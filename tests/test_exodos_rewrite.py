@@ -7,6 +7,7 @@ the bytes and line endings around them are kept exactly.
 """
 from __future__ import annotations
 
+import pytest
 from services.exodos import EXODOS, rewrite_conf
 
 
@@ -115,3 +116,26 @@ def test_folder_mounts_on_other_drives_are_reported():
         "@MOUNT A: .\\FLOPPY -t floppy",
     ]
     assert result.leftovers == []
+
+
+def test_a_c_drive_mount_of_a_subfolder_is_reported():
+    """DOSBox Pure already mounts the file as C:; a folder mount reads the
+    host disk, so C: stays the file root and the game's subfolder is missed."""
+    conf = b"mount c .\\eXoDOS\\Abaron\\HD\r\nc:\r\nGAME.EXE\r\n"
+
+    assert _rw(conf).folder_mounts == ["mount c .\\HD"]
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        b"mount c .\\eXoDOS\\Abaron",
+        b"mount c .\\eXoDOS\\Abaron\\",
+        b"mount c .",
+        b"mount c .\\",
+        b"@MOUNT C: .\\ -freesize 1024",
+        b'mount c ".\\eXoDOS\\Abaron"',
+    ],
+)
+def test_a_c_drive_mount_of_the_root_is_not_reported(line):
+    assert _rw(line + b"\r\n").folder_mounts == []

@@ -576,3 +576,17 @@ def test_a_symlinked_game_folder_inside_the_tree_is_refused(tree):
 
     with pytest.raises(NotRepackable, match="link"):
         ExodosService().inspect(path)
+
+
+def test_a_game_mounted_from_a_subfolder_as_c_gets_a_warning(tree):
+    """Codex's layout: C: is a subfolder, so `c:` then GAME.EXE finds nothing."""
+    (tree["dos"] / "Abaron" / "dosbox.conf").write_bytes(
+        b"[autoexec]\r\nmount c .\\eXoDOS\\Abaron\\HD\r\nc:\r\nGAME.EXE\r\n",
+    )
+    service = ExodosService()
+    source = _game_zip(tree, ["Abaron/HD/GAME.EXE"])
+
+    updates = _convert(service, source, service.get_output_path(source))
+
+    assert updates[-1].get("warning") is True
+    assert "mount c .\\HD" in updates[-1]["message"]

@@ -1897,8 +1897,9 @@ copied into RomM alone does not start.
 - **It tells you when a game reaches outside itself.** If the config still points
   into `.\eXoDOS\` after the rewrite, the job finishes with a warning naming the
   line, because that game will probably not start. It also warns about a folder
-  `mount` on a drive other than C: (`mount d .\CD -t cdrom`): DOSBox Pure mounts
-  folders from the host disk, not from the loaded file.
+  `mount` on a drive other than C: (`mount d .\CD -t cdrom`), and about a C:
+  mount of a subfolder (`mount c .\HD`): DOSBox Pure mounts the loaded file as
+  C: and mounts folders from the host disk, not from the file.
 - **Output is `Game.dosz`**, beside the source or in the chosen output directory.
   A `.dosz` is a zip under the name DOSBox Pure documents for one, so the product
   can never replace its source, and its Verify action never claims other zips.

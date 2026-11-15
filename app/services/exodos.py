@@ -93,9 +93,10 @@ class ConfRewrite:
     # Lines (comments aside) that still point into the pack after the rewrite:
     # the game reaches outside its own folder and will probably not start.
     leftovers: list[str]
-    # Folder mounts on a drive other than C:. DOSBox Pure's MOUNT reads the
-    # host filesystem, not the loaded file, so these cannot work from inside
-    # it (C: is the file itself; IMGMOUNT and BOOT do read from it).
+    # Folder mounts that cannot work from inside the file: any drive but C:,
+    # and a C: mount of a subfolder. DOSBox Pure's MOUNT reads the host
+    # filesystem and C: is already the file itself (IMGMOUNT and BOOT do
+    # read from it). See _folder_mount_misses.
     folder_mounts: list[str] = field(default_factory=list)
 
 
@@ -105,8 +106,11 @@ _MOUNT_LINE = re.compile(rb"^[ \t]*(?:@[ \t]*)?(?:mount|imgmount|boot)(?:[ \t]|$
 # ``mount <drive> <path>``, the drive written with or without its colon. A
 # switch in place of the drive (``mount -u d``) does not match.
 _FOLDER_MOUNT = re.compile(
-    rb"^[ \t]*(?:@[ \t]*)?mount[ \t]+([a-z]):?[ \t]+[^-\s]", re.IGNORECASE,
+    rb'^[ \t]*(?:@[ \t]*)?mount[ \t]+([a-z]):?[ \t]+("[^"]*"|[^-\s][^\s]*)', re.IGNORECASE,
 )
+# The spellings of "the root of the file" a C: mount may name after the
+# rewrite; any other C: mount names a subfolder.
+_ROOT_PATHS = frozenset({b".", b".\\", b"./"})
 _COMMENT_LINE = re.compile(rb"^[ \t]*(?:#|@?[ \t]*rem(?:[ \t]|$))", re.IGNORECASE)
 # What may follow a path that ends at the pack or game folder.
 _PATH_ENDS = (b"", b" ", b"\t", b'"')
@@ -153,6 +157,24 @@ def _rewrite_line(body: bytes, needle: bytes, top: bytes) -> bytes:
     return b"".join(out)
 
 
+def _folder_mount_misses(body: bytes) -> bool:
+    """Whether a ``mount`` line cannot reach its folder from inside the file.
+
+    DOSBox Pure mounts the loaded file as C: and reads a folder mount from the
+    host disk. So a folder mount on any other drive finds nothing, and a C:
+    mount of a subfolder is refused ("already mounted"), leaving C: at the
+    file root where the game's files are not. Only a C: mount of the root
+    itself (``.``, ``.\\``) is harmless.
+    """
+    found = _FOLDER_MOUNT.match(body)
+    if not found:
+        return False
+    if found.group(1).lower() != b"c":
+        return True
+    target = found.group(2).strip(b'"')
+    return target not in _ROOT_PATHS
+
+
 def rewrite_conf(data: bytes, top: str, profile: CollectionProfile = EXODOS) -> ConfRewrite:
     """Rewrite a template's mount paths for a game repacked at the zip root.
 
@@ -170,8 +192,7 @@ def rewrite_conf(data: bytes, top: str, profile: CollectionProfile = EXODOS) -> 
             body = _rewrite_line(body, profile.needle, top_bytes)
         if profile.needle in body.lower() and not _COMMENT_LINE.match(body):
             leftovers.append(body.strip().decode("cp437"))
-        drive = _FOLDER_MOUNT.match(body)
-        if drive and drive.group(1).lower() != b"c":
+        if _folder_mount_misses(body):
             folder_mounts.append(body.strip().decode("cp437"))
         lines.append(body + eol)
     return ConfRewrite(
@@ -396,7 +417,8 @@ class ExodosService:
             )
         if rewrite.folder_mounts:
             caveats.append(
-                "These folder mounts read the host disk, not the file: "
+                "These folder mounts cannot reach the file's contents (DOSBox Pure "
+                "mounts the file as C: and reads folders from the host disk): "
                 + "; ".join(rewrite.folder_mounts),
             )
         if caveats:
