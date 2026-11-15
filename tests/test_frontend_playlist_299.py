@@ -27,7 +27,7 @@ def _run_dialog(tmp_path: Path, expr: str):
         pytest.skip("node not available")
     script = tmp_path / "dialog_eval.mjs"
     script.write_text(
-        f"import {{ canCreate, classifyPreviewError }} from {json.dumps(_DIALOG.as_uri())};\n"
+        f"import {{ canCreate, classifyPreviewError, playlistPaths, parentDir }} from {json.dumps(_DIALOG.as_uri())};\n"
         f"process.stdout.write(JSON.stringify({expr}));\n",
         encoding="utf-8",
     )
@@ -92,3 +92,22 @@ def test_other_errors_are_selection_errors(tmp_path):
     assert _run_dialog(
         tmp_path, "classifyPreviewError({ message: 'Select two or more discs' }, null)",
     ) == {"kind": "selection", "message": "Select two or more discs", "title": None}
+
+
+def test_parent_dir_splits_on_slash_only(tmp_path):
+    # Paths come from a POSIX server: a backslash is a filename character.
+    assert _run_dialog(tmp_path, "parentDir('/vol/Game\\\\ (Disc 2).iso')") == "/vol"
+    assert _run_dialog(tmp_path, "parentDir('/vol/a/b.iso')") == "/vol/a"
+
+
+def test_a_backslash_in_a_file_name_does_not_change_its_folder(tmp_path):
+    # /vol/Game (Disc 1).iso and /vol/Game\ (Disc 2).iso share /vol.
+    expr = (
+        "playlistPaths(['/vol/Game (Disc 1).iso', '/vol/Game\\\\ (Disc 2).iso'])"
+    )
+    assert _run_dialog(tmp_path, expr) == ["/vol/Game (Disc 1).iso", "/vol/Game\\ (Disc 2).iso"]
+
+
+def test_discs_in_different_real_folders_hide_the_button(tmp_path):
+    assert _run_dialog(tmp_path, "playlistPaths(['/vol/a/x.iso', '/vol/b/y.iso'])") == []
+    assert _run_dialog(tmp_path, "playlistPaths(['/vol/a/x.iso'])") == []
