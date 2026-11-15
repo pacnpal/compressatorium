@@ -127,3 +127,33 @@ async def test_a_job_still_running_when_the_wait_ends_is_retained(e2e_env, monke
     # Not finished, not withdrawn: its output may still land, so the client
     # keeps it rather than retiring its records.
     assert [k.id for k in kept] == [job.id]
+
+
+@pytest.mark.asyncio
+async def test_an_unbounded_job_timeout_still_caps_the_wait_in_the_request(
+    e2e_env, monkeypatch,
+):
+    # progress_timeout = 0 means no job bound, but the rollback runs inside the
+    # Auto request: it waits at most the in-request cap, then keeps the job.
+    monkeypatch.setattr(convert_routes.settings, "progress_timeout", 0)
+    monkeypatch.setattr(convert_routes, "ROLLBACK_WAIT_CAP_SECONDS", 1.0)
+    job, worker, release = await _job_paused_in_post_convert(e2e_env, monkeypatch)
+
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    try:
+        kept = await asyncio.wait_for(convert_routes._cancel_queued([job]), 5)
+    finally:
+        elapsed = loop.time() - started
+        release.set()
+        await asyncio.wait_for(worker, 5)
+
+    assert elapsed < 3, elapsed
+    assert [k.id for k in kept] == [job.id]
+
+
+def test_the_in_request_cap_is_thirty_seconds():
+    from services import job_manager as job_manager_module
+
+    assert job_manager_module.ROLLBACK_WAIT_CAP_SECONDS == 30
+    assert convert_routes.ROLLBACK_WAIT_CAP_SECONDS == 30

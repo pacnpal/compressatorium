@@ -2574,7 +2574,9 @@ clears `autoInFlight` (the store stops waiting at the abort even when a request
 ignores the signal); `jobs.adopt` applies the same freshness rule as `refresh()`
 (`snapshotIsNewer`). The rollback (`_cancel_queued`) asks every queued job to
 cancel, then waits for them to settle with `JobManager.wait_until_terminal`,
-bounded by `CHD_PROGRESS_TIMEOUT`. `cancel_job()` returning True for a
+for at most `CHD_PROGRESS_TIMEOUT` or `ROLLBACK_WAIT_CAP_SECONDS` (30 s),
+whichever is shorter; the cap holds when the timeout is 0, since the wait runs
+inside the HTTP request. `cancel_job()` returning True for a
 processing job means only that its cancel event is set, and a worker past its
 last check (in `post_convert`) still completes, so the retained list is built
 from the real final states: completed with an output, or still running at the

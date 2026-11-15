@@ -28,6 +28,7 @@ from models import (
 from routes.preferences import CONVERSION_KEY as CONVERSION_PREFS_KEY
 from services.archive import archive_service
 from services.job_manager import (
+    ROLLBACK_WAIT_CAP_SECONDS,
     DestinationUnresolvableError,
     OutputClaimedError,
     QueueBackpressureError,
@@ -1329,8 +1330,10 @@ async def _cancel_queued(jobs: list) -> list:
     states, never by ``cancel_job()``'s answer: for a processing job that only
     means its cancel event is set, and a worker past its last check (in
     ``post_convert``, say) still completes. So every job is asked to cancel,
-    then the rollback waits for them to settle, bounded by the job progress
-    timeout (``CHD_PROGRESS_TIMEOUT``; 0 means no bound). Retained: a job that
+    then the rollback waits for them to settle, for at most the job progress
+    timeout (``CHD_PROGRESS_TIMEOUT``) or ``ROLLBACK_WAIT_CAP_SECONDS``,
+    whichever is shorter. The cap applies even when the timeout is 0 (no job
+    bound), because this runs inside the HTTP request. Retained: a job that
     completed with an output, and one still running at the bound (its output
     may yet land). Cancelled and failed jobs are withdrawn. Nothing is deleted.
     """
@@ -1339,7 +1342,8 @@ async def _cancel_queued(jobs: list) -> list:
             await job_manager.cancel_job(job.id)
         except Exception:  # keep withdrawing the rest; judged by state below
             logger.warning("Could not cancel Auto job %s", job.id, exc_info=True)
-    bound = max(0, int(getattr(settings, "progress_timeout", 0) or 0)) or None
+    job_bound = max(0, int(getattr(settings, "progress_timeout", 0) or 0))
+    bound = min(job_bound, ROLLBACK_WAIT_CAP_SECONDS) if job_bound else ROLLBACK_WAIT_CAP_SECONDS
     await job_manager.wait_until_terminal([job.id for job in jobs], bound)
 
     kept: list = []

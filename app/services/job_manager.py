@@ -229,6 +229,11 @@ async def _resolve_paths_bounded(paths: Iterable[str]) -> Dict[str, str]:
 _TERMINAL_STATUSES = (JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED)
 # How often `wait_until_terminal` re-reads job states.
 _SETTLE_POLL_SECONDS = 0.05
+# The longest a caller inside an HTTP request (the Auto rollback) waits in
+# `wait_until_terminal`, whatever the job progress timeout says (0 there means
+# no bound). A job still running at this cap is reported as kept, so a short
+# cap loses nothing and a stuck job cannot hang the request.
+ROLLBACK_WAIT_CAP_SECONDS = 30.0
 
 
 class DestinationUnresolvableError(RuntimeError):
