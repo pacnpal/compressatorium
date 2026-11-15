@@ -725,16 +725,25 @@ class LockManager:
             self._release_key(key)
 
     def _release_key(self, normalized_path: str) -> None:
+        """Let go of one identity: the flock first, then the memory record.
+
+        The handle is taken out under the mutex, the lock file is unlinked and
+        unlocked outside it (no I/O under the mutex), and only then is the
+        identity dropped from ``_locks``: another job here sees the path as
+        free only once the flock is actually gone (codex 4579986280).
+        """
         with self._lock_mutex:
             if normalized_path not in self._locks:
                 return
-            self._locks.remove(normalized_path)
             lock_handle = self._lock_handles.pop(normalized_path, None)
-        # The unlink and close outside the mutex: no I/O under it.
-        if lock_handle is not None:
-            self._unlink_then_close(
-                lock_handle, self._lock_file_path(normalized_path), normalized_path,
-            )
+        try:
+            if lock_handle is not None:
+                self._unlink_then_close(
+                    lock_handle, self._lock_file_path(normalized_path), normalized_path,
+                )
+        finally:
+            with self._lock_mutex:
+                self._locks.discard(normalized_path)
 
     def acquire_dir_lock(self, dir_path: str) -> bool:
         """Acquire an exclusive lock over a directory and its entire subtree.
@@ -821,10 +830,13 @@ class LockManager:
         with self._lock_mutex:
             if normalized not in self._dir_locks:
                 return
-            self._dir_locks.remove(normalized)
             handle = self._dir_lock_handles.pop(normalized, None)
-        if handle is not None:  # the unlink and close outside the mutex
-            self._unlink_then_close(handle, self._lock_file_path(normalized), normalized)
+        try:
+            if handle is not None:  # the flock first, outside the mutex
+                self._unlink_then_close(handle, self._lock_file_path(normalized), normalized)
+        finally:
+            with self._lock_mutex:  # then the memory record
+                self._dir_locks.discard(normalized)
 
     # Input locks (#306). A job holds a *shared* flock on each file it reads
     # (its Source and the Source's companions) for as long as it runs. Readers

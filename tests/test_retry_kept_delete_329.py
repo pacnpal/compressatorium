@@ -1063,3 +1063,72 @@ def test_an_unlink_that_raises_its_own_timeout_error_is_a_counted_attempt(
     pending = _rule_state(env)["gc"]["kept_sources"]["Game.iso"]
     assert pending["attempts"] == 1
     assert "timed out" in pending["last_reason"]
+
+
+# --------------------------------------------------------------------------- #
+# Letting go of locks never stalls the sweep (Codex 4579986280)
+# --------------------------------------------------------------------------- #
+
+
+def test_a_stalled_lock_release_neither_holds_the_sweep_nor_the_pool(
+    env, dolphin, capsys, kept, monkeypatch,
+):
+    """The lock directory stops answering while the retry lets go of its
+    locks: the retry returns within its bound, the event loop keeps ticking,
+    the shared threadpool is never asked, and the background worker still
+    closes every handle once the directory answers."""
+    import time
+
+    from services import job_manager as job_manager_module
+    from services.job_manager import KEPT_DELETED, job_manager
+    from services.lock_manager import LockManager, lock_manager
+
+    monkeypatch.setattr(job_manager_module, "KEPT_DELETE_PROBE_SECONDS", 0.2)
+    real_unlink_then_close = LockManager._unlink_then_close
+
+    def stalled(self, handle, *args, **kwargs):
+        time.sleep(1.0)
+        return real_unlink_then_close(self, handle, *args, **kwargs)
+
+    monkeypatch.setattr(LockManager, "_unlink_then_close", stalled)
+    pooled = []
+    real_pool = job_manager_module.run_in_threadpool
+
+    async def watched_pool(func, *args, **kwargs):
+        pooled.append(getattr(func, "__name__", repr(func)))
+        return await real_pool(func, *args, **kwargs)
+
+    monkeypatch.setattr(job_manager_module, "run_in_threadpool", watched_pool)
+
+    async def run():
+        gaps = []
+
+        async def heartbeat():
+            last = time.monotonic()
+            while True:
+                await asyncio.sleep(0.01)
+                now = time.monotonic()
+                gaps.append(now - last)
+                last = now
+
+        beat = asyncio.create_task(heartbeat())
+        started = time.monotonic()
+        outcome = await job_manager.retry_kept_delete(
+            source_path=str(kept["iso"]), output_path=str(kept["output"]),
+            required_check="container_only",
+        )
+        elapsed = time.monotonic() - started
+        beat.cancel()
+        return outcome, elapsed, max(gaps or [0])
+
+    outcome, elapsed, worst_gap = asyncio.run(run())
+
+    assert outcome.status == KEPT_DELETED
+    assert not kept["iso"].exists()
+    # Two releases (the Source's hold, the output lock), each bounded.
+    assert elapsed < 0.9, elapsed
+    assert worst_gap < 0.5, worst_gap
+    assert "_let_go" not in pooled
+    # The worker finishes on its own: every lock is let go in the end.
+    assert _wait_for(lambda: not lock_manager.is_locked(str(kept["output"])))
+    assert _wait_for(lambda: not lock_manager.check_file_status(str(kept["iso"]))[1])

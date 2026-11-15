@@ -45,6 +45,7 @@ from services.round_trip import round_trip, round_trip_applies
 from services.subprocess_runner import (
     DeadlineExpired,
     MutationInFlight,
+    ProbeCapacityExceeded,
     ReadCancelled,
     run_detached,
     run_detached_bounded,
@@ -3241,10 +3242,10 @@ class JobManager:
             if outcome.kept_reason is None and cancel_event.is_set():
                 outcome.kept_reason = skipped
         if outcome.kept_reason:
-            self._release_delete_holds(owner_id)
+            await self._release_delete_holds_in_background(owner_id, probe_seconds)
             return outcome
         if cancel_event.is_set() or cancelled():
-            self._release_delete_holds(owner_id)
+            await self._release_delete_holds_in_background(owner_id, probe_seconds)
             outcome.cancelled = True
             return outcome
         for path in delete_order:
@@ -3253,7 +3254,7 @@ class JobManager:
                 hand_off=lambda: self._hand_off_locks(owner_id, travelling_locks),
             )
             deleted.append(path)
-        self._release_delete_holds(owner_id)
+        await self._release_delete_holds_in_background(owner_id, probe_seconds)
 
         ext = os.path.splitext(file_path)[1].lower()
         clears = []
@@ -3276,6 +3277,40 @@ class JobManager:
                     exc_info=True,
                 )
         return outcome
+
+    @staticmethod
+    async def _let_go_in_background(
+        paths: Iterable[str], seconds: Optional[float] = None,
+    ) -> None:
+        """Release exclusive locks on a detached worker; wait for it at most
+        *seconds* (``KEPT_DELETE_PROBE_SECONDS`` by default), then move on.
+
+        Letting go of a lock is lock-file I/O (``_unlink_then_close``), which a
+        lock directory that stops answering can stall: never on the event
+        loop, never on the shared threadpool, never unbounded under
+        ``_sweep_lock`` (codex 4579986280). The worker owns the release once
+        started and finishes on its own, closing every handle, whether or not
+        the caller still waits. The one path a job and a retry both let go by.
+        """
+        paths = list(paths)
+        if not paths:
+            return
+        bound = KEPT_DELETE_PROBE_SECONDS if seconds is None else seconds
+        try:
+            await run_detached_bounded(_let_go, paths, timeout=bound)
+        except DeadlineExpired:
+            logger.warning(
+                "Letting go of %d lock(s) did not finish in %gs; it goes on in "
+                "the background", len(paths), bound,
+            )
+        except ProbeCapacityExceeded:
+            # No detached slot: a thread of its own, still never the pool.
+            threading.Thread(target=_let_go, args=(paths,), daemon=True).start()
+
+    async def _release_delete_holds_in_background(
+        self, owner_id: str, seconds: Optional[float] = None,
+    ) -> None:
+        await self._let_go_in_background(self._delete_holds.pop(owner_id, []), seconds)
 
     def _hand_off_locks(
         self, owner_id: str, travelling: Optional[HeldLocks],
@@ -3456,7 +3491,7 @@ class JobManager:
         finally:
             # Off the loop: lock files are I/O (codex 4579852997).
             holds = self._delete_holds.pop(owner_id, [])
-            await run_in_threadpool(_let_go, [*holds, *travelling.take()])
+            await self._let_go_in_background([*holds, *travelling.take()])
 
     async def _delete_check(
         self, job, tool, source_path: str, output_path: str, cancel_event,
@@ -4373,14 +4408,18 @@ class JobManager:
             # listener that must record how the job ended has to hear about it
             # while the job object still says so.
             self._notify_terminal(job)
-            # Only release lock if we acquired it
-            if lock_acquired:
-                self._release_output_locks(job)
+            # Only release lock if we acquired it. The output locks (unless an
+            # unlink took them) and the delete holds, in the background like
+            # a retry's: lock-file I/O never on the loop.
+            held_outputs = self._output_locks.pop(job.id, None) if lock_acquired else None
+            await self._let_go_in_background([
+                *(held_outputs.take() if held_outputs is not None else []),
+                *self._delete_holds.pop(job_id, []),
+            ])
             # Release the directory subtree lock held by a folder->iso job.
             if dir_lock_acquired:
                 lock_manager.release_dir_lock(job.file_path)
             self._release_inputs(job_id)
-            self._release_delete_holds(job_id)
 
             concurrency_manager.release(job_id)
 

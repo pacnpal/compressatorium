@@ -4057,6 +4057,17 @@ each delete path (below), which also asks `folder_locked_above`.
   of memory under it and unlinks and closes the lock file after. A path
   resolve or stat that stalls on a dead mount therefore never holds the
   mutex against another caller, the event loop included.
+- **A release lets go of the flock first, then the memory record**
+  (`_release_key`, `release_dir_lock`): the handle is taken out under the
+  mutex, the lock file is unlinked and unlocked outside it, and only then is
+  the identity dropped from `_locks` / `_dir_locks`, so another job here sees
+  the path free only once the flock is actually gone.
+- **Letting go never stalls a caller** (codex 4579986280). A job's cleanup and
+  a retried delete release their exclusive locks through one helper,
+  `JobManager._let_go_in_background`: the release runs on a detached worker
+  (never the shared threadpool), the caller waits for it at most
+  `KEPT_DELETE_PROBE_SECONDS` and moves on, and the worker finishes on its
+  own, closing every handle it took.
 - Taking a lock is different: only contention (`BlockingIOError` from the
   non-blocking `flock`, or an existing output) answers "busy" and requeues.
   Any other `OSError` making or locking the lock file (`ENAMETOOLONG`,
