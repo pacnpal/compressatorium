@@ -364,7 +364,7 @@ def _logical_files(item) -> list[str]:
         logger.debug("No verify target for %s through %s: %s", item.path, mode, exc)
         return []
     files = [target] if target else []
-    return files + [p for p in _companion_outputs(mode, item.path) if p not in files]
+    return files + [p for p in registry._companions(mode, item.path) if p not in files]
 
 
 # --------------------------------------------------------------------------- #
@@ -1008,55 +1008,21 @@ def _tool_serves(tool, platform: str, registry) -> bool:
     return not any(platform in _tool_slugs(t) for t in registry.all())
 
 
-def _split_owner(path: str) -> tuple[str, str] | None:
-    """``(logical output, mode)`` when ``path`` is a numbered part of a split
-    output (``Game.iso.0``), else None.
-
-    Registry-driven: the candidate is the name without its last suffix, and it
-    counts only when it carries a mode's declared output extension (``.iso``
-    for folder_to_iso, so ``save.0`` never qualifies) and that mode's own
-    ``companion_outputs`` for it (the split-part lookup makeps3iso's delete
-    and overwrite paths use) lists ``path``. A suffix that isn't a number is
-    never one. A file that doesn't qualify stays a plain file for discovery.
-    """
-    from services.tools import registry
-    from utils.path_utils import match_extension
-
-    base, suffix = os.path.splitext(path)
-    if not suffix[1:].isdigit():
-        return None
-    real = os.path.realpath(path)
-    for spec in registry.mode_specs():
-        if not spec.output_ext or match_extension(base, {spec.output_ext}) is None:
-            continue  # this mode never writes a file named like the base
-        parts = _companion_outputs(spec.mode, base)
-        if real in {os.path.realpath(part) for part in parts}:
-            return base, spec.mode
-    return None
-
-
-def _companion_outputs(mode: str, base: str) -> list[str]:
-    """A mode's companion outputs for ``base``; [] when the tool's disk probe
-    fails (it owns nothing then), said at debug level."""
-    from services.tools import registry
-
-    try:
-        return registry.for_mode(mode).companion_outputs(base, mode)
-    except OSError as exc:
-        logger.debug("No companion outputs from %s for %s: %s", mode, base, exc)
-        return []
-
-
 def _is_split_part(path: str) -> bool:
-    return _split_owner(path) is not None
+    """A numbered part of a split output (``registry.split_owner``)."""
+    from services.tools import registry
+
+    return registry.split_owner(path) is not None
 
 
 def _to_logical(items: list[Item]) -> list[Item]:
     """Numbered parts become their one logical Image (#306), deduped."""
+    from services.tools import registry
+
     out: list[Item] = []
     index: dict[str, Item] = {}
     for item in items:
-        owner = None if item.status or "::" in item.path else _split_owner(item.path)
+        owner = None if item.status or "::" in item.path else registry.split_owner(item.path)
         if owner is not None:
             item = Item(path=owner[0], explicit=item.explicit, logical_mode=owner[1])
         key = os.path.realpath(item.path)

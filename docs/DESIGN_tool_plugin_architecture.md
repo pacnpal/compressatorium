@@ -2772,7 +2772,7 @@ it, and with `scan_tree(unreadable=[...])` the CLI reports it as a skipped line
 **A split output is one logical Image.** A split makeps3iso build writes
 `Game.iso.0`, `.1`, ... and no `Game.iso`, but its check is recorded under
 `Game.iso`. A verify treats the parts as that one Image, registry-driven, with
-the split-part lookup the delete and overwrite paths use: `cli._split_owner`
+the split-part lookup the delete and overwrite paths use: `ToolRegistry.split_owner`
 maps a numbered part to its output when the name without its last suffix
 carries a mode's declared output extension (`.iso` for folder_to_iso, so
 `save.0` never qualifies and stays a plain file) and that mode's
