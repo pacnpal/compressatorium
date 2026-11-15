@@ -353,10 +353,10 @@ def test_a_product_that_fails_its_check_is_never_kept(tree, monkeypatch):
     output = service.get_output_path(source)
     real_check = ExodosService._check_product
 
-    def corrupt_then_check(self, path):
+    def corrupt_then_check(self, path, *args):
         with open(path, "r+b") as handle:
             handle.truncate(os.path.getsize(path) // 2)
-        return real_check(self, path)
+        return real_check(self, path, *args)
 
     monkeypatch.setattr(ExodosService, "_check_product", corrupt_then_check)
 
@@ -440,3 +440,24 @@ def test_the_warning_reads_as_sentences(tree):
 
     assert message.startswith("Repacked, but it may not start. The conf still points")
     assert message.endswith(".")
+
+
+def test_a_cancel_during_the_check_keeps_nothing(tree, monkeypatch):
+    """The check re-reads the whole product, so it must honour Cancel too."""
+    service = ExodosService()
+    source = _game_zip(tree)
+    before = Path(source).read_bytes()
+    cancel = asyncio.Event()
+    real_check = ExodosService._own_check
+
+    def cancel_then_check(self, path, is_cancelled):
+        cancel.set()
+        return real_check(self, path, is_cancelled)
+
+    monkeypatch.setattr(ExodosService, "_own_check", cancel_then_check)
+
+    with pytest.raises(ConversionCancelled):
+        _convert(service, source, service.get_output_path(source), cancel)
+
+    assert sorted(os.listdir(tree["games"])) == ["!dos", "Abaron (1995).zip"]
+    assert Path(source).read_bytes() == before

@@ -27,7 +27,8 @@ import functools
 import os
 import re
 import zipfile
-from collections.abc import AsyncGenerator
+import zlib
+from collections.abc import AsyncGenerator, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -35,6 +36,7 @@ from fastapi.concurrency import run_in_threadpool
 from services.archive import archive_service
 from services.archive_edit import rewrite_zip
 from services.subprocess_runner import (
+    ConversionCancelled,
     ReadCancelled,
     collect_verify,
     run_detached,
@@ -50,6 +52,7 @@ INPUT_EXTENSIONS = frozenset({".zip"})
 # A dosbox.conf is a few KB; anything far larger is not a template.
 _MAX_TEMPLATE_BYTES = 1024 * 1024
 _PROGRESS_INTERVAL = 0.5
+_CHECK_CHUNK = 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -346,7 +349,7 @@ class ExodosService:
             # The same CRC and structure check Verify runs, on the finished
             # temp file: a product that fails it is never placed, so the job
             # fails and leaves no output. The Source is only ever read.
-            check=self._own_check,
+            check=lambda path: self._own_check(path, is_cancelled),
             is_cancelled=is_cancelled,
             on_progress=on_progress,
         ))
@@ -410,7 +413,11 @@ class ExodosService:
             yield problem
             return
         try:
-            await run_detached(self._check_product, path, cancel_event=cancel_event)
+            await run_detached(
+                self._check_product, path,
+                (lambda: cancel_event.is_set()) if cancel_event else (lambda: False),
+                cancel_event=cancel_event,
+            )
         except ReadCancelled:
             yield {
                 "type": "error", "valid": False, "cancelled": True,
@@ -422,15 +429,23 @@ class ExodosService:
             return
         yield {"type": "complete", "valid": True, "message": "File is Intact"}
 
-    def _own_check(self, path: str) -> None:
+    def _own_check(self, path: str, is_cancelled: Callable[[], bool]) -> None:
         try:
-            self._check_product(path)
+            self._check_product(path, is_cancelled)
         except (OSError, ValueError, zipfile.BadZipFile) as exc:
             raise RuntimeError(
                 f"The repacked file failed its own check, so it was not kept: {exc}",
             ) from exc
 
-    def _check_product(self, path: str) -> None:
+    def _check_product(
+        self, path: str, is_cancelled: Callable[[], bool] = lambda: False,
+    ) -> None:
+        """CRCs, member names and limits, and the root conf, or ``ValueError``.
+
+        Reads every member, so it polls ``is_cancelled`` between chunks and
+        raises ``ConversionCancelled`` rather than make a cancelled job wait
+        out a multi-GB read.
+        """
         with zipfile.ZipFile(path) as zf:
             infos = zf.infolist()
             archive_service.enforce_archive_limits(
@@ -444,9 +459,24 @@ class ExodosService:
                     raise ValueError(f"{exc}: {info.filename!r}") from exc
             if self.profile.conf_name not in {info.filename for info in infos}:
                 raise ValueError(f"No {self.profile.conf_name} at the root of the file")
-            bad = zf.testzip()
-            if bad is not None:
-                raise ValueError(f"CRC check failed for {bad}")
+            for info in infos:
+                if not info.is_dir():
+                    self._read_member(zf, info, is_cancelled)
+
+    @staticmethod
+    def _read_member(
+        zf: zipfile.ZipFile, info: zipfile.ZipInfo, is_cancelled: Callable[[], bool],
+    ) -> None:
+        # zipfile checks the CRC once the member has been read to its end.
+        try:
+            with zf.open(info) as member:
+                while True:
+                    if is_cancelled():
+                        raise ConversionCancelled("Conversion cancelled")
+                    if not member.read(_CHECK_CHUNK):
+                        return
+        except (zipfile.BadZipFile, zlib.error, EOFError) as exc:
+            raise ValueError(f"CRC check failed for {info.filename}: {exc}") from exc
 
     # --- info --------------------------------------------------------------
 
