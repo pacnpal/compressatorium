@@ -4,10 +4,16 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+
 from app.models import AutoJobCreateRequest
 from app.routes import convert as convert_routes
 
-from .test_auto_convert import _fresh_cache, _mixed_selection, _route_env, _volume  # noqa: F401
+from .test_auto_convert import (  # noqa: F401
+    _fresh_cache,
+    _mixed_selection,
+    _route_env,
+    _volume,
+)
 
 
 @pytest.mark.asyncio
