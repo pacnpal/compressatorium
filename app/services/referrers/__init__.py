@@ -108,7 +108,6 @@ class ReferrerOutcome:
             target, reason = exc.target, exc.reason
         else:
             target, reason = fallback_target, str(exc) or type(exc).__name__
-        logger.warning("Referrer %s could not update %s: %s", referrer, target, reason)
         self._record(referrer, target, "failed", reason)
         self.failed, self.reason = target, reason
 
@@ -141,7 +140,11 @@ def _plan_and_apply(image_path: str, renames: Mapping[str, str]) -> ReferrerOutc
         try:
             if _applies(referrer, image_path, renames):
                 planned.extend((referrer, c) for c in referrer.plan(renames))
-        except Exception as exc:  # noqa: BLE001 - any failure keeps the Source
+        except Exception as exc:
+            # Any failure keeps the Source, so the catch is deliberately broad.
+            logger.warning(
+                "Referrer %s could not plan for %s", referrer.id, image_path, exc_info=True,
+            )
             outcome._fail(referrer.id, exc, referrer.id)
             break
     for referrer, change in planned:
@@ -150,7 +153,11 @@ def _plan_and_apply(image_path: str, renames: Mapping[str, str]) -> ReferrerOutc
             continue
         try:
             referrer.apply(change)
-        except Exception as exc:  # noqa: BLE001 - any failure keeps the Source
+        except Exception as exc:
+            # Any failure keeps the Source, so the catch is deliberately broad.
+            logger.warning(
+                "Referrer %s could not update %s", referrer.id, change.target, exc_info=True,
+            )
             outcome._fail(referrer.id, exc, change.target)
             continue
         outcome._record(referrer.id, change.target, "updated")
@@ -182,10 +189,14 @@ async def update_before_source_removal(
         )
     except ReadCancelled:
         reason = "cancelled"
-    except Exception as exc:  # noqa: BLE001 - a timeout or anything else keeps the Source
+        logger.warning("Referrer hook for %s did not finish: cancelled", image_path)
+    except Exception as exc:
+        # A timeout or anything else keeps the Source, so the catch is broad.
         reason = str(exc) or type(exc).__name__
+        logger.warning(
+            "Referrer hook for %s did not finish", image_path, exc_info=True,
+        )
     abandoned.set()
-    logger.warning("Referrer hook for %s did not finish: %s", image_path, reason)
     outcome = ReferrerOutcome()
     # One failed record per Referrer, so the Ledger row says why the Source
     # was kept even though no target was reached.
