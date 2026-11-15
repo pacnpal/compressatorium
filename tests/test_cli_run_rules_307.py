@@ -712,7 +712,6 @@ def test_romm_before_pass_does_what_the_server_does_at_startup(env, monkeypatch)
 
     async def settle():
         calls.append("settle_once")
-        return None
 
     monkeypatch.setattr(romm_settings, "load", load)
     monkeypatch.setattr(romm_routes, "replay_identity_cleanup", replay)
