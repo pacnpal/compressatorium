@@ -4,6 +4,20 @@
 
 ### Added
 
+- **Notifications: webhook and Apprise** (#293). Add a webhook URL or an Apprise
+  URL under the new **Settings** page and get one message when a sweep finishes
+  (counts, space saved, and the failures inside it) and one when a job you
+  started by hand fails. **Test** sends a sample and shows the error if it fails.
+  Nothing is sent until a destination is added. Saved URLs are never sent back
+  to the browser, and a destination that errors or hangs never fails or delays a
+  job. Apprise is bundled in the Docker image and imported only when used;
+  webhooks need no extra package.
+  Webhook delivery does not follow redirects (Test reports "HTTP 30x") and does not
+  use `HTTP(S)_PROXY`.
+  A native **Discord webhook** destination (any https URL that speaks Discord's
+  webhook format, no Apprise needed) posts one embed per message with mentions
+  disabled; the generic webhook's JSON is unchanged.
+
 - **`compressatorium convert` and `compressatorium verify`** (#306). A command
   line for shells and cron that covers every tool, recurses into subfolders and
   archives, and uses the web UI's planner, delete checks and Ledger.

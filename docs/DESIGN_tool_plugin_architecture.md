@@ -2885,6 +2885,94 @@ conversion, no check runs in that job, so `job.check_passed` stays unset. Its
 (`JobManager._stored_check`), so the UI keeps a Round-tripped badge rather than
 falling back to Intact.
 
+### 3.3.13 Notifications (`services/notifications.py`)
+
+The one place that sends anything off the server. Callers use these functions and
+never see a transport:
+
+- `notify(event)` queues an `Event(kind, title, body, data)` and returns at once.
+- `on_job_finished(job)` is a `JobManager.add_terminal_listener` callback
+  (registered in `main.py`). A failed job that no sweep owns becomes one
+  `job_failed` message.
+- `sweep_owner()`, `sweep_jobs_queued(jobs)` and `sweep_finished(result, dry_run=,
+  library_id=)` are the sweep's hooks (one line each in
+  `rules/sweep.py::_sweep_locked`; `sweep_finished` is called from `sweep()` in a
+  `finally`, so the post-lock return point named in the Rule engine section is not
+  where a sweep ends for notifications). A sweep queues jobs and returns, so its
+  message waits until the last of those jobs is terminal, then sends one
+  `sweep_finished` message: counts, bytes saved (the Ledger's definition, via
+  `ledger.job_saved_bytes`), and the failures listed inside it. The queue call
+  enqueues and then awaits, so a job can end before it returns. Ownership is
+  therefore set at creation: `sweep_owner()` returns a token, the sweep passes it as
+  `owner=` through `create_batch_jobs` and `create_jobs_atomic`, and
+  `JobManager._queue_job_locked` sets `ConversionJob._sweep_owner` before the job is
+  enqueued (`_sweep_owner` is a private attribute, in no schema or serialized form; callers that pass nothing behave as
+  before). The terminal listener decides by `_sweep_owner` alone: an owned job is never
+  sent as a lone `job_failed`, and a manual job on the same Source is never
+  absorbed. Once `sweep_jobs_queued` has the jobs, each is the sweep's by id
+  whatever its status, so a late listener sends nothing alone and the message goes
+  out once. A job already terminal when `sweep_jobs_queued` runs is counted
+  but not waited on. `sweep()` calls `sweep_finished` from a `finally`, with a
+  default `sweep_failed` error, so a sweep that raises after queueing still
+  closes; a cancel (shutdown) reports nothing as a failure. A sweep that queued
+  nothing and hit no error sends nothing; a preview sends nothing.
+- A platform that keeps failing is due again every scheduler tick, so an error is
+  reported once per `(library, platform, reason)`: repeats stay quiet and a different reason
+  sends again. A reported error is forgotten only when a later sweep lists the
+  platform in `result["platforms"]` (it was inspected) without that error; a
+  filtered or capped sweep forgets nothing. There is no recovery message. The key
+  is the error text, so those texts must stay constant.
+
+Events are a registry: `register_event(key, title)` adds one, `event_list()`
+feeds Settings. A later ticket (check failed, with check Rules) registers its own
+event and calls `notify`; no transport changes.
+
+Destination types are rows of one table, `_KINDS` (`Kind(key, label, placeholder,
+send, check, hint)`); `KINDS`, `TRANSPORTS` and `kind_list()` (which Settings reads
+to build its picker) derive from it, so adding a type is one row and nothing else
+branches on the kind. Transports are `TRANSPORTS[kind](url, event)`, blocking and
+raising on failure. `webhook` and `discord` share one HTTP path, `_post_json`
+(`http.client`, JSON `POST`, http/https only, one overall deadline) and differ only
+in the payload builder: `generic_payload` is `{"event", "title", "message", "data"}`
+(example in the README); `discord_payload` is one embed (colour by outcome, at most
+10 scalar `data` fields, a UTC timestamp) with `allowed_mentions: {"parse": []}`,
+truncated with an ellipsis to Discord's limits (content 2000, title 256,
+description 4096, field value 1024, 6000 over one embed). `discord` requires https
+when a destination is saved or tested. 200 and 204 are success; 429 is an error
+naming Retry-After and is never retried. `apprise` is imported inside the function;
+without the package its `check` refuses Apprise URLs with a
+clear message. Tests replace entries in `TRANSPORTS` with a recorder. The webhook
+never follows redirects (any status of 300 or more is an error, and `Location` is
+never read), does not use `HTTP(S)_PROXY`, and runs under one overall deadline: a
+timer shuts the socket down at 0.9 x `SEND_TIMEOUT_S`. Apprise keeps its own
+per-operation socket timeouts (4 s by default), which are not an overall limit.
+
+`notify` and `deliver` put the event in a module inbox synchronously, before any
+await, so the order events were raised in is the order every destination sees
+them. One dispatcher task drains the inbox: it loads the destinations and hands the
+event to each destination's own FIFO queue (`MAX_QUEUED_PER_DESTINATION`, oldest
+dropped with a warning when full), one event at a time. Each queue has one worker.
+The worker reads the destination's kind and URL when it sends, so an edit applies to
+messages already queued and a destination deleted meanwhile is skipped;
+`remove_destination` also drops its queue. Empty queues and finished workers are
+removed.
+
+Sends run on `run_detached`'s daemon threads (`services/subprocess_runner.py`), never a
+thread pool: pool workers are joined at interpreter exit, so one send that never returns
+would hold a CLI command open after its work finished. A thread cannot be killed: if a send outlives `SEND_TIMEOUT_S` the
+destination is marked busy until its thread really ends, and queued sends to it
+fail fast ("still running") instead of stacking threads. Errors are scrubbed: a
+destination URL is a secret and appears in no log line, no API response and no
+error text. Foreign exceptions are logged by type name only; our own error texts
+pass `_redact`, which strips the URL and each piece of it. An Apprise failure
+reason is taken from Apprise's own log (`LogCapture`) and redacted the same way.
+
+Destinations live in the `notifications` preference (`{"destinations": [{id,
+kind, url, label}]}`). The API (`routes/notifications.py`) returns only
+`{id, kind, label, hint}`, where `hint` is a webhook's host or an Apprise scheme.
+An edit that omits `url` keeps the stored one. Pending sweeps are in memory, so a
+restart mid-sweep drops that one message.
+
 ### 3.3.14 Platform detection (`services/platform_detect.py`, `ToolPlugin.header_platform`)
 
 `detect_platform(path) -> Detection` is the one place an Image's Platform is
