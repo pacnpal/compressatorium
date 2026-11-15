@@ -2,9 +2,12 @@
 
 Folders registered as Libraries (#303).
 
-Revision ID: 0011
-Revises: 0010
+Revision ID: 0012
+Revises: 0011
 Create Date: 2026-11-14 00:00:00
+
+Stacked on #297's 0011 (ledger totals); it was 0011 on the same parent
+before both branches met.
 """
 
 from __future__ import annotations
@@ -14,8 +17,8 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = '0011'
-down_revision: str | Sequence[str] | None = '0010'
+revision: str = '0012'
+down_revision: str | Sequence[str] | None = '0011'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

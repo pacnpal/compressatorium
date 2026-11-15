@@ -2423,7 +2423,7 @@ cache cannot be read.
 
 **The catalogue** (`services/libraries/__init__.py`). Folder Libraries are rows
 of `folder_libraries` (root unique, name, `schedule_enabled`, `max_per_sweep`,
-migration 0011, `AUTOINCREMENT` so a removed Library's id is never reused and
+migration 0012, `AUTOINCREMENT` so a removed Library's id is never reused and
 state keyed by it cannot reach another folder), read once and cached; `register`, `update` and `remove`
 replace the cached copy. `register` uses `ensure_path_within_volumes` (the file
 browser's check), requires a folder, and refuses the same root or one that
