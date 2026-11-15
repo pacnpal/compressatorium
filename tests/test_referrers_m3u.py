@@ -248,23 +248,32 @@ async def test_delete_confirmation_names_the_numbered_output_a_rename_writes(vol
 
 @pytest.mark.asyncio
 async def test_a_locked_rename_target_is_a_plan_error_not_a_500(volume, monkeypatch):
-    """When RENAME can't find a free name (or the folder is locked), the
-    preview says so on the item instead of failing the whole request."""
-    def refuse(*_a, **_kw):
-        raise convert_routes.SkipFile(convert_routes.SkipReason.OUTPUT_LOCKED)
+    """When RENAME can't find a free name (or the folder is busy), the preview
+    says so on that item instead of failing the request. The error blocks the
+    whole plan (Confirm is disabled for the batch), and the message says so."""
+    real = convert_routes._renamed_output
 
-    monkeypatch.setattr(convert_routes, "_renamed_output", refuse)
+    def refuse_disc_1(mode, output_path, duplicate_action):
+        if "Disc 1" in output_path:
+            raise convert_routes.SkipFile(convert_routes.SkipReason.OUTPUT_LOCKED)
+        return real(mode, output_path, duplicate_action)
+
+    monkeypatch.setattr(convert_routes, "_renamed_output", refuse_disc_1)
 
     plan = await convert_routes.delete_plan(DeletePlanRequest(
-        file_paths=[str(volume / "Game (Disc 1).cue")],
+        file_paths=[str(volume / "Game (Disc 1).cue"), str(volume / "Game (Disc 2).cue")],
         mode=ConversionMode.CREATECD,
         duplicate_action=DuplicateAction.RENAME,
     ))
 
-    [item] = plan["items"]
+    disc_1, disc_2 = plan["items"]
     assert plan["blocked"] is True
-    assert item["errors"]
-    assert item["referrer_changes"] == []
+    [error] = disc_1["errors"]
+    assert "whole delete plan" in error
+    assert "being converted" not in error
+    assert disc_1["referrer_changes"] == []
+    assert disc_2["errors"] == []
+    assert disc_2["referrer_changes"]
 
 
 @pytest.mark.asyncio

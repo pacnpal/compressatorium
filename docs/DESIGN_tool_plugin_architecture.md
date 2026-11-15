@@ -2472,20 +2472,24 @@ never half of one.
   bytes as they were.
 - *Fail safe.* An entry that does not resolve but whose file name matches a
   replaced file's name (splitting on `/` or `\`, ignoring case, both sides in
-  Unicode NFC; the names are also compared trimmed of ASCII whitespace) is not
+  Unicode NFC; the names are also compared trimmed of C-locale spaces) is not
   guessed at: `plan` raises `ReferrerError` naming the playlist and line
   (`line 2 names game.cue but doesn't point at it`), so the Source is kept.
   That catches absolute paths in the emulator's own path space, mixed
   separators and case differences on case-sensitive volumes. An unresolved
-  entry for some other file does not block anything.
+  entry for some other file does not block anything. For a labelled or quoted
+  line, the whole trimmed entry read literally (as a plain line reader with no
+  label split or unquoting reads it) is also checked: if it reaches or names a
+  replaced file (a Source literally named `A|B.cue` or `"Game.cue"`) the
+  Source is kept.
 - *UTF-16 and NUL bytes.* Such a playlist is never rewritten. It is UTF-16
   only with a BOM, or when NULs fill most of the odd (little-endian) or even
-  (big-endian) byte positions, and then it is decoded strictly. Any other
-  file with a NUL (a C-string terminator in an 8-bit file, say), or UTF-16
-  that doesn't decode, is undecodable and is read every way that could name
-  the Source (UTF-16 with replacements, and NUL-stripped as UTF-8 and as
-  cp1252). If any reading contains a replaced file's name the Source is kept;
-  otherwise the playlist is left alone.
+  (big-endian) byte positions, and then it is decoded strictly (or with
+  replacements if that fails). Without a BOM the NUL-stripped UTF-8 and cp1252
+  readings are always checked too, since the parity guess can be wrong (an
+  8-bit file with a zero-filled tail) and they are what a byte reader sees. If
+  any reading contains a replaced file's name the Source is kept; otherwise
+  the playlist is left alone.
 - *Entry style.* The new entry is the entry's own folder part plus the path
   from the replaced file's resolved folder to the resolved output, so both
   sides use the same path form (a symlinked folder does not turn `Game.cue`
@@ -2495,7 +2499,8 @@ never half of one.
   still resolves through a symlinked `link`).
 - *One reader.* `_read_line(raw_line, first)` is the only parser, modelled on
   C byte readers (RetroArch): lines split on CR/LF bytes only; a UTF-8 BOM
-  dropped on the file's first line; only ASCII space, tab, CR and LF trimmed
+  dropped on the file's first line; only the C-locale spaces (space, tab, CR,
+  LF, VT, FF, as libretro's `ISSPACE`) trimmed
   (NBSP, U+3000, U+2028 and the like stay part of the name); blank and `#`
   lines skipped; a `path|label` split at the first `|`; quotes around the
   path dropped; a slash-free entry with backslashes read as

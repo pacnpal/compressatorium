@@ -464,10 +464,10 @@ def _reader_entries(data: bytes) -> list[str]:
     data = data.removeprefix(b"\xef\xbb\xbf")
     entries = []
     for raw in data.replace(b"\r\n", b"\n").replace(b"\r", b"\n").split(b"\n"):
-        entry = raw.decode("utf-8").strip(" \t\r\n")
+        entry = raw.decode("utf-8").strip(" \t\r\n\v\f")
         if not entry or entry.startswith("#"):
             continue
-        entry = entry.split("|", 1)[0].strip(" \t\r\n")
+        entry = entry.split("|", 1)[0].strip(" \t\r\n\v\f")
         if len(entry) >= 2 and entry[0] == entry[-1] and entry[0] in "\"'":
             entry = entry[1:-1]
         if "\\" in entry and "/" not in entry:
@@ -807,6 +807,57 @@ async def test_a_stray_nul_in_an_8_bit_playlist_keeps_the_source(tmp_path, data)
 
     assert not outcome.ok
     assert playlist.read_bytes() == data
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pad", [512, 4096, 513, 8])
+async def test_a_nul_padded_8_bit_playlist_keeps_the_source(tmp_path, pad):
+    """A zero-filled tail (an interrupted write on FAT, a preallocating sync)
+    can fill one byte parity with NULs. The 8-bit readings still name the
+    Source, so it is kept whatever the length."""
+    _disc(tmp_path, "Game (Disc 1).cue")
+    playlist = tmp_path / "Game.m3u"
+    data = b"Game (Disc 1).cue\nGame (Disc 2).cue\n" + b"\0" * pad
+    playlist.write_bytes(data)
+
+    outcome = await _replace(tmp_path, "Game (Disc 1).cue", "Game (Disc 1).chd")
+
+    assert not outcome.ok
+    assert playlist.read_bytes() == data
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", ["A|B.cue", '"Game.cue"', "'Game.cue'"], ids=repr)
+async def test_a_source_named_like_a_label_or_quotes_keeps_it(tmp_path, name):
+    """A plain line reader reaches a Source literally named ``A|B.cue`` or
+    ``"Game.cue"``; the label/quote reading doesn't. Keep the Source."""
+    try:
+        _disc(tmp_path, name)
+    except OSError:
+        pytest.skip("the filesystem refuses this name")
+    playlist = tmp_path / "Game.m3u"
+    playlist.write_text(f"{name}\n")
+
+    outcome = await _replace(tmp_path, name, "Game.chd")
+
+    assert not outcome.ok
+    assert playlist.read_text() == f"{name}\n"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("space", ["\x0b", "\x0c"], ids=["VT", "FF"])
+async def test_vertical_tab_and_form_feed_are_trimmed_like_retroarch(tmp_path, space):
+    _disc(tmp_path, "Game.cue")
+    out = _disc(tmp_path, "Game.chd")
+    playlist = tmp_path / "Game.m3u"
+    playlist.write_bytes(f"{space}Game.cue\n".encode())
+
+    outcome = await _replace(tmp_path, "Game.cue", "Game.chd")
+
+    assert outcome.ok, outcome.reason
+    assert playlist.read_bytes() == f"{space}Game.chd\n".encode()
+    [read] = _reader_entries(playlist.read_bytes())
+    assert os.path.samefile(tmp_path / read, out)
 
 
 @pytest.mark.asyncio
