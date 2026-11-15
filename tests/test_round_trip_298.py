@@ -527,3 +527,79 @@ async def test_batch_route_carries_the_container_only_opt_out(e2e):
     assert [j.container_only for j in jobs] == [True, True]
     assert [j.check_passed for j in jobs] == ["intact", "intact"]
     assert e2e["calls"] == []
+
+
+# ---------------------------------------------------------------------------
+# within: where a tool may read a Source's sheet and tracks (#294 contract)
+# ---------------------------------------------------------------------------
+
+
+class _RecordingTool:
+    """Records each content_digest call; both sides digest the same."""
+
+    display_name = "Recorder"
+
+    def __init__(self):
+        self.calls: list[tuple[str, object]] = []
+
+    async def verify_timeout(self, path, *, cancel_event=None):
+        return 0
+
+    async def content_digest(self, path, *, cancel_event=None, within=None):
+        self.calls.append((path, within))
+        return ContentDigest(kind="k", value="v")
+
+
+@pytest.mark.asyncio
+async def test_round_trip_passes_within_to_the_source_side_only():
+    from services.round_trip import round_trip
+
+    tool = _RecordingTool()
+    outcome = await round_trip(
+        tool, "/scratch/job/disc.cue", "/vol/disc.chd", within=["/scratch/job"],
+    )
+
+    assert outcome.passed
+    # The Source may live in the job's extraction folder; the output is
+    # always in a Volume, so it gets the Volume default (None).
+    assert tool.calls == [
+        ("/scratch/job/disc.cue", ["/scratch/job"]),
+        ("/vol/disc.chd", None),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_an_archive_member_source_is_digested_within_its_extraction_folder(
+    e2e, monkeypatch,
+):
+    import os
+    import zipfile
+
+    from app.models import ConversionMode, DuplicateAction, JobCreateRequest
+
+    tmp_path = e2e["tmp_path"]
+    archive = tmp_path / "Game.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("Game.iso", b"the disc" * 4096)
+    e2e["stdout"] = f"{hashlib.sha1(b'the disc' * 4096).hexdigest()}\n".encode()
+
+    seen: list[tuple[str, object]] = []
+    tool = _dolphin()
+    original = tool.content_digest
+
+    async def recording(path, *, cancel_event=None, within=None):
+        seen.append((path, within))
+        return await original(path, cancel_event=cancel_event, within=within)
+
+    monkeypatch.setattr(tool, "content_digest", recording)
+    routes = e2e["routes"]
+    job = await routes.create_job(JobCreateRequest(
+        file_path=f"{archive}::Game.iso", mode=ConversionMode.DOLPHIN_RVZ,
+        duplicate_action=DuplicateAction.SKIP, delete_on_verify=True,
+    ))
+    await routes.job_manager._process_job(job.id)
+
+    assert job.status.value == "completed", job.error_message
+    (source_path, source_within), (output_path, output_within) = seen
+    assert source_within == [os.path.dirname(source_path)]
+    assert output_path == job.output_path and output_within is None
