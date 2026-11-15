@@ -303,7 +303,11 @@ def _header_dependencies(path: str, tools: Iterable) -> tuple | None:
         if match_extension(path, tool.input_extensions) is None:
             continue
         reads = getattr(tool, "header_reads", None)
-        listed = reads(path) if reads else []
+        try:
+            listed = reads(path) if reads else []
+        except Exception:  # like a probe, a dependency list must never break detection
+            logger.debug("header_reads %s failed for %s", tool.id, path, exc_info=True)
+            listed = None
         if listed is None:
             # The tool cannot tell what its probe reads (an unreadable sheet):
             # answer, but cache nothing.

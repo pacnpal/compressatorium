@@ -170,6 +170,12 @@ def _split_line(line: str) -> list[str]:
         return line.split()
 
 
+def _is_number(field: str) -> bool:
+    # isdigit() is True for "²" and friends, which int() refuses; a sheet field
+    # is a number only when it is plain ASCII decimal digits.
+    return field.isascii() and field.isdecimal()
+
+
 def gdi_tracks(text: str) -> list[GdiTrack]:
     """Every track line of a ``.gdi`` sheet, in order.
 
@@ -180,7 +186,7 @@ def gdi_tracks(text: str) -> list[GdiTrack]:
     if not lines:
         return []
     head = _split_line(lines[0])
-    start = 1 if head and head[0].isdigit() else 0
+    start = 1 if head and _is_number(head[0]) else 0
     tracks: list[GdiTrack] = []
     for line in lines[start:]:
         parts = _split_line(line)
@@ -189,7 +195,7 @@ def gdi_tracks(text: str) -> list[GdiTrack]:
         name = parts[4].strip('"').strip()
         if not name:
             continue
-        size = int(parts[3]) if parts[3].isdigit() else None
+        size = int(parts[3]) if _is_number(parts[3]) else None
         tracks.append(GdiTrack(parts[0], size, name))
     return tracks
 
