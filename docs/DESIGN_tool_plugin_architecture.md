@@ -3431,9 +3431,14 @@ lock was taken (`Game.iso.3`) is covered too (codex 4577940381). The
 in-process `_split_output_blocks` stays as the same-process check. Every output lock goes through this, the CLI's jobs included (they use
 the same job manager), and companion outputs too.
 The identity is filesystem bytes: `_lock_file_path` hashes
-`os.fsencode(realpath)` and the recorded path is written with `os.fsencode`
-and read back with `os.fsdecode`, so a native name a sheet reads (`Caf\xe9.bin`,
-a surrogate escape in Python) locks, records and probes like any other path.
+`os.fsencode(realpath)`, and the recorded path is one line, `hex:` and the hex
+of its `os.fsencode` bytes, read back with `os.fsdecode`
+(`_encode_recorded_path` / `_decode_recorded_path`, one pair for every lock
+kind). So a native name a sheet reads (`Caf\xe9.bin`, a surrogate escape in
+Python), or a path with a newline in it (`GAME\nDisc/Game.wia`, which the old
+plain record cut at the newline; codex 4578027196), locks, records and probes
+like any other path. A first line without the prefix is the older plain
+record, still read, so a lock an older process wrote during an upgrade counts.
 If taking a job's input locks raises anyway, `JobManager._fail_before_start`
 ends the job FAILED and lets go of everything it holds (the input locks taken
 so far, its folder and output locks, its concurrency slot): a job never stays
