@@ -241,6 +241,13 @@ async def _send_one(kind: str, url: str, event: Event, slot: str | None = None) 
         await asyncio.wait_for(asyncio.wrap_future(future), SEND_TIMEOUT_S)
     except asyncio.TimeoutError:
         raise NotificationError(f"Timed out after {SEND_TIMEOUT_S:g}s") from None
+    except NotificationError:
+        raise
+    except Exception as exc:
+        # Whatever a transport raised, callers only ever see a NotificationError:
+        # the type name, never the text (it can echo the destination URL). The
+        # original rides along as __cause__ only; nothing logs a traceback of it.
+        raise NotificationError(f"The send failed ({type(exc).__name__})") from exc
 
 
 # ----------------------------------------------------------------------
@@ -354,9 +361,6 @@ async def test_destination(
         await _send_one(kind, url, event)
     except NotificationError as exc:
         return {"ok": False, "error": str(exc)}
-    except Exception as exc:  # noqa: BLE001  never leak what an exception echoes
-        logger.warning("Notification test failed (%s): %s", kind, type(exc).__name__)
-        return {"ok": False, "error": f"The send failed ({type(exc).__name__})"}
     return {"ok": True, "error": None}
 
 
@@ -484,7 +488,7 @@ async def _drain_destination(slot: str) -> None:
                 if dest is not None:
                     try:
                         await _send_one(dest["kind"], dest["url"], event, slot=slot)
-                    except Exception as exc:  # noqa: BLE001  one send never stops the queue
+                    except NotificationError as exc:  # every send failure arrives as one
                         _log_failure(dest, event, exc)
             except Exception:
                 logger.warning("Could not read notification destinations", exc_info=True)
