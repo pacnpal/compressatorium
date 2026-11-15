@@ -877,3 +877,64 @@ async def test_an_overwrite_job_on_a_symlinked_output_keeps_its_destination_lock
     assert seen == {
         "link_gone": True, "dest": False, "old": False, "busy": True, "web_old": 409,
     }, seen
+
+
+# --------------------------------------------------------------------------- #
+# A symlinked output inside a packed folder (codex 4577847011)
+# --------------------------------------------------------------------------- #
+
+
+def _symlinked_output_in_packed_folder(tmp_path):
+    game = tmp_path / "GAME"
+    game.mkdir()
+    (tmp_path / "outside.rvz").write_bytes(b"old")
+    link = game / "new.rvz"
+    link.symlink_to("../outside.rvz")
+    packer = _manager(tmp_path / "locks")  # the process packing GAME
+    assert packer.acquire_dir_lock(str(game))
+    return game, link, packer
+
+
+def test_an_overwrite_through_a_symlink_out_of_a_packed_folder_is_refused(tmp_path):
+    """The sweep unlinks ``GAME/new.rvz`` and the converter writes there,
+    inside the folder another process packs, so the folder above the
+    non-following destination counts, not only the symlink's target's."""
+    game, link, packer = _symlinked_output_in_packed_folder(tmp_path)
+    other = _manager(tmp_path / "locks")
+    try:
+        assert other.acquire_lock(str(link), allow_existing=True) is False
+        assert other._locks == set()  # all or none
+        assert other.output_folder_locked_above(str(link)) == os.path.realpath(game)
+        free = tmp_path / "free"
+        free.mkdir()
+        assert other.output_folder_locked_above(str(free / "Game.rvz")) is None
+        assert other.acquire_lock(str(free / "Game.rvz"))
+        other.release_lock(str(free / "Game.rvz"))
+    finally:
+        packer.release_dir_lock(str(game))
+    assert other.acquire_lock(str(link), allow_existing=True)
+    other.release_lock(str(link))
+
+
+def test_the_dispatch_probe_sees_a_symlinked_output_in_a_packed_folder(
+    tmp_path, monkeypatch,
+):
+    from datetime import datetime, timezone
+
+    from models import ConversionJob, ConversionMode, InputKind, JobStatus
+    from services.job_manager import job_manager
+
+    monkeypatch.setattr(lock_module.lock_manager, "_lock_dir", str(tmp_path / "locks"))
+    game, link, packer = _symlinked_output_in_packed_folder(tmp_path)
+    (tmp_path / "Game.iso").write_bytes(b"disc")
+    job = ConversionJob(
+        id="symlinked-out", file_path=str(tmp_path / "Game.iso"), filename="Game.iso",
+        mode=ConversionMode.DOLPHIN_RVZ, status=JobStatus.QUEUED,
+        created_at=datetime.now(timezone.utc), output_path=str(link),
+        input_kind=InputKind.FILE,
+    )
+    try:
+        assert job_manager._blocked_by_dir_lock(job) is True
+    finally:
+        packer.release_dir_lock(str(game))
+    assert job_manager._blocked_by_dir_lock(job) is False

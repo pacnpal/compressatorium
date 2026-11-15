@@ -470,10 +470,46 @@ class LockManager:
         """
         if not self._take_lock(output_path, allow_existing=allow_existing):
             return False
-        if self.folder_locked_above(output_path) is not None:
+        with self._lock_mutex:
+            keys = list(self._lock_keys.get(os.path.normpath(output_path), ()))
+        if self._folder_locked_above_keys(keys) is not None:
             self.release_lock(output_path)
             return False
         return True
+
+    def output_folder_locked_above(self, output_path: str) -> str | None:
+        """A folder above any identity an output lock on ``output_path``
+        takes (``_output_keys``), locked here or in any process; or None.
+
+        The dispatch probe: the same identities, so a symlinked output whose
+        own folder is being packed is seen even when its target is elsewhere
+        (codex 4577847011).
+        """
+        return self._folder_locked_above_keys(self._output_keys(output_path))
+
+    def _folder_locked_above_keys(self, keys: list[str]) -> str | None:
+        """The first folder above any of ``keys`` (already-resolved lock
+        identities) that a folder lock covers: in this process
+        (``_dir_locks``) or by a held lock file, up to its Volume root.
+
+        Each key's folder is walked as it stands; the key itself is never
+        resolved again, so the non-following destination of a symlinked
+        output is checked where the converter will write.
+        """
+        from utils.path_utils import containing_volume_root
+
+        for key in keys:
+            with self._lock_mutex:
+                for locked_dir in self._dir_locks:
+                    if self._path_within(key, locked_dir):
+                        return locked_dir
+            root = containing_volume_root(key)
+            above = self.locked_folder_above(
+                os.path.dirname(key), str(root) if root is not None else None,
+            )
+            if above is not None:
+                return above
+        return None
 
     def _output_keys(self, output_path: str) -> list[str]:
         """The identities an output lock takes: both places a write can land.

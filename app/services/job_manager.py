@@ -1315,13 +1315,18 @@ class JobManager:
         """
         if job.input_kind == InputKind.DIRECTORY:
             return lock_manager.dir_lock_would_conflict(job.file_path)
-        paths = [job.output_path, job.file_path.split("::", 1)[0]]
         # In this process (`_dir_locks`), or in any other: a held lock file on
-        # a folder above, up to the Volume root (#306).
-        return any(
-            lock_manager.is_within_locked_dir(p)
-            or lock_manager.folder_locked_above(p) is not None
-            for p in paths if p
+        # a folder above, up to the Volume root (#306). The output is probed
+        # under every identity its lock takes (`_output_keys`: the
+        # non-following destination and a symlink's target, codex 4577847011).
+        if job.output_path and lock_manager.output_folder_locked_above(
+            job.output_path,
+        ) is not None:
+            return True
+        source = job.file_path.split("::", 1)[0]
+        return bool(source) and (
+            lock_manager.is_within_locked_dir(source)
+            or lock_manager.folder_locked_above(source) is not None
         )
 
     def _take_output_locks(self, job: ConversionJob) -> bool:

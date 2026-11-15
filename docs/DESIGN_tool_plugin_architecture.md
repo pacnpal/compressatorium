@@ -3311,7 +3311,14 @@ final component, so once an overwrite sweep has unlinked an output symlink
 the new file's path is still locked), and, when the output is a symlink
 today, its current real target, so nobody rewrites the old target mid-job.
 Both are taken or neither, and `release_lock` lets go of exactly the keys it
-took. Every output lock goes through this, the CLI's jobs included (they use
+took. The folder-above check runs on each of those identities too
+(`_folder_locked_above_keys`: a dir lock here, or a held lock file on any
+folder above the key, up to its Volume root), so `GAME/new.rvz ->
+../outside.rvz` is refused while another process packs `GAME`, and any
+conflict releases every key taken. The dispatch probe
+(`JobManager._blocked_by_dir_lock`) asks the same thing through
+`output_folder_locked_above`, over the same `_output_keys` list (codex
+4577847011). Every output lock goes through this, the CLI's jobs included (they use
 the same job manager), and companion outputs too.
 The identity is filesystem bytes: `_lock_file_path` hashes
 `os.fsencode(realpath)` and the recorded path is written with `os.fsencode`
