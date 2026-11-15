@@ -171,6 +171,17 @@ async def lifespan(app: FastAPI):
 
     raise_open_file_limit()
 
+    # One Rule scheduler per data directory (#307). Held for the server's whole
+    # life; taken before anything else touches the data directory, so a second
+    # server, or a `run-rules` pass in progress, stops this one from starting.
+    from services import scheduler_lock
+
+    try:
+        scheduler = scheduler_lock.acquire("server")
+    except scheduler_lock.SchedulerLockHeld as exc:
+        logger.error("Not starting: %s", exc)
+        raise RuntimeError(f"Not starting: {exc}") from None
+
     # Initialise the SQLite DB and run any pending JSON → SQLite migrations
     # BEFORE any store is touched (dat_store.has_dats() below needs it).
     from pathlib import Path
@@ -392,6 +403,7 @@ async def lifespan(app: FastAPI):
         )
 
     yield
+    scheduler.release()
 
 
 app = FastAPI(

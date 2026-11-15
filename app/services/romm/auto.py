@@ -62,5 +62,10 @@ async def sweep(**kwargs) -> dict:
 
 
 async def run_forever() -> None:
-    """The scheduler, sweeping the RomM Library while its switch is on."""
-    await _sweep.run_forever(lambda: [romm_library])
+    """The server's scheduler, sweeping each Library while its switch is on.
+
+    The same Library list ``compressatorium run-rules`` sweeps (#307).
+    """
+    from services.libraries import all_libraries
+
+    await _sweep.run_forever(all_libraries)
