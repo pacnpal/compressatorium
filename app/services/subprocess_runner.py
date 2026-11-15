@@ -780,8 +780,9 @@ async def run_detached_undoable(
             state["abandoned"] = True
             delivered, result = state["delivered"], state["result"]
         if delivered:
-            # Answered, but the answer never reached the caller.
-            undo(result)
+            # Answered, but the answer never reached the caller. Undone on a
+            # thread of its own: *undo* may do I/O, never on the event loop.
+            threading.Thread(target=undo, args=(result,), daemon=True).start()
         raise
 
 

@@ -4049,6 +4049,14 @@ each delete path (below), which also asks `folder_locked_above`.
   over NFS) counts as not held, here and in `check_file_status`. That holds
   while every process runs as the same uid, which the entrypoint's and the
   wrapper's `gosu converter` drop ensure.
+- **No filesystem I/O under `_lock_mutex`** (codex 4579852997). The mutex
+  guards only in-memory state: an acquirer claims the identity in `_locks`
+  (or `_dir_locks`) under it, then resolves paths, stats the target and
+  opens and flocks the lock file without it, and takes it again only to
+  record the handle or roll the claim back; a release takes the identity out
+  of memory under it and unlinks and closes the lock file after. A path
+  resolve or stat that stalls on a dead mount therefore never holds the
+  mutex against another caller, the event loop included.
 - Taking a lock is different: only contention (`BlockingIOError` from the
   non-blocking `flock`, or an existing output) answers "busy" and requeues.
   Any other `OSError` making or locking the lock file (`ENAMETOOLONG`,
@@ -4219,7 +4227,12 @@ waiting while it still runs (the timeout, None for no bound, or a cancel),
 `hand_off()` takes the locks it runs under from the caller and the worker
 releases them only after the mutation has returned or raised, so nothing that
 waits on them (a new job's input lock) is granted while it can still take
-effect. The timeout raises `MutationInFlight`. Only a worker that started can
+effect. The timeout raises `MutationInFlight`. "Who owns these locks now" is
+one object, `HeldLocks`: a job's output locks (the output and its companions,
+`_output_locks`) and a retry's output lock are each one, passed to
+`_delete_source_set` as `travelling_locks`; a hand-off `take()`s them, and the
+owner's own `release()` (`_release_output_locks`, the retry's cleanup, run off
+the loop) is then a no-op (CodeRabbit 4579839955). Only a worker that started can
 own the locks: when none could be launched (`ProbeCapacityExceeded`) or the
 caller gave up before it began, nothing is handed off, the mutation never
 runs, the caller keeps and releases its locks, and `MutationNotStarted` (a

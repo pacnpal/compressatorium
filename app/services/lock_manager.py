@@ -246,10 +246,11 @@ class LockManager:
         packing a tree this path lives in — wait and retry) apart from a
         permanent one (the output already exists — fail). Resolves symlinks.
         """
+        resolved = self._resolve(path)  # filesystem I/O: outside the mutex
         with self._lock_mutex:
             if not self._dir_locks:
                 return False
-            return self._within_locked_dir_locked(self._resolve(path))
+            return self._within_locked_dir_locked(resolved)
 
     def locked_folder_above(
         self, path: str, stop_at: str | None = None, *, include_self: bool = True,
@@ -469,7 +470,7 @@ class LockManager:
             is_locked = key in self._locks
             if not is_locked and self._dir_locks:
                 is_locked = self._within_locked_dir_locked(key)
-            file_exists = os.path.isfile(normalized_path)
+        file_exists = os.path.isfile(normalized_path)  # outside the mutex
 
         if is_locked:
             return (file_exists, True)
@@ -605,6 +606,9 @@ class LockManager:
             return False
         self._ensure_ready()
 
+        # No filesystem I/O under `_lock_mutex` (codex 4579852997): the mutex
+        # only claims the identity in memory, so a probe that stalls on a dead
+        # mount can never hold it against a caller on the event loop.
         with self._lock_mutex:
             # Check if already locked by another job
             if normalized_path in self._locks:
@@ -615,7 +619,11 @@ class LockManager:
             # contends here just like an exact output collision.
             if self._dir_locks and self._within_locked_dir_locked(normalized_path):
                 return False
+            # Claimed: everyone else here sees it locked from now on.
+            self._locks.add(normalized_path)
 
+        taken = False
+        try:
             # Try to create a lock file
             lock_file_path = self._lock_file_path(normalized_path)
             self._make_lock_dir(lock_file_path, normalized_path)
@@ -624,15 +632,21 @@ class LockManager:
                     normalized_path, lock_file_path, allow_existing,
                 )
                 if outcome is not None:
+                    taken = outcome
                     return outcome
             return False
+        finally:
+            if not taken:
+                with self._lock_mutex:
+                    self._locks.discard(normalized_path)
 
     def _try_file_lock(
         self, normalized_path: str, lock_file_path: str, allow_existing: bool,
     ) -> bool | None:
         """One attempt at :meth:`acquire_lock`; None when the lock file was
-        unlinked under us and the attempt should be repeated. Caller holds
-        ``self._lock_mutex``."""
+        unlinked under us and the attempt should be repeated. The caller has
+        claimed *normalized_path* in ``_locks``; this runs without the mutex
+        and takes it only to record the handle."""
         lock_handle = None
         try:
             with contextlib.ExitStack() as stack:
@@ -676,8 +690,8 @@ class LockManager:
 
                 # Successfully acquired the lock and file doesn't exist
                 self._record_path(lock_handle, normalized_path)
-                self._locks.add(normalized_path)
-                self._lock_handles[normalized_path] = lock_handle
+                with self._lock_mutex:
+                    self._lock_handles[normalized_path] = lock_handle
                 # Transfer ownership to _lock_handles by detaching ExitStack cleanup.
                 # This keeps lock_handle open for the conversion lifecycle.
                 stack.pop_all()
@@ -686,9 +700,9 @@ class LockManager:
         except Exception as exc:
             # Ensure file handle is closed on any error
             if lock_handle is not None:
-                if self._lock_handles.get(normalized_path) is lock_handle:
-                    self._lock_handles.pop(normalized_path, None)
-                    self._locks.discard(normalized_path)
+                with self._lock_mutex:
+                    if self._lock_handles.get(normalized_path) is lock_handle:
+                        self._lock_handles.pop(normalized_path, None)
                 try:
                     lock_handle.close()
                 except Exception:
@@ -712,15 +726,15 @@ class LockManager:
 
     def _release_key(self, normalized_path: str) -> None:
         with self._lock_mutex:
-            if normalized_path in self._locks:
-                self._locks.remove(normalized_path)
-
-                # Release and close the lock file handle
-                if normalized_path in self._lock_handles:
-                    lock_handle = self._lock_handles.pop(normalized_path)
-                    self._unlink_then_close(
-                        lock_handle, self._lock_file_path(normalized_path), normalized_path,
-                    )
+            if normalized_path not in self._locks:
+                return
+            self._locks.remove(normalized_path)
+            lock_handle = self._lock_handles.pop(normalized_path, None)
+        # The unlink and close outside the mutex: no I/O under it.
+        if lock_handle is not None:
+            self._unlink_then_close(
+                lock_handle, self._lock_file_path(normalized_path), normalized_path,
+            )
 
     def acquire_dir_lock(self, dir_path: str) -> bool:
         """Acquire an exclusive lock over a directory and its entire subtree.
@@ -758,38 +772,48 @@ class LockManager:
         with self._lock_mutex:
             if self._dir_overlaps_locked(normalized):
                 return False
+            # Claimed in memory; the lock file I/O happens outside the mutex.
+            self._dir_locks.add(normalized)
 
+        taken = False
+        lock_handle = None
+        try:
             lock_file_path = self._lock_file_path(normalized)
             self._make_lock_dir(lock_file_path, normalized)
-            lock_handle = None
-            try:
-                with contextlib.ExitStack() as stack:
-                    lock_handle = stack.enter_context(open_lock_handle(lock_file_path))
-                    try:
-                        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    except BlockingIOError:
-                        # Held by another process packing the same folder.
-                        return False
-                    if not self._still_linked(lock_handle, lock_file_path):
-                        # Unlinked by its last holder under us: a lock no one
-                        # else can see. The job defers and tries again.
-                        return False
-                    self._record_path(lock_handle, normalized)
-                    self._dir_locks.add(normalized)
+            with contextlib.ExitStack() as stack:
+                lock_handle = stack.enter_context(open_lock_handle(lock_file_path))
+                try:
+                    fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    # Held by another process packing the same folder.
+                    return False
+                if not self._still_linked(lock_handle, lock_file_path):
+                    # Unlinked by its last holder under us: a lock no one
+                    # else can see. The job defers and tries again.
+                    return False
+                self._record_path(lock_handle, normalized)
+                with self._lock_mutex:
                     self._dir_lock_handles[normalized] = lock_handle
-                    # Keep the handle open for the job lifecycle.
-                    stack.pop_all()
-                    return True
-            except Exception as exc:
-                if lock_handle is not None:
+                # Keep the handle open for the job lifecycle.
+                stack.pop_all()
+                taken = True
+                return True
+        except LockFailed:
+            raise
+        except Exception as exc:
+            if lock_handle is not None:
+                with self._lock_mutex:
                     self._dir_lock_handles.pop(normalized, None)
+                with contextlib.suppress(Exception):
+                    lock_handle.close()
+            logger.error(
+                "Failed to acquire dir lock for %s", normalized, exc_info=True,
+            )
+            raise LockFailed(normalized, exc) from exc
+        finally:
+            if not taken:
+                with self._lock_mutex:
                     self._dir_locks.discard(normalized)
-                    with contextlib.suppress(Exception):
-                        lock_handle.close()
-                logger.error(
-                    "Failed to acquire dir lock for %s", normalized, exc_info=True,
-                )
-                raise LockFailed(normalized, exc) from exc
 
     def release_dir_lock(self, dir_path: str):
         """Release a directory subtree lock acquired via :meth:`acquire_dir_lock`."""
@@ -799,8 +823,8 @@ class LockManager:
                 return
             self._dir_locks.remove(normalized)
             handle = self._dir_lock_handles.pop(normalized, None)
-            if handle is not None:
-                self._unlink_then_close(handle, self._lock_file_path(normalized), normalized)
+        if handle is not None:  # the unlink and close outside the mutex
+            self._unlink_then_close(handle, self._lock_file_path(normalized), normalized)
 
     # Input locks (#306). A job holds a *shared* flock on each file it reads
     # (its Source and the Source's companions) for as long as it runs. Readers

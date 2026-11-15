@@ -476,10 +476,22 @@ def test_a_folder_library_root_change_drops_the_entry_without_deleting(
     assert not _rule_state(env)["gc"].get("kept_sources")
 
 
-def test_a_source_outside_the_librarys_root_is_not_deleted(env, dolphin, capsys, kept):
+def test_a_source_outside_the_librarys_root_is_not_deleted(
+    env, dolphin, capsys, kept, monkeypatch,
+):
     """Checked fresh at retry: the Source must still be inside the Library as
-    it is now, even when the recorded identity matches."""
+    it is now, even when the recorded identity matches. The containment check
+    alone keeps it: the delete step is never reached."""
+    from services.job_manager import job_manager
     from services.rules import sweep as rules_sweep
+
+    reached = []
+
+    async def must_not_run(**kwargs):
+        reached.append(kwargs)
+        raise AssertionError("retry_kept_delete reached past the containment check")
+
+    monkeypatch.setattr(job_manager, "retry_kept_delete", must_not_run)
 
     async def retarget_entry():
         state = await rules_sweep.get_state(env["shelf"])
@@ -497,6 +509,7 @@ def test_a_source_outside_the_librarys_root_is_not_deleted(env, dolphin, capsys,
     assert code == 0, lines
     assert elsewhere.exists()
     assert not _rule_state(env)["gc"].get("kept_sources")
+    assert reached == []
 
 
 def test_a_late_completion_from_a_former_library_identity_records_nothing(
@@ -904,3 +917,121 @@ def test_an_unlink_that_cannot_start_is_a_counted_kept_attempt(
     assert pending["attempts"] == 1
     assert not lock_manager.check_file_status(str(kept["iso"]))[1]
     assert not lock_manager.is_locked(str(kept["output"]))
+
+
+def test_a_job_cancelled_during_its_unlink_keeps_its_output_locks_until_it_ends(
+    env, dolphin, monkeypatch,
+):
+    """The job path's hand-off carries the output lock too (CodeRabbit
+    4579839955): cancelled while its Source's unlink is still running, the job
+    does not let go of its output lock in cleanup; the unlink's worker does,
+    once the unlink has finished. Until then no other job may take it."""
+    import os
+    import threading
+    import time
+
+    from models import ConversionMode, DuplicateAction, JobCreateRequest
+    from routes import convert as convert_routes
+    from services.lock_manager import LockManager, lock_manager
+
+    import cli
+
+    cli._open_db(False)  # the verification store the job writes to
+    iso = _iso(env)
+    output = iso.with_suffix(".rvz")
+    began = threading.Event()
+    real_remove = os.remove
+
+    def slow_remove(path, *args, **kwargs):
+        if os.path.realpath(str(path)) == os.path.realpath(str(iso)):
+            began.set()
+            time.sleep(2.0)
+        return real_remove(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "remove", slow_remove)
+    other = LockManager()
+    other._lock_dir = lock_manager._lock_dir
+
+    async def run():
+        job = await convert_routes.create_job(JobCreateRequest(
+            file_path=str(iso), mode=ConversionMode.DOLPHIN_RVZ,
+            duplicate_action=DuplicateAction.SKIP, delete_on_verify=True,
+            container_only=True,
+        ))
+        task = asyncio.create_task(convert_routes.job_manager._process_job(job.id))
+        deadline = time.monotonic() + 20
+        while not began.is_set():
+            assert not task.done(), (job.status, job.error_message, job.message)
+            assert time.monotonic() < deadline, (job.status, job.message)
+            await asyncio.sleep(0.02)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run())
+
+    # The unlink is still running: the output stays locked against others.
+    assert iso.exists()
+    assert other.acquire_lock(str(output), allow_existing=True) is False
+    assert _wait_for(lambda: not iso.exists())
+    assert _wait_for(lambda: not lock_manager.is_locked(str(output)))
+    assert other.acquire_lock(str(output), allow_existing=True)
+    other.release_lock(str(output))
+
+
+def test_a_stalled_probe_in_lock_acquisition_never_blocks_the_event_loop(
+    env, dolphin, capsys, kept, monkeypatch,
+):
+    """Codex 4579852997's repro: the Source's ``isfile`` stalls inside lock
+    acquisition. The retry returns within its bound, and its cleanup (letting
+    go of the output lock it already holds) never waits on the lock manager's
+    mutex on the event loop: a heartbeat keeps ticking throughout."""
+    import os
+    import sys
+    import time
+
+    from services import job_manager as job_manager_module
+    from services.job_manager import KEPT_KEPT, job_manager
+
+    monkeypatch.setattr(job_manager_module, "KEPT_DELETE_PROBE_SECONDS", 0.1)
+    iso = str(kept["iso"])
+    real_isfile = os.path.isfile
+
+    def stalled(path, *args, **kwargs):
+        if (
+            os.path.realpath(str(path)) == os.path.realpath(iso)
+            and sys._getframe(1).f_code.co_name == "_try_file_lock"
+        ):
+            time.sleep(1.5)
+        return real_isfile(path, *args, **kwargs)
+
+    monkeypatch.setattr(os.path, "isfile", stalled)
+
+    async def run():
+        gaps = []
+
+        async def heartbeat():
+            last = time.monotonic()
+            while True:
+                await asyncio.sleep(0)
+                now = time.monotonic()
+                gaps.append(now - last)
+                last = now
+                await asyncio.sleep(0.01)
+
+        beat = asyncio.create_task(heartbeat())
+        started = time.monotonic()
+        outcome = await job_manager.retry_kept_delete(
+            source_path=iso, output_path=str(kept["output"]),
+            required_check="container_only",
+        )
+        elapsed = time.monotonic() - started
+        beat.cancel()
+        return outcome, elapsed, max(gaps or [0])
+
+    outcome, elapsed, worst_gap = asyncio.run(run())
+
+    assert outcome.status == KEPT_KEPT
+    assert elapsed < 0.6, elapsed
+    assert worst_gap < 0.5, worst_gap
+    time.sleep(1.6)  # let the stalled probe finish before teardown

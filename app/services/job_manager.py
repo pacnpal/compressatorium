@@ -112,6 +112,36 @@ def _check_satisfies(check_passed: Optional[str], required: Optional[str]) -> bo
     return check_passed in _CHECK_LABELS
 
 
+class HeldLocks:
+    """Exclusive locks one owner holds, and who lets go of them (#329).
+
+    The owner releases them (:meth:`release`) unless an irreversible mutation
+    it stopped waiting for took them first (:meth:`take`, through
+    ``JobManager._hand_off_locks``): then that mutation's worker releases them
+    once it has finished, and the owner's :meth:`release` is a no-op. The one
+    answer to "who owns these locks now", for a job's output locks and a
+    retried delete's alike. Thread-safe.
+    """
+
+    def __init__(self, paths: Iterable[str] = ()) -> None:
+        self._paths: List[str] = list(paths)
+        self._mutex = threading.Lock()
+
+    def add(self, path: str) -> None:
+        with self._mutex:
+            self._paths.append(path)
+
+    def take(self) -> List[str]:
+        """Every lock still held here, now no longer the owner's to release."""
+        with self._mutex:
+            paths, self._paths = self._paths, []
+        return paths
+
+    def release(self) -> None:
+        """Let go of whatever the owner still holds. Blocking (lock file I/O)."""
+        _let_go(self.take())
+
+
 def _let_go(paths: Optional[Iterable[str]]) -> None:
     """Release the exclusive locks :meth:`JobManager._take_exclusively` took."""
     for path in paths or ():
@@ -462,7 +492,9 @@ class JobManager:
         self._terminal_mutex = threading.Lock()
         # The companion outputs (extractcd's .bin beside its .cue) each running
         # job holds the same cross-process exclusive lock on as its output.
-        self._companion_locks: Dict[str, List[str]] = {}
+        # Each running job's output locks (the output and its companions),
+        # released by `_release_output_locks` unless an unlink took them.
+        self._output_locks: Dict[str, HeldLocks] = {}
         # Jobs currently inside the verify phase, mapped to the monotonic clock
         # reading when that phase began. Verification emits no progress and can
         # legitimately run for many minutes, so the stalled-job warning reports
@@ -1471,14 +1503,15 @@ class JobManager:
             except LockFailed:
                 let_go()
                 raise
-        self._companion_locks[job.id] = held
+        self._output_locks[job.id] = HeldLocks([job.output_path, *held])
         return True
 
     def _release_output_locks(self, job: ConversionJob) -> None:
-        for path in self._companion_locks.pop(job.id, []):
-            lock_manager.release_lock(path)
-        if job.output_path:
-            lock_manager.release_lock(job.output_path)
+        """Let go of the job's output locks, unless an unlink still running
+        took them with it (``HeldLocks``): its worker lets go of them then."""
+        held = self._output_locks.pop(job.id, None)
+        if held is not None:
+            held.release()
 
     async def _fail_before_start(
         self, job_id: str, job: ConversionJob, message: str, *, dir_lock_held: bool,
@@ -3129,7 +3162,7 @@ class JobManager:
         cancelled: Callable[[], bool],
         deleted: List[str],
         probe_seconds: Optional[float] = None,
-        travelling_locks: Optional[List[str]] = None,
+        travelling_locks: Optional["HeldLocks"] = None,
     ) -> _SourceDelete:
         """The delete step, shared by a job and a retried delete (#329).
 
@@ -3153,7 +3186,7 @@ class JobManager:
         Each unlink is a mutation, never abandoned with its locks
         (``run_detached_mutation``, codex 4579725632): when the caller stops
         waiting while one still runs (the bound, a cancel), the delete holds,
-        and the caller's *travelling_locks* (a retry's output lock), pass to
+        and the caller's *travelling_locks* (its output locks), pass to
         its worker, which releases them once the unlink has finished, and
         :class:`MutationInFlight` (or the cancel) propagates.
         """
@@ -3243,13 +3276,14 @@ class JobManager:
         return outcome
 
     def _hand_off_locks(
-        self, owner_id: str, travelling: Optional[List[str]],
+        self, owner_id: str, travelling: Optional[HeldLocks],
     ) -> Callable[[], None]:
         """Take *owner_id*'s delete holds and the *travelling* locks from their
         owner, for a mutation's worker to release (``run_detached_mutation``)."""
-        paths = [*self._delete_holds.pop(owner_id, []), *(travelling or [])]
-        if travelling is not None:
-            travelling.clear()
+        paths = [
+            *self._delete_holds.pop(owner_id, []),
+            *(travelling.take() if travelling is not None else []),
+        ]
         return lambda: _let_go(paths)
 
     def _kept_delete_snapshot(
@@ -3325,7 +3359,7 @@ class JobManager:
         owner_id = f"kept-delete:{uuid.uuid4().hex}"
         # The output lock, while this holds it. It travels with an unlink that
         # outlives this call, so it is released only from this list.
-        travelling: List[str] = []
+        travelling = HeldLocks()
         deleted: List[str] = []
         try:
             # Bounded, like every probe here: taking a lock stats the path, and
@@ -3342,7 +3376,7 @@ class JobManager:
                 return KeptDeleteRetry(KEPT_KEPT, KEPT_DELETE_UNANSWERED)
             if not output_held:
                 return KeptDeleteRetry(KEPT_READER, "the output is in use by another job")
-            travelling.append(output_path)
+            travelling.add(output_path)
             try:
                 record = await asyncio.wait_for(
                     run_detached(verification_store.get_record_blocking, output_path),
@@ -3419,8 +3453,9 @@ class JobManager:
                 return KeptDeleteRetry(KEPT_KEPT, removal.kept_reason)
             return KeptDeleteRetry(KEPT_DELETED, None, tuple(deleted))
         finally:
-            self._release_delete_holds(owner_id)
-            _let_go(travelling)
+            # Off the loop: lock files are I/O (codex 4579852997).
+            holds = self._delete_holds.pop(owner_id, [])
+            await run_in_threadpool(_let_go, [*holds, *travelling.take()])
 
     async def _delete_check(
         self, job, tool, source_path: str, output_path: str, cancel_event,
@@ -4271,6 +4306,9 @@ class JobManager:
                             cancel_event=cancel_event,
                             cancelled=lambda: job_id in self._cancelled,
                             deleted=job.deleted_paths,
+                            # The output locks travel with an unlink this job
+                            # stops waiting for (a cancel), like a retry's.
+                            travelling_locks=self._output_locks.get(job_id),
                         )
                         job.referrers_updated = removal.referrer_records
                         if removal.cancelled:
