@@ -4,7 +4,7 @@ import shlex
 from pathlib import Path
 from typing import Dict, List, Set
 
-from utils.path_utils import strip_archive_path
+from utils.path_utils import is_within_configured_volumes, strip_archive_path
 from utils.sheet_text import gdi_tracks, pick_existing, sheet_readings
 
 
@@ -103,6 +103,43 @@ def sheet_track_paths(sheet_path: str) -> list[str]:
     readings = [parse(text) for text in sheet_readings(sheet)]
     tracks = pick_existing(readings, lambda ref: _resolve_track_path(sheet.parent, ref))
     return [str(track) for track in tracks]
+
+
+_SHEET_TEXT_PARSERS = {".cue": _cue_tracks_from_text, ".gdi": _gdi_tracks_from_text}
+
+
+def sheet_reference_problems(sheet_path: str) -> list[str]:
+    """Why a ``.cue`` / ``.gdi`` sheet is unsafe to hand to a converter, or ``[]``.
+
+    The converter opens the files a sheet names itself, so each reference has
+    to stay inside the configured Volumes or the job would pack a file from
+    elsewhere into its output. Unsafe: a reference that is absolute, one that
+    leaves the sheet's folder (``..``), and one that resolves (through a
+    symlink) outside the configured Volumes. Every decoding of the sheet is
+    checked (``utils.sheet_text``), so a name cannot hide in one spelling. A
+    sheet that exists but cannot be read is unsafe too: nothing was checked.
+    Empty for any other file. Blocking (reads the sheet, resolves each track).
+    """
+    sheet = Path(sheet_path)
+    parse = _SHEET_TEXT_PARSERS.get(sheet.suffix.lower())
+    if parse is None:
+        return []
+    readings = sheet_readings(sheet)
+    if not readings:
+        return ["the track sheet could not be read"] if os.path.exists(sheet) else []
+    problems: list[str] = []
+    for text in readings:
+        for ref in parse(text):
+            try:
+                track = _resolve_track_path(sheet.parent, ref)
+            except ValueError as exc:
+                problems.append(str(exc))
+                continue
+            if not is_within_configured_volumes(
+                os.path.realpath(track), treat_archives=False,
+            ):
+                problems.append(f"Track reference resolves outside the volumes: {ref}")
+    return list(dict.fromkeys(problems))
 
 
 def build_delete_plan(source_path: str) -> Dict[str, object]:

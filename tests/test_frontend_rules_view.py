@@ -259,6 +259,8 @@ def test_the_sweep_summary_names_every_reason_a_library_gives():
         assert f"{code}:" in labels.group(1), f"no label for {code}"
     assert "still running, try again shortly" in labels.group(1)
     assert "r.stopped_reason === 'not_configured'" in src
+    # PR #320 (Codex security): a sheet whose tracks leave the volumes.
+    assert "r.skipped_unsafe" in src
 
 
 def test_the_deferred_romm_load_stops_once_the_view_is_gone():

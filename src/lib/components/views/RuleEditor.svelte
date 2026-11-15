@@ -444,6 +444,10 @@
         {#if r.skipped_failed}
           · {r.skipped_failed} held after a failed conversion
         {/if}
+        {#if r.skipped_unsafe}
+          · {r.skipped_unsafe} not converted: a track sheet names a file outside the
+          volumes
+        {/if}
         {#if r.stopped_reason === 'limit'}· stopped at the per-run limit{/if}
         {#if r.stopped_reason === 'queue_full'}· stopped, queue full{/if}
         {#if r.stopped_reason === 'no_rules'}· no rules configured{/if}

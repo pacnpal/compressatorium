@@ -322,10 +322,20 @@ def source_companions_are_safe(file_path: str, mode: str) -> bool:
     taking the job's locks, since a queued job's companion can be swapped for a
     symlink in between.
 
+    A track sheet (``.cue`` / ``.gdi``) is checked from its own text, whatever
+    the tool reports: the converter opens every file the sheet names, so a
+    reference that is absolute, leaves the sheet's folder, or resolves outside
+    the volumes rejects the job (``delete_plan.sheet_reference_problems``). An
+    empty companion list is never taken to mean safe.
+
     Blocking I/O (an ``lstat`` and a ``realpath`` per companion); call it off
     the event loop.
     """
     from services.tools import registry  # local: avoids an import cycle
+    from utils.delete_plan import sheet_reference_problems  # local: cycle
+
+    if sheet_reference_problems(file_path):
+        return False
 
     try:
         tool = registry.for_mode(mode)

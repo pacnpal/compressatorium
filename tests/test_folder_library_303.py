@@ -1444,3 +1444,40 @@ async def test_a_removed_librarys_id_is_never_reused(tree: Path) -> None:
     await routes.remove_library(first["id"])
     second = await _register(tree / "ps2")
     assert second["id"] != first["id"]
+
+
+@pytest.mark.asyncio
+async def test_a_sheet_that_escapes_the_volume_is_never_queued(
+    db: Path, ready, queue,
+) -> None:
+    """Codex security P1 (PR #320): chdman opens a sheet's tracks itself.
+
+    A planted ``.cue`` naming a file outside the Volume (by ``..``, by an
+    absolute path, or by a symlinked track) must never reach the queue, and
+    the sweep says why. A normal sheet beside it still converts.
+    """
+    from routes import libraries as routes
+
+    secret = db.parent / "compressatorium.secret"
+    secret.write_bytes(b"secret")
+    psx = db / "roms" / "psx"
+    psx.mkdir(parents=True)
+    (psx / "Escape.cue").write_text('FILE "../../../compressatorium.secret" BINARY\n')
+    (psx / "Absolute.cue").write_text(f'FILE "{secret}" BINARY\n')
+    (psx / "Linked.bin").symlink_to(secret)
+    (psx / "Linked.cue").write_text('FILE "Linked.bin" BINARY\n')
+    (psx / "Good.bin").write_bytes(b"\0" * 4096)
+    (psx / "Good.cue").write_text('FILE "Good.bin" BINARY\n')
+
+    lib = await _register(db / "roms")
+    await routes.put_library_rules(lib["id"], {"rules": {
+        "psx": {"mode": "createcd", "enabled": True},
+    }})
+    preview = await routes.preview_library(lib["id"])
+    result = await routes.run_library(lib["id"])
+
+    assert [Path(p).name for p in queue] == ["Good.cue"], result
+    for summary in (preview, result):
+        assert summary["skipped_unsafe"] == 3, summary
+        platform = summary["platforms"][0]
+        assert sorted(platform["unsafe"]) == ["Absolute.cue", "Escape.cue", "Linked.cue"]

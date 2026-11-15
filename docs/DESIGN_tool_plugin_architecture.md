@@ -2347,6 +2347,17 @@ can cache it. A track named in another case owns the listed file only when
 `os.path.samefile` agrees (a case-insensitive share); on a case-sensitive
 filesystem nothing is hidden.
 
+**Unsafe sheets.** The converter opens every file a sheet names itself, so a
+sheet is checked from its own text before any job runs:
+`delete_plan.sheet_reference_problems` (the delete plan's cue/gdi parsers and
+`utils.sheet_text` decoding) reports a reference that is absolute, leaves the
+sheet's folder, or resolves outside the configured Volumes (a symlinked
+track). `path_utils.source_companions_are_safe`, the gate `plan_job` and the
+worker both call for every job (manual, batch, Auto, Rules), rejects such a
+sheet whatever the tool's companion list says; an empty list never means safe.
+The sweep asks the same gate per candidate and reports the Image as unsafe
+(`skipped_unsafe`, and each Platform's `unsafe` names) instead of queueing it.
+
 **The folder Library** (`services/libraries/folder.py`). One walk of the root
 (`os.walk`, symlinks not followed, symlinked files skipped) collects every
 regular, readable file whose extension a tool reads or writes

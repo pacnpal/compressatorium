@@ -79,6 +79,7 @@ from utils.path_utils import (
     is_within_configured_volumes,
     match_extension,
     path_fingerprint,
+    source_companions_are_safe,
 )
 
 # The logger name the engine has always logged under (see `rules.logger`).
@@ -849,6 +850,12 @@ def _inspect_candidate(
         return miss
     if not _accepts_source(tool, spec, path):
         return {**miss, "skip": "unconvertible", "path": path}
+    # The job manager refuses these too; asked here so the sweep reports the
+    # Image as unsafe instead of queueing a job that can only be refused. A
+    # track sheet naming a file outside the volumes would otherwise have the
+    # converter pack that file into its output.
+    if not source_companions_are_safe(path, rule["mode"]):
+        return {**miss, "skip": "unsafe_source", "path": path}
     resolved = _resolve_source(path)
     if resolved is None:
         return miss
@@ -1188,6 +1195,7 @@ async def _sweep_locked(
             # nothing.
             held = await _prune_holds(library, platform_id, held, images)
         held_count = 0
+        unsafe_names: list[str] = []
         batch: list[str] = []
         unresponsive = False
         image_by_path: dict[str, Image] = {}
@@ -1247,6 +1255,9 @@ async def _sweep_locked(
             if decision["skip"] == "outside_volumes":
                 result["skipped_unconvertible"] += 1
                 continue
+            if decision["skip"] == "unsafe_source":
+                unsafe_names.append(Path(path).name)
+                continue
             if decision["skip"] == "held_failed":
                 result["skipped_failed"] += 1
                 held_count += 1
@@ -1285,6 +1296,11 @@ async def _sweep_locked(
             # Shown per Platform, so a held Image does not vanish from the
             # result: it is waiting for its files to change or for Forget.
             summary["skipped_failed"] = held_count
+        if unsafe_names:
+            # Never queued, and named: a sheet whose tracks leave the volumes.
+            # Present only when there is one, so a clean result keeps its shape.
+            result["skipped_unsafe"] = result.get("skipped_unsafe", 0) + len(unsafe_names)
+            summary["unsafe"] = unsafe_names[:25]
         if rule["delete_on_verify"]:
             # What Preview shows: the check that will actually pass before
             # this batch deletes a Source, not the stored preference (a mode
