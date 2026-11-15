@@ -20,13 +20,15 @@
   stops the rest of the run.
 - **`compressatorium run-rules`** (#307). One pass over your stored Rules, for
   cron or Unraid User Scripts: it queues what each Rule says is due, waits for
-  those jobs and exits (0, or 1 when a job failed). `--library romm` limits it
-  to one Library; `--dry-run` shows what each Rule would queue. Only one Rule
-  scheduler runs per data directory: the server now holds a lock on
-  `/config/locks/scheduler.lock` while it runs, `run-rules` exits 3 without
-  queuing anything while it is held, and a second server on the same `/config`
-  refuses to start (so does a server started while a `run-rules` pass is still
-  running).
+  those jobs and exits: 0, or 1 when a job failed or a sweep reported an error
+  (RomM not answering, a tool not installed, ...). `--library romm` limits it
+  to one Library; `--dry-run` shows what each Rule would queue. Before sweeping
+  RomM it finishes an owed identity cleanup and settles pending re-pins once.
+  Only one Rule scheduler runs per data directory: the server now holds a lock
+  on `/config/locks/scheduler.lock` while it runs, and `run-rules` exits 3
+  without queuing anything while it is held. A server started during a
+  `run-rules` pass, or beside another server on the same `/config`, waits for
+  the lock (logging who holds it) and then starts.
 - **Auto convert and Platform detection** (#294). Tick **Auto** in the convert
   panel, select a mix of files, and each Image goes to its Platform's default
   format with your saved compression. The Platform comes from the Image's own

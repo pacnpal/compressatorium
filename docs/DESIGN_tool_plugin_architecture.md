@@ -2206,6 +2206,13 @@ second: one root folder inside a Volume.
   the metadata snapshot for re-pin here, so the re-pin bookkeeping stays in
   `services/romm`.
 - `sweep_extras()` adds keys when a sweep ends (RomM: `pending_repins`).
+- `before_pass(*, dry_run)` is not called by the sweep: `run-rules` (§3.3.14)
+  calls it before it sweeps the Library, for the upkeep the server does at
+  startup or in its background loops. RomM loads its settings and, on a real
+  pass, runs `routes.romm.replay_identity_cleanup()` and one
+  `routes.romm.settle_once()` (the settler loop's tick, shared with
+  `settle_forever`). A dry run must write nothing. A Library with no upkeep
+  implements it as a no-op.
 
 Capabilities (`RECOGNIZED_FILTER`, `CONVERTED_HISTORY`) say what a Library
 supports. The engine does not gate on them yet; a Rules editor and the folder
@@ -2283,7 +2290,7 @@ RomM routes and `main.py` call (`get_rules()`, `set_rules(raw)`, `sweep(...)`,
 `run_forever()`, ...) and passes `romm_library` to each, so the HTTP API did
 not change. `run_forever(libraries)` takes a callable returning the Libraries to
 sweep on each tick. `romm_auto.run_forever()` passes
-`services.libraries.all_libraries`, the one list of Libraries; `run-rules`
+`services.library_catalog.all_libraries`, the one list of Libraries; `run-rules`
 (§3.3.14) sweeps the same list, so a new Library is added there once.
 
 ### 3.3.12 The Round-trip check (`ToolPlugin.content_digest`, `services/round_trip.py`)
@@ -2651,42 +2658,77 @@ lifecycle (Ledger listener, `process_queue()`, cancel, `shutdown()`) for both
 `convert` and `run-rules`.
 
 **`run-rules` (#307).** One pass over the stored Rules, like one tick of the
-server's scheduler, then exit. For each Library in
-`services.libraries.all_libraries()` (or the one `--library` names) it calls
-`rules.sweep.sweep(library)`: the scheduler's own sweep, so each Rule's
-switch, days, window, interval and caps apply, and the Ledger rows,
-`after_queue` hooks and Rule state are written the same way. The Library's
-master switch (`schedule_enabled`, RomM's auto-convert toggle) is not read:
-running the command is the switch. `libraries.load_settings()` primes what the
-server loads at startup (RomM's settings cache) before the first sweep.
-`rules.sweep.note_job_finished` is a terminal listener, as in `main.py`, and
-the jobs are waited for with `JobManager.drain()`. Each job's line is printed
-as it ends, under the Library whose sweep queued it. Exit 1 when one of its
-jobs failed or was cancelled.
+server's scheduler, then exit. Under the scheduler lock and with the database
+open, it lists the Libraries (`services.library_catalog.all_libraries()`, or
+the one `--library` names; listed only now because a Library list can live in
+the database). For each it runs the Library's `before_pass(dry_run=...)` hook
+(§3.3.11), then `rules.sweep.sweep(library, should_stop=...)`: the scheduler's
+own sweep, so each Rule's switch, days, window, interval and caps apply, and
+the Ledger rows, `after_queue` hooks and Rule state are written the same way.
+The Library's master switch (`schedule_enabled`, RomM's auto-convert toggle) is
+not read: running the command is the switch. `rules.sweep.note_job_finished`
+is a terminal listener, as in `main.py`, and the jobs are waited for with
+`JobManager.drain()`. Each job's line is printed as it ends, under the Library
+whose sweep queued it.
 
-`--dry-run` is `sweep(library, dry_run=True)` (Preview) inside
+Compared with the server, a pass does the RomM upkeep `before_pass` covers
+(identity-cleanup replay, one settle pass) and nothing else the server starts:
+no DAT sync, no Hasheous override load, no re-pin settler loop, so re-pins this
+pass records wait for the next pass or the server.
+
+Errors and exit status. As in `run_forever`, an exception from one Library's
+hook or sweep is caught (`cli._sweep_one`), reported as an `error` line for
+that Library, and the next Library runs. Exit 1 when that happened, when a
+sweep result has any `errors` entry (`unreadable`, `tool_not_ready`,
+`identity_cleanup_pending`, `queue_failed`, `destination_claimed`, ...), when it
+stopped for `library_unresponsive` or `not_configured` (a Library that has
+Rules but cannot be swept), or when a job failed or was cancelled. The same
+applies to `--dry-run`.
+
+Stopping. `sweep()` takes `should_stop`, asked before each Platform and again
+right before a batch is queued; once true the sweep queues nothing more and
+ends with `stopped_reason == "stopped"`. The server passes nothing. On SIGTERM,
+SIGINT or SIGHUP `run-rules` sets `state.stopping` (which `should_stop`
+reads) and cancels the queued and running jobs; after the sweep returns it
+cancels again, for a batch let in between, and only then drains.
+
+`--dry-run` is `sweep(library, dry_run=True)` inside
 `preferences_store.read_only()`: the Rule store's first read can write (the
 legacy-key copy, the one-time Round-trip upgrade), and in that block a write
 lands in an in-memory overlay that later reads return, so the database is left
-as it was. With no database a dry run reports `no_rules`.
+as it was. The overlay is on the store instance, not per task, so it is for a
+process doing one thing (the CLI), never the server. Unlike the editor's
+Preview it keeps the Rule clock (`ignore_schedule` is not set). With no
+database a dry run reports `no_rules` without listing Libraries.
 
 **One scheduler per data directory (`services/scheduler_lock.py`).** The server
 and `run-rules` each hold an exclusive `flock` on `scheduler.lock` in the lock
 directory above (`<data dir>/locks` by default, so every container mounting the
-same `/config` sees it). The server takes it in `main.lifespan` before the
-database is opened and holds it until shutdown; a second server on the same
-data directory raises `RuntimeError` and does not start. `run-rules` takes it
-before opening the database and holds it through `drain()`; when it is held it
-prints why and exits 3 (`cli.EXIT_LOCKED`) having touched nothing. `acquire`
-retries for a second, then raises `SchedulerLockHeld`, whose message names the
-holder from the JSON the holder writes into the file (`by`, `pid`, `host`,
-`since`). The file is never unlinked, so the lock is always on the file every
-process opens, and the kernel drops it when the holder dies. A dry run only
-calls `check()`: it opens an existing file read-only and probes with a shared
-non-blocking `flock`, creating nothing. The stale-lock sweeps leave the file
-alone (`LockManager` only touches `filelock-*`, `ConcurrencyManager` only
-holders and tickets). `convert` and `verify` do not take it: they run beside a
-server.
+same `/config` sees it). The file is never unlinked, so the lock is always on
+the file every process opens, and the kernel drops it when the holder dies. The
+holder writes a note into it (`by`, `pid`, `host`, `since`) that
+`SchedulerLockHeld` reads back to say who holds it.
+
+- `run-rules` calls `acquire`: up to a second of retries (so a dry run's
+  momentary probe never turns a real pass away), then `SchedulerLockHeld`, and
+  the CLI prints why and exits 3 (`cli.EXIT_LOCKED`) having touched nothing. It
+  takes the lock before opening the database and holds it through `drain()`.
+- The server's `main.lifespan` calls `acquire_waiting` before `_serve` opens
+  the database, and releases the lock in `finally` once `_serve` has cancelled
+  the Rule scheduler task. While another process holds it (a `run-rules` pass,
+  or a second server on the same data directory) startup waits: a
+  non-blocking `flock` every `_WAIT_POLL` seconds with `asyncio.sleep` between,
+  logging the holder on the first miss and every `_WAIT_LOG_EVERY` (30) seconds.
+  uvicorn only acts on SIGTERM once startup returns, so `_watch_stop_signals`
+  wraps its handlers for the wait: a SIGTERM or SIGINT is noted, passed on to
+  uvicorn's handler, and ends the wait with `StoppedWaiting`, which startup
+  turns into a `RuntimeError`. The lock file is closed on every way out.
+- A dry run only calls `check()`: it opens an existing file read-only and
+  probes with a shared non-blocking `flock`, creating nothing.
+
+The stale-lock sweeps leave the file alone (`LockManager` only touches
+`filelock-*`, `ConcurrencyManager` only holders and tickets). `convert` and
+`verify` do not take it: they run beside a server.
 
 ### 3.4 `registry.py`
 

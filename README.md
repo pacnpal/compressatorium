@@ -1631,15 +1631,34 @@ same sweep the server's scheduler runs each minute, so each Rule's own on/off
 switch, days, time window, interval and per-run cap still apply; the
 auto-convert master switch does not, because running the command is the
 switch. `--library romm` limits it to one Library. `--dry-run` prints what each
-Rule would queue (the editor's Preview) and writes nothing. It prints one line
-per Platform and one per job as it ends.
+Rule would queue on this pass and writes nothing. Unlike the editor's Preview it
+keeps each Rule's clock, so a Rule that is not due (outside its window, or run
+within its interval) prints no line. It prints one line per Platform and one per
+job as it ends.
+
+Before it sweeps RomM, `run-rules` does the RomM upkeep the server does in the
+background: it finishes an identity cleanup a crash left owed (otherwise RomM
+Rules are refused with `identity_cleanup_pending`) and runs one pass of the
+re-pin settler, so ROMs converted by an earlier pass get their metadata back.
+Re-pins recorded by this pass are settled by the next pass, or by the server.
+It does not run the DAT sync, the Hasheous checks or anything else the web UI
+starts.
+
+A pass exits `1` when any job failed or was cancelled, and also when any sweep
+reported an error: RomM not answering (`unreadable`), a tool that is not
+installed, an output folder outside the Volumes, a source that could not be
+read, a destination another job took first (`destination_claimed`), RomM not
+configured while it has Rules, or a Library whose sweep raised. The other
+Libraries still run. A stop (SIGTERM, `docker stop`, Ctrl-C) queues nothing
+more, cancels the jobs it queued and exits `1`.
 
 Every command takes `--dry-run` (print the plan, convert or check nothing) and
-`--json` (one JSON line per Image, or per Platform for `run-rules`, on stdout).
+`--json` (one JSON line per Image; for `run-rules`, one per Platform and one per
+job, on stdout).
 Warnings and errors always go to stderr; `-v` adds INFO messages there. Exit
 status: `0` when everything finished or there was nothing to do, `1` when any
-Image or job failed, `2` on bad arguments, `3` when `run-rules` found another
-scheduler using the data directory.
+Image or job failed (for `run-rules`, also a sweep error), `2` on bad arguments,
+`3` when `run-rules` found another scheduler using the data directory.
 
 Each Image is planned on its own, so one bad file is reported and the others
 still convert. When `MAX_QUEUE_DEPTH` is set, jobs are fed in batches below it.
@@ -1658,9 +1677,10 @@ belong to the user the server runs as.
 server; `run-rules` does not. The server holds a lock on
 `/config/locks/scheduler.lock` for as long as it runs, and its own scheduler
 runs the Rules. While that lock is held, `run-rules` prints who holds it and
-exits `3` without queuing anything. A second server started on the same
-`/config` refuses to start, and so does a server started while a `run-rules`
-pass is still running. Use `run-rules` where the server is not running all the
+exits `3` without queuing anything. A server started while a `run-rules` pass
+(or another server) holds the lock waits for it before it opens anything,
+logging who it waits for every 30 seconds, then starts; `docker stop` still
+stops it while it waits. Use `run-rules` where the server is not running all the
 time: start a one-off container with the same `/config` and the same Volume
 mounts as the server (RomM's library root must resolve to the same path).
 

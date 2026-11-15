@@ -57,7 +57,9 @@ class PreferencesStore:
 
         For a dry run (``run-rules --dry-run``, #307): code that writes as it
         reads (the Rule store's one-time copies) sees its own writes, and the
-        database is left as it was.
+        database is left as it was. The overlay is on this instance, not per
+        task: use it only in a process doing one thing (the CLI), never in the
+        server, where it would swallow every other request's writes.
         """
         previous, self._overlay = self._overlay, {}
         try:
