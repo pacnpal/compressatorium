@@ -55,7 +55,7 @@ from services.subprocess_runner import (
     ioprio_prefix,
     nice_prefix,
 )
-from utils.sheet_text import pick_existing, sheet_readings
+from utils.sheet_text import gdi_tracks, pick_existing, sheet_readings
 
 logger = get_logger("disc_id")
 
@@ -1140,17 +1140,18 @@ def _extract_gdi(path: str) -> Optional[dict]:
     """
     try:
         gdi_dir = Path(path).parent
-        with open(path, encoding="latin-1") as f:
-            lines = [line.strip() for line in f if line.strip()]
-
-        for line in lines[1:]:  # skip track count on first line
-            parts = line.split()
-            if len(parts) < 5:
-                continue
-            track_num = parts[0]
-            sector_size = int(parts[3]) if parts[3].isdigit() else 2352
-            filename = parts[4].strip('"')
-            bin_path = gdi_dir / filename
+        # The shared sheet parsing (utils.sheet_text): quoted names keep their
+        # spaces, and the first spelling of a name that exists on disk wins.
+        readings = [gdi_tracks(text) for text in sheet_readings(path)]
+        if not readings:
+            return None
+        files = pick_existing(
+            [[track.name for track in reading] for reading in readings],
+            lambda name: gdi_dir / name,
+        )
+        for track, bin_path in zip(readings[0], files):
+            track_num = track.number
+            sector_size = track.sector_size or 2352
             if not bin_path.exists():
                 continue
             if track_num == "1":

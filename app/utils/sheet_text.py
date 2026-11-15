@@ -7,7 +7,9 @@ the delete plan and header-dependency list (``utils.delete_plan``).
 """
 from __future__ import annotations
 
+import shlex
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 _UTF8_BOM = b"\xef\xbb\xbf"
@@ -33,6 +35,48 @@ def sheet_readings(path: str | Path) -> list[str]:
     except UnicodeDecodeError:
         first = raw.decode("cp1252", errors="replace")
     return [first, raw.decode("latin-1")]
+
+
+@dataclass(frozen=True)
+class GdiTrack:
+    """One track line of a ``.gdi``: ``number lba type sector_size "name" offset``."""
+
+    number: str
+    sector_size: int | None
+    name: str
+
+
+def _split_line(line: str) -> list[str]:
+    # Quoted names keep their spaces; a line shlex can't parse (an unbalanced
+    # quote) falls back to whitespace splitting.
+    try:
+        return shlex.split(line, comments=True, posix=True)
+    except ValueError:
+        return line.split()
+
+
+def gdi_tracks(text: str) -> list[GdiTrack]:
+    """Every track line of a ``.gdi`` sheet, in order.
+
+    The first line is the track count and is skipped when it is a number.
+    Lines with fewer than five fields, or no file name, are left out.
+    """
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return []
+    head = _split_line(lines[0])
+    start = 1 if head and head[0].isdigit() else 0
+    tracks: list[GdiTrack] = []
+    for line in lines[start:]:
+        parts = _split_line(line)
+        if len(parts) < 5:
+            continue
+        name = parts[4].strip('"').strip()
+        if not name:
+            continue
+        size = int(parts[3]) if parts[3].isdigit() else None
+        tracks.append(GdiTrack(parts[0], size, name))
+    return tracks
 
 
 def pick_existing(

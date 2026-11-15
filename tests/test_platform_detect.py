@@ -493,6 +493,24 @@ def test_a_cp1252_cue_lists_its_accented_track_and_is_cached(tmp_path):
     assert cue in platform_detect._cache
 
 
+@pytest.mark.parametrize(
+    ("track_name", "listed"),
+    [("Game (Track 1).bin", '"Game (Track 1).bin"'), ("track01.bin", "track01.bin")],
+    ids=["quoted-with-spaces", "unquoted"],
+)
+def test_a_gdi_track_name_is_read_whole(tmp_path, track_name, listed):
+    from services.tools import registry
+
+    folder = tmp_path / "stuff"
+    raw = bytearray(2352)
+    raw[16:16 + 0x200] = _make_ipbin()
+    track = _write(folder / track_name, bytes(raw))
+    gdi = _write(folder / "game.gdi", f"1\n1 0 4 2352 {listed} 0\n".encode())
+
+    assert detect_platform(gdi).platform == "dc"
+    assert registry.get("chdman").header_reads(gdi) == [track]
+
+
 def test_a_gdi_lists_its_tracks_as_header_reads(tmp_path):
     from services.tools import registry
 

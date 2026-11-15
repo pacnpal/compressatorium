@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Dict, List, Set
 
 from utils.path_utils import strip_archive_path
-from utils.sheet_text import pick_existing, sheet_readings
+from utils.sheet_text import gdi_tracks, pick_existing, sheet_readings
 
 
 _WIN_ABS_RE = re.compile(r"^[a-zA-Z]:[\\/]")
@@ -81,28 +81,7 @@ def _parse_gdi_tracks(gdi_path: Path) -> list[str]:
 
 
 def _gdi_tracks_from_text(text: str) -> list[str]:
-    tracks: list[str] = []
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-
-    if not lines:
-        return tracks
-
-    def _split(line: str) -> List[str]:
-        try:
-            return shlex.split(line, comments=True, posix=True)
-        except ValueError:
-            return line.split()
-
-    head = _split(lines[0])
-    start_idx = 1 if head and head[0].isdigit() else 0
-    for line in lines[start_idx:]:
-        parts = _split(line)
-        if len(parts) < 5:
-            continue
-        name = parts[4].strip('"').strip()
-        if name:
-            tracks.append(name)
-    return tracks
+    return [track.name for track in gdi_tracks(text)]
 
 
 def sheet_track_paths(sheet_path: str) -> list[str]:
