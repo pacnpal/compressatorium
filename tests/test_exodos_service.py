@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+import threading
+import time
 import zipfile
 from pathlib import Path
 
@@ -461,3 +463,78 @@ def test_a_cancel_during_the_check_keeps_nothing(tree, monkeypatch):
 
     assert sorted(os.listdir(tree["games"])) == ["!dos", "Abaron (1995).zip"]
     assert Path(source).read_bytes() == before
+
+
+# --- a repack whose I/O stops answering (PR #324 review) --------------------
+
+
+@pytest.fixture
+def hung_write(monkeypatch):
+    """The real rewrite, stuck in its first write the way a dead mount sticks.
+
+    ``release`` lets the blocked "syscall" return; ``finished`` is set once
+    the worker has run to its end, whatever that end was.
+    """
+    real = exodos_module.rewrite_zip
+    release, finished = threading.Event(), threading.Event()
+
+    def hung(src, dst, *, on_progress, **kwargs):
+        def stuck(done, total):
+            release.wait(30)
+            on_progress(done, total)
+
+        try:
+            return real(src, dst, on_progress=stuck, **kwargs)
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(exodos_module, "rewrite_zip", hung)
+    yield {"release": release, "finished": finished}
+    release.set()
+
+
+def _no_product_and_no_temp(tree):
+    return sorted(os.listdir(tree["games"])) == ["!dos", "Abaron (1995).zip"]
+
+
+def test_cancel_returns_at_once_and_the_late_worker_publishes_nothing(tree, hung_write):
+    service = ExodosService()
+    source = _game_zip(tree)
+    cancel = asyncio.Event()
+
+    async def run():
+        asyncio.get_running_loop().call_later(0.3, cancel.set)
+        return [u async for u in service.convert(
+            source, service.get_output_path(source), "exodos_repack", cancel_event=cancel,
+        )]
+
+    started = time.monotonic()
+    with pytest.raises(ConversionCancelled):
+        asyncio.run(run())
+    assert time.monotonic() - started < 3
+
+    # The blocked write finally returns: the worker sees it was abandoned,
+    # removes its hidden temp file and places nothing.
+    hung_write["release"].set()
+    assert hung_write["finished"].wait(10)
+    assert _no_product_and_no_temp(tree)
+
+
+def test_a_stalled_repack_fails_and_the_late_worker_publishes_nothing(
+    tree, hung_write, monkeypatch,
+):
+    from services import subprocess_runner
+
+    monkeypatch.setattr(exodos_module.settings, "progress_timeout", 1)
+    monkeypatch.setattr(subprocess_runner, "_MIN_STALL_TIMEOUT", 1)
+    service = ExodosService()
+    source = _game_zip(tree)
+
+    started = time.monotonic()
+    with pytest.raises(RuntimeError, match="stopped responding"):
+        _convert(service, source, service.get_output_path(source))
+    assert time.monotonic() - started < 5
+
+    hung_write["release"].set()
+    assert hung_write["finished"].wait(10)
+    assert _no_product_and_no_temp(tree)

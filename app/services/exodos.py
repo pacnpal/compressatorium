@@ -26,6 +26,7 @@ import asyncio
 import functools
 import os
 import re
+import threading
 import zipfile
 import zlib
 from collections.abc import AsyncGenerator, Callable
@@ -39,6 +40,7 @@ from services.subprocess_runner import (
     ConversionCancelled,
     ReadCancelled,
     collect_verify,
+    conversion_stall_bound,
     run_detached,
     verify_preflight,
 )
@@ -334,7 +336,11 @@ class ExodosService:
         template = await run_in_threadpool(self._read_template, plan.template)
         rewrite = rewrite_conf(template, plan.top, self.profile)
         prefix = f"{plan.top}/"
-        progress = {"done": 0, "total": plan.total_size}
+        # "beats" counts the worker's polls of is_cancelled, which it makes
+        # between every chunk it copies or checks: a worker still polling is a
+        # worker still making progress.
+        progress = {"done": 0, "total": plan.total_size, "beats": 0}
+        abandoned = threading.Event()
 
         def rename(name: str) -> str | None:
             return None if name == prefix else name[len(prefix):]
@@ -343,10 +349,15 @@ class ExodosService:
             progress["done"], progress["total"] = done, total
 
         def is_cancelled() -> bool:
-            return cancel_event is not None and cancel_event.is_set()
+            progress["beats"] += 1
+            return abandoned.is_set() or (cancel_event is not None and cancel_event.is_set())
 
         yield {"progress": 0, "message": f"Repacking {plan.top}"}
-        task = asyncio.ensure_future(run_in_threadpool(
+        # Detached, not pooled: a mount that stops answering blocks the worker
+        # in a syscall nothing can interrupt. Cancel and the no-progress bound
+        # below return without waiting for it, and set `abandoned`, which the
+        # worker reads before it would place the product.
+        task = asyncio.ensure_future(run_detached(
             rewrite_zip, input_path, output_path,
             rename=rename,
             add={self.profile.conf_name: rewrite.data},
@@ -356,20 +367,14 @@ class ExodosService:
             check=lambda path: self._own_check(path, is_cancelled),
             is_cancelled=is_cancelled,
             on_progress=on_progress,
+            cancel_event=cancel_event,
         ))
-        last = -1
-        while not task.done():
-            await asyncio.wait({task}, timeout=_PROGRESS_INTERVAL)
-            if task.done() or is_cancelled():
-                continue
-            done = progress["done"]
-            yield {
-                "progress": min(99, done * 100 // max(progress["total"], 1)),
-                "message": f"Repacking {plan.top}",
-                "activity": done != last,
-            }
-            last = done
-        task.result()
+        try:
+            async for update in self._watch(task, plan.top, progress):
+                yield update
+        except BaseException:
+            abandoned.set()
+            raise
         caveats = []
         if rewrite.leftovers:
             caveats.append(
@@ -389,6 +394,45 @@ class ExodosService:
             }
         else:
             yield {"progress": 100, "message": "Repack complete"}
+
+    @staticmethod
+    async def _watch(
+        task: asyncio.Future, top: str, progress: dict,
+    ) -> AsyncGenerator[dict, None]:
+        """Report the worker's progress until it ends; give up on a stalled one.
+
+        A cancel surfaces from ``run_detached`` as ``ReadCancelled`` the moment
+        the event fires, and becomes ``ConversionCancelled``. A worker that
+        stops polling for ``conversion_stall_bound()`` seconds is abandoned
+        with a ``RuntimeError``, freeing the job and the queue slot.
+        """
+        bound = conversion_stall_bound()
+        loop = asyncio.get_running_loop()
+        last_beat, last_change, last_done = -1, loop.time(), -1
+        while not task.done():
+            await asyncio.wait({task}, timeout=_PROGRESS_INTERVAL)
+            if task.done():
+                break
+            now = loop.time()
+            if progress["beats"] != last_beat:
+                last_beat, last_change = progress["beats"], now
+            elif bound and now - last_change > bound:
+                task.cancel()
+                raise RuntimeError(
+                    f"Repacking {top} stopped responding (no progress in {bound}s); "
+                    "the volume may be offline",
+                )
+            done = progress["done"]
+            yield {
+                "progress": min(99, done * 100 // max(progress["total"], 1)),
+                "message": f"Repacking {top}",
+                "activity": done != last_done,
+            }
+            last_done = done
+        try:
+            task.result()
+        except ReadCancelled as exc:
+            raise ConversionCancelled("Conversion cancelled") from exc
 
     # --- verify ------------------------------------------------------------
 

@@ -735,6 +735,18 @@ async def run_detached(
             _note_abandoned("detached read")
 
 
+def conversion_stall_bound() -> int:
+    """Seconds a conversion may go without progress before it is given up on.
+
+    ``CHD_PROGRESS_TIMEOUT``, floored at :data:`_MIN_STALL_TIMEOUT`; ``0`` means
+    no bound. The one reading of that rule for work that runs outside
+    ``SubprocessRunner.run`` (detached reads, an in-process repack), so it
+    cannot drift from the subprocess phase's.
+    """
+    bound = max(0, int(getattr(settings, "progress_timeout", 0) or 0))
+    return max(bound, _MIN_STALL_TIMEOUT) if bound > 0 else 0
+
+
 async def run_detached_within_stall_bound(
     func: Callable,
     *args: object,
@@ -757,11 +769,10 @@ async def run_detached_within_stall_bound(
     abandoned (as ``run_detached`` does for a cancel) and ``RuntimeError`` names
     ``what``; ``ReadCancelled`` still propagates for a cancel.
     """
-    bound = max(0, int(getattr(settings, "progress_timeout", 0) or 0))
+    bound = conversion_stall_bound()
     read = run_detached(func, *args, cancel_event=cancel_event, **kwargs)
     if bound <= 0:
         return await read
-    bound = max(bound, _MIN_STALL_TIMEOUT)
     loop = asyncio.get_running_loop()
     deadline = loop.time() + bound
     try:

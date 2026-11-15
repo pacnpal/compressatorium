@@ -261,3 +261,18 @@ def test_special_permission_bits_are_not_copied(tmp_path):
     rewrite_zip(src, str(dst))
 
     assert stat.S_IMODE(os.stat(dst).st_mode) == 0o755
+
+
+def test_a_cancel_after_the_check_still_places_nothing(tmp_path):
+    """The last gate before placement: an abandoned run must never publish."""
+    src = _make_zip(tmp_path / "in.zip", {"A": b"a"})
+    dst = str(tmp_path / "out.zip")
+    state = {"checked": False}
+
+    def check(_path):
+        state["checked"] = True
+
+    with pytest.raises(ConversionCancelled):
+        rewrite_zip(src, dst, check=check, is_cancelled=lambda: state["checked"])
+
+    assert _leftovers(tmp_path, {"in.zip"}) == []

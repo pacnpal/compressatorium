@@ -2431,6 +2431,17 @@ tool: it registers with an empty binary path and reports no pids.
   #306 adds for a kept Source), so the caveat outlives later messages such as
   the verify step's; the job row shows it under the output path
   (`src/lib/util/jobDetail.js`).
+- **A volume that stops answering.** The rewrite runs through `run_detached`
+  (a daemon thread, reported to any `collect_abandonment()` sink if it is left
+  behind), never the shared pool. Cancel returns at once: `run_detached` raises
+  `ReadCancelled` the moment the event fires. A worker that stops polling its
+  `is_cancelled` (it polls between every chunk it copies or checks) for
+  `conversion_stall_bound()` seconds, the same `CHD_PROGRESS_TIMEOUT` bound the
+  subprocess phase uses, is given up on and the job fails. Either way the job
+  loop returns, so the concurrency slot is freed while the worker is still
+  stuck, and an `abandoned` flag makes `is_cancelled` true: `rewrite_zip`
+  checks it as its last step before placement, so when the stuck syscall
+  finally returns the worker removes its hidden temp file and publishes nothing.
 - **Check.** `verify_stream` tests every CRC, the member names and limits, and
   the root `dosbox.conf`. It is served by the shared verify routes
   (`_VERIFY_CONFIG["exodos"]`, `/api/exodos-verify`), and `convert` passes the

@@ -194,6 +194,10 @@ def rewrite_zip(
             on_progress(total, total)
         if check is not None:
             check(tmp)
+        # The last gate: a caller that gave up on this run (a cancel, or a run
+        # abandoned for not answering) must never see its product appear.
+        if is_cancelled():
+            raise ConversionCancelled("Conversion cancelled")
         os.chmod(tmp, _product_mode(src))
         place_without_clobbering(tmp, dst)
         _fsync_dir(directory)

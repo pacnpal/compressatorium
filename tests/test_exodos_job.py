@@ -65,3 +65,42 @@ async def test_a_clean_repack_has_no_warning(tree):
 
     assert job.status.value == "completed", job.error_message
     assert job.warning is None
+
+
+@pytest.mark.asyncio
+async def test_cancelling_a_hung_repack_ends_the_job_and_frees_its_slot(tree, monkeypatch):
+    """The job loop returns on Cancel without waiting for a blocked write.
+
+    ``_process_job`` returning is what releases the job's concurrency slot, so
+    the queue behind it moves on even while the worker is still stuck.
+    """
+    import asyncio
+    import threading
+
+    from services import exodos as exodos_module
+
+    tree["template"].write_bytes(TEMPLATE)
+    release = threading.Event()
+    real = exodos_module.rewrite_zip
+
+    def hung(src, dst, *, on_progress, **kwargs):
+        def stuck(done, total):
+            release.wait(30)
+            on_progress(done, total)
+        return real(src, dst, on_progress=stuck, **kwargs)
+
+    monkeypatch.setattr(exodos_module, "rewrite_zip", hung)
+    job = await convert_routes.create_job(JobCreateRequest(
+        file_path=str(tree["game"]),
+        mode=ConversionMode.EXODOS_REPACK,
+        duplicate_action=DuplicateAction.SKIP,
+    ))
+    try:
+        run = asyncio.ensure_future(convert_routes.job_manager._process_job(job.id))
+        await asyncio.sleep(0.5)
+        await convert_routes.job_manager.cancel_job(job.id)
+        await asyncio.wait_for(run, timeout=5)
+    finally:
+        release.set()
+
+    assert job.status.value == "cancelled"
