@@ -14,11 +14,13 @@ Entries are file names relative to the playlist's own folder.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import unicodedata
 from dataclasses import asdict, dataclass, field
 
+from services.lock_manager import LockFailed, lock_manager
 from services.referrers import write_new_bytes
 from services.referrers.m3u import PLAYLIST_EXT, entry_for, playlist_bytes
 from services.tools import registry
@@ -52,6 +54,10 @@ _MAX_SUFFIX = 999
 
 class PlaylistError(Exception):
     """The selection or name can't make a playlist. ``str(exc)`` is user-facing."""
+
+
+class PlaylistBusy(PlaylistError):
+    """A selected disc is held by a conversion that is replacing it."""
 
 
 class PlaylistNameError(PlaylistError):
@@ -321,6 +327,40 @@ def _check_playlist_file_name(file_name: str) -> str:
     return stem
 
 
+@contextlib.contextmanager
+def _holding_discs(paths: list[str]):
+    """Hold a shared input lock on every selected file for the block.
+
+    A delete-on-verify conversion takes exclusive delete holds on its Source
+    paths and waits for shared holders, so while the playlist is validated and
+    published such a conversion either finished first (the disc is then gone and
+    the selection fails) or waits and then sees the new playlist in its
+    Referrer scan. The same lock every job takes; nothing here is about .m3u.
+    """
+    held: list[str] = []
+    try:
+        for raw in dict.fromkeys(paths):
+            # Only plausible Volume paths: validation refuses the rest, and a
+            # lock file must not be made for an arbitrary path.
+            if "::" in raw or not os.path.isabs(raw):
+                continue
+            if not is_within_configured_volumes(raw, treat_archives=False):
+                continue
+            try:
+                got = lock_manager.acquire_input_lock(raw)
+            except LockFailed as exc:
+                raise PlaylistError(f"Can't lock {os.path.basename(raw)}: {exc}") from None
+            if not got:
+                raise PlaylistBusy(
+                    f"{os.path.basename(raw)} is busy: a conversion is replacing this disc",
+                )
+            held.append(raw)
+        yield
+    finally:
+        for raw in held:
+            lock_manager.release_input_lock(raw)
+
+
 def create_playlist(paths: list[str], file_name: str) -> PlaylistPlan:
     """Write the playlist as *file_name* beside the discs, never over anything.
 
@@ -328,15 +368,16 @@ def create_playlist(paths: list[str], file_name: str) -> PlaylistPlan:
     exists now, including when it appeared after the preview.
     """
     stem = _check_playlist_file_name(file_name)
-    sel = _check_selection(paths)  # the name is the previewed file_name, not re-derived
-    target = os.path.join(sel.directory, file_name)
-    if not is_within_configured_volumes(target, treat_archives=False):
-        raise PlaylistError("The playlist would be outside the configured volumes")
-    try:
-        write_new_bytes(target, playlist_bytes(sel.entries))
-    except FileExistsError:
-        base = _TRAILING_NUMBER_SUFFIX_RE.sub("", stem)
-        raise PlaylistNameTaken(file_name, _free_name(sel.directory, base)) from None
+    with _holding_discs(paths):
+        sel = _check_selection(paths)  # the name is the previewed file_name, not re-derived
+        target = os.path.join(sel.directory, file_name)
+        if not is_within_configured_volumes(target, treat_archives=False):
+            raise PlaylistError("The playlist would be outside the configured volumes")
+        try:
+            write_new_bytes(target, playlist_bytes(sel.entries))
+        except FileExistsError:
+            base = _TRAILING_NUMBER_SUFFIX_RE.sub("", stem)
+            raise PlaylistNameTaken(file_name, _free_name(sel.directory, base)) from None
     return PlaylistPlan(
         directory=sel.directory,
         title=stem,

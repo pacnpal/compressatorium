@@ -84,8 +84,11 @@ def test_locks_are_released_when_validation_refuses(env):
 
 
 @pytest.mark.asyncio
-async def test_the_route_answers_busy_with_409(env):
-    _vol, paths, _server, other = env
+async def test_the_route_answers_busy_with_409(env, monkeypatch):
+    import services.disc_playlist as routed  # the module the route imports
+
+    _vol, paths, server, other = env
+    monkeypatch.setattr(routed, "lock_manager", server)
     assert other.acquire_lock(paths[0], allow_existing=True)
     with pytest.raises(HTTPException) as exc:
         await files_routes.playlist_create(

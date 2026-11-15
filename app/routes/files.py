@@ -21,6 +21,7 @@ from models import (
 from services.archive import ARCHIVE_EXTENSIONS, archive_service
 from services.chd_metadata_store import chd_metadata_store
 from services.disc_playlist import (
+    PlaylistBusy,
     PlaylistError,
     PlaylistNameError,
     PlaylistNameTaken,
@@ -1098,6 +1099,8 @@ async def playlist_create(payload: PlaylistCreateRequest) -> dict:
             status_code=409,
             detail={"message": str(exc), "suggested_name": exc.suggested_name},
         ) from None
+    except PlaylistBusy as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
     except PlaylistError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
     except OSError as exc:
