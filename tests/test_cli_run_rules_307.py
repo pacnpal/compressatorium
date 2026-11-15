@@ -512,9 +512,9 @@ def test_the_server_takes_the_scheduler_lock_before_the_database_init_lock(
 
 
 def test_a_job_announced_twice_is_reported_once(env, dolphin, capsys, monkeypatch):
-    """The job manager may announce one job's end twice (a queued job
-    cancelled before it starts hears it from cancel_job and _process_job).
-    run-rules prints one line per job."""
+    """A job's end announced twice (as cancel_job and _process_job both did
+    for a queued job before #306 09dbda9) still gives one run-rules line.
+    The job manager now announces once; run-rules keeps its own guard."""
     from services.job_manager import JobManager
 
     iso = _iso(env)
@@ -523,6 +523,9 @@ def test_a_job_announced_twice_is_reported_once(env, dolphin, capsys, monkeypatc
 
     def twice(self, job):
         real(self, job)
+        # Undo the job manager's once-only flag, so the second announce
+        # reaches the listeners and only run-rules' guard stops it.
+        self._terminal_announced.discard(job.id)
         real(self, job)
 
     monkeypatch.setattr(JobManager, "_notify_terminal", twice)
