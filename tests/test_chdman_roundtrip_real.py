@@ -39,7 +39,7 @@ def _binary() -> str | None:
 
 def _sample(env: str) -> Path | None:
     value = os.environ.get(env)
-    path = Path(value) if value else None
+    path = Path(value).resolve() if value else None
     return path if path and path.is_file() else None
 
 
@@ -58,14 +58,17 @@ async def _convert_and_round_trip(tmp_path, monkeypatch, env: str, mode: str):
     # The job only round-trips an output that passed its container check.
     assert (await tool.verify(str(chd)))["valid"]
 
-    outcome = await round_trip(tool, str(sample), str(chd))
+    # The sample is usually outside the configured Volumes: trust its folder,
+    # as the job trusts its extraction folder for an archive member.
+    outcome = await round_trip(tool, str(sample), str(chd), within=[str(sample.parent)])
     assert outcome.passed, outcome.message
     scratch = tmp_path / "scratch"
     assert not scratch.exists() or os.listdir(scratch) == []
 
     # Negative case: the same Source with one byte flipped must not match.
-    altered = _copy_with_one_byte_flipped(sample, tmp_path / "altered")
-    outcome = await round_trip(tool, str(altered), str(chd))
+    altered_dir = tmp_path / "altered"
+    altered = _copy_with_one_byte_flipped(sample, altered_dir)
+    outcome = await round_trip(tool, str(altered), str(chd), within=[str(altered_dir)])
     assert not outcome.passed and not outcome.cancelled, outcome
     assert "content differs" in outcome.message
     assert not scratch.exists() or os.listdir(scratch) == []
@@ -74,7 +77,7 @@ async def _convert_and_round_trip(tmp_path, monkeypatch, env: str, mode: str):
 def _copy_with_one_byte_flipped(sample: Path, folder: Path) -> Path:
     """Copy ``sample`` (and a cue's track files) into ``folder``, then flip the
     middle byte of the first image file."""
-    from utils.delete_plan import sheet_track_paths
+    from utils.sheet_text import sheet_track_list
 
     folder.mkdir()
     copy = folder / sample.name
@@ -82,7 +85,9 @@ def _copy_with_one_byte_flipped(sample: Path, folder: Path) -> Path:
     images = [copy]
     if sample.suffix.lower() in (".cue", ".gdi"):
         images = []
-        for track in sheet_track_paths(str(sample)):
+        tracks = sheet_track_list(sample, within=[str(sample.parent)]) or []
+        assert tracks, f"could not read the tracks of {sample}"
+        for track in dict.fromkeys(tracks):
             target = folder / Path(track).relative_to(sample.parent)
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(track, target)

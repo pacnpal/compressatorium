@@ -1,28 +1,43 @@
-"""The track table of a CD sheet (``.cue`` / ``.gdi``), independent of file layout.
+"""A CD sheet (``.cue`` / ``.gdi``) as the Round-trip check compares it (#300).
 
-The Round-trip check (#300) compares a Source sheet with the sheet ``chdman
-extractcd`` writes back. Their track bytes may be split across files
-differently (a Redump set has one ``.bin`` per track, chdman writes one), so
-the table is reduced to what does not depend on that split. Per track, for a
-cue: the type token (``MODE1/2352``, ``MODE2/2352``, ``AUDIO``, ...), its sector
-size, the pregap frames held in the file (``INDEX 01`` minus ``INDEX 00``), the
-``PREGAP`` and ``POSTGAP`` frames, and the frames from ``INDEX 01`` to the end of
-the track. For a gdi: the start LBA, data or audio, sector size and frames.
+The Round-trip check compares a Source sheet with the sheet ``chdman
+extractcd`` writes back. ``read_disc_sheet`` gives both what is compared: the
+track files (each once, in sheet order) and a fingerprint of the track table.
 
-Positions follow MAME's cue reader: ``INDEX`` times are frame counts within the
-file, and a track's bytes start where the previous track in that file ended at
-the previous track's sector size. ``INDEX 02`` and later, ``FLAGS``, ``CATALOG``
-and ``ISRC`` are not compared: a CD CHD does not store them.
+There is no parser here. The sheet is read through ``utils.sheet_text``, the
+one sheet reader: chdman's framing, tokens, size cap and decodings, and its
+refusals (an unreadable or ambiguous sheet, a track outside the trusted roots).
+The track files come from ``sheet_text.sheet_track_list``; the table is built
+from the same reading's ``sheet_line_tokens`` (CUE) or ``gdi_tracks`` (GDI).
+
+The table is reduced to what does not depend on how the tracks are split into
+files (a Redump set has one ``.bin`` per track, chdman writes one). Per CUE
+track: the type token (``MODE1/2352``, ``MODE2/2352``, ``AUDIO``, ...), its
+sector size, the pregap frames held in the file (``INDEX 01`` minus ``INDEX
+00``), the ``PREGAP`` and ``POSTGAP`` frames, and the frames from ``INDEX 01``
+to the end of the track. Per GDI track: start LBA, data or audio, sector size
+and frames. Positions follow MAME's cue reader: ``INDEX`` times are frame
+counts within the file, and a track's bytes start where the previous track in
+that file ended at the previous track's sector size. Keywords are matched as
+chdman matches them (case-sensitive). ``INDEX 02`` and later, ``FLAGS``,
+``CATALOG`` and ``ISRC`` are not compared: a CD CHD does not store them.
 """
 from __future__ import annotations
 
 import hashlib
 import os
 import re
-import shlex
+from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
-from utils.sheet_text import resolve_track as resolve_track_path
+from utils.sheet_text import (
+    cue_file_name,
+    gdi_tracks,
+    sheet_line_tokens,
+    sheet_readings,
+    sheet_track_list,
+)
 
 Track = tuple[object, ...]
 
@@ -31,6 +46,50 @@ _MSF_RE = re.compile(r"^(\d+):(\d{1,2}):(\d{1,2})$")
 # (cdrom.cpp, the raw-image branch): 2048-byte mode 1, then 2336 and 2352
 # byte mode 2.
 _RAW_TRACK_TYPES = (("MODE1/2048", 2048), ("MODE2/2336", 2336), ("MODE2/2352", 2352))
+
+
+@dataclass(frozen=True)
+class DiscSheet:
+    """``tracks``: each track file once, in sheet order. ``layout``: SHA1 of
+    the track table, or None when it says no more than a bare image would
+    (``_fingerprint``)."""
+
+    tracks: list[str]
+    layout: str | None
+
+
+def read_disc_sheet(
+    sheet_path: str, *, within: Sequence[str] | None = None,
+) -> DiscSheet:
+    """The track files and track-table fingerprint of a ``.cue`` / ``.gdi``.
+
+    ``within`` is passed to ``sheet_text``: the trusted roots the sheet's
+    tracks must resolve under (None: the configured Volumes). Raises
+    ``ValueError`` when the sheet is unreadable, ambiguous, names a refused
+    track or no track at all, or has a table this cannot read; ``OSError``
+    when a track file cannot be sized. Never a partial answer.
+    """
+    sheet = Path(sheet_path)
+    ext = sheet.suffix.lower()
+    if ext not in (".cue", ".gdi"):
+        raise ValueError(f"not a CD sheet: {sheet.name}")
+    paths = sheet_track_list(sheet, within=within)
+    if not paths:
+        raise ValueError(
+            f"{sheet.name} is unreadable, names no track, or names a track "
+            "outside the trusted folders",
+        )
+    readings = sheet_readings(sheet)
+    if not readings:
+        raise ValueError(f"{sheet.name} is unreadable")
+    files = [str(p) for p in paths]
+    if ext == ".cue":
+        layout = _cue_layout(readings[0], files)
+    else:
+        layout = _gdi_layout(readings[0], files)
+    unique = list(dict.fromkeys(files))
+    total_bytes = sum(os.path.getsize(f) for f in unique)
+    return DiscSheet(tracks=unique, layout=_fingerprint(layout, total_bytes))
 
 
 def _frames(msf: str) -> int:
@@ -52,36 +111,36 @@ def _sector_size(track_type: str) -> int:
     return int(size)
 
 
-def _split(line: str) -> list[str]:
-    try:
-        return shlex.split(line, posix=True)
-    except ValueError:
-        return line.split()
-
-
-def _cue_layout(sheet: Path) -> tuple[list[Track], int]:
+def _cue_layout(text: str, files: list[str]) -> list[Track]:
+    """The CUE track table. ``files`` is ``sheet_track_list``'s answer: one
+    resolved path per ``FILE`` line, in order."""
     tracks: list[dict] = []
     current_file: str | None = None
-    for raw in sheet.read_text(encoding="utf-8", errors="ignore").splitlines():
-        parts = _split(raw.strip())
-        if not parts:
+    file_index = 0
+    for tokens in sheet_line_tokens(text):
+        if not tokens:
             continue
-        keyword = parts[0].upper()
-        if keyword == "FILE" and len(parts) >= 2:
-            current_file = str(resolve_track_path(sheet.parent, parts[1]))
-        elif keyword == "TRACK" and len(parts) >= 3:
+        keyword = tokens[0]
+        if cue_file_name(tokens) is not None:
+            if file_index >= len(files):
+                raise ValueError("more FILE lines than tracks resolved")
+            current_file = files[file_index]
+            file_index += 1
+        elif keyword == "TRACK" and len(tokens) >= 3:
             if current_file is None:
                 raise ValueError("TRACK before any FILE")
             tracks.append({
-                "type": parts[2].upper(), "file": current_file,
+                "type": tokens[2], "file": current_file,
                 "index": {}, "pregap": 0, "postgap": 0,
             })
-        elif keyword == "INDEX" and len(parts) >= 3 and tracks:
-            tracks[-1]["index"][int(parts[1])] = _frames(parts[2])
-        elif keyword in ("PREGAP", "POSTGAP") and len(parts) >= 2 and tracks:
-            tracks[-1][keyword.lower()] = _frames(parts[1])
+        elif keyword == "INDEX" and len(tokens) >= 3 and tracks:
+            if not tokens[1].isdigit():
+                raise ValueError(f"bad INDEX number {tokens[1]!r}")
+            tracks[-1]["index"][int(tokens[1])] = _frames(tokens[2])
+        elif keyword in ("PREGAP", "POSTGAP") and len(tokens) >= 2 and tracks:
+            tracks[-1][keyword.lower()] = _frames(tokens[1])
     if not tracks:
-        raise ValueError(f"{sheet.name} has no tracks")
+        raise ValueError("the cue has no tracks")
 
     sizes: dict[str, int] = {}
     layout: list[Track] = []
@@ -89,10 +148,10 @@ def _cue_layout(sheet: Path) -> tuple[list[Track], int]:
         if 1 not in track["index"]:
             raise ValueError(f"track {i + 1} has no INDEX 01")
         size = _sector_size(track["type"])
-        start = track["index"].get(0, track["index"][1])
+        start = _start(track)
         nxt = tracks[i + 1] if i + 1 < len(tracks) else None
         if nxt is not None and nxt["file"] == track["file"]:
-            total = nxt["index"].get(0, nxt["index"].get(1, start)) - start
+            total = _start(nxt) - start
         else:
             file_bytes = sizes.setdefault(track["file"], os.path.getsize(track["file"]))
             total = (file_bytes - _byte_start(tracks, i)) // size
@@ -101,9 +160,12 @@ def _cue_layout(sheet: Path) -> tuple[list[Track], int]:
             track["type"], size, pregap_in_file, track["pregap"],
             total - pregap_in_file, track["postgap"],
         ))
-    for track in tracks:
-        sizes.setdefault(track["file"], os.path.getsize(track["file"]))
-    return layout, sum(sizes.values())
+    return layout
+
+
+def _start(track: dict) -> int:
+    """Where the track's bytes start in its file: INDEX 00, else INDEX 01."""
+    return track["index"].get(0, track["index"].get(1, 0))
 
 
 def _byte_start(tracks: list[dict], i: int) -> int:
@@ -113,55 +175,37 @@ def _byte_start(tracks: list[dict], i: int) -> int:
     first = i
     while first > 0 and tracks[first - 1]["file"] == track["file"]:
         first -= 1
-    first_track = tracks[first]
-    offset = first_track["index"].get(0, first_track["index"][1]) * _sector_size(
-        first_track["type"],
-    )
+    offset = _start(tracks[first]) * _sector_size(tracks[first]["type"])
     for j in range(first, i):
-        here = tracks[j]["index"].get(0, tracks[j]["index"][1])
-        nxt = tracks[j + 1]["index"].get(0, tracks[j + 1]["index"][1])
-        offset += (nxt - here) * _sector_size(tracks[j]["type"])
+        offset += (_start(tracks[j + 1]) - _start(tracks[j])) * _sector_size(
+            tracks[j]["type"],
+        )
     return offset
 
 
-def _gdi_layout(sheet: Path) -> tuple[list[Track], int]:
-    lines = [
-        _split(line.strip())
-        for line in sheet.read_text(encoding="utf-8", errors="ignore").splitlines()
-        if line.strip()
-    ]
-    if lines and len(lines[0]) == 1 and lines[0][0].isdigit():
-        lines = lines[1:]
+def _gdi_layout(text: str, files: list[str]) -> list[Track]:
+    """The GDI track table, from ``sheet_text.gdi_tracks`` (aligned with
+    ``files``: one resolved path per track line)."""
+    lines = gdi_tracks(text)
+    if not lines or len(lines) != len(files):
+        raise ValueError("the gdi tracks do not match its files")
     layout: list[Track] = []
-    total_bytes = 0
-    for parts in lines:
-        if len(parts) < 5:
-            continue
-        lba, kind, size = int(parts[1]), int(parts[2]), int(parts[3])
-        file_bytes = os.path.getsize(resolve_track_path(sheet.parent, parts[4]))
-        total_bytes += file_bytes
-        layout.append((lba, "AUDIO" if kind == 0 else "DATA", size, file_bytes // size))
-    if not layout:
-        raise ValueError(f"{sheet.name} has no tracks")
-    return layout, total_bytes
+    for line, path in zip(lines, files):
+        if not line.sector_size or line.lba is None or line.track_type is None:
+            raise ValueError(f"unreadable gdi track line for {line.name!r}")
+        frames = os.path.getsize(path) // line.sector_size
+        kind = "AUDIO" if line.track_type == 0 else "DATA"
+        layout.append((line.lba, kind, line.sector_size, frames))
+    return layout
 
 
-def layout_fingerprint(sheet_path: str) -> str | None:
-    """SHA1 of the sheet's track table, or None when it adds nothing.
+def _fingerprint(layout: list[Track], total_bytes: int) -> str | None:
+    """SHA1 of the track table, or None when it adds nothing.
 
     None when the table is exactly what chdman infers for a bare image of the
     same bytes (one track, no gaps): an ``.iso`` Source and the one-track cue a
-    ``createcd`` of it extracts to then compare by their bytes alone. Raises
-    ``ValueError`` or ``OSError`` when the sheet cannot be read.
+    ``createcd`` of it extracts to then compare by their bytes alone.
     """
-    sheet = Path(sheet_path)
-    ext = sheet.suffix.lower()
-    if ext == ".cue":
-        layout, total_bytes = _cue_layout(sheet)
-    elif ext == ".gdi":
-        layout, total_bytes = _gdi_layout(sheet)
-    else:
-        raise ValueError(f"not a CD sheet: {sheet.name}")
     if layout == raw_image_layout(total_bytes):
         return None
     text = "\n".join(",".join(str(v) for v in track) for track in layout)

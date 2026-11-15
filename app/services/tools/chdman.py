@@ -30,8 +30,7 @@ from services.disk import InsufficientDiskSpace, headroom_scratch_dir
 from services.file_hasher import compute_files_sha1_sync
 from services.lock_manager import lock_manager
 from services.subprocess_runner import ReadCancelled, run_detached
-from utils.delete_plan import sheet_track_paths
-from utils.disc_sheet import layout_fingerprint
+from utils.disc_sheet import read_disc_sheet
 from utils.sheet_text import sheet_track_list
 
 from .base import BaseTool, ContentDigest, ContentDigestUnavailable
@@ -412,13 +411,20 @@ class ChdmanTool(BaseTool):
         return out
 
     async def content_digest(
-        self, path: str, *, cancel_event: asyncio.Event | None = None,
+        self,
+        path: str,
+        *,
+        cancel_event: asyncio.Event | None = None,
+        within: Sequence[str] | None = None,
     ) -> ContentDigest | None:
+        # ``within`` is for the Source side: a sheet's tracks must resolve under
+        # it (the job's extraction folder for an archive member, the Volumes
+        # when None). A CHD's own extract is read under its scratch dir instead.
         ext = Path(path).suffix.lower()
         if ext in _RAW_IMAGE_EXTS:
             value = await _hash_files([path], cancel_event)
         elif ext in _SHEET_EXTS:
-            value = await _hash_sheet(path, cancel_event)
+            value = await _hash_sheet(path, cancel_event, within)
         elif ext == ".chd":
             value = await self._chd_image_sha1(path, cancel_event)
         else:
@@ -477,7 +483,9 @@ class ChdmanTool(BaseTool):
                     path, sheet, cancel_event=cancel_event,
                 ):
                     raise ContentDigestUnavailable("chdman extractcd did not finish")
-                return await _hash_sheet(sheet, cancel_event)
+                # The scratch dir is outside the Volumes; it is the one root
+                # this sheet's tracks may resolve under.
+                return await _hash_sheet(sheet, cancel_event, within=[work])
         except InsufficientDiskSpace as e:
             raise ContentDigestUnavailable(f"not enough space to extract: {e}") from e
 
@@ -530,21 +538,28 @@ async def _hash_files(paths: list[str], cancel_event: asyncio.Event | None) -> s
         raise ContentDigestUnavailable(f"could not hash the image: {e}") from e
 
 
-async def _hash_sheet(sheet: str, cancel_event: asyncio.Event | None) -> str:
+async def _hash_sheet(
+    sheet: str,
+    cancel_event: asyncio.Event | None,
+    within: Sequence[str] | None,
+) -> str:
     """The digest value of a cue/gdi: its track data and its track table.
 
     ``<sha1 of the track files in sheet order>``, plus ``/<sha1 of the track
     table>`` unless the table is the one chdman infers for a bare image of those
-    bytes (``utils.disc_sheet.layout_fingerprint``). So equal values mean the
-    same sector bytes *and* the same tracks, types, sector sizes, lengths, index
+    bytes (``utils.disc_sheet.read_disc_sheet``). So equal values mean the same
+    sector bytes *and* the same tracks, types, sector sizes, lengths, index
     offsets and gaps, however the tracks are split into files.
+
+    The sheet is read through ``utils.sheet_text`` with ``within`` as the
+    trusted roots its tracks may resolve under; anything it refuses is
+    unavailable, so the Source is kept.
     """
     try:
-        tracks = await run_detached(sheet_track_paths, sheet, cancel_event=cancel_event)
-        layout = await run_detached(layout_fingerprint, sheet, cancel_event=cancel_event)
+        disc = await run_detached(
+            read_disc_sheet, sheet, within=within, cancel_event=cancel_event,
+        )
     except (OSError, ValueError, ReadCancelled) as e:
         raise ContentDigestUnavailable(f"could not read {Path(sheet).name}: {e}") from e
-    if not tracks:
-        raise ContentDigestUnavailable(f"{Path(sheet).name} names no track files")
-    data_sha1 = await _hash_files(tracks, cancel_event)
-    return data_sha1 if layout is None else f"{data_sha1}/{layout}"
+    data_sha1 = await _hash_files(disc.tracks, cancel_event)
+    return data_sha1 if disc.layout is None else f"{data_sha1}/{disc.layout}"

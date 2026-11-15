@@ -2360,7 +2360,7 @@ in `_verifying` so the stall reporter treats it like the container check.
 chdman's digest kind is `image_data_sha1`. Its value is the SHA1 of the image's
 bytes as files on disk, track files laid end to end in sheet order, followed by
 `/<sha1 of the track table>` for a sheet whose table says more than a bare image
-(`utils.disc_sheet.layout_fingerprint`). That one definition covers an ISO, a
+(`utils.disc_sheet.read_disc_sheet`). That one definition covers an ISO, a
 cue/bin set (split or single-bin) and a DVD CHD's data SHA1.
 
 **The track table** is compared so that equal sector bytes in a different disc
@@ -2378,6 +2378,20 @@ carries no table hash: that is how an `.iso` Source compares with the one-track
 cue a `createcd` of it extracts to. Not compared, because a CD CHD does not keep
 them: `INDEX 02` and later, `FLAGS` (DCP, PRE), `CATALOG`, `ISRC` and `REM`
 lines. Those are lost on conversion with or without the check.
+
+**One sheet reader, and where tracks may live.** `read_disc_sheet` parses
+nothing itself: it reads the sheet through `utils.sheet_text` (§3.3.14), the
+same framing, `chd_tokens`, size cap, decodings and ambiguity refusal as every
+other sheet reader. The track files are `sheet_track_list(sheet, within=...)`;
+the table is built from the same reading's `sheet_line_tokens` (CUE, with
+`cue_file_name` for the FILE rule) or `gdi_tracks` (GDI, which also carries
+each line's LBA and type). Every track is confined to the trusted roots in
+`within`. A Source sheet uses the `within` the job passes through
+`round_trip` (its extraction folder for an archive member, `None` for the
+Volumes). The sheet `chdman extractcd` writes is read with
+`within=[the scratch dir it was extracted to]`: the scratch volume is outside
+the Volumes, and that dir is the only place its tracks may be. Anything
+`sheet_text` refuses makes the digest unavailable, so the Source is kept.
 
 **The DVD side reads the header `Data SHA1`.** For `createdvd` that is the
 SHA1 of exactly the logical bytes chdman read, which is the whole ISO (MAME
