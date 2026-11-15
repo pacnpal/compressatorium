@@ -41,6 +41,11 @@ export class RulesSource {
   // Bumped by every rule edit; see `saveRules`. Not $state -- nothing renders
   // it, and it changes on every keystroke in the editor.
   #rulesRevision = 0;
+  // Bumped by every save the backend accepted; see `loadRules`.
+  #saveGeneration = 0;
+  // Saves run one at a time, in the order they were asked for; see `saveRules`.
+  #saveChain = Promise.resolve();
+  #savesPending = 0;
 
   constructor(endpoints) {
     this.#endpoints = endpoints;
@@ -83,13 +88,19 @@ export class RulesSource {
   async loadRules() {
     this.rulesLoading = true;
     this.rulesError = null;
+    const generation = this.#saveGeneration;
     try {
       const data = await this.#endpoints.getRules();
       // Server truth, unless the editor is holding edits nobody has saved: a
       // reload can be triggered by something else entirely (a settings save on
       // the next tab, a sweep finishing), and overwriting there would discard
-      // what the operator typed with no way back.
-      if (!this.rulesDirty) this.rules = data?.rules ?? {};
+      // what the operator typed with no way back. Nor when a save landed while
+      // this read was in flight: the read is older than the saved Rules, and
+      // adopting it would put the previous configuration back in the editor
+      // for the next save to write over the new one.
+      if (!this.rulesDirty && generation === this.#saveGeneration) {
+        this.rules = data?.rules ?? {};
+      }
       this.ruleDefaults = data?.defaults ?? null;
       this.ruleOptions = data?.options ?? this.ruleOptions;
       this.ruleState = data?.state ?? {};
@@ -129,28 +140,42 @@ export class RulesSource {
     this.#rulesRevision += 1;
   }
 
-  async saveRules() {
+  /**
+   * Save the Rules. Saves from one source reach the backend one at a time, in
+   * the order they were asked for (Save, then Preview or Run, can each ask):
+   * two in flight could land out of order and leave the older configuration
+   * on the server. Each submits the Rules as they are when its turn comes.
+   */
+  saveRules() {
+    this.#savesPending += 1;
     this.rulesSaving = true;
+    const turn = this.#saveChain.then(() => this.#saveNow());
+    // The chain only orders; each caller still sees its own save's failure.
+    this.#saveChain = turn.catch(() => {});
+    return turn.finally(() => {
+      this.#savesPending -= 1;
+      this.rulesSaving = this.#savesPending > 0;
+    });
+  }
+
+  async #saveNow() {
     // The editor stays live while this is in flight, so anything typed after
     // this point is NOT in what we just submitted.
     const revision = this.#rulesRevision;
-    try {
-      const data = await this.#endpoints.saveRules(this.rules);
-      if (revision !== this.#rulesRevision) {
-        // Edited mid-save. Adopting the server's copy would replace those
-        // edits with the snapshot that was submitted before them — silently,
-        // and then clear the dirty flag so the Save bar stopped asking. The
-        // newer edits stay, still dirty, for the next save to normalize.
-        return this.rules;
-      }
-      // Take the server's normalized copy: it clamps numbers and drops rules
-      // whose mode no longer exists, so the editor shows what will actually run.
-      this.rules = data?.rules ?? this.rules;
-      this.rulesDirty = false;
+    const data = await this.#endpoints.saveRules(this.rules);
+    this.#saveGeneration += 1;
+    if (revision !== this.#rulesRevision) {
+      // Edited mid-save. Adopting the server's copy would replace those
+      // edits with the snapshot that was submitted before them — silently,
+      // and then clear the dirty flag so the Save bar stopped asking. The
+      // newer edits stay, still dirty, for the next save to normalize.
       return this.rules;
-    } finally {
-      this.rulesSaving = false;
     }
+    // Take the server's normalized copy: it clamps numbers and drops rules
+    // whose mode no longer exists, so the editor shows what will actually run.
+    this.rules = data?.rules ?? this.rules;
+    this.rulesDirty = false;
+    return this.rules;
   }
 
   /** How many sources this rule remembers having produced an output for. */

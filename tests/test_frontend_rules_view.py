@@ -114,6 +114,68 @@ process.stdout.write(JSON.stringify({{
     assert data["call"][0:2] == ["saveLibraryRules", "folder:3"], data
 
 
+def test_a_read_that_started_before_a_save_is_dropped(tmp_path):
+    """CodeRabbit 4576895559: a stale loadRules() response cannot undo a save.
+
+    The read of configuration A starts, B is saved and lands, then A's response
+    arrives: the editor keeps B.
+    """
+    data = _run(tmp_path, f"""
+const source = new FolderRulesSource({_FOLDER});
+const loading = source.loadRules();
+await tick();
+source.setRule('ngc', {{ mode: 'dolphin_wia', enabled: true }});
+const saving = source.saveRules();
+await tick();
+__calls[1].resolve({{ rules: {{ ngc: {{ mode: 'dolphin_wia', enabled: true }} }} }});
+await saving;
+__calls[0].resolve({{
+  rules: {{ ngc: {{ mode: 'dolphin_rvz', enabled: true }} }}, state: {{ ngc: {{ x: 1 }} }},
+}});
+await loading;
+process.stdout.write(JSON.stringify({{
+  rules: source.rules, dirty: source.rulesDirty, state: source.ruleState,
+}}));
+""")
+    assert data["rules"]["ngc"]["mode"] == "dolphin_wia", data
+    assert data["dirty"] is False, data
+
+
+def test_saves_reach_the_backend_in_the_order_they_were_made(tmp_path):
+    """CodeRabbit 4576895561: one save at a time per source, in invocation order.
+
+    Save A, edit, save B: B is not sent until A has answered, so an older
+    save can never land after a newer one. B then submits the latest rules.
+    """
+    data = _run(tmp_path, f"""
+const source = new FolderRulesSource({_FOLDER});
+source.setRule('ngc', {{ mode: 'dolphin_rvz', enabled: true }});
+const first = source.saveRules();
+await tick();
+source.setRule('ngc', {{ mode: 'dolphin_wia', enabled: true }});
+const second = source.saveRules();
+await tick();
+const sentBeforeFirstAnswered = __log.length;
+const savingWhileQueued = source.rulesSaving;
+__calls[0].resolve({{ rules: {{ ngc: {{ mode: 'dolphin_rvz', enabled: true }} }} }});
+await first;
+await tick();
+const secondSent = __log[1];
+__calls[1].resolve({{ rules: {{ ngc: {{ mode: 'dolphin_wia', enabled: true }} }} }});
+await second;
+process.stdout.write(JSON.stringify({{
+  sentBeforeFirstAnswered, savingWhileQueued, secondSent,
+  rules: source.rules, dirty: source.rulesDirty, saving: source.rulesSaving,
+}}));
+""")
+    assert data["sentBeforeFirstAnswered"] == 1, data
+    assert data["savingWhileQueued"] is True, data
+    assert data["secondSent"][2]["ngc"]["mode"] == "dolphin_wia", data
+    assert data["rules"]["ngc"]["mode"] == "dolphin_wia", data
+    assert data["dirty"] is False, data
+    assert data["saving"] is False, data
+
+
 def test_a_refreshed_list_updates_a_cached_source_and_keeps_its_edits(tmp_path):
     """Codex 4576870640: a cached source follows the Library's refreshed settings.
 
