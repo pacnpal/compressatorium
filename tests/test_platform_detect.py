@@ -465,7 +465,10 @@ _ACCENTED = "Jeu (\u00c9dition).bin"
     "encode",
     [
         lambda text: text.encode("utf-8"),
-        lambda text: b"\xef\xbb\xbf" + text.encode("utf-8"),   # UTF-8 with a BOM
+        # UTF-8 with a BOM. chdman keeps the BOM, so a first-line FILE would be
+        # `﻿FILE` to it (and the sheet ambiguous, test_sheet_bom); real
+        # BOM sheets open with REM lines.
+        lambda text: b"\xef\xbb\xbf" + ("REM COMMENT \"x\"\n" + text).encode("utf-8"),
         lambda text: text.encode("cp1252"),
     ],
     ids=["utf-8", "utf-8-bom", "cp1252"],
