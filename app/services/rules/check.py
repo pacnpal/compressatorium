@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -163,6 +164,47 @@ def _hold(check: Check) -> list[str] | None:
 def _let_go(held: list[str]) -> None:
     for path in held:
         lock_manager.release_input_lock(path)
+
+
+async def _take(check: Check) -> list[str] | None:
+    """:func:`_hold` off the loop, bounded and safe to cancel.
+
+    On a detached thread, bounded by ``_RECHECK_SECONDS``: taking the locks
+    resolves the path and walks its folders, and a mount that stops answering
+    must cost this Image, not the run. None when the locks did not come in
+    time (the Image is skipped). If the caller gives up (the bound, or a task
+    cancel) while the thread is still taking them, the thread lets go of them
+    itself when it finishes; if it had already finished, they go here.
+    """
+    guard = threading.Lock()
+    state: dict[str, Any] = {"abandoned": False, "held": None}
+
+    def work() -> list[str] | None:
+        held = _hold(check)
+        with guard:
+            if not state["abandoned"]:
+                state["held"] = held
+                return held
+        if held:
+            _let_go(held)
+        return None
+
+    try:
+        return await asyncio.wait_for(run_detached(work), _RECHECK_SECONDS)
+    except BaseException as exc:
+        with guard:
+            state["abandoned"] = True
+            held, state["held"] = state["held"], None
+        if held:
+            _let_go(held)
+        if isinstance(exc, asyncio.TimeoutError):
+            return None
+        raise
+
+
+async def _release(held: list[str]) -> None:
+    """Let go of *held*, even if the task is cancelled while it does."""
+    await asyncio.shield(asyncio.ensure_future(run_in_threadpool(_let_go, held)))
 
 
 def _unchanged(check: Check) -> bool:
@@ -379,7 +421,7 @@ async def _check_one(
     """
     token = await workload_limiter.acquire("verify")
     async with token:
-        held = await run_in_threadpool(_hold, check)
+        held = await _take(check)
         if held is None:
             return SKIPPED, "", False
         try:
@@ -393,7 +435,7 @@ async def _check_one(
                 return SKIPPED, "", False
             return await _verify(check, cancel_event)
         finally:
-            await run_in_threadpool(_let_go, held)
+            await _release(held)
 
 
 def check_failed_event(library: Library, failed: list[tuple[Check, str]]) -> notifications.Event:

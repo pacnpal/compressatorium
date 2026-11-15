@@ -11,7 +11,9 @@
   the next one does not fit the budget (one larger than the whole budget goes
   alone), and each goes through its tool's own Verify as one job in the queue.
   Run now spends another budget's worth and leaves the nightly run when it
-  is due. #306's verdict rules decide: a verifier killed by a signal is no
+  is due. A check Rule whose window starts and ends at the same time runs all
+  day (once a day from midnight); a conversion Rule with such a window is
+  paused with the reason shown, since there it is a slip. #306's verdict rules decide: a verifier killed by a signal is no
   verdict, and an Image whose check never reaches one goes behind the others.
   An Image gone or changed by its turn is skipped. While an Image's Verify
   runs it is held like a file a conversion reads. An Image that fails becomes a **Not

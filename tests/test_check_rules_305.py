@@ -235,6 +235,24 @@ def test_a_window_whose_start_equals_its_end_is_open_all_day() -> None:
     assert [r.strftime("%a %H:%M") for r in _runs(mondays, start, 72 * 60)] == ["Mon 00:00"]
 
 
+def test_a_conversion_rule_refuses_a_window_whose_start_equals_its_end() -> None:
+    """r3 I1: for a conversion an equal pair is a slip, so it fails safe: paused."""
+    from services.rules.rules import CONVERT, normalize_rule
+    from services.rules.schedule import _in_window, _is_due
+
+    rule = normalize_rule({
+        "mode": "createcd", "enabled": True, "window_start": "03:00",
+        "window_end": "03:00", "timezone": "UTC",
+    }, kind=CONVERT)
+    noon = datetime(2026, 11, 16, 12, 0, tzinfo=timezone.utc)
+
+    assert rule["invalid_window"] is True
+    assert rule["enabled"] is False
+    assert not _is_due(rule, {}, noon)
+    # Even a hand-edited blob that skips normalize_rule is not open all day.
+    assert not _in_window({**rule, "enabled": True}, noon)
+
+
 def test_each_kind_keeps_to_its_own_shape() -> None:
     """A conversion Rule needs a target; a check Rule never has one."""
     from services.rules.rules import CHECK, CONVERT, normalize_rule
@@ -367,8 +385,8 @@ def _verifier(monkeypatch):
     async def bound(path, *, cancel_event=None):
         return 0
 
-    monkeypatch.setattr(tool, "verify", verify)
-    monkeypatch.setattr(tool, "verify_timeout", bound)
+    monkeypatch.setitem(vars(tool), "verify", verify)
+    monkeypatch.setitem(vars(tool), "verify_timeout", bound)
     return verdicts, calls
 
 
@@ -466,7 +484,7 @@ async def test_an_inconclusive_check_changes_nothing(
         async def broken(path, *, cancel_event=None):
             raise verdict
 
-        monkeypatch.setattr(registry.get("chdman"), "verify", broken)
+        monkeypatch.setitem(vars(registry.get("chdman")), "verify", broken)
     else:
         verdicts["Cove.chd"] = verdict
     lib = await _folder_library(tree, {"enabled": True, "check_budget_gb": 3})
@@ -488,7 +506,7 @@ async def test_a_check_that_rejects_the_file_by_raising_is_a_verdict(
     async def rejects(path, *, cancel_event=None):
         raise ValueError("bad CHD header")
 
-    monkeypatch.setattr(registry.get("chdman"), "verify", rejects)
+    monkeypatch.setitem(vars(registry.get("chdman")), "verify", rejects)
     lib = await _folder_library(tree, {"enabled": True, "check_budget_gb": 3})
     _seed(lib, {"ps2/Aria.chd": 2, "ps2/Bolt.chd": 3, "ps2/Dune.chd": 1})
 
@@ -916,7 +934,7 @@ async def test_an_image_gone_before_its_turn_gets_no_finding(
             (tree / "ps2" / "Bolt.chd").unlink()   # gone before Bolt's turn
         return await real(path, cancel_event=cancel_event)
 
-    monkeypatch.setattr(tool, "verify", verify)
+    monkeypatch.setitem(vars(tool), "verify", verify)
     lib = await _folder_library(tree, {"enabled": True, "check_budget_gb": 6})
     _seed(lib, {"ps2/Aria.chd": 2, "ps2/Bolt.chd": 10, "ps2/Dune.chd": 1})
     before = image_checks.last_checked(lib)
@@ -931,7 +949,7 @@ async def test_an_image_gone_before_its_turn_gets_no_finding(
 
 @pytest.mark.asyncio
 async def test_an_image_changed_before_its_turn_is_skipped(
-    tree: Path, ready, verifier, sent,
+    tree: Path, ready, verifier, sent, monkeypatch,
 ) -> None:
     from services import image_checks
 
@@ -944,41 +962,33 @@ async def test_an_image_changed_before_its_turn_is_skipped(
             _sparse(tree / "ps2" / "Bolt.chd", 2 * GB)   # a different file now
         return {"valid": True, "message": "Intact"}
 
-    monkeypatch_verify = registry.get("chdman")
-    original = monkeypatch_verify.verify
-    monkeypatch_verify.verify = replace_bolt
-    try:
-        lib = await _folder_library(tree, {"enabled": True, "check_budget_gb": 6})
-        _seed(lib, {"ps2/Aria.chd": 2, "ps2/Bolt.chd": 10, "ps2/Dune.chd": 1})
-        before = image_checks.last_checked(lib)
-        await _run(lib)
-    finally:
-        monkeypatch_verify.verify = original
+    monkeypatch.setitem(vars(registry.get("chdman")), "verify", replace_bolt)
+    lib = await _folder_library(tree, {"enabled": True, "check_budget_gb": 6})
+    _seed(lib, {"ps2/Aria.chd": 2, "ps2/Bolt.chd": 10, "ps2/Dune.chd": 1})
+    before = image_checks.last_checked(lib)
+    await _run(lib)
 
     assert calls == ["Cove.chd"]
     assert image_checks.last_checked(lib)["ps2/Bolt.chd"] == before["ps2/Bolt.chd"]
 
 
 @pytest.mark.asyncio
-async def test_a_check_holds_the_images_input_lock(tree: Path, ready, verifier, sent) -> None:
+async def test_a_check_holds_the_images_input_lock(
+    tree: Path, ready, verifier, sent, monkeypatch,
+) -> None:
     """While it is checked, a delete-source job sees the Image as in use (#306's lock)."""
     from services.lock_manager import lock_manager
 
     held: dict[str, bool] = {}
-    tool = registry.get("chdman")
-    original = tool.verify
 
     async def verify(path, *, cancel_event=None):
         held[Path(path).name] = lock_manager.check_file_status(path)[1]
         return {"valid": True, "message": "Intact"}
 
-    tool.verify = verify
-    try:
-        lib = await _folder_library(tree, {"enabled": True, "check_budget_gb": 3})
-        _seed(lib, {"ps2/Aria.chd": 2, "ps2/Bolt.chd": 3, "ps2/Dune.chd": 1})
-        await _run(lib)
-    finally:
-        tool.verify = original
+    monkeypatch.setitem(vars(registry.get("chdman")), "verify", verify)
+    lib = await _folder_library(tree, {"enabled": True, "check_budget_gb": 3})
+    _seed(lib, {"ps2/Aria.chd": 2, "ps2/Bolt.chd": 3, "ps2/Dune.chd": 1})
+    await _run(lib)
 
     assert held == {"Cove.chd": True}
     assert lock_manager.check_file_status(str(tree / "ps2" / "Cove.chd"))[1] is False
@@ -1044,8 +1054,8 @@ async def test_an_always_inconclusive_image_does_not_starve_its_platform(
     async def bound(path, *, cancel_event=None):
         return 0
 
-    monkeypatch.setattr(tool, "verify", verify)
-    monkeypatch.setattr(tool, "verify_timeout", bound)
+    monkeypatch.setitem(vars(tool), "verify", verify)
+    monkeypatch.setitem(vars(tool), "verify_timeout", bound)
     _sparse(tree / "ps2" / "Aria.chd", 9 * GB)   # bigger than the budget
     lib = await _folder_library(tree, {"enabled": True, "check_budget_gb": 6})
     for _night in range(3):
@@ -1136,8 +1146,8 @@ async def test_two_platforms_failing_in_one_sweep_send_one_notification(
     async def bound(path, *, cancel_event=None):
         return 0
 
-    monkeypatch.setattr(tool, "verify", verify)
-    monkeypatch.setattr(tool, "verify_timeout", bound)
+    monkeypatch.setitem(vars(tool), "verify", verify)
+    monkeypatch.setitem(vars(tool), "verify_timeout", bound)
     roms = db / "roms"
     _sparse(roms / "ps2" / "A.chd", GB)
     _sparse(roms / "psx" / "B.chd", GB)
@@ -1236,13 +1246,89 @@ async def test_a_lock_that_fails_part_way_lets_go_of_the_others(
             raise PermissionError("lock dir not writable")
         return real(path)
 
-    monkeypatch.setattr(lock_manager, "acquire_input_lock", acquire)
+    monkeypatch.setitem(vars(lock_manager), "acquire_input_lock", acquire)
     lib = await _folder_library(tree, {"enabled": True, "check_budget_gb": 3})
     _seed(lib, {"ps2/Aria.chd": 2, "ps2/Bolt.chd": 3, "ps2/Dune.chd": 1})
 
     await _run(lib)
 
     assert lock_manager.check_file_status(str(tree / "ps2" / "Cove.chd"))[1] is False
+
+
+@pytest.mark.asyncio
+async def test_a_check_cancelled_while_it_takes_its_lock_lets_go_of_it(
+    tree: Path, ready, verifier, sent, monkeypatch,
+) -> None:
+    """r3 minor (reviewer probe): a task cancel during _hold leaves nothing locked."""
+    import asyncio
+    import threading
+
+    from services.lock_manager import lock_manager
+    from services.rules import check as checks
+
+    gate = threading.Event()
+    real = lock_manager.acquire_input_lock
+
+    def slow(path):
+        gate.wait(1)
+        return real(path)
+
+    monkeypatch.setitem(vars(lock_manager), "acquire_input_lock", slow)
+    cove = tree / "ps2" / "Cove.chd"
+    item = checks.Check(
+        key="ps2/Cove.chd", name="Cove.chd", path=str(cove), size=GB,
+        tool_id="chdman", fingerprint="",
+    )
+    task = asyncio.create_task(checks._check_one(item, None))
+    await asyncio.sleep(0.2)
+    task.cancel()
+    gate.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await asyncio.sleep(0.3)
+
+    assert lock_manager.check_file_status(str(cove))[1] is False
+
+
+@pytest.mark.asyncio
+async def test_a_lock_that_does_not_come_in_time_skips_the_image(
+    tree: Path, ready, verifier, sent, monkeypatch,
+) -> None:
+    """r3 minor: _hold is bounded; a stuck acquisition skips the Image and leaks nothing."""
+    import threading
+
+    from services.lock_manager import lock_manager
+    from services.rules import check as checks
+
+    gate = threading.Event()
+    real = lock_manager.acquire_input_lock
+
+    def stuck(path):
+        gate.wait(2)
+        return real(path)
+
+    monkeypatch.setitem(vars(lock_manager), "acquire_input_lock", stuck)
+    monkeypatch.setattr(checks, "_RECHECK_SECONDS", 0.2)
+    cove = tree / "ps2" / "Cove.chd"
+    item = checks.Check(
+        key="ps2/Cove.chd", name="Cove.chd", path=str(cove), size=GB,
+        tool_id="chdman", fingerprint="",
+    )
+
+    import asyncio
+    import time
+
+    started = time.monotonic()
+    verdict = await checks._check_one(item, None)
+    waited = time.monotonic() - started
+    gate.set()
+    await asyncio.sleep(0.3)
+
+    assert waited < 1.0   # gave up at the bound, not when the lock came
+    assert verdict[0] == checks.SKIPPED
+    _verdicts, calls = verifier
+    assert calls == []
+    assert lock_manager.check_file_status(str(cove))[1] is False
 
 
 @pytest.mark.asyncio
@@ -1262,8 +1348,8 @@ async def test_an_image_checked_long_ago_and_now_inconclusive_rotates(
     async def bound(path, *, cancel_event=None):
         return 0
 
-    monkeypatch.setattr(tool, "verify", verify)
-    monkeypatch.setattr(tool, "verify_timeout", bound)
+    monkeypatch.setitem(vars(tool), "verify", verify)
+    monkeypatch.setitem(vars(tool), "verify_timeout", bound)
     _sparse(tree / "ps2" / "Aria.chd", 9 * GB)
     lib = await _folder_library(tree, {"enabled": True, "check_budget_gb": 6})
     _seed(lib, {"ps2/Aria.chd": 60, "ps2/Bolt.chd": 3, "ps2/Cove.chd": 2, "ps2/Dune.chd": 1})
@@ -1307,8 +1393,8 @@ async def test_a_run_stopped_by_a_romm_change_reports_nothing_it_did_not_write(
     async def bound(path, *, cancel_event=None):
         return 0
 
-    monkeypatch.setattr(tool, "verify", verify)
-    monkeypatch.setattr(tool, "verify_timeout", bound)
+    monkeypatch.setitem(vars(tool), "verify", verify)
+    monkeypatch.setitem(vars(tool), "verify_timeout", bound)
     await romm_routes.put_romm_rules({
         "rules": {}, "check_rules": {"7": {"enabled": True, "check_budget_gb": 6}},
     })
@@ -1369,8 +1455,8 @@ async def test_a_conversion_that_finishes_during_a_check_keeps_its_source(
     async def fake_verify(cmd, *, path, **kwargs):
         yield {"type": "complete", "valid": True, "message": "Disc image is Intact"}
 
-    monkeypatch.setattr(runner, "run", fake_run)
-    monkeypatch.setattr(runner, "run_verify", fake_verify)
+    monkeypatch.setitem(vars(runner), "run", fake_run)
+    monkeypatch.setitem(vars(runner), "run_verify", fake_verify)
     real_verify = tool.verify
     conversion: dict = {}
 
@@ -1389,7 +1475,7 @@ async def test_a_conversion_that_finishes_during_a_check_keeps_its_source(
             conversion["job"] = job
         return await real_verify(path, cancel_event=cancel_event)
 
-    monkeypatch.setattr(tool, "verify", verify)
+    monkeypatch.setitem(vars(tool), "verify", verify)
     created = await routes.register_library(routes.RegisterLibraryRequest(path=str(roms)))
     await routes.put_library_rules(
         created["id"], {"check_rules": {"gc": {"enabled": True, "check_budget_gb": 1}}},

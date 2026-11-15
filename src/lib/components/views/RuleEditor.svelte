@@ -704,7 +704,7 @@
                     />
                   </label>
 
-                  {@render schedule(rule, (patch) => update(platform.id, patch))}
+                  {@render schedule(rule, (patch) => update(platform.id, patch), false)}
 
                   <label class="field">
                     <span>Convert in this order</span>
@@ -849,7 +849,13 @@
                   </p>
                 {/if}
 
-                {#if rule.invalid_window}
+                {#if rule.invalid_window && rule.window_start && rule.window_start === rule.window_end}
+                  <p class="warn" role="alert">
+                    The time window starts and ends at the same time, so this
+                    rule is paused. Give it a different end, or leave both blank
+                    to convert at any hour.
+                  </p>
+                {:else if rule.invalid_window}
                   <p class="warn" role="alert">
                     Only one end of the time window is set, so this rule is
                     paused. A window needs both a start and an end — half of one
@@ -950,7 +956,7 @@
                       </span>
                     </label>
 
-                    {@render schedule(check, (patch) => updateCheck(platform.id, patch))}
+                    {@render schedule(check, (patch) => updateCheck(platform.id, patch), true)}
                   </div>
 
                   <p class="hint">
@@ -999,7 +1005,9 @@
 </div>
 
 <!-- The window and weekdays, shared by the conversion and check forms. -->
-{#snippet schedule(rule, change)}
+<!-- equalIsAllDay: a check Rule reads the same start and end as the whole day;
+     a conversion Rule is paused for it (normalize_rule). -->
+{#snippet schedule(rule, change, equalIsAllDay)}
   <label class="field">
     <span>Only between</span>
     <div class="pair">
@@ -1014,8 +1022,12 @@
       />
     </div>
     <span class="hint">
-      Leave blank, or give the same start and end, to run at any hour. Times are
-      {rule.timezone || browserZone}.
+      {#if equalIsAllDay}
+        Leave blank, or give the same start and end, to run at any hour.
+      {:else}
+        Leave blank to run at any hour.
+      {/if}
+      Times are {rule.timezone || browserZone}.
     </span>
   </label>
 

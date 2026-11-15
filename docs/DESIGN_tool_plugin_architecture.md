@@ -3008,16 +3008,19 @@ A Rule has a kind, `rules.CONVERT` or `rules.CHECK`, and its identity is
 Rule. A check Rule has no target format (`rules.is_check_rule`).
 `normalize_rule(raw, kind=...)` drops a `CONVERT` Rule with no mode and gives a
 `CHECK` Rule none, with `check_budget_gb` (1 to 1048576, default 50), the usual
-window, weekdays, timezone, priority and `enabled`. Its `interval_minutes` is
+window, weekdays, timezone, priority and `enabled`. A conversion Rule whose
+window starts and ends at the same time is refused as `invalid_window`
+(paused, the editor says why) and `_window` keeps it literal, so it never
+converts all day. Its `interval_minutes` is
 fixed at `CHECK_INTERVAL_MINUTES` (a day) but the schedule does not read it: a
 check Rule is due once per window (`schedule._is_due`): the window is open on an
 allowed weekday (an overnight window's tail belongs to the day it opened) and
 `last_run_at` is before the moment this window opened (`_window_opened`,
 which resolves the wall-clock start with `_instant`: a start in a
 spring-forward gap opens at the first real instant after it, a start in a
-fall-back repeated hour at its first occurrence, so either opens once; a
-window whose start equals its end is the whole day (`schedule._window`, for
-every Rule kind), as is no
+fall-back repeated hour at its first occurrence, so either opens once; for a
+check Rule a window whose start equals its end is the whole day
+(`schedule._window`), as is no
 window: the whole local day, opened at midnight). A run that starts late
 does not push the next night later, and one that crosses midnight counts for
 the window it started in. Its output folder is never read. Each kind has its own preference rows

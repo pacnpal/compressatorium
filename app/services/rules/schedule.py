@@ -26,9 +26,10 @@ def _in_window(rule: dict, now: datetime) -> bool:
     22:00 UTC -- the middle of the working day for most of the world.
 
     A window whose end is before its start wraps midnight (22:00-04:00), which
-    is the shape an overnight conversion window actually takes. One whose start
-    equals its end (03:00-03:00) is the whole day, as no window is. The weekday
-    is read in the same zone, so "Saturday" means the operator's Saturday.
+    is the shape an overnight conversion window actually takes. For a check
+    Rule, one whose start equals its end (03:00-03:00) is the whole day, as no
+    window is. The weekday is read in the same zone, so "Saturday" means the
+    operator's Saturday.
     """
     try:
         now = now.astimezone(ZoneInfo(rule.get("timezone") or "UTC"))
@@ -61,13 +62,16 @@ def _in_window(rule: dict, now: datetime) -> bool:
 def _window(rule: dict) -> tuple:
     """The window's ``(start, end)`` times; ``(None, None)`` when it is the whole day.
 
-    No window, and a window whose start equals its end, are both the whole day:
-    read literally, 03:00-03:00 is open for one instant a day and a scheduler
-    ticking once a minute would almost never see it.
+    No window is the whole day. For a check Rule, so is a window whose start
+    equals its end: read literally, 03:00-03:00 is open for one instant a day
+    and a scheduler ticking once a minute would almost never see it. For a
+    conversion Rule an equal pair stays literal (never, in practice):
+    `normalize_rule` pauses it as `invalid_window`, and a blob that skipped
+    that must not convert all day.
     """
     start = _parse_hhmm(rule["window_start"])
     end = _parse_hhmm(rule["window_end"])
-    if start is not None and start == end:
+    if start is not None and start == end and is_check_rule(rule):
         return None, None
     return start, end
 

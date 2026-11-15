@@ -124,11 +124,21 @@ def test_the_editor_says_how_the_budget_and_schedule_work() -> None:
 
 
 def test_the_editor_and_readme_say_an_equal_window_is_all_day() -> None:
-    """r2 M1: 03:00-03:00 is the whole day, and both places say so."""
+    """r2 M1: 03:00-03:00 is the whole day for a check Rule, and both places say so."""
     assert "same start and end" in _EDITOR.read_text(encoding="utf-8")
     readme = (Path(__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8")
     section = readme.split("### Check Rules", 1)[1].split("\n### ", 1)[0]
     assert "same start and end" in section
+
+
+def test_only_the_check_form_offers_an_equal_window_as_all_day() -> None:
+    """r3 I1: the shared schedule fields say "all day" only for a check Rule; a
+    conversion Rule with an equal pair is paused and says why."""
+    src = _EDITOR.read_text(encoding="utf-8")
+    assert "{#snippet schedule(rule, change, equalIsAllDay)}" in src
+    assert "{@render schedule(check, (patch) => updateCheck(platform.id, patch), true)}" in src
+    assert "{@render schedule(rule, (patch) => update(platform.id, patch), false)}" in src
+    assert "starts and ends at the same time" in src
 
 
 def test_a_not_intact_finding_has_a_label_and_no_set_platform() -> None:

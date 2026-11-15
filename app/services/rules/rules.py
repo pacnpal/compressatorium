@@ -637,6 +637,13 @@ def normalize_rule(
     if (out["window_start"] or out["window_end"]) and (starts is None or ends is None):
         out["invalid_window"] = True
         out["enabled"] = False
+    elif kind == CONVERT and starts is not None and starts == ends:
+        # The same start and end is a slip for a conversion: read literally it
+        # opens for one instant, read as "all day" it converts through working
+        # hours, delete-source included. Paused, as half a window is. (A check
+        # Rule reads it as the whole day: `schedule._window`.)
+        out["invalid_window"] = True
+        out["enabled"] = False
     out["timezone"] = _valid_timezone(raw.get("timezone"))
     days = raw.get("days")
     if isinstance(days, list):
