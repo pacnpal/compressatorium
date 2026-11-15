@@ -6,6 +6,7 @@
   import { chdMetadata } from '$lib/stores/chdMetadata.svelte.js';
   import { datMatching } from '$lib/stores/datMatching.svelte.js';
   import { registry } from '$lib/tools/registry.js';
+  import { playlistPaths } from '$lib/util/playlistDialog.js';
   import FileRow from './FileRow.svelte';
   import Breadcrumb from './Breadcrumb.svelte';
   import Pager from '$lib/components/ui/Pager.svelte';
@@ -27,6 +28,7 @@
   import ArrowLeft from '@lucide/svelte/icons/arrow-left';
   import ShieldCheck from '@lucide/svelte/icons/shield-check';
   import Trash2 from '@lucide/svelte/icons/trash-2';
+  import ListMusic from '@lucide/svelte/icons/list-music';
 
   const entries = $derived(fileBrowser.visibleEntries);
   const pageCount = $derived(fileBrowser.pageCount);
@@ -151,6 +153,18 @@
     // *only* split rows doesn't surface a Delete button that opens an empty
     // "Delete 0 files?" modal; a mixed selection still shows it for the rest.
     return sel.some((e) => e?.path && !e.path.includes('::') && e.split_parts == null);
+  });
+
+  // "Create .m3u" needs two or more disc Images in one folder (discExts, mirrored
+  // from the backend registry). The server stays the authority and refuses
+  // anything else, e.g. two formats of one disc, with its reason in the dialog.
+  const playlistCandidates = $derived.by(() => {
+    const paths = registry.discImages(
+      Array.from(fileBrowser.selectedFiles.values())
+        .filter((e) => e?.path && !e.path.includes('::') && e.split_parts == null)
+        .map((e) => e.path),
+    );
+    return playlistPaths(paths);
   });
 
   let searchInput = $state('');
@@ -280,6 +294,10 @@
       .filter((e) => e?.path && !e.path.includes('::') && e.split_parts == null);
   }
 
+  function openPlaylist() {
+    ui.playlistPaths = playlistCandidates;
+  }
+
   function sortIcon(field) {
     if (sortBy !== field) return ChevronsUpDown;
     return sortOrder === 'asc' ? ChevronUp : ChevronDown;
@@ -375,6 +393,11 @@
       {#if selectedHasVerifiable}
         <button type="button" class="bulk-action" onclick={openBulkVerify}>
           <ShieldCheck size={12} aria-hidden="true" /> Verify
+        </button>
+      {/if}
+      {#if playlistCandidates.length >= 2}
+        <button type="button" class="bulk-action" onclick={openPlaylist}>
+          <ListMusic size={12} aria-hidden="true" /> Create .m3u
         </button>
       {/if}
       {#if selectedHasFilesystemPath}

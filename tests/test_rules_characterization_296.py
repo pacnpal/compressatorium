@@ -116,7 +116,8 @@ async def test_the_rules_api_keeps_its_shape(romm_env) -> None:
     assert saved["rules"]["7"]["max_per_run"] == 3
 
     got = await romm_routes.get_romm_rules()
-    assert set(got) == {"rules", "state", "defaults", "options"}
+    # #305 added the check Rules beside the conversion Rules; the rest is pinned.
+    assert set(got) == {"rules", "state", "defaults", "options", "check_rules", "check_state"}
     assert got["rules"] == saved["rules"]
     assert got["state"] == {}
     assert set(got["defaults"]) == set(got["rules"]["7"])

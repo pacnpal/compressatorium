@@ -17,7 +17,7 @@ import pytest
 from app.models import ConversionMode
 from app.services.tools import registry
 
-EXTERNAL_MODES = {ConversionMode.METADATA_SCAN, ConversionMode.DAT_MATCH}
+EXTERNAL_MODES = {ConversionMode.METADATA_SCAN, ConversionMode.DAT_MATCH, ConversionMode.CHECK}
 # Composite/chain modes orchestrate several services and have no single
 # ``_service`` to monkeypatch, so the single-tool ladder/parity model below
 # doesn't apply (they get dedicated coverage in test_chain_service.py).

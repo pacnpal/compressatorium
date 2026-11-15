@@ -64,6 +64,38 @@ export const api = {
   // ─── Version ──────────────────────────────────────────────────────────
   getVersion: () => fetchJson(`${API_BASE}/version`, undefined, 'Failed to fetch version'),
 
+  // ─── Notifications (webhook / Apprise destinations) ─────────────────────
+  // The server never returns a saved URL; edits that omit `url` keep it.
+  getNotifications: () =>
+    fetchJson(`${API_BASE}/notifications`, undefined, 'Failed to load notifications'),
+  addNotificationDestination: (body) =>
+    jsonPost(`${API_BASE}/notifications/destinations`, body, {}, 'Failed to add destination'),
+  editNotificationDestination: (id, body) =>
+    fetchJson(
+      `${API_BASE}/notifications/destinations/${encodeURIComponent(id)}`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+      'Failed to save destination',
+    ),
+  deleteNotificationDestination: (id) =>
+    fetchJson(
+      `${API_BASE}/notifications/destinations/${encodeURIComponent(id)}`,
+      { method: 'DELETE' },
+      'Failed to remove destination',
+    ),
+  testNotificationDestination: (id) =>
+    jsonPost(
+      `${API_BASE}/notifications/destinations/${encodeURIComponent(id)}/test`,
+      {},
+      {},
+      'Test failed',
+    ),
+  testNotificationDraft: (body) =>
+    jsonPost(`${API_BASE}/notifications/test`, body, {}, 'Test failed'),
+
   // ─── Ledger (permanent record of finished jobs) ────────────────────────
   getLedgerRecent: (limit = 5) =>
     fetchJson(buildApiUrl('/ledger/recent', { limit }), undefined, 'Failed to fetch ledger'),
@@ -165,6 +197,26 @@ export const api = {
       buildApiUrl('/files/delete', params),
       { method: 'DELETE', headers },
       'Failed to delete',
+    );
+  },
+
+  /** Preview the .m3u the selected discs would make. Writes nothing. */
+  playlistPreview(paths, title) {
+    return jsonPost(
+      `${API_BASE}/files/playlist/preview`,
+      title == null ? { paths } : { paths, title },
+      {},
+      'Failed to preview the playlist',
+    );
+  },
+
+  /** Write the previewed playlist. A taken name is a 409 with `err.detail.suggested_name`. */
+  createPlaylist(paths, fileName) {
+    return jsonPost(
+      `${API_BASE}/files/playlist`,
+      { paths, file_name: fileName },
+      {},
+      'Failed to create the playlist',
     );
   },
 
@@ -503,6 +555,18 @@ export const api = {
   getVerifiedCHDs: () =>
     fetchJson(`${API_BASE}/verified`, undefined, 'Failed to fetch check results'),
 
+  /** The same answer as getVerifiedCHDs, for just `paths` (at most 2000). */
+  getVerifiedFor: (paths) =>
+    fetchJson(
+      `${API_BASE}/verified/lookup`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ paths }),
+      },
+      'Failed to fetch check results',
+    ),
+
   // ─── Batch verify (POST + ReadableStream SSE) ─────────────────────────
   verifyBatchCHDs(paths, opts) {
     return runBatchVerify(`${API_BASE}/verify-batch/events`, paths, opts);
@@ -609,13 +673,16 @@ export const api = {
   getRommRules: () =>
     fetchJson(`${API_BASE}/romm/rules`, undefined, 'Failed to load RomM rules'),
 
-  saveRommRules: (rules) =>
+  // `checkRules` (#305) is sent when given; without it the server keeps them.
+  saveRommRules: (rules, checkRules) =>
     fetchJson(
       `${API_BASE}/romm/rules`,
       {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ rules }),
+        body: JSON.stringify(
+          checkRules === undefined ? { rules } : { rules, check_rules: checkRules },
+        ),
       },
       'Failed to save RomM rules',
     ),
@@ -689,13 +756,15 @@ export const api = {
       'Failed to load the Rules',
     ),
 
-  saveLibraryRules: (id, rules) =>
+  saveLibraryRules: (id, rules, checkRules) =>
     fetchJson(
       `${API_BASE}/libraries/${encodeURIComponent(id)}/rules`,
       {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ rules }),
+        body: JSON.stringify(
+          checkRules === undefined ? { rules } : { rules, check_rules: checkRules },
+        ),
       },
       'Failed to save the Rules',
     ),
@@ -715,6 +784,49 @@ export const api = {
 
   runLibrary: (id, body = {}) =>
     jsonPost(`${API_BASE}/libraries/${encodeURIComponent(id)}/run`, body, {}, 'Run failed'),
+
+  // ── Findings and folder Platform mappings (#304) ───────────────────────
+  listFindings: (includeDismissed = false) =>
+    fetchJson(
+      `${API_BASE}/findings${includeDismissed ? '?include_dismissed=true' : ''}`,
+      undefined,
+      'Failed to list the Findings',
+    ),
+
+  // `fingerprint` is the cause the user was shown; the backend answers 409
+  // when the Finding changed since, so a stale row acts on nothing else.
+  dismissFinding: (id, fingerprint) =>
+    jsonPost(
+      `${API_BASE}/findings/${encodeURIComponent(id)}/dismiss`, { fingerprint }, {},
+      'Failed to dismiss the Finding',
+    ),
+
+  undismissFinding: (id, fingerprint) =>
+    jsonPost(
+      `${API_BASE}/findings/${encodeURIComponent(id)}/undismiss`, { fingerprint }, {},
+      'Failed to show the Finding again',
+    ),
+
+  checkFindings: () =>
+    jsonPost(`${API_BASE}/findings/check`, {}, {}, 'Failed to check the Libraries'),
+
+  listPlatforms: () =>
+    fetchJson(`${API_BASE}/platforms`, undefined, 'Failed to list the Platforms'),
+
+  listPlatformMappings: () =>
+    fetchJson(`${API_BASE}/platform-mappings`, undefined, 'Failed to list the mappings'),
+
+  // `platform: null` clears the folder's mapping.
+  setPlatformMapping: (path, platform) =>
+    fetchJson(
+      `${API_BASE}/platform-mappings`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path, platform }),
+      },
+      'Failed to set the Platform',
+    ),
 
   // Records the metadata to carry across a conversion. MUST be called before
   // the batch is submitted: the provider ids are read from the RomM record for

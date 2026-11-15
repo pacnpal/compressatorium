@@ -66,10 +66,11 @@ REGISTER_WAIT_SECONDS = 5.0
 # against the folder Libraries before answering 503: the same bound #294 gives
 # the convert routes' Volume checks.
 ROOT_CHECK_SECONDS = VOLUME_PROBE_TIMEOUT_SECONDS
-# Registration and root-check workers outstanding at once (`run_admitted`). A
-# slot is held until the worker returns, so a dead mount costs at most this
-# many threads however often the request is retried. Room for a few honest
-# registrations at once; they finish in milliseconds on a healthy mount.
+# Library folder workers outstanding at once (`run_admitted`): registration,
+# the RomM root check, and setting a folder's Platform mapping (#304). A slot
+# is held until the worker returns, so a dead mount costs at most this many
+# threads however often a request is retried. Room for a few honest requests
+# at once; they finish in milliseconds on a healthy mount.
 MAX_PENDING_WORKERS = 4
 _worker_slots = threading.BoundedSemaphore(MAX_PENDING_WORKERS)
 
@@ -84,8 +85,11 @@ class LibraryPathError(ValueError):
 
 def reset_for_tests() -> None:
     global _cache
+    from services import platform_mappings
+
     with _lock:
         _cache = None
+    platform_mappings.reset_for_tests()
 
 
 def _session():
@@ -221,7 +225,10 @@ def check_romm_root(path: str) -> None:
 
 
 async def run_admitted(func, *args, timeout: float, **kwargs):
-    """Run a registration or root-check worker, bounded and admission-controlled.
+    """Run a Library folder worker, bounded and admission-controlled.
+
+    Used by registration, the RomM root check and the Platform mapping save
+    (#304): each resolves and stats a folder inside a Library.
 
     The work resolves and stats a folder that may sit on a mount that stopped
     answering, where it blocks for good. It runs on a disposable thread
@@ -406,6 +413,11 @@ async def remove(library_id: str) -> bool:
     await rules_sweep.forget_library(library)
 
     def _delete() -> None:
+        from services import findings, image_checks, platform_mappings
+
+        platform_mappings.forget_library(library_id)
+        findings.forget_library(library_id)
+        image_checks.forget_library(library_id)
         with _session() as session:
             row = session.get(_db.FolderLibraryRecord, record_id)
             if row is not None:

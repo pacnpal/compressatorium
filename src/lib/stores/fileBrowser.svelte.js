@@ -33,6 +33,8 @@ class FileBrowserStore {
   volumesLoading = $state(false);
   volumesError = $state(null);
   selectedVolume = $state(null);
+  // Bumped by every Open folder (`openFolder`): only the latest navigates.
+  #openFolderRequest = 0;
 
   // Navigation
   currentPath = $state(null);
@@ -252,20 +254,56 @@ class FileBrowserStore {
   }
 
   // ─── Volumes ──────────────────────────────────────────────────────────
+  /**
+   * The Workspace start: load the Volume list, then select and list the first
+   * Volume when none is selected yet.
+   */
   async loadVolumes() {
+    if (!(await this.fetchVolumes())) return;
+    if (!this.selectedVolume && this.volumes.length > 0) {
+      await this.selectVolume(this.volumes[0]);
+    }
+  }
+
+  /**
+   * Load the Volume list only: no Volume is selected and nothing is listed.
+   * True when it loaded.
+   */
+  async fetchVolumes() {
     this.volumesLoading = true;
     this.volumesError = null;
     try {
       const data = await api.getVolumes();
       this.volumes = Array.isArray(data) ? data : [];
-      if (!this.selectedVolume && this.volumes.length > 0) {
-        await this.selectVolume(this.volumes[0]);
-      }
+      return true;
     } catch (e) {
       this.volumesError = e?.message ?? 'Failed to load volumes';
+      return false;
     } finally {
       this.volumesLoading = false;
     }
+  }
+
+  /**
+   * Show the folder at *path* from another view (the Findings view's "Open
+   * folder"). Loads the Volume list without listing any Volume, then goes
+   * straight to the Volume that holds *path* and to the folder: a first
+   * Volume on a mount that stopped answering never stands in the way, and
+   * the Volume list, once loaded, no longer selects the first Volume over it.
+   * Only the latest request opens anything: an earlier one whose Volume fetch
+   * answers after it changes no selection and navigates nowhere.
+   */
+  async openFolder(path) {
+    if (!path) return;
+    const request = ++this.#openFolderRequest;
+    if (this.volumes.length === 0) await this.fetchVolumes();
+    if (request !== this.#openFolderRequest) return;
+    const holder = this.volumes
+      .filter((v) => v?.path && (path === v.path || path.startsWith(`${v.path.replace(/\/+$/, '')}/`)))
+      .sort((a, b) => b.path.length - a.path.length)[0];
+    if (holder) this.selectedVolume = holder;
+    ui.navigate('workspace');
+    await this.navigate(path);
   }
 
   async selectVolume(volume) {

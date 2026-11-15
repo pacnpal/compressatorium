@@ -24,6 +24,7 @@ from .base import (
     WriteGuard,
     atomic_write_bytes,
     write_guard,
+    write_new_bytes,
 )
 from .m3u import M3uReferrer
 
@@ -232,4 +233,5 @@ __all__ = [
     "plan_changes_bounded",
     "registry",
     "update_before_source_removal",
+    "write_new_bytes",
 ]

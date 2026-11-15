@@ -31,7 +31,7 @@ class RommStore extends RulesSource {
   constructor() {
     super({
       getRules: () => api.getRommRules(),
-      saveRules: (rules) => api.saveRommRules(rules),
+      saveRules: (rules, checkRules) => api.saveRommRules(rules, checkRules),
       forgetConverted: (platformIds) => api.forgetRommConverted(platformIds),
       preview: (body) => api.previewRommAutoConvert(body),
       run: (body) => api.runRommAutoConvert(body),

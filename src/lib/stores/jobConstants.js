@@ -16,3 +16,12 @@ export const ACTIVE_STATUSES = new Set(['queued', 'processing']);
 // hydration kicks dat_match jobs), so surfacing them would flood the UI.
 // Shown only when the user opts into external-scan jobs.
 export const EXTERNAL_SCAN_MODES = new Set(['metadata_scan', 'dat_match']);
+
+// Display names for the externally-managed job modes, which have no registry
+// spec. A check Rule's run (#305) is visible by default; the two scans above
+// stay behind the toggle.
+export const EXTERNAL_MODE_LABELS = Object.freeze({
+  metadata_scan: 'Metadata scan',
+  dat_match: 'DAT match',
+  check: 'Check',
+});

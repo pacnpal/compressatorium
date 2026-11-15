@@ -25,6 +25,50 @@
     that `dosbox.conf` is at the root before keeping its output, and Verify on
     a `.dosz` runs the same check.
   - Behaviour modelled on eXo2romm (Unlicense); no code is shared.
+- **Check Rules** (#305). A Platform in the Rules view (folder Libraries and
+  RomM) can have a check Rule beside its conversion Rule: tick **Check these
+  Images are Intact** and set a nightly budget in GB, a window and weekdays.
+  Once a day the Images never checked go first, then the oldest checks, until
+  the next one does not fit the budget (one larger than the whole budget goes
+  alone), and each goes through its tool's own Verify as one job in the queue.
+  Run now spends another budget's worth and leaves the nightly run when it
+  is due. A check Rule whose window starts and ends at the same time runs all
+  day (once a day from midnight); a conversion Rule with such a window is
+  paused with the reason shown, since there it is a slip. #306's verdict rules decide: a verifier killed by a signal is no
+  verdict, and an Image whose check never reaches one goes behind the others.
+  An Image gone or changed by its turn is skipped. While an Image's Verify
+  runs and its result is recorded it is held like a file a conversion reads. An Image that fails becomes a **Not
+  Intact** Finding and the run sends one `check_failed` notification listing
+  the failures; a later pass clears the Finding. A check that could not run
+  changes nothing, and an Image no tool can check is skipped. Each Image's
+  last check time is kept in a new `image_checks` table (migration 0014,
+  on top of #304's 0013).
+- **Findings view and folder Platforms** (#304). A new **Findings** view lists
+  the Images in your folder Libraries that need a decision: a Platform
+  conflict (the header disagrees with the folder) or an Unsorted Image. Each
+  row shows the Library, the Image, the kind, first and last seen, and links
+  to **Open folder** and **Set Platform**; **Dismiss** hides it until its cause
+  changes, and **Show again** undoes that. **Set Platform** ("this folder is
+  PSP") is also on a folder's row menu. Below the header, the nearest folder
+  that is set to or named after a Platform decides (on the same folder, the one
+  you set wins), and a header that disagrees is a conflict. The app never moves or deletes an Image over a
+  Finding. API: `/api/findings`, `/api/platform-mappings`, `/api/platforms`.
+  New tables `platform_mappings`, `findings` and `finding_dismissals`
+  (migration 0013, on top of #303's 0012).
+- **Notifications: webhook and Apprise** (#293). Add a webhook URL or an Apprise
+  URL under the new **Settings** page and get one message when a sweep finishes
+  (counts, space saved, and the failures inside it) and one when a job you
+  started by hand fails. **Test** sends a sample and shows the error if it fails.
+  Nothing is sent until a destination is added. Saved URLs are never sent back
+  to the browser, and a destination that errors or hangs never fails or delays a
+  job. Apprise is bundled in the Docker image and imported only when used;
+  webhooks need no extra package.
+  Webhook delivery does not follow redirects (Test reports "HTTP 30x") and does not
+  use `HTTP(S)_PROXY`.
+  A native **Discord webhook** destination (any https URL that speaks Discord's
+  webhook format, no Apprise needed) posts one embed per message with mentions
+  disabled; the generic webhook's JSON is unchanged.
+
 - **`compressatorium convert` and `compressatorium verify`** (#306). A command
   line for shells and cron that covers every tool, recurses into subfolders and
   archives, and uses the web UI's planner, delete checks and Ledger.
@@ -52,6 +96,13 @@
   without queuing anything while it is held. A server started during a
   `run-rules` pass, or beside another server on the same `/config`, waits for
   the lock (logging who holds it) and then starts.
+- **Create an `.m3u` from selected discs** (#299). Tick two or more disc
+  images of one game in a folder and press **Create .m3u** in the selection bar.
+  A preview shows the file name (the title without `(Disc N)` / `CD N`,
+  editable) and the entries in disc order before anything is written. An
+  existing playlist is never overwritten; a taken name gets the next free one,
+  such as `Game (2).m3u`. New endpoints: `POST /api/files/playlist/preview` and
+  `POST /api/files/playlist`.
 - **`.m3u` playlists follow a converted disc** (#295). With delete-on-verify,
   an `.m3u` that names the Source, in its folder or any folder above it up to
   the volume root, is rewritten to the output before the Source is deleted.
@@ -273,12 +324,26 @@
 
 ### Fixed
 
+- **Folder Platforms are never guessed past a read error** (#338). If the
+  saved folder Platforms can't be read, folder Libraries list nothing and
+  their Rules wait until they can, instead of taking a disc's header as its
+  Platform when its folder may say otherwise. Images checked meanwhile show
+  as Unsorted, saying why. The **Set Platform** dialog shows when it couldn't
+  read the folder's current Platform, with **Retry**, instead of acting as
+  if none were set, and it never shows a Platform left over from an earlier
+  opening. **Open folder** clicked twice goes to the folder clicked last.
 - **chdman Create Raw works** (#326). The job now passes `--unitsize 512`;
   chdman refuses a raw image without a unit size, so every Create Raw job used
   to fail.
 - **The RomM version shows again** (#335). RomM 5.x nests it under
   `SYSTEM.VERSION` in its heartbeat; the flat key older releases send is still
   read.
+- **A split PS3 ISO keeps its check** (#305). A PS3 ISO built past 4 GB is
+  written as `Game.iso.0`, `.1` and so on, and its check is stored under
+  `Game.iso`. Opening the web UI used to delete that record, because no
+  `Game.iso` file exists, so the ISO lost its Intact badge and the mode that
+  made it. A stored check is now kept while its split parts are on disk, and
+  removed once they are gone.
 
 ### Security
 

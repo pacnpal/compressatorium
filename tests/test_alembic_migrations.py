@@ -163,6 +163,50 @@ def test_no_model_drift_after_upgrade(fresh_db_path: str):
     assert relevant == [], f"ORM drift detected: {relevant}"
 
 
+def test_0014_stacks_on_0013_and_walks_up_from_an_empty_database(fresh_db_path: str):
+    """#305's migration is 0014, on #304's 0013, on #303's 0012, on #297's
+    0011: one head.
+
+    Forward-only (every ``downgrade`` raises), so the chain is walked upward:
+    an empty database taken to 0011, then 0012, then 0013, then 0014, each
+    revision bringing its own tables.
+    """
+    from alembic import command
+    from alembic.script import ScriptDirectory
+
+    engine = _db.make_engine(fresh_db_path)
+    cfg = _db._alembic_config(engine)
+    script = ScriptDirectory.from_config(cfg)
+    assert script.get_heads() == ["0014"]
+    assert script.get_revision("0014").down_revision == "0013"
+    assert script.get_revision("0013").down_revision == "0012"
+    assert script.get_revision("0012").down_revision == "0011"
+
+    def tables() -> set[str]:
+        return set(inspect(engine).get_table_names())
+
+    added = {"platform_mappings", "findings", "finding_dismissals"}
+    command.upgrade(cfg, "0011")
+    assert "ledger_totals" in tables()
+    assert not ({"folder_libraries"} | added) & tables()
+    command.upgrade(cfg, "0012")
+    assert "folder_libraries" in tables()
+    assert not added & tables()
+    command.upgrade(cfg, "0013")
+    assert added <= tables()
+    assert "image_checks" not in tables()
+    assert _current_rev(engine) == "0013"
+    # Ids of cleared Findings are never handed out again (PR #322).
+    with engine.connect() as conn:
+        sql = conn.exec_driver_sql(
+            "SELECT sql FROM sqlite_master WHERE name = 'findings'",
+        ).scalar()
+    assert "AUTOINCREMENT" in sql
+    command.upgrade(cfg, "0014")
+    assert "image_checks" in tables()
+    assert _current_rev(engine) == "0014"
+
+
 # ---------------------------------------------------------------------------
 # Called-before-init guard
 # ---------------------------------------------------------------------------

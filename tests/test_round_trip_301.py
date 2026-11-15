@@ -455,7 +455,7 @@ async def test_z3ds_decoder_failure_is_unavailable(tmp_path, monkeypatch):
         _z3ds()._service, "decode_command",
         lambda: [__import__("sys").executable, "-c", "import sys; sys.exit(1)"],
     )
-    with pytest.raises(Exception):  # noqa: B017 - any failure is "not proven"
+    with pytest.raises(ContentDigestUnavailable, match="exited with 1"):
         await _z3ds().content_digest(str(out))
 
 

@@ -7,6 +7,8 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from pydantic import BaseModel
+
 from config import settings
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
@@ -987,9 +989,40 @@ async def list_verified() -> dict:
     the UI names the check instead of calling the file "verified".
     """
     await verification_store.prune_missing()
+    return await _verified_answer(await verification_store.all_records())
+
+
+# How many paths one ``/verified/lookup`` may ask about: a check run's budget
+# of small Images, with room to spare, and still one bounded read.
+MAX_VERIFIED_LOOKUP = 2000
+
+
+class VerifiedLookup(BaseModel):
+    paths: list[str]
+
+
+@router.post("/verified/lookup")
+async def lookup_verified(body: VerifiedLookup) -> dict:
+    """``/verified``, for just *paths*: the re-read a page makes when a check
+    run ends (#305), for the files it settled, in case the page missed one of
+    their progress events. A path not listed has no passing check.
+    """
+    if len(body.paths) > MAX_VERIFIED_LOOKUP:
+        raise HTTPException(
+            status_code=422, detail=f"At most {MAX_VERIFIED_LOOKUP} paths per lookup",
+        )
+    wanted = set(body.paths)
+    records = [
+        r for r in await verification_store.all_records() if r.get("chd_path") in wanted
+    ]
+    return await _verified_answer(records)
+
+
+async def _verified_answer(records: list[dict]) -> dict:
+    """The ``{verified, checks}`` answer for *records*, inside the Volumes."""
     verified = []
     checks: dict[str, str] = {}
-    for record in await verification_store.all_records():
+    for record in records:
         chd_path = record.get("chd_path")
         if chd_path and await run_in_threadpool(
             is_within_configured_volumes, chd_path, treat_archives=False

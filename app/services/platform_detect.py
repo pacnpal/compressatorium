@@ -7,17 +7,21 @@ choice and folder Libraries, and (later) the Inbox and the CLI. It never guesses
    through ``ToolPlugin.header_platform`` (chdman: PS1/PS2/PSP/Dreamcast/
    Saturn/Sega CD, dolphin: GameCube/Wii, xiso: Xbox/Xbox 360). The registry
    decides who is asked, so a new console is taught here by its tool.
-2. **Folder name.** The nearest parent folder whose name is a Platform slug a
-   tool declares, or a name RomM, ES-DE or Batocera use for one (``psx``,
-   ``gc``, ``megacd``, ...).
+2. **The nearest folder that says.** Walking up from the Image's folder, the
+   first folder that either has the user's mapping ("this folder is PSP",
+   :mod:`services.platform_mappings`, #304) or a name that is a Platform slug
+   a tool declares, or a name RomM, ES-DE or Batocera use for one (``psx``,
+   ``gc``, ``megacd``, ...). At the same folder the mapping beats the name. A
+   mapping on ``roms/`` therefore names the Images in ``roms/misc/`` but not
+   those in ``roms/ps2/``.
 
-The header wins. A folder name is only used when no header can be read. A
-header that disagrees with the folder, or two headers that disagree with each
-other, is a conflict and names no Platform. When nothing answers the Image is
-Unsorted.
+The header wins. The folder is only used when no header can be read. A header
+that disagrees with the deciding folder, or two headers that disagree with
+each other, is a conflict and names no Platform. When nothing answers the
+Image is Unsorted.
 
 Results are cached per path and thrown away when the file's size or mtime
-changes.
+changes, or the folder evidence that decides it does.
 """
 from __future__ import annotations
 
@@ -30,12 +34,13 @@ from pathlib import Path, PurePath
 
 from logging_setup import get_logger
 from models import InputKind
-from utils.path_utils import containing_volume_root, is_special_file, match_extension
+from utils.path_utils import is_special_file, match_extension, platform_boundary_root
 
 logger = get_logger("platform_detect")
 
 HEADER = "header"
 FOLDER = "folder"
+MAPPING = "mapping"
 CONFLICT = "conflict"
 UNSORTED = "unsorted"
 
@@ -165,28 +170,45 @@ def platform_name(slug: str | None) -> str | None:
     return _NAMES.get(slug, slug)
 
 
+def known_slugs() -> set[str]:
+    """Every Platform slug the app accepts: aliased, or declared by a registered tool.
+
+    The one vocabulary: :func:`known_slug` checks a submitted id against it and
+    :func:`platforms` offers it, so the picker can never list a Platform a
+    mapping would refuse. ``_NAMES`` is a display-name lookup only; a name
+    with no Platform behind it (DOS before a tool declares it) is not offered.
+    """
+    return set(_ALIASES) | set(_folder_names(_default_tools()).values())
+
+
+def platforms() -> list[dict[str, str]]:
+    """Every known Platform with its display name, sorted by name (the mapping picker)."""
+    return sorted(
+        ({"slug": slug, "name": platform_name(slug)} for slug in known_slugs()),
+        key=lambda p: p["name"].lower(),
+    )
+
+
 def known_slug(name: str | None) -> str | None:
     """The Platform slug *name* stands for, or None when no Platform has it.
 
-    A slug is known when it is in the alias table or a registered tool declares
-    it. Used to check a Platform id a client submits (a folder Library's Rule
-    keys) rather than storing whatever string arrives.
+    Known means in :func:`known_slugs`. Used to check a Platform id a client
+    submits (a folder Library's Rule keys, a folder mapping) rather than
+    storing whatever string arrives.
     """
     slug = canonical_slug(name)
     if slug is None:
         return None
-    if slug in _ALIASES:
-        return slug
-    return slug if slug in set(_folder_names(_default_tools()).values()) else None
+    return slug if slug in known_slugs() else None
 
 
 @dataclass(frozen=True)
 class Detection:
     """What :func:`detect_platform` worked out, and how.
 
-    ``platform`` is set only when ``how`` is ``"header"`` or ``"folder"``.
-    ``header`` and ``folder`` keep what each source said, so a conflict can be
-    explained ("in the ps2 folder, header says ngc").
+    ``platform`` is set only when ``how`` is ``"header"``, ``"mapping"`` or
+    ``"folder"``. ``header``, ``folder`` and ``mapped`` keep what each source
+    said, so a conflict can be explained ("in the ps2 folder, header says ngc").
     """
 
     platform: str | None
@@ -194,6 +216,16 @@ class Detection:
     header: str | None
     folder: str | None
     reason: str
+    # The Platform the user's mapping gave the deciding folder, when a
+    # mapping is the folder evidence that decides.
+    mapped: str | None = None
+    # Every header's answer, when two or more disagree.
+    headers: tuple[str, ...] = ()
+    # The folder evidence that decided (a mapping or a Platform name): the
+    # folder's path and the Platform it named. ``folder`` above is only the
+    # nearest Platform name, which a nearer mapping may have overruled.
+    place: str | None = None
+    place_platform: str | None = None
 
     @property
     def decided(self) -> bool:
@@ -256,30 +288,40 @@ def _header(path: str, tools: Iterable) -> tuple[set[str], list[str]]:
     return found, sources
 
 
-def _candidate_folders(path: str) -> list[str]:
-    """Folder names the walk may read for ``path``, nearest first.
+def _candidate_paths(path: str) -> list[PurePath]:
+    """The folders the walk may read for ``path``, nearest first.
 
     From the Image's own folder up to the root of the Volume that holds it,
     root included, never above: a Volume mounted under ``/mnt/md/...`` must not
-    make every Image in it a Genesis Image. A path in no configured Volume
-    uses only its own folder.
+    make every Image in it a Genesis Image. Resolved, so a mapping (stored
+    under a Library's resolved root) matches an Image reached through a
+    symlink too. A path in no configured Volume uses only its own folder.
     """
     parent = PurePath(path).parent
-    root = containing_volume_root(path)
+    own = [parent] if parent.name else []
+    root = platform_boundary_root(path)
     if root is None:
-        return [parent.name] if parent.name else []
+        return own
     resolved = Path(os.path.realpath(path)).parent
     try:
         below = resolved.relative_to(root).parts
     except ValueError:
-        return [parent.name] if parent.name else []
-    return [*reversed(below), root.name]
+        return own
+    out = [resolved]
+    for _part in below:
+        out.append(out[-1].parent)
+    return out
+
+
+def _candidate_folders(path: str) -> list[str]:
+    """Folder names the walk may read for ``path``, nearest first."""
+    return [p.name for p in _candidate_paths(path)]
 
 
 def _folder_context(path: str) -> tuple[str, str | None]:
     """What ``_candidate_folders`` depends on beyond the path: the resolved
     parent folder and the containing Volume root."""
-    root = containing_volume_root(path)
+    root = platform_boundary_root(path)
     parent = str(Path(os.path.realpath(path)).parent)
     return parent, None if root is None else str(root)
 
@@ -292,31 +334,91 @@ def _folder(path: str, names: dict[str, str]) -> tuple[str | None, str | None]:
     return None, None
 
 
-def _decide(path: str, tools: list) -> Detection:
+def _mapped_folders() -> dict[str, str]:
+    """The user's mappings: absolute folder path -> Platform slug.
+
+    Raises ``platform_mappings.MappingsUnavailable`` when they can't be read.
+    """
+    from services import platform_mappings
+
+    return platform_mappings.mapped_folders()
+
+
+def mapping_snapshot() -> dict[str, str]:
+    """One read of the mappings, for a caller that detects many Images.
+
+    Pass it as ``mapped=`` to both :func:`detection_key` and
+    :func:`detect_uncached`, so a decision is cached under a key built from
+    the very evidence it was decided on. A mapping changed between two reads
+    would otherwise cache one answer under the other's key. Raises
+    ``platform_mappings.MappingsUnavailable`` when they can't be read.
+    """
+    return _mapped_folders()
+
+
+# Why an Image is Unsorted when the mappings could not be read: detection
+# decides nothing on evidence it could not see.
+_MAPPINGS_UNREADABLE = "the folder Platform mappings could not be read"
+
+
+def _place(
+    disk_path: str, names: dict[str, str], mapped: dict[str, str],
+) -> tuple[str, str, str, str] | None:
+    """The nearest folder above the Image that names a Platform.
+
+    ``(how, slug, folder path, folder name)``: ``how`` is ``"mapping"`` or
+    ``"folder"``. Walking up from the Image's folder, the first folder with a
+    mapping or a Platform name decides; at the same folder the mapping wins.
+    """
+    for parent in _candidate_paths(disk_path):
+        label = parent.name or str(parent)
+        slug = mapped.get(str(parent)) if mapped else None
+        if slug:
+            return MAPPING, slug, str(parent), label
+        slug = names.get(parent.name.lower()) if parent.name else None
+        if slug:
+            return FOLDER, slug, str(parent), label
+    return None
+
+
+def _decide(path: str, tools: list, mapped: dict[str, str]) -> Detection:
     disk_path, member = _split_member(path)
     headers: set[str] = set()
     sources: list[str] = []
     if not member:
         headers, sources = _header(disk_path, tools)
-    folder, folder_name = _folder(disk_path, _folder_names(tools))
+    names = _folder_names(tools)
+    folder, _folder_name = _folder(disk_path, names)
+    found = _place(disk_path, names, mapped)
+    place = how = where = mapped = place_path = None
+    if found:
+        how, place, place_path, label = found
+        if how == MAPPING:
+            mapped = place
+            where = f"you set the {label} folder to {place}"
+        else:
+            where = f"in the {label} folder"
 
+    decided_by = {"place": place_path, "place_platform": place}
     if len(headers) > 1:
         return Detection(
             None, CONFLICT, None, folder,
-            f"headers disagree ({', '.join(sorted(sources))})",
+            f"headers disagree ({', '.join(sorted(sources))})", mapped,
+            tuple(sorted(headers)), **decided_by,
         )
     header = next(iter(headers), None)
-    if header and folder and header != folder:
+    if header and place and header != place:
         return Detection(
             None, CONFLICT, header, folder,
-            f"in the {folder_name} folder, but the header says {header}",
+            f"{where}, but the header says {header}", mapped, **decided_by,
         )
     if header:
-        return Detection(header, HEADER, header, folder, f"header says {header}")
-    if folder:
         return Detection(
-            folder, FOLDER, None, folder,
-            f"no readable header; in the {folder_name} folder",
+            header, HEADER, header, folder, f"header says {header}", mapped, **decided_by,
+        )
+    if place:
+        return Detection(
+            place, how, None, folder, f"no readable header; {where}", mapped, **decided_by,
         )
     return Detection(
         None, UNSORTED, None, None,
@@ -336,13 +438,19 @@ def clear_cache() -> None:
         _cache.clear()
 
 
-def detect_uncached(path: str, *, tools: Iterable | None = None) -> Detection:
+def detect_uncached(
+    path: str, *, tools: Iterable | None = None, mapped: dict[str, str] | None = None,
+) -> Detection:
     """:func:`detect_platform` without the shared cache, for a caller that keeps its own.
 
     A folder Library keys its own cache on (path, size, mtime) for every file
     it holds, which the bounded LRU below cannot do for a large Library.
+    *mapped* is the :func:`mapping_snapshot` the caller built its cache key
+    from; omitted, the mappings are read here (and may raise
+    ``MappingsUnavailable``).
     """
-    return _decide(path, list(tools) if tools is not None else _default_tools())
+    tool_list = list(tools) if tools is not None else _default_tools()
+    return _decide(path, tool_list, _mapped_folders() if mapped is None else mapped)
 
 
 def detect_platform(path: str, *, tools: Iterable | None = None) -> Detection:
@@ -363,29 +471,37 @@ def detect_platform(path: str, *, tools: Iterable | None = None) -> Detection:
         # no writer), stranding the threadpool worker. Checked before any
         # header probe or open, here at the one entry point every caller uses.
         return Detection(None, UNSORTED, None, None, "not a regular file or folder")
+    # One read of the mappings for the key and the decision alike, so a
+    # mapping changed in between can't cache one answer under the other's key.
+    # Unreadable mappings decide nothing, and nothing is remembered.
+    from services.platform_mappings import MappingsUnavailable
+
+    try:
+        mapped = _mapped_folders()
+    except MappingsUnavailable:
+        return Detection(None, UNSORTED, None, None, _MAPPINGS_UNREADABLE)
     if not _member and os.path.isdir(disk_path):
         # A folder Image (a PS3 disc folder) is judged by files below it, which
         # its own size and mtime do not track. Probe it fresh every time.
-        return _decide(path, tool_list)
-    key = detection_key(path, st, tools=tool_list)
+        return _decide(path, tool_list, mapped)
+    key = detection_key(path, st, tools=tool_list, mapped=mapped)
     if key is None:
         # A file the header probe needs is missing or unreadable (a .bin still
         # copying in). Answer now, but remember nothing: the next call re-reads.
-        return _decide(path, tool_list)
+        return _decide(path, tool_list, mapped)
     # `detection_key` already carries the probe set. The shared cache adds the
     # folder walk's context, which the file's own stat does not track: the
     # resolved parent folder (a retargeted folder symlink) and the Volume root
-    # the walk stops at. A folder Library's cache keys on `detection_key`
-    # alone: it walks a resolved root without following symlinks, so a path's
-    # folder context cannot change under it, and resolving it per Image per
-    # walk would cost a Volume resolution for every file.
+    # the walk stops at. A folder Library's cache adds the same context, but
+    # resolved once per walk for its root (`FolderLibrary._walk`): its walk
+    # follows no symlinks below the root, so every Image under it shares it.
     key = (*key, _folder_context(path))
     with _cache_lock:
         hit = _cache.get(path)
         if hit is not None and hit[0] == key:
             _cache.move_to_end(path)
             return hit[1]
-    result = _decide(path, tool_list)
+    result = _decide(path, tool_list, mapped)
     with _cache_lock:
         _cache[path] = (key, result)
         _cache.move_to_end(path)
@@ -396,23 +512,36 @@ def detect_platform(path: str, *, tools: Iterable | None = None) -> Detection:
 
 def detection_key(
     path: str, st: os.stat_result, *, tools: Iterable | None = None,
+    mapped: dict[str, str] | None = None,
 ) -> tuple | None:
     """What a cached Detection for *path* is valid for, or None when it must not be cached.
 
-    The file's size and mtime (*st*, the caller's stat of it) and those of
+    The file's size and mtime (*st*, the caller's stat of it), those of
     every other file its header probe reads (``ToolPlugin.header_reads``: a
-    sheet's tracks), and the probe set itself: the same file asked of other
-    tools can answer differently. The tool objects are compared by identity
-    and kept alive by the key, so an id is never reused. None when one of the
-    files cannot be stat'ed. The shared cache here and a folder Library's own
-    cache both key on it, so a changed track or probe set re-detects in either.
+    sheet's tracks), the probe set itself (the same file asked of other tools
+    can answer differently; the tool objects are compared by identity and kept
+    alive by the key, so an id is never reused), and the folder evidence that
+    decides it (the user's mapping or a Platform folder name, by source and
+    path). None when one of the files cannot be stat'ed. The shared cache here
+    and a folder Library's own cache both key on it, so a changed track, probe
+    set or mapping re-detects the Image in either. Pass the *mapped* snapshot
+    the decision uses (:func:`mapping_snapshot`), so both read the same one.
     """
     tool_list = list(tools) if tools is not None else _default_tools()
     disk_path, member = _split_member(path)
     deps = () if member else _header_dependencies(disk_path, tool_list)
     if deps is None:
         return None
-    return (st.st_size, st.st_mtime_ns, deps, tuple(tool_list))
+    # The deciding folder evidence by path and source: where a mapping sits
+    # relative to a Platform-named folder changes the answer, so a name alone
+    # would not do. With no mapping anywhere the folder evidence is the path's
+    # own, already what the key is for: skip the walk (a resolve) on every
+    # stat-only rewalk. *mapped* is the snapshot the caller decides with
+    # (`mapping_snapshot`); omitted, the mappings are read here.
+    if mapped is None:
+        mapped = _mapped_folders()
+    found = _place(disk_path, _folder_names(tool_list), mapped) if mapped else None
+    return (st.st_size, st.st_mtime_ns, deps, tuple(tool_list), found[:3] if found else None)
 
 
 def _header_dependencies(path: str, tools: Iterable) -> tuple | None:
@@ -489,11 +618,16 @@ def _extension_match(spec, path: str, reads) -> str | None:
     """The extension of ``path`` that ``spec`` reads, by name only.
 
     A directory mode (makeps3iso's folder->iso) reads folders, not suffixes:
-    it answers ``""`` for a directory on disk and None for anything else.
+    it answers ``""`` for a directory on disk and None for anything else. A
+    file mode never reads a directory, whatever its name: a PS3 folder named
+    ``Game.iso`` is a folder, not an ISO (#294's 5eef3f3).
     """
     disk_path, member = _split_member(path)
+    is_dir = not member and os.path.isdir(disk_path)
     if InputKind.DIRECTORY in spec.input_kinds:
-        return "" if not member and os.path.isdir(disk_path) else None
+        return "" if is_dir else None
+    if is_dir:
+        return None
     name = path.split("::", 1)[1] if member else disk_path
     return match_extension(name, reads)
 

@@ -959,8 +959,13 @@ async def test_repeated_sweeps_on_a_hung_mount_strand_one_thread(
     from routes import libraries as routes
     from services.rules import sweep as rules_sweep
 
+    from services import notifications
+
     lib = await _library_with_rules(tree)
     monkeypatch.setattr(rules_sweep, "_LISTING_SECONDS", 0.2)
+    # The sweep's error notification reads its destinations on a pooled worker,
+    # which can start one more idle pool thread; not a stranded one.
+    monkeypatch.setattr(notifications, "notify", lambda event: None)
     before = threading.active_count()
 
     for _ in range(6):
@@ -1822,7 +1827,8 @@ def test_the_folder_libraries_migration_stacks_on_the_ledger_totals_one(tmp_path
     engine = _db.make_engine(str(tmp_path / "chain.db"))
     cfg = _db._alembic_config(engine)
     script = ScriptDirectory.from_config(cfg)
-    assert script.get_heads() == ["0012"]
+    # #304's 0013 stacks on this 0012 and #305's 0014 on that: one head, 0014.
+    assert script.get_heads() == ["0014"]
     assert script.get_revision("0012").down_revision == "0011"
     assert script.get_revision("0011").down_revision == "0010"
 
@@ -1840,6 +1846,35 @@ def test_the_folder_libraries_migration_stacks_on_the_ledger_totals_one(tmp_path
     fresh = _db.make_engine(str(tmp_path / "fresh.db"))
     command.upgrade(_db._alembic_config(fresh), "head")
     assert {"folder_libraries", "ledger_totals"} <= tables(fresh)
+
+
+@pytest.mark.asyncio
+async def test_an_ancestor_swapped_for_a_symlink_re_detects(db: Path) -> None:
+    """CodeRabbit 4578050375: the walk's folder context is part of the cache key.
+
+    ``ps2`` is cached for ``ps2/library/game.iso`` from its folder. Rename
+    ``ps2`` to ``neutral`` and put a ``ps2`` symlink to it in its place: the
+    Library path and the file's stat are unchanged, but the folder the file
+    really sits in no longer names a Platform, so the next walk re-detects.
+    """
+    import os as _os
+
+    from services import libraries
+
+    library_dir = db / "ps2" / "library"
+    library_dir.mkdir(parents=True)
+    _blank(library_dir / "game.iso")
+    lib = await _register(library_dir)
+    library = libraries.get(lib["id"])
+
+    first = library.scan(refresh=True)
+    assert [e.detection.platform for e in first.entries] == ["ps2"]
+
+    _os.rename(db / "ps2", db / "neutral")
+    (db / "ps2").symlink_to(db / "neutral", target_is_directory=True)
+
+    second = library.scan(refresh=True)
+    assert [e.detection.platform for e in second.entries] == [None]
 
 
 def test_the_detection_key_names_its_probe_set(db: Path) -> None:

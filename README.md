@@ -460,6 +460,52 @@ curl -X PUT http://localhost:8080/api/ledger/settings \
 `GET /api/ledger/recent?limit=N` and `GET /api/ledger/savings` return the rows and
 the totals as JSON.
 
+### Notifications
+
+Open **Settings** and add a webhook URL or an [Apprise](https://github.com/caronc/apprise)
+URL (Discord, Telegram, ntfy, email and many more) to hear about finished work.
+Nothing leaves the server until you add a destination. You get:
+
+- one message when a sweep finishes, with its counts and the space it saved;
+  anything that failed inside the sweep is listed in that message, not sent
+  separately;
+- one message when a job you started by hand fails;
+- one message when a [check Rule](#check-rules) finds Images that are not
+  Intact, listing them.
+
+There are three destination types. A **generic webhook** gets a JSON `POST`:
+
+```json
+{"event": "sweep_finished", "title": "Sweep finished: 3 converted, 1.2 GB saved",
+ "message": "Queued 3. Space saved: 1.2 GB.",
+ "data": {"queued": 3, "completed": 3, "failed": 0, "cancelled": 0, "saved_bytes": 1288490188,
+          "failures": [], "errors": []}}
+```
+
+A **Discord webhook** takes any https URL that speaks Discord's webhook format
+(discord.com, or a compatible service) with no Apprise needed. It posts one embed
+(green for a clean sweep, red for a failure, grey otherwise) with a few key/value
+fields, a UTC timestamp, and `allowed_mentions: {"parse": []}` so nothing in a
+filename can ping @everyone or a role. Long text is truncated to Discord's limits:
+
+```json
+{"username": "Compressatorium", "content": "Job failed: Game.iso",
+ "embeds": [{"title": "Job failed: Game.iso", "description": "createdvd: no disc",
+             "color": 15158332, "fields": [{"name": "Mode", "value": "createdvd", "inline": true}],
+             "timestamp": "2026-11-15T14:00:00+00:00"}],
+ "allowed_mentions": {"parse": []}}
+```
+
+A 200 or 204 is success; a 429 is reported with its Retry-After and is not retried.
+The URL is https-only for a Discord webhook. An **Apprise URL** covers everything
+else Apprise supports. Use
+**Test** to send a sample message and see the error if it fails. Saved URLs are
+never sent back to the browser, since they often hold a token, and sends have a
+10 second timeout and run in the background, so a slow or broken destination
+never delays or fails a job. Messages to one destination are sent in order, so a burst all arrives. A webhook URL that redirects is treated as an error (Test shows "HTTP 30x"; save the final URL), and webhook delivery does not use `HTTP_PROXY` / `HTTPS_PROXY`. Webhooks need nothing extra. Apprise ships in the
+Docker image; without it, Apprise URLs are refused with a message and webhooks
+still work. The same destinations are available at `/api/notifications`.
+
 The **Ledger** view in the sidebar lists every row, newest first, 25 to a page.
 Search matches the Source or output path, and you can filter by status, tool and
 Platform. **Export CSV** downloads every row matching the current search and
@@ -526,6 +572,16 @@ it, say), the source is kept, the output stays beside it,
 and the job ends as `converted, source kept: couldn't update <playlist>
 (<reason>)`. The Ledger row records each playlist updated, or the one that
 kept the source and why.
+
+**Create an `.m3u` from selected discs.** Tick the discs of one game in the file
+list (two or more disc images in the same folder, such as `.cue`, `.gdi`, `.iso`,
+`.chd`, `.rvz` or `.cso`) and press **Create .m3u**. Ticked `.bin` tracks of a
+`.cue` are left out; two formats of one disc are refused. A preview shows the playlist name and its
+entries before anything is written. The name drops the `(Disc N)` / `CD N` part
+(`Final Quest (Disc 1).cue` gives `Final Quest.m3u`) and can be edited. Entries
+go in disc order, by the number in the name and otherwise by name, as file names
+beside the playlist. An existing playlist is never overwritten: if the name is
+taken, the preview offers the next free one (`Final Quest (2).m3u`).
 
 ### File info
 
@@ -693,9 +749,11 @@ becomes a Library, and the **Rules** view (in the sidebar) shows it:
   (`.m3u`) are not Images. A `.bin` no sheet lists is its own Image. Converted
   outputs (`.chd`, `.rvz`) and archives (`.zip`, `.7z`) in the folder count as
   Images too; folders (a decrypted PS3 game) do not.
-- **Platforms** come from Platform detection: an Image's own header first, then
-  its folder name (`ps2`, `gc`, `psx`, `megacd`, ... as ES-DE and Batocera lay
-  them out). Each Platform shows its name and how many Images it has.
+- **Platforms** come from Platform detection: an Image's own header first,
+  then the nearest folder above it that either has a Platform you set (see
+  [Findings](#findings-and-folder-platforms)) or is named after one (`ps2`,
+  `gc`, `psx`, `megacd`, ... as ES-DE and Batocera lay them out). Each
+  Platform shows its name and how many Images it has.
 - **Unsorted** Images (nothing names their Platform) and **Conflicted** ones
   (the header disagrees with the folder, such as a GameCube disc filed under
   `ps2`) are counted but never converted by a Rule. Files that cannot be read
@@ -719,6 +777,98 @@ becomes a Library, and the **Rules** view (in the sidebar) shows it:
 - **Remove Library** forgets the Library and its Rules. It never touches a file.
 
 The RomM view's **Automation** tab is the same Rules view, opened on RomM.
+
+### Check Rules
+
+A check Rule checks Images instead of converting them: it has no target format.
+A Platform can have one beside its conversion Rule, so "convert PS2 to CHD" and
+"check PS2 nightly" work together. Expand a Platform in the Rules view, on a
+folder Library or on RomM, tick **Check these Images are Intact**, and set how
+much to read a night ("check 50 GB a night"), a time window and weekdays:
+
+- A check Rule runs once per window, on each weekday you allow, on its own
+  clock: the conversion Rule on the same Platform keeps its own. A run that
+  starts late in the window, or carries on past midnight, does not move the
+  next night's run. No window, or the same start and end (03:00 to 03:00),
+  means the whole day: once a day from local midnight. (A conversion Rule
+  with the same start and end is paused instead, since there it is a slip.) Nightly runs need **Run
+  automatically** on for the Library. **Run now** runs both, and the check
+  spends another budget's worth on top of the nightly run, which still comes
+  when it is due.
+- The Images never checked go first, then the ones checked longest ago. They
+  are taken in that order until the next one does not fit the budget; a smaller
+  one further down never jumps ahead. The budget counts an Image's full size,
+  every track. An Image larger than the whole budget is checked on its own
+  rather than never.
+- Each Image goes through its tool's own **Verify**, the same check as the
+  Verify action. A run is one job in the Jobs panel, and Cancel stops it.
+  While an Image's Verify runs and its result is recorded (not while it waits
+  its turn) it is held like a file a conversion reads. A conversion that finishes then and would delete
+  that Source waits briefly; if the check is still reading it, the conversion
+  completes with "Source kept: it was being read by another job", leaving the
+  Source and the new file both in place.
+  An Image that is gone or changed by the time its turn comes (converted
+  away, deleted, replaced) is skipped: no Finding and no check time.
+- An Image that fails becomes a **Not Intact** Finding, and the run sends one
+  notification listing every failure. A later check that passes clears the
+  Finding. Dismissing it hides it while the file stays the same.
+- A check that could not run (the tool is missing, it timed out, its
+  verifier was killed) gives no Finding and no check time. The attempt only
+  sends the Image behind the others, so one that never reaches a verdict does
+  not take every night's budget. An Image no installed tool can check on its
+  Platform (a PS2 `.iso`) is skipped and does not count against the budget.
+- A Not Intact Finding whose file is gone (its folder still there) is cleared
+  by the next listing or sweep. Pointing RomM at another instance or library
+  drops RomM's check times and Not Intact Findings, since the new instance
+  reuses ROM ids for other games.
+- **Preview** lists what tonight's run would check, and checks nothing.
+
+A check never converts, moves, renames or deletes anything.
+
+A run on a GBA folder with one damaged ROM archive: its Not Intact row in
+Findings (no Set Platform: the file is the problem, not its folder), and the
+run's Check job in the Jobs panel with its result.
+
+| Light | Dark |
+|-------|------|
+| ![Findings with a Not Intact row, light](docs/screenshots/findings-not-intact-light.png) | ![Findings with a Not Intact row, dark](docs/screenshots/findings-not-intact-dark.png) |
+| ![A Check job in the Jobs panel, light](docs/screenshots/jobs-check-light.png) | ![A Check job in the Jobs panel, dark](docs/screenshots/jobs-check-dark.png) |
+
+### Findings and folder Platforms
+
+The **Findings** view (in the sidebar) lists every Image in a folder Library
+that needs your decision:
+
+- **Platform conflict**: the Image's header disagrees with its folder, or with
+  the Platform you set on the folder ("in the ps2 folder, but the header says
+  ngc").
+- **Unsorted**: nothing names the Image's Platform, or the file could not be
+  read.
+- **Not Intact**: a [check Rule](#check-rules) found the Image fails its
+  tool's check (in a folder or RomM Library). It has no Set Platform action.
+
+Each row shows the Library, the Image, the kind, and when it was first and last
+seen, with three actions: **Open folder** shows it in the Workspace, **Set
+Platform** tells the app what the folder holds, and **Dismiss** hides the row
+until its cause changes (a dismissed conflict comes back if the header or
+folder later says something else). **Show dismissed** lists the hidden ones,
+each with **Show again**. **Check now** lists every folder Library again.
+Findings are written each time a Library is listed or swept, and cleared once
+the cause is gone. A subfolder or file that cannot be read during a listing
+keeps its Findings as they were until it can. A dismissal is kept even when its
+Image drops out of a listing for a while (a share that was unmounted): the
+Finding comes back dismissed if its cause is the same.
+
+**Set Platform** ("this folder is PSP") is also on a folder's row menu in the
+Workspace, for any folder inside a folder Library. Walking up from an Image,
+the nearest folder that has a Platform set or is named after one decides, and
+on the same folder the one you set wins. So setting `roms/` to PSP names the
+Images in `roms/misc/`, while `roms/ps2/` stays PS2. The header still wins
+over both, and a header that disagrees is a conflict, never a guess. **Clear
+mapping** removes it. If the Library is being listed when you save, the
+Findings update once that listing finishes.
+
+The app never moves, renames or deletes an Image because of a Finding.
 
 #### Your metadata survives conversion
 
@@ -918,6 +1068,12 @@ A three-pane layout: navigation and tool picker on the left, the volume and file
 |-------|------|
 | ![Auto plan, light](docs/screenshots/workspace-auto-plan-light.png) | ![Auto plan, dark](docs/screenshots/workspace-auto-plan-dark.png) |
 
+**Create .m3u from selected discs.** Select the discs of one game and the dialog previews the playlist name and the entries in disc order before it writes anything.
+
+| Light | Dark |
+|-------|------|
+| ![Create .m3u preview, light](docs/screenshots/playlist-light.png) | ![Create .m3u preview, dark](docs/screenshots/playlist-dark.png) |
+
 **Dolphin (GameCube / Wii).** Compress discs to RVZ, WIA, or GCZ, with a codec and compression-level picker.
 
 | Light | Dark |
@@ -984,6 +1140,22 @@ A folder registered as a Library, with the Platforms found in it, its Unsorted a
 |-------|------|
 | ![Rules view on a folder Library, light](docs/screenshots/rules-folder-light.png) | ![Rules view on a folder Library, dark](docs/screenshots/rules-folder-dark.png) |
 
+#### Check Rule
+
+A PS2 Platform with a conversion Rule and a check Rule: 50 GB a night between 01:00 and 05:00. See [Check Rules](#check-rules).
+
+| Light | Dark |
+|-------|------|
+| ![Check Rule in the rule editor, light](docs/screenshots/rule-editor-check-light.png) | ![Check Rule in the rule editor, dark](docs/screenshots/rule-editor-check-dark.png) |
+
+#### Findings
+
+A Platform conflict (a GameCube disc filed under `ps2`) and an Unsorted Image, each with its actions. See [Findings and folder Platforms](#findings-and-folder-platforms).
+
+| Light | Dark |
+|-------|------|
+| ![Findings view, light](docs/screenshots/findings-light.png) | ![Findings view, dark](docs/screenshots/findings-dark.png) |
+
 #### DAT Library
 
 Import or sync No-Intro / Redump / MAMERedump datasets and match converted files against known-good hashes.
@@ -991,6 +1163,14 @@ Import or sync No-Intro / Redump / MAMERedump datasets and match converted files
 | Light | Dark |
 |-------|------|
 | ![DAT Library, light](docs/screenshots/dat-light.png) | ![DAT Library, dark](docs/screenshots/dat-dark.png) |
+
+#### Settings
+
+Notification destinations for finished sweeps and failed jobs.
+
+| Light | Dark |
+|-------|------|
+| ![Settings, light](docs/screenshots/settings-light.png) | ![Settings, dark](docs/screenshots/settings-dark.png) |
 
 #### Help
 
@@ -1821,7 +2001,10 @@ ids are listed by `/api/libraries`). `--dry-run` prints what each
 Rule would queue on this pass and writes nothing. Unlike the editor's Preview it
 keeps each Rule's clock, so a Rule that is not due (outside its window, or run
 within its interval) prints no line. It prints one line per Platform and one per
-job as it ends.
+job as it ends. A due [check Rule](#check-rules) runs here too, and the pass
+waits for its checks: an Image that is not Intact, or whose check could not
+run, makes it exit `1`, and the check Rule's night counts as done only once its
+checks have finished.
 
 Before it sweeps RomM, `run-rules` does the RomM upkeep the server does in the
 background: it finishes an identity cleanup a crash left owed (otherwise RomM
@@ -2032,6 +2215,8 @@ The Web UI communicates with a REST API that can also be used directly. Interact
 | GET | `/api/files/search` | Recursively search for convertible files |
 | GET | `/api/files/archive` | List contents of an archive file |
 | POST | `/api/files/rename` | Rename a file or directory |
+| POST | `/api/files/playlist/preview` | Preview the `.m3u` that selected discs would make (name, folder, ordered entries). Writes nothing |
+| POST | `/api/files/playlist` | Write the previewed `.m3u` beside the discs. Never overwrites: a taken name is a 409 with `detail.suggested_name` |
 | DELETE | `/api/files/delete` | Delete a single file or empty directory |
 | POST | `/api/files/delete-batch` | Delete multiple files at once |
 

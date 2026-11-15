@@ -370,8 +370,10 @@ def test_migrations_have_a_single_head():
 
     cfg = _db._alembic_config(_db.make_engine(":memory:"))
     heads = ScriptDirectory.from_config(cfg).get_heads()
-    # #303's 0012 (folder Libraries) stacks on this branch's 0011.
-    assert heads == ["0012"]
+    # #303's 0012 (folder Libraries) stacks on this branch's 0011, #304's
+    # 0013 (mappings and Findings) on that, and #305's 0014 (check times) on
+    # that.
+    assert heads == ["0014"]
 
 
 def test_upgrade_from_0010_seeds_totals_from_populated_ledger(tmp_path):

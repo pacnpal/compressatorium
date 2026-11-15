@@ -4,7 +4,7 @@
 // Library's FolderRulesSource (libraries.svelte.js). Only the endpoints differ,
 // and they come in through the constructor:
 //
-//   { getRules(), saveRules(rules), forgetConverted(platformIds),
+//   { getRules(), saveRules(rules, checkRules), forgetConverted(platformIds),
 //     preview(body), run(body), loadError }
 //
 // A subclass adds its Platforms and the members the editor reads beside the
@@ -13,13 +13,41 @@
 // automatableModes, losesDatMatch(spec), imageNouns, the filter labels, and
 // afterRun(result).
 //
+// A Platform has up to two Rules (#305): its conversion Rule in `rules` and
+// its check Rule in `checkRules`, each with its own run state. They load and
+// save together, and one never replaces the other.
+//
 // No imports on purpose: the store tests evaluate this file with Node.
+
+// `invalid_window` belongs to the server: `normalize_rule` recomputes it from
+// the window on every save, so the editor never sends it (Codex 4577383258: a
+// sent flag kept a corrected window paused for good). It is dropped on screen
+// as soon as the window or Enabled changes, so a stale error does not linger
+// until the save answers. Any other edit leaves the server's error showing.
+const WINDOW_FIELDS = ['window_start', 'window_end', 'enabled'];
+
+function withoutStaleWindowFlag(previous, rule) {
+  if (!rule?.invalid_window) return rule;
+  if (previous && WINDOW_FIELDS.every((f) => previous[f] === rule[f])) return rule;
+  const { invalid_window: _stale, ...rest } = rule;
+  return rest;
+}
+
+function withoutWindowFlags(rules) {
+  return Object.fromEntries(Object.entries(rules ?? {}).map(([key, rule]) => {
+    if (!rule || !('invalid_window' in rule)) return [key, rule];
+    const { invalid_window: _server, ...rest } = rule;
+    return [key, rest];
+  }));
+}
 
 export class RulesSource {
   rules = $state({});
+  checkRules = $state({});
   ruleDefaults = $state(null);
   ruleOptions = $state({ orders: [], duplicate_actions: [], days: [] });
   ruleState = $state({});
+  checkRuleState = $state({});
   rulesLoading = $state(false);
   rulesSaving = $state(false);
   rulesError = $state(null);
@@ -100,10 +128,12 @@ export class RulesSource {
       // for the next save to write over the new one.
       if (!this.rulesDirty && generation === this.#saveGeneration) {
         this.rules = data?.rules ?? {};
+        this.checkRules = data?.check_rules ?? {};
       }
       this.ruleDefaults = data?.defaults ?? null;
       this.ruleOptions = data?.options ?? this.ruleOptions;
       this.ruleState = data?.state ?? {};
+      this.checkRuleState = data?.check_state ?? {};
     } catch (e) {
       // Surfaced, not swallowed: without this the editor renders an empty rule
       // set that looks like "nothing is configured" when the request failed.
@@ -126,8 +156,35 @@ export class RulesSource {
     return this.ruleState[String(platformId)] ?? null;
   }
 
+  /** The check Rule for *platformId*, or null when it has none. */
+  checkRuleFor(platformId) {
+    const rule = this.checkRules[String(platformId)];
+    return rule ? { ...rule } : null;
+  }
+
+  /** The check Rule's run state: last run, how many it checked. */
+  lastCheckFor(platformId) {
+    return this.checkRuleState[String(platformId)] ?? null;
+  }
+
+  setCheckRule(platformId, rule) {
+    const key = String(platformId);
+    this.checkRules = { ...this.checkRules, [key]: withoutStaleWindowFlag(this.checkRules[key], rule) };
+    this.rulesDirty = true;
+    this.#rulesRevision += 1;
+  }
+
+  removeCheckRule(platformId) {
+    const next = { ...this.checkRules };
+    delete next[String(platformId)];
+    this.checkRules = next;
+    this.rulesDirty = true;
+    this.#rulesRevision += 1;
+  }
+
   setRule(platformId, rule) {
-    this.rules = { ...this.rules, [String(platformId)]: rule };
+    const key = String(platformId);
+    this.rules = { ...this.rules, [key]: withoutStaleWindowFlag(this.rules[key], rule) };
     this.rulesDirty = true;
     this.#rulesRevision += 1;
   }
@@ -162,7 +219,9 @@ export class RulesSource {
     // The editor stays live while this is in flight, so anything typed after
     // this point is NOT in what we just submitted.
     const revision = this.#rulesRevision;
-    const data = await this.#endpoints.saveRules(this.rules);
+    const data = await this.#endpoints.saveRules(
+      withoutWindowFlags(this.rules), withoutWindowFlags(this.checkRules),
+    );
     this.#saveGeneration += 1;
     if (revision !== this.#rulesRevision) {
       // Edited mid-save. Adopting the server's copy would replace those
@@ -174,6 +233,7 @@ export class RulesSource {
     // Take the server's normalized copy: it clamps numbers and drops rules
     // whose mode no longer exists, so the editor shows what will actually run.
     this.rules = data?.rules ?? this.rules;
+    this.checkRules = data?.check_rules ?? this.checkRules;
     this.rulesDirty = false;
     return this.rules;
   }

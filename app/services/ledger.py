@@ -21,7 +21,7 @@ from datetime import datetime, timedelta, timezone
 import anyio
 from fastapi.concurrency import run_in_threadpool
 from logging_setup import get_logger
-from models import ConversionJob
+from models import ConversionJob, JobStatus
 from services import db as _db
 from services.preferences_store import preferences_store
 from services.tools import registry
@@ -89,6 +89,17 @@ def row_from_job(job: ConversionJob) -> dict:
     }
 
 
+def job_saved_bytes(job: ConversionJob) -> int:
+    """Space this job reclaimed: the Ledger's definition (a completed job that
+    replaced its Source), for callers that report it without a database read."""
+    if (
+        job.status != JobStatus.COMPLETED or not job.deleted_paths
+        or job.input_bytes is None or job.output_size is None
+    ):
+        return 0
+    return job.input_bytes - job.output_size
+
+
 def _session():
     if _db.SessionLocal is None:
         raise RuntimeError("ledger: db.init_engine() has not run")
@@ -144,7 +155,15 @@ async def retention_days() -> int | None:
 
 
 async def record(job: ConversionJob) -> None:
-    """Terminal listener: write *job*'s row. Never raises."""
+    """Terminal listener: write *job*'s row. Never raises.
+
+    Skipped only for a job mode that declares it has no row
+    (``job_manager.EXTERNAL_JOB_MODES``: a check Rule's run).
+    """
+    from services.job_manager import in_ledger
+
+    if not in_ledger(job.mode):
+        return
     try:
         await run_in_threadpool(_insert_sync, row_from_job(job), await retention_days())
     except Exception:

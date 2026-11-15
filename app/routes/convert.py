@@ -34,6 +34,7 @@ from services.job_manager import (
     DestinationUnresolvableError,
     OutputClaimedError,
     QueueBackpressureError,
+    is_external_mode,
     job_manager,
 )
 from services import referrers
@@ -835,7 +836,7 @@ async def _planned_output_path(mode: str, file_path: str, output_dir: str | None
 @router.post("/jobs/check-duplicates", response_model=list[DuplicateInfo])
 async def check_duplicates(request: CheckDuplicatesRequest):
     """Check which output files already exist for the given input files."""
-    if request.mode in (ConversionMode.METADATA_SCAN, ConversionMode.DAT_MATCH):
+    if is_external_mode(request.mode):
         raise HTTPException(
             status_code=400,
             detail=f"{request.mode.value} is not a valid conversion mode",
@@ -1001,7 +1002,7 @@ async def delete_plan(request: DeletePlanRequest) -> dict:
 @router.post("/jobs", response_model=ConversionJob)
 async def create_job(request: JobCreateRequest):
     """Create a single conversion job."""
-    if request.mode in (ConversionMode.METADATA_SCAN, ConversionMode.DAT_MATCH):
+    if is_external_mode(request.mode):
         raise HTTPException(
             status_code=400,
             detail=f"{request.mode.value} is not a valid conversion mode",
@@ -1213,7 +1214,7 @@ async def prepare_batch(request: BatchJobCreateRequest) -> PreparedBatch:
     Raises the same HTTP errors ``create_batch_jobs`` always has. Split out so
     Auto can prepare every group before it queues any of them.
     """
-    if request.mode in (ConversionMode.METADATA_SCAN, ConversionMode.DAT_MATCH):
+    if is_external_mode(request.mode):
         raise HTTPException(
             status_code=400,
             detail=f"{request.mode.value} is not a valid conversion mode",

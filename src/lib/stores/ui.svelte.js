@@ -14,7 +14,7 @@ import { STORAGE_KEYS, readBool, writeBool, readString, writeString } from '$lib
 import { api } from '$lib/api/endpoints.js';
 import { registry } from '$lib/tools/registry.js';
 
-const VIEWS = Object.freeze(['dashboard', 'workspace', 'romm', 'rules', 'dat', 'ledger', 'help']);
+const VIEWS = Object.freeze(['dashboard', 'workspace', 'romm', 'rules', 'findings', 'dat', 'ledger', 'settings', 'help']);
 // Tool ids come from the registry, single source of truth, no
 // hardcoded set to keep in sync when a 4th tool is added.
 const VALID_TOOLS = registry.ids();
@@ -49,6 +49,8 @@ class UIStore {
   deleteTarget = $state(null);
   bulkDeleteEntries = $state(null);
   bulkVerifyItems = $state(null);
+  // Full paths of the discs a playlist is being made from (null = closed).
+  playlistPaths = $state(null);
   duplicateCheck = $state(null);
   deletePlan = $state(null);
   showCancelAll = $state(false);
@@ -80,6 +82,7 @@ class UIStore {
       !!this.deleteTarget ||
       !!this.bulkDeleteEntries ||
       !!this.bulkVerifyItems ||
+      !!this.playlistPaths ||
       !!this.duplicateCheck ||
       !!this.deletePlan ||
       this.duplicatePromptOpen ||

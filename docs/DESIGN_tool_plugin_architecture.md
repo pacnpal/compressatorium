@@ -2885,14 +2885,105 @@ conversion, no check runs in that job, so `job.check_passed` stays unset. Its
 (`JobManager._stored_check`), so the UI keeps a Round-tripped badge rather than
 falling back to Intact.
 
+### 3.3.13 Notifications (`services/notifications.py`)
+
+The one place that sends anything off the server. Callers use these functions and
+never see a transport:
+
+- `notify(event)` queues an `Event(kind, title, body, data)` and returns at once.
+- `on_job_finished(job)` is a `JobManager.add_terminal_listener` callback
+  (registered in `main.py`). A failed job that no sweep owns becomes one
+  `job_failed` message.
+- `sweep_owner()`, `sweep_jobs_queued(jobs)` and `sweep_finished(result, dry_run=,
+  library_id=)` are the sweep's hooks (one line each in
+  `rules/sweep.py::_sweep_locked`; `sweep_finished` is called from `sweep()` in a
+  `finally`, so the post-lock return point named in the Rule engine section is not
+  where a sweep ends for notifications). A sweep queues jobs and returns, so its
+  message waits until the last of those jobs is terminal, then sends one
+  `sweep_finished` message: counts, bytes saved (the Ledger's definition, via
+  `ledger.job_saved_bytes`), and the failures listed inside it. The queue call
+  enqueues and then awaits, so a job can end before it returns. Ownership is
+  therefore set at creation: `sweep_owner()` returns a token, the sweep passes it as
+  `owner=` through `create_batch_jobs` and `create_jobs_atomic`, and
+  `JobManager._queue_job_locked` sets `ConversionJob._sweep_owner` before the job is
+  enqueued (`_sweep_owner` is a private attribute, in no schema or serialized form; callers that pass nothing behave as
+  before). The terminal listener decides by `_sweep_owner` alone: an owned job is never
+  sent as a lone `job_failed`, and a manual job on the same Source is never
+  absorbed. Once `sweep_jobs_queued` has the jobs, each is the sweep's by id
+  whatever its status, so a late listener sends nothing alone and the message goes
+  out once. A job already terminal when `sweep_jobs_queued` runs is counted
+  but not waited on. `sweep()` calls `sweep_finished` from a `finally`, with a
+  default `sweep_failed` error, so a sweep that raises after queueing still
+  closes; a cancel (shutdown) reports nothing as a failure. A sweep that queued
+  nothing and hit no error sends nothing; a preview sends nothing.
+- A platform that keeps failing is due again every scheduler tick, so an error is
+  reported once per `(library, platform, reason)`: repeats stay quiet and a different reason
+  sends again. A reported error is forgotten only when a later sweep lists the
+  platform in `result["platforms"]` (it was inspected) without that error; a
+  filtered or capped sweep forgets nothing. There is no recovery message. The key
+  is the error text, so those texts must stay constant.
+
+Events are a registry: `register_event(key, title)` adds one, `event_list()`
+feeds Settings. A later ticket (check failed, with check Rules) registers its own
+event and calls `notify`; no transport changes.
+
+Destination types are rows of one table, `_KINDS` (`Kind(key, label, placeholder,
+send, check, hint)`); `KINDS`, `TRANSPORTS` and `kind_list()` (which Settings reads
+to build its picker) derive from it, so adding a type is one row and nothing else
+branches on the kind. Transports are `TRANSPORTS[kind](url, event)`, blocking and
+raising on failure. `webhook` and `discord` share one HTTP path, `_post_json`
+(`http.client`, JSON `POST`, http/https only, one overall deadline) and differ only
+in the payload builder: `generic_payload` is `{"event", "title", "message", "data"}`
+(example in the README); `discord_payload` is one embed (colour by outcome, at most
+10 scalar `data` fields, a UTC timestamp) with `allowed_mentions: {"parse": []}`,
+truncated with an ellipsis to Discord's limits (content 2000, title 256,
+description 4096, field value 1024, 6000 over one embed). `discord` requires https
+when a destination is saved or tested. 200 and 204 are success; 429 is an error
+naming Retry-After and is never retried. `apprise` is imported inside the function;
+without the package its `check` refuses Apprise URLs with a
+clear message. Tests replace entries in `TRANSPORTS` with a recorder. The webhook
+never follows redirects (any status of 300 or more is an error, and `Location` is
+never read), does not use `HTTP(S)_PROXY`, and runs under one overall deadline: a
+timer shuts the socket down at 0.9 x `SEND_TIMEOUT_S`. Apprise keeps its own
+per-operation socket timeouts (4 s by default), which are not an overall limit.
+
+`notify` and `deliver` put the event in a module inbox synchronously, before any
+await, so the order events were raised in is the order every destination sees
+them. One dispatcher task drains the inbox: it loads the destinations and hands the
+event to each destination's own FIFO queue (`MAX_QUEUED_PER_DESTINATION`, oldest
+dropped with a warning when full), one event at a time. Each queue has one worker.
+The worker reads the destination's kind and URL when it sends, so an edit applies to
+messages already queued and a destination deleted meanwhile is skipped;
+`remove_destination` also drops its queue. Empty queues and finished workers are
+removed.
+
+Sends run on `run_detached`'s daemon threads (`services/subprocess_runner.py`), never a
+thread pool: pool workers are joined at interpreter exit, so one send that never returns
+would hold a CLI command open after its work finished. A thread cannot be killed: if a send outlives `SEND_TIMEOUT_S` the
+destination is marked busy until its thread really ends, and queued sends to it
+fail fast ("still running") instead of stacking threads. Errors are scrubbed: a
+destination URL is a secret and appears in no log line, no API response and no
+error text. Foreign exceptions are logged by type name only; our own error texts
+pass `_redact`, which strips the URL and each piece of it. An Apprise failure
+reason is taken from Apprise's own log (`LogCapture`) and redacted the same way.
+
+Destinations live in the `notifications` preference (`{"destinations": [{id,
+kind, url, label}]}`). The API (`routes/notifications.py`) returns only
+`{id, kind, label, hint}`, where `hint` is a webhook's host or an Apprise scheme.
+An edit that omits `url` keeps the stored one. Pending sweeps are in memory, so a
+restart mid-sweep drops that one message.
+
 ### 3.3.14 Platform detection (`services/platform_detect.py`, `ToolPlugin.header_platform`)
 
 `detect_platform(path) -> Detection` is the one place an Image's Platform is
 worked out without a library manager. The convert panel's Auto choice uses it
 today; folder Libraries (#303), the Inbox and the CLI (#306) are meant to call
 the same function. `Detection` is a frozen dataclass: `platform` (a slug, or
-None), `how` (`"header"`, `"folder"`, `"conflict"`, `"unsorted"`), what each
-source said (`header`, `folder`) and a one-line `reason` for the UI.
+None), `how` (`"header"`, `"mapping"`, `"folder"`, `"conflict"`,
+`"unsorted"`), what each source said (`header`, `folder` for the nearest
+Platform name, `mapped`, `headers` when two disagree), the folder evidence that
+decided (`place`, its path, and `place_platform`) and a one-line `reason` for
+the UI.
 
 Precedence is fixed and never guesses:
 
@@ -2925,16 +3016,38 @@ Precedence is fixed and never guesses:
    (`InputKind.DIRECTORY`) whose tool accepts it, so a PS3 folder goes to
    `folder_to_iso`. The web UI offers a folder under Auto when the listing
    marks it convertible by a tool with a folder-input mode.
-2. **Folder name.** The nearest parent folder whose name is a key or alias in
-   `_ALIASES`: RomM's slug for each Platform a tool declares, with every other
-   name for it (the tools' own spellings and the folder names ES-DE and
-   Batocera use: `ps1`, `gc`, `megacd`, `pcenginecd`, `cdi`, `megadrive`,
-   `mastersystem`, `n3ds`, ...). Archive members (`a.zip::disc.iso`) skip the
-   header and use the archive's folder. The walk runs from the Image's own
-   folder up to the root of the Volume that holds it, root included, and never
-   above (`utils.path_utils.containing_volume_root`), so a Volume mounted under
-   `/mnt/md/...` does not make every Image in it a Genesis Image. A path in no
-   configured Volume uses only its own folder.
+2. **The nearest folder that says** (`_place`). Walking up from the Image's
+   folder, the first folder that either carries the user's mapping (#304,
+   §3.3.16) or has a name that is a key or alias in `_ALIASES` decides. At the
+   same folder the mapping wins. `_ALIASES` holds RomM's slug for each
+   Platform a tool declares, with every other name for it (the tools' own
+   spellings and the folder names ES-DE and Batocera use: `ps1`, `gc`,
+   `megacd`, `pcenginecd`, `cdi`, `megadrive`, `mastersystem`, `n3ds`, ...).
+   A mapping on `roms/` therefore names `roms/misc/x.iso` and leaves
+   `roms/ps2/x.iso` to its folder name. Archive members (`a.zip::disc.iso`)
+   skip the header and use the archive's folder. The walk runs over the
+   resolved folders from the Image's own folder up to the root of the Volume
+   that holds it, root included, and never above
+   (`utils.path_utils.platform_boundary_root`, the deepest root; `_candidate_paths`), so a Volume
+   mounted under `/mnt/md/...` does not make every Image in it a Genesis Image,
+   and a mapping matches whether the Image was reached through a symlink or
+   not. A path in no configured Volume uses only its own folder.
+   That
+   boundary is for Platform inference only: a lock walk (another process
+   packing a folder, the delete/rename guards, the dispatch probe) stops at
+   `lock_boundary_root`, the outermost root over the path with every
+   overlapping root considered, so a folder locked above an inner Volume (with
+   `/mnt` and `/games -> /mnt/MyGame/PS3_GAME`, a lock on `/mnt/MyGame`) is
+   still found. Containment has a three-way form,
+   `utils.path_utils.volume_containment(path)`: True inside, False only on
+   positive evidence of outside (a `..` segment, a path under no configured or
+   cached root spelling while every root's spelling is known, or freshly
+   resolved roots that don't hold it), None whenever the gate gave up on an
+   error instead (a root probe that failed or went over its bound, an OSError
+   resolving the path, a root missing from the resolved-spelling cache; each
+   is noted through `_note_unknown`). `is_within_configured_volumes` is that answer with None
+   counted as outside; a caller that must not mistake a stalled mount for
+   "outside" (the `.m3u` Referrer, §3.3.15) uses the three-way form.
 
 Track sheets are read one way everywhere, through `utils.sheet_text`: as UTF-8
 (a BOM stripped), as cp1252 when they are not valid UTF-8, and as Latin-1 last,
@@ -3029,8 +3142,14 @@ pins every key to RomM's list. A test also fails when a tool declares a slug
 the table does not cover, so a new Platform brings its folder names with it.
 `platform_name(slug)` gives the display name from `_NAMES` (a test fails when a
 slug has none). `detect_uncached` is the same decision without the shared LRU,
-for a caller (the folder Library) that keeps its own per-file cache. A header that disagrees with the folder, or two headers that disagree,
-is a `conflict` with no Platform. Nothing at all is `unsorted`. Results are
+for a caller (the folder Library) that keeps its own per-file cache. Such a
+caller reads the folder Platform mappings once (`mapping_snapshot()`) and
+passes that one snapshot as `mapped=` to both `detection_key` and
+`detect_uncached`: two reads could see a mapping change in between and cache
+one answer under the other's key. `detect_platform` does the same for the
+shared LRU (one read for the key and the decision). A header
+that disagrees with the deciding folder, or two headers that disagree (kept
+in `Detection.headers`), is a `conflict` with no Platform. Nothing at all is `unsorted`. Results are
 cached per path in a bounded LRU and dropped when the file's size or mtime
 changes; `clear_cache()` exists for tests. A header probe that reads other
 files declares them through `ToolPlugin.header_reads(path)` (default empty;
@@ -3286,15 +3405,40 @@ be set on the temp file aborts the write (`PermissionError` "can't keep its
 group"), which keeps the Source. A crash leaves the old file or the new one,
 never half of one.
 
+`write_new_bytes(path, data)` is its no-overwrite sibling: the same temp file
+and fsync, then `utils.path_utils.place_without_clobbering` (a hard link or a
+no-replace rename), so "is the name free" and "create it" are one atomic step and
+a file or symlink already at `path` raises `FileExistsError` untouched.
+`m3u.playlist_bytes(entries)` builds a fresh playlist in the encoding the
+Referrer reads and rewrites with. **Create an `.m3u` from selected discs** (#299,
+`services/disc_playlist.py`, `POST /api/files/playlist/preview` and
+`/api/files/playlist`) is built on these two, not a second writer. It accepts two
+or more files directly in one folder inside a Volume whose extension is in
+`registry.disc_extensions()`, the union of each tool's `disc_extensions` (chdman
+`.cue .gdi .iso .chd`, Dolphin `.iso .gcz .wia .rvz .wbfs`, maxcso `.cso .zso`; a
+tool with no standalone disc files declares nothing). `registry.js` mirrors it as
+`discExts` (checked by `tests/test_frontend_parity_186.py`), and the file list
+shows **Create .m3u** only for two or more such files in one folder. Order is by
+`(Disc N)` / `Disc N` / `CD N`, then name. A ticked `.bin` that a ticked `.cue` /
+`.gdi` names is dropped from the selection with a warning; two files for one disc
+(a `.cue` and its `.chd`, or one disc number twice) are refused. Entries are file
+names beside the playlist. The preview computes a free name (`<Title> (2).m3u`);
+the create call writes exactly the previewed name and answers 409 with the next
+free one if it was taken since, never picking a different name on its own.
+
 **The `.m3u` Referrer** (`m3u.py`) is always on.
 
 - *Where it looks.* The replaced file's resolved folder and each folder above
-  it up to and including its Volume root (`utils.path_utils.volume_root_for`,
+  it up to and including its Volume root (`utils.path_utils.lock_boundary_root`,
   with nested Volumes the outermost one wins, so `/roms/All.m3u` is found for
   a disc under a `/roms/psx` Volume). Only the `*.m3u` files directly in those folders,
   no recursive walk, so the cost is one `scandir` per level. This covers a
   playlist beside the discs and the Batocera / ES-DE layout (`psx/Game.m3u`
   naming `.discs/Game (Disc 1).cue`). `detect` looks at the same folders.
+  If the boundary can't be determined the Referrer fails (Source kept). Each
+  playlist found is checked with `volume_containment`: confirmed outside is
+  left alone, "couldn't tell" fails (Source kept); `apply` checks again right
+  before writing and refuses unless confirmed inside.
 - *What it rewrites.* Only entries whose path (as the reader below reads it)
   resolves exactly to a replaced file, matched by `(st_dev, st_ino)` so any
   spelling that reaches the file counts (relative, absolute, `./`, other case
@@ -3408,6 +3552,125 @@ To add a Referrer: subclass `Referrer` in `services/referrers/`, give it a new
 `id`, and `registry.register(...)` it in `services/referrers/__init__.py`.
 Nothing in the job pipeline, the delete-plan route or the modal changes. The
 existing RomM re-pin (3.3.9) is not a Referrer yet.
+
+### 3.3.16 Folder Platform mappings and the Findings store (`services/platform_mappings.py`, `services/findings.py`)
+
+**Mappings.** A row of `platform_mappings` says "this folder is PSP": a
+`library_id`, the folder's path relative to that Library's root (`/`
+separators, `""` for the root), and a Platform slug checked with
+`known_slug`. `set_mapping(path, platform)` takes the folder's absolute path,
+finds the folder Library that holds it (403 outside the Volumes, 404 outside
+every folder Library, 422 for an unknown Platform), and clears the mapping
+when `platform` is None. The rows are kept in memory as an index of absolute
+folder paths, rebuilt on first use after any change; `mapped_folders()`
+returns it, and detection's `_place` walks the Image's parents against it and
+the Platform folder names together. Removing a Library deletes its rows.
+
+"No mappings set" and "the mappings could not be read" are different states.
+An empty table answers `{}`. A database read that fails raises
+`platform_mappings.MappingsUnavailable` and caches nothing, so the next call
+reads again. Missing evidence never decides a Platform:
+`detect_platform` answers Unsorted ("the folder Platform mappings could not
+be read") and caches nothing, and a folder Library's walk stops with
+`MappingsUnreadable` (code `mappings_unavailable`), so its Rules listing
+returns nothing and no Finding is written until the mappings read again.
+Otherwise a header could pass as the Platform of a folder whose mapping says
+something else, with no conflict. Only a process with no database at all (a
+CLI dry run on a fresh data dir) reads "no table" as "none set".
+
+Detection reads the mapping as evidence inside `_decide`, never as an override
+applied afterwards, so a mapping that disagrees with a header is a conflict in
+the same way a folder name is. `detection_key` includes the deciding folder
+evidence as `(source, folder path, slug)`, which is how a changed mapping
+invalidates both caches: the shared LRU and a folder Library's per-file cache
+see a new key for exactly the Images it decides. The path, not the name, is in
+the key, because where a mapping sits relative to a Platform-named folder
+changes the answer. `set_mapping` also calls `FolderLibrary.invalidate()`,
+which bumps the Library's generation so the next listing walks again instead
+of serving the last walk (`SCAN_TTL_SECONDS`).
+
+**Findings.** `findings` holds one row per `(library_id, image_key, kind)`.
+The store is Library agnostic: a producer passes `reconcile(library_id,
+observed, kinds=...)` everything it currently sees, each an `Observed(kind,
+image_key, path, reason, cause)`. Rows not observed again (of those kinds, for
+that Library) are deleted; new ones get `first_seen`; every observed row gets
+`last_seen`. `fingerprint` is a digest of `kind` and the structured `cause`
+(for a Platform Finding: `how`, `header`, `folder` and `folder_platform` for
+the folder that decided, by its Library-relative path, `mapped`, and `headers`
+when two disagree), not of the
+`reason` text, so a reworded message does not resurface a dismissed row.
+`dismiss(id)` writes a row to `finding_dismissals`, keyed by `(library_id,
+image_key, kind, fingerprint)` and kept apart from the Finding row. A Finding
+is dismissed while such a row matches its current fingerprint. Because the
+dismissal outlives the Finding row, a row that a walk drops for not seeing the
+Image (a share that was unmounted, so its mount point listed empty) comes back
+dismissed when it returns with the same cause. A fingerprint `reconcile` sees
+change deletes the Image's dismissals of that kind, and so does writing a new
+row whose fingerprint differs from a stored dismissal (the cause changed while
+the Image was out of the listing), so a cause that changes and then changes
+back stays shown. `undismiss(id)` deletes them by hand, and `forget_library`
+deletes a removed Library's. A dismissal of a cause that went away for good
+stays behind, at most one per Image and kind. `dismiss` and `undismiss` take
+the store's write lock; `dismiss` is idempotent (a double click is one row)
+and asks `current(library_id)` under the lock, so a dismiss racing the
+Library's removal writes nothing (the route passes #303's token check).
+`reconcile(..., keep_under=[...])` leaves alone every row whose `image_key`
+sits under a folder the producer could not look in. An `Observed` marked
+`only_if_new` (an Image file the producer could not read) does the same for
+one Image that already has a row: every row of it is kept as it is, and only
+an Image with no row yet gets the new Finding.
+`reconcile(..., current=...)` asks the producer, under the store's write lock,
+whether it may still write; `forget_library` takes the same lock. Kinds today
+are `platform_conflict` and `unsorted`; later producers (RomM, the Inbox, Check
+Rules) add their own kinds and pass them in `kinds`, so one producer never
+clears another's rows.
+
+**The producer.** The folder Library's walk (§3.3.11, #303) is the only one: at
+the end of `_walk` it reconciles a `platform_conflict` per conflicted Entry, an
+`unsorted` per Entry with no Platform, and an `unsorted` per Image file the walk
+could not read (`only_if_new`; not a track a readable sheet lists, which is
+not an Image). A
+listing served from the last walk writes nothing, and a walk that fails (root
+unavailable) never reaches the reconcile. A subfolder that does not list is
+passed as `keep_under`, so a mount blip at any depth clears no Finding.
+
+The walk's `current` check refuses the write in two cases. The Library was
+removed: `FolderLibrary` captures the Rule engine's token for its id
+(`rules_sweep.library_generation`, #303) when it is built, and
+`rules_sweep.forget_library` moves it before `libraries.remove` drops the
+Findings, so a walk of the removed object writes nothing whether it was
+running then or starts later. Or the Library's own generation moved since the
+walk started: a mapping was set while it ran, so its detections are out of
+date. The walk then marks its Scan `stale`. Whenever the generation moved
+during a walk (before its Findings were written or after), `scan()` starts
+`_schedule_rewalk` on a daemon thread once its lock is released, and still
+returns the walk to a listing or the Findings path. Rules never get it:
+`images()` (via `_scan_for_rules`) walks once more, and when that walk is
+stale too it raises the transient `listing_in_progress`, so the sweep skips
+the Library this tick and retries on the next instead of converting Images
+under Platforms the new mapping changed. A database error while reconciling is logged and costs only
+the Findings; the walk still serves the Rules. Nothing that reads the store
+moves, renames or deletes a file.
+
+**API** (`routes/findings.py`). `GET /api/findings` (`include_dismissed`), with
+each row's Library name and folder; `POST /api/findings/{id}/dismiss`; `POST
+/api/findings/check` walks every folder Library on a detached thread, bounded
+as #303's listings are, and reports each Library's status
+(`listing_in_progress`, `root_unavailable`, ...); `GET /api/platforms` lists
+what a folder can be set to; `GET`/`PUT /api/platform-mappings` lists and sets
+mappings, and a `PUT` walks the Library again right away so its Findings
+follow. When a walk is already running the `PUT` still saves and answers
+`walk.status: "listing_in_progress"` with "A listing is running; Findings
+refresh after it."; the running walk drops its stale Findings and walks again.
+`POST /api/findings/{id}/undismiss` shows a dismissed Finding again. Check now
+walks the Libraries side by side.
+
+Dismiss and undismiss send the row's `fingerprint` with its id
+(`{"fingerprint": ...}`), and the store refuses with 409 when the row's cause
+is another one now. With `findings` on SQLite AUTOINCREMENT, a cleared
+Finding's id is never handed to another, so a row left on a screen after a
+walk changed or cleared it can never act on a different Finding. In the UI,
+each mutation drops every listing that started before it and lists again.
 
 ### 3.3.17 The headless CLI (`app/cli.py`, #306, #307)
 
@@ -4057,6 +4320,246 @@ The stale-lock sweeps leave the file alone (`LockManager` only touches
 `filelock-*`, `ConcurrencyManager` only holders and tickets). `convert` and
 `verify` do not take it: they run beside a server.
 
+### 3.3.18 Check Rules (`services/rules/check.py`, `services/image_checks.py`)
+
+A Rule has a kind, `rules.CONVERT` or `rules.CHECK`, and its identity is
+(Library, Platform, kind): a Platform can have a conversion Rule and a check
+Rule. A check Rule has no target format (`rules.is_check_rule`).
+`normalize_rule(raw, kind=...)` drops a `CONVERT` Rule with no mode and gives a
+`CHECK` Rule none, with `check_budget_gb` (1 to 1048576, default 50), the usual
+window, weekdays, timezone, priority and `enabled`. A conversion Rule whose
+window starts and ends at the same time is refused as `invalid_window`
+(paused, the editor says why) and `_window` keeps it literal, so it never
+converts all day. `invalid_window` is recomputed from the submitted window on
+every save, for every kind, and a client-sent value is ignored, so a corrected
+window re-enables the Rule; the editor never sends the flag
+(`rulesSource.svelte.js`). `invalid_pattern` is the one flag read back from the
+stored Rule, because the refused pattern itself is replaced by none. A check
+Rule's `interval_minutes` is
+fixed at `CHECK_INTERVAL_MINUTES` (a day) but the schedule does not read it: a
+check Rule is due once per window (`schedule._is_due`): the window is open on an
+allowed weekday (an overnight window's tail belongs to the day it opened) and
+`last_run_at` is before the moment this window opened (`_window_opened`,
+which resolves the wall-clock start with `_instant`: a start in a
+spring-forward gap opens at the first real instant after it, a start in a
+fall-back repeated hour at its first occurrence, so either opens once; for a
+check Rule a window whose start equals its end is the whole day
+(`schedule._window`), as is no
+window: the whole local day, opened at midnight). A run that starts late
+does not push the next night later, and one that crosses midnight counts for
+the window it started in. Its output folder is never read. Each kind has its own preference rows
+(`store.rules_key(kind)`, `store.state_key(kind)`: `rules` / `rules.state` and
+`rules.check` / `rules.check.state`), each keyed `"<library id>:<platform id>"`,
+so the two kinds never overwrite each other and run on their own clocks. No
+table change: Rules live in preferences, and migration 0014 (on #304's 0013)
+holds only the check times. `sweep.get_rules` / `get_state` take the kind;
+`sweep.set_check_rules` replaces the check Rules. The editor payload carries
+`check_rules` and `check_state` beside `rules` and `state`, and a save replaces
+`check_rules` only when the submission has it.
+
+**Sweep.** `_sweep_locked` walks every (kind, Platform) in priority, Platform,
+kind order, gating each on its own `enabled` and its own kind's state, and
+hands a check Rule to `_sweep_check`. Run now ignores both clocks, so it runs
+both kinds and a check spends another budget. A check Rule's Run now stamps
+`last_manual_run_at`, not `last_run_at` (either stamped with the `now` the
+sweep found the Rule due at, so a pick that runs past midnight counts for the
+window that selected it), and `_is_due` reads only
+`last_run_at`, so the nightly run still comes in its window; a Platform whose tool is not ready and that picked nothing is not
+stamped at all. Before the loop a real sweep calls `_clear_vanished` (bounded,
+detached): `findings.clear_gone(library, NOT_INTACT)` drops a not-Intact
+Finding whose file is missing while its folder lists other entries. A share
+that is not mounted is a missing folder or an empty mount point and clears
+nothing; an Image deleted from a folder it was alone in keeps its Finding until
+it is dismissed. A folder walk calls the same after its reconcile. The per-sweep cap counts conversions only, so a
+check Rule ordered after a capped conversion Rule still runs. `_sweep_check`
+lists the Platform through the same bounded `_list_images` as a conversion,
+reads `image_checks.order_stamps(library.id)`, and walks
+`check.stalest_first` (no row first, then by the later of `checked_at` and
+`attempted_at`, oldest first, then the key: an Image checked long ago that is
+now inconclusive goes to the back too). An inconclusive check writes only
+`attempted_at` (`image_checks.record_attempt`): no check time, no Finding,
+nothing cleared, but the Image goes behind the others, so one that never
+reaches a verdict cannot take every night's budget. Each candidate's disk questions go through `check.inspect` on a detached,
+bounded thread, as a conversion candidate's do. It returns a skip reason
+(`unresolvable`, `missing`, `uncheckable`) or a `Check`: the Image key, path,
+size, the checking tool and the Image's file fingerprint. An Image already
+being checked (`check.in_flight`) or converted (the active-path set) is
+skipped. Readiness is the verifier's (`registry.tool_is_ready(tool,
+purpose="verify")`), not conversion's: jwud checks WUX in pure Python without
+JWUDTool, and z3ds needs zstd to check. A tool that is not ready skips its
+Images and reports
+`tool_not_ready`; it never yields a verdict. Images are taken stalest first
+until the next would pass `check_budget_gb`, never skipping ahead to a smaller
+one; the first is always taken, so one Image larger than the budget is checked
+alone rather than never. Skipped
+Images cost nothing. The Platform summary carries `check: true`, `checks`,
+`check_bytes`, `budget_bytes`, `skipped_uncheckable` and `candidates`; the
+result gains `checks` only when a check Rule ran, so a conversion sweep keeps
+its shape. A preview stops there.
+
+**Which tool.** `ToolRegistry.check_tool(path, slug)` is the first tool from
+`tools_checking_path(path)` (#306's `claims_check`, so an archive too damaged
+to open is still claimed and fails) left after `narrow_to_platform(slug)`. A
+PS2 `.iso` is not given to dolphin-tool for sharing GameCube's extension; with
+nothing left the Image is uncheckable. No per-tool branching: a new tool's
+`verify_extensions`, `claims_check` and `platform_slugs` are all a check needs.
+A stored check comes first, as in the CLI (#306): `check.inspect` reads the
+Image's Verify record and passes its producing mode as
+`check_tool(..., recorded_mode=...)`, and when that mode can verify its tool
+checks the Image with no Platform narrowing (makeps3iso for a PS3 ISO it
+built, though it claims no extension).
+
+**A split output is one Image.** A split makeps3iso build writes
+`Game.iso.0`, `.1`, ... and no `Game.iso`. `ToolRegistry.split_owner(path)`
+maps a numbered part to `(Game.iso, mode)` when the name without its last
+suffix carries a mode's declared output extension (so `save.0` never
+qualifies) and that mode's `companion_outputs` lists the part, the same rule
+as `cli._split_owner`; `split_members(path)` gives the later parts for the
+first one. The folder Library's walk lists such parts and `image_members`
+folds them into one Image on `Game.iso.0`, so the budget pays the parts'
+summed size and the lock and fingerprint cover every part. The check is
+handed `Game.iso.0`, and makeps3iso's verify checks the whole set (#306). The
+record lives under `Game.iso` (`Check.record_path`), so a pass refreshes it
+there and a failure marks it failed there. `ToolRegistry.output_exists(path)`
+is the presence rule for a stored record: the path is on disk, or it is the
+logical name of a split output whose first part is (the same rule as
+`split_owner`, read the other way). `verification_store.prune_missing`, run
+by `/api/verified`, drops only records it answers False for, so a split ISO's
+record and its producing mode survive a page load. `_hold` also takes the shared lock on
+that logical path, with the first part and every later part, from the verify
+slot through the recorded verdict: a directory-input rebuild locks only
+`Game.iso`, so while one runs the Image is skipped as busy. Every file a check reads (each member,
+split part or track) must be inside the Volumes, or the Image is skipped as
+`unresolvable`.
+
+**Run.** A real sweep passes everything every check Rule picked to
+`check.start` once, after its loop, so a sweep is one run, one external job
+(`ConversionMode.CHECK`, in `_EXTERNAL_JOB_MODES`) and at most one
+notification. Each check Rule's run is recorded only once that job has
+reached every Image the Rule picked (`check.start(..., on_finished=...)`, under the
+sweep lock), so a run cut short by a cancel, a stop or a restart leaves its
+Rule due. A sweep that picked nothing records at once. The stamp is still the
+moment the sweep found the Rule due, so a night's run that ends past midnight
+counts for the window that picked it. Until the run ends, its scheduled Rules
+are held in `sweep._active_check_runs` (by Library and Platform), and the
+scheduler picks nothing more for them, so the budget applies once per window.
+A scheduled pick that comes up empty only because its Images are held
+elsewhere for now records nothing, so the Rule is still due once they are
+free. Held elsewhere is one count for every such reason: another check run
+(Run now, `check.in_flight`), a conversion queued or running (the sweep's
+active paths), or a writer's lock on any of the Image's files, which
+`check.inspect` reports as `busy`. A pick that is empty because nothing is
+eligible records as before. Each Image's new state goes to an open page as it
+settles: `check._publish` sends `verification_changes` (the Verify record path
+with its check now, or null once it is no longer Intact) on the run's own
+`progress` event (`update_external_job(..., event_extra=...)`), which the jobs
+stream forwards in order. The browser's `verification.applyJobEvent` applies it
+beside a conversion's `verified` / `source_deleted` flags. Nothing is replayed
+at the end, so a newer pass on a file (a repair and a re-verify) is never
+overwritten by the run's older verdict. A subscriber's queue is bounded (100)
+and drops when full, so the terminal event also lists the paths the run
+settled (`verification_paths`, no verdicts). The store re-reads just those from
+the database through `POST /api/verified/lookup` (at most
+`MAX_VERIFIED_LOOKUP` paths a request, chunked by the client), with the same
+`loadVerified` live-log replay a full reload uses, so a live event that lands
+during the re-read still wins.
+`on_finished(attempted)` is called exactly once as the run ends, with the keys
+of the picked Images the run reached and settled (a verdict either way, no
+verdict, or skipped as gone, changed or in use); a crash, a cancelled task or a
+changed Library reports none. A Rule is recorded only when every Image it
+picked is in that set, so a run that stops early (an abandoned verifier, a
+cancel) leaves the Rules it never reached due; the stop itself still ends the
+run at once. The hold is let go either way. Run now is not held back by it. The hold is in memory: one scheduler runs per data directory
+(#307's scheduler lock), and a restart ends every run. A stop (#307's
+`should_stop`, asked before each Platform, while a Platform lists, before each
+Image is inspected and once more after the loop) starts nothing new: the
+picked Images are dropped and no run is recorded, so the next sweep picks them
+again.
+
+**`run-rules`.** A check run is its own task, not a queued job, so
+`JobManager.drain` does not wait for it. `_run_rules_pass` awaits
+`check.drain(should_stop=...)` after the jobs, still inside the job runner, so
+its terminal listener hears the run end. A stop cancels the running check jobs
+there (their cancel event reaches the slot wait and the verifier), and nothing
+is recorded for the Image in hand. `check.run_outcome(job_id)` holds each
+run's counts; `cli._finish_check_run` fails the pass under the CLI's rule
+(exit 1 when any Image failed, as `verify` does): an Image not Intact, or one
+whose check reached no verdict. A cancelled or crashed run is already a
+cancelled or failed job. The run's `check_failed` alert goes through the queued
+`notifications.notify`, so `cli._job_runner` awaits `notifications.drain()`
+before `job_manager.shutdown()` for every command that runs jobs, bounded by
+three `SEND_TIMEOUT_S` sends in a row. For each Image in order the run waits for a slot on the
+`verify` workload lane, the one the Verify action uses (raced against the job's
+cancel event, so Cancel ends a queued run at once), and only then takes
+#306's shared input lock (`lock_manager.acquire_input_lock`) on the Image and
+its files (`image_members`), so nothing is held while it queues. `_hold` lets
+go of what it took if an acquisition raises. It then compares the Image with
+what the sweep picked (`_unchanged`: still a file, same `image_fingerprint`). A
+lock it cannot get, or an Image gone or changed, is `SKIPPED`: nothing written,
+no notification line. Then `tool.verify(path, cancel_event)`, bounded by
+`tool.verify_timeout(path)`, the same call and bound as the Verify action. The
+verdict is written (`_apply`, then `refresh_check` or `clear`) while the locks
+are still held, so an overwrite conversion cannot replace the file between the
+Verify and the record that describes it; the locks go once it is written,
+cancel included. While they are held,
+#306's delete step finds the Source in use: a delete-source conversion that
+finishes then waits briefly (`_hold_delete_paths_waiting`) and, if the check
+still holds it, completes with `SOURCE_KEPT_FOR_READERS` as its warning,
+keeping the Source and its output. `check.outcome(result)` reads it:
+
+| Result | Outcome | Writes |
+|---|---|---|
+| `valid` | Intact | `image_checks` row (`intact`), `verification_store.refresh_check` (keeps the record's `source_path` and `produced_meta`), `findings.resolve(not_intact)` |
+| not `valid` | not Intact | `image_checks` row (`not_intact`), `verification_store.mark_failed` (keeps `produced_meta` and `source_path`), `findings.observe(not_intact)` |
+| `inconclusive`, `abandoned` or `uncheckable` flag (#306: a verifier killed by a signal via `verify_exit_event`; an allowlisted exception or a timeout via `verify_exception_event`; a file this app's own rules refuse, such as an archive over the safety limits) | inconclusive | `attempted_at` only |
+| any other exception from the check (`verify_exception_event` reads it as the tool rejecting the data) | not Intact | as not `valid` |
+| `cancelled` | the run stops | nothing for that Image |
+
+A failed check keeps the Verify row with `check_passed = "failed"`
+(`verification_store.FAILED`, migration 0010's column): `is_verified`,
+`get_record` and `all_records` skip it, so the Intact badge, the re-run fast
+path and the CLI's `--since` all treat the file as unverified, while
+`produced_meta_blocking` still returns the producing mode. A PS3 ISO that
+failed therefore goes back to makeps3iso on the next run, and a pass
+(`refresh_check`) restores the row and clears the Finding. With no size from
+the Library (a RomM ROM without `fs_size_bytes`), `check.inspect` charges
+`image_sets.image_size`: every file of the Image, split parts and tracks
+included.
+
+When `stops_verify_batch` says so (an `abandoned` result, or a read the
+check's `collect_abandonment` sink saw written off), the run stops, as a batch
+Verify does. Cancel on the
+job sets its cancel event, which the running verify honours. Every write is
+guarded by the Library's generation (`sweep.library_generation`), so a Library
+removed mid-run gets no rows (`_apply` reports whether it wrote; when it did
+not, the run ends cancelled and counts nothing for that Image), and `libraries.remove` drops its `image_checks`
+rows with its Findings. RomM's identity cleanup (a new instance or library
+root) calls `sweep.forget_checks_locked(romm_library)`: the generation moves,
+then RomM's not-Intact Findings with their dismissals
+(`findings.forget_kind`) and its `image_checks` rows go, since ROM ids are
+reused by the new instance. The job ends with "N Intact, M not Intact".
+
+**Findings.** `findings.NOT_INTACT` rows are written one Image at a time with
+`findings.observe` (an upsert on `reconcile`'s terms, sharing its `_upsert`) and
+`findings.resolve` (delete the row, keep its dismissal). `KINDS`, what a folder
+walk reconciles, does not include it: a walk sees every Image, a check only a
+few. The cause is `{tool, files}` (the file fingerprint when picked), so a
+dismissal holds while the file is unchanged and a changed file that still fails
+is shown again.
+
+**Notification.** `check.py` registers `check_failed` with
+`notifications.register_event`. A run with failures sends one `Event` listing
+up to `MAX_LISTED_FAILURES` of them, with `data = {library_id, failed: [{image,
+path, error}]}`, through `notifications.notify`. The run's job is external, so
+the sweep's own `sweep_finished` message does not count it.
+
+**Ledger.** Each external job mode declares itself in
+`job_manager.EXTERNAL_JOB_MODES` (`ExternalMode`). `CHECK` sets
+`in_ledger=False`, since a check run converts nothing, and `ledger.record`
+skips a job only when `job_manager.in_ledger(mode)` says so. Metadata scans and
+DAT matches keep their rows. `CHECK` also sets `started_by_hand=False`, so a
+failed run is not #293's "A job you started failed"
+(`notifications._started_by_hand`).
 ### 3.3.19 Editing a zip (`services/archive_edit.py`) and the eXoDOS repack
 
 `rewrite_zip(src, dst, *, rename, add, is_cancelled, on_progress)` is the shared
