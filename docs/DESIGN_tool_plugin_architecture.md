@@ -2778,6 +2778,15 @@ tool-wide walk. A folder that can't be read is skipped as the web search skips
 it, and with `scan_tree(unreadable=[...])` the CLI reports it as a skipped line
 ("This folder can't be read: ..."), exit code unaffected.
 
+**Discovered inputs stay inside the Volumes.** A folder walk follows file
+symlinks, so every discovered file, folder and archive (for a member) goes
+through the shared containment check the web's verify guard uses
+(`is_within_configured_volumes`, which resolves the path) before any tool is
+chosen (`cli._skip_outside_volumes`). One that resolves outside every Volume
+is skipped ("It resolves outside the configured Volumes") and never read,
+checked, converted or recorded, in both `convert` and `verify`. Paths named on
+the command line are checked up front (`_check_paths`).
+
 **Stopping during planning.** The CLI's planning runs blocking filesystem work
 on `run_in_threadpool`, which can't be cancelled: SIGINT, SIGTERM or SIGHUP
 during `--auto` planning (header reads) over a Volume that has stopped
@@ -2859,6 +2868,16 @@ nothing owned lives under it. Everything else, of any type and junk included, is
 list of harmless sidecars. An archive or sheet that can't be read counts as an
 extra (the archive's own name). The error and the CLI line name the first three
 (`describe_extras`).
+
+**Companion outputs are locked like the output.** `JobManager._take_output_locks`
+takes the cross-process exclusive output lock on the primary output and on
+every companion output the mode declares (`companion_outputs`: extractcd's
+`Game.bin` beside its `Game.cue`), all or none, before the job starts, and
+`_release_output_locks` lets them all go on every path (the job's `finally`,
+a deferral, a failure before the run). So the web guard's exact-path probe
+refuses a rename or delete of the companion mid-write, and no other job can
+take it to write. Directory modes' split parts are found on disk later and
+keep their prefix guard.
 
 **Input locks.** Every file-input job, whichever entry point queued it, holds a
 *shared* flock on each file it reads (`JobManager._hold_inputs`: the Source, or

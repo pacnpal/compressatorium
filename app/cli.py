@@ -309,12 +309,37 @@ def _discover(
                 add(f"{path}::{entry['internal_path']}", False)
             if listing.get("truncated"):
                 truncated(path)
+    _skip_outside_volumes(found.values())
     if not archives:
         return [
             i for i in found.values()
             if i.explicit or not archive_service.is_archive(i.path.split("::", 1)[0])
         ]
     return list(found.values())
+
+
+def _skip_outside_volumes(items) -> None:
+    """Skip every discovered input outside the configured Volumes (#306).
+
+    A folder walk follows a file symlink, so a link in a Volume can point
+    anywhere. Each discovered file, folder and archive (for a member) goes
+    through the shared containment check the web's verify guard uses
+    (``is_within_configured_volumes``, which resolves the path) before any
+    tool is chosen; one outside is never read, checked or recorded. Paths
+    named on the command line were checked already (``_check_paths``).
+    """
+    from utils.path_utils import is_within_configured_volumes
+
+    verdicts: dict[str, bool] = {}
+    for item in items:
+        if item.explicit or item.status:
+            continue
+        base = item.path.split("::", 1)[0]
+        if base not in verdicts:
+            verdicts[base] = is_within_configured_volumes(base, treat_archives=False)
+        if not verdicts[base]:
+            item.status = "skipped"
+            item.reason = "It resolves outside the configured Volumes"
 
 
 # --------------------------------------------------------------------------- #
