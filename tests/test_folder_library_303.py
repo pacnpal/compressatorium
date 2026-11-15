@@ -1797,6 +1797,29 @@ async def test_an_unchanged_source_is_still_held(tree: Path, ready, queue, monke
     assert list(state.get("failed") or {}) == ["gc/Melee.iso"], state
 
 
+def test_the_detection_key_names_its_probe_set(db: Path) -> None:
+    """CodeRabbit 4576895544: ``detection_key`` itself carries the probe set.
+
+    Both caches key on it (the shared one and a folder Library's), so a
+    Detection made by one set of tools is never reused for another.
+    """
+    from services.tools import registry
+
+    iso = db / "neutral" / "game.iso"
+    iso.parent.mkdir(parents=True)
+    _gamecube(iso)
+    st = os.stat(iso)
+    chdman = [registry.get("chdman")]
+    dolphin = [registry.get("dolphin")]
+
+    assert platform_detect.detection_key(str(iso), st, tools=chdman) == (
+        platform_detect.detection_key(str(iso), st, tools=list(chdman))
+    )
+    assert platform_detect.detection_key(str(iso), st, tools=chdman) != (
+        platform_detect.detection_key(str(iso), st, tools=dolphin)
+    )
+
+
 @pytest.mark.asyncio
 async def test_a_slow_walk_is_reused_from_when_it_finished(db: Path, monkeypatch) -> None:
     """CodeRabbit 4576895543: the reuse window starts when the walk is ready.

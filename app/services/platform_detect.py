@@ -360,10 +360,6 @@ def detect_platform(path: str, *, tools: Iterable | None = None) -> Detection:
         # A file the header probe needs is missing or unreadable (a .bin still
         # copying in). Answer now, but remember nothing: the next call re-reads.
         return _decide(path, tool_list)
-    # The probe set is part of the answer: the same file asked of other tools
-    # can answer differently. The tool objects themselves, compared by
-    # identity (and kept alive by the entry, so an id is never reused).
-    key = (*key, tuple(tool_list))
     with _cache_lock:
         hit = _cache.get(path)
         if hit is not None and hit[0] == key:
@@ -385,16 +381,18 @@ def detection_key(
 
     The file's size and mtime (*st*, the caller's stat of it) and those of
     every other file its header probe reads (``ToolPlugin.header_reads``: a
-    sheet's tracks). None when one of those cannot be stat'ed. The shared
-    cache here and a folder Library's own cache both key on it, so a changed
-    track re-detects its sheet in either.
+    sheet's tracks), and the probe set itself: the same file asked of other
+    tools can answer differently. The tool objects are compared by identity
+    and kept alive by the key, so an id is never reused. None when one of the
+    files cannot be stat'ed. The shared cache here and a folder Library's own
+    cache both key on it, so a changed track or probe set re-detects in either.
     """
     tool_list = list(tools) if tools is not None else _default_tools()
     disk_path, member = _split_member(path)
     deps = () if member else _header_dependencies(disk_path, tool_list)
     if deps is None:
         return None
-    return (st.st_size, st.st_mtime_ns, deps)
+    return (st.st_size, st.st_mtime_ns, deps, tuple(tool_list))
 
 
 def _header_dependencies(path: str, tools: Iterable) -> tuple | None:
