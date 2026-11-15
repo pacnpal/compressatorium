@@ -1130,3 +1130,41 @@ def test_a_multi_rom_archive_is_still_not_a_rom_archive(volume, dolphin, capsys)
 
     code, lines = _cli(capsys, "verify", str(volume), "--json")
     assert (code, lines) == (0, [])
+
+
+
+def test_a_z3ds_verifier_killed_by_a_signal_keeps_the_stored_pass(
+    volume, dolphin, capsys, monkeypatch,
+):
+    """z3ds runs zstd itself, outside the shared runner: its signal death goes
+    through the same killed_verify_error classification (codex 4576670747)."""
+    import asyncio
+    import shutil
+    import struct
+
+    from services.verification_store import verification_store
+
+    payload = b"payload" * 64
+    header = struct.pack("<4s4sBBHIQQ", b"Z3DS", b"NCSD", 1, 0, 0x20, 0, len(payload), 0)
+    game = volume / "3ds" / "Game.z3ds"
+    game.parent.mkdir(parents=True)
+    game.write_bytes(header + payload)
+    (volume / "empty").mkdir()
+    _cli(capsys, "verify", str(volume / "empty"))  # creates the database
+    asyncio.run(verification_store.mark_verified(str(game)))
+
+    zstd = volume.parent / "bin" / "zstd"
+    zstd.parent.mkdir()
+    zstd.write_text("#!/bin/sh\nkill -KILL $$\n")
+    zstd.chmod(0o755)
+    real_which = shutil.which
+    monkeypatch.setattr(
+        shutil, "which", lambda name, *a, **k: str(zstd) if name == "zstd" else real_which(name),
+    )
+
+    code, lines = _cli(capsys, "verify", str(game), "--json")
+
+    assert code == 1
+    assert lines[0]["status"] == "failed"
+    assert "signal" in lines[0]["reason"]
+    assert asyncio.run(verification_store.get_record(str(game))) is not None

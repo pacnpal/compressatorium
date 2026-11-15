@@ -22,6 +22,7 @@ from services.subprocess_runner import (
     verify_preflight,
     ToolUnavailable,
     verify_exception_event,
+    verify_exit_event,
 )
 
 # Compress inputs (raw 3DS ROMs). The upstream fork
@@ -580,12 +581,12 @@ class Z3DSCompressService:
                         "message": "File is Intact"
                     }
                 else:
+                    # zstd runs outside the shared runner; its exit status is
+                    # classified by the same helper (a signal is no verdict).
                     stderr_text = stderr.decode("utf-8", errors="replace").strip()
-                    yield {
-                        "type": "error",
-                        "valid": False,
-                        "message": f"Integrity check failed: {stderr_text}"
-                    }
+                    yield verify_exit_event(
+                        process.returncode, f"Integrity check failed: {stderr_text}",
+                    )
             finally:
                 # Bounded TERM -> KILL ladder rather than kill()+wait(): a child
                 # blocked in uninterruptible I/O never answers either, and an

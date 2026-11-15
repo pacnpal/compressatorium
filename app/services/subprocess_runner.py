@@ -873,6 +873,19 @@ def killed_verify_error(returncode: int) -> dict:
     )
 
 
+def verify_exit_event(returncode: int | None, failure_message: str) -> dict:
+    """The terminal event for a verifier that did not exit 0 (#306).
+
+    The one place an exit status becomes a result, for the shared runner and
+    for any service that drives its own subprocess (z3ds's zstd): a signal
+    (negative return code) is ``killed_verify_error``, no verdict; any other
+    non-zero exit is the verifier's verdict, ``failure_message``.
+    """
+    if returncode is not None and returncode < 0:
+        return killed_verify_error(returncode)
+    return SubprocessRunner._verify_error(failure_message)
+
+
 def stops_verify_batch(result: dict, abandoned: Sequence[str] = ()) -> bool:
     """Whether a verify must end a walk over a list of files.
 
@@ -1392,12 +1405,9 @@ class SubprocessRunner:
                     f"Verification timed out after {timeout}s", inconclusive=True,
                 )
             return
-        if returncode < 0:
-            yield killed_verify_error(returncode)
-            return
         output = (stdout or b"").decode("utf-8", errors="replace").strip()
         tail = "\n".join(output.splitlines()[-5:]) if output else "verification failed"
-        yield self._verify_error(f"Integrity check failed: {tail}")
+        yield verify_exit_event(returncode, f"Integrity check failed: {tail}")
 
     async def run_verify(
         self,
@@ -1585,11 +1595,9 @@ class SubprocessRunner:
 
             if process.returncode == 0:
                 yield {"type": "complete", "valid": True, "message": success_message}
-            elif process.returncode is not None and process.returncode < 0:
-                yield killed_verify_error(process.returncode)
             else:
                 output = "\n".join(output_lines[-20:]).strip()
-                yield self._verify_error(output or failure_message)
+                yield verify_exit_event(process.returncode, output or failure_message)
         finally:
             # Skipped when the ladder already exhausted itself: repeating it on a
             # child that survived SIGKILL only burns another 15s.
