@@ -994,6 +994,7 @@ def test_verify_stops_when_its_own_deadline_abandons_a_read(
     assert BATCH_STOPPED_MESSAGE in captured.err
 
 
+
 def test_a_stop_during_queueing_cancels_the_jobs_it_returned(
     volume, dolphin, capsys, monkeypatch,
 ):
@@ -1025,3 +1026,62 @@ def test_a_stop_during_queueing_cancels_the_jobs_it_returned(
     assert lines[0]["status"] == "cancelled"
     assert iso.exists()
     assert dolphin["runs"] == []
+
+
+def _romz_zip(path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("Game.gba", b"rom" * 64)
+    return path
+
+
+@pytest.mark.parametrize("named", [True, False])
+def test_a_damaged_archive_with_a_stored_check_is_checked_and_fails(
+    volume, dolphin, capsys, monkeypatch, named,
+):
+    """Once damaged, the romz content probe no longer claims the file; a stored
+    check means it was an Image this app checked, so it is checked again."""
+    import asyncio
+
+    from services.verification_store import verification_store
+
+    # 7z's own test of an intact archive, stubbed at the SubprocessRunner seam;
+    # the damaged archive is refused before 7z would run.
+    async def seven_zip_passes(cmd, *, path, success_message, **kwargs):
+        yield {"type": "complete", "valid": True, "message": success_message}
+
+    monkeypatch.setattr(registry.get("romz")._service._runner, "capture_verify",
+                        seven_zip_passes)
+
+    archive = _romz_zip(volume / "gba" / "Game.gba.zip")
+    code, lines = _cli(capsys, "verify", str(archive), "--json")
+    assert (code, lines[0]["status"]) == (0, "intact")
+
+    data = archive.read_bytes()
+    archive.write_bytes(data[: len(data) // 2])  # truncate the central directory
+
+    target = archive if named else volume
+    code, lines = _cli(capsys, "verify", str(target), "--json")
+
+    assert code == 1
+    assert lines[0]["path"] == str(archive)
+    assert lines[0]["status"] == "failed"
+    assert asyncio.run(verification_store.get_record(str(archive))) is None
+
+
+def test_a_generic_iso_gets_the_verifier_for_its_platform(volume, dolphin, capsys):
+    """A PS2 .iso is not a Dolphin disc: it is skipped as unsupported (not a
+    failure), while a GameCube .iso still goes to Dolphin."""
+    ps2 = volume / "ps2" / "Game.iso"
+    ps2.parent.mkdir()
+    ps2.write_bytes(b"x" * 4096)
+    gc = _iso(volume, "gc/Game.iso")
+
+    code, lines = _cli(capsys, "verify", str(volume), "--dry-run", "--json")
+
+    by_path = {line["path"]: line for line in lines}
+    assert code == 0
+    assert by_path[str(gc)]["tool"] == "dolphin"
+    assert by_path[str(gc)]["status"] == "planned"
+    assert by_path[str(ps2)]["status"] == "skipped"
+    assert "ps2" in by_path[str(ps2)]["reason"]
