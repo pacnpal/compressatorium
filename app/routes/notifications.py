@@ -4,8 +4,6 @@ A saved destination URL is a secret and is never returned; the browser sees an
 id, a kind, a label and a harmless hint (a webhook's host, an Apprise scheme).
 """
 
-from typing import Literal
-
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from services import notifications
@@ -14,7 +12,7 @@ router = APIRouter()
 
 
 class NewDestination(BaseModel):
-    kind: Literal["webhook", "apprise"]
+    kind: str = Field(max_length=32)  # one of notifications.KINDS, checked on save
     url: str = Field(max_length=notifications.MAX_URL_LEN)
     label: str | None = Field(default=None, max_length=notifications.MAX_LABEL_LEN)
 
@@ -26,7 +24,7 @@ class DestinationEdit(BaseModel):
 
 
 class DraftTest(BaseModel):
-    kind: Literal["webhook", "apprise"]
+    kind: str = Field(max_length=32)
     url: str = Field(max_length=notifications.MAX_URL_LEN)
 
 
@@ -39,6 +37,7 @@ async def get_notifications() -> dict:
     return {
         "destinations": await notifications.list_destinations(),
         "events": notifications.event_list(),
+        "kinds": notifications.kind_list(),
         "apprise_available": notifications.apprise_available(),
     }
 

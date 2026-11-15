@@ -1,6 +1,7 @@
 <script>
   /**
-   * Notification destinations: webhook URLs and Apprise URLs.
+   * Notification destinations: a generic webhook, a Discord webhook, or an Apprise URL.
+   * The kinds, their labels and placeholders come from the server (`kinds`).
    *
    * A saved URL is a secret (it often holds a token), so the server never sends
    * it back. The list shows a label and a harmless hint; "Edit" can change the
@@ -16,7 +17,7 @@
 
   let destinations = $state([]);
   let events = $state([]);
-  let appriseAvailable = $state(true);
+  let kinds = $state([]);
   let loaded = $state(false);
 
   // The one open form: a new destination (editingId === null) or an edit.
@@ -29,20 +30,21 @@
   // id (or 'draft') -> { ok, error } from the last Test.
   let results = $state({});
 
-  const kindOptions = $derived([
-    { value: 'webhook', label: 'Webhook URL' },
-    {
-      value: 'apprise',
-      label: appriseAvailable ? 'Apprise URL' : 'Apprise URL (not installed)',
-    },
-  ]);
+  const kindOptions = $derived(
+    kinds.map((k) => ({
+      value: k.value,
+      label: k.available ? k.label : `${k.label} (not installed)`,
+    })),
+  );
+  const selectedKind = $derived(kinds.find((k) => k.value === kind));
+  const kindLabel = (value) => kinds.find((k) => k.value === value)?.label ?? value;
 
   async function load() {
     try {
       const r = await api.getNotifications();
       destinations = r.destinations ?? [];
       events = r.events ?? [];
-      appriseAvailable = r.apprise_available !== false;
+      kinds = r.kinds ?? [];
     } catch (e) {
       toast.error(e?.message ?? 'Failed to load notifications');
     } finally {
@@ -150,7 +152,7 @@
           <li>
             <div class="dest-main">
               <span class="dest-label">{d.label}</span>
-              <Badge tone="neutral" size="sm">{d.kind === 'apprise' ? 'Apprise' : 'Webhook'}</Badge>
+              <Badge tone="neutral" size="sm">{kindLabel(d.kind)}</Badge>
               {#if d.hint && d.hint !== d.label}<span class="muted">{d.hint}</span>{/if}
             </div>
             <div class="dest-actions">
@@ -172,10 +174,10 @@
             <Select bind:value={kind} options={kindOptions} ariaLabel="Destination type" />
           </div>
         {/if}
-        {#if kind === 'apprise' && !appriseAvailable}
+        {#if selectedKind && !selectedKind.available}
           <p class="error">
-            Apprise is not installed in this build. Use a webhook URL, or run the Docker
-            image, which includes it.
+            {selectedKind.label} is not installed in this build. Use a webhook, or run
+            the Docker image, which includes it.
           </p>
         {/if}
         <label class="field">
@@ -183,7 +185,7 @@
           <input
             type="url"
             bind:value={url}
-            placeholder={kind === 'apprise' ? 'discord://webhook-id/token' : 'https://example.com/hook'}
+            placeholder={selectedKind?.placeholder ?? ''}
             autocomplete="off"
             spellcheck="false"
           />

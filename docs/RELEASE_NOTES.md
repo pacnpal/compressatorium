@@ -14,6 +14,9 @@
   webhooks need no extra package.
   Webhook delivery does not follow redirects (Test reports "HTTP 30x") and does not
   use `HTTP(S)_PROXY`.
+  A native **Discord webhook** destination (any https URL that speaks Discord's
+  webhook format, no Apprise needed) posts one embed per message with mentions
+  disabled; the generic webhook's JSON is unchanged.
 
 - **`compressatorium convert` and `compressatorium verify`** (#306). A command
   line for shells and cron that covers every tool, recurses into subfolders and

@@ -2927,10 +2927,21 @@ Events are a registry: `register_event(key, title)` adds one, `event_list()`
 feeds Settings. A later ticket (check failed, with check Rules) registers its own
 event and calls `notify`; no transport changes.
 
-Transports are `TRANSPORTS[kind](url, event)`, blocking and raising on failure:
-`webhook` (`http.client`, JSON `POST`, http/https only) and `apprise` (imported
-inside the function; without the package `validate` refuses Apprise URLs with a
-clear message). Tests replace entries in `TRANSPORTS` with a recorder. The webhook
+Destination types are rows of one table, `_KINDS` (`Kind(key, label, placeholder,
+send, check, hint)`); `KINDS`, `TRANSPORTS` and `kind_list()` (which Settings reads
+to build its picker) derive from it, so adding a type is one row and nothing else
+branches on the kind. Transports are `TRANSPORTS[kind](url, event)`, blocking and
+raising on failure. `webhook` and `discord` share one HTTP path, `_post_json`
+(`http.client`, JSON `POST`, http/https only, one overall deadline) and differ only
+in the payload builder: `generic_payload` is `{"event", "title", "message", "data"}`
+(example in the README); `discord_payload` is one embed (colour by outcome, at most
+10 scalar `data` fields, a UTC timestamp) with `allowed_mentions: {"parse": []}`,
+truncated with an ellipsis to Discord's limits (content 2000, title 256,
+description 4096, field value 1024, 6000 over one embed). `discord` requires https
+when a destination is saved or tested. 200 and 204 are success; 429 is an error
+naming Retry-After and is never retried. `apprise` is imported inside the function;
+without the package its `check` refuses Apprise URLs with a
+clear message. Tests replace entries in `TRANSPORTS` with a recorder. The webhook
 never follows redirects (any status of 300 or more is an error, and `Location` is
 never read), does not use `HTTP(S)_PROXY`, and runs under one overall deadline: a
 timer shuts the socket down at 0.9 x `SEND_TIMEOUT_S`. Apprise keeps its own
@@ -2946,7 +2957,9 @@ messages already queued and a destination deleted meanwhile is skipped;
 `remove_destination` also drops its queue. Empty queues and finished workers are
 removed.
 
-Sends run in a private thread pool (`MAX_DESTINATIONS` + 12 workers). A thread cannot be killed: if a send outlives `SEND_TIMEOUT_S` the
+Sends run on `run_detached`'s daemon threads (`services/subprocess_runner.py`), never a
+thread pool: pool workers are joined at interpreter exit, so one send that never returns
+would hold a CLI command open after its work finished. A thread cannot be killed: if a send outlives `SEND_TIMEOUT_S` the
 destination is marked busy until its thread really ends, and queued sends to it
 fail fast ("still running") instead of stacking threads. Errors are scrubbed: a
 destination URL is a secret and appears in no log line, no API response and no

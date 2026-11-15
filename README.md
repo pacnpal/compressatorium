@@ -470,7 +470,32 @@ Nothing leaves the server until you add a destination. You get:
   separately;
 - one message when a job you started by hand fails.
 
-A webhook gets a JSON `POST` with `event`, `title`, `message` and `data`. Use
+There are three destination types. A **generic webhook** gets a JSON `POST`:
+
+```json
+{"event": "sweep_finished", "title": "Sweep finished: 3 converted, 1.2 GB saved",
+ "message": "Queued 3. Space saved: 1.2 GB.",
+ "data": {"queued": 3, "completed": 3, "failed": 0, "cancelled": 0, "saved_bytes": 1288490188,
+          "failures": [], "errors": []}}
+```
+
+A **Discord webhook** takes any https URL that speaks Discord's webhook format
+(discord.com, or a compatible service) with no Apprise needed. It posts one embed
+(green for a clean sweep, red for a failure, grey otherwise) with a few key/value
+fields, a UTC timestamp, and `allowed_mentions: {"parse": []}` so nothing in a
+filename can ping @everyone or a role. Long text is truncated to Discord's limits:
+
+```json
+{"username": "Compressatorium", "content": "Job failed: Game.iso",
+ "embeds": [{"title": "Job failed: Game.iso", "description": "createdvd: no disc",
+             "color": 15158332, "fields": [{"name": "Mode", "value": "createdvd", "inline": true}],
+             "timestamp": "2026-11-15T14:00:00+00:00"}],
+ "allowed_mentions": {"parse": []}}
+```
+
+A 200 or 204 is success; a 429 is reported with its Retry-After and is not retried.
+The URL is https-only for a Discord webhook. An **Apprise URL** covers everything
+else Apprise supports. Use
 **Test** to send a sample message and see the error if it fails. Saved URLs are
 never sent back to the browser, since they often hold a token, and sends have a
 10 second timeout and run in the background, so a slow or broken destination

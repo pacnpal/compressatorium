@@ -33,8 +33,8 @@ import threading
 import uuid
 from collections import deque
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
 from urllib import parse as urlparse
 
@@ -42,11 +42,11 @@ from logging_setup import get_logger
 from models import ConversionJob, JobStatus
 from services import ledger
 from services.preferences_store import preferences_store
+from services.subprocess_runner import ProbeCapacityExceeded, run_detached
 
 logger = get_logger("notifications")
 
 PREF_KEY = "notifications"
-KINDS = ("webhook", "apprise")
 MAX_DESTINATIONS = 20
 MAX_URL_LEN = 2048
 MAX_LABEL_LEN = 60
@@ -121,12 +121,82 @@ def _abort(conn: http.client.HTTPConnection) -> None:
     conn.close()
 
 
+def generic_payload(event: Event) -> dict:
+    """The generic webhook's body: ``{event, title, message, data}``."""
+    return {"event": event.kind, "title": event.title, "message": event.body, "data": event.data}
+
+
+# Discord's documented limits: content 2000; embed title 256, description 4096,
+# field name 256 and value 1024, at most 25 fields (we send at most 10); and 6000
+# characters over everything in one embed.
+_DISCORD_COLORS = {"ok": 0x2ECC71, "bad": 0xE74C3C, "neutral": 0x95A5A6}
+_DISCORD_MAX_FIELDS = 10
+_DISCORD_EMBED_TOTAL = 6000
+
+
+def _clip(text: str, limit: int) -> str:
+    """Truncate to *limit* characters with an ellipsis; never fails."""
+    text = str(text)
+    return text if len(text) <= limit else text[: max(limit - 1, 0)] + "…"
+
+
+def _discord_color(event: Event) -> int:
+    data = event.data
+    if event.kind == "job_failed" or data.get("failed") or data.get("errors"):
+        return _DISCORD_COLORS["bad"]
+    if event.kind == "sweep_finished":
+        return _DISCORD_COLORS["ok"]
+    return _DISCORD_COLORS["neutral"]
+
+
+def discord_payload(event: Event) -> dict:
+    """The body of a Discord-format webhook: one embed, with no mention parsed.
+
+    ``allowed_mentions.parse`` is empty, so nothing in a filename or an error
+    text can ping @everyone or a role. Every limit is met by truncating.
+    """
+    title = _clip(event.title, 256)
+    fields = []
+    for key, value in event.data.items():
+        if isinstance(value, (str, int, float, bool)) and len(fields) < _DISCORD_MAX_FIELDS:
+            fields.append({
+                "name": _clip(str(key).replace("_", " ").capitalize(), 256),
+                "value": _clip(value, 1024) or "-", "inline": True,
+            })
+    used = len(title) + sum(len(f["name"]) + len(f["value"]) for f in fields)
+    # Drop fields, not the message, if the embed would pass 6000 characters.
+    while fields and used + 1 > _DISCORD_EMBED_TOTAL:
+        dropped = fields.pop()
+        used -= len(dropped["name"]) + len(dropped["value"])
+    description = _clip(event.body, min(4096, _DISCORD_EMBED_TOTAL - used))
+    return {
+        "username": "Compressatorium",
+        "content": _clip(event.title, 2000),
+        "embeds": [{
+            "title": title,
+            "description": description,
+            "color": _discord_color(event),
+            "fields": fields,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }],
+        "allowed_mentions": {"parse": []},
+    }
+
+
 def _send_webhook(url: str, event: Event) -> None:
+    _post_json(url, generic_payload(event))
+
+
+def _send_discord(url: str, event: Event) -> None:
+    _post_json(url, discord_payload(event))
+
+
+def _post_json(url: str, body: dict) -> None:
+    """POST *body* as JSON under one overall deadline. The one HTTP send path of
+    every webhook kind: only the payload differs between them."""
     _check_http_url(url)
     parts = urlparse.urlsplit(url)
-    payload = json.dumps({
-        "event": event.kind, "title": event.title, "message": event.body, "data": event.data,
-    }).encode()
+    payload = json.dumps(body).encode()
     target = (parts.path or "/") + (f"?{parts.query}" if parts.query else "")
     # http.client, not urlopen: the scheme is fixed to http/https by the check
     # above, redirects are never followed, and the whole exchange gets one
@@ -157,6 +227,7 @@ def _send_webhook(url: str, event: Event) -> None:
         # `Connection: close` response http.client detaches the socket from
         # `conn`, where the deadline's abort could not interrupt a slow body.
         status = response.status
+        retry_after = response.getheader("Retry-After")
         response.close()
     except (OSError, http.client.HTTPException) as exc:
         if expired.is_set():
@@ -167,6 +238,10 @@ def _send_webhook(url: str, event: Event) -> None:
     finally:
         timer.cancel()
         conn.close()
+    if status == 429:
+        # Never retried here: the next event is the retry.
+        wait = f", retry after {retry_after[:20]} s" if retry_after else ""
+        raise NotificationError(f"The webhook is rate limiting this destination (HTTP 429{wait})")
     if status >= 300:
         raise NotificationError(f"The webhook answered HTTP {status}")
 
@@ -212,16 +287,67 @@ _APPRISE_MISSING = (
     "Use a webhook URL, or run the Docker image, which includes Apprise."
 )
 
-TRANSPORTS: dict[str, Callable[[str, Event], None]] = {
-    "webhook": _send_webhook,
-    "apprise": _send_apprise,
-}
+def _check_https_url(url: str) -> None:
+    _check_http_url(url)
+    if urlparse.urlsplit(url).scheme != "https":
+        raise NotificationError("A Discord webhook URL must start with https://")
 
-# Own pool so a hung destination can never starve the app's default thread pool.
-# A thread cannot be killed once a transport hangs, so two limits keep the pool
-# usable: each destination holds at most one send in flight (`_in_flight`), and
-# the pool is larger than MAX_DESTINATIONS plus a few Test sends.
-_executor = ThreadPoolExecutor(max_workers=MAX_DESTINATIONS + 12, thread_name_prefix="notify")
+
+def _check_apprise_url(url: str) -> None:
+    if not apprise_available():
+        raise NotificationError(_APPRISE_MISSING)
+    if "://" not in url:
+        raise NotificationError("An Apprise URL looks like discord://id/token")
+
+
+def _host_hint(url: str) -> str:
+    return urlparse.urlsplit(url).hostname or ""
+
+
+def _scheme_hint(url: str) -> str:
+    return url.split("://", 1)[0] + "://" if "://" in url else ""
+
+
+@dataclass(frozen=True)
+class Kind:
+    """One destination type. Adding one is a row in `_KINDS`; nothing else in
+    this module (or the Settings form, which reads `kind_list()`) branches on it."""
+
+    key: str
+    label: str
+    placeholder: str
+    send: Callable[[str, Event], None]
+    check: Callable[[str], None]  # raises NotificationError (run on save and on Test)
+    hint: Callable[[str], str]  # what may be shown of a saved URL: never the secret
+
+
+_KINDS: dict[str, Kind] = {k.key: k for k in (
+    Kind("webhook", "Webhook (generic JSON)", "https://example.com/hook",
+         _send_webhook, _check_http_url, _host_hint),
+    Kind("discord", "Discord webhook", "https://discord.com/api/webhooks/<id>/<token>",
+         _send_discord, _check_https_url, _host_hint),
+    Kind("apprise", "Apprise", "discord://webhook-id/token",
+         _send_apprise, _check_apprise_url, _scheme_hint),
+)}
+KINDS = tuple(_KINDS)
+TRANSPORTS: dict[str, Callable[[str, Event], None]] = {k: v.send for k, v in _KINDS.items()}
+
+
+def kind_list() -> list[dict]:
+    """The picker's rows, for Settings."""
+    return [
+        {"value": k.key, "label": k.label, "placeholder": k.placeholder,
+         "available": k.key != "apprise" or apprise_available()}
+        for k in _KINDS.values()
+    ]
+
+# Transports run on `run_detached`'s throwaway daemon threads, not a thread pool:
+# a pool's workers are joined at interpreter exit, so one send that never returns
+# (a slow-drip server) would hold a CLI command open after its work was done, and
+# a stuck pooled worker would starve every send queued behind it. A thread cannot
+# be killed, so what bounds the cost is that each saved destination holds at most
+# one send in flight (`_in_flight`), released when its thread really ends, plus
+# run_detached's own process-wide ceiling on abandoned threads.
 _in_flight: set[str] = set()
 
 
@@ -236,12 +362,21 @@ async def _send_one(kind: str, url: str, event: Event, slot: str | None = None) 
         if slot in _in_flight:
             raise NotificationError("The previous send to this destination is still running")
         _in_flight.add(slot)
-    future = _executor.submit(TRANSPORTS[kind], url, event)
-    if slot is not None:
-        # Released when the thread really ends, not when we stop waiting.
-        future.add_done_callback(lambda _f: _in_flight.discard(slot))
+
+    def run() -> None:
+        try:
+            TRANSPORTS[kind](url, event)
+        finally:
+            # Released when the thread really ends, not when we stop waiting.
+            if slot is not None:
+                _in_flight.discard(slot)
+
     try:
-        await asyncio.wait_for(asyncio.wrap_future(future), SEND_TIMEOUT_S)
+        await asyncio.wait_for(run_detached(run), SEND_TIMEOUT_S)
+    except ProbeCapacityExceeded:
+        if slot is not None:
+            _in_flight.discard(slot)  # the thread never started
+        raise NotificationError("Too many sends are stuck; try again later") from None
     except asyncio.TimeoutError:
         raise NotificationError(f"Timed out after {SEND_TIMEOUT_S:g}s") from None
     except NotificationError:
@@ -288,10 +423,8 @@ async def _save(dests: list[dict]) -> None:
 
 def _hint(dest: dict) -> str:
     """Where it goes, with nothing secret: the host, or just the Apprise scheme."""
-    url = dest.get("url", "")
-    if dest.get("kind") == "webhook":
-        return urlparse.urlsplit(url).hostname or ""
-    return url.split("://", 1)[0] + "://" if "://" in url else ""
+    kind = _KINDS.get(dest.get("kind", ""))
+    return kind.hint(dest.get("url", "")) if kind else ""
 
 
 def public_view(dest: dict) -> dict:
@@ -309,13 +442,7 @@ def validate(kind: str, url: str) -> str:
     url = (url or "").strip()
     if not url or len(url) > MAX_URL_LEN:
         raise NotificationError("Enter a URL")
-    if kind == "webhook":
-        _check_http_url(url)
-    else:
-        if not apprise_available():
-            raise NotificationError(_APPRISE_MISSING)
-        if "://" not in url:
-            raise NotificationError("An Apprise URL looks like discord://id/token")
+    _KINDS[kind].check(url)
     return url
 
 
@@ -379,7 +506,7 @@ async def test_destination(
         url = validate(kind or "", url or "")
         await _send_one(kind, url, event)
     except NotificationError as exc:
-        return {"ok": False, "error": str(exc)}
+        return {"ok": False, "error": _redact(str(exc), url)}
     return {"ok": True, "error": None}
 
 
