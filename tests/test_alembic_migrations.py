@@ -163,6 +163,26 @@ def test_no_model_drift_after_upgrade(fresh_db_path: str):
     assert relevant == [], f"ORM drift detected: {relevant}"
 
 
+def test_0012_upgrades_and_downgrades(fresh_db_path: str):
+    """#304's migration: its three tables come and go, and upgrade runs again after."""
+    from alembic import command
+
+    engine = _db.init_engine(fresh_db_path, create_schema=False)
+    _db.apply_migrations()
+    added = {"platform_mappings", "findings", "finding_dismissals"}
+    assert added <= set(inspect(engine).get_table_names())
+
+    cfg = _db._alembic_config(engine)
+    command.downgrade(cfg, "0011")
+
+    assert _current_rev(engine) == "0011"
+    assert not added & set(inspect(engine).get_table_names())
+    assert "folder_libraries" in inspect(engine).get_table_names()
+
+    command.upgrade(cfg, "head")
+    assert added <= set(inspect(engine).get_table_names())
+
+
 # ---------------------------------------------------------------------------
 # Called-before-init guard
 # ---------------------------------------------------------------------------

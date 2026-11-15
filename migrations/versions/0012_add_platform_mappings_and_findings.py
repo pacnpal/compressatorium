@@ -1,6 +1,7 @@
 """add_platform_mappings_and_findings
 
-The user's folder-to-Platform mappings, and the Findings store (#304).
+The user's folder-to-Platform mappings, the Findings store and its
+dismissals (#304).
 
 Revision ID: 0012
 Revises: 0011
@@ -48,7 +49,6 @@ def upgrade() -> None:
             sa.Column('reason', sa.String(), nullable=False),
             sa.Column('cause', sa.JSON(), nullable=False),
             sa.Column('fingerprint', sa.String(), nullable=False),
-            sa.Column('dismissed_fingerprint', sa.String(), nullable=True),
             sa.Column('first_seen', sa.String(), nullable=False),
             sa.Column('last_seen', sa.String(), nullable=False),
             sa.PrimaryKeyConstraint('id'),
@@ -57,8 +57,32 @@ def upgrade() -> None:
             'ux_findings_library_image_kind', 'findings',
             ['library_id', 'image_key', 'kind'], unique=True,
         )
+    if 'finding_dismissals' not in tables:
+        op.create_table(
+            'finding_dismissals',
+            sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
+            sa.Column('library_id', sa.String(), nullable=False),
+            sa.Column('image_key', sa.String(), nullable=False),
+            sa.Column('kind', sa.String(), nullable=False),
+            sa.Column('fingerprint', sa.String(), nullable=False),
+            sa.Column('dismissed_at', sa.String(), nullable=False),
+            sa.PrimaryKeyConstraint('id'),
+        )
+        op.create_index(
+            'ux_finding_dismissals_key', 'finding_dismissals',
+            ['library_id', 'image_key', 'kind', 'fingerprint'], unique=True,
+        )
 
 
 def downgrade() -> None:
-    # Downgrade migrations are not supported in this project: forward-only.
-    raise NotImplementedError("downgrade not supported")
+    # Drops what upgrade() created, newest first. The mappings, Findings and
+    # dismissals go with it; no Image is touched.
+    tables = set(sa.inspect(op.get_bind()).get_table_names())
+    for table, index in (
+        ('finding_dismissals', 'ux_finding_dismissals_key'),
+        ('findings', 'ux_findings_library_image_kind'),
+        ('platform_mappings', 'ux_platform_mappings_library_folder'),
+    ):
+        if table in tables:
+            op.drop_index(index, table_name=table)
+            op.drop_table(table)

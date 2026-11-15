@@ -348,8 +348,9 @@ class FindingRecord(Base):
     (a folder Library's walk) and deleted when the cause goes away. Library
     agnostic: ``library_id`` is the Rule engine's id (``romm``, ``folder:3``)
     and ``image_key`` the Library's own Image key. ``fingerprint`` is a digest
-    of the cause; a dismissed row stays hidden while ``dismissed_fingerprint``
-    equals it, and shows again once the cause changes. Nothing acts on a row.
+    of the cause. Whether a row is dismissed lives in ``finding_dismissals``,
+    not here, so a row that is cleared and comes back keeps it. Nothing acts
+    on a row.
     """
 
     __tablename__ = "findings"
@@ -361,11 +362,35 @@ class FindingRecord(Base):
     reason = Column(String, nullable=False)
     cause = Column(JSON, nullable=False, default=dict)
     fingerprint = Column(String, nullable=False)
-    dismissed_fingerprint = Column(String, nullable=True)
     first_seen = Column(String, nullable=False)
     last_seen = Column(String, nullable=False)
     __table_args__ = (
         Index("ux_findings_library_image_kind", "library_id", "image_key", "kind", unique=True),
+    )
+
+
+class FindingDismissalRecord(Base):
+    """The owner's "not now" on one Finding's cause (#304).
+
+    Keyed by (Library, Image, kind, cause fingerprint) and kept apart from the
+    Finding row: a walk that does not see the Image (an unmounted share) drops
+    the row, and when it comes back with the same cause it comes back
+    dismissed. Show again deletes it; a cause seen to change deletes it;
+    removing the Library deletes it.
+    """
+
+    __tablename__ = "finding_dismissals"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    library_id = Column(String, nullable=False)
+    image_key = Column(String, nullable=False)
+    kind = Column(String, nullable=False)
+    fingerprint = Column(String, nullable=False)
+    dismissed_at = Column(String, nullable=False)
+    __table_args__ = (
+        Index(
+            "ux_finding_dismissals_key", "library_id", "image_key", "kind", "fingerprint",
+            unique=True,
+        ),
     )
 
 

@@ -2731,12 +2731,21 @@ that Library) are deleted; new ones get `first_seen`; every observed row gets
 `last_seen`. `fingerprint` is a digest of `kind` and the structured `cause`
 (for a Platform Finding: `how`, `header`, `folder`, `mapped`), not of the
 `reason` text, so a reworded message does not resurface a dismissed row.
-`dismiss(id)` copies the fingerprint into `dismissed_fingerprint`; the row is
-hidden while the two match and shows again once the cause changes. A changed
-fingerprint also clears `dismissed_fingerprint`, so a cause that changes and
-then changes back stays shown. `undismiss(id)` clears it by hand.
+`dismiss(id)` writes a row to `finding_dismissals`, keyed by `(library_id,
+image_key, kind, fingerprint)` and kept apart from the Finding row. A Finding
+is dismissed while such a row matches its current fingerprint. Because the
+dismissal outlives the Finding row, a row that a walk drops for not seeing the
+Image (a share that was unmounted, so its mount point listed empty) comes back
+dismissed when it returns with the same cause. A fingerprint `reconcile` sees
+change deletes the Image's dismissals of that kind, so a cause that changes
+and then changes back stays shown. `undismiss(id)` deletes them by hand, and
+`forget_library` deletes a removed Library's. Dismissals of a cause that went
+away for good stay behind, at most one per Image, kind and cause.
 `reconcile(..., keep_under=[...])` leaves alone every row whose `image_key`
-sits under a folder the producer could not look in, dismissal included.
+sits under a folder the producer could not look in. An `Observed` marked
+`only_if_new` (an Image file the producer could not read) does the same for
+one Image that already has a row: every row of it is kept as it is, and only
+an Image with no row yet gets the new Finding.
 `reconcile(..., current=...)` asks the producer, under the store's write lock,
 whether it may still write; `forget_library` takes the same lock. Kinds today
 are `platform_conflict` and `unsorted`; later producers (RomM, the Inbox, Check
@@ -2746,7 +2755,8 @@ clears another's rows.
 **The producer.** The folder Library's walk (§3.3.11, #303) is the only one: at
 the end of `_walk` it reconciles a `platform_conflict` per conflicted Entry, an
 `unsorted` per Entry with no Platform, and an `unsorted` per Image file the walk
-could not read (not a track a readable sheet lists: that is not an Image). A
+could not read (`only_if_new`; not a track a readable sheet lists, which is
+not an Image). A
 listing served from the last walk writes nothing, and a walk that fails (root
 unavailable) never reaches the reconcile. A subfolder that does not list is
 passed as `keep_under`, so a mount blip at any depth clears no Finding.

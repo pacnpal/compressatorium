@@ -7,8 +7,11 @@ Each observed Finding is upserted: the first time it is stored with
 same kinds that was not observed again is deleted, because its cause went away
 (the Image moved, was mapped, or was fixed).
 
-**Dismiss.** :func:`dismiss` records the cause's fingerprint, and the Finding
-is hidden while the cause stays the same. The fingerprint is a digest of the
+**Dismiss.** :func:`dismiss` records the cause's fingerprint in
+``finding_dismissals``, keyed by Library, Image, kind and fingerprint, and the
+Finding is hidden while the cause stays the same. The dismissal is kept apart
+from the Finding row, so a row a walk drops for not seeing the Image comes
+back dismissed when it returns with the same cause. The fingerprint is a digest of the
 structured cause (the header, the folder, the mapping), not of the reason's
 wording, so a new header answer brings the Finding back and a reworded message
 does not.
@@ -127,9 +130,9 @@ def reconcile(
                 counts["changed"] += 1
                 row.fingerprint = fingerprint
                 row.cause = dict(item.cause)
-                # The cause changed, so the person decides again: a cause
-                # that later changes back to the dismissed one stays shown.
-                row.dismissed_fingerprint = None
+                # The cause was seen to change, so the person decides again: a
+                # cause that later changes back to the dismissed one stays shown.
+                _dismissals(session, library_id, row.image_key, row.kind).delete()
             row.reason = item.reason
             row.path = item.path
             row.last_seen = stamp
@@ -139,7 +142,7 @@ def reconcile(
             session.add(_db.FindingRecord(
                 library_id=library_id, image_key=item.image_key, kind=item.kind,
                 path=item.path, reason=item.reason, cause=dict(item.cause),
-                fingerprint=item.fingerprint, dismissed_fingerprint=None,
+                fingerprint=item.fingerprint,
                 first_seen=stamp, last_seen=stamp,
             ))
             counts["added"] += 1
@@ -147,7 +150,20 @@ def reconcile(
     return counts
 
 
-def _describe(row: _db.FindingRecord) -> dict[str, Any]:
+def _dismissals(session, library_id: str, image_key: str, kind: str):
+    return session.query(_db.FindingDismissalRecord).filter_by(
+        library_id=library_id, image_key=image_key, kind=kind,
+    )
+
+
+def _dismissed_keys(session) -> set[tuple[str, str, str, str]]:
+    return {
+        (d.library_id, d.image_key, d.kind, d.fingerprint)
+        for d in session.query(_db.FindingDismissalRecord).all()
+    }
+
+
+def _describe(row: _db.FindingRecord, dismissed: set) -> dict[str, Any]:
     return {
         "id": row.id,
         "library_id": row.library_id,
@@ -158,7 +174,7 @@ def _describe(row: _db.FindingRecord) -> dict[str, Any]:
         "cause": dict(row.cause or {}),
         "first_seen": row.first_seen,
         "last_seen": row.last_seen,
-        "dismissed": row.dismissed_fingerprint == row.fingerprint,
+        "dismissed": (row.library_id, row.image_key, row.kind, row.fingerprint) in dismissed,
     }
 
 
@@ -168,7 +184,8 @@ def list_findings(*, include_dismissed: bool = False) -> list[dict[str, Any]]:
         rows = session.query(_db.FindingRecord).order_by(
             _db.FindingRecord.library_id, _db.FindingRecord.image_key, _db.FindingRecord.kind,
         ).all()
-        out = [_describe(row) for row in rows]
+        dismissed = _dismissed_keys(session)
+        out = [_describe(row, dismissed) for row in rows]
     if include_dismissed:
         return out
     return [row for row in out if not row["dismissed"]]
@@ -176,10 +193,7 @@ def list_findings(*, include_dismissed: bool = False) -> list[dict[str, Any]]:
 
 def count_dismissed() -> int:
     """How many Findings are hidden by a dismiss. Blocking."""
-    with _session() as session:
-        return session.query(_db.FindingRecord).filter(
-            _db.FindingRecord.dismissed_fingerprint == _db.FindingRecord.fingerprint,
-        ).count()
+    return sum(1 for row in list_findings(include_dismissed=True) if row["dismissed"])
 
 
 def dismiss(finding_id: int) -> bool:
@@ -188,7 +202,14 @@ def dismiss(finding_id: int) -> bool:
         row = session.get(_db.FindingRecord, finding_id)
         if row is None:
             return False
-        row.dismissed_fingerprint = row.fingerprint
+        exists = _dismissals(session, row.library_id, row.image_key, row.kind).filter_by(
+            fingerprint=row.fingerprint,
+        ).first()
+        if exists is None:
+            session.add(_db.FindingDismissalRecord(
+                library_id=row.library_id, image_key=row.image_key, kind=row.kind,
+                fingerprint=row.fingerprint, dismissed_at=_now(),
+            ))
         session.commit()
     return True
 
@@ -199,17 +220,18 @@ def undismiss(finding_id: int) -> bool:
         row = session.get(_db.FindingRecord, finding_id)
         if row is None:
             return False
-        row.dismissed_fingerprint = None
+        _dismissals(session, row.library_id, row.image_key, row.kind).delete()
         session.commit()
     return True
 
 
 def forget_library(library_id: str) -> None:
-    """Drop a removed Library's Findings. Blocking.
+    """Drop a removed Library's Findings and dismissals. Blocking.
 
     Call it after the Library stops answering ``current`` as True: the write
     lock then makes sure no walk of it writes afterwards.
     """
     with _write_lock, _session() as session:
         session.query(_db.FindingRecord).filter_by(library_id=library_id).delete()
+        session.query(_db.FindingDismissalRecord).filter_by(library_id=library_id).delete()
         session.commit()

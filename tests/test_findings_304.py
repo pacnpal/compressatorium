@@ -962,3 +962,57 @@ async def test_a_dismissed_unsorted_image_unreadable_for_one_walk_stays_dismisse
     after = _all()["Mystery.iso"]
     assert (after["id"], after["dismissed"]) == (first["id"], True)
 
+
+def test_a_finding_that_comes_back_unchanged_comes_back_dismissed(db: Path) -> None:
+    from services import findings
+
+    findings.reconcile("folder:1", [_conflict("ps2/a.iso")])
+    findings.dismiss(_open()[0]["id"])
+    findings.reconcile("folder:1", [])  # the walk did not see it
+    assert _open(include_dismissed=True) == []
+
+    findings.reconcile("folder:1", [_conflict("ps2/a.iso")])
+
+    assert [r["dismissed"] for r in _open(include_dismissed=True)] == [True]
+
+
+def test_showing_again_forgets_the_dismissal_for_good(db: Path) -> None:
+    from services import findings
+
+    findings.reconcile("folder:1", [_conflict("ps2/a.iso")])
+    finding_id = _open()[0]["id"]
+    findings.dismiss(finding_id)
+    findings.undismiss(finding_id)
+    findings.reconcile("folder:1", [])
+    findings.reconcile("folder:1", [_conflict("ps2/a.iso")])
+
+    assert [r["dismissed"] for r in _open()] == [False]
+
+
+def test_a_dismissal_is_kept_per_kind_and_cause(db: Path) -> None:
+    from services import db as _db
+    from services import findings
+
+    findings.reconcile("folder:1", [_conflict("ps2/a.iso", header="ngc")])
+    findings.dismiss(_open()[0]["id"])
+
+    with _db.SessionLocal() as session:
+        rows = session.query(_db.FindingDismissalRecord).all()
+        keys = [(r.library_id, r.image_key, r.kind, r.fingerprint) for r in rows]
+    assert keys == [
+        ("folder:1", "ps2/a.iso", "platform_conflict",
+         _conflict("ps2/a.iso", header="ngc").fingerprint),
+    ]
+
+
+def test_forgetting_a_library_drops_its_dismissals(db: Path) -> None:
+    from services import findings
+
+    findings.reconcile("folder:1", [_conflict("ps2/a.iso")])
+    findings.dismiss(_open()[0]["id"])
+    findings.forget_library("folder:1")
+
+    findings.reconcile("folder:1", [_conflict("ps2/a.iso")])
+
+    assert [r["dismissed"] for r in _open()] == [False]
+
