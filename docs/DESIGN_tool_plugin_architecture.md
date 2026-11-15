@@ -2624,7 +2624,9 @@ succeeded or not. It takes the caller's AbortSignal: `ConvertPanel` aborts it
 in `onDestroy`, so leaving the view mid-plan aborts the plan request, never
 opens the modal afterwards, resolves a pending confirmation as cancelled, and
 clears `autoInFlight` (the store stops waiting at the abort even when a request
-ignores the signal); `jobs.adopt` applies the same freshness rule as `refresh()`
+ignores the signal, and including a RomM snapshot that stalls: its rows are
+retired on their own when it returns, never touching a newer run's state);
+`jobs.adopt` applies the same freshness rule as `refresh()`
 (`snapshotIsNewer`) and never adopts an unknown job the store saw evicted
 from history or removed by Clear completed (bounded tombstones, one helper),
 so a response built before a job finished and was pruned or cleared cannot
