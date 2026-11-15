@@ -157,8 +157,29 @@ async def update_before_source_removal(
         reason = str(exc) or type(exc).__name__
     logger.warning("Referrer hook for %s did not finish: %s", image_path, reason)
     outcome = ReferrerOutcome()
+    # One failed record per Referrer, so the Ledger row says why the Source
+    # was kept even though no target was reached.
+    for referrer in registry.all():
+        outcome._record(referrer.id, image_path, "failed", reason)
     outcome.failed, outcome.reason = "playlists", reason
     return outcome
+
+
+async def plan_changes_bounded(
+    image_path: str, renames: Mapping[str, str],
+) -> list[ReferrerChange]:
+    """``plan_changes`` for the delete confirmation, bounded like the job's
+    hook: on a detached thread under the conversion's no-progress bound, so a
+    playlist on a mount that stopped answering can't hang the confirmation.
+    Raises ReferrerError (target "playlists") on a timeout."""
+    try:
+        return await run_detached_within_stall_bound(
+            plan_changes, image_path, dict(renames), what="Reading playlists",
+        )
+    except ReferrerError:
+        raise
+    except Exception as exc:
+        raise ReferrerError("playlists", str(exc) or type(exc).__name__) from exc
 
 
 __all__ = [
@@ -168,6 +189,7 @@ __all__ = [
     "ReferrerOutcome",
     "atomic_write_bytes",
     "plan_changes",
+    "plan_changes_bounded",
     "registry",
     "update_before_source_removal",
 ]

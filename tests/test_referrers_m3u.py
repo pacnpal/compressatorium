@@ -239,6 +239,10 @@ async def test_delete_confirmation_names_the_numbered_output_a_rename_writes(vol
         delete_on_verify=True,
     ))
 
+    # Only its planned output is needed; don't leave it queued for later tests.
+    await convert_routes.job_manager.cancel_job(job.id)
+    await convert_routes.job_manager.delete_job(job.id)
+
     [change] = plan["items"][0]["referrer_changes"]
     assert job.output_path != str(volume / "Game (Disc 1).chd")
     assert change["edits"] == [
@@ -377,15 +381,23 @@ async def test_cancel_frees_the_slot_while_a_playlist_read_hangs(volume, monkeyp
 
     from services.referrers import m3u as m3u_module
 
-    entered, release = threading.Event(), threading.Event()
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
     real_read = m3u_module._read
+    real_update = hook_module._update_sync
 
     def stuck_read(path):
         entered.set()
         release.wait(30)
         return real_read(path)
 
+    def update_then_signal(*args, **kwargs):
+        try:
+            return real_update(*args, **kwargs)
+        finally:
+            finished.set()
+
     monkeypatch.setattr(m3u_module, "_read", stuck_read)
+    monkeypatch.setattr(hook_module, "_update_sync", update_then_signal)
     job = await convert_routes.create_job(JobCreateRequest(
         file_path=str(volume / "Game (Disc 1).cue"),
         mode=ConversionMode.CREATECD,
@@ -397,12 +409,68 @@ async def test_cancel_frees_the_slot_while_a_playlist_read_hangs(volume, monkeyp
         assert await asyncio.to_thread(entered.wait, 10)
         await convert_routes.job_manager.cancel_job(job.id)
         await asyncio.wait_for(task, timeout=5)
+        # Checked while the reader is still blocked: the abandoned thread may
+        # (harmlessly) rewrite the playlist once it is released.
+        assert (volume / "Game (Disc 1).cue").is_file()
+        assert job.deleted_paths == []
+        assert (volume / "Game.m3u").read_bytes() == M3U
+        assert job.referrers_updated and job.referrers_updated[0]["status"] == "failed"
+    finally:
+        release.set()
+        await asyncio.to_thread(finished.wait, 10)
+
+    assert (volume / "Game (Disc 1).cue").is_file()
+
+
+@pytest.mark.asyncio
+async def test_a_hung_playlist_read_doesnt_hang_the_delete_confirmation(volume, monkeypatch):
+    """The preview plans under the same bound as the job's hook: a playlist on
+    a mount that stopped answering becomes the source-kept warning."""
+    import asyncio
+    import threading
+
+    from services import subprocess_runner
+    from services.referrers import m3u as m3u_module
+
+    release = threading.Event()
+    real_read = m3u_module._read
+
+    def stuck_read(path):
+        release.wait(30)
+        return real_read(path)
+
+    monkeypatch.setattr(m3u_module, "_read", stuck_read)
+    monkeypatch.setattr(subprocess_runner, "_MIN_STALL_TIMEOUT", 0)
+    monkeypatch.setattr(convert_routes.settings, "progress_timeout", 1)
+    try:
+        plan = await asyncio.wait_for(convert_routes.delete_plan(DeletePlanRequest(
+            file_paths=[str(volume / "Game (Disc 1).cue")], mode=ConversionMode.CREATECD,
+        )), timeout=10)
     finally:
         release.set()
 
-    assert (volume / "Game (Disc 1).cue").is_file()
-    assert job.deleted_paths == []
-    assert (volume / "Game.m3u").read_bytes() == M3U
+    [item] = plan["items"]
+    assert item["referrer_changes"] == []
+    assert any("the source will be kept" in w for w in item.get("warnings", []))
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_hook_records_a_failed_referrer():
+    """The Ledger row must say why the Source was kept."""
+    import asyncio
+
+    cancel = asyncio.Event()
+    cancel.set()
+
+    outcome = await hook_module.update_before_source_removal(
+        "/data/Game.cue", {"/data/Game.cue": "/data/Game.chd"}, cancel_event=cancel,
+    )
+
+    assert not outcome.ok
+    assert outcome.records == [{
+        "referrer": "m3u", "target": "/data/Game.cue",
+        "status": "failed", "reason": "cancelled",
+    }]
 
 
 _SRC = Path(__file__).resolve().parents[1] / "src" / "lib"

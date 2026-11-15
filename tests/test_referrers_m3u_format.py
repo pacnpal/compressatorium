@@ -877,6 +877,27 @@ async def test_a_utf16_file_with_an_appended_8_bit_line_keeps_the_source(tmp_pat
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("encoding", ["utf-16-le", "utf-16-be"])
+@pytest.mark.parametrize("name", [
+    "日本語日本語日本語.cue", "Game 日本語日本語日本語日本語.cue",
+], ids=["cjk", "cjk+ascii"])
+async def test_a_bomless_utf16_playlist_with_few_nuls_keeps_the_source(
+    tmp_path, encoding, name,
+):
+    """Long CJK names have too few NULs for the parity guess; both UTF-16
+    readings are still checked whenever there is any NUL."""
+    _disc(tmp_path, name)
+    playlist = tmp_path / "P.m3u"
+    data = f"{name}\n".encode(encoding)
+    playlist.write_bytes(data)
+
+    outcome = await _replace(tmp_path, name, "Game.chd")
+
+    assert not outcome.ok
+    assert playlist.read_bytes() == data
+
+
+@pytest.mark.asyncio
 async def test_a_zero_padded_playlist_is_not_called_utf16(tmp_path):
     _disc(tmp_path, "Game (Disc 1).cue")
     (tmp_path / "Game.m3u").write_bytes(b"Game (Disc 1).cue\n" + b"\0" * 512)

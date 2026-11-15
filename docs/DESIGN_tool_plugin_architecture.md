@@ -2408,9 +2408,11 @@ The package exposes the registry and two entry points:
   the numbered path the job writes. The route builds its plan with
   `build_delete_plan(..., confine_to_volumes=True)`: a track that resolves
   outside every Volume (through a symlinked folder) goes to `unsafe_paths`,
-  blocks the item, and never reaches `delete_paths` or the Referrer scan. A
-  plan that can't be made becomes a warning on the item ("the source will be
-  kept").
+  blocks the item, and never reaches `delete_paths` or the Referrer scan. The
+  preview plans through `plan_changes_bounded`, under the same detached,
+  no-progress bound as the hook, so a playlist on a mount that stopped
+  answering can't hang the confirmation. A plan that can't be made (or times
+  out) becomes a warning on the item ("the source will be kept").
 - `update_before_source_removal(image_path, renames)` is the **one hook** in
   `_process_job`. It runs after `_delete_check` (§3.3.12) has passed and after
   the delete plan's safety checks, immediately before the `os.remove` loop. Off the event
@@ -2430,7 +2432,8 @@ The package exposes the registry and two entry points:
   conversion's no-progress bound) and takes the job's `cancel_event`, so a
   playlist on a mount that stopped answering can't hold the job slot and its
   locks: on a timeout or a Cancel the thread is abandoned and the outcome keeps
-  the Source with the reason.
+  the Source with the reason, recording one `failed` entry per Referrer (target
+  the Image) so the Ledger row says why.
   Because the hook awaits a worker thread, the job re-asks two things after
   it and before `os.remove`: a Cancel pressed meanwhile keeps the Source
   ("Delete skipped (cancelled)"), and `JobManager._check_delete_paths` (lock,
@@ -2489,7 +2492,9 @@ never half of one.
   replacements if that fails). The NUL-stripped UTF-8 and cp1252 readings are
   always checked too, BOM or not: the parity guess can be wrong (an 8-bit
   file with a zero-filled tail), a file can mix content (an 8-bit line
-  appended to a UTF-16 one), and they are what a line reader sees. If any
+  appended to a UTF-16 one), and they are what a line reader sees. Both
+  UTF-16 byte orders are read too (with replacements), since long non-ASCII
+  names have too few NULs for the parity guess. If any
   reading contains a replaced file's name the Source is kept, and the reason
   names the reading that matched (`UTF-16` or `NUL bytes`); otherwise the
   playlist is left alone.

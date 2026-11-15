@@ -315,6 +315,10 @@ def _wide_text_check(playlist: str, data: bytes, renames: _Renames) -> bool:
     readings += [
         ("NUL bytes", stripped.decode("utf-8", errors="replace")),
         ("NUL bytes", stripped.decode("cp1252", errors="replace")),
+        # Long non-ASCII names in UTF-16 have too few NULs for the parity
+        # guess: read both byte orders as well.
+        ("UTF-16", data.decode("utf-16-le", errors="replace")),
+        ("UTF-16", data.decode("utf-16-be", errors="replace")),
     ]
     for kind, text in readings:
         folded = _fold(text)
