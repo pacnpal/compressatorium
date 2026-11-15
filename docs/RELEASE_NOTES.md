@@ -92,7 +92,10 @@
   (#306), whichever process runs the job. Every job holds a shared lock on its
   Source and the Source's companions until it ends, so the web answers 409
   while a CLI run converts that file. Two jobs reading one file don't block each
-  other.
+  other. Renaming or deleting a folder is refused the same way while a job in
+  any process reads or writes something inside it.
+  - A CLI container and the web UI that share `/config` must mount each Volume
+    at the same path; locks name container paths.
 - **Delete-source keeps an archive that holds another Image** (#306).
   Deleting an archive member's Source deletes the whole archive, so the archive
   now goes only when that member is the only Image in it. The count covers

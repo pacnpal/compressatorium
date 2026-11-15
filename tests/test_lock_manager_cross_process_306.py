@@ -10,7 +10,6 @@ import fcntl
 import os
 
 import pytest
-
 from services import lock_manager as lock_module
 from services.lock_manager import LockManager
 
@@ -275,3 +274,56 @@ async def test_the_server_refuses_to_touch_an_input_another_process_reads(
         assert result["success"] is True
     finally:
         reset_db_engine()
+
+
+# --------------------------------------------------------------------------- #
+# Locks below a folder (review r8 M1)
+# --------------------------------------------------------------------------- #
+
+
+def test_a_lock_inside_a_folder_is_found_from_the_folder(tmp_path):
+    holder, probe = _manager(tmp_path / "locks"), _manager(tmp_path / "locks")
+    folder = tmp_path / "vol" / "ps3"
+    (folder / "GAME").mkdir(parents=True)
+    wia = folder / "Game.wia"
+    wia.write_bytes(b"x")
+    out = tmp_path / "vol" / "gc" / "Game.rvz"
+
+    assert probe.locked_path_below(str(folder)) is None
+    assert holder.acquire_dir_lock(str(folder / "GAME"))
+    assert probe.locked_path_below(str(folder)) == os.path.realpath(folder / "GAME")
+    holder.release_dir_lock(str(folder / "GAME"))
+    assert holder.acquire_input_lock(str(wia))
+    assert probe.locked_path_below(str(folder)) == os.path.normpath(wia)
+    holder.release_input_lock(str(wia))
+    assert holder.acquire_lock(str(out))
+    assert probe.locked_path_below(str(folder)) is None  # elsewhere
+    assert probe.locked_path_below(str(tmp_path / "vol")) == os.path.normpath(out)
+    holder.release_lock(str(out))
+    assert probe.locked_path_below(str(tmp_path / "vol")) is None
+    # A sibling whose name only starts the same is not inside.
+    assert holder.acquire_input_lock(str(tmp_path / "vol" / "ps3x" / "A.iso"))
+    assert probe.locked_path_below(str(folder)) is None
+
+
+@pytest.mark.asyncio
+async def test_the_server_refuses_to_delete_or_rename_a_folder_holding_a_lock(
+    guarded_volume,
+):
+    from fastapi import HTTPException
+
+    g = guarded_volume
+    ps3 = g.folder.parent  # vol/ps3, holding the GAME folder being packed
+    assert g.cli.acquire_dir_lock(str(g.folder))
+    try:
+        with pytest.raises(HTTPException) as exc:
+            await g.routes.delete_file(
+                g.request("recursive-delete"), path=str(ps3), recursive=True,
+            )
+        assert exc.value.status_code == 409
+        with pytest.raises(HTTPException) as exc:
+            await g.routes.rename_file(g.request("rename-file"), path=str(ps3), new_name="PS3")
+        assert exc.value.status_code == 409
+        assert g.inner.exists()
+    finally:
+        g.cli.release_dir_lock(str(g.folder))

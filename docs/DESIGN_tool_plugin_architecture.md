@@ -2680,6 +2680,28 @@ output lock on that path would use, so:
   remaining reader. An acquirer retries briefly when the stale probe holds the
   file for a moment, and checks `_still_linked` (rule 2).
 
+**Locks below a folder.** Lock files are named by a hash, so each one records
+the path it locks as its first line when it is taken (`_record_path`; readers
+sharing a file may each write it, the first line counts). For a folder, the web
+guard also asks `LockManager.locked_path_below(folder)`: it reads the lock dir,
+and for each lock file naming a path at or inside the folder (normalized or
+resolved) probes it without blocking, as `check_file_status` does. Held by any
+handle means a job in some process writes or reads something inside, and a
+rename or delete of the folder answers 409. So a recursive delete of `vol/ps3`
+is refused while another process packs `vol/ps3/GAME`, converts
+`vol/ps3/Game.wia`, or writes an output there.
+
+**Limits of the lock dir.**
+
+- Keys are container-local paths. Containers that share `/config` (the web UI
+  and a CLI container) must mount each Volume at the same path, or they don't
+  see each other's locks. Two containers mounting different folders at one path
+  get false 409s, which fail safe.
+- A probe that can't run (a lock file another uid owns, `ENOLCK` on a lock dir
+  over NFS) counts as not held, here and in `check_file_status`. That holds
+  while every process runs as the same uid, which the entrypoint's and the
+  wrapper's `gosu converter` drop ensure.
+
 A job that cannot take its input locks (another job holds the path for
 writing) is deferred and re-queued, like a folder-lock block. Before the
 delete-on-verify step checks its delete paths with `check_file_status`, the job

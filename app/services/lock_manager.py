@@ -187,6 +187,62 @@ class LockManager:
                 return None
             current = parent
 
+    def locked_path_below(self, dir_path: str) -> str | None:
+        """A path at or inside ``dir_path`` that some process holds a lock on.
+
+        Lock files are named by a hash, so each one records the path it locks
+        (``_record_path``) when it is taken. This reads every lock file in the
+        lock dir, and for one naming a path inside the folder probes it without
+        blocking, as ``check_file_status`` does: held by anyone (another
+        process, or another handle here) means something inside is being
+        written or read, so the folder must not be renamed or deleted (#306).
+        A stale one found on the way is removed. Returns that path, or None.
+        """
+        prefixes = {os.path.normpath(dir_path), self._resolve(dir_path)}
+        try:
+            names = [
+                name for name in os.listdir(self._lock_dir)
+                if name.startswith("filelock-") and name.endswith(".lock")
+            ]
+        except OSError:
+            return None
+        for name in names:
+            lock_file = os.path.join(self._lock_dir, name)
+            locked = self._recorded_path(lock_file)
+            if not locked or not any(
+                self._path_within(locked, prefix) for prefix in prefixes
+            ):
+                continue
+            if self.is_read_only or self._remove_if_stale(lock_file) is False:
+                return locked
+        return None
+
+    @staticmethod
+    def _record_path(handle, locked_path: str) -> None:
+        """Write the locked path into a lock file just taken, once.
+
+        Readers sharing one file may both see it empty and both write; the
+        first line is what counts. Best effort: a lock without its path is
+        still a lock, only ``locked_path_below`` can't see it.
+        """
+        try:
+            if os.fstat(handle.fileno()).st_size == 0:
+                handle.write(locked_path.encode("utf-8", "surrogateescape") + b"\n")
+                handle.flush()
+        except OSError:
+            logger.debug("Could not record the path of a lock", exc_info=True)
+
+    @staticmethod
+    def _recorded_path(lock_file: str) -> str | None:
+        try:
+            with open(lock_file, "rb") as handle:
+                first = handle.readline(8192)
+        except OSError:
+            return None
+        if not first.endswith(b"\n"):
+            return None  # empty, or being written right now
+        return first[:-1].decode("utf-8", "surrogateescape") or None
+
     def dir_lock_would_conflict(self, dir_path: str) -> bool:
         """Whether :meth:`acquire_dir_lock` for ``dir_path`` would currently
         conflict with an existing lock (without acquiring anything)."""
@@ -432,6 +488,7 @@ class LockManager:
                         return False
 
                 # Successfully acquired the lock and file doesn't exist
+                self._record_path(lock_handle, normalized_path)
                 self._locks.add(normalized_path)
                 self._lock_handles[normalized_path] = lock_handle
                 # Transfer ownership to _lock_handles by detaching ExitStack cleanup.
@@ -514,6 +571,7 @@ class LockManager:
                         # Unlinked by its last holder under us: a lock no one
                         # else can see. The job defers and tries again.
                         return False
+                    self._record_path(lock_handle, normalized)
                     self._dir_locks.add(normalized)
                     self._dir_lock_handles[normalized] = lock_handle
                     # Keep the handle open for the job lifecycle.
@@ -564,6 +622,7 @@ class LockManager:
         handle = self._shared_lock(lock_file_path)
         if handle is None:
             return False
+        self._record_path(handle, normalized)
         with self._lock_mutex:
             self._input_handles.setdefault(normalized, []).append(handle)
         return True
