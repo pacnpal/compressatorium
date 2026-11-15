@@ -1650,7 +1650,11 @@ installed, an output folder outside the Volumes, a source that could not be
 read, a destination another job took first (`destination_claimed`), RomM not
 configured while it has Rules, or a Library whose sweep raised. The other
 Libraries still run. A stop (SIGTERM, `docker stop`, Ctrl-C) queues nothing
-more, cancels the jobs it queued and exits `1`.
+more, cancels the jobs it queued and exits `1`. A job that converts and checks
+its output but keeps the Source because another job was still reading it
+completes: its line shows "Source kept: it was being read by another job" and
+it does not change the exit status. A Source kept by a safety check (an archive
+that holds other files, a delete plan that changed) is a failed job.
 
 Every command takes `--dry-run` (print the plan, convert or check nothing) and
 `--json` (one JSON line per Image; for `run-rules`, one per Platform and one per

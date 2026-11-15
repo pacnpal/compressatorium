@@ -166,7 +166,11 @@ def _dolphin(monkeypatch):
         Path(output_path).write_bytes(b"converted output")
         yield {"progress": 100, "message": "Conversion complete"}
 
+    async def fake_verify(cmd, *, path, **kwargs):
+        yield {"type": "complete", "valid": True, "message": "Disc image is Intact"}
+
     monkeypatch.setattr(service._runner, "run", fake_run)
+    monkeypatch.setattr(service._runner, "run_verify", fake_verify)
     return state
 
 
@@ -258,6 +262,55 @@ def test_a_library_with_no_rules_is_reported_and_left_alone(env, dolphin, capsys
     assert code == 0
     assert {"library": "attic", "platform_id": None, "mode": None, "status": "skipped",
             "queued": 0, "considered": 0, "candidates": [], "reason": "no_rules"} in lines
+
+
+def test_a_source_kept_while_another_job_reads_it_is_a_success(
+    env, dolphin, capsys, monkeypatch,
+):
+    """The shared delete step (#306): the output is done and checked, but
+    another process still reads the Source (here, locks the folder above it),
+    so the job completes and keeps the Source with a warning. run-rules shows
+    the warning and exits 0."""
+    from services import job_manager as job_manager_module
+    from services.job_manager import SOURCE_KEPT_FOR_READERS, JobManager
+    from services.lock_manager import LockManager, lock_manager
+
+    monkeypatch.setattr(job_manager_module, "DELETE_READER_WAIT_SECONDS", 0.3)
+    monkeypatch.setattr(job_manager_module, "DELETE_READER_POLL_SECONDS", 0.05)
+    iso = _iso(env)
+    folder = iso.parent
+    # The output goes elsewhere, so a lock on the Source's folder is the
+    # other reader's alone.
+    out_dir = env["vol"] / "out"
+    out_dir.mkdir()
+    _store_rules(env, {"shelf": {"gc": {
+        "mode": "dolphin_rvz", "enabled": True, "delete_on_verify": True,
+        "check_level": "container_only", "output_dir": str(out_dir),
+    }}})
+    reader = LockManager()
+    reader._lock_dir = lock_manager._lock_dir
+    original = JobManager._release_inputs
+    taken = []
+
+    def release_then_read(self, job_id):
+        original(self, job_id)
+        if not taken:
+            taken.append(reader.acquire_dir_lock(str(folder)))
+
+    monkeypatch.setattr(JobManager, "_release_inputs", release_then_read)
+    try:
+        code, lines, _err = _cli(capsys, "run-rules", "--json")
+    finally:
+        reader.release_dir_lock(str(folder))
+
+    assert taken == [True]
+    assert code == 0, lines
+    jobs = [line for line in lines if line.get("path")]
+    assert [(j["status"], j["source_deleted"], j["reason"]) for j in jobs] == [
+        ("completed", False, SOURCE_KEPT_FOR_READERS),
+    ]
+    assert iso.exists()
+    assert (out_dir / "Game.rvz").exists()
 
 
 def test_a_failed_job_exits_1(env, dolphin, capsys):

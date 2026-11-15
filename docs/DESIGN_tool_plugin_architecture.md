@@ -3001,7 +3001,11 @@ sweep result has any `errors` entry (`unreadable`, `tool_not_ready`,
 `identity_cleanup_pending`, `queue_failed`, `destination_claimed`, ...), when it
 stopped for `library_unresponsive` or `not_configured` (a Library that has
 Rules but cannot be swept), or when a job failed or was cancelled. The same
-applies to `--dry-run`.
+applies to `--dry-run`. A job the shared delete step completes with
+`job.warning` (`SOURCE_KEPT_FOR_READERS`: the Source was still being read once
+`DELETE_READER_WAIT_SECONDS` ran out) is a success: its line carries the
+warning as `reason`. A delete refused for safety raises in that step, so the
+job ends FAILED and counts.
 
 Stopping. `sweep()` takes `should_stop`, asked before each Platform, before
 each Image is inspected, and again right before a batch is queued; once true
