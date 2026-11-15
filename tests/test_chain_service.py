@@ -47,7 +47,7 @@ def chain_env(monkeypatch, tmp_path):
     # post_convert hook. Keep it a no-op here so the orchestration assertions
     # don't depend on real disc parsing; the dedicated test below installs its
     # own spy to assert how the hook is invoked.
-    async def _noop_post_convert(input_path, output_path, mode):
+    async def _noop_post_convert(input_path, output_path, mode, *, within=None):
         return None
 
     monkeypatch.setattr(
@@ -134,7 +134,7 @@ def test_chain_tags_final_chd_via_post_convert(chain_env, tmp_path, monkeypatch)
 
     seen: list[tuple[str, str, str]] = []
 
-    async def _spy(input_path, output_path, mode):
+    async def _spy(input_path, output_path, mode, *, within=None):
         seen.append((input_path, output_path, mode))
 
     monkeypatch.setattr(registry.get("chdman"), "post_convert", _spy)
@@ -242,7 +242,7 @@ def nkit_chain_env(monkeypatch, tmp_path):
 
     monkeypatch.setattr(chain_mod, "create_scratch_dir", _scratch)
 
-    async def _noop_post_convert(input_path, output_path, mode):
+    async def _noop_post_convert(input_path, output_path, mode, *, within=None):
         return None
 
     monkeypatch.setattr(registry.get("dolphin"), "post_convert", _noop_post_convert)

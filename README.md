@@ -12,7 +12,7 @@ A game image converter that wraps ten tools: **CHDMAN** (MAME), **dolphin-tool**
 * **Multiple volume mounts** so you can keep separate game libraries separate.
 * **File detection** that works out which files each tool can convert.
 * **Existing-output detection** with skip, rename, or overwrite.
-* **Delete-on-verify.** Optionally remove the source once the output passes its check. Off by default. For GameCube/Wii the output must be Round-tripped (it decodes to the same disc as the source); other tools need it Intact (it passes its own container check).
+* **Delete-on-verify.** Optionally remove the source once the output passes its check. Off by default. By default the output must be Round-tripped: it decodes to the same content as the source. CHDMAN Create LD offers no delete-on-verify.
 * **Progress tracking** through a live job queue.
 * **File info** for CHD, Dolphin, 3DS, Switch, CSO, handheld ROM, NKit, Wii U, and Xbox files.
 
@@ -459,15 +459,51 @@ curl -X PUT http://localhost:8080/api/ledger/settings \
 `GET /api/ledger/recent?limit=N` and `GET /api/ledger/savings` return the rows and
 the totals as JSON.
 
+The **Ledger** view in the sidebar lists every row, newest first, 25 to a page.
+Search matches the Source or output path, and you can filter by status, tool and
+Platform. **Export CSV** downloads every row matching the current search and
+filters (the same query behind `GET /api/ledger/export.csv`). The list is also
+available as JSON from `GET /api/ledger?q=&status=&tool=&platform=&limit=&offset=`,
+which returns `{"items": [...], "total": N}`.
+
+For a home-lab dashboard, `GET /api/metrics` serves Prometheus text:
+
+```
+compressatorium_jobs_total{status="completed"}   # also failed, cancelled
+compressatorium_input_bytes_total                # Source bytes, completed jobs
+compressatorium_output_bytes_total               # output bytes, completed jobs
+compressatorium_queue_depth                      # queued or running now
+```
+
+`/api/ledger/savings` is the savings summary (totals by Platform and by format).
+Both follow the API's auth rules: with `COMPRESSATORIUM_ENABLE_AUTH` on, give
+Prometheus the token as a bearer token or as the basic-auth password. The job and
+byte totals are true counters kept in their own table: they only go up, and a
+retention prune of Ledger rows does not lower them. (They start from the Ledger's
+contents when you upgrade.)
+
+| Light | Dark |
+|-------|------|
+| ![Ledger, light](docs/screenshots/ledger-light.png) | ![Ledger, dark](docs/screenshots/ledger-dark.png) |
+
 ### Verifying and deleting safely
 
 Converting never deletes anything on its own — the safe order is convert, verify,
 then delete the source. Verify reads the whole output back and checks it against
 the file's own hashes/CRC; a file that passes is **Intact**. With
 **delete-on-verify** the source is removed only after the output passes, and
-never if it fails. For Dolphin modes the bar is higher by default: the output
-must be **Round-tripped**, meaning the disc it decodes to has the same SHA1 as
-the source disc. **Container check only (faster, weaker)** in the convert panel
+never if it fails. By default the bar is higher: the output must be
+**Round-tripped**, meaning the content it decodes to matches the source. Dolphin
+and CHDMAN compare disc SHA1s; CSO/ZSO/DAX, 3DS and WUX outputs are decoded and
+hashed with no temp file; an NSZ is compared through the NSP SHA256 that
+`nsz -V` rebuilds (an XCZ is decompressed to the scratch volume); a 7z/zip ROM
+archive must hold exactly the ROM, by name, size and CRC; CSO to CHD compares
+the decoded disc with the CHD. CHDMAN Create LD offers no delete-on-verify: an
+AVI cannot be compared with a LaserDisc CHD. A CD CHD is extracted to a temp
+folder for this, and both its track data and its track table (tracks, types,
+lengths, index offsets, gaps) must match the source cue or gdi; the folder is removed
+afterwards. Without about a disc's worth of free scratch space the job keeps the
+source and fails. **Container check only (faster, weaker)** in the convert panel
 drops back to the Intact check for that job. You get a confirmation list of
 everything to be deleted first, including the `.cue`/`.gdi` track files that ride
 with a `.bin`, and the whole archive if the source came from one. **Bulk Verify**
@@ -653,6 +689,45 @@ has converted, and that memory is kept honest for you:
 
 The schedule clock and the conversion history are separate, so forgetting one
 never disturbs the other.
+
+### Folder Libraries and the Rules view
+
+You don't need RomM to automate conversions. Open any folder inside a Volume in
+the Workspace, and pick **Register as a Library** from its row menu. The folder
+becomes a Library, and the **Rules** view (in the sidebar) shows it:
+
+- **Images** are what gets converted, not files: a `.cue` or `.gdi` and the
+  tracks it lists are one Image (the sheet), and a split Wii U dump is one Image
+  (its first part). Track files are never converted on their own, and playlists
+  (`.m3u`) are not Images. A `.bin` no sheet lists is its own Image. Converted
+  outputs (`.chd`, `.rvz`) and archives (`.zip`, `.7z`) in the folder count as
+  Images too; folders (a decrypted PS3 game) do not.
+- **Platforms** come from Platform detection: an Image's own header first, then
+  its folder name (`ps2`, `gc`, `psx`, `megacd`, ... as ES-DE and Batocera lay
+  them out). Each Platform shows its name and how many Images it has.
+- **Unsorted** Images (nothing names their Platform) and **Conflicted** ones
+  (the header disagrees with the folder, such as a GameCube disc filed under
+  `ps2`) are counted but never converted by a Rule. Files that cannot be read
+  are counted on their own and skipped too.
+- **Rules** have the same settings as RomM's, one per Platform: "convert ps2 to
+  CHD nightly" is a ps2 Rule with a window of `01:00`–`05:00`. A folder Rule
+  always **skips** an Image whose output already exists, so a sweep that runs
+  twice queues nothing new. Overwrite and write-alongside are not offered for
+  folder Libraries. An Image whose conversion failed is held: it is not
+  queued again until one of its files changes (size or modified time; a
+  sheet's tracks count), and the Rule shows how many it holds with a **Retry
+  failed** button that releases them. Preview and Run count held Images too.
+- **Only Recognized / not Recognized** filters read the DAT or Hasheous match
+  already cached for each file. Listing a Library never hashes anything. A file
+  nobody has matched yet is neither: both filters skip it, so run a DAT match
+  over the folder first.
+- **Preview** shows what a sweep would queue and moves no schedule clock. **Run
+  now** queues it. **Run automatically** turns the scheduler on for that Library.
+- If the folder cannot be reached during a run (a NAS rebooting, a mount
+  dropping), that run says so and queues nothing; the next run checks again.
+- **Remove Library** forgets the Library and its Rules. It never touches a file.
+
+The RomM view's **Automation** tab is the same Rules view, opened on RomM.
 
 #### Your metadata survives conversion
 
@@ -909,6 +984,13 @@ A Rule open in the editor. A Rule that deletes its source Round-trips the new fi
 | Light | Dark |
 |-------|------|
 | ![RomM rule editor, light](docs/screenshots/romm-rule-editor-light.png) | ![RomM rule editor, dark](docs/screenshots/romm-rule-editor-dark.png) |
+#### Rules on a folder Library
+
+A folder registered as a Library, with the Platforms found in it, its Unsorted and Conflicted counts, and a PS2 Rule. See [Folder Libraries and the Rules view](#folder-libraries-and-the-rules-view).
+
+| Light | Dark |
+|-------|------|
+| ![Rules view on a folder Library, light](docs/screenshots/rules-folder-light.png) | ![Rules view on a folder Library, dark](docs/screenshots/rules-folder-dark.png) |
 
 #### DAT Library
 
@@ -1619,32 +1701,158 @@ goes from 7.3 GB to 5.7 GB.
 extract-xiso is distributed under a modified BSD license; its license text ships
 in the image at `/usr/share/doc/extract-xiso/LICENSE.TXT`.
 
-## CLI Mode (Batch Processing)
+## Command line (`compressatorium`)
 
-For automated/headless conversion, use CLI mode. CLI mode runs CHDMAN only and processes
-files in the **top level** of each mounted volume (no recursive scanning, no archives). See
-`DOCKER-COMPOSE.md` for CLI behavior details.
-
-### CD Conversion (Default)
-
-```bash
-docker run --rm \
-  -e CHD_MODE=cli \
-  -v "$(pwd)/isofiles:/data/games:rw" \
-  pacnpal/compressatorium
-```
-
-### DVD Conversion (PSP, PS2)
+The image ships a `compressatorium` command for shells and cron. It drives the
+same planner, job queue, delete checks and Ledger as the web UI, for every tool,
+and recurses into subfolders and archives the way the UI's search does. Paths
+must sit inside the configured Volumes.
 
 ```bash
-docker run --rm \
-  -e CHD_MODE=cli \
-  -e CHDMAN_MODE=createdvd \
-  -v "$(pwd)/isofiles:/data/games:rw" \
-  pacnpal/compressatorium
+compressatorium convert /data/ps2 --to chd --delete-source
+compressatorium convert /data --auto --dry-run --json
+compressatorium verify /data/gamecube --since 30d
+compressatorium run-rules --dry-run
 ```
 
-### Multiple Volumes in CLI Mode
+**`convert PATH... (--to FORMAT | --auto)`**
+
+- `--to` takes an output format (`chd`, `rvz`, `wia`, `gcz`, `iso`, `cue`, `cso`,
+  `zso`, `nsz`, `z3ds`, `wux`, `7z`, `zip`, ...) or a mode id (`createdvd`,
+  `nkit_to_rvz`). A format is resolved per Image through the tool registry,
+  chains included: a PS2 `.iso` goes to `createdvd`, a PS1 `.cue` to
+  `createcd`, an NKit image to `nkit_to_rvz`, a Game Boy Advance ROM with
+  `--to 7z` to a `.gba.7z`. The Image's Platform narrows the choice, so a
+  GameCube `.iso` is never sent to chdman. A Conflicted Image (its header and
+  folder disagree) is skipped with the reason. An Unsorted Image converts only
+  with a mode whose command reads its extension. An Image already in the format
+  is reported and left alone.
+- `--auto` sends each Image to its Platform's default format. Conflicted and
+  Unsorted Images are skipped and reported.
+- `--delete-source` deletes each Source once its output passes the strongest
+  check its mode has: the Round-trip check where the tool has one, else the
+  container check. `--container-only` deletes on the container check alone.
+- `--compression CODECS` sets the compression for every Image; `--compression
+  default` uses each tool's own default. Without it, the compression saved in
+  the web UI is used.
+- `--duplicate skip|overwrite|rename` (default `skip`), `--output-dir DIR`,
+  `--no-recurse` (top level only), `--no-archives` (leave archives alone),
+  `--any-platform` (with `--to`, no Platform check).
+
+**`verify PATH... [--since AGE]`** checks each Image is Intact and stores the
+result. `--since 30d` (also `12h`, `2w`) skips Images checked within that window.
+A check that fails drops the stored result; one that times out or cannot run
+leaves it and reports the error.
+
+**`run-rules [--library ID]`** does one pass over the Rules stored in the web UI
+for every Library (RomM and each registered folder Library), waits for the jobs
+it queued, and exits. It is the
+same sweep the server's scheduler runs each minute, so each Rule's own on/off
+switch, days, time window, interval and per-run cap still apply; the
+auto-convert master switch does not, because running the command is the
+switch. `--library romm` or `--library folder:1` limits it to one Library (the
+ids are listed by `/api/libraries`). `--dry-run` prints what each
+Rule would queue on this pass and writes nothing. Unlike the editor's Preview it
+keeps each Rule's clock, so a Rule that is not due (outside its window, or run
+within its interval) prints no line. It prints one line per Platform and one per
+job as it ends.
+
+Before it sweeps RomM, `run-rules` does the RomM upkeep the server does in the
+background: it finishes an identity cleanup a crash left owed (otherwise RomM
+Rules are refused with `identity_cleanup_pending`) and runs one pass of the
+re-pin settler, so ROMs converted by an earlier pass get their metadata back.
+Re-pins recorded by this pass are settled by the next pass, or by the server.
+It does not run the DAT sync, the Hasheous checks or anything else the web UI
+starts.
+
+A pass exits `1` when any job failed or was cancelled, and also when any sweep
+reported an error: RomM not answering (`unreadable`), a tool that is not
+installed, an output folder outside the Volumes, a source that could not be
+read, a destination another job took first (`destination_claimed`), RomM not
+configured while it has Rules, a queue too full to take the pass's Images
+(`MAX_QUEUE_DEPTH`; the line says how many were left), or a Library whose
+sweep raised. The other
+Libraries still run. A stop (SIGTERM, `docker stop`, Ctrl-C) queues nothing
+more, cancels the jobs it queued and exits `1`. A job that converts and checks
+its output but keeps the Source because another job was still reading it
+completes: its line shows "Source kept: it was being read by another job" and
+it does not change the exit status. A Source kept by a safety check (an archive
+that holds other files, a delete plan that changed) is a failed job.
+
+Every command takes `--dry-run` (print the plan, convert or check nothing) and
+`--json` (one JSON line per Image; for `run-rules`, one per Platform and one per
+job, on stdout).
+Warnings and errors always go to stderr; `-v` adds INFO messages there. Exit
+status: `0` when everything finished or there was nothing to do, `1` when any
+Image or job failed (for `run-rules`, also a sweep error), `2` on bad arguments,
+`3` when `run-rules` found another scheduler using the data directory.
+
+Each Image is planned on its own, so one bad file is reported and the others
+still convert. When `MAX_QUEUE_DEPTH` is set, jobs are fed in batches below it.
+
+**Beside a running server.** Each job holds a file lock on its output, and both
+share the conversion slots. These live in `CHD_CONCURRENCY_LOCK_DIR`, which
+defaults to `/config/locks`, so a separate container that mounts the same
+`/config` (such as `docker-compose.cli.yml`) shares them too. Run it in the
+server's container with `docker exec compressatorium compressatorium convert ...`.
+Started as root (`docker exec` without `-u`, or `--entrypoint`), the command
+first remaps and drops to the `converter` user through the image's entrypoint,
+honouring `PUID`/`PGID` the same way the server does, so the files it writes
+belong to the user the server runs as.
+
+**One Rule scheduler per data directory.** `convert` and `verify` run beside a
+server; `run-rules` does not. The server holds a lock on
+`/config/locks/scheduler.lock` for as long as it runs, and its own scheduler
+runs the Rules. While that lock is held, `run-rules` prints who holds it and
+exits `3` without queuing anything. A server started while a `run-rules` pass
+(or another server) holds the lock waits for it before it opens anything,
+logging who it waits for every 30 seconds, then starts; `docker stop` still
+stops it while it waits. The web UI does not answer while it waits, but the
+container's health check counts the wait as healthy. Use `run-rules` where the server is not running all the
+time: start a one-off container with the same `/config` and the same Volume
+mounts as the server (RomM's library root must resolve to the same path).
+
+### Rules from cron
+
+A crontab line on the Docker host, nightly at 02:00:
+
+```bash
+0 2 * * * docker run --rm -e PUID=1000 -e PGID=1000 -v /srv/compressatorium/config:/config -v /srv/games:/data/games --entrypoint compressatorium pacnpal/compressatorium run-rules >> /var/log/compressatorium-rules.log 2>&1
+```
+
+### Rules from Unraid User Scripts
+
+Add a script in **Settings → User Scripts**, paste this, and set its schedule
+(for example **Custom** `0 3 * * *`). Use the appdata and share paths your
+Compressatorium container uses.
+
+```bash
+#!/bin/bash
+docker run --rm -e PUID=99 -e PGID=100 \
+  -v /mnt/user/appdata/compressatorium:/config \
+  -v /mnt/user/games:/data/games \
+  --entrypoint compressatorium pacnpal/compressatorium run-rules
+status=$?
+if [ "$status" -eq 3 ]; then
+  echo "Compressatorium is running; its own scheduler runs the Rules."
+  exit 0
+fi
+exit "$status"
+```
+
+### `CHD_MODE=cli`
+
+`CHD_MODE=cli` keeps today's behaviour: it runs
+
+```bash
+compressatorium convert <each Volume> --to $CHDMAN_MODE \
+  --no-recurse --no-archives --any-platform --compression default
+```
+
+and exits. That is the top level of each Volume, every `.cue`, `.gdi` and
+`.iso` the chdman command reads, no archives, no Platform check and chdman's own
+compression. `CHDMAN_MODE` is `createcd` (default) or `createdvd`. Outputs that
+already exist are skipped. For anything else, run `compressatorium` directly.
 
 ```bash
 docker run --rm \
@@ -1653,6 +1861,15 @@ docker run --rm \
   -v /home/user/psp:/data/psp:rw \
   -v /home/user/ps2:/data/ps2:rw \
   pacnpal/compressatorium
+```
+
+To run any other command in a one-off container:
+
+```bash
+docker run --rm -e PUID=1000 -e PGID=1000 \
+  -v /home/user/gc:/data/gc:rw -v ./config:/config \
+  --entrypoint compressatorium pacnpal/compressatorium \
+  convert /data/gc --to rvz --json
 ```
 
 ---
@@ -1864,7 +2081,7 @@ The Web UI communicates with a REST API that can also be used directly. Interact
 | `COMPRESSATORIUM_SEARCH_AUTO_RETURN_TO_FILE_LIST` | `true` | Web UI: when true, `Search All` conversions return to the previous file-list view after queueing |
 | `CHD_SEARCH_AUTO_RETURN_TO_FILE_LIST` | `true` | Legacy alias for `COMPRESSATORIUM_SEARCH_AUTO_RETURN_TO_FILE_LIST` |
 | `CHD_TEMP_DIR` | `/config/temp` | Temporary working directory for archive extraction (auto-created) |
-| `CHD_CONCURRENCY_LOCK_DIR` | `/tmp/chd-locks` | Directory for job lock files (ephemeral, auto-cleaned on container restart) |
+| `CHD_CONCURRENCY_LOCK_DIR` | `/config/locks` | Directory for job lock files, conversion slots and the Rule scheduler lock. Under the data dir so the server and a CLI container share it. Created at start; the process stops with an error if it can't be |
 | `COMPRESSATORIUM_DB_PATH` | `/config/compressatorium.db` | Unified SQLite database for DATs, match cache, CHD metadata, verification state, and DAT-sync state |
 | `CHD_METADATA_STORE` | *(deprecated)* | Legacy JSON path. Ignored at runtime; auto-migrated into the SQLite DB on first startup (custom path honored if set) and renamed to `chd_metadata.json.migrated.bak` |
 | `CHD_VERIFICATION_STORE` | *(deprecated)* | Legacy JSON path. Ignored at runtime; auto-migrated into the SQLite DB on first startup (custom path honored if set) and renamed to `verified_chds.json.migrated.bak` |
@@ -1961,7 +2178,7 @@ The application also uses a non-persistent directory for runtime lock files:
 
 | File / Directory | Location | Description |
 |------------------|----------|-------------|
-| `locks/` | `/tmp/chd-locks` | Job lock files (ephemeral, stored outside `/config` and automatically cleaned on container restart) |
+| `locks/` | `/config/locks` | Job lock files, conversion slots and `scheduler.lock` (one Rule scheduler per data directory), shared by every process that mounts `/config`; stale ones are cleaned up on start |
 
 ---
 

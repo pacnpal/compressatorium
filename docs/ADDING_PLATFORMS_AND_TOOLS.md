@@ -229,7 +229,7 @@ A plugin subclasses `BaseTool` and provides:
 | `is_ready()` | **async.** Whether the tool's runtime prerequisites are met. `False` ⇒ `GET /api/tools` reports it unavailable and the frontend hides it, instead of offering jobs that can only fail. Default `True`; override for a tool gated on an operator-supplied secret or an optional binary (`NszTool` → `prod.keys`). Threadpool anything that touches disk. |
 | `detect_output(input_path, *, from_archive=False)` | optional, returns an `OutputStatus` so the file list can badge "output already exists". May content-validate the candidate before claiming it: `romz` only reports a `.7z`/`.zip` sibling as its output when it's a genuine single-ROM archive (not just any file matching the `Game.gba.7z` naming), so the badge and the source row's verify-from-output flow track real outputs. `from_archive` marks `input_path` as the *synthesised* location an archive member would occupy once extracted — the listing-side counterpart of the `treat_as_stem` `plan_job` passes for the same member. Ignore it unless your output *name* depends on the input's neighbours: extraction hands over one member and never its siblings, so a member can only produce a single-file output (`jwud` forwards it, so a member named `game_part1.wud` doesn't badge a real split set's `game.wux`). |
 | `converts_path(path)` | optional per-file refinement of `input_extensions` — the input-side mirror of `verifies_path`. Default is the plain extension match; override when your source is really a *set* of files so only the primary is offered (`jwud` hides the secondary members of a split `game_part1.wud` … `game_part12.wud` dump, which stay listed but non-convertible). Drives `FileEntry.convertible_by`. May do disk I/O — it runs inside the threadpool scan. |
-| `header_platform(path)` | optional. The Platform your tool reads from the file's own header (a few bytes), or `None`. Default `None`. Platform detection (`services/platform_detect.py`) asks every tool whose `input_extensions` match, maps the answer onto a RomM slug, and uses it for the convert panel's Auto choice. Override it when your consoles can be told apart from the bytes (chdman: `SYSTEM.CNF` / `PARAM.SFO` / sector-0 ids; dolphin: GC/Wii magic; xiso: XDVDFS layout). Never guess: answer `None` when unsure. Add your Platform's folder names to `_ALIASES` in `platform_detect.py` (a test fails until you do). If a mode cannot read every input it accepts by hand, set `ModeSpec.reads_extensions`; set `auto_target=False` on a mode that should never be an Auto default, and `auto_platform_slugs` for a Platform a mode should serve in Auto but not by hand. Add your rows to `tests/test_auto_routing_table.py`. If the probe reads other files (a sheet's tracks), list them from `header_reads(path)` so the cache sees them change. If `is_ready()` can be False, set `not_ready_reason` to say why. See design doc §3.3.14. |
+| `header_platform(path)` | optional. The Platform your tool reads from the file's own header (a few bytes), or `None`. Default `None`. Platform detection (`services/platform_detect.py`) asks every tool whose `input_extensions` match, maps the answer onto a RomM slug, and uses it for the convert panel's Auto choice. Override it when your consoles can be told apart from the bytes (chdman: `SYSTEM.CNF` / `PARAM.SFO` / sector-0 ids; dolphin: GC/Wii magic; xiso: XDVDFS layout). Never guess: answer `None` when unsure. Add your Platform's folder names to `_ALIASES` and its display name to `_NAMES` in `platform_detect.py`, keyed by RomM's slug (tests fail until you do). If a mode cannot read every input it accepts by hand, set `ModeSpec.reads_extensions`; set `auto_target=False` on a mode that should never be an Auto default, and `auto_platform_slugs` for a Platform a mode should serve in Auto but not by hand. Add your rows to `tests/test_auto_routing_table.py`. If the probe reads other files (a sheet's tracks), list them from `header_reads(path)` so the cache sees them change. If `is_ready()` can be False, set `not_ready_reason` to say why. See design doc §3.3.14. |
 | `delete_on_verify_is_safe(mode, compression)` | optional per-job guard on delete-on-verify. `ModeSpec.supports_delete_on_verify` says the *mode* offers it; this says the *job* may, given its settings. Default `True` (your `verify()` reads the whole output). Override when a job setting can weaken the guarantee — `jwud` returns `False` for `-noVerify`, because its verify is a structural WUX walk backed by JWUDTool's conversion-time byte-for-byte comparison. `routes/convert.py` rejects the combination for single and batch alike. |
 | `scannable_path(path)` | optional per-file veto on the library metadata / DAT-match walk. `scannable_extensions` selects it by *type*; this drops an individual path. Default `True`; override only when a name matching a produced extension provably is not a standalone artifact (`jwud` vetoes `game_partN.wud` — twelve 2 GiB slices of one disc image that no DAT can match, so hashing them is ~25 GB of pure waste per set). Any tool answering `False` drops the path. May do *bounded* disk I/O — jwud's veto is on membership of a real set, not on the name, so a lone `game_part1.wud` stays scannable and the same path stops being scannable once its siblings appear — but it runs once per candidate across the whole library, so keep it to a stat or two, never a read. It runs inside the threadpool scan walk, never on the event loop. |
 | `source_companions(path)` | optional sibling *input* files this source also consumes, never including `path` — the input-side mirror of `companion_outputs`. Default `[]`. `utils/delete_plan.build_delete_plan` adds them, so delete-on-verify removes a multi-file source whole instead of orphaning the parts the job didn't name. (`.cue`/`.gdi` tracks are still parsed from file *contents* in `delete_plan.py` rather than routed through this hook — see the design doc.) |
@@ -238,7 +238,7 @@ A plugin subclasses `BaseTool` and provides:
 | `active_pids()` | PIDs for the debug heartbeat |
 | `post_convert(input_path, output_path, mode)` | optional hook, default no-op |
 | `embedded_hashes(path, *, cancel_event=None)` | **optional** DAT-match fast path. Return `(sha1, match_type)` tuples your format already carries / can derive cheaply (so matching skips a full file hash); default `[]` → the caller falls back to a file-level SHA1, which is correct for raw formats. Raise `EmbeddedHashUnavailable` (from `services.tools.base`) when you *should* yield a hash but the attempt failed transiently, so it's recorded as a non-cacheable miss instead of a false negative. |
-| `content_digest(path, *, cancel_event=None)` | **optional** Round-trip check. Return a `ContentDigest(kind, value)` hashing what the file *decodes to*, for both your inputs and your outputs, and set `ModeSpec.supports_round_trip=True` on the modes it covers. Default `None` keeps the container check. Raise `ContentDigestUnavailable` when the hash should exist but could not be read; the Source is then kept. See DESIGN §3.3.12. |
+| `content_digest(path, *, cancel_event=None)` | **optional** Round-trip check. Return a `ContentDigest(kind, value)` hashing what the file *decodes to*, for both your inputs and your outputs, and set `ModeSpec.supports_round_trip=True` on the modes it covers. Default `None` keeps the container check. Raise `ContentDigestUnavailable` when the hash should exist but could not be read; the Source is then kept. If the output's content can only be hashed from a decoded copy, decode it inside `services.disk.headroom_scratch_dir(prefix, required_bytes)` (headroom-checked, removed on every exit), as chdman does for CD CHDs. See DESIGN §3.3.12. |
 | `embedded_hash_is_exhaustive` | optional flag (default `False`). Set `True` only when your container bytes can never appear in a DAT (e.g. a recompressed image), so a content-hash miss is definitive and the file-level fallback is skipped; leave `False` if your file's own SHA1 might be indexed. |
 
 `BaseTool` fills in `input_extensions` (the union of every mode's
@@ -316,7 +316,7 @@ the non-obvious rows is in §8 to §14.
 | 3 | `requirements.txt` | Add any new **Python** runtime dependency the service imports. | If service needs a new pip dep |
 | 4 | `requirements-dev.txt` | Add test-only Python deps. | Rare |
 | 5 | `.local-bin/` + `.env.local` | Local-dev copy of a from-source binary. Only `z3ds_compressor` is committed here today. Dropping a binary in `.local-bin/` is **not** enough: `run_dev.sh` doesn't add it to `PATH`, and from-source tools default to an absolute `/usr/local/bin/...` path, so you must set `<TOOL>_PATH` in `.env.local` (which `run_dev.sh` sources). See §8. | New from-source tool |
-| 6 | `entrypoint.sh` | Add the binary path env passthrough; extend the **CLI batch mode** loop if the tool should run headless (see §9). | New tool, CLI support optional |
+| 6 | `entrypoint.sh` | Add the binary path env passthrough. Headless use needs nothing: `compressatorium` reaches every registered tool (see §9). | New tool |
 
 ### 3.2 Backend code
 
@@ -1317,7 +1317,7 @@ PERIPHERAL (don't forget)
 [ ] .dockerignore: confirm nothing new is excluded
 [ ] requirements.txt: new pip deps (if any)
 [ ] .local-bin/<binary>: local-dev copy (from-source tools)
-[ ] entrypoint.sh: CLI-mode loop (only if headless batch support wanted)
+[ ] headless: check `compressatorium convert <dir> --to <format> --dry-run --json` picks your mode
 [ ] disc_id.py: serial/title parser (only for new disc platforms w/ tagging)
 [ ] migrations/: new Alembic rev (only if persisting new columns/tables)
 [ ] docker-compose*.yml + docs/DEPLOYMENT.md + docs/DOCKER-COMPOSE.md: env/volume docs
@@ -1510,27 +1510,25 @@ from `PATH` and need no override.
 
 ---
 
-## 9. Headless CLI mode: `entrypoint.sh`
+## 9. Headless CLI: `compressatorium` (`app/cli.py`)
 
-`entrypoint.sh` supports `CHD_MODE=cli` (batch-convert a volume with no web UI;
-see `docker-compose.cli.yml`). This path is **independent of the Python app**: it
-shells out to `chdman` directly and currently only knows `createcd`/`createdvd`
-over `*.gdi *.iso *.cue`, validating `CHDMAN_MODE` against that allow-list with a
-`case` statement.
+`compressatorium convert|verify` (#306) runs the Python pipeline without a web
+server, so a registered tool is usable headlessly with **no CLI changes**:
+`--to <format>` resolves through `platform_detect.format_route` (your mode's
+`output_path` and read set decide whether it is picked), `--auto` through
+`plan_auto`, and `verify` through `registry.tools_verifying_path`. Check your
+tool with `compressatorium convert <dir> --to <your format> --dry-run --json`.
+See DESIGN §3.3.17.
 
-If your new tool/platform should be usable headlessly:
-- Extend the `CHDMAN_MODE` case statement (or add a parallel `CONVERT_TOOL` env)
-  to accept your mode.
-- Add a globbing loop for your input extensions and invoke your binary, mirroring
-  the existing `for i in *.gdi *.iso *.cue` block.
-- Skip-if-output-exists logic (`[[ -e "${i%.*}.<ext>" ]]`) should match your
-  output suffix.
-
-If headless mode is out of scope, skip this: the web UI path (`exec uvicorn
-main:app …`) already dispatches your tool via the Python pipeline.
+`CHD_MODE=cli` in `entrypoint.sh` is an alias for
+`compressatorium convert <each Volume> --to $CHDMAN_MODE` with flags that keep
+its old scope (top level, no archives, no Platform check); its `case` statement
+still only accepts `createcd`/`createdvd`, which is today's contract for that
+variable. Nothing to change there for a new tool.
 
 The same file handles **PUID/PGID remap** and the privilege drop to `converter`
-(`exec gosu converter`). No changes needed there.
+(`exec gosu converter`); the `compressatorium` wrapper reuses it when started
+as root. No changes needed there.
 
 ---
 

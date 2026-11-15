@@ -557,7 +557,9 @@ async def _plan_directory_job(
     )
     if output_exists or is_locked:
         if duplicate_action == DuplicateAction.SKIP:
-            raise SkipFile(SkipReason.OUTPUT_EXISTS)
+            raise SkipFile(
+                SkipReason.OUTPUT_LOCKED if is_locked else SkipReason.OUTPUT_EXISTS,
+            )
         if duplicate_action == DuplicateAction.OVERWRITE:
             if is_locked:
                 raise SkipFile(SkipReason.OUTPUT_LOCKED)
@@ -662,7 +664,9 @@ async def plan_job(
         output_exists, is_locked = check_output_conflicts(mode, output_path)
         if output_exists or is_locked:
             if duplicate_action == DuplicateAction.SKIP:
-                raise SkipFile(SkipReason.OUTPUT_EXISTS)
+                raise SkipFile(
+                    SkipReason.OUTPUT_LOCKED if is_locked else SkipReason.OUTPUT_EXISTS,
+                )
             if duplicate_action == DuplicateAction.OVERWRITE:
                 if is_locked:
                     raise SkipFile(SkipReason.OUTPUT_LOCKED)
@@ -756,7 +760,9 @@ async def plan_job(
         output_exists, is_locked = check_output_conflicts(mode, output_path)
         if output_exists or is_locked:
             if duplicate_action == DuplicateAction.SKIP:
-                raise SkipFile(SkipReason.OUTPUT_EXISTS)
+                raise SkipFile(
+                    SkipReason.OUTPUT_LOCKED if is_locked else SkipReason.OUTPUT_EXISTS,
+                )
             if duplicate_action == DuplicateAction.OVERWRITE:
                 if is_locked:
                     raise SkipFile(SkipReason.OUTPUT_LOCKED)
@@ -1076,8 +1082,10 @@ class PreparedBatch:
     request: BatchJobCreateRequest
     compression: str | None
     plans: list[JobPlan]
-    # file path -> why planning skipped it (the same words a single-job
-    # request would get), so Auto can say so in its plan.
+    # file path -> why it was left out: a ``plan_job`` skip (the same words a
+    # single-job request would get), or a file whose output another file of
+    # the batch writes. Auto says so in its plan; the CLI reports each one
+    # (#294, #306).
     skipped: dict[str, str] = field(default_factory=dict)
 
     @property
@@ -1107,7 +1115,7 @@ def _check_queue_room(adding: int) -> None:
         )
 
 
-async def _queue_prepared(batch: PreparedBatch) -> list[ConversionJob]:
+async def queue_prepared(batch: PreparedBatch) -> list[ConversionJob]:
     """Queue a prepared batch as one atomic job-manager call."""
     try:
         return await job_manager.create_jobs_atomic(
@@ -1138,12 +1146,12 @@ async def _queue_prepared(batch: PreparedBatch) -> list[ConversionJob]:
 @router.post("/jobs/batch", response_model=list[ConversionJob])
 async def create_batch_jobs(request: BatchJobCreateRequest):
     """Create multiple conversion jobs."""
-    batch = await _prepare_batch(request)
+    batch = await prepare_batch(request)
     # Proactive batch backpressure: reject before enqueuing any jobs if
     # accepting the batch would push the queue past ``max_queue_depth``.
     # Keeps single-job and batch submission behaviour consistent.
     _check_queue_room(len(batch.plans))
-    return await _queue_prepared(batch)
+    return await queue_prepared(batch)
 
 
 def _check_within_volumes(file_paths, output_dir: str | None = None) -> None:
@@ -1186,7 +1194,7 @@ async def _off_loop_bounded(func, *args, **kwargs):
         ) from None
 
 
-async def _prepare_batch(request: BatchJobCreateRequest) -> PreparedBatch:
+async def prepare_batch(request: BatchJobCreateRequest) -> PreparedBatch:
     """Validate and plan every file of a batch, queueing nothing.
 
     Raises the same HTTP errors ``create_batch_jobs`` always has. Split out so
@@ -1262,8 +1270,14 @@ async def _prepare_batch(request: BatchJobCreateRequest) -> PreparedBatch:
             selected[key] = plan
             order.append(key)
             continue
+        loser = existing
         if plan.priority > existing.priority:
             selected[key] = plan
+        else:
+            loser = plan
+        skipped[loser.file_path] = (
+            f"Same output as {os.path.basename(selected[key].file_path)}"
+        )
 
     return PreparedBatch(
         request=request,
@@ -1273,21 +1287,22 @@ async def _prepare_batch(request: BatchJobCreateRequest) -> PreparedBatch:
     )
 
 
-def _auto_compression(target) -> str | None:
-    """The saved compression for an Auto target, if its mode accepts it.
+def checked_compression(mode: str, compression: str | None) -> str | None:
+    """A saved compression for ``mode``, if the mode accepts it.
 
     A saved value the mode would refuse (left over from an older picker) falls
-    back to the tool default rather than failing the whole batch.
+    back to the tool default rather than failing the whole batch. Used for
+    Auto targets and by the CLI (#306).
     """
-    if not target.compression:
+    if not compression:
         return None
     try:
-        value = normalize_compression(target.compression)
-        _validate_request_compression(registry.spec(target.mode), target.mode, value)
+        value = normalize_compression(compression)
+        _validate_request_compression(registry.spec(mode), mode, value)
     except HTTPException:
         logger.warning(
             "Saved compression %r does not fit %s; using the tool default",
-            target.compression, target.mode,
+            compression, mode,
         )
         return None
     return value
@@ -1312,8 +1327,36 @@ async def _plan_auto(request: AutoPlanRequest) -> list:
         _checked_auto_plan, list(request.file_paths),
         compression_prefs=prefs, output_dir=output_dir, ready_tool_ids=ready,
     )
+    return _with_checked_compression(plan)
+
+
+async def plan_auto_targets(
+    paths: list[str],
+    output_dir: str | None,
+    prefs: dict,
+    *,
+    ready_tool_ids: list[str] | None = None,
+) -> list:
+    """``plan_auto`` with each saved compression checked against its mode.
+
+    The CLI's ``--auto`` (#306); the Auto route plans the same way through
+    ``_plan_auto``, which adds the Volume checks and the 30 s bound an HTTP
+    request needs. ``prefs`` is the saved ``conversion`` preference and
+    ``ready_tool_ids`` the tools that can run here
+    (``registry.ready_tool_ids()``). Off the event loop, unbounded: a CLI run
+    plans a whole library and has no request to time out.
+    """
+    plan = await run_in_threadpool(
+        plan_auto, paths, compression_prefs=prefs, output_dir=output_dir,
+        ready_tool_ids=ready_tool_ids,
+    )
+    return _with_checked_compression(plan)
+
+
+def _with_checked_compression(plan: list) -> list:
     return [
-        replace(target, compression=_auto_compression(target)) if target.mode else target
+        replace(target, compression=checked_compression(target.mode, target.compression))
+        if target.mode else target
         for target in plan
     ]
 
@@ -1395,7 +1438,7 @@ async def create_auto_jobs(request: AutoJobCreateRequest):
             )
 
     prepared = [
-        await _prepare_batch(BatchJobCreateRequest(
+        await prepare_batch(BatchJobCreateRequest(
             file_paths=paths,
             mode=ConversionMode(mode),
             output_dir=request.output_dir,
@@ -1419,7 +1462,7 @@ async def create_auto_jobs(request: AutoJobCreateRequest):
     jobs: list[ConversionJob] = []
     for batch in prepared:
         try:
-            jobs += await _queue_prepared(batch)
+            jobs += await queue_prepared(batch)
         except HTTPException as exc:
             kept = await _cancel_queued(jobs)
             if kept:

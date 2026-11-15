@@ -662,7 +662,9 @@ def _strip_trailing_dot_and_seps(path: str) -> str:
     return (drive + tail) or path
 
 
-def source_companions_are_safe(file_path: str, mode: str) -> bool:
+def source_companions_are_safe(
+    file_path: str, mode: str, *, within: Sequence[str] | None = None,
+) -> bool:
     """Whether every sibling input this mode's tool also consumes stays in-volume.
 
     The single-file analogue of :func:`is_safe_directory_tree`, and it exists
@@ -684,10 +686,27 @@ def source_companions_are_safe(file_path: str, mode: str) -> bool:
     taking the job's locks, since a queued job's companion can be swapped for a
     symlink in between.
 
+    A track sheet (``.cue`` / ``.gdi``) is checked from its own text, whatever
+    the tool reports: the converter opens every file the sheet names, so a
+    reference that is absolute, leaves the sheet's folder, or resolves outside
+    the volumes rejects the job (``delete_plan.sheet_reference_problems``). An
+    empty companion list is never taken to mean safe.
+
+    ``within`` swaps the Volumes for explicit trusted roots, as in
+    ``utils.sheet_text.resolve_track``: the worker passes ``[the job's own
+    extraction folder]`` when the source came out of an archive, since that
+    folder is not a Volume. Companions and track references must then resolve
+    inside it. Omitted, the Volumes apply; an empty list is refused.
+
     Blocking I/O (an ``lstat`` and a ``realpath`` per companion); call it off
     the event loop.
     """
     from services.tools import registry  # local: avoids an import cycle
+    from utils.delete_plan import sheet_reference_problems  # local: cycle
+    from utils.sheet_text import resolve_track  # local: cycle
+
+    if sheet_reference_problems(file_path, within=within):
+        return False
 
     try:
         tool = registry.for_mode(mode)
@@ -696,9 +715,12 @@ def source_companions_are_safe(file_path: str, mode: str) -> bool:
     for companion in tool.source_companions(file_path):
         if os.path.islink(companion):
             return False
-        if not is_within_configured_volumes(
-            os.path.realpath(companion), treat_archives=False,
-        ):
+        # The one confined resolver, as for a sheet's tracks: the companion's
+        # real path must sit under the trusted roots.
+        folder, name = os.path.split(companion)
+        try:
+            resolve_track(folder, name, within=within)
+        except ValueError:
             return False
     return True
 

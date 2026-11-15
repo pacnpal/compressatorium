@@ -49,6 +49,7 @@ from services.subprocess_runner import (
     run_detached,
     run_detached_within_stall_bound,
     verify_preflight,
+    verify_exception_event,
 )
 from utils.path_utils import (
     is_same_file,
@@ -760,8 +761,11 @@ class ExtractXisoService:
                 "message": "Verification cancelled",
             }
             return
-        except (XisoImageError, OSError) as exc:
+        except XisoImageError as exc:
             yield {"type": "error", "valid": False, "message": f"Invalid XISO: {exc}"}
+            return
+        except OSError as exc:  # the image could not be read: no verdict (#306)
+            yield verify_exception_event(exc, prefix="Could not read the XISO")
             return
 
         # nice/ionice as command wrappers, never preexec_fn (the maxcso / chdman /
@@ -787,7 +791,7 @@ class ExtractXisoService:
                 yield update
         except Exception as exc:
             logger.exception("Error during XISO verification: %s", exc)
-            yield {"type": "error", "valid": False, "message": f"Verification error: {exc}"}
+            yield verify_exception_event(exc)
 
 
 # Global service instance

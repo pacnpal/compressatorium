@@ -37,6 +37,7 @@ from services.subprocess_runner import (
     nice_prefix,
     remove_partial_output,
     verify_preflight,
+    verify_exception_event,
 )
 
 # SubprocessRunner "owner" for the shared priority/timeout policy. An optional
@@ -344,7 +345,9 @@ class MaxcsoService:
             # re-raise that one — a child that outlived SIGKILL is still reading
             # this storage, so a batch has to stop rather than open the next file.
             logger.exception("Error during CSO verification: %s", e)
-            yield {"type": "error", "valid": False, "message": f"Verification error: {e}"}
+            # The shared allowlist decides: a launch failure is no verdict,
+            # anything else is (#306).
+            yield verify_exception_event(e)
 
 
 # Global service instance
