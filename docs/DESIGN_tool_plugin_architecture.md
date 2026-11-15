@@ -2933,7 +2933,11 @@ start reading a path between the checks and its unlink, since a new reader's
 shared lock is refused while the exclusive one is held. A path another job is
 still reading (a shared lock in any process), or one under a folder another
 process packs, is waited for, polling without blocking, up to
-`DELETE_READER_WAIT_SECONDS` (60 s). Still held then, the Source is kept and the
+`DELETE_READER_WAIT_SECONDS` (60 s). The wait checks the job's cancellation
+before every attempt and again right after one succeeds, and `_process_job`
+looks once more just before the unlinks: a cancel that lands while it sleeps
+keeps the Source and ends the job CANCELLED, even if the reader lets go
+before the next poll. Still held at the bound, the Source is kept and the
 job ends COMPLETED with `job.warning` set to "Source kept: it was being read by
 another job": the conversion succeeded, so it never fails for this. The CLI
 prints the warning on that line and exits 0 (transient, as #307's run rules
