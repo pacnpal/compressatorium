@@ -128,3 +128,78 @@ async def test_the_web_batch_refuses_it_too(tmp_path, monkeypatch):
     assert exc.value.status_code == 400
     assert "Game.gba" in exc.value.detail
     assert pack.exists()
+
+
+# --------------------------------------------------------------------------- #
+# Unsafe member names keep the archive and create nothing (codex 4577029535)
+# --------------------------------------------------------------------------- #
+
+
+def _escape_name():
+    import uuid
+
+    return f"../outside-{uuid.uuid4().hex}"
+
+
+def _symlink_entry(zf, name, target):
+    info = zipfile.ZipInfo(name)
+    info.external_attr = 0o120777 << 16
+    zf.writestr(info, target)
+
+
+@pytest.mark.parametrize("kind", ["dotdot", "absolute", "symlink"])
+def test_an_unsafe_member_name_keeps_the_archive_and_writes_nothing(tmp_path, kind):
+    import os
+    import tempfile
+
+    escape = _escape_name()
+    pack = tmp_path / "pack.zip"
+    with zipfile.ZipFile(pack, "w") as zf:
+        zf.writestr("Game.iso", b"x" * 64)
+        if kind == "dotdot":
+            zf.writestr(escape, b"y")
+            bad = escape
+        elif kind == "absolute":
+            bad = f"/{escape[3:]}"
+            zf.writestr(bad, b"y")
+        else:
+            bad = "link"
+            _symlink_entry(zf, bad, "/etc/passwd")
+    before = set(os.listdir(tempfile.gettempdir()))
+
+    errors = _errors(f"{pack}::Game.iso")
+
+    assert any(bad.lstrip("/") in error for error in errors), errors
+    # Nothing was created from a member name, inside or outside the temp dir.
+    landed = os.path.join(tempfile.gettempdir(), escape[3:])
+    assert not os.path.exists(landed)
+    assert not os.path.exists(os.path.join(str(tmp_path), escape[3:]))
+    assert set(os.listdir(tempfile.gettempdir())) - before == set()
+
+
+@pytest.mark.asyncio
+async def test_the_web_batch_refuses_an_archive_with_an_unsafe_member(tmp_path, monkeypatch):
+    from app.models import BatchJobCreateRequest, ConversionMode, DuplicateAction
+    from app.routes import convert as convert_routes
+
+    monkeypatch.setattr(convert_routes.settings, "chd_volumes", str(tmp_path))
+    monkeypatch.setattr(convert_routes.settings, "data_mount_root", str(tmp_path))
+    monkeypatch.setattr(convert_routes.settings, "max_queue_depth", 0)
+    monkeypatch.setattr(convert_routes.job_manager, "get_queue_depth", lambda: 0)
+    monkeypatch.setattr(
+        convert_routes.job_manager, "create_jobs_atomic", AsyncMock(return_value=[]),
+    )
+    escape = _escape_name()
+    pack = _zip(tmp_path / "pack.zip", {"Game.iso": b"x" * 64, escape: b"y"})
+
+    with pytest.raises(HTTPException) as exc:
+        await convert_routes.create_batch_jobs(BatchJobCreateRequest(
+            file_paths=[f"{pack}::Game.iso"],
+            mode=ConversionMode.CREATEDVD,
+            duplicate_action=DuplicateAction.SKIP,
+            delete_on_verify=True,
+        ))
+
+    assert exc.value.status_code == 400
+    assert escape in exc.value.detail
+    assert not (tmp_path.parent / escape[3:]).exists()

@@ -404,6 +404,8 @@ class ArchiveService:
 
     def _validate_member(self, member: str) -> List[str]:
         """Ensure an archive member path cannot escape the extraction directory."""
+        if "\x00" in member:
+            raise ValueError("NUL bytes are not allowed in archive members")
         if "\\" in member:
             raise ValueError("Backslashes are not allowed in archive members")
         normalized = member.strip()

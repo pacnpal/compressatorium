@@ -2746,6 +2746,15 @@ most twice `MAX_CONCURRENT_JOBS` of its jobs queued (never more than
 `MAX_QUEUE_DEPTH`), so a cron run does not put a whole library ahead of the web
 UI.
 
+**What a `--to` walk lists.** A folder walk lists what the web search lists
+(`scan_tree`, tool-wide inputs). With `--to`, `cli._discover` also lists every
+file whose name ends with an extension the target's modes accept
+(`platform_detect.target_reads_extensions`: a mode id's
+`mode_reads_extensions`, or for a format the union over the Auto-eligible
+modes), so a mode that reads what its tool leaves out of its inputs (chdman's
+extract modes and `.chd`) finds its files. `format_candidates` then decides
+per file. `--auto` keeps the tool-wide walk.
+
 **One output, one job.** `cli._prepare` keeps every output path the run will
 write, across groups and re-planned batches, and skips a later Image that
 writes one already taken ("Same output as X"). The planner's own collapse
@@ -2787,9 +2796,16 @@ belongs to the converted Image. `utils.delete_plan.archive_members_beyond_image`
 lists the rest: the owned set is the member itself, the tracks its sheet names
 (the sheet is extracted to a temp dir and each reference resolved with
 `resolve_track`, confined there, in every spelling the sheet reads as), and its
-`source_companions` split parts (by name, against the archive's names laid out
-as empty files). A directory entry counts only when nothing owned lives under
-it. Everything else, of any type and junk included, is an extra; there is no
+`source_companions` split parts. Before anything is created from any member
+name, every name must pass the shared extraction validator
+(`ArchiveService._validate_member`: absolute, `..`, a drive letter, a
+backslash, a NUL) and no member may be a symlink; otherwise the archive is
+kept and the summary names those members. Only then is the sheet extracted
+(which validates its destination again), and only then, for the registry's
+on-disk split-part lookup, are the validated names laid out as empty files in
+a fresh temp root, each through `_prepare_destination`, which checks by real
+path that it stays inside that root. A directory entry counts only when
+nothing owned lives under it. Everything else, of any type and junk included, is an extra; there is no
 list of harmless sidecars. An archive or sheet that can't be read counts as an
 extra (the archive's own name). The error and the CLI line name the first three
 (`describe_extras`).

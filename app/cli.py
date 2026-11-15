@@ -241,14 +241,17 @@ def _check_paths(paths: list[str]) -> list[str]:
 
 def _discover(
     paths: list[str], *, for_verify: bool = False, recurse: bool = True,
-    archives: bool = True,
+    archives: bool = True, reads: frozenset[str] | None = None,
 ) -> list[Item]:
     """Every Image under ``paths``, named ones first-class, in walk order.
 
     A folder is walked with the web UI's search (``scan_tree``); a folder that
     is itself an Image (a PS3 disc folder) is taken whole. An archive named on
     the command line brings its convertible members along. An archive whose
-    member listing hit the per-archive cap gets a line saying so.
+    member listing hit the per-archive cap gets a line saying so. ``reads``
+    (``--to``'s accepted extensions) also lists every file in a walked folder
+    with one of them, which the tool-wide walk leaves out when the mode reads
+    what its tool doesn't (a ``.chd`` for chdman's extract modes).
     """
     from routes.files import scan_tree
     from services.archive import archive_service
@@ -281,6 +284,9 @@ def _discover(
                 if for_verify and not entry.get("verifiable_by"):
                     continue
                 add(entry["path"], False)
+            if reads:
+                for file_path in _files_reading(path, reads, recurse):
+                    add(file_path, False)
             if not for_verify:  # a check reads files, never archive members
                 for entry in members:
                     add(entry["path"], False)
@@ -305,6 +311,27 @@ def _discover(
             if i.explicit or not archive_service.is_archive(i.path.split("::", 1)[0])
         ]
     return list(found.values())
+
+
+def _files_reading(root: str, reads: frozenset[str], recurse: bool) -> list[str]:
+    """Files under ``root`` whose name ends with one of ``reads``, in the same
+    sorted walk order as ``scan_tree``: junk skipped, symlinked folders not
+    followed, a folder that is itself an Image not walked into."""
+    from services.tools import registry
+    from utils.junk import is_junk_entry
+    from utils.path_utils import match_extension
+
+    found = []
+    for name in sorted(os.listdir(root)):
+        if is_junk_entry(name):
+            continue
+        path = os.path.join(root, name)
+        if os.path.isdir(path):
+            if recurse and not os.path.islink(path) and not registry.tools_for_directory(path):
+                found += _files_reading(path, reads, recurse)
+        elif os.path.isfile(path) and match_extension(name, reads) is not None:
+            found.append(path)
+    return found
 
 
 # --------------------------------------------------------------------------- #
@@ -801,8 +828,16 @@ async def convert(args, printer: Printer, state: RunState) -> int:
 
     has_db = _open_db(args.dry_run)
     prefs = await _saved_compression(has_db)
+    from services.platform_detect import target_reads_extensions
+
+    # With --to, the walk lists what that target's modes accept; without it
+    # (--auto), the tool-wide walk as before.
+    reads = target_reads_extensions(args.to, registry) if args.to else None
     items = await run_in_threadpool(
-        lambda: _discover(paths, recurse=not args.no_recurse, archives=not args.no_archives),
+        lambda: _discover(
+            paths, recurse=not args.no_recurse, archives=not args.no_archives,
+            reads=reads,
+        ),
     )
     # The shared, bounded readiness probe the Auto route uses.
     ready = await registry.ready_tool_ids()
