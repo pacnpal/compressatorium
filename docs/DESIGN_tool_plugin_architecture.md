@@ -3126,7 +3126,10 @@ folds them into one Image on `Game.iso.0`, so the budget pays the parts'
 summed size and the lock and fingerprint cover every part. The check is
 handed `Game.iso.0`, and makeps3iso's verify checks the whole set (#306). The
 record lives under `Game.iso` (`Check.record_path`), so a pass refreshes it
-there and a failure clears it there. Every file a check reads (each member,
+there and a failure clears it there. `_hold` also takes the shared lock on
+that logical path, with the first part and every later part, from the verify
+slot through the recorded verdict: a directory-input rebuild locks only
+`Game.iso`, so while one runs the Image is skipped as busy. Every file a check reads (each member,
 split part or track) must be inside the Volumes, or the Image is skipped as
 `unresolvable`.
 

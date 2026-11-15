@@ -171,8 +171,16 @@ def _hold(check: Check) -> list[str] | None:
     """
     held: list[str] = []
     ok = False
+    # A split output also holds its logical `Game.iso` (`record_path`): a
+    # directory-input rebuild locks only that path, so without it a rebuild
+    # could rewrite the parts mid-check (Codex 4577570988). The set is #306's:
+    # logical path, first part, then `registry.split_members(first)`, which
+    # `members` already carries.
+    paths = (check.record_path, check.path, *check.members) if check.record_path else (
+        check.path, *check.members,
+    )
     try:
-        for path in dict.fromkeys((check.path, *check.members)):
+        for path in dict.fromkeys(paths):
             if not lock_manager.acquire_input_lock(path):
                 return None
             held.append(path)

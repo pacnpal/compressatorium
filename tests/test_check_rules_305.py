@@ -1954,6 +1954,45 @@ async def test_a_split_set_counts_as_one_image_for_a_conversion_rule(db: Path, r
     assert split[:3] == (1, 1, 1)
 
 
+@pytest.mark.asyncio
+async def test_a_split_iso_being_rebuilt_is_skipped_as_busy(db: Path, ready, sent) -> None:
+    """Codex 4577570988: a directory-input rebuild locks only the logical
+    GAME.iso. The check holds that path too, so while another process has it
+    the Image is skipped as busy: no Finding, no check time, record untouched,
+    even though the parts on disk look damaged mid-build."""
+    from routes import libraries as routes
+    from services import image_checks
+    from services.lock_manager import LockManager, lock_manager
+    from services.verification_store import verification_store
+
+    from .test_cli_306 import _real_split_iso
+
+    roms = db / "roms"
+    iso = _real_split_iso(roms / "ps3")
+    meta = {"mode": "folder_to_iso", "tool": "makeps3iso"}
+    await verification_store.mark_verified(str(iso), produced_meta=meta)
+    before = await verification_store.get_record(str(iso))
+    part1 = roms / "ps3" / "GAME.iso.1"
+    part1.write_bytes(part1.read_bytes()[: 2048 * 3])  # half-written by the rebuild
+    created = await routes.register_library(routes.RegisterLibraryRequest(path=str(roms)))
+    lib = created["id"]
+    await routes.put_library_rules(lib, {"check_rules": {"ps3": {
+        "enabled": True, "check_budget_gb": 1,
+    }}})
+    builder = LockManager()
+    builder._lock_dir = lock_manager._lock_dir  # pylint: disable=protected-access
+    assert builder.acquire_lock(str(iso), allow_existing=True)
+    try:
+        await _run(lib)
+    finally:
+        builder.release_lock(str(iso))
+
+    assert _not_intact() == []
+    assert "ps3/GAME.iso.0" not in image_checks.order_stamps(lib)
+    assert await verification_store.get_record(str(iso)) == before
+    assert [e for e in sent if e.kind == "check_failed"] == []
+
+
 def test_a_numbered_file_is_a_split_part_only_beside_a_modes_output_name(db: Path) -> None:
     """#306 ab2d818: ``save.0`` is no split part, so a folder Library never lists
     it; ``Game.iso.0`` with its ``.1`` is."""
