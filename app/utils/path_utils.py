@@ -396,13 +396,16 @@ def _matching_volumes(candidate: str) -> list[str]:
     matching = [v for v in volumes if _lexically_under(candidate, _configured_root(v))]
     if matching:
         return matching
+    # Every matching alias, not the first: nested Volumes configured through
+    # symlinks (/outer -> /data/PS2, /inner -> /data/PS2/library) both match,
+    # and a caller choosing the most specific root needs them all.
     resolved_roots = _resolved_root_spellings()
-    for volume in volumes:
-        configured = _configured_root(volume)
-        real = resolved_roots.get(configured)
-        if real is not None and real != configured and _lexically_under(candidate, real):
-            return [volume]
-    return []
+    return [
+        volume for volume in volumes
+        if (real := resolved_roots.get(_configured_root(volume))) is not None
+        and real != _configured_root(volume)
+        and _lexically_under(candidate, real)
+    ]
 
 
 def _has_parent_segment(raw_path: str) -> bool:
