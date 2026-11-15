@@ -546,11 +546,15 @@ class NszService:
                 cmd = self._build_command(file_path, work, "nsz_decompress")
                 await self._capture(cmd, keys_file, cancel_event)
                 produced = os.path.join(work, self._produced_name(file_path))
-                if not os.path.isfile(produced):
-                    raise RuntimeError("nsz -D produced no XCI")
-                return await hash_files(
-                    [produced], algorithm="sha256", cancel_event=cancel_event,
-                )
+                # No existence check here: a stat on the event loop would be
+                # unbounded on a hung scratch volume. The detached hash finds
+                # out instead.
+                try:
+                    return await hash_files(
+                        [produced], algorithm="sha256", cancel_event=cancel_event,
+                    )
+                except FileNotFoundError as e:
+                    raise RuntimeError("nsz -D produced no XCI") from e
         except InsufficientDiskSpace as e:
             raise RuntimeError(f"not enough scratch space to decompress: {e}") from e
 

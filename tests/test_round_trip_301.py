@@ -554,6 +554,35 @@ async def test_split_wud_parts_are_found_off_the_event_loop(tmp_path, small_wud,
 
 
 @pytest.mark.asyncio
+async def test_a_blocked_stat_of_the_wud_parts_still_meets_the_deadline(
+    tmp_path, small_wud, monkeypatch,
+):
+    """A sibling-part stat that never returns (a hung mount) must not stop the
+    deadline: it runs off the loop, so wait_for fires on time."""
+    import threading
+    import time
+
+    (tmp_path / "game_part1.wud").write_bytes(b"part one")
+    tool = _jwud()
+    release = threading.Event()
+
+    def hung_stat(_path):
+        release.wait(30)
+        return []
+
+    monkeypatch.setattr(tool, "source_companions", hung_stat)
+    started = time.monotonic()
+    try:
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(
+                tool.content_digest(str(tmp_path / "game_part1.wud")), timeout=0.5,
+            )
+        assert time.monotonic() - started < 5
+    finally:
+        release.set()
+
+
+@pytest.mark.asyncio
 async def test_a_wux_whose_sector_array_is_cut_short_is_unavailable(tmp_path, small_wud):
     out = tmp_path / "game.wux"
     write_wux(out, _wud_image(small_wud))
@@ -702,6 +731,39 @@ async def test_xcz_digest_decompresses_to_scratch_and_removes_it(tmp_path, nsz_f
     assert digest == ContentDigest(kind=SWITCH, value=hashlib.sha256(xci).hexdigest())
     assert "-D" in nsz_fake.calls[0]
     assert os.listdir(tmp_path / "scratch") == []
+
+
+@pytest.mark.asyncio
+async def test_the_xcz_digest_makes_no_blocking_stat_on_the_event_loop(
+    tmp_path, nsz_fake, monkeypatch,
+):
+    """Every filesystem call on the XCZ path runs off the loop: a stat that
+    hangs on the loop thread would stop the deadline from firing."""
+    import threading
+    import time
+
+    from services import nsz as nsz_module
+
+    loop_thread = threading.get_ident()
+    real_isfile = os.path.isfile
+    release = threading.Event()
+
+    def isfile(path):
+        if threading.get_ident() == loop_thread:
+            release.wait(30)  # a hung mount, on the loop
+        return real_isfile(path)
+
+    monkeypatch.setattr(nsz_module.os.path, "isfile", isfile)
+    out = tmp_path / "Game.xcz"
+    out.write_bytes(b"xcz")
+    nsz_fake.decompressed = b"HEAD" * 4000
+    started = time.monotonic()
+    try:
+        digest = await asyncio.wait_for(_nsz().content_digest(str(out)), timeout=5)
+        assert digest.value == hashlib.sha256(b"HEAD" * 4000).hexdigest()
+        assert time.monotonic() - started < 5
+    finally:
+        release.set()
 
 
 @pytest.mark.asyncio

@@ -734,6 +734,63 @@ async def run_detached(
             _note_abandoned("detached read")
 
 
+async def feed_stdin_from_file(
+    process,
+    path: str,
+    *,
+    offset: int = 0,
+    cancel_event: asyncio.Event | None = None,
+    chunk_size: int = 1 << 20,
+) -> None:
+    """Copy ``path`` from ``offset`` into ``process.stdin``, then close stdin.
+
+    The shared feeder for a child that reads a file on stdin (``zstd -t`` in
+    z3ds verify, ``zstd -dc`` in the Round-trip). Reads go through
+    :func:`run_detached`, so a read on a mount that stopped answering never
+    blocks the event loop. Such a read can only be abandoned, never closed:
+    closing the handle waits on the lock the stuck read holds, which would turn
+    the cleanup into another unbounded wait holding a probe slot. So the handle
+    is closed only when no read is in flight; when this is cancelled or
+    ``cancel_event`` fires during a read, it is abandoned with its thread.
+    A child that stops reading (broken pipe) ends the feed quietly; its exit
+    code says why.
+    """
+    def _open():
+        handle = open(path, "rb")  # noqa: SIM115
+        if offset:
+            handle.seek(offset)
+        return handle
+
+    handle = await run_detached(_open, cancel_event=cancel_event)
+    abandon = False
+    try:
+        while not (cancel_event is not None and cancel_event.is_set()):
+            abandon = True  # a read is in flight from here
+            try:
+                chunk = await run_detached(
+                    handle.read, chunk_size, cancel_event=cancel_event,
+                )
+            except ReadCancelled:
+                break
+            abandon = False
+            if not chunk:
+                break
+            try:
+                process.stdin.write(chunk)
+                await process.stdin.drain()
+            except (BrokenPipeError, ConnectionResetError):
+                break
+    except (asyncio.CancelledError, GeneratorExit):
+        abandon = True
+        raise
+    finally:
+        with contextlib.suppress(Exception):
+            process.stdin.close()
+        if not abandon:
+            with contextlib.suppress(Exception):
+                await run_detached(handle.close)
+
+
 async def run_detached_within_stall_bound(
     func: Callable,
     *args: object,
@@ -1280,37 +1337,7 @@ class SubprocessRunner:
         stderr_tail = bytearray()
 
         async def _feed() -> None:
-            # Plain handle through the detached seam, as z3ds verify does: on
-            # a dead mount the read can only be abandoned, never closed.
-            def _open():
-                handle = open(stdin_path, "rb")  # noqa: SIM115
-                if stdin_offset:
-                    handle.seek(stdin_offset)
-                return handle
-
-            handle = await run_detached(_open)
-            # Set while a read is in flight. If this task is cancelled then
-            # (a cancel, a deadline), the read is abandoned with its thread,
-            # and closing the handle would wait on the lock that read holds,
-            # so the handle is abandoned too, as z3ds verify does.
-            reading = False
-            try:
-                while True:
-                    reading = True
-                    chunk = await run_detached(handle.read, 1 << 20)
-                    reading = False
-                    if not chunk:
-                        break
-                    process.stdin.write(chunk)
-                    await process.stdin.drain()
-            except (BrokenPipeError, ConnectionResetError):
-                pass  # the decoder stopped reading; its exit code says why
-            finally:
-                with contextlib.suppress(Exception):
-                    process.stdin.close()
-                if not reading:
-                    with contextlib.suppress(Exception):
-                        await run_detached(handle.close)
+            await feed_stdin_from_file(process, stdin_path, offset=stdin_offset)
 
         async def _drain_stdout() -> None:
             while True:

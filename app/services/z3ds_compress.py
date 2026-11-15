@@ -16,6 +16,7 @@ from services.subprocess_runner import (
     collect_verify,
     ioprio_prefix,
     ReadCancelled,
+    feed_stdin_from_file,
     remove_partial_output,
     resolve_verify_timeout,
     run_detached,
@@ -160,7 +161,8 @@ class Z3DSCompressService:
         (``SubprocessRunner.hash_stdout``), so no decoded ROM is written. The
         caller bounds the call; a cancel stops zstd and raises ReadCancelled.
         """
-        cmd = self.decode_command()
+        # The PATH lookup stats directories, so it runs off the event loop too.
+        cmd = await run_detached(self.decode_command, cancel_event=cancel_event)
         if cmd is None:
             raise RuntimeError("zstd not found; the decoded ROM cannot be hashed")
         offset = await self._get_verify_payload_offset(
@@ -466,68 +468,14 @@ class Z3DSCompressService:
                                 payload_offset,
                             )
 
-                        # Plain file object read through the shared detached
-                        # seam, deliberately *not* an async file context (this
-                        # replaced the aiofiles one, the app's last user of it):
-                        # on an unresponsive volume the read can only be
-                        # abandoned, and a context manager's exit would then
-                        # await a close that waits on the very lock the stuck
-                        # read holds -- turning the cleanup below into another
-                        # unbounded wait. So the handle is closed only on the
-                        # paths that got that far, and simply abandoned (with
-                        # its thread) otherwise.
-                        def _open_payload():
-                            handle = open(file_path, "rb")  # noqa: SIM115
-                            handle.seek(payload_offset)
-                            return handle
-
-                        f = await run_detached(_open_payload, cancel_event=cancel_event)
-                        abandoned = False
-                        try:
-                            while True:
-                                if cancel_event is not None and cancel_event.is_set():
-                                    # Stop feeding immediately; the waiter below
-                                    # reports the cancel and the finally reaps
-                                    # zstd. One chunk of latency at most.
-                                    # Not `abandoned`: this break happens
-                                    # *between* reads, so no thread holds the
-                                    # handle and closing it is safe and bounded.
-                                    # Only a read still in flight makes close
-                                    # itself a wait we cannot afford.
-                                    break
-                                try:
-                                    chunk = await run_detached(
-                                        f.read, chunk_size, cancel_event=cancel_event,
-                                    )
-                                except ReadCancelled:
-                                    abandoned = True
-                                    break
-                                if not chunk:
-                                    break
-                                try:
-                                    if process.stdin is None:
-                                        raise RuntimeError("zstd stdin is unavailable")
-                                    process.stdin.write(chunk)
-                                    await process.stdin.drain()
-                                except BrokenPipeError:
-                                    # zstd closed stdin early due to integrity failure.
-                                    break
-                        except (asyncio.CancelledError, GeneratorExit):
-                            # The feeder task itself was cancelled (SSE
-                            # disconnect, timeout, the cancel race below). Same
-                            # rule as ReadCancelled: a read may still hold the
-                            # handle's lock, so closing it here would block
-                            # behind that read and turn cleanup into one more
-                            # unbounded wait. Abandon it with its thread.
-                            abandoned = True
-                            raise
-                        finally:
-                            if not abandoned:
-                                with contextlib.suppress(Exception):
-                                    await run_detached(f.close)
-
+                        # The shared feeder: detached reads, and a read still in
+                        # flight on a cancel is abandoned with its handle rather
+                        # than closed (closing would wait on that read's lock).
+                        await feed_stdin_from_file(
+                            process, file_path, offset=payload_offset,
+                            cancel_event=cancel_event, chunk_size=chunk_size,
+                        )
                         if process.stdin is not None:
-                            process.stdin.close()
                             await process.stdin.wait_closed()
 
                     except Exception as stream_err:

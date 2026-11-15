@@ -2486,6 +2486,20 @@ is produced:
   PID-tracked, command-wrapper nice/ionice, bounded by `timeout` and stopped
   through the `reap` ladder on a cancel (`ReadCancelled`), a timeout or a
   non-zero exit (`RuntimeError` with the stderr tail).
+- `subprocess_runner.feed_stdin_from_file(process, path, offset=, cancel_event=)`
+  is the one stdin feeder, shared by `hash_stdout` and z3ds verify. Reads are
+  detached; a read still in flight when the feed is cancelled is abandoned
+  with its handle, never closed, because closing waits on the lock the stuck
+  read holds.
+
+**No filesystem call on the event loop.** A digest runs while the job holds
+the only dispatcher slot, and a stat on a hung mount blocks the loop itself, so
+no deadline or cancel can fire. Every path, size, existence and sibling-file
+lookup in a digest runs on a detached thread: inside the hashing producer
+(JWUDTool's split parts, the produced XCI) or through `run_detached` (the
+Z3DS payload offset and `zstd` lookup, nsz's file identity and XCZ size, romz
+listings). Tests stand a hung stat in for a dead mount and check the deadline
+still fires.
 
 Both run under the same outer bound as every digest: `round_trip._digest`
 wraps the call in `tool.verify_timeout(path)`.

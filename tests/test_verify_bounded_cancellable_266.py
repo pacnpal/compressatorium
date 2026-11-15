@@ -1044,6 +1044,13 @@ async def _z3ds_feeder_cancel_abandons_handle(tmp_path: Path, monkeypatch):
             closed.append("closed")
 
     monkeypatch.setattr(z3ds_module, "open", lambda *_a, **_k: _StuckHandle(), raising=False)
+    # The feeder is the shared subprocess_runner.feed_stdin_from_file (#301),
+    # which opens the file in its own module.
+    from services import subprocess_runner as runner_module
+
+    monkeypatch.setattr(
+        runner_module, "open", lambda *_a, **_k: _StuckHandle(), raising=False,
+    )
 
     async def _fake_exec(*_args, **_kwargs):
         return child
