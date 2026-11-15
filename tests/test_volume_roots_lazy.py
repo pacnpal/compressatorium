@@ -299,8 +299,9 @@ def test_a_deeper_alias_root_wins_over_a_configured_spelling(tmp_path, monkeypat
     # /games -> /mnt/ps2/library by its alias. The alias root is deeper, so it
     # holds /mnt/ps2/library/game.iso, and the folder walk must stop there,
     # never reading "ps2" above it.
-    from config import settings
     from services import platform_detect
+
+    from config import settings
 
     mnt = tmp_path / "mnt"
     library = mnt / "ps2" / "library"
