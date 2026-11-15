@@ -1887,3 +1887,22 @@ def test_the_extraction_validator_refuses_a_nul_in_a_member_name():
 
     with pytest.raises(ValueError, match="NUL"):
         archive_service._validate_member("Game\x00.iso")
+
+
+def test_a_folder_of_chds_is_discovered_for_an_extract_mode(volume, capsys):
+    """codex 4577029533: with --to a mode id, a folder walk uses that mode's
+    accepted extensions; chdman leaves .chd out of its tool-wide inputs, so
+    `convert DIR --to extractdvd` used to find nothing."""
+    ps2 = volume / "ps2"
+    ps2.mkdir()
+    for name in ("A.chd", "B.chd"):
+        (ps2 / name).write_bytes(b"MComprHD" + b"\0" * 120)
+
+    code, lines = _cli(
+        capsys, "convert", str(volume), "--to", "extractdvd", "--dry-run", "--json",
+    )
+
+    assert code == 0, lines
+    assert sorted(Path(x["path"]).name for x in lines) == ["A.chd", "B.chd"]
+    assert {x["mode"] for x in lines} == {"extractdvd"}
+    assert {x["status"] for x in lines} == {"planned"}

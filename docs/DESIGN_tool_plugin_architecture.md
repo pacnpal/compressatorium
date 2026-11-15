@@ -2732,6 +2732,15 @@ most twice `MAX_CONCURRENT_JOBS` of its jobs queued (never more than
 `MAX_QUEUE_DEPTH`), so a cron run does not put a whole library ahead of the web
 UI.
 
+**What a `--to` walk lists.** A folder walk lists what the web search lists
+(`scan_tree`, tool-wide inputs). With `--to`, `cli._discover` also lists every
+file whose name ends with an extension the target's modes accept
+(`platform_detect.target_reads_extensions`: a mode id's
+`mode_reads_extensions`, or for a format the union over the Auto-eligible
+modes), so a mode that reads what its tool leaves out of its inputs (chdman's
+extract modes and `.chd`) finds its files. `format_candidates` then decides
+per file. `--auto` keeps the tool-wide walk.
+
 **One output, one job.** `cli._prepare` keeps every output path the run will
 write, across groups and re-planned batches, and skips a later Image that
 writes one already taken ("Same output as X"). The planner's own collapse

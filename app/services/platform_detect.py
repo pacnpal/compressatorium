@@ -496,6 +496,26 @@ def _writes(spec, path: str, fmt: str, tools_registry) -> bool:
     return out is not None and match_extension(out, {fmt}) is not None
 
 
+def target_reads_extensions(target: str, tools_registry) -> frozenset[str]:
+    """Every extension some mode for ``target`` can read (#306).
+
+    A mode id: what that mode's command reads (``mode_reads_extensions``). A
+    format: the union over the Auto-eligible modes ``format_candidates``
+    considers. A folder walk for ``--to`` lists the files with these, so a
+    mode reading what its tool leaves out of its inputs (chdman's extract
+    modes and ``.chd``) still finds them; ``format_candidates`` then decides
+    per file.
+    """
+    _fmt, mode = _parse_target(target, tools_registry)
+    if mode is not None:
+        return frozenset(tools_registry.mode_reads_extensions(mode))
+    found: set[str] = set()
+    for spec in tools_registry.mode_specs():
+        if spec.auto_target:
+            found |= tools_registry.mode_reads_extensions(spec.mode)
+    return frozenset(found)
+
+
 def format_candidates(path: str, target: str, tools_registry) -> list:
     """The modes that could turn ``path`` into ``target``, Platform aside.
 
