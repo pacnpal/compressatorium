@@ -2400,3 +2400,62 @@ def test_naming_a_split_part_checks_its_logical_image(volume, dolphin, capsys, m
     assert len(lines) == 1, lines
     assert lines[0]["path"] == str(iso)
     assert (lines[0]["tool"], lines[0]["status"]) == ("makeps3iso", "intact")
+
+
+def _real_split_iso(folder, *, extra_sectors=8):
+    """A real (tiny) PS3 ISO 9660 image split across GAME.iso.0 and .1: part 0
+    holds the volume descriptor and PARAM.SFO, part 1 the rest of the volume,
+    and the descriptor's volume size covers both."""
+    import struct
+
+    from tests.ps3_helpers import make_sfo
+    from tests.test_disc_id import _make_iso
+
+    image = bytearray(_make_iso({
+        "PS3_GAME/PARAM.SFO": make_sfo([("TITLE_ID", "BLES01807"), ("TITLE", "Game")]),
+    }))
+    tail = b"\xab" * (extra_sectors * 2048)
+    volume_sectors = (len(image) + len(tail)) // 2048
+    struct.pack_into("<I", image, 16 * 2048 + 80, volume_sectors)   # volume space size
+    struct.pack_into(">I", image, 16 * 2048 + 84, volume_sectors)
+    struct.pack_into("<H", image, 16 * 2048 + 128, 2048)            # logical block size
+    struct.pack_into(">H", image, 16 * 2048 + 130, 2048)
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "GAME.iso.0").write_bytes(bytes(image))
+    (folder / "GAME.iso.1").write_bytes(tail)
+    return folder / "GAME.iso"
+
+
+def test_the_real_split_check_reads_every_part(volume, dolphin, capsys):
+    """makeps3iso's own verify, no stub: a healthy split set is Intact, and a
+    later part cut short fails it (a split Image is never reported intact when
+    a later part is damaged)."""
+    iso = _real_split_iso(volume / "games")
+    _store(iso, produced_meta={"mode": "folder_to_iso", "tool": "makeps3iso"})
+
+    code, lines = _cli(capsys, "verify", str(volume), "--json")
+    assert code == 0, lines
+    assert [(x["path"], x["tool"], x["status"]) for x in lines] == [
+        (str(iso), "makeps3iso", "intact"),
+    ]
+
+    part1 = volume / "games" / "GAME.iso.1"
+    part1.write_bytes(part1.read_bytes()[: 2048 * 3])  # damaged: cut short
+
+    code, lines = _cli(capsys, "verify", str(volume), "--json")
+    assert code == 1, lines
+    assert [(x["tool"], x["status"]) for x in lines] == [("makeps3iso", "failed")]
+    assert "GAME.iso.1" in lines[0]["reason"] or "short" in lines[0]["reason"]
+
+
+def test_a_split_iso_missing_a_later_part_fails(volume, dolphin, capsys):
+    iso = _real_split_iso(volume / "games")
+    _store(iso, produced_meta={"mode": "folder_to_iso", "tool": "makeps3iso"})
+    (volume / "games" / "GAME.iso.1").unlink()
+
+    code, lines = _cli(capsys, "verify", str(volume), "--json")
+
+    assert code == 1, lines
+    assert [(x["path"], x["tool"], x["status"]) for x in lines] == [
+        (str(iso), "makeps3iso", "failed"),
+    ]

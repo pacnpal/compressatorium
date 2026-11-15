@@ -2778,8 +2778,16 @@ name without its last suffix lists it. The walk lists such parts
 (`scan_tree(also_include=...)`), a named part maps the same way, and
 `_to_logical` folds them into one item; a stored record whose own path is gone
 is kept when its recorded mode's `verify_target` finds the file
-(`_stored_logical`). The check reads that target (the first part) and the
-line and record stay on `Game.iso`.
+(`_stored_logical`). The check is handed that target (the first part) and the
+line and record stay on `Game.iso`. makeps3iso's verify then covers every
+part, not only the first: its TITLE_ID readback reads part 0, and for a split
+set (`MakePs3IsoService.split_set_of`, from the logical path or any numbered
+part) `check_split_set` checks the whole set's structure: the ISO 9660 volume
+size in part 0's descriptor must fit in the parts' summed size, so a later
+part missing or cut short fails, and every part must read to its last byte (a
+read error is no verdict). PS3 ISOs carry no checksums, so a later part's
+bytes can't be proven beyond that. The job's own verify-after takes the same
+path, since it is handed the same first part.
 
 **Discovered inputs stay inside the Volumes.** A folder walk follows file
 symlinks, so every discovered file, folder and archive (for a member) goes
