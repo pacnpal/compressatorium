@@ -14,8 +14,9 @@ from routes import convert, dat, files, info, preferences, romm
 from routes import findings as findings_routes
 from routes import ledger as ledger_routes
 from routes import libraries as library_routes
+from routes import notifications as notification_routes
 from routes import rules as rules_routes
-from services import ledger
+from services import ledger, notifications
 from services.job_manager import job_manager
 from services.nsz import nsz_service
 
@@ -318,6 +319,9 @@ async def lifespan(app: FastAPI):
     job_manager.add_terminal_listener(romm_auto.note_job_finished)
     # Every terminal job also lands in the permanent Ledger (#292).
     job_manager.add_terminal_listener(ledger.record)
+    # A failed manual job and a finished sweep each send one message, if any
+    # destination is configured (#293).
+    job_manager.add_terminal_listener(notifications.on_job_finished)
 
     # The unattended-conversion scheduler always runs; it checks the master
     # switch each tick, so toggling auto-convert in the app takes effect
@@ -422,6 +426,7 @@ app.include_router(preferences.router, prefix="/api", tags=["preferences"])
 app.include_router(romm.router, prefix="/api", tags=["romm"])
 app.include_router(ledger_routes.router, prefix="/api", tags=["ledger"])
 app.include_router(library_routes.router, prefix="/api", tags=["libraries"])
+app.include_router(notification_routes.router, prefix="/api", tags=["notifications"])
 app.include_router(rules_routes.router, prefix="/api", tags=["rules"])
 app.include_router(findings_routes.router, prefix="/api", tags=["findings"])
 

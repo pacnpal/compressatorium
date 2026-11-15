@@ -949,8 +949,13 @@ async def test_repeated_sweeps_on_a_hung_mount_strand_one_thread(
     from routes import libraries as routes
     from services.rules import sweep as rules_sweep
 
+    from services import notifications
+
     lib = await _library_with_rules(tree)
     monkeypatch.setattr(rules_sweep, "_LISTING_SECONDS", 0.2)
+    # The sweep's error notification reads its destinations on a pooled worker,
+    # which can start one more idle pool thread; not a stranded one.
+    monkeypatch.setattr(notifications, "notify", lambda event: None)
     before = threading.active_count()
 
     for _ in range(6):

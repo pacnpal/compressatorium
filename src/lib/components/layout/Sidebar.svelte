@@ -8,6 +8,7 @@
   import Library from '@lucide/svelte/icons/library';
   import ListChecks from '@lucide/svelte/icons/list-checks';
   import Flag from '@lucide/svelte/icons/flag';
+  import Settings from '@lucide/svelte/icons/settings';
   import HelpCircle from '@lucide/svelte/icons/circle-help';
   import ChevronLeft from '@lucide/svelte/icons/chevron-left';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
@@ -48,6 +49,9 @@
     </SidebarItem>
     <SidebarItem label="DAT Library" {collapsed} active={view === 'dat'} onclick={() => go('dat')}>
       {#snippet icon()}<Database size={16} />{/snippet}
+    </SidebarItem>
+    <SidebarItem label="Settings" {collapsed} active={view === 'settings'} onclick={() => go('settings')}>
+      {#snippet icon()}<Settings size={16} />{/snippet}
     </SidebarItem>
     <SidebarItem label="Help" {collapsed} active={view === 'help'} onclick={() => go('help')}>
       {#snippet icon()}<HelpCircle size={16} />{/snippet}
