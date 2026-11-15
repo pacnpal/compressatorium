@@ -893,6 +893,46 @@ def test_a_stop_while_images_are_inspected_ends_the_inspection(
     assert "last_run_at" not in _rule_state(env).get("gc", {}), "a cut-short pass is not a run"
 
 
+def test_a_stop_while_delete_snapshots_are_read_queues_nothing(
+    env, dolphin, capsys, monkeypatch,
+):
+    """codex 4577047502: a delete-on-verify batch reads one snapshot per
+    Source before it queues; a stop during that must queue none of it."""
+    import os
+    import signal
+    import time
+
+    from services.rules import sweep as rules_sweep
+
+    for n in range(5):
+        _iso(env, name=f"Game{n}.iso")
+    _store_rules(env, {"shelf": {"gc": {
+        "mode": "dolphin_rvz", "enabled": True, "delete_on_verify": True,
+        "check_level": "container_only",
+    }}})
+    read = []
+    real = rules_sweep.build_delete_snapshot
+
+    def snapshot_and_stop(path, *args, **kwargs):
+        read.append(Path(path).name)
+        if len(read) == 1:
+            os.kill(os.getpid(), signal.SIGTERM)
+            time.sleep(0.3)  # the signal handler runs on the loop meanwhile
+        return real(path, *args, **kwargs)
+
+    monkeypatch.setattr(rules_sweep, "build_delete_snapshot", snapshot_and_stop)
+    started = time.monotonic()
+
+    code, lines, _err = _cli(capsys, "run-rules", "--json")
+
+    assert code == 1
+    assert time.monotonic() - started < 10
+    assert read == ["Game0.iso"], "no Source probed after the stop"
+    assert [line for line in lines if line.get("path")] == [], "nothing queued"
+    assert dolphin["runs"] == []
+    assert "last_run_at" not in _rule_state(env).get("gc", {}), "the clock did not move"
+
+
 def test_the_fixture_keeps_every_lock_file_in_the_test_lock_dir(env):
     """Otherwise the queue's holder file points at the real lock dir, which
     does not exist on a clean machine, and the first job never starts."""

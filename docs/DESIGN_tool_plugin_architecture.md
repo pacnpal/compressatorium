@@ -3014,7 +3014,8 @@ warning as `reason`. A delete refused for safety raises in that step, so the
 job ends FAILED and counts.
 
 Stopping. `sweep()` takes `should_stop`, asked before each Platform, before
-each Image is inspected, and again right before a batch is queued; once true
+each Image is inspected, before each delete snapshot is read, and again right
+before a batch is queued; once true
 the sweep queues nothing more, does not stamp that Platform's clock, and ends
 with `stopped_reason == "stopped"`. The server passes nothing. On SIGTERM,
 SIGINT or SIGHUP `run-rules` sets `state.stopping` (which `should_stop`

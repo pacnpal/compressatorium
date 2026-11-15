@@ -803,7 +803,8 @@ async def sweep(
     platform must not abort the sweep for the others.
 
     *should_stop* is asked before each Platform, before each Image is
-    inspected, and again just before a batch is queued; once it is true the
+    inspected, before each delete snapshot is read, and again just before a
+    batch is queued; once it is true the
     sweep queues nothing more and ends with ``stopped_reason == "stopped"``
     (``run-rules`` on SIGTERM, #307).
 
@@ -1142,6 +1143,10 @@ async def _sweep_locked(
                 if rule["delete_on_verify"]:
                     snapshots = {}
                     for path in batch:
+                        # One probe per Source, each up to its bound: a stop
+                        # must not wait for the rest of them.
+                        if stopping():
+                            break
                         # Bounded, and a missing snapshot is not silently
                         # accepted: `_process_job` refuses to delete without
                         # one, so an unreadable source must drop out of the
@@ -1177,6 +1182,11 @@ async def _sweep_locked(
                         result["platforms"].append(summary)
                         continue
 
+                if stopping():
+                    # Arrived while the snapshots were read: queue none of
+                    # this batch, and leave the Platform's clock alone.
+                    result["stopped_reason"] = "stopped"
+                    break
                 jobs = await job_manager.create_batch_jobs(
                     batch,
                     ConversionMode(rule["mode"]),
