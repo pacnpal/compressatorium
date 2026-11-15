@@ -285,7 +285,7 @@ class FolderLibrary:
             members_cache[path] = (key, value)
             return value
 
-        scan = Scan(unreadable=unreadable, taken_at=time.monotonic())
+        scan = Scan(unreadable=unreadable)
         root = self.root
         for path in image_sets.group_images([p for p, _ in files], members=members):
             st = stats[path]
@@ -311,6 +311,9 @@ class FolderLibrary:
         # Only what this walk saw, so the caches are as large as the Library.
         self._members = members_cache
         self._detections = detections
+        # The reuse window starts once the walk is ready, not when it began:
+        # a walk whose detection outlasts SCAN_TTL_SECONDS is still shared.
+        scan.taken_at = time.monotonic()
         return scan
 
     def scan(self, *, refresh: bool = False) -> Scan:

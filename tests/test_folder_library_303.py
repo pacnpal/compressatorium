@@ -1709,6 +1709,46 @@ async def test_a_backslash_track_path_is_one_detected_image(db: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_slow_walk_is_reused_from_when_it_finished(db: Path, monkeypatch) -> None:
+    """CodeRabbit 4576895543: the reuse window starts when the walk is ready.
+
+    Detection here takes 40 s of (fake) clock, longer than the 30 s window;
+    the next listing right after must reuse the walk, not repeat it.
+    """
+    from types import SimpleNamespace
+
+    from services import libraries
+    from services.libraries import folder as folder_mod
+
+    (db / "roms" / "ps2").mkdir(parents=True)
+    _ps2(db / "roms" / "ps2" / "Game.iso")
+    lib = await _register(db / "roms")
+    library = libraries.get(lib["id"])
+
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(folder_mod, "time", SimpleNamespace(monotonic=lambda: clock["now"]))
+    real_detect = folder_mod.platform_detect.detect_uncached
+
+    def slow_detect(path, **kwargs):
+        clock["now"] += 40.0
+        return real_detect(path, **kwargs)
+
+    monkeypatch.setattr(folder_mod.platform_detect, "detect_uncached", slow_detect)
+    walks: list[int] = []
+    real_files = library._files
+
+    def counting_files():
+        walks.append(1)
+        return real_files()
+
+    monkeypatch.setattr(library, "_files", counting_files)
+
+    library.scan(refresh=True)
+    library.scan()
+    assert len(walks) == 1
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("where", ["same", "parent", "child"])
 async def test_a_romm_root_overlapping_a_folder_library_is_refused(
     db: Path, where: str,
