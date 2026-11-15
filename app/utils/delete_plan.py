@@ -159,7 +159,40 @@ def describe_extras(extras: List[str], limit: int = 3) -> str:
 
 
 def archive_members_beyond_image(source_path: str) -> List[str]:
-    """Members of an archive-member Source's archive that are not that Image.
+    """Members of an archive-member Source's archive that keep it: the names
+    ``_archive_verdict`` gives, whatever the reason. Empty when it may go."""
+    verdict = _archive_verdict(source_path)
+    return verdict[1] if verdict else []
+
+
+# Why an archive was kept, as the summary says it (review r11 M4).
+_KEPT_PHRASES = {
+    "extra": "also holds {}",
+    "unsafe": "has an unsafe member name {}",
+    "duplicate": "has a duplicate member {}",
+    "ambiguous": "has an ambiguous sheet spelling {}",
+}
+
+
+def archive_kept_summary(source_path: str) -> str | None:
+    """Why an archive-member Source's archive must be kept, for a summary line
+    ("also holds readme.txt", "has an unsafe member name ../x", "has a
+    duplicate member Game.iso", "has an ambiguous sheet spelling Café.bin,
+    CafÃ©.bin", "can't be read"), or None when it may go."""
+    verdict = _archive_verdict(source_path)
+    if verdict is None:
+        return None
+    why, names = verdict
+    if why == "unreadable":
+        return "can't be read"
+    return _KEPT_PHRASES[why].format(describe_extras(names))
+
+
+def _archive_verdict(source_path: str) -> tuple[str, List[str]] | None:
+    """Whether an archive-member Source's archive must be kept, and why.
+
+    ``(why, members)`` with ``why`` one of ``extra``, ``unsafe``,
+    ``duplicate``, ``ambiguous`` or ``unreadable``; None when it may go.
 
     Deleting an archive member's Source deletes the whole archive, so it may
     go only when every member belongs to the Image that was converted: its own
@@ -174,33 +207,36 @@ def archive_members_beyond_image(source_path: str) -> List[str]:
     so the plan refuses. Empty for a plain file.
     """
     if "::" not in source_path:
-        return []
+        return None
     archive, member = source_path.split("::", 1)
     from services.archive_members import read_archive_members
 
     try:
         members = read_archive_members(archive)
     except Exception:  # noqa: BLE001 - unknown contents: keep the archive
-        return [os.path.basename(archive)]
+        return ("unreadable", [os.path.basename(archive)])
     # Fail closed on a name or kind the extraction validator refuses, before
     # anything is created from any name (codex 4577029535).
     unsafe = [m.name for m in members if _unsafe_member_reason(m)]
+    if unsafe:
+        return ("unsafe", unsafe)
     # A name listed twice is two different files; only one can be the Image.
     seen: set[str] = set()
+    duplicates: list[str] = []
     for entry in members:
-        if entry.name in seen and entry.name not in unsafe:
-            unsafe.append(entry.name)
+        if entry.name in seen and entry.name not in duplicates:
+            duplicates.append(entry.name)
         seen.add(entry.name)
-    if unsafe:
-        return unsafe
+    if duplicates:
+        return ("duplicate", duplicates)
     names = {m.name + ("/" if m.is_dir and not m.name.endswith("/") else "")
              for m in members}
     try:
         owned = _image_members(archive, member, names)
     except _AmbiguousSheet as exc:
-        return exc.members
+        return ("ambiguous", exc.members)
     except Exception:  # noqa: BLE001 - an unreadable sheet: keep the archive
-        return [os.path.basename(archive)]
+        return ("unreadable", [os.path.basename(archive)])
     owned_dirs = set()
     for name in owned:
         folder = posixpath.dirname(name)
@@ -215,7 +251,7 @@ def archive_members_beyond_image(source_path: str) -> List[str]:
         elif name in owned:  # names are canonical: the validator passed them
             continue
         extras.append(name)
-    return extras
+    return ("extra", extras) if extras else None
 
 
 def build_delete_plan(source_path: str) -> Dict[str, object]:
@@ -253,9 +289,9 @@ def build_delete_plan(source_path: str) -> Dict[str, object]:
             )
             # Never take anything else with it (#306): the archive goes only
             # when every member belongs to this Image.
-            others = archive_members_beyond_image(original_source)
-            if others:
-                errors.append(f"The archive also holds {describe_extras(others)}; it is kept")
+            kept = archive_kept_summary(original_source)
+            if kept:
+                errors.append(f"The archive {kept}; it is kept")
             return {
                 "source_path": original_source,
                 "delete_paths": delete_paths,

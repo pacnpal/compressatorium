@@ -1855,13 +1855,17 @@ def test_an_xiso_outside_an_xbox_folder_goes_to_xiso(volume):
 
 
 def test_an_archive_with_an_unsafe_member_is_kept_and_nothing_is_written(
-    volume, dolphin, capsys, tmp_path,
+    volume, dolphin, capsys, tmp_path, monkeypatch,
 ):
     """codex 4577029535: a member named ``../outside-...`` keeps the archive,
     exit 1, and no file is created from its name anywhere."""
     import tempfile
     import uuid
 
+    from config import settings
+
+    app_temp = tmp_path / "app-temp"
+    monkeypatch.setattr(settings, "temp_dir", str(app_temp))
     escape = f"../outside-{uuid.uuid4().hex}"
     pack = volume / "gc" / "pack.zip"
     pack.parent.mkdir()
@@ -1878,7 +1882,10 @@ def test_an_archive_with_an_unsafe_member_is_kept_and_nothing_is_written(
     assert pack.exists()
     line = next(x for x in lines if x["path"].endswith("::Game.iso"))
     assert escape in line["reason"]
-    for root in (tempfile.gettempdir(), str(volume), str(volume / "gc"), str(tmp_path)):
+    assert "unsafe member name" in line["reason"]
+    for root in (
+        tempfile.gettempdir(), str(volume), str(volume / "gc"), str(tmp_path), str(app_temp),
+    ):
         assert not os.path.exists(os.path.join(root, escape[3:])), root
 
 
