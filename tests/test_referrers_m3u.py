@@ -11,6 +11,7 @@ import stat
 from pathlib import Path
 
 import pytest
+import services.referrers as hook_module
 from services import db as _db
 from services import ledger as ledger_store
 
@@ -221,7 +222,106 @@ async def test_delete_confirmation_follows_the_output_folder(volume):
     ]
 
 
+@pytest.mark.asyncio
+async def test_delete_confirmation_names_the_numbered_output_a_rename_writes(volume):
+    """With RENAME and the base output taken, the preview names the numbered
+    path the job will write, resolved the same way the job plans it."""
+    (volume / "Game (Disc 1).chd").write_bytes(b"older")
+    plan = await convert_routes.delete_plan(DeletePlanRequest(
+        file_paths=[str(volume / "Game (Disc 1).cue")],
+        mode=ConversionMode.CREATECD,
+        duplicate_action=DuplicateAction.RENAME,
+    ))
+    job = await convert_routes.create_job(JobCreateRequest(
+        file_path=str(volume / "Game (Disc 1).cue"),
+        mode=ConversionMode.CREATECD,
+        duplicate_action=DuplicateAction.RENAME,
+        delete_on_verify=True,
+    ))
+
+    [change] = plan["items"][0]["referrer_changes"]
+    assert job.output_path != str(volume / "Game (Disc 1).chd")
+    assert change["edits"] == [
+        {"old": "Game (Disc 1).cue", "new": os.path.basename(job.output_path)},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_track_outside_the_volumes_is_blocked_and_never_scanned(
+    volume, tmp_path_factory,
+):
+    """A cue's track reached through a symlinked folder that leaves the Volume
+    is unsafe: it is not a delete path and its folder is not searched."""
+    outside = tmp_path_factory.mktemp("outside")
+    (outside / "Game.bin").write_bytes(b"\0" * 2352)
+    (outside / "Secret.m3u").write_text("Game.bin\n")
+    (volume / "tracks").symlink_to(outside)
+    (volume / "Linked.cue").write_text(
+        'FILE "tracks/Game.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n'
+    )
+
+    plan = await convert_routes.delete_plan(DeletePlanRequest(
+        file_paths=[str(volume / "Linked.cue")], mode=ConversionMode.CREATECD,
+    ))
+
+    [item] = plan["items"]
+    assert plan["blocked"] is True
+    assert any("outside configured volumes" in u for u in item["unsafe_paths"])
+    assert str(outside / "Game.bin") not in item["delete_paths"]
+    assert all("Secret.m3u" not in c["target"] for c in item["referrer_changes"])
+
+
+def _wrap_hook(monkeypatch, after):
+    """Run the real Referrer hook, then *after* (the race being simulated)."""
+    real = hook_module.update_before_source_removal
+
+    async def wrapped(image_path, renames):
+        outcome = await real(image_path, renames)
+        after()
+        return outcome
+
+    monkeypatch.setattr(hook_module, "update_before_source_removal", wrapped)
+
+
+@pytest.mark.asyncio
+async def test_a_source_changed_during_the_hook_is_kept(volume, monkeypatch):
+    source = volume / "Game (Disc 1).cue"
+    _wrap_hook(monkeypatch, lambda: source.write_text(source.read_text() + "REM edited\n"))
+
+    job = await _convert_disc_1(volume)
+
+    assert job.status == JobStatus.COMPLETED, job.error_message
+    assert job.message.startswith("converted, source kept:")
+    assert source.is_file() and (volume / "Game (Disc 1).bin").is_file()
+    assert job.deleted_paths == []
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_during_the_hook_keeps_the_source(volume, monkeypatch):
+    def cancel_all():
+        for event in list(convert_routes.job_manager._cancel_events.values()):
+            event.set()
+
+    _wrap_hook(monkeypatch, cancel_all)
+
+    job = await _convert_disc_1(volume)
+
+    assert "Delete skipped (cancelled)" in job.message
+    assert (volume / "Game (Disc 1).cue").is_file()
+    assert job.deleted_paths == []
+    # The playlist already points at the output, which is still there.
+    assert b"Game (Disc 1).chd" in (volume / "Game.m3u").read_bytes()
+    assert (volume / "Game (Disc 1).chd").is_file()
+
+
 _SRC = Path(__file__).resolve().parents[1] / "src" / "lib"
+
+
+def test_confirmation_sends_the_duplicate_action():
+    endpoints = (_SRC / "api" / "endpoints.js").read_text()
+    assert "duplicate_action" in endpoints.split("getDeletePlan", 1)[1].split("},", 1)[0]
+    panel = (_SRC / "components" / "panels" / "ConvertPanel.svelte").read_text()
+    assert "fetchDeletePlan(planInputs, duplicateAction)" in panel
 
 
 def test_confirmation_modal_shows_referrer_changes():
@@ -232,4 +332,4 @@ def test_confirmation_modal_shows_referrer_changes():
     endpoints = (_SRC / "api" / "endpoints.js").read_text()
     assert "output_dir" in endpoints.split("getDeletePlan", 1)[1].split("},", 1)[0]
     store = (_SRC / "stores" / "conversion.svelte.js").read_text()
-    assert "getDeletePlan(filePaths, this.mode, this.outputDir" in store
+    assert "filePaths, this.mode, this.outputDir || null, duplicateAction" in store

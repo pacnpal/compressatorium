@@ -370,6 +370,10 @@ class M3uReferrer(Referrer):
         changes = []
         for directory in dirs:
             for playlist in _playlists(directory):
+                # Never read through a link (it may lead out of the Volumes);
+                # fail closed so the Source is kept.
+                if os.path.islink(playlist):
+                    raise ReferrerError(playlist, "is a symlink")
                 with _playlist_lock(playlist):
                     _, edits = _rewrite(playlist, _read(playlist), directory, targets)
                 if edits:
@@ -394,7 +398,7 @@ class M3uReferrer(Referrer):
             try:
                 backup = path + BACKUP_SUFFIX
                 if not os.path.lexists(backup):
-                    atomic_write_bytes(backup, original)
+                    atomic_write_bytes(backup, original, like=path)
                 atomic_write_bytes(path, updated)
             except OSError as exc:
                 raise ReferrerError(path, exc.strerror or str(exc)) from exc

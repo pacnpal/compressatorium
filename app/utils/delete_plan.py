@@ -4,7 +4,7 @@ import shlex
 from pathlib import Path
 from typing import Dict, List, Set
 
-from utils.path_utils import strip_archive_path
+from utils.path_utils import is_within_configured_volumes, strip_archive_path
 
 
 _WIN_ABS_RE = re.compile(r"^[a-zA-Z]:[\\/]")
@@ -90,7 +90,16 @@ def _parse_gdi_tracks(gdi_path: Path) -> List[str]:
     return tracks
 
 
-def build_delete_plan(source_path: str) -> Dict[str, object]:
+def build_delete_plan(
+    source_path: str, *, confine_to_volumes: bool = False,
+) -> Dict[str, object]:
+    """The files a delete-on-verify would remove for *source_path*.
+
+    With *confine_to_volumes* (the delete-plan route), a resolved path outside
+    every configured Volume goes to ``unsafe_paths`` instead of
+    ``delete_paths``, so the plan is blocked and the Referrer scan never sees
+    it. The job's own delete step checks each path against the Volumes too.
+    """
     original_source = source_path
     is_archive_member = "::" in source_path
     plan_source = strip_archive_path(source_path) if is_archive_member else source_path
@@ -111,6 +120,13 @@ def build_delete_plan(source_path: str) -> Dict[str, object]:
         if real in resolved:
             return
         resolved.add(real)
+        # A track reached through a symlinked folder can resolve outside every
+        # Volume. It is never deleted, and the Referrer scan never sees it.
+        if confine_to_volumes and not is_within_configured_volumes(
+            real, treat_archives=False,
+        ):
+            unsafe_paths.append(f"Delete path outside configured volumes: {real}")
+            return
         delete_paths.append(real)
         if not os.path.exists(real):
             missing_paths.append(real)

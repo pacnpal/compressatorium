@@ -276,8 +276,10 @@ class MetadataBatchRequest(BaseModel):
 class DeletePlanRequest(BaseModel):
     file_paths: list[str]
     mode: ConversionMode = ConversionMode.CREATECD
-    # Where the outputs will land, so Referrer changes name the right file.
+    # Where the outputs will land, and how a taken output is handled (RENAME
+    # writes a numbered path), so Referrer changes name the file the job writes.
     output_dir: str | None = None
+    duplicate_action: DuplicateAction = DuplicateAction.SKIP
 
 
 class DolphinDiscInfo(BaseModel):

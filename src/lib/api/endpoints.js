@@ -235,10 +235,10 @@ export const api = {
     );
   },
 
-  getDeletePlan(filePaths, mode = 'createcd', outputDir = null) {
+  getDeletePlan(filePaths, mode = 'createcd', outputDir = null, duplicateAction = 'skip') {
     return jsonPost(
       `${API_BASE}/jobs/delete-plan`,
-      { file_paths: filePaths, mode, output_dir: outputDir },
+      { file_paths: filePaths, mode, output_dir: outputDir, duplicate_action: duplicateAction },
       {},
       'Failed to build delete plan',
     );

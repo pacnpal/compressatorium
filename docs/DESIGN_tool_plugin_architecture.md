@@ -2400,11 +2400,17 @@ The package exposes the registry and two entry points:
 - `plan_changes(image_path, renames)` runs `detect` + `plan` on every
   registered Referrer. Both entry points ask `detect` about the Image *and*
   every path in `renames`, so a companion that is deleted too (a cue's track
-  in a subfolder) gates planning as well. `POST /api/jobs/delete-plan` calls it per item (with the
-  request's `output_dir`, so the planned output path is the real one) and
-  returns `referrer_changes: [{referrer, target, edits: [{old, new}]}]`, which
-  `DeletePlanModal.svelte` lists under each source. A plan that can't be made
-  becomes a warning on the item ("the source will be kept").
+  in a subfolder) gates planning as well. `POST /api/jobs/delete-plan` calls it
+  per item and returns `referrer_changes: [{referrer, target, edits: [{old,
+  new}]}]`, which `DeletePlanModal.svelte` lists under each source. The request
+  carries `output_dir` and `duplicate_action`; the planned output goes through
+  `_renamed_output`, the same helper `plan_job` uses, so a RENAME preview names
+  the numbered path the job writes. The route builds its plan with
+  `build_delete_plan(..., confine_to_volumes=True)`: a track that resolves
+  outside every Volume (through a symlinked folder) goes to `unsafe_paths`,
+  blocks the item, and never reaches `delete_paths` or the Referrer scan. A
+  plan that can't be made becomes a warning on the item ("the source will be
+  kept").
 - `update_before_source_removal(image_path, renames)` is the **one hook** in
   `_process_job`. It runs after `_delete_check` (§3.3.12) has passed and after
   the delete plan's safety checks, immediately before the `os.remove` loop. Off the event
@@ -2420,6 +2426,12 @@ The package exposes the registry and two entry points:
   and `deleted_paths` stays empty. `JobRow.svelte` shows that message on a
   completed delete-on-verify job that deleted nothing. Changes already applied
   before the failure stay: they point at the output, which exists.
+  Because the hook awaits a worker thread, the job re-asks two things after
+  it and before `os.remove`: a Cancel pressed meanwhile keeps the Source
+  ("Delete skipped (cancelled)"), and `JobManager._check_delete_paths` (lock,
+  Volume, other job, symlink, type, not-the-output, snapshot size / mtime /
+  inode / device) runs a second time; it ran once before the hook. A failure
+  the second time keeps the Source with `converted, source kept: <reason>`.
 
 `atomic_write_bytes(path, data)` (in `base.py`) is the shared writer for file
 Referrers and anything else that writes a playlist: a temp file in the same
@@ -2497,8 +2509,11 @@ never half of one.
   `apply` holds it while it re-reads the playlist, re-runs the rewrite on what
   is there now and writes, so two jobs updating one playlist both land, and an
   edit made after planning is kept.
-- *Writing.* `apply` refuses a read-only or symlinked playlist. It writes
-  `<name>.m3u.bak` once, only if no backup exists, then the new playlist.
+- *Writing.* `plan` refuses a symlinked playlist before reading it (it may
+  lead out of the Volumes), which keeps the Source; `apply` refuses a
+  read-only or symlinked one. It writes `<name>.m3u.bak` once, only if no
+  backup exists, with the playlist's own mode and group
+  (`atomic_write_bytes(..., like=playlist)`), then the new playlist.
 
 To add a Referrer: subclass `Referrer` in `services/referrers/`, give it a new
 `id`, and `registry.register(...)` it in `services/referrers/__init__.py`.

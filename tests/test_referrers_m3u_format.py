@@ -178,9 +178,9 @@ async def test_two_discs_updating_one_playlist_at_once_keep_both_edits(
     playlist.write_text("D1.cue\nD2.cue\n")
     real_write = m3u_module.atomic_write_bytes
 
-    def slow_write(path, data):
+    def slow_write(path, data, **kw):
         time.sleep(0.2)
-        real_write(path, data)
+        real_write(path, data, **kw)
 
     monkeypatch.setattr(m3u_module, "atomic_write_bytes", slow_write)
 
@@ -570,6 +570,59 @@ def test_entry_for_new_playlists_uses_the_same_reader(tmp_path, name, first_line
         data = (entry + "\n").encode() if first_line else ("#EXTM3U\n" + entry + "\n").encode()
         [read] = _reader_entries(data)
         assert os.path.samefile(tmp_path / read, tmp_path / name)
+
+
+@pytest.mark.asyncio
+async def test_a_symlinked_playlist_is_never_read_and_keeps_the_source(
+    tmp_path, tmp_path_factory, monkeypatch,
+):
+    outside = tmp_path_factory.mktemp("outside")
+    secret = outside / "secret.m3u"
+    secret.write_text("Game.cue\n")
+    _disc(tmp_path, "Game.cue")
+    (tmp_path / "Game.m3u").symlink_to(secret)
+    reads = []
+    real_read = m3u_module._read
+    monkeypatch.setattr(m3u_module, "_read", lambda p: reads.append(p) or real_read(p))
+
+    outcome = await _replace(tmp_path, "Game.cue", "Game.chd")
+
+    assert not outcome.ok
+    assert "symlink" in outcome.reason
+    assert reads == []
+    assert secret.read_text() == "Game.cue\n"
+
+
+@pytest.mark.asyncio
+async def test_the_backup_keeps_the_playlists_mode(tmp_path):
+    _disc(tmp_path, "A.cue")
+    playlist = tmp_path / "Game.m3u"
+    playlist.write_text("A.cue\n")
+    playlist.chmod(0o600)
+
+    outcome = await _replace(tmp_path, "A.cue", "A.chd")
+
+    assert outcome.ok
+    assert stat.S_IMODE((tmp_path / "Game.m3u.bak").stat().st_mode) == 0o600
+
+
+@pytest.mark.asyncio
+async def test_the_backup_keeps_the_playlists_group(tmp_path):
+    _disc(tmp_path, "A.cue")
+    playlist = tmp_path / "Game.m3u"
+    playlist.write_text("A.cue\n")
+    group = _other_group(tmp_path)
+    if group is None:
+        pytest.skip("needs a second group")
+    try:
+        os.chown(playlist, -1, group)
+    except PermissionError:
+        pytest.skip("can't change group here")
+
+    outcome = await _replace(tmp_path, "A.cue", "A.chd")
+
+    assert outcome.ok
+    assert (tmp_path / "Game.m3u.bak").stat().st_gid == group
 
 
 def _other_group(path: Path) -> int | None:
