@@ -833,25 +833,34 @@ def test_a_headers_disagree_conflict_names_the_headers_in_its_cause(db: Path) ->
 async def test_a_sheet_whose_track_is_outside_the_library_shows_no_outside_path(
     db: Path,
 ) -> None:
-    """Placeholder for #303's escaping-track fix: covers it once that merges.
+    """With #303's escaping-track fix merged: no Finding shows an outside path.
 
-    Whatever the walk makes of a sheet that points outside the Library root,
-    the Finding it records must not carry the outside path: ``reason`` and
-    ``cause`` are served by /api/findings and shown in the UI.
+    One sheet points outside the Library root (still inside the Volume), one
+    outside the Volume altogether, which #303 refuses. Whatever the walk makes
+    of either, the Finding it records must not carry the outside path:
+    ``reason`` and ``cause`` are served by /api/findings and shown in the UI.
     """
     from services import libraries
 
-    outside = db / "outside"
-    outside.mkdir()
-    (outside / "secret.bin").write_bytes(b"\0" * 2352)
+    beside = db / "beside"
+    beside.mkdir()
+    (beside / "neighbour.bin").write_bytes(b"\0" * 2352)
+    beyond = db.parent / "beyond"
+    beyond.mkdir()
+    (beyond / "secret.bin").write_bytes(b"\0" * 2352)
     roms = db / "roms"
     roms.mkdir()
-    (roms / "Escape.cue").write_text(_CUE.replace("Game.bin", "../outside/secret.bin"))
+    (roms / "Beside.cue").write_text(_CUE.replace("Game.bin", "../beside/neighbour.bin"))
+    (roms / "Beyond.cue").write_text(_CUE.replace("Game.bin", "../../beyond/secret.bin"))
     await _register(roms)
 
     libraries.folder_libraries()[0].summary(refresh=True)
 
-    for row in _open(include_dismissed=True):
+    rows = _open(include_dismissed=True)
+    # Both sheets are Images nobody can place, so both are Findings.
+    assert {r["image_key"] for r in rows} == {"Beside.cue", "Beyond.cue"}
+    for row in rows:
         text = f"{row['reason']} {row['cause']}"
-        assert "outside" not in text and "secret" not in text, row
+        for leak in ("beside", "neighbour", "beyond", "secret", str(db.parent)):
+            assert leak not in text, (leak, row)
 
