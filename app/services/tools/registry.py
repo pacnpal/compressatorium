@@ -169,8 +169,14 @@ class ToolRegistry:
 
         Derived rather than listed, so a future tool with the same shape is
         excluded without anyone remembering to add it.
+
+        Separately, a mode can opt out by policy with `ModeSpec.automatable`
+        set False (the eXoDOS repack is manual only). Both answers reach the
+        rule editor, `normalize_rule` and the sweep through this one method.
         """
         spec = self.spec(mode)
+        if not getattr(spec, "automatable", True):
+            return False
         output_ext = (spec.output_ext or "").lower()
         if not output_ext:
             return True

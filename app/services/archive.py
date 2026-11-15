@@ -418,6 +418,21 @@ class ArchiveService:
             raise ValueError("Drive letters are not allowed inside archives")
         return segments
 
+    def member_segments(self, member: str) -> List[str]:
+        """The path segments of a member name, or ``ValueError`` if it is unsafe.
+
+        The same rules the extract path applies (no backslashes, absolute paths,
+        ``..``, empty segments or drive letters), for callers that read archives
+        themselves. A name with leading or trailing whitespace is refused too:
+        the rules check the stripped name, and a caller that then uses the raw
+        name would act on a different path than the one checked. A directory
+        entry's trailing ``/`` is the caller's to strip.
+        """
+        segments = self._validate_member(member)
+        if "/".join(segments) != member:
+            raise ValueError(f"Member name has leading or trailing spaces: {member!r}")
+        return segments
+
     def _prepare_destination(self, temp_dir: str, member: str) -> str:
         segments = self._validate_member(member)
         base = Path(temp_dir).resolve()

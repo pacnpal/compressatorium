@@ -3545,6 +3545,11 @@ class JobManager:
                     self._last_progress_at[job_id] = now
                 job.progress = update["progress"]
                 job.message = update["message"]
+                # A tool's caveat (an eXoDOS conf that points outside its game,
+                # a chain step's warning) is kept on the job: later messages,
+                # such as the verify step's, replace job.message.
+                if update.get("warning"):
+                    job.warning = update["message"]
                 if logger.isEnabledFor(logging.DEBUG):
                     last_log = self._last_progress_log_at.get(job_id, 0)
                     if now - last_log >= settings.debug_progress_interval:

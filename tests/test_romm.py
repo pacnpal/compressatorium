@@ -3990,7 +3990,7 @@ def test_a_mode_that_multiplies_its_own_output_is_not_automatable() -> None:
     assert [
         spec.mode for spec in registry.mode_specs()
         if not registry.mode_is_automatable(spec.mode)
-    ] == ["copy"]
+    ] == ["copy", "exodos_repack"]  # the second opts out (ModeSpec.automatable)
 
     # Refused in normalization too, for a rules blob written straight into the
     # database rather than through the editor.

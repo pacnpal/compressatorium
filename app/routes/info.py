@@ -38,6 +38,7 @@ from services.dolphin_tool import (
     DOLPHIN_CONVERTIBLE_EXTENSIONS,
     dolphin_tool_service,
 )
+from services.exodos import exodos_service
 from services.extract_xiso import (
     XISO_CONVERTIBLE_EXTENSIONS,
     XISO_VERIFY_EXTENSIONS,
@@ -1498,6 +1499,15 @@ _VERIFY_CONFIG: dict[str, _VerifyRouteConfig] = {
         bad_ext_detail="Not an XISO produced by this tool (.xiso.iso)",
         verify_error_prefix="Failed to verify XISO",
     ),
+    "exodos": _VerifyRouteConfig(
+        url_prefix="exodos-",
+        service=lambda: exodos_service,
+        sync_name="verify_exodos",
+        events_name="verify_exodos_events",
+        batch_name="verify_exodos_batch_events",
+        bad_ext_detail="Not a repacked eXoDOS game (.dosz)",
+        verify_error_prefix="Failed to verify eXoDOS repack",
+    ),
 }
 
 
@@ -2052,4 +2062,7 @@ verify_jwud, verify_jwud_events, verify_jwud_batch_events = register_verify_rout
 )
 verify_xiso, verify_xiso_events, verify_xiso_batch_events = register_verify_routes(
     router, registry.get("xiso"),
+)
+verify_exodos, verify_exodos_events, verify_exodos_batch_events = register_verify_routes(
+    router, registry.get("exodos"),
 )

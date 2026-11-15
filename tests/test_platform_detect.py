@@ -207,7 +207,7 @@ def test_every_alias_names_its_romm_slug(tmp_path, alias, slug):
 # RomM's slug differs from IGDB's in places (`psx`, not `ps`; `genesis`, not
 # `genesis-slash-megadrive`), and Detection answers in RomM's.
 ROMM_SLUGS = frozenset({
-    "3do", "3ds", "arcade", "atari2600", "atari7800", "c64", "dc", "gamegear",
+    "3do", "3ds", "arcade", "atari2600", "atari7800", "c64", "dc", "dos", "gamegear",
     "gb", "gba", "gbc", "genesis", "laseractive", "lynx", "n64", "nds",
     "neo-geo-cd", "neo-geo-pocket", "neo-geo-pocket-color", "nes",
     "new-nintendo-3ds", "ngc", "pc-fx", "philips-cd-i", "ps2", "ps3", "psp",

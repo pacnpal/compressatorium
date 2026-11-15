@@ -40,6 +40,7 @@ def _parity_env(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(convert_routes.settings, "chd_volumes", str(tmp_path))
     monkeypatch.setattr(convert_routes.settings, "data_mount_root", str(tmp_path))
     monkeypatch.setattr(convert_routes.settings, "max_queue_depth", 0)
+    monkeypatch.setattr(convert_routes.settings, "exodos_dos_dir", str(tmp_path / "!dos"))
     monkeypatch.setattr(convert_routes.job_manager, "get_queue_depth", lambda: 0)
 
     single_mock = AsyncMock(return_value="job")
@@ -126,6 +127,15 @@ def _cases():
         path.write_bytes(b"\0" * 0x10000 + b"MICROSOFT*XBOX*MEDIA" + b"\0" * 64)
         return str(path)
 
+    def exodos_game(tmp_path: Path, name: str) -> str:
+        """An eXoDOS-shaped game zip plus its template in the fixture's tree."""
+        template = tmp_path / "!dos" / "Abaron" / "dosbox.conf"
+        template.parent.mkdir(parents=True, exist_ok=True)
+        template.write_bytes(b"[autoexec]\r\nmount c .\\eXoDOS\\Abaron\r\n")
+        archive = tmp_path / name
+        with zipfile.ZipFile(archive, "w") as zf:
+            zf.writestr("Abaron/ABARON.EXE", b"exe")
+        return str(archive)
     def _sheet(tmp_path: Path, name: str, text: str) -> str:
         path = tmp_path / name
         path.write_text(text)
@@ -230,7 +240,28 @@ def _cases():
             DuplicateAction.SKIP,
             "accept",
         ),
+        (
+            "exodos_repack_game_zip_accept",
+            lambda t: exodos_game(t, "Abaron (1995).zip"),
+            ConversionMode.EXODOS_REPACK,
+            DuplicateAction.SKIP,
+            "accept",
+        ),
         # --- rejections / skips ---
+        (
+            "exodos_not_repackable_reject",  # EXODOS_NOT_REPACKABLE: a plain zip
+            lambda t: _make_zip(t, "Bundle.zip"),
+            ConversionMode.EXODOS_REPACK,
+            DuplicateAction.SKIP,
+            "reject",
+        ),
+        (
+            "exodos_bad_ext_reject",  # EXODOS_BAD_EXTENSION
+            lambda t: write(t, "Abaron.7z"),
+            ConversionMode.EXODOS_REPACK,
+            DuplicateAction.SKIP,
+            "reject",
+        ),
         (
             "xiso_not_xbox_reject",  # XISO_NOT_XBOX_IMAGE: right suffix, no XDVDFS
             lambda t: write(t, "game.iso"),
@@ -1105,8 +1136,11 @@ async def test_cancelling_during_that_probe_returns_now(monkeypatch) -> None:
         # ...and every other tool keeps the multi-file default.
         (("game_part1.wud", "game_part2.wud"), ConversionMode.JWUD_COMPRESS,
          convert_routes.SkipReason.SOURCE_NOT_INDEPENDENTLY_CONVERTIBLE),
+        # A file named .zip that is not an eXoDOS game zip.
+        (("Bundle.zip",), ConversionMode.EXODOS_REPACK,
+         convert_routes.SkipReason.EXODOS_NOT_REPACKABLE),
     ],
-    ids=["xiso_content_reason", "jwud_default_reason"],
+    ids=["xiso_content_reason", "jwud_default_reason", "exodos_content_reason"],
 )
 async def test_converts_path_rejection_names_the_tools_reason(
     parity_env, names, mode, reason,

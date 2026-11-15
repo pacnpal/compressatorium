@@ -107,6 +107,9 @@ jobs:
           # screenshot run never starts a job, so a no-op executable is enough to
           # keep the tool visible for the capture.
           export JWUDTOOL_PATH=/bin/true
+          # The eXoDOS tool hides itself without a template tree; the fixture
+          # ships a synthetic one.
+          export EXODOS_DOS_DIR="$RUNNER_TEMP/fixture/eXoDOS/!dos"
           mkdir -p "$CHD_DATA_DIR" "$CHD_TEMP_DIR"
           python -m uvicorn main:app --host 127.0.0.1 --port 8099 > "$RUNNER_TEMP/server.log" 2>&1 &
           for i in $(seq 1 30); do

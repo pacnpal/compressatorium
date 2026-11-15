@@ -98,6 +98,8 @@ _ALIASES: dict[str, tuple[str, ...]] = {
     "3do": ("3do-interactive-multiplayer",),
     "laseractive": (),
     "arcade": ("mame", "fbneo", "naomi", "naomi2", "naomigd", "atomiswave"),
+    # PC
+    "dos": ("ms-dos", "msdos", "pc-dos"),
     # Microsoft
     "xbox": ("microsoft-xbox",),
     "xbox360": ("xbox-360",),

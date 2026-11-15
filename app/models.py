@@ -59,6 +59,7 @@ class ConversionMode(str, Enum):
     NKIT_RESTORE = "nkit_restore"
     NKIT_TO_RVZ = "nkit_to_rvz"
     XISO_REWRITE = "xiso_rewrite"
+    EXODOS_REPACK = "exodos_repack"
     METADATA_SCAN = "metadata_scan"
     DAT_MATCH = "dat_match"
     # A check Rule's run (#305): Verify over the Images it picked. An external

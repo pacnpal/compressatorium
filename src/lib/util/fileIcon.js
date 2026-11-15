@@ -35,6 +35,7 @@ export const TOOL_MEDIA = {
   z3ds: 'game', // 3DS ROMs
   nsz: 'game', // Switch dumps
   romz: 'game', // handheld ROMs (.7z/.zip outputs handled as archives below)
+  exodos: 'game', // DOS games repacked for RomM (.dosz; the .zip source is an archive)
 };
 
 // Loose archive containers get the archive glyph even when they arrive as a

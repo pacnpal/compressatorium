@@ -90,6 +90,12 @@ class ModeSpec:
     # createcd reads as a track sheet, but a platform-narrowed manual panel
     # must keep landing a PS2 catalog on createdvd (see chdman.py).
     auto_platform_slugs: frozenset[str] = frozenset()
+    # Whether an unattended Rule may run this mode at all. True for every mode
+    # whose only question is termination, which the registry derives
+    # (`mode_is_automatable`). False opts a mode out by policy: it is meant to
+    # be run by hand (the eXoDOS repack writes a second, playable copy of every
+    # game beside its Source, which a Rule over a RomM folder would multiply).
+    automatable: bool = True
 
 
 @dataclass(frozen=True)
@@ -151,3 +157,5 @@ class ChainSpec:
     reads_extensions: frozenset[str] = frozenset()
     auto_target: bool = True
     auto_platform_slugs: frozenset[str] = frozenset()
+    # Structural parity with ModeSpec.automatable.
+    automatable: bool = True

@@ -542,6 +542,16 @@ export const api = {
     return fetchJson(buildApiUrl('/xiso-verify', params), undefined, 'Failed to verify XISO');
   },
 
+  verifyExodos(path, { onProgress } = {}) {
+    const params = new URLSearchParams({ path });
+    if (onProgress) {
+      return verifyEventSource(buildApiUrl('/exodos-verify/events', params), onProgress, {
+        failureFallback: 'eXoDOS repack verification failed',
+      });
+    }
+    return fetchJson(buildApiUrl('/exodos-verify', params), undefined, 'Failed to verify eXoDOS repack');
+  },
+
   getVerifiedCHDs: () =>
     fetchJson(`${API_BASE}/verified`, undefined, 'Failed to fetch check results'),
 
@@ -588,6 +598,10 @@ export const api = {
 
   verifyBatchXiso(paths, opts) {
     return runBatchVerify(`${API_BASE}/xiso-verify-batch/events`, paths, opts);
+  },
+
+  verifyBatchExodos(paths, opts) {
+    return runBatchVerify(`${API_BASE}/exodos-verify-batch/events`, paths, opts);
   },
 
   // ─── CHD metadata cache ───────────────────────────────────────────────

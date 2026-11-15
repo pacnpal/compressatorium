@@ -308,6 +308,8 @@ class SkipReason(Enum):
     JWUD_BAD_EXTENSION = "jwud_bad_extension"
     XISO_BAD_EXTENSION = "xiso_bad_extension"
     XISO_NOT_XBOX_IMAGE = "xiso_not_xbox_image"
+    EXODOS_BAD_EXTENSION = "exodos_bad_extension"
+    EXODOS_NOT_REPACKABLE = "exodos_not_repackable"
     SOURCE_NOT_INDEPENDENTLY_CONVERTIBLE = "source_not_independently_convertible"
     DOLPHIN_SAME_PATH = "dolphin_same_path"
     CHAIN_BAD_EXTENSION = "chain_bad_extension"
@@ -408,6 +410,15 @@ _SKIP_HTTP: dict[SkipReason, tuple[int, str]] = {
         "File is not an untrimmed Xbox / Xbox 360 disc image (no XDVDFS volume "
         "was found, or it is already an optimized XISO)",
     ),
+    SkipReason.EXODOS_BAD_EXTENSION: (
+        400,
+        "exodos_repack requires an eXoDOS game zip (.zip)",
+    ),
+    SkipReason.EXODOS_NOT_REPACKABLE: (
+        400,
+        "File is not an eXoDOS game zip this tool can repack: it must hold one "
+        "game folder whose dosbox.conf template is in EXODOS_DOS_DIR",
+    ),
     SkipReason.SOURCE_NOT_INDEPENDENTLY_CONVERTIBLE: (
         400,
         "File is one part of a multi-file source and cannot be converted on its "
@@ -466,6 +477,7 @@ _BAD_EXTENSION_REASON: dict[str, SkipReason] = {
     "nkit": SkipReason.NKIT_BAD_EXTENSION,
     "jwud": SkipReason.JWUD_BAD_EXTENSION,
     "xiso": SkipReason.XISO_BAD_EXTENSION,
+    "exodos": SkipReason.EXODOS_BAD_EXTENSION,
 }
 
 # Why a file a tool claims by extension was still rejected by its per-file
@@ -474,6 +486,7 @@ _BAD_EXTENSION_REASON: dict[str, SkipReason] = {
 # names its own reason, so the user is told what is actually wrong.
 _NOT_CONVERTIBLE_REASON: dict[str, SkipReason] = {
     "xiso": SkipReason.XISO_NOT_XBOX_IMAGE,
+    "exodos": SkipReason.EXODOS_NOT_REPACKABLE,
 }
 
 

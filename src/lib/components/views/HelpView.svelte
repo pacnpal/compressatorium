@@ -73,6 +73,12 @@
       blurb: 'Full Xbox and Xbox 360 disc images trimmed to XISO, using extract-xiso. A Redump-style disc image carries a video partition, a security region and a game partition padded out to the size of the disc; an XISO keeps only the game\'s files, laid out contiguously, which is what xemu, Xenia (and its Android ports) and modded consoles load. Expect it to be 20-40% smaller. Every Xbox image is an .iso, like PSP and PS2 images, so the app looks inside each file for the Xbox filesystem and only offers this tool when it is there. The trimmed image is written as Game.xiso.iso beside the source; the original is only ever read, never renamed or deleted, and there is no delete-after-verify option, because a trim discards partitions nothing can rebuild. Verify checks that every file in the XISO lies inside it and that extract-xiso can list it — enough to catch a truncated copy, though XISO has no checksums to compare against the source. Info reads the filesystem directly: console, disc layout, file count, and how much of the image is game data.',
       io: '.iso  →  .xiso.iso',
     },
+    {
+      glyph: 'DOS',
+      name: 'eXoDOS',
+      blurb: 'eXoDOS game zips repacked for RomM\'s in-browser DOS player (DOSBox Pure). eXoDOS keeps each game\'s DOSBox setup in a separate !dos folder, with mount paths that point into the whole collection, so a game zip copied into RomM alone does not start. The repack moves the game to the root of a new file and writes its dosbox.conf there with those paths rewritten, which is where DOSBox Pure looks for one. Only mount, imgmount and boot lines change. The result is Game.dosz beside the source (a zip under the name DOSBox Pure documents for one); the original is only ever read. If the config still points outside the game after the rewrite, the job says so, because that game will probably not start. Set EXODOS_DOS_DIR to your eXoDOS !dos folder (inside a volume) to turn the tool on, and in RomM\'s config.yml set emulatorjs.settings.dosbox_pure.dosbox_pure_conf: inside (and leave emulatorjs.disable_batch_bootup at false) so DOSBox Pure can load the file\'s dosbox.conf, which is the file\'s first entry. Whether a repacked game boots in RomM\'s player (EmulatorJS 4.2.3 or the nightly) has not been tested yet.',
+      io: '.zip  →  .dosz',
+    },
   ];
 
   // Per-tool mode reference. Generated from the registry (one section per

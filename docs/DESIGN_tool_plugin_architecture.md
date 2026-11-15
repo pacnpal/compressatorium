@@ -3048,6 +3048,16 @@ Precedence is fixed and never guesses:
    is noted through `_note_unknown`). `is_within_configured_volumes` is that answer with None
    counted as outside; a caller that must not mistake a stalled mount for
    "outside" (the `.m3u` Referrer, §3.3.15) uses the three-way form.
+   A containment check proves where a path pointed when it was checked, not
+   where a later `open()` lands: anyone who can write the Volume can swap a
+   component for a symlink in between. A file whose bytes a tool copies into
+   its product is therefore read with `utils.path_utils.read_beneath(root,
+   relative, max_bytes=)`, which opens every component, of the root from `/`
+   and then of the relative path, with `O_NOFOLLOW` against the directory
+   descriptor above it (Python exposes no `openat2`, and the walk also runs on
+   macOS), requires a regular file (`fstat`), and reads only from that one
+   descriptor. Any symlink, `..`, non-regular file or oversized file is
+   refused. The eXoDOS repack reads its templates this way (§3.3.19).
 
 Track sheets are read one way everywhere, through `utils.sheet_text`: as UTF-8
 (a BOM stripped), as cp1252 when they are not valid UTF-8, and as Latin-1 last,
@@ -4560,6 +4570,116 @@ skips a job only when `job_manager.in_ledger(mode)` says so. Metadata scans and
 DAT matches keep their rows. `CHECK` also sets `started_by_hand=False`, so a
 failed run is not #293's "A job you started failed"
 (`notifications._started_by_hand`).
+### 3.3.19 Editing a zip (`services/archive_edit.py`) and the eXoDOS repack
+
+`rewrite_zip(src, dst, *, rename, add, is_cancelled, on_progress)` is the shared
+way to produce an edited copy of a zip. The first user is the eXoDOS repack
+(`exodos_repack`, #323); the planned Patch bench is the next.
+
+- **Through zipfile's public API.** Each member is read (zipfile checks its CRC
+  at the end of the read) and written back with its own compression method,
+  timestamp and attributes. Member content is identical; compressed bytes may
+  differ. A corrupt Source member fails the copy instead of reaching the product.
+- **`rename`** maps a member name to its new name, or to `None` to drop it.
+  **`add`** holds new members, written *first* (a reader that takes the first
+  file of a kind finds them) and stamped `added_date_time` (the zip epoch by
+  default), so a product does not depend on the clock. An added name replaces
+  any copied member that would have taken it. Two copied members renamed onto
+  one name raise `ValueError`.
+- **Nothing that looks finished appears early.** The archive is written to a
+  `mkstemp` file named `.<dst name>.partial-*.tmp` in the destination
+  directory (hidden, and ending in `.tmp`, which RomM's scanner skips by
+  default, so a partial file is never listed as a game), fsynced, passed to
+  the caller's optional `check(temp_path)`, given the Source's permission
+  bits without setuid, setgid or sticky (`mkstemp` makes it `0600`, which a
+  player running as another user could not read; `0o666 & ~umask` if the
+  Source cannot be stat-ed), then placed with
+  `utils.path_utils.place_without_clobbering`, the atomic no-replace move, and
+  the directory is fsynced. Any failure, including
+  `ConversionCancelled` from `is_cancelled`, unlinks the temporary file. An
+  existing file at `dst` raises `FileExistsError` and is never replaced; the job
+  pipeline's authorized-overwrite sweep clears it first.
+
+`archive_service.member_segments(name)` is the public face of the extract path's
+member-name rules (no backslashes, absolute paths, `..`, empty segments or drive
+letters), for callers that read archives themselves.
+
+**The eXoDOS repack** (`services/exodos.py`, `tools/exodos.py`) is a pure-Python
+tool: it registers with an empty binary path and reports no pids.
+
+- **Gating.** `EXODOS_DOS_DIR` is the only source of the template tree. It must
+  be a directory inside a configured Volume; otherwise `is_ready` is false (run
+  through `run_detached`, since it stats a possibly dead mount) and the tool is
+  hidden. Checking a product reads only the `.dosz`, so `verify_is_ready` is
+  always true: `compressatorium verify` and Verify work without the install.
+- **Content-refined source.** `.zip` is romz's archive extension too, so
+  `converts_path` reads the zip's directory: every name passes
+  `member_segments` and `enforce_archive_limits`, every member sits in one game
+  folder (a loose root file refuses it), and `<tree>/<game>/dosbox.conf`
+  is read through `read_beneath` (no symlink on any component, a regular
+  file, one descriptor). The answer is cached per (path, size, mtime), and
+  `convert` reads the template again the same way rather than trusting the
+  earlier check, so a template swapped for a link in between is refused and
+  the job fails with the Source untouched. `_NOT_CONVERTIBLE_REASON["exodos"]` names the plan-time reason. The
+  frontend descriptor is *not* `contentRefined`: a `.zip` is an archive row,
+  and the listing never annotates archive rows with `convertible_by`, so the
+  content gate would refuse every zip. Any `.zip` can be ticked in this mode;
+  `plan_job` skips the ones `converts_path` refuses, with the reason. A
+  registry test pins that no content-refined tool takes an archive input.
+- **The product.** DOSBox Pure mounts the loaded file as C: and, with the
+  `dosbox_pure_conf=inside` core option, loads `C:\DOSBOX.CONF`. So the members
+  are re-rooted (`<game>/x` becomes `x`) and the template is added as
+  `dosbox.conf` at the root, as the first entry (RomM's default EmulatorJS,
+  4.2.3, extracts the file and hands the core the first file with an extension
+  it lists, which for DOSBox Pure is `.conf`; the nightly loads a generated
+  `BOOTUP.BAT` and relies on `dosbox_pure_conf=inside` instead), its
+  `mount`/`imgmount`/`boot` lines rewritten by `rewrite_conf` (bytes in, bytes
+  out; CRLF and encoding kept). The product is
+  `<name>.dosz` beside the Source, the extension DOSBox Pure documents as a zip,
+  so it can never share its Source's path.
+- **Warnings.** Lines that still point into `.\eXoDOS\` after the rewrite,
+  folder mounts on a drive other than C:, and a C: mount of anything but the
+  file root (`mount c .\HD`: C: is already the file, so the game's subfolder
+  is never mounted) end the job with a `warning`
+  update, the same shape a chain uses for a caveat. `JobManager._process_job`
+  copies any update carrying `warning` onto `ConversionJob.warning` (the field
+  #306 adds for a kept Source), so the caveat outlives later messages such as
+  the verify step's; the job row shows it under the output path
+  (`src/lib/util/jobDetail.js`).
+- **A volume that stops answering.** The two reads before the rewrite (the
+  zip's directory in `inspect`, the template) go through
+  `run_detached_within_stall_bound`, like xiso's header reads: Cancel returns at
+  once (`ReadCancelled` becomes `ConversionCancelled`) and a read with no answer
+  past the bound fails the job. The rewrite itself runs through `run_detached`
+  (a daemon thread, reported to any `collect_abandonment()` sink if it is left
+  behind), never the shared pool. Cancel returns at once: `run_detached` raises
+  `ReadCancelled` the moment the event fires. A worker that stops polling its
+  `is_cancelled` (it polls between every chunk it copies or checks) for
+  `conversion_stall_bound()` seconds, the same `CHD_PROGRESS_TIMEOUT` bound the
+  subprocess phase uses, is given up on and the job fails. Either way the job
+  loop returns, so the concurrency slot is freed while the worker is still
+  stuck, and an `abandoned` flag makes `is_cancelled` true: `rewrite_zip`
+  checks it as its last step before placement, so when the stuck syscall
+  finally returns the worker removes its hidden temp file and publishes nothing.
+- **Check.** `verify_stream` tests every CRC, the member names and limits, and
+  the root `dosbox.conf`. It is served by the shared verify routes
+  (`_VERIFY_CONFIG["exodos"]`, `/api/exodos-verify`), and `convert` passes the
+  same check to `rewrite_zip`, so every job checks its own product before it
+  is placed; a failure fails the job and leaves no output. The frontend
+  descriptor has no `getInfo`, and `registry.infoToolForRow` (the row menu's
+  Info rule) only resolves to a tool that has one, so `.dosz` rows offer Verify
+  and no Info. The mode sets `supports_verify` without
+  `supports_delete_on_verify` (listed in the registry test's declined set): the
+  product differs from its Source by design, and the Source is the operator's
+  eXoDOS install.
+- **Never automatic.** The mode sets `automatable=False` (Rules refuse it)
+  and `auto_target=False` (§3.3.14: Auto never picks it, so a `dos` folder's
+  zips are skipped with a reason by the convert panel's Auto choice and by
+  `compressatorium convert --auto`). `dos` is in Platform detection's alias
+  table like every other Platform a tool declares.
+- **Extending.** The pack-specific facts (template folder, pack folder name, conf
+  name, Platform slug) live in a `CollectionProfile`. eXoWin3x and the other eXo
+  packs are a new profile, not new logic. Only eXoDOS ships.
 
 ### 3.4 `registry.py`
 
@@ -4727,6 +4847,14 @@ database: `normalize_rule` drops such a rule, and the editor omits the mode
 (served through `/romm/status`'s `automatable_modes`, since the derivation
 needs the tool's `output_path` and cannot be mirrored in JS). Extract modes are
 a *separate*, UI-side exclusion — they terminate, and rules using them work.
+
+**A mode can also opt out by policy.** `ModeSpec.automatable` (default `True`,
+mirrored on `ChainSpec`) set `False` makes `mode_is_automatable` answer no
+before the termination test runs, so the same two enforcement points refuse
+it. The eXoDOS repack (`exodos_repack`) is the one mode that sets it: it is
+manual only, because a Rule over RomM's `dos` folder would write a second copy
+of every game beside it, and the Rule's verify step would hide the conf warning
+nobody is there to read.
 
 #### Asking a tool whether it can run (`registry.tool_is_ready`)
 

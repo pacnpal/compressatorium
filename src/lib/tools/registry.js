@@ -104,6 +104,11 @@ const NKIT_VERIFY_EXTS = [];
 const XISO_COMPRESS_EXTS = ['.iso'];
 const XISO_VERIFY_EXTS = ['.xiso.iso'];
 const XISO_SOURCE_EXTS = [...XISO_COMPRESS_EXTS, ...XISO_VERIFY_EXTS];
+// eXoDOS repack: an eXoDOS game zip in, a DOSBox Pure zip (.dosz) out. `.zip`
+// is also romz's archive extension; the backend reads each zip's directory in
+// plan_job and skips one that is not an eXoDOS game, with the reason.
+const EXODOS_INPUT_EXTS = ['.zip'];
+const EXODOS_VERIFY_EXTS = ['.dosz'];
 
 /**
  * @typedef {Object} ModeEntry
@@ -715,12 +720,62 @@ export const TOOLS = [
       return path;
     },
   },
+  {
+    id: 'exodos',
+    label: 'eXoDOS',
+    hint: 'Repack eXoDOS game zips for RomM\'s in-browser DOS player (DOSBox Pure).',
+    // /api/exodos-verify: every member's CRC, the member names and limits, and
+    // dosbox.conf at the root. Every repack also runs it before keeping its
+    // output.
+    verifyPrefix: 'exodos',
+    sourceExts: EXODOS_INPUT_EXTS,
+    verifyExts: EXODOS_VERIFY_EXTS,
+    // Not contentRefined, unlike xiso: a .zip is an archive row, and the
+    // listing never puts a convertible_by claim on archive rows, so the
+    // content gate would refuse every zip. The extension gate lets any .zip be
+    // ticked, and plan_job's converts_path skips a zip that is not one game
+    // folder with a template in EXODOS_DOS_DIR, with the reason.
+    modeGroups: ['exodos'],
+    groups: { exodos: 'eXoDOS → RomM' },
+    defaultMode: 'exodos_repack',
+    glyph: 'DOS',
+    accent: 'var(--badge-romz)',
+    compressionCodecs: [],
+    compressionStyle: 'none',
+    modes: [
+      { mode: 'exodos_repack', kind: 'compress', label: 'Repack for RomM', group: 'exodos',
+        outputExt: '.dosz', inputExtensions: EXODOS_INPUT_EXTS,
+        supportsCompression: false, supportsCompressionLevel: false,
+        // Verifiable but never deletable: the product differs from its Source
+        // by design, and the Source is the user's eXoDOS install. Mirrors the
+        // backend ModeSpec.
+        supportsDeleteOnVerify: false, supportsVerify: true,
+        // The repack needs the zip itself and the template tree beside it.
+        allowsArchiveInput: false },
+    ],
+    // No Info: the product is a zip with a known layout, so there is nothing
+    // beyond name and size to show. infoToolForRow then offers no Info action.
+    getInfo: undefined,
+    verify: (path, opts) => api.verifyExodos(path, opts),
+    verifyBatch: (paths, opts) => api.verifyBatchExodos(paths, opts),
+    // `Game (1995).zip` -> `Game (1995).dosz`; a product maps to itself.
+    productPath: (path) => {
+      if (/\.dosz$/i.test(path)) return path;
+      if (/\.zip$/i.test(path)) return path.replace(/\.zip$/i, '.dosz');
+      return path;
+    },
+  },
 ];
 
 const byId = new Map(TOOLS.map((t) => [t.id, t]));
 const byMode = new Map(
   TOOLS.flatMap((t) => t.modes.map((m) => [m.mode, { tool: t, spec: m }])),
 );
+
+/** Whether a tool can answer Info (its `getInfo` binding is set). */
+function hasInfoBinding(tool) {
+  return typeof tool?.getInfo === 'function';
+}
 
 function endsWithAny(path, exts) {
   return matchedExtLength(path, exts) > 0;
@@ -826,6 +881,22 @@ export const registry = {
       return null;
     }
     return tool;
+  },
+
+  /**
+   * The tool whose Info a file row's Info action calls, or null for none.
+   * The row's verify owner wins (it reads the product it made), then, on a
+   * plain file row, the first source-claiming tool. Either way only a tool
+   * with a `getInfo` binding qualifies, so a verifiable product with nothing
+   * to describe (the eXoDOS `.dosz`) gets no Info action rather than one that
+   * throws. Archive rows skip the source fallback: romz lists `.7z`/`.zip` as
+   * sources, and archive Info belongs to the backend-gated verify owner.
+   */
+  infoToolForRow: (path, verifiableBy, isArchive) => {
+    const owner = registry.verifyToolForPath(path, verifiableBy);
+    if (owner) return hasInfoBinding(owner) ? owner : null;
+    if (isArchive || !path || typeof path !== 'string') return null;
+    return sourceToolsBySpecificity(path).find(hasInfoBinding) ?? null;
   },
 
   /** Tools whose source extensions match the given path (convertible sources),

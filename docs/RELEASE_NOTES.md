@@ -4,6 +4,27 @@
 
 ### Added
 
+- **eXoDOS repack for RomM** (#323). A new **eXoDOS** tool turns an eXoDOS game
+  zip into a `.dosz` laid out for RomM's in-browser DOS player (DOSBox Pure),
+  with the game's own `dosbox.conf` as the file's first entry. The game moves
+  to the root of the file, and its `dosbox.conf` from eXoDOS's `!dos` folder
+  is written there with the mount paths rewritten.
+  - Manual only: run it from the file browser. Rules never offer it and refuse
+    a stored Rule that names it.
+  - Set `EXODOS_DOS_DIR` to your `!dos` folder, inside a volume, to turn it on.
+    In RomM's `config.yml`, set
+    `emulatorjs.settings.dosbox_pure.dosbox_pure_conf: inside` and leave
+    `emulatorjs.disable_batch_bootup` at `false`. Booting real games in RomM
+    is still to be confirmed.
+  - Only `mount`, `imgmount` and `boot` lines change; line endings and encoding
+    are kept. A game whose config still points outside itself, or mounts a
+    folder on a drive other than C:, finishes with a warning, which stays on
+    the finished job's row.
+  - The output is written beside the source as `Game.dosz`; the source is only
+    read, and delete-source is not offered. Every repack checks every CRC and
+    that `dosbox.conf` is at the root before keeping its output, and Verify on
+    a `.dosz` runs the same check.
+  - Behaviour modelled on eXo2romm (Unlicense); no code is shared.
 - **Check Rules** (#305). A Platform in the Rules view (folder Libraries and
   RomM) can have a check Rule beside its conversion Rule: tick **Check these
   Images are Intact** and set a nightly budget in GB, a window and weekdays.
