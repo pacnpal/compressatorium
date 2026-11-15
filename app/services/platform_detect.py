@@ -164,6 +164,14 @@ def platform_name(slug: str | None) -> str | None:
     return _NAMES.get(slug, slug)
 
 
+def platforms() -> list[dict[str, str]]:
+    """Every Platform with a display name, sorted by name (the mapping picker)."""
+    return sorted(
+        ({"slug": slug, "name": name} for slug, name in _NAMES.items()),
+        key=lambda p: p["name"].lower(),
+    )
+
+
 def known_slug(name: str | None) -> str | None:
     """The Platform slug *name* stands for, or None when no Platform has it.
 

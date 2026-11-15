@@ -426,3 +426,93 @@ async def test_removing_a_library_drops_its_findings_and_mappings(tree: Path) ->
 
     assert _open() == []
     assert platform_mappings.mappings() == []
+
+
+# ----------------------------------------------------------------------
+# the API
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_the_findings_route_lists_open_findings_with_their_library(tree: Path) -> None:
+    from routes import findings as routes
+
+    library = await _register(tree)
+    await routes.check_findings()
+
+    listed = await routes.list_findings()
+
+    rows = {r["image_key"]: r for r in listed["findings"]}
+    misfiled = rows["ps2/Misfiled.iso"]
+    assert misfiled["library_name"] == library["name"]
+    assert misfiled["kind"] == "platform_conflict"
+    # What the actions need: the folder to open, and the folder to map.
+    assert misfiled["folder"] == str(tree / "ps2")
+    assert misfiled["first_seen"] and misfiled["last_seen"]
+    assert listed["dismissed"] == 0
+
+
+@pytest.mark.asyncio
+async def test_dismissing_through_the_route_hides_the_finding(tree: Path) -> None:
+    from fastapi import HTTPException
+    from routes import findings as routes
+
+    await _register(tree)
+    await routes.check_findings()
+    first = (await routes.list_findings())["findings"][0]
+
+    await routes.dismiss_finding(first["id"])
+
+    listed = await routes.list_findings()
+    assert first["id"] not in [r["id"] for r in listed["findings"]]
+    assert listed["dismissed"] == 1
+    with pytest.raises(HTTPException) as err:
+        await routes.dismiss_finding(99999)
+    assert err.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_setting_a_mapping_through_the_route_updates_the_findings(tree: Path) -> None:
+    from routes import findings as routes
+
+    _blank(tree / "misc" / "Loose.iso")
+    library = await _register(tree)
+    await routes.check_findings()
+    assert "misc/Loose.iso" in {
+        r["image_key"] for r in (await routes.list_findings())["findings"]
+    }
+
+    saved = await routes.set_platform_mapping(
+        routes.MappingRequest(path=str(tree / "misc"), platform="psp"),
+    )
+
+    assert (saved["library_id"], saved["folder"], saved["platform"]) == (
+        library["id"], "misc", "psp",
+    )
+    assert "misc/Loose.iso" not in {
+        r["image_key"] for r in (await routes.list_findings())["findings"]
+    }
+    listed = await routes.list_platform_mappings()
+    assert [(m["folder"], m["platform"]) for m in listed] == [("misc", "psp")]
+
+
+@pytest.mark.asyncio
+async def test_a_mapping_outside_a_library_is_refused_by_the_route(db: Path) -> None:
+    from fastapi import HTTPException
+    from routes import findings as routes
+
+    (db / "loose").mkdir()
+    with pytest.raises(HTTPException) as err:
+        await routes.set_platform_mapping(
+            routes.MappingRequest(path=str(db / "loose"), platform="psp"),
+        )
+    assert err.value.status_code == 404
+
+
+def test_the_platform_picker_lists_known_platforms() -> None:
+    from routes import findings as routes
+
+    listed = routes.list_platforms()
+
+    assert {"slug": "psp", "name": "PlayStation Portable"} in listed
+    assert len({p["slug"] for p in listed}) == len(listed)
