@@ -21,8 +21,8 @@
   can't be read, the Source is kept and the job says why.
   - **Container check only (faster, weaker)** in the convert panel skips the
     comparison and deletes once the output passes its own container check.
-  - Tools other than Dolphin and chdman (below) keep the container check for
-    now. A job that keeps its Source reads nothing extra.
+  - The other tools followed (#300, #301, below). A job that keeps its Source
+    reads nothing extra.
   - The job, the Ledger row, Verify results and the file badge now say **Intact** (passed its
     container check) or **Round-tripped** (decoded to the same content as its
     Source) instead of "verified". Existing checked files show as Intact.
@@ -62,6 +62,25 @@
   - **RomM Rules:** delete-source Rules on Create CD and Create DVD now
     Round-trip too unless the Rule is set to Container check only, so their
     sweeps need the scratch space and take longer.
+- **Round-trip now covers every tool that has delete-source** (#301). Before a
+  delete-source job removes its Source, the output is decoded and compared with
+  it: CSO/ZSO/DAX (maxcso), 3DS (z3ds) and WUX (JWUDTool) are decoded to a
+  hashing stream with no temp file; an NSZ is compared through the NSP SHA256
+  that `nsz -V` rebuilds; a 7z/zip ROM archive's members (name, size, CRC) must
+  match the ROM exactly; CSO/ZSO/DAX to CHD compares the decoded disc with the
+  CHD. On a mismatch the Source is kept. Container check only skips it, as
+  before. PS3 folder to ISO and the XISO trim still offer no delete-source.
+  - **Behaviour change:** these delete-source jobs read the Source and the
+    output once more, so they take longer, RomM Rule sweeps included.
+  - An XCZ is decompressed to the scratch volume to be compared, so an XCI job
+    needs about the XCI's size free there, or it keeps the Source.
+  - Kept with "content differs": NSPs whose delta fragments nsz drops (update
+    NSPs, unless compressed with `--keep`), and XCIs nsz does not rebuild byte
+    for byte. Use Container check only for those.
+  - A large ZSO decodes slowly (LZ4 is decoded in Python) and may hit the
+    verify time limit, which keeps the Source.
+  - chdman's Create raw, Create HD, Create LaserDisc and Copy still use the
+    container check only.
 - **chdman verify is stricter** (#300). chdman reports a data SHA1 mismatch, and
   a CHD with no checksum, while still exiting with success. Verify now passes a
   CHD only when chdman says the raw SHA1 matched, and fails on any error line.

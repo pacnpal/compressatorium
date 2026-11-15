@@ -2314,8 +2314,8 @@ async def content_digest(self, path, *, cancel_event=None) -> ContentDigest | No
 - `ModeSpec.supports_round_trip` (mirrored as `supportsRoundTrip` in
   `registry.js`, parity-tested) says the mode's tool has a digest for both its
   inputs and its output. `registry.mode_supports_round_trip(mode)` reads it.
-  `ChainSpec` carries it as `False` until chains compare the first step's
-  decoded Source with the final output (#301).
+  `ChainSpec` carries it too: a chain that sets it compares the first step's
+  decoded Source with the final output (see "Chains" below).
 
 **Where it runs.** `JobManager._delete_check` is the one decision point. It runs
 after the container check passes and returns `(check_passed,
@@ -2347,6 +2347,12 @@ in `_verifying` so the stall reporter treats it like the container check.
 | --- | --- | --- |
 | dolphin | `.iso`: SHA1 of the file (detached read, no subprocess). `.rvz`/`.wia`/`.gcz`/`.wbfs`: `dolphin-tool verify --algorithm sha1` | same rule by extension |
 | chdman (`createcd`, `createdvd`) | `.iso`/`.bin`: SHA1 of the file. `.cue`/`.gdi`: SHA1 of the track files the sheet names, read end to end in sheet order, each file once, plus the sheet's track table | `.chd`: `chdman info`, then by metadata tag. DVD (`DVD `) or hard disk (`GDDD`): the `Data SHA1` line. CD (`CHCD`/`CHTR`/`CHT2`): `chdman extractcd` to a `.cue` in a scratch dir, then the sheet rule. GD-ROM (`CHGT`/`CHGD`): the same, extracted as a `.gdi` |
+| maxcso (`cso_compress`, `cso2_compress`, `zso_compress`, `dax_compress`) | `.iso`: SHA1 of the file | `.cso`/`.zso`/`.dax`: decoded in Python by `utils.cso_decode` and hashed as it streams (no temp file) |
+| z3ds (`z3ds_compress`) | the ROM: SHA1 of the file | the payload after the Z3DS header and metadata, fed to `zstd -dc`; stdout hashed by `SubprocessRunner.hash_stdout` (no temp file) |
+| jwud (`jwud_compress`) | `.wud`: SHA1 of the file, or of every part of a split set in order | `.wux`: the sector table decoded in Python by `jwudtool.iter_wux_image` and hashed as it streams (no temp file) |
+| nsz (`nsz_compress`) | `.nsp`/`.xci`: SHA256 of the file | `.nsz`: the `[NSP SHA256]` line `nsz -V` prints for the NSP it rebuilds in a hashing stream. `.xcz`: `nsz -D` into a headroom-checked scratch dir, then SHA256 of the `.xci` |
+| romz (`romz_7z`, `romz_zip`) | the ROM: its basename, size and CRC32, as the one member it is archived as | `.7z`/`.zip`: every member's name, size and stored CRC32, read from the listing (`archive_members.read_member_crcs`) |
+| chain (`cso_to_chd`) | the first step's tool (maxcso: the decoded CSO) | the final step's tool (chdman: the CHD's data SHA1) |
 
 chdman's digest kind is `image_data_sha1`. Its value is the SHA1 of the image's
 bytes as files on disk, track files laid end to end in sheet order, followed by
@@ -2417,8 +2423,90 @@ Redump-style GD-ROM cue/bin Source (a cue table can never equal chdman's gdi
 table), and a cue with `CDI/2352` tracks (MAME stores them as `MODE2_RAW` and
 extracts `MODE2/2352`, and track type tokens are compared as written).
 
-The other tools return `None` today and their modes keep the container check;
-#301 adds rows here. What the check guarantees
+**The rest of the tools (#301).** After #301 every mode with delete-source
+Round-trips except chdman's `createraw`, `createhd`, `createld` and `copy`
+(above). PS3 folder to ISO (`folder_to_iso`) and the XISO trim
+(`xiso_rewrite`) offer no delete-source at all, and `nkit_to_rvz` still does
+not (its comment says why), so none of them needs a digest. Kinds:
+maxcso, z3ds and jwud use chdman's `image_data_sha1` (now
+`tools.base.IMAGE_DATA_SHA1_KIND`): the SHA1 of the image's bytes. nsz uses
+`switch_image_sha256`, romz `rom_members_crc32` (SHA1 of the sorted
+`name, size, crc` lines, so a missing, extra or renamed member, or another
+size or CRC, gives another value). romz trusts the CRCs the archive stores
+because the container check before it (`7z t`) decompresses every member and
+checks it against that CRC.
+
+**Streaming with no temp file.** Two shared seams hash a decoded image as it
+is produced:
+
+- `services.stream_digest.hash_stream(produce, algorithm=, cancel_event=)` runs
+  a Python producer (`produce(stop) -> Iterable[bytes]`) on a detached thread
+  (`run_detached`, never a pooled worker) and hashes what it yields. A cancel
+  raises `ReadCancelled` at once, and on that, an outer deadline or any other
+  exit it sets `stop`, which the producer checks between chunks, so the thread
+  ends instead of decoding the rest of the image. `content_digest_of` wraps it
+  into a `ContentDigest` and turns a decoder's `ValueError`/`OSError` into
+  `ContentDigestUnavailable`. `file_chunks(paths)` is the producer for a plain
+  file or a split set. Algorithms: `sha1`, `sha256`, `crc32`.
+- `SubprocessRunner.hash_stdout(cmd, stdin_path=, stdin_offset=, timeout=,
+  cancel_event=)` runs a decoder child and hashes its stdout as it arrives,
+  optionally feeding stdin from a region of a file (read on detached threads).
+  PID-tracked, command-wrapper nice/ionice, bounded by `timeout` and stopped
+  through the `reap` ladder on a cancel (`ReadCancelled`), a timeout or a
+  non-zero exit (`RuntimeError` with the stderr tail).
+
+Both run under the same outer bound as every digest: `round_trip._digest`
+wraps the call in `tool.verify_timeout(path)`.
+
+Why each tool decodes where it does: maxcso writes every block at an explicit
+file offset (libuv `fs_write` with `dstPos_`), which a pipe refuses, so it
+cannot decode to stdout; `utils.cso_decode` reads the formats as maxcso's
+`README_CSO.md` and `src/input.cpp` define them (CSO v1: raw deflate, high bit
+uncompressed; CSO v2: a block at least the block size long is uncompressed,
+else the high bit picks LZ4 over deflate; ZSO: LZ4, high bit uncompressed; DAX:
+zlib frames of 8 KiB, NC areas uncompressed). LZ4 is decoded in Python (the
+image has no `lz4` package) and stops once a block is full, like maxcso's
+`LZ4_decompress_safe_partial`, because stored blocks may carry alignment
+padding. That is slower than deflate; a large ZSO may run into
+`verify_timeout`, which keeps the Source. JWUDTool writes a fixed
+`game.wud` into a folder and refuses an existing target, so neither a pipe
+nor a FIFO works; the WUX layout `read_wux_header` already validates is
+decoded instead. z3ds's payload is plain seekable zstd, so the `zstd` binary
+`verify` already uses decodes it to a pipe. A decoder bug in either Python
+decoder can only make a good container hash differently from its Source,
+which keeps the Source; it cannot produce the Source's bytes from a container
+that does not hold them.
+
+**Chains.** `ChainTool.content_digest(path)` hands a chain's Source (an input
+extension of one of its specs) to the first step's tool and anything else to
+the final step's tool, and `verify_timeout` follows the same rule. The two
+tools must agree on the kind, or `same_content` refuses and the Source is
+kept. `cso_to_chd` sets `supports_round_trip`: maxcso digests the `.cso` by
+decoding it and chdman digests the `.chd` by its data SHA1, both
+`image_data_sha1`, so the decoded disc image is what is compared.
+`nkit_to_rvz` has no delete-source.
+
+**Spike (#301): does `nsz -V` prove content equality?** Read from nsz 4.6.1
+and 5.0.0 (`nsz/NszDecompressor.py` / `Decompressor.py`). Result: **not on its
+own.** `nsz -V file.nsz` decompresses every NCZ and checks each NCA's SHA256
+against the hashes in the CNMT inside the same file
+(`FileExistingChecks.ExtractHashes`). That proves the output agrees with its
+own metadata, not with the Source: it never reads the Source, and the CNMT NCA,
+tickets and certificates are not checked against anything outside the file.
+So it does not count as Round-tripped. But the same run rebuilds the whole NSP
+(`Pfs0VerifyStream`, header laid out as the original, no file written) through
+SHA256 and prints `[NSP SHA256] <hex>`. That hash compared with the Source
+NSP's SHA256 is a decode-and-compare with no temp file, and that is what the
+nsz digest uses. For an XCZ, `nsz -V` prints no whole-image hash, so the XCZ
+is decompressed with `nsz -D` into `headroom_scratch_dir` (required bytes
+from the XCI cart header's valid-data-end page, or four times the container
+when that cannot be read) and the `.xci` hashed. Known limits, in the safe
+direction: nsz drops NDV0 delta fragments unless run with `--keep`, so an
+update NSP that held them is kept with "content differs"; an XCZ whose
+decompressed XCI is not byte-identical to the Source (nsz rewrites the XCI
+container around the partitions) is kept the same way.
+
+What the check guarantees
 does not depend on the input format: only identical digests allow a delete,
 and any mismatch keeps the Source. An NKit `.nkit.iso` Source is hashed as a
 file; whether that equals the digest of its output depends on what
