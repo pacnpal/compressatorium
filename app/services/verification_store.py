@@ -80,15 +80,17 @@ class VerificationStore:
             check_passed=check,
         )
         updates = {
-            "source_path": stmt.excluded.source_path,
             "verified_at": stmt.excluded.verified_at,
             "check_passed": stmt.excluded.check_passed,
         }
         # Refreshing a check never erases provenance (#306): a call with no
-        # produced_meta (a plain Verify) leaves the stored one, the mode that
-        # made the file, which the CLI routes the next check by.
+        # produced_meta or source_path (a plain Verify) leaves the stored ones,
+        # the mode that made the file (which the CLI routes the next check by)
+        # and its Source (which the re-run fast path reads).
         if produced_meta is not None:
             updates["produced_meta"] = stmt.excluded.produced_meta
+        if normalized_source is not None:
+            updates["source_path"] = stmt.excluded.source_path
         stmt = stmt.on_conflict_do_update(index_elements=["chd_path"], set_=updates)
         with self._session() as session:
             session.execute(stmt)
@@ -106,8 +108,9 @@ class VerificationStore:
 
         ``check`` names which one (#298): ``"intact"``, its tool's container
         check (every manual Verify), or ``"round_tripped"``, its content digest
-        equalled its Source's at conversion time. ``produced_meta=None`` keeps
-        a stored one: refreshing a check never erases what made the file.
+        equalled its Source's at conversion time. ``produced_meta=None`` and
+        ``source_path=None`` keep the stored ones: refreshing a check never
+        erases what made the file.
         """
         await run_in_threadpool(
             self._mark_sync, chd_path, source_path, produced_meta, check,

@@ -1474,6 +1474,26 @@ def test_refreshing_a_check_keeps_the_recorded_mode(volume, dolphin, capsys, mon
     assert _stored(iso)["produced_meta"] == {"mode": "folder_to_iso"}
 
 
+def test_a_ps3_iso_goes_to_makeps3iso_on_every_run(volume, dolphin, capsys, monkeypatch):
+    """review r8 C1 / Q1: a PS3 ISO makeps3iso built, verified twice over the
+    whole volume, with Dolphin failing anything it is handed. Both runs go to
+    makeps3iso and pass, and the record keeps its mode."""
+    from services import ps3
+
+    monkeypatch.setattr(ps3, "ps3_iso_title_id", lambda path, **kw: "BLES00000")
+    dolphin["valid"] = False
+    iso = volume / "ps3" / "Game.iso"
+    iso.parent.mkdir()
+    iso.write_bytes(b"\0" * 4096)
+    _store(iso, produced_meta={"mode": "folder_to_iso"})
+
+    for _ in range(2):
+        code, lines = _cli(capsys, "verify", str(volume), "--json")
+        assert code == 0, lines
+        assert [(x["tool"], x["status"]) for x in lines] == [("makeps3iso", "intact")]
+    assert _stored(iso)["produced_meta"] == {"mode": "folder_to_iso"}
+
+
 def test_a_cli_job_holds_its_input_for_other_processes(volume, dolphin, capsys, monkeypatch):
     """codex 4576728590: while a job reads Game.wia, another process sees the
     input as taken (the web guard's exact-path probe refuses with 409)."""
