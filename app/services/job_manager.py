@@ -403,6 +403,9 @@ class JobManager:
         self._input_mutex = threading.Lock()
         # The delete paths a job holds exclusively while it unlinks them.
         self._delete_holds: Dict[str, List[str]] = {}
+        # The companion outputs (extractcd's .bin beside its .cue) each running
+        # job holds the same cross-process exclusive lock on as its output.
+        self._companion_locks: Dict[str, List[str]] = {}
         # Jobs currently inside the verify phase, mapped to the monotonic clock
         # reading when that phase began. Verification emits no progress and can
         # legitimately run for many minutes, so the stalled-job warning reports
@@ -1346,6 +1349,38 @@ class JobManager:
             for p in paths if p
         )
 
+    def _take_output_locks(self, job: ConversionJob) -> bool:
+        """The cross-process exclusive lock on the job's output and on every
+        companion output its mode declares, or none of them (#306).
+
+        A companion (extractcd's ``Game.bin``) is written as much as the
+        primary, so the web guard's exact-path probe must refuse a rename or
+        delete of it too, and no other job may take it to write.
+        """
+        if not lock_manager.acquire_lock(job.output_path, allow_existing=job.allow_overwrite):
+            return False
+        held: List[str] = []
+        if job.input_kind != InputKind.DIRECTORY:
+            # Directory modes' split parts are found on disk later and are
+            # already guarded by their own prefix match.
+            for path in registry.for_mode(job.mode.value).companion_outputs(
+                job.output_path, job.mode.value,
+            ):
+                if not lock_manager.acquire_lock(path, allow_existing=job.allow_overwrite):
+                    for taken in held:
+                        lock_manager.release_lock(taken)
+                    lock_manager.release_lock(job.output_path)
+                    return False
+                held.append(path)
+        self._companion_locks[job.id] = held
+        return True
+
+    def _release_output_locks(self, job: ConversionJob) -> None:
+        for path in self._companion_locks.pop(job.id, []):
+            lock_manager.release_lock(path)
+        if job.output_path:
+            lock_manager.release_lock(job.output_path)
+
     async def _fail_before_start(
         self, job_id: str, job: ConversionJob, message: str, *, dir_lock_held: bool,
     ) -> None:
@@ -1356,8 +1391,7 @@ class JobManager:
         self._release_inputs(job_id)
         if dir_lock_held:
             lock_manager.release_dir_lock(job.file_path)
-        if job.output_path:
-            lock_manager.release_lock(job.output_path)
+        self._release_output_locks(job)
         job.status = JobStatus.FAILED
         job.error_message = message
         job.completed_at = datetime.now(timezone.utc)
@@ -1386,7 +1420,7 @@ class JobManager:
         """
         job = self.jobs.get(job_id)
         if output_lock_held and job is not None and job.output_path:
-            lock_manager.release_lock(job.output_path)
+            self._release_output_locks(job)
         if job_id in self._cancel_events:
             del self._cancel_events[job_id]
         concurrency_manager.release(job_id)
@@ -3019,9 +3053,7 @@ class JobManager:
             return
 
         # Try to acquire lock for the output file (prevents race conditions)
-        lock_acquired = lock_manager.acquire_lock(
-            job.output_path, allow_existing=job.allow_overwrite
-        )
+        lock_acquired = await run_in_threadpool(self._take_output_locks, job)
         if not lock_acquired:
             # A transient block by a folder->iso subtree lock (racing the
             # precheck) waits & re-queues rather than failing.
@@ -3086,7 +3118,7 @@ class JobManager:
                     job_id,
                     {"type": "error", "job_id": job_id, "error": job.error_message},
                 )
-                lock_manager.release_lock(job.output_path)
+                self._release_output_locks(job)
                 if job_id in self._cancel_events:
                     del self._cancel_events[job_id]
                 concurrency_manager.release(job_id)
@@ -3802,7 +3834,7 @@ class JobManager:
             self._notify_terminal(job)
             # Only release lock if we acquired it
             if lock_acquired:
-                lock_manager.release_lock(job.output_path)
+                self._release_output_locks(job)
             # Release the directory subtree lock held by a folder->iso job.
             if dir_lock_acquired:
                 lock_manager.release_dir_lock(job.file_path)

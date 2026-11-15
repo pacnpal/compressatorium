@@ -2151,3 +2151,31 @@ def test_a_job_cancelled_while_waiting_for_a_reader_keeps_its_source(
     assert iso.exists(), lines
     assert lines[0]["status"] == "cancelled", lines
     assert lines[0]["source_deleted"] is False
+
+
+@pytest.mark.parametrize("command", [
+    ["verify"], ["convert", "--to", "extractdvd"],
+])
+def test_a_symlink_out_of_the_volumes_is_skipped_never_read(
+    volume, dolphin, capsys, tmp_path, command,
+):
+    """codex 4577208363: a symlink in a Volume pointing outside every Volume is
+    not planned, checked or converted; it is skipped as outside the
+    configured Volumes."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    target = outside / "Secret.chd"
+    target.write_bytes(b"MComprHD" + b"\0" * 120)
+    (volume / "ps2").mkdir()
+    link = volume / "ps2" / "Escape.chd"
+    link.symlink_to(target)
+    inside = volume / "ps2" / "Inside.chd"
+    inside.write_bytes(b"MComprHD" + b"\0" * 120)
+
+    code, lines = _cli(capsys, command[0], str(volume), *command[1:], "--dry-run", "--json")
+
+    by_name = {Path(x["path"]).name: x for x in lines}
+    assert by_name["Escape.chd"]["status"] == "skipped", lines
+    assert "outside the configured Volumes" in by_name["Escape.chd"]["reason"]
+    assert by_name["Inside.chd"]["status"] == "planned", lines
+    assert code == 0, lines
