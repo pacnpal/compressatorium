@@ -885,8 +885,12 @@ async def run_detached_mutation(
             # The mutation finished; the locks are still the caller's. Its own
             # failure (an ETIMEDOUT from a network filesystem included) is
             # that failure, not the wait running out (codex 4579904147).
+            if error is exc:
+                raise  # the mutation's own failure, as it was raised
             if error is not None:
-                raise error
+                # The wait ran out just as it failed: the timeout did not
+                # cause the failure, so it is not chained on.
+                raise error from None
             if isinstance(exc, asyncio.TimeoutError):
                 return result  # answered just as the wait ran out
             raise
