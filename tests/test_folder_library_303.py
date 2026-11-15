@@ -1481,3 +1481,53 @@ async def test_a_sheet_that_escapes_the_volume_is_never_queued(
         assert summary["skipped_unsafe"] == 3, summary
         platform = summary["platforms"][0]
         assert sorted(platform["unsafe"]) == ["Absolute.cue", "Escape.cue", "Linked.cue"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("escape", [
+    "{vol}/../outside",          # .. out of the Volume
+    "{vol}/roms/../../outside",  # .. deeper in
+    "../../outside",             # relative
+    "{link}",                    # a symlink inside the Volume pointing out
+])
+async def test_a_rule_output_folder_cannot_leave_the_volumes(
+    tree: Path, tmp_path: Path, escape: str,
+) -> None:
+    """CodeQL py/path-injection (PR #320): the output folder a Rule names is confined.
+
+    PUT /api/libraries/{id}/rules carries a user-chosen output folder into the
+    Volume check. A path that leaves the Volumes, by ``..`` or by a symlink,
+    is refused: the Rule is paused with the folder recorded, never written to.
+    """
+    from routes import libraries as routes
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    link = tree / "escape-link"
+    link.symlink_to(outside)
+    output_dir = escape.format(vol=tree.parent, link=link)
+
+    lib = await _register(tree)
+    saved = await routes.put_library_rules(lib["id"], {"rules": {
+        "ps2": {"mode": "createdvd", "enabled": True, "output_dir": output_dir},
+    }})
+
+    rule = saved["rules"]["ps2"]
+    assert rule["output_dir"] is None
+    assert rule["invalid_output_dir"] == output_dir
+    assert rule["enabled"] is False
+
+
+def test_the_volume_check_confines_a_path_before_touching_it(tree: Path, tmp_path: Path) -> None:
+    """The containment answer for the cases the check guards, unchanged by the rewrite."""
+    from utils.path_utils import is_within_configured_volumes
+
+    vol = tree.parent
+    assert is_within_configured_volumes(str(vol)) is True
+    assert is_within_configured_volumes(str(vol / "roms" / "new-folder")) is True
+    assert is_within_configured_volumes(str(vol / ".." / "x")) is False
+    # A sibling whose name merely starts with the Volume's name is not inside it.
+    assert is_within_configured_volumes(str(vol) + "-sibling") is False
+    loop = vol / "loop"
+    loop.symlink_to(loop)
+    assert is_within_configured_volumes(str(loop)) is False

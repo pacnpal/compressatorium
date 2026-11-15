@@ -251,24 +251,41 @@ def containing_volume_root(path: str) -> Path | None:
 
 
 def is_within_configured_volumes(path: str, *, treat_archives: bool = True) -> bool:
-    """Check whether the given path lies inside one of the configured CHD volumes."""
+    """Check whether the given path lies inside one of the configured CHD volumes.
+
+    The path is normalised with ``os.path.realpath`` (``..`` and symlinks
+    resolved, non-strict, like ``_resolve_path``), then confined by a prefix
+    check against each resolved Volume root, and only a confined path is ever
+    touched on disk (the symlink-loop probe). Keeping the check directly in
+    front of the one filesystem call is what lets static analysis see the
+    confinement (CodeQL ``py/path-injection``); the answer is the same as the
+    ``Path.resolve`` + ``relative_to`` form it replaces.
+    """
     base_path = strip_archive_path(path) if treat_archives else path
-    real_path = _resolve_path(base_path, strict=False)
-    if real_path is None:
+    try:
+        real_path = os.path.realpath(os.path.expanduser(base_path))
+    except (OSError, ValueError, RuntimeError):
         return False
 
     for volume in settings.volumes:
         real_volume = _resolve_volume(volume)
         if real_volume is None:
             continue
-
-        try:
-            real_path.relative_to(real_volume)
-            return True
-        except ValueError:
-            if real_path == real_volume:
-                return True
+        root = str(real_volume)
+        inside = real_path == root or real_path.startswith(
+            root.rstrip(os.sep) + os.sep,
+        )
+        if not inside:
             continue
+        # Confined; now it may be touched. A symlink loop resolves to itself
+        # without raising on Python 3.13+, so probe it: ELOOP means the path
+        # cannot be safely resolved and is refused, as `_resolve_path` does.
+        try:
+            os.stat(real_path)
+        except OSError as exc:
+            if exc.errno == errno.ELOOP:
+                return False
+        return True
 
     return False
 
