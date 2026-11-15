@@ -373,10 +373,9 @@ def detect_platform(path: str, *, tools: Iterable | None = None) -> Detection:
     # `detection_key` already carries the probe set. The shared cache adds the
     # folder walk's context, which the file's own stat does not track: the
     # resolved parent folder (a retargeted folder symlink) and the Volume root
-    # the walk stops at. A folder Library's cache keys on `detection_key`
-    # alone: it walks a resolved root without following symlinks, so a path's
-    # folder context cannot change under it, and resolving it per Image per
-    # walk would cost a Volume resolution for every file.
+    # the walk stops at. A folder Library's cache adds the same context, but
+    # resolved once per walk for its root (`FolderLibrary._walk`): its walk
+    # follows no symlinks below the root, so every Image under it shares it.
     key = (*key, _folder_context(path))
     with _cache_lock:
         hit = _cache.get(path)

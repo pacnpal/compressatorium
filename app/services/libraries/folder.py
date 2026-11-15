@@ -68,7 +68,11 @@ from services.rules.library import (
     QueuedImage,
 )
 from services.tools import registry
-from utils.path_utils import is_within_configured_volumes, match_extension
+from utils.path_utils import (
+    containing_volume_root,
+    is_within_configured_volumes,
+    match_extension,
+)
 
 logger = get_logger("folder_library")
 
@@ -287,12 +291,22 @@ class FolderLibrary:
 
         scan = Scan(unreadable=unreadable)
         root = self.root
+        # The folder context the folder-name fallback reads beyond the file's
+        # own stat: where the root really is (an ancestor renamed and replaced
+        # by a symlink keeps the Library path and every file stat, while the
+        # folders around the Image change) and the Volume root the fallback
+        # stops at. Resolved once per walk, not per Image: the walk does not
+        # follow symlinks below the root, so every path under it shares this.
+        context = (os.path.realpath(root), str(containing_volume_root(root) or ""))
         for path in image_sets.group_images([p for p, _ in files], members=members):
             st = stats[path]
             # Detection's own key: the file and the tracks its header probe
-            # reads, so a changed track re-detects its sheet. None (a track
-            # missing) means answer now and remember nothing.
+            # reads, so a changed track re-detects its sheet, plus the walk's
+            # folder context. None (a track missing) means answer now and
+            # remember nothing.
             key = platform_detect.detection_key(path, st)
+            if key is not None:
+                key = (*key, context)
             hit = self._detections.get(path)
             if key is not None and hit is not None and hit[0] == key:
                 detection = hit[1]
