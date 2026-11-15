@@ -71,6 +71,15 @@
   `romm.rules` and `romm.auto_state` rows are kept and no longer written, so a
   downgrade gets the Rules and history as they were at upgrade time.
 
+### Fixed
+
+- **chdman Create Raw works** (#326). The job now passes `--unitsize 512`;
+  chdman refuses a raw image without a unit size, so every Create Raw job used
+  to fail.
+- **The RomM version shows again** (#335). RomM 5.x nests it under
+  `SYSTEM.VERSION` in its heartbeat; the flat key older releases send is still
+  read.
+
 ### Security
 
 - **Docker image: cleared the open Trivy findings.** Base images moved to

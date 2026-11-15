@@ -46,6 +46,10 @@ class ChdmanService:
         compression: str | None = None,
     ) -> list[str]:
         cmd = [self.chdman_path, mode, "-f", "-i", input_path, "-o", output_path]
+        if mode == "createraw":
+            # chdman refuses a raw image without a unit size; 512 is the
+            # sector size of the raw hard-disk images this mode targets.
+            cmd = cmd[:2] + ["-us", "512"] + cmd[2:]
         if mode == "createdvd":
             # Insert -hs 2048 after mode for PSP compatibility
             cmd = [

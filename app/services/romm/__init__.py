@@ -25,6 +25,7 @@ from .client import (
     RommClient,
     RommError,
     RommNotConfigured,
+    heartbeat_version,
     romm_client,
 )
 
@@ -35,5 +36,6 @@ __all__ = [
     "RommClient",
     "RommError",
     "RommNotConfigured",
+    "heartbeat_version",
     "romm_client",
 ]
