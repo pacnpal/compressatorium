@@ -67,6 +67,10 @@ export const api = {
   // ─── Ledger (permanent record of finished jobs) ────────────────────────
   getLedgerRecent: (limit = 5) =>
     fetchJson(buildApiUrl('/ledger/recent', { limit }), undefined, 'Failed to fetch ledger'),
+  getLedgerPage: (query) =>
+    fetchJson(buildApiUrl('/ledger', query), undefined, 'Failed to fetch ledger'),
+  getLedgerFacets: () =>
+    fetchJson(`${API_BASE}/ledger/facets`, undefined, 'Failed to fetch ledger filters'),
   getLedgerSavings: () =>
     fetchJson(`${API_BASE}/ledger/savings`, undefined, 'Failed to fetch savings'),
 
@@ -257,10 +261,10 @@ export const api = {
     );
   },
 
-  getDeletePlan(filePaths, mode = 'createcd') {
+  getDeletePlan(filePaths, mode = 'createcd', outputDir = null, duplicateAction = 'skip') {
     return jsonPost(
       `${API_BASE}/jobs/delete-plan`,
-      { file_paths: filePaths, mode },
+      { file_paths: filePaths, mode, output_dir: outputDir, duplicate_action: duplicateAction },
       {},
       'Failed to build delete plan',
     );
@@ -630,6 +634,73 @@ export const api = {
 
   runRommAutoConvert: (body = {}) =>
     jsonPost(`${API_BASE}/romm/auto-convert/run`, body, {}, 'Auto-convert run failed'),
+
+  // ── Libraries (#303): RomM plus every folder registered as one ──────────
+  // A Library id goes in the path (`romm`, `folder:3`), so it is encoded.
+  listLibraries: () =>
+    fetchJson(`${API_BASE}/libraries`, undefined, 'Failed to list Libraries'),
+
+  registerLibrary: (path, name = null) =>
+    jsonPost(`${API_BASE}/libraries`, { path, name }, {}, 'Failed to register the Library'),
+
+  updateLibrary: (id, patch) =>
+    fetchJson(
+      `${API_BASE}/libraries/${encodeURIComponent(id)}`,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(patch),
+      },
+      'Failed to save the Library',
+    ),
+
+  removeLibrary: (id) =>
+    fetchJson(
+      `${API_BASE}/libraries/${encodeURIComponent(id)}`,
+      { method: 'DELETE' },
+      'Failed to remove the Library',
+    ),
+
+  getLibraryPlatforms: (id) =>
+    fetchJson(
+      `${API_BASE}/libraries/${encodeURIComponent(id)}/platforms`,
+      undefined,
+      'Failed to list the Library',
+    ),
+
+  getLibraryRules: (id) =>
+    fetchJson(
+      `${API_BASE}/libraries/${encodeURIComponent(id)}/rules`,
+      undefined,
+      'Failed to load the Rules',
+    ),
+
+  saveLibraryRules: (id, rules) =>
+    fetchJson(
+      `${API_BASE}/libraries/${encodeURIComponent(id)}/rules`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rules }),
+      },
+      'Failed to save the Rules',
+    ),
+
+  forgetLibraryConverted: (id, platformIds = null) =>
+    jsonPost(
+      `${API_BASE}/libraries/${encodeURIComponent(id)}/rules/forget-converted`,
+      platformIds ? { platform_ids: platformIds } : {},
+      {},
+      'Failed to clear the conversion history',
+    ),
+
+  previewLibrary: (id, body = {}) =>
+    jsonPost(
+      `${API_BASE}/libraries/${encodeURIComponent(id)}/preview`, body, {}, 'Preview failed',
+    ),
+
+  runLibrary: (id, body = {}) =>
+    jsonPost(`${API_BASE}/libraries/${encodeURIComponent(id)}/run`, body, {}, 'Run failed'),
 
   // Records the metadata to carry across a conversion. MUST be called before
   // the batch is submitted: the provider ids are read from the RomM record for

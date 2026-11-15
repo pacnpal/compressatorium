@@ -2,8 +2,9 @@
 
 Sheets come in UTF-8 (with or without a BOM) and in Windows-1252, and a track
 name decoded the wrong way names a file that is not there. Every reader of a
-sheet decodes it through here: the disc-ID probe (``services.disc_id``) and
-the delete plan and header-dependency list (``utils.delete_plan``).
+sheet decodes it through here: the disc-ID probe (``services.disc_id``), the
+delete plan and header-dependency list (``utils.delete_plan``), and the
+Round-trip's track table (``utils.disc_sheet``).
 
 The converter opens the files a sheet names itself, so a sheet is read here
 exactly the way chdman 0.285 reads it (``src/lib/util/cdrom.cpp`` at
@@ -412,11 +413,28 @@ def cue_tracks(text: str) -> list[str]:
     detection cache's track list all read sheets through it.
     """
     names: list[str] = []
-    for line in _sheet_lines(text):
-        tokens = chd_tokens(line)
-        if len(tokens) >= 2 and tokens[0] == "FILE" and tokens[1]:
-            names.append(tokens[1])
+    for tokens in sheet_line_tokens(text):
+        name = cue_file_name(tokens)
+        if name is not None:
+            names.append(name)
     return names
+
+
+def sheet_line_tokens(text: str) -> list[list[str]]:
+    """Every line of a sheet as chdman reads it, split into ``chd_tokens``.
+
+    For a reader that needs more than the file names (the Round-trip's track
+    table, ``utils.disc_sheet``): the same framing and tokens as every other
+    reader here, so it sees the commands chdman sees.
+    """
+    return [chd_tokens(line) for line in _sheet_lines(text)]
+
+
+def cue_file_name(tokens: Sequence[str]) -> str | None:
+    """The file a CUE line names, when it is a ``FILE`` line (``cue_tracks``)."""
+    if len(tokens) >= 2 and tokens[0] == "FILE" and tokens[1]:
+        return tokens[1]
+    return None
 
 
 @dataclass(frozen=True)
@@ -426,6 +444,10 @@ class GdiTrack:
     number: str
     sector_size: int | None
     name: str
+    # The start LBA and track type (0 audio, 4 data), for the Round-trip's
+    # track table; None when the field is not a plain number.
+    lba: int | None = None
+    track_type: int | None = None
 
 
 def _is_number(field: str) -> bool:
@@ -468,7 +490,10 @@ def gdi_tracks(text: str) -> list[GdiTrack]:
     for parts in lines[start:]:
         if len(parts) < 5 or not parts[4]:
             continue
-        tracks.append(GdiTrack(parts[0], _as_number(parts[3]), parts[4]))
+        tracks.append(GdiTrack(
+            parts[0], _as_number(parts[3]), parts[4],
+            lba=_as_number(parts[1]), track_type=_as_number(parts[2]),
+        ))
     return tracks
 
 

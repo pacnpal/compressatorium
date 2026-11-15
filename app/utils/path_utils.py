@@ -10,7 +10,7 @@ import threading
 import time
 from collections.abc import Iterable, Sequence
 from pathlib import Path
-from typing import Optional
+from typing import NamedTuple, Optional
 
 from config import settings
 
@@ -570,6 +570,71 @@ def is_within_configured_volumes(path: str, *, treat_archives: bool = True) -> b
     return _confined_real_path(base_path) is not None
 
 
+class FileIdentity(NamedTuple):
+    """What identifies a file across two stats of it."""
+
+    dev: int
+    ino: int
+    size: int
+    mtime_ns: int
+    realpath: str
+
+
+def file_identity(path: str) -> Optional[FileIdentity]:
+    """*path*'s identity (following links), or None if it can't be stat'ed."""
+    try:
+        st = os.stat(path)
+    except (OSError, ValueError):
+        return None
+    return FileIdentity(
+        st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, os.path.realpath(path),
+    )
+
+
+def same_identity(a: Optional[FileIdentity], b: Optional[FileIdentity]) -> bool:
+    """Whether two identities are the same, unchanged file.
+
+    Size and ``mtime_ns`` must always match, so a file rewritten in place
+    (same inode, new bytes) is not the file that was checked. Then either
+    ``(st_dev, st_ino)`` or the resolved path must match: FUSE/SMB mounts such
+    as Unraid's shfs user shares can report a different ``st_ino`` for the
+    same file on each stat, and their inodes can also be reused, which is why
+    the inode is never enough on its own. A missing file (None) is never the
+    same as anything.
+    """
+    if a is None or b is None:
+        return False
+    if (a.size, a.mtime_ns) != (b.size, b.mtime_ns):
+        return False
+    return (a.dev, a.ino) == (b.dev, b.ino) or a.realpath == b.realpath
+
+
+def same_file(a: str, b: str) -> bool:
+    """``os.path.samefile`` that tolerates unstable inodes (see ``same_identity``)."""
+    return same_identity(file_identity(a), file_identity(b))
+
+
+def volume_root_for(path: str) -> Optional[str]:
+    """The resolved root of the configured Volume holding *path*, or None.
+
+    With nested Volumes the outermost one wins: both are Volumes the user
+    granted, and a walk up from *path* should reach everything above it that
+    the app may read.
+    """
+    real_path = _resolve_path(path, strict=False)
+    if real_path is None:
+        return None
+    best: Optional[Path] = None
+    for volume in settings.volumes:
+        real_volume = _resolve_volume(volume)
+        if real_volume is None:
+            continue
+        inside = real_path == real_volume or real_volume in real_path.parents
+        if inside and (best is None or len(real_volume.parts) < len(best.parts)):
+            best = real_volume
+    return str(best) if best is not None else None
+
+
 def _strip_trailing_dot_and_seps(path: str) -> str:
     """Strip only *trailing* separators and ``.`` components from ``path``.
 
@@ -597,7 +662,9 @@ def _strip_trailing_dot_and_seps(path: str) -> str:
     return (drive + tail) or path
 
 
-def source_companions_are_safe(file_path: str, mode: str) -> bool:
+def source_companions_are_safe(
+    file_path: str, mode: str, *, within: Sequence[str] | None = None,
+) -> bool:
     """Whether every sibling input this mode's tool also consumes stays in-volume.
 
     The single-file analogue of :func:`is_safe_directory_tree`, and it exists
@@ -619,10 +686,27 @@ def source_companions_are_safe(file_path: str, mode: str) -> bool:
     taking the job's locks, since a queued job's companion can be swapped for a
     symlink in between.
 
+    A track sheet (``.cue`` / ``.gdi``) is checked from its own text, whatever
+    the tool reports: the converter opens every file the sheet names, so a
+    reference that is absolute, leaves the sheet's folder, or resolves outside
+    the volumes rejects the job (``delete_plan.sheet_reference_problems``). An
+    empty companion list is never taken to mean safe.
+
+    ``within`` swaps the Volumes for explicit trusted roots, as in
+    ``utils.sheet_text.resolve_track``: the worker passes ``[the job's own
+    extraction folder]`` when the source came out of an archive, since that
+    folder is not a Volume. Companions and track references must then resolve
+    inside it. Omitted, the Volumes apply; an empty list is refused.
+
     Blocking I/O (an ``lstat`` and a ``realpath`` per companion); call it off
     the event loop.
     """
     from services.tools import registry  # local: avoids an import cycle
+    from utils.delete_plan import sheet_reference_problems  # local: cycle
+    from utils.sheet_text import resolve_track  # local: cycle
+
+    if sheet_reference_problems(file_path, within=within):
+        return False
 
     try:
         tool = registry.for_mode(mode)
@@ -631,9 +715,12 @@ def source_companions_are_safe(file_path: str, mode: str) -> bool:
     for companion in tool.source_companions(file_path):
         if os.path.islink(companion):
             return False
-        if not is_within_configured_volumes(
-            os.path.realpath(companion), treat_archives=False,
-        ):
+        # The one confined resolver, as for a sheet's tracks: the companion's
+        # real path must sit under the trusted roots.
+        folder, name = os.path.split(companion)
+        try:
+            resolve_track(folder, name, within=within)
+        except ValueError:
             return False
     return True
 

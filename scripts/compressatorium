@@ -1,0 +1,15 @@
+#!/bin/sh
+# The `compressatorium` command: the CLI module (app/cli.py) on the image's
+# venv, with app/ on PYTHONPATH the way the server runs. Paths stay relative
+# to the caller's working directory.
+#
+# Started as root (`docker exec`, `docker run --entrypoint compressatorium`),
+# it goes through the image's entrypoint first, which remaps the converter user
+# to PUID/PGID and drops to it exactly as it does for the server, so outputs,
+# lock files and the database stay owned by the user the server runs as.
+if [ "$(id -u)" = "0" ] && [ -x /entrypoint.sh ] && [ -z "${COMPRESSATORIUM_RUN_AS_ROOT:-}" ]; then
+    exec /entrypoint.sh compressatorium "$@"
+fi
+APP_DIR="${COMPRESSATORIUM_APP_DIR:-/app}"
+PYTHON="${COMPRESSATORIUM_PYTHON:-/opt/venv/bin/python3}"
+PYTHONPATH="$APP_DIR${PYTHONPATH:+:$PYTHONPATH}" exec "$PYTHON" -m cli "$@"

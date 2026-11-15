@@ -107,6 +107,68 @@ class MakePs3IsoService:
         return parts
 
     @classmethod
+    def split_set_of(cls, path: str) -> list[str]:
+        """Every part of the split set ``path`` belongs to, in order, or [].
+
+        ``path`` may be the logical ``Game.iso`` (gone after a split build),
+        or any numbered part of it (``Game.iso.0``, what ``verify_target``
+        hands a check). A plain, unsplit ISO answers [].
+        """
+        if not os.path.isfile(path):
+            return cls._numbered_parts(path)
+        base, suffix = os.path.splitext(path)
+        if suffix[1:].isdigit():
+            parts = cls._numbered_parts(base)
+            if path in parts:  # a lone .0 too: its later parts may be gone
+                return parts
+        return []
+
+    @classmethod
+    def _split_set_damage(cls, iso_path: str) -> str | None:
+        """Why the split set ``iso_path`` belongs to is damaged, or None when it
+        holds or ``iso_path`` is no split output. Blocking: discovery and check
+        together, for one detached thread."""
+        parts = cls.split_set_of(iso_path)
+        return cls.check_split_set(parts) if parts else None
+
+    @staticmethod
+    def check_split_set(parts: list[str]) -> str | None:
+        """Why a split set is damaged, or None when its structure holds.
+
+        Every part is checked, not only the first: the ISO 9660 volume size in
+        part 0's descriptor must fit in the parts' summed size (a later part
+        missing or cut short fails it), and every part must read to its last
+        byte. PS3 ISOs carry no checksums, so a later part's bytes can't be
+        proven beyond that. Raises ``OSError`` when a part can't be read (no
+        verdict).
+        """
+        import struct
+
+        sizes = [os.path.getsize(part) for part in parts]
+        with open(parts[0], "rb") as fh:
+            fh.seek(16 * 2048)
+            descriptor = fh.read(2048)
+        if len(descriptor) >= 132 and descriptor[1:6] == b"CD001":
+            sectors = struct.unpack_from("<I", descriptor, 80)[0]
+            block = struct.unpack_from("<H", descriptor, 128)[0] or 2048
+            expected = sectors * block
+            if expected and sum(sizes) < expected:
+                short = os.path.basename(parts[-1])
+                return (
+                    f"The split ISO is {expected - sum(sizes)} bytes short of its "
+                    f"volume: a part after {os.path.basename(parts[0])} is missing "
+                    f"or cut short (last part {short})"
+                )
+        for part, size in zip(parts, sizes):
+            if size == 0:
+                return f"Split part {os.path.basename(part)} is empty"
+            with open(part, "rb") as fh:
+                fh.seek(size - 1)
+                if len(fh.read(1)) != 1:
+                    return f"Split part {os.path.basename(part)} can't be read to its end"
+        return None
+
+    @classmethod
     def split_parts(cls, output_path: str) -> list[str]:
         """Files makeps3iso actually produced for ``output_path``, in order.
 
@@ -349,6 +411,14 @@ class MakePs3IsoService:
                 "cancelled": True,
                 "message": "Verification cancelled",
             }
+        except OSError as exc:
+            # The ISO could not be read: no verdict on it (#306), so a caller
+            # keeps a stored result. `valid` stays False: nothing is deleted.
+            return {
+                "valid": False,
+                "inconclusive": True,
+                "message": f"Could not read the ISO: {exc}",
+            }
         if cancel_event is not None and cancel_event.is_set():
             # The read and the cancel can land together, and `run_detached`
             # resolves whichever it sees first. A verdict reached under a cancel
@@ -360,6 +430,31 @@ class MakePs3IsoService:
                 "message": "Verification cancelled",
             }
         if title_id:
+            # A split build: the TITLE_ID readback only reads part 0, so the
+            # whole set's structure is checked too (#306). A split Image is
+            # never Intact when a later part is damaged.
+            # Finding the set stats the disk too, so it runs on the same
+            # detached thread as the check, never on the event loop: a hung
+            # mount then meets the verify's bound and cancel like the
+            # readback above (codex 4577688831).
+            try:
+                damage = await run_detached(
+                    self._split_set_damage, iso_path, cancel_event=cancel_event,
+                )
+            except ReadCancelled:
+                return {
+                    "valid": False,
+                    "cancelled": True,
+                    "message": "Verification cancelled",
+                }
+            except OSError as exc:
+                return {
+                    "valid": False,
+                    "inconclusive": True,
+                    "message": f"Could not read the split ISO: {exc}",
+                }
+            if damage:
+                return {"valid": False, "message": damage}
             return {"valid": True, "message": f"PS3 ISO TITLE_ID {title_id}"}
         return {
             "valid": False,

@@ -1,7 +1,7 @@
 """Work out an Image's Platform from the Image itself.
 
 One function, :func:`detect_platform`, shared by the convert panel's Auto
-choice and (later) folder Libraries, the Inbox and the CLI. It never guesses:
+choice and folder Libraries, and (later) the Inbox and the CLI. It never guesses:
 
 1. **Header.** Each tool that takes the file's extension reads its own header
    through ``ToolPlugin.header_platform`` (chdman: PS1/PS2/PSP/Dreamcast/
@@ -97,6 +97,52 @@ _ALIASES: dict[str, tuple[str, ...]] = {
     "xbox": ("microsoft-xbox",),
     "xbox360": ("xbox-360",),
 }
+# What each Platform is called on screen.
+_NAMES: dict[str, str] = {
+    "psx": "PlayStation",
+    "ps2": "PlayStation 2",
+    "psp": "PlayStation Portable",
+    "ps3": "PlayStation 3",
+    "ngc": "GameCube",
+    "wii": "Wii",
+    "wiiu": "Wii U",
+    "switch": "Nintendo Switch",
+    "3ds": "Nintendo 3DS",
+    "new-nintendo-3ds": "New Nintendo 3DS",
+    "nds": "Nintendo DS",
+    "gb": "Game Boy",
+    "gbc": "Game Boy Color",
+    "gba": "Game Boy Advance",
+    "nes": "NES",
+    "snes": "SNES",
+    "n64": "Nintendo 64",
+    "virtualboy": "Virtual Boy",
+    "dc": "Dreamcast",
+    "saturn": "Saturn",
+    "segacd": "Sega CD",
+    "genesis": "Genesis / Mega Drive",
+    "sms": "Master System",
+    "gamegear": "Game Gear",
+    "turbografx-cd": "TurboGrafx-CD",
+    "pc-fx": "PC-FX",
+    "neo-geo-cd": "Neo Geo CD",
+    "neo-geo-pocket": "Neo Geo Pocket",
+    "neo-geo-pocket-color": "Neo Geo Pocket Color",
+    "wonderswan": "WonderSwan",
+    "wonderswan-color": "WonderSwan Color",
+    "lynx": "Lynx",
+    "atari2600": "Atari 2600",
+    "atari7800": "Atari 7800",
+    "c64": "Commodore 64",
+    # A RomM UniversalPlatformSlug; a tool may declare it (#324).
+    "dos": "DOS",
+    "philips-cd-i": "CD-i",
+    "3do": "3DO",
+    "laseractive": "LaserActive",
+    "arcade": "Arcade",
+    "xbox": "Xbox",
+    "xbox360": "Xbox 360",
+}
 _CANONICAL: dict[str, str] = {
     alias: slug for slug, aliases in _ALIASES.items() for alias in (slug, *aliases)
 }
@@ -108,6 +154,28 @@ def canonical_slug(name: str | None) -> str | None:
         return None
     key = name.strip().lower()
     return _CANONICAL.get(key, key) or None
+
+
+def platform_name(slug: str | None) -> str | None:
+    """A Platform's display name, or the slug itself when the table has none."""
+    if not slug:
+        return None
+    return _NAMES.get(slug, slug)
+
+
+def known_slug(name: str | None) -> str | None:
+    """The Platform slug *name* stands for, or None when no Platform has it.
+
+    A slug is known when it is in the alias table or a registered tool declares
+    it. Used to check a Platform id a client submits (a folder Library's Rule
+    keys) rather than storing whatever string arrives.
+    """
+    slug = canonical_slug(name)
+    if slug is None:
+        return None
+    if slug in _ALIASES:
+        return slug
+    return slug if slug in set(_folder_names(_default_tools()).values()) else None
 
 
 @dataclass(frozen=True)
@@ -266,6 +334,15 @@ def clear_cache() -> None:
         _cache.clear()
 
 
+def detect_uncached(path: str, *, tools: Iterable | None = None) -> Detection:
+    """:func:`detect_platform` without the shared cache, for a caller that keeps its own.
+
+    A folder Library keys its own cache on (path, size, mtime) for every file
+    it holds, which the bounded LRU below cannot do for a large Library.
+    """
+    return _decide(path, list(tools) if tools is not None else _default_tools())
+
+
 def detect_platform(path: str, *, tools: Iterable | None = None) -> Detection:
     """The Platform of the Image at ``path``, and how it was decided.
 
@@ -288,18 +365,19 @@ def detect_platform(path: str, *, tools: Iterable | None = None) -> Detection:
         # A folder Image (a PS3 disc folder) is judged by files below it, which
         # its own size and mtime do not track. Probe it fresh every time.
         return _decide(path, tool_list)
-    deps = () if _member else _header_dependencies(disk_path, tool_list)
-    if deps is None:
+    key = detection_key(path, st, tools=tool_list)
+    if key is None:
         # A file the header probe needs is missing or unreadable (a .bin still
         # copying in). Answer now, but remember nothing: the next call re-reads.
         return _decide(path, tool_list)
-    # The probe set is part of the answer: the same file asked of other tools
-    # can answer differently. The tool objects themselves, compared by
-    # identity (and kept alive by the entry, so an id is never reused). So is
-    # the folder walk's context, which the file's own stat does not track: the
+    # `detection_key` already carries the probe set. The shared cache adds the
+    # folder walk's context, which the file's own stat does not track: the
     # resolved parent folder (a retargeted folder symlink) and the Volume root
-    # the walk stops at.
-    key = (st.st_size, st.st_mtime_ns, deps, tuple(tool_list), _folder_context(path))
+    # the walk stops at. A folder Library's cache keys on `detection_key`
+    # alone: it walks a resolved root without following symlinks, so a path's
+    # folder context cannot change under it, and resolving it per Image per
+    # walk would cost a Volume resolution for every file.
+    key = (*key, _folder_context(path))
     with _cache_lock:
         hit = _cache.get(path)
         if hit is not None and hit[0] == key:
@@ -312,6 +390,27 @@ def detect_platform(path: str, *, tools: Iterable | None = None) -> Detection:
         while len(_cache) > _CACHE_MAX:
             _cache.popitem(last=False)
     return result
+
+
+def detection_key(
+    path: str, st: os.stat_result, *, tools: Iterable | None = None,
+) -> tuple | None:
+    """What a cached Detection for *path* is valid for, or None when it must not be cached.
+
+    The file's size and mtime (*st*, the caller's stat of it) and those of
+    every other file its header probe reads (``ToolPlugin.header_reads``: a
+    sheet's tracks), and the probe set itself: the same file asked of other
+    tools can answer differently. The tool objects are compared by identity
+    and kept alive by the key, so an id is never reused. None when one of the
+    files cannot be stat'ed. The shared cache here and a folder Library's own
+    cache both key on it, so a changed track or probe set re-detects in either.
+    """
+    tool_list = list(tools) if tools is not None else _default_tools()
+    disk_path, member = _split_member(path)
+    deps = () if member else _header_dependencies(disk_path, tool_list)
+    if deps is None:
+        return None
+    return (st.st_size, st.st_mtime_ns, deps, tuple(tool_list))
 
 
 def _header_dependencies(path: str, tools: Iterable) -> tuple | None:
@@ -384,6 +483,64 @@ def _auto_candidates(platform: str, tools_registry) -> list:
     return found
 
 
+def _extension_match(spec, path: str, reads) -> str | None:
+    """The extension of ``path`` that ``spec`` reads, by name only.
+
+    A directory mode (makeps3iso's folder->iso) reads folders, not suffixes:
+    it answers ``""`` for a directory on disk and None for anything else.
+    """
+    disk_path, member = _split_member(path)
+    if InputKind.DIRECTORY in spec.input_kinds:
+        return "" if not member and os.path.isdir(disk_path) else None
+    name = path.split("::", 1)[1] if member else disk_path
+    return match_extension(name, reads)
+
+
+def _can_read(spec, path: str, tools_registry) -> bool:
+    """Whether ``spec``'s command can read ``path``, past its extension.
+
+    An archive member needs a mode that takes archive members; a file on disk
+    asks the tool's ``converts_path`` and a folder its ``accepts_directory``.
+    May touch the disk (a header or a sibling), so it runs last.
+
+    ``converts_path`` refines the tool's own ``input_extensions``, so it is
+    asked only about a file those cover: chdman's extract and copy modes read
+    ``.chd``, which chdman leaves out of its tool-wide inputs on purpose.
+    """
+    disk_path, member = _split_member(path)
+    if member:
+        return bool(spec.allows_archive_input)
+    tool = tools_registry.for_mode(spec.mode)
+    if InputKind.DIRECTORY in spec.input_kinds:
+        return bool(tool.accepts_directory(disk_path))
+    if match_extension(disk_path, tool.input_extensions) is None:
+        return True
+    return bool(tool.converts_path(disk_path))
+
+
+def _best_reader(path: str, specs, tools_registry, reads_of) -> tuple:
+    """``(spec, matched extension)`` of the most specific reader of ``path``.
+
+    The most specific extension match wins (``.nkit.iso`` over ``.iso``), then
+    the smallest read set, then the order of ``specs`` (registration order).
+    ``(None, None)`` when no spec can read the file.
+    """
+    best, best_matched = None, None
+    best_key: tuple[int, int] | None = None
+    for spec in specs:
+        reads = reads_of(spec)
+        matched = _extension_match(spec, path, reads)
+        if matched is None:
+            continue
+        key = (-len(matched), len(reads))
+        if best_key is not None and key >= best_key:
+            continue
+        if not _can_read(spec, path, tools_registry):
+            continue
+        best, best_matched, best_key = spec, matched, key
+    return best, best_matched
+
+
 def default_mode(path: str, platform: str, tools_registry) -> str | None:
     """The default target mode for an Image of ``platform`` at ``path``.
 
@@ -396,34 +553,188 @@ def default_mode(path: str, platform: str, tools_registry) -> str | None:
     ``.iso`` goes to createdvd, which reads only ``.iso``, not createcd), then
     registration order. None when no candidate reads the file.
     """
-    disk_path, member = _split_member(path)
-    name = path.split("::", 1)[1] if member else disk_path
-    if not member and os.path.isdir(disk_path):
-        # A folder Image goes to the first folder-input mode for the Platform
-        # whose tool takes this folder (``accepts_directory``).
-        for spec in _auto_candidates(platform, tools_registry):
-            if (
-                InputKind.DIRECTORY in spec.input_kinds
-                and tools_registry.for_mode(spec.mode).accepts_directory(disk_path)
-            ):
-                return spec.mode
-        return None
-    best: str | None = None
-    best_key: tuple[int, int] | None = None
-    for spec in _auto_candidates(platform, tools_registry):
+    best, _ = _best_reader(
+        path, _auto_candidates(platform, tools_registry), tools_registry,
+        lambda spec: tools_registry.mode_reads_extensions(spec.mode),
+    )
+    return best.mode if best else None
+
+
+# --------------------------------------------------------------------------- #
+# A named format: `compressatorium convert --to <format>` (#306)
+# --------------------------------------------------------------------------- #
+
+
+def _parse_target(target: str, tools_registry) -> tuple[str | None, str | None]:
+    """``(format, None)`` for a format such as ``chd``, ``(None, mode)`` for a mode id."""
+    key = target.strip().lower()
+    if any(spec.mode == key for spec in tools_registry.mode_specs()):
+        return None, key
+    return (key if key.startswith(".") else f".{key}"), None
+
+
+def target_formats(tools_registry) -> list[str]:
+    """Every format some Auto-eligible mode writes (``.chd``, ``.rvz``, ...).
+
+    Read from each mode's ``output_path`` over its own inputs, so a tool whose
+    output extension follows its input (z3ds, nsz) is covered without a list.
+    A compound output (romz's ``Game.gba.7z``) also lists its last extension,
+    so ``7z`` and ``zip`` name the archive whatever the ROM inside; a name
+    that is not an extension (chdman copy's ``Game_copy.chd``) is left out.
+    """
+    found: set[str] = set()
+    for spec in tools_registry.mode_specs():
+        if not spec.auto_target:
+            continue
+        tool = tools_registry.for_mode(spec.mode)
+        for ext in tools_registry.mode_reads_extensions(spec.mode) or {""}:
+            probe = f"/compressatorium-format-probe/Game{ext}"
+            try:
+                out = tool.output_path(spec.mode, probe)
+            except (KeyError, ValueError, OSError):
+                continue
+            stem = "/compressatorium-format-probe/Game"
+            suffix = out[len(stem):].lower() if out.startswith(stem) else ""
+            if suffix.startswith(".") and len(suffix) > 1:
+                found.add(suffix)
+                found.add(os.path.splitext(suffix)[1])
+    return sorted(found)
+
+
+def _writes(spec, path: str, fmt: str, tools_registry) -> bool:
+    out = _target_output(path, spec.mode, None, tools_registry)
+    return out is not None and match_extension(out, {fmt}) is not None
+
+
+def target_reads_extensions(target: str, tools_registry) -> frozenset[str]:
+    """Every extension some mode for ``target`` can read (#306).
+
+    A mode id: what that mode's command reads (``mode_reads_extensions``). A
+    format: the union over the Auto-eligible modes ``format_candidates``
+    considers. A folder walk for ``--to`` lists the files with these, so a
+    mode reading what its tool leaves out of its inputs (chdman's extract
+    modes and ``.chd``) still finds them; ``format_candidates`` then decides
+    per file.
+    """
+    _fmt, mode = _parse_target(target, tools_registry)
+    if mode is not None:
+        return frozenset(tools_registry.mode_reads_extensions(mode))
+    found: set[str] = set()
+    for spec in tools_registry.mode_specs():
+        if spec.auto_target:
+            found |= tools_registry.mode_reads_extensions(spec.mode)
+    return frozenset(found)
+
+
+def format_candidates(path: str, target: str, tools_registry) -> list:
+    """The modes that could turn ``path`` into ``target``, Platform aside.
+
+    ``target`` is a format (``chd``, ``.rvz``) or a mode id (``createcd``). A
+    format matches every Auto-eligible mode whose command reads the Image and
+    whose output has that extension; a mode id matches itself when its
+    command reads the Image (``mode_reads_extensions``: createdvd takes a
+    ``.cue`` by hand but cannot read one). Empty means the Image is not in
+    scope for ``target``.
+    """
+    fmt, mode = _parse_target(target, tools_registry)
+    if mode is not None:
+        spec = tools_registry.spec(mode)
+        reads = tools_registry.mode_reads_extensions(mode)
+        if _extension_match(spec, path, reads) is None:
+            return []
+        return [spec] if _can_read(spec, path, tools_registry) else []
+    found = []
+    for spec in tools_registry.mode_specs():
+        if not spec.auto_target:
+            continue
         reads = tools_registry.mode_reads_extensions(spec.mode)
-        matched = match_extension(name, reads)
-        if matched is None:
+        if _extension_match(spec, path, reads) is None:
             continue
-        key = (-len(matched), len(reads))
-        if best_key is not None and key >= best_key:
+        if not _writes(spec, path, fmt, tools_registry):
             continue
-        if member and not spec.allows_archive_input:
+        if _can_read(spec, path, tools_registry):
+            found.append(spec)
+    return found
+
+
+def _serves(spec, platform: str, tools_registry) -> bool:
+    """Whether ``spec`` may convert an Image of ``platform``.
+
+    The Auto test (``platform_slugs`` or ``auto_platform_slugs``), kept
+    conservative like ``mode_allows_platform``: a mode that names no Platform,
+    or a Platform no mode names, rules nothing out.
+    """
+    def claimed(s) -> set:
+        return {
+            canonical_slug(slug)
+            for slug in (*tools_registry.mode_platform_slugs(s.mode), *s.auto_platform_slugs)
+        }
+
+    own = claimed(spec)
+    if not own or platform in own:
+        return True
+    return not any(platform in claimed(s) for s in tools_registry.mode_specs())
+
+
+serves_platform = _serves
+
+
+def format_route(
+    path: str, target: str, platform: str | None, tools_registry,
+) -> tuple[str | None, str | None]:
+    """``(mode, None)`` for how ``path`` becomes ``target``, or ``(None, reason)``.
+
+    Auto's choice restricted to the modes that write the format: the
+    Image's Platform (when one was worked out) narrows the candidates, then
+    ``_best_reader`` ranks them exactly as ``default_mode`` does. An Image whose
+    most specific reader already reads the format is left alone ("Already
+    CHD"), the ``auto_route`` rule. A mode id is taken as given once it reads
+    the Image and serves its Platform.
+    """
+    fmt, mode = _parse_target(target, tools_registry)
+    candidates = format_candidates(path, target, tools_registry)
+    if not candidates:
+        name = path.split("::", 1)[-1]
+        ext = os.path.splitext(name)[1].lower() or name
+        if mode is not None:
+            return None, f"{mode} does not read {ext} files"
+        return None, f"No {fmt} target reads {ext} files"
+    if platform:
+        served = [s for s in candidates if _serves(s, platform, tools_registry)]
+        if not served:
+            if mode is not None:
+                return None, f"{mode} does not convert {platform} Images"
+            return None, f"No {fmt} target for {platform} Images"
+        candidates = served
+    if mode is not None:
+        return mode, None
+    best, matched = _best_reader(
+        path, candidates, tools_registry,
+        lambda spec: tools_registry.mode_reads_extensions(spec.mode),
+    )
+    if best is None:
+        return None, f"No {fmt} target reads this Image"
+    if matched and matched.lower() == fmt:
+        return None, f"Already {fmt.lstrip('.').upper()}"
+    return best.mode, None
+
+
+def auto_reads(path: str, tools_registry) -> bool:
+    """Whether any mode Auto may pick reads ``path``'s extension.
+
+    A cheap, name-only test for walking a tree: a ``.bin`` beside its ``.cue``
+    or a finished ``.chd`` is not an Image Auto would plan, so the CLI does
+    not report it (#306).
+    """
+    for spec in tools_registry.mode_specs():
+        if not spec.auto_target:
             continue
-        if not member and not tools_registry.for_mode(spec.mode).converts_path(disk_path):
+        if getattr(spec.kind, "value", spec.kind) not in _TARGET_KINDS:
             continue
-        best, best_key = spec.mode, key
-    return best
+        reads = tools_registry.mode_reads_extensions(spec.mode)
+        if _extension_match(spec, path, reads) is not None:
+            return True
+    return False
 
 
 def auto_route(path: str, platform: str, tools_registry) -> tuple[str | None, str | None]:

@@ -8,6 +8,7 @@ explicitly in ``__init__.py``.
 from __future__ import annotations
 
 import asyncio
+import os
 from typing import TYPE_CHECKING
 
 from logging_setup import get_logger
@@ -64,7 +65,7 @@ class ToolRegistry:
     def spec(self, mode: str) -> ModeSpec:
         return self.for_mode(mode).spec(mode)
 
-    async def tool_is_ready(self, tool: ToolPlugin) -> bool:
+    async def tool_is_ready(self, tool: ToolPlugin, *, purpose: str = "convert") -> bool:
         """Can this tool run here — without hanging the caller if a mount cannot say?
 
         ``is_ready()`` is a coroutine, which makes it look safe, and it is not.
@@ -98,8 +99,10 @@ class ToolRegistry:
         ``is_ready()`` is covered by using the registry the way every other
         dispatch already does.
         """
+        # Readiness is per operation (#306): "verify" asks `verify_is_ready`.
+        probe = tool.verify_is_ready() if purpose == "verify" else tool.is_ready()
         try:
-            return bool(await asyncio.wait_for(tool.is_ready(), READY_PROBE_SECONDS))
+            return bool(await asyncio.wait_for(probe, READY_PROBE_SECONDS))
         except (asyncio.TimeoutError, OSError):
             logger.warning(
                 "readiness check for %s did not finish in %ss; treating it as "
@@ -420,6 +423,69 @@ class ToolRegistry:
         it off the event loop.
         """
         return [t for t in self._tools.values() if t.verifies_path(path)]
+
+    def split_owner_name(self, path: str) -> str | None:
+        """The logical output a numbered split part would belong to, by name
+        alone: *path* without its last suffix, when that suffix is a number
+        and the rest carries some mode's declared output extension
+        (``Game.iso.3`` -> ``Game.iso``; ``save.0`` -> None). No disk I/O, so
+        a part that doesn't exist yet (still being written) has an owner too.
+        """
+        base, suffix = os.path.splitext(path)
+        if not suffix[1:].isdigit():
+            return None
+        exts = {spec.output_ext for spec in self.mode_specs() if spec.output_ext}
+        return base if match_extension(base, exts) is not None else None
+
+    def split_owner(self, path: str) -> tuple[str, str] | None:
+        """``(logical output, mode)`` when *path* is a numbered part of a split
+        output (``Game.iso.0``), else None. May do disk I/O.
+
+        Registry-driven: the candidate is the name without its last suffix, and
+        it counts only when it carries a mode's declared output extension
+        (``.iso`` for folder_to_iso, so ``save.0`` never qualifies) and that
+        mode's own ``companion_outputs`` for it (the lookup the delete and
+        overwrite paths use) lists *path*. A suffix that isn't a number is
+        never one, and costs no disk I/O.
+        """
+        base, suffix = os.path.splitext(path)
+        if not suffix[1:].isdigit():
+            return None
+        real = os.path.realpath(path)
+        for spec in self.mode_specs():
+            if not spec.output_ext or match_extension(base, {spec.output_ext}) is None:
+                continue  # this mode never writes a file named like the base
+            if real in {os.path.realpath(p) for p in self._companions(spec.mode, base)}:
+                return base, spec.mode
+        return None
+
+    def split_members(self, path: str) -> list[str]:
+        """The later parts of the split output whose *first* part is *path*.
+
+        [] for anything else, a later part included: a split output is one
+        logical Image, carried by its first part. May do disk I/O.
+        """
+        owner = self.split_owner(path)
+        if owner is None:
+            return []
+        parts = self._companions(owner[1], owner[0])
+        if not parts or os.path.realpath(parts[0]) != os.path.realpath(path):
+            return []
+        return parts[1:]
+
+    def _companions(self, mode: str, output_path: str) -> list[str]:
+        """A mode's companion outputs; [] when the tool's disk probe fails."""
+        try:
+            return self.for_mode(mode).companion_outputs(output_path, mode)
+        except OSError as exc:
+            logger.debug("No companion outputs from %s for %s: %s", mode, output_path, exc)
+            return []
+
+    def tools_checking_path(self, path: str) -> list[ToolPlugin]:
+        """Tools a verify run checks ``path`` with (``claims_check``), in
+        registration order. Wider than :meth:`tools_verifying_path`: a damaged
+        file its tool would otherwise recognise is included (#306)."""
+        return [t for t in self._tools.values() if t.claims_check(path)]
 
     def verify_extensions(self) -> tuple[str, ...]:
         """Union of every registered tool's verify_extensions.

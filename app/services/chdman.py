@@ -171,6 +171,33 @@ class ChdmanService:
 
         return self._parse_info(stdout.decode())
 
+    async def extract_cd(
+        self,
+        chd_path: str,
+        sheet_path: str,
+        *,
+        cancel_event: asyncio.Event | None = None,
+    ) -> bool:
+        """``chdman extractcd`` the CD in ``chd_path`` to ``sheet_path``.
+
+        The sheet's extension picks the format (``.cue`` or ``.gdi``); the track
+        files land beside it. Unbounded here: the Round-trip check bounds the
+        whole digest. True only when chdman exited 0; a cancel, a timeout or a
+        failure is False.
+        """
+        returncode, _, stderr = await self._runner.run_capture(
+            [self.chdman_path, "extractcd", "-f", "-i", chd_path, "-o", sheet_path],
+            cancel_event=cancel_event,
+        )
+        if returncode != 0:
+            logger.warning(
+                "chdman extractcd %s for %s: %s",
+                "aborted" if returncode is None else f"failed ({returncode})",
+                chd_path, stderr.decode(errors="replace").strip(),
+            )
+            return False
+        return True
+
     async def verify(
         self, chd_path: str, *, cancel_event: asyncio.Event | None = None,
     ) -> dict:
@@ -203,6 +230,7 @@ class ChdmanService:
             success_message="CHD file is Intact",
             failure_message="CHD verification failed",
             cancel_event=cancel_event,
+            judge_output=_judge_verify_output,
         )
 
 
@@ -299,6 +327,35 @@ class ChdmanService:
         if output_dir:
             return str(Path(output_dir) / filename)
         return str(input_p.parent / filename)
+
+
+NO_CHECKSUM_MESSAGE = "This CHD carries no checksum, so it can't be checked"
+
+
+def _judge_verify_output(lines: list[str]) -> str | None:
+    """Why a ``chdman verify`` that exited 0 still failed, or None if it passed.
+
+    chdman's ``do_verify`` (unchanged from MAME 0.146 to master) prints a raw
+    or overall SHA1 mismatch to stderr as ``Error: ... SHA1 in header = ...``
+    and exits 0, and also exits 0 with ``No verification to be done; ...`` when
+    the CHD carries no checksum. So the exit code alone would call a CHD whose
+    hunks no longer decode to the data it was made from Intact. It passes only
+    when it printed ``Raw SHA1 verification successful!`` and no error line.
+    """
+    text = [line.strip() for line in lines]
+    errors = [
+        line for line in text
+        if line.lower().startswith("error") or "actual sha1" in line.lower()
+    ]
+    if errors:
+        return "\n".join(errors)
+    if any("No verification to be done" in line for line in text):
+        # Uncompressed, or no checksum: nothing was read, so not Intact. Said
+        # as "can't be checked" so a library file does not look damaged.
+        return NO_CHECKSUM_MESSAGE
+    if not any("Raw SHA1 verification successful" in line for line in text):
+        return "chdman verify did not report a raw SHA1 match"
+    return None
 
 
 chdman_service = ChdmanService()
