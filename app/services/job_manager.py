@@ -2979,45 +2979,52 @@ class JobManager:
         # web guard's exact-path probe refuses to rename or delete them, and a
         # job writing one of those paths can't take its output lock. Readers
         # share it. A folder input already holds its subtree lock above.
-        if job.input_kind != InputKind.DIRECTORY and not await run_in_threadpool(
-            self._hold_inputs, job_id, job,
-        ):
-            await self._defer_blocked_job(
+        # From the moment the input locks may be taken until the try/finally
+        # below owns them: a cancellation here (worker shutdown) releases
+        # them, or the Source would stay shared-locked until restart (#306).
+        try:
+            if job.input_kind != InputKind.DIRECTORY and not await run_in_threadpool(
+                self._hold_inputs, job_id, job,
+            ):
+                await self._defer_blocked_job(
+                    job_id,
+                    output_lock_held=True,
+                    message="Waiting for another job using this Source or its folder...",
+                )
+                return
+
+            job.status = JobStatus.PROCESSING
+            job.started_at = datetime.now(timezone.utc)
+            # Restart the progress clock at the moment work actually begins. It was
+            # last set when the job was created, so a job that waited in the queue
+            # longer than debug_progress_timeout -- routine on a deep queue -- would
+            # otherwise be reported stalled the instant it started running.
+            self._last_progress_at[job_id] = time.monotonic()
+            processing_now = sum(
+                1 for candidate in self.jobs.values() if candidate.status == JobStatus.PROCESSING
+            )
+            if processing_now > self.max_concurrent:
+                logger.error(
+                    "Processing concurrency invariant violated: processing=%d max_concurrent=%d",
+                    processing_now,
+                    self.max_concurrent,
+                )
+
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug("Job %s acquired locks and started processing", job_id)
+
+            await self._notify_subscribers(
                 job_id,
-                output_lock_held=True,
-                message="Waiting for another job using this Source or its folder...",
+                {
+                    "type": "status",
+                    "job_id": job_id,
+                    "status": job.status.value,
+                    "progress": 0,
+                },
             )
-            return
-
-        job.status = JobStatus.PROCESSING
-        job.started_at = datetime.now(timezone.utc)
-        # Restart the progress clock at the moment work actually begins. It was
-        # last set when the job was created, so a job that waited in the queue
-        # longer than debug_progress_timeout -- routine on a deep queue -- would
-        # otherwise be reported stalled the instant it started running.
-        self._last_progress_at[job_id] = time.monotonic()
-        processing_now = sum(
-            1 for candidate in self.jobs.values() if candidate.status == JobStatus.PROCESSING
-        )
-        if processing_now > self.max_concurrent:
-            logger.error(
-                "Processing concurrency invariant violated: processing=%d max_concurrent=%d",
-                processing_now,
-                self.max_concurrent,
-            )
-
-        if logger.isEnabledFor(logging.DEBUG):
-            logger.debug("Job %s acquired locks and started processing", job_id)
-
-        await self._notify_subscribers(
-            job_id,
-            {
-                "type": "status",
-                "job_id": job_id,
-                "status": job.status.value,
-                "progress": 0,
-            },
-        )
+        except BaseException:
+            self._release_inputs(job_id)
+            raise
 
         try:
             # Ledger bookkeeping (#292): size the Source set before anything can

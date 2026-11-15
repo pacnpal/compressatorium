@@ -427,3 +427,48 @@ def test_an_output_lock_through_an_alias_is_one_lock_with_the_real_path(tmp_path
     first.release_lock(str(tmp_path / "alias" / "Game.rvz"))
     assert second.acquire_lock(str(real / "Game.rvz"))
     second.release_lock(str(real / "Game.rvz"))
+
+
+@pytest.mark.asyncio
+async def test_a_job_cancelled_before_its_run_lets_go_of_its_input_locks(tmp_path, monkeypatch):
+    """review r9 M4: a CancelledError between taking the input locks and the
+    try/finally that releases them (worker shutdown at the first status
+    notice) must not leave the Source shared-locked."""
+    import asyncio
+    from datetime import datetime, timezone
+
+    from models import ConversionJob, ConversionMode, JobStatus
+    from services.concurrency_manager import concurrency_manager
+    from services.job_manager import job_manager
+    from services.lock_manager import lock_manager
+
+    monkeypatch.setattr(lock_manager, "_lock_dir", str(tmp_path / "locks"))
+    monkeypatch.setattr(lock_manager, "_ready", False)
+    iso = tmp_path / "Game.iso"
+    iso.write_bytes(b"disc")
+    out = str(tmp_path / "Game.rvz")
+    job = ConversionJob(
+        id="m4cancel", file_path=str(iso), filename=iso.name,
+        mode=ConversionMode.DOLPHIN_RVZ, status=JobStatus.QUEUED,
+        created_at=datetime.now(timezone.utc), output_path=out,
+    )
+    original = job_manager._notify_subscribers
+
+    async def cancelled_at_start(job_id, event):
+        if event.get("type") == "status" and event.get("progress") == 0:
+            raise asyncio.CancelledError
+        return await original(job_id, event)
+
+    monkeypatch.setattr(job_manager, "_notify_subscribers", cancelled_at_start)
+    job_manager.jobs[job.id] = job
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await job_manager._process_job(job.id)
+        assert _manager(tmp_path / "locks").check_file_status(str(iso))[1] is False
+        assert job.id not in job_manager._input_locks
+    finally:
+        lock_manager.release_lock(out)
+        concurrency_manager.release(job.id)
+        job_manager.jobs.pop(job.id, None)
+        job_manager._cancel_events.pop(job.id, None)
+        job_manager._release_inputs(job.id)
