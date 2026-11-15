@@ -69,6 +69,7 @@ class VerificationStore:
         source_path: str | None,
         produced_meta: dict | None = None,
         check: str = "intact",
+        keep_provenance: bool = False,
     ) -> None:
         normalized = self._normalize(chd_path)
         normalized_source = self._normalize(source_path) if source_path else None
@@ -83,13 +84,14 @@ class VerificationStore:
             "verified_at": stmt.excluded.verified_at,
             "check_passed": stmt.excluded.check_passed,
         }
-        # Refreshing a check never erases provenance (#306): a call with no
-        # produced_meta or source_path (a plain Verify) leaves the stored ones,
-        # the mode that made the file (which the CLI routes the next check by)
-        # and its Source (which the re-run fast path reads).
-        if produced_meta is not None:
+        # A conversion's record replaces what was there, None included, so an
+        # output rebuilt at the same path never inherits an old mode. A plain
+        # re-check (``refresh_check``) keeps the mode that made the file
+        # (which the CLI routes the next check by) and its Source (which the
+        # re-run fast path reads): refreshing a check never erases provenance
+        # (#306).
+        if not keep_provenance:
             updates["produced_meta"] = stmt.excluded.produced_meta
-        if normalized_source is not None:
             updates["source_path"] = stmt.excluded.source_path
         stmt = stmt.on_conflict_do_update(index_elements=["chd_path"], set_=updates)
         with self._session() as session:
@@ -108,12 +110,23 @@ class VerificationStore:
 
         ``check`` names which one (#298): ``"intact"``, its tool's container
         check (every manual Verify), or ``"round_tripped"``, its content digest
-        equalled its Source's at conversion time. ``produced_meta=None`` and
-        ``source_path=None`` keep the stored ones: refreshing a check never
-        erases what made the file.
+        equalled its Source's at conversion time. This is a conversion's
+        record: it replaces any stored provenance, ``None`` included. A plain
+        re-check uses :meth:`refresh_check`.
         """
         await run_in_threadpool(
             self._mark_sync, chd_path, source_path, produced_meta, check,
+        )
+
+    async def refresh_check(self, chd_path: str, *, check: str = "intact") -> None:
+        """Record that ``chd_path`` passed a plain re-check (#306).
+
+        Updates when and which check passed, and keeps the stored
+        ``produced_meta`` and ``source_path``: refreshing a check never erases
+        what made the file. A file with no record gets a plain one.
+        """
+        await run_in_threadpool(
+            self._mark_sync, chd_path, None, None, check, True,
         )
 
     def _clear_sync(self, chd_path: str) -> None:

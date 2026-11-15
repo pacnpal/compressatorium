@@ -1618,7 +1618,7 @@ def _sse_from_verify_stream(
                     yield {"event": "verify_progress", "data": json.dumps(update)}
                 elif update.get("type") == "complete":
                     if update.get("valid"):
-                        await verification_store.mark_verified(path)
+                        await verification_store.refresh_check(path)
                     yield {"event": "verify_complete", "data": json.dumps(update)}
                     break
                 elif update.get("type") == "error":
@@ -1811,7 +1811,7 @@ def _sse_batch_from_verify_stream(
                         lane["token"] = None
 
                 if final_result.get("valid"):
-                    await verification_store.mark_verified(path)
+                    await verification_store.refresh_check(path)
                     verified_count += 1
                     status = "verified"
                 else:
@@ -1918,7 +1918,7 @@ def register_verify_routes(router_: APIRouter, tool: ToolPlugin) -> tuple:
                 cfg.service().verify(path), timeout=bound or None,
             )
             if result.get("valid"):
-                await verification_store.mark_verified(path)
+                await verification_store.refresh_check(path)
             return result
         except asyncio.TimeoutError:
             # A verdict-shaped answer, not a 500: the file is not known bad, the

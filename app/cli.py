@@ -946,7 +946,7 @@ async def _verify_one(path: str, tool, has_db: bool, since, dry_run: bool) -> di
         line["_stop"] = True
     if result.get("valid"):
         line["status"], line["reason"] = "intact", result.get("message")
-        await verification_store.mark_verified(path)
+        await verification_store.refresh_check(path)
         return line
     if result.get("uncheckable"):
         # The tool won't check it here (an archive safety rule refused it):

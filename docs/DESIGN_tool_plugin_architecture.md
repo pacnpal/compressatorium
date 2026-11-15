@@ -2892,6 +2892,14 @@ call (`romz._no_prompt_switch()`; no password literal), so an encrypted archive
 fails at once instead of prompting. `7z a` names none:
 there the switch would encrypt the archive being written.
 
+**Provenance.** A plain re-check that passes (the CLI's `verify`, the web's
+Verify, single and batch) records it with `verification_store.refresh_check`,
+which updates when and which check passed and keeps the stored `produced_meta`
+and `source_path`: refreshing a check never erases the mode that made the file,
+which step 1 below routes by. A conversion records with `mark_verified`, which
+replaces both, `None` included, so an output rebuilt at the same path by
+another mode never inherits the old one.
+
 **Which tool checks a file** (`cli._verify_tool`), in this order:
 
 | Step | When | Verifier |
