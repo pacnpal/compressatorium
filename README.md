@@ -1938,10 +1938,11 @@ emulatorjs:
 Then put the `.dosz` files in RomM's `dos` platform folder.
 
 **Untested: whether a repacked game boots in RomM.** RomM's default EmulatorJS
-(4.2.3) and its nightly build hand the file to DOSBox Pure in different ways: from
-their source, 4.2.3 unpacks it and loads one file the core accepts, and the nightly
-loads a generated `BOOTUP.BAT`. Neither build has been tried with a real eXoDOS
-game yet. `dosbox.conf` is written first in the hope that 4.2.3 picks it, but that
+(4.2.3) and its nightly build may hand the file to DOSBox Pure in different ways.
+Reading their source, 4.2.3 unpacks it and loads one file the core accepts. The
+nightly, which RomM loads when netplay is enabled, may instead load a generated
+`BOOTUP.BAT` while `emulatorjs.disable_batch_bootup` is `false` (the default).
+Neither build has been tried with a real eXoDOS game yet. `dosbox.conf` is written first in the hope that 4.2.3 picks it, but that
 is not confirmed either. A boot test on both builds (a floppy game, a CD game and a
 game with several executables) is pending with the project owner; until it
 passes, treat playback in RomM as unverified.

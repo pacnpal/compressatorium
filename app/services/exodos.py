@@ -562,8 +562,8 @@ class ExodosService:
                         raise ConversionCancelled("Conversion cancelled")
                     if not member.read(_CHECK_CHUNK):
                         return
-        except ConversionCancelled:
-            raise
+        # ConversionCancelled subclasses only Exception, so none of these
+        # handlers can turn a cancel into a ValueError.
         except (zipfile.BadZipFile, zlib.error, EOFError) as exc:
             raise ValueError(f"CRC check failed for {info.filename}: {exc}") from exc
         except (RuntimeError, NotImplementedError) as exc:
