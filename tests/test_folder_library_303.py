@@ -1802,6 +1802,42 @@ async def test_an_unchanged_source_is_still_held(tree: Path, ready, queue, monke
     assert list(state.get("failed") or {}) == ["gc/Melee.iso"], state
 
 
+def test_the_folder_libraries_migration_stacks_on_the_ledger_totals_one(tmp_path: Path) -> None:
+    """Supervisor ruling: #297 keeps 0011; #303's table comes in 0012 on top.
+
+    One linear head. Migrations here are forward-only (every ``downgrade``
+    raises), so the chain is walked upward instead: an empty database taken
+    to 0010, then 0011, then head, each table arriving with its own revision,
+    and a straight upgrade of another empty database to head.
+    """
+    from alembic import command
+    from alembic.script import ScriptDirectory
+    from sqlalchemy import inspect
+
+    engine = _db.make_engine(str(tmp_path / "chain.db"))
+    cfg = _db._alembic_config(engine)
+    script = ScriptDirectory.from_config(cfg)
+    # #304's 0013 stacks on this 0012, so the one head is 0013.
+    assert script.get_heads() == ["0013"]
+    assert script.get_revision("0012").down_revision == "0011"
+    assert script.get_revision("0011").down_revision == "0010"
+
+    def tables(eng) -> set[str]:
+        return set(inspect(eng).get_table_names())
+
+    command.upgrade(cfg, "0010")
+    assert not {"folder_libraries", "ledger_totals"} & tables(engine)
+    command.upgrade(cfg, "0011")
+    assert "ledger_totals" in tables(engine)
+    assert "folder_libraries" not in tables(engine)
+    command.upgrade(cfg, "head")
+    assert {"folder_libraries", "ledger_totals"} <= tables(engine)
+
+    fresh = _db.make_engine(str(tmp_path / "fresh.db"))
+    command.upgrade(_db._alembic_config(fresh), "head")
+    assert {"folder_libraries", "ledger_totals"} <= tables(fresh)
+
+
 def test_the_detection_key_names_its_probe_set(db: Path) -> None:
     """CodeRabbit 4576895544: ``detection_key`` itself carries the probe set.
 

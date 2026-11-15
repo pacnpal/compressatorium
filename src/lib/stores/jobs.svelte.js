@@ -14,6 +14,8 @@ import {
 } from './jobConstants.js';
 
 const MAX_OPTIMISTIC_PLACEHOLDERS = 100;
+// How many eviction tombstones the jobs store keeps (newest win).
+const EVICTED_TOMBSTONES = 2000;
 
 /**
  * Whether an HTTP snapshot of a job we already hold is newer than our copy,
@@ -80,6 +82,12 @@ class JobsStore {
 
   // index for O(1) lookup; not a $state because it's derived from this.jobs
   _byId = new SvelteMap();
+  // Eviction tombstones: ids the backend pruned from history after they
+  // finished, newest last, at most EVICTED_TOMBSTONES of them. An HTTP
+  // response built before the prune (Auto's adopt) must not bring such a job
+  // back as an unknown queued row. A plain id->true map, like refresh().
+  _evictedIds = Object.create(null);
+  _evictedOrder = [];
   _unsubscribe = null;
   _pollTimer = null;
 
@@ -303,6 +311,19 @@ class JobsStore {
    * evicted would inflate every badge — by one per completion for as long as
    * a batch runs past the cap, until refresh()'s deletion reconcile caught up.
    */
+  /** Record eviction tombstones, keeping the newest EVICTED_TOMBSTONES. */
+  _rememberEvicted(ids) {
+    for (const id of ids) {
+      if (id == null || this._evictedIds[id]) continue;
+      this._evictedIds[id] = true;
+      this._evictedOrder.push(id);
+    }
+    const excess = this._evictedOrder.length - EVICTED_TOMBSTONES;
+    if (excess > 0) {
+      for (const id of this._evictedOrder.splice(0, excess)) delete this._evictedIds[id];
+    }
+  }
+
   _applyHistoryOverflow(payload) {
     if (!payload || typeof payload !== 'object') return;
     // A new backend process restarts the sequence at 0, so the cursor from
@@ -327,6 +348,7 @@ class JobsStore {
       // `prefer-svelte-reactivity` rule flags raw Set usage even for locals.
       const gone = Object.create(null);
       for (const id of evictedIds) gone[id] = true;
+      this._rememberEvicted(evictedIds);
       this.jobs = this.jobs.filter((j) => {
         if (gone[j.id]) {
           this._byId.delete(j.id);
@@ -396,13 +418,17 @@ class JobsStore {
       // absent from the snapshot. Active jobs are left alone: SSE owns
       // them, and they may simply not be in the snapshot yet if they
       // were just queued between the snapshot generation and arrival.
+      const pruned = [];
       this.jobs = this.jobs.filter((j) => {
         if (TERMINAL_STATUSES.has(j.status) && !remoteIds[j.id]) {
           this._byId.delete(j.id);
+          pruned.push(j.id);
           return false;
         }
         return true;
       });
+      // Finished and gone from the backend: tombstone them like an eviction.
+      this._rememberEvicted(pruned);
     } catch (e) {
       console.error('Job snapshot hydration failed:', e);
     } finally {
@@ -513,6 +539,9 @@ class JobsStore {
       // An HTTP response can be older than the SSE events that beat it here
       // (the job already finished): the same freshness rule as refresh().
       const existing = this._byId.get(job?.id);
+      // Unknown because the backend already pruned it from history (it
+      // finished and was evicted before this response arrived): never back.
+      if (!existing && this._evictedIds[job?.id]) continue;
       if (!existing || snapshotIsNewer(existing, job)) this._applyJob(job);
     }
   }

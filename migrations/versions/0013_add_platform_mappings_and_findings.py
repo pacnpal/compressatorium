@@ -3,8 +3,8 @@
 The user's folder-to-Platform mappings, the Findings store and its
 dismissals (#304).
 
-Revision ID: 0012
-Revises: 0011
+Revision ID: 0013
+Revises: 0012
 Create Date: 2026-11-14 00:00:00
 """
 
@@ -15,8 +15,8 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = '0012'
-down_revision: str | Sequence[str] | None = '0011'
+revision: str = '0013'
+down_revision: str | Sequence[str] | None = '0012'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
@@ -77,14 +77,5 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    # Drops what upgrade() created, newest first. The mappings, Findings and
-    # dismissals go with it; no Image is touched.
-    tables = set(sa.inspect(op.get_bind()).get_table_names())
-    for table, index in (
-        ('finding_dismissals', 'ux_finding_dismissals_key'),
-        ('findings', 'ux_findings_library_image_kind'),
-        ('platform_mappings', 'ux_platform_mappings_library_folder'),
-    ):
-        if table in tables:
-            op.drop_index(index, table_name=table)
-            op.drop_table(table)
+    # Downgrade migrations are not supported in this project (forward-only).
+    raise NotImplementedError("downgrade not supported")

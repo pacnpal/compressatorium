@@ -459,6 +459,33 @@ curl -X PUT http://localhost:8080/api/ledger/settings \
 `GET /api/ledger/recent?limit=N` and `GET /api/ledger/savings` return the rows and
 the totals as JSON.
 
+The **Ledger** view in the sidebar lists every row, newest first, 25 to a page.
+Search matches the Source or output path, and you can filter by status, tool and
+Platform. **Export CSV** downloads every row matching the current search and
+filters (the same query behind `GET /api/ledger/export.csv`). The list is also
+available as JSON from `GET /api/ledger?q=&status=&tool=&platform=&limit=&offset=`,
+which returns `{"items": [...], "total": N}`.
+
+For a home-lab dashboard, `GET /api/metrics` serves Prometheus text:
+
+```
+compressatorium_jobs_total{status="completed"}   # also failed, cancelled
+compressatorium_input_bytes_total                # Source bytes, completed jobs
+compressatorium_output_bytes_total               # output bytes, completed jobs
+compressatorium_queue_depth                      # queued or running now
+```
+
+`/api/ledger/savings` is the savings summary (totals by Platform and by format).
+Both follow the API's auth rules: with `COMPRESSATORIUM_ENABLE_AUTH` on, give
+Prometheus the token as a bearer token or as the basic-auth password. The job and
+byte totals are true counters kept in their own table: they only go up, and a
+retention prune of Ledger rows does not lower them. (They start from the Ledger's
+contents when you upgrade.)
+
+| Light | Dark |
+|-------|------|
+| ![Ledger, light](docs/screenshots/ledger-light.png) | ![Ledger, dark](docs/screenshots/ledger-dark.png) |
+
 ### Notifications
 
 Open **Settings** and add a webhook URL or an [Apprise](https://github.com/caronc/apprise)

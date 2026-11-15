@@ -287,6 +287,33 @@ def _resolve_root_into(configured: str, box: dict) -> None:
         box["failed"] = True
 
 
+_probe_lock = threading.Lock()
+_probes_in_flight: dict[str, tuple[threading.Thread, dict]] = {}
+
+
+def _root_probe(configured: str) -> tuple[threading.Thread, dict]:
+    """The live probe resolving ``configured``, started if none is running.
+
+    One registry for every resolution of a root (cache refreshes and
+    ``_fresh_root``): there is never more than one live probe per root, so
+    a mount that stays blocked strands one thread, however many refreshes
+    and requests ask. A finished probe is never reused; its answer may be
+    stale.
+    """
+    with _probe_lock:
+        entry = _probes_in_flight.get(configured)
+        if entry is None or not entry[0].is_alive():
+            box: dict = {}
+            thread = threading.Thread(
+                target=_resolve_root_into, args=(configured, box), daemon=True,
+                name=f"volume-root-probe:{configured}",
+            )
+            entry = (thread, box)
+            _probes_in_flight[configured] = entry
+            thread.start()
+        return entry
+
+
 def refresh_volume_roots(*, timeout: float | None = None) -> None:
     """Re-resolve every configured root, each bounded on its own thread.
 
@@ -301,11 +328,7 @@ def refresh_volume_roots(*, timeout: float | None = None) -> None:
     probes = []
     for volume in volumes:
         configured = _configured_root(volume)
-        box: dict = {}
-        thread = threading.Thread(
-            target=_resolve_root_into, args=(configured, box), daemon=True,
-        )
-        thread.start()
+        thread, box = _root_probe(configured)
         probes.append((configured, thread, box))
     deadline = time.monotonic() + bound
     for _configured, thread, _box in probes:
@@ -373,13 +396,16 @@ def _matching_volumes(candidate: str) -> list[str]:
     matching = [v for v in volumes if _lexically_under(candidate, _configured_root(v))]
     if matching:
         return matching
+    # Every matching alias, not the first: nested Volumes configured through
+    # symlinks (/outer -> /data/PS2, /inner -> /data/PS2/library) both match,
+    # and a caller choosing the most specific root needs them all.
     resolved_roots = _resolved_root_spellings()
-    for volume in volumes:
-        configured = _configured_root(volume)
-        real = resolved_roots.get(configured)
-        if real is not None and real != configured and _lexically_under(candidate, real):
-            return [volume]
-    return []
+    return [
+        volume for volume in volumes
+        if (real := resolved_roots.get(_configured_root(volume))) is not None
+        and real != _configured_root(volume)
+        and _lexically_under(candidate, real)
+    ]
 
 
 def _has_parent_segment(raw_path: str) -> bool:
@@ -434,30 +460,15 @@ def _holding_roots(real_path: Path, matched: Sequence[str]) -> list[Path]:
     return holders
 
 
-_probe_lock = threading.Lock()
-_probes_in_flight: dict[str, tuple[threading.Thread, dict]] = {}
-
-
 def _fresh_root(configured: str) -> Path | None:
     """``configured`` resolved now, within ``ROOT_PROBE_SECONDS``; None otherwise.
 
     Fails closed: a probe that times out or fails gives None, never the
-    cached spelling. Each root has at most one probe in flight; a check that
-    arrives while one runs waits on it (under its own bound) instead of
-    starting another, so a stalled mount strands one thread, not one per
-    request.
+    cached spelling. Through the per-root registry (``_root_probe``): a check
+    that arrives while a probe runs waits on it (under its own bound) instead
+    of starting another.
     """
-    with _probe_lock:
-        entry = _probes_in_flight.get(configured)
-        if entry is None or not entry[0].is_alive():
-            box: dict = {}
-            thread = threading.Thread(
-                target=_resolve_root_into, args=(configured, box), daemon=True,
-            )
-            entry = (thread, box)
-            _probes_in_flight[configured] = entry
-            thread.start()
-    thread, box = entry
+    thread, box = _root_probe(configured)
     thread.join(ROOT_PROBE_SECONDS)
     if thread.is_alive() or "real" not in box:
         return None
