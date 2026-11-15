@@ -1,0 +1,112 @@
+"""Opening a folder from another view (#304, PR #322 review).
+
+The Findings view's "Open folder" calls ``fileBrowser.openFolder(path)``. It
+must load the Volume list and go straight to the Volume and folder it was
+asked for. The normal Workspace start (``loadVolumes``) selects and lists the
+first Volume, as before. Asserted behaviourally by evaluating
+``src/lib/stores/fileBrowser.svelte.js`` with Node, runes reduced and its
+sibling stores stubbed, as the other ``test_frontend_*`` store tests do.
+"""
+from __future__ import annotations
+
+import json
+import re
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from .test_frontend_rules_view import _find_node
+
+_STORE = Path(__file__).resolve().parents[1] / "src" / "lib" / "stores" / "fileBrowser.svelte.js"
+
+
+def _plain_js() -> str:
+    src = _STORE.read_text(encoding="utf-8")
+    kept = [
+        line for line in src.splitlines()
+        if not (line.strip().startswith("import ") and line.strip().endswith(";"))
+    ]
+    body = re.sub(r"\$state\(", "(", "\n".join(kept))
+    leftover = [r for r in ("$state(", "$derived(", "$effect(") if r in body]
+    assert not leftover, f"fileBrowser.svelte.js grew runes this harness does not reduce: {leftover}"
+    return body.replace("export const ", "const ").replace("export class ", "class ")
+
+
+_STUBS = """
+const SvelteMap = Map;
+const STORAGE_KEYS = {};
+const readString = () => null;
+const writeString = () => {};
+const jobs = { hasActive: false };
+const conversion = { allowsInput: () => true, allowsInputEntry: () => true };
+const ui = { navigated: [], navigate(v) { this.navigated.push(v); } };
+const __listed = [];
+const api = {
+  getVolumes: async () => [
+    { name: 'First', path: '/first' },
+    { name: 'Target', path: '/target' },
+  ],
+  // The first Volume sits on a mount that stopped answering.
+  listFiles: (path) => {
+    __listed.push(path);
+    if (path === '/first' || path.startsWith('/first/')) return new Promise(() => {});
+    return Promise.resolve({ entries: [{ name: 'x.iso', path: `${path}/x.iso` }] });
+  },
+  listArchive: async () => ({ entries: [] }),
+  getArchiveSummaryBatch: async () => ({}),
+  searchFiles: async () => ({ results: [] }),
+  getRommRoms: async () => ({ items: [] }),
+};
+const within = (promise, ms) => Promise.race([
+  promise.then(() => 'done'),
+  new Promise((resolve) => setTimeout(() => resolve('timed out'), ms)),
+]);
+"""
+
+
+def _run(tmp_path: Path, scenario: str) -> dict:
+    node = _find_node()
+    if node is None:
+        pytest.skip("node not available to evaluate the fileBrowser store")
+    script = tmp_path / "file_browser_eval.mjs"
+    script.write_text(_STUBS + _plain_js() + scenario, encoding="utf-8")
+    proc = subprocess.run(
+        [node, str(script)], capture_output=True, text=True, timeout=30, check=False,
+    )
+    if proc.returncode != 0:
+        pytest.fail(f"Could not evaluate the fileBrowser store via node:\n{proc.stderr}")
+    return json.loads(proc.stdout)
+
+
+def test_open_folder_goes_straight_to_its_volume_without_listing_the_first(tmp_path):
+    data = _run(tmp_path, """
+const outcome = await within(fileBrowser.openFolder('/target/roms'), 2000);
+process.stdout.write(JSON.stringify({
+  outcome,
+  volume: fileBrowser.selectedVolume?.path ?? null,
+  path: fileBrowser.currentPath,
+  listed: __listed,
+  navigated: ui.navigated,
+  entries: fileBrowser.entries.length,
+}));
+""")
+    assert data["outcome"] == "done", data
+    assert data["volume"] == "/target", data
+    assert data["path"] == "/target/roms", data
+    assert data["listed"] == ["/target/roms"], data
+    assert data["navigated"] == ["workspace"], data
+    assert data["entries"] == 1, data
+
+
+def test_the_workspace_start_still_selects_and_lists_the_first_volume(tmp_path):
+    data = _run(tmp_path, """
+const outcome = await within(fileBrowser.loadVolumes(), 300);
+process.stdout.write(JSON.stringify({
+  outcome, volume: fileBrowser.selectedVolume?.path ?? null, listed: __listed,
+}));
+""")
+    # The first Volume's listing never answers, so loadVolumes waits on it.
+    assert data["outcome"] == "timed out", data
+    assert data["volume"] == "/first", data
+    assert data["listed"] == ["/first"], data
