@@ -3490,9 +3490,14 @@ free one if it was taken since, never picking a different name on its own.
   filename that itself starts with U+FEFF keeps it. One rule covers readers
   that ignore the BOM (an 8-bit line appended to the file): the bytes that
   would be left on disk, rewritten or not, are read back as the UTF-16 text
-  and as the NUL-stripped bytes in UTF-8 and cp1252 (`_replaced_reached`, the
-  one reader, comments skipped). If any reading still reaches a replaced
-  file, or a new entry can't be encoded in UTF-16, the Source is kept. Text that doesn't decode strictly falls to the rule below.
+  and as the NUL-stripped bytes in UTF-8 and cp1252. Every reading goes
+  through `_text_reaches_replaced`, which runs each entry line through
+  `_entry_reaches_replaced`: the one check that `_rewrite` also uses for its
+  own lines. It asks whether a line reaches a replaced file by any reading a
+  player could use: the parsed path, the literal line, the label-split path
+  with quotes kept, and an unresolved name. If any reading still reaches a
+  replaced file, or a new entry can't be encoded in UTF-16, the Source is
+  kept. Text that doesn't decode strictly falls to the rule below.
 - *UTF-16 without a BOM, and NUL bytes.* Such a playlist is never rewritten:
   without a BOM the encoding can't be known safely. It is UTF-16
   only with a BOM, or when NULs fill most of the odd (little-endian) or even

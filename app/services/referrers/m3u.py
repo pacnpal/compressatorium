@@ -418,9 +418,10 @@ def _rewrite_utf16(
     One rule guards the readers that don't honour the BOM (a line reader can
     see an 8-bit line appended to the file): the bytes that would be left on
     disk, rewritten or not, are read back every way the checker knows (the
-    UTF-16 text, and the NUL-stripped bytes as UTF-8 and as cp1252). If any
-    reading still reaches a replaced file, the Source is kept
-    (``_replaced_reached``: the one reader, comments and blank lines skipped).
+    UTF-16 text, and the NUL-stripped bytes as UTF-8 and as cp1252). Each
+    reading goes through ``_text_reaches_replaced``, the same per-line check
+    ``_rewrite`` uses (parsed path, literal line, quoted form, label split).
+    If any reading still reaches a replaced file, the Source is kept.
     """
     try:
         text = data[len(bom):].decode(codec)
@@ -438,39 +439,57 @@ def _rewrite_utf16(
             result = bom + updated[len(_BOM):].decode(*_ENC).encode(codec)
         except UnicodeEncodeError as exc:
             raise ReferrerError(playlist, "the new entry can't be written in UTF-16") from exc
-    stale = _replaced_reached(result[len(bom):].decode(codec), playlist_dir, renames)
     stripped = result.replace(b"\x00", b"")
-    for other in (stripped.decode("utf-8", errors="replace"),
-                  stripped.decode("cp1252", errors="replace")):
-        stale |= _replaced_reached(other, playlist_dir, renames)
-    if stale:
-        raise ReferrerError(
-            playlist,
-            "would still name a replaced file when read another way "
-            f"({os.path.basename(min(stale))})",
-        )
+    for reading in (result[len(bom):].decode(codec),
+                    stripped.decode("utf-8", errors="replace"),
+                    stripped.decode("cp1252", errors="replace")):
+        stale = _text_reaches_replaced(reading, playlist_dir, renames)
+        if stale is not None:
+            raise ReferrerError(
+                playlist, f"would still name {stale} when read another way",
+            )
     return result, edits
 
 
-def _replaced_reached(text: str, playlist_dir: str, renames: _Renames) -> set[str]:
-    """The replaced files the entries of decoded playlist *text* lead to.
+def _entry_reaches_replaced(
+    parsed: _Line, playlist_dir: str, renames: _Renames,
+) -> tuple[_Target | None, str | None]:
+    """Whether one entry line reaches a replaced file, by any reading a
+    player could use. The one checker: ``_rewrite`` uses it for every line,
+    and the UTF-16 path for every reading of its result.
 
-    Read with the one reader (``_parse_line``: comments and blank lines
-    skipped) and matched the way ``_rewrite`` matches: an entry that resolves
-    to a replaced file gives that file's resolved path, and one that doesn't
-    resolve but names a replaced file gives the name (``_rewrite`` would keep
-    the Source for it)."""
-    reached = set()
+    Returns ``(target, name)``. ``target`` is set when the line's path (label
+    split, quotes dropped) resolves to a replaced file: that line can be
+    rewritten. ``name`` alone means another reading names or reaches one and
+    the line can't be rewritten safely: the path doesn't resolve but names a
+    replaced file, or the literal line (a plain line reader: no label split,
+    no unquoting) or the label-split path with its quotes kept (RetroArch)
+    reaches or names one. ``(None, None)``: no reading does."""
+    identity = file_identity(os.path.join(playlist_dir, parsed.posix))
+    target = renames.target_for(identity)
+    if target is not None:
+        return target, _named_file(parsed.path)
+    if identity is None and _named_file(parsed.path) in renames.names:
+        return None, _named_file(parsed.path)
+    if parsed.path != parsed.entry:
+        label_split = parsed.entry.partition("|")[0].rstrip(_WS)
+        for literal in dict.fromkeys((parsed.entry, label_split)):
+            if literal and _raw_names_a_source(literal, playlist_dir, renames):
+                return None, _named_file(literal)
+    return None, None
+
+
+def _text_reaches_replaced(text: str, playlist_dir: str, renames: _Renames) -> str | None:
+    """The first replaced file decoded playlist *text* still reaches, by any
+    reading of any entry line (``_entry_reaches_replaced``), or None."""
     for line in re.split(r"\r\n|\r|\n", text):
         parsed = _parse_line(line)
         if parsed is None:
             continue
-        identity = file_identity(os.path.join(playlist_dir, parsed.posix))
-        if renames.target_for(identity) is not None:
-            reached.add(identity.realpath)
-        elif identity is None and _named_file(parsed.path) in renames.names:
-            reached.add(f"(unresolved) {_named_file(parsed.path)}")
-    return reached
+        target, name = _entry_reaches_replaced(parsed, playlist_dir, renames)
+        if target is not None or name is not None:
+            return name or "a replaced file"
+    return None
 
 
 def _rewrite(
@@ -500,22 +519,10 @@ def _rewrite(
             out.append(prefix + line)
             continue
         position += 1
-        identity = file_identity(os.path.join(playlist_dir, parsed.posix))
-        target = renames.target_for(identity)
+        target, named = _entry_reaches_replaced(parsed, playlist_dir, renames)
         if target is None:
-            named = None
-            if identity is None and _named_file(parsed.path) in renames.names:
-                named = _named_file(parsed.path)
-            elif parsed.path != parsed.entry:
-                # Other readers read this line differently: a plain line
-                # reader takes it whole; RetroArch splits the label but keeps
-                # quotes. If either reaches or names a replaced file, the
-                # label/quote reading doesn't, so don't guess: keep the Source.
-                label_split = parsed.entry.partition("|")[0].rstrip(_WS)
-                for literal in dict.fromkeys((parsed.entry, label_split)):
-                    if literal and _raw_names_a_source(literal, playlist_dir, renames):
-                        named = _named_file(literal)
-                        break
+            # Another reading names or reaches a replaced file but this one
+            # can't be rewritten: don't guess, keep the Source.
             if named is not None:
                 raise ReferrerError(
                     playlist, f"line {number} names {named} but doesn't point at it",

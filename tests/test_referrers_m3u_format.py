@@ -607,6 +607,28 @@ async def test_an_appended_8_bit_entry_survives_no_rewrite_of_the_utf16_part(tmp
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("name", ["A|B.cue", '"Game.cue"'], ids=["label-like", "quoted"])
+async def test_an_appended_8_bit_line_is_read_every_way_a_player_reads_it(tmp_path, name):
+    """Codex's repro: a Source literally named ``A|B.cue`` (or ``"Game.cue"``)
+    in an appended 8-bit line. The label/quote reading cuts it short, but a
+    plain line reader reaches the Source, so it is kept."""
+    try:
+        _disc(tmp_path, name)
+    except OSError:
+        pytest.skip("the filesystem refuses this name")
+    playlist = tmp_path / "Game.m3u"
+    data = "#EXTM3U\n".encode("utf-16") + f"\n{name}\n".encode()
+    if len(data) % 2:
+        data += b"\n"  # even length, so the whole file still decodes as UTF-16
+    playlist.write_bytes(data)
+
+    outcome = await _replace(tmp_path, name, "Game.chd")
+
+    assert not outcome.ok
+    assert playlist.read_bytes() == data
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("codec", list(_UTF16_WITH_BOM))
 async def test_a_leading_feff_in_the_first_utf16_entry_is_part_of_its_name(tmp_path, codec):
     """After the BOM, a first filename that itself starts with U+FEFF names a
