@@ -2388,7 +2388,16 @@ Precedence is fixed and never guesses:
    name for it (the tools' own spellings and the folder names ES-DE and
    Batocera use: `ps1`, `gc`, `megacd`, `pcenginecd`, `cdi`, `megadrive`,
    `mastersystem`, `n3ds`, ...). Archive members (`a.zip::disc.iso`) skip the
-   header and use the archive's folder.
+   header and use the archive's folder. The walk runs from the Image's own
+   folder up to the root of the Volume that holds it, root included, and never
+   above (`utils.path_utils.containing_volume_root`), so a Volume mounted under
+   `/mnt/md/...` does not make every Image in it a Genesis Image. A path in no
+   configured Volume uses only its own folder.
+
+Cue sheets are read as UTF-8 (a BOM stripped), as cp1252 when they are not
+valid UTF-8, and as Latin-1 last; the first spelling of a track name that
+exists beside the sheet is used (`disc_id._cue_track_paths`), so
+`Jeu (Édition).bin` resolves from either encoding.
 
 Every answer goes through `canonical_slug`, which maps aliases, IGDB's slugs
 and the tools' own vocabulary (`ps`, `ps1`, `gamecube`, `neogeocd`,

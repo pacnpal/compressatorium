@@ -519,18 +519,60 @@ def nintendo_disc_platform(path: str) -> str | None:
     return None
 
 
+_UTF8_BOM = b"\xef\xbb\xbf"
+# A cue sheet is a few hundred bytes; anything far larger is not one.
+_MAX_CUE_BYTES = 1024 * 1024
+
+
+def _cue_file_names(text: str) -> list[str]:
+    """The quoted name of every ``FILE`` line, in order."""
+    names = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        parts = stripped.split('"')
+        if stripped.upper().startswith("FILE ") and len(parts) >= 2:
+            names.append(parts[1])
+    return names
+
+
+def _cue_track_paths(path: str) -> list[Path]:
+    """Every track file a cue sheet names, resolved beside the sheet.
+
+    Sheets come in UTF-8 (with or without a BOM) and in Windows-1252, so a name
+    is decoded as UTF-8 first, as cp1252 when the sheet is not valid UTF-8, and
+    as Latin-1 last (the reading this module always used). The first spelling
+    that exists on disk wins; when none does, the Latin-1 one is returned and
+    the caller's existence check fails as it always did.
+    """
+    try:
+        with open(path, "rb") as cue:
+            raw = cue.read(_MAX_CUE_BYTES)
+    except OSError:
+        return []
+    raw = raw.removeprefix(_UTF8_BOM)
+    try:
+        first = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        first = raw.decode("cp1252", errors="replace")
+    readings = [_cue_file_names(first), _cue_file_names(raw.decode("latin-1"))]
+    folder = Path(path).parent
+    tracks = []
+    for index, fallback in enumerate(readings[-1]):
+        chosen = folder / fallback
+        for names in readings:
+            if index < len(names) and (folder / names[index]).exists():
+                chosen = folder / names[index]
+                break
+        tracks.append(chosen)
+    return tracks
+
+
 def _cue_data_file(path: str) -> str | None:
     """The first ``FILE`` a cue sheet names, when it exists beside the sheet."""
-    try:
-        with open(path, encoding="latin-1") as cue:
-            for line in cue:
-                parts = line.strip().split('"')
-                if line.strip().upper().startswith("FILE ") and len(parts) >= 2:
-                    candidate = Path(path).parent / parts[1]
-                    return str(candidate) if candidate.is_file() else None
-    except OSError:
+    tracks = _cue_track_paths(path)
+    if not tracks:
         return None
-    return None
+    return str(tracks[0]) if tracks[0].is_file() else None
 
 
 def sega_sector0_platform(path: str) -> str | None:
@@ -1101,20 +1143,12 @@ def _extract_cue(path: str) -> Optional[dict]:
     Parse a .cue sheet, find the first DATA track's BIN file, and extract.
     """
     try:
-        cue_dir = Path(path).parent
-        with open(path, encoding="latin-1") as cue:
-            for line in cue:
-                line = line.strip()
-                if line.upper().startswith("FILE "):
-                    # FILE "track.bin" BINARY
-                    parts = line.split('"')
-                    if len(parts) >= 2:
-                        bin_path = cue_dir / parts[1]
-                        if bin_path.exists():
-                            result = _extract_bin(str(bin_path))
-                            if result:
-                                return result
-                            break
+        for bin_path in _cue_track_paths(path):
+            if bin_path.exists():
+                result = _extract_bin(str(bin_path))
+                if result:
+                    return result
+                break
     except Exception as e:
         logger.debug("disc_id: CUE extraction failed for %s: %s", path, e)
     return None

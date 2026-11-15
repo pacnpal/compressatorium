@@ -27,6 +27,15 @@ def _fresh_cache():
     platform_detect.clear_cache()
 
 
+@pytest.fixture(autouse=True)
+def _volume(tmp_path, monkeypatch):
+    """``tmp_path`` is the configured Volume, so the folder walk reaches every
+    folder a test builds under it (and nothing above it)."""
+    from config import settings
+
+    monkeypatch.setattr(settings, "chd_volumes", str(tmp_path))
+
+
 def _by_path(plan):
     return {Path(entry.file_path).name: entry for entry in plan}
 

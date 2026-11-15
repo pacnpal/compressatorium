@@ -26,10 +26,10 @@ import threading
 from collections import OrderedDict
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
-from pathlib import PurePath
+from pathlib import Path, PurePath
 
 from logging_setup import get_logger
-from utils.path_utils import match_extension
+from utils.path_utils import containing_volume_root, match_extension
 
 logger = get_logger("platform_detect")
 
@@ -171,8 +171,28 @@ def _header(path: str, tools: Iterable) -> tuple[set[str], list[str]]:
     return found, sources
 
 
+def _candidate_folders(path: str) -> list[str]:
+    """Folder names the walk may read for ``path``, nearest first.
+
+    From the Image's own folder up to the root of the Volume that holds it,
+    root included, never above: a Volume mounted under ``/mnt/md/...`` must not
+    make every Image in it a Genesis Image. A path in no configured Volume
+    uses only its own folder.
+    """
+    parent = PurePath(path).parent
+    root = containing_volume_root(path)
+    if root is None:
+        return [parent.name] if parent.name else []
+    resolved = Path(os.path.realpath(path)).parent
+    try:
+        below = resolved.relative_to(root).parts
+    except ValueError:
+        return [parent.name] if parent.name else []
+    return [*reversed(below), root.name]
+
+
 def _folder(path: str, names: dict[str, str]) -> tuple[str | None, str | None]:
-    for part in reversed(PurePath(path).parent.parts):
+    for part in _candidate_folders(path):
         slug = names.get(part.lower())
         if slug:
             return slug, part

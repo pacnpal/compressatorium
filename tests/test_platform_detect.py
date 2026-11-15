@@ -24,6 +24,15 @@ def _fresh_cache():
     platform_detect.clear_cache()
 
 
+@pytest.fixture(autouse=True)
+def _volume(tmp_path, monkeypatch):
+    """``tmp_path`` is the configured Volume, so the folder walk reaches every
+    folder a test builds under it (and nothing above it)."""
+    from config import settings
+
+    monkeypatch.setattr(settings, "chd_volumes", str(tmp_path))
+
+
 def _write(path: Path, data: bytes) -> str:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data)
@@ -237,6 +246,41 @@ def test_every_declared_slug_maps_onto_a_romm_slug_in_the_table(declared):
     assert platform_detect.canonical_slug(declared) in platform_detect._ALIASES
 
 
+def test_folder_walk_stops_at_the_volume_root(tmp_path, monkeypatch):
+    from config import settings
+
+    # The Volume sits under a folder named like a Platform (`md` is Genesis).
+    volume = tmp_path / "mnt" / "md" / "library"
+    monkeypatch.setattr(settings, "chd_volumes", str(volume))
+    headered = _ps2(volume / "pile" / "game.iso")
+    blank = _blank(volume / "pile" / "other.iso")
+
+    assert (detect_platform(headered).platform, detect_platform(headered).how) == (
+        "ps2", "header",
+    )
+    assert detect_platform(blank).how == "unsorted"
+
+
+def test_the_volume_root_itself_can_name_the_platform(tmp_path, monkeypatch):
+    from config import settings
+
+    volume = tmp_path / "psx"
+    monkeypatch.setattr(settings, "chd_volumes", str(volume))
+
+    assert detect_platform(_blank(volume / "game.iso")).platform == "psx"
+
+
+def test_a_path_outside_every_volume_uses_only_its_own_folder(tmp_path, monkeypatch):
+    from config import settings
+
+    monkeypatch.setattr(settings, "chd_volumes", str(tmp_path / "volume"))
+    own = _blank(tmp_path / "elsewhere" / "ps2" / "game.iso")
+    above = _blank(tmp_path / "elsewhere" / "ps2" / "Game (USA)" / "game.iso")
+
+    assert detect_platform(own).platform == "ps2"
+    assert detect_platform(above).how == "unsorted"
+
+
 def test_nearest_platform_folder_wins(tmp_path):
     path = _write(tmp_path / "ps2" / "psp" / "game.iso", b"\0" * 64)
 
@@ -412,6 +456,27 @@ def test_a_cue_is_re_probed_when_its_track_changes(tmp_path):
     os.utime(track, ns=(st.st_atime_ns, st.st_mtime_ns + 5_000_000_000))
 
     assert detect_platform(cue).platform == "segacd"
+
+
+_ACCENTED = "Jeu (\u00c9dition).bin"
+
+
+@pytest.mark.parametrize(
+    "encode",
+    [
+        lambda text: text.encode("utf-8"),
+        lambda text: b"\xef\xbb\xbf" + text.encode("utf-8"),   # UTF-8 with a BOM
+        lambda text: text.encode("cp1252"),
+    ],
+    ids=["utf-8", "utf-8-bom", "cp1252"],
+)
+def test_a_cue_naming_an_accented_track_is_followed(tmp_path, encode):
+    folder = tmp_path / "downloads"
+    _sector0(folder / _ACCENTED, b"SEGA SEGASATURN ", raw=True)
+    sheet = f'FILE "{_ACCENTED}" BINARY\n  TRACK 01 MODE1/2352\n'
+    cue = _write(folder / "game.cue", encode(sheet))
+
+    assert detect_platform(cue).platform == "saturn"
 
 
 def test_a_gdi_lists_its_tracks_as_header_reads(tmp_path):
