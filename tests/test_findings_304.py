@@ -1036,3 +1036,91 @@ async def test_a_conflict_names_the_folder_that_decided(tree: Path) -> None:
     named = rows["ps2/Misfiled.iso"]["cause"]
     assert (named["folder"], named["folder_platform"], named["mapped"]) == ("ps2", "ps2", None)
 
+
+# ----------------------------------------------------------------------
+# review r3: F2 (a cause that changed while away) and F4 (dismiss races)
+# ----------------------------------------------------------------------
+
+
+def test_a_cause_that_changed_while_the_image_was_away_drops_the_old_dismissal(
+    db: Path,
+) -> None:
+    from services import findings
+
+    findings.reconcile("folder:1", [_conflict("ps2/a.iso", header="ngc")])
+    findings.dismiss(_open()[0]["id"])
+    findings.reconcile("folder:1", [])  # out of the listing
+    findings.reconcile("folder:1", [_conflict("ps2/a.iso", header="wii")])  # shown: Y
+    assert [r["dismissed"] for r in _open(include_dismissed=True)] == [False]
+    findings.reconcile("folder:1", [])  # away again
+
+    findings.reconcile("folder:1", [_conflict("ps2/a.iso", header="ngc")])  # X again
+
+    # The owner was shown Y in between, so X is a new decision, not hidden.
+    assert [r["dismissed"] for r in _open(include_dismissed=True)] == [False]
+
+
+def test_dismissing_twice_is_one_dismissal(db: Path) -> None:
+    import threading
+
+    from services import db as _db
+    from services import findings
+
+    findings.reconcile("folder:1", [_conflict("ps2/a.iso")])
+    finding_id = _open()[0]["id"]
+    errors = []
+
+    def click() -> None:
+        try:
+            assert findings.dismiss(finding_id) is True
+        except Exception as exc:  # noqa: BLE001 - the test reports any failure
+            errors.append(exc)
+
+    clicks = [threading.Thread(target=click) for _ in range(8)]
+    for thread in clicks:
+        thread.start()
+    for thread in clicks:
+        thread.join()
+
+    assert errors == []
+    with _db.SessionLocal() as session:
+        assert session.query(_db.FindingDismissalRecord).count() == 1
+
+
+def test_a_dismiss_for_a_library_no_longer_current_writes_nothing(db: Path) -> None:
+    from services import db as _db
+    from services import findings
+
+    findings.reconcile("folder:1", [_conflict("ps2/a.iso")])
+    finding_id = _open()[0]["id"]
+
+    assert findings.dismiss(finding_id, current=lambda library_id: False) is False
+
+    with _db.SessionLocal() as session:
+        assert session.query(_db.FindingDismissalRecord).count() == 0
+
+
+@pytest.mark.asyncio
+async def test_dismissing_a_finding_of_a_removed_library_leaves_no_orphan(
+    tree: Path, monkeypatch,
+) -> None:
+    """Removal moved the Library's token but has not dropped its rows yet."""
+    from fastapi import HTTPException
+    from routes import findings as routes
+    from services import db as _db
+    from services import libraries
+    from services.rules import sweep as rules_sweep
+
+    await _register(tree)
+    libraries.folder_libraries()[0].summary(refresh=True)
+    finding_id = _open()[0]["id"]
+    library = libraries.folder_libraries()[0]
+    await rules_sweep.forget_library(library)  # the first step of libraries.remove
+
+    with pytest.raises(HTTPException) as err:
+        await routes.dismiss_finding(finding_id)
+
+    assert err.value.status_code == 404
+    with _db.SessionLocal() as session:
+        assert session.query(_db.FindingDismissalRecord).count() == 0
+

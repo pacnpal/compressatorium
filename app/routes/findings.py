@@ -74,10 +74,21 @@ async def list_findings(include_dismissed: bool = False) -> dict:
     return {"findings": rows, "dismissed": dismissed}
 
 
+def _library_is_current(library_id: str) -> bool:
+    """Still a Library that is not being removed (#303's token, where it has one)."""
+    library = libraries.get(library_id)
+    if library is None:
+        return False
+    is_current = getattr(library, "is_current", None)
+    return is_current() if is_current is not None else True
+
+
 @router.post("/findings/{finding_id}/dismiss")
 async def dismiss_finding(finding_id: int) -> dict:
     """Hide a Finding until its cause changes. The Image is left as it is."""
-    if not await run_in_threadpool(findings.dismiss, finding_id):
+    if not await run_in_threadpool(
+        lambda: findings.dismiss(finding_id, current=_library_is_current),
+    ):
         raise HTTPException(status_code=404, detail="Finding not found")
     return {"dismissed": finding_id}
 

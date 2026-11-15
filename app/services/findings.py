@@ -139,6 +139,12 @@ def reconcile(
         for key, item in seen.items():
             if key in stored:
                 continue
+            # A dismissal of another cause for this Image and kind is out of
+            # date: the cause changed while the Image was out of the listing,
+            # so it must not hide a later return of that old cause.
+            _dismissals(session, library_id, item.image_key, item.kind).filter(
+                _db.FindingDismissalRecord.fingerprint != item.fingerprint,
+            ).delete(synchronize_session=False)
             session.add(_db.FindingRecord(
                 library_id=library_id, image_key=item.image_key, kind=item.kind,
                 path=item.path, reason=item.reason, cause=dict(item.cause),
@@ -196,11 +202,21 @@ def count_dismissed() -> int:
     return sum(1 for row in list_findings(include_dismissed=True) if row["dismissed"])
 
 
-def dismiss(finding_id: int) -> bool:
-    """Hide a Finding until its cause changes. False when there is no such Finding."""
-    with _session() as session:
+def dismiss(
+    finding_id: int, *, current: Callable[[str], bool] | None = None,
+) -> bool:
+    """Hide a Finding until its cause changes. False when there is no such Finding.
+
+    Idempotent (a double click is one dismissal), and under the write lock
+    that `reconcile` and `forget_library` take. *current* is asked there with
+    the Finding's Library id: False (the Library is being removed) writes
+    nothing, so no dismissal is left behind for a removed Library.
+    """
+    with _write_lock, _session() as session:
         row = session.get(_db.FindingRecord, finding_id)
         if row is None:
+            return False
+        if current is not None and not current(row.library_id):
             return False
         exists = _dismissals(session, row.library_id, row.image_key, row.kind).filter_by(
             fingerprint=row.fingerprint,
@@ -216,7 +232,7 @@ def dismiss(finding_id: int) -> bool:
 
 def undismiss(finding_id: int) -> bool:
     """Show a dismissed Finding again. False when there is no such Finding."""
-    with _session() as session:
+    with _write_lock, _session() as session:
         row = session.get(_db.FindingRecord, finding_id)
         if row is None:
             return False

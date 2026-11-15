@@ -2743,10 +2743,15 @@ is dismissed while such a row matches its current fingerprint. Because the
 dismissal outlives the Finding row, a row that a walk drops for not seeing the
 Image (a share that was unmounted, so its mount point listed empty) comes back
 dismissed when it returns with the same cause. A fingerprint `reconcile` sees
-change deletes the Image's dismissals of that kind, so a cause that changes
-and then changes back stays shown. `undismiss(id)` deletes them by hand, and
-`forget_library` deletes a removed Library's. Dismissals of a cause that went
-away for good stay behind, at most one per Image, kind and cause.
+change deletes the Image's dismissals of that kind, and so does writing a new
+row whose fingerprint differs from a stored dismissal (the cause changed while
+the Image was out of the listing), so a cause that changes and then changes
+back stays shown. `undismiss(id)` deletes them by hand, and `forget_library`
+deletes a removed Library's. A dismissal of a cause that went away for good
+stays behind, at most one per Image and kind. `dismiss` and `undismiss` take
+the store's write lock; `dismiss` is idempotent (a double click is one row)
+and asks `current(library_id)` under the lock, so a dismiss racing the
+Library's removal writes nothing (the route passes #303's token check).
 `reconcile(..., keep_under=[...])` leaves alone every row whose `image_key`
 sits under a folder the producer could not look in. An `Observed` marked
 `only_if_new` (an Image file the producer could not read) does the same for
