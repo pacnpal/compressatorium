@@ -15,8 +15,9 @@ import pytest
 from app.models import AutoJobCreateRequest, AutoJobItem, AutoPlanRequest
 from app.routes import convert as convert_routes
 
-from .test_auto_convert import _fresh_cache, _route_env  # noqa: F401
 from .test_platform_detect import _blank, _gamecube, _ps2
+
+pytestmark = pytest.mark.usefixtures("fresh_detect_cache")
 
 
 async def _preview(paths: list[str]) -> dict:
