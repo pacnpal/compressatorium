@@ -1885,12 +1885,14 @@ DOSBox setup in a separate `!dos` folder, at `!dos/Abaron/dosbox.conf`. That con
 mounts paths inside the whole collection (`mount c .\eXoDOS\Abaron`), so a game zip
 copied into RomM alone does not start.
 
-- **What the repack writes.** DOSBox Pure mounts the loaded file as drive C: and,
-  with its core option `dosbox_pure_conf` set to `inside`, loads `C:\DOSBOX.CONF`:
-  `dosbox.conf` at the root of the file. So the repack moves the game's files out of
-  their folder to the root, and writes the game's template there as `dosbox.conf`
-  with its mount paths rewritten (`mount c .\eXoDOS\Abaron` becomes `mount c .\`,
+- **What the repack writes.** The repack moves the game's files out of their
+  folder to the root of the file, and writes the game's template there as the
+  file's first entry, `dosbox.conf`, with its mount paths rewritten (`mount c .\eXoDOS\Abaron` becomes `mount c .\`,
   `imgmount d .\eXoDOS\Abaron\CD\GAME.CUE` becomes `imgmount d .\CD\GAME.CUE`).
+  The layout follows what DOSBox Pure's README and source describe: it mounts a
+  loaded zip as drive C: and, with its core option `dosbox_pure_conf` set to
+  `inside`, loads `C:\DOSBOX.CONF`. That is expected behaviour, not tested
+  behaviour; see the RomM setup below.
 - **Only mount lines change.** Only `mount`, `imgmount` and `boot` lines are
   rewritten. Comments, every other line, the file's encoding and its line endings
   are kept exactly. A path into a different game's folder is left alone.
@@ -1933,10 +1935,16 @@ emulatorjs:
       dosbox_pure_conf: inside
 ```
 
-Then put the `.dosz` files in RomM's `dos` platform folder. RomM's default
-EmulatorJS (4.2.3) and its nightly build hand the game to DOSBox Pure in
-different ways; `dosbox.conf` is written as the first entry in the file so either
-one finds it.
+Then put the `.dosz` files in RomM's `dos` platform folder.
+
+**Untested: whether a repacked game boots in RomM.** RomM's default EmulatorJS
+(4.2.3) and its nightly build hand the file to DOSBox Pure in different ways: from
+their source, 4.2.3 unpacks it and loads one file the core accepts, and the nightly
+loads a generated `BOOTUP.BAT`. Neither build has been tried with a real eXoDOS
+game yet. `dosbox.conf` is written first in the hope that 4.2.3 picks it, but that
+is not confirmed either. A boot test on both builds (a floppy game, a CD game and a
+game with several executables) is pending with the project owner; until it
+passes, treat playback in RomM as unverified.
 
 Only eXoDOS is supported. eXoWin3x and the other eXo packs use the same pattern and
 can be added later. The behaviour is modelled on

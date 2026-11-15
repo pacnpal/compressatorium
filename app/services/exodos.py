@@ -34,11 +34,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from fastapi.concurrency import run_in_threadpool
-from services.archive import archive_service
+from services.archive import ArchiveSafetyRefused, archive_service
 from services.archive_edit import rewrite_zip
 from services.subprocess_runner import (
     ConversionCancelled,
     ReadCancelled,
+    SubprocessRunner,
     collect_verify,
     conversion_stall_bound,
     run_detached,
@@ -287,12 +288,6 @@ class ExodosService:
                 segments = archive_service.member_segments(name)
             except ValueError as exc:
                 raise NotRepackable(f"{exc}: {info.filename!r}") from exc
-            # The shared rules check a stripped name; the repack slices the
-            # raw one. Refuse any name the two would read differently.
-            if "/".join(segments) != name:
-                raise NotRepackable(
-                    f"Member name has leading or trailing spaces: {info.filename!r}",
-                )
             if len(segments) == 1 and not info.is_dir():
                 raise NotRepackable(
                     "The zip does not hold a single game folder "
@@ -501,11 +496,20 @@ class ExodosService:
                 cancel_event.is_set if cancel_event else _never_cancelled,
                 cancel_event=cancel_event,
             )
-        except ReadCancelled:
+        except (ReadCancelled, ConversionCancelled):
             yield {
                 "type": "error", "valid": False, "cancelled": True,
                 "message": "Verification cancelled",
             }
+            return
+        except ArchiveSafetyRefused as exc:
+            # A rule this app sets (a size or entry limit), not damage: the file
+            # can't be checked here, the same answer romz gives (#306).
+            yield SubprocessRunner._verify_error(
+                "This archive can't be checked (refused by the archive safety "
+                f"rules: {exc.rule})",
+                uncheckable=True,
+            )
             return
         except (OSError, ValueError, zipfile.BadZipFile) as exc:
             yield {"type": "error", "valid": False, "message": str(exc)}
@@ -558,8 +562,14 @@ class ExodosService:
                         raise ConversionCancelled("Conversion cancelled")
                     if not member.read(_CHECK_CHUNK):
                         return
+        except ConversionCancelled:
+            raise
         except (zipfile.BadZipFile, zlib.error, EOFError) as exc:
             raise ValueError(f"CRC check failed for {info.filename}: {exc}") from exc
+        except (RuntimeError, NotImplementedError) as exc:
+            # zipfile's answer for an encrypted member (RuntimeError) or a
+            # compression method it can't decode (NotImplementedError).
+            raise ValueError(f"Cannot read {info.filename}: {exc}") from exc
 
     # --- info --------------------------------------------------------------
 

@@ -590,3 +590,97 @@ def test_a_game_mounted_from_a_subfolder_as_c_gets_a_warning(tree):
 
     assert updates[-1].get("warning") is True
     assert "mount c .\\HD" in updates[-1]["message"]
+
+
+# --- verify edge cases (PR #324 CodeRabbit review) --------------------------
+
+
+def _verify_events(service, path, cancel_event=None):
+    async def _drain():
+        return [e async for e in service.verify_stream(path, cancel_event=cancel_event)]
+
+    return asyncio.run(_drain())
+
+
+def _raw_dosz(path, members, method=zipfile.ZIP_STORED):
+    with zipfile.ZipFile(path, "w", method) as zf:
+        for name, data in members.items():
+            zf.writestr(name, data)
+    return str(path)
+
+
+def test_shared_member_rules_refuse_a_padded_name():
+    from services.archive import archive_service
+
+    with pytest.raises(ValueError, match="spaces"):
+        archive_service.member_segments(" Abaron/x")
+
+
+def test_verify_refuses_a_padded_member_name(tree):
+    path = _raw_dosz(tree["volume"] / "pad.dosz", {"dosbox.conf": b"c", " GAME.EXE": b"g"})
+
+    result = asyncio.run(ExodosService().verify(path))
+
+    assert result["valid"] is False
+
+
+def test_a_cancel_raised_inside_the_check_is_a_cancelled_verdict(tree, monkeypatch):
+    path = _raw_dosz(tree["volume"] / "ok.dosz", {"dosbox.conf": b"c", "G.EXE": b"g"})
+
+    def cancelled(self, *_args):
+        raise ConversionCancelled("Conversion cancelled")
+
+    monkeypatch.setattr(ExodosService, "_check_product", cancelled)
+
+    events = _verify_events(ExodosService(), path)
+
+    assert events[-1].get("cancelled") is True
+
+
+def test_a_limit_refusal_is_not_checkable_rather_than_failed(tree, monkeypatch):
+    path = _raw_dosz(tree["volume"] / "ok.dosz", {"dosbox.conf": b"c", "G.EXE": b"g"})
+    monkeypatch.setattr(exodos_module.settings, "archive_max_entries", 1)
+
+    events = _verify_events(ExodosService(), path)
+
+    assert events[-1].get("uncheckable") is True
+
+
+def test_a_damaged_product_still_fails(tree):
+    path = tree["volume"] / "bad.dosz"
+    _raw_dosz(path, {"dosbox.conf": b"c", "G.EXE": b"g" * 5000})
+    raw = bytearray(path.read_bytes())
+    raw[raw.index(b"g" * 100) + 10] ^= 0xFF
+    path.write_bytes(bytes(raw))
+
+    events = _verify_events(ExodosService(), str(path))
+
+    assert events[-1]["valid"] is False
+    assert not events[-1].get("uncheckable")
+
+
+def _patch_member_header(path, name: bytes, *, flag=None, method=None):
+    """Rewrite a member's general-purpose flag or method in both headers."""
+    raw = bytearray(Path(path).read_bytes())
+    for sig, flag_at, method_at in ((b"PK\x03\x04", 6, 8), (b"PK\x01\x02", 8, 10)):
+        start = 0
+        while (at := raw.find(sig, start)) >= 0:
+            name_at = at + (30 if sig == b"PK\x03\x04" else 46)
+            if raw[name_at:name_at + len(name)] == name:
+                if flag is not None:
+                    raw[at + flag_at] |= flag
+                if method is not None:
+                    raw[at + method_at:at + method_at + 2] = method.to_bytes(2, "little")
+            start = at + 4
+    Path(path).write_bytes(bytes(raw))
+
+
+@pytest.mark.parametrize(("flag", "method"), [(0x1, None), (None, 99)], ids=["encrypted", "unknown-method"])
+def test_an_unreadable_member_fails_verify_instead_of_raising(tree, flag, method):
+    path = _raw_dosz(tree["volume"] / "odd.dosz", {"dosbox.conf": b"c", "G.EXE": b"g" * 100})
+    _patch_member_header(path, b"G.EXE", flag=flag, method=method)
+
+    result = asyncio.run(ExodosService().verify(path))
+
+    assert result["valid"] is False
+    assert "G.EXE" in result["message"]
