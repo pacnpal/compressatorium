@@ -140,16 +140,40 @@ jobs:
     needs: screenshots
     permissions:
       contents: write
+      pull-requests: read
     steps:
+      # A PR stacked on another feature branch would get the same PNGs its
+      # base gets, leaving binary conflicts between the two (#333). Skip the
+      # commit there; the images are regenerated once the stack reaches the
+      # default branch.
+      - name: Skip branches stacked on a feature branch
+        id: stacked
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |-
+          bases=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$GITHUB_REF_NAME" \
+            --state open --json baseRefName --jq '.[].baseRefName')
+          for base in $bases; do
+            if [ "$base" != "$DEFAULT_BRANCH" ]; then
+              echo "Open PR from $GITHUB_REF_NAME targets $base; not committing."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+
       - uses: actions/checkout@v7
+        if: steps.stacked.outputs.skip != 'true'
 
       - name: Download screenshots
+        if: steps.stacked.outputs.skip != 'true'
         uses: actions/download-artifact@v4
         with:
           name: screenshots
           path: docs/screenshots
 
       - name: Commit and push
+        if: steps.stacked.outputs.skip != 'true'
         run: |-
           git config user.name "Automated"
           git config user.email "actions@users.noreply.github.com"

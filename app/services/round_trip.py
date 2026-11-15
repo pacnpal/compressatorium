@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from logging_setup import get_logger
@@ -49,13 +50,16 @@ class RoundTripOutcome:
 
 
 async def _digest(
-    tool: ToolPlugin, path: str, cancel_event: asyncio.Event | None,
+    tool: ToolPlugin,
+    path: str,
+    cancel_event: asyncio.Event | None,
+    within: Sequence[str] | None = None,
 ) -> ContentDigest:
     """One side's digest, under the same bound as a verify of that file."""
     try:
         bound = await tool.verify_timeout(path, cancel_event=cancel_event)
         digest = await asyncio.wait_for(
-            tool.content_digest(path, cancel_event=cancel_event),
+            tool.content_digest(path, cancel_event=cancel_event, within=within),
             timeout=bound or None,
         )
     except ContentDigestUnavailable:
@@ -82,6 +86,7 @@ async def round_trip(
     output_path: str,
     *,
     cancel_event: asyncio.Event | None = None,
+    within: Sequence[str] | None = None,
 ) -> RoundTripOutcome:
     """Compare the content ``source_path`` and ``output_path`` decode to.
 
@@ -89,6 +94,12 @@ async def round_trip(
     member, not the ``archive::member`` pseudo-path). Read one side at a time:
     both are usually on the same volume, and two full reads at once only
     contend for it.
+
+    ``within`` is the job's trusted root(s) for the Source (its extraction
+    folder for an archive member, ``None`` for the Volumes) and is passed to
+    the Source side only. The output always lives in a Volume, so its side
+    gets ``None``; a tool that extracts the output into scratch reads that
+    scratch under its own ``within``.
     """
     cancelled = RoundTripOutcome(passed=False, cancelled=True)
 
@@ -96,7 +107,7 @@ async def round_trip(
         return cancel_event is not None and cancel_event.is_set()
 
     try:
-        source = await _digest(tool, source_path, cancel_event)
+        source = await _digest(tool, source_path, cancel_event, within)
         if _is_cancelled():
             return cancelled
         output = await _digest(tool, output_path, cancel_event)
