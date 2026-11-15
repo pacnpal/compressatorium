@@ -111,8 +111,8 @@ class ChainSpec:
     # output, and its delete flag already implies that, so this stays False and
     # `registry.mode_supports_verify` reads them together.
     supports_verify: bool = False
-    # Structural parity with ModeSpec. No chain round-trips yet: it needs the
-    # first step's decoded Source compared with the final output (#301).
+    # Structural parity with ModeSpec. A chain that sets it compares the first
+    # step's decoded Source with the final output (ChainTool.content_digest).
     supports_round_trip: bool = False
     allows_archive_input: bool = True        # == step 1's
     input_kinds: frozenset[InputKind] = field(

@@ -124,7 +124,9 @@ async def test_hash_stdout_fails_on_a_nonzero_exit_with_the_reason():
 async def test_hash_stdout_cancel_stops_the_decoder():
     runner = SubprocessRunner(owner="test")
     cancel = asyncio.Event()
-    cmd = _py("import sys, time\nwhile True:\n sys.stdout.buffer.write(b'z'*4096)\n time.sleep(0.01)")
+    cmd = _py(
+        "import sys, time\nwhile True:\n sys.stdout.buffer.write(b'z'*4096)\n time.sleep(0.01)",
+    )
     task = asyncio.ensure_future(runner.hash_stdout(cmd, cancel_event=cancel))
     await asyncio.sleep(0.3)
     assert runner.active_pids()

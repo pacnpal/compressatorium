@@ -757,6 +757,225 @@ async def test_real_nsz_output_rebuilds_the_nsp(tmp_path):
     assert await _nsz().content_digest(nsp) == await _nsz().content_digest(str(out))
 
 
+# ---------------------------------------------------------------------------
+# romz (7z / zip): each member's CRC and size against the Source file
+# ---------------------------------------------------------------------------
+
+MEMBERS = "rom_members_crc32"
+
+
+def _romz():
+    return registry.get("romz")
+
+
+def _zip(path: Path, members: dict[str, bytes]) -> None:
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
+        for name, data in members.items():
+            zf.writestr(name, data)
+
+
+def _7z(path: Path, members: dict[str, bytes]) -> None:
+    py7zr = pytest.importorskip("py7zr")
+    with py7zr.SevenZipFile(path, "w") as zf:
+        for name, data in members.items():
+            zf.writestr(data, name)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pack", [_zip, _7z])
+async def test_an_archive_holding_the_rom_has_the_rom_digest(tmp_path, pack):
+    rom = tmp_path / "Game.gba"
+    rom.write_bytes(b"cartridge" * 777)
+    archive = tmp_path / f"Game.gba{'.zip' if pack is _zip else '.7z'}"
+    pack(archive, {"Game.gba": rom.read_bytes()})
+
+    source = await _romz().content_digest(str(rom))
+    output = await _romz().content_digest(str(archive))
+
+    assert source.kind == MEMBERS
+    assert source == output
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("members", [
+    {"Game.gba": b"cartridge" * 776},                          # other bytes
+    {"Renamed.gba": b"cartridge" * 777},                       # renamed
+    {"Game.gba": b"cartridge" * 777, "extra.txt": b"x"},       # extra member
+    {},                                                        # missing
+], ids=["crc", "renamed", "extra", "missing"])
+@pytest.mark.parametrize("pack", [_zip, _7z])
+async def test_an_archive_with_another_member_set_differs(tmp_path, pack, members):
+    rom = tmp_path / "Game.gba"
+    rom.write_bytes(b"cartridge" * 777)
+    archive = tmp_path / f"Game.gba{'.zip' if pack is _zip else '.7z'}"
+    pack(archive, members)
+
+    source = await _romz().content_digest(str(rom))
+    output = await _romz().content_digest(str(archive))
+
+    assert source != output
+
+
+def test_romz_compress_modes_declare_round_trip():
+    assert registry.mode_supports_round_trip("romz_7z")
+    assert registry.mode_supports_round_trip("romz_zip")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("mode", "pack"), [("romz_zip", _zip), ("romz_7z", _7z)])
+async def test_romz_job_whose_archive_holds_the_rom_deletes_it(e2e, mode, pack):
+    rom = e2e["tmp_path"] / "Game.gba"
+    rom.write_bytes(b"cartridge" * 777)
+    e2e["writer"] = lambda src, out: pack(out, {src.name: src.read_bytes()})
+
+    _assert_round_tripped(await _run(e2e, rom, mode), rom)
+
+
+@pytest.mark.asyncio
+async def test_romz_job_whose_archive_has_an_extra_member_keeps_the_rom(e2e):
+    rom = e2e["tmp_path"] / "Game.gba"
+    rom.write_bytes(b"cartridge" * 777)
+    e2e["writer"] = lambda src, out: _zip(
+        out, {src.name: src.read_bytes(), "readme.txt": b"hi"},
+    )
+
+    _assert_kept(await _run(e2e, rom, "romz_zip"), rom)
+
+
+_SEVENZIP = _binary("SEVENZIP_PATH", "/usr/bin/7z", "7z")
+
+
+@pytest.mark.skipif(_SEVENZIP is None, reason="7z is not installed")
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fmt", ["7z", "zip"])
+async def test_real_7z_archive_has_the_rom_digest(tmp_path, fmt):
+    import subprocess
+
+    rom = tmp_path / "Game.gba"
+    rom.write_bytes(os.urandom(100_000))
+    archive = tmp_path / f"Game.gba.{fmt}"
+    subprocess.run(
+        [_SEVENZIP, "a", f"-t{fmt}", "--", str(archive), "./Game.gba"],
+        check=True, capture_output=True, cwd=tmp_path,
+    )
+    assert await _romz().content_digest(str(rom)) == await _romz().content_digest(
+        str(archive),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Chains: the first step's decoded Source against the final output
+# ---------------------------------------------------------------------------
+
+
+def _chdman_info(data_sha1: str) -> bytes:
+    return (
+        "chdman - MAME Compressed Hunks of Data (CHD) manager 0.285\n"
+        "File Version: 5\nLogical size: 12,288 bytes\n"
+        f"SHA1:         {'11' * 20}\nData SHA1:    {data_sha1}\n"
+        "Metadata:     Tag='DVD '  Index=0  Length=1 bytes\n"
+    ).encode()
+
+
+@pytest.fixture(name="chdman_info")
+def _chdman_info_fixture(monkeypatch):
+    state = {"data_sha1": "00" * 20, "calls": []}
+
+    async def fake_capture(cmd, **kwargs):
+        state["calls"].append(list(cmd))
+        if "info" in cmd:
+            return 0, _chdman_info(state["data_sha1"]), b""
+        return 0, b"", b""
+
+    monkeypatch.setattr(
+        registry.get("chdman")._service._runner, "run_capture", fake_capture,
+    )
+    return state
+
+
+def test_cso_to_chd_declares_round_trip_and_nkit_to_rvz_still_cannot_delete():
+    assert registry.mode_supports_round_trip("cso_to_chd")
+    assert not registry.spec("nkit_to_rvz").supports_delete_on_verify
+
+
+@pytest.mark.asyncio
+async def test_chain_digests_its_source_with_the_first_steps_tool(tmp_path, chdman_info):
+    image = _image()
+    cso = tmp_path / "Game.cso"
+    write_ciso(cso, image)
+    chain = registry.get("chain")
+
+    assert await chain.content_digest(str(cso)) == ContentDigest(
+        kind=IMAGE, value=_sha1(image),
+    )
+    assert chdman_info["calls"] == []  # the Source never went to chdman
+
+
+def _chain_writer(image: bytes):
+    """Step 1 (cso_decompress) writes the ISO, step 2 (createdvd) the CHD."""
+    def write(_src: Path, out: Path) -> None:
+        out.write_bytes(image if out.suffix == ".iso" else b"MComprHD fake")
+    return write
+
+
+@pytest.mark.asyncio
+async def test_cso_to_chd_with_the_same_disc_deletes_the_cso(e2e, chdman_info):
+    image = _image()
+    cso = e2e["tmp_path"] / "Game.cso"
+    write_ciso(cso, image)
+    e2e["writer"] = _chain_writer(image)
+    chdman_info["data_sha1"] = _sha1(image)
+
+    job = await _run(e2e, cso, "cso_to_chd")
+
+    _assert_round_tripped(job, cso)
+    assert [m for _i, _o, m in e2e["writes"]] == ["cso_decompress", "createdvd"]
+
+
+@pytest.mark.asyncio
+async def test_cso_to_chd_whose_chd_holds_another_disc_keeps_the_cso(e2e, chdman_info):
+    image = _image()
+    cso = e2e["tmp_path"] / "Game.zso"
+    write_ciso(cso, image, magic=b"ZISO")
+    e2e["writer"] = _chain_writer(image)
+    chdman_info["data_sha1"] = _sha1(image + b"x")
+
+    _assert_kept(await _run(e2e, cso, "cso_to_chd"), cso)
+
+
+# ---------------------------------------------------------------------------
+# Modes that must keep refusing delete-source
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("mode", ["folder_to_iso", "xiso_rewrite"])
+def test_ps3_folder_to_iso_and_the_xiso_trim_offer_no_delete_source(mode):
+    spec = registry.spec(mode)
+    assert not spec.supports_delete_on_verify
+    assert not spec.supports_round_trip
+
+
+@pytest.mark.parametrize("mode", ["folder_to_iso", "xiso_rewrite"])
+def test_the_route_refuses_delete_source_for_them(mode):
+    from fastapi import HTTPException
+
+    from app.routes import convert as convert_routes
+
+    with pytest.raises(HTTPException) as err:
+        convert_routes._validate_delete_on_verify(registry.spec(mode), True)
+    assert err.value.status_code == 400
+
+
+def test_every_mode_with_delete_source_round_trips_except_chdmans_raw_modes():
+    """After #301 the only delete-source modes on the container check alone
+    are chdman's createraw/createhd/createld/copy (#300 left them out)."""
+    left = {
+        s.mode for s in registry.mode_specs()
+        if s.supports_delete_on_verify and not s.supports_round_trip
+    }
+    assert left == {"createraw", "createhd", "createld", "copy"}
+
+
 _MAXCSO = _binary("MAXCSO_PATH", "/usr/local/bin/maxcso", "maxcso")
 
 
