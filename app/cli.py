@@ -295,7 +295,6 @@ def _discover(
                 add(f"{path}::{entry['internal_path']}", False)
             if listing.get("truncated"):
                 truncated(path)
-    _skip_outside_volumes(found.values())
     if not archives:
         return [
             i for i in found.values()
@@ -308,11 +307,12 @@ def _skip_outside_volumes(items) -> None:
     """Skip every discovered input outside the configured Volumes (#306).
 
     A folder walk follows a file symlink, so a link in a Volume can point
-    anywhere. Each discovered file, folder and archive (for a member) goes
-    through the shared containment check the web's verify guard uses
-    (``is_within_configured_volumes``, which resolves the path) before any
-    tool is chosen; one outside is never read, checked or recorded. Paths
-    named on the command line were checked already (``_check_paths``).
+    anywhere. Run once on the final input set (after a verify adds its stored
+    checks), before any tool is chosen: each discovered file, folder and
+    archive (for a member) goes through the shared containment check the
+    web's verify guard uses (``is_within_configured_volumes``, which resolves
+    the path); one outside is never read, checked or recorded. Paths named on
+    the command line were checked already (``_check_paths``).
     """
     from utils.path_utils import is_within_configured_volumes
 
@@ -812,6 +812,8 @@ async def convert(args, printer: Printer, state: RunState) -> int:
             reads=reads,
         ),
     )
+    # Once, on the final input set, before any mode is chosen.
+    await run_in_threadpool(_skip_outside_volumes, items)
     # The shared, bounded readiness probe the Auto route uses.
     ready = await registry.ready_tool_ids()
     if args.auto:
@@ -937,6 +939,8 @@ def _with_stored_checks(items: list[Item], paths: list[str], records: list[dict]
     Stored paths are real paths; each is spelled under the folder the user
     named, as the walk spells them.
     """
+    # Both sides compared by real path: a stored path whose file is now a
+    # symlink resolves to the same file the walk already listed.
     seen = {os.path.realpath(i.path) for i in items}
     for folder in paths:
         if "::" in folder or not os.path.isdir(folder):
@@ -944,11 +948,11 @@ def _with_stored_checks(items: list[Item], paths: list[str], records: list[dict]
         real = os.path.realpath(folder)
         for record in records:
             stored = record.get("chd_path") or ""
-            if stored in seen or not stored.startswith(real + os.sep):
+            if not stored.startswith(real + os.sep):
                 continue
-            if not os.path.isfile(stored):
+            if os.path.realpath(stored) in seen or not os.path.isfile(stored):
                 continue
-            seen.add(stored)
+            seen.add(os.path.realpath(stored))
             items.append(Item(path=folder.rstrip(os.sep) + stored[len(real):]))
     return items
 
@@ -1080,6 +1084,8 @@ async def verify(args, printer: Printer, state: RunState) -> int:
 
     if has_db:
         items = _with_stored_checks(items, paths, await verification_store.all_records())
+    # Once, on the final input set, before any verifier is chosen.
+    await run_in_threadpool(_skip_outside_volumes, items)
     failed = False
     # Asked once per tool per run, dry runs included: a probe can walk the
     # volumes (nsz looking for prod.keys), so never once per file.
