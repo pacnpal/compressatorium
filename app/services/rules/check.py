@@ -438,6 +438,34 @@ async def _run(library: Library, picked: list[Check], job_id: str, generation: i
     await job_manager.finish_external_job(job_id, success=True)
 
 
+async def _acquire_slot(cancel_event: asyncio.Event | None) -> Any:
+    """A slot on the ``verify`` lane, or None when the job is cancelled first.
+
+    A run can queue for a slot for as long as other verifies take; Cancel must
+    end it now, not when a slot comes free.
+    """
+    if cancel_event is None:
+        return await workload_limiter.acquire("verify")
+    if cancel_event.is_set():
+        return None
+    slot = asyncio.ensure_future(workload_limiter.acquire("verify"))
+    cancelled = asyncio.ensure_future(cancel_event.wait())
+    try:
+        await asyncio.wait({slot, cancelled}, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        cancelled.cancel()
+        if not slot.done():
+            slot.cancel()
+        try:
+            token = await slot
+        except asyncio.CancelledError:
+            token = None
+    if token is not None and cancel_event.is_set():
+        token.release()   # both came at once: the cancel wins
+        return None
+    return token
+
+
 async def _check_one(
     check: Check, cancel_event: asyncio.Event | None,
     persist: Callable[[str, str], Awaitable[bool]] | None = None,
@@ -453,7 +481,9 @@ async def _check_one(
     held, so a writer cannot replace the file between the Verify and the record
     that describes it; the locks go once it is written, cancel included.
     """
-    token = await workload_limiter.acquire("verify")
+    token = await _acquire_slot(cancel_event)
+    if token is None:
+        return CANCELLED, "", False, False
     async with token:
         held = await _take(check)
         if held is None:

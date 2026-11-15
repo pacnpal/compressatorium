@@ -1167,7 +1167,7 @@ async def test_two_platforms_failing_in_one_sweep_send_one_notification(
 
 @pytest.mark.asyncio
 async def test_an_image_waiting_for_a_verify_slot_is_not_locked(
-    tree: Path, ready, verifier, sent,
+    tree: Path, ready, verifier, sent, monkeypatch,
 ) -> None:
     """I1: the lock is taken when the verify starts, never while the check queues."""
     import asyncio
@@ -1175,7 +1175,12 @@ async def test_an_image_waiting_for_a_verify_slot_is_not_locked(
     from routes import libraries as routes
     from services.lock_manager import lock_manager
     from services.rules import check
-    from services.workload_limiter import workload_limiter
+    from services.workload_limiter import WorkloadLimiter
+
+    # A lane of its own: an asyncio semaphore binds to the first event loop a
+    # waiter queues on, and each test has its own loop.
+    workload_limiter = WorkloadLimiter(verify_limit=1, metadata_scan_limit=1)
+    monkeypatch.setattr(check, "workload_limiter", workload_limiter)
 
     lib = await _folder_library(tree, {"enabled": True, "check_budget_gb": 3})
     _seed(lib, {"ps2/Aria.chd": 2, "ps2/Bolt.chd": 3, "ps2/Dune.chd": 1})
@@ -1660,3 +1665,84 @@ async def test_a_writer_waits_until_the_verdict_is_recorded(
     # ...and gets the file once the check is done.
     assert writer.acquire_lock(cove, allow_existing=True)
     writer.release_lock(cove)
+
+
+@pytest.mark.asyncio
+async def test_a_check_waiting_for_a_verify_slot_can_be_cancelled(
+    tree: Path, ready, verifier, sent, monkeypatch,
+) -> None:
+    """4577171591: Cancel ends a run that is queued for a verify slot, at once."""
+    import asyncio
+
+    from routes import libraries as routes
+    from services.job_manager import job_manager
+    from services.rules import check
+    from services.workload_limiter import WorkloadLimiter
+
+    # A lane of its own: an asyncio semaphore binds to the first event loop a
+    # waiter queues on, and each test has its own loop.
+    workload_limiter = WorkloadLimiter(verify_limit=1, metadata_scan_limit=1)
+    monkeypatch.setattr(check, "workload_limiter", workload_limiter)
+
+    lib = await _folder_library(tree, {"enabled": True, "check_budget_gb": 3})
+    _seed(lib, {"ps2/Aria.chd": 2, "ps2/Bolt.chd": 3, "ps2/Dune.chd": 1})
+    before = {j.id for j in job_manager.get_all_jobs()}
+    busy = [await workload_limiter.acquire("verify") for _ in range(workload_limiter.limit("verify"))]
+    try:
+        await routes.run_library(lib)
+        await asyncio.sleep(0.2)   # queued for a slot
+        (job,) = [j for j in job_manager.get_all_jobs() if j.id not in before]
+        await job_manager.cancel_job(job.id)
+        await asyncio.wait_for(check.drain(), 2)   # ends without a slot coming free
+    finally:
+        for token in busy:
+            token.release()
+
+    assert job.status.value == "cancelled"
+    _verdicts, calls = verifier
+    assert calls == []
+    assert not check.in_flight(lib, "ps2/Cove.chd")
+    assert workload_limiter.in_use("verify") == 0
+
+
+@pytest.mark.asyncio
+async def test_a_scheduled_check_is_stamped_with_the_moment_it_was_due(
+    tree: Path, ready, verifier, sent, monkeypatch,
+) -> None:
+    """4577171597: a pick that runs past midnight still counts for the day it began."""
+    from routes import libraries as routes
+    from services import libraries
+    from services.rules import check as checks
+    from services.rules import sweep as rules_sweep
+
+    monday = datetime(2026, 11, 16, 23, 59, 30, tzinfo=timezone.utc)
+    tuesday = monday + timedelta(minutes=2)
+    clock = {"now": monday}
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return clock["now"].astimezone(tz) if tz else clock["now"]
+
+    real_inspect = checks.inspect
+
+    def slow_inspect(image):
+        clock["now"] = tuesday   # picking crosses midnight
+        return real_inspect(image)
+
+    monkeypatch.setattr(rules_sweep, "datetime", Clock)
+    monkeypatch.setattr(checks, "inspect", slow_inspect)
+    lib = await _folder_library(tree, {"enabled": True, "check_budget_gb": 3, "timezone": "UTC"})
+    library = libraries.get(lib)
+
+    await rules_sweep.sweep(library)
+    await checks.drain()
+
+    stored = await routes.get_library_rules(lib)
+    state = stored["check_state"]["ps2"]
+    assert state["last_run_at"].startswith("2026-11-16T23:59")
+    # So Tuesday still gets its own run.
+    from services.rules.schedule import _is_due
+
+    rule = stored["check_rules"]["ps2"]
+    assert _is_due(rule, state, tuesday + timedelta(minutes=3))

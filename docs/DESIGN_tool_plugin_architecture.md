@@ -3057,7 +3057,9 @@ check times. `sweep.get_rules` / `get_state` take the kind;
 kind order, gating each on its own `enabled` and its own kind's state, and
 hands a check Rule to `_sweep_check`. Run now ignores both clocks, so it runs
 both kinds and a check spends another budget. A check Rule's Run now stamps
-`last_manual_run_at`, not `last_run_at`, and `_is_due` reads only
+`last_manual_run_at`, not `last_run_at` (either stamped with the `now` the
+sweep found the Rule due at, so a pick that runs past midnight counts for the
+window that selected it), and `_is_due` reads only
 `last_run_at`, so the nightly run still comes in its window; a Platform whose tool is not ready and that picked nothing is not
 stamped at all. Before the loop a real sweep calls `_clear_vanished` (bounded,
 detached): `findings.clear_gone(library, NOT_INTACT)` drops a not-Intact
@@ -3102,7 +3104,8 @@ nothing left the Image is uncheckable. No per-tool branching: a new tool's
 `check.start` once, after its loop, so a sweep is one run, one external job
 (`ConversionMode.CHECK`, in `_EXTERNAL_JOB_MODES`) and at most one
 notification. For each Image in order the run waits for a slot on the
-`verify` workload lane, the one the Verify action uses, and only then takes
+`verify` workload lane, the one the Verify action uses (raced against the job's
+cancel event, so Cancel ends a queued run at once), and only then takes
 #306's shared input lock (`lock_manager.acquire_input_lock`) on the Image and
 its files (`image_members`), so nothing is held while it queues. `_hold` lets
 go of what it took if an acquisition raises. It then compares the Image with

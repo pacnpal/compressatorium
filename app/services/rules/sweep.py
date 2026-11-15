@@ -403,7 +403,7 @@ async def get_state(library: Library, kind: str = CONVERT) -> dict[str, dict]:
 
 async def _record_run(
     library: Library, platform_id: str, summary: dict, kind: str = CONVERT,
-    *, manual: bool = False,
+    *, manual: bool = False, at: datetime | None = None,
 ) -> None:
     """Stamp the schedule clock, merging into whatever else the entry holds.
 
@@ -417,8 +417,11 @@ async def _record_run(
     # A manual run of a check Rule (Run now) stamps its own field: `_is_due`
     # reads only `last_run_at`, so the nightly run is not pushed back a day.
     clock = "last_manual_run_at" if manual else "last_run_at"
+    # *at* is the moment the sweep found the Rule due, so a pick that runs past
+    # midnight still counts for the window that selected it.
+    stamp = at or datetime.now(timezone.utc)
     entry.update({
-        clock: datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        clock: stamp.isoformat().replace("+00:00", "Z"),
         "last_queued": summary.get("queued", 0),
         "last_considered": summary.get("considered", 0),
     })
@@ -1190,7 +1193,7 @@ async def _sweep_locked(
         if kind == CHECK:
             if await _sweep_check(
                 library, platform_id, rule, result, active_paths,
-                picked=picked, dry_run=dry_run, manual=ignore_schedule,
+                picked=picked, dry_run=dry_run, manual=ignore_schedule, now=now,
             ):
                 break
             continue
@@ -1684,6 +1687,7 @@ async def _list_images(library: Library, platform_id: str, result: dict) -> list
 async def _sweep_check(
     library: Library, platform_id: str, rule: dict, result: dict,
     active_paths: set[str], *, picked: list, dry_run: bool, manual: bool = False,
+    now: datetime | None = None,
 ) -> bool:
     """One check Rule's Platform: pick the stalest Images within its budget (#305).
 
@@ -1780,7 +1784,7 @@ async def _sweep_check(
         picked.extend(chosen)
         # A Platform whose tool is missing waits for the next tick, not a day.
         if not unresponsive and not (not_ready and not chosen):
-            await _record_run(library, platform_id, summary, CHECK, manual=manual)
+            await _record_run(library, platform_id, summary, CHECK, manual=manual, at=now)
     return False
 
 
