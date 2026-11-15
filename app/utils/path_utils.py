@@ -398,22 +398,70 @@ def _real_inside_volumes(
 ) -> Path | None:
     """``path`` resolved on disk (symlinks followed), if that is inside a Volume.
 
-    ``roots`` are the Volumes the gate matched ``path`` under; those are
-    resolved now. A real path outside them (a symlink from one Volume into
-    another, as Unraid shares do) is accepted when it lies inside any
-    Volume's cached resolved root (``_resolved_root_spellings``), so no other
-    Volume is resolved synchronously and a stalled one is never waited on.
+    Granting needs a fresh resolution: see ``_holding_roots``.
     """
     real_path = _resolve_path(path, strict=strict)
     if real_path is None:
         return None
-    for volume in roots:
-        if _contains(_resolve_volume(volume), real_path):
-            return real_path
-    for resolved in _resolved_root_spellings().values():
-        if _contains(Path(resolved), real_path):
-            return real_path
-    return None
+    return real_path if _holding_roots(real_path, roots) else None
+
+
+def _holding_roots(real_path: Path, matched: Sequence[str]) -> list[Path]:
+    """The freshly resolved Volume roots that hold ``real_path``.
+
+    The cached spellings (``_resolved_root_spellings``) only *select* a root;
+    access is granted against a fresh, bounded resolution of exactly that root
+    (``_fresh_root``), so a Volume whose symlink was repointed stops covering
+    its old target at once, and a probe that times out refuses. ``matched``
+    are the Volumes the gate matched the path under; they are resolved first.
+    A real path outside them (a symlink from one Volume into another, as
+    Unraid shares do) selects, by cached spelling, the Volume that may hold
+    it, and only that one is resolved. No unrelated root is ever resolved, so
+    a stalled one is never waited on.
+    """
+    matched_roots = [_configured_root(volume) for volume in matched]
+    holders = [
+        root for root in map(_fresh_root, matched_roots) if _contains(root, real_path)
+    ]
+    if holders:
+        return holders
+    for configured, cached in _resolved_root_spellings().items():
+        if configured in matched_roots or not _contains(Path(cached), real_path):
+            continue
+        fresh = _fresh_root(configured)
+        if _contains(fresh, real_path):
+            holders.append(fresh)
+    return holders
+
+
+_probe_lock = threading.Lock()
+_probes_in_flight: dict[str, tuple[threading.Thread, dict]] = {}
+
+
+def _fresh_root(configured: str) -> Path | None:
+    """``configured`` resolved now, within ``ROOT_PROBE_SECONDS``; None otherwise.
+
+    Fails closed: a probe that times out or fails gives None, never the
+    cached spelling. Each root has at most one probe in flight; a check that
+    arrives while one runs waits on it (under its own bound) instead of
+    starting another, so a stalled mount strands one thread, not one per
+    request.
+    """
+    with _probe_lock:
+        entry = _probes_in_flight.get(configured)
+        if entry is None or not entry[0].is_alive():
+            box: dict = {}
+            thread = threading.Thread(
+                target=_resolve_root_into, args=(configured, box), daemon=True,
+            )
+            entry = (thread, box)
+            _probes_in_flight[configured] = entry
+            thread.start()
+    thread, box = entry
+    thread.join(ROOT_PROBE_SECONDS)
+    if thread.is_alive() or "real" not in box:
+        return None
+    return Path(box["real"])
 
 
 def _confined_real_path(raw_path: str, *, strict: bool = False) -> Path | None:
@@ -477,17 +525,11 @@ def containing_volume_root(path: str) -> Path | None:
     real_path = _confined_real_path(disk_path)
     if real_path is None:
         return None
-    # Only the Volumes the path is spelled under are resolved (no stalled
-    # mount elsewhere is waited on). A symlink into another Volume is held by
-    # that one, found among the cached resolved roots.
+    # Only the Volumes the path is spelled under are resolved, freshly and
+    # bounded (no stalled mount elsewhere is waited on). A symlink into another
+    # Volume is held by that one, selected by cached spelling (`_holding_roots`).
     candidate = os.path.normpath(os.path.abspath(os.path.expanduser(disk_path)))
-    holders = [
-        root for root in map(_resolve_volume, _matching_volumes(candidate))
-        if _contains(root, real_path)
-    ] or [
-        root for root in map(Path, _resolved_root_spellings().values())
-        if _contains(root, real_path)
-    ]
+    holders = _holding_roots(real_path, _matching_volumes(candidate))
     return max(holders, key=lambda root: len(root.parts), default=None)
 
 
