@@ -110,3 +110,32 @@ process.stdout.write(JSON.stringify({
     assert data["outcome"] == "timed out", data
     assert data["volume"] == "/first", data
     assert data["listed"] == ["/first"], data
+
+
+def test_a_superseded_open_folder_does_not_win(tmp_path):
+    """CodeRabbit 4579059379: only the latest Open folder navigates.
+
+    With no Volumes loaded yet, two Open folder actions each fetch the Volume
+    list. The second fetch answers first and opens its folder; when the first
+    answers after it, that older request goes nowhere.
+    """
+    data = _run(tmp_path, """
+const __volumeCalls = [];
+api.getVolumes = () => new Promise((resolve) => { __volumeCalls.push(resolve); });
+const tick = () => new Promise((r) => setImmediate(r));
+const volumes = [{ name: 'Target', path: '/target' }];
+const first = fileBrowser.openFolder('/target/a');
+await tick();
+const second = fileBrowser.openFolder('/target/b');
+await tick();
+__volumeCalls[1](volumes);
+await within(second, 2000);
+__volumeCalls[0](volumes);
+await within(first, 2000);
+process.stdout.write(JSON.stringify({
+  path: fileBrowser.currentPath, listed: __listed, navigated: ui.navigated,
+}));
+""")
+    assert data["path"] == "/target/b", data
+    assert data["listed"] == ["/target/b"], data
+    assert data["navigated"] == ["workspace"], data

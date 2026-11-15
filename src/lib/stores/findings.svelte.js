@@ -20,6 +20,15 @@ class FindingsStore {
   platforms = $state([]);
   // The folder the mapping dialog is open on: `{ path, name }`, or null.
   mappingTarget = $state(null);
+  // The open dialog's read of that folder's current Platform: `loading`,
+  // `loaded` (`mappingCurrent` is the slug, or null for none set) or `error`
+  // (`mappingError` says why; "couldn't load" is never shown as "none set").
+  mappingCurrent = $state(null);
+  mappingState = $state('idle');
+  mappingError = $state(null);
+  // Bumped by every opening, closing and retry: only the read that matches
+  // writes, so a response (or failure) from an earlier opening is dropped.
+  #mappingRead = 0;
   // Set when a mapping was saved while its Library was mid-walk: the
   // backend's note that the Findings refresh after that walk. Check now
   // clears it.
@@ -105,14 +114,43 @@ class FindingsStore {
     return hit?.platform ?? null;
   }
 
-  /** Open the mapping dialog on a folder. */
+  /** Open the mapping dialog on a folder, and read what it is set to. */
   openMapping(path, name = null) {
     if (!path) return;
     this.mappingTarget = { path, name: name ?? path.split(/[/\\]/).filter(Boolean).pop() ?? path };
+    this.loadCurrentMapping();
+  }
+
+  /**
+   * Read the open dialog's folder mapping (again, for Retry). Owned by this
+   * opening: a later opening, a close or a retry makes this read's answer,
+   * or its failure, a no-op.
+   */
+  async loadCurrentMapping() {
+    const target = this.mappingTarget;
+    if (!target) return;
+    const read = ++this.#mappingRead;
+    this.mappingState = 'loading';
+    this.mappingCurrent = null;
+    this.mappingError = null;
+    try {
+      const slug = await this.currentMapping(target.path);
+      if (read !== this.#mappingRead) return;
+      this.mappingCurrent = slug;
+      this.mappingState = 'loaded';
+    } catch (e) {
+      if (read !== this.#mappingRead) return;
+      this.mappingError = e?.message ?? "Could not read the folder's Platform";
+      this.mappingState = 'error';
+    }
   }
 
   closeMapping() {
     this.mappingTarget = null;
+    this.#mappingRead += 1;
+    this.mappingState = 'idle';
+    this.mappingCurrent = null;
+    this.mappingError = null;
   }
 
   /** Set (or with `platform` null, clear) a folder's Platform, then refresh the list. */

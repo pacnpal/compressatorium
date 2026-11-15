@@ -333,10 +333,30 @@ def _folder(path: str, names: dict[str, str]) -> tuple[str | None, str | None]:
 
 
 def _mapped_folders() -> dict[str, str]:
-    """The user's mappings: absolute folder path -> Platform slug."""
+    """The user's mappings: absolute folder path -> Platform slug.
+
+    Raises ``platform_mappings.MappingsUnavailable`` when they can't be read.
+    """
     from services import platform_mappings
 
     return platform_mappings.mapped_folders()
+
+
+def mapping_snapshot() -> dict[str, str]:
+    """One read of the mappings, for a caller that detects many Images.
+
+    Pass it as ``mapped=`` to both :func:`detection_key` and
+    :func:`detect_uncached`, so a decision is cached under a key built from
+    the very evidence it was decided on. A mapping changed between two reads
+    would otherwise cache one answer under the other's key. Raises
+    ``platform_mappings.MappingsUnavailable`` when they can't be read.
+    """
+    return _mapped_folders()
+
+
+# Why an Image is Unsorted when the mappings could not be read: detection
+# decides nothing on evidence it could not see.
+_MAPPINGS_UNREADABLE = "the folder Platform mappings could not be read"
 
 
 def _place(
@@ -359,7 +379,7 @@ def _place(
     return None
 
 
-def _decide(path: str, tools: list) -> Detection:
+def _decide(path: str, tools: list, mapped: dict[str, str]) -> Detection:
     disk_path, member = _split_member(path)
     headers: set[str] = set()
     sources: list[str] = []
@@ -367,7 +387,7 @@ def _decide(path: str, tools: list) -> Detection:
         headers, sources = _header(disk_path, tools)
     names = _folder_names(tools)
     folder, _folder_name = _folder(disk_path, names)
-    found = _place(disk_path, names, _mapped_folders())
+    found = _place(disk_path, names, mapped)
     place = how = where = mapped = place_path = None
     if found:
         how, place, place_path, label = found
@@ -416,13 +436,19 @@ def clear_cache() -> None:
         _cache.clear()
 
 
-def detect_uncached(path: str, *, tools: Iterable | None = None) -> Detection:
+def detect_uncached(
+    path: str, *, tools: Iterable | None = None, mapped: dict[str, str] | None = None,
+) -> Detection:
     """:func:`detect_platform` without the shared cache, for a caller that keeps its own.
 
     A folder Library keys its own cache on (path, size, mtime) for every file
     it holds, which the bounded LRU below cannot do for a large Library.
+    *mapped* is the :func:`mapping_snapshot` the caller built its cache key
+    from; omitted, the mappings are read here (and may raise
+    ``MappingsUnavailable``).
     """
-    return _decide(path, list(tools) if tools is not None else _default_tools())
+    tool_list = list(tools) if tools is not None else _default_tools()
+    return _decide(path, tool_list, _mapped_folders() if mapped is None else mapped)
 
 
 def detect_platform(path: str, *, tools: Iterable | None = None) -> Detection:
@@ -443,15 +469,24 @@ def detect_platform(path: str, *, tools: Iterable | None = None) -> Detection:
         # no writer), stranding the threadpool worker. Checked before any
         # header probe or open, here at the one entry point every caller uses.
         return Detection(None, UNSORTED, None, None, "not a regular file or folder")
+    # One read of the mappings for the key and the decision alike, so a
+    # mapping changed in between can't cache one answer under the other's key.
+    # Unreadable mappings decide nothing, and nothing is remembered.
+    from services.platform_mappings import MappingsUnavailable
+
+    try:
+        mapped = _mapped_folders()
+    except MappingsUnavailable:
+        return Detection(None, UNSORTED, None, None, _MAPPINGS_UNREADABLE)
     if not _member and os.path.isdir(disk_path):
         # A folder Image (a PS3 disc folder) is judged by files below it, which
         # its own size and mtime do not track. Probe it fresh every time.
-        return _decide(path, tool_list)
-    key = detection_key(path, st, tools=tool_list)
+        return _decide(path, tool_list, mapped)
+    key = detection_key(path, st, tools=tool_list, mapped=mapped)
     if key is None:
         # A file the header probe needs is missing or unreadable (a .bin still
         # copying in). Answer now, but remember nothing: the next call re-reads.
-        return _decide(path, tool_list)
+        return _decide(path, tool_list, mapped)
     # `detection_key` already carries the probe set. The shared cache adds the
     # folder walk's context, which the file's own stat does not track: the
     # resolved parent folder (a retargeted folder symlink) and the Volume root
@@ -464,7 +499,7 @@ def detect_platform(path: str, *, tools: Iterable | None = None) -> Detection:
         if hit is not None and hit[0] == key:
             _cache.move_to_end(path)
             return hit[1]
-    result = _decide(path, tool_list)
+    result = _decide(path, tool_list, mapped)
     with _cache_lock:
         _cache[path] = (key, result)
         _cache.move_to_end(path)
@@ -475,6 +510,7 @@ def detect_platform(path: str, *, tools: Iterable | None = None) -> Detection:
 
 def detection_key(
     path: str, st: os.stat_result, *, tools: Iterable | None = None,
+    mapped: dict[str, str] | None = None,
 ) -> tuple | None:
     """What a cached Detection for *path* is valid for, or None when it must not be cached.
 
@@ -486,7 +522,8 @@ def detection_key(
     decides it (the user's mapping or a Platform folder name, by source and
     path). None when one of the files cannot be stat'ed. The shared cache here
     and a folder Library's own cache both key on it, so a changed track, probe
-    set or mapping re-detects the Image in either.
+    set or mapping re-detects the Image in either. Pass the *mapped* snapshot
+    the decision uses (:func:`mapping_snapshot`), so both read the same one.
     """
     tool_list = list(tools) if tools is not None else _default_tools()
     disk_path, member = _split_member(path)
@@ -497,8 +534,10 @@ def detection_key(
     # relative to a Platform-named folder changes the answer, so a name alone
     # would not do. With no mapping anywhere the folder evidence is the path's
     # own, already what the key is for: skip the walk (a resolve) on every
-    # stat-only rewalk.
-    mapped = _mapped_folders()
+    # stat-only rewalk. *mapped* is the snapshot the caller decides with
+    # (`mapping_snapshot`); omitted, the mappings are read here.
+    if mapped is None:
+        mapped = _mapped_folders()
     found = _place(disk_path, _folder_names(tool_list), mapped) if mapped else None
     return (st.st_size, st.st_mtime_ns, deps, tuple(tool_list), found[:3] if found else None)
 

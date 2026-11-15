@@ -55,6 +55,111 @@ async def test_a_mapping_names_the_platform_when_there_is_no_header(db: Path) ->
     assert (found.platform, found.how, found.mapped) == ("psp", "mapping", "psp")
 
 
+def _mappings_in_turn(monkeypatch, *snapshots: dict[str, str]) -> list[int]:
+    """Make ``mapped_folders`` answer *snapshots* in turn (the last one repeats)."""
+    from services import platform_mappings
+
+    calls: list[int] = []
+
+    def answer() -> dict[str, str]:
+        calls.append(1)
+        return snapshots[min(len(calls), len(snapshots)) - 1]
+
+    monkeypatch.setattr(platform_mappings, "mapped_folders", answer)
+    return calls
+
+
+@pytest.mark.asyncio
+async def test_a_detection_reads_one_mapping_snapshot(db: Path, monkeypatch) -> None:
+    """CodeRabbit 4579059369: the cache key and the decision read the same mappings.
+
+    The mapping says psp when the key is built and ngc a moment later. Read
+    twice, the ngc header would be accepted and cached under the psp key. Read
+    once, the answer is the conflict the psp mapping makes, and a later lookup
+    with the same evidence gets that conflict back.
+    """
+    folder = db / "roms" / "mine"
+    image = _gamecube(folder / "Melee.iso")
+    await _register(db / "roms")
+    psp = {str(folder.resolve()): "psp"}
+    ngc = {str(folder.resolve()): "ngc"}
+    calls = _mappings_in_turn(monkeypatch, psp, ngc, psp)
+
+    found = platform_detect.detect_platform(image)
+
+    assert len(calls) == 1
+    assert (found.platform, found.how, found.mapped) == (None, "conflict", "psp")
+
+
+@pytest.mark.asyncio
+async def test_a_folder_walk_reads_one_mapping_snapshot(db: Path, monkeypatch) -> None:
+    """The same for a folder Library's walk: one snapshot for every Image's key and answer."""
+    from services import libraries
+
+    folder = db / "roms" / "mine"
+    _gamecube(folder / "Melee.iso")
+    _gamecube(folder / "Melee2.iso")
+    lib = await _register(db / "roms")
+    library = libraries.get(lib["id"])
+    psp = {str(folder.resolve()): "psp"}
+    ngc = {str(folder.resolve()): "ngc"}
+    calls = _mappings_in_turn(monkeypatch, psp, ngc, psp, ngc)
+
+    scan = library.scan(refresh=True)
+
+    assert len(calls) == 1
+    assert {(e.detection.platform, e.detection.how) for e in scan.entries} == {(None, "conflict")}
+
+
+def _unreadable_mappings(monkeypatch) -> None:
+    from services import platform_mappings
+
+    def broken() -> dict[str, str]:
+        raise RuntimeError("database is locked")
+
+    platform_mappings.invalidate()
+    monkeypatch.setattr(platform_mappings, "_build_index", broken)
+
+
+@pytest.mark.asyncio
+async def test_unreadable_mappings_never_decide_a_platform(db: Path, monkeypatch) -> None:
+    """CodeRabbit 4579059370: "could not read the mappings" is not "no mappings".
+
+    A psp mapping is saved on the folder of a GameCube disc. If the mappings
+    can't be read, the header alone would pass as ngc with no conflict.
+    Detection answers Unsorted instead, saying why, and remembers nothing.
+    """
+    folder = db / "roms" / "mine"
+    image = _gamecube(folder / "Melee.iso")
+    await _register(db / "roms")
+    _map(folder, "psp")
+    _unreadable_mappings(monkeypatch)
+
+    found = platform_detect.detect_platform(image)
+
+    assert found.platform is None
+    assert found.how == "unsorted"
+    assert "mapping" in found.reason
+
+
+@pytest.mark.asyncio
+async def test_unreadable_mappings_stop_the_rules_listing(db: Path, monkeypatch) -> None:
+    """A folder Library whose mappings can't be read lists nothing for Rules."""
+    from services import libraries
+    from services.rules import LibraryUnreadable
+
+    folder = db / "roms" / "mine"
+    _gamecube(folder / "Melee.iso")
+    lib = await _register(db / "roms")
+    _map(folder, "psp")
+    library = libraries.get(lib["id"])
+    _unreadable_mappings(monkeypatch)
+
+    with pytest.raises(LibraryUnreadable) as exc:
+        library.images("ngc")
+    assert exc.value.code == "mappings_unavailable"
+
+
 @pytest.mark.asyncio
 async def test_a_mapping_outranks_the_folder_name(db: Path) -> None:
     image = _blank(db / "roms" / "ps2" / "Game.iso")

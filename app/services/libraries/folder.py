@@ -68,6 +68,7 @@ from typing import Any
 from logging_setup import get_logger
 from services import findings, image_sets, platform_detect
 from services.platform_detect import CONFLICT, Detection
+from services.platform_mappings import MappingsUnavailable
 from services.rules.library import (
     FAILED_HOLD,
     RECOGNIZED_FILTER,
@@ -103,6 +104,12 @@ class RootUnavailable(LibraryUnreadable):
     """The root is gone, or not inside a configured Volume right now (a mount blip)."""
 
     code = "root_unavailable"
+
+
+class MappingsUnreadable(LibraryUnreadable):
+    """The folder Platform mappings could not be read, so no Platform is decided."""
+
+    code = "mappings_unavailable"
 
 
 @dataclass(frozen=True)
@@ -363,20 +370,28 @@ class FolderLibrary(LibraryDefaults):
         # uses). Resolved once per walk, not per Image: the walk does not
         # follow symlinks below the root, so every path under it shares this.
         context = (os.path.realpath(root), str(platform_boundary_root(root) or ""))
+        # One read of the folder Platform mappings for the whole walk: every
+        # Image's cache key and decision see the same evidence. A read that
+        # fails stops the walk (nothing is listed for Rules and no Finding is
+        # written) rather than deciding without the mappings.
+        try:
+            mapped = platform_detect.mapping_snapshot()
+        except MappingsUnavailable as exc:
+            raise MappingsUnreadable(str(exc)) from exc
         for path in image_sets.group_images([p for p, _ in files], members=members):
             st = stats[path]
             # Detection's own key: the file and the tracks its header probe
             # reads, so a changed track re-detects its sheet, plus the walk's
             # folder context. None (a track missing) means answer now and
             # remember nothing.
-            key = platform_detect.detection_key(path, st)
+            key = platform_detect.detection_key(path, st, mapped=mapped)
             if key is not None:
                 key = (*key, context)
             hit = self._detections.get(path)
             if key is not None and hit is not None and hit[0] == key:
                 detection = hit[1]
             else:
-                detection = platform_detect.detect_uncached(path)
+                detection = platform_detect.detect_uncached(path, mapped=mapped)
             if key is not None:
                 detections[path] = (key, detection)
             scan.entries.append(Entry(
