@@ -338,6 +338,34 @@ class PlatformMappingRecord(Base):
     )
 
 
+class FindingRecord(Base):
+    """Something the app noticed about an Image that a person has to decide (#304).
+
+    One open row per (Library, Image, kind), upserted by whatever noticed it
+    (a folder Library's walk) and deleted when the cause goes away. Library
+    agnostic: ``library_id`` is the Rule engine's id (``romm``, ``folder:3``)
+    and ``image_key`` the Library's own Image key. ``fingerprint`` is a digest
+    of the cause; a dismissed row stays hidden while ``dismissed_fingerprint``
+    equals it, and shows again once the cause changes. Nothing acts on a row.
+    """
+
+    __tablename__ = "findings"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    library_id = Column(String, nullable=False)
+    image_key = Column(String, nullable=False)
+    kind = Column(String, nullable=False)
+    path = Column(String, nullable=False)
+    reason = Column(String, nullable=False)
+    cause = Column(JSON, nullable=False, default=dict)
+    fingerprint = Column(String, nullable=False)
+    dismissed_fingerprint = Column(String, nullable=True)
+    first_seen = Column(String, nullable=False)
+    last_seen = Column(String, nullable=False)
+    __table_args__ = (
+        Index("ux_findings_library_image_kind", "library_id", "image_key", "kind", unique=True),
+    )
+
+
 class Preference(Base):
     """Generic key/value store for app preferences (UI layout, etc.).
 

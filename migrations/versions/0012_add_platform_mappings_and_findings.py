@@ -37,6 +37,26 @@ def upgrade() -> None:
             'ux_platform_mappings_library_folder', 'platform_mappings',
             ['library_id', 'folder'], unique=True,
         )
+    if 'findings' not in tables:
+        op.create_table(
+            'findings',
+            sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
+            sa.Column('library_id', sa.String(), nullable=False),
+            sa.Column('image_key', sa.String(), nullable=False),
+            sa.Column('kind', sa.String(), nullable=False),
+            sa.Column('path', sa.String(), nullable=False),
+            sa.Column('reason', sa.String(), nullable=False),
+            sa.Column('cause', sa.JSON(), nullable=False),
+            sa.Column('fingerprint', sa.String(), nullable=False),
+            sa.Column('dismissed_fingerprint', sa.String(), nullable=True),
+            sa.Column('first_seen', sa.String(), nullable=False),
+            sa.Column('last_seen', sa.String(), nullable=False),
+            sa.PrimaryKeyConstraint('id'),
+        )
+        op.create_index(
+            'ux_findings_library_image_kind', 'findings',
+            ['library_id', 'image_key', 'kind'], unique=True,
+        )
 
 
 def downgrade() -> None:

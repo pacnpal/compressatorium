@@ -161,3 +161,117 @@ async def test_an_unknown_platform_is_refused(db: Path) -> None:
     with pytest.raises(platform_mappings.MappingError) as err:
         _map(db / "roms" / "misc", "not-a-console")
     assert err.value.status == 422
+
+
+# ----------------------------------------------------------------------
+# the Findings store
+# ----------------------------------------------------------------------
+
+
+def _conflict(key: str, header: str = "ngc", folder: str = "ps2"):
+    from services import findings
+
+    return findings.Observed(
+        kind=findings.PLATFORM_CONFLICT, image_key=key, path=f"/vol/roms/{key}",
+        reason=f"in the {folder} folder, but the header says {header}",
+        cause={"header": header, "folder": folder, "mapped": None},
+    )
+
+
+def _open(**kwargs) -> list[dict]:
+    from services import findings
+
+    return findings.list_findings(**kwargs)
+
+
+def test_a_finding_is_stored_once_per_kind_and_image(db: Path) -> None:
+    from services import findings
+
+    findings.reconcile("folder:1", [_conflict("ps2/a.iso")], now="2026-11-01T00:00:00Z")
+    findings.reconcile("folder:1", [_conflict("ps2/a.iso")], now="2026-11-02T00:00:00Z")
+
+    rows = _open()
+    assert len(rows) == 1
+    row = rows[0]
+    assert (row["library_id"], row["image_key"], row["kind"]) == (
+        "folder:1", "ps2/a.iso", "platform_conflict",
+    )
+    assert row["first_seen"] == "2026-11-01T00:00:00Z"
+    assert row["last_seen"] == "2026-11-02T00:00:00Z"
+    assert row["reason"] == "in the ps2 folder, but the header says ngc"
+
+
+def test_a_finding_clears_when_its_cause_goes_away(db: Path) -> None:
+    from services import findings
+
+    findings.reconcile("folder:1", [_conflict("ps2/a.iso"), _conflict("ps2/b.iso")])
+    findings.reconcile("folder:1", [_conflict("ps2/b.iso")])
+
+    assert [r["image_key"] for r in _open()] == ["ps2/b.iso"]
+
+
+def test_a_walk_only_clears_its_own_library(db: Path) -> None:
+    from services import findings
+
+    findings.reconcile("folder:1", [_conflict("ps2/a.iso")])
+    findings.reconcile("folder:2", [])
+
+    assert [r["library_id"] for r in _open()] == ["folder:1"]
+
+
+def test_dismissing_hides_a_finding_while_its_cause_is_the_same(db: Path) -> None:
+    from services import findings
+
+    findings.reconcile("folder:1", [_conflict("ps2/a.iso")])
+    finding_id = _open()[0]["id"]
+
+    assert findings.dismiss(finding_id) is True
+    findings.reconcile("folder:1", [_conflict("ps2/a.iso")])
+
+    assert _open() == []
+    dismissed = _open(include_dismissed=True)
+    assert [(r["id"], r["dismissed"]) for r in dismissed] == [(finding_id, True)]
+
+
+def test_a_dismissed_finding_comes_back_when_its_cause_changes(db: Path) -> None:
+    from services import findings
+
+    findings.reconcile("folder:1", [_conflict("ps2/a.iso", header="ngc")])
+    findings.dismiss(_open()[0]["id"])
+
+    # The header now says Wii: a different cause, so the person decides again.
+    findings.reconcile("folder:1", [_conflict("ps2/a.iso", header="wii")])
+
+    rows = _open()
+    assert [(r["image_key"], r["dismissed"]) for r in rows] == [("ps2/a.iso", False)]
+    assert "wii" in rows[0]["reason"]
+
+
+def test_a_reworded_reason_alone_does_not_bring_a_finding_back(db: Path) -> None:
+    from dataclasses import replace
+
+    from services import findings
+
+    seen = _conflict("ps2/a.iso")
+    findings.reconcile("folder:1", [seen])
+    findings.dismiss(_open()[0]["id"])
+
+    findings.reconcile("folder:1", [replace(seen, reason="worded differently")])
+
+    assert _open() == []
+
+
+def test_dismissing_an_unknown_finding_says_so(db: Path) -> None:
+    from services import findings
+
+    assert findings.dismiss(12345) is False
+
+
+def test_forgetting_a_library_drops_its_findings(db: Path) -> None:
+    from services import findings
+
+    findings.reconcile("folder:1", [_conflict("ps2/a.iso")])
+    findings.reconcile("folder:2", [_conflict("ps2/a.iso")])
+    findings.forget_library("folder:1")
+
+    assert [r["library_id"] for r in _open()] == ["folder:2"]
