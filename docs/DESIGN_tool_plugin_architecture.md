@@ -2839,7 +2839,12 @@ each delete path (below), which also asks `folder_locked_above`.
   wrapper's `gosu converter` drop ensure.
 
 A job that cannot take its input locks (another job holds the path for
-writing) is deferred and re-queued, like a folder-lock block. At the
+writing) is deferred and re-queued, like a folder-lock block. The locks are
+taken on a worker thread that a cancelled job does not wait for, so each
+acquisition is recorded only while the job's attempt is still live
+(`_begin_input_attempt`, checked under `_input_mutex`); once
+`_release_inputs` has ended the attempt (a cancel, the job's cleanup), a lock
+the thread takes afterwards is released at once. At the
 delete-on-verify step the job trades its shared read locks for exclusive ones
 on every delete path (`JobManager._hold_delete_paths_waiting`, through
 `acquire_lock(path, allow_existing=True)`) and holds them until the unlinks

@@ -472,3 +472,66 @@ async def test_a_job_cancelled_before_its_run_lets_go_of_its_input_locks(tmp_pat
         job_manager.jobs.pop(job.id, None)
         job_manager._cancel_events.pop(job.id, None)
         job_manager._release_inputs(job.id)
+
+
+@pytest.mark.asyncio
+async def test_locks_a_cancelled_job_takes_after_the_cancel_are_released(
+    tmp_path, monkeypatch,
+):
+    """The input-lock thread can still be running when the job is cancelled:
+    whatever it acquires after that is released as soon as it returns."""
+    import asyncio
+    import threading
+    import time as time_module
+    from datetime import datetime, timezone
+
+    from models import ConversionJob, ConversionMode, JobStatus
+    from services.concurrency_manager import concurrency_manager
+    from services.job_manager import job_manager
+    from services.lock_manager import lock_manager
+
+    monkeypatch.setattr(lock_manager, "_lock_dir", str(tmp_path / "locks"))
+    monkeypatch.setattr(lock_manager, "_ready", False)
+    iso = tmp_path / "Game.iso"
+    iso.write_bytes(b"disc")
+    out = str(tmp_path / "Game.rvz")
+    entered, go, finished = threading.Event(), threading.Event(), threading.Event()
+    original = lock_manager.acquire_input_lock
+
+    def paused_acquire(path):
+        entered.set()
+        go.wait(10)
+        try:
+            return original(path)
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(lock_manager, "acquire_input_lock", paused_acquire)
+    job = ConversionJob(
+        id="raceinput", file_path=str(iso), filename=iso.name,
+        mode=ConversionMode.DOLPHIN_RVZ, status=JobStatus.QUEUED,
+        created_at=datetime.now(timezone.utc), output_path=out,
+    )
+    job_manager.jobs[job.id] = job
+    task = asyncio.create_task(job_manager._process_job(job.id))
+    try:
+        while not entered.is_set():
+            await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        go.set()  # the thread now takes its lock, after the cancel
+        assert finished.wait(5)
+        deadline = time_module.monotonic() + 2
+        while lock_manager._input_handles and time_module.monotonic() < deadline:
+            await asyncio.sleep(0.01)
+        assert lock_manager._input_handles == {}
+        assert _manager(tmp_path / "locks").check_file_status(str(iso))[1] is False
+        assert job.id not in job_manager._input_locks
+    finally:
+        go.set()
+        lock_manager.release_lock(out)
+        concurrency_manager.release(job.id)
+        job_manager.jobs.pop(job.id, None)
+        job_manager._cancel_events.pop(job.id, None)
+        job_manager._release_inputs(job.id)

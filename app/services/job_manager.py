@@ -9,6 +9,7 @@ import resource
 import shutil
 import sys
 import tempfile
+import threading
 import time
 import uuid
 from collections import OrderedDict, deque
@@ -359,6 +360,12 @@ class JobManager:
         self._output_keys: Dict[str, Tuple[str, ...]] = {}
         # The files each running job holds a shared input lock on (#306).
         self._input_locks: Dict[str, List[str]] = {}
+        # The live input-lock attempt per job, and the lock guarding it with
+        # ``_input_locks``. The acquisition runs on a worker thread that can
+        # outlive a cancelled job: it records each lock only while its attempt
+        # is still the live one, and releases it otherwise.
+        self._input_attempts: Dict[str, object] = {}
+        self._input_mutex = threading.Lock()
         # The delete paths a job holds exclusively while it unlinks them.
         self._delete_holds: Dict[str, List[str]] = {}
         # Jobs currently inside the verify phase, mapped to the monotonic clock
@@ -1420,20 +1427,39 @@ class JobManager:
             return [job.file_path.split("::", 1)[0]]
         return [job.file_path, *self._track_candidate_paths(job.file_path)]
 
-    def _hold_inputs(self, job_id: str, job: ConversionJob) -> bool:
-        """Take a shared lock on every file the job reads, or none of them."""
-        held: List[str] = []
+    def _begin_input_attempt(self, job_id: str) -> object:
+        """Start a live input-lock attempt for the job (see ``_hold_inputs``)."""
+        attempt = object()
+        with self._input_mutex:
+            self._input_attempts[job_id] = attempt
+        return attempt
+
+    def _hold_inputs(self, job_id: str, job: ConversionJob, attempt: object) -> bool:
+        """Take a shared lock on every file the job reads, or none of them.
+
+        Runs on a worker thread, which a cancelled job does not wait for. Each
+        lock is recorded only while ``attempt`` is still the job's live one;
+        once ``_release_inputs`` has ended it (a cancel, the job's cleanup),
+        whatever this thread takes is released at once instead (#306).
+        """
         for path in dict.fromkeys(self._input_paths(job)):
-            if not lock_manager.acquire_input_lock(path):
-                for taken in held:
-                    lock_manager.release_input_lock(taken)
-                return False
-            held.append(path)
-        self._input_locks[job_id] = held
+            acquired = lock_manager.acquire_input_lock(path)
+            with self._input_mutex:
+                live = self._input_attempts.get(job_id) is attempt
+                if acquired and live:
+                    self._input_locks.setdefault(job_id, []).append(path)
+                    continue
+            if acquired:
+                lock_manager.release_input_lock(path)  # the job moved on
+            self._release_inputs(job_id)
+            return False
         return True
 
     def _release_inputs(self, job_id: str) -> None:
-        for path in self._input_locks.pop(job_id, []):
+        with self._input_mutex:
+            self._input_attempts.pop(job_id, None)
+            paths = self._input_locks.pop(job_id, [])
+        for path in paths:
             lock_manager.release_input_lock(path)
 
     def _try_hold_for_delete(self, job_id: str, paths: Iterable[str]) -> bool:
@@ -3016,7 +3042,7 @@ class JobManager:
         # them, or the Source would stay shared-locked until restart (#306).
         try:
             if job.input_kind != InputKind.DIRECTORY and not await run_in_threadpool(
-                self._hold_inputs, job_id, job,
+                self._hold_inputs, job_id, job, self._begin_input_attempt(job_id),
             ):
                 await self._defer_blocked_job(
                     job_id,
