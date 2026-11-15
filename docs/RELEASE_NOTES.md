@@ -158,21 +158,28 @@
   Source and the Source's companions until it ends, so the web answers 409
   while a CLI run converts that file. Two jobs reading one file don't block each
   other. Renaming or deleting a folder is refused the same way while a job in
-  any process reads or writes something inside it.
+  any process reads or writes something inside it. A delete-source job whose
+  Source another job is still reading waits up to a minute for it; if it's
+  still being read, the Source is kept and the job completes with "Source
+  kept: it was being read by another job" instead of failing.
   - A CLI container and the web UI that share `/config` must mount each Volume
     at the same path; locks name container paths.
-- **Delete-source keeps an archive that holds another Image** (#306).
-  Deleting an archive member's Source deletes the whole archive, so the archive
-  now goes only when that member is the only Image in it. The count covers
-  every Image in the archive, including ones the run skipped or left out. The
-  web UI refuses such a request with the names of the other Images; the CLI
-  converts the member, keeps the archive, says so on that line and exits 1.
-  Junk such as `__MACOSX/` and a disc's own `.bin` tracks don't count.
+- **Delete-source keeps an archive unless everything in it is the converted
+  Image** (#306). Deleting an archive member's Source deletes the whole
+  archive, so the archive is now deleted only when every member belongs to
+  the Image that was converted: its own file, the tracks its sheet names, and
+  its split parts. Any other member, of any type (another disc, a ROM, a loose
+  `.bin`, a nested archive, a folder, a `.txt`, `.nfo` or `.jpg`, `__MACOSX/`
+  clutter), keeps the archive. The web UI refuses such a request and names the
+  first few extra members; the CLI converts the member, keeps the archive,
+  names them on that line and exits 1.
 - **An archive the safety rules refuse is skipped by `verify`, not failed**
   (#306). A single-ROM archive with a symlink, an absolute or `..` path, an
   encrypted member, or over a `CHD_ARCHIVE_MAX_*` limit you set is reported as
   "can't be checked (refused by the archive safety rules: ...)". Its stored
-  check is kept and the exit code is unaffected. 7z is never left waiting for a
+  check is kept and the exit code is unaffected. The web's Verify says the same
+  (a warning, not an error, and "N can't be checked" in a batch summary, apart
+  from failures). 7z is never left waiting for a
   password: it reads no terminal input, and an encrypted archive fails at once.
 - **Auto converts a PS3 disc folder to an ISO** (#306). The Auto choice now
   sends a PS3 disc folder to `folder_to_iso`; it used to leave it alone.

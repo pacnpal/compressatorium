@@ -510,7 +510,7 @@ def _decide_deletes(items: list[Item], args) -> None:
 
     if not args.delete_source:
         return
-    from utils.delete_plan import other_images_in_archive
+    from utils.delete_plan import archive_members_beyond_image, describe_extras
 
     routed = [i for i in items if i.mode and not i.status]
     shared = get_disallowed_archive_paths([i.path for i in routed])
@@ -519,12 +519,12 @@ def _decide_deletes(items: list[Item], args) -> None:
             item.reason = f"Source kept: {item.mode} cannot delete its Source"
         elif "::" in item.path and item.path.split("::", 1)[0] in shared:
             item.reason = "Source kept: several Images come from this archive"
-        elif others := other_images_in_archive(item.path):
-            # The archive's whole membership, whatever routing kept: an archive
-            # goes only when this is the only Image in it (the delete plan's
-            # own rule, which the web submit hits too).
+        elif others := archive_members_beyond_image(item.path):
+            # Fail closed: an archive goes only when every member belongs to
+            # this Image (the delete plan's own rule, which the web submit
+            # hits too).
             archive = os.path.basename(item.path.split("::", 1)[0])
-            item.reason = f"Source kept: {archive} also holds {', '.join(others[:3])}"
+            item.reason = f"Source kept: {archive} also holds {describe_extras(others)}"
         else:
             item.delete_source = True
             continue
@@ -748,6 +748,11 @@ def _finish(item: Item, job) -> None:
     item.output = job.output_path or item.output
     item.check = job.check_passed
     item.source_deleted = bool(job.deleted_paths)
+    if getattr(job, "warning", None):
+        # Completed, but did less than asked: a Source kept because another
+        # job was reading it. Reported like any kept Source (exit 1).
+        item.reason = job.warning
+        item.kept_source = item.kept_source or item.delete_source
     if job.error_message:
         item.reason = job.error_message
 
@@ -946,7 +951,7 @@ async def _verify_one(path: str, tool, has_db: bool, since, dry_run: bool) -> di
         line["_stop"] = True
     if result.get("valid"):
         line["status"], line["reason"] = "intact", result.get("message")
-        await verification_store.mark_verified(path)
+        await verification_store.refresh_check(path)
         return line
     if result.get("uncheckable"):
         # The tool won't check it here (an archive safety rule refused it):

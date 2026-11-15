@@ -194,6 +194,10 @@ class ConversionJob(BaseModel):
     # exists. A private attribute: not a field, so it is in neither the API schema
     # nor any serialized form.
     _sweep_owner: str | None = PrivateAttr(default=None)
+    # A finished job that did less than asked without failing, such as a
+    # delete-source run that kept its Source because another job was reading
+    # it (#306). None when there is nothing to say.
+    warning: str | None = None
 
 
 class JobCreateRequest(BaseModel):

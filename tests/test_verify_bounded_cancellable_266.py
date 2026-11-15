@@ -439,7 +439,7 @@ async def test_verify_route_applies_the_bound(tmp_path, monkeypatch):
     monkeypatch.setattr(info_routes.settings, "chd_volumes", str(tmp_path))
     monkeypatch.setattr(info_routes.settings, "data_mount_root", str(tmp_path))
     store = Mock()
-    store.mark_verified = AsyncMock()
+    store.refresh_check = AsyncMock()
     monkeypatch.setattr(info_routes, "verification_store", store)
 
     target = tmp_path / "game.wux"
@@ -469,7 +469,7 @@ async def test_verify_route_applies_the_bound(tmp_path, monkeypatch):
     assert result["valid"] is False
     assert "timed out" in result["message"].lower()
     # A verify that never finished proves nothing, so nothing is recorded.
-    store.mark_verified.assert_not_called()
+    store.refresh_check.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -735,7 +735,7 @@ async def test_a_verdict_within_the_bound_is_reported_not_timed_out(
     monkeypatch.setattr(info_routes.settings, "chd_volumes", str(tmp_path))
     monkeypatch.setattr(info_routes.settings, "data_mount_root", str(tmp_path))
     store = Mock()
-    store.mark_verified = AsyncMock()
+    store.refresh_check = AsyncMock()
     monkeypatch.setattr(info_routes, "verification_store", store)
 
     target = tmp_path / "game.wux"
@@ -760,11 +760,11 @@ async def test_a_verdict_within_the_bound_is_reported_not_timed_out(
     events = [e async for e in response.body_iterator if isinstance(e, dict)]
 
     assert events[-1]["event"] == "verify_complete"
-    store.mark_verified.assert_called_once_with(str(target))
+    store.refresh_check.assert_called_once_with(str(target))
 
     # And the other side of the line: overrun the bound and the verdict never
     # arrives, because the producer itself was stopped.
-    store.mark_verified.reset_mock()
+    store.refresh_check.reset_mock()
     delay = 5
 
     response = await info_routes.verify_jwud_events(path=str(target))
@@ -772,7 +772,7 @@ async def test_a_verdict_within_the_bound_is_reported_not_timed_out(
 
     assert events[-1]["event"] == "verify_error"
     assert "timed out" in events[-1]["data"].lower()
-    store.mark_verified.assert_not_called()
+    store.refresh_check.assert_not_called()
 
 
 def test_cancel_reaches_a_detached_verify_read(tmp_path, monkeypatch):
@@ -861,7 +861,7 @@ async def test_a_chatty_verifier_still_hits_the_batch_bound(tmp_path, monkeypatc
     """
     monkeypatch.setattr(info_routes.settings, "chd_volumes", str(tmp_path))
     monkeypatch.setattr(info_routes.settings, "data_mount_root", str(tmp_path))
-    monkeypatch.setattr(info_routes, "verification_store", Mock(mark_verified=AsyncMock()))
+    monkeypatch.setattr(info_routes, "verification_store", Mock(refresh_check=AsyncMock()))
 
     target = tmp_path / "game.wux"
     target.write_bytes(b"WUX0" + b"\0" * 1024)
@@ -1180,7 +1180,7 @@ async def test_the_bound_holds_when_the_sse_client_stops_reading(tmp_path, monke
     monkeypatch.setattr(info_routes.settings, "chd_volumes", str(tmp_path))
     monkeypatch.setattr(info_routes.settings, "data_mount_root", str(tmp_path))
     monkeypatch.setattr(
-        info_routes, "verification_store", Mock(mark_verified=AsyncMock()),
+        info_routes, "verification_store", Mock(refresh_check=AsyncMock()),
     )
 
     target = tmp_path / "game.wux"
@@ -1348,7 +1348,7 @@ async def test_a_batch_stops_when_a_verifier_cannot_be_killed(tmp_path, monkeypa
     """
     monkeypatch.setattr(info_routes.settings, "chd_volumes", str(tmp_path))
     monkeypatch.setattr(info_routes.settings, "data_mount_root", str(tmp_path))
-    monkeypatch.setattr(info_routes, "verification_store", Mock(mark_verified=AsyncMock()))
+    monkeypatch.setattr(info_routes, "verification_store", Mock(refresh_check=AsyncMock()))
 
     targets = []
     for name in ("one.wux", "two.wux", "three.wux"):
@@ -1619,7 +1619,7 @@ async def _stalled_reader_bounded_queue(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(info_routes.settings, "chd_volumes", str(tmp_path))
     monkeypatch.setattr(info_routes.settings, "data_mount_root", str(tmp_path))
     monkeypatch.setattr(
-        info_routes, "verification_store", Mock(mark_verified=AsyncMock()),
+        info_routes, "verification_store", Mock(refresh_check=AsyncMock()),
     )
     monkeypatch.setattr(info_routes, "_VERIFY_QUEUE_LIMIT", 8)
 
@@ -1732,7 +1732,7 @@ async def _lane_freed_with_a_parked_reader(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(info_routes.settings, "chd_volumes", str(tmp_path))
     monkeypatch.setattr(info_routes.settings, "data_mount_root", str(tmp_path))
     monkeypatch.setattr(
-        info_routes, "verification_store", Mock(mark_verified=AsyncMock()),
+        info_routes, "verification_store", Mock(refresh_check=AsyncMock()),
     )
 
     target = tmp_path / "game.wux"
@@ -1773,7 +1773,7 @@ async def test_a_batch_does_not_hold_the_lane_between_files(tmp_path, monkeypatc
     monkeypatch.setattr(info_routes.settings, "chd_volumes", str(tmp_path))
     monkeypatch.setattr(info_routes.settings, "data_mount_root", str(tmp_path))
     monkeypatch.setattr(
-        info_routes, "verification_store", Mock(mark_verified=AsyncMock()),
+        info_routes, "verification_store", Mock(refresh_check=AsyncMock()),
     )
 
     targets = []
@@ -1911,7 +1911,7 @@ async def _batch_frees_lane_mid_file(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(info_routes.settings, "chd_volumes", str(tmp_path))
     monkeypatch.setattr(info_routes.settings, "data_mount_root", str(tmp_path))
     monkeypatch.setattr(
-        info_routes, "verification_store", Mock(mark_verified=AsyncMock()),
+        info_routes, "verification_store", Mock(refresh_check=AsyncMock()),
     )
 
     targets = []

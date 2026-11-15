@@ -80,6 +80,11 @@ class LockManager:
         # Shared (read) locks on the files running jobs read, one handle per
         # acquisition, so two jobs here reading one Source each hold their own.
         self._input_handles: dict[str, list] = {}
+        # Lock identity is the real path (#306): a path reached through a
+        # symlinked folder locks, records and probes as the file it names, so
+        # a probe on the real path sees it. Each caller path maps to the
+        # identity it was locked under, kept unchanged through release.
+        self._lock_keys: dict[str, str] = {}
         if not lazy:
             self._ensure_ready()
 
@@ -374,18 +379,17 @@ class LockManager:
 
         """
         normalized_path = os.path.normpath(output_path)
+        key = self._resolve(output_path)  # the lock identity: the real path
         with self._lock_mutex:
-            is_locked = normalized_path in self._locks
-            # Resolve symlinks only when a directory subtree lock is actually
-            # held (the uncommon case), to keep the hot listing path cheap.
+            is_locked = key in self._locks
             if not is_locked and self._dir_locks:
-                is_locked = self._within_locked_dir_locked(self._resolve(output_path))
+                is_locked = self._within_locked_dir_locked(key)
             file_exists = os.path.isfile(normalized_path)
 
         if is_locked:
             return (file_exists, True)
 
-        return (file_exists, self._check_external_lock(normalized_path))
+        return (file_exists, self._check_external_lock(key))
 
     def _check_external_lock(self, normalized_path: str) -> bool:
         """Check if an external process holds a lock on the output file.
@@ -443,7 +447,8 @@ class LockManager:
         if self.is_read_only:
             return False
         self._ensure_ready()
-        normalized_path = os.path.normpath(output_path)
+        # The real path is the identity (see ``_lock_keys``).
+        normalized_path = self._resolve(output_path)
 
         with self._lock_mutex:
             # Check if already locked by another job
@@ -452,11 +457,8 @@ class LockManager:
 
             # Reject a target that lives inside a directory subtree another job
             # has locked (makeps3iso packing the folder): the per-file job
-            # contends here just like an exact output collision. Resolve
-            # symlinks so a symlinked path into the folder can't slip through.
-            if self._dir_locks and self._within_locked_dir_locked(
-                self._resolve(output_path)
-            ):
+            # contends here just like an exact output collision.
+            if self._dir_locks and self._within_locked_dir_locked(normalized_path):
                 return False
 
             # Try to create a lock file
@@ -469,6 +471,8 @@ class LockManager:
                     normalized_path, lock_file_path, allow_existing,
                 )
                 if outcome is not None:
+                    if outcome:
+                        self._lock_keys[os.path.normpath(output_path)] = normalized_path
                     return outcome
             return False
 
@@ -553,9 +557,10 @@ class LockManager:
 
     def release_lock(self, output_path: str):
         """Release the lock for an output file path."""
-        normalized_path = os.path.normpath(output_path)
-
         with self._lock_mutex:
+            normalized_path = self._lock_keys.pop(
+                os.path.normpath(output_path), None,
+            ) or self._resolve(output_path)
             if normalized_path in self._locks:
                 self._locks.remove(normalized_path)
 
@@ -672,14 +677,15 @@ class LockManager:
             return False
         self._ensure_ready()
         normalized = os.path.normpath(path)
-        lock_file_path = self._lock_file_path(normalized)
+        key = self._resolve(path)  # the identity: the real path
+        lock_file_path = self._lock_file_path(key)
         os.makedirs(os.path.dirname(lock_file_path), exist_ok=True)
         handle = self._shared_lock(lock_file_path)
         if handle is None:
             return False
-        self._record_path(handle, normalized)
+        self._record_path(handle, key)
         with self._lock_mutex:
-            self._input_handles.setdefault(normalized, []).append(handle)
+            self._input_handles.setdefault(normalized, []).append((key, handle))
         if self.folder_locked_above(path) is not None:
             # A folder above is being packed: reading inside it is a conflict.
             self.release_input_lock(path)
@@ -693,10 +699,10 @@ class LockManager:
             handles = self._input_handles.get(normalized)
             if not handles:
                 return
-            handle = handles.pop()
+            key, handle = handles.pop()  # the identity it was taken under
             if not handles:
                 del self._input_handles[normalized]
-        lock_file_path = self._lock_file_path(normalized)
+        lock_file_path = self._lock_file_path(key)
         try:
             # The last reader removes the file. Upgrading fails while another
             # reader holds it, and that reader removes it in turn.
