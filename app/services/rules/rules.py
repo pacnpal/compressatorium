@@ -671,15 +671,17 @@ def normalize_rule(
         # Pause rather than run wider than asked. The editor shows why.
         out["invalid_pattern"] = True
         out["enabled"] = False
-    # A refused value is replaced by the wider fallback, so the *reason* has to
+    # A refused pattern is replaced by the wider fallback, so the *reason* has to
     # survive the round trip or the pause becomes unreadable: re-normalizing a
     # stored rule sees `exclude_pattern: None`, finds nothing wrong with it, and
     # clears the flag -- leaving the editor showing a rule paused for no stated
     # reason, and the sweep unable to tell an operator's pause from this one.
-    for flag in ("invalid_pattern", "invalid_window"):
-        if raw.get(flag):
-            out[flag] = True
-            out["enabled"] = False
+    if raw.get("invalid_pattern"):
+        out["invalid_pattern"] = True
+        out["enabled"] = False
+    # `invalid_window` is never read from `raw`. The window is kept as sent, so
+    # the check above recomputes the flag on every save; honouring a sent flag
+    # would keep a corrected window paused for good (Codex 4577383258).
 
     out["check_budget_gb"] = _clamp(
         "check_budget_gb", raw.get("check_budget_gb"), DEFAULT_CHECK_BUDGET_GB,

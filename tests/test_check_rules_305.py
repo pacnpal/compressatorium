@@ -1780,3 +1780,38 @@ async def test_a_check_run_cancelled_before_it_starts_ends_once(
     assert calls == []
     assert "ps2/Cove.chd" not in image_checks.order_stamps(lib)
     assert [e for e in sent if e.kind in ("check_failed", "job_failed")] == []
+
+
+@pytest.mark.asyncio
+async def test_a_check_rule_with_a_corrected_window_runs_again(tree: Path, ready) -> None:
+    """4577383258: the server recomputes invalid_window from the window it is sent,
+    so a check Rule paused for half a window resumes once the window is whole,
+    even if a client still sends the old flag back."""
+    from routes import libraries as routes
+
+    created = await routes.register_library(routes.RegisterLibraryRequest(path=str(tree)))
+    lib = created["id"]
+
+    half = await routes.put_library_rules(lib, {"check_rules": {"ps2": {
+        "enabled": True, "check_budget_gb": 3, "window_start": "01:00",
+    }}})
+    assert half["check_rules"]["ps2"]["invalid_window"] is True
+    assert half["check_rules"]["ps2"]["enabled"] is False
+
+    whole = await routes.put_library_rules(lib, {"check_rules": {"ps2": {
+        **half["check_rules"]["ps2"], "window_end": "05:00", "enabled": True,
+    }}})
+    assert whole["check_rules"]["ps2"]["invalid_window"] is False
+    assert whole["check_rules"]["ps2"]["enabled"] is True
+
+
+def test_a_conversion_rule_with_an_equal_window_stays_refused_on_every_save() -> None:
+    """The recompute keeps an equal pair invalid for a conversion Rule, flag sent or not."""
+    from services.rules.rules import CONVERT, normalize_rule
+
+    for sent_flag in (True, False):
+        rule = normalize_rule({
+            "mode": "createcd", "enabled": True, "window_start": "03:00",
+            "window_end": "03:00", "invalid_window": sent_flag,
+        }, kind=CONVERT)
+        assert (rule["invalid_window"], rule["enabled"]) == (True, False)

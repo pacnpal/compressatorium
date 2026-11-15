@@ -97,6 +97,62 @@ process.stdout.write(JSON.stringify({{
     assert data["dirty"] is True
 
 
+def test_editing_the_window_drops_a_stale_invalid_window_flag(tmp_path) -> None:
+    """4577383258: the server owns invalid_window. The store drops it once the window
+    or Enabled changes, and never sends it back."""
+    data = _run_store(tmp_path, f"""
+const source = new FolderRulesSource({_FOLDER});
+const loading = source.loadRules();
+__calls[0].resolve({{
+  rules: {{ ps2: {{ mode: 'createdvd', enabled: false, window_start: '03:00',
+    window_end: '03:00', invalid_window: true }} }},
+  check_rules: {{ ps2: {{ mode: '', enabled: false, check_budget_gb: 50,
+    window_start: '01:00', window_end: null, invalid_window: true }} }},
+  state: {{}}, check_state: {{}}, defaults: {{ mode: '' }}, options: {{}},
+}});
+await loading;
+source.setCheckRule('ps2', {{ ...source.checkRuleFor('ps2'), window_end: '05:00',
+  enabled: true }});
+source.setRule('ps2', {{ ...source.ruleFor('ps2'), enabled: true }});
+const edited = {{ check: source.checkRuleFor('ps2'), rule: source.ruleFor('ps2') }};
+const saving = source.saveRules();
+await tick();
+__calls[1].resolve({{ rules: {{}}, check_rules: {{}} }});
+await saving;
+process.stdout.write(JSON.stringify({{ edited, call: __log[1] }}));
+""")
+    assert "invalid_window" not in data["edited"]["check"]
+    assert "invalid_window" not in data["edited"]["rule"]
+    _name, _library_id, rules, checks = data["call"]
+    assert "invalid_window" not in rules["ps2"]
+    assert "invalid_window" not in checks["ps2"]
+    assert checks["ps2"]["window_end"] == "05:00"
+
+
+def test_an_unrelated_edit_keeps_the_flag_on_screen_but_not_in_the_save(tmp_path) -> None:
+    """A budget change leaves the server's error showing until the next save answers."""
+    data = _run_store(tmp_path, f"""
+const source = new FolderRulesSource({_FOLDER});
+const loading = source.loadRules();
+__calls[0].resolve({{
+  rules: {{}},
+  check_rules: {{ ps2: {{ mode: '', enabled: false, check_budget_gb: 50,
+    window_start: '01:00', window_end: null, invalid_window: true }} }},
+  state: {{}}, check_state: {{}}, defaults: {{ mode: '' }}, options: {{}},
+}});
+await loading;
+source.setCheckRule('ps2', {{ ...source.checkRuleFor('ps2'), check_budget_gb: 80 }});
+const edited = source.checkRuleFor('ps2');
+const saving = source.saveRules();
+await tick();
+__calls[1].resolve({{ rules: {{}}, check_rules: {{}} }});
+await saving;
+process.stdout.write(JSON.stringify({{ edited, call: __log[1] }}));
+""")
+    assert data["edited"]["invalid_window"] is True
+    assert "invalid_window" not in data["call"][3]["ps2"]
+
+
 def test_the_endpoints_send_the_check_rules() -> None:
     src = _ENDPOINTS.read_text(encoding="utf-8")
     assert src.count("check_rules: checkRules") == 2

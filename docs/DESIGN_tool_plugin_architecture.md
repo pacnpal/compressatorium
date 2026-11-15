@@ -3036,7 +3036,12 @@ Rule. A check Rule has no target format (`rules.is_check_rule`).
 window, weekdays, timezone, priority and `enabled`. A conversion Rule whose
 window starts and ends at the same time is refused as `invalid_window`
 (paused, the editor says why) and `_window` keeps it literal, so it never
-converts all day. Its `interval_minutes` is
+converts all day. `invalid_window` is recomputed from the submitted window on
+every save, for every kind, and a client-sent value is ignored, so a corrected
+window re-enables the Rule; the editor never sends the flag
+(`rulesSource.svelte.js`). `invalid_pattern` is the one flag read back from the
+stored Rule, because the refused pattern itself is replaced by none. A check
+Rule's `interval_minutes` is
 fixed at `CHECK_INTERVAL_MINUTES` (a day) but the schedule does not read it: a
 check Rule is due once per window (`schedule._is_due`): the window is open on an
 allowed weekday (an overnight window's tail belongs to the day it opened) and

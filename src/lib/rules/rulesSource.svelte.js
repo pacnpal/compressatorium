@@ -19,6 +19,28 @@
 //
 // No imports on purpose: the store tests evaluate this file with Node.
 
+// `invalid_window` belongs to the server: `normalize_rule` recomputes it from
+// the window on every save, so the editor never sends it (Codex 4577383258: a
+// sent flag kept a corrected window paused for good). It is dropped on screen
+// as soon as the window or Enabled changes, so a stale error does not linger
+// until the save answers. Any other edit leaves the server's error showing.
+const WINDOW_FIELDS = ['window_start', 'window_end', 'enabled'];
+
+function withoutStaleWindowFlag(previous, rule) {
+  if (!rule?.invalid_window) return rule;
+  if (previous && WINDOW_FIELDS.every((f) => previous[f] === rule[f])) return rule;
+  const { invalid_window: _stale, ...rest } = rule;
+  return rest;
+}
+
+function withoutWindowFlags(rules) {
+  return Object.fromEntries(Object.entries(rules ?? {}).map(([key, rule]) => {
+    if (!rule || !('invalid_window' in rule)) return [key, rule];
+    const { invalid_window: _server, ...rest } = rule;
+    return [key, rest];
+  }));
+}
+
 export class RulesSource {
   rules = $state({});
   checkRules = $state({});
@@ -146,7 +168,8 @@ export class RulesSource {
   }
 
   setCheckRule(platformId, rule) {
-    this.checkRules = { ...this.checkRules, [String(platformId)]: rule };
+    const key = String(platformId);
+    this.checkRules = { ...this.checkRules, [key]: withoutStaleWindowFlag(this.checkRules[key], rule) };
     this.rulesDirty = true;
     this.#rulesRevision += 1;
   }
@@ -160,7 +183,8 @@ export class RulesSource {
   }
 
   setRule(platformId, rule) {
-    this.rules = { ...this.rules, [String(platformId)]: rule };
+    const key = String(platformId);
+    this.rules = { ...this.rules, [key]: withoutStaleWindowFlag(this.rules[key], rule) };
     this.rulesDirty = true;
     this.#rulesRevision += 1;
   }
@@ -195,7 +219,9 @@ export class RulesSource {
     // The editor stays live while this is in flight, so anything typed after
     // this point is NOT in what we just submitted.
     const revision = this.#rulesRevision;
-    const data = await this.#endpoints.saveRules(this.rules, this.checkRules);
+    const data = await this.#endpoints.saveRules(
+      withoutWindowFlags(this.rules), withoutWindowFlags(this.checkRules),
+    );
     this.#saveGeneration += 1;
     if (revision !== this.#rulesRevision) {
       // Edited mid-save. Adopting the server's copy would replace those
