@@ -13,7 +13,6 @@ from fastapi.concurrency import run_in_threadpool
 from models import OutputStatus, Z3DSInfo
 from services.lock_manager import lock_manager
 from services.stream_digest import content_digest_of, file_chunks
-from services.subprocess_runner import ReadCancelled
 from services.z3ds_compress import (
     Z3DS_CONVERTIBLE_EXTENSIONS,
     Z3DS_DECOMPRESS_EXTENSIONS,
@@ -159,9 +158,8 @@ class Z3dsTool(BaseTool):
             return None
         try:
             value = await self._service.decoded_sha1(path, cancel_event=cancel_event)
-        except ReadCancelled:
-            raise
         except (RuntimeError, ValueError, OSError) as e:
+            # ReadCancelled is none of these, so a cancel propagates untouched.
             raise ContentDigestUnavailable(str(e)) from e
         return ContentDigest(kind=IMAGE_DATA_SHA1_KIND, value=value)
 

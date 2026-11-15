@@ -20,7 +20,7 @@ from services.nsz import (
     nsz_service,
 )
 from services.stream_digest import content_digest_of, file_chunks
-from services.subprocess_runner import ReadCancelled, run_detached
+from services.subprocess_runner import run_detached
 
 from .base import BaseTool, ContentDigest, ContentDigestUnavailable
 from .spec import ModeKind, ModeSpec
@@ -98,9 +98,8 @@ class NszTool(BaseTool):
             return None
         try:
             value = await rebuild(path, cancel_event=cancel_event)
-        except ReadCancelled:
-            raise
         except (RuntimeError, ValueError, OSError) as e:
+            # ReadCancelled is none of these, so a cancel propagates untouched.
             raise ContentDigestUnavailable(str(e)) from e
         return ContentDigest(
             kind=SWITCH_IMAGE_SHA256_KIND, value=value, mismatch_reason=reason,
