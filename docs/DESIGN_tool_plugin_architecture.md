@@ -2433,7 +2433,13 @@ The package exposes the registry and two entry points:
   playlist on a mount that stopped answering can't hold the job slot and its
   locks: on a timeout or a Cancel the thread is abandoned and the outcome keeps
   the Source with the reason, recording one `failed` entry per Referrer (target
-  the Image) so the Ledger row says why.
+  the Image) so the Ledger row says why. An abandoned thread can't write late:
+  `_update_sync` runs under a `base.WriteGuard` holding an `abandoned` event
+  (set by the hook on a timeout or Cancel) and each output's identity
+  (`st_dev`, `st_ino`, size, `mtime_ns`) captured when the hook started.
+  `apply` calls `base.check_write` under the playlist's lock right before every
+  write (backup and playlist), so once the job has let go, or another
+  conversion has replaced the output, nothing more is written.
   Because the hook awaits a worker thread, the job re-asks two things after
   it and before `os.remove`: a Cancel pressed meanwhile keeps the Source
   ("Delete skipped (cancelled)"), and `JobManager._check_delete_paths` (lock,

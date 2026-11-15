@@ -937,6 +937,93 @@ async def test_a_stray_nul_in_an_unrelated_playlist_does_not_block(tmp_path):
     assert other.read_bytes() == b"Other.cue\n\x00"
 
 
+def _stall_reads(monkeypatch):
+    """Block the first playlist read; signal entry and the worker's end."""
+    import threading
+
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+    real_read, real_update = m3u_module._read, referrers._update_sync
+    blocked = []
+
+    def stuck_read(path):
+        if not blocked:
+            blocked.append(path)
+            entered.set()
+            release.wait(30)
+        return real_read(path)
+
+    def update_then_signal(*args, **kwargs):
+        try:
+            return real_update(*args, **kwargs)
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(m3u_module, "_read", stuck_read)
+    monkeypatch.setattr(referrers, "_update_sync", update_then_signal)
+    return entered, release, finished
+
+
+def _replace_output(path: Path) -> None:
+    """Another conversion writes a different disc at the same path."""
+    path.unlink()
+    path.write_bytes(b"a different disc")
+
+
+@pytest.mark.asyncio
+async def test_an_abandoned_hook_never_writes_after_cancel(tmp_path, monkeypatch):
+    """Codex's sequence: the hook stalls on a read, the job cancels it and
+    lets go of the output, another job replaces the output, the read returns.
+    The late worker must not touch the playlist."""
+    _disc(tmp_path, "Game.cue")
+    out = _disc(tmp_path, "Game.chd")
+    playlist = tmp_path / "Game.m3u"
+    playlist.write_text("Game.cue\n")
+    entered, release, finished = _stall_reads(monkeypatch)
+    cancel = asyncio.Event()
+
+    hook = asyncio.create_task(referrers.update_before_source_removal(
+        str(tmp_path / "Game.cue"), {str(tmp_path / "Game.cue"): str(out)},
+        cancel_event=cancel,
+    ))
+    try:
+        assert await asyncio.to_thread(entered.wait, 10)
+        cancel.set()
+        outcome = await asyncio.wait_for(hook, timeout=5)
+        _replace_output(out)
+    finally:
+        release.set()
+    assert await asyncio.to_thread(finished.wait, 10), "the late worker didn't finish"
+
+    assert not outcome.ok
+    assert playlist.read_text() == "Game.cue\n"
+    assert not (tmp_path / "Game.m3u.bak").exists()
+
+
+@pytest.mark.asyncio
+async def test_an_output_replaced_during_the_hook_is_never_pointed_at(tmp_path, monkeypatch):
+    """Even before any timeout: the output must still be the one verified
+    (same device, inode, size, mtime) when the playlist is written."""
+    _disc(tmp_path, "Game.cue")
+    out = _disc(tmp_path, "Game.chd")
+    playlist = tmp_path / "Game.m3u"
+    playlist.write_text("Game.cue\n")
+    entered, release, _finished = _stall_reads(monkeypatch)
+
+    hook = asyncio.create_task(referrers.update_before_source_removal(
+        str(tmp_path / "Game.cue"), {str(tmp_path / "Game.cue"): str(out)},
+    ))
+    try:
+        assert await asyncio.to_thread(entered.wait, 10)
+        _replace_output(out)
+    finally:
+        release.set()
+    outcome = await asyncio.wait_for(hook, timeout=10)
+
+    assert not outcome.ok
+    assert "output" in outcome.reason
+    assert playlist.read_text() == "Game.cue\n"
+
+
 def test_apply_refuses_when_the_output_is_gone(tmp_path):
     """A late (abandoned) apply must not point a playlist at a removed output."""
     _disc(tmp_path, "A.cue")

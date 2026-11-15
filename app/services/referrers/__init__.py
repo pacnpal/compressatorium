@@ -9,13 +9,22 @@ branch on a Referrer's identity: they ask for every Referrer's planned change
 from __future__ import annotations
 
 import os
+import threading
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from logging_setup import get_logger
 from services.subprocess_runner import ReadCancelled, run_detached_within_stall_bound
 
-from .base import Referrer, ReferrerChange, ReferrerError, atomic_write_bytes
+from .base import (
+    Referrer,
+    ReferrerChange,
+    ReferrerError,
+    WriteGuard,
+    atomic_write_bytes,
+    file_identity,
+    write_guard,
+)
 from .m3u import M3uReferrer
 
 logger = get_logger("referrers")
@@ -106,8 +115,25 @@ class ReferrerOutcome:
 _SKIPPED = "not attempted after an earlier Referrer failed"
 
 
-def _update_sync(image_path: str, renames: Mapping[str, str]) -> ReferrerOutcome:
-    """Plan every Referrer, then apply each change. The first failure stops it."""
+def _update_sync(
+    image_path: str, renames: Mapping[str, str],
+    abandoned: threading.Event | None = None,
+) -> ReferrerOutcome:
+    """Plan every Referrer, then apply each change. The first failure stops it.
+
+    Every write is guarded (``base.check_write``, under the target's lock):
+    once *abandoned* is set, or an output no longer has the identity it had
+    when this started, nothing more is written.
+    """
+    guard = WriteGuard(
+        abandoned=abandoned or threading.Event(),
+        outputs={new: file_identity(new) for new in dict.fromkeys(renames.values())},
+    )
+    with write_guard(guard):
+        return _plan_and_apply(image_path, renames)
+
+
+def _plan_and_apply(image_path: str, renames: Mapping[str, str]) -> ReferrerOutcome:
     outcome = ReferrerOutcome()
     planned: list[tuple[Referrer, ReferrerChange]] = []
     for referrer in registry.all():
@@ -142,19 +168,22 @@ async def update_before_source_removal(
     Bounded and cancellable like the job's other reads of a mount that may
     stop answering: the work runs on a detached thread under the conversion's
     no-progress bound, and *cancel_event* returns at once. On a timeout or a
-    cancel the thread is abandoned and the outcome keeps the Source. Whatever
-    the thread finishes later can only point a playlist at the output, which
-    stays.
+    cancel the thread is abandoned and the outcome keeps the Source. The
+    abandoned thread is told so: it checks under each playlist's lock before
+    every write and writes nothing more, so it can't point a playlist at an
+    output another job has since replaced.
     """
+    abandoned = threading.Event()
     try:
         return await run_detached_within_stall_bound(
-            _update_sync, image_path, dict(renames),
+            _update_sync, image_path, dict(renames), abandoned,
             what="Updating playlists", cancel_event=cancel_event,
         )
     except ReadCancelled:
         reason = "cancelled"
     except Exception as exc:  # noqa: BLE001 - a timeout or anything else keeps the Source
         reason = str(exc) or type(exc).__name__
+    abandoned.set()
     logger.warning("Referrer hook for %s did not finish: %s", image_path, reason)
     outcome = ReferrerOutcome()
     # One failed record per Referrer, so the Ledger row says why the Source

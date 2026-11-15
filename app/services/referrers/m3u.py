@@ -48,7 +48,13 @@ from dataclasses import dataclass
 
 from utils.path_utils import volume_root_for
 
-from .base import Referrer, ReferrerChange, ReferrerError, atomic_write_bytes
+from .base import (
+    Referrer,
+    ReferrerChange,
+    ReferrerError,
+    atomic_write_bytes,
+    check_write,
+)
 
 PLAYLIST_EXT = ".m3u"
 BACKUP_SUFFIX = ".bak"
@@ -507,7 +513,9 @@ class M3uReferrer(Referrer):
             try:
                 backup = path + BACKUP_SUFFIX
                 if not os.path.lexists(backup):
+                    check_write(path)
                     atomic_write_bytes(backup, original, like=path)
+                check_write(path)
                 atomic_write_bytes(path, updated)
             except OSError as exc:
                 raise ReferrerError(path, exc.strerror or str(exc)) from exc
