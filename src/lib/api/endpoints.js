@@ -721,6 +721,9 @@ export const api = {
   listPlatforms: () =>
     fetchJson(`${API_BASE}/platforms`, undefined, 'Failed to list the Platforms'),
 
+  listPlatformMappings: () =>
+    fetchJson(`${API_BASE}/platform-mappings`, undefined, 'Failed to list the mappings'),
+
   // `platform: null` clears the folder's mapping.
   setPlatformMapping: (path, platform) =>
     fetchJson(

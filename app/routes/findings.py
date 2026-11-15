@@ -48,14 +48,14 @@ async def _walk(library) -> dict:
         # The walk already running finishes first. If a mapping changed under
         # it, it drops its Findings and walks again (FolderLibrary.scan).
         return {
-            "id": library.id, "status": "listing_in_progress",
+            "id": library.id, "name": library.name, "status": "listing_in_progress",
             "message": "A listing is running; Findings refresh after it.",
         }
     except LibraryUnreadable as exc:
-        return {"id": library.id, "status": exc.code, "error": str(exc)}
+        return {"id": library.id, "name": library.name, "status": exc.code, "error": str(exc)}
     except (asyncio.TimeoutError, OSError):
-        return {"id": library.id, "status": "library_unresponsive"}
-    return {"id": library.id, "status": "ok"}
+        return {"id": library.id, "name": library.name, "status": "library_unresponsive"}
+    return {"id": library.id, "name": library.name, "status": "ok"}
 
 
 @router.get("/findings")
@@ -92,9 +92,9 @@ async def undismiss_finding(finding_id: int) -> dict:
 
 @router.post("/findings/check")
 async def check_findings() -> dict:
-    """Walk every folder Library now, so its Findings are current."""
+    """Walk every folder Library now, side by side, so its Findings are current."""
     found = await run_in_threadpool(libraries.folder_libraries)
-    return {"libraries": [await _walk(library) for library in found]}
+    return {"libraries": list(await asyncio.gather(*(_walk(lib) for lib in found)))}
 
 
 @router.get("/platforms")

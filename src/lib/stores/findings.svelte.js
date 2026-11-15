@@ -24,18 +24,22 @@ class FindingsStore {
   // backend's note that the Findings refresh after that walk. Check now
   // clears it.
   pending = $state(null);
+  // Only the latest listing request may write the list (rapid toggles).
+  #request = 0;
 
   async load() {
+    const request = ++this.#request;
     this.loading = true;
     this.error = null;
     try {
       const data = await api.listFindings(this.showDismissed);
+      if (request !== this.#request) return this.list;
       this.list = Array.isArray(data?.findings) ? data.findings : [];
       this.dismissed = data?.dismissed ?? 0;
     } catch (e) {
-      this.error = e?.message ?? 'Failed to list the Findings';
+      if (request === this.#request) this.error = e?.message ?? 'Failed to list the Findings';
     } finally {
-      this.loading = false;
+      if (request === this.#request) this.loading = false;
     }
     return this.list;
   }
@@ -76,6 +80,13 @@ class FindingsStore {
     const data = await api.listPlatforms();
     this.platforms = Array.isArray(data) ? data : [];
     return this.platforms;
+  }
+
+  /** The Platform set on the folder at *path*, or null when none is. */
+  async currentMapping(path) {
+    const rows = await api.listPlatformMappings();
+    const hit = (Array.isArray(rows) ? rows : []).find((m) => m?.path === path);
+    return hit?.platform ?? null;
   }
 
   /** Open the mapping dialog on a folder. */

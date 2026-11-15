@@ -12,6 +12,7 @@
   import { toast } from 'svelte-sonner';
   import { findings } from '$lib/stores/findings.svelte.js';
   import { fileBrowser } from '$lib/stores/fileBrowser.svelte.js';
+  import { libraries } from '$lib/stores/libraries.svelte.js';
   import Button from '$lib/components/ui/Button.svelte';
   import Badge from '$lib/components/ui/Badge.svelte';
   import Checkbox from '$lib/components/ui/Checkbox.svelte';
@@ -31,6 +32,24 @@
     untrack(() => findings.load());
   });
 
+  // Whether any folder Library exists, for the empty state.
+  $effect(() => {
+    untrack(() => {
+      if (libraries.list.length === 0) libraries.load();
+    });
+  });
+
+  const emptyText = $derived.by(() => {
+    if (findings.dismissed > 0 && !findings.showDismissed) {
+      const n = findings.dismissed;
+      return `Nothing open. ${n} dismissed Finding${n === 1 ? ' is' : 's are'} hidden; tick Show dismissed to see ${n === 1 ? 'it' : 'them'}.`;
+    }
+    if (!libraries.loading && libraries.folders.length === 0) {
+      return 'No folder Library yet. Open a folder in the Workspace and pick Register as a Library from its row menu.';
+    }
+    return 'Nothing needs a decision right now. Findings are recorded each time a folder Library is listed or swept, or when you press Check now.';
+  });
+
   function when(stamp) {
     if (!stamp) return '';
     const date = new Date(stamp);
@@ -42,8 +61,11 @@
       const result = await findings.check();
       const waiting = (result?.libraries ?? []).filter((lib) => lib.status !== 'ok');
       if (waiting.length) {
-        toast.warning(`${waiting.length} Library could not be checked right now`, {
-          description: waiting.map((lib) => `${lib.id}: ${lib.status}`).join(', '),
+        const title = waiting.length === 1
+          ? '1 Library could not be checked right now'
+          : `${waiting.length} Libraries could not be checked right now`;
+        toast.warning(title, {
+          description: waiting.map((lib) => `${lib.name ?? lib.id}: ${lib.status}`).join(', '),
         });
       }
     } catch (e) {
@@ -105,11 +127,10 @@
 
   {#if findings.loading && findings.list.length === 0}
     <p class="muted"><Spinner /> Loading…</p>
-  {:else if findings.list.length === 0 && !findings.error}
-    <EmptyState
-      title="No Findings"
-      description="Every Image in your folder Libraries has a Platform. Findings appear after a Library is listed or swept, or when you press Check now."
-    />
+  {:else if findings.list.length === 0 && findings.error}
+    <!-- The error notice above says it all; no empty table under it. -->
+  {:else if findings.list.length === 0}
+    <EmptyState title="No Findings" description={emptyText} />
   {:else}
     <div class="table" role="table" aria-label="Findings">
       <div class="row header" role="row">
@@ -136,18 +157,34 @@
           <span role="cell" class="muted small"><span class="cell-label">First seen </span>{when(row.first_seen)}</span>
           <span role="cell" class="muted small"><span class="cell-label">Last seen </span>{when(row.last_seen)}</span>
           <span role="cell" class="actions">
-            <Button variant="ghost" size="sm" icon={openIcon} onclick={() => fileBrowser.openFolder(row.folder)}>
+            <Button
+              variant="ghost" size="sm" icon={openIcon}
+              ariaLabel={`Open the folder of ${row.image_key}`}
+              onclick={() => fileBrowser.openFolder(row.folder)}
+            >
               Open folder
             </Button>
-            <Button variant="ghost" size="sm" icon={mapIcon} onclick={() => findings.openMapping(row.folder)}>
+            <Button
+              variant="ghost" size="sm" icon={mapIcon}
+              ariaLabel={`Set the Platform of the folder holding ${row.image_key}`}
+              onclick={() => findings.openMapping(row.folder)}
+            >
               Set Platform
             </Button>
             {#if row.dismissed}
-              <Button variant="ghost" size="sm" icon={showIcon} onclick={() => undismiss(row)}>
+              <Button
+                variant="ghost" size="sm" icon={showIcon}
+                ariaLabel={`Show ${row.image_key} again`}
+                onclick={() => undismiss(row)}
+              >
                 Show again
               </Button>
             {:else}
-              <Button variant="ghost" size="sm" icon={dismissIcon} onclick={() => dismiss(row)}>
+              <Button
+                variant="ghost" size="sm" icon={dismissIcon}
+                ariaLabel={`Dismiss ${row.image_key}`}
+                onclick={() => dismiss(row)}
+              >
                 Dismiss
               </Button>
             {/if}

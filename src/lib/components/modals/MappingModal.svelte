@@ -22,6 +22,8 @@
   let platform = $state('');
   let busy = $state(false);
   let loadError = $state(null);
+  // What the folder is set to now (null: nothing set), preselected.
+  let current = $state(null);
 
   const options = $derived([
     { value: '', label: 'Choose a Platform…' },
@@ -32,12 +34,19 @@
   // Platform list loading must not reset what was picked.
   $effect(() => {
     if (!target) return;
+    const path = target.path;
     untrack(() => {
       platform = '';
+      current = null;
       loadError = null;
       findings.loadPlatforms().catch((e) => {
         loadError = e?.message ?? 'Could not list the Platforms';
       });
+      findings.currentMapping(path).then((slug) => {
+        if (findings.mappingTarget?.path !== path) return;
+        current = slug;
+        if (slug && !platform) platform = slug;
+      }).catch(() => {});
     });
   });
 
@@ -74,7 +83,7 @@
   onClose={close}
   title="Set the folder's Platform"
   description={target
-    ? `Every Image under ${target.name} counts as this Platform unless its header says otherwise. A header that disagrees shows up as a Finding.`
+    ? `Images under ${target.name} count as this Platform, unless a nearer folder is named after or set to another Platform, or the Image's own header says otherwise. A header that disagrees shows up as a Finding.`
     : ''}
   size="sm"
 >
@@ -88,7 +97,7 @@
     {/if}
   {/snippet}
   {#snippet footer()}
-    <Button variant="ghost" onclick={() => save(null)} disabled={busy}>Clear mapping</Button>
+    <Button variant="ghost" onclick={() => save(null)} disabled={busy || !current}>Clear mapping</Button>
     <Button variant="secondary" onclick={close} disabled={busy}>Cancel</Button>
     <Button variant="primary" onclick={() => save(platform)} disabled={busy || !platform} loading={busy}>
       Save

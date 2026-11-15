@@ -332,6 +332,15 @@ class FolderLibrary:
                 key=self._key(path),
                 path=path, size=st.st_size, mtime=st.st_mtime, detection=detection,
             ))
+        # An unreadable file a readable sheet lists is that sheet's track, not
+        # an Image of its own, so it gets no Finding (CONTEXT.md).
+        owned = {
+            os.path.normpath(member)
+            for _size, _mtime, listed in members_cache.values() for member in listed
+        }
+        scan.unreadable_files = [
+            p for p in scan.unreadable_files if os.path.normpath(p) not in owned
+        ]
         # Only what this walk saw, so the caches are as large as the Library.
         self._members = members_cache
         self._detections = detections
@@ -352,6 +361,9 @@ class FolderLibrary:
                 "how": found.how, "header": found.header,
                 "folder": found.folder, "mapped": found.mapped,
             }
+            if found.headers:
+                # Which headers disagree: a different pair is a new cause.
+                cause["headers"] = list(found.headers)
             kind = findings.PLATFORM_CONFLICT if found.how == CONFLICT else findings.UNSORTED
             out.append(findings.Observed(
                 kind=kind, image_key=entry.key, path=entry.path,

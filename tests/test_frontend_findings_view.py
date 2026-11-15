@@ -54,6 +54,7 @@ const api = {
   checkFindings: __call('checkFindings'),
   listPlatforms: __call('listPlatforms'),
   setPlatformMapping: __call('setPlatformMapping'),
+  listPlatformMappings: __call('listPlatformMappings'),
 };
 """
 
@@ -178,6 +179,36 @@ process.stdout.write(JSON.stringify({ pending: findings.pending }));
     assert data["pending"] is None, data
 
 
+def test_an_older_listing_never_replaces_a_newer_one(tmp_path):
+    """Rapid "Show dismissed" toggles: only the last request's answer is kept."""
+    data = _run(tmp_path, """
+const waits = [];
+__answers.listFindings = (include) => new Promise((resolve) => waits.push([include, resolve]));
+findings.showDismissed = true;
+const first = findings.load();
+findings.showDismissed = false;
+const second = findings.load();
+waits[1][1]({ findings: [{ id: 2, dismissed: false }], dismissed: 1 });
+await second;
+waits[0][1]({ findings: [{ id: 1, dismissed: true }, { id: 2, dismissed: false }], dismissed: 1 });
+await first;
+process.stdout.write(JSON.stringify({ ids: findings.list.map((f) => f.id) }));
+""")
+    assert data["ids"] == [2], data
+
+
+def test_the_mapping_dialog_knows_the_folders_current_platform(tmp_path):
+    data = _run(tmp_path, """
+__answers.listPlatformMappings = [
+  { library_id: 'folder:1', folder: 'misc', path: '/v/roms/misc', platform: 'psp' },
+];
+const here = await findings.currentMapping('/v/roms/misc');
+const none = await findings.currentMapping('/v/roms/other');
+process.stdout.write(JSON.stringify({ here, none }));
+""")
+    assert data == {"here": "psp", "none": None}, data
+
+
 def test_check_now_walks_then_reloads(tmp_path):
     data = _run(tmp_path, """
 __answers.checkFindings = { libraries: [{ id: 'folder:1', status: 'ok' }] };
@@ -255,3 +286,25 @@ def test_nothing_in_the_findings_ui_deletes_or_moves_a_file():
         src = path.read_text(encoding="utf-8")
         for call in ("deleteFile", "renameFile", "bulkDelete", "deleteTarget"):
             assert call not in src, (path.name, call)
+
+
+def test_the_empty_state_does_not_claim_everything_has_a_platform():
+    view = _VIEW.read_text(encoding="utf-8")
+    assert "Every Image in your folder Libraries has a Platform" not in view
+    # An empty list because everything is dismissed says so.
+    assert "findings.dismissed" in view
+
+
+def test_each_row_action_names_its_image():
+    view = _VIEW.read_text(encoding="utf-8")
+    assert "ariaLabel={`Open the folder of ${row.image_key}`}" in view
+    assert "ariaLabel" in (_SRC / "lib" / "components" / "ui" / "Button.svelte").read_text(
+        encoding="utf-8",
+    )
+
+
+def test_check_now_names_libraries_and_counts_them_right():
+    view = _VIEW.read_text(encoding="utf-8")
+    assert "could not be checked" in view
+    assert "Libraries could not be checked" in view
+

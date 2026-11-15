@@ -784,3 +784,74 @@ async def test_a_mapping_put_during_a_walk_says_findings_follow(tree: Path) -> N
     assert saved["walk"]["status"] == "listing_in_progress"
     assert saved["walk"]["message"] == "A listing is running; Findings refresh after it."
 
+
+# ----------------------------------------------------------------------
+# minor fixes from review round 1
+# ----------------------------------------------------------------------
+
+_CUE = 'FILE "Game.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n'
+
+
+@pytest.mark.skipif(_IS_ROOT, reason="root reads a file whatever its mode")
+@pytest.mark.asyncio
+async def test_an_unreadable_track_of_a_sheet_is_not_an_image_finding(tree: Path) -> None:
+    from services import libraries
+
+    sheet = tree / "sheet"
+    sheet.mkdir()
+    (sheet / "Game.cue").write_text(_CUE)
+    track = sheet / "Game.bin"
+    track.write_bytes(b"\0" * 2352)
+    track.chmod(0)
+    try:
+        await _register(tree)
+        libraries.folder_libraries()[0].summary(refresh=True)
+    finally:
+        track.chmod(0o644)
+
+    # The track belongs to Game.cue; it is not an Image of its own (CONTEXT.md).
+    assert "sheet/Game.bin" not in _kinds()
+
+
+def test_a_headers_disagree_conflict_names_the_headers_in_its_cause(db: Path) -> None:
+    from services.libraries.folder import Entry, FolderLibrary, Scan
+    from services.platform_detect import Detection
+
+    library = FolderLibrary(record_id=1, root=str(db), name="r")
+    found = Detection(
+        None, "conflict", None, None, "headers disagree (a=ngc, b=ps2)",
+        None, ("ngc", "ps2"),
+    )
+    entry = Entry(key="x.iso", path=str(db / "x.iso"), size=1, mtime=0.0, detection=found)
+
+    observed = library._findings(Scan(entries=[entry]))
+
+    assert observed[0].cause["headers"] == ["ngc", "ps2"]
+
+
+@pytest.mark.asyncio
+async def test_a_sheet_whose_track_is_outside_the_library_shows_no_outside_path(
+    db: Path,
+) -> None:
+    """Placeholder for #303's escaping-track fix: covers it once that merges.
+
+    Whatever the walk makes of a sheet that points outside the Library root,
+    the Finding it records must not carry the outside path: ``reason`` and
+    ``cause`` are served by /api/findings and shown in the UI.
+    """
+    from services import libraries
+
+    outside = db / "outside"
+    outside.mkdir()
+    (outside / "secret.bin").write_bytes(b"\0" * 2352)
+    roms = db / "roms"
+    roms.mkdir()
+    (roms / "Escape.cue").write_text(_CUE.replace("Game.bin", "../outside/secret.bin"))
+    await _register(roms)
+
+    libraries.folder_libraries()[0].summary(refresh=True)
+
+    for row in _open(include_dismissed=True):
+        text = f"{row['reason']} {row['cause']}"
+        assert "outside" not in text and "secret" not in text, row
+
