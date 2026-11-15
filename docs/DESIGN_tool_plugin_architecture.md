@@ -2646,10 +2646,15 @@ roots come from the deployment, so their resolved spellings are cached:
 built at startup (`refresh_volume_roots`) and whenever the configured Volumes
 change, refreshed in the background once older than `ROOT_REFRESH_SECONDS`,
 each root resolved on its own thread with its own `ROOT_PROBE_SECONDS` bound.
-A root that times out keeps its last good spelling. The final check resolves
-the submitted path itself and accepts a real path inside the matched root or
-inside any Volume's cached resolved root, so a symlink from one Volume into
-another (Unraid shares) is accepted and a stalled Volume is never waited on.
+A root that times out keeps its last good spelling. A cached spelling only
+selects a root; granting access needs a fresh resolution of exactly that root
+(`_fresh_root`, bounded by `ROOT_PROBE_SECONDS`, one probe in flight per
+root), so a Volume symlink that was repointed stops covering its old target at
+once, and a probe that times out refuses. The final check resolves the
+submitted path itself and accepts a real path inside the freshly resolved
+matched root, or inside another Volume that its cached spelling selects and a
+fresh probe confirms, so a symlink from one Volume into another (Unraid
+shares) is accepted and an unrelated stalled Volume is never waited on.
 
 Special files are never opened. Opening a FIFO with no writer blocks forever,
 which would strand the threadpool worker an Auto request runs detection on.
