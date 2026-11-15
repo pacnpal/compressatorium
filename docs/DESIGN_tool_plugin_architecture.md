@@ -3109,8 +3109,11 @@ go of what it took if an acquisition raises. It then compares the Image with
 what the sweep picked (`_unchanged`: still a file, same `image_fingerprint`). A
 lock it cannot get, or an Image gone or changed, is `SKIPPED`: nothing written,
 no notification line. Then `tool.verify(path, cancel_event)`, bounded by
-`tool.verify_timeout(path)`, the same call and bound as the Verify action; the
-locks go as soon as it ends, before anything is written. While they are held,
+`tool.verify_timeout(path)`, the same call and bound as the Verify action. The
+verdict is written (`_apply`, then `refresh_check` or `clear`) while the locks
+are still held, so an overwrite conversion cannot replace the file between the
+Verify and the record that describes it; the locks go once it is written,
+cancel included. While they are held,
 #306's delete step finds the Source in use: a delete-source conversion that
 finishes then waits briefly (`_hold_delete_paths_waiting`) and, if the check
 still holds it, completes with `SOURCE_KEPT_FOR_READERS` as its warning,

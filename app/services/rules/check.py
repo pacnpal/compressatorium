@@ -29,6 +29,7 @@ from __future__ import annotations
 import asyncio
 import os
 import threading
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -356,8 +357,26 @@ async def _run(library: Library, picked: list[Check], job_id: str, generation: i
                 job_id, progress=int(100 * index / max(1, len(picked))),
                 message=f"Checking {index + 1} of {len(picked)}: {check.name}",
             )
+            async def persist(verdict: str, message: str, check: Check = check) -> bool:
+                """Write the verdict; called by `_check_one` with the locks still held."""
+                if not await run_in_threadpool(
+                    _apply, library.id, check, verdict, message, current,
+                ):
+                    return False
+                if verdict == INTACT:
+                    # A re-check refreshes the record and keeps what made the
+                    # file (its Source and producing mode): only a conversion
+                    # replaces it.
+                    await verification_store.refresh_check(check.path)
+                elif verdict == NOT_INTACT:
+                    # The Intact badge no longer holds.
+                    await verification_store.clear(check.path)
+                return True
+
             try:
-                verdict, message, stop = await _check_one(check, cancel_event)
+                verdict, message, stop, written = await _check_one(
+                    check, cancel_event, persist,
+                )
             finally:
                 _in_flight.discard((library.id, check.key))
             if verdict == SKIPPED:
@@ -366,21 +385,13 @@ async def _run(library: Library, picked: list[Check], job_id: str, generation: i
             if verdict == CANCELLED:
                 cancelled = True
                 break
-            if not await run_in_threadpool(
-                _apply, library.id, check, verdict, message, current,
-            ):
+            if not written:
                 # The Library changed under the run: nothing was written for
                 # this Image, so it is not counted or reported, and the run ends.
                 cancelled = True
                 break
             counts[verdict] += 1
-            if verdict == INTACT:
-                # A re-check refreshes the record and keeps what made the file
-                # (its Source and producing mode): only a conversion replaces it.
-                await verification_store.refresh_check(check.path)
-            elif verdict == NOT_INTACT:
-                # The Intact badge no longer holds.
-                await verification_store.clear(check.path)
+            if verdict == NOT_INTACT:
                 failed.append((check, message))
             if stop:
                 # Something is still reading this storage; opening the next
@@ -413,20 +424,24 @@ async def _run(library: Library, picked: list[Check], job_id: str, generation: i
 
 async def _check_one(
     check: Check, cancel_event: asyncio.Event | None,
-) -> tuple[str, str, bool]:
-    """Check one picked Image, if it is still the one picked: ``(outcome, message, stop)``.
+    persist: Callable[[str, str], Awaitable[bool]] | None = None,
+) -> tuple[str, str, bool, bool]:
+    """Check one picked Image, if it is still the one picked.
 
-    First a slot on the ``verify`` lane, the one the Verify action uses. Only
-    then the Image and its files are locked (:func:`_hold`), so nothing is held
-    while the check queues, then compared with what the sweep picked
-    (:func:`_unchanged`). Gone, changed or being written is ``SKIPPED``: no
-    check time, no Finding, no notification. The locks go as the Verify ends.
+    Returns ``(outcome, message, stop, written)``. First a slot on the
+    ``verify`` lane, the one the Verify action uses. Only then the Image and its
+    files are locked (:func:`_hold`), so nothing is held while the check queues,
+    then compared with what the sweep picked (:func:`_unchanged`). Gone, changed
+    or being written is ``SKIPPED``: no check time, no Finding, no
+    notification. A verdict is written by *persist* while the locks are still
+    held, so a writer cannot replace the file between the Verify and the record
+    that describes it; the locks go once it is written, cancel included.
     """
     token = await workload_limiter.acquire("verify")
     async with token:
         held = await _take(check)
         if held is None:
-            return SKIPPED, "", False
+            return SKIPPED, "", False, False
         try:
             try:
                 same = await asyncio.wait_for(
@@ -435,8 +450,12 @@ async def _check_one(
             except (asyncio.TimeoutError, OSError):
                 same = False
             if not same:
-                return SKIPPED, "", False
-            return await _verify(check, cancel_event)
+                return SKIPPED, "", False, False
+            verdict, message, stop = await _verify(check, cancel_event)
+            written = False
+            if verdict in (INTACT, NOT_INTACT, INCONCLUSIVE) and persist is not None:
+                written = await persist(verdict, message)
+            return verdict, message, stop, written
         finally:
             await _release(held)
 

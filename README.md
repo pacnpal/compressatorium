@@ -715,8 +715,8 @@ much to read a night ("check 50 GB a night"), a time window and weekdays:
   rather than never.
 - Each Image goes through its tool's own **Verify**, the same check as the
   Verify action. A run is one job in the Jobs panel, and Cancel stops it.
-  While an Image's Verify runs (not while it waits its turn) it is held like a
-  file a conversion reads. A conversion that finishes then and would delete
+  While an Image's Verify runs and its result is recorded (not while it waits
+  its turn) it is held like a file a conversion reads. A conversion that finishes then and would delete
   that Source waits briefly; if the check is still reading it, the conversion
   completes with "Source kept: it was being read by another job", leaving the
   Source and the new file both in place.

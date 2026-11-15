@@ -16,7 +16,7 @@
   paused with the reason shown, since there it is a slip. #306's verdict rules decide: a verifier killed by a signal is no
   verdict, and an Image whose check never reaches one goes behind the others.
   An Image gone or changed by its turn is skipped. While an Image's Verify
-  runs it is held like a file a conversion reads. An Image that fails becomes a **Not
+  runs and its result is recorded it is held like a file a conversion reads. An Image that fails becomes a **Not
   Intact** Finding and the run sends one `check_failed` notification listing
   the failures; a later pass clears the Finding. A check that could not run
   changes nothing, and an Image no tool can check is skipped. Each Image's

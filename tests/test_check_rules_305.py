@@ -1601,3 +1601,48 @@ async def test_an_archive_the_safety_rules_refuse_is_no_verdict(
     assert await verification_store.get_record(str(archive)) is not None
     assert "gba/Big Racer.zip" not in image_checks.last_checked(created["id"])
     assert "gba/Big Racer.zip" in image_checks.order_stamps(created["id"])
+
+
+@pytest.mark.asyncio
+async def test_a_writer_waits_until_the_verdict_is_recorded(
+    tree: Path, ready, verifier, sent, monkeypatch,
+) -> None:
+    """4577134005: the locks are held until the verdict is written, so an overwrite
+    conversion cannot replace the file the recorded verdict describes."""
+    from services import image_checks
+    from services.lock_manager import LockManager, lock_manager
+    from services.verification_store import verification_store
+
+    cove = str(tree / "ps2" / "Cove.chd")
+    writer = LockManager()
+    writer._lock_dir = lock_manager._lock_dir
+    while_recording: list[bool] = []
+    real_record = image_checks.record
+    real_refresh = verification_store.refresh_check
+
+    def try_to_write() -> None:
+        taken = writer.acquire_lock(cove, allow_existing=True)
+        while_recording.append(taken)
+        if taken:
+            writer.release_lock(cove)
+
+    def record(*args, **kwargs):
+        try_to_write()
+        return real_record(*args, **kwargs)
+
+    async def refresh(path, **kwargs):
+        try_to_write()
+        return await real_refresh(path, **kwargs)
+
+    lib = await _folder_library(tree, {"enabled": True, "check_budget_gb": 3})
+    _seed(lib, {"ps2/Aria.chd": 2, "ps2/Bolt.chd": 3, "ps2/Dune.chd": 1})
+    monkeypatch.setattr(image_checks, "record", record)
+    monkeypatch.setitem(vars(verification_store), "refresh_check", refresh)
+
+    await _run(lib)
+
+    # The writer was refused while each part of the verdict was written...
+    assert while_recording == [False, False]
+    # ...and gets the file once the check is done.
+    assert writer.acquire_lock(cove, allow_existing=True)
+    writer.release_lock(cove)
