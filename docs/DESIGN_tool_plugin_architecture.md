@@ -3078,7 +3078,10 @@ bounded thread, as a conversion candidate's do. It returns a skip reason
 (`unresolvable`, `missing`, `uncheckable`) or a `Check`: the Image key, path,
 size, the checking tool and the Image's file fingerprint. An Image already
 being checked (`check.in_flight`) or converted (the active-path set) is
-skipped. A tool that is not ready skips its Images and reports
+skipped. Readiness is the verifier's (`registry.tool_is_ready(tool,
+purpose="verify")`), not conversion's: jwud checks WUX in pure Python without
+JWUDTool, and z3ds needs zstd to check. A tool that is not ready skips its
+Images and reports
 `tool_not_ready`; it never yields a verdict. Images are taken stalest first
 until the next would pass `check_budget_gb`, never skipping ahead to a smaller
 one; the first is always taken, so one Image larger than the budget is checked
@@ -3115,9 +3118,9 @@ keeping the Source and its output. `check.outcome(result)` reads it:
 
 | Result | Outcome | Writes |
 |---|---|---|
-| `valid` | Intact | `image_checks` row (`intact`), `verification_store.mark_verified`, `findings.resolve(not_intact)` |
+| `valid` | Intact | `image_checks` row (`intact`), `verification_store.refresh_check` (keeps the record's `source_path` and `produced_meta`), `findings.resolve(not_intact)` |
 | not `valid` | not Intact | `image_checks` row (`not_intact`), `verification_store.clear`, `findings.observe(not_intact)` |
-| `inconclusive` or `abandoned` flag (#306: a verifier killed by a signal via `verify_exit_event`; an allowlisted exception or a timeout via `verify_exception_event`) | inconclusive | `attempted_at` only |
+| `inconclusive`, `abandoned` or `uncheckable` flag (#306: a verifier killed by a signal via `verify_exit_event`; an allowlisted exception or a timeout via `verify_exception_event`; a file this app's own rules refuse, such as an archive over the safety limits) | inconclusive | `attempted_at` only |
 | any other exception from the check (`verify_exception_event` reads it as the tool rejecting the data) | not Intact | as not `valid` |
 | `cancelled` | the run stops | nothing for that Image |
 

@@ -310,7 +310,7 @@ def _tree(db: Path) -> Path:
 
 @pytest.fixture(name="ready")
 def _ready(monkeypatch):
-    async def always(_tool):
+    async def always(_tool, **_kwargs):
         return True
 
     monkeypatch.setattr(registry, "tool_is_ready", always)
@@ -1492,3 +1492,112 @@ async def test_a_conversion_that_finishes_during_a_check_keeps_its_source(
     assert rvz.exists()
     # The check still records its result.
     assert "gc/Game.iso" in image_checks.last_checked(created["id"])
+
+
+# ----------------------------------------------------------------------
+# PR review (#325, Codex)
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_passing_check_keeps_what_made_the_file(
+    tree: Path, ready, verifier, sent,
+) -> None:
+    """4577114954: a check refreshes the Verify record and keeps its provenance."""
+    from services.verification_store import verification_store
+
+    from .test_platform_detect import _ps2
+
+    cove = str(tree / "ps2" / "Cove.chd")
+    await verification_store.mark_verified(
+        cove, source_path=str(tree / "ps2" / "Cove.cue"),
+        produced_meta={"mode": "createcd"},
+    )
+    # A PS3 ISO makeps3iso built: no check tool serves PS3, so it is skipped and
+    # its record (and the makeps3iso mode in it) is left as it is.
+    ps3 = Path(_ps2(tree / "ps3" / "Game.iso"))
+    await verification_store.mark_verified(
+        str(ps3), source_path=str(tree / "ps3" / "Game"),
+        produced_meta={"mode": "folder_to_iso"},
+    )
+    lib = await _folder_library(tree, {"enabled": True, "check_budget_gb": 3})
+    _seed(lib, {"ps2/Aria.chd": 2, "ps2/Bolt.chd": 3, "ps2/Dune.chd": 1})
+
+    await _run(lib)
+
+    record = await verification_store.get_record(cove)
+    assert record["produced_meta"] == {"mode": "createcd"}
+    assert record["source_path"] == str(tree / "ps2" / "Cove.cue")
+    ps3_record = await verification_store.get_record(str(ps3))
+    assert ps3_record["produced_meta"] == {"mode": "folder_to_iso"}
+
+
+@pytest.mark.asyncio
+async def test_a_check_asks_whether_the_verifier_is_ready(db: Path, monkeypatch) -> None:
+    """4577114957: verify readiness decides, not conversion readiness.
+
+    JWUDTool (conversion) missing still leaves WUX Images checkable by its pure
+    Python verifier; zstd missing makes z3ds Images not ready to check.
+    """
+    from routes import libraries as routes
+
+    asked: list[tuple[str, str]] = []
+
+    async def readiness(tool, *, purpose="convert"):
+        asked.append((tool.id, purpose))
+        if purpose == "verify":
+            return tool.id != "z3ds"
+        return tool.id != "jwud"
+
+    monkeypatch.setattr(registry, "tool_is_ready", readiness)
+    roms = db / "roms"
+    _sparse(roms / "wiiu" / "Game.wux", 1024)
+    _sparse(roms / "3ds" / "Game.z3ds", 1024)
+    created = await routes.register_library(routes.RegisterLibraryRequest(path=str(roms)))
+    await routes.put_library_rules(created["id"], {"check_rules": {
+        "wiiu": {"enabled": True, "check_budget_gb": 1},
+        "3ds": {"enabled": True, "check_budget_gb": 1},
+    }})
+
+    result = await routes.preview_library(created["id"])
+
+    by_platform = {p["platform_id"]: p for p in result["platforms"]}
+    assert by_platform["wiiu"]["candidates"] == ["Game.wux"]
+    assert by_platform["3ds"]["candidates"] == []
+    assert {"platform_id": "3ds", "error": "tool_not_ready"} in result["errors"]
+    assert {purpose for _tool, purpose in asked} == {"verify"}
+
+
+@pytest.mark.asyncio
+async def test_an_archive_the_safety_rules_refuse_is_no_verdict(
+    db: Path, ready, sent, monkeypatch,
+) -> None:
+    """4577114961: "uncheckable" is server policy, not damage: no Finding, the
+    Intact badge stays, no notification; only an attempt time for ordering."""
+    import zipfile
+
+    from routes import libraries as routes
+    from services import image_checks
+    from services.verification_store import verification_store
+
+    from config import settings
+
+    roms = db / "roms"
+    archive = roms / "gba" / "Big Racer.zip"
+    archive.parent.mkdir(parents=True)
+    with zipfile.ZipFile(archive, "w") as handle:
+        handle.writestr("Big Racer.gba", b"\x01" * 4096)
+    monkeypatch.setattr(settings, "archive_max_member_size", 1024)
+    await verification_store.mark_verified(str(archive))
+    created = await routes.register_library(routes.RegisterLibraryRequest(path=str(roms)))
+    await routes.put_library_rules(
+        created["id"], {"check_rules": {"gba": {"enabled": True, "check_budget_gb": 1}}},
+    )
+
+    await _run(created["id"])
+
+    assert _not_intact() == []
+    assert [e for e in sent if e.kind == "check_failed"] == []
+    assert await verification_store.get_record(str(archive)) is not None
+    assert "gba/Big Racer.zip" not in image_checks.last_checked(created["id"])
+    assert "gba/Big Racer.zip" in image_checks.order_stamps(created["id"])

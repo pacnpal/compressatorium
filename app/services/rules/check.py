@@ -251,11 +251,13 @@ def outcome(result: dict) -> str:
     #306 flags ``inconclusive`` (the check could not run: a verifier killed by
     a signal through ``verify_exit_event``, an allowlisted exception through
     ``verify_exception_event``, a timeout or stall) or ``abandoned`` (the
-    verifier outlived SIGKILL) is no verdict either. Otherwise ``valid`` decides.
+    verifier outlived SIGKILL) is no verdict either, and nor is ``uncheckable``
+    (#306: a rule this app sets, such as the archive safety limits, refused the
+    file; that says nothing about its data). Otherwise ``valid`` decides.
     """
     if result.get("cancelled"):
         return CANCELLED
-    if result.get("inconclusive") or result.get("abandoned"):
+    if result.get("inconclusive") or result.get("abandoned") or result.get("uncheckable"):
         return INCONCLUSIVE
     return INTACT if result.get("valid") else NOT_INTACT
 
@@ -373,8 +375,9 @@ async def _run(library: Library, picked: list[Check], job_id: str, generation: i
                 break
             counts[verdict] += 1
             if verdict == INTACT:
-                # What the Verify action records for a pass.
-                await verification_store.mark_verified(check.path)
+                # A re-check refreshes the record and keeps what made the file
+                # (its Source and producing mode): only a conversion replaces it.
+                await verification_store.refresh_check(check.path)
             elif verdict == NOT_INTACT:
                 # The Intact badge no longer holds.
                 await verification_store.clear(check.path)

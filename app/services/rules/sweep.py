@@ -1734,7 +1734,12 @@ async def _sweep_check(
             continue
         item: checks.Check = decision["check"]
         if item.tool_id not in ready:
-            ready[item.tool_id] = await _ready_bounded(registry.get(item.tool_id))
+            # Whether its verifier can run here, which is not the same as
+            # converting: jwud verifies in pure Python without JWUDTool, and
+            # z3ds needs zstd to verify whatever converting needs (#306).
+            ready[item.tool_id] = await registry.tool_is_ready(
+                registry.get(item.tool_id), purpose="verify",
+            )
         if not ready[item.tool_id]:
             # No verdict can come from a tool that is not installed: skipped,
             # never a "not Intact" Finding.
