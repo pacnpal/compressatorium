@@ -55,7 +55,7 @@ def _is_absolute_reference(ref: str) -> bool:
     ref = ref.strip()
     if not ref:
         return False
-    if ref.startswith("~") or ref.startswith("\\\\") or _WIN_ABS_RE.match(ref):
+    if ref.startswith(("~", "\\\\")) or _WIN_ABS_RE.match(ref):
         return True
     return Path(ref).is_absolute()
 
