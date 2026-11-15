@@ -1519,7 +1519,7 @@ async def test_a_rule_output_folder_cannot_leave_the_volumes(
 
 
 def test_the_volume_check_confines_a_path_before_touching_it(tree: Path, tmp_path: Path) -> None:
-    """The containment answer for the cases the check guards, unchanged by the rewrite."""
+    """The containment answers the Volume check must keep (pinned for the CodeQL fix in #294)."""
     from utils.path_utils import is_within_configured_volumes
 
     vol = tree.parent
