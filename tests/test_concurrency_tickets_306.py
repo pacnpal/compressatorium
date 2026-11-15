@@ -178,3 +178,36 @@ def test_a_hung_up_holder_does_not_stall_the_next_job(tmp_path):
         if holder.poll() is None:
             holder.kill()
         server.release("serverjob")
+
+
+def test_a_holder_file_deleted_from_outside_is_recreated(tmp_path):
+    """A tmp cleaner or a user removes the holder file: other processes would
+    read that as a dead holder and prune this live process's tickets."""
+    lock_dir = tmp_path / "locks"
+    live = ConcurrencyManager(1, str(lock_dir))
+    live.reserve_ticket("running")
+    live.reserve_ticket("queued")
+    os.remove(live._holder_path)
+
+    live._ensure_holder()
+
+    assert os.path.exists(live._holder_path)
+    other = ConcurrencyManager(1, str(lock_dir))
+    other._prune_dead_tickets(force=True)
+    assert other._list_tickets() == ["running", "queued"]
+    live.release_ticket("running")
+    live.release_ticket("queued")
+
+
+def test_tickets_pruned_while_the_holder_was_gone_come_back(tmp_path):
+    lock_dir = tmp_path / "locks"
+    live = ConcurrencyManager(1, str(lock_dir))
+    live.reserve_ticket("running")
+    os.remove(live._holder_path)
+    other = ConcurrencyManager(1, str(lock_dir))  # prunes: holder file missing
+    assert other._list_tickets() == []
+
+    live._ensure_holder()
+
+    assert other._list_tickets() == ["running"]
+    live.release_ticket("running")

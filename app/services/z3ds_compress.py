@@ -603,11 +603,9 @@ class Z3DSCompressService:
             }
         except Exception as e:
             logger.exception("Error during 3DS verification: %s", e)
-            yield {
-                "type": "error",
-                "valid": False,
-                "message": f"Verification error: {str(e)}"
-            }
+            yield SubprocessRunner._verify_error(
+                f"Verification error: {e}", inconclusive=True,
+            )
 
 
 # Global service instance

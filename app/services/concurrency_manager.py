@@ -9,7 +9,7 @@ import uuid
 
 from config import settings
 from logging_setup import get_logger
-from services.lock_manager import unlink_held
+from services.lock_manager import still_linked, unlink_held
 
 logger = get_logger("concurrency_manager")
 
@@ -103,9 +103,28 @@ class ConcurrencyManager:
         Written under a temp name, locked, then renamed into place, so it is
         never visible unlocked. Raises OSError when it cannot be made; callers
         retry on their next poll.
+
+        If the file was deleted from outside (a tmp cleaner, a user), other
+        processes would read this process as dead and prune its tickets. So
+        the held handle is checked against the path on every call (each wait
+        poll makes one); when it no longer names the held file, the holder is
+        made again under the same id and every ticket this process holds is
+        written back.
         """
         if self._holder_handle is not None:
+            if still_linked(self._holder_handle, self._holder_path):
+                return
+            with contextlib.suppress(OSError):
+                self._holder_handle.close()
+            self._holder_handle = None
+            self._make_holder()
+            logger.warning("Holder file %s was removed; made it again", self._holder_path)
+            for key, (ticket, _path) in list(self._ticket_handles.items()):
+                self._restore_ticket_file(key, ticket)
             return
+        self._make_holder()
+
+    def _make_holder(self) -> None:
         tmp_path = f"{self._holder_path}.{os.getpid()}.tmp"
         handle = open(tmp_path, "w", encoding="utf-8")  # noqa: SIM115 - held for life
         try:

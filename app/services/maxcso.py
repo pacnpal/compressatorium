@@ -344,7 +344,11 @@ class MaxcsoService:
             # re-raise that one — a child that outlived SIGKILL is still reading
             # this storage, so a batch has to stop rather than open the next file.
             logger.exception("Error during CSO verification: %s", e)
-            yield {"type": "error", "valid": False, "message": f"Verification error: {e}"}
+            # The check did not run to a verdict (a missing binary, a launch
+            # failure): inconclusive, so a stored result is kept (#306).
+            yield SubprocessRunner._verify_error(
+                f"Verification error: {e}", inconclusive=True,
+            )
 
 
 # Global service instance

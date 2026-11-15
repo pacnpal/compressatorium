@@ -652,6 +652,11 @@ def _point_locks_at(monkeypatch, lock_dir):
         concurrency_manager, "_ticket_counter_path", str(lock_dir / "queue_counter"),
     )
     monkeypatch.setattr(concurrency_manager, "_ready", False)
+    monkeypatch.setattr(
+        concurrency_manager, "_holder_path",
+        str(lock_dir / f"holder_{concurrency_manager._holder_id}.lock"),
+    )
+    monkeypatch.setattr(concurrency_manager, "_holder_handle", None)
 
 
 def test_dry_run_creates_no_lock_dir(volume, dolphin, capsys, monkeypatch, tmp_path):
@@ -776,3 +781,104 @@ def test_never_two_jobs_for_one_output_in_a_run(volume, dolphin, capsys, monkeyp
         (str(gc / writers[0]), str(gc / "Game.rvz")),
     ]
     assert code == 1  # Bad.iso
+
+
+def test_point_locks_at_moves_the_holder_file_too(monkeypatch, tmp_path):
+    import os
+
+    from services.concurrency_manager import concurrency_manager
+
+    lock_dir = tmp_path / "locks"
+    _point_locks_at(monkeypatch, lock_dir)
+
+    assert os.path.dirname(concurrency_manager._holder_path) == str(lock_dir)
+    assert concurrency_manager._holder_handle is None
+
+
+def test_verify_finds_images_that_only_a_check_reads(volume, dolphin, capsys):
+    """A .chd is read by no create mode (chdman leaves it out of its inputs), so
+    the convert search skipped it and `verify <dir>` checked nothing."""
+    chd = volume / "ps2" / "deep" / "Game.chd"
+    chd.parent.mkdir(parents=True)
+    chd.write_bytes(b"chd")
+
+    code, lines = _cli(capsys, "verify", str(volume), "--dry-run", "--json")
+
+    assert code == 0
+    assert lines == [{"path": str(chd), "status": "planned", "tool": "chdman",
+                      "reason": None}]
+
+
+def test_verify_stops_after_a_verifier_is_abandoned(volume, dolphin, capsys, monkeypatch):
+    """A verifier that outlived SIGKILL still holds the storage: opening the
+    next file on it would strand one more, so the run stops."""
+    from services.subprocess_runner import abandoned_verify_error
+
+    _rvz(volume, "gc/A.rvz")
+    _rvz(volume, "gc/B.rvz")
+    service = registry.get("dolphin")._service
+
+    async def stuck(cmd, *, path, **kwargs):
+        yield abandoned_verify_error(4242)
+
+    monkeypatch.setattr(service._runner, "run_verify", stuck)
+    import cli
+    from services.subprocess_runner import BATCH_STOPPED_MESSAGE
+
+    code = cli.main(["verify", str(volume), "--json"])
+    captured = capsys.readouterr()
+    lines = [json.loads(line) for line in captured.out.splitlines() if line.strip()]
+
+    assert code == 1
+    assert len(lines) == 1
+    assert lines[0]["status"] == "failed"
+    assert "could not be killed" in lines[0]["reason"]
+    assert BATCH_STOPPED_MESSAGE in captured.err
+
+
+def test_the_web_batch_verify_uses_the_same_stop_rule():
+    from routes import info
+    from services import subprocess_runner
+
+    assert info.stops_verify_batch is subprocess_runner.stops_verify_batch
+    assert info.BATCH_STOPPED_MESSAGE == subprocess_runner.BATCH_STOPPED_MESSAGE
+    assert subprocess_runner.stops_verify_batch({"valid": False, "abandoned": True})
+    assert not subprocess_runner.stops_verify_batch({"valid": False, "inconclusive": True})
+
+
+def test_verify_skips_a_tool_that_cannot_run_here_and_keeps_its_check(
+    volume, dolphin, capsys, monkeypatch,
+):
+    import asyncio
+
+    from services.verification_store import verification_store
+
+    rvz = _rvz(volume)
+    _cli(capsys, "verify", str(volume), "--json")
+    tool = registry.get("dolphin")
+
+    async def not_ready(self):
+        return False
+
+    monkeypatch.setattr(type(tool), "is_ready", not_ready)
+
+    code, lines = _cli(capsys, "verify", str(volume), "--json")
+
+    assert code == 0
+    assert lines[0]["status"] == "skipped"
+    assert lines[0]["reason"].startswith(f"{tool.display_name} isn't ready")
+    assert asyncio.run(verification_store.get_record(str(rvz))) is not None
+
+
+def test_the_shared_scan_lists_what_a_check_reads_for_verify(volume):
+    from routes.files import scan_tree
+
+    chd = volume / "ps2" / "Game.chd"
+    chd.parent.mkdir(parents=True)
+    chd.write_bytes(b"chd")
+
+    convert_files, _, _ = scan_tree(str(volume), purpose="convert")
+    verify_files, _, _ = scan_tree(str(volume), purpose="verify")
+
+    assert str(chd) not in [f["path"] for f in convert_files]
+    assert [f["path"] for f in verify_files] == [str(chd)]

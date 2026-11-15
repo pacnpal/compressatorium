@@ -2512,7 +2512,7 @@ caller of the same seams the routes use, not a second conversion path:
 
 | Step | Shared seam |
 | --- | --- |
-| Find Images | `routes.files.scan_tree`: the `GET /files/search` walk (subfolders, convertible folders, archive members as `archive::member`) |
+| Find Images | `routes.files.scan_tree`: the `GET /files/search` walk (subfolders, convertible folders, archive members as `archive::member`). `purpose="verify"` also lists every file some tool can check though none converts it (`.chd`), from `tools_verifying_path` |
 | `--to <format>` | `platform_detect.format_route` / `format_candidates` (below) |
 | `--auto` | `routes.convert.plan_auto_targets` (`plan_auto` plus `checked_compression`), the Auto route's planner |
 | Plan | `routes.convert.prepare_batch`: `plan_job` per file, duplicate handling, delete snapshots. `PreparedBatch.skipped` lists each file it left out with the reason (`_SKIP_HTTP` text, or "Same output as X"), which the CLI reports and the routes ignore |
@@ -2579,6 +2579,15 @@ killed by SIGKILL, SIGHUP or the OOM killer stops blocking the server's queue as
 soon as the server's next job waits. Tickets and temp files from older versions
 (no holder in the name) go when they can be locked.
 
+A holder file deleted from outside while its process runs (a tmp cleaner, a
+user) would make that process look dead. `_ensure_holder`, called on every wait
+poll, checks the held handle against the path (`still_linked`); when they
+differ it makes the holder again under the same id and writes back every
+ticket the process holds. Slot files have no such repair: a cleaner that
+deletes `convert_slot_<i>.lock` on the `$TMPDIR/chd-locks` fallback lets two
+processes lock different files for one slot. Keep the lock dir out of reach of
+age-based cleaners; `/config/locks`, the default, is.
+
 A queue that cannot be listed (EMFILE, an I/O error) is never read as empty:
 `_list_tickets` raises, and `_wait_for_turn` logs it (at most every 30 s) and
 retries. The shared counter is retried before the in-process fallback, whose
@@ -2617,6 +2626,14 @@ timeout, and `verify_preflight`'s stat/read errors ("File not found", "Error
 reading file"); not for an empty file or a wrong extension, which are verdicts.
 `valid` stays False, so nothing is deleted on it, but the CLI's verify keeps a
 stored check unless the failure is conclusive.
+
+The services report a missing prerequisite (nsz without `prod.keys`) and their
+"could not run" catch-alls (a verifier that failed to launch, an unexpected
+error; romz's unreadable archive) as `inconclusive` too, through the same
+helper. The CLI also asks `registry.tool_is_ready` first and skips a tool that
+cannot run here. `subprocess_runner.stops_verify_batch(result)` (true for
+`abandoned`) and `BATCH_STOPPED_MESSAGE` are the one stop rule for a walk over
+many files: the web UI's batch verify and the CLI's `verify` both end there.
 
 **`JobManager.drain()`** waits until every queued run has ended, cleanup
 included: a job notifies its listeners before `_process_job` removes its temp
