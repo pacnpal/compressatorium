@@ -368,6 +368,10 @@ class JobManager:
         self._input_mutex = threading.Lock()
         # The delete paths a job holds exclusively while it unlinks them.
         self._delete_holds: Dict[str, List[str]] = {}
+        # Jobs whose end has been announced to terminal listeners, so each is
+        # announced exactly once (``_notify_terminal``).
+        self._terminal_announced: Set[str] = set()
+        self._terminal_mutex = threading.Lock()
         # The companion outputs (extractcd's .bin beside its .cue) each running
         # job holds the same cross-process exclusive lock on as its output.
         self._companion_locks: Dict[str, List[str]] = {}
@@ -1018,10 +1022,21 @@ class JobManager:
             self._terminal_listeners.remove(callback)
 
     def _notify_terminal(self, job: ConversionJob) -> None:
-        """Tell every listener that *job* is finished. Never raises."""
-        if not self._terminal_listeners:
-            return
+        """Tell every listener that *job* is finished, once. Never raises.
+
+        Exactly once per job, whichever path gets here first (#306): a queued
+        job cancelled while the start path runs reaches both the cancel path
+        and the start path's terminal path, and every listener (SSE,
+        notifications, the Ledger's counters, check results) must hear it
+        once. The flag is set under ``_terminal_mutex`` before notifying.
+        """
         if job.status not in _TERMINAL_STATUSES:
+            return
+        with self._terminal_mutex:
+            if job.id in self._terminal_announced:
+                return
+            self._terminal_announced.add(job.id)
+        if not self._terminal_listeners:
             return
         for callback in list(self._terminal_listeners):
             try:
@@ -1351,6 +1366,12 @@ class JobManager:
         if dir_lock_held:
             lock_manager.release_dir_lock(job.file_path)
         self._release_output_locks(job)
+        if job.status in _TERMINAL_STATUSES:
+            # Already ended another way (a cancel that landed while this path
+            # ran): keep that ending, let go of the rest.
+            self._cancel_events.pop(job_id, None)
+            concurrency_manager.release(job_id)
+            return
         job.status = JobStatus.FAILED
         job.error_message = message
         job.completed_at = datetime.now(timezone.utc)
@@ -2119,6 +2140,8 @@ class JobManager:
             if job_id not in self._cancel_events:
                 await self._cleanup_temp_dir(job)
             del self.jobs[job_id]
+            with self._terminal_mutex:
+                self._terminal_announced.discard(job_id)
             return True
         return False
 
