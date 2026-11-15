@@ -134,6 +134,10 @@ def _compress_flags(mode: str, compression: str | None) -> list[str]:
     return ["-t7z", "-m0=lzma2", "-mx=9", "-md=256m", "-mfb=273", "-mmt=on"]
 
 
+class NotSingleRomArchive(ValueError):
+    """A readable archive that holds no ROM, or more than one file."""
+
+
 class RomzService:
     """Wrapper for the 7z binary, packing/unpacking handheld ROM dumps."""
 
@@ -237,6 +241,25 @@ class RomzService:
             return False
         return True
 
+    @classmethod
+    def claims_for_verify(cls, archive_path: str) -> bool:
+        """Whether a check of ``archive_path`` belongs to romz (#306).
+
+        Only a readable archive that is plainly not a single-ROM one (no ROM,
+        or more than one file) is someone else's. An archive that cannot be
+        read, or that the single-ROM rules reject for another reason, is
+        claimed, so the check runs and reports it: a truncated ``.gba.zip``
+        must fail, not go unchecked. The listing's ``is_single_rom_archive``
+        stays strict.
+        """
+        try:
+            cls._single_rom_member(archive_path)
+        except NotSingleRomArchive:
+            return False
+        except Exception:  # noqa: BLE001 - unreadable or rejected: the check fails it
+            return True
+        return True
+
     @staticmethod
     def _reject_traversal(name: str) -> None:
         """Reject a member that could escape or collide inside the temp dir.
@@ -292,10 +315,10 @@ class RomzService:
             if not is_junk_path(name)
         )
         if not has_rom:
-            raise ValueError(
+            raise NotSingleRomArchive(
                 "Archive holds no Game Boy / GBA / DS ROM to extract",
             )
-        raise ValueError(
+        raise NotSingleRomArchive(
             "Archive holds more than one file; the extract mode only reverts "
             "single-ROM archives produced by this tool",
         )

@@ -148,6 +148,14 @@ class RomzTool(BaseTool):
             return False
         return self._service.is_single_rom_archive(path)
 
+    def claims_check(self, path: str) -> bool:
+        # A verify run (#306): an archive that cannot be read is still romz's,
+        # so the check runs and fails it. Only a readable archive that plainly
+        # is not a single-ROM one belongs elsewhere.
+        if Path(path).suffix.lower() not in self.verify_extensions:
+            return False
+        return self._service.claims_for_verify(path)
+
     def output_path(
         self,
         mode: str,

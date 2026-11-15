@@ -208,6 +208,16 @@ class ToolPlugin(Protocol):
         answer while one is missing. Default empty.
         """
 
+    def claims_check(self, path: str) -> bool:
+        """Whether a verify run must check ``path`` with this tool (#306).
+
+        Wider than :meth:`verifies_path`, which gates the listing's Verify/Info
+        row-actions: a file this tool would recognise if it were intact (a
+        truncated ``.gba.zip``) is claimed, so the check runs and reports the
+        damage instead of the file going unchecked. Defaults to
+        ``verifies_path``.
+        """
+
     def verifies_path(self, path: str) -> bool:
         """Whether this tool's verify/info applies to a concrete file.
 
@@ -566,6 +576,10 @@ class BaseTool:
     def header_reads(self, path: str) -> list[str]:
         # Default: the probe reads only the file itself.
         return []
+
+    def claims_check(self, path: str) -> bool:
+        # Default: the listing's own answer.
+        return self.verifies_path(path)
 
     def verifies_path(self, path: str) -> bool:
         # Default: a declared-extension match (suffix-based, so a compound

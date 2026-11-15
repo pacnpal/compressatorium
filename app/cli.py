@@ -798,7 +798,7 @@ def _verify_tool(path: str, has_db: bool = False) -> tuple:
     from services.verification_store import verification_store
     from utils.path_utils import match_extension
 
-    tools = registry.tools_verifying_path(path)
+    tools = registry.tools_checking_path(path)
     if not tools and has_db and verification_store._get_record_sync(path):
         claimed = registry.tool_for_verify(path)
         tools = [claimed] if claimed is not None else []

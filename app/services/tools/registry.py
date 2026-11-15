@@ -423,6 +423,12 @@ class ToolRegistry:
         """
         return [t for t in self._tools.values() if t.verifies_path(path)]
 
+    def tools_checking_path(self, path: str) -> list[ToolPlugin]:
+        """Tools a verify run checks ``path`` with (``claims_check``), in
+        registration order. Wider than :meth:`tools_verifying_path`: a damaged
+        file its tool would otherwise recognise is included (#306)."""
+        return [t for t in self._tools.values() if t.claims_check(path)]
+
     def verify_extensions(self) -> tuple[str, ...]:
         """Union of every registered tool's verify_extensions.
 

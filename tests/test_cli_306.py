@@ -1085,3 +1085,48 @@ def test_a_generic_iso_gets_the_verifier_for_its_platform(volume, dolphin, capsy
     assert by_path[str(gc)]["status"] == "planned"
     assert by_path[str(ps2)]["status"] == "skipped"
     assert "ps2" in by_path[str(ps2)]["reason"]
+
+
+
+def _truncated_romz_zip(volume):
+    archive = _romz_zip(volume / "gba" / "Game.gba.zip")
+    data = archive.read_bytes()
+    archive.write_bytes(data[: len(data) // 2])
+    return archive
+
+
+def test_a_truncated_rom_archive_named_directly_fails_without_a_stored_check(
+    volume, dolphin, capsys,
+):
+    archive = _truncated_romz_zip(volume)
+
+    code, lines = _cli(capsys, "verify", str(archive), "--json")
+
+    assert code == 1
+    assert lines[0]["status"] == "failed"
+    assert lines[0]["tool"] == "romz"
+
+
+def test_a_truncated_rom_archive_in_a_folder_is_counted_failed(volume, dolphin, capsys):
+    archive = _truncated_romz_zip(volume)
+
+    code, lines = _cli(capsys, "verify", str(volume), "--json")
+
+    assert code == 1
+    assert [(line["path"], line["status"]) for line in lines] == [(str(archive), "failed")]
+
+
+def test_a_multi_rom_archive_is_still_not_a_rom_archive(volume, dolphin, capsys):
+    archive = volume / "gba" / "Pack.zip"
+    archive.parent.mkdir(parents=True)
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("A.gba", b"a" * 64)
+        zf.writestr("B.gba", b"b" * 64)
+
+    code, lines = _cli(capsys, "verify", str(archive), "--json")
+    assert code == 0
+    assert lines == [{"path": str(archive), "status": "skipped", "tool": None,
+                      "reason": "No tool checks this file"}]
+
+    code, lines = _cli(capsys, "verify", str(volume), "--json")
+    assert (code, lines) == (0, [])
