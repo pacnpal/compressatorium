@@ -7,6 +7,8 @@ satisfied by running it in a threadpool.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import os
 from collections.abc import AsyncGenerator
 from pathlib import Path
 
@@ -21,8 +23,28 @@ from services.romz import (
     romz_service,
 )
 
-from .base import BaseTool
+from services.archive_members import read_member_crcs
+from services.stream_digest import hash_files
+from services.subprocess_runner import ReadCancelled, run_detached
+
+from .base import BaseTool, ContentDigest, ContentDigestUnavailable
 from .spec import ModeKind, ModeSpec
+
+# The member set of an archive (name, size, CRC32 of each), hashed into one
+# value. A loose ROM is the one-member set it would be archived as.
+ROM_MEMBERS_KIND = "rom_members_crc32"
+
+
+def _member_set_digest(members: list[tuple[str, int | None, int | None]]) -> str:
+    """SHA1 of the sorted ``name, size, crc`` lines: equal only for the same
+    members with the same sizes and CRCs, whatever order they are stored in."""
+    lines = sorted(
+        f"{name}\t{'' if size is None else size}\t{'' if crc is None else f'{crc:08x}'}"
+        for name, size, crc in members
+    )
+    return hashlib.sha1(  # nosec # nosemgrep: insecure-hash-algorithm-sha1
+        "\n".join(lines).encode("utf-8"), usedforsecurity=False,
+    ).hexdigest()
 
 # The compress-direction badge prefers .7z (the default product), then .zip.
 _PRIMARY_OUTPUT_EXT = ".7z"
@@ -60,6 +82,8 @@ class RomzTool(BaseTool):
             # The UI sends an effort preset (fast|default|max), no numeric level.
             supports_compression=True,
             supports_delete_on_verify=True,
+            # Each member's CRC and size are compared with the ROM (#301).
+            supports_round_trip=True,
             # ROMs are compressed loose, not from inside another archive (that
             # would be recursive), so a ROM member is never offered as a
             # conversion input. It is still *visible* when browsing into a romz
@@ -78,6 +102,7 @@ class RomzTool(BaseTool):
             input_extensions=frozenset(ROMZ_COMPRESS_EXTENSIONS),
             supports_compression=True,
             supports_delete_on_verify=True,
+            supports_round_trip=True,
             allows_archive_input=False,
         ),
         ModeSpec(
@@ -195,6 +220,36 @@ class RomzTool(BaseTool):
             original_size=raw.get("original_size"),
             ratio=raw.get("ratio"),
         )
+
+    async def content_digest(
+        self, path: str, *, cancel_event: asyncio.Event | None = None,
+    ) -> ContentDigest | None:
+        # The member set: an archive's members as it lists them, a loose ROM
+        # as the one member it is archived as (its basename). A missing, extra
+        # or renamed member, or another CRC or size, gives another value. The
+        # stored CRCs are proven by the container check the job ran first:
+        # `7z t` decompresses every member and checks it against its CRC.
+        ext = Path(path).suffix.lower()
+        try:
+            if ext in ROMZ_COMPRESS_EXTENSIONS:
+                crc = await hash_files([path], algorithm="crc32", cancel_event=cancel_event)
+                size = await run_detached(os.path.getsize, path, cancel_event=cancel_event)
+                members = [(Path(path).name, int(size), int(crc, 16))]
+            elif ext in ROMZ_ARCHIVE_EXTENSIONS:
+                listed = await run_detached(
+                    read_member_crcs, path, cancel_event=cancel_event,
+                )
+                members = [
+                    (name + ("/" if is_dir else ""), size, crc)
+                    for name, size, crc, is_dir in listed
+                ]
+            else:
+                return None
+        except ReadCancelled:
+            raise
+        except Exception as e:  # unreadable archive or ROM: not proven
+            raise ContentDigestUnavailable(f"could not list {Path(path).name}: {e}") from e
+        return ContentDigest(kind=ROM_MEMBERS_KIND, value=_member_set_digest(members))
 
     def active_pids(self) -> list[int]:
         return self._service.active_pids()
