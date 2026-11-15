@@ -396,7 +396,8 @@ app = FastAPI(
         "Web UI for converting game files with chdman, dolphin-tool, "
         "z3ds_compressor, nsz, maxcso, 7z (handheld ROM archives), "
         "makeps3iso (PS3 folder to ISO), nkit2iso (NKit to ISO), "
-        "JWUDTool (Wii U WUD/WUX), and extract-xiso (Xbox ISO to XISO)"
+        "JWUDTool (Wii U WUD/WUX), extract-xiso (Xbox ISO to XISO), "
+        "and an eXoDOS repack for RomM"
     ),
     version=get_version(),
     lifespan=lifespan,

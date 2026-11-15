@@ -406,6 +406,21 @@ class ExodosService:
             if bad is not None:
                 raise ValueError(f"CRC check failed for {bad}")
 
+    # --- info --------------------------------------------------------------
+
+    def info(self, path: str) -> dict:
+        """What the file is, for the shared basic-info shape. Synchronous."""
+        size = os.path.getsize(path)
+        return {
+            "file": os.path.basename(path),
+            "size": size,
+            "size_display": f"{size} bytes",
+            "format": "DOSBox Pure zip" if path.lower().endswith(OUTPUT_EXTENSION) else "zip",
+            "extension": Path(path).suffix.lower(),
+            "compressed": True,
+            "compression_type": "zip",
+        }
+
     # --- output ------------------------------------------------------------
 
     @staticmethod
@@ -416,6 +431,16 @@ class ExodosService:
         source = Path(input_path)
         filename = f"{source.stem}{OUTPUT_EXTENSION}"
         return str(Path(output_dir) / filename if output_dir else source.parent / filename)
+
+    def get_output_path_for_mode(
+        self,
+        mode: str,
+        input_path: str,
+        output_dir: str | None = None,
+        *,
+        treat_as_stem: bool = False,
+    ) -> str:
+        return self.get_output_path(input_path, output_dir, treat_as_stem=treat_as_stem)
 
 
 @functools.lru_cache(maxsize=4096)

@@ -20,6 +20,8 @@ from app.services.dolphin_tool import (
     DOLPHIN_CONVERTIBLE_EXTENSIONS,
     dolphin_tool_service,
 )
+from app.services.exodos import INPUT_EXTENSIONS as EXODOS_INPUT_EXTENSIONS
+from app.services.exodos import exodos_service
 from app.services.extract_xiso import (
     XISO_CONVERTIBLE_EXTENSIONS,
     extract_xiso_service,
@@ -91,12 +93,14 @@ def _legacy_tool_for_mode(mode: str) -> str:
         return "jwud"
     if mode.startswith("xiso_"):
         return "xiso"
+    if mode.startswith("exodos_"):
+        return "exodos"
     return "chdman"
 
 
 def test_every_conversion_mode_resolves_to_exactly_one_tool():
     resolved = {m.value: registry.for_mode(m.value).id for m in CONVERSION_MODES}
-    assert len(resolved) == 34
+    assert len(resolved) == 35
     # Each registered mode is owned by exactly one tool (no duplicates).
     assert sorted(s.mode for s in registry.mode_specs()) == sorted(resolved)
 
@@ -141,6 +145,8 @@ def test_kind_classification():
     assert spec("cso_decompress").kind is ModeKind.EXTRACT
     # extract-xiso trims a disc image in one direction only
     assert spec("xiso_rewrite").kind is ModeKind.COMPRESS
+    # the eXoDOS repack writes a new file of a different kind beside its source
+    assert spec("exodos_repack").kind is ModeKind.COMPRESS
     # romz 7z/zip compress vs extract
     assert spec("romz_7z").kind is ModeKind.COMPRESS
     assert spec("romz_zip").kind is ModeKind.COMPRESS
@@ -211,6 +217,7 @@ def test_convertible_extensions_match_service_constants():
         | set(JWUD_COMPRESS_EXTENSIONS)
         | set(JWUD_DECOMPRESS_EXTENSIONS)
         | set(XISO_CONVERTIBLE_EXTENSIONS)
+        | set(EXODOS_INPUT_EXTENSIONS)
     )
     assert set(registry.convertible_extensions()) == expected
 
@@ -238,7 +245,8 @@ def test_tools_for_input_representative():
     assert [t.id for t in registry.tools_for_input("Game.gb")] == ["romz"]
     assert [t.id for t in registry.tools_for_input("Game.nds")] == ["romz"]
     assert [t.id for t in registry.tools_for_input("Game.7z")] == ["romz"]
-    assert [t.id for t in registry.tools_for_input("Game.zip")] == ["romz"]
+    # .zip is also an eXoDOS game zip; exodos narrows per file by content.
+    assert sorted(t.id for t in registry.tools_for_input("Game.zip")) == ["exodos", "romz"]
     # Wii U disc images, both directions.
     assert [t.id for t in registry.tools_for_input("Game.wud")] == ["jwud"]
     assert [t.id for t in registry.tools_for_input("Game.wux")] == ["jwud"]
@@ -276,6 +284,7 @@ def test_tool_for_verify_representative():
     assert registry.tool_for_verify("Game.7z").id == "romz"
     assert registry.tool_for_verify("Game.zip").id == "romz"
     assert registry.tool_for_verify("Game.wux").id == "jwud"
+    assert registry.tool_for_verify("Game.dosz").id == "exodos"
     # A compound product outranks the generic `.iso` tail Dolphin claims...
     assert registry.tool_for_verify("Game.xiso.iso").id == "xiso"
     # ...while a plain `.iso` still resolves exactly as before.
@@ -336,6 +345,7 @@ def test_tools_verifying_path_refines_extension_match(tmp_path):
         ("jwud_compress", jwudtool_service, "/data/Game.wud"),
         ("jwud_decompress", jwudtool_service, "/data/Game.wux"),
         ("xiso_rewrite", extract_xiso_service, "/data/Game.iso"),
+        ("exodos_repack", exodos_service, "/data/Abaron (1995).zip"),
     ],
 )
 def test_output_path_delegation_matches_service(
@@ -409,7 +419,7 @@ def test_mode_spec_tool_id_must_match_owner():
 
 
 @pytest.mark.parametrize(
-    "tool_id", ["chdman", "dolphin", "z3ds", "nsz", "cso", "romz", "jwud"],
+    "tool_id", ["chdman", "dolphin", "z3ds", "nsz", "cso", "romz", "jwud", "exodos"],
 )
 def test_output_extensions_cover_mode_output_exts(tool_id):
     tool = registry.get(tool_id)
@@ -471,7 +481,12 @@ def _mode_output_exts(tool, mode) -> set[str]:
 # (NKIT2ISO_RECOVERY=none) and still yields a cleanly-verifying RVZ, so deleting
 # the NKit source on that evidence destroys the only file a later
 # NKIT2ISO_RECOVERY=download run could restore bit-exact.
-_DELETE_ON_VERIFY_DECLINED = {"nkit_to_rvz"}
+#
+# exodos_repack: the product differs from its Source by design (re-rooted, with
+# a rewritten dosbox.conf added), so its verify proves the product reads back,
+# never that it holds the Source. The Source is the operator's eXoDOS install,
+# which eXoDOS itself still needs.
+_DELETE_ON_VERIFY_DECLINED = {"nkit_to_rvz", "exodos_repack"}
 
 
 def test_delete_on_verify_requires_a_verifiable_output():

@@ -104,6 +104,11 @@ const NKIT_VERIFY_EXTS = [];
 const XISO_COMPRESS_EXTS = ['.iso'];
 const XISO_VERIFY_EXTS = ['.xiso.iso'];
 const XISO_SOURCE_EXTS = [...XISO_COMPRESS_EXTS, ...XISO_VERIFY_EXTS];
+// eXoDOS repack: an eXoDOS game zip in, a DOSBox Pure zip (.dosz) out. `.zip`
+// is also romz's archive extension, so the backend reads each zip's directory
+// before claiming it (contentRefined below).
+const EXODOS_INPUT_EXTS = ['.zip'];
+const EXODOS_VERIFY_EXTS = ['.dosz'];
 
 /**
  * @typedef {Object} ModeEntry
@@ -702,6 +707,46 @@ export const TOOLS = [
     productPath: (path) => {
       if (/\.xiso\.iso$/i.test(path)) return path;
       if (/\.iso$/i.test(path)) return path.replace(/\.iso$/i, '.xiso.iso');
+      return path;
+    },
+  },
+  {
+    id: 'exodos',
+    label: 'eXoDOS',
+    hint: 'Repack eXoDOS game zips so RomM\'s in-browser DOS player can start them.',
+    // No verify route: the product is checked by the job itself (CRC and
+    // structure) when "verify each result" is on.
+    verifyPrefix: '',
+    sourceExts: EXODOS_INPUT_EXTS,
+    verifyExts: EXODOS_VERIFY_EXTS,
+    // Offered only on zips the backend matched: one game folder whose
+    // dosbox.conf template is in EXODOS_DOS_DIR. A plain .zip stays romz's.
+    contentRefined: true,
+    modeGroups: ['exodos'],
+    groups: { exodos: 'eXoDOS → RomM' },
+    defaultMode: 'exodos_repack',
+    glyph: 'DOS',
+    accent: 'var(--badge-romz)',
+    compressionCodecs: [],
+    compressionStyle: 'none',
+    modes: [
+      { mode: 'exodos_repack', kind: 'compress', label: 'Repack for RomM', group: 'exodos',
+        outputExt: '.dosz', inputExtensions: EXODOS_INPUT_EXTS,
+        supportsCompression: false, supportsCompressionLevel: false,
+        // Verifiable but never deletable: the product differs from its Source
+        // by design, and the Source is the user's eXoDOS install. Mirrors the
+        // backend ModeSpec.
+        supportsDeleteOnVerify: false, supportsVerify: true,
+        // The repack needs the zip itself and the template tree beside it.
+        allowsArchiveInput: false },
+    ],
+    getInfo: undefined,
+    verify: undefined,
+    verifyBatch: undefined,
+    // `Game (1995).zip` -> `Game (1995).dosz`; a product maps to itself.
+    productPath: (path) => {
+      if (/\.dosz$/i.test(path)) return path;
+      if (/\.zip$/i.test(path)) return path.replace(/\.zip$/i, '.dosz');
       return path;
     },
   },

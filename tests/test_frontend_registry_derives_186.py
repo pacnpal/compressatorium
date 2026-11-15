@@ -296,7 +296,9 @@ def test_content_claims_read_only_the_backend_probe(tmp_path):
     dump = _dump(tmp_path)
     claims = dump["content_claims"]
 
-    assert dump["content_refined"] == ["xiso"]
+    # Registry order: every tool whose extension claim means nothing until the
+    # backend's probe agreed (Xbox discs among .iso, eXoDOS games among .zip).
+    assert dump["content_refined"] == ["xiso", "exodos"]
     assert claims["xbox"] == ["xiso"]
     assert claims["psp"] == []
     assert claims["empty"] == []

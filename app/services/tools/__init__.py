@@ -11,6 +11,7 @@ from .base import BaseTool, ToolPlugin
 from .chain import ChainTool
 from .chdman import ChdmanTool
 from .dolphin import DolphinTool
+from .exodos import ExodosTool
 from .jwud import JwudTool
 from .makeps3iso import MakePs3IsoTool
 from .maxcso import MaxcsoTool
@@ -33,6 +34,8 @@ registry.register(MakePs3IsoTool(settings.makeps3iso_path))
 registry.register(Nkit2IsoTool(settings.nkit2iso_path))
 registry.register(JwudTool(settings.jwudtool_path))
 registry.register(XisoTool(settings.extract_xiso_path))
+# Pure Python: no binary to locate, gated on EXODOS_DOS_DIR instead.
+registry.register(ExodosTool(""))
 # Composite/pipeline modes register last: ChainTool drives the component tools
 # above through the registry, so they must already be present.
 registry.register(ChainTool(registry))

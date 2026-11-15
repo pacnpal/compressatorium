@@ -92,6 +92,13 @@ export const MODE_BLURBS = {
     + 'Usually 20-40% smaller. Writes Game.xiso.iso beside the source and never '
     + 'modifies or deletes the original. Offered only on images that really hold '
     + 'an Xbox filesystem.',
+  // eXoDOS
+  exodos_repack:
+    'Repack an eXoDOS game zip so RomM\'s in-browser DOS player (DOSBox Pure) can '
+    + 'start it: the game moves to the root of the file and its dosbox.conf, taken '
+    + 'from EXODOS_DOS_DIR with the mount paths rewritten, goes beside it. Writes '
+    + 'Game.dosz beside the source and never modifies or deletes the original. '
+    + 'Offered only on zips that hold one game folder with a template.',
   // PS3
   folder_to_iso:
     'Pack a decrypted PS3 folder into an .iso RPCS3 mounts. An optional toggle '
