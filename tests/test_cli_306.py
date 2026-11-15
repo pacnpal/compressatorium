@@ -618,3 +618,20 @@ def test_a_stalled_check_keeps_the_stored_result(volume, dolphin, capsys, monkey
     assert lines[0]["status"] == "failed"
     assert "stalled" in lines[0]["reason"]
     assert asyncio.run(verification_store.get_record(str(rvz))) is not None
+
+
+def test_entrypoint_and_wrapper_diagnostics_go_to_stderr():
+    """stdout carries --json lines once the wrapper goes through the entrypoint
+    (PGID=100 on Debian prints "GID ... already exists" on every one-off run)."""
+    import re
+
+    root = Path(__file__).resolve().parents[1]
+    for name in ("entrypoint.sh", "scripts/compressatorium"):
+        text = (root / name).read_text()
+        body = re.sub(r"discover_volumes\(\) \{.*?\n\}\n", "", text, flags=re.S)
+        for number, line in enumerate(body.splitlines(), 1):
+            code = line.split("#", 1)[0]
+            if re.search(r"(^|[;&|]\s*|\s)(echo|printf)\s", code) and ">&2" not in code:
+                if re.search(r'echo "\$mount_opts" \|', code):
+                    continue  # piped into grep, not printed
+                raise AssertionError(f"{name}:{number} prints to stdout: {line.strip()}")
