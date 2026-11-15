@@ -4220,6 +4220,17 @@ the shared form of a bounded call that takes something (a lock): when its
 caller gives up, whatever the abandoned call returns later is handed to
 `undo`, so nothing it took stays held.
 
+A bounded helper tells its deadline from the call's own `TimeoutError` (a
+network filesystem's `ETIMEDOUT`; `asyncio.TimeoutError` is the built-in
+`TimeoutError`) by who finished, not by type (codex 4579904147): the call
+records that it settled, and how, before it returns or raises (`_Finished`).
+A call that settled with its own error has that error re-raised as itself; an
+answer that came just as the wait ran out is returned; only a wait that ran
+out while the call still ran is the deadline: `DeadlineExpired` from
+`run_detached_bounded` (the read-only probe form) and `run_detached_undoable`,
+`MutationInFlight` from `run_detached_mutation`, "stopped responding" from
+`run_detached_within_stall_bound`.
+
 Read-only probes may be abandoned; irreversible mutations may not
 (codex 4579725632). `run_detached_mutation(func, *args, timeout, hand_off)`
 runs a mutation (an unlink) on a detached thread. When its caller stops

@@ -757,14 +757,20 @@ async def run_detached_undoable(
     is handed to *undo*, so nothing an abandoned call took stays held. *undo*
     runs on that thread when the answer comes after the caller gave up, or on
     the caller's side when the answer came but was lost to the timeout. Raises
-    :class:`asyncio.TimeoutError` on the timeout; an exception from *func*
-    propagates (it took nothing, or let go of it itself).
+    :class:`DeadlineExpired` on the timeout; an exception from *func*
+    propagates as itself, its own ``TimeoutError`` included (it took nothing,
+    or let go of it itself). Told apart by who finished, not by type.
     """
     guard = threading.Lock()
-    state: dict = {"abandoned": False, "delivered": False, "result": None}
+    state: dict = {"abandoned": False, "delivered": False, "result": None, "error": None}
 
     def call() -> object:
-        result = func(*args, **kwargs)
+        try:
+            result = func(*args, **kwargs)
+        except BaseException as exc:
+            with guard:
+                state["error"] = exc
+            raise
         with guard:
             if not state["abandoned"]:
                 state["delivered"] = True
@@ -775,14 +781,20 @@ async def run_detached_undoable(
 
     try:
         return await asyncio.wait_for(run_detached(call), timeout)
-    except BaseException:
+    except BaseException as exc:
         with guard:
             state["abandoned"] = True
-            delivered, result = state["delivered"], state["result"]
+            delivered, result, error = state["delivered"], state["result"], state["error"]
+        if error is not None or isinstance(exc, ProbeCapacityExceeded):
+            raise  # the call's own failure, or it never started: nothing taken
+        if delivered and isinstance(exc, asyncio.TimeoutError):
+            return result  # answered just as the wait ran out: the caller's now
         if delivered:
             # Answered, but the answer never reached the caller. Undone on a
             # thread of its own: *undo* may do I/O, never on the event loop.
             threading.Thread(target=undo, args=(result,), daemon=True).start()
+        if isinstance(exc, asyncio.TimeoutError):
+            raise DeadlineExpired(f"no answer in {timeout:g}s") from exc
         raise
 
 
@@ -830,7 +842,10 @@ async def run_detached_mutation(
     caller keeps its locks, and :class:`MutationNotStarted` says so.
     """
     guard = threading.Lock()
-    state: dict = {"started": False, "settled": False, "gave_up": False, "release": None}
+    state: dict = {
+        "started": False, "settled": False, "gave_up": False, "release": None,
+        "error": None, "result": None,
+    }
 
     def call() -> object:
         with guard:
@@ -840,7 +855,15 @@ async def run_detached_mutation(
                 raise MutationNotStarted("the caller stopped waiting before it began")
             state["started"] = True
         try:
-            return func(*args, **kwargs)
+            result = func(*args, **kwargs)
+        except BaseException as exc:
+            with guard:
+                state["error"] = exc
+            raise
+        else:
+            with guard:
+                state["result"] = result
+            return result
         finally:
             with guard:
                 state["settled"] = True
@@ -852,11 +875,21 @@ async def run_detached_mutation(
         return await asyncio.wait_for(run_detached(call), timeout)
     except BaseException as exc:
         with guard:
-            started = state["started"]
+            started, settled = state["started"], state["settled"]
+            error, result = state["error"], state["result"]
             if not started:
                 state["gave_up"] = True
-            elif not state["settled"]:
+            elif not settled:
                 state["release"] = hand_off()
+        if settled:
+            # The mutation finished; the locks are still the caller's. Its own
+            # failure (an ETIMEDOUT from a network filesystem included) is
+            # that failure, not the wait running out (codex 4579904147).
+            if error is not None:
+                raise error
+            if isinstance(exc, asyncio.TimeoutError):
+                return result  # answered just as the wait ran out
+            raise
         if not started:
             if isinstance(exc, (asyncio.CancelledError, MutationNotStarted)):
                 raise
@@ -954,6 +987,74 @@ async def feed_stdin_from_file(
                 await run_detached(handle.close)
 
 
+class DeadlineExpired(asyncio.TimeoutError):
+    """A bounded detached call's wait ran out while the call was still running.
+
+    Never raised for the call's own ``TimeoutError`` (a network filesystem's
+    ``ETIMEDOUT``): ``asyncio.TimeoutError`` is the built-in ``TimeoutError``,
+    so the bounded helpers tell the two apart by who finished (``_Finished``),
+    not by type, and re-raise the call's own error as itself (codex 4579904147).
+    """
+
+
+class _Finished:
+    """Who finished: whether a detached call settled, and how. Recorded by the
+    call itself, on its thread, before it returns or raises."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.settled = False
+        self.error: BaseException | None = None
+        self.result: object = None
+
+    def wrap(self, func: Callable, args: tuple, kwargs: dict) -> Callable[[], object]:
+        def call() -> object:
+            try:
+                result = func(*args, **kwargs)
+            except BaseException as exc:
+                with self._lock:
+                    self.settled, self.error = True, exc
+                raise
+            with self._lock:
+                self.settled, self.result = True, result
+            return result
+        return call
+
+    def snapshot(self) -> tuple[bool, BaseException | None, object]:
+        with self._lock:
+            return self.settled, self.error, self.result
+
+
+async def run_detached_bounded(
+    func: Callable,
+    *args: object,
+    timeout: float,
+    cancel_event: asyncio.Event | None = None,
+    **kwargs: object,
+) -> object:
+    """:func:`run_detached` under *timeout*, for a read-only probe.
+
+    Raises :class:`DeadlineExpired` only when the wait ran out while the call
+    still ran. The call's own exceptions propagate as themselves, its own
+    ``TimeoutError`` included; an answer that came just as the wait ran out
+    is returned; :class:`ProbeCapacityExceeded` (no thread could start)
+    propagates unchanged.
+    """
+    finished = _Finished()
+    try:
+        return await asyncio.wait_for(
+            run_detached(finished.wrap(func, args, kwargs), cancel_event=cancel_event),
+            timeout,
+        )
+    except asyncio.TimeoutError as exc:
+        settled, error, result = finished.snapshot()
+        if isinstance(exc, ProbeCapacityExceeded) or error is exc:
+            raise
+        if settled and error is None:
+            return result
+        raise DeadlineExpired(f"no answer in {timeout:g}s") from exc
+
+
 async def run_detached_within_stall_bound(
     func: Callable,
     *args: object,
@@ -977,21 +1078,25 @@ async def run_detached_within_stall_bound(
     ``what``; ``ReadCancelled`` still propagates for a cancel.
     """
     bound = conversion_stall_bound()
-    read = run_detached(func, *args, cancel_event=cancel_event, **kwargs)
+    finished = _Finished()
+    read = run_detached(
+        finished.wrap(func, args, kwargs), cancel_event=cancel_event,
+    )
     if bound <= 0:
         return await read
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + bound
     try:
         return await asyncio.wait_for(read, timeout=bound)
     except asyncio.TimeoutError as exc:
-        # Only the bound's own expiry is "stopped responding". Other
-        # TimeoutErrors fail at once and carry their own cause: the probe
-        # ceiling (`ProbeCapacityExceeded` subclasses TimeoutError) and, on
-        # 3.11+, an OS-level ETIMEDOUT raised by ``func``. Rewording those as a
-        # full-bound wait would hide what an operator needs to act on.
-        if isinstance(exc, ProbeCapacityExceeded) or loop.time() < deadline:
+        # Only the bound's own expiry is "stopped responding", told by who
+        # finished (codex 4579904147). Other TimeoutErrors carry their own
+        # cause: the probe ceiling (`ProbeCapacityExceeded` subclasses
+        # TimeoutError) and an OS-level ETIMEDOUT raised by ``func``. Rewording
+        # those as a full-bound wait would hide what an operator needs to act on.
+        settled, error, result = finished.snapshot()
+        if isinstance(exc, ProbeCapacityExceeded) or error is exc:
             raise
+        if settled and error is None:
+            return result
         raise RuntimeError(
             f"{what} stopped responding (no answer in {bound:.0f}s)",
         ) from exc

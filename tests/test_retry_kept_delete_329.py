@@ -1035,3 +1035,31 @@ def test_a_stalled_probe_in_lock_acquisition_never_blocks_the_event_loop(
     assert elapsed < 0.6, elapsed
     assert worst_gap < 0.5, worst_gap
     time.sleep(1.6)  # let the stalled probe finish before teardown
+
+
+def test_an_unlink_that_raises_its_own_timeout_error_is_a_counted_attempt(
+    env, dolphin, capsys, kept, monkeypatch,
+):
+    """A network filesystem's ETIMEDOUT from the unlink is the unlink's own
+    failure, not the retry's deadline (codex 4579904147): a counted kept
+    attempt, never "unknown", so the cap and the Finding stay reachable."""
+    import errno
+    import os
+
+    iso = kept["iso"]
+    real = os.remove
+
+    def etimedout(path, *args, **kwargs):
+        if os.path.realpath(str(path)) == os.path.realpath(str(iso)):
+            raise TimeoutError(errno.ETIMEDOUT, "Operation timed out", str(path))
+        return real(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "remove", etimedout)
+
+    code, lines, _err = _cli(capsys, "run-rules", "--json")
+
+    assert code == 0, lines
+    assert iso.exists()
+    pending = _rule_state(env)["gc"]["kept_sources"]["Game.iso"]
+    assert pending["attempts"] == 1
+    assert "timed out" in pending["last_reason"]

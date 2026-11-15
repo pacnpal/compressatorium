@@ -43,9 +43,11 @@ from services.mutation_guard import locked_for_mutation
 from services import referrers
 from services.round_trip import round_trip, round_trip_applies
 from services.subprocess_runner import (
+    DeadlineExpired,
     MutationInFlight,
     ReadCancelled,
     run_detached,
+    run_detached_bounded,
     run_detached_mutation,
     run_detached_undoable,
 )
@@ -3076,11 +3078,11 @@ class JobManager:
         ``_CANONICAL_PROBE_SECONDS``); a timeout raises RuntimeError, so the
         delete is refused and nothing more is removed."""
         try:
-            return await asyncio.wait_for(
-                run_detached(func, *args),
+            return await run_detached_bounded(
+                func, *args,
                 timeout=_CANONICAL_PROBE_SECONDS if seconds is None else seconds,
             )
-        except asyncio.TimeoutError:
+        except DeadlineExpired:
             raise RuntimeError(
                 "The Source's volume did not answer; refusing to delete"
             ) from None
@@ -3321,14 +3323,11 @@ class JobManager:
         """:meth:`_kept_delete_snapshot` on a detached thread, bounded: a
         volume that stops answering is a reason to try again later."""
         try:
-            return await asyncio.wait_for(
-                run_detached(
-                    self._kept_delete_snapshot, source_path, output_path, meta,
-                    recorded_source,
-                ),
-                KEPT_DELETE_PROBE_SECONDS,
+            return await run_detached_bounded(
+                self._kept_delete_snapshot, source_path, output_path, meta,
+                recorded_source, timeout=KEPT_DELETE_PROBE_SECONDS,
             )
-        except (asyncio.TimeoutError, ReadCancelled):
+        except (DeadlineExpired, ReadCancelled):
             return KEPT_DELETE_UNANSWERED
 
     async def retry_kept_delete(
@@ -3370,20 +3369,22 @@ class JobManager:
                     timeout=KEPT_DELETE_PROBE_SECONDS,
                     undo=lambda held: _let_go([output_path] if held else []),
                 )
-            except LockFailed as exc:
-                return KeptDeleteRetry(KEPT_KEPT, str(exc))
-            except asyncio.TimeoutError:
+            except DeadlineExpired:
                 return KeptDeleteRetry(KEPT_KEPT, KEPT_DELETE_UNANSWERED)
+            except (LockFailed, OSError) as exc:
+                return KeptDeleteRetry(KEPT_KEPT, str(exc))
             if not output_held:
                 return KeptDeleteRetry(KEPT_READER, "the output is in use by another job")
             travelling.add(output_path)
             try:
-                record = await asyncio.wait_for(
-                    run_detached(verification_store.get_record_blocking, output_path),
-                    KEPT_DELETE_PROBE_SECONDS,
+                record = await run_detached_bounded(
+                    verification_store.get_record_blocking, output_path,
+                    timeout=KEPT_DELETE_PROBE_SECONDS,
                 )
-            except asyncio.TimeoutError:
+            except DeadlineExpired:
                 return KeptDeleteRetry(KEPT_KEPT, KEPT_DELETE_UNANSWERED)
+            except OSError as exc:
+                return KeptDeleteRetry(KEPT_KEPT, str(exc))
             check = (record or {}).get("check_passed")
             meta = (record or {}).get("produced_meta")
             if (
@@ -3411,10 +3412,10 @@ class JobManager:
                     self._take_exclusively, paths,
                     timeout=KEPT_DELETE_PROBE_SECONDS, undo=_let_go,
                 )
-            except LockFailed as exc:
-                return KeptDeleteRetry(KEPT_KEPT, str(exc))
-            except asyncio.TimeoutError:
+            except DeadlineExpired:
                 return KeptDeleteRetry(KEPT_KEPT, KEPT_DELETE_UNANSWERED)
+            except (LockFailed, OSError) as exc:
+                return KeptDeleteRetry(KEPT_KEPT, str(exc))
             if taken is None:
                 return KeptDeleteRetry(KEPT_READER, SOURCE_KEPT_FOR_READERS)
             self._delete_holds[owner_id] = list(taken)
