@@ -79,6 +79,7 @@ from utils.path_utils import (
     is_within_configured_volumes,
     match_extension,
     path_fingerprint,
+    source_companions_are_safe,
 )
 
 # The logger name the engine has always logged under (see `rules.logger`).
@@ -112,6 +113,12 @@ _sweep_lock = asyncio.Lock()
 # purpose: the job queue it indexes is in memory too, so an entry has nothing
 # to outlive.
 _job_owners: dict[str, tuple[Library, str, str]] = {}
+
+# library id -> its generation, bumped when the Library is removed. A job-finish
+# callback captures it before its first await and writes state only if it is
+# unchanged, checked under `_sweep_lock`: a Library removed while the callback
+# was probing must not have its state written back.
+_generations: dict[str, int] = {}
 
 # (library id, platform id) -> the reason it last could not be listed. A
 # Platform that stays unreadable (a folder that is gone) is retried every tick;
@@ -346,6 +353,7 @@ async def forget_library(library: Library) -> None:
     written back either.
     """
     async with _sweep_lock:
+        _generations[library.id] = _generations.get(library.id, 0) + 1
         for job_id, owner in list(_job_owners.items()):
             if owner[0].id == library.id:
                 _job_owners.pop(job_id, None)
@@ -655,12 +663,18 @@ async def note_job_finished(job) -> None:
         return
     library, platform_id, rom_id = owner
     done = status == JobStatus.COMPLETED
+    # Captured before any await; see `_generations`.
+    generation = _generations.get(library.id, 0)
     if FAILED_HOLD in library.capabilities and status != JobStatus.CANCELLED:
-        await _note_failure(library, platform_id, rom_id, job, failed=not done)
+        await _note_failure(
+            library, platform_id, rom_id, job, failed=not done, generation=generation,
+        )
     if CONVERTED_HISTORY not in library.capabilities:
         # No converted history to write the verdict into (skip-only Rules).
         return
     async with _sweep_lock:
+        if _generations.get(library.id, 0) != generation:
+            return  # removed meanwhile
         # Under the same lock as every other write to this blob: a sweep
         # rewrites the whole thing, so an unsynchronised update here would be
         # lost, or would lose the sweep's.
@@ -707,6 +721,7 @@ async def _prune_holds(
 
 async def _note_failure(
     library: Library, platform_id: str, image_key: str, job, *, failed: bool,
+    generation: int,
 ) -> None:
     """Hold a failed Image until its file changes, or release a converted one.
 
@@ -724,6 +739,9 @@ async def _note_failure(
         if not fingerprint:
             return
     async with _sweep_lock:
+        if _generations.get(library.id, 0) != generation:
+            # The Library was removed while the fingerprint was being read.
+            return
         state = await get_state(library)
         entry = dict(state.get(platform_id) or {})
         held = dict(entry.get("failed") or {})
@@ -832,6 +850,12 @@ def _inspect_candidate(
         return miss
     if not _accepts_source(tool, spec, path):
         return {**miss, "skip": "unconvertible", "path": path}
+    # The job manager refuses these too; asked here so the sweep reports the
+    # Image as unsafe instead of queueing a job that can only be refused. A
+    # track sheet naming a file outside the volumes would otherwise have the
+    # converter pack that file into its output.
+    if not source_companions_are_safe(path, rule["mode"]):
+        return {**miss, "skip": "unsafe_source", "path": path}
     resolved = _resolve_source(path)
     if resolved is None:
         return miss
@@ -1171,6 +1195,7 @@ async def _sweep_locked(
             # nothing.
             held = await _prune_holds(library, platform_id, held, images)
         held_count = 0
+        unsafe_names: list[str] = []
         batch: list[str] = []
         unresponsive = False
         image_by_path: dict[str, Image] = {}
@@ -1230,6 +1255,9 @@ async def _sweep_locked(
             if decision["skip"] == "outside_volumes":
                 result["skipped_unconvertible"] += 1
                 continue
+            if decision["skip"] == "unsafe_source":
+                unsafe_names.append(Path(path).name)
+                continue
             if decision["skip"] == "held_failed":
                 result["skipped_failed"] += 1
                 held_count += 1
@@ -1268,6 +1296,11 @@ async def _sweep_locked(
             # Shown per Platform, so a held Image does not vanish from the
             # result: it is waiting for its files to change or for Forget.
             summary["skipped_failed"] = held_count
+        if unsafe_names:
+            # Never queued, and named: a sheet whose tracks leave the volumes.
+            # Present only when there is one, so a clean result keeps its shape.
+            result["skipped_unsafe"] = result.get("skipped_unsafe", 0) + len(unsafe_names)
+            summary["unsafe"] = unsafe_names[:25]
         if rule["delete_on_verify"]:
             # What Preview shows: the check that will actually pass before
             # this batch deletes a Source, not the stored preference (a mode

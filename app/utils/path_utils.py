@@ -234,6 +234,22 @@ def _resolve_volume(volume_path: str) -> Optional[Path]:
         return None
 
 
+def containing_volume_root(path: str) -> Path | None:
+    """The resolved root of the configured Volume that holds ``path``, or None.
+
+    The most specific one when Volumes nest. ``path`` may be an archive member
+    (``a.zip::disc.iso``); the archive's own location decides.
+    """
+    real_path = _resolve_path(strip_archive_path(path), strict=False)
+    if real_path is None:
+        return None
+    holders = [
+        root for root in map(_resolve_volume, settings.volumes)
+        if root is not None and (real_path == root or root in real_path.parents)
+    ]
+    return max(holders, key=lambda root: len(root.parts), default=None)
+
+
 def is_within_configured_volumes(path: str, *, treat_archives: bool = True) -> bool:
     """Check whether the given path lies inside one of the configured CHD volumes."""
     base_path = strip_archive_path(path) if treat_archives else path
@@ -306,10 +322,20 @@ def source_companions_are_safe(file_path: str, mode: str) -> bool:
     taking the job's locks, since a queued job's companion can be swapped for a
     symlink in between.
 
+    A track sheet (``.cue`` / ``.gdi``) is checked from its own text, whatever
+    the tool reports: the converter opens every file the sheet names, so a
+    reference that is absolute, leaves the sheet's folder, or resolves outside
+    the volumes rejects the job (``delete_plan.sheet_reference_problems``). An
+    empty companion list is never taken to mean safe.
+
     Blocking I/O (an ``lstat`` and a ``realpath`` per companion); call it off
     the event loop.
     """
     from services.tools import registry  # local: avoids an import cycle
+    from utils.delete_plan import sheet_reference_problems  # local: cycle
+
+    if sheet_reference_problems(file_path):
+        return False
 
     try:
         tool = registry.for_mode(mode)

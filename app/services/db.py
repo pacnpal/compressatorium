@@ -308,6 +308,9 @@ class FolderLibraryRecord(Base):
     """
 
     __tablename__ = "folder_libraries"
+    # AUTOINCREMENT: a removed Library's id is never handed to a new one, so
+    # state keyed "folder:<id>" can never reach a different folder.
+    __table_args__ = {"sqlite_autoincrement": True}
     id = Column(Integer, primary_key=True, autoincrement=True)
     root = Column(String, nullable=False, unique=True)
     name = Column(String, nullable=False)

@@ -37,13 +37,14 @@ export class FolderRulesSource extends RulesSource {
   platformsBusy = $state(false);
 
   constructor(library) {
-    const id = () => library?.id;
+    // The endpoints read `this.id` (the reactive `library` field) when they
+    // run, after construction; nothing is captured from the constructor.
     super({
-      getRules: () => api.getLibraryRules(id()),
-      saveRules: (rules) => api.saveLibraryRules(id(), rules),
-      forgetConverted: (platformIds) => api.forgetLibraryConverted(id(), platformIds),
-      preview: (body) => api.previewLibrary(id(), body),
-      run: (body) => api.runLibrary(id(), body),
+      getRules: () => api.getLibraryRules(this.id),
+      saveRules: (rules) => api.saveLibraryRules(this.id, rules),
+      forgetConverted: (platformIds) => api.forgetLibraryConverted(this.id, platformIds),
+      preview: (body) => api.previewLibrary(this.id, body),
+      run: (body) => api.runLibrary(this.id, body),
       loadError: 'Failed to load the Rules',
     });
     this.library = library;

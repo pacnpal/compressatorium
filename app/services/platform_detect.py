@@ -30,10 +30,11 @@ import threading
 from collections import OrderedDict
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
-from pathlib import PurePath
+from pathlib import Path, PurePath
 
 from logging_setup import get_logger
-from utils.path_utils import match_extension
+from models import InputKind
+from utils.path_utils import containing_volume_root, match_extension
 
 logger = get_logger("platform_detect")
 
@@ -233,15 +234,29 @@ def _split_member(path: str) -> tuple[str, bool]:
     return path, False
 
 
+def _probes(tool, path: str, is_dir: bool) -> bool:
+    """Whether ``tool`` is asked for ``path``'s header.
+
+    A file: when the tool takes its extension. A folder: when the tool takes
+    that folder as its input unit (``accepts_directory``, e.g. a PS3 disc
+    folder), the directory analogue the rest of the registry already uses.
+    """
+    if is_dir:
+        accepts = getattr(tool, "accepts_directory", None)
+        return bool(accepts and accepts(path))
+    return match_extension(path, tool.input_extensions) is not None
+
+
 def _header(path: str, tools: Iterable) -> tuple[set[str], list[str]]:
     found: set[str] = set()
     sources: list[str] = []
     seen: set[int] = set()
+    is_dir = os.path.isdir(path)
     for tool in tools:
         if id(tool) in seen:
             continue
         seen.add(id(tool))
-        if match_extension(path, tool.input_extensions) is None:
+        if not _probes(tool, path, is_dir):
             continue
         try:
             raw = tool.header_platform(path)
@@ -255,8 +270,38 @@ def _header(path: str, tools: Iterable) -> tuple[set[str], list[str]]:
     return found, sources
 
 
+def _candidate_paths(path: str) -> list[PurePath]:
+    """The folders the walk may read for ``path``, nearest first.
+
+    From the Image's own folder up to the root of the Volume that holds it,
+    root included, never above: a Volume mounted under ``/mnt/md/...`` must not
+    make every Image in it a Genesis Image. Resolved, so a mapping (stored
+    under a Library's resolved root) matches an Image reached through a
+    symlink too. A path in no configured Volume uses only its own folder.
+    """
+    parent = PurePath(path).parent
+    own = [parent] if parent.name else []
+    root = containing_volume_root(path)
+    if root is None:
+        return own
+    resolved = Path(os.path.realpath(path)).parent
+    try:
+        below = resolved.relative_to(root).parts
+    except ValueError:
+        return own
+    out = [resolved]
+    for _part in below:
+        out.append(out[-1].parent)
+    return out
+
+
+def _candidate_folders(path: str) -> list[str]:
+    """Folder names the walk may read for ``path``, nearest first."""
+    return [p.name for p in _candidate_paths(path)]
+
+
 def _folder(path: str, names: dict[str, str]) -> tuple[str | None, str | None]:
-    for part in reversed(PurePath(path).parent.parts):
+    for part in _candidate_folders(path):
         slug = names.get(part.lower())
         if slug:
             return slug, part
@@ -279,7 +324,7 @@ def _place(
     ``"folder"``. Walking up from the Image's folder, the first folder with a
     mapping or a Platform name decides; at the same folder the mapping wins.
     """
-    for parent in PurePath(os.path.normpath(disk_path)).parents:
+    for parent in _candidate_paths(disk_path):
         label = parent.name or str(parent)
         slug = mapped.get(str(parent)) if mapped else None
         if slug:
@@ -405,7 +450,10 @@ def detection_key(
     # The deciding folder evidence by path and source: where a mapping sits
     # relative to a Platform-named folder changes the answer, so a name alone
     # would not do.
-    found = _place(disk_path, _folder_names(tool_list), _mapped_folders())
+    # With no mapping anywhere the folder evidence is the path's own, already
+    # what the key is for: skip the walk (a resolve) on every stat-only rewalk.
+    mapped = _mapped_folders()
+    found = _place(disk_path, _folder_names(tool_list), mapped) if mapped else None
     return (st.st_size, st.st_mtime_ns, deps, found[:3] if found else None)
 
 
@@ -484,6 +532,16 @@ def default_mode(path: str, platform: str, tools_registry) -> str | None:
     """
     disk_path, member = _split_member(path)
     name = path.split("::", 1)[1] if member else disk_path
+    if not member and os.path.isdir(disk_path):
+        # A folder Image goes to the first folder-input mode for the Platform
+        # whose tool takes this folder (``accepts_directory``).
+        for spec in _auto_candidates(platform, tools_registry):
+            if (
+                InputKind.DIRECTORY in spec.input_kinds
+                and tools_registry.for_mode(spec.mode).accepts_directory(disk_path)
+            ):
+                return spec.mode
+        return None
     best: str | None = None
     best_key: tuple[int, int] | None = None
     for spec in _auto_candidates(platform, tools_registry):
@@ -524,6 +582,8 @@ def _no_target_reason(path: str, platform: str, tools_registry) -> str:
     if not _auto_candidates(platform, tools_registry):
         return f"No tool converts {platform} Images"
     name = path.split("::", 1)[-1]
+    if "::" not in path and os.path.isdir(path):
+        return f"No {platform} target takes this folder"
     ext = os.path.splitext(name)[1].lower() or name
     return f"No {platform} target reads {ext} files"
 

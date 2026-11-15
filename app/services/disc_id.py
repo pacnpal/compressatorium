@@ -55,6 +55,7 @@ from services.subprocess_runner import (
     ioprio_prefix,
     nice_prefix,
 )
+from utils.sheet_text import gdi_tracks, pick_existing, sheet_readings
 
 logger = get_logger("disc_id")
 
@@ -191,7 +192,46 @@ _DC_HWID_NEEDLE = b"SEGA SEGAKATANA"
 # Low-level ISO 9660 helpers
 # ===========================================================================
 
-def _read_pvd(f) -> Optional[bytes]:
+# Every length these helpers read comes out of the image (the PVD's root
+# directory size, a directory record's extent size), so every read is bounded
+# before it happens: by this parser limit, and by what the image actually holds
+# past the offset. A directory record table is a few KiB on a real disc and the
+# files read through here (SYSTEM.CNF, PARAM.SFO) are smaller still, so 1 MiB
+# leaves wide headroom. A size outside either bound is a parse failure, which
+# callers already treat as "no header": a planted image claiming 0xffffffff
+# bytes costs nothing, instead of a 4 GiB allocation.
+_MAX_ISO_READ = 1024 * 1024
+
+
+def _stream_size(f) -> int | None:
+    """Logical size of an ISO 9660 stream in bytes, when it can be known."""
+    size = getattr(f, "logical_size", None)
+    if size is not None:
+        return size
+    try:
+        return os.fstat(f.fileno()).st_size
+    except (AttributeError, OSError, ValueError):
+        return None
+
+
+def _bounded_read(f, offset: int, size: int) -> bytes | None:
+    """``size`` bytes at ``offset``, or None when the image cannot hold them.
+
+    Refuses a size above ``_MAX_ISO_READ`` or running past the end of the
+    image, without reading anything.
+    """
+    if size < 0 or size > _MAX_ISO_READ:
+        return None
+    total = _stream_size(f)
+    if total is not None and offset + size > total:
+        return None
+    try:
+        f.seek(offset)
+        return f.read(size)
+    except OSError:
+        return None
+
+def _read_pvd(f) -> bytes | None:
     """Return the 2048-byte PVD sector from a seekable ISO 9660 stream, or None."""
     try:
         f.seek(_PVD_SECTOR * _SECTOR_SIZE)
@@ -216,10 +256,8 @@ def _list_dir(f, lba: int, size: int) -> list[tuple[str, int, int, bool]]:
     Yield (name, lba, size, is_dir) for each entry in an ISO 9660 directory.
     Skips the '.' and '..' self-referencing entries.
     """
-    try:
-        f.seek(lba * _SECTOR_SIZE)
-        data = f.read(size)
-    except OSError:
+    data = _bounded_read(f, lba * _SECTOR_SIZE, size)
+    if data is None:
         return []
 
     entries: list[tuple[str, int, int, bool]] = []
@@ -302,12 +340,9 @@ def _find_file(f, root_lba: int, root_size: int, path_parts: list[str]) -> Optio
             return None
         _name, lba, size, is_dir = hit
         if i == len(path_parts) - 1:
-            # Final component, read and return the file
-            try:
-                f.seek(lba * _SECTOR_SIZE)
-                return f.read(size)
-            except OSError:
-                return None
+            # Final component, read and return the file (bounded, see
+            # _MAX_ISO_READ: None when its recorded size is implausible).
+            return _bounded_read(f, lba * _SECTOR_SIZE, size)
         if not is_dir:
             return None
         cur_lba, cur_size = lba, size
@@ -519,18 +554,35 @@ def nintendo_disc_platform(path: str) -> str | None:
     return None
 
 
+def _cue_file_names(text: str) -> list[str]:
+    """The quoted name of every ``FILE`` line, in order."""
+    names = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        parts = stripped.split('"')
+        if stripped.upper().startswith("FILE ") and len(parts) >= 2:
+            names.append(parts[1])
+    return names
+
+
+def _cue_track_paths(path: str) -> list[Path]:
+    """Every track file a cue sheet names, resolved beside the sheet.
+
+    Decoded the shared way (``utils.sheet_text``: UTF-8 with a BOM stripped,
+    cp1252 when not UTF-8, Latin-1 last); the first spelling that exists on
+    disk wins, and a track none of whose spellings exists keeps the first.
+    """
+    folder = Path(path).parent
+    readings = [_cue_file_names(text) for text in sheet_readings(path)]
+    return pick_existing(readings, lambda name: folder / name)
+
+
 def _cue_data_file(path: str) -> str | None:
     """The first ``FILE`` a cue sheet names, when it exists beside the sheet."""
-    try:
-        with open(path, encoding="latin-1") as cue:
-            for line in cue:
-                parts = line.strip().split('"')
-                if line.strip().upper().startswith("FILE ") and len(parts) >= 2:
-                    candidate = Path(path).parent / parts[1]
-                    return str(candidate) if candidate.is_file() else None
-    except OSError:
+    tracks = _cue_track_paths(path)
+    if not tracks:
         return None
-    return None
+    return str(tracks[0]) if tracks[0].is_file() else None
 
 
 def sega_sector0_platform(path: str) -> str | None:
@@ -673,6 +725,15 @@ class _BinSectorStream:
         self._sector_size = sector_size
         self._header_size = header_size
         self._pos = 0  # logical position
+
+    @property
+    def logical_size(self) -> int | None:
+        """Bytes of 2048-byte user data the raw track holds (for read bounds)."""
+        try:
+            physical = os.fstat(self._f.fileno()).st_size
+        except (AttributeError, OSError, ValueError):
+            return None
+        return (physical // self._sector_size) * _SECTOR_SIZE
 
     def seek(self, pos: int) -> None:
         self._pos = pos
@@ -1101,20 +1162,12 @@ def _extract_cue(path: str) -> Optional[dict]:
     Parse a .cue sheet, find the first DATA track's BIN file, and extract.
     """
     try:
-        cue_dir = Path(path).parent
-        with open(path, encoding="latin-1") as cue:
-            for line in cue:
-                line = line.strip()
-                if line.upper().startswith("FILE "):
-                    # FILE "track.bin" BINARY
-                    parts = line.split('"')
-                    if len(parts) >= 2:
-                        bin_path = cue_dir / parts[1]
-                        if bin_path.exists():
-                            result = _extract_bin(str(bin_path))
-                            if result:
-                                return result
-                            break
+        for bin_path in _cue_track_paths(path):
+            if bin_path.exists():
+                result = _extract_bin(str(bin_path))
+                if result:
+                    return result
+                break
     except Exception as e:
         logger.debug("disc_id: CUE extraction failed for %s: %s", path, e)
     return None
@@ -1130,17 +1183,18 @@ def _extract_gdi(path: str) -> Optional[dict]:
     """
     try:
         gdi_dir = Path(path).parent
-        with open(path, encoding="latin-1") as f:
-            lines = [line.strip() for line in f if line.strip()]
-
-        for line in lines[1:]:  # skip track count on first line
-            parts = line.split()
-            if len(parts) < 5:
-                continue
-            track_num = parts[0]
-            sector_size = int(parts[3]) if parts[3].isdigit() else 2352
-            filename = parts[4].strip('"')
-            bin_path = gdi_dir / filename
+        # The shared sheet parsing (utils.sheet_text): quoted names keep their
+        # spaces, and the first spelling of a name that exists on disk wins.
+        readings = [gdi_tracks(text) for text in sheet_readings(path)]
+        if not readings:
+            return None
+        files = pick_existing(
+            [[track.name for track in reading] for reading in readings],
+            lambda name: gdi_dir / name,
+        )
+        for track, bin_path in zip(readings[0], files):
+            track_num = track.number
+            sector_size = track.sector_size or 2352
             if not bin_path.exists():
                 continue
             if track_num == "1":

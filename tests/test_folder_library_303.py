@@ -1351,3 +1351,133 @@ async def test_a_library_no_longer_reports_a_constant_configured(tree: Path) -> 
     lib = await _register(tree)
     assert "configured" not in lib
     assert all("configured" not in entry for entry in await routes.list_libraries())
+
+
+# ----------------------------------------------------------------------
+# PR #320 review
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_an_images_size_is_all_of_its_files(psx: Path, ready, queue) -> None:
+    """Codex 4576551531: a 67-byte .cue for a large .bin is the size of the set."""
+    from routes import libraries as routes
+    from services import libraries
+
+    lib = await _register(psx)
+    images = {i.key: i for i in libraries.get(lib["id"]).images("psx")}
+    multi = psx / "psx" / "Multi"
+    expected = sum(
+        (multi / name).stat().st_size
+        for name in ("Multi.cue", "Multi (Track 1).bin", "Multi (Track 2).bin")
+    )
+    assert images["psx/Multi/Multi.cue"].size == expected
+
+    # A size filter judges the whole set: 8 KiB of tracks pass a 6 KiB minimum.
+    await routes.put_library_rules(lib["id"], {"rules": {
+        "psx": {"mode": "createcd", "enabled": True, "min_size_mb": 0},
+    }})
+    for path in (multi / "Multi (Track 1).bin", multi / "Multi (Track 2).bin"):
+        path.write_bytes(b"\0" * (1024 * 1024))
+    libraries.get(lib["id"]).scan(refresh=True)
+    await routes.put_library_rules(lib["id"], {"rules": {
+        "psx": {"mode": "createcd", "enabled": True, "min_size_mb": 1},
+    }})
+    await routes.run_library(lib["id"])
+    assert [Path(p).name for p in queue] == ["Multi.cue"]
+
+
+@pytest.mark.asyncio
+async def test_removing_a_library_mid_callback_leaves_no_holds(
+    tree: Path, ready, queue, monkeypatch,
+) -> None:
+    """Codex 4576551534: a failure noted while the Library is removed writes nothing."""
+    import asyncio
+
+    from models import JobStatus
+    from routes import libraries as routes
+    from services.rules import sweep as rules_sweep
+
+    jobs: dict[str, str] = {}
+    real_batch = job_manager.create_batch_jobs
+
+    async def batch(paths, mode, **kwargs):
+        made = await real_batch(paths, mode, **kwargs)
+        jobs.update({Path(j.file_path).name: j.id for j in made})
+        return made
+
+    monkeypatch.setattr(job_manager, "create_batch_jobs", batch)
+    (tree / "gc" / "Locked.iso").unlink()
+    lib = await _register(tree)
+    await routes.put_library_rules(lib["id"], {"rules": {"ps2": _RULES["ps2"]}})
+    await routes.run_library(lib["id"])
+
+    probing = asyncio.Event()
+    release = asyncio.Event()
+    real_probe = rules_sweep._probe
+
+    async def slow_probe(func, *args, default):
+        probing.set()
+        await release.wait()
+        return await real_probe(func, *args, default=default)
+
+    monkeypatch.setattr(rules_sweep, "_probe", slow_probe)
+    noting = asyncio.create_task(rules_sweep.note_job_finished(SimpleNamespace(
+        id=jobs["Ico.iso"], status=JobStatus.FAILED,
+        file_path=str((tree / "ps2" / "Ico.iso").resolve()),
+    )))
+    await asyncio.wait_for(probing.wait(), 2)
+    await routes.remove_library(lib["id"])
+    release.set()
+    await noting
+
+    blob = await preferences_store.get("rules.state") or {}
+    assert not any(key.startswith(f"{lib['id']}:") for key in blob), blob
+
+
+@pytest.mark.asyncio
+async def test_a_removed_librarys_id_is_never_reused(tree: Path) -> None:
+    """Codex 4576551534: state keyed by Library id must not reach a new Library."""
+    from routes import libraries as routes
+
+    first = await _register(tree / "gc")
+    await routes.remove_library(first["id"])
+    second = await _register(tree / "ps2")
+    assert second["id"] != first["id"]
+
+
+@pytest.mark.asyncio
+async def test_a_sheet_that_escapes_the_volume_is_never_queued(
+    db: Path, ready, queue,
+) -> None:
+    """Codex security P1 (PR #320): chdman opens a sheet's tracks itself.
+
+    A planted ``.cue`` naming a file outside the Volume (by ``..``, by an
+    absolute path, or by a symlinked track) must never reach the queue, and
+    the sweep says why. A normal sheet beside it still converts.
+    """
+    from routes import libraries as routes
+
+    secret = db.parent / "compressatorium.secret"
+    secret.write_bytes(b"secret")
+    psx = db / "roms" / "psx"
+    psx.mkdir(parents=True)
+    (psx / "Escape.cue").write_text('FILE "../../../compressatorium.secret" BINARY\n')
+    (psx / "Absolute.cue").write_text(f'FILE "{secret}" BINARY\n')
+    (psx / "Linked.bin").symlink_to(secret)
+    (psx / "Linked.cue").write_text('FILE "Linked.bin" BINARY\n')
+    (psx / "Good.bin").write_bytes(b"\0" * 4096)
+    (psx / "Good.cue").write_text('FILE "Good.bin" BINARY\n')
+
+    lib = await _register(db / "roms")
+    await routes.put_library_rules(lib["id"], {"rules": {
+        "psx": {"mode": "createcd", "enabled": True},
+    }})
+    preview = await routes.preview_library(lib["id"])
+    result = await routes.run_library(lib["id"])
+
+    assert [Path(p).name for p in queue] == ["Good.cue"], result
+    for summary in (preview, result):
+        assert summary["skipped_unsafe"] == 3, summary
+        platform = summary["platforms"][0]
+        assert sorted(platform["unsafe"]) == ["Absolute.cue", "Escape.cue", "Linked.cue"]

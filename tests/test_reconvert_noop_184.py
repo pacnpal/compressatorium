@@ -49,6 +49,9 @@ class _StubVerStore:
 def _noop_env(tmp_path: Path, monkeypatch):
     """Fresh, isolated JobManager + coordinators; record any convert call."""
     monkeypatch.setattr(jm_mod.settings, "max_queue_depth", 0)
+    # The seeded .cue's track must sit inside a configured volume: the worker
+    # re-checks every track a sheet names before converting (PR #320).
+    monkeypatch.setattr(jm_mod.settings, "chd_volumes", str(tmp_path))
     lock_dir = tmp_path / "locks"
     monkeypatch.setattr(jm_mod.settings, "concurrency_lock_dir", str(lock_dir))
     monkeypatch.setattr(

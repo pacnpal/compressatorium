@@ -28,6 +28,9 @@
   API: `/api/libraries` (list, register, update, remove, platforms, rules,
   preview, run). Registered folders live in a new `folder_libraries` table
   (migration 0011).
+  - A `.cue` or `.gdi` whose tracks point outside the configured volumes (an
+    absolute path, `..`, or a symlink) is refused for every conversion, manual
+    or automatic, and a Rule reports it instead of queueing it.
   - Every Rule sweep now gives a Library 10 minutes to list a Platform, RomM
     included (RomM's catalog fetch had no limit). Past that the sweep stops
     with "the library stopped responding" and the next one starts over.

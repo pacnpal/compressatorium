@@ -35,9 +35,11 @@ def upgrade() -> None:
         sa.Column('created_at', sa.String(), nullable=False),
         sa.PrimaryKeyConstraint('id'),
         sa.UniqueConstraint('root'),
+        # A removed Library's id is never reused (state is keyed by it).
+        sqlite_autoincrement=True,
     )
 
 
 def downgrade() -> None:
-    # Downgrade migrations are not supported in this project — forward-only.
+    # Downgrade migrations are not supported in this project (forward-only).
     raise NotImplementedError("downgrade not supported")

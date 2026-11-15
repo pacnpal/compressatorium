@@ -2225,7 +2225,10 @@ what a Library supports. Nothing in `rules/` asks what kind of Library it has.
   so a replaced track counts) under `rules.state[...]["failed"][image key]`;
   the candidate probe skips the Image (`skipped_failed`, in the result and in
   each Platform's summary) while the fingerprint is unchanged, and a later
-  success drops the hold. A real run drops holds for Images the Library no
+  success drops the hold. Removing a Library bumps its generation
+(`sweep._generations`); a job-finish callback captures it before its first
+await and writes nothing if it changed, checked under `_sweep_lock`, so a
+removal mid-callback cannot recreate the Library's state. A real run drops holds for Images the Library no
   longer lists. **Forget history** clears holds too; the editor shows the held
   count with **Retry failed** whatever the policy. RomM does not
   declare it, so a failed ROM is re-queued every sweep, as it always was;
@@ -2344,6 +2347,17 @@ can cache it. A track named in another case owns the listed file only when
 `os.path.samefile` agrees (a case-insensitive share); on a case-sensitive
 filesystem nothing is hidden.
 
+**Unsafe sheets.** The converter opens every file a sheet names itself, so a
+sheet is checked from its own text before any job runs:
+`delete_plan.sheet_reference_problems` (the delete plan's cue/gdi parsers and
+`utils.sheet_text` decoding) reports a reference that is absolute, leaves the
+sheet's folder, or resolves outside the configured Volumes (a symlinked
+track). `path_utils.source_companions_are_safe`, the gate `plan_job` and the
+worker both call for every job (manual, batch, Auto, Rules), rejects such a
+sheet whatever the tool's companion list says; an empty list never means safe.
+The sweep asks the same gate per candidate and reports the Image as unsafe
+(`skipped_unsafe`, and each Platform's `unsafe` names) instead of queueing it.
+
 **The folder Library** (`services/libraries/folder.py`). One walk of the root
 (`os.walk`, symlinks not followed, symlinked files skipped) collects every
 regular, readable file whose extension a tool reads or writes
@@ -2360,7 +2374,9 @@ A file the process cannot read, or a folder it cannot list, is counted as
 `unreadable` and skipped. A Platform id is the canonical slug
 (`platform_detect.known_slug` refuses one no Platform has) and its name is
 `platform_name`; an Image key is the posix path relative to the root,
-`added_at` is the mtime. `summary()` gives the Rules view its counts.
+`added_at` is the mtime, and `size` is every file of the Image
+(`image_sets.image_size`: a sheet and its tracks), so size filters and orders
+judge the set. `summary()` gives the Rules view its counts.
 `configured()` is true: the engine calls it on the event loop, so it touches no
 disk, and it must not latch one bad answer. Every walk checks the root against
 the configured Volumes itself, on its worker thread, and raises
@@ -2379,7 +2395,8 @@ cache cannot be read.
 
 **The catalogue** (`services/libraries/__init__.py`). Folder Libraries are rows
 of `folder_libraries` (root unique, name, `schedule_enabled`, `max_per_sweep`,
-migration 0011), read once and cached; `register`, `update` and `remove`
+migration 0011, `AUTOINCREMENT` so a removed Library's id is never reused and
+state keyed by it cannot reach another folder), read once and cached; `register`, `update` and `remove`
 replace the cached copy. `register` uses `ensure_path_within_volumes` (the file
 browser's check), requires a folder, and refuses the same root or one that
 contains or sits inside another Library's root, a registered folder or RomM's
@@ -2517,7 +2534,24 @@ Precedence is fixed and never guesses:
    Wii at 0x18). xiso answers through `extract_xiso.detect_console` (the XDVDFS
    layout, or a trimmed image's boot executable). A probe that raises is
    treated as no answer. A new console is taught to detection by its tool's
-   override, not by an edit here.
+   override, not by an edit here. Probes run on any file Auto is pointed at,
+   including through an unauthenticated `/api/jobs/auto-plan`, so a probe
+   must never let a size read from the image drive a read. The ISO 9660
+   helpers in `disc_id` (`_bounded_read`) refuse any directory or file extent
+   above `_MAX_ISO_READ` (1 MiB) or past the end of the image (a raw `.bin`
+   reports its user-data size as `logical_size`), and a refused read is no
+   header. The other probes read fixed-size windows, cap the sheet at 1 MiB
+   (`utils.sheet_text`). The XDVDFS walk takes its limits as parameters:
+   conversion and info keep `_MAX_DIR_TABLE` (64 MiB per table), while the
+   probe (`detect_console`) passes 1 MiB per table and 4 MiB per walk.
+   `tests/test_header_probe_bounds.py` probes images whose sizes are hostile.
+
+   A folder is probed by the tools that take it as their input unit
+   (`accepts_directory`): makeps3iso answers `ps3` for a PS3 disc folder, and
+   `default_mode` sends a folder to the Platform's first folder-input mode
+   (`InputKind.DIRECTORY`) whose tool accepts it, so a PS3 folder goes to
+   `folder_to_iso`. The web UI offers a folder under Auto when the listing
+   marks it convertible by a tool with a folder-input mode.
 2. **The nearest folder that says** (`_place`). Walking up from the Image's
    folder, the first folder that either carries the user's mapping (#304,
    §3.3.14) or has a name that is a key or alias in `_ALIASES` decides. At the
@@ -2527,7 +2561,20 @@ Precedence is fixed and never guesses:
    `megacd`, `pcenginecd`, `cdi`, `megadrive`, `mastersystem`, `n3ds`, ...).
    A mapping on `roms/` therefore names `roms/misc/x.iso` and leaves
    `roms/ps2/x.iso` to its folder name. Archive members (`a.zip::disc.iso`)
-   skip the header and use the archive's folder.
+   skip the header and use the archive's folder. The walk runs over the
+   resolved folders from the Image's own folder up to the root of the Volume
+   that holds it, root included, and never above
+   (`utils.path_utils.containing_volume_root`, `_candidate_paths`), so a Volume
+   mounted under `/mnt/md/...` does not make every Image in it a Genesis Image,
+   and a mapping matches whether the Image was reached through a symlink or
+   not. A path in no configured Volume uses only its own folder.
+
+Track sheets are read one way everywhere, through `utils.sheet_text`: as UTF-8
+(a BOM stripped), as cp1252 when they are not valid UTF-8, and as Latin-1 last,
+and the first spelling of a track name that exists beside the sheet wins. The
+disc-ID probe (`disc_id._cue_track_paths`), the header-dependency list
+(`delete_plan.sheet_track_paths`) and the delete plan all use it, so
+`Jeu (Édition).bin` resolves, and is cached, from either encoding.
 
 Every answer goes through `canonical_slug`, which maps aliases, IGDB's slugs
 and the tools' own vocabulary (`ps`, `ps1`, `gamecube`, `neogeocd`,
@@ -2635,8 +2682,18 @@ a destination, 503 when a volume stops answering), and earlier jobs may have
 started by then. On any failure the route withdraws the jobs this request
 queued (`job_manager.cancel_job`) and returns the error. A job that had already
 finished cannot be withdrawn: its output stays, it is logged, and the error
-names it ("Already finished and kept: ..."). Auto never deletes a Source (no
-delete-on-verify), so nothing is lost either way.
+returns it. The error detail is then structured, `{"message": "... Already
+finished and kept: ...", "jobs": [...]}`, with `jobs` in the shape a success
+returns. `client.fetchJson` keeps a structured detail on `err.detail`, the store
+adopts those jobs and reconciles its re-pin snapshots against them before it
+retires the rest, so a kept output keeps its record. Auto never deletes a
+Source (no delete-on-verify), so nothing is lost either way.
+
+An explicit target choice wins over Auto. Every mode selector (the convert
+panel's dropdown, RomM's "Convert to") calls `conversion.chooseTarget(mode)`,
+which sets the mode and, if Auto was on, turns it off with an "Auto is off"
+notice. `setMode` stays the programmatic path (platform adoption, tool
+switches) and leaves Auto alone.
 
 The legacy UI's "ISO handling" toggle is gone. It lived only in the browser,
 under the `primary_tool_preference` key that now names the selected tool tab;

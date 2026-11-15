@@ -27,6 +27,15 @@ def _fresh_cache():
     platform_detect.clear_cache()
 
 
+@pytest.fixture(autouse=True)
+def _volume(tmp_path, monkeypatch):
+    """``tmp_path`` is the configured Volume, so the folder walk reaches every
+    folder a test builds under it (and nothing above it)."""
+    from config import settings
+
+    monkeypatch.setattr(settings, "chd_volumes", str(tmp_path))
+
+
 def _by_path(plan):
     return {Path(entry.file_path).name: entry for entry in plan}
 
@@ -408,8 +417,16 @@ async def test_auto_route_names_a_job_that_finished_before_the_withdrawal(
     async def fake_atomic(job_specs, mode, **_kwargs):
         if mode.value == "dolphin_rvz":
             raise convert_routes.OutputClaimedError("taken by another job")
-        name = Path(job_specs[0]["file_path"]).name
-        return [type("Job", (), {"id": f"job-{mode.value}", "filename": name})()]
+        spec = job_specs[0]
+        return [convert_routes.ConversionJob(
+            id=f"job-{mode.value}",
+            file_path=spec["file_path"],
+            filename=Path(spec["file_path"]).name,
+            output_path=spec["output_path"],
+            mode=mode,
+            status="completed",
+            created_at="2026-11-14T00:00:00Z",
+        )]
 
     async def fake_cancel(_job_id):
         return False  # already finished: nothing left to cancel
@@ -421,9 +438,16 @@ async def test_auto_route_names_a_job_that_finished_before_the_withdrawal(
         await convert_routes.create_auto_jobs(AutoJobCreateRequest(file_paths=paths))
 
     assert exc.value.status_code == 409
-    assert "taken by another job" in exc.value.detail
-    assert "ps2.iso" in exc.value.detail
+    detail = exc.value.detail
+    assert "taken by another job" in detail["message"]
+    assert "ps2.iso" in detail["message"]
     assert "ps2.iso" in caplog.text
+    # The kept jobs come back in the shape a success returns them, so the
+    # client can adopt them and keep their re-pin records.
+    kept = {job["id"]: job for job in detail["jobs"]}
+    assert "job-createdvd" in kept
+    assert kept["job-createdvd"]["file_path"].endswith("ps2.iso")
+    assert kept["job-createdvd"]["output_path"].endswith("ps2.chd")
 
 
 @pytest.mark.asyncio
@@ -490,3 +514,25 @@ async def test_auto_rejects_paths_outside_the_volumes(route_env, tmp_path_factor
         await convert_routes.create_auto_jobs(AutoJobCreateRequest(file_paths=[outside]))
 
     assert exc.value.status_code == 403
+
+
+def test_a_ps3_disc_folder_goes_to_folder_to_iso(tmp_path):
+    from .ps3_helpers import make_ps3_folder
+
+    # Anywhere, not only under a `ps3` folder: the folder's own layout is the
+    # header (the tool that accepts the directory names its Platform).
+    folder = make_ps3_folder(tmp_path / "downloads" / "Some Game")
+
+    [entry] = plan_auto([str(folder)])
+
+    assert (entry.detection.platform, entry.detection.how) == ("ps3", "header")
+    assert entry.mode == "folder_to_iso"
+
+
+def test_a_plain_folder_is_not_a_ps3_image(tmp_path):
+    folder = tmp_path / "ps3" / "not a game"
+    folder.mkdir(parents=True)
+
+    [entry] = plan_auto([str(folder)])
+
+    assert entry.mode is None
