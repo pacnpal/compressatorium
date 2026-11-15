@@ -560,6 +560,13 @@ async def _prepare(items: list[Item], args) -> list[tuple]:
             ).append(item)
 
     prepared = []
+    # Every output this run will write, across all groups and re-planned
+    # batches: two jobs for one output path are never queued in one run. The
+    # planner collapses duplicates only within one batch, and a group re-planned
+    # Image by Image (or two groups) would otherwise queue both -- with
+    # --duplicate overwrite and --delete-source, both Sources deleted for one
+    # surviving output.
+    claimed: dict[str, Item] = {}
     for (mode, compression, delete), group in groups.items():
         request = BatchJobCreateRequest(
             file_paths=[i.path for i in group],
@@ -584,12 +591,23 @@ async def _prepare(items: list[Item], args) -> list[tuple]:
                 else:
                     item.status, item.reason = "skipped", reason
             planned = {}
+            kept_plans = []
             for plan in batch.plans:
                 item = by_path.get(plan.file_path)
+                key = os.path.realpath(plan.output_path)
+                first = claimed.get(key)
+                if first is not None:
+                    if item is not None:
+                        item.status = "skipped"
+                        item.reason = f"Same output as {os.path.basename(first.path)}"
+                    continue
+                kept_plans.append(plan)
                 if item is not None:
+                    claimed[key] = item
                     item.output = plan.output_path
                     planned[plan.file_path] = item
-            prepared.append((batch, planned))
+            if kept_plans:
+                prepared.append((dataclasses.replace(batch, plans=kept_plans), planned))
     return prepared
 
 
@@ -921,6 +939,9 @@ def main(argv: list[str] | None = None) -> int:
     except SystemExit as exc:  # argparse: --help is 0, a bad argument 2
         return exc.code if isinstance(exc.code, int) else EXIT_USAGE
     with _logging(args.verbose):
+        from utils.process_limits import raise_open_file_limit
+
+        raise_open_file_limit()
         try:
             return asyncio.run(_run(args))
         except UsageError as exc:

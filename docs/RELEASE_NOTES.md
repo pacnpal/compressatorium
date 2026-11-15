@@ -82,10 +82,12 @@
   unset, output locks and conversion slots move from `/tmp/chd-locks` to
   `<data dir>/locks`, so a CLI container that mounts the same `/config` as the
   web UI shares its locks. When `/config` is not writable the old `/tmp`
-  location is used, with a warning. Queue tickets are now held by a file lock
-  for as long as their job is queued, so a process killed without cleanup
+  location is used, with a warning. Each process holds one lock file for its
+  lifetime and its queue tickets name it, so a process killed without cleanup
   (closed terminal, SIGKILL, out of memory) no longer stalls the other
   process's conversions; its tickets are cleared by the next job that waits.
+  The server and the CLI raise their open-file limit to the system maximum at
+  start.
 - **Auto converts a PS3 disc folder to an ISO** (#306). The Auto choice now
   sends a PS3 disc folder to `folder_to_iso`; it used to leave it alone.
 - A single convert request for an output another job is writing now says

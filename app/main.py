@@ -166,6 +166,10 @@ async def lifespan(app: FastAPI):
 
     configure_logging()
     logger = get_logger()
+    # One budget for sockets, SQLite, tool subprocesses and lock files (#306).
+    from utils.process_limits import raise_open_file_limit
+
+    raise_open_file_limit()
 
     # Initialise the SQLite DB and run any pending JSON → SQLite migrations
     # BEFORE any store is touched (dat_store.has_dats() below needs it).

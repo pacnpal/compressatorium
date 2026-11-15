@@ -349,6 +349,14 @@ class MakePs3IsoService:
                 "cancelled": True,
                 "message": "Verification cancelled",
             }
+        except OSError as exc:
+            # The ISO could not be read: no verdict on it (#306), so a caller
+            # keeps a stored result. `valid` stays False: nothing is deleted.
+            return {
+                "valid": False,
+                "inconclusive": True,
+                "message": f"Could not read the ISO: {exc}",
+            }
         if cancel_event is not None and cancel_event.is_set():
             # The read and the cancel can land together, and `run_detached`
             # resolves whichever it sees first. A verdict reached under a cancel

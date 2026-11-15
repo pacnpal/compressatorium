@@ -2563,16 +2563,34 @@ and `unlink_held` are module functions, shared with the concurrency manager.
 
 **Slots and tickets (`ConcurrencyManager`).** Slot files
 (`convert_slot_<i>.lock`) are a fixed set held by `flock` and are never
-unlinked. A ticket (`queue_<ticket>_<seq>_<key>.ticket`) is written under a
-private temp name, flock-held, then renamed into place, and its holder keeps the
-flock until `release_ticket` unlinks it while still holding it. Liveness is the
-flock, not a PID (PIDs mean nothing across containers): a ticket another process
-can flock belongs to a holder that died without cleanup, and
-`_prune_dead_tickets` removes it, at construction and at most once a second
-from `_wait_for_turn`. So a CLI killed by SIGKILL, SIGHUP or the OOM killer stops
-blocking the server's queue as soon as the server's next job waits. One open
-file per queued job is the cost, so the CLI keeps at most twice
-`MAX_CONCURRENT_JOBS` of its jobs queued (never more than `MAX_QUEUE_DEPTH`).
+unlinked. Each process creates one `holder_<id>.lock` on first use (temp name,
+flock, rename, so it is never visible unlocked) and holds its flock for its
+whole life: one open file per process, whatever it queues. A ticket is a plain
+file naming its holder, `queue_<ticket>_<seq>_<holder>_<key>.ticket`, and
+`release_ticket` removes it while the holder lock is held. Liveness is the
+holder's flock, not a PID (PIDs mean nothing across containers): a holder file
+another process can lock, or one that is gone, belongs to a process that died
+without cleanup, and `_prune_dead_tickets` removes its tickets and leftover
+temp files while holding that lock, then the holder file (`unlink_held`). It
+runs at construction and at most once a second from `_wait_for_turn`, so a CLI
+killed by SIGKILL, SIGHUP or the OOM killer stops blocking the server's queue as
+soon as the server's next job waits. Tickets and temp files from older versions
+(no holder in the name) go when they can be locked.
+
+A queue that cannot be listed (EMFILE, an I/O error) is never read as empty:
+`_list_tickets` raises, and `_wait_for_turn` logs it (at most every 30 s) and
+retries. The shared counter is retried before the in-process fallback, whose
+collisions `_list_tickets` breaks by `(seq, key)` identically in every process.
+The server and the CLI raise the soft open-file limit to the hard limit at
+start (`utils.process_limits.raise_open_file_limit`). The CLI still keeps at
+most twice `MAX_CONCURRENT_JOBS` of its jobs queued (never more than
+`MAX_QUEUE_DEPTH`), so a cron run does not put a whole library ahead of the web
+UI.
+
+**One output, one job.** `cli._prepare` keeps every output path the run will
+write, across groups and re-planned batches, and skips a later Image that
+writes one already taken ("Same output as X"). The planner's own collapse
+works within one batch only.
 
 **Lazy, and read-only for a dry run.** Choosing the lock dir creates nothing
 (`config._default_lock_dir`; it warns when it falls back to `$TMPDIR`). The

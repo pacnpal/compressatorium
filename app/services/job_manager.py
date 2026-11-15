@@ -2801,7 +2801,7 @@ class JobManager:
                     "Another job is already converting to this output file"
                 )
             elif file_exists:
-                job.error_message = "Output CHD file already exists"
+                job.error_message = "Output file already exists"
             else:
                 job.error_message = "Could not acquire lock for output file"
             job.completed_at = datetime.now(timezone.utc)

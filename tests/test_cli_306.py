@@ -734,3 +734,45 @@ def test_only_a_small_window_of_jobs_is_queued_at_once(volume, dolphin, capsys, 
     assert code == 0, lines
     assert all(iso.with_suffix(".rvz").exists() for iso in isos)
     assert max(depths) <= 2, depths
+
+
+def test_never_two_jobs_for_one_output_in_a_run(volume, dolphin, capsys, monkeypatch):
+    """After a group refusal each Image is planned alone, so the planner's own
+    "Same output as" collapse no longer sees both: Game.gcz and Game.iso both
+    write Game.rvz. With --duplicate overwrite and --delete-source both used to
+    finish and both Sources were deleted for one surviving output."""
+    from routes import convert as convert_routes
+
+    gc = volume / "gc"
+    bad = _iso(volume, "gc/Bad.iso")
+    for name in ("A.iso", "B.iso", "C.iso", "D.iso"):
+        _iso(volume, f"gc/{name}")
+    gcz = gc / "Game.gcz"
+    _iso(volume, "gc/Game.iso")
+    gcz.write_bytes(b"gcz")
+    (gc / "Game.rvz").write_bytes(b"old output")
+    real = convert_routes.build_delete_snapshot
+
+    def snapshot(path):
+        if path == str(bad):
+            raise ValueError("a companion file is a symlink")
+        return real(path)
+
+    monkeypatch.setattr(convert_routes, "build_delete_snapshot", snapshot)
+
+    code, lines = _cli(
+        capsys, "convert", str(volume), "--to", "rvz", "--duplicate", "overwrite",
+        "--delete-source", "--container-only", "--json",
+    )
+
+    by_name = {Path(line["path"]).name: line for line in lines}
+    writers = [n for n in ("Game.gcz", "Game.iso") if by_name[n]["status"] == "completed"]
+    assert len(writers) == 1, by_name
+    loser = ({"Game.gcz", "Game.iso"} - set(writers)).pop()
+    assert by_name[loser]["status"] == "skipped"
+    assert by_name[loser]["reason"].startswith("Same output as")
+    assert (gc / loser).exists()
+    assert [p for p in dolphin["runs"] if p[1].endswith("Game.rvz")] == [
+        (str(gc / writers[0]), str(gc / "Game.rvz")),
+    ]
+    assert code == 1  # Bad.iso

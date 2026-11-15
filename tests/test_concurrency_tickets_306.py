@@ -101,3 +101,80 @@ def test_a_lazy_manager_touches_nothing_until_used(tmp_path, lazy):
     cm.reserve_ticket("job")
     assert (lock_dir / "queue_counter").exists()
     cm.release_ticket("job")
+
+
+def _open_fds() -> int:
+    return len(os.listdir("/dev/fd"))
+
+
+def test_a_thousand_queued_jobs_keep_fd_use_flat(tmp_path):
+    """Liveness is one held lock per process, not one open file per job: a
+    Select-All of a few thousand files must not exhaust the fd limit."""
+    cm = ConcurrencyManager(1, str(tmp_path / "locks"))
+    cm.reserve_ticket("first")
+    before = _open_fds()
+
+    for i in range(1000):
+        cm.reserve_ticket(f"job{i}")
+
+    assert _open_fds() - before <= 1
+    assert len(cm._list_tickets()) == 1001
+    for i in range(1000):
+        cm.release_ticket(f"job{i}")
+    assert cm._list_tickets() == ["first"]
+
+
+def test_a_queue_that_cannot_be_listed_is_not_read_as_empty(tmp_path, monkeypatch):
+    """EMFILE from listdir used to mean "nobody is queued", so no job ever
+    reached the front and the queue deadlocked; now the waiter retries."""
+    import errno
+
+    from services import concurrency_manager as cm_module
+
+    cm = ConcurrencyManager(1, str(tmp_path / "locks"))
+    real_listdir = os.listdir
+    failures = {"left": 3}
+
+    def flaky_listdir(path):
+        if path == cm.lock_dir and failures["left"]:
+            failures["left"] -= 1
+            raise OSError(errno.EMFILE, "Too many open files")
+        return real_listdir(path)
+
+    monkeypatch.setattr(cm_module.os, "listdir", flaky_listdir)
+    warnings = []
+    monkeypatch.setattr(
+        cm_module.logger, "warning", lambda msg, *args: warnings.append(msg % args),
+    )
+    with pytest.raises(OSError):
+        cm._list_tickets()
+
+    assert asyncio.run(_acquires(cm, "job", 5))
+    assert failures["left"] == 0
+    assert any("could not be read" in w for w in warnings)
+    cm.release("job")
+
+
+def test_orphaned_temp_files_of_dead_writers_are_swept(tmp_path):
+    lock_dir = tmp_path / "locks"
+    lock_dir.mkdir()
+    orphan = lock_dir / "queue_4_2_job.ticket.12345.tmp"
+    orphan.write_text("{}")
+
+    ConcurrencyManager(1, str(lock_dir))
+
+    assert not orphan.exists()
+
+
+def test_a_hung_up_holder_does_not_stall_the_next_job(tmp_path):
+    lock_dir = tmp_path / "locks"
+    server = ConcurrencyManager(1, str(lock_dir))
+    holder = _start_holder(lock_dir)
+    try:
+        holder.send_signal(signal.SIGHUP)
+        holder.wait(timeout=10)
+        assert asyncio.run(_acquires(server, "serverjob", 5))
+    finally:
+        if holder.poll() is None:
+            holder.kill()
+        server.release("serverjob")
