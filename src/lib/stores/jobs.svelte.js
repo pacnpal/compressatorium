@@ -388,6 +388,11 @@ class JobsStore {
     const cursor = this.historySeq;
     const cursorGeneration = this.historyGeneration;
     let listSynced = false;
+    // The jobs known before the request. Only these can be inferred evicted
+    // when the snapshot lacks them: one SSE created (and maybe finished) while
+    // the request was in flight is simply newer than the snapshot.
+    const knownBefore = Object.create(null);
+    for (const job of this.jobs) knownBefore[job.id] = true;
     try {
       const data = await api.getJobs();
       if (!Array.isArray(data)) return;
@@ -418,9 +423,10 @@ class JobsStore {
       // absent from the snapshot. Active jobs are left alone: SSE owns
       // them, and they may simply not be in the snapshot yet if they
       // were just queued between the snapshot generation and arrival.
+      // Likewise any job SSE brought in after the request was sent.
       const pruned = [];
       this.jobs = this.jobs.filter((j) => {
-        if (TERMINAL_STATUSES.has(j.status) && !remoteIds[j.id]) {
+        if (knownBefore[j.id] && TERMINAL_STATUSES.has(j.status) && !remoteIds[j.id]) {
           this._byId.delete(j.id);
           pruned.push(j.id);
           return false;

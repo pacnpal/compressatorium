@@ -116,3 +116,30 @@ def test_eviction_tombstones_are_bounded(tmp_path):
     kept = _evaluate(tmp_path, _TOMBSTONES_ARE_BOUNDED)["kept"]
 
     assert 0 < kept <= 2000
+
+
+# CodeRabbit 4577602616: refresh() infers an eviction only for jobs it knew
+# before it asked. A job created and finished over SSE while getJobs() was in
+# flight is simply newer than that snapshot: it stays, and is not tombstoned.
+_SSE_JOB_DURING_REFRESH = """
+const store = new JobsStore();
+store._applyJob({ id: 'old', file_path: '/v/o.iso', mode: 'createdvd', status: 'completed' });
+api.getJobs = async () => {
+  // While the request is in flight, SSE delivers a new job's whole life.
+  store._applyJob({ id: 'j9', file_path: '/v/n.iso', mode: 'createdvd', status: 'queued' });
+  store._applyJob({ id: 'j9', file_path: '/v/n.iso', mode: 'createdvd', status: 'completed' });
+  return [];                                  // built before j9 existed
+};
+api.getJobHistoryOverflow = async () => ({});
+await store.refresh();
+process.stdout.write(JSON.stringify({
+  ids: store.jobs.map((j) => j.id),
+  tombstoned: Object.keys(store._evictedIds).sort(),
+}));
+"""
+
+
+def test_a_job_born_during_refresh_is_neither_dropped_nor_tombstoned(tmp_path):
+    data = _evaluate(tmp_path, _SSE_JOB_DURING_REFRESH)
+
+    assert data == {"ids": ["j9"], "tombstoned": ["old"]}, data
