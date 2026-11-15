@@ -22,3 +22,20 @@ export function classifyPreviewError(err, requestedTitle) {
   }
   return { kind: 'selection', message, title: null };
 }
+
+/**
+ * The folder of a server path. Paths come from a POSIX server, so only `/`
+ * separates folders: a backslash is an ordinary file name character.
+ */
+export function parentDir(path) {
+  return path.slice(0, path.lastIndexOf('/'));
+}
+
+/**
+ * The paths a playlist can be made from: two or more, all in one folder.
+ * Whether they are disc Images is checked by the caller (registry discImages)
+ * and, finally, by the server.
+ */
+export function playlistPaths(paths) {
+  return paths.length >= 2 && new Set(paths.map(parentDir)).size === 1 ? paths : [];
+}

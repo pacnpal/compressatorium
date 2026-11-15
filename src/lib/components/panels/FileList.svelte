@@ -6,6 +6,7 @@
   import { chdMetadata } from '$lib/stores/chdMetadata.svelte.js';
   import { datMatching } from '$lib/stores/datMatching.svelte.js';
   import { registry } from '$lib/tools/registry.js';
+  import { playlistPaths } from '$lib/util/playlistDialog.js';
   import FileRow from './FileRow.svelte';
   import Breadcrumb from './Breadcrumb.svelte';
   import Pager from '$lib/components/ui/Pager.svelte';
@@ -163,8 +164,7 @@
         .filter((e) => e?.path && !e.path.includes('::') && e.split_parts == null)
         .map((e) => e.path),
     );
-    const folder = (p) => p.slice(0, Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\')));
-    return paths.length >= 2 && new Set(paths.map(folder)).size === 1 ? paths : [];
+    return playlistPaths(paths);
   });
 
   let searchInput = $state('');
