@@ -255,7 +255,7 @@
         <Checkbox
           bind:checked={conversion.deleteOnVerify}
           label="Delete sources once the output checks out"
-          description={supportsRoundTrip
+          description={conversion.deleteCheck === 'round_tripped'
             ? 'The output must be Round-tripped (it decodes to the same content as the source) before sources are deleted. Sources are kept if it is not.'
             : 'The output must be Intact (it passes its own container check) before sources are deleted. Sources are kept if it is not.'}
         />

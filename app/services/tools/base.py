@@ -316,7 +316,11 @@ class ToolPlugin(Protocol):
         """
 
     async def content_digest(
-        self, path: str, *, cancel_event: asyncio.Event | None = None,
+        self,
+        path: str,
+        *,
+        cancel_event: asyncio.Event | None = None,
+        within: Sequence[str] | None = None,
     ) -> ContentDigest | None:
         """Hash of the image content ``path`` decodes to, for the Round-trip check.
 
@@ -332,6 +336,12 @@ class ToolPlugin(Protocol):
         attempt failed; the Source is then kept. A cancelled ``cancel_event``
         may surface as either; the caller checks the event itself. The caller
         bounds the call with ``verify_timeout(path)``.
+
+        ``within`` is the trusted root(s) a sheet's track references may
+        resolve under, as in ``post_convert``: the job's archive-extraction
+        folder for an archive-member Source, ``None`` (the configured Volumes)
+        otherwise. A tool that extracts into its own scratch folder passes that
+        folder to its own sheet reads. A tool that reads no sheet ignores it.
         """
 
     async def is_ready(self) -> bool:
@@ -577,7 +587,11 @@ class BaseTool:
         return []
 
     async def content_digest(
-        self, path: str, *, cancel_event: asyncio.Event | None = None,
+        self,
+        path: str,
+        *,
+        cancel_event: asyncio.Event | None = None,
+        within: Sequence[str] | None = None,
     ) -> ContentDigest | None:
         # Default: no content digest. Such a tool's modes leave
         # ModeSpec.supports_round_trip False, so their jobs keep the container
