@@ -149,6 +149,13 @@ def _keep_owner(tmp: str, original: os.stat_result) -> None:
         ) from exc
 
 
+def _temp_file(directory: str) -> tuple[int, str]:
+    """A new hidden temp file in *directory*. Its name is short and fixed-length
+    (``.tmp-`` plus random characters), never built from the target's name, so a
+    target near the 255-byte file name limit can still be written."""
+    return tempfile.mkstemp(dir=directory, prefix=".tmp-")
+
+
 def atomic_write_bytes(path: str, data: bytes, *, like: str | None = None) -> None:
     """Replace *path* with *data* so a crash leaves the old file or the new one.
 
@@ -158,9 +165,7 @@ def atomic_write_bytes(path: str, data: bytes, *, like: str | None = None) -> No
     that can't be kept aborts the write. A new file with neither gets 0644.
     """
     directory = os.path.dirname(path) or "."
-    fd, tmp = tempfile.mkstemp(
-        dir=directory, prefix=f".{os.path.basename(path)}.", suffix=".tmp",
-    )
+    fd, tmp = _temp_file(directory)
     try:
         with os.fdopen(fd, "wb") as f:
             f.write(data)
@@ -195,9 +200,7 @@ def write_new_bytes(path: str, data: bytes) -> None:
     *path* is never touched. The new file has the default ``0o644`` mode.
     """
     directory = os.path.dirname(path) or "."
-    # A short fixed prefix: the target's own name can be near the 255-byte
-    # limit, and a temp name built from it would not fit.
-    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".new-", suffix=".tmp")
+    fd, tmp = _temp_file(directory)
     try:
         with os.fdopen(fd, "wb") as f:
             f.write(data)

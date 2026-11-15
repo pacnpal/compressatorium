@@ -34,10 +34,12 @@ _NUMBER_RE = re.compile(r"(?<![A-Za-z0-9])" + _DISC + r"(?![A-Za-z0-9])", re.IGN
 _TRAILING_NUMBER_SUFFIX_RE = re.compile(r"\s\(\d+\)$")
 _SEPARATORS = " \t-_,.:;"
 _MAX_FILE_NAME_BYTES = 255
-# A title leaves room for the longest suffix the preview can add, " (999).m3u",
-# so every name it offers can be created; a file-name stem only for ".m3u".
-_MAX_TITLE_BYTES = _MAX_FILE_NAME_BYTES - len(".m3u") - len(" (999)")
-_MAX_STEM_BYTES = _MAX_FILE_NAME_BYTES - len(".m3u")
+# A title leaves room for the longest suffix the preview can add, " (999)", so
+# every name it offers can be created.
+# The playlist later gets a ".m3u.bak" copy when its disc converts (the Referrer's
+# one-time backup), so the stem leaves room for that too.
+_MAX_STEM_BYTES = _MAX_FILE_NAME_BYTES - len(".m3u") - len(".bak")
+_MAX_TITLE_BYTES = _MAX_STEM_BYTES - len(" (999)")
 _MAX_SUFFIX = 999
 
 

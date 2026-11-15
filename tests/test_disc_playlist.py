@@ -354,7 +354,7 @@ def test_playlist_bytes_reads_the_rendered_file_back():
         playlist_bytes(["two\nlines.cue"])
 
 
-_TITLE_MAX = 245  # 255 - ".m3u" - " (999)"
+_TITLE_MAX = 241  # 255 - ".m3u" - ".bak" - " (999)"
 
 
 def test_a_longest_title_can_still_be_given_a_collision_suffix(vol: Path):
