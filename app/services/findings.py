@@ -92,10 +92,11 @@ def started_delete(
     finished (#329): the Source is part deleted and *left* names the files
     still there, so it settles once they are gone (:func:`clear_gone`). One
     shape for every producer: a sweep giving up, a decision invalidated, a
-    hand-started job."""
+    hand-started job. The Source is its path (where Open folder goes); the
+    files left are all in ``cause[REMAINING]``."""
     left = [str(path) for path in left] or [str(source or "")]
     return Observed(
-        kind=SOURCE_KEPT, image_key=str(image_key), path=left[0],
+        kind=SOURCE_KEPT, image_key=str(image_key), path=str(source or left[0]),
         reason=f"Source part deleted and kept: {why}; {len(left)} of its files remain",
         cause={"source": source, "output": output, REMAINING: left},
     )
@@ -266,17 +267,23 @@ def clear_gone(
     Source's first file may be the one already removed).
     Dismissals are kept, as :func:`resolve` keeps them. Returns how many were
     cleared.
+
+    The files are looked at outside the write lock, so the delete is a
+    compare-and-delete (CodeRabbit 4580360075): only a row still carrying the
+    id and cause fingerprint that was looked at goes. One a producer updated
+    meanwhile (a new cause, another list of files left) stays.
     """
     with _session() as session:
         rows = session.query(_db.FindingRecord).filter_by(
             library_id=library_id, kind=kind,
         ).all()
         candidates = [
-            (row.image_key, row.path, list((row.cause or {}).get(REMAINING) or ()))
+            (row.id, row.fingerprint, row.path,
+             list((row.cause or {}).get(REMAINING) or ()))
             for row in rows
         ]
     gone = [
-        key for key, path, remaining in candidates
+        (row_id, fingerprint) for row_id, fingerprint, path, remaining in candidates
         if all(_is_gone(p) for p in remaining or [path])
     ]
     if not gone:
@@ -284,11 +291,14 @@ def clear_gone(
     with _write_lock, _session() as session:
         if current is not None and not current():
             return 0
-        cleared = session.query(_db.FindingRecord).filter(
-            _db.FindingRecord.library_id == library_id,
-            _db.FindingRecord.kind == kind,
-            _db.FindingRecord.image_key.in_(gone),
-        ).delete(synchronize_session=False)
+        cleared = 0
+        for row_id, fingerprint in gone:
+            cleared += session.query(_db.FindingRecord).filter(
+                _db.FindingRecord.id == row_id,
+                _db.FindingRecord.library_id == library_id,
+                _db.FindingRecord.kind == kind,
+                _db.FindingRecord.fingerprint == fingerprint,
+            ).delete(synchronize_session=False)
         session.commit()
     return cleared
 

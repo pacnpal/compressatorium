@@ -34,6 +34,7 @@ import os
 import re
 from collections.abc import Callable, Iterable
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -112,6 +113,8 @@ _CANDIDATE_PROBE_SECONDS = 30
 KEPT_SOURCES = "kept_sources"
 KEPT_DELETE_MAX_ATTEMPTS = 10
 KEPT_DELETES_PER_SWEEP = 25
+# How long recording a delete a cancel stopped may take: the cancel waits on it.
+_CANCEL_RECORD_SECONDS = 10
 # How long the save-time output-directory validation may take. Generous: it
 # resolves each candidate and stats every configured volume, and a healthy
 # local mount answers instantly. See `normalize_rules_bounded`.
@@ -1102,48 +1105,63 @@ async def _file_kept_finding(
     )
 
 
-async def _finish_deleting(
-    library: Library, image_key: str, pending: dict, rule: dict | None,
-) -> dict | bool | None:
-    """Finish a pending delete whose unlinks began (``state: deleting``).
+async def _kept_outcome(
+    library: Library, image_key: str, pending: dict, outcome: KeptDeleteRetry,
+    result: dict,
+) -> dict | None:
+    """What one pending delete becomes after *outcome*: the entry to keep, or
+    None when it goes (deleted, given up on, or no longer standing).
 
-    None when the plan is done (the entry goes), False when it is given up
-    on (reported, and the entry goes), else the entry to keep.
+    A started delete (``deleting``, or an outcome saying it started) that
+    will not be finished is reported with the files it left
+    (``_report_started_delete``); a whole Source given up on at the attempt
+    cap gets the ``source_kept`` Finding as well.
     """
+    deleting = pending.get("state") == KEPT_DELETING
     planned = [str(path) for path in pending.get("planned") or []]
-    try:
-        outcome = await job_manager.finish_kept_delete(
-            source_path=str(pending.get("source") or ""),
-            output_path=str(pending.get("output") or ""),
-            planned=planned,
-            required_check=effective_check_level(rule) if rule else None,
-        )
-    except Exception as exc:
-        logger.warning(
-            "rules: finishing the delete of %s failed", pending.get("source"),
-            exc_info=True,
-        )
-        outcome = KeptDeleteRetry(KEPT_KEPT, str(exc) or type(exc).__name__)
     if outcome.status == KEPT_DELETED:
+        result["kept_sources_deleted"] = result.get("kept_sources_deleted", 0) + 1
         return None
-    if outcome.status == KEPT_UNKNOWN:
-        return {**pending, "last_reason": outcome.reason}
-    if outcome.status == KEPT_STARTED:
-        return {**pending, "planned": list(outcome.planned), "last_reason": outcome.reason}
-    left = list(outcome.planned) or planned
+    if outcome.status in (KEPT_UNKNOWN, KEPT_STARTED):
+        # The delete started: the unlinks outlived the wait (the worker
+        # removes the rest of the plan), one failed after another succeeded,
+        # or a cancel stopped it. Not an attempt; the next sweep finishes it
+        # from the recorded plan, not a new one (codex 4580176201, 4580227623).
+        return {
+            **pending, "state": KEPT_DELETING,
+            "planned": list(outcome.planned) or planned, "last_reason": outcome.reason,
+        }
     if outcome.status == KEPT_STALE:
-        # The output no longer stands: the files left stay, and say so.
-        await _report_started_delete(library, image_key, pending, outcome.reason, left)
-        return False
+        if deleting:
+            # The output no longer stands: the files left stay, and say so.
+            await _report_started_delete(
+                library, image_key, pending, str(outcome.reason),
+                list(outcome.planned) or planned,
+            )
+        else:
+            logger.info(
+                "rules: not retrying the delete of %s: %s",
+                pending.get("source"), outcome.reason,
+            )
+        return None
     attempts = int(pending.get("attempts") or 0) + 1
     if attempts < KEPT_DELETE_MAX_ATTEMPTS:
         return {**pending, "attempts": attempts, "last_reason": outcome.reason}
-    await _report_started_delete(
+    if deleting:
+        await _report_started_delete(
+            library, image_key, pending,
+            f"still in use after {attempts} tries to finish deleting it ({outcome.reason})",
+            list(outcome.planned) or planned,
+        )
+        return None
+    result["kept_sources_given_up"] = result.get("kept_sources_given_up", 0) + 1
+    await _report_kept_source(
         library, image_key, pending,
-        f"still in use after {attempts} tries to finish deleting it ({outcome.reason})",
-        left,
+        f"Source kept: still in use after {attempts} tries to delete it "
+        f"({outcome.reason})",
+        str(pending.get("source") or ""),
     )
-    return False
+    return None
 
 
 def _rule_paused(rule: dict, wanted: set[str] | None) -> bool:
@@ -1173,23 +1191,44 @@ def _inside_library(source: str, root: str | None) -> bool:
         return False
 
 
-async def _retry_kept_deletes(
+@dataclass(frozen=True)
+class _KeptAttempt:
+    """One pending delete a sweep tries, planned under ``_sweep_lock`` and run
+    after it (:func:`_run_kept_deletes`)."""
+
+    platform_id: str
+    image_key: str
+    pending: dict
+    required_check: str | None
+    generation: int
+
+    def key(self, library: Library) -> tuple[str, str, str]:
+        return (library.id, self.platform_id, self.image_key)
+
+
+# The pending deletes a sweep is running now, off `_sweep_lock` (its check of
+# the output is long): another sweep leaves each alone until it is done.
+_kept_running: set[tuple[str, str, str]] = set()
+
+
+async def _plan_kept_deletes(
     library: Library, rules: dict, wanted: set[str] | None,
     stopping: Callable[[], bool], result: dict,
-) -> None:
-    """Retry the delete step for every Source a reader kept (#329).
+) -> list[_KeptAttempt]:
+    """Decide which Sources a reader kept are tried this sweep (#329). Called
+    under ``_sweep_lock``; :func:`_run_kept_deletes` tries them after it.
 
     Only for a Platform whose conversion Rule still deletes its Sources: a
-    Rule turned off or changed to keep them drops the entry. The retry takes
-    the same locks and checks as the job's own delete step and establishes
-    again that the output is the checked one and the Source is unchanged and
-    inside the Volumes; anything that no longer holds drops the entry with the
-    Source kept. A reader again counts an attempt; at the cap the entry is
-    dropped and a ``source_kept`` Finding says so.
+    Rule turned off or changed to keep them drops the entry. What no longer
+    stands (the decision, the Library, the sweep's own plan) is dropped here,
+    with the Source kept; an unanswered volume is an attempt. A delete that
+    already started (``deleting``) is always tried, to finish it.
     """
     state = await get_state(library)
     budget = KEPT_DELETES_PER_SWEEP
     changed = False
+    attempts: list[_KeptAttempt] = []
+    generation = _generations.get(library.id, 0)
     for platform_id in sorted(state):
         entry = state[platform_id]
         kept = entry.get(KEPT_SOURCES) if isinstance(entry, dict) else None
@@ -1205,20 +1244,16 @@ async def _retry_kept_deletes(
         for image_key in sorted(kept):
             if stopping() or budget <= 0:
                 break
+            if (library.id, platform_id, image_key) in _kept_running:
+                continue  # another sweep is trying it right now
             pending = kept[image_key]
+            required = effective_check_level(rule) if rule else None
             if isinstance(pending, dict) and pending.get("state") == KEPT_DELETING:
                 # A delete already under way: finish it, never plan it again.
                 budget -= 1
-                remaining_entry = await _finish_deleting(library, image_key, pending, rule)
-                if remaining_entry is None:
-                    remaining.pop(image_key)
-                    result["kept_sources_deleted"] = (
-                        result.get("kept_sources_deleted", 0) + 1
-                    )
-                elif remaining_entry is False:
-                    remaining.pop(image_key)
-                else:
-                    remaining[image_key] = remaining_entry
+                attempts.append(_KeptAttempt(
+                    platform_id, image_key, pending, required, generation,
+                ))
                 continue
             if (
                 not rule or not rule.get("delete_on_verify")
@@ -1252,59 +1287,22 @@ async def _retry_kept_deletes(
                 remaining.pop(image_key)
                 continue
             budget -= 1
-            try:
-                if inside is None:
-                    raise OSError("the Library's volume did not answer")
-                if plan == PLAN_UNANSWERED:
-                    raise OSError("the current plan for this Source could not be read")
-                outcome = await job_manager.retry_kept_delete(
-                    source_path=str(pending.get("source") or ""),
-                    output_path=str(pending.get("output") or ""),
-                    required_check=effective_check_level(rule),
+            if inside is None or plan == PLAN_UNANSWERED:
+                reason = (
+                    "the Library's volume did not answer" if inside is None
+                    else "the current plan for this Source could not be read"
                 )
-            except Exception as exc:
-                # One entry's failure (an unlink refused, an I/O error) is that
-                # entry's attempt, never the sweep's (codex 4579529048).
-                logger.warning(
-                    "rules: retrying the delete of %s failed",
-                    pending.get("source"), exc_info=True,
+                kept_entry = await _kept_outcome(
+                    library, image_key, pending, KeptDeleteRetry(KEPT_KEPT, reason), result,
                 )
-                outcome = KeptDeleteRetry(KEPT_KEPT, str(exc) or type(exc).__name__)
-            if outcome.status == KEPT_DELETED:
-                remaining.pop(image_key)
-                result["kept_sources_deleted"] = result.get("kept_sources_deleted", 0) + 1
+                if kept_entry is None:
+                    remaining.pop(image_key)
+                else:
+                    remaining[image_key] = kept_entry
                 continue
-            if outcome.status in (KEPT_UNKNOWN, KEPT_STARTED):
-                # The delete started: the unlinks outlived the wait (the worker
-                # removes the rest of the plan), or one failed after another
-                # succeeded. Not an attempt; the next sweep finishes it from the
-                # recorded plan, not a new one (codex 4580176201, 4580227623).
-                remaining[image_key] = {
-                    **pending, "state": KEPT_DELETING,
-                    "planned": list(outcome.planned), "last_reason": outcome.reason,
-                }
-                continue
-            if outcome.status == KEPT_STALE:
-                logger.info(
-                    "rules: not retrying the delete of %s: %s",
-                    pending.get("source"), outcome.reason,
-                )
-                remaining.pop(image_key)
-                continue
-            attempts = int(pending.get("attempts") or 0) + 1
-            if attempts < KEPT_DELETE_MAX_ATTEMPTS:
-                remaining[image_key] = {
-                    **pending, "attempts": attempts, "last_reason": outcome.reason,
-                }
-                continue
-            remaining.pop(image_key)
-            result["kept_sources_given_up"] = result.get("kept_sources_given_up", 0) + 1
-            await _report_kept_source(
-                library, image_key, pending,
-                f"Source kept: still in use after {attempts} tries to delete it "
-                f"({outcome.reason})",
-                str(pending.get("source") or ""),
-            )
+            attempts.append(_KeptAttempt(
+                platform_id, image_key, pending, required, generation,
+            ))
         if remaining != kept:
             entry = dict(entry)
             if remaining:
@@ -1316,7 +1314,6 @@ async def _retry_kept_deletes(
     if changed:
         await store.write(store.STATE_KEY, library, state)
     # A Source deleted by hand after the sweep gave up: its Finding goes.
-    generation = _generations.get(library.id, 0)
     await _probe(
         functools.partial(
             findings.clear_gone,
@@ -1324,6 +1321,122 @@ async def _retry_kept_deletes(
         ),
         library.id, findings.SOURCE_KEPT, default=0,
     )
+    for attempt in attempts:
+        _kept_running.add(attempt.key(library))
+    return attempts
+
+
+async def _still_pending(library: Library, attempt: _KeptAttempt) -> bool:
+    """Whether *attempt*'s entry is still the one the sweep planned: the same
+    Library generation and the very same entry. A Rule edit, Forget history,
+    RomM's identity cleanup or the Library's removal while it was checked
+    changed or dropped it (and reported a started delete). Under
+    ``_sweep_lock``."""
+    if _generations.get(library.id, 0) != attempt.generation:
+        return False
+    entry = (await get_state(library)).get(attempt.platform_id)
+    kept = entry.get(KEPT_SOURCES) if isinstance(entry, dict) else None
+    return isinstance(kept, dict) and kept.get(attempt.image_key) == attempt.pending
+
+
+async def _settle_kept(
+    library: Library, attempt: _KeptAttempt, outcome: KeptDeleteRetry, result: dict,
+) -> None:
+    """Write what *attempt*'s entry becomes after *outcome*. Under ``_sweep_lock``."""
+    kept_entry = await _kept_outcome(
+        library, attempt.image_key, attempt.pending, outcome, result,
+    )
+    state = await get_state(library)
+    entry = dict(state.get(attempt.platform_id) or {})
+    kept = dict(entry.get(KEPT_SOURCES) or {})
+    if kept_entry is None:
+        kept.pop(attempt.image_key, None)
+    else:
+        kept[attempt.image_key] = kept_entry
+    if kept:
+        entry[KEPT_SOURCES] = kept
+    else:
+        entry.pop(KEPT_SOURCES, None)
+    state[attempt.platform_id] = entry
+    await store.write(store.STATE_KEY, library, state)
+
+
+async def _run_kept_deletes(
+    library: Library, attempts: list[_KeptAttempt], result: dict,
+) -> None:
+    """Try each planned pending delete, after the sweep let go of
+    ``_sweep_lock`` (codex 4580346573).
+
+    Each is prepared under its own file locks, held throughout
+    (``job_manager.kept_delete``): the record, the Source, and the output's
+    check run again, which can take as long as a verify. Only then is
+    ``_sweep_lock`` taken, to confirm the entry still stands, delete, and
+    record the outcome, so a long check never holds up other sweeps, Rule
+    edits or job completions.
+    """
+    for attempt in attempts:
+        try:
+            await _run_kept_delete(library, attempt, result)
+        finally:
+            _kept_running.discard(attempt.key(library))
+
+
+async def _run_kept_delete(library: Library, attempt: _KeptAttempt, result: dict) -> None:
+    """One :func:`_run_kept_deletes` attempt."""
+    pending = attempt.pending
+    deleting = pending.get("state") == KEPT_DELETING
+    try:
+        async with job_manager.kept_delete(
+            source_path=str(pending.get("source") or ""),
+            output_path=str(pending.get("output") or ""),
+            required_check=attempt.required_check,
+            planned=(
+                [str(path) for path in pending.get("planned") or []] if deleting else None
+            ),
+        ) as run:
+            if run.refused is None:
+                async with _sweep_lock:
+                    if not await _still_pending(library, attempt):
+                        return
+                    try:
+                        outcome = await run.delete()
+                    except asyncio.CancelledError:
+                        # Stopped once the unlinks began (CodeRabbit
+                        # 4580360089): what started is recorded, bounded,
+                        # then the cancel goes on.
+                        if run.started is not None:
+                            await _record_cancelled_delete(library, attempt, run.started, result)
+                        raise
+                    await _settle_kept(library, attempt, outcome, result)
+                return
+            outcome = run.refused
+    except Exception as exc:
+        # One entry's failure (an unlink refused, an I/O error) is that
+        # entry's attempt, never the sweep's (codex 4579529048).
+        logger.warning(
+            "rules: retrying the delete of %s failed", pending.get("source"), exc_info=True,
+        )
+        outcome = KeptDeleteRetry(KEPT_KEPT, str(exc) or type(exc).__name__)
+    async with _sweep_lock:
+        if await _still_pending(library, attempt):
+            await _settle_kept(library, attempt, outcome, result)
+
+
+async def _record_cancelled_delete(
+    library: Library, attempt: _KeptAttempt, started: KeptDeleteRetry, result: dict,
+) -> None:
+    """Record a delete a cancel stopped after it began, as ``deleting``,
+    bounded: the cancel is already on its way, and never waits on the
+    unlink worker."""
+    try:
+        await asyncio.wait_for(
+            _settle_kept(library, attempt, started, result), _CANCEL_RECORD_SECONDS,
+        )
+    except (asyncio.TimeoutError, OSError):
+        logger.warning(
+            "rules: recording the cancelled delete of %s did not finish",
+            attempt.pending.get("source"), exc_info=True,
+        )
 
 
 async def _prune_holds(
@@ -1622,19 +1735,24 @@ async def sweep(
     sweep in every respect but the queueing, so it takes the lock too rather
     than reporting candidates a concurrent run is already claiming.
     """
-    async with _sweep_lock:
-        blocked = library.sweep_blocked()
-        if blocked:
-            return {
-                "queued": 0, "considered": 0, "platforms": [],
-                "errors": [{"platform_id": None, "error": blocked}],
-                **await library.sweep_extras(),
-            }
-        # Closed even if the sweep raises after queueing jobs: the default is the
-        # failure, replaced by the real result on success. A cancel (shutdown)
-        # is not a failure to report.
-        notified: dict = {"errors": [{"platform_id": None, "error": "sweep_failed"}]}
-        try:
+    # The pending deletes this sweep plans under the lock and tries after it
+    # (`_run_kept_deletes`): their output checks run without it.
+    kept_attempts: list[_KeptAttempt] = []
+    # Closed even if the sweep raises after queueing jobs: the default is the
+    # failure, replaced by the real result on success. A cancel (shutdown)
+    # is not a failure to report.
+    notified: dict | None = {"errors": [{"platform_id": None, "error": "sweep_failed"}]}
+    result: dict | None = None
+    try:
+        async with _sweep_lock:
+            blocked = library.sweep_blocked()
+            if blocked:
+                notified = None
+                return {
+                    "queued": 0, "considered": 0, "platforms": [],
+                    "errors": [{"platform_id": None, "error": blocked}],
+                    **await library.sweep_extras(),
+                }
             result = notified = await _sweep_locked(
                 library,
                 platform_ids=platform_ids,
@@ -1642,11 +1760,17 @@ async def sweep(
                 dry_run=dry_run,
                 overall_limit=overall_limit,
                 should_stop=should_stop,
+                kept_attempts=kept_attempts,
             )
-        except asyncio.CancelledError:
+        await _run_kept_deletes(library, kept_attempts, result)
+    except asyncio.CancelledError:
+        if result is None:
             notified = {"errors": []}
-            raise
-        finally:
+        raise
+    finally:
+        for attempt in kept_attempts:
+            _kept_running.discard(attempt.key(library))
+        if notified is not None:
             notifications.sweep_finished(notified, dry_run=dry_run, library_id=library.id)
     # The sweep is finished: every sweep that ran returns through here, after
     # the lock is released. `result["dry_run"]` tells a preview from a run.
@@ -1661,8 +1785,11 @@ async def _sweep_locked(
     dry_run: bool,
     overall_limit: int | None,
     should_stop: Callable[[], bool] | None = None,
+    kept_attempts: list | None = None,
 ) -> dict:
-    """The sweep body. Always called with ``_sweep_lock`` held."""
+    """The sweep body. Always called with ``_sweep_lock`` held. The pending
+    deletes it plans go in *kept_attempts*, for the caller to try once the
+    lock is released."""
     def stopping() -> bool:
         return should_stop is not None and should_stop()
 
@@ -1746,7 +1873,14 @@ async def _sweep_locked(
     check_runs: list = []
     if not dry_run:
         await _clear_vanished(library)
-        await _retry_kept_deletes(library, rules[CONVERT], wanted, stopping, result)
+        planned_deletes = await _plan_kept_deletes(
+            library, rules[CONVERT], wanted, stopping, result,
+        )
+        if kept_attempts is not None:
+            kept_attempts.extend(planned_deletes)
+        else:
+            for attempt in planned_deletes:
+                _kept_running.discard(attempt.key(library))
 
     for kind, platform_id in ordered:
         if stopping():

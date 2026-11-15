@@ -670,6 +670,22 @@ async def bounded_path_check(func: Callable, *args: object, **kwargs: object) ->
     return await _bounded_probe(func, *args, **kwargs)
 
 
+def start_detached(func: Callable, *args: object, **kwargs: object) -> asyncio.Future:
+    """Start a blocking call on a detached daemon thread *now*, before the
+    caller's next await, and return the future that settles with it.
+
+    For work that must not be lost to a cancel: ``run_detached`` starts its
+    thread only once awaited, so a cancel that lands first means it never
+    starts. Once this returns, the thread owns the call. Raises
+    :class:`ProbeCapacityExceeded` like ``run_detached`` when no slot is free.
+    Must be called on the event loop. An exception nobody awaits is consumed,
+    not reported as never retrieved.
+    """
+    future = _probe_in_daemon_thread(functools.partial(func, *args, **kwargs))
+    future.add_done_callback(lambda done: done.cancelled() or done.exception())
+    return future
+
+
 async def run_detached(
     func: Callable,
     *args: object,

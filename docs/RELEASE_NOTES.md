@@ -14,7 +14,11 @@
   **Source kept** Finding under **Started by hand**; it clears itself once the
   files left are gone. A half-finished delete is never forgotten silently:
   turning the Rule's delete off, Forget history, a RomM instance change or
-  removing the Library reports it the same way.
+  removing the Library reports it the same way. Before a retried delete
+  removes anything, the output's check runs again (the container check, plus
+  the Round-trip where the Rule asks for it): an output changed since its
+  check keeps the Source, even one rewritten in place to the same size and
+  date.
 - **UTF-16 `.m3u` playlists follow a converted disc** (#334). A playlist saved
   as UTF-16 with a BOM (Windows Notepad's "Unicode") that names the Source is
   now rewritten like a UTF-8 one, keeping its encoding, BOM and line endings.

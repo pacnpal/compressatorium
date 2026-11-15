@@ -105,6 +105,107 @@ def test_an_output_changed_since_its_check_keeps_the_source(env, dolphin, capsys
     assert not _rule_state(env)["gc"].get("kept_sources")
 
 
+def _content_checking_verify(monkeypatch, seen=None, stall=0.0):
+    """dolphin-tool's verify, reading the output as a real check would: only
+    the bytes the conversion wrote pass. *seen* collects each verify, with
+    whether the sweep lock was held; *stall* makes it outlast any bound."""
+    from services.rules import sweep as rules_sweep
+
+    service = registry.get("dolphin")._service
+
+    async def verify(cmd, *, path, **kwargs):
+        if seen is not None:
+            seen.append((path, rules_sweep._sweep_lock.locked()))
+        if stall:
+            await asyncio.sleep(stall)
+        with open(path, "rb") as handle:
+            valid = handle.read() == b"converted output"
+        yield {
+            "type": "complete", "valid": valid,
+            "message": "Disc image is Intact" if valid else "Disc is damaged",
+        }
+
+    monkeypatch.setattr(service._runner, "run_verify", verify)
+
+
+def test_an_output_rewritten_in_place_keeps_the_source(env, dolphin, capsys, kept, monkeypatch):
+    """Codex 4580346573: every output byte rewritten, same length, mtime put
+    back, so size, mtime, inode and device all match the record. The retry
+    re-runs the output's check, which fails: the Source is kept."""
+    output = kept["output"]
+    before = output.stat()
+    with open(output, "r+b") as handle:
+        handle.write(b"X" * before.st_size)
+    os.utime(output, ns=(before.st_atime_ns, before.st_mtime_ns))
+    assert output.stat().st_ino == before.st_ino
+    _content_checking_verify(monkeypatch)
+
+    code, lines, _err = _cli(capsys, "run-rules", "--json")
+
+    assert code == 0, lines
+    assert kept["iso"].exists()
+    assert not _rule_state(env)["gc"].get("kept_sources")
+
+
+def test_a_retry_re_verifies_the_output_outside_the_sweep_lock(
+    env, dolphin, capsys, kept, monkeypatch,
+):
+    """An unchanged output passes its check again, run off the sweep lock,
+    and the Source is deleted."""
+    seen: list = []
+    _content_checking_verify(monkeypatch, seen)
+
+    code, lines, _err = _cli(capsys, "run-rules", "--json")
+
+    assert code == 0, lines
+    assert not kept["iso"].exists()
+    assert seen == [(str(kept["output"]), False)]
+
+
+def test_a_re_verify_that_times_out_is_a_counted_attempt(
+    env, dolphin, capsys, kept, monkeypatch,
+):
+    """The re-check runs under the tool's own verify bound; outlasting it is
+    an attempt, and nothing is deleted."""
+    tool = registry.for_mode("dolphin_rvz")
+
+    async def short(path, *, cancel_event=None):
+        return 0.2
+
+    monkeypatch.setattr(tool, "verify_timeout", short)
+    _content_checking_verify(monkeypatch, stall=5)
+
+    code, lines, _err = _cli(capsys, "run-rules", "--json")
+
+    assert code == 0, lines
+    assert kept["iso"].exists()
+    pending = _rule_state(env)["gc"]["kept_sources"]["Game.iso"]
+    assert pending["attempts"] == 1
+
+
+def test_a_round_trip_rule_runs_the_round_trip_again(env, dolphin, capsys, monkeypatch):
+    """A Rule whose check is the Round-trip has it re-run on the retry, by the
+    same function the job uses."""
+    from services import job_manager as job_manager_module
+    from services.round_trip import RoundTripOutcome
+
+    compared: list = []
+
+    async def round_trip(tool, source, output, **kwargs):
+        compared.append((source, output))
+        return RoundTripOutcome(passed=True)
+
+    monkeypatch.setattr(job_manager_module, "round_trip", round_trip)
+    kept = _keep(env, capsys, monkeypatch, check_level="round_trip")
+    assert len(compared) == 1  # the job's own
+
+    code, lines, _err = _cli(capsys, "run-rules", "--json")
+
+    assert code == 0, lines
+    assert compared[1:] == [(str(kept["iso"]), str(kept["output"]))]
+    assert not kept["iso"].exists()
+
+
 def test_an_output_gone_keeps_the_source(env, dolphin, capsys, kept):
     from services.job_manager import job_manager
 
@@ -1635,6 +1736,10 @@ def test_a_started_delete_whose_output_then_changed_is_reported(
     assert not _rule_state(env)["gc"].get("kept_sources")
     reported = [f for f in findings.list_findings() if f["kind"] == findings.SOURCE_KEPT]
     assert len(reported) == 1 and "part" in reported[0]["reason"]
+    # The Source is its path, and every file left is named (CodeRabbit
+    # 4580360093), as the hand-started reporter does.
+    assert reported[0]["path"] == str(kept["iso"])
+    assert reported[0]["cause"][findings.REMAINING] == [str(kept["iso"])]
 
 
 def _hand_started_part_delete(env, monkeypatch):
@@ -1772,3 +1877,189 @@ def test_settling_hand_started_findings_is_bounded(
         assert time.monotonic() - started < 5
     finally:
         release.set()
+
+
+# --------------------------------------------------------------------------- #
+# A cancel during a started delete (CodeRabbit 4580360083, 4580360089, and the
+# outside-diff note on job_manager.py:3362)
+# --------------------------------------------------------------------------- #
+
+
+def _hold_unlink(monkeypatch, target):
+    """``os.remove`` of *target* waits for ``go``, then refuses it. Returns
+    the ``reached`` and ``go`` events."""
+    import threading
+
+    reached, go = threading.Event(), threading.Event()
+    real = os.remove
+
+    def held(path, *args, **kwargs):
+        if os.path.realpath(str(path)) == os.path.realpath(str(target)):
+            reached.set()
+            go.wait(10)
+            raise PermissionError(13, "Permission denied", str(path))
+        return real(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "remove", held)
+    return reached, go
+
+
+async def _cancel_once(task, reached) -> None:
+    while not reached.is_set():
+        await asyncio.sleep(0.01)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+def test_letting_go_of_locks_survives_an_immediate_cancel(monkeypatch):
+    """The release worker starts before the first await: a cancel that lands
+    at once still has every lock let go."""
+    import threading
+
+    from services import job_manager as job_manager_module
+
+    released, seen = threading.Event(), []
+
+    def let_go(paths):
+        seen.extend(paths)
+        released.set()
+
+    monkeypatch.setattr(job_manager_module, "_let_go", let_go)
+
+    async def body():
+        asyncio.current_task().cancel()
+        await job_manager_module.JobManager._let_go_in_background(["/v/out/Game.rvz"])
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(body())
+    assert released.wait(2)
+    assert seen == ["/v/out/Game.rvz"]
+
+
+def test_a_job_cancelled_mid_delete_records_it_and_ends_cancelled(
+    env, dolphin, two_file_source, monkeypatch,
+):
+    import cli
+    from models import ConversionMode, DuplicateAction, JobCreateRequest, JobStatus
+    from routes import convert as convert_routes
+    from services import findings
+
+    cli._open_db(False)
+    iso, part = _iso(env), _part2(env)
+    reached, go = _hold_unlink(monkeypatch, iso)
+
+    async def run():
+        job = await convert_routes.create_job(JobCreateRequest(
+            file_path=str(iso), mode=ConversionMode.DOLPHIN_RVZ,
+            duplicate_action=DuplicateAction.SKIP, delete_on_verify=True,
+            container_only=True,
+        ))
+        task = asyncio.ensure_future(convert_routes.job_manager._process_job(job.id))
+        try:
+            await _cancel_once(task, reached)
+        finally:
+            go.set()
+        return job
+
+    job = asyncio.run(run())
+
+    assert not part.exists() and iso.exists()
+    assert job.status == JobStatus.CANCELLED
+    assert job.id in convert_routes.job_manager._terminal_announced
+    reported = [f for f in findings.list_findings() if f["kind"] == findings.SOURCE_KEPT]
+    assert [f["library_id"] for f in reported] == [findings.NO_LIBRARY]
+    assert reported[0]["cause"][findings.REMAINING] == [str(iso)]
+
+
+def test_a_retry_cancelled_mid_delete_is_recorded_as_deleting(
+    env, dolphin, two_file_source, capsys, monkeypatch,
+):
+    from services.rules import sweep as rules_sweep
+
+    part = _part2(env)
+    kept = _keep(env, capsys, monkeypatch)
+    reached, go = _hold_unlink(monkeypatch, kept["iso"])
+
+    async def run():
+        task = asyncio.ensure_future(rules_sweep.sweep(env["shelf"]))
+        try:
+            await _cancel_once(task, reached)
+        finally:
+            go.set()
+
+    asyncio.run(run())
+
+    assert not part.exists() and kept["iso"].exists()
+    pending = _rule_state(env)["gc"]["kept_sources"]["Game.iso"]
+    assert pending["state"] == "deleting"
+    assert str(kept["iso"]) in pending["planned"]
+
+
+# --------------------------------------------------------------------------- #
+# Settling Findings (CodeRabbit 4580360066, 4580360075)
+# --------------------------------------------------------------------------- #
+
+
+def test_findings_loads_share_one_stuck_settle(env, dolphin, two_file_source, monkeypatch):
+    """Ten loads while the settle is stuck on a dead path take one detached
+    slot between them, not ten."""
+    import threading
+
+    from routes import findings as routes
+    from services import findings
+
+    _, iso, _ = _hand_started_part_delete(env, monkeypatch)
+    release, stuck = threading.Event(), []
+    real = os.path.lexists
+
+    def hung(path):
+        if str(path) == str(iso):
+            stuck.append(path)
+            release.wait(10)
+        return real(path)
+
+    monkeypatch.setattr(routes, "_SETTLE_SECONDS", 0.05)
+    monkeypatch.setattr(findings.os.path, "lexists", hung)
+
+    async def ten_loads():
+        for _ in range(10):
+            await routes.list_findings()
+
+    try:
+        asyncio.run(ten_loads())
+        assert len(stuck) == 1
+    finally:
+        release.set()
+
+
+def test_clear_gone_keeps_a_finding_updated_while_it_looked(env, dolphin, monkeypatch):
+    """The files are looked at outside the write lock; a Finding a producer
+    updated meanwhile is not the one that was seen gone, and stays."""
+    import cli
+    from services import findings
+
+    cli._open_db(False)
+    folder = env["shelf"].root / "gc"
+    (folder / "Other.iso").write_bytes(b"x")  # the folder is listed
+    gone = str(folder / "Gone.iso")
+
+    def kept(output):
+        return findings.Observed(
+            kind=findings.SOURCE_KEPT, image_key=gone, path=gone, reason="kept",
+            cause={"source": gone, "output": output},
+        )
+
+    findings.observe("shelf", kept(None))
+    real = os.path.lexists
+
+    def updated_meanwhile(path):
+        if str(path) == gone:
+            findings.observe("shelf", kept("/v/out/Gone.rvz"))
+        return real(path)
+
+    monkeypatch.setattr(findings.os.path, "lexists", updated_meanwhile)
+
+    assert findings.clear_gone("shelf", findings.SOURCE_KEPT) == 0
+    rows = findings.list_findings()
+    assert [r["cause"]["output"] for r in rows] == ["/v/out/Gone.rvz"]

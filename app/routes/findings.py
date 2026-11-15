@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import threading
 
 from fastapi import APIRouter, HTTPException
 from fastapi.concurrency import run_in_threadpool
@@ -34,6 +35,8 @@ _MAPPING_SECONDS = 60
 # How long the Findings view waits to settle the hand-started Findings (it
 # stats the files each one names) before it lists them as they are.
 _SETTLE_SECONDS = 5
+# Held by the settle that is running (`_settle_blocking`), across threads.
+_settle_running = threading.Lock()
 
 
 class FindingRef(BaseModel):
@@ -76,18 +79,30 @@ async def _walk(library) -> dict:
     return {"id": library.id, "name": library.name, "status": "ok"}
 
 
+def _settle_blocking() -> int:
+    """One settle of the hand-started Findings, unless one is running."""
+    if not _settle_running.acquire(blocking=False):
+        return 0
+    try:
+        return findings.clear_gone(findings.NO_LIBRARY, findings.SOURCE_KEPT)
+    finally:
+        _settle_running.release()
+
+
 async def _settle_started_by_hand() -> None:
     """Clear the hand-started Findings whose files are gone (#329). Never raises.
 
     They have no Library, so no sweep settles them; the view does, as it
     loads. Bounded and detached: a volume that does not answer leaves them
-    listed as they are, and the next load tries again.
+    listed as they are, and the next load tries again. At most one settle is
+    in flight (CodeRabbit 4580360066): while one runs, even one stuck on a
+    dead mount, a load starts none and lists the Findings as they are, so
+    stuck settles never take more than one detached probe slot.
     """
+    if _settle_running.locked():
+        return
     try:
-        await asyncio.wait_for(
-            run_detached(findings.clear_gone, findings.NO_LIBRARY, findings.SOURCE_KEPT),
-            _SETTLE_SECONDS,
-        )
+        await asyncio.wait_for(run_detached(_settle_blocking), _SETTLE_SECONDS)
     except (asyncio.TimeoutError, OSError):
         logger.warning(
             "Findings: checking the hand-started Findings did not finish; "
