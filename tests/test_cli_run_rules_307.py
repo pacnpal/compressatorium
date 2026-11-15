@@ -34,6 +34,8 @@ class _Shelf:
         self.unreadable = False  # images() raises LibraryUnreadable
         self.broken = False  # configured() raises: the whole sweep fails
         self.on_images = None  # called inside images(), for a signal mid-sweep
+        self.slug = "ngc"  # the Platform the registry checks a mode against
+        self.suffix = ".iso"  # the Images are the files with this suffix
 
     async def before_pass(self, *, dry_run: bool) -> None:
         self.calls.append(("before_pass", dry_run))
@@ -52,7 +54,7 @@ class _Shelf:
     def platforms(self):
         from services.rules import Platform
 
-        return [Platform(id="gc", slug="ngc", name="GameCube")]
+        return [Platform(id="gc", slug=self.slug, name="GameCube")]
 
     def images(self, platform_id):
         from services.rules import Image, LibraryUnreadable
@@ -65,10 +67,10 @@ class _Shelf:
         return [
             Image(
                 key=p.name, name=p.name, size=p.stat().st_size,
-                added_at=p.stat().st_mtime, platform="ngc", path=str(p),
+                added_at=p.stat().st_mtime, platform=self.slug, path=str(p),
             )
             for p in sorted((self.root / platform_id).iterdir())
-            if p.suffix == ".iso"
+            if p.suffix == self.suffix
         ]
 
     def rule_defaults(self):
@@ -411,6 +413,42 @@ def test_a_job_that_cannot_lock_its_source_is_a_failure(env, dolphin, capsys, mo
     ]
     assert dolphin["runs"] == []
     assert not iso.with_suffix(".rvz").exists()
+
+
+@pytest.mark.parametrize("duplicate", ["skip", "overwrite"])
+def test_a_companion_output_another_process_is_writing_is_skipped_not_failed(
+    env, dolphin, capsys, duplicate,
+):
+    """#306 55bd7a8 locks a job's companion outputs too (extractcd's .bin
+    beside its .cue). One another process holds makes the sweep skip the
+    Image, as for a locked primary output: nothing queued, exit 0."""
+    from services.lock_manager import LockManager, lock_manager
+
+    shelf = env["shelf"]
+    shelf.slug, shelf.suffix = "psx", ".chd"
+    chd = shelf.root / "gc" / "Game.chd"
+    chd.write_bytes(b"a cd image" * 64)
+    _store_rules(env, {"shelf": {"gc": {
+        "mode": "extractcd", "enabled": True, "duplicate_action": duplicate,
+    }}})
+    # Free, the Image is planned: the skip below is the lock's doing.
+    code, lines, _err = _cli(capsys, "run-rules", "--dry-run", "--json")
+    assert (code, [line["queued"] for line in lines if line["platform_id"] == "gc"]) == (0, [1])
+
+    writer = LockManager()
+    writer._lock_dir = lock_manager._lock_dir
+    companion = str(chd.with_suffix(".bin"))
+    assert writer.acquire_lock(companion)
+    try:
+        code, lines, _err = _cli(capsys, "run-rules", "--json")
+    finally:
+        writer.release_lock(companion)
+
+    assert code == 0, lines
+    platform = [line for line in lines if line.get("platform_id") == "gc"]
+    assert [(p["status"], p["queued"], p["reason"]) for p in platform] == [("queued", 0, None)]
+    assert [line for line in lines if line.get("path")] == []
+    assert not chd.with_suffix(".cue").exists()
 
 
 def test_a_failed_job_exits_1(env, dolphin, capsys):
