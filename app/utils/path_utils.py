@@ -214,6 +214,22 @@ def match_extension(name: str, extensions: Iterable[str]) -> Optional[str]:
     return best
 
 
+# Per thread: how many times the containment gate (`_confined_real_path` and
+# its helpers) gave up because of an error rather than a verdict: a failed
+# or timed-out root probe, an OSError resolving the path, a root missing from
+# the resolved-spelling cache. `volume_containment` turns a refusal that
+# happened alongside one of these into "couldn't tell" instead of "outside".
+_unknown_failures = threading.local()
+
+
+def _note_unknown() -> None:
+    _unknown_failures.count = getattr(_unknown_failures, "count", 0) + 1
+
+
+def _unknown_count() -> int:
+    return getattr(_unknown_failures, "count", 0)
+
+
 def _resolve_path(raw_path: str, *, strict: bool = False) -> Optional[Path]:
     """Resolve a path that ``_confined_real_path`` already confined.
 
@@ -232,7 +248,11 @@ def _resolve_path(raw_path: str, *, strict: bool = False) -> Optional[Path]:
     try:
         path_obj = Path(raw_path).expanduser()
         resolved = path_obj.resolve(strict=strict)
-    except (OSError, RuntimeError):
+    except RuntimeError:
+        return None                  # a symlink loop (before 3.13): a verdict
+    except OSError as exc:
+        if exc.errno != errno.ELOOP and not (strict and exc.errno == errno.ENOENT):
+            _note_unknown()          # EIO, a stalled mount, ...: couldn't tell
         return None
 
     # Additional ELOOP probe for Python 3.13+ where ``resolve()`` no longer
@@ -450,14 +470,14 @@ def _holding_roots(real_path: Path, matched: Sequence[str]) -> list[Path]:
     """
     matched_roots = [_configured_root(volume) for volume in matched]
     holders = [
-        root for root in map(_fresh_root, matched_roots) if _contains(root, real_path)
+        root for root in map(_fresh_root_noted, matched_roots) if _contains(root, real_path)
     ]
     if holders:
         return holders
     for configured, cached in _resolved_root_spellings().items():
         if configured in matched_roots or not _contains(Path(cached), real_path):
             continue
-        fresh = _fresh_root(configured)
+        fresh = _fresh_root_noted(configured)
         if _contains(fresh, real_path):
             holders.append(fresh)
     return holders
@@ -489,6 +509,14 @@ def _fresh_root(configured: str) -> Path | None:
     if thread.is_alive() or "real" not in box:
         return None
     return Path(box["real"])
+
+
+def _fresh_root_noted(configured: str) -> Path | None:
+    """``_fresh_root``, noting a failed or timed-out probe as unknown."""
+    root = _fresh_root(configured)
+    if root is None:
+        _note_unknown()
+    return root
 
 
 def _confined_real_path(raw_path: str, *, strict: bool = False) -> Path | None:
@@ -539,6 +567,11 @@ def _confined_real_path(raw_path: str, *, strict: bool = False) -> Path | None:
             return _real_inside_volumes(root, roots=[volume], strict=strict)
         if candidate.startswith(root.rstrip(os.sep) + os.sep):
             return _real_inside_volumes(candidate, roots=[volume], strict=strict)
+    # Under no configured or cached spelling. That is a verdict only if every
+    # root's resolved spelling is known: a root whose probe failed or timed
+    # out has none, so a path spelled through its target can't be matched.
+    if any(_configured_root(volume) not in resolved_roots for volume in volumes):
+        _note_unknown()
     return None
 
 
@@ -596,14 +629,32 @@ def lock_boundary_root(path: str) -> Path | None:
     return min(tops, key=lambda root: len(root.parts), default=None)
 
 
+def volume_containment(path: str, *, treat_archives: bool = True) -> bool | None:
+    """Whether *path* lies inside a configured Volume: True, False, or None.
+
+    The three-way form of ``is_within_configured_volumes``, through the same
+    gate (``_confined_real_path``). True: inside. False: confirmed outside
+    (refused lexically, or every root it could fall under was freshly
+    resolved and doesn't hold it). None: couldn't tell, because a fresh root
+    probe the answer depended on failed or went over its bound. A caller that
+    must not mistake a stalled mount for "outside" (the ``.m3u`` Referrer
+    deciding which playlists to leave alone) uses this.
+    """
+    base_path = strip_archive_path(path) if treat_archives else path
+    before = _unknown_count()
+    if _confined_real_path(base_path) is not None:
+        return True
+    return None if _unknown_count() != before else False
+
+
 def is_within_configured_volumes(path: str, *, treat_archives: bool = True) -> bool:
     """Check whether the given path lies inside one of the configured CHD volumes.
 
     Through the one gate, ``_confined_real_path``: no ``..``, confined
     lexically before the filesystem sees it, then resolved and checked again.
+    "Couldn't tell" (``volume_containment`` returns None) counts as outside.
     """
-    base_path = strip_archive_path(path) if treat_archives else path
-    return _confined_real_path(base_path) is not None
+    return volume_containment(path, treat_archives=treat_archives) is True
 
 
 class FileIdentity(NamedTuple):
@@ -616,7 +667,7 @@ class FileIdentity(NamedTuple):
     realpath: str
 
 
-def file_identity(path: str) -> Optional[FileIdentity]:
+def file_identity(path: str) -> FileIdentity | None:
     """*path*'s identity (following links), or None if it can't be stat'ed."""
     try:
         st = os.stat(path)
@@ -627,7 +678,7 @@ def file_identity(path: str) -> Optional[FileIdentity]:
     )
 
 
-def same_identity(a: Optional[FileIdentity], b: Optional[FileIdentity]) -> bool:
+def same_identity(a: FileIdentity | None, b: FileIdentity | None) -> bool:
     """Whether two identities are the same, unchanged file.
 
     Size and ``mtime_ns`` must always match, so a file rewritten in place
@@ -648,27 +699,6 @@ def same_identity(a: Optional[FileIdentity], b: Optional[FileIdentity]) -> bool:
 def same_file(a: str, b: str) -> bool:
     """``os.path.samefile`` that tolerates unstable inodes (see ``same_identity``)."""
     return same_identity(file_identity(a), file_identity(b))
-
-
-def volume_root_for(path: str) -> Optional[str]:
-    """The resolved root of the configured Volume holding *path*, or None.
-
-    With nested Volumes the outermost one wins: both are Volumes the user
-    granted, and a walk up from *path* should reach everything above it that
-    the app may read.
-    """
-    real_path = _resolve_path(path, strict=False)
-    if real_path is None:
-        return None
-    best: Optional[Path] = None
-    for volume in settings.volumes:
-        real_volume = _resolve_volume(volume)
-        if real_volume is None:
-            continue
-        inside = real_path == real_volume or real_volume in real_path.parents
-        if inside and (best is None or len(real_volume.parts) < len(best.parts)):
-            best = real_volume
-    return str(best) if best is not None else None
 
 
 def _strip_trailing_dot_and_seps(path: str) -> str:

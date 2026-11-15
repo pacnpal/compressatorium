@@ -49,7 +49,13 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
 from services.lock_manager import LockWaitTimeout, lock_manager
-from utils.path_utils import FileIdentity, file_identity, same_identity, volume_root_for
+from utils.path_utils import (
+    FileIdentity,
+    file_identity,
+    lock_boundary_root,
+    same_identity,
+    volume_containment,
+)
 
 from .base import (
     Referrer,
@@ -110,11 +116,21 @@ def _playlists(directory: str) -> list[str]:
 
 
 def _search_dirs(path: str) -> list[str]:
-    """*path*'s resolved folder and each folder above it up to its Volume root."""
+    """*path*'s resolved folder and each folder above it up to its Volume root.
+
+    Raises ReferrerError when the Volume boundary can't be determined (the
+    fresh root probe failed or went over its bound): the folders above could
+    hold a playlist naming the Source, so it must be kept.
+    """
     start = os.path.dirname(os.path.realpath(path))
-    root = volume_root_for(start)
+    boundary = lock_boundary_root(start)
+    if boundary is None:
+        raise ReferrerError(
+            start, "can't confirm its Volume boundary, so the playlists above it weren't checked",
+        )
+    root = str(boundary)
     dirs = [start]
-    if root is None or not (start == root or start.startswith(root.rstrip(os.sep) + os.sep)):
+    if not (start == root or start.startswith(root.rstrip(os.sep) + os.sep)):
         return dirs
     current = start
     while current != root:
@@ -491,6 +507,18 @@ class M3uReferrer(Referrer):
                 # fail closed so the Source is kept.
                 if os.path.islink(playlist):
                     raise ReferrerError(playlist, "is a symlink")
+                # The walk's upper limit may come from a cached root spelling
+                # (right for lock probing). Which playlists we read and write
+                # is decided against the Volumes as they are now: one that is
+                # confirmed outside them is left alone; one we can't tell about
+                # (a root probe failed) keeps the Source.
+                inside = volume_containment(playlist, treat_archives=False)
+                if inside is None:
+                    raise ReferrerError(
+                        playlist, "can't confirm it is inside the configured Volumes",
+                    )
+                if not inside:
+                    continue
                 with _playlist_lock(playlist):
                     _, edits = _rewrite(
                         playlist, _read(playlist), directory, targets, strict=False,
@@ -507,6 +535,12 @@ class M3uReferrer(Referrer):
         directory, targets = change.payload
         if os.path.islink(path):
             raise ReferrerError(path, "is a symlink")
+        # Checked again right before writing, against the Volumes as they are
+        # now: a playlist that has left them since planning is not written.
+        # (It was planned because it named the Source, so the Source is kept.)
+        # Outside and "couldn't tell" both refuse.
+        if volume_containment(path, treat_archives=False) is not True:
+            raise ReferrerError(path, "isn't confirmed inside the configured Volumes")
         if not os.access(path, os.W_OK):
             raise ReferrerError(path, "is read-only")
         # Threads here take the in-process lock; other processes (a CLI run
