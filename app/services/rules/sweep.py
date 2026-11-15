@@ -46,6 +46,7 @@ from services.job_manager import (
     KEPT_DELETED,
     KEPT_KEPT,
     KEPT_STALE,
+    KEPT_UNKNOWN,
     SOURCE_KEPT_FOR_READERS,
     KeptDeleteRetry,
     OutputClaimedError,
@@ -1028,6 +1029,11 @@ async def _retry_kept_deletes(
             if outcome.status == KEPT_DELETED:
                 remaining.pop(image_key)
                 result["kept_sources_deleted"] = result.get("kept_sources_deleted", 0) + 1
+                continue
+            if outcome.status == KEPT_UNKNOWN:
+                # An unlink outlived the wait: the Source may be gone or not.
+                # Not an attempt; the next sweep's own checks settle it.
+                remaining[image_key] = {**pending, "last_reason": outcome.reason}
                 continue
             if outcome.status == KEPT_STALE:
                 logger.info(

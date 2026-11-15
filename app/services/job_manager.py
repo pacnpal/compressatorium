@@ -42,7 +42,13 @@ from services.lock_manager import LockFailed, lock_manager
 from services.mutation_guard import locked_for_mutation
 from services import referrers
 from services.round_trip import round_trip, round_trip_applies
-from services.subprocess_runner import ReadCancelled, run_detached, run_detached_undoable
+from services.subprocess_runner import (
+    MutationInFlight,
+    ReadCancelled,
+    run_detached,
+    run_detached_mutation,
+    run_detached_undoable,
+)
 from services.tools import ModeKind, registry
 from services.verification_store import verification_store
 from utils.delete_plan import build_delete_plan, build_delete_snapshot
@@ -72,6 +78,9 @@ KEPT_DELETED = "deleted"  # the Source is gone
 KEPT_READER = "reader"  # someone still holds it: try again on a later sweep
 KEPT_KEPT = "kept"  # the delete step kept it (a Referrer, a path check): try again
 KEPT_STALE = "stale"  # what the delete stood on no longer holds: never retry
+# An unlink was still running when the retry stopped waiting: the Source may or
+# may not be gone. Not an attempt; the next sweep's own checks settle it.
+KEPT_UNKNOWN = "unknown"
 # How long a retry waits for the Source's volume to answer its stat checks.
 KEPT_DELETE_PROBE_SECONDS = 30.0
 KEPT_DELETE_UNANSWERED = "the Source's volume did not answer"
@@ -3120,6 +3129,7 @@ class JobManager:
         cancelled: Callable[[], bool],
         deleted: List[str],
         probe_seconds: Optional[float] = None,
+        travelling_locks: Optional[List[str]] = None,
     ) -> _SourceDelete:
         """The delete step, shared by a job and a retried delete (#329).
 
@@ -3139,6 +3149,13 @@ class JobManager:
         and the store clears. A retry passes ``KEPT_DELETE_PROBE_SECONDS``;
         a job leaves it None (the probes take ``_CANONICAL_PROBE_SECONDS``, the
         hook the conversion's stall bound, the unlinks no bound, as before).
+
+        Each unlink is a mutation, never abandoned with its locks
+        (``run_detached_mutation``, codex 4579725632): when the caller stops
+        waiting while one still runs (the bound, a cancel), the delete holds,
+        and the caller's *travelling_locks* (a retry's output lock), pass to
+        its worker, which releases them once the unlink has finished, and
+        :class:`MutationInFlight` (or the cancel) propagates.
         """
         expected_set = set(expected_paths)
         current_plan = await self._bounded_delete_probe(
@@ -3196,10 +3213,10 @@ class JobManager:
             outcome.cancelled = True
             return outcome
         for path in delete_order:
-            if probe_seconds is None:
-                await run_in_threadpool(os.remove, path)
-            else:
-                await self._bounded_delete_probe(os.remove, path, seconds=probe_seconds)
+            await run_detached_mutation(
+                os.remove, path, timeout=probe_seconds,
+                hand_off=lambda: self._hand_off_locks(owner_id, travelling_locks),
+            )
             deleted.append(path)
         self._release_delete_holds(owner_id)
 
@@ -3224,6 +3241,16 @@ class JobManager:
                     exc_info=True,
                 )
         return outcome
+
+    def _hand_off_locks(
+        self, owner_id: str, travelling: Optional[List[str]],
+    ) -> Callable[[], None]:
+        """Take *owner_id*'s delete holds and the *travelling* locks from their
+        owner, for a mutation's worker to release (``run_detached_mutation``)."""
+        paths = [*self._delete_holds.pop(owner_id, []), *(travelling or [])]
+        if travelling is not None:
+            travelling.clear()
+        return lambda: _let_go(paths)
 
     def _kept_delete_snapshot(
         self, source_path: str, output_path: str, meta: dict, recorded_source: str,
@@ -3296,7 +3323,9 @@ class JobManager:
                 KEPT_STALE, "an archive member's Source cannot be proven unchanged",
             )
         owner_id = f"kept-delete:{uuid.uuid4().hex}"
-        output_held = False
+        # The output lock, while this holds it. It travels with an unlink that
+        # outlives this call, so it is released only from this list.
+        travelling: List[str] = []
         deleted: List[str] = []
         try:
             # Bounded, like every probe here: taking a lock stats the path, and
@@ -3313,6 +3342,7 @@ class JobManager:
                 return KeptDeleteRetry(KEPT_KEPT, KEPT_DELETE_UNANSWERED)
             if not output_held:
                 return KeptDeleteRetry(KEPT_READER, "the output is in use by another job")
+            travelling.append(output_path)
             try:
                 record = await asyncio.wait_for(
                     run_detached(verification_store.get_record_blocking, output_path),
@@ -3373,7 +3403,11 @@ class JobManager:
                     cancelled=lambda: False,
                     deleted=deleted,
                     probe_seconds=KEPT_DELETE_PROBE_SECONDS,
+                    travelling_locks=travelling,
                 )
+            except MutationInFlight as exc:
+                # Its locks went with it; they are let go once it has finished.
+                return KeptDeleteRetry(KEPT_UNKNOWN, str(exc), tuple(deleted))
             except (RuntimeError, OSError) as exc:
                 # A refusal, or a removal the filesystem refused part way
                 # (codex 4579529048): counted, with whatever was removed.
@@ -3386,8 +3420,7 @@ class JobManager:
             return KeptDeleteRetry(KEPT_DELETED, None, tuple(deleted))
         finally:
             self._release_delete_holds(owner_id)
-            if output_held:
-                lock_manager.release_lock(output_path)
+            _let_go(travelling)
 
     async def _delete_check(
         self, job, tool, source_path: str, output_path: str, cancel_event,

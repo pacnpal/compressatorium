@@ -4194,9 +4194,14 @@ is a counted `kept` attempt (codex 4579683118):
 - the Source snapshot and identity checks (`_kept_delete_snapshot`);
 - in `_delete_source_set` (its `probe_seconds`): the plan, the path
   resolution, the path checks, the Referrer hook
-  (`update_before_source_removal(bound=...)`), each unlink, and the store
-  clears (`clear_blocking`), where a timeout after the unlinks only leaves a
-  stale record of a Source that is gone.
+  (`update_before_source_removal(bound=...)`), and the store clears
+  (`clear_blocking`), where a timeout after the unlinks only leaves a stale
+  record of a Source that is gone.
+- Each unlink is a mutation, not a probe, so it is never abandoned with its
+  locks (below). One that outlives `KEPT_DELETE_PROBE_SECONDS` makes the
+  retry's outcome `unknown`: the Source may or may not be gone. That is not
+  an attempt, and the entry stays; the next sweep's own checks settle it (a
+  Source that is gone is dropped as `stale`, one still there is retried).
 
 The record names the Source by its real path, so `_kept_delete_snapshot`
 compares it with the Source resolved now: a Library reached through a symlink
@@ -4206,6 +4211,17 @@ is still the same Source (codex 4579683123).
 the shared form of a bounded call that takes something (a lock): when its
 caller gives up, whatever the abandoned call returns later is handed to
 `undo`, so nothing it took stays held.
+
+Read-only probes may be abandoned; irreversible mutations may not
+(codex 4579725632). `run_detached_mutation(func, *args, timeout, hand_off)`
+runs a mutation (an unlink) on a detached thread. When its caller stops
+waiting while it still runs (the timeout, None for no bound, or a cancel),
+`hand_off()` takes the locks it runs under from the caller and the worker
+releases them only after the mutation has returned or raised, so nothing that
+waits on them (a new job's input lock) is granted while it can still take
+effect. The timeout raises `MutationInFlight`. `_delete_source_set` runs every
+unlink through it for the job and the retry alike (`_hand_off_locks`: the
+delete holds, plus a retry's output lock).
 
 **Root.** `scripts/compressatorium` started as root execs `/entrypoint.sh
 compressatorium ...`: the entrypoint's PUID/PGID remap and `gosu converter`

@@ -785,6 +785,65 @@ async def run_detached_undoable(
         raise
 
 
+class MutationInFlight(RuntimeError):
+    """An irreversible mutation was still running when its caller stopped
+    waiting (:func:`run_detached_mutation`). Whether it took effect is
+    unknown; the locks it runs under went with it and are released by its
+    worker once it has finished."""
+
+
+async def run_detached_mutation(
+    func: Callable,
+    *args: object,
+    timeout: float | None,
+    hand_off: Callable[[], Callable[[], object]],
+    **kwargs: object,
+) -> object:
+    """Run an irreversible mutation (an unlink) on a detached thread, never
+    abandoning it with the locks that make it safe.
+
+    A read-only probe may be abandoned (:func:`run_detached`,
+    :func:`run_detached_undoable`): nothing it does outlives its caller's
+    interest. A mutation may not: if its caller let go of its locks while it
+    still ran, it could take effect under another job's newly granted lock.
+    So when the caller stops waiting (*timeout*, None for no bound, or a
+    cancel) while *func* still runs, *hand_off()* is called once, on the
+    caller's side: it takes the locks from the caller and returns the
+    callable that releases them, which the worker calls after *func* has
+    returned or raised. The caller must not release them itself after that.
+
+    Raises :class:`MutationInFlight` on the timeout (also when *func* finished
+    just as the wait ran out, its answer lost: the outcome is unknown either
+    way, but then the locks stay the caller's). A cancel propagates as usual,
+    after the hand-off. An exception from *func* within the wait propagates.
+    """
+    guard = threading.Lock()
+    state: dict = {"settled": False, "release": None}
+
+    def call() -> object:
+        try:
+            return func(*args, **kwargs)
+        finally:
+            with guard:
+                state["settled"] = True
+                release = state["release"]
+            if release is not None:
+                release()  # the caller stopped waiting: these are ours to let go
+
+    try:
+        return await asyncio.wait_for(run_detached(call), timeout)
+    except BaseException as exc:
+        with guard:
+            if not state["settled"]:
+                state["release"] = hand_off()
+        if isinstance(exc, asyncio.TimeoutError):
+            raise MutationInFlight(
+                f"{getattr(func, '__name__', 'the change')} was still running "
+                f"after {timeout:g}s",
+            ) from exc
+        raise
+
+
 def conversion_stall_bound() -> int:
     """Seconds a conversion may go without progress before it is given up on.
 

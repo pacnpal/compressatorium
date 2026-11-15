@@ -636,7 +636,8 @@ _STAGES = [
     ("delete plan", _stall_module("build_delete_plan"), "kept"),
     ("path checks", _stall_path_checks, "kept"),
     ("Referrer hook", _stall_referrer_hook, "kept"),
-    ("unlink", _stall_unlink, "kept"),
+    # An unlink is never abandoned with its locks: its outcome is unknown.
+    ("unlink", _stall_unlink, "unknown"),
     # The Source is gone by then: the bookkeeping after it never undoes that.
     ("store clear", _stall_store_clear, "deleted"),
 ]
@@ -696,3 +697,126 @@ def test_a_source_under_a_symlinked_root_is_still_deleted(
     assert not (symlinked_root / "gc" / "Game.iso").exists()
     assert kept["output"].read_bytes() == b"converted output"
     assert not _rule_state(env)["gc"].get("kept_sources")
+
+
+# --------------------------------------------------------------------------- #
+# A mutation is never abandoned with its locks (Codex 4579725632)
+# --------------------------------------------------------------------------- #
+
+
+def _slow_unlink(monkeypatch, target, *, then_fail=False, seconds=1.0):
+    """``os.remove`` on *target* waits, then removes it (or refuses)."""
+    import os
+    import time
+
+    real = os.remove
+
+    def slow(path, *args, **kwargs):
+        if os.path.realpath(str(path)) == os.path.realpath(str(target)):
+            time.sleep(seconds)
+            if then_fail:
+                raise PermissionError(13, "Permission denied", str(path))
+        return real(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "remove", slow)
+
+
+def _wait_for(condition, seconds=5.0):
+    import time
+
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if condition():
+            return True
+        time.sleep(0.05)
+    return condition()
+
+
+def test_a_timed_out_unlink_keeps_its_locks_until_it_finishes(
+    env, dolphin, capsys, kept, monkeypatch,
+):
+    """Codex's repro: the retry stops waiting on a slow unlink. Another job's
+    read lock on the Source is refused until the unlink has finished, so the
+    Source never disappears under a granted lock, and then the worker lets go
+    of both locks."""
+    import time
+
+    from services import job_manager as job_manager_module
+    from services.job_manager import KEPT_UNKNOWN, job_manager
+    from services.lock_manager import LockManager, lock_manager
+
+    monkeypatch.setattr(job_manager_module, "KEPT_DELETE_PROBE_SECONDS", 0.3)
+    iso, output = kept["iso"], kept["output"]
+    # Long enough that a reader's own brief retries (about half a second) end
+    # well before the unlink does.
+    _slow_unlink(monkeypatch, iso, seconds=3.0)
+    reader = LockManager()
+    reader._lock_dir = lock_manager._lock_dir
+
+    started = time.monotonic()
+    outcome = asyncio.run(job_manager.retry_kept_delete(
+        source_path=str(iso), output_path=str(output), required_check="container_only",
+    ))
+
+    assert time.monotonic() - started < 0.9
+    assert outcome.status == KEPT_UNKNOWN
+    # The unlink is still running: no read lock is granted on the Source.
+    assert iso.exists()
+    granted = reader.acquire_input_lock(str(iso))
+    assert granted is False or not iso.exists(), "a read lock on a Source still being removed"
+    assert granted is False
+    # Once it has finished, the worker let go of the Source and output locks.
+    assert _wait_for(lambda: not iso.exists())
+    assert _wait_for(lambda: not lock_manager.is_locked(str(output)))
+    assert _wait_for(lambda: not reader.check_file_status(str(iso))[1])
+
+
+def test_an_unknown_outcome_is_not_an_attempt_and_the_next_sweep_settles_it(
+    env, dolphin, capsys, kept, monkeypatch,
+):
+    """The unlink outlives the sweep's wait: the entry is neither counted nor
+    dropped. Here the unlink then fails, so the Source is still there, and the
+    next sweep deletes it."""
+    from services import job_manager as job_manager_module
+
+    iso = kept["iso"]
+    with monkeypatch.context() as patch:
+        patch.setattr(job_manager_module, "KEPT_DELETE_PROBE_SECONDS", 0.3)
+        _slow_unlink(patch, iso, then_fail=True)
+        code, lines, _err = _cli(capsys, "run-rules", "--json")
+        assert code == 0, lines
+        pending = _rule_state(env)["gc"]["kept_sources"]["Game.iso"]
+        assert pending["attempts"] == 0
+        assert _wait_for(lambda: not _source_locked(iso))
+
+    code, lines, _err = _cli(capsys, "run-rules", "--json")
+
+    assert code == 0, lines
+    assert not iso.exists()
+    assert not _rule_state(env)["gc"].get("kept_sources")
+
+
+def test_an_unknown_outcome_whose_unlink_finished_is_settled_as_gone(
+    env, dolphin, capsys, kept, monkeypatch,
+):
+    from services import job_manager as job_manager_module
+
+    iso = kept["iso"]
+    with monkeypatch.context() as patch:
+        patch.setattr(job_manager_module, "KEPT_DELETE_PROBE_SECONDS", 0.3)
+        _slow_unlink(patch, iso)
+        _cli(capsys, "run-rules", "--json")
+        assert _wait_for(lambda: not iso.exists())
+        assert _wait_for(lambda: not _source_locked(iso))
+
+    code, lines, _err = _cli(capsys, "run-rules", "--json")
+
+    assert code == 0, lines
+    assert not iso.exists()
+    assert not _rule_state(env)["gc"].get("kept_sources")
+
+
+def _source_locked(path) -> bool:
+    from services.lock_manager import lock_manager
+
+    return lock_manager.check_file_status(str(path))[1]
