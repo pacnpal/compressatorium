@@ -1856,7 +1856,7 @@ The Web UI communicates with a REST API that can also be used directly. Interact
 | `COMPRESSATORIUM_SEARCH_AUTO_RETURN_TO_FILE_LIST` | `true` | Web UI: when true, `Search All` conversions return to the previous file-list view after queueing |
 | `CHD_SEARCH_AUTO_RETURN_TO_FILE_LIST` | `true` | Legacy alias for `COMPRESSATORIUM_SEARCH_AUTO_RETURN_TO_FILE_LIST` |
 | `CHD_TEMP_DIR` | `/config/temp` | Temporary working directory for archive extraction (auto-created) |
-| `CHD_CONCURRENCY_LOCK_DIR` | `/tmp/chd-locks` | Directory for job lock files (ephemeral, auto-cleaned on container restart) |
+| `CHD_CONCURRENCY_LOCK_DIR` | `/config/locks` | Directory for job lock files and conversion slots. Under the data dir so the server and a CLI container share it; falls back to `$TMPDIR/chd-locks` when the data dir is not writable |
 | `COMPRESSATORIUM_DB_PATH` | `/config/compressatorium.db` | Unified SQLite database for DATs, match cache, CHD metadata, verification state, and DAT-sync state |
 | `CHD_METADATA_STORE` | *(deprecated)* | Legacy JSON path. Ignored at runtime; auto-migrated into the SQLite DB on first startup (custom path honored if set) and renamed to `chd_metadata.json.migrated.bak` |
 | `CHD_VERIFICATION_STORE` | *(deprecated)* | Legacy JSON path. Ignored at runtime; auto-migrated into the SQLite DB on first startup (custom path honored if set) and renamed to `verified_chds.json.migrated.bak` |
@@ -1953,7 +1953,7 @@ The application also uses a non-persistent directory for runtime lock files:
 
 | File / Directory | Location | Description |
 |------------------|----------|-------------|
-| `locks/` | `/tmp/chd-locks` | Job lock files (ephemeral, stored outside `/config` and automatically cleaned on container restart) |
+| `locks/` | `/config/locks` | Job lock files and conversion slots, shared by every process that mounts `/config`; stale ones are cleaned up on start |
 
 ---
 
