@@ -138,9 +138,10 @@ class Settings(BaseSettings):
         default=None,
         alias="CHD_CONCURRENCY_LOCK_DIR",
         description=(
-            "Directory for job lock files and conversion slots "
-            "(default: <data dir>/locks, shared by every container mounting /config; "
-            "$TMPDIR/chd-locks when the data dir is not writable)"
+            "Directory for job lock files and conversion slots. Default: always "
+            "<data dir>/locks when a data dir is configured (shared by every "
+            "container mounting /config); startup fails if it can't be created. "
+            "/tmp/chd-locks only when no data dir is configured at all."
         ),
     )
     max_job_history: int = Field(default=500, alias="MAX_JOB_HISTORY")
