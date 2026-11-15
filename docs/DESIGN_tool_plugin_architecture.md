@@ -2792,7 +2792,11 @@ size in part 0's descriptor must fit in the parts' summed size, so a later
 part missing or cut short fails, and every part must read to its last byte (a
 read error is no verdict). PS3 ISOs carry no checksums, so a later part's
 bytes can't be proven beyond that. The job's own verify-after takes the same
-path, since it is handed the same first part.
+path, since it is handed the same first part. The CLI's check of a split
+Image also holds a shared lock on the logical `Game.iso` and every part for
+the whole check, not only the first part: a rebuild holds just the logical
+output's lock (`_take_output_locks` for a directory job), so an in-progress
+build makes the check skip as busy instead of judging a half-written set.
 
 **Discovered inputs stay inside the Volumes.** A folder walk follows file
 symlinks, so every discovered file, folder and archive (for a member) goes

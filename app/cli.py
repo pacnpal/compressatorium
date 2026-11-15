@@ -1092,7 +1092,7 @@ def _checked_at(record: dict | None) -> datetime | None:
         return None
 
 
-def _hold_for_check(path: str) -> list[str] | None:
+def _hold_for_check(path: str, also: list[str] | tuple = ()) -> list[str] | None:
     """Take the shared read lock jobs use on ``path`` and its companions.
 
     Held through the check and its record, so no other process can overwrite
@@ -1104,7 +1104,7 @@ def _hold_for_check(path: str) -> list[str] | None:
 
     held: list[str] = []
     try:
-        for each in dict.fromkeys([path, *registry.source_companions(path)]):
+        for each in dict.fromkeys([path, *also, *registry.source_companions(path)]):
             if not lock_manager.acquire_input_lock(each):
                 _let_go_of(held)
                 return None
@@ -1126,11 +1126,14 @@ def _let_go_of(held: list[str]) -> None:
 
 async def _verify_one(
     path: str, tool, has_db: bool, since, dry_run: bool, *, target: str | None = None,
+    also_lock: list[str] | tuple = (),
 ) -> dict:
     """Check one Image. The line carries ``_stop`` when the run must end.
 
     ``target`` is the file the check reads when it isn't ``path`` (a split
     output's first part); the line and the record stay on ``path``.
+    ``also_lock`` names more files the check depends on (a split output's
+    logical path and every part), held the same way for the whole check.
     """
     read = target or path
     from fastapi.concurrency import run_in_threadpool
@@ -1146,12 +1149,12 @@ async def _verify_one(
             return line
     if dry_run:
         # Read-only: look, take nothing.
-        if lock_manager.is_locked(read):
+        if any(lock_manager.is_locked(each) for each in (read, *also_lock)):
             line["status"], line["reason"] = "skipped", "Busy: another job is writing it"
         else:
             line["status"] = "planned"
         return line
-    held = await run_in_threadpool(_hold_for_check, read)
+    held = await run_in_threadpool(_hold_for_check, read, also_lock)
     if held is None:
         # A writer has it: no verdict either way, and what was stored stays.
         line["status"], line["reason"] = "skipped", "Busy: another job is writing it"
@@ -1265,8 +1268,16 @@ async def verify(args, printer: Printer, state: RunState) -> int:
             })
             failed = failed or item.explicit
             continue
+        # A logical Image (a split ISO) also holds its logical path, which a
+        # rebuild locks alone, and every part: an in-progress build makes the
+        # check skip as busy rather than judge a half-written set.
+        also_lock = (
+            [item.path, *registry._companions(item.logical_mode, item.path)]
+            if item.logical_mode else []
+        )
         line = await _verify_one(
             item.path, tool, has_db, since, args.dry_run, target=target,
+            also_lock=also_lock,
         )
         stop = line.pop("_stop", False)
         failed = failed or line["status"] == "failed"

@@ -2490,3 +2490,21 @@ def test_a_split_part_pointing_outside_skips_the_whole_image(volume, dolphin, ca
         code, lines = _cli(capsys, "verify", str(named), "--json")
         assert [(x["path"], x["status"]) for x in lines] == [(str(iso), "skipped")], lines
         assert "outside the configured Volumes" in lines[0]["reason"]
+
+
+def test_a_split_iso_being_rebuilt_is_skipped_as_busy(volume, dolphin, capsys, tmp_path):
+    """codex 4577520805: a rebuild holds only the logical output's lock
+    (Game.iso); the check must see it and skip as busy, not judge a
+    half-written set."""
+    iso = _real_split_iso(volume / "games")
+    _store(iso, produced_meta={"mode": "folder_to_iso", "tool": "makeps3iso"})
+    builder = _other_process()
+    assert builder.acquire_lock(str(iso))
+    try:
+        code, lines = _cli(capsys, "verify", str(volume), "--json")
+    finally:
+        builder.release_lock(str(iso))
+
+    assert code == 0, lines
+    assert [(x["path"], x["status"]) for x in lines] == [(str(iso), "skipped")], lines
+    assert "busy" in lines[0]["reason"].lower()
