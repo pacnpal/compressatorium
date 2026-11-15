@@ -1394,6 +1394,31 @@ def test_7z_never_waits_for_a_password(monkeypatch):
     assert password_switches(compress) == []
 
 
+def test_the_7z_password_switch_is_random_per_call():
+    """Codacy B105: no password literal. Each read command gets a fresh
+    throwaway value, which only exists so 7z never prompts."""
+    from services.romz import romz_service
+
+    def switch(cmd):
+        return next(a for a in cmd[: cmd.index("--")] if a.startswith("-p"))
+
+    first = switch(romz_service._test_command("/i/Game.gba.7z"))
+    second = switch(romz_service._test_command("/i/Game.gba.7z"))
+    assert first != second
+    assert len(first) > 2 + 8
+
+
+@pytest.mark.parametrize("compression", [None, "fast", "default", "max"])
+def test_7z_a_never_gets_a_password_switch(compression):
+    """On `a` the switch would encrypt the archive being written."""
+    from services.romz import ROMZ_COMPRESS_MODES, romz_service
+
+    for mode in sorted(ROMZ_COMPRESS_MODES):
+        cmd = romz_service._build_command("Game.gba", "/o/Game.gba.out", mode, compression)
+        assert cmd[cmd.index(romz_service.sevenzip_path) + 1] == "a", cmd
+        assert not any(a.startswith("-p") for a in cmd[: cmd.index("--")]), cmd
+
+
 def _store(path, **meta):
     import asyncio
 
