@@ -18,9 +18,11 @@ folder, or with a PS1 header, belongs to the ``psx`` Platform.
 
 **One walk.** A walk of the root is kept for :data:`SCAN_TTL_SECONDS`, so a
 sweep over several ruled Platforms, and the listing that preceded it, share
-it. Each file's detection and sheet members are cached on the Library, keyed
-by path and checked against size and mtime, and pruned to the files the last
-walk saw. A repeat walk of a large Library is a stat per file and reads no
+it. Each file's sheet members are cached on the Library, keyed by path and
+checked against size and mtime, and its detection against
+``platform_detect.detection_key`` (the file and the tracks its header probe
+reads, the same key the shared cache uses); both are pruned to the files the
+last walk saw. A repeat walk of a large Library is a stat per file and reads no
 headers.
 
 **No disk on the event loop.** :meth:`FolderLibrary.configured` answers from
@@ -72,6 +74,10 @@ ID_PREFIX = "folder:"
 # How long one walk serves later listings. Long enough to cover a sweep over
 # every ruled Platform; short enough that the Rules view is current.
 SCAN_TTL_SECONDS = 30.0
+
+
+class ListingInProgress(LibraryUnreadable):
+    """Another walk of this Library is still running; try again shortly."""
 
 
 @dataclass(frozen=True)
@@ -160,7 +166,8 @@ class FolderLibrary:
         # Whether the last walk found the root inside the configured Volumes.
         self._in_volumes = True
         # path -> (size, mtime_ns, value), for the files the last walk saw.
-        self._detections: dict[str, tuple[int, int, Detection]] = {}
+        # path -> (platform_detect.detection_key, Detection).
+        self._detections: dict[str, tuple[tuple, Detection]] = {}
         self._members: dict[str, tuple[int, int, list[str]]] = {}
 
     def __repr__(self) -> str:
@@ -226,7 +233,7 @@ class FolderLibrary:
         files, unreadable = self._files()
         stats = dict(files)
         members_cache: dict[str, tuple[int, int, list[str]]] = {}
-        detections: dict[str, tuple[int, int, Detection]] = {}
+        detections: dict[str, tuple[tuple, Detection]] = {}
 
         def members(path: str) -> list[str]:
             st = stats[path]
@@ -242,12 +249,17 @@ class FolderLibrary:
         root = self.root
         for path in image_sets.group_images([p for p, _ in files], members=members):
             st = stats[path]
+            # Detection's own key: the file and the tracks its header probe
+            # reads, so a changed track re-detects its sheet. None (a track
+            # missing) means answer now and remember nothing.
+            key = platform_detect.detection_key(path, st)
             hit = self._detections.get(path)
-            if hit is not None and hit[:2] == (st.st_size, st.st_mtime_ns):
-                detection = hit[2]
+            if key is not None and hit is not None and hit[0] == key:
+                detection = hit[1]
             else:
                 detection = platform_detect.detect_uncached(path)
-            detections[path] = (st.st_size, st.st_mtime_ns, detection)
+            if key is not None:
+                detections[path] = (key, detection)
             scan.entries.append(Entry(
                 key=Path(os.path.relpath(path, root)).as_posix(),
                 path=path, size=st.st_size, mtime=st.st_mtime, detection=detection,
@@ -264,7 +276,7 @@ class FolderLibrary:
         Library is still running, rather than waiting behind it.
         """
         if not self._lock.acquire(blocking=False):
-            raise LibraryUnreadable(
+            raise ListingInProgress(
                 f"previous listing of {self.root} still running",
             )
         try:

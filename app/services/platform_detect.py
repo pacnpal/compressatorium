@@ -311,12 +311,11 @@ def detect_platform(path: str, *, tools: Iterable | None = None) -> Detection:
         st = os.stat(disk_path)
     except OSError:
         return Detection(None, UNSORTED, None, None, "file could not be read")
-    deps = () if _member else _header_dependencies(disk_path, tool_list)
-    if deps is None:
+    key = detection_key(path, st, tools=tool_list)
+    if key is None:
         # A file the header probe needs is missing or unreadable (a .bin still
         # copying in). Answer now, but remember nothing: the next call re-reads.
         return _decide(path, tool_list)
-    key = (st.st_size, st.st_mtime_ns, deps)
     with _cache_lock:
         hit = _cache.get(path)
         if hit is not None and hit[0] == key:
@@ -329,6 +328,25 @@ def detect_platform(path: str, *, tools: Iterable | None = None) -> Detection:
         while len(_cache) > _CACHE_MAX:
             _cache.popitem(last=False)
     return result
+
+
+def detection_key(
+    path: str, st: os.stat_result, *, tools: Iterable | None = None,
+) -> tuple | None:
+    """What a cached Detection for *path* is valid for, or None when it must not be cached.
+
+    The file's size and mtime (*st*, the caller's stat of it) and those of
+    every other file its header probe reads (``ToolPlugin.header_reads``: a
+    sheet's tracks). None when one of those cannot be stat'ed. The shared
+    cache here and a folder Library's own cache both key on it, so a changed
+    track re-detects its sheet in either.
+    """
+    tool_list = list(tools) if tools is not None else _default_tools()
+    disk_path, member = _split_member(path)
+    deps = () if member else _header_dependencies(disk_path, tool_list)
+    if deps is None:
+        return None
+    return (st.st_size, st.st_mtime_ns, deps)
 
 
 def _header_dependencies(path: str, tools: Iterable) -> tuple | None:

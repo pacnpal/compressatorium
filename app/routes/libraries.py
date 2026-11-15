@@ -19,12 +19,18 @@ from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 from routes import rules as shared_rule_routes
 from services import libraries
+from services.libraries.folder import ListingInProgress
 from services.rules import editor as rules_editor
 from services.rules.library import Library, LibraryUnreadable
 from services.subprocess_runner import run_detached
 from services.tools import registry
 
 router = APIRouter()
+
+# The 409 detail for a listing that cannot start because the previous walk of
+# the folder is still running. The Rules view shows it as a wait with a retry,
+# not as an error.
+LISTING_IN_PROGRESS = "listing_in_progress"
 
 # How long a folder Library's walk may take before the request gives up. A
 # healthy mount answers in seconds; a dead one would otherwise hold a request
@@ -122,6 +128,8 @@ async def library_platforms(library_id: str) -> dict:
         summary = await asyncio.wait_for(
             run_detached(lambda: summarize(refresh=True)), _SCAN_SECONDS,
         )
+    except ListingInProgress:
+        raise HTTPException(status_code=409, detail=LISTING_IN_PROGRESS) from None
     except LibraryUnreadable as exc:
         raise HTTPException(status_code=409, detail=f"Library unreadable: {exc}") from None
     except (asyncio.TimeoutError, OSError):

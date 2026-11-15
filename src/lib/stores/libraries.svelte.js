@@ -16,6 +16,10 @@ import { ui } from '$lib/stores/ui.svelte.js';
 
 export const ROMM_LIBRARY_ID = 'romm';
 
+// The backend's 409 detail when the folder's previous walk is still running
+// (routes/libraries.py LISTING_IN_PROGRESS).
+const LISTING_IN_PROGRESS = 'listing_in_progress';
+
 /** One folder Library: its Platforms, counts and schedule switch, plus its Rules. */
 export class FolderRulesSource extends RulesSource {
   emptyTitle = 'No Platforms found';
@@ -28,6 +32,9 @@ export class FolderRulesSource extends RulesSource {
   automatableModes = $state(null);
   platformsLoading = $state(false);
   platformsError = $state(null);
+  // The previous walk of this folder is still running (a slow or stuck
+  // mount). A wait, not an error: the view offers a retry.
+  platformsBusy = $state(false);
 
   constructor(library) {
     const id = () => library?.id;
@@ -68,6 +75,7 @@ export class FolderRulesSource extends RulesSource {
     this.platformsError = null;
     try {
       const data = await api.getLibraryPlatforms(this.id);
+      this.platformsBusy = false;
       this.platforms = Array.isArray(data?.platforms) ? data.platforms : [];
       this.counts = {
         unsorted: data?.unsorted ?? 0,
@@ -78,6 +86,12 @@ export class FolderRulesSource extends RulesSource {
         ? data.automatable_modes
         : null;
     } catch (e) {
+      if (e?.status === 409 && e?.message === LISTING_IN_PROGRESS) {
+        // Keep whatever was listed before; the walk will finish.
+        this.platformsBusy = true;
+        return;
+      }
+      this.platformsBusy = false;
       this.platformsError = e?.message ?? 'Failed to list the Library';
       this.platforms = [];
     } finally {

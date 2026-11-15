@@ -1090,3 +1090,47 @@ async def test_configured_turns_false_once_the_root_leaves_the_volumes(
     assert library.configured() is False
     result = await routes.run_library(lib["id"])
     assert result["stopped_reason"] == "not_configured"
+
+
+def test_a_changed_track_re_detects_its_sheet(db: Path, monkeypatch) -> None:
+    """The Library's detection cache keys a sheet on its tracks too (#294's header_reads)."""
+    from services.libraries.folder import FolderLibrary
+
+    roms = db / "roms"
+    _psx_tree(roms)
+    library = FolderLibrary(record_id=1, root=str(roms.resolve()), name="r")
+    decided: list[str] = []
+    real = platform_detect._decide
+
+    def counting(path, *args, **kwargs):
+        decided.append(Path(path).name)
+        return real(path, *args, **kwargs)
+
+    monkeypatch.setattr(platform_detect, "_decide", counting)
+    library.summary(refresh=True)
+    decided.clear()
+
+    with (roms / "psx" / "Multi" / "Multi (Track 2).bin").open("ab") as fh:
+        fh.write(b"\0" * 2048)
+    library.summary(refresh=True)
+
+    assert decided == ["Multi.cue"]
+
+
+@pytest.mark.asyncio
+async def test_a_listing_still_running_is_its_own_409(tree: Path, hung_walk) -> None:
+    """Not "unreadable": the Rules view shows it as a neutral wait with a retry."""
+    import threading
+
+    from routes import libraries as routes
+    from services import libraries
+
+    lib = await _register(tree)
+    library = libraries.get(lib["id"])
+    threading.Thread(target=lambda: library.scan(refresh=True), daemon=True).start()
+    assert hung_walk.wait(2)
+
+    with pytest.raises(HTTPException) as exc:
+        await routes.library_platforms(lib["id"])
+    assert exc.value.status_code == 409
+    assert exc.value.detail == routes.LISTING_IN_PROGRESS

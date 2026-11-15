@@ -219,6 +219,37 @@ def test_the_editor_shows_held_images_whatever_the_policy():
     assert before.rfind("{#if rule.duplicate_action !== 'skip'}") < before.rfind("{/if}")
 
 
+def test_a_listing_still_running_is_a_wait_not_an_error(tmp_path):
+    data = _run(tmp_path, f"""
+const source = new FolderRulesSource({_FOLDER});
+const api2 = api;
+api2.getLibraryPlatforms = async () => {{
+  const err = new Error('listing_in_progress');
+  err.status = 409;
+  throw err;
+}};
+await source.loadPlatforms();
+const busy = {{ busy: source.platformsBusy, error: source.platformsError }};
+api2.getLibraryPlatforms = async () => ({{ platforms: [{{ id: 'ps2', images: 1 }}] }});
+await source.loadPlatforms();
+process.stdout.write(JSON.stringify({{
+  ...busy, after: {{ busy: source.platformsBusy, n: source.platforms.length }},
+}}));
+""")
+    assert data["busy"] is True, data
+    assert data["error"] is None, data
+    assert data["after"] == {"busy": False, "n": 1}, data
+
+
+def test_the_rules_view_offers_a_retry_while_a_listing_runs():
+    src = _RULES_VIEW.read_text(encoding="utf-8")
+    block = re.search(r"\{:else if source\.platformsBusy\}(.*?)\{:else", src, re.DOTALL)
+    assert block, "no neutral state for a listing still running"
+    assert "Listing still running, try again shortly" in block.group(1)
+    assert "source.loadPlatforms()" in block.group(1)
+    assert "error" not in block.group(1), "the wait is styled as an error"
+
+
 def test_both_libraries_share_one_rules_source():
     """The Rule bookkeeping exists once (fix round 1, I1)."""
     folder = _STORE.read_text(encoding="utf-8")

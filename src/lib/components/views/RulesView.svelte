@@ -145,6 +145,11 @@
         <code class="root">{selected.root}</code>
         {#if source.platformsLoading}
           <span class="muted"><Spinner /> Looking for Platforms…</span>
+        {:else if source.platformsBusy}
+          <span class="muted busy">
+            Listing still running, try again shortly.
+            <Button variant="ghost" onclick={() => source.loadPlatforms()}>Retry</Button>
+          </span>
         {:else if source.platformsError}
           <span class="error">{source.platformsError}</span>
         {:else}
