@@ -2626,8 +2626,9 @@ opens the modal afterwards, resolves a pending confirmation as cancelled, and
 clears `autoInFlight` (the store stops waiting at the abort even when a request
 ignores the signal); `jobs.adopt` applies the same freshness rule as `refresh()`
 (`snapshotIsNewer`) and never adopts an unknown job the store saw evicted
-from history (bounded eviction tombstones), so a response built before a job
-finished and was pruned cannot put it back in the queue. That holds only while
+from history or removed by Clear completed (bounded tombstones, one helper),
+so a response built before a job finished and was pruned or cleared cannot
+put it back in the queue. That holds only while
 the job's tombstone is kept: the store keeps the newest 2000, so a response
 delayed past that many evictions can still restore the job. `refresh()` infers
 an eviction (and tombstones it) only for jobs it knew before it sent the

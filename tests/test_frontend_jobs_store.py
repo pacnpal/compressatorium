@@ -143,3 +143,24 @@ def test_a_job_born_during_refresh_is_neither_dropped_nor_tombstoned(tmp_path):
     data = _evaluate(tmp_path, _SSE_JOB_DURING_REFRESH)
 
     assert data == {"ids": ["j9"], "tombstoned": ["old"]}, data
+
+
+# CodeRabbit review 5909981859: Clear completed removes finished jobs on the
+# backend too. A late Auto response listing one must not bring it back as an
+# unknown queued row: the cleared ids are tombstoned like evictions.
+_CLEARED_BEFORE_ADOPT = """
+const store = new JobsStore();
+store._applyJob({ id: 'j1', file_path: '/v/a.iso', mode: 'createdvd', status: 'completed' });
+store._applyJob({ id: 'j2', file_path: '/v/b.iso', mode: 'createdvd', status: 'processing' });
+api.deleteCompletedJobs = async () => ({ history_generation: 'g', history_seq: 5 });
+await store.clearCompleted();
+store.adopt([
+  { id: 'j1', file_path: '/v/a.iso', mode: 'createdvd', status: 'queued' },
+  { id: 'j2', file_path: '/v/b.iso', mode: 'createdvd', status: 'queued' },
+]);
+process.stdout.write(JSON.stringify(Object.fromEntries(store.jobs.map((j) => [j.id, j.status]))));
+"""
+
+
+def test_a_cleared_job_is_not_restored_by_a_late_auto_response(tmp_path):
+    assert _evaluate(tmp_path, _CLEARED_BEFORE_ADOPT) == {"j2": "processing"}
