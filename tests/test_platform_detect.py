@@ -479,6 +479,20 @@ def test_a_cue_naming_an_accented_track_is_followed(tmp_path, encode):
     assert detect_platform(cue).platform == "saturn"
 
 
+@pytest.mark.parametrize("track_name", ["game.bin", "Game (Track 1).bin"])
+def test_an_unquoted_saturn_cue_is_followed(tmp_path, track_name):
+    from services.tools import registry
+
+    folder = tmp_path / "downloads"
+    track = _sector0(folder / track_name, b"SEGA SEGASATURN ", raw=True)
+    cue = _write(
+        folder / "game.cue", f"FILE {track_name} BINARY\n  TRACK 01 MODE1/2352\n".encode(),
+    )
+
+    assert detect_platform(cue).platform == "saturn"
+    assert registry.get("chdman").header_reads(cue) == [track]
+
+
 def test_a_cp1252_cue_lists_its_accented_track_and_is_cached(tmp_path):
     from services.tools import registry
 
