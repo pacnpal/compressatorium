@@ -23,7 +23,14 @@ from services.referrers import write_new_bytes
 from services.referrers.m3u import PLAYLIST_EXT, entry_for, playlist_bytes
 from services.tools import registry
 from utils.sheet_text import sheet_track_list
-from utils.path_utils import is_within_configured_volumes, match_extension, same_file
+from utils.path_utils import (
+    FileIdentity,
+    file_identity,
+    is_within_configured_volumes,
+    match_extension,
+    same_file,
+    same_identity,
+)
 
 _DISC = r"(?:disc|disk|cd)[\s_-]*(\d+)(?:\s*of\s*\d+)?"
 # "(Disc 1)", "[CD 2]", "(Disc 1 of 3)": the whole bracket group goes.
@@ -190,12 +197,13 @@ def _validated_files(paths: list[str]) -> tuple[str, dict[str, str]]:
     return directory, files
 
 
-def _named_tracks(sheet: str) -> set[str]:
-    """Casefolded track file names a .cue / .gdi sheet refers to, read the one way
-    the app reads sheets (``utils.sheet_text``): confined to the Volumes, and a
-    refused or ambiguous sheet is unreadable, so it names nothing."""
-    tracks = sheet_track_list(sheet)
-    return {t.name.casefold() for t in tracks} if tracks else set()
+def _named_tracks(sheet: str) -> list[FileIdentity]:
+    """The identities of the track files a .cue / .gdi sheet refers to, read the
+    one way the app reads sheets (``utils.sheet_text``): confined to the Volumes,
+    and a refused or ambiguous sheet is unreadable, so it names nothing. A track
+    that does not exist has no identity and matches no selected file."""
+    found = (file_identity(str(t)) for t in sheet_track_list(sheet) or [])
+    return [ident for ident in found if ident is not None]
 
 
 def _split_discs_and_tracks(files: dict[str, str]) -> tuple[list[str], list[str]]:
@@ -207,11 +215,18 @@ def _split_discs_and_tracks(files: dict[str, str]) -> tuple[list[str], list[str]
     """
     disc_exts = registry.disc_extensions()
     sheets = [files[n] for n in files if n.lower().endswith((".cue", ".gdi"))]
-    named = set().union(*(_named_tracks(s) for s in sheets)) if sheets else set()
-    tracks = [n for n in files if n.casefold() in named]
+    named = [ident for sheet in sheets for ident in _named_tracks(sheet)]
+
+    def is_track(name: str) -> bool:
+        # By file identity, not name: tracks/Game (Disc 2).iso is not the
+        # selected Game (Disc 2).iso beside the sheet.
+        mine = file_identity(files[name])
+        return any(same_identity(mine, ident) for ident in named)
+
+    tracks = [n for n in files if is_track(n)]
     discs = []
     for name in files:
-        if name.casefold() in named:
+        if name in tracks:
             continue
         if match_extension(name, disc_exts) is None:
             raise PlaylistError(f"{name} is not a disc image")
