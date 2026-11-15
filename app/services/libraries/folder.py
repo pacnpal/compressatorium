@@ -192,6 +192,10 @@ class FolderLibrary:
         # Bumped when something the last walk relied on changed (a mapping),
         # so the next listing walks again instead of serving it.
         self._generation = 0
+        # Set when the Library is removed: a walk that outlives it must not
+        # record Findings. (#303's Library generation token will take this
+        # job when it lands.)
+        self._removed = False
         # Serialises a settings change (database row, then this object), so
         # two concurrent edits leave both saying the same thing. Never the walk
         # lock: a settings edit must not wait for a walk.
@@ -215,6 +219,14 @@ class FolderLibrary:
             self._schedule_enabled = bool(schedule_enabled)
         if max_per_sweep is not None:
             self._max_per_sweep = int(max_per_sweep)
+
+    def mark_removed(self) -> None:
+        """This Library was removed; a walk still running records nothing."""
+        self._removed = True
+
+    def is_current(self) -> bool:
+        """Still a registered Library. Asked under the Findings store's lock."""
+        return not self._removed
 
     def invalidate(self) -> None:
         """The last walk is out of date; the next listing walks again. Never waits."""
@@ -350,6 +362,7 @@ class FolderLibrary:
             findings.reconcile(
                 self.id, self._findings(scan),
                 keep_under=[self._key(path) for path in scan.unwalked],
+                current=self.is_current,
             )
         except Exception:
             # The walk is still good for Rules; the Findings view is behind

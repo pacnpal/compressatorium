@@ -20,7 +20,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Iterable
+import threading
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -30,6 +31,10 @@ from services import db as _db
 PLATFORM_CONFLICT = "platform_conflict"
 UNSORTED = "unsorted"
 KINDS = (PLATFORM_CONFLICT, UNSORTED)
+
+# Serialises a producer's write against forgetting its Library, so a walk that
+# outlives its Library cannot write after that Library's rows are dropped.
+_write_lock = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -67,6 +72,7 @@ def reconcile(
     library_id: str, observed: Iterable[Observed], *,
     kinds: Iterable[str] = KINDS, now: str | None = None,
     keep_under: Iterable[str] = (),
+    current: Callable[[], bool] | None = None,
 ) -> dict[str, int]:
     """Make *library_id*'s stored Findings of *kinds* match *observed*. Blocking.
 
@@ -74,24 +80,29 @@ def reconcile(
     this time (a subfolder that did not list). Rows under them are left as
     they are, dismissal included: not seen is not gone.
 
+    *current* is asked under the store's write lock, just before writing:
+    False (the producer's Library was removed while it worked) writes nothing.
+
     Returns how many were added, updated (the cause changed) and cleared.
     """
     kinds = tuple(kinds)
     unseen = tuple(p.strip("/") for p in keep_under if p.strip("/"))
     stamp = now or _now()
-    current: dict[tuple[str, str], Observed] = {}
+    seen: dict[tuple[str, str], Observed] = {}
     for item in observed:
         if item.kind in kinds:
-            current[(item.image_key, item.kind)] = item
+            seen[(item.image_key, item.kind)] = item
     counts = {"added": 0, "changed": 0, "cleared": 0}
-    with _session() as session:
+    with _write_lock, _session() as session:
+        if current is not None and not current():
+            return counts
         rows = session.query(_db.FindingRecord).filter(
             _db.FindingRecord.library_id == library_id,
             _db.FindingRecord.kind.in_(kinds),
         ).all()
         stored = {(row.image_key, row.kind): row for row in rows}
         for key, row in stored.items():
-            item = current.get(key)
+            item = seen.get(key)
             if item is None and _under(row.image_key, unseen):
                 continue
             if item is None:
@@ -109,7 +120,7 @@ def reconcile(
             row.reason = item.reason
             row.path = item.path
             row.last_seen = stamp
-        for key, item in current.items():
+        for key, item in seen.items():
             if key in stored:
                 continue
             session.add(_db.FindingRecord(
@@ -181,7 +192,11 @@ def undismiss(finding_id: int) -> bool:
 
 
 def forget_library(library_id: str) -> None:
-    """Drop a removed Library's Findings. Blocking."""
-    with _session() as session:
+    """Drop a removed Library's Findings. Blocking.
+
+    Call it after the Library stops answering ``current`` as True: the write
+    lock then makes sure no walk of it writes afterwards.
+    """
+    with _write_lock, _session() as session:
         session.query(_db.FindingRecord).filter_by(library_id=library_id).delete()
         session.commit()

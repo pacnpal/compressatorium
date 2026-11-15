@@ -266,6 +266,8 @@ async def remove(library_id: str) -> bool:
     def _delete() -> None:
         from services import findings, platform_mappings
 
+        # First, so a walk of it that finishes from here on writes nothing.
+        library.mark_removed()
         platform_mappings.forget_library(library_id)
         findings.forget_library(library_id)
         with _session() as session:

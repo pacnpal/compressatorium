@@ -677,3 +677,34 @@ def test_the_platform_picker_lists_known_platforms() -> None:
 
     assert {"slug": "psp", "name": "PlayStation Portable"} in listed
     assert len({p["slug"] for p in listed}) == len(listed)
+
+
+# ----------------------------------------------------------------------
+# a walk that outlives its Library (I2)
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_walk_that_finishes_after_its_library_is_removed_writes_nothing(
+    tree: Path,
+) -> None:
+    from services import libraries
+
+    await _register(tree)
+    library = libraries.folder_libraries()[0]
+    await libraries.remove(library.id)
+
+    # A walk still running when the Library went (a listing, Check now, a
+    # walk stranded on a dead mount) finishes now.
+    library.summary(refresh=True)
+
+    assert _open() == []
+
+
+def test_reconcile_writes_nothing_once_the_producer_is_gone(db: Path) -> None:
+    from services import findings
+
+    findings.reconcile("folder:1", [_conflict("ps2/a.iso")], current=lambda: False)
+
+    assert _open() == []
+
