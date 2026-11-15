@@ -309,7 +309,7 @@ class FolderLibrary:
         """Walk the root once, group the files into Images and detect each Platform."""
         # What this walk's detections are valid for: a mapping set while it
         # runs bumps the generation, and its Findings are then not written.
-        generation = self._generation
+        walk_generation = self._generation
         files, unreadable, unreadable_files, unwalked = self._files()
         stats = dict(files)
         known = {os.path.normpath(p): st for p, st in files}
@@ -341,7 +341,7 @@ class FolderLibrary:
 
         scan = Scan(
             unreadable=unreadable, unreadable_files=unreadable_files,
-            unwalked=unwalked, taken_at=time.monotonic(), generation=generation,
+            unwalked=unwalked, taken_at=time.monotonic(), generation=walk_generation,
         )
         for path in image_sets.group_images([p for p, _ in files], members=members):
             st = stats[path]
