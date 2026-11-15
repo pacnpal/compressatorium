@@ -992,3 +992,36 @@ def test_verify_stops_when_its_own_deadline_abandons_a_read(
     assert len(lines) == 1
     assert "timed out" in lines[0]["reason"]
     assert BATCH_STOPPED_MESSAGE in captured.err
+
+
+def test_a_stop_during_queueing_cancels_the_jobs_it_returned(
+    volume, dolphin, capsys, monkeypatch,
+):
+    """SIGTERM lands while queue_prepared is reserving destinations: the
+    one-shot cancel-all ran before the jobs existed, so they must be cancelled
+    after the queue call returns, before any runs (Source deletion included)."""
+    import asyncio
+    import os
+    import signal
+
+    from routes import convert as convert_routes
+
+    iso = _iso(volume)
+    real = convert_routes.queue_prepared
+
+    async def signalled_mid_queue(batch):
+        os.kill(os.getpid(), signal.SIGTERM)
+        await asyncio.sleep(0.05)  # the handler runs and its cancel-all finishes
+        return await real(batch)
+
+    monkeypatch.setattr(convert_routes, "queue_prepared", signalled_mid_queue)
+
+    code, lines = _cli(
+        capsys, "convert", str(volume), "--to", "rvz", "--delete-source",
+        "--container-only", "--json",
+    )
+
+    assert code == 1
+    assert lines[0]["status"] == "cancelled"
+    assert iso.exists()
+    assert dolphin["runs"] == []

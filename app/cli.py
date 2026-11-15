@@ -714,6 +714,10 @@ async def _run_jobs(prepared: list[tuple], printer: Printer, state: RunState) ->
                 if item is not None:
                     watching[job.id] = item
                     pending.add(job.id)
+            if state.stopping:
+                # A stop that arrived while this batch was being queued: the
+                # signal handler's cancel-all ran before these jobs existed.
+                await job_manager.cancel_all_jobs()
             report()
         while pending:
             await wait_for_an_end()
