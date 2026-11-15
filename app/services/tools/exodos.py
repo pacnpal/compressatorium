@@ -9,7 +9,8 @@ why.
   folder whose template is in ``EXODOS_DOS_DIR``. Cached per (path, size,
   mtime).
 * **Gated like nsz.** No template tree, no tool: ``is_ready`` is false and the
-  sidebar hides it.
+  sidebar hides it. Checking a product needs no tree, so ``verify_is_ready``
+  stays true.
 * **Verifiable, never deletable.** The product differs from its Source by
   design, so verify proves it reads back, not that it holds the Source; and the
   Source is the operator's eXoDOS install. ``supports_verify`` without
@@ -76,6 +77,12 @@ class ExodosTool(BaseTool):
         # Detached, not pooled: the probe stats a directory that may sit on a
         # mount that has stopped answering (see ToolPlugin.is_ready).
         return bool(await run_detached(self._service.is_ready))
+
+    async def verify_is_ready(self) -> bool:
+        # Checking a .dosz reads only the .dosz (CRCs, names, the root conf),
+        # never the template tree, so a product stays checkable after the
+        # eXoDOS install is gone or EXODOS_DOS_DIR is unset.
+        return True
 
     def converts_path(self, path: str) -> bool:
         return self._service.is_repackable(path)

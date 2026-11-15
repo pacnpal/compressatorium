@@ -4600,7 +4600,8 @@ tool: it registers with an empty binary path and reports no pids.
 - **Gating.** `EXODOS_DOS_DIR` is the only source of the template tree. It must
   be a directory inside a configured Volume; otherwise `is_ready` is false (run
   through `run_detached`, since it stats a possibly dead mount) and the tool is
-  hidden.
+  hidden. Checking a product reads only the `.dosz`, so `verify_is_ready` is
+  always true: `compressatorium verify` and Verify work without the install.
 - **Content-refined source.** `.zip` is romz's archive extension too, so
   `converts_path` reads the zip's directory: every name passes
   `member_segments` and `enforce_archive_limits`, every member sits in one game
