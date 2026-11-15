@@ -22,8 +22,14 @@ from services.nsz import (
     nsz_service,
 )
 
-from .base import BaseTool
+from services.stream_digest import content_digest_of, file_chunks
+from services.subprocess_runner import ReadCancelled
+
+from .base import BaseTool, ContentDigest, ContentDigestUnavailable
 from .spec import ModeKind, ModeSpec
+
+# SHA256 of a whole NSP/XCI image: what nsz -V prints for the NSP it rebuilds.
+SWITCH_IMAGE_SHA256_KIND = "switch_image_sha256"
 
 
 class NszTool(BaseTool):
@@ -44,6 +50,9 @@ class NszTool(BaseTool):
             # token only when the spec advertises level support.
             supports_compression_level=True,
             supports_delete_on_verify=True,
+            # NSP: compared with the NSP SHA256 nsz -V rebuilds. XCI: the XCZ
+            # is decompressed to scratch and hashed (#301 spike, DESIGN).
+            supports_round_trip=True,
             allows_archive_input=True,
         ),
         ModeSpec(
@@ -65,6 +74,32 @@ class NszTool(BaseTool):
     output_extensions = frozenset({".nsz", ".xcz", ".nsp", ".xci"})
     # nsz -V validates the compressed containers.
     verify_extensions = frozenset({".nsz", ".xcz"})
+
+    async def content_digest(
+        self, path: str, *, cancel_event: asyncio.Event | None = None,
+    ) -> ContentDigest | None:
+        # Both sides are the SHA256 of the whole NSP/XCI image. The Source is
+        # hashed as a file; an NSZ's rebuilt NSP hash comes from nsz -V (no
+        # temp file), an XCZ is decompressed into a headroom-checked scratch dir.
+        ext = Path(path).suffix.lower()
+        if ext in NSZ_COMPRESS_EXTENSIONS:
+            return await content_digest_of(
+                file_chunks([path]), kind=SWITCH_IMAGE_SHA256_KIND,
+                algorithm="sha256", cancel_event=cancel_event,
+            )
+        if ext == ".nsz":
+            rebuild = self._service.rebuilt_nsp_sha256
+        elif ext == ".xcz":
+            rebuild = self._service.decompressed_sha256
+        else:
+            return None
+        try:
+            value = await rebuild(path, cancel_event=cancel_event)
+        except ReadCancelled:
+            raise
+        except (RuntimeError, ValueError, OSError) as e:
+            raise ContentDigestUnavailable(str(e)) from e
+        return ContentDigest(kind=SWITCH_IMAGE_SHA256_KIND, value=value)
 
     def __init__(self, binary_path: str) -> None:
         super().__init__(binary_path)

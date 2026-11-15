@@ -561,6 +561,202 @@ async def test_real_jwudtool_output_decodes_to_the_wud(tmp_path):
     assert source == output
 
 
+# ---------------------------------------------------------------------------
+# nsz: the NSP SHA256 that nsz -V rebuilds; an XCZ is decompressed and hashed
+# ---------------------------------------------------------------------------
+
+SWITCH = "switch_image_sha256"
+
+
+def _nsz():
+    return registry.get("nsz")
+
+
+class FakeNsz:
+    """``nsz -V`` prints the rebuilt NSP's SHA256; ``nsz -D`` writes the XCI."""
+
+    def __init__(self) -> None:
+        self.verify_stdout = b""
+        self.rc = 0
+        self.decompressed: bytes | None = None
+        self.calls: list[list[str]] = []
+        self.homes: list[str] = []
+        self.on_call = None
+
+    async def run_capture(self, cmd, **kwargs):
+        self.calls.append(list(cmd))
+        self.homes.append((kwargs.get("env") or {}).get("HOME", ""))
+        if self.on_call is not None:
+            return self.on_call(cmd)
+        if "-V" in cmd:
+            return self.rc, self.verify_stdout, b""
+        if "-D" in cmd:
+            work = Path(cmd[cmd.index("-o") + 1])
+            src = Path(cmd[-1])
+            if self.decompressed is not None:
+                (work / (src.stem + ".xci")).write_bytes(self.decompressed)
+            return self.rc, b"", b""
+        raise AssertionError(cmd)
+
+
+@pytest.fixture(name="nsz_fake")
+def _nsz_fake(monkeypatch, tmp_path):
+    from config import settings
+
+    keys = tmp_path / "prod.keys"
+    keys.write_text("header_key = 00\n")
+    service = _nsz()._service
+    fake = FakeNsz()
+    monkeypatch.setattr(service._runner, "run_capture", fake.run_capture)
+    monkeypatch.setattr(service, "resolved_keys_file", lambda: str(keys))
+    monkeypatch.setattr(settings, "temp_dir", str(tmp_path / "scratch"))
+    return fake
+
+
+def _verify_stdout(sha256: str) -> bytes:
+    """``nsz -V`` output in the shape 4.6.1 and 5.0.0 both print."""
+    return (
+        "[VERIFY NSZ] Game.nsz\n"
+        "[NCA HASH] " + "ab" * 32 + "\n"
+        "[VERIFIED] Game/0123.ncz\n"
+        f"[NSP SHA256] {sha256}\n"
+    ).encode()
+
+
+@pytest.mark.asyncio
+async def test_nsp_digest_is_the_file_sha256(tmp_path):
+    nsp = tmp_path / "Game.nsp"
+    nsp.write_bytes(b"PFS0" + b"switch" * 500)
+    assert await _nsz().content_digest(str(nsp)) == ContentDigest(
+        kind=SWITCH, value=hashlib.sha256(nsp.read_bytes()).hexdigest(),
+    )
+
+
+@pytest.mark.asyncio
+async def test_nsz_digest_is_the_nsp_sha256_nsz_verify_rebuilds(tmp_path, nsz_fake):
+    out = tmp_path / "Game.nsz"
+    out.write_bytes(b"PFS0 ncz")
+    nsz_fake.verify_stdout = _verify_stdout("CD" * 32)
+
+    digest = await _nsz().content_digest(str(out))
+
+    assert digest == ContentDigest(kind=SWITCH, value="cd" * 32)
+    assert nsz_fake.calls[0][-2:] == ["-V", str(out)]
+    assert nsz_fake.homes[0]  # run with the private keys HOME
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("stdout", "rc"), [
+    (b"[VERIFY NSZ] Game.nsz\n", 0),        # no hash line
+    (_verify_stdout("cd" * 32), 1),         # a failed verify
+    (_verify_stdout("cd" * 32) * 2, 0),     # two hashes: ambiguous
+])
+async def test_an_nsz_verify_without_one_clean_hash_is_unavailable(
+    tmp_path, nsz_fake, stdout, rc,
+):
+    out = tmp_path / "Game.nsz"
+    out.write_bytes(b"x")
+    nsz_fake.verify_stdout, nsz_fake.rc = stdout, rc
+    with pytest.raises(ContentDigestUnavailable):
+        await _nsz().content_digest(str(out))
+
+
+@pytest.mark.asyncio
+async def test_xcz_digest_decompresses_to_scratch_and_removes_it(tmp_path, nsz_fake):
+    xci = b"HEAD" * 4000
+    out = tmp_path / "Game.xcz"
+    out.write_bytes(b"xcz")
+    nsz_fake.decompressed = xci
+
+    digest = await _nsz().content_digest(str(out))
+
+    assert digest == ContentDigest(kind=SWITCH, value=hashlib.sha256(xci).hexdigest())
+    assert "-D" in nsz_fake.calls[0]
+    assert os.listdir(tmp_path / "scratch") == []
+
+
+@pytest.mark.asyncio
+async def test_an_xcz_that_decompresses_to_nothing_is_unavailable(tmp_path, nsz_fake):
+    out = tmp_path / "Game.xcz"
+    out.write_bytes(b"xcz")
+    with pytest.raises(ContentDigestUnavailable):
+        await _nsz().content_digest(str(out))
+    assert os.listdir(tmp_path / "scratch") == []
+
+
+@pytest.mark.asyncio
+async def test_an_xcz_with_no_scratch_room_is_unavailable_without_decompressing(
+    tmp_path, nsz_fake, monkeypatch,
+):
+    from services import disk
+
+    def no_room(*_a, **_k):
+        raise disk.InsufficientDiskSpace("not enough room")
+
+    monkeypatch.setattr(disk, "ensure_headroom", no_room)
+    out = tmp_path / "Game.xcz"
+    out.write_bytes(b"xcz")
+    with pytest.raises(ContentDigestUnavailable, match="space"):
+        await _nsz().content_digest(str(out))
+    assert nsz_fake.calls == []
+
+
+def test_nsz_compress_declares_round_trip():
+    assert registry.mode_supports_round_trip("nsz_compress")
+
+
+@pytest.mark.asyncio
+async def test_nsz_job_whose_rebuilt_nsp_matches_deletes_the_nsp(e2e, nsz_fake):
+    nsp = e2e["tmp_path"] / "Game.nsp"
+    nsp.write_bytes(b"PFS0" + b"switch" * 500)
+    e2e["writer"] = lambda src, out: out.write_bytes(b"nsz container")
+    nsz_fake.verify_stdout = _verify_stdout(hashlib.sha256(nsp.read_bytes()).hexdigest())
+
+    _assert_round_tripped(await _run(e2e, nsp, "nsz_compress"), nsp)
+
+
+@pytest.mark.asyncio
+async def test_nsz_job_whose_rebuilt_nsp_differs_keeps_the_nsp(e2e, nsz_fake):
+    """What an NSP whose NDV0 delta fragments nsz dropped looks like."""
+    nsp = e2e["tmp_path"] / "Game.nsp"
+    nsp.write_bytes(b"PFS0" + b"switch" * 500)
+    e2e["writer"] = lambda src, out: out.write_bytes(b"nsz container")
+    nsz_fake.verify_stdout = _verify_stdout("00" * 32)
+
+    _assert_kept(await _run(e2e, nsp, "nsz_compress"), nsp)
+
+
+@pytest.mark.asyncio
+async def test_nsz_job_on_an_xci_compares_the_decompressed_xci(e2e, nsz_fake):
+    xci = e2e["tmp_path"] / "Game.xci"
+    xci.write_bytes(b"HEAD" * 4000)
+    e2e["writer"] = lambda src, out: out.write_bytes(b"xcz container")
+    nsz_fake.decompressed = xci.read_bytes()
+
+    _assert_round_tripped(await _run(e2e, xci, "nsz_compress"), xci)
+
+
+_NSZ_BIN = _binary("NSZ_PATH", "/usr/local/bin/nsz", "nsz")
+
+
+@pytest.mark.skipif(
+    _NSZ_BIN is None or not os.environ.get("NSZ_TEST_NSP"),
+    reason="needs nsz, prod.keys and a real NSP in NSZ_TEST_NSP",
+)
+@pytest.mark.asyncio
+async def test_real_nsz_output_rebuilds_the_nsp(tmp_path):
+    """Opt-in: a real NSP compressed by the real nsz (with prod.keys set up
+    as the app finds them) round-trips to the same SHA256."""
+    import subprocess
+
+    nsp = os.environ["NSZ_TEST_NSP"]
+    subprocess.run(
+        [_NSZ_BIN, "-C", "-K", "-o", str(tmp_path), nsp], check=True, capture_output=True,
+    )
+    out = tmp_path / (Path(nsp).stem + ".nsz")
+    assert await _nsz().content_digest(nsp) == await _nsz().content_digest(str(out))
+
+
 _MAXCSO = _binary("MAXCSO_PATH", "/usr/local/bin/maxcso", "maxcso")
 
 

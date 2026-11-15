@@ -376,7 +376,7 @@ export const TOOLS = [
         group: 'nsz',
         outputExt: null, inputExtensions: NSZ_COMPRESS_EXTS,
         supportsCompression: false, supportsCompressionLevel: true,
-        supportsDeleteOnVerify: true, allowsArchiveInput: true },
+        supportsDeleteOnVerify: true, supportsRoundTrip: true, allowsArchiveInput: true },
       { mode: 'nsz_decompress', kind: 'extract', label: 'Decompress (NSZ/XCZ → NSP/XCI)',
         group: 'nsz',
         outputExt: null, inputExtensions: NSZ_VERIFY_EXTS,
