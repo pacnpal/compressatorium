@@ -4,12 +4,15 @@ Synthetic fixtures only: a tiny eXoDOS-shaped tree under a temp Volume.
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import zipfile
+from pathlib import Path
 
 import pytest
 from services import exodos as exodos_module
 from services.exodos import ExodosService, NotRepackable
+from services.subprocess_runner import ConversionCancelled
 
 TEMPLATE = (
     b"[autoexec]\r\n"
@@ -90,6 +93,7 @@ def test_inspect_finds_the_game_folder_and_its_template(tree):
         (["ABARON.EXE"], "single game folder"),
         (["Abaron/A.EXE", "Other/B.EXE"], "single game folder"),
         (["Abaron/"], "single game folder"),
+        (["Abaron", "Abaron/A.EXE"], "single game folder"),
         (["Abaron/A.EXE", "Abaron/../../evil"], "Invalid archive member"),
         (["/abs/A.EXE"], "Absolute paths"),
         (["Abaron/C:/A.EXE"], "Drive letters"),
@@ -168,3 +172,160 @@ def test_the_product_can_go_to_another_folder(tree, tmp_path):
     assert ExodosService().get_output_path(source, str(tmp_path)) == str(
         tmp_path / "Abaron (1995).dosz",
     )
+
+
+# --- convert ---------------------------------------------------------------
+
+
+def _convert(service, source, output, cancel_event=None):
+    async def _drain():
+        return [
+            update async for update in service.convert(
+                source, output, "exodos_repack", cancel_event=cancel_event,
+            )
+        ]
+
+    return asyncio.run(_drain())
+
+
+def _members(path):
+    with zipfile.ZipFile(path) as zf:
+        return {name: zf.read(name) for name in zf.namelist()}
+
+
+def test_convert_re_roots_the_game_and_writes_the_rewritten_conf(tree):
+    service = ExodosService()
+    source = _game_zip(tree)
+    before = Path(source).read_bytes()
+    output = service.get_output_path(source)
+
+    updates = _convert(service, source, output)
+
+    assert _members(output) == {
+        "ABARON.EXE": b"data:Abaron/ABARON.EXE",
+        "CD/ABARON.CUE": b"data:Abaron/CD/ABARON.CUE",
+        "dosbox.conf": (
+            b"[autoexec]\r\n"
+            b"mount c .\\\r\n"
+            b"imgmount d .\\CD\\ABARON.CUE -t cdrom\r\n"
+            b"c:\r\n"
+            b"ABARON.EXE\r\n"
+        ),
+    }
+    assert Path(source).read_bytes() == before
+    assert updates[-1]["progress"] == 100
+    assert not updates[-1].get("warning")
+
+
+def test_a_conf_inside_the_game_folder_is_replaced_by_the_template(tree):
+    service = ExodosService()
+    source = _game_zip(tree, ["Abaron/A.EXE", "Abaron/dosbox.conf"])
+    output = service.get_output_path(source)
+
+    _convert(service, source, output)
+
+    with zipfile.ZipFile(output) as zf:
+        assert zf.namelist().count("dosbox.conf") == 1
+        assert zf.read("dosbox.conf").startswith(b"[autoexec]")
+
+
+def test_convert_warns_when_the_conf_still_points_into_the_pack(tree):
+    (tree["dos"] / "Abaron" / "dosbox.conf").write_bytes(
+        TEMPLATE + b"imgmount e .\\eXoDOS\\Other\\CD.CUE -t cdrom\r\n",
+    )
+    service = ExodosService()
+    source = _game_zip(tree)
+
+    updates = _convert(service, source, service.get_output_path(source))
+
+    assert updates[-1]["warning"] is True
+    assert "imgmount e .\\eXoDOS\\Other\\CD.CUE" in updates[-1]["message"]
+
+
+def test_cancel_leaves_neither_product_nor_temp_file(tree):
+    service = ExodosService()
+    source = _game_zip(tree)
+    cancel = asyncio.Event()
+    cancel.set()
+
+    with pytest.raises(ConversionCancelled):
+        _convert(service, source, service.get_output_path(source), cancel)
+
+    assert sorted(os.listdir(tree["games"])) == ["!dos", "Abaron (1995).zip"]
+
+
+def test_convert_refuses_a_zip_that_is_not_repackable(tree):
+    service = ExodosService()
+    source = _game_zip(tree, ["Loose.EXE"], name="Loose.zip")
+
+    with pytest.raises(NotRepackable):
+        _convert(service, source, service.get_output_path(source))
+
+
+# --- verify ----------------------------------------------------------------
+
+
+def _verify(service, path, cancel_event=None):
+    return asyncio.run(service.verify(path, cancel_event=cancel_event))
+
+
+def _product(tree):
+    service = ExodosService()
+    source = _game_zip(tree)
+    output = service.get_output_path(source)
+    _convert(service, source, output)
+    return service, output
+
+
+def test_a_finished_product_verifies_intact(tree):
+    service, output = _product(tree)
+
+    result = _verify(service, output)
+
+    assert result["valid"] is True
+    assert "Intact" in result["message"]
+
+
+def test_a_member_with_a_bad_crc_fails_verify(tree, tmp_path):
+    service = ExodosService()
+    bad = tmp_path / "vol" / "bad.dosz"
+    with zipfile.ZipFile(bad, "w", zipfile.ZIP_STORED) as zf:
+        zf.writestr("dosbox.conf", b"[autoexec]\r\n")
+        zf.writestr("GAME.EXE", b"g" * 5000)
+    raw = bytearray(bad.read_bytes())
+    raw[raw.index(b"g" * 100) + 10] ^= 0xFF
+    bad.write_bytes(bytes(raw))
+
+    result = _verify(service, str(bad))
+
+    assert result["valid"] is False
+    assert "GAME.EXE" in result["message"]
+
+
+def test_a_product_without_a_root_conf_fails_verify(tree, tmp_path):
+    service = ExodosService()
+    path = _zip(tmp_path / "vol" / "noconf.dosz", ["GAME.EXE"])
+
+    result = _verify(service, path)
+
+    assert result["valid"] is False
+    assert "dosbox.conf" in result["message"]
+
+
+def test_a_product_with_an_unsafe_member_fails_verify(tree, tmp_path):
+    service = ExodosService()
+    path = _zip(tmp_path / "vol" / "evil.dosz", ["dosbox.conf", "../evil"])
+
+    result = _verify(service, path)
+
+    assert result["valid"] is False
+
+
+def test_a_cancelled_verify_reaches_no_verdict(tree):
+    service, output = _product(tree)
+    cancel = asyncio.Event()
+    cancel.set()
+
+    result = _verify(service, output, cancel)
+
+    assert result.get("cancelled") is True

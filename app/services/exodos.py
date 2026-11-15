@@ -21,14 +21,24 @@ Behaviour modelled on derkommutator/eXo2romm (Unlicense); no code is shared.
 """
 from __future__ import annotations
 
+import asyncio
 import functools
 import os
 import re
 import zipfile
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from fastapi.concurrency import run_in_threadpool
 from services.archive import archive_service
+from services.archive_edit import rewrite_zip
+from services.subprocess_runner import (
+    ReadCancelled,
+    collect_verify,
+    run_detached,
+    verify_preflight,
+)
 from utils.path_utils import is_within_configured_volumes
 
 from config import settings
@@ -36,6 +46,9 @@ from config import settings
 # The product's extension: a zip, under the name DOSBox Pure documents for one.
 OUTPUT_EXTENSION = ".dosz"
 INPUT_EXTENSIONS = frozenset({".zip"})
+# A dosbox.conf is a few KB; anything far larger is not a template.
+_MAX_TEMPLATE_BYTES = 1024 * 1024
+_PROGRESS_INTERVAL = 0.5
 
 
 @dataclass(frozen=True)
@@ -226,8 +239,13 @@ class ExodosService:
                 segments = archive_service.member_segments(name)
             except ValueError as exc:
                 raise NotRepackable(f"{exc}: {info.filename!r}") from exc
+            if len(segments) == 1 and not info.is_dir():
+                raise NotRepackable(
+                    "The zip does not hold a single game folder "
+                    f"(a file sits at its root: {info.filename!r})",
+                )
             tops.add(segments[0])
-            has_file = has_file or (len(segments) > 1 and not info.is_dir())
+            has_file = has_file or len(segments) > 1
         if len(tops) != 1 or not has_file:
             raise NotRepackable("The zip does not hold a single game folder")
         return tops.pop()
@@ -257,6 +275,136 @@ class ExodosService:
         except OSError:
             return False
         return _probe(self.profile, path, st.st_size, st.st_mtime_ns, root)
+
+    def _read_template(self, path: str) -> bytes:
+        if os.path.getsize(path) > _MAX_TEMPLATE_BYTES:
+            raise NotRepackable(f"The template is larger than {_MAX_TEMPLATE_BYTES} bytes")
+        with open(path, "rb") as handle:
+            return handle.read()
+
+    # --- convert -----------------------------------------------------------
+
+    async def convert(
+        self,
+        input_path: str,
+        output_path: str,
+        mode: str,
+        *,
+        compression: str | None = None,
+        cancel_event: asyncio.Event | None = None,
+    ) -> AsyncGenerator[dict, None]:
+        """Write the repacked game to ``output_path``; the Source is only read.
+
+        Raises :class:`NotRepackable` for a zip that is not one game folder with
+        a template, and ``ConversionCancelled`` when cancelled. Either way no
+        product is left behind (see :func:`services.archive_edit.rewrite_zip`).
+        The last update carries ``warning`` when the conf still points outside
+        the game.
+        """
+        plan = await run_in_threadpool(self.inspect, input_path)
+        template = await run_in_threadpool(self._read_template, plan.template)
+        rewrite = rewrite_conf(template, plan.top, self.profile)
+        prefix = f"{plan.top}/"
+        progress = {"done": 0, "total": plan.total_size}
+
+        def rename(name: str) -> str | None:
+            return None if name == prefix else name[len(prefix):]
+
+        def on_progress(done: int, total: int) -> None:
+            progress["done"], progress["total"] = done, total
+
+        def is_cancelled() -> bool:
+            return cancel_event is not None and cancel_event.is_set()
+
+        yield {"progress": 0, "message": f"Repacking {plan.top}"}
+        task = asyncio.ensure_future(run_in_threadpool(
+            rewrite_zip, input_path, output_path,
+            rename=rename,
+            add={self.profile.conf_name: rewrite.data},
+            is_cancelled=is_cancelled,
+            on_progress=on_progress,
+        ))
+        last = -1
+        while not task.done():
+            await asyncio.wait({task}, timeout=_PROGRESS_INTERVAL)
+            if task.done() or is_cancelled():
+                continue
+            done = progress["done"]
+            yield {
+                "progress": min(99, done * 100 // max(progress["total"], 1)),
+                "message": f"Repacking {plan.top}",
+                "activity": done != last,
+            }
+            last = done
+        task.result()
+        if rewrite.leftovers:
+            yield {
+                "progress": 100,
+                "message": (
+                    "Repacked, but the conf still points outside the game, so it "
+                    f"may not start: {'; '.join(rewrite.leftovers)}"
+                ),
+                "warning": True,
+            }
+        else:
+            yield {"progress": 100, "message": "Repack complete"}
+
+    # --- verify ------------------------------------------------------------
+
+    async def verify(
+        self, path: str, *, cancel_event: asyncio.Event | None = None,
+    ) -> dict:
+        return await collect_verify(
+            self.verify_stream(path, cancel_event=cancel_event),
+            fallback_message="Verification failed",
+        )
+
+    async def verify_stream(
+        self, path: str, *, cancel_event: asyncio.Event | None = None,
+    ) -> AsyncGenerator[dict, None]:
+        """The product's CRC and structure check.
+
+        Every member's CRC must read back, every name must pass the shared
+        archive path rules and limits, and ``dosbox.conf`` must sit at the
+        root, where DOSBox Pure looks for it. It does not compare with the
+        Source: the product differs from it by design.
+        """
+        problem, _size = await verify_preflight(
+            path, {OUTPUT_EXTENSION}, cancel_event=cancel_event,
+        )
+        if problem is not None:
+            yield problem
+            return
+        try:
+            await run_detached(self._check_product, path, cancel_event=cancel_event)
+        except ReadCancelled:
+            yield {
+                "type": "error", "valid": False, "cancelled": True,
+                "message": "Verification cancelled",
+            }
+            return
+        except (OSError, ValueError, zipfile.BadZipFile) as exc:
+            yield {"type": "error", "valid": False, "message": str(exc)}
+            return
+        yield {"type": "complete", "valid": True, "message": "File is Intact"}
+
+    def _check_product(self, path: str) -> None:
+        with zipfile.ZipFile(path) as zf:
+            infos = zf.infolist()
+            archive_service.enforce_archive_limits(
+                [(info.filename, info.file_size) for info in infos],
+            )
+            for info in infos:
+                name = info.filename[:-1] if info.is_dir() else info.filename
+                try:
+                    archive_service.member_segments(name)
+                except ValueError as exc:
+                    raise ValueError(f"{exc}: {info.filename!r}") from exc
+            if self.profile.conf_name not in {info.filename for info in infos}:
+                raise ValueError(f"No {self.profile.conf_name} at the root of the file")
+            bad = zf.testzip()
+            if bad is not None:
+                raise ValueError(f"CRC check failed for {bad}")
 
     # --- output ------------------------------------------------------------
 
