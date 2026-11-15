@@ -2764,6 +2764,15 @@ tool-wide walk. A folder that can't be read is skipped as the web search skips
 it, and with `scan_tree(unreadable=[...])` the CLI reports it as a skipped line
 ("This folder can't be read: ..."), exit code unaffected.
 
+**Discovered inputs stay inside the Volumes.** A folder walk follows file
+symlinks, so every discovered file, folder and archive (for a member) goes
+through the shared containment check the web's verify guard uses
+(`is_within_configured_volumes`, which resolves the path) before any tool is
+chosen (`cli._skip_outside_volumes`). One that resolves outside every Volume
+is skipped ("It resolves outside the configured Volumes") and never read,
+checked, converted or recorded, in both `convert` and `verify`. Paths named on
+the command line are checked up front (`_check_paths`).
+
 **Stopping during planning.** The CLI's planning runs blocking filesystem work
 on `run_in_threadpool`, which can't be cancelled: SIGINT, SIGTERM or SIGHUP
 during `--auto` planning (header reads) over a Volume that has stopped
