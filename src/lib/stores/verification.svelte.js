@@ -10,6 +10,15 @@ import { registry } from '$lib/tools/registry.js';
 // At most this many paths per /verified/lookup (the server's MAX_VERIFIED_LOOKUP).
 const LOOKUP_CHUNK = 2000;
 
+/** A `{verified, checks}` answer as path -> its check ('intact' by default). */
+function passedChecks(data) {
+  const passed = Object.create(null);
+  for (const path of data?.verified ?? []) {
+    passed[path] = data?.checks?.[path] ?? 'intact';
+  }
+  return passed;
+}
+
 class VerificationStore {
   statuses = new SvelteSet();
   // path -> 'intact' | 'round_tripped': which check a stored output passed.
@@ -18,53 +27,47 @@ class VerificationStore {
   progress = new SvelteMap();
   batchRun = $state(null);
   _batchAbort = null;
-  // One log per loadVerified() still in flight: every live write made while
-  // it waits (a `verifyOne` resolved, a job event, a check run's per-Image
-  // change), path -> check, or null for a removal. Replayed over that load's
-  // snapshot, which is older than all of them, so an addition, a changed
-  // check and a removal all survive it alike (#298, codex 4578598280).
-  // A Set, so overlapping loads each keep their own log.
-  _liveLogs = new Set();
+  // One ordering for every write into `statuses` / `checks` (#298, codex
+  // 4578598280, 4579128146). `_seq` grows with each live write and each
+  // request start; `_versions` holds, per path, the number of the write that
+  // set it. A server answer carries its request's number and only replaces a
+  // path set before that request, so neither an older full reload nor an
+  // older lookup can undo a newer live event or a newer answer, whichever
+  // lands first. Plain object: a bookkeeping table nothing renders.
+  _seq = 0;
+  _versions = Object.create(null);
   // Re-reads of a check run's paths still in flight (see applyJobEvent).
   _lookups = new Set();
 
   /**
-   * Replace what the store holds with the server's answer: every path, or,
-   * with `paths`, just those (a check run's, through /verified/lookup, in
-   * chunks the server accepts). Either way the live writes made while the
-   * request was out are replayed over it, since they are newer.
+   * Take the server's answer: for every path, or, with `paths`, just those (a
+   * check run's, through /verified/lookup, in chunks the server accepts). It
+   * replaces only what is older than the request (see `_seq`).
    */
   async loadVerified(paths = null) {
-    // A plain Map: a transient log nothing renders.
-    const live = new Map();
-    this._liveLogs.add(live);
+    const version = ++this._seq;
     try {
       if (paths) {
         for (let i = 0; i < paths.length; i += LOOKUP_CHUNK) {
           const chunk = paths.slice(i, i + LOOKUP_CHUNK);
           const data = await api.getVerifiedFor(chunk);
-          // path -> its check; a path not here has no passing check now.
-          const passed = Object.create(null);
-          for (const path of data?.verified ?? []) {
-            passed[path] = data?.checks?.[path] ?? 'intact';
-          }
-          for (const path of chunk) this._write(path, passed[path] ?? null);
+          const passed = passedChecks(data);
+          for (const path of chunk) this._set(path, passed[path] ?? null, version);
         }
       } else {
         const data = await api.getVerifiedCHDs();
-        this.statuses.clear();
-        for (const path of data?.verified ?? []) this.statuses.add(path);
-        this.checks.clear();
-        for (const [path, check] of Object.entries(data?.checks ?? {})) {
-          this.checks.set(path, check);
+        const passed = passedChecks(data);
+        // Every path either side knows: the answer's, and ours (a path the
+        // server no longer lists is no longer checked).
+        for (const path of [...this.statuses]) {
+          if (!(path in passed)) this._set(path, null, version);
+        }
+        for (const [path, check] of Object.entries(passed)) {
+          this._set(path, check, version);
         }
       }
-      // What happened while the request was out is newer than its answer.
-      for (const [path, check] of live) this._write(path, check);
     } catch (_e) {
       // non-fatal, leave whatever we had
-    } finally {
-      this._liveLogs.delete(live);
     }
   }
 
@@ -90,15 +93,20 @@ class VerificationStore {
   /** Record that `path` passed `check`. A manual Verify is 'intact'. */
   markChecked(path, check = 'intact') {
     if (!path) return;
-    this._write(path, check);
-    for (const log of this._liveLogs) log.set(path, check);
+    this._set(path, check, ++this._seq);
   }
 
   /** Drop everything known about `path` (deleted, or no longer checked). */
   forget(path) {
     if (!path) return;
-    this._write(path, null);
-    for (const log of this._liveLogs) log.set(path, null);
+    this._set(path, null, ++this._seq);
+  }
+
+  /** Write `path` unless something newer than `version` already set it. */
+  _set(path, check, version) {
+    if ((this._versions[path] ?? 0) > version) return;
+    this._versions[path] = version;
+    this._write(path, check);
   }
 
   /** Set `path`'s check, or clear it with null. Every write goes through here. */

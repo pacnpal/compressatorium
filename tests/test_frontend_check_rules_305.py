@@ -262,6 +262,37 @@ process.stdout.write(JSON.stringify({
     }
 
 
+def test_an_older_full_load_never_undoes_a_newer_lookup(tmp_path) -> None:
+    """Codex 4579128146: a full reload is still out when a check run's end
+    re-reads its paths. The lookup removes a failed Image and lands first;
+    the older full answer, which still lists it, must not bring it back.
+    Responses only replace state older than their own request."""
+    data = _run_verification(tmp_path, """
+let __answerLookup;
+api.getVerifiedFor = () => new Promise((resolve) => { __answerLookup = resolve; });
+const store = new VerificationStore();
+store.markChecked('/v/bolt.chd');
+store.markChecked('/v/keep.chd');
+const full = store.loadVerified();              // the older request
+store.applyJobEvent({ type: 'complete', job: { id: 'check1' },
+  verification_paths: ['/v/bolt.chd'] });       // the newer one
+__answerLookup({ verified: [], checks: {} });   // Bolt failed: lands first
+await store.pendingLookups();
+const afterLookup = store.checkFor('/v/bolt.chd');
+__resolve({ verified: ['/v/bolt.chd', '/v/keep.chd', '/v/new.chd'],
+            checks: { '/v/bolt.chd': 'intact', '/v/keep.chd': 'intact',
+                      '/v/new.chd': 'intact' } });
+await full;
+process.stdout.write(JSON.stringify({
+  afterLookup,
+  bolt: store.checkFor('/v/bolt.chd'),
+  keep: store.checkFor('/v/keep.chd'),
+  fresh: store.checkFor('/v/new.chd'),
+}));
+""")
+    assert data == {"afterLookup": None, "bolt": None, "keep": "intact", "fresh": "intact"}
+
+
 def test_the_jobs_stream_hands_its_job_events_to_the_verification_store() -> None:
     src = (Path(__file__).resolve().parents[1] / "src" / "lib" / "stores"
            / "jobs.svelte.js").read_text(encoding="utf-8")
