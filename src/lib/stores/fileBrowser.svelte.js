@@ -33,6 +33,8 @@ class FileBrowserStore {
   volumesLoading = $state(false);
   volumesError = $state(null);
   selectedVolume = $state(null);
+  // Bumped by every Open folder (`openFolder`): only the latest navigates.
+  #openFolderRequest = 0;
 
   // Navigation
   currentPath = $state(null);
@@ -288,10 +290,14 @@ class FileBrowserStore {
    * straight to the Volume that holds *path* and to the folder: a first
    * Volume on a mount that stopped answering never stands in the way, and
    * the Volume list, once loaded, no longer selects the first Volume over it.
+   * Only the latest request opens anything: an earlier one whose Volume fetch
+   * answers after it changes no selection and navigates nowhere.
    */
   async openFolder(path) {
     if (!path) return;
+    const request = ++this.#openFolderRequest;
     if (this.volumes.length === 0) await this.fetchVolumes();
+    if (request !== this.#openFolderRequest) return;
     const holder = this.volumes
       .filter((v) => v?.path && (path === v.path || path.startsWith(`${v.path.replace(/\/+$/, '')}/`)))
       .sort((a, b) => b.path.length - a.path.length)[0];
