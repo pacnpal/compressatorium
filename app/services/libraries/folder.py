@@ -285,9 +285,15 @@ class FolderLibrary:
         for current, dirs, names in os.walk(root, followlinks=False, onerror=on_error):
             dirs.sort()
             for name in sorted(names):
-                if match_extension(name, extensions) is None:
-                    continue
                 path = os.path.join(current, name)
+                # A split output's numbered parts (`Game.iso.0`, `.1`) carry no
+                # Image extension; they are listed, and `image_members` folds
+                # them into one Image on the first part.
+                if (
+                    match_extension(name, extensions) is None
+                    and registry.split_owner(path) is None
+                ):
+                    continue
                 try:
                     st = os.lstat(path)
                 except OSError:

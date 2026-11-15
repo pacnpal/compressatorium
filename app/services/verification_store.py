@@ -205,6 +205,10 @@ class VerificationStore:
     async def get_record(self, chd_path: str) -> dict[str, str | None] | None:
         return await run_in_threadpool(self._get_record_sync, chd_path)
 
+    def get_record_blocking(self, chd_path: str) -> dict[str, str | None] | None:
+        """:meth:`get_record` for a caller already off the event loop."""
+        return self._get_record_sync(chd_path)
+
     async def all_records(self) -> list[dict[str, str | None]]:
         return await run_in_threadpool(self._all_records_sync)
 

@@ -8,6 +8,7 @@ explicitly in ``__init__.py``.
 from __future__ import annotations
 
 import asyncio
+import os
 from typing import TYPE_CHECKING
 
 from logging_setup import get_logger
@@ -423,18 +424,77 @@ class ToolRegistry:
         """
         return [t for t in self._tools.values() if t.verifies_path(path)]
 
-    def check_tool(self, path: str, slug: str | None) -> ToolPlugin | None:
+    def check_tool(
+        self, path: str, slug: str | None, *, recorded_mode: str | None = None,
+    ) -> ToolPlugin | None:
         """The tool a check Rule checks *path* with, or None when none can (#305).
 
-        The first tool a verify run checks the file with (:meth:`tools_checking_path`,
-        so an archive too damaged to open is still claimed and fails), narrowed
-        by the Image's Platform on :meth:`narrow_to_platform`'s terms: a PS2
-        ``.iso`` is not handed to dolphin-tool just because GameCube discs share
-        the extension, since that check could only fail. May do disk I/O.
+        *recorded_mode* is the producing mode a stored check names, which wins
+        when its tool can verify. Otherwise the first tool a verify run checks
+        the file with (:meth:`tools_checking_path`, so an archive too damaged
+        to open is still claimed and fails; a split part by its output's
+        name), narrowed by the Image's Platform on :meth:`narrow_to_platform`'s
+        terms: a PS2 ``.iso`` is not handed to dolphin-tool just because
+        GameCube discs share the extension, since that check could only fail.
+        May do disk I/O.
         """
-        tools = {t.id: t for t in self.tools_checking_path(path)}
+        if recorded_mode:
+            # A stored check names the mode that made the file: it goes back to
+            # that mode's tool, with no Platform narrowing (the CLI's order,
+            # #306): makeps3iso for a PS3 ISO it built, though it claims no
+            # extension. A mode that can't verify falls through.
+            try:
+                tool = self.for_mode(recorded_mode)
+            except KeyError:
+                tool = None
+            if tool is not None and self.mode_supports_verify(recorded_mode):
+                return tool
+        # A numbered part of a split output is checked by the tool of the
+        # output it belongs to (`Game.iso.0` by whoever checks `Game.iso`).
+        owner = self.split_owner(path)
+        tools = {t.id: t for t in self.tools_checking_path(owner[0] if owner else path)}
         kept = self.narrow_to_platform(list(tools), slug)
         return tools[kept[0]] if kept else None
+
+    def split_owner(self, path: str) -> tuple[str, str] | None:
+        """``(logical output, mode)`` when *path* is a numbered part of a split
+        output (``Game.iso.0``), else None. May do disk I/O.
+
+        Registry-driven: the candidate is the name without its last suffix, and
+        it counts only when a mode's own ``companion_outputs`` for that output
+        (the lookup the delete and overwrite paths use) lists *path*. A suffix
+        that isn't a number is never one, and costs no disk I/O.
+        """
+        base, suffix = os.path.splitext(path)
+        if not suffix[1:].isdigit():
+            return None
+        real = os.path.realpath(path)
+        for spec in self.mode_specs():
+            if real in {os.path.realpath(p) for p in self._companions(spec.mode, base)}:
+                return base, spec.mode
+        return None
+
+    def split_members(self, path: str) -> list[str]:
+        """The later parts of the split output whose *first* part is *path*.
+
+        [] for anything else, a later part included: a split output is one
+        logical Image, carried by its first part. May do disk I/O.
+        """
+        owner = self.split_owner(path)
+        if owner is None:
+            return []
+        parts = self._companions(owner[1], owner[0])
+        if not parts or os.path.realpath(parts[0]) != os.path.realpath(path):
+            return []
+        return parts[1:]
+
+    def _companions(self, mode: str, output_path: str) -> list[str]:
+        """A mode's companion outputs; [] when the tool's disk probe fails."""
+        try:
+            return self.for_mode(mode).companion_outputs(output_path, mode)
+        except OSError as exc:
+            logger.debug("No companion outputs from %s for %s: %s", mode, output_path, exc)
+            return []
 
     def tools_checking_path(self, path: str) -> list[ToolPlugin]:
         """Tools a verify run checks ``path`` with (``claims_check``), in

@@ -1532,8 +1532,8 @@ async def test_a_passing_check_keeps_what_made_the_file(
         cove, source_path=str(tree / "ps2" / "Cove.cue"),
         produced_meta={"mode": "createcd"},
     )
-    # A PS3 ISO makeps3iso built: no check tool serves PS3, so it is skipped and
-    # its record (and the makeps3iso mode in it) is left as it is.
+    # A PS3 ISO makeps3iso built: the Library has no PS3 check Rule, so it is
+    # not checked and its record (and the makeps3iso mode in it) is left as it is.
     ps3 = Path(_ps2(tree / "ps3" / "Game.iso"))
     await verification_store.mark_verified(
         str(ps3), source_path=str(tree / "ps3" / "Game"),
@@ -1869,3 +1869,51 @@ async def test_a_converted_images_mode_survives_a_nightly_check(
     assert after["produced_meta"] == made["produced_meta"]
     assert after["source_path"] == made["source_path"]
     assert after["check_passed"] == "intact"
+
+
+@pytest.mark.asyncio
+async def test_a_split_ps3_iso_is_one_image_and_a_short_later_part_fails_it(
+    db: Path, ready, sent,
+) -> None:
+    """#306 f360920: a split makeps3iso build (GAME.iso.0, .1, no GAME.iso) is one
+    Image to a check Rule. Its stored check names folder_to_iso, so makeps3iso
+    checks it (as the CLI routes it). The budget pays the parts' summed size,
+    the record under GAME.iso is refreshed and keeps its mode, and the real
+    makeps3iso verify, no stub, fails the set when a later part is cut short."""
+    from routes import libraries as routes
+    from services.verification_store import verification_store
+
+    from .test_cli_306 import _real_split_iso
+
+    roms = db / "roms"
+    iso = _real_split_iso(roms / "ps3")
+    meta = {"mode": "folder_to_iso", "tool": "makeps3iso"}
+    await verification_store.mark_verified(str(iso), produced_meta=meta)
+    parts = [roms / "ps3" / "GAME.iso.0", roms / "ps3" / "GAME.iso.1"]
+    total = sum(p.stat().st_size for p in parts)
+    created = await routes.register_library(routes.RegisterLibraryRequest(path=str(roms)))
+    lib = created["id"]
+    await routes.put_library_rules(lib, {"check_rules": {"ps3": {
+        "enabled": True, "check_budget_gb": 1,
+    }}})
+
+    preview = await routes.preview_library(lib)
+    (summary,) = preview["platforms"]
+    assert summary["considered"] == 1  # one Image, not one per part
+    assert summary["candidates"] == ["GAME.iso.0"]
+    assert summary["checks"] == 1
+    assert summary["check_bytes"] == total
+
+    await _run(lib)
+    assert _not_intact() == []
+    kept = await verification_store.get_record(str(iso))
+    assert kept["produced_meta"] == meta
+    assert await verification_store.get_record(str(parts[0])) is None
+
+    parts[1].write_bytes(parts[1].read_bytes()[: 2048 * 3])  # cut short
+    await _run(lib)
+
+    (finding,) = _not_intact()
+    assert finding["image_key"] == "ps3/GAME.iso.0"
+    assert "short" in finding["reason"], finding
+    assert await verification_store.get_record(str(iso)) is None

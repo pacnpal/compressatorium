@@ -73,6 +73,13 @@ class Check:
     fingerprint: str
     # The Image's other files (a sheet's tracks, split parts): locked with it.
     members: tuple[str, ...] = ()
+    # Where its Verify record lives when that is not ``path``: a split output's
+    # check is recorded under the logical ``Game.iso``, not ``Game.iso.0``.
+    record_path: str = ""
+
+    @property
+    def record(self) -> str:
+        return self.record_path or self.path
 
 
 # (library id, image key) of every Image picked and not yet checked, so a Run
@@ -123,7 +130,15 @@ def inspect(image: Image) -> dict[str, Any]:
         return {"skip": "uncheckable"}  # no tool verifies a folder
     if not os.path.isfile(resolved):
         return {"skip": "missing"}
-    tool = registry.check_tool(path, image.platform)
+    # A split output (`Game.iso.0`, `.1`) is one Image whose record is kept
+    # under its logical name; a stored check's mode picks the tool (#306).
+    owner = registry.split_owner(path)
+    record_path = owner[0] if owner else path
+    stored = verification_store.get_record_blocking(record_path) or {}
+    tool = registry.check_tool(
+        path, image.platform,
+        recorded_mode=(stored.get("produced_meta") or {}).get("mode"),
+    )
     if tool is None:
         return {"skip": "uncheckable"}
     return {
@@ -135,6 +150,7 @@ def inspect(image: Image) -> dict[str, Any]:
             size=int(image.size or os.path.getsize(resolved)), tool_id=tool.id,
             fingerprint=image_fingerprint(path) or "",
             members=tuple(image_members(path)),
+            record_path=record_path if owner else "",
         ),
     }
 
@@ -383,10 +399,10 @@ async def _run(library: Library, picked: list[Check], job_id: str, generation: i
                     # A re-check refreshes the record and keeps what made the
                     # file (its Source and producing mode): only a conversion
                     # replaces it.
-                    await verification_store.refresh_check(check.path)
+                    await verification_store.refresh_check(check.record)
                 elif verdict == NOT_INTACT:
                     # The Intact badge no longer holds.
-                    await verification_store.clear(check.path)
+                    await verification_store.clear(check.record)
                 return True
 
             try:

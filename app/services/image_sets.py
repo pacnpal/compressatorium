@@ -33,7 +33,11 @@ def is_playlist(path: str) -> bool:
 
 def image_members(path: str) -> list[str]:
     """The other files the Image at *path* is made of. Reads the sheet; blocking."""
-    members = [*sheet_track_paths(path), *registry.source_companions(path)]
+    members = [
+        *sheet_track_paths(path), *registry.source_companions(path),
+        # A split output (`Game.iso.0` owns `.1`, `.2`): one logical Image.
+        *registry.split_members(path),
+    ]
     own = os.path.normpath(path)
     return [m for m in dict.fromkeys(members) if os.path.normpath(m) != own]
 
