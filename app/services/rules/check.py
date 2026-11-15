@@ -36,11 +36,13 @@ from fastapi.concurrency import run_in_threadpool
 from logging_setup import get_logger
 from models import ConversionMode
 from services import findings, image_checks, notifications
-from services.image_sets import image_fingerprint
+from services.image_sets import image_fingerprint, image_members
 from services.job_manager import job_manager
+from services.lock_manager import lock_manager
 from services.rules.library import Image, Library
 from services.subprocess_runner import (
     collect_abandonment,
+    run_detached,
     stops_verify_batch,
     verify_exception_event,
 )
@@ -64,8 +66,11 @@ class Check:
     size: int
     tool_id: str
     # The Image's files (size and mtime) when it was picked: a "not Intact"
-    # Finding's cause, so a dismissal holds while the file stays the same.
+    # Finding's cause, so a dismissal holds while the file stays the same, and
+    # what the run compares with just before it checks.
     fingerprint: str
+    # The Image's other files (a sheet's tracks, split parts): locked with it.
+    members: tuple[str, ...] = ()
 
 
 # (library id, image key) of every Image picked and not yet checked, so a Run
@@ -77,13 +82,18 @@ def in_flight(library_id: str, image_key: str) -> bool:
     return (library_id, str(image_key)) in _in_flight
 
 
-async def last_checked(library_id: str) -> dict[str, str]:
-    """``{image key: last check time}`` for *library_id*."""
-    return await run_in_threadpool(image_checks.last_checked, library_id)
+async def order_stamps(library_id: str) -> dict[str, str]:
+    """``{image key: the later of its last check and last attempt}`` for *library_id*."""
+    return await run_in_threadpool(image_checks.order_stamps, library_id)
 
 
 def stalest_first(images: list[Image], last: dict[str, str]) -> list[Image]:
-    """Never-checked Images first, then the oldest last check, then by key."""
+    """Never-checked Images first, then the oldest of last check or attempt, then by key.
+
+    *last* is :func:`order_stamps`. An Image whose check was only ever
+    inconclusive has an attempt time, so it goes behind the Images never
+    tried until they have all had a turn.
+    """
 
     def order(image: Image) -> tuple:
         stamp = last.get(str(image.key))
@@ -97,8 +107,8 @@ def inspect(image: Image) -> dict[str, Any]:
 
     ``{"skip": reason}`` when it cannot be checked here (``unresolvable``:
     no local path inside the Volumes; ``missing``: gone from disk;
-    ``uncheckable``: no tool checks this file on its Platform), else
-    ``{"resolved": path, "check": Check}``.
+    ``uncheckable``: no tool checks this file on its Platform, a folder
+    Image included), else ``{"resolved": path, "check": Check}``.
     """
     path = image.path
     if not path or not is_within_configured_volumes(path):
@@ -107,6 +117,8 @@ def inspect(image: Image) -> dict[str, Any]:
         resolved = str(Path(path).expanduser().resolve(strict=False))
     except (OSError, RuntimeError):
         return {"skip": "unresolvable"}
+    if os.path.isdir(resolved):
+        return {"skip": "uncheckable"}  # no tool verifies a folder
     if not os.path.isfile(resolved):
         return {"skip": "missing"}
     tool = registry.check_tool(path, image.platform)
@@ -116,10 +128,43 @@ def inspect(image: Image) -> dict[str, Any]:
         "resolved": resolved,
         "check": Check(
             key=str(image.key), name=os.path.basename(path), path=path,
-            size=int(image.size or 0), tool_id=tool.id,
+            # A Library that does not know the size (RomM without
+            # fs_size_bytes) still pays for the Image against the budget.
+            size=int(image.size or os.path.getsize(resolved)), tool_id=tool.id,
             fingerprint=image_fingerprint(path) or "",
+            members=tuple(image_members(path)),
         ),
     }
+
+
+def _hold(check: Check) -> list[str] | None:
+    """Take #306's shared input lock on the Image and its files, or none. Blocking.
+
+    Held for the whole check, so a delete-source job (in this process or
+    another) sees the Image in use and keeps it. None when one cannot be had:
+    a job is writing that path.
+    """
+    held: list[str] = []
+    for path in dict.fromkeys((check.path, *check.members)):
+        if not lock_manager.acquire_input_lock(path):
+            _let_go(held)
+            return None
+        held.append(path)
+    return held
+
+
+def _let_go(held: list[str]) -> None:
+    for path in held:
+        lock_manager.release_input_lock(path)
+
+
+def _unchanged(check: Check) -> bool:
+    """Whether the Image is still the one the sweep picked. Blocking.
+
+    A conversion Rule's delete-source, or the user, can remove or replace it
+    while the run works through the Images before it.
+    """
+    return os.path.isfile(check.path) and image_fingerprint(check.path) == check.fingerprint
 
 
 def finding_for(check: Check, reason: str) -> findings.Observed:
@@ -138,6 +183,10 @@ INTACT = image_checks.INTACT
 NOT_INTACT = image_checks.NOT_INTACT
 INCONCLUSIVE = "inconclusive"
 CANCELLED = "cancelled"
+# Gone, replaced or being written when its turn came: not checked at all.
+SKIPPED = "skipped"
+# How long the re-check before each Image may take (a stat and a fingerprint).
+_RECHECK_SECONDS = 30
 
 notifications.register_event(
     "check_failed", "A check Rule found Images that are not Intact (one message per sweep)",
@@ -198,14 +247,14 @@ def start(library: Library, picked: list[Check], *, generation: int) -> Any:
     sweep picked them: once it moves (the Library was removed) nothing more
     is written for it.
     """
-    for check in picked:
-        _in_flight.add((library.id, check.key))
     count = len(picked)
     job = job_manager.create_external_job(
         f"Check {count} Image{'s' if count != 1 else ''} in {library.name}",
         ConversionMode.CHECK,
         message="Waiting to check",
     )
+    for check in picked:
+        _in_flight.add((library.id, check.key))
     task = asyncio.get_running_loop().create_task(
         _run(library, picked, job.id, generation),
     )
@@ -221,8 +270,11 @@ async def drain() -> None:
 
 
 def _apply(library_id: str, check: Check, verdict: str, message: str, current) -> None:
-    """Write one verdict: the last check time and the Finding. Blocking."""
-    if verdict == INTACT:
+    """Write one verdict: the last check or attempt time and the Finding. Blocking."""
+    if verdict == INCONCLUSIVE:
+        # Only orders the next picks; no check time, no Finding, nothing cleared.
+        image_checks.record_attempt(library_id, check.key, current=current)
+    elif verdict == INTACT:
         image_checks.record(library_id, check.key, INTACT, current=current)
         findings.resolve(library_id, check.key, findings.NOT_INTACT, current=current)
     elif verdict == NOT_INTACT:
@@ -239,7 +291,7 @@ async def _run(library: Library, picked: list[Check], job_id: str, generation: i
         return library_generation(library.id) == generation
 
     cancel_event = job_manager.get_cancel_event(job_id)
-    counts = {INTACT: 0, NOT_INTACT: 0, INCONCLUSIVE: 0}
+    counts = {INTACT: 0, NOT_INTACT: 0, INCONCLUSIVE: 0, SKIPPED: 0}
     failed: list[tuple[Check, str]] = []
     cancelled = False
     try:
@@ -252,9 +304,12 @@ async def _run(library: Library, picked: list[Check], job_id: str, generation: i
                 message=f"Checking {index + 1} of {len(picked)}: {check.name}",
             )
             try:
-                verdict, message, stop = await _verify(check, cancel_event)
+                verdict, message, stop = await _check_one(check, cancel_event)
             finally:
                 _in_flight.discard((library.id, check.key))
+            if verdict == SKIPPED:
+                counts[SKIPPED] += 1
+                continue
             if verdict == CANCELLED:
                 cancelled = True
                 break
@@ -285,6 +340,7 @@ async def _run(library: Library, picked: list[Check], job_id: str, generation: i
     summary = (
         f"{counts[INTACT]} Intact, {counts[NOT_INTACT]} not Intact"
         + (f", {counts[INCONCLUSIVE]} could not be checked" if counts[INCONCLUSIVE] else "")
+        + (f", {counts[SKIPPED]} gone or changed" if counts[SKIPPED] else "")
     )
     if cancelled:
         await job_manager.finish_external_job_cancelled(job_id, message=f"Stopped: {summary}")
@@ -293,6 +349,32 @@ async def _run(library: Library, picked: list[Check], job_id: str, generation: i
     if job is not None:
         job.message = summary
     await job_manager.finish_external_job(job_id, success=True)
+
+
+async def _check_one(
+    check: Check, cancel_event: asyncio.Event | None,
+) -> tuple[str, str, bool]:
+    """Check one picked Image, if it is still the one picked: ``(outcome, message, stop)``.
+
+    The Image and its files are locked for the whole check (:func:`_hold`), then
+    compared with what the sweep picked (:func:`_unchanged`). Gone, changed or
+    being written is ``SKIPPED``: no check time, no Finding, no notification.
+    """
+    held = await run_in_threadpool(_hold, check)
+    if held is None:
+        return SKIPPED, "", False
+    try:
+        try:
+            same = await asyncio.wait_for(
+                run_detached(_unchanged, check), _RECHECK_SECONDS,
+            )
+        except (asyncio.TimeoutError, OSError):
+            same = False
+        if not same:
+            return SKIPPED, "", False
+        return await _verify(check, cancel_event)
+    finally:
+        await run_in_threadpool(_let_go, held)
 
 
 def check_failed_event(library: Library, failed: list[tuple[Check, str]]) -> notifications.Event:

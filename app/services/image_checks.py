@@ -1,8 +1,11 @@
 """Each Image's last check time, for check Rules (#305). Blocking; call off the loop.
 
 A check Rule picks the stalest Images first: those with no row, then the oldest
-``checked_at``. A pass writes ``intact`` and a fail ``not_intact``; an
-inconclusive check writes nothing, so the Image stays as stale as it was.
+of ``checked_at`` and ``attempted_at`` (:func:`order_stamps`). A pass writes
+``intact`` and a fail ``not_intact`` with a check time. An inconclusive check
+writes only an attempt time (:func:`record_attempt`): it is no check time and
+says nothing about the Image, but it sends the Image behind the others, so one
+that never reaches a verdict cannot take every night's budget.
 """
 
 from __future__ import annotations
@@ -36,7 +39,38 @@ def last_checked(library_id: str) -> dict[str, str]:
     """``{image key: checked_at}`` for every Image of *library_id* ever checked."""
     with _session() as session:
         rows = session.query(_db.ImageCheckRecord).filter_by(library_id=library_id).all()
-        return {row.image_key: row.checked_at for row in rows}
+        return {row.image_key: row.checked_at for row in rows if row.checked_at}
+
+
+def order_stamps(library_id: str) -> dict[str, str]:
+    """``{image key: the later of its check and attempt times}``: what picks order on."""
+    with _session() as session:
+        rows = session.query(_db.ImageCheckRecord).filter_by(library_id=library_id).all()
+        return {
+            row.image_key: max(s for s in (row.checked_at, row.attempted_at) if s)
+            for row in rows if row.checked_at or row.attempted_at
+        }
+
+
+def record_attempt(
+    library_id: str, image_key: str, *, at: str | None = None,
+    current: Callable[[], bool] | None = None,
+) -> bool:
+    """Store an inconclusive check of one Image: its attempt time, nothing else."""
+    stamp = at or now()
+    with _write_lock, _session() as session:
+        if current is not None and not current():
+            return False
+        session.execute(
+            sqlite_insert(_db.ImageCheckRecord)
+            .values(library_id=library_id, image_key=image_key, attempted_at=stamp)
+            .on_conflict_do_update(
+                index_elements=["library_id", "image_key"],
+                set_={"attempted_at": stamp},
+            )
+        )
+        session.commit()
+    return True
 
 
 def record(

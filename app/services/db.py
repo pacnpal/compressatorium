@@ -402,18 +402,20 @@ class FindingDismissalRecord(Base):
 class ImageCheckRecord(Base):
     """When an Image was last checked by a check Rule, and how it came out (#305).
 
-    One row per (Library, Image key), written when a check passes (``intact``)
-    or fails (``not_intact``). An inconclusive check writes nothing. A check
-    Rule picks the Images with no row first, then the oldest ``checked_at``.
-    Removing the Library removes its rows.
+    One row per (Library, Image key). A check that passes (``intact``) or fails
+    (``not_intact``) writes ``checked_at`` and ``result``. An inconclusive one
+    writes only ``attempted_at``, which orders the next picks and is no check
+    time. A check Rule picks the Images with no row first, then the oldest of
+    ``checked_at`` and ``attempted_at``. Removing the Library removes its rows.
     """
 
     __tablename__ = "image_checks"
     id = Column(Integer, primary_key=True, autoincrement=True)
     library_id = Column(String, nullable=False)
     image_key = Column(String, nullable=False)
-    checked_at = Column(String, nullable=False)
-    result = Column(String, nullable=False)
+    checked_at = Column(String, nullable=True)
+    result = Column(String, nullable=True)
+    attempted_at = Column(String, nullable=True)
     __table_args__ = (
         Index("ux_image_checks_library_image", "library_id", "image_key", unique=True),
     )

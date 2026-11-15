@@ -40,7 +40,7 @@ from typing import Any
 
 from logging_setup import get_logger
 from models import ConversionMode, JobStatus
-from services import notifications, subprocess_runner
+from services import findings, image_checks, notifications, subprocess_runner
 from services.image_sets import image_fingerprint
 from services.job_manager import (
     OutputClaimedError,
@@ -402,6 +402,7 @@ async def get_state(library: Library, kind: str = CONVERT) -> dict[str, dict]:
 
 async def _record_run(
     library: Library, platform_id: str, summary: dict, kind: str = CONVERT,
+    *, manual: bool = False,
 ) -> None:
     """Stamp the schedule clock, merging into whatever else the entry holds.
 
@@ -412,8 +413,11 @@ async def _record_run(
     """
     state = await get_state(library, kind)
     entry = dict(state.get(str(platform_id)) or {})
+    # A manual run of a check Rule (Run now) stamps its own field: `_is_due`
+    # reads only `last_run_at`, so the nightly run is not pushed back a day.
+    clock = "last_manual_run_at" if manual else "last_run_at"
     entry.update({
-        "last_run_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        clock: datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "last_queued": summary.get("queued", 0),
         "last_considered": summary.get("considered", 0),
     })
@@ -1115,6 +1119,8 @@ async def _sweep_locked(
 
     # What the check Rules picked, run as one job once the pass is over.
     picked: list = []
+    if not dry_run:
+        await _clear_vanished(library)
 
     for kind, platform_id in ordered:
         rule = rules[kind][platform_id]
@@ -1157,7 +1163,7 @@ async def _sweep_locked(
         if kind == CHECK:
             if await _sweep_check(
                 library, platform_id, rule, result, active_paths,
-                picked=picked, dry_run=dry_run,
+                picked=picked, dry_run=dry_run, manual=ignore_schedule,
             ):
                 break
             continue
@@ -1551,6 +1557,41 @@ async def _sweep_locked(
     return result
 
 
+async def _clear_vanished(library: Library) -> None:
+    """Clear *library*'s "not Intact" Findings whose file is gone (#305).
+
+    A converted or deleted Image is never listed or checked again, so nothing
+    else would. Bounded and detached: it stats each such Finding's path.
+    """
+    generation = _generations.get(library.id, 0)
+    try:
+        await asyncio.wait_for(
+            run_detached(
+                findings.clear_gone, library.id, findings.NOT_INTACT,
+                current=lambda: _generations.get(library.id, 0) == generation,
+            ),
+            _CANDIDATE_PROBE_SECONDS,
+        )
+    except (asyncio.TimeoutError, OSError):
+        logger.warning(
+            "romm_auto: checking %s's not-Intact Findings did not finish; "
+            "the next sweep tries again", library.id,
+        )
+
+
+def forget_checks_locked(library: Library) -> None:
+    """Drop *library*'s check times and "not Intact" Findings. Blocking.
+
+    For a Library whose Image keys now name other Images (RomM pointed at
+    another instance reuses ROM ids). The caller holds :func:`paused`; the
+    Library's generation moves first, so a check run in flight writes nothing
+    more.
+    """
+    _generations[library.id] = _generations.get(library.id, 0) + 1
+    findings.forget_kind(library.id, findings.NOT_INTACT)
+    image_checks.forget_library(library.id)
+
+
 async def _list_images(library: Library, platform_id: str, result: dict) -> list[Image] | None:
     """One Platform's Images, or None with the reason added to *result*.
 
@@ -1603,19 +1644,21 @@ async def _list_images(library: Library, platform_id: str, result: dict) -> list
 
 async def _sweep_check(
     library: Library, platform_id: str, rule: dict, result: dict,
-    active_paths: set[str], *, picked: list, dry_run: bool,
+    active_paths: set[str], *, picked: list, dry_run: bool, manual: bool = False,
 ) -> bool:
     """One check Rule's Platform: pick the stalest Images within its budget (#305).
 
     Adds the Platform's summary to *result* and what it picked to *picked*.
     Returns True when the sweep must stop (the Library stopped answering).
+    *manual* (Run now) records the run without moving the clock the schedule
+    reads, so the nightly run still comes when it is due.
     """
     platform_ref = library.platform_value(platform_id)
     images = await _list_images(library, platform_id, result)
     if images is None:
         return result["stopped_reason"] == "library_unresponsive"
     budget = int(rule["check_budget_gb"]) * checks.GB
-    last = await checks.last_checked(library.id)
+    last = await checks.order_stamps(library.id)
     ready: dict[str, bool] = {}
     chosen: list[checks.Check] = []
     spent = considered = uncheckable = 0
@@ -1691,8 +1734,9 @@ async def _sweep_check(
     result["platforms"].append(summary)
     if not dry_run:
         picked.extend(chosen)
-        if not unresponsive:
-            await _record_run(library, platform_id, summary, CHECK)
+        # A Platform whose tool is missing waits for the next tick, not a day.
+        if not unresponsive and not (not_ready and not chosen):
+            await _record_run(library, platform_id, summary, CHECK, manual=manual)
     return False
 
 

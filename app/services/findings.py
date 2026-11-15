@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import threading
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
@@ -214,6 +215,54 @@ def resolve(
         ).delete()
         session.commit()
     return bool(removed)
+
+
+def clear_gone(
+    library_id: str, kind: str, *, current: Callable[[], bool] | None = None,
+) -> int:
+    """Clear *library_id*'s Findings of *kind* whose file is gone. Blocking.
+
+    For a kind no walk reconciles (``NOT_INTACT``): a converted or deleted
+    Image is never listed or checked again, so its Finding would otherwise
+    stay for good. Gone means the file is missing while its folder is still
+    there, so an unmounted share clears nothing. Dismissals are kept, as
+    :func:`resolve` keeps them. Returns how many were cleared.
+    """
+    with _session() as session:
+        rows = session.query(_db.FindingRecord).filter_by(
+            library_id=library_id, kind=kind,
+        ).all()
+        candidates = [(row.image_key, row.path) for row in rows]
+    gone = [
+        key for key, path in candidates
+        if not os.path.lexists(path) and os.path.isdir(os.path.dirname(path))
+    ]
+    if not gone:
+        return 0
+    with _write_lock, _session() as session:
+        if current is not None and not current():
+            return 0
+        cleared = session.query(_db.FindingRecord).filter(
+            _db.FindingRecord.library_id == library_id,
+            _db.FindingRecord.kind == kind,
+            _db.FindingRecord.image_key.in_(gone),
+        ).delete(synchronize_session=False)
+        session.commit()
+    return cleared
+
+
+def forget_kind(library_id: str, kind: str) -> None:
+    """Drop *library_id*'s Findings of *kind* and their dismissals. Blocking.
+
+    For a Library whose Image keys now name other Images (RomM pointed at
+    another instance reuses ROM ids).
+    """
+    with _write_lock, _session() as session:
+        session.query(_db.FindingRecord).filter_by(library_id=library_id, kind=kind).delete()
+        session.query(_db.FindingDismissalRecord).filter_by(
+            library_id=library_id, kind=kind,
+        ).delete()
+        session.commit()
 
 
 def _dismissals(session, library_id: str, image_key: str, kind: str):

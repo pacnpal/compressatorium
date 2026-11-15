@@ -438,6 +438,9 @@ class FolderLibrary:
                 keep_under=[self._key(path) for path in scan.unwalked],
                 current=current,
             )
+            # A check Rule's "not Intact" (#305) for an Image that is gone
+            # (converted away, deleted): no walk or check would see it again.
+            findings.clear_gone(self.id, findings.NOT_INTACT, current=current)
         except Exception:
             # The walk is still good for Rules; the Findings view is behind
             # until the next walk. Logged, not swallowed.

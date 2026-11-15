@@ -1,6 +1,7 @@
 """add_image_checks
 
-Each Image's last check time and result, for check Rules (#305).
+Each Image's last check time and result, for check Rules (#305), and the
+time of its last inconclusive attempt, which only orders the next picks.
 
 Revision ID: 0013
 Revises: 0012
@@ -29,8 +30,9 @@ def upgrade() -> None:
         sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
         sa.Column('library_id', sa.String(), nullable=False),
         sa.Column('image_key', sa.String(), nullable=False),
-        sa.Column('checked_at', sa.String(), nullable=False),
-        sa.Column('result', sa.String(), nullable=False),
+        sa.Column('checked_at', sa.String(), nullable=True),
+        sa.Column('result', sa.String(), nullable=True),
+        sa.Column('attempted_at', sa.String(), nullable=True),
         sa.PrimaryKeyConstraint('id'),
     )
     op.create_index(

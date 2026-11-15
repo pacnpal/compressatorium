@@ -662,3 +662,268 @@ async def test_saving_one_kind_keeps_the_other(tree: Path, ready) -> None:
     stored = await routes.get_library_rules(lib)
     assert stored["rules"]["ps2"]["enabled"] is False
     assert stored["check_rules"]["ps2"]["check_budget_gb"] == 3
+
+
+# ----------------------------------------------------------------------
+# review round 1: the Image moves under a running check (C1)
+# ----------------------------------------------------------------------
+
+
+def _fake_chdman(tree: Path) -> Path:
+    """chdman verify that passes an existing file and fails a missing one, as chdman does."""
+    fake = tree.parent / "bin" / "chdman"
+    fake.parent.mkdir(exist_ok=True)
+    fake.write_text('#!/bin/sh\nif [ -f "$3" ]; then echo ok; exit 0; fi\n'
+                    'echo "Error opening CHD file: No such file"; exit 1\n')
+    fake.chmod(0o755)
+    return fake
+
+
+@pytest.mark.asyncio
+async def test_an_image_gone_before_its_turn_gets_no_finding(
+    tree: Path, ready, sent, monkeypatch,
+) -> None:
+    """Reviewer probe: a convert Rule's delete-source (or the user) removes a picked Image."""
+    from services import image_checks
+
+    tool = registry.get("chdman")
+    monkeypatch.setattr(tool._service, "chdman_path", str(_fake_chdman(tree)))
+    real = tool.verify
+
+    async def verify(path, *, cancel_event=None):
+        if Path(path).name == "Cove.chd":
+            (tree / "ps2" / "Bolt.chd").unlink()   # gone before Bolt's turn
+        return await real(path, cancel_event=cancel_event)
+
+    monkeypatch.setattr(tool, "verify", verify)
+    lib = await _folder_library(tree, {"enabled": True, "check_budget_gb": 6})
+    _seed(lib, {"ps2/Aria.chd": 2, "ps2/Bolt.chd": 10, "ps2/Dune.chd": 1})
+    before = image_checks.last_checked(lib)
+
+    await _run(lib)
+
+    assert _not_intact() == []
+    assert [e for e in sent if e.kind == "check_failed"] == []
+    # No check time either: it was never checked.
+    assert image_checks.last_checked(lib)["ps2/Bolt.chd"] == before["ps2/Bolt.chd"]
+
+
+@pytest.mark.asyncio
+async def test_an_image_changed_before_its_turn_is_skipped(
+    tree: Path, ready, verifier, sent,
+) -> None:
+    from services import image_checks
+
+    _verdicts, calls = verifier
+
+    async def replace_bolt(path, *, cancel_event=None):
+        name = Path(path).name
+        calls.append(name)
+        if name == "Cove.chd":
+            _sparse(tree / "ps2" / "Bolt.chd", 2 * GB)   # a different file now
+        return {"valid": True, "message": "Intact"}
+
+    monkeypatch_verify = registry.get("chdman")
+    original = monkeypatch_verify.verify
+    monkeypatch_verify.verify = replace_bolt
+    try:
+        lib = await _folder_library(tree, {"enabled": True, "check_budget_gb": 6})
+        _seed(lib, {"ps2/Aria.chd": 2, "ps2/Bolt.chd": 10, "ps2/Dune.chd": 1})
+        before = image_checks.last_checked(lib)
+        await _run(lib)
+    finally:
+        monkeypatch_verify.verify = original
+
+    assert calls == ["Cove.chd"]
+    assert image_checks.last_checked(lib)["ps2/Bolt.chd"] == before["ps2/Bolt.chd"]
+
+
+@pytest.mark.asyncio
+async def test_a_check_holds_the_images_input_lock(tree: Path, ready, verifier, sent) -> None:
+    """While it is checked, a delete-source job sees the Image as in use (#306's lock)."""
+    from services.lock_manager import lock_manager
+
+    held: dict[str, bool] = {}
+    tool = registry.get("chdman")
+    original = tool.verify
+
+    async def verify(path, *, cancel_event=None):
+        held[Path(path).name] = lock_manager.check_file_status(path)[1]
+        return {"valid": True, "message": "Intact"}
+
+    tool.verify = verify
+    try:
+        lib = await _folder_library(tree, {"enabled": True, "check_budget_gb": 3})
+        _seed(lib, {"ps2/Aria.chd": 2, "ps2/Bolt.chd": 3, "ps2/Dune.chd": 1})
+        await _run(lib)
+    finally:
+        tool.verify = original
+
+    assert held == {"Cove.chd": True}
+    assert lock_manager.check_file_status(str(tree / "ps2" / "Cove.chd"))[1] is False
+
+
+@pytest.mark.asyncio
+async def test_a_not_intact_finding_for_a_vanished_file_is_cleared_by_the_next_sweep(
+    tree: Path, ready, verifier, sent,
+) -> None:
+    verdicts, _calls = verifier
+    verdicts["Cove.chd"] = {"valid": False, "message": "bad hunk"}
+    lib = await _folder_library(tree, {"enabled": True, "check_budget_gb": 3})
+    _seed(lib, {"ps2/Aria.chd": 2, "ps2/Bolt.chd": 3, "ps2/Dune.chd": 1})
+    await _run(lib)
+    assert [f["image_key"] for f in _not_intact()] == ["ps2/Cove.chd"]
+
+    (tree / "ps2" / "Cove.chd").unlink()
+    await _run(lib)
+
+    assert _not_intact() == []
+
+
+@pytest.mark.asyncio
+async def test_a_not_intact_finding_for_a_vanished_file_is_cleared_by_the_next_walk(
+    tree: Path, ready, verifier, sent,
+) -> None:
+    from services import libraries
+
+    verdicts, _calls = verifier
+    verdicts["Cove.chd"] = {"valid": False, "message": "bad hunk"}
+    lib = await _folder_library(tree, {"enabled": True, "check_budget_gb": 3})
+    _seed(lib, {"ps2/Aria.chd": 2, "ps2/Bolt.chd": 3, "ps2/Dune.chd": 1})
+    await _run(lib)
+    assert [f["image_key"] for f in _not_intact()] == ["ps2/Cove.chd"]
+
+    (tree / "ps2" / "Cove.chd").unlink()
+    libraries.get(lib).summary(refresh=True)
+
+    assert _not_intact() == []
+
+
+# ----------------------------------------------------------------------
+# review round 1: rotation, Run now, RomM identity (I1, I2, I3)
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_an_always_inconclusive_image_does_not_starve_its_platform(
+    tree: Path, ready, sent, monkeypatch,
+) -> None:
+    """Reviewer probe: an inconclusive Image goes behind the others until they had a turn."""
+    from services import image_checks
+
+    calls: list[str] = []
+    tool = registry.get("chdman")
+
+    async def verify(path, *, cancel_event=None):
+        calls.append(Path(path).name)
+        if Path(path).name == "Aria.chd":
+            return {"valid": False, "inconclusive": True, "message": "timed out"}
+        return {"valid": True, "message": "ok"}
+
+    async def bound(path, *, cancel_event=None):
+        return 0
+
+    monkeypatch.setattr(tool, "verify", verify)
+    monkeypatch.setattr(tool, "verify_timeout", bound)
+    _sparse(tree / "ps2" / "Aria.chd", 9 * GB)   # bigger than the budget
+    lib = await _folder_library(tree, {"enabled": True, "check_budget_gb": 6})
+    for _night in range(3):
+        await _run(lib)
+
+    assert calls == ["Aria.chd", "Bolt.chd", "Cove.chd", "Dune.chd"][: len(calls)]
+    assert calls[:3] != ["Aria.chd"] * 3
+    # An attempt is no check: Aria still has no check time and no Finding.
+    assert "ps2/Aria.chd" not in image_checks.last_checked(lib)
+    assert _not_intact() == []
+
+
+@pytest.mark.asyncio
+async def test_run_now_leaves_the_nightly_schedule_alone(
+    tree: Path, ready, verifier, sent,
+) -> None:
+    from routes import libraries as routes
+    from services import libraries
+    from services.rules import check as checks
+    from services.rules import sweep as rules_sweep
+
+    _verdicts, calls = verifier
+    lib = await _folder_library(tree, {"enabled": True, "check_budget_gb": 3})
+
+    await _run(lib)   # Run now
+    assert calls == ["Aria.chd"]
+    state = (await routes.get_library_rules(lib))["check_state"]["ps2"]
+    assert "last_run_at" not in state
+
+    # The scheduled run is still due: Run now was an extra budget.
+    result = await rules_sweep.sweep(libraries.get(lib))
+    await checks.drain()
+    assert result["checks"] == 1
+    assert calls == ["Aria.chd", "Bolt.chd"]
+
+
+@pytest.mark.asyncio
+async def test_a_new_romm_instance_drops_romms_check_times_and_findings(
+    db: Path, ready, verifier, sent,
+) -> None:
+    from routes import romm as romm_routes
+    from services import image_checks
+    from services.romm import settings as romm_settings
+    from services.rules import check
+
+    for name in ("Aria", "Bolt"):
+        _sparse(db / "library" / "roms" / "ps2" / f"{name}.chd", 3 * GB)
+    await romm_settings.save({"url": "http://romm:8080", "library_root": str(db / "library")})
+    roms = [
+        {
+            "id": rom_id, "name": name, "full_path": f"roms/ps2/{name}.chd",
+            "fs_name": f"{name}.chd", "fs_size_bytes": 3 * GB, "platform_slug": "ps2",
+        }
+        for rom_id, name in ((1, "Aria"), (2, "Bolt"))
+    ]
+    verdicts, _calls = verifier
+    verdicts["Bolt.chd"] = {"valid": False, "message": "bad hunk"}
+    await romm_routes.put_romm_rules({
+        "rules": {}, "check_rules": {"7": {"enabled": True, "check_budget_gb": 6}},
+    })
+    with patch.object(romm_routes.romm_client, "roms", return_value=roms):
+        await romm_routes.run_auto_convert(romm_routes.SweepRequest(platform_ids=[7]))
+        await check.drain()
+    assert image_checks.last_checked("romm")
+    assert _not_intact()
+
+    await romm_routes.put_romm_settings(
+        romm_routes.RommSettingsPatch(url="http://other-romm:8080"),
+    )
+
+    # The new instance reuses ROM ids: the old checks say nothing about it.
+    assert image_checks.last_checked("romm") == {}
+    assert _not_intact() == []
+
+
+@pytest.mark.asyncio
+async def test_two_platforms_failing_in_one_sweep_send_one_notification(
+    db: Path, ready, sent, monkeypatch,
+) -> None:
+    """Reviewer probe: one run, one message, whatever the number of check Rules."""
+    from routes import libraries as routes
+
+    tool = registry.get("chdman")
+
+    async def verify(path, *, cancel_event=None):
+        return {"valid": False, "message": "bad"}
+
+    async def bound(path, *, cancel_event=None):
+        return 0
+
+    monkeypatch.setattr(tool, "verify", verify)
+    monkeypatch.setattr(tool, "verify_timeout", bound)
+    roms = db / "roms"
+    _sparse(roms / "ps2" / "A.chd", GB)
+    _sparse(roms / "psx" / "B.chd", GB)
+    created = await routes.register_library(routes.RegisterLibraryRequest(path=str(roms)))
+    await routes.put_library_rules(created["id"], {"rules": {}, "check_rules": {
+        "ps2": {"enabled": True, "check_budget_gb": 6},
+        "psx": {"enabled": True, "check_budget_gb": 6},
+    }})
+    await _run(created["id"])
+    assert len([e for e in sent if e.kind == "check_failed"]) == 1
