@@ -2459,3 +2459,34 @@ def test_a_split_iso_missing_a_later_part_fails(volume, dolphin, capsys):
     assert [(x["path"], x["tool"], x["status"]) for x in lines] == [
         (str(iso), "makeps3iso", "failed"),
     ]
+
+
+def test_a_numbered_file_that_is_no_split_output_plans_nothing(volume, dolphin, capsys):
+    """codex 4577484083: save.0 is not a split part; no mode writes `save`.
+    Only a base carrying a mode's declared output extension qualifies."""
+    saves = volume / "saves"
+    saves.mkdir()
+    (saves / "save.0").write_bytes(b"save data")
+
+    code, lines = _cli(capsys, "verify", str(volume), "--json")
+
+    assert (code, lines) == (0, [])
+
+
+def test_a_split_part_pointing_outside_skips_the_whole_image(volume, dolphin, capsys, tmp_path):
+    """codex 4577484093: containment covers every file the check reads, not
+    only the logical name: part 0 a symlink to outside skips the Image, in a
+    folder verify and when a contained later part is named."""
+    staging = tmp_path / "staging"
+    _real_split_iso(staging)
+    games = volume / "games"
+    games.mkdir()
+    (games / "GAME.iso.0").symlink_to(staging / "GAME.iso.0")
+    (games / "GAME.iso.1").write_bytes((staging / "GAME.iso.1").read_bytes())
+    iso = games / "GAME.iso"
+    _store(iso, produced_meta={"mode": "folder_to_iso", "tool": "makeps3iso"})
+
+    for named in (volume, games / "GAME.iso.1"):
+        code, lines = _cli(capsys, "verify", str(named), "--json")
+        assert [(x["path"], x["status"]) for x in lines] == [(str(iso), "skipped")], lines
+        assert "outside the configured Volumes" in lines[0]["reason"]
