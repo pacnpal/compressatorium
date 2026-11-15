@@ -11,7 +11,8 @@ eXoDOS repack today, the Patch bench later). The Source is only ever read.
 * **Nothing that looks finished appears early.** The archive is written under
   a hidden temporary name in the destination directory
   (``.partial-XXXXXXXX.tmp``, which library scanners such as RomM's skip by
-  default; ``services/partial_writes.py`` sweeps the ones a hard kill leaves), fsynced, optionally checked by the caller, given the Source's
+  default; ``services/partial_writes.py`` sweeps the ones a hard kill
+  leaves), fsynced, optionally checked by the caller, given the Source's
   permission bits (``mkstemp`` makes it ``0600``), and only
   then moved into place with :func:`utils.path_utils.place_without_clobbering`,
   an atomic no-replace move. A crash, a cancel or an error leaves no product,
