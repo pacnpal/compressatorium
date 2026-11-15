@@ -33,6 +33,12 @@ __all__ = ["_dolphin", "_env"]
 @pytest.fixture(name="kept")
 def _kept(env, dolphin, capsys, monkeypatch):
     """A first pass that converts Game.iso and keeps it for a reader."""
+    return _keep(env, capsys, monkeypatch)
+
+
+def _keep(env, capsys, monkeypatch, output_name="Game.rvz", **rule_changes):
+    """Convert Game.iso under the delete Rule (with *rule_changes*) while
+    another job reads its folder, so the Source is kept; return the paths."""
     from services import job_manager as job_manager_module
     from services.job_manager import SOURCE_KEPT_FOR_READERS, JobManager
     from services.lock_manager import LockManager, lock_manager
@@ -41,10 +47,10 @@ def _kept(env, dolphin, capsys, monkeypatch):
     monkeypatch.setattr(job_manager_module, "DELETE_READER_POLL_SECONDS", 0.05)
     iso = _iso(env)
     out_dir = env["vol"] / "out"
-    out_dir.mkdir()
+    out_dir.mkdir(exist_ok=True)
     _store_rules(env, {"shelf": {"gc": {
         "mode": "dolphin_rvz", "enabled": True, "delete_on_verify": True,
-        "check_level": "container_only", "output_dir": str(out_dir),
+        "check_level": "container_only", "output_dir": str(out_dir), **rule_changes,
     }}})
     reader = LockManager()
     reader._lock_dir = lock_manager._lock_dir
@@ -73,8 +79,8 @@ def _kept(env, dolphin, capsys, monkeypatch):
     pending = _rule_state(env)["gc"]["kept_sources"]
     assert list(pending) == ["Game.iso"]
     assert pending["Game.iso"]["source"] == str(iso)
-    assert pending["Game.iso"]["output"] == str(out_dir / "Game.rvz")
-    return {"iso": iso, "output": out_dir / "Game.rvz", "reader": reader}
+    assert pending["Game.iso"]["output"] == str(out_dir / output_name)
+    return {"iso": iso, "output": out_dir / output_name, "reader": reader}
 
 
 def test_a_kept_source_is_deleted_on_the_next_sweep(env, dolphin, capsys, kept):
@@ -1158,3 +1164,130 @@ def test_a_rule_that_no_longer_selects_the_source_keeps_it(
     assert code == 0, lines
     assert kept["iso"].exists()
     assert not _rule_state(env)["gc"].get("kept_sources")
+
+
+# --------------------------------------------------------------------------- #
+# A renamed output is still this Rule's output (Codex 4580078019)
+# --------------------------------------------------------------------------- #
+
+
+def _renaming_shelf(env):
+    """The shelf may use the rename policy (it keeps converted history), and
+    the base output name is already taken by something else."""
+    from services.rules.library import CONVERTED_HISTORY
+
+    env["shelf"].capabilities = frozenset({CONVERTED_HISTORY})
+    out_dir = env["vol"] / "out"
+    out_dir.mkdir(exist_ok=True)
+    (out_dir / "Game.rvz").write_bytes(b"someone else's file")
+
+
+def test_a_renamed_output_is_retried_and_deleted(env, dolphin, capsys, monkeypatch):
+    _renaming_shelf(env)
+    kept = _keep(
+        env, capsys, monkeypatch, output_name="Game_1.rvz", duplicate_action="rename",
+    )
+
+    code, lines, _err = _cli(capsys, "run-rules", "--json")
+
+    assert code == 0, lines
+    assert not kept["iso"].exists()
+    assert kept["output"].read_bytes() == b"converted output"
+    assert not _rule_state(env)["gc"].get("kept_sources")
+
+
+def test_an_unrelated_numbered_file_is_not_this_rules_output(
+    env, dolphin, capsys, monkeypatch,
+):
+    """Only the numbered sibling of the planned output passes as renamed."""
+    from services.job_manager import job_manager
+    from services.rules import sweep as rules_sweep
+
+    _renaming_shelf(env)
+    kept = _keep(
+        env, capsys, monkeypatch, output_name="Game_1.rvz", duplicate_action="rename",
+    )
+    reached = []
+
+    async def must_not_run(**kwargs):
+        reached.append(kwargs)
+        raise AssertionError("retry_kept_delete reached for an unrelated output")
+
+    async def point_elsewhere():
+        state = await rules_sweep.get_state(env["shelf"])
+        state["gc"]["kept_sources"]["Game.iso"]["output"] = str(
+            env["vol"] / "out" / "Other_1.rvz",
+        )
+        await rules_sweep.store.write(rules_sweep.store.STATE_KEY, env["shelf"], state)
+
+    asyncio.run(point_elsewhere())
+    monkeypatch.setattr(job_manager, "retry_kept_delete", must_not_run)
+
+    code, lines, _err = _cli(capsys, "run-rules", "--json")
+
+    assert code == 0, lines
+    assert kept["iso"].exists()
+    assert reached == []
+    assert not _rule_state(env)["gc"].get("kept_sources")
+
+
+def test_a_policy_changed_away_from_rename_drops_the_entry(
+    env, dolphin, capsys, monkeypatch,
+):
+    _renaming_shelf(env)
+    kept = _keep(
+        env, capsys, monkeypatch, output_name="Game_1.rvz", duplicate_action="rename",
+    )
+    _store_rules(env, {"shelf": _rule(env, duplicate_action="skip")})
+
+    code, lines, _err = _cli(capsys, "run-rules", "--json")
+
+    assert code == 0, lines
+    assert kept["iso"].exists()
+    assert not _rule_state(env)["gc"].get("kept_sources")
+
+
+# --------------------------------------------------------------------------- #
+# A late Finding write is bound to its Library (Codex 4580078026)
+# --------------------------------------------------------------------------- #
+
+
+def test_a_late_finding_write_after_the_library_is_forgotten_writes_nothing(
+    env, dolphin, capsys, kept, monkeypatch,
+):
+    """The ``source_kept`` Finding's write outlives the sweep's wait; the
+    Library is forgotten meanwhile: when the write finally runs, nothing
+    appears."""
+    import threading
+    import time
+
+    from services import findings, subprocess_runner
+    from services.rules import sweep as rules_sweep
+
+    monkeypatch.setattr(rules_sweep, "KEPT_DELETE_MAX_ATTEMPTS", 1)
+    monkeypatch.setattr(subprocess_runner, "_STAT_TIMEOUT", 0.2)
+    real_observe = findings.observe
+    release = threading.Event()
+    finished = threading.Event()
+
+    def late_observe(*args, **kwargs):
+        release.wait(10)
+        try:
+            return real_observe(*args, **kwargs)
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(findings, "observe", late_observe)
+    reader, iso = kept["reader"], kept["iso"]
+    assert reader.acquire_dir_lock(str(iso.parent))
+    try:
+        _cli(capsys, "run-rules", "--json")
+    finally:
+        reader.release_dir_lock(str(iso.parent))
+
+    asyncio.run(rules_sweep.forget_library(env["shelf"]))
+    release.set()
+    assert finished.wait(10)
+    time.sleep(0.1)
+
+    assert not [f for f in findings.list_findings() if f["kind"] == findings.SOURCE_KEPT]

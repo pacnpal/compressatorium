@@ -57,6 +57,7 @@ from services.output_conflicts import (
     QUEUE,
     SKIP_EXISTING,
     SKIP_LOCKED,
+    is_renamed_from,
     resolve_destination,
 )
 from services.rules import check as checks
@@ -944,7 +945,11 @@ def _planned_delete(image: Image, rule: dict, tool, spec, source: str, output: s
     companions, and the destination the Rule maps it to. The output exists by
     now, so the destination is asked as ``overwrite`` would (where this Rule
     writes it, not whether to write it again); the duplicate policy itself is
-    a decision-identity input.
+    a decision-identity input. Under the ``rename`` policy the output may be
+    the numbered sibling the rename gave that destination (``Game_1.rvz``,
+    ``is_renamed_from``, codex 4580078019); ``overwrite`` and ``skip`` take
+    the destination exactly. Either way the retry then requires the check
+    record of that very output to name this Source.
     """
     plan = _inspect_candidate(
         image, {**rule, "duplicate_action": "overwrite"}, tool, spec, None,
@@ -953,10 +958,13 @@ def _planned_delete(image: Image, rule: dict, tool, spec, source: str, output: s
         return PLAN_UNANSWERED  # the output is busy right now: ask again later
     if plan["skip"] is not None or not plan["destination"] or not plan["path"]:
         return PLAN_OTHER
-    same = (
-        os.path.realpath(plan["destination"]) == os.path.realpath(output)
-        and os.path.realpath(plan["path"]) == os.path.realpath(source)
+    planned = os.path.realpath(plan["destination"])
+    recorded = os.path.realpath(output)
+    same_output = recorded == planned or (
+        rule["duplicate_action"] == "rename"
+        and is_renamed_from(recorded, planned, rule["mode"])
     )
+    same = same_output and os.path.realpath(plan["path"]) == os.path.realpath(source)
     return PLAN_SAME if same else PLAN_OTHER
 
 
@@ -1124,8 +1132,18 @@ async def _retry_kept_deletes(
                 continue
             remaining.pop(image_key)
             result["kept_sources_given_up"] = result.get("kept_sources_given_up", 0) + 1
+            generation = _generations.get(library.id, 0)
             await _probe(
-                findings.observe, library.id, findings.Observed(
+                functools.partial(
+                    findings.observe,
+                    # Under the Findings write lock: a write that outlives this
+                    # wait writes nothing once the Library was forgotten or
+                    # its identity changed (codex 4580078026).
+                    current=lambda generation=generation: (
+                        _generations.get(library.id, 0) == generation
+                    ),
+                ),
+                library.id, findings.Observed(
                     kind=findings.SOURCE_KEPT, image_key=str(image_key),
                     path=str(pending.get("source") or ""),
                     reason=(
@@ -1147,7 +1165,14 @@ async def _retry_kept_deletes(
     if changed:
         await store.write(store.STATE_KEY, library, state)
     # A Source deleted by hand after the sweep gave up: its Finding goes.
-    await _probe(findings.clear_gone, library.id, findings.SOURCE_KEPT, default=0)
+    generation = _generations.get(library.id, 0)
+    await _probe(
+        functools.partial(
+            findings.clear_gone,
+            current=lambda: _generations.get(library.id, 0) == generation,
+        ),
+        library.id, findings.SOURCE_KEPT, default=0,
+    )
 
 
 async def _prune_holds(

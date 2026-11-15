@@ -4184,6 +4184,10 @@ It may only proceed while the decision that kept the Source still stands:
   any other answer drops the entry without deleting, and an unanswered or
   busy one is an attempt. The output exists by then, so the destination is
   asked as `overwrite` would; the duplicate policy is an identity input.
+  Under `rename` the recorded output may be the numbered sibling the rename
+  gave that destination (`output_conflicts.is_renamed_from`, the same
+  derivation `get_unique_output_path` probes with); `overwrite` and `skip`
+  take it exactly (codex 4580078019).
 - Apart from that, the record's check must meet the Rule's current effective
   check level (`retry_kept_delete(required_check=...)`, `_check_satisfies`):
   Round-tripped meets either level, Intact only the container check. So does a
@@ -4205,6 +4209,10 @@ It may only proceed while the decision that kept the Source still stands:
 `reader` and `kept` count an attempt; at `KEPT_DELETE_MAX_ATTEMPTS`
 (10) the entry is dropped and a `source_kept` Finding (`findings.SOURCE_KEPT`)
 names the Source, cleared once the Source is gone (`findings.clear_gone`).
+Both writes run detached and bounded, and carry a `current` predicate on the
+Library's generation, checked under the Findings write lock, so a write that
+outlives the sweep's wait writes nothing once the Library was forgotten or
+its RomM identity changed (codex 4580078026).
 The sweep's result counts `kept_sources_deleted` and `kept_sources_given_up`
 when either happened.
 
