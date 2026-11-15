@@ -1,13 +1,21 @@
 """Auto route: what the response says when part of a batch can't be queued."""
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
 
-from app.models import AutoJobCreateRequest
+from app.models import (
+    AutoJobCreateRequest,
+    ConversionMode,
+    DuplicateAction,
+    JobCreateRequest,
+    JobStatus,
+)
 from app.routes import convert as convert_routes
 
+from .test_archive_conversion_e2e import _e2e_env  # noqa: F401
 from .test_auto_convert import (  # noqa: F401
     _fresh_cache,
     _mixed_selection,
@@ -57,3 +65,65 @@ async def test_an_image_skipped_while_preparing_says_why_in_the_plan(route_env):
     assert rows["ps2.iso"].mode is None
     assert rows["ps2.iso"].skip_reason
     assert all("ps2.iso" not in q["files"] for q in route_env["queued"])
+
+
+# --- Rollback waits for running jobs (Codex 4576827979) ----------------------
+# cancel_job() returns True for a processing job once it has only set the
+# job's cancel event. A worker past its last cancellation check (paused in
+# post_convert, say) still completes with its output. The rollback must wait
+# for the real final state and retain such a job, never read "cancel
+# requested" as "withdrawn".
+
+
+async def _job_paused_in_post_convert(e2e_env, monkeypatch, name="rom.iso"):
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def paused_post_convert(input_path, output_path, mode, **_kwargs):
+        entered.set()
+        await release.wait()
+
+    for tool in convert_routes.registry.all():
+        monkeypatch.setattr(tool, "post_convert", paused_post_convert)
+    source = e2e_env["tmp_path"] / name
+    source.write_bytes(b"PAYLOAD")
+    job = await convert_routes.create_job(JobCreateRequest(
+        file_path=str(source), mode=ConversionMode.CREATEDVD,
+        duplicate_action=DuplicateAction.SKIP, delete_on_verify=False,
+    ))
+    worker = asyncio.create_task(convert_routes.job_manager._process_job(job.id))
+    await asyncio.wait_for(entered.wait(), 5)
+    return job, worker, release
+
+
+@pytest.mark.asyncio
+async def test_a_job_that_finishes_during_rollback_is_retained(e2e_env, monkeypatch):
+    job, worker, release = await _job_paused_in_post_convert(e2e_env, monkeypatch)
+
+    rollback = asyncio.create_task(convert_routes._cancel_queued([job]))
+    await asyncio.sleep(0.2)
+    assert not rollback.done(), "rollback must wait for the running job"
+    release.set()
+    kept = await asyncio.wait_for(rollback, 5)
+    await asyncio.wait_for(worker, 5)
+
+    final = convert_routes.job_manager.get_job(job.id)
+    assert final.status == JobStatus.COMPLETED
+    assert Path(final.output_path).exists()
+    assert [k.id for k in kept] == [job.id]
+
+
+@pytest.mark.asyncio
+async def test_a_job_still_running_when_the_wait_ends_is_retained(e2e_env, monkeypatch):
+    monkeypatch.setattr(convert_routes.settings, "progress_timeout", 1)
+    job, worker, release = await _job_paused_in_post_convert(e2e_env, monkeypatch)
+
+    try:
+        kept = await asyncio.wait_for(convert_routes._cancel_queued([job]), 5)
+    finally:
+        release.set()
+        await asyncio.wait_for(worker, 5)
+
+    # Not finished, not withdrawn: its output may still land, so the client
+    # keeps it rather than retiring its records.
+    assert [k.id for k in kept] == [job.id]
