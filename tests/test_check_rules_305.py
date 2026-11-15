@@ -1746,3 +1746,37 @@ async def test_a_scheduled_check_is_stamped_with_the_moment_it_was_due(
 
     rule = stored["check_rules"]["ps2"]
     assert _is_due(rule, state, tuesday + timedelta(minutes=3))
+
+
+@pytest.mark.asyncio
+async def test_a_check_run_cancelled_before_it_starts_ends_once(
+    tree: Path, ready, verifier, sent, monkeypatch,
+) -> None:
+    """#306's 09dbda9: a check job cancelled before its first Image is announced
+    terminal once, sends nothing, and records nothing."""
+    from routes import libraries as routes
+    from services import image_checks, notifications
+    from services.job_manager import job_manager
+    from services.rules import check
+
+    heard: list[tuple[str, str]] = []
+    monkeypatch.setattr(job_manager, "_terminal_listeners", [
+        lambda job: heard.append((job.id, job.status.value)),
+        notifications.on_job_finished,
+    ])
+    lib = await _folder_library(tree, {"enabled": True, "check_budget_gb": 3})
+    _seed(lib, {"ps2/Aria.chd": 2, "ps2/Bolt.chd": 3, "ps2/Dune.chd": 1})
+    before = {j.id for j in job_manager.get_all_jobs()}
+
+    await routes.run_library(lib)
+    # The run is queued as a task but has not checked anything yet.
+    (job,) = [j for j in job_manager.get_all_jobs() if j.id not in before]
+    await job_manager.cancel_job(job.id)
+    await check.drain()
+
+    assert job.status.value == "cancelled"
+    assert heard == [(job.id, "cancelled")]
+    _verdicts, calls = verifier
+    assert calls == []
+    assert "ps2/Cove.chd" not in image_checks.order_stamps(lib)
+    assert [e for e in sent if e.kind in ("check_failed", "job_failed")] == []
