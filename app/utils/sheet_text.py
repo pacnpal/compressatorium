@@ -142,6 +142,21 @@ def sheet_tracks(
     return tracks
 
 
+def sheet_track_list(
+    path: str | Path, *, within: Sequence[str | Path] | None = None,
+) -> list[Path] | None:
+    """``sheet_tracks`` for a ``.cue`` or ``.gdi``, parser chosen by suffix.
+
+    None for any other file, an unreadable sheet, or a refused track.
+    """
+    suffix = Path(path).suffix.lower()
+    if suffix == ".cue":
+        return sheet_tracks(path, cue_tracks, within=within)
+    if suffix == ".gdi":
+        return sheet_tracks(path, lambda text: [t.name for t in gdi_tracks(text)], within=within)
+    return None
+
+
 def sheet_is_readable(path: str | Path) -> bool:
     """Whether the sheet can be read whole (exists, readable, within the cap)."""
     return bool(sheet_readings(path))

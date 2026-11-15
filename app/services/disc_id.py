@@ -554,14 +554,16 @@ def nintendo_disc_platform(path: str) -> str | None:
     return None
 
 
-def _cue_track_paths(path: str) -> list[Path]:
+def _cue_track_paths(path: str, within=None) -> list[Path]:
     """Every track file a cue sheet names, resolved beside the sheet.
 
     Decoded the shared way (``utils.sheet_text``: UTF-8 with a BOM stripped,
     cp1252 when not UTF-8, Latin-1 last); the first spelling that exists on
     disk wins, and a track none of whose spellings exists keeps the first.
+    ``within`` names the trusted roots (``utils.sheet_text.resolve_track``);
+    None means the configured Volumes.
     """
-    return sheet_tracks(path, cue_tracks) or []
+    return sheet_tracks(path, cue_tracks, within=within) or []
 
 
 def _cue_data_file(path: str) -> str | None:
@@ -612,7 +614,7 @@ def disc_platform(path: str) -> str | None:
 # Public synchronous extractor: source files
 # ===========================================================================
 
-def extract_from_source(path: str) -> Optional[dict]:
+def extract_from_source(path: str, *, within=None) -> Optional[dict]:
     """
     Extract game ID (and optionally title) from a source disc image file.
 
@@ -624,14 +626,18 @@ def extract_from_source(path: str) -> Optional[dict]:
       .cue  → Follows the DATA track .bin reference
 
     Returns a dict with at least ``game_id`` and ``platform`` keys, or None.
+
+    ``within`` is passed to the track-sheet readers: the roots a .cue/.gdi's
+    tracks must resolve under. None (the default) means the configured
+    Volumes; the job worker passes the archive extraction dir it created.
     """
     ext = Path(path).suffix.lower()
     if ext == ".iso":
         return _extract_iso(path)
     if ext == ".gdi":
-        return _extract_gdi(path)
+        return _extract_gdi(path, within=within)
     if ext == ".cue":
-        return _extract_cue(path)
+        return _extract_cue(path, within=within)
     if ext == ".bin":
         return _extract_bin(path)
     return None
@@ -1144,12 +1150,12 @@ def _extract_from_chd_sectors(chd_path: str) -> Optional[dict]:
     return None
 
 
-def _extract_cue(path: str) -> Optional[dict]:
+def _extract_cue(path: str, within=None) -> Optional[dict]:
     """
     Parse a .cue sheet, find the first DATA track's BIN file, and extract.
     """
     try:
-        for bin_path in _cue_track_paths(path):
+        for bin_path in _cue_track_paths(path, within):
             if bin_path.exists():
                 result = _extract_bin(str(bin_path))
                 if result:
@@ -1160,7 +1166,7 @@ def _extract_cue(path: str) -> Optional[dict]:
     return None
 
 
-def _extract_gdi(path: str) -> Optional[dict]:
+def _extract_gdi(path: str, within=None) -> Optional[dict]:
     """
     Parse a Dreamcast .gdi file and extract game ID from the first track's
     IP.BIN header.  The .gdi format is a plain-text index:
@@ -1172,7 +1178,9 @@ def _extract_gdi(path: str) -> Optional[dict]:
         gdi_dir = Path(path).parent
         # The shared sheet parsing (utils.sheet_text): quoted names keep their
         # spaces, and the first spelling of a name that exists on disk wins.
-        files = sheet_tracks(path, lambda text: [t.name for t in gdi_tracks(text)])
+        files = sheet_tracks(
+            path, lambda text: [t.name for t in gdi_tracks(text)], within=within,
+        )
         if not files:
             return None   # unreadable, or a track refused: say nothing
         entries = gdi_tracks(sheet_readings(path)[0])
