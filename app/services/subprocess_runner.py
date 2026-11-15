@@ -734,6 +734,24 @@ async def run_detached(
             _note_abandoned("detached read")
 
 
+def open_input_at(path: str, offset: int = 0):
+    """A buffered read handle on ``path``, positioned at ``offset``.
+
+    For a reader that outlives any one block: the stdin feeder reads it chunk
+    by chunk on detached threads and must be able to abandon it with a stuck
+    read, so no ``with`` block can own it. The caller closes it.
+    """
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        handle = os.fdopen(fd, "rb")
+    except BaseException:
+        os.close(fd)
+        raise
+    if offset:
+        handle.seek(offset)
+    return handle
+
+
 async def feed_stdin_from_file(
     process,
     path: str,
@@ -755,16 +773,9 @@ async def feed_stdin_from_file(
     A child that stops reading (broken pipe) ends the feed quietly; its exit
     code says why.
     """
-    def _open():
-        # The handle outlives this call (it is read chunk by chunk and may be
-        # abandoned), so an ExitStack owns it rather than a with block.
-        owner = contextlib.ExitStack()
-        handle = owner.enter_context(open(path, "rb"))
-        if offset:
-            handle.seek(offset)
-        return owner, handle
-
-    owner, handle = await run_detached(_open, cancel_event=cancel_event)
+    handle = await run_detached(
+        open_input_at, path, offset, cancel_event=cancel_event,
+    )
     abandon = False
     try:
         while not (cancel_event is not None and cancel_event.is_set()):
@@ -791,7 +802,7 @@ async def feed_stdin_from_file(
             process.stdin.close()
         if not abandon:
             with contextlib.suppress(Exception):
-                await run_detached(owner.close)
+                await run_detached(handle.close)
 
 
 async def run_detached_within_stall_bound(
@@ -1169,6 +1180,29 @@ class SubprocessRunner:
         _note_abandoned(f"pid {process.pid}")
         return False
 
+    @staticmethod
+    async def _spawn_piped(
+        cmd: list[str],
+        *,
+        stdin=None,
+        stderr=asyncio.subprocess.PIPE,
+        preexec_fn: Callable[[], None] | None = None,
+        env: Mapping[str, str] | None = None,
+    ):
+        """Spawn ``cmd`` (a list argv, never a shell) with stdout on a pipe.
+
+        The one spawn site :meth:`run_capture` and :meth:`hash_stdout` share,
+        so the argv-from-the-tool's-config spawn exists once in this module.
+        """
+        return await asyncio.create_subprocess_exec(  # nosemgrep
+            cmd[0], *cmd[1:],
+            stdin=stdin,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=stderr,
+            preexec_fn=preexec_fn,
+            env=env,
+        )
+
     async def run_capture(
         self,
         cmd: list[str],
@@ -1239,9 +1273,8 @@ class SubprocessRunner:
 
         use_preexec = os.name == "posix" and not nice_via_wrapper
 
-        process = await asyncio.create_subprocess_exec(  # nosemgrep
-            cmd[0], *cmd[1:],
-            stdout=asyncio.subprocess.PIPE,
+        process = await self._spawn_piped(
+            cmd,
             stderr=(
                 asyncio.subprocess.STDOUT
                 if stderr_to_stdout
@@ -1324,15 +1357,13 @@ class SubprocessRunner:
         # Command wrappers, never a preexec_fn: see run_verify.
         if not nice_via_wrapper:
             cmd = nice_prefix(self._owner) + ioprio_prefix(self._owner) + cmd
-        process = await asyncio.create_subprocess_exec(
-            cmd[0], *cmd[1:],
+        process = await self._spawn_piped(
+            cmd,
             stdin=(
                 asyncio.subprocess.PIPE
                 if stdin_path is not None
                 else asyncio.subprocess.DEVNULL
             ),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
             env=env,
         )
         self.track_pid(process.pid)
