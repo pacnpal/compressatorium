@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import secrets
 import tempfile
 from collections.abc import AsyncGenerator
 from pathlib import Path
@@ -144,12 +145,17 @@ class NotSingleRomArchive(ValueError):
     """A readable archive that holds no ROM, or more than one file."""
 
 
-# Every 7z command that reads an archive names a password, so 7z never stops
-# to ask for one: an encrypted archive fails at once ("Wrong password") rather
-# than waiting on the terminal of a CLI run (#306). Not on `a`, where the
-# switch would encrypt the archive being written. The shared runner also gives
-# every child /dev/null for stdin.
-_NO_PASSWORD = "-pcompressatorium-no-password"
+def _no_prompt_switch() -> str:
+    """A ``-p`` switch with a throwaway random value, built per call.
+
+    Every 7z command that reads an archive names a password, so 7z never stops
+    to ask for one: an encrypted archive fails at once ("Wrong password") rather
+    than waiting on the terminal of a CLI run (#306). The value is random, not a
+    literal, and never used for anything else. Not on ``a``, where the switch
+    would encrypt the archive being written. The shared runner also gives every
+    child /dev/null for stdin.
+    """
+    return "-p" + secrets.token_hex(8)
 
 
 class RomzService:
@@ -391,7 +397,7 @@ class RomzService:
             # relative path under it, so the validated member lands at
             # ``<root>/<member>`` (the caller's runner_output) — including ROMs
             # stored under a top-level folder.
-            switches = [f"-o{output_target}", _NO_PASSWORD, "-bsp1", "-y"]
+            switches = [f"-o{output_target}", _no_prompt_switch(), "-bsp1", "-y"]
             # Extract the whole archive (no positional member selector) with
             # `x`, which PRESERVES member paths. Two reasons we don't name the
             # member or use `e` (flatten):
@@ -415,7 +421,7 @@ class RomzService:
     def _test_command(self, archive_path: str) -> list[str]:
         """``7z t``: tests every member's CRC. ``--`` keeps an archive name
         beginning with ``-`` a positional filename."""
-        return [self.sevenzip_path, "t", _NO_PASSWORD, "--", archive_path]
+        return [self.sevenzip_path, "t", _no_prompt_switch(), "--", archive_path]
 
     def active_pids(self) -> list[int]:
         return self._runner.active_pids()

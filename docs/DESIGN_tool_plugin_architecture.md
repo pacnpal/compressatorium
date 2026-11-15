@@ -2779,8 +2779,9 @@ comes from the listing (`ArchiveMember.is_encrypted`: zip flag bit 0, py7zr's
 
 **Nothing waits on a terminal.** Every child the shared runner starts (`run`,
 `run_capture`, `run_verify`) gets `/dev/null` for stdin, and every 7z command
-that reads an archive (`x`, `t`) names a dummy password (`romz._NO_PASSWORD`),
-so an encrypted archive fails at once instead of prompting. `7z a` names none:
+that reads an archive (`x`, `t`) names a throwaway random password, built per
+call (`romz._no_prompt_switch()`; no password literal), so an encrypted archive
+fails at once instead of prompting. `7z a` names none:
 there the switch would encrypt the archive being written.
 
 **Which tool checks a file** (`cli._verify_tool`), in this order:
