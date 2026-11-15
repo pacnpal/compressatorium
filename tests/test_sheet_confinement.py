@@ -121,3 +121,26 @@ def test_a_track_inside_is_still_followed(layout):
     cue.write_text('FILE "x.bin" BINARY\n  TRACK 01 MODE1/2352\n')
 
     assert detect_platform(str(cue)).platform == "saturn"
+
+
+@pytest.mark.parametrize("quoted", [True, False])
+def test_a_gdi_naming_a_dotdot_track_is_never_opened(layout, opened, quoted):
+    from utils.sheet_text import resolve_track
+
+    # A Dreamcast track one folder up, inside the Volume, so only the ".."
+    # rule (not the Volume check) can refuse it.
+    outside = layout["volume"] / "x.bin"
+    raw = bytearray(2352)
+    raw[16:16 + 0x200] = _make_ipbin()
+    outside.write_bytes(bytes(raw))
+    name = '"../x.bin"' if quoted else "../x.bin"
+    gdi = layout["folder"] / "game.gdi"
+    gdi.write_text(f"1\n1 0 4 2352 {name} 0\n")
+
+    with pytest.raises(ValueError):
+        resolve_track(layout["folder"], "../x.bin")
+    opened.clear()   # only what the probe opens counts
+    result = detect_platform(str(gdi))
+
+    assert result.platform is None
+    assert not _was_opened(opened, outside)

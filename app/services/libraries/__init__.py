@@ -17,11 +17,15 @@ and never touches a file.
 
 from __future__ import annotations
 
+import asyncio
 import threading
+import time
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from fastapi.concurrency import run_in_threadpool
 from services import db as _db
 from services.libraries.folder import ID_PREFIX, FolderLibrary
 from services.rules.library import Library, duplicate_actions
@@ -144,16 +148,80 @@ def _overlaps(a: Path, b: Path) -> bool:
     return a == b or a.is_relative_to(b) or b.is_relative_to(a)
 
 
+def find_overlap(root: Path, others: list[tuple[str, Path]]) -> tuple[str, Path] | None:
+    """The first Library in *others* whose root equals, holds, or sits inside *root*.
+
+    The one non-overlap rule for Library roots, run in both directions:
+    registering a folder checks it against every folder Library and RomM's
+    root, and saving RomM's root checks it against every folder Library. Two
+    overlapping roots would put the same Images under two Rule sets. *others*
+    is ``(name, resolved root)`` pairs. Callers hold the registration lock
+    (:func:`register`, :func:`romm_root_claim`), so no save races the check.
+    """
+    for other_name, other_root in others:
+        if _overlaps(root, other_root):
+            return other_name, other_root
+    return None
+
+
+def _resolved(path: str) -> Path:
+    try:
+        return Path(path).resolve()
+    except (OSError, RuntimeError):
+        return Path(path)
+
+
 def _romm_root() -> Path | None:
     """RomM's library folder, resolved. Touches the disk (RomM's mount)."""
     from services.romm.library import romm_library
 
     if not romm_library.root:
         return None
+    return _resolved(romm_library.root)
+
+
+def check_romm_root(path: str) -> None:
+    """Refuse RomM's library root at *path* if it overlaps a folder Library.
+
+    Raises :class:`LibraryPathError` (409) naming the Library. Blocking
+    (resolves the path); the caller holds the registration lock.
+    """
+    root = _resolved(path)
+    others = [(lib.name, Path(lib.root)) for lib in folder_libraries()]
+    hit = find_overlap(root, others)
+    if hit is not None:
+        other_name, other_root = hit
+        raise LibraryPathError(
+            409,
+            f"RomM's library folder overlaps the folder Library {other_name!r} at "
+            f"{other_root}; remove that Library or pick another folder",
+        )
+
+
+@asynccontextmanager
+async def romm_root_claim(path: str | None):
+    """Hold the registration lock while RomM's library root is checked and saved.
+
+    The same lock :func:`register` takes, so a folder registration cannot
+    slip in between this check and the save. A blank *path* (no root, or
+    clearing it) overlaps nothing but still takes the lock. Waits at most
+    ``REGISTER_WAIT_SECONDS``, polling rather than parking a thread, so a
+    cancelled request never leaves the lock taken.
+    """
+    deadline = time.monotonic() + REGISTER_WAIT_SECONDS
+    while not _register_lock.acquire(blocking=False):
+        if time.monotonic() >= deadline:
+            raise LibraryPathError(
+                409, "A Library registration is still running; try again shortly",
+            )
+        await asyncio.sleep(0.05)
     try:
-        return Path(romm_library.root).resolve()
-    except (OSError, RuntimeError):
-        return Path(romm_library.root)
+        if path:
+            _loaded()
+            await run_in_threadpool(check_romm_root, path)
+        yield
+    finally:
+        _register_lock.release()
 
 
 def register(path: str, name: str | None = None) -> FolderLibrary:
@@ -180,7 +248,9 @@ def register(path: str, name: str | None = None) -> FolderLibrary:
         romm_root = _romm_root()
         if romm_root is not None:
             others.append((romm_library.name, romm_root))
-        for other_name, other_root in others:
+        hit = find_overlap(root, others)
+        if hit is not None:
+            other_name, other_root = hit
             if root == other_root:
                 # Most often a retry after a 504: the first registration went
                 # on and finished.
@@ -189,10 +259,9 @@ def register(path: str, name: str | None = None) -> FolderLibrary:
                     f"Already the Library {other_name!r}: an earlier registration "
                     "of this folder has finished",
                 )
-            if _overlaps(root, other_root):
-                raise LibraryPathError(
-                    409, f"Overlaps the Library {other_name!r} at {other_root}",
-                )
+            raise LibraryPathError(
+                409, f"Overlaps the Library {other_name!r} at {other_root}",
+            )
         with _session() as session:
             row = _db.FolderLibraryRecord(
                 root=str(root), name=label, schedule_enabled=False, max_per_sweep=25,

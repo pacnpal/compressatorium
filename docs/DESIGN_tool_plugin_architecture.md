@@ -2412,9 +2412,14 @@ replace the cached copy. `register` uses `ensure_path_within_volumes` (the file
 browser's check), requires a folder, and refuses the same root or one that
 contains or sits inside another Library's root, a registered folder or RomM's
 library folder (409), since two Libraries would give one Image two Rules. The
-check and the insert run under `_register_lock` (only ever taken in a worker
-thread, since it is held across RomM's root resolve and a database write), and
-a unique-root `IntegrityError` is a 409 too. The catalogue's `_lock` guards the
+rule is one function, `libraries.find_overlap`, run in both directions: the
+RomM settings route checks a new RomM library root against every folder
+Library (`check_romm_root`, a 409 naming the Library) before saving it. Both
+take `_register_lock`: `register` in its worker thread, held across RomM's
+root resolve and the database write, and the RomM save through
+`romm_root_claim`, which polls for the lock without parking a thread, so a
+cancelled request never leaves it held, and keeps it until the settings are
+saved. A unique-root `IntegrityError` is a 409 too. The catalogue's `_lock` guards the
 in-memory cache only: the event loop takes it on every `get()`, so it is never
 held across disk or database access or a Library's walk lock. `update()` writes
 the row and changes the cached Library in place (`apply_settings`), as one
@@ -2603,7 +2608,19 @@ archived set; an empty `within` is refused). When any track of a sheet is
 refused, or the sheet is unreadable (missing, or over `MAX_SHEET_BYTES`, read
 as cap + 1 bytes and never parsed partially), `sheet_tracks` returns None and
 the probe says nothing, so a planted sheet cannot make the probe read a file
-outside the Volumes. `header_reads` returns None for an unreadable sheet and
+outside the Volumes.
+
+Disc-ID tagging reads the same sheets after a conversion. `_process_job`
+builds `within` once: None for a source in a Volume, `[temp_dir]` (the
+`mkdtemp` root it extracted into) for an archive member, never the input
+file's parent. It passes that one value to the job gate and to
+`post_convert(input_path, output_path, mode, *, within=None)`, which every
+plugin accepts. CHDMAN's hook hands it to `disc_id.extract_from_source`, whose
+cue/gdi readers resolve tracks through `sheet_tracks(..., within=within)`.
+When a refused or unreadable track stops tagging, the hook logs a warning
+naming the sheet (`sheet_text.sheet_track_list` tells that case apart from a
+disc with no ID); it never skips silently, and a refused track is never
+opened. `header_reads` returns None for an unreadable sheet and
 a failing `header_reads` is treated the same way, so neither is cached. A
 folder Image (a PS3 disc folder) is never cached: its answer depends on files
 below it.

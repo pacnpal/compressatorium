@@ -363,8 +363,14 @@ class ToolPlugin(Protocol):
 
     async def post_convert(
         self, input_path: str, output_path: str, mode: str,
+        *, within: Sequence[str] | None = None,
     ) -> None:
-        """Optional post-processing hook after a successful conversion."""
+        """Optional post-processing hook after a successful conversion.
+
+        ``within`` is the trusted root(s) an archive-extracted source lives
+        under (the job worker's extraction dir). None means the source is in a
+        configured Volume.
+        """
 
     def overwrite_targets(self, output_path: str, mode: str) -> list[str]:
         """Every path to clear before an **authorized** overwrite, primary first.
@@ -591,6 +597,7 @@ class BaseTool:
 
     async def post_convert(
         self, input_path: str, output_path: str, mode: str,
+        *, within: Sequence[str] | None = None,
     ) -> None:
         return None
 
