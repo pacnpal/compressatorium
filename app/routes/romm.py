@@ -34,6 +34,7 @@ from routes.files import (
     detect_file_outputs,
     verifiable_tools,
 )
+from services import libraries
 from services.file_hasher import compute_file_sha1_sync
 from services.job_manager import job_manager
 from services.lock_manager import lock_manager
@@ -1587,7 +1588,15 @@ async def put_romm_settings(patch: RommSettingsPatch) -> dict:
         # row, so neither half can commit alone: whichever is interrupted, the
         # marker survives and `_run_identity_cleanup` replays the other. Both
         # halves of the cleanup are idempotent, so replaying costs nothing.
-        values = await romm_settings.save(submitted, cleanup_pending=changed)
+        # RomM's root must not overlap a folder Library, or two Rule sets act
+        # on the same Images. Checked and saved under the registration lock
+        # (`libraries.romm_root_claim`), so a folder registration cannot race
+        # it; refused before anything is persisted.
+        try:
+            async with libraries.romm_root_claim(submitted.get("library_root")):
+                values = await romm_settings.save(submitted, cleanup_pending=changed)
+        except libraries.LibraryPathError as exc:
+            raise HTTPException(status_code=exc.status, detail=str(exc)) from None
         cleared = await _run_identity_cleanup() if owed else 0
         if cleared:
             logger.info(

@@ -2412,9 +2412,14 @@ replace the cached copy. `register` uses `ensure_path_within_volumes` (the file
 browser's check), requires a folder, and refuses the same root or one that
 contains or sits inside another Library's root, a registered folder or RomM's
 library folder (409), since two Libraries would give one Image two Rules. The
-check and the insert run under `_register_lock` (only ever taken in a worker
-thread, since it is held across RomM's root resolve and a database write), and
-a unique-root `IntegrityError` is a 409 too. The catalogue's `_lock` guards the
+rule is one function, `libraries.find_overlap`, run in both directions: the
+RomM settings route checks a new RomM library root against every folder
+Library (`check_romm_root`, a 409 naming the Library) before saving it. Both
+take `_register_lock`: `register` in its worker thread, held across RomM's
+root resolve and the database write, and the RomM save through
+`romm_root_claim`, which polls for the lock without parking a thread, so a
+cancelled request never leaves it held, and keeps it until the settings are
+saved. A unique-root `IntegrityError` is a 409 too. The catalogue's `_lock` guards the
 in-memory cache only: the event loop takes it on every `get()`, so it is never
 held across disk or database access or a Library's walk lock. `update()` writes
 the row and changes the cached Library in place (`apply_settings`), as one
@@ -2611,6 +2616,15 @@ as cap + 1 bytes and never parsed partially), `sheet_tracks` returns None and
 the probe says nothing, so a planted sheet cannot make the probe read a file
 outside the Volumes.
 
+Special files are never opened. Opening a FIFO with no writer blocks forever,
+which would strand the threadpool worker an Auto request runs detection on.
+`path_utils.is_special_file` (`lstat`, a symlink judged by its target) is
+asked at the top of `detect_platform`, before any header probe or open, so a
+FIFO, socket or device input gets no Platform ("not a regular file or
+folder"). `resolve_track` refuses a track that exists and is one of these, so
+a sheet cannot point the probe at one either; a missing track is still not
+refused.
+
 Disc-ID tagging reads the same sheets after a conversion. `_process_job`
 builds `within` once: None for a source in a Volume, `[temp_dir]` (the
 `mkdtemp` root it extracted into) for an archive member, never the input
@@ -2739,9 +2753,21 @@ appeared after planning) is marked skipped in the returned plan with
 preparation's reason. In the browser, `conversion.runAuto` runs the flow once
 at a time (an in-flight guard), on the selection and RomM context captured
 before its first await, and updates the re-pin badge whether queueing
-succeeded or not; `jobs.adopt` applies the same freshness rule as `refresh()`
-(`snapshotIsNewer`). The error detail is then structured, `{"message": "... Already
-finished and kept: ...", "jobs": [...]}`, with `jobs` in the shape a success
+succeeded or not. It takes the caller's AbortSignal: `ConvertPanel` aborts it
+in `onDestroy`, so leaving the view mid-plan aborts the plan request, never
+opens the modal afterwards, resolves a pending confirmation as cancelled, and
+clears `autoInFlight` (the store stops waiting at the abort even when a request
+ignores the signal); `jobs.adopt` applies the same freshness rule as `refresh()`
+(`snapshotIsNewer`). The rollback (`_cancel_queued`) asks every queued job to
+cancel, then waits for them to settle with `JobManager.wait_until_terminal`,
+for at most `CHD_PROGRESS_TIMEOUT` or `ROLLBACK_WAIT_CAP_SECONDS` (30 s),
+whichever is shorter; the cap holds when the timeout is 0, since the wait runs
+inside the HTTP request. `cancel_job()` returning True for a
+processing job means only that its cancel event is set, and a worker past its
+last check (in `post_convert`) still completes, so the retained list is built
+from the real final states: completed with an output, or still running at the
+bound. The error detail is then structured, `{"message": "... Kept (finished
+or still running): ...", "jobs": [...]}`, with `jobs` in the shape a success
 returns. `client.fetchJson` keeps a structured detail on `err.detail`, the store
 adopts those jobs and reconciles its re-pin snapshots against them before it
 retires the rest, so a kept output keeps its record. Auto never deletes a

@@ -45,6 +45,10 @@
     or automatic, and a Rule reports it instead of queueing it. A sheet
     converted from inside an archive is checked against the folder it was
     extracted into, so its tracks there convert and nothing outside it does.
+  - Library roots never overlap. A folder equal to, inside, or containing
+    another Library (RomM's library folder included) can't be registered, and
+    saving a RomM library folder that overlaps a registered folder is refused
+    with the Library's name.
   - Every Rule sweep now gives a Library 10 minutes to list a Platform, RomM
     included (RomM's catalog fetch had no limit). Past that the sweep stops
     with "the library stopped responding" and the next one starts over.

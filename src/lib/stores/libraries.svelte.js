@@ -59,8 +59,16 @@ export class FolderRulesSource extends RulesSource {
   }
 
   async setScheduleEnabled(enabled) {
-    this.library = await api.updateLibrary(this.id, { schedule_enabled: enabled });
-    libraries.adopt(this.library);
+    libraries.adopt(await api.updateLibrary(this.id, { schedule_enabled: enabled }));
+  }
+
+  /**
+   * Take the Library's latest settings (name, schedule switch, ...) in place.
+   * Only the Library row changes; the Rules and any unsaved edit to them live
+   * on RulesSource and are left alone.
+   */
+  adoptLibrary(library) {
+    if (library?.id === this.id) this.library = library;
   }
 
   imageCount(platform) {
@@ -77,6 +85,9 @@ export class FolderRulesSource extends RulesSource {
     try {
       const data = await api.getLibraryPlatforms(this.id);
       this.platformsBusy = false;
+      // The response carries the Library's current row; a setting changed
+      // elsewhere (another tab) shows here, in the picker and in this source.
+      if (data?.library) libraries.adopt(data.library);
       this.platforms = Array.isArray(data?.platforms) ? data.platforms : [];
       this.counts = {
         unsorted: data?.unsorted ?? 0,
@@ -138,6 +149,7 @@ class LibrariesStore {
     try {
       const data = await api.listLibraries();
       this.list = Array.isArray(data) ? data : [];
+      this.#refreshSources(this.list);
       if (!this.list.some((lib) => lib.id === this.selectedId)) {
         this.selectedId = ROMM_LIBRARY_ID;
       }
@@ -156,6 +168,12 @@ class LibrariesStore {
     this.list = at === -1
       ? [...this.list, library]
       : this.list.map((lib) => (lib.id === library.id ? library : lib));
+    this.#refreshSources([library]);
+  }
+
+  /** Hand each cached source its Library's fresh row, keeping the source (and its edits). */
+  #refreshSources(rows) {
+    for (const row of rows) this.#sources.get(row.id)?.adoptLibrary(row);
   }
 
   select(id) {

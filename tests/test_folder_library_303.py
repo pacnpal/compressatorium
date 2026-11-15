@@ -1711,3 +1711,60 @@ async def test_a_backslash_track_path_is_one_detected_image(db: Path) -> None:
     assert [e.key for e in scan.entries] == ["Game/game.cue"]
     assert scan.entries[0].detection.platform == "saturn"
     assert [i.key for i in library.images("saturn")] == ["Game/game.cue"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("where", ["same", "parent", "child"])
+async def test_a_romm_root_overlapping_a_folder_library_is_refused(
+    db: Path, where: str,
+) -> None:
+    """Codex 4576816771: saving RomM's library root checks every folder Library.
+
+    The same overlap rule as registration, the other way round: a RomM root
+    equal to, containing, or inside a registered folder is a 409 naming the
+    Library, and nothing is saved.
+    """
+    from routes import romm as romm_routes
+    from services.romm import settings as romm_settings
+
+    folder = db / "games" / "gc"
+    (folder / "sub").mkdir(parents=True)
+    await _register(folder, name="GameCube")
+    root = {"same": folder, "parent": db / "games", "child": folder / "sub"}[where]
+
+    with pytest.raises(HTTPException) as exc:
+        await romm_routes.put_romm_settings(romm_routes.RommSettingsPatch(
+            url="http://romm:8080", library_root=str(root),
+        ))
+    assert exc.value.status_code == 409
+    assert "GameCube" in exc.value.detail
+    assert not romm_settings.effective().get("library_root")
+
+
+@pytest.mark.asyncio
+async def test_a_romm_root_beside_a_folder_library_saves(db: Path) -> None:
+    from routes import romm as romm_routes
+    from services.romm import settings as romm_settings
+
+    (db / "games" / "gc").mkdir(parents=True)
+    (db / "romm").mkdir()
+    await _register(db / "games" / "gc")
+
+    await romm_routes.put_romm_settings(romm_routes.RommSettingsPatch(
+        url="http://romm:8080", library_root=str(db / "romm"),
+    ))
+    assert romm_settings.effective()["library_root"] == str(db / "romm")
+
+
+@pytest.mark.asyncio
+async def test_registering_romms_own_root_is_refused(db: Path) -> None:
+    """The opposite order: RomM first, then a folder Library at the same root."""
+    from services.romm import settings as romm_settings
+
+    library = db / "library"
+    library.mkdir()
+    await romm_settings.save({"url": "http://romm:8080", "library_root": str(library)})
+
+    with pytest.raises(HTTPException) as exc:
+        await _register(library)
+    assert exc.value.status_code == 409

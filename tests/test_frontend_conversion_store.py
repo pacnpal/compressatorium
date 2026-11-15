@@ -467,3 +467,78 @@ def test_run_auto_updates_the_repin_badge_even_when_queueing_fails(tmp_path):
 
     assert data["badge"] == [4], data
     assert data["after"] is False, data
+
+
+# --- An aborted Auto run (Codex 4576827983) ----------------------------------
+# The panel passes an AbortSignal and aborts it when it unmounts. An aborted
+# run never opens the confirmation, resolves a pending one as cancelled, and
+# clears autoInFlight, so Start works again when the panel comes back. The
+# stubbed getAutoPlan ignores the signal, so the store must not rely on the
+# request itself rejecting.
+
+_RUN_AUTO_ABORT_MID_PLAN = """
+const store = new ConversionStore();
+let answerPlan;
+autoPlanAnswer = (paths) => new Promise((resolve) => {
+  answerPlan = () => resolve(paths.map((p) => ({ file_path: p, mode: 'createdvd' })));
+});
+let confirmCalls = 0;
+const confirm = () => { confirmCalls += 1; return Promise.resolve(true); };
+const controller = new AbortController();
+const run = store.runAuto({ paths: ['/v/a.iso'], confirm, signal: controller.signal });
+await new Promise((resolve) => setTimeout(resolve, 0));   // the plan is loading
+const during = store.autoInFlight;
+controller.abort();                                       // the panel unmounts
+const result = await run;
+const afterAbort = store.autoInFlight;
+answerPlan();                                             // the plan lands late
+await new Promise((resolve) => setTimeout(resolve, 0));
+// Back on the workspace: Start runs a fresh flow.
+autoPlanAnswer = (paths) => paths.map((p) => ({ file_path: p, mode: 'createdvd' }));
+const again = await store.runAuto({ paths: ['/v/b.iso'], confirm: () => Promise.resolve(true) });
+process.stdout.write(JSON.stringify({
+  during, result, afterAbort, confirmCalls,
+  planAfter: store.autoPlan,
+  queued: calls.auto.map((args) => args[0]),
+  againQueued: again !== null,
+  errors: toasts.filter(([kind]) => kind === 'error'),
+}));
+"""
+
+
+def test_an_aborted_auto_run_mid_plan_never_confirms_and_frees_start(tmp_path):
+    data = _run(tmp_path, _RUN_AUTO_ABORT_MID_PLAN)
+
+    assert data["during"] is True, data
+    assert data["result"] is None, data
+    assert data["afterAbort"] is False, data       # Start is enabled again
+    assert data["confirmCalls"] == 0, data         # the modal never opened
+    assert data["planAfter"] is None, data         # the late plan was dropped
+    assert data["queued"] == [["/v/b.iso"]], data  # only the fresh run queued
+    assert data["againQueued"] is True, data
+    assert data["errors"] == [], data
+
+
+_RUN_AUTO_ABORT_IN_CONFIRM = """
+const store = new ConversionStore();
+let opened = false;
+const confirm = () => { opened = true; return new Promise(() => {}); };  // never answered
+const controller = new AbortController();
+const run = store.runAuto({ paths: ['/v/a.iso'], confirm, signal: controller.signal });
+await new Promise((resolve) => setTimeout(resolve, 0));   // the modal is up
+controller.abort();
+const result = await run;
+process.stdout.write(JSON.stringify({
+  opened, result, after: store.autoInFlight,
+  planAfter: store.autoPlan,
+  queued: calls.auto.length,
+}));
+"""
+
+
+def test_an_aborted_auto_run_resolves_a_pending_confirm_as_cancelled(tmp_path):
+    data = _run(tmp_path, _RUN_AUTO_ABORT_IN_CONFIRM)
+
+    assert data == {
+        "opened": True, "result": None, "after": False, "planAfter": None, "queued": 0,
+    }, data

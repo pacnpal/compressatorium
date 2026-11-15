@@ -41,7 +41,7 @@ def _env(tmp_path: Path, monkeypatch):
         Path(output_path).write_bytes(b"CHD")
         yield {"progress": 100, "message": "done"}
 
-    async def noop_post_convert(input_path, output_path, mode):
+    async def noop_post_convert(input_path, output_path, mode, *, within=None):
         return None
 
     for tool in convert_routes.registry.all():
@@ -129,3 +129,38 @@ def test_an_empty_root_list_trusts_nothing(env) -> None:
     (volume / "Good.cue").write_text('FILE "Inside.bin" BINARY\n')
 
     assert source_companions_are_safe(str(volume / "Good.cue"), "createcd", within=[]) is False
+
+
+@pytest.mark.asyncio
+async def test_the_worker_hands_one_root_list_to_the_gate_and_post_convert(
+    env, monkeypatch,
+) -> None:
+    """One ``within`` in ``_process_job``: the safety gate and ``post_convert``
+    get the same list, ``[the job's extraction dir]``, for an archive member."""
+    from services import job_manager as jm_mod
+
+    seen: dict[str, object] = {}
+    real_gate = jm_mod.source_companions_are_safe
+
+    def gate(file_path, mode, *, within=None):
+        seen["gate"] = within
+        seen["input"] = file_path
+        return real_gate(file_path, mode, within=within)
+
+    async def post_convert(input_path, output_path, mode, *, within=None):
+        seen["post_convert"] = within
+
+    monkeypatch.setattr(jm_mod, "source_companions_are_safe", gate)
+    for tool in convert_routes.registry.all():
+        monkeypatch.setattr(tool, "post_convert", post_convert)
+
+    job = await _convert_member(env["volume"], {
+        "Game.cue": b'FILE "Game.bin" BINARY\n',
+        "Game.bin": b"\0" * 4096,
+    }, "Game.cue")
+
+    assert job.status.value == JobStatus.COMPLETED.value, job.error_message
+    roots = seen["gate"]
+    assert isinstance(roots, list) and len(roots) == 1
+    assert os.path.dirname(str(seen["input"])) == roots[0]
+    assert seen["post_convert"] is roots

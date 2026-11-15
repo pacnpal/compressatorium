@@ -69,6 +69,7 @@ const api = {
   removeLibrary: __defer('removeLibrary'),
   updateLibrary: __defer('updateLibrary'),
   forgetLibraryConverted: __defer('forgetLibraryConverted'),
+  getLibraryPlatforms: __defer('getLibraryPlatforms'),
 };
 const romm = { isRomm: true };
 const ui = { navigated: null, navigate(v) { this.navigated = v; } };
@@ -111,6 +112,65 @@ process.stdout.write(JSON.stringify({{
     assert data["dirty"] is True, data
     # Saved against the folder Library's own endpoint, by its id.
     assert data["call"][0:2] == ["saveLibraryRules", "folder:3"], data
+
+
+def test_a_refreshed_list_updates_a_cached_source_and_keeps_its_edits(tmp_path):
+    """Codex 4576870640: a cached source follows the Library's refreshed settings.
+
+    The schedule switch flipped elsewhere (another tab) shows after
+    ``libraries.load()``, and the unsaved Rule edit survives the refresh.
+    """
+    data = _run(tmp_path, f"""
+const loadOnce = libraries.load();
+await tick();
+__calls[0].resolve([{{ ...{_FOLDER}, schedule_enabled: false }}]);
+await loadOnce;
+const source = libraries.sourceFor('folder:3');
+source.setRule('ngc', {{ mode: 'dolphin_rvz', enabled: true }});
+const before = source.scheduleEnabled;
+
+const loadAgain = libraries.load();
+await tick();
+__calls[1].resolve([{{ ...{_FOLDER}, schedule_enabled: true }}]);
+await loadAgain;
+process.stdout.write(JSON.stringify({{
+  before, after: source.scheduleEnabled,
+  same: libraries.sourceFor('folder:3') === source,
+  rules: source.rules, dirty: source.rulesDirty,
+}}));
+""")
+    assert data["before"] is False, data
+    assert data["after"] is True, data
+    assert data["same"] is True, data
+    assert data["rules"]["ngc"] == {"mode": "dolphin_rvz", "enabled": True}, data
+    assert data["dirty"] is True, data
+
+
+def test_the_platforms_response_updates_the_library(tmp_path):
+    """``loadPlatforms`` adopts the Library its response carries."""
+    data = _run(tmp_path, f"""
+const loadOnce = libraries.load();
+await tick();
+__calls[0].resolve([{{ ...{_FOLDER}, schedule_enabled: false }}]);
+await loadOnce;
+const source = libraries.sourceFor('folder:3');
+source.setRule('ngc', {{ mode: 'dolphin_rvz', enabled: true }});
+const listing = source.loadPlatforms();
+await tick();
+__calls[1].resolve({{
+  platforms: [], unsorted: 0, conflicted: 0, unreadable: 0,
+  library: {{ ...{_FOLDER}, schedule_enabled: true }},
+}});
+await listing;
+process.stdout.write(JSON.stringify({{
+  scheduled: source.scheduleEnabled,
+  row: libraries.list.find((lib) => lib.id === 'folder:3').schedule_enabled,
+  dirty: source.rulesDirty,
+}}));
+""")
+    assert data["scheduled"] is True, data
+    assert data["row"] is True, data
+    assert data["dirty"] is True, data
 
 
 def test_folder_rules_offer_what_the_backend_allows(tmp_path):
