@@ -2999,6 +2999,7 @@ class JobManager:
 
     async def _check_delete_paths(
         self, job_id: str, paths: list[str], fingerprints: dict, output_real: str,
+        probe_seconds: Optional[float] = None,
     ) -> None:
         """Raise RuntimeError unless every path is still safe to delete.
 
@@ -3020,18 +3021,22 @@ class JobManager:
         jobs = list(self.jobs.values())
         problem = await self._bounded_delete_probe(
             self._delete_path_problem, job_id, paths, fingerprints, output_real,
-            own_holds, jobs,
+            own_holds, jobs, seconds=probe_seconds,
         )
         if problem:
             raise RuntimeError(problem)
 
     @staticmethod
-    async def _bounded_delete_probe(func: Callable, *args: object) -> object:
-        """A delete-step probe on a detached thread, bounded; a timeout raises
-        RuntimeError, so the delete is refused and nothing is removed."""
+    async def _bounded_delete_probe(
+        func: Callable, *args: object, seconds: Optional[float] = None,
+    ) -> object:
+        """A delete-step probe on a detached thread, bounded (``seconds``, else
+        ``_CANONICAL_PROBE_SECONDS``); a timeout raises RuntimeError, so the
+        delete is refused and nothing more is removed."""
         try:
             return await asyncio.wait_for(
-                run_detached(func, *args), timeout=_CANONICAL_PROBE_SECONDS,
+                run_detached(func, *args),
+                timeout=_CANONICAL_PROBE_SECONDS if seconds is None else seconds,
             )
         except asyncio.TimeoutError:
             raise RuntimeError(
@@ -3114,6 +3119,7 @@ class JobManager:
         cancel_event: asyncio.Event,
         cancelled: Callable[[], bool],
         deleted: List[str],
+        probe_seconds: Optional[float] = None,
     ) -> _SourceDelete:
         """The delete step, shared by a job and a retried delete (#329).
 
@@ -3127,9 +3133,17 @@ class JobManager:
         Referrer or path check that fails after it, keeps the Source with a
         reason; a cancel at the last look, before any unlink, is reported as
         ``cancelled``.
+
+        *probe_seconds* bounds every stage that touches the filesystem: the
+        plan, the path resolution and checks, the Referrer hook, each unlink
+        and the store clears. A retry passes ``KEPT_DELETE_PROBE_SECONDS``;
+        a job leaves it None (the probes take ``_CANONICAL_PROBE_SECONDS``, the
+        hook the conversion's stall bound, the unlinks no bound, as before).
         """
         expected_set = set(expected_paths)
-        current_plan = await self._bounded_delete_probe(build_delete_plan, file_path)
+        current_plan = await self._bounded_delete_probe(
+            build_delete_plan, file_path, seconds=probe_seconds,
+        )
         if (
             current_plan.get("errors")
             or current_plan.get("unsafe_paths")
@@ -3141,9 +3155,12 @@ class JobManager:
 
         output_real, source_for_delete, delete_order = await self._bounded_delete_probe(
             self._delete_order, file_path, output_path, list(expected_paths),
+            seconds=probe_seconds,
         )
 
-        await self._check_delete_paths(owner_id, expected_paths, fingerprints, output_real)
+        await self._check_delete_paths(
+            owner_id, expected_paths, fingerprints, output_real, probe_seconds,
+        )
 
         # Referrers (.m3u, ...) move to the output before the Source goes; if
         # any can't, the Source stays (#295).
@@ -3151,6 +3168,7 @@ class JobManager:
             source_for_delete,
             {path: output_path for path in delete_order},
             cancel_event=cancel_event,
+            bound=probe_seconds,
         )
         outcome = _SourceDelete(referrer_records=referrer_outcome.records)
         # The hook awaited a worker thread: re-ask cancel and every per-path
@@ -3163,7 +3181,7 @@ class JobManager:
         else:
             try:
                 await self._check_delete_paths(
-                    owner_id, expected_paths, fingerprints, output_real,
+                    owner_id, expected_paths, fingerprints, output_real, probe_seconds,
                 )
             except RuntimeError as exc:
                 outcome.kept_reason = f"converted, source kept: {exc}"
@@ -3178,19 +3196,37 @@ class JobManager:
             outcome.cancelled = True
             return outcome
         for path in delete_order:
-            await run_in_threadpool(os.remove, path)
+            if probe_seconds is None:
+                await run_in_threadpool(os.remove, path)
+            else:
+                await self._bounded_delete_probe(os.remove, path, seconds=probe_seconds)
             deleted.append(path)
         self._release_delete_holds(owner_id)
 
         ext = os.path.splitext(file_path)[1].lower()
+        clears = []
         if ext in registry.verify_extensions():
-            await verification_store.clear(file_path)
+            clears.append((verification_store.clear, verification_store.clear_blocking))
         if ext == ".chd":
-            await chd_metadata_store.clear(file_path)
+            clears.append((chd_metadata_store.clear, chd_metadata_store.clear_blocking))
+        for clear, clear_blocking in clears:
+            if probe_seconds is None:
+                await clear(file_path)
+                continue
+            try:
+                await self._bounded_delete_probe(
+                    clear_blocking, file_path, seconds=probe_seconds,
+                )
+            except RuntimeError:
+                # The Source is gone; a stale record of it is all this leaves.
+                logger.warning(
+                    "Clearing the records of deleted %s did not finish", file_path,
+                    exc_info=True,
+                )
         return outcome
 
     def _kept_delete_snapshot(
-        self, source_path: str, output_path: str, meta: dict,
+        self, source_path: str, output_path: str, meta: dict, recorded_source: str,
     ) -> Union[Dict[str, object], str]:
         """What a retried delete of *source_path* stands on, established now:
         its delete snapshot, or why it no longer holds. Blocking.
@@ -3198,8 +3234,12 @@ class JobManager:
         Fails closed on each: the Source is inside the configured Volumes, the
         output is the very file its check recorded (``produced_meta``: size,
         mtime, inode, device), and the Source set is byte-for-byte the one
-        that output was made and checked from.
+        that output was made and checked from. The record names the Source
+        by its real path, so the two are compared resolved: a Library reached
+        through a symlink is still the same Source (codex 4579683123).
         """
+        if os.path.realpath(source_path) != recorded_source:
+            return "the output's check record names another Source"
         if not is_within_configured_volumes(source_path, treat_archives=False):
             return "the Source is not inside the configured volumes"
         if self._output_fingerprint(output_path) != meta.get("output"):
@@ -3215,13 +3255,16 @@ class JobManager:
         return snapshot
 
     async def _kept_delete_snapshot_bounded(
-        self, source_path: str, output_path: str, meta: dict,
+        self, source_path: str, output_path: str, meta: dict, recorded_source: str,
     ) -> Union[Dict[str, object], str]:
         """:meth:`_kept_delete_snapshot` on a detached thread, bounded: a
         volume that stops answering is a reason to try again later."""
         try:
             return await asyncio.wait_for(
-                run_detached(self._kept_delete_snapshot, source_path, output_path, meta),
+                run_detached(
+                    self._kept_delete_snapshot, source_path, output_path, meta,
+                    recorded_source,
+                ),
                 KEPT_DELETE_PROBE_SECONDS,
             )
         except (asyncio.TimeoutError, ReadCancelled):
@@ -3270,14 +3313,20 @@ class JobManager:
                 return KeptDeleteRetry(KEPT_KEPT, KEPT_DELETE_UNANSWERED)
             if not output_held:
                 return KeptDeleteRetry(KEPT_READER, "the output is in use by another job")
-            record = await verification_store.get_record(output_path)
+            try:
+                record = await asyncio.wait_for(
+                    run_detached(verification_store.get_record_blocking, output_path),
+                    KEPT_DELETE_PROBE_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                return KeptDeleteRetry(KEPT_KEPT, KEPT_DELETE_UNANSWERED)
             check = (record or {}).get("check_passed")
             meta = (record or {}).get("produced_meta")
             if (
                 not record
                 or check not in _CHECK_LABELS
                 or not _check_satisfies(check, required_check)
-                or record.get("source_path") != source_path
+                or not record.get("source_path")
                 or not isinstance(meta, dict)
                 or not meta.get("source")
                 or not meta.get("output")
@@ -3286,7 +3335,7 @@ class JobManager:
                     KEPT_STALE, "the output's check record no longer matches",
                 )
             snapshot = await self._kept_delete_snapshot_bounded(
-                source_path, output_path, meta,
+                source_path, output_path, meta, record["source_path"],
             )
             if snapshot == KEPT_DELETE_UNANSWERED:
                 return KeptDeleteRetry(KEPT_KEPT, snapshot)
@@ -3307,7 +3356,7 @@ class JobManager:
             self._delete_holds[owner_id] = list(taken)
             # Once more under the holds: nothing can change the set now.
             again = await self._kept_delete_snapshot_bounded(
-                source_path, output_path, meta,
+                source_path, output_path, meta, record["source_path"],
             )
             if isinstance(again, str):
                 status = KEPT_KEPT if again == KEPT_DELETE_UNANSWERED else KEPT_STALE
@@ -3323,6 +3372,7 @@ class JobManager:
                     cancel_event=asyncio.Event(),
                     cancelled=lambda: False,
                     deleted=deleted,
+                    probe_seconds=KEPT_DELETE_PROBE_SECONDS,
                 )
             except (RuntimeError, OSError) as exc:
                 # A refusal, or a removal the filesystem refused part way

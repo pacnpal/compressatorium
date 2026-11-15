@@ -559,3 +559,140 @@ def test_every_history_invalidation_drops_pending_deletes(env, dolphin, capsys):
     asyncio.run(romm_routes._run_identity_cleanup())
     state = asyncio.run(rules_sweep.get_state(romm_library))
     assert not (state.get("7") or {}).get("kept_sources"), "RomM's identity cleanup"
+
+
+# --------------------------------------------------------------------------- #
+# Every stage under the sweep lock is bounded (Codex 4579683118)
+# --------------------------------------------------------------------------- #
+
+
+def _stall_record_lookup(kept, monkeypatch, stall):
+    from services.verification_store import VerificationStore
+
+    real = VerificationStore._normalize
+    monkeypatch.setattr(VerificationStore, "_normalize", staticmethod(
+        lambda path: stall(path, str(kept["output"])) or real(path),
+    ))
+
+
+def _stall_module(name):
+    def patch(kept, monkeypatch, stall):
+        from services import job_manager as job_manager_module
+
+        real = getattr(job_manager_module, name)
+        monkeypatch.setattr(
+            job_manager_module, name,
+            lambda path, *a, **k: stall(path, str(kept["iso"])) or real(path, *a, **k),
+        )
+    return patch
+
+
+def _stall_path_checks(kept, monkeypatch, stall):
+    from services.job_manager import JobManager
+
+    real = JobManager._delete_path_problem
+
+    def stalled(self, job_id, paths, *args, **kwargs):
+        stall(paths[0], str(kept["iso"]))
+        return real(self, job_id, paths, *args, **kwargs)
+
+    monkeypatch.setattr(JobManager, "_delete_path_problem", stalled)
+
+
+def _stall_referrer_hook(kept, monkeypatch, stall):
+    import services.referrers as hook_module
+
+    real = hook_module._update_sync
+    monkeypatch.setattr(
+        hook_module, "_update_sync",
+        lambda image, *a, **k: stall(image, str(kept["iso"])) or real(image, *a, **k),
+    )
+
+
+def _stall_unlink(kept, monkeypatch, stall):
+    import os
+
+    real = os.remove
+    monkeypatch.setattr(
+        os, "remove",
+        lambda path, *a, **k: stall(path, str(kept["iso"])) or real(path, *a, **k),
+    )
+
+
+def _stall_store_clear(kept, monkeypatch, stall):
+    from services.verification_store import VerificationStore
+
+    real = VerificationStore._clear_sync
+    monkeypatch.setattr(
+        VerificationStore, "_clear_sync",
+        lambda self, path: stall(path, str(kept["iso"])) or real(self, path),
+    )
+
+
+# (stage, how to stall it, the outcome once it gives up)
+_STAGES = [
+    ("record lookup", _stall_record_lookup, "kept"),
+    ("Source snapshot", _stall_module("build_delete_snapshot"), "kept"),
+    ("delete plan", _stall_module("build_delete_plan"), "kept"),
+    ("path checks", _stall_path_checks, "kept"),
+    ("Referrer hook", _stall_referrer_hook, "kept"),
+    ("unlink", _stall_unlink, "kept"),
+    # The Source is gone by then: the bookkeeping after it never undoes that.
+    ("store clear", _stall_store_clear, "deleted"),
+]
+
+
+@pytest.mark.parametrize(("stage", "stall_it", "expected"), _STAGES,
+                         ids=[s[0] for s in _STAGES])
+def test_a_stage_that_stalls_is_given_up_within_the_bound(
+    env, dolphin, capsys, kept, monkeypatch, stage, stall_it, expected,
+):
+    import os
+    import time
+
+    from services import job_manager as job_manager_module
+    from services.job_manager import job_manager
+
+    monkeypatch.setattr(job_manager_module, "KEPT_DELETE_PROBE_SECONDS", 0.3)
+
+    def stall(path, target):
+        if os.path.realpath(str(path)) == os.path.realpath(target):
+            time.sleep(1.5)
+
+    stall_it(kept, monkeypatch, stall)
+    started = time.monotonic()
+    outcome = asyncio.run(job_manager.retry_kept_delete(
+        source_path=str(kept["iso"]), output_path=str(kept["output"]),
+        required_check="container_only",
+    ))
+
+    assert time.monotonic() - started < 1.2, stage
+    assert outcome.status == expected, (stage, outcome)
+    time.sleep(1.5)  # let the abandoned thread finish before teardown
+
+
+# --------------------------------------------------------------------------- #
+# The same Source, however its path is spelled (Codex 4579683123)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture(name="symlinked_root")
+def _symlinked_root(env):
+    """The Library's root is a symlink to where its files really are, from
+    before the job ran: the check record names the real path, the job the
+    linked one."""
+    real = env["vol"] / "shelf_real"
+    (env["vol"] / "shelf").rename(real)
+    (env["vol"] / "shelf").symlink_to(real, target_is_directory=True)
+    return real
+
+
+def test_a_source_under_a_symlinked_root_is_still_deleted(
+    env, dolphin, capsys, symlinked_root, kept,
+):
+    code, lines, _err = _cli(capsys, "run-rules", "--json")
+
+    assert code == 0, lines
+    assert not (symlinked_root / "gc" / "Game.iso").exists()
+    assert kept["output"].read_bytes() == b"converted output"
+    assert not _rule_state(env)["gc"].get("kept_sources")

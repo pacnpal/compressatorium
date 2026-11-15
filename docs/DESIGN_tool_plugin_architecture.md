@@ -4184,6 +4184,24 @@ under `_CANONICAL_PROBE_SECONDS` (`_bounded_delete_probe`), for the job and the
 retry alike: a volume that stops answering refuses the delete instead of
 stalling the event loop.
 
+A retry runs under `_sweep_lock`, so every stage that touches the filesystem
+is bounded by `KEPT_DELETE_PROBE_SECONDS` on a detached thread, and a timeout
+is a counted `kept` attempt (codex 4579683118):
+
+- the Library containment check (`_inside_library`, through `_probe`);
+- the output lock and the delete-path holds (`run_detached_undoable`);
+- the check record lookup (`verification_store.get_record_blocking`);
+- the Source snapshot and identity checks (`_kept_delete_snapshot`);
+- in `_delete_source_set` (its `probe_seconds`): the plan, the path
+  resolution, the path checks, the Referrer hook
+  (`update_before_source_removal(bound=...)`), each unlink, and the store
+  clears (`clear_blocking`), where a timeout after the unlinks only leaves a
+  stale record of a Source that is gone.
+
+The record names the Source by its real path, so `_kept_delete_snapshot`
+compares it with the Source resolved now: a Library reached through a symlink
+is still the same Source (codex 4579683123).
+
 `run_detached_undoable(func, *args, timeout, undo)` (`subprocess_runner`) is
 the shared form of a bounded call that takes something (a lock): when its
 caller gives up, whatever the abandoned call returns later is handed to

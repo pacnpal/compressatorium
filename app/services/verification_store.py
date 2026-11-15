@@ -167,6 +167,11 @@ class VerificationStore:
     async def clear(self, chd_path: str) -> None:
         await run_in_threadpool(self._clear_sync, chd_path)
 
+    def clear_blocking(self, chd_path: str) -> None:
+        """:meth:`clear`, blocking, for a caller that bounds it on its own
+        detached thread (a retried delete, #329)."""
+        self._clear_sync(chd_path)
+
     def _move_sync(self, old_path: str, new_path: str) -> None:
         old_normalized = self._normalize(old_path)
         new_normalized = self._normalize(new_path)
@@ -232,6 +237,11 @@ class VerificationStore:
 
     async def get_record(self, chd_path: str) -> dict[str, str | None] | None:
         return await run_in_threadpool(self._get_record_sync, chd_path)
+
+    def get_record_blocking(self, chd_path: str) -> dict[str, str | None] | None:
+        """:meth:`get_record`, blocking, for a caller that bounds it on its own
+        detached thread (a retried delete, #329)."""
+        return self._get_record_sync(chd_path)
 
     def produced_meta_blocking(self, chd_path: str) -> dict | None:
         """What made ``chd_path``, passing or not: its ``produced_meta``. Blocking.
