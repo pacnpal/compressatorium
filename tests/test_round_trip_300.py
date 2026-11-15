@@ -122,7 +122,7 @@ def _scratch_left(_tmp_path=None) -> list[str]:
 
 
 def _bytes_part(digest: ContentDigest) -> str:
-    """The track-data SHA1 in a digest value (``<data sha1>[/<layout sha1>]``)."""
+    """The track-data SHA1 in a digest value (``<data sha1>[/<table sha256>]``)."""
     return digest.value.split("/")[0]
 
 
@@ -335,6 +335,17 @@ async def test_the_same_tracks_split_or_in_one_bin_have_one_digest(tmp_path, fak
     single = await _digest_of(_single_bin_cue(tmp_path / "single"))
 
     assert split.same_content(single)
+
+
+@pytest.mark.asyncio
+async def test_the_track_data_is_sha1_and_the_track_table_is_sha256(tmp_path, fake):
+    # The data part must be SHA-1: a DVD CHD's header Data SHA1 is compared
+    # with the same kind. The table hash is the app's own, so SHA-256.
+    digest = await _digest_of(_split_cue(tmp_path / "split"))
+    data, table = digest.value.split("/")
+
+    assert data == _sha1(_T1, _T2)
+    assert len(table) == 64 and all(c in "0123456789abcdef" for c in table)
 
 
 @pytest.mark.asyncio

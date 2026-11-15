@@ -200,18 +200,18 @@ def _gdi_layout(text: str, files: list[str]) -> list[Track]:
 
 
 def _fingerprint(layout: list[Track], total_bytes: int) -> str | None:
-    """SHA1 of the track table, or None when it adds nothing.
+    """SHA-256 of the track table, or None when it adds nothing.
 
     None when the table is exactly what chdman infers for a bare image of the
     same bytes (one track, no gaps): an ``.iso`` Source and the one-track cue a
-    ``createcd`` of it extracts to then compare by their bytes alone.
+    ``createcd`` of it extracts to then compare by their bytes alone. Only ever
+    compared with another fingerprint made here, so the algorithm is the app's
+    choice.
     """
     if layout == raw_image_layout(total_bytes):
         return None
     text = "\n".join(",".join(str(v) for v in track) for track in layout)
-    return hashlib.sha1(  # nosec # nosemgrep: insecure-hash-algorithm-sha1
-        text.encode(), usedforsecurity=False,
-    ).hexdigest()
+    return hashlib.sha256(text.encode()).hexdigest()
 
 
 def raw_image_layout(size: int) -> list[Track] | None:

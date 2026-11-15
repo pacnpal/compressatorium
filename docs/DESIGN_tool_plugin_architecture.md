@@ -2300,7 +2300,7 @@ different file hashes and the same digest.
 @dataclass(frozen=True)
 class ContentDigest:
     kind: str    # shape of what was hashed, e.g. "gc_wii_disc_sha1"
-    value: str   # lowercase hex; compared only for equality (chdman: "<sha1>/<sha1>")
+    value: str   # lowercase hex; compared only for equality (chdman: "<sha1>/<sha256>")
     def same_content(self, other) -> bool: ...   # ValueError on a kind mismatch
 
 async def content_digest(self, path, *, cancel_event=None, within=None) -> ContentDigest | None
@@ -2380,9 +2380,12 @@ in `_verifying` so the stall reporter treats it like the container check.
 
 chdman's digest kind is `image_data_sha1`. Its value is the SHA1 of the image's
 bytes as files on disk, track files laid end to end in sheet order, followed by
-`/<sha1 of the track table>` for a sheet whose table says more than a bare image
+`/<sha256 of the track table>` for a sheet whose table says more than a bare image
 (`utils.disc_sheet.read_disc_sheet`). That one definition covers an ISO, a
-cue/bin set (split or single-bin) and a DVD CHD's data SHA1.
+cue/bin set (split or single-bin) and a DVD CHD's data SHA1. The data part is
+SHA-1 because the DVD side is the CHD header's `Data SHA1`, and an `.iso`
+Source is compared with a DVD CHD and a CD extract alike. The table hash is
+only ever compared with another made by the app, so it is SHA-256.
 
 **The track table** is compared so that equal sector bytes in a different disc
 layout do not pass. Per track of a cue: the type token (`MODE1/2352`,
