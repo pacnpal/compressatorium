@@ -46,14 +46,27 @@ def _volumes(tmp_path, monkeypatch):
     [
         lambda p: path_utils.is_within_configured_volumes(p),
         lambda p: path_utils.ensure_path_within_volumes(p) is not None,
-        lambda p: path_utils.containing_volume_root(p) is not None,
     ],
-    ids=["is_within", "ensure", "containing_root"],
+    ids=["is_within", "ensure"],
 )
 def test_a_path_on_a_healthy_volume_never_touches_another(volumes, check):
     path = str(volumes["healthy"] / "games" / "game.iso")
 
     assert check(path)
+    assert volumes["touched"] == []
+
+
+def test_the_containing_root_never_touches_another_once_the_cache_is_built(volumes):
+    # platform_boundary_root also weighs the cached alias spellings (a deeper
+    # alias root can hold the path). Building that cache probes every root
+    # once, bounded; at startup in production. Once built, finding the root of
+    # a path on a healthy Volume touches no other Volume.
+    path_utils.refresh_volume_roots()
+    volumes["touched"].clear()
+
+    assert path_utils.platform_boundary_root(
+        str(volumes["healthy"] / "games" / "game.iso"),
+    ) == volumes["healthy"].resolve()
     assert volumes["touched"] == []
 
 
@@ -196,7 +209,7 @@ def test_a_symlink_from_one_volume_into_another_is_accepted(tmp_path, monkeypatc
     monkeypatch.setattr(settings, "chd_volumes", f"{a},{b}")
 
     assert path_utils.is_within_configured_volumes(str(a / "link" / "game.iso"))
-    assert path_utils.containing_volume_root(str(a / "link" / "game.iso")) == b.resolve()
+    assert path_utils.platform_boundary_root(str(a / "link" / "game.iso")) == b.resolve()
     assert not path_utils.is_within_configured_volumes(str(a / "escape" / "secret.iso"))
 
 
@@ -276,9 +289,33 @@ def test_nested_symlinked_volumes_give_the_most_specific_root(tmp_path, monkeypa
     volumes = [outer, inner] if order == "outer-first" else [inner, outer]
     monkeypatch.setattr(settings, "chd_volumes", ",".join(map(str, volumes)))
 
-    root = path_utils.containing_volume_root(str(data / "library" / "game.iso"))
+    root = path_utils.platform_boundary_root(str(data / "library" / "game.iso"))
 
     assert root == (data / "library").resolve()
+
+
+def test_a_deeper_alias_root_wins_over_a_configured_spelling(tmp_path, monkeypatch):
+    # CodeRabbit 4578050378: /mnt matches by its configured spelling, and
+    # /games -> /mnt/ps2/library by its alias. The alias root is deeper, so it
+    # holds /mnt/ps2/library/game.iso, and the folder walk must stop there,
+    # never reading "ps2" above it.
+    from services import platform_detect
+
+    from config import settings
+
+    mnt = tmp_path / "mnt"
+    library = mnt / "ps2" / "library"
+    library.mkdir(parents=True)
+    image = library / "game.iso"
+    image.write_bytes(b"\0" * 4096)                  # headerless
+    games = tmp_path / "games"
+    games.symlink_to(library, target_is_directory=True)
+    monkeypatch.setattr(settings, "chd_volumes", f"{mnt},{games}")
+    platform_detect.clear_cache()
+
+    assert path_utils.platform_boundary_root(str(image)) == library.resolve()
+    assert platform_detect.detect_platform(str(image)).platform is None
+    platform_detect.clear_cache()
 
 
 def test_refreshes_over_a_blocked_root_keep_one_live_probe(tmp_path, monkeypatch):

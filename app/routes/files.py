@@ -26,7 +26,7 @@ from services.verification_store import verification_store
 from utils.junk import is_junk_entry
 from utils.path_utils import (
     match_extension,
-    containing_volume_root,
+    lock_boundary_root,
     ensure_path_within_volumes,
     get_volume_name_for_path,
     is_configured_volume_root,
@@ -280,7 +280,7 @@ async def _assert_path_not_in_use(path: str, *, is_dir: bool = False) -> None:
     # and of each folder above it, up to the Volume root (#306). Off the event
     # loop: resolving the Volume roots touches the disk.
     def _locked_folder_above() -> str | None:
-        volume_root = containing_volume_root(path)
+        volume_root = lock_boundary_root(path)
         return lock_manager.locked_folder_above(
             path, str(volume_root) if volume_root is not None else None,
         )
