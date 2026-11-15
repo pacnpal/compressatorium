@@ -4,6 +4,7 @@ import inspect
 import logging
 from logging_setup import get_logger
 import os
+import random
 import resource
 import shutil
 import sys
@@ -1296,10 +1297,14 @@ class JobManager:
         """
         if job.input_kind == InputKind.DIRECTORY:
             return lock_manager.dir_lock_would_conflict(job.file_path)
-        paths = [job.output_path]
-        if "::" not in job.file_path:
-            paths.append(job.file_path)
-        return any(lock_manager.is_within_locked_dir(p) for p in paths if p)
+        paths = [job.output_path, job.file_path.split("::", 1)[0]]
+        # In this process (`_dir_locks`), or in any other: a held lock file on
+        # a folder above, up to the Volume root (#306).
+        return any(
+            lock_manager.is_within_locked_dir(p)
+            or lock_manager.folder_locked_above(p) is not None
+            for p in paths if p
+        )
 
     async def _defer_blocked_job(
         self,
@@ -1341,7 +1346,9 @@ class JobManager:
 
         async def _requeue() -> None:
             try:
-                await asyncio.sleep(delay)
+                # Jitter: two processes that each took a lock and then backed
+                # off from the other's must not retry in lockstep (#306).
+                await asyncio.sleep(delay + random.uniform(0, delay / 2))
             except asyncio.CancelledError:
                 return
             job = self.jobs.get(job_id)
@@ -2981,7 +2988,7 @@ class JobManager:
             await self._defer_blocked_job(
                 job_id,
                 output_lock_held=True,
-                message="Waiting for another job to finish writing the Source...",
+                message="Waiting for another job using this Source or its folder...",
             )
             return
 
@@ -3499,7 +3506,11 @@ class JobManager:
                         self._release_inputs(job_id)
                         for path in expected_paths:
                             _, is_locked = lock_manager.check_file_status(path)
-                            if is_locked:
+                            # A folder above it that another process took
+                            # once this job let go of its read locks (#306).
+                            if is_locked or await run_in_threadpool(
+                                lock_manager.folder_locked_above, path,
+                            ):
                                 raise RuntimeError(
                                     "Delete path is locked by an active conversion"
                                 )
