@@ -524,6 +524,10 @@ class JobManager:
             "output_dir": output_dir,
             "output_path": output_path,
         }]
+        # History first: no await may follow a job's registration, or a
+        # cancellation there leaves it queued but never returned (see
+        # `create_jobs_atomic`).
+        await self._prune_jobs()
         # Outside the lock, and off the event loop: see `_reservation_keys`.
         reservation = await self._reservation_keys(specs, mode)
         async with self._create_lock:
@@ -546,7 +550,6 @@ class JobManager:
                 delete_snapshot=delete_snapshot,
                 reservation=reservation,
             )
-        await self._prune_jobs()
         return job
 
     async def create_jobs_atomic(
@@ -564,6 +567,12 @@ class JobManager:
             return []
 
         jobs: List[ConversionJob] = []
+        # History first, before anything is registered. The prune awaits
+        # (`delete_job` cleans temp dirs); after registration, a cancellation
+        # there would end this call with jobs queued that the caller never got
+        # back and so could not withdraw. It removes finished jobs only, so the
+        # claim check below answers the same either way.
+        await self._prune_jobs()
         # Outside the lock, and off the event loop: see `_reservation_keys`.
         reservation = await self._reservation_keys(job_specs, mode)
         async with self._create_lock:
@@ -595,7 +604,6 @@ class JobManager:
                         reservation=reservation,
                     )
                 )
-        await self._prune_jobs()
         return jobs
 
     async def create_batch_jobs(

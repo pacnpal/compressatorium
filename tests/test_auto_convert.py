@@ -475,6 +475,37 @@ async def test_auto_route_withdraws_on_any_failure_not_only_http_errors(
     assert cancelled
 
 
+@pytest.mark.asyncio
+async def test_auto_route_withdraws_earlier_groups_when_cancelled(route_env, monkeypatch):
+    # A client disconnect cancels the request mid-loop: the groups already
+    # queued are withdrawn, then the cancellation propagates.
+    import asyncio
+
+    paths = _mixed_selection(route_env["tmp_path"])
+    queued_ids: list[str] = []
+    cancelled: list[str] = []
+
+    async def fake_atomic(job_specs, mode, **_kwargs):
+        if mode.value == "dolphin_rvz":
+            raise asyncio.CancelledError
+        job_id = f"job-{mode.value}"
+        queued_ids.append(job_id)
+        return [type("Job", (), {"id": job_id, "filename": "x"})()]
+
+    async def fake_cancel(job_id):
+        cancelled.append(job_id)
+        return True
+
+    monkeypatch.setattr(convert_routes.job_manager, "create_jobs_atomic", fake_atomic)
+    monkeypatch.setattr(convert_routes.job_manager, "cancel_job", fake_cancel)
+
+    with pytest.raises(asyncio.CancelledError):
+        await convert_routes.create_auto_jobs(AutoJobCreateRequest(file_paths=paths))
+
+    assert queued_ids, "the cancelled group must not be the first one queued"
+    assert sorted(cancelled) == sorted(queued_ids)
+
+
 def test_a_target_whose_tool_is_not_ready_is_skipped(tmp_path):
     from services.tools import registry
 
