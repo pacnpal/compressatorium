@@ -56,6 +56,19 @@ def test_a_path_on_a_healthy_volume_never_touches_another(volumes, check):
     assert volumes["touched"] == []
 
 
+def test_a_path_on_a_later_volume_never_touches_an_earlier_stalled_one(volumes, monkeypatch):
+    from config import settings
+
+    monkeypatch.setattr(
+        settings, "chd_volumes", f"{volumes['stalled']},{volumes['healthy']}",
+    )
+
+    assert path_utils.is_within_configured_volumes(
+        str(volumes["healthy"] / "games" / "game.iso"),
+    )
+    assert volumes["touched"] == []
+
+
 def test_the_healthy_root_itself_never_touches_another(volumes):
     assert path_utils.is_within_configured_volumes(str(volumes["healthy"]))
     assert volumes["touched"] == []
