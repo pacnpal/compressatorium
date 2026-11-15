@@ -632,10 +632,12 @@ class ConversionStore {
     this.duplicateCheck = null;
   }
 
-  async fetchDeletePlan(filePaths) {
+  async fetchDeletePlan(filePaths, duplicateAction = 'skip') {
     if (!filePaths?.length) return null;
     try {
-      this.deletePlan = await api.getDeletePlan(filePaths, this.mode);
+      this.deletePlan = await api.getDeletePlan(
+        filePaths, this.mode, this.outputDir || null, duplicateAction,
+      );
       return this.deletePlan;
     } catch (e) {
       toast.error(e?.message ?? 'Failed to build delete plan');

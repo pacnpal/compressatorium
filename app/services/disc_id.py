@@ -214,11 +214,12 @@ def _stream_size(f) -> int | None:
         return None
 
 
-def _bounded_read(f, offset: int, size: int) -> bytes | None:
+def _bounded_read(f, offset: int, size: int, *, strict: bool = False) -> bytes | None:
     """``size`` bytes at ``offset``, or None when the image cannot hold them.
 
     Refuses a size above ``_MAX_ISO_READ`` or running past the end of the
-    image, without reading anything.
+    image, without reading anything. ``strict`` raises an I/O error instead of
+    answering None (#306: a verify must tell "cannot read" from "not there").
     """
     if size < 0 or size > _MAX_ISO_READ:
         return None
@@ -229,14 +230,22 @@ def _bounded_read(f, offset: int, size: int) -> bytes | None:
         f.seek(offset)
         return f.read(size)
     except OSError:
+        if strict:
+            raise
         return None
 
-def _read_pvd(f) -> bytes | None:
-    """Return the 2048-byte PVD sector from a seekable ISO 9660 stream, or None."""
+
+def _read_pvd(f, *, strict: bool = False) -> bytes | None:
+    """Return the 2048-byte PVD sector from a seekable ISO 9660 stream, or None.
+
+    ``strict`` raises an I/O error instead of answering None.
+    """
     try:
         f.seek(_PVD_SECTOR * _SECTOR_SIZE)
         pvd = f.read(_SECTOR_SIZE)
     except OSError:
+        if strict:
+            raise
         return None
     if len(pvd) < 190 or pvd[:7] != _PVD_MAGIC:
         return None
@@ -251,12 +260,15 @@ def _pvd_root_dir(pvd: bytes) -> tuple[int, int]:
     return lba, size
 
 
-def _list_dir(f, lba: int, size: int) -> list[tuple[str, int, int, bool]]:
+def _list_dir(
+    f, lba: int, size: int, *, strict: bool = False,
+) -> list[tuple[str, int, int, bool]]:
     """
     Yield (name, lba, size, is_dir) for each entry in an ISO 9660 directory.
-    Skips the '.' and '..' self-referencing entries.
+    Skips the '.' and '..' self-referencing entries. ``strict`` raises an I/O
+    error instead of answering an empty listing.
     """
-    data = _bounded_read(f, lba * _SECTOR_SIZE, size)
+    data = _bounded_read(f, lba * _SECTOR_SIZE, size, strict=strict)
     if data is None:
         return []
 
@@ -306,7 +318,9 @@ def _list_dir(f, lba: int, size: int) -> list[tuple[str, int, int, bool]]:
     return entries
 
 
-def read_iso_file(iso_path: str, path_parts: list[str]) -> Optional[bytes]:
+def read_iso_file(
+    iso_path: str, path_parts: list[str], *, strict: bool = False,
+) -> Optional[bytes]:
     """Read one file's bytes from an ISO 9660 image by path, or ``None``.
 
     The shared, format-only ISO 9660 path lookup: open the image, walk the PVD
@@ -315,26 +329,32 @@ def read_iso_file(iso_path: str, path_parts: list[str]) -> Optional[bytes]:
     built ISO (PS3 ``TITLE_ID`` readback in ``services.ps3``) reuse this rather
     than re-implementing the ISO 9660 walk, per the repo's "modularity is key"
     rule. Returns ``None`` for a non-ISO / unreadable image or a missing path.
+    ``strict`` raises an I/O error instead, for a caller that has to tell "the
+    image does not hold it" from "the image could not be read" (a verify).
     """
     try:
         with open(iso_path, "rb") as f:
-            pvd = _read_pvd(f)
+            pvd = _read_pvd(f, strict=strict)
             if not pvd:
                 return None
             root_lba, root_size = _pvd_root_dir(pvd)
-            return _find_file(f, root_lba, root_size, path_parts)
+            return _find_file(f, root_lba, root_size, path_parts, strict=strict)
     except OSError:
+        if strict:
+            raise
         return None
 
 
-def _find_file(f, root_lba: int, root_size: int, path_parts: list[str]) -> Optional[bytes]:
+def _find_file(
+    f, root_lba: int, root_size: int, path_parts: list[str], *, strict: bool = False,
+) -> Optional[bytes]:
     """
     Walk an ISO 9660 directory tree and return the raw bytes of the file at
     *path_parts* (e.g. ["PSP_GAME", "PARAM.SFO"]), or None if not found.
     """
     cur_lba, cur_size = root_lba, root_size
     for i, part in enumerate(path_parts):
-        entries = _list_dir(f, cur_lba, cur_size)
+        entries = _list_dir(f, cur_lba, cur_size, strict=strict)
         hit = next((e for e in entries if e[0] == part.upper()), None)
         if hit is None:
             return None
@@ -342,7 +362,7 @@ def _find_file(f, root_lba: int, root_size: int, path_parts: list[str]) -> Optio
         if i == len(path_parts) - 1:
             # Final component, read and return the file (bounded, see
             # _MAX_ISO_READ: None when its recorded size is implausible).
-            return _bounded_read(f, lba * _SECTOR_SIZE, size)
+            return _bounded_read(f, lba * _SECTOR_SIZE, size, strict=strict)
         if not is_dir:
             return None
         cur_lba, cur_size = lba, size

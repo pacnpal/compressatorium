@@ -23,6 +23,7 @@ from services.rules.library import (
     CONVERTED_HISTORY,
     RECOGNIZED_FILTER,
     Image,
+    LibraryDefaults,
     LibraryUnreadable,
     Platform,
     QueuedImage,
@@ -72,7 +73,7 @@ def image_from_rom(rom: dict) -> Image:
     )
 
 
-class RommLibrary:
+class RommLibrary(LibraryDefaults):
     """The RomM instance configured in the app, as a Library."""
 
     id = "romm"
@@ -137,6 +138,24 @@ class RommLibrary:
         return bool(romm_settings.effective().get("auto_convert"))
 
     # ---- hooks ----
+
+    async def before_pass(self, *, dry_run: bool) -> None:
+        """What the server does for RomM that ``run-rules`` needs (#307).
+
+        Loads the saved RomM settings (the server does at startup). On a real
+        pass it also finishes an identity cleanup a crash left owed (startup
+        does that too; otherwise every sweep is refused with
+        ``identity_cleanup_pending``) and runs one pass of the re-pin settler,
+        so ROMs converted by an earlier pass get their metadata back without a
+        server running. Re-pins recorded by this pass wait for the next one.
+        """
+        await romm_settings.load()
+        if dry_run:
+            return
+        from routes import romm as romm_routes
+
+        await romm_routes.replay_identity_cleanup()
+        await romm_routes.settle_once()
 
     def sweep_blocked(self) -> str | None:
         """Refuse a sweep while a change of RomM instance is half cleaned up.

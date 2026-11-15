@@ -186,6 +186,14 @@ class ConversionJob(BaseModel):
     # no check ran.
     check_passed: str | None = None
     deleted_paths: list[str] = []
+    # A finished job that did less than asked without failing, such as a
+    # delete-source run that kept its Source because another job was reading
+    # it (#306). None when there is nothing to say.
+    warning: str | None = None
+    # What the Referrer hook did before the Source was to be removed (#295):
+    # {"referrer": id, "target": file, "status": "updated" | "failed" |
+    # "skipped", "reason": why, for failed and skipped}.
+    referrers_updated: list[dict] = []
 
 
 class JobCreateRequest(BaseModel):
@@ -321,6 +329,10 @@ class MetadataBatchRequest(BaseModel):
 class DeletePlanRequest(BaseModel):
     file_paths: list[str]
     mode: ConversionMode = ConversionMode.CREATECD
+    # Where the outputs will land, and how a taken output is handled (RENAME
+    # writes a numbered path), so Referrer changes name the file the job writes.
+    output_dir: str | None = None
+    duplicate_action: DuplicateAction = DuplicateAction.SKIP
 
 
 class DolphinDiscInfo(BaseModel):

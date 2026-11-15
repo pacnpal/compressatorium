@@ -1,4 +1,5 @@
 import asyncio
+import functools
 from logging_setup import get_logger
 import os
 import re
@@ -35,6 +36,7 @@ from services.job_manager import (
     QueueBackpressureError,
     job_manager,
 )
+from services import referrers
 from services.platform_detect import plan_auto
 from services.preferences_store import preferences_store
 from services.romz import romz_service
@@ -56,6 +58,7 @@ from utils.path_utils import (
     is_within_configured_volumes,
     match_extension,
     source_companions_are_safe,
+    strip_archive_path,
 )
 
 router = APIRouter()
@@ -554,7 +557,9 @@ async def _plan_directory_job(
     )
     if output_exists or is_locked:
         if duplicate_action == DuplicateAction.SKIP:
-            raise SkipFile(SkipReason.OUTPUT_EXISTS)
+            raise SkipFile(
+                SkipReason.OUTPUT_LOCKED if is_locked else SkipReason.OUTPUT_EXISTS,
+            )
         if duplicate_action == DuplicateAction.OVERWRITE:
             if is_locked:
                 raise SkipFile(SkipReason.OUTPUT_LOCKED)
@@ -659,12 +664,14 @@ async def plan_job(
         output_exists, is_locked = check_output_conflicts(mode, output_path)
         if output_exists or is_locked:
             if duplicate_action == DuplicateAction.SKIP:
-                raise SkipFile(SkipReason.OUTPUT_EXISTS)
+                raise SkipFile(
+                    SkipReason.OUTPUT_LOCKED if is_locked else SkipReason.OUTPUT_EXISTS,
+                )
             if duplicate_action == DuplicateAction.OVERWRITE:
                 if is_locked:
                     raise SkipFile(SkipReason.OUTPUT_LOCKED)
             elif duplicate_action == DuplicateAction.RENAME:
-                output_path = get_unique_output_path(output_path, mode)
+                output_path = _renamed_output(mode, output_path, duplicate_action)
 
     if "::" not in file_path and not os.path.isfile(file_path):
         raise SkipFile(SkipReason.FILE_NOT_FOUND)
@@ -753,12 +760,14 @@ async def plan_job(
         output_exists, is_locked = check_output_conflicts(mode, output_path)
         if output_exists or is_locked:
             if duplicate_action == DuplicateAction.SKIP:
-                raise SkipFile(SkipReason.OUTPUT_EXISTS)
+                raise SkipFile(
+                    SkipReason.OUTPUT_LOCKED if is_locked else SkipReason.OUTPUT_EXISTS,
+                )
             if duplicate_action == DuplicateAction.OVERWRITE:
                 if is_locked:
                     raise SkipFile(SkipReason.OUTPUT_LOCKED)
             elif duplicate_action == DuplicateAction.RENAME:
-                output_path = get_unique_output_path(output_path, mode)
+                output_path = _renamed_output(mode, output_path, duplicate_action)
 
     if (
         spec.kind != ModeKind.COPY
@@ -795,6 +804,21 @@ async def plan_job(
     )
 
 
+async def _planned_output_path(mode: str, file_path: str, output_dir: str | None) -> str:
+    """The output a conversion of *file_path* would be planned to write."""
+    if "::" not in file_path:
+        return await run_in_threadpool(_get_output_path, mode, file_path, output_dir)
+    # An archive member is named from its internal filename and lands beside
+    # the archive unless an output folder was chosen. Off the event loop: romz
+    # extract reads the archive to name its output.
+    archive_path, internal_path = file_path.split("::", 1)
+    output_name = archive_service._output_name_for_member(internal_path)
+    return await run_in_threadpool(
+        _get_output_path, mode, output_name, output_dir or os.path.dirname(archive_path),
+        treat_as_stem=True,
+    )
+
+
 @router.post("/jobs/check-duplicates", response_model=list[DuplicateInfo])
 async def check_duplicates(request: CheckDuplicatesRequest):
     """Check which output files already exist for the given input files."""
@@ -819,29 +843,7 @@ async def check_duplicates(request: CheckDuplicatesRequest):
         if not is_within_configured_volumes(file_path):
             continue
 
-        # Handle archive paths - get the actual filename and determine output location
-        actual_filename = file_path
-        effective_output_dir = output_dir
-
-        if "::" in file_path:
-            # For archive files, use the internal filename for the CHD name
-            # and save next to the archive (unless output_dir is specified)
-            archive_path, internal_path = file_path.split("::", 1)
-            actual_filename = internal_path
-            if not effective_output_dir:
-                effective_output_dir = os.path.dirname(archive_path)
-
-        # Off the event loop: romz extract reads the archive to name its output.
-        if "::" in file_path:
-            output_name = archive_service._output_name_for_member(actual_filename)
-            output_path = await run_in_threadpool(
-                _get_output_path, mode, output_name, effective_output_dir,
-                treat_as_stem=True,
-            )
-        else:
-            output_path = await run_in_threadpool(
-                _get_output_path, mode, actual_filename, effective_output_dir,
-            )
+        output_path = await _planned_output_path(mode, file_path, output_dir)
         exists, _ = await run_in_threadpool(
             check_output_conflicts, mode, output_path,
         )
@@ -851,6 +853,70 @@ async def check_duplicates(request: CheckDuplicatesRequest):
         )
 
     return results
+
+
+def _renamed_output(mode: str, output_path: str, duplicate_action: DuplicateAction) -> str:
+    """The path a RENAME job writes when *output_path* is taken (or locked).
+
+    Shared by ``plan_job`` and the delete-plan preview, so the confirmation
+    names the same numbered output the job will write.
+    """
+    if duplicate_action != DuplicateAction.RENAME:
+        return output_path
+    exists, locked = check_output_conflicts(mode, output_path)
+    return get_unique_output_path(output_path, mode) if exists or locked else output_path
+
+
+async def _add_referrer_changes(
+    item: dict, mode: str, file_path: str, output_dir: str | None,
+    duplicate_action: DuplicateAction = DuplicateAction.SKIP,
+) -> None:
+    """List each Referrer's planned change on a delete-plan *item* (#295).
+
+    The same renames the job hands the Referrer hook: every file the delete
+    removes, mapped to the output the job will write (a RENAME's numbered
+    path included).
+    """
+    item["referrer_changes"] = []
+    delete_paths = item.get("delete_paths") or []
+    if not delete_paths:
+        return
+    try:
+        output_path = await run_in_threadpool(
+            _renamed_output, mode,
+            await _planned_output_path(mode, file_path, output_dir), duplicate_action,
+        )
+    except SkipFile as skip:
+        # RENAME couldn't settle on an output name (no free numbered name, or
+        # the output folder is busy right now). Record it as an error on this
+        # item instead of a 500. Any item error sets the plan-wide `blocked`,
+        # so this disables Confirm for the whole batch, and the message says so.
+        logger.debug("delete-plan: no RENAME output for %s: %s", file_path, skip.reason)
+        item.setdefault("errors", []).append(
+            "Can't settle the output name a rename would use (no free numbered "
+            "name, or the output folder is busy). This blocks the whole delete "
+            "plan: retry, or leave this file out of the selection.",
+        )
+        return
+    image_path = strip_archive_path(file_path) if "::" in file_path else file_path
+    try:
+        changes = await referrers.plan_changes_bounded(
+            image_path, {p: output_path for p in delete_paths},
+        )
+    except Exception as exc:
+        # Any planning failure is shown as "the source will be kept" (the job
+        # would keep it too), so the catch is deliberately broad.
+        logger.warning(
+            "delete-plan: Referrer planning failed for %s", image_path, exc_info=True,
+        )
+        target = getattr(exc, "target", None) or image_path
+        reason = getattr(exc, "reason", None) or str(exc)
+        item.setdefault("warnings", []).append(
+            f"Couldn't update {os.path.basename(target)} ({reason}); "
+            "the source will be kept",
+        )
+        return
+    item["referrer_changes"] = [c.to_dict() for c in changes]
 
 
 @router.post("/jobs/delete-plan")
@@ -864,6 +930,15 @@ async def delete_plan(request: DeletePlanRequest) -> dict:
         raise HTTPException(
             status_code=400,
             detail=_DELETE_ON_VERIFY_UNSUPPORTED_DETAIL,
+        )
+
+    output_dir = normalize_output_dir(request.output_dir)
+    if output_dir and not is_within_configured_volumes(
+        output_dir, treat_archives=False,
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied: output directory outside configured volumes",
         )
 
     disallowed_archives = get_disallowed_archive_paths(request.file_paths)
@@ -883,7 +958,12 @@ async def delete_plan(request: DeletePlanRequest) -> dict:
                 "errors": [],
             }
         else:
-            item = await run_in_threadpool(build_delete_plan, file_path)
+            item = await run_in_threadpool(
+                functools.partial(build_delete_plan, file_path, confine_to_volumes=True),
+            )
+            await _add_referrer_changes(
+                item, mode, file_path, output_dir, request.duplicate_action,
+            )
 
         if "::" in file_path:
             archive_path = file_path.split("::", 1)[0]
@@ -1002,8 +1082,10 @@ class PreparedBatch:
     request: BatchJobCreateRequest
     compression: str | None
     plans: list[JobPlan]
-    # file path -> why planning skipped it (the same words a single-job
-    # request would get), so Auto can say so in its plan.
+    # file path -> why it was left out: a ``plan_job`` skip (the same words a
+    # single-job request would get), or a file whose output another file of
+    # the batch writes. Auto says so in its plan; the CLI reports each one
+    # (#294, #306).
     skipped: dict[str, str] = field(default_factory=dict)
 
     @property
@@ -1033,7 +1115,7 @@ def _check_queue_room(adding: int) -> None:
         )
 
 
-async def _queue_prepared(batch: PreparedBatch) -> list[ConversionJob]:
+async def queue_prepared(batch: PreparedBatch) -> list[ConversionJob]:
     """Queue a prepared batch as one atomic job-manager call."""
     try:
         return await job_manager.create_jobs_atomic(
@@ -1064,12 +1146,12 @@ async def _queue_prepared(batch: PreparedBatch) -> list[ConversionJob]:
 @router.post("/jobs/batch", response_model=list[ConversionJob])
 async def create_batch_jobs(request: BatchJobCreateRequest):
     """Create multiple conversion jobs."""
-    batch = await _prepare_batch(request)
+    batch = await prepare_batch(request)
     # Proactive batch backpressure: reject before enqueuing any jobs if
     # accepting the batch would push the queue past ``max_queue_depth``.
     # Keeps single-job and batch submission behaviour consistent.
     _check_queue_room(len(batch.plans))
-    return await _queue_prepared(batch)
+    return await queue_prepared(batch)
 
 
 def _check_within_volumes(file_paths, output_dir: str | None = None) -> None:
@@ -1112,7 +1194,7 @@ async def _off_loop_bounded(func, *args, **kwargs):
         ) from None
 
 
-async def _prepare_batch(request: BatchJobCreateRequest) -> PreparedBatch:
+async def prepare_batch(request: BatchJobCreateRequest) -> PreparedBatch:
     """Validate and plan every file of a batch, queueing nothing.
 
     Raises the same HTTP errors ``create_batch_jobs`` always has. Split out so
@@ -1188,8 +1270,14 @@ async def _prepare_batch(request: BatchJobCreateRequest) -> PreparedBatch:
             selected[key] = plan
             order.append(key)
             continue
+        loser = existing
         if plan.priority > existing.priority:
             selected[key] = plan
+        else:
+            loser = plan
+        skipped[loser.file_path] = (
+            f"Same output as {os.path.basename(selected[key].file_path)}"
+        )
 
     return PreparedBatch(
         request=request,
@@ -1199,21 +1287,22 @@ async def _prepare_batch(request: BatchJobCreateRequest) -> PreparedBatch:
     )
 
 
-def _auto_compression(target) -> str | None:
-    """The saved compression for an Auto target, if its mode accepts it.
+def checked_compression(mode: str, compression: str | None) -> str | None:
+    """A saved compression for ``mode``, if the mode accepts it.
 
     A saved value the mode would refuse (left over from an older picker) falls
-    back to the tool default rather than failing the whole batch.
+    back to the tool default rather than failing the whole batch. Used for
+    Auto targets and by the CLI (#306).
     """
-    if not target.compression:
+    if not compression:
         return None
     try:
-        value = normalize_compression(target.compression)
-        _validate_request_compression(registry.spec(target.mode), target.mode, value)
+        value = normalize_compression(compression)
+        _validate_request_compression(registry.spec(mode), mode, value)
     except HTTPException:
         logger.warning(
             "Saved compression %r does not fit %s; using the tool default",
-            target.compression, target.mode,
+            compression, mode,
         )
         return None
     return value
@@ -1238,8 +1327,36 @@ async def _plan_auto(request: AutoPlanRequest) -> list:
         _checked_auto_plan, list(request.file_paths),
         compression_prefs=prefs, output_dir=output_dir, ready_tool_ids=ready,
     )
+    return _with_checked_compression(plan)
+
+
+async def plan_auto_targets(
+    paths: list[str],
+    output_dir: str | None,
+    prefs: dict,
+    *,
+    ready_tool_ids: list[str] | None = None,
+) -> list:
+    """``plan_auto`` with each saved compression checked against its mode.
+
+    The CLI's ``--auto`` (#306); the Auto route plans the same way through
+    ``_plan_auto``, which adds the Volume checks and the 30 s bound an HTTP
+    request needs. ``prefs`` is the saved ``conversion`` preference and
+    ``ready_tool_ids`` the tools that can run here
+    (``registry.ready_tool_ids()``). Off the event loop, unbounded: a CLI run
+    plans a whole library and has no request to time out.
+    """
+    plan = await run_in_threadpool(
+        plan_auto, paths, compression_prefs=prefs, output_dir=output_dir,
+        ready_tool_ids=ready_tool_ids,
+    )
+    return _with_checked_compression(plan)
+
+
+def _with_checked_compression(plan: list) -> list:
     return [
-        replace(target, compression=_auto_compression(target)) if target.mode else target
+        replace(target, compression=checked_compression(target.mode, target.compression))
+        if target.mode else target
         for target in plan
     ]
 
@@ -1321,7 +1438,7 @@ async def create_auto_jobs(request: AutoJobCreateRequest):
             )
 
     prepared = [
-        await _prepare_batch(BatchJobCreateRequest(
+        await prepare_batch(BatchJobCreateRequest(
             file_paths=paths,
             mode=ConversionMode(mode),
             output_dir=request.output_dir,
@@ -1345,7 +1462,7 @@ async def create_auto_jobs(request: AutoJobCreateRequest):
     jobs: list[ConversionJob] = []
     for batch in prepared:
         try:
-            jobs += await _queue_prepared(batch)
+            jobs += await queue_prepared(batch)
         except HTTPException as exc:
             kept = await _cancel_queued(jobs)
             if kept:

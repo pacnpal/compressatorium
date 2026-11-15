@@ -237,7 +237,7 @@ A plugin subclasses `BaseTool` and provides:
 | `active_pids()` | PIDs for the debug heartbeat |
 | `post_convert(input_path, output_path, mode)` | optional hook, default no-op |
 | `embedded_hashes(path, *, cancel_event=None)` | **optional** DAT-match fast path. Return `(sha1, match_type)` tuples your format already carries / can derive cheaply (so matching skips a full file hash); default `[]` → the caller falls back to a file-level SHA1, which is correct for raw formats. Raise `EmbeddedHashUnavailable` (from `services.tools.base`) when you *should* yield a hash but the attempt failed transiently, so it's recorded as a non-cacheable miss instead of a false negative. |
-| `content_digest(path, *, cancel_event=None)` | **optional** Round-trip check. Return a `ContentDigest(kind, value)` hashing what the file *decodes to*, for both your inputs and your outputs, and set `ModeSpec.supports_round_trip=True` on the modes it covers. Default `None` keeps the container check. Raise `ContentDigestUnavailable` when the hash should exist but could not be read; the Source is then kept. See DESIGN §3.3.12. |
+| `content_digest(path, *, cancel_event=None)` | **optional** Round-trip check. Return a `ContentDigest(kind, value)` hashing what the file *decodes to*, for both your inputs and your outputs, and set `ModeSpec.supports_round_trip=True` on the modes it covers. Default `None` keeps the container check. Raise `ContentDigestUnavailable` when the hash should exist but could not be read; the Source is then kept. If the output's content can only be hashed from a decoded copy, decode it inside `services.disk.headroom_scratch_dir(prefix, required_bytes)` (headroom-checked, removed on every exit), as chdman does for CD CHDs. See DESIGN §3.3.12. |
 | `embedded_hash_is_exhaustive` | optional flag (default `False`). Set `True` only when your container bytes can never appear in a DAT (e.g. a recompressed image), so a content-hash miss is definitive and the file-level fallback is skipped; leave `False` if your file's own SHA1 might be indexed. |
 
 `BaseTool` fills in `input_extensions` (the union of every mode's
@@ -315,7 +315,7 @@ the non-obvious rows is in §8 to §14.
 | 3 | `requirements.txt` | Add any new **Python** runtime dependency the service imports. | If service needs a new pip dep |
 | 4 | `requirements-dev.txt` | Add test-only Python deps. | Rare |
 | 5 | `.local-bin/` + `.env.local` | Local-dev copy of a from-source binary. Only `z3ds_compressor` is committed here today. Dropping a binary in `.local-bin/` is **not** enough: `run_dev.sh` doesn't add it to `PATH`, and from-source tools default to an absolute `/usr/local/bin/...` path, so you must set `<TOOL>_PATH` in `.env.local` (which `run_dev.sh` sources). See §8. | New from-source tool |
-| 6 | `entrypoint.sh` | Add the binary path env passthrough; extend the **CLI batch mode** loop if the tool should run headless (see §9). | New tool, CLI support optional |
+| 6 | `entrypoint.sh` | Add the binary path env passthrough. Headless use needs nothing: `compressatorium` reaches every registered tool (see §9). | New tool |
 
 ### 3.2 Backend code
 
@@ -1316,7 +1316,7 @@ PERIPHERAL (don't forget)
 [ ] .dockerignore: confirm nothing new is excluded
 [ ] requirements.txt: new pip deps (if any)
 [ ] .local-bin/<binary>: local-dev copy (from-source tools)
-[ ] entrypoint.sh: CLI-mode loop (only if headless batch support wanted)
+[ ] headless: check `compressatorium convert <dir> --to <format> --dry-run --json` picks your mode
 [ ] disc_id.py: serial/title parser (only for new disc platforms w/ tagging)
 [ ] migrations/: new Alembic rev (only if persisting new columns/tables)
 [ ] docker-compose*.yml + docs/DEPLOYMENT.md + docs/DOCKER-COMPOSE.md: env/volume docs
@@ -1509,27 +1509,25 @@ from `PATH` and need no override.
 
 ---
 
-## 9. Headless CLI mode: `entrypoint.sh`
+## 9. Headless CLI: `compressatorium` (`app/cli.py`)
 
-`entrypoint.sh` supports `CHD_MODE=cli` (batch-convert a volume with no web UI;
-see `docker-compose.cli.yml`). This path is **independent of the Python app**: it
-shells out to `chdman` directly and currently only knows `createcd`/`createdvd`
-over `*.gdi *.iso *.cue`, validating `CHDMAN_MODE` against that allow-list with a
-`case` statement.
+`compressatorium convert|verify` (#306) runs the Python pipeline without a web
+server, so a registered tool is usable headlessly with **no CLI changes**:
+`--to <format>` resolves through `platform_detect.format_route` (your mode's
+`output_path` and read set decide whether it is picked), `--auto` through
+`plan_auto`, and `verify` through `registry.tools_verifying_path`. Check your
+tool with `compressatorium convert <dir> --to <your format> --dry-run --json`.
+See DESIGN §3.3.17.
 
-If your new tool/platform should be usable headlessly:
-- Extend the `CHDMAN_MODE` case statement (or add a parallel `CONVERT_TOOL` env)
-  to accept your mode.
-- Add a globbing loop for your input extensions and invoke your binary, mirroring
-  the existing `for i in *.gdi *.iso *.cue` block.
-- Skip-if-output-exists logic (`[[ -e "${i%.*}.<ext>" ]]`) should match your
-  output suffix.
-
-If headless mode is out of scope, skip this: the web UI path (`exec uvicorn
-main:app …`) already dispatches your tool via the Python pipeline.
+`CHD_MODE=cli` in `entrypoint.sh` is an alias for
+`compressatorium convert <each Volume> --to $CHDMAN_MODE` with flags that keep
+its old scope (top level, no archives, no Platform check); its `case` statement
+still only accepts `createcd`/`createdvd`, which is today's contract for that
+variable. Nothing to change there for a new tool.
 
 The same file handles **PUID/PGID remap** and the privilege drop to `converter`
-(`exec gosu converter`). No changes needed there.
+(`exec gosu converter`); the `compressatorium` wrapper reuses it when started
+as root. No changes needed there.
 
 ---
 

@@ -45,6 +45,7 @@ __all__ = [
     "remove",
     "run_forever",
     "update",
+    "without_a_database",
 ]
 
 # Folder Libraries by row id. None until first read.
@@ -132,6 +133,18 @@ def all_libraries() -> list[Library]:
     from services.romm.library import romm_library
 
     return [romm_library, *folder_libraries()]
+
+
+def without_a_database() -> list[Library]:
+    """The Libraries that exist with no database open: RomM alone.
+
+    Folder Libraries are rows of the database, so a process that has none (a
+    ``run-rules --dry-run`` on a fresh data dir) lists these instead of
+    :func:`all_libraries`, which would fail opening a session.
+    """
+    from services.romm.library import romm_library
+
+    return [romm_library]
 
 
 async def run_forever() -> None:

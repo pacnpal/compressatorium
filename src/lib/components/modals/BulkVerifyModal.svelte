@@ -75,14 +75,14 @@
 
   let running = $state(false);
   let groupIndex = $state(0);
-  let runResults = $state({ verified: 0, failed: 0 });
+  let runResults = $state({ verified: 0, failed: 0, uncheckable: 0 });
   const batch = $derived(verification.batchRun);
 
   // Per-tool progress aggregated across groups. While a batch is in
   // flight, `batch.done` reflects the current group only; runResults
   // accumulates verified/failed across already-finished groups.
   const overallDone = $derived(
-    runResults.verified + runResults.failed + (batch?.done ?? 0),
+    runResults.verified + runResults.failed + runResults.uncheckable + (batch?.done ?? 0),
   );
 
   function close() {
@@ -90,7 +90,7 @@
     // Reset run state so reopening with a fresh selection starts clean.
     running = false;
     groupIndex = 0;
-    runResults = { verified: 0, failed: 0 };
+    runResults = { verified: 0, failed: 0, uncheckable: 0 };
     // Drop the completed-run summary from the store. verifyBatch leaves
     // batchRun populated after a successful run, and App.svelte treats
     // a truthy batchRun as "a batch is active" to suppress auto-refresh,
@@ -111,7 +111,7 @@
   async function startRun() {
     if (running || groups.groups.length === 0) return;
     running = true;
-    runResults = { verified: 0, failed: 0 };
+    runResults = { verified: 0, failed: 0, uncheckable: 0 };
     // Track totals locally and only assign to runResults after each
     // group. Reading the just-assigned `runResults.verified` for the
     // success toast can see the previous tick's value in some
@@ -119,6 +119,7 @@
     // store update still drives the in-flight UI.
     let verifiedTotal = 0;
     let failedTotal = 0;
+    let uncheckableTotal = 0;
     try {
       for (let i = 0; i < groups.groups.length; i += 1) {
         groupIndex = i;
@@ -126,7 +127,10 @@
         const result = await verification.verifyBatch(tool.id, paths);
         verifiedTotal += result?.verified ?? 0;
         failedTotal += result?.failed ?? 0;
-        runResults = { verified: verifiedTotal, failed: failedTotal };
+        uncheckableTotal += result?.uncheckable ?? 0;
+        runResults = {
+          verified: verifiedTotal, failed: failedTotal, uncheckable: uncheckableTotal,
+        };
         if (result?.aborted) {
           // The backend stopped that group because a verifier could not be
           // killed and is still holding the storage. The remaining groups are
@@ -211,11 +215,14 @@
             <div class="bv-msg">{batch.message}</div>
           {/if}
         </div>
-      {:else if !running && (runResults.verified + runResults.failed) > 0}
+      {:else if !running && (runResults.verified + runResults.failed + runResults.uncheckable) > 0}
         <div class="bv-summary" role="status">
           <Badge tone="success">{runResults.verified} Intact</Badge>
           {#if runResults.failed > 0}
             <Badge tone="error">{runResults.failed} failed</Badge>
+          {/if}
+          {#if runResults.uncheckable > 0}
+            <Badge tone="warning">{runResults.uncheckable} can't be checked</Badge>
           {/if}
           {#if groups.skipped.length > 0}
             <Badge tone="warning">{groups.skipped.length} skipped</Badge>
@@ -229,7 +236,7 @@
             {#snippet icon()}<XIcon size={14} />{/snippet}
             Cancel
           </Button>
-        {:else if (runResults.verified + runResults.failed) > 0}
+        {:else if (runResults.verified + runResults.failed + runResults.uncheckable) > 0}
           <Button variant="secondary" onclick={close}>Close</Button>
         {:else}
           <Button variant="secondary" onclick={close}>Dismiss</Button>
