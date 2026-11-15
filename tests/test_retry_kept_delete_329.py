@@ -2063,3 +2063,97 @@ def test_clear_gone_keeps_a_finding_updated_while_it_looked(env, dolphin, monkey
     assert findings.clear_gone("shelf", findings.SOURCE_KEPT) == 0
     rows = findings.list_findings()
     assert [r["cause"]["output"] for r in rows] == ["/v/out/Gone.rvz"]
+
+
+def _hold_first_refuse_second(monkeypatch, first, second):
+    """``os.remove`` of *first* waits for ``go`` and then goes through; of
+    *second*, it is refused. Returns the ``reached`` and ``go`` events."""
+    import threading
+
+    reached, go = threading.Event(), threading.Event()
+    real = os.remove
+
+    def unlink(path, *args, **kwargs):
+        real_path = os.path.realpath(str(path))
+        if real_path == os.path.realpath(str(first)):
+            reached.set()
+            go.wait(10)
+        elif real_path == os.path.realpath(str(second)):
+            raise PermissionError(13, "Permission denied", str(path))
+        return real(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "remove", unlink)
+    return reached, go
+
+
+def test_a_job_cancelled_during_its_first_unlink_is_reported(
+    env, dolphin, two_file_source, monkeypatch,
+):
+    """CodeRabbit 4580360083: the cancel lands while the first unlink still
+    runs, so nothing is seen removed yet; the worker then removes it and is
+    refused the next. The handed-off delete counts as started: the Finding
+    names every planned file not seen removed, the one left among them."""
+    import cli
+    from models import ConversionMode, DuplicateAction, JobCreateRequest, JobStatus
+    from routes import convert as convert_routes
+    from services import findings
+
+    cli._open_db(False)
+    iso, part = _iso(env), _part2(env)
+    reached, go = _hold_first_refuse_second(monkeypatch, part, iso)
+
+    async def run():
+        job = await convert_routes.create_job(JobCreateRequest(
+            file_path=str(iso), mode=ConversionMode.DOLPHIN_RVZ,
+            duplicate_action=DuplicateAction.SKIP, delete_on_verify=True,
+            container_only=True,
+        ))
+        task = asyncio.ensure_future(convert_routes.job_manager._process_job(job.id))
+        try:
+            await _cancel_once(task, reached)
+        finally:
+            go.set()
+        return job
+
+    job = asyncio.run(run())
+
+    assert _wait_for(lambda: not part.exists())
+    assert iso.exists()
+    assert job.status == JobStatus.CANCELLED
+    reported = [f for f in findings.list_findings() if f["kind"] == findings.SOURCE_KEPT]
+    assert [f["library_id"] for f in reported] == [findings.NO_LIBRARY]
+    assert str(iso) in reported[0]["cause"][findings.REMAINING]
+
+
+def test_a_retry_cancelled_during_its_first_unlink_is_finished_later(
+    env, dolphin, two_file_source, capsys, monkeypatch,
+):
+    """The same for a retry: a ``deleting`` entry with the whole plan, which
+    the next sweep finishes against what actually remains."""
+    from services.rules import sweep as rules_sweep
+
+    part = _part2(env)
+    kept = _keep(env, capsys, monkeypatch)
+    with monkeypatch.context() as patch:
+        reached, go = _hold_first_refuse_second(patch, part, kept["iso"])
+
+        async def run():
+            task = asyncio.ensure_future(rules_sweep.sweep(env["shelf"]))
+            try:
+                await _cancel_once(task, reached)
+            finally:
+                go.set()
+
+        asyncio.run(run())
+        assert _wait_for(lambda: not part.exists())
+        assert _wait_for(lambda: not _source_locked(kept["iso"]))
+        pending = _rule_state(env)["gc"]["kept_sources"]["Game.iso"]
+        assert pending["state"] == "deleting"
+        assert str(kept["iso"]) in pending["planned"]
+        assert kept["iso"].exists()
+
+    code, lines, _err = _cli(capsys, "run-rules", "--json")
+
+    assert code == 0, lines
+    assert not kept["iso"].exists()
+    assert not _rule_state(env)["gc"].get("kept_sources")

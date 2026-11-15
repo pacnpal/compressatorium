@@ -182,13 +182,22 @@ class HeldLocks:
         _let_go(self.take())
 
 
-def unfinished_delete(planned: Iterable[str], removed: Iterable[str]) -> Optional[List[str]]:
+def unfinished_delete(
+    planned: Iterable[str], removed: Iterable[str], *, in_flight: bool = False,
+) -> Optional[List[str]]:
     """The one decision about a delete step that stopped (#329): once any
     planned file was removed the delete has started, and every outcome but
     "all removed" leaves the files still to remove (the ``deleting``
-    lifecycle). None when it never started or finished."""
+    lifecycle). None when it never started or finished.
+
+    *in_flight*: the unlinks were handed off while running (a timeout or a
+    cancel, ``run_detached_mutation``), so their outcome is unknown whatever
+    *removed* says yet; the first unlink may be the one still running
+    (CodeRabbit 4580360083). That is a started delete, and every planned file
+    not seen removed is left to settle: a finish, or ``clear_gone``, checks
+    what actually remains, so one that went through just clears."""
     removed = set(removed)
-    if not removed:
+    if not removed and not in_flight:
         return None
     rest = [path for path in planned if path not in removed]
     return rest or None
@@ -3250,8 +3259,13 @@ class JobManager:
         probe_seconds: Optional[float] = None,
         travelling_locks: Optional["HeldLocks"] = None,
         planned: Optional[List[str]] = None,
+        handed_off: Optional[List[bool]] = None,
     ) -> _SourceDelete:
         """The delete step, shared by a job and a retried delete (#329).
+
+        *handed_off* gets ``True`` appended when the unlinks were handed to
+        their worker while still running: the outcome is then unknown, and
+        ``unfinished_delete(..., in_flight=True)`` takes the delete as started.
 
         Called holding every path of *expected_paths* exclusively
         (``_delete_holds[owner_id]``); lets go of them before it returns. The
@@ -3339,7 +3353,9 @@ class JobManager:
         # the worker removes every planned file before it lets them go.
         await run_detached_mutation(
             _remove_in_order, delete_order, deleted, timeout=probe_seconds,
-            hand_off=lambda: self._hand_off_locks(owner_id, travelling_locks),
+            hand_off=lambda: self._hand_off_locks(
+                owner_id, travelling_locks, handed_off=handed_off,
+            ),
         )
         await self._release_delete_holds_in_background(owner_id, probe_seconds)
         await self._clear_source_records(file_path, probe_seconds)
@@ -3415,9 +3431,13 @@ class JobManager:
 
     def _hand_off_locks(
         self, owner_id: str, travelling: Optional[HeldLocks],
+        *, handed_off: Optional[List[bool]] = None,
     ) -> Callable[[], None]:
         """Take *owner_id*'s delete holds and the *travelling* locks from their
-        owner, for a mutation's worker to release (``run_detached_mutation``)."""
+        owner, for a mutation's worker to release (``run_detached_mutation``).
+        Called only for a mutation still running; *handed_off* records that."""
+        if handed_off is not None:
+            handed_off.append(True)
         paths = [
             *self._delete_holds.pop(owner_id, []),
             *(travelling.take() if travelling is not None else []),
@@ -3701,6 +3721,7 @@ class JobManager:
                 return KeptDeleteRetry(status, last)
             deleted: List[str] = []
             planned: List[str] = []
+            handed_off: List[bool] = []
             try:
                 removal = await self._delete_source_set(
                     owner_id,
@@ -3715,20 +3736,24 @@ class JobManager:
                     probe_seconds=KEPT_DELETE_PROBE_SECONDS,
                     travelling_locks=travelling,
                     planned=planned,
+                    handed_off=handed_off,
                 )
             except MutationInFlight as exc:
                 # Its locks went with it, and the rest of the plan; the worker
                 # removes every planned file, then lets them go.
+                rest = unfinished_delete(planned, deleted, in_flight=True)
                 return KeptDeleteRetry(
-                    KEPT_UNKNOWN, str(exc), tuple(deleted), tuple(planned),
+                    KEPT_UNKNOWN, str(exc), tuple(deleted), tuple(rest or planned),
                 )
             except asyncio.CancelledError:
-                # Cancelled mid-plan (CodeRabbit 4580360089): what started is
-                # recorded by the caller from `run.started`, then this goes on.
-                run.started = KeptDeleteRetry(
-                    KEPT_UNKNOWN, "the delete was cancelled", tuple(deleted),
-                    tuple(unfinished_delete(planned, deleted) or ()),
-                )
+                # Cancelled mid-plan (CodeRabbit 4580360089, 4580360083): what
+                # started, or is still running on the worker, is recorded by
+                # the caller from `run.started`; then this goes on.
+                rest = unfinished_delete(planned, deleted, in_flight=bool(handed_off))
+                if rest:
+                    run.started = KeptDeleteRetry(
+                        KEPT_UNKNOWN, "the delete was cancelled", tuple(deleted), tuple(rest),
+                    )
                 raise
             except (RuntimeError, OSError) as exc:
                 logger.warning(
@@ -3900,15 +3925,19 @@ class JobManager:
                     hand_off=lambda: self._hand_off_locks(owner_id, travelling),
                 )
             except MutationInFlight as exc:
+                rest = unfinished_delete(remaining, removed, in_flight=True)
                 return KeptDeleteRetry(
-                    KEPT_UNKNOWN, str(exc), tuple(removed), tuple(planned),
+                    KEPT_UNKNOWN, str(exc), tuple(removed), tuple(rest or remaining),
                 )
             except asyncio.CancelledError:
-                # Cancelled mid-plan (CodeRabbit 4580360089): the plan stays as
-                # it is for the next sweep; the caller records that, then this
-                # goes on.
+                # Cancelled mid-plan (CodeRabbit 4580360089): the delete has
+                # started either way, so what is left (or still running on
+                # the worker) stays for the next sweep; the caller records
+                # that, then this goes on.
+                rest = unfinished_delete(remaining, removed, in_flight=True)
                 run.started = KeptDeleteRetry(
-                    KEPT_UNKNOWN, "the delete was cancelled", tuple(removed), tuple(planned),
+                    KEPT_UNKNOWN, "the delete was cancelled", tuple(removed),
+                    tuple(rest or remaining),
                 )
                 raise
             except (MutationNotStarted, OSError) as exc:
@@ -4776,6 +4805,7 @@ class JobManager:
                         # above): no job can start reading one between the
                         # checks and its unlink (#306).
                         job_planned: List[str] = []
+                        job_handed_off: List[bool] = []
                         try:
                             removal = await self._delete_source_set(
                                 job_id,
@@ -4792,22 +4822,30 @@ class JobManager:
                                 # retry's.
                                 travelling_locks=self._output_locks.get(job_id),
                                 planned=job_planned,
+                                handed_off=job_handed_off,
                             )
                         except asyncio.CancelledError:
                             # The task itself was cancelled once the unlinks
-                            # began (CodeRabbit 4580360083): what started is
-                            # recorded (bounded, never waiting on the unlink
-                            # worker), the job ends CANCELLED and is
-                            # announced (the `finally` below), then the
-                            # cancel goes on.
-                            rest = unfinished_delete(job_planned, job.deleted_paths)
+                            # began, or while the first still ran (CodeRabbit
+                            # 4580360083): what started, or is still running
+                            # on the worker, is recorded (bounded, never
+                            # waiting on the unlink worker), the job ends
+                            # CANCELLED and is announced (the `finally`
+                            # below), then the cancel goes on.
+                            rest = unfinished_delete(
+                                job_planned, job.deleted_paths,
+                                in_flight=bool(job_handed_off),
+                            )
                             if rest:
                                 await self._report_unfinished_delete(
                                     job, rest, "the job was cancelled",
                                 )
                             raise
                         except (RuntimeError, OSError) as exc:
-                            rest = unfinished_delete(job_planned, job.deleted_paths)
+                            rest = unfinished_delete(
+                                job_planned, job.deleted_paths,
+                                in_flight=bool(job_handed_off),
+                            )
                             if rest is None:
                                 raise
                             # Started, then refused part way: never silent.

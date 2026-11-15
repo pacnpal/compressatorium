@@ -4205,6 +4205,15 @@ concurrent sweep (`_kept_running`). The preparation:
   Rule's job) or the started-delete Finding (a hand-started one), ends
   CANCELLED and is announced (`_notify_terminal`). Then the cancel goes on;
   nothing waits on the unlink worker, which owns the rest of the plan.
+  **A handed-off delete counts as started** (CodeRabbit 4580360083): when
+  `run_detached_mutation` hands the unlinks to their worker while they still
+  run (a timeout or a cancel; `_hand_off_locks` marks `handed_off`), their
+  outcome is unknown even with nothing seen removed yet, since the first
+  unlink may be the one running. `unfinished_delete(planned, removed,
+  in_flight=True)` then returns every planned file not seen removed, for the
+  job, the retry and the finish alike, recorded as `deleting` or as the
+  started-delete Finding; the next finish, or `clear_gone`, settles it
+  against what actually remains, so a delete that went through just clears.
 
 It may only proceed while the decision that kept the Source still stands:
 
