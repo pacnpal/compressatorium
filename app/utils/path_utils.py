@@ -196,7 +196,10 @@ def match_extension(name: str, extensions: Iterable[str]) -> Optional[str]:
 
 
 def _resolve_path(raw_path: str, *, strict: bool = False) -> Optional[Path]:
-    """Safely resolve a user-supplied path without following non-existent segments.
+    """Resolve a path that ``_confined_real_path`` already confined.
+
+    Only the gate calls this with a request-supplied value; it is not a
+    containment check on its own.
 
     Explicitly rejects symlink loops: prior to Python 3.13, ``Path.resolve()``
     raised :class:`RuntimeError` for an infinite-loop symlink, which this
@@ -251,19 +254,54 @@ def _volume_root_spellings() -> list[str]:
     return roots
 
 
-def _confine_to_volumes(raw_path: str) -> str | None:
-    """``raw_path`` normalised, if it lies lexically inside a Volume root.
+def _has_parent_segment(raw_path: str) -> bool:
+    """Whether ``raw_path`` has a ``..`` segment (split on ``os.sep`` and ``/``)."""
+    return ".." in raw_path.replace(os.sep, "/").split("/")
 
-    The first gate for a user-supplied path, before any filesystem call sees
-    it: ``..`` segments are folded by ``normpath``, and the result must equal a
-    root or start with ``root + os.sep``. Only a path that passes is resolved
-    on disk, and the resolved path is checked again (a symlink inside a Volume
-    can still point out of it).
+
+def _real_inside_volumes(path: str, *, strict: bool) -> Path | None:
+    """``path`` resolved on disk (symlinks followed), if that is inside a Volume."""
+    real_path = _resolve_path(path, strict=strict)
+    if real_path is None:
+        return None
+    for volume in settings.volumes:
+        real_volume = _resolve_volume(volume)
+        if real_volume is not None and (
+            real_path == real_volume or real_volume in real_path.parents
+        ):
+            return real_path
+    return None
+
+
+def _confined_real_path(raw_path: str, *, strict: bool = False) -> Path | None:
+    """The one gate every resolver of a request-supplied path goes through.
+
+    Fails closed, in order:
+
+    1. Any ``..`` segment is refused outright. Nothing in the app needs one,
+       and folding it lexically is wrong when it follows a symlink:
+       ``/vol/link/../x`` normalises to ``/vol/x`` while the OS opens the
+       link target's parent.
+    2. The path, made absolute and normalised, must equal a Volume root or
+       start with ``root + os.sep`` (roots in their configured and resolved
+       spellings, both trusted). A path outside every Volume never reaches the
+       filesystem.
+    3. The path is resolved on disk and the real path must lie inside a
+       resolved Volume root, which catches a symlink inside a Volume pointing
+       out of it. With ``..`` refused, normalising only drops ``.`` segments
+       and repeated separators, so this resolves exactly the path the OS
+       would open for ``raw_path``.
+
+    Returns the resolved path, or None.
     """
+    if _has_parent_segment(raw_path):
+        return None
     candidate = os.path.normpath(os.path.abspath(os.path.expanduser(raw_path)))
     for root in _volume_root_spellings():
-        if candidate == root or candidate.startswith(root.rstrip(os.sep) + os.sep):
-            return candidate
+        if candidate == root:
+            return _real_inside_volumes(root, strict=strict)
+        if candidate.startswith(root.rstrip(os.sep) + os.sep):
+            return _real_inside_volumes(candidate, strict=strict)
     return None
 
 
@@ -273,10 +311,7 @@ def containing_volume_root(path: str) -> Path | None:
     The most specific one when Volumes nest. ``path`` may be an archive member
     (``a.zip::disc.iso``); the archive's own location decides.
     """
-    confined = _confine_to_volumes(strip_archive_path(path))
-    if confined is None:
-        return None
-    real_path = _resolve_path(confined, strict=False)
+    real_path = _confined_real_path(strip_archive_path(path))
     if real_path is None:
         return None
     holders = [
@@ -289,31 +324,11 @@ def containing_volume_root(path: str) -> Path | None:
 def is_within_configured_volumes(path: str, *, treat_archives: bool = True) -> bool:
     """Check whether the given path lies inside one of the configured CHD volumes.
 
-    Confined lexically first (``_confine_to_volumes``), so a path outside every
-    Volume never reaches the filesystem; then resolved and checked again.
+    Through the one gate, ``_confined_real_path``: no ``..``, confined
+    lexically before the filesystem sees it, then resolved and checked again.
     """
     base_path = strip_archive_path(path) if treat_archives else path
-    confined = _confine_to_volumes(base_path)
-    if confined is None:
-        return False
-    real_path = _resolve_path(confined, strict=False)
-    if real_path is None:
-        return False
-
-    for volume in settings.volumes:
-        real_volume = _resolve_volume(volume)
-        if real_volume is None:
-            continue
-
-        try:
-            real_path.relative_to(real_volume)
-            return True
-        except ValueError:
-            if real_path == real_volume:
-                return True
-            continue
-
-    return False
+    return _confined_real_path(base_path) is not None
 
 
 def _strip_trailing_dot_and_seps(path: str) -> str:
@@ -408,7 +423,7 @@ def is_safe_directory_tree(path: str) -> bool:
     if stat.S_ISLNK(raw_lstat.st_mode):
         return False
 
-    root = _resolve_path(path, strict=True)
+    root = _confined_real_path(path, strict=True)
     if root is None or not root.is_dir():
         return False
 
@@ -453,7 +468,7 @@ def is_safe_directory_tree(path: str) -> bool:
 def is_configured_volume_root(path: str, *, treat_archives: bool = True) -> bool:
     """Check whether the given path is exactly one of the configured volume roots."""
     base_path = strip_archive_path(path) if treat_archives else path
-    real_path = _resolve_path(base_path, strict=False)
+    real_path = _confined_real_path(base_path)
     if real_path is None:
         return False
 
@@ -467,20 +482,18 @@ def is_configured_volume_root(path: str, *, treat_archives: bool = True) -> bool
 
 def ensure_path_within_volumes(path: str, *, treat_archives: bool = True) -> Path:
     """Return the resolved path if it is within configured volumes, else raise ValueError."""
-    if not is_within_configured_volumes(path, treat_archives=treat_archives):
-        raise ValueError("Path outside configured volumes")
-    resolved = _resolve_path(
-        strip_archive_path(path) if treat_archives else path, strict=False
+    resolved = _confined_real_path(
+        strip_archive_path(path) if treat_archives else path,
     )
     if resolved is None:
-        raise ValueError("Path could not be resolved")
+        raise ValueError("Path outside configured volumes")
     return resolved
 
 
 def get_volume_name_for_path(path: str) -> Optional[str]:
     """Return the configured volume name that contains the given path, if any."""
     base_path = strip_archive_path(path)
-    real_path = _resolve_path(base_path, strict=False)
+    real_path = _confined_real_path(base_path)
     if real_path is None:
         return None
 
@@ -501,8 +514,12 @@ def get_volume_name_for_path(path: str) -> Optional[str]:
 
 
 def safe_join(base_dir: str, *parts: str) -> Path:
-    """Join parts to a base directory while ensuring the result stays inside the base."""
-    resolved_base = _resolve_path(base_dir, strict=True)
+    """Join parts to a base directory while ensuring the result stays inside the base.
+
+    The base goes through the same gate as every request path, so it must be
+    an existing directory inside a Volume.
+    """
+    resolved_base = _confined_real_path(base_dir, strict=True)
     if resolved_base is None:
         raise ValueError("Base directory does not exist")
 
