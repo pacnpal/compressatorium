@@ -451,6 +451,66 @@ def test_a_companion_output_another_process_is_writing_is_skipped_not_failed(
     assert not chd.with_suffix(".cue").exists()
 
 
+def _record_init_order(monkeypatch, seen: list, *, stop_with=None):
+    """Wrap #306's database init lock: note whether the scheduler lock is
+    already held when it is taken (``check()`` raises while anyone holds it)."""
+    import contextlib
+
+    from services import db as _db
+    from services import scheduler_lock
+
+    real = _db._init_lock
+
+    @contextlib.contextmanager
+    def recording(lock_dir):
+        try:
+            scheduler_lock.check()
+            seen.append("scheduler lock free")
+        except scheduler_lock.SchedulerLockHeld:
+            seen.append("scheduler lock held")
+        if stop_with is not None:
+            raise stop_with
+        with real(lock_dir):
+            yield
+
+    monkeypatch.setattr(_db, "_init_lock", recording)
+
+
+def test_run_rules_takes_the_scheduler_lock_before_the_database_init_lock(
+    env, dolphin, capsys, monkeypatch,
+):
+    """#306 serialises database init with init.lock. run-rules takes the
+    scheduler lock first, then opens the database under init.lock."""
+    _iso(env)
+    _store_rules(env, {"shelf": RVZ_RULE})
+    seen = []
+    _record_init_order(monkeypatch, seen)
+
+    code, _lines, _err = _cli(capsys, "run-rules", "--json")
+
+    assert code == 0
+    assert seen == ["scheduler lock held"]
+
+
+def test_the_server_takes_the_scheduler_lock_before_the_database_init_lock(
+    env, monkeypatch,
+):
+    import main
+
+    monkeypatch.setattr(main, "configure_logging", lambda: None)
+    seen = []
+    _record_init_order(monkeypatch, seen, stop_with=_ReachedTheDatabase())
+
+    async def start():
+        async with main.lifespan(main.app):
+            pass
+
+    with pytest.raises(_ReachedTheDatabase):
+        asyncio.run(start())
+
+    assert seen == ["scheduler lock held"]
+
+
 def test_a_failed_job_exits_1(env, dolphin, capsys):
     _iso(env)
     _store_rules(env, {"shelf": RVZ_RULE})
