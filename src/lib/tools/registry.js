@@ -647,7 +647,7 @@ export const TOOLS = [
         group: 'jwud',
         outputExt: '.wux', inputExtensions: JWUD_COMPRESS_EXTS,
         supportsCompression: true, supportsCompressionLevel: false,
-        supportsDeleteOnVerify: true, allowsArchiveInput: true },
+        supportsDeleteOnVerify: true, supportsRoundTrip: true, allowsArchiveInput: true },
       { mode: 'jwud_decompress', kind: 'extract', label: 'Decompress Wii U (WUX → WUD)',
         group: 'jwud',
         outputExt: '.wud', inputExtensions: JWUD_VERIFY_EXTS,

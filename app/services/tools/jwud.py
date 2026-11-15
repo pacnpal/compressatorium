@@ -17,6 +17,7 @@ from services.jwudtool import (
     JWUD_DECOMPRESS_EXTENSIONS,
     JWUD_OUTPUT_FORMATS,
     is_split_secondary,
+    iter_wux_image,
     jwudtool_service,
     split_part_index,
     split_set_parts,
@@ -25,7 +26,9 @@ from services.jwudtool import (
 from services.subprocess_runner import run_detached
 from services.lock_manager import lock_manager
 
-from .base import BaseTool
+from services.stream_digest import content_digest_of, file_chunks
+
+from .base import IMAGE_DATA_SHA1_KIND, BaseTool, ContentDigest
 from .spec import ModeKind, ModeSpec
 
 
@@ -53,6 +56,9 @@ class JwudTool(BaseTool):
             # runs JWUDTool's byte-for-byte comparison against the source unless
             # the job explicitly opted out of it.
             supports_delete_on_verify=True,
+            # And the delete itself waits for the Round-trip: the .wux is
+            # decoded to a hashing stream and compared with the .wud set.
+            supports_round_trip=True,
             allows_archive_input=True,
         ),
         ModeSpec(
@@ -212,6 +218,24 @@ class JwudTool(BaseTool):
             **self._basic_info_fields(raw),
             original_size=raw.get("original_size"),
             ratio=raw.get("ratio"),
+        )
+
+    async def content_digest(
+        self, path: str, *, cancel_event: asyncio.Event | None = None,
+    ) -> ContentDigest | None:
+        # Both sides are the SHA1 of the 25 GB disc image: a .wud (with every
+        # part of a split set, in order), or what a .wux's sector table
+        # decodes to, hashed as it streams (#301).
+        ext = Path(path).suffix.lower()
+        if ext in JWUD_COMPRESS_EXTENSIONS:
+            produce = file_chunks([path, *self.source_companions(path)])
+        elif ext in JWUD_DECOMPRESS_EXTENSIONS:
+            def produce(stop):
+                return iter_wux_image(path, stop)
+        else:
+            return None
+        return await content_digest_of(
+            produce, kind=IMAGE_DATA_SHA1_KIND, cancel_event=cancel_event,
         )
 
     def active_pids(self) -> list[int]:

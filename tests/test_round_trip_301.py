@@ -431,6 +431,136 @@ async def test_real_z3ds_compressor_output_decodes_to_the_rom(tmp_path):
     assert digest.value == _sha1(rom.read_bytes())
 
 
+# ---------------------------------------------------------------------------
+# JWUDTool: the WUX sector table decoded in Python to a hashing stream
+# ---------------------------------------------------------------------------
+
+_WUX_SECTOR = 0x8000
+
+
+def _jwud():
+    return registry.get("jwud")
+
+
+@pytest.fixture(name="small_wud")
+def _small_wud(monkeypatch):
+    """A Wii U image is always 25 GB; shrink the pinned size for tests."""
+    from services import jwudtool
+
+    size = 5 * _WUX_SECTOR + 1234
+    monkeypatch.setattr(jwudtool, "WUD_IMAGE_SIZE", size)
+    monkeypatch.setattr(jwudtool, "WUD_SPLIT_PART_SIZE", 2 * _WUX_SECTOR)
+    return size
+
+
+def _wud_image(size: int) -> bytes:
+    # Sectors 1 and 3 equal (deduplicated in the WUX), the rest distinct.
+    same = b"\x5a" * _WUX_SECTOR
+    sectors = [bytes([i]) * _WUX_SECTOR for i in range(6)]
+    sectors[1] = sectors[3] = same
+    return b"".join(sectors)[:size]
+
+
+def write_wux(path: Path, image: bytes) -> None:
+    """A WUX laid out as JNUSLib writes it: header, one u32 per sector, the
+    deduplicated sector array at the next sector boundary."""
+    count = (len(image) + _WUX_SECTOR - 1) // _WUX_SECTOR
+    unique: dict[bytes, int] = {}
+    table = []
+    for i in range(count):
+        sector = image[i * _WUX_SECTOR:(i + 1) * _WUX_SECTOR].ljust(_WUX_SECTOR, b"\0")
+        table.append(unique.setdefault(sector, len(unique)))
+    header = struct.pack("<4sIIIQ", b"WUX0", 0x1099D02E, _WUX_SECTOR, 0, len(image))
+    header = header.ljust(0x20, b"\0")
+    start = 0x20 + count * 4 + _WUX_SECTOR - 1
+    start -= start % _WUX_SECTOR
+    head = header + struct.pack(f"<{count}I", *table)
+    path.write_bytes(head.ljust(start, b"\0") + b"".join(unique))
+
+
+@pytest.mark.asyncio
+async def test_wux_digest_is_the_sha1_of_the_image_it_decodes_to(tmp_path, small_wud):
+    image = _wud_image(small_wud)
+    out = tmp_path / "game.wux"
+    write_wux(out, image)
+
+    assert await _jwud().content_digest(str(out)) == ContentDigest(
+        kind=IMAGE, value=_sha1(image),
+    )
+
+
+@pytest.mark.asyncio
+async def test_wud_digest_covers_every_part_of_a_split_set(tmp_path, small_wud):
+    image = _wud_image(small_wud)
+    part = 2 * _WUX_SECTOR
+    for i in range(3):
+        (tmp_path / f"game_part{i + 1}.wud").write_bytes(image[i * part:(i + 1) * part])
+
+    digest = await _jwud().content_digest(str(tmp_path / "game_part1.wud"))
+
+    assert digest == ContentDigest(kind=IMAGE, value=_sha1(image))
+
+
+@pytest.mark.asyncio
+async def test_a_wux_whose_sector_array_is_cut_short_is_unavailable(tmp_path, small_wud):
+    out = tmp_path / "game.wux"
+    write_wux(out, _wud_image(small_wud))
+    out.write_bytes(out.read_bytes()[:-_WUX_SECTOR - 100])
+    with pytest.raises(ContentDigestUnavailable):
+        await _jwud().content_digest(str(out))
+
+
+def test_jwud_compress_declares_round_trip():
+    assert registry.mode_supports_round_trip("jwud_compress")
+
+
+@pytest.mark.asyncio
+async def test_jwud_job_with_a_matching_wux_deletes_the_whole_split_set(e2e, small_wud):
+    image = _wud_image(small_wud)
+    part = 2 * _WUX_SECTOR
+    parts = []
+    for i in range(3):
+        p = e2e["tmp_path"] / f"game_part{i + 1}.wud"
+        p.write_bytes(image[i * part:(i + 1) * part])
+        parts.append(p)
+    e2e["writer"] = lambda src, out: write_wux(out, image)
+
+    _assert_round_tripped(await _run(e2e, parts[0], "jwud_compress"), *parts)
+
+
+@pytest.mark.asyncio
+async def test_jwud_job_whose_wux_holds_another_image_keeps_the_wud(e2e, small_wud):
+    image = _wud_image(small_wud)
+    wud = e2e["tmp_path"] / "game.wud"
+    wud.write_bytes(image)
+    e2e["writer"] = lambda src, out: write_wux(out, image[:-1] + b"?")
+
+    _assert_kept(await _run(e2e, wud, "jwud_compress"), wud)
+
+
+_JWUD = _binary("JWUDTOOL_PATH", "/usr/local/bin/jwudtool", "jwudtool")
+
+
+@pytest.mark.skipif(
+    _JWUD is None or not os.environ.get("JWUD_TEST_WUD"),
+    reason="needs JWUDTool and a real Wii U image in JWUD_TEST_WUD",
+)
+@pytest.mark.asyncio
+async def test_real_jwudtool_output_decodes_to_the_wud(tmp_path):
+    """Opt-in: a WUX JWUDTool wrote decodes to the image it was made from.
+    Needs a real 25 GB .wud (JNUSLib refuses any other size)."""
+    import subprocess
+
+    wud = os.environ["JWUD_TEST_WUD"]
+    subprocess.run(
+        [_JWUD, "-in", wud, "-out", str(tmp_path), "-compress", "-noVerify"],
+        check=True, capture_output=True,
+    )
+    source = await _jwud().content_digest(wud)
+    output = await _jwud().content_digest(str(tmp_path / "game.wux"))
+    assert source == output
+
+
 _MAXCSO = _binary("MAXCSO_PATH", "/usr/local/bin/maxcso", "maxcso")
 
 
