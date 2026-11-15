@@ -272,6 +272,22 @@
   wait: 1800
   javascript: *js_theme_dark
 
+# --- Ledger ---------------------------------------------------------------
+# The fixture environment converts nothing, so this captures the empty Ledger
+# with its search box, filters and Export CSV button, like the dashboard shots.
+- url: http://127.0.0.1:8099/?s=ledger-light#/ledger
+  output: docs/screenshots/ledger-light.png
+  width: 1280
+  height: 900
+  wait: 1800
+  javascript: *js_theme_light
+- url: http://127.0.0.1:8099/?s=ledger-dark#/ledger
+  output: docs/screenshots/ledger-dark.png
+  width: 1280
+  height: 900
+  wait: 1800
+  javascript: *js_theme_dark
+
 # --- RomM library ---------------------------------------------------------
 # The screenshot environment has no RomM instance configured, so these capture
 # the first-run state. That is deliberate: the setup form is what a new user

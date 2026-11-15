@@ -14,7 +14,8 @@
   that is set to or named after a Platform decides (on the same folder, the one
   you set wins), and a header that disagrees is a conflict. The app never moves or deletes an Image over a
   Finding. API: `/api/findings`, `/api/platform-mappings`, `/api/platforms`.
-  New tables `platform_mappings` and `findings` (migration 0012).
+  New tables `platform_mappings`, `findings` and `finding_dismissals`
+  (migration 0013, on top of #303's 0012).
 - **Folder Libraries and the Rules view** (#303). Pick **Register as a
   Library** on any folder inside a Volume, and the new **Rules** view shows the
   Platforms found in it with Image counts, plus how many Images are Unsorted or
@@ -27,7 +28,7 @@
   files. The RomM view's Automation tab is now the same view, opened on RomM.
   API: `/api/libraries` (list, register, update, remove, platforms, rules,
   preview, run). Registered folders live in a new `folder_libraries` table
-  (migration 0011).
+  (migration 0012).
   - A `.cue` or `.gdi` whose tracks point outside the configured volumes (an
     absolute path, `..`, or a symlink) is refused for every conversion, manual
     or automatic, and a Rule reports it instead of queueing it. A sheet
@@ -58,6 +59,13 @@
     Source was deleted, split by Platform and by output format.
   - **Recent conversions** now reads from the Ledger, so it is no longer empty
     after a restart.
+- **Ledger view, CSV export and metrics** (#297). A new **Ledger** page lists
+  every row newest first, paged, with search by path and filters for status,
+  tool and Platform. **Export CSV** downloads the rows matching the current
+  filter. New endpoints: `GET /api/ledger` (paged JSON), `GET
+  /api/ledger/export.csv`, and `GET /api/metrics` (Prometheus text: jobs by
+  status, bytes in, bytes out, queue depth). All sit behind the same auth as
+  the rest of the API. `GET /api/ledger/savings` remains the savings summary.
 - **Round-trip check before a Dolphin job deletes its Source** (#298). With
   delete-source on, a GameCube/Wii conversion now proves the output holds the
   same disc before removing anything: the Source ISO's SHA1 is compared with

@@ -2154,6 +2154,23 @@ a short settle delay, since the row is written after the completion event. A `re
 in the `ledger` preference prunes older rows on each write; unset keeps them
 forever. Recording never raises: a failure is logged and the job is unaffected.
 
+Reads all go through `services/ledger.py` so the routes stay thin. A
+`LedgerFilter` (path substring on Source or output, status, tool, Platform)
+builds one set of SQL clauses used by `list_page` (newest first, with a total),
+by `export_csv` (the same filter, keyset-paged on `(finished_at, id)` inside one
+explicit read transaction held for the stream, so every page reads the same SQLite
+snapshot and a job finishing or a prune mid-export neither repeats, skips nor drops
+a row) and by `facets` (distinct values for the filter
+menus). The Prometheus counters are not computed from the `ledger` table: the
+`ledger_totals` table (migration `0011`, seeded from the Ledger) holds per-status
+job counts and completed-job byte sums, bumped in the same transaction as each
+new row and never decremented, so retention cannot lower a counter. `q` is escaped, so
+`%` and `_` match literally. CSV cells starting with `=`, `+`, `-`, `@`, tab or
+CR get a leading `'` so a spreadsheet doesn't run them. `metrics_text` renders the
+Prometheus exposition (jobs by status, bytes of completed jobs, plus the live
+`job_manager.get_queue_depth()` passed in by the route). It sits under `/api`,
+so the auth middleware covers it with no exemption.
+
 ### 3.3.11 The Rule engine and the Library interface (`services/rules/`)
 
 A Rule converts the Images of one Platform in one Library. The engine that runs
@@ -2406,7 +2423,7 @@ cache cannot be read.
 
 **The catalogue** (`services/libraries/__init__.py`). Folder Libraries are rows
 of `folder_libraries` (root unique, name, `schedule_enabled`, `max_per_sweep`,
-migration 0011, `AUTOINCREMENT` so a removed Library's id is never reused and
+migration 0012, `AUTOINCREMENT` so a removed Library's id is never reused and
 state keyed by it cannot reach another folder), read once and cached; `register`, `update` and `remove`
 replace the cached copy. `register` uses `ensure_path_within_volumes` (the file
 browser's check), requires a folder, and refuses the same root or one that

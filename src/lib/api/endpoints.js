@@ -67,6 +67,10 @@ export const api = {
   // ─── Ledger (permanent record of finished jobs) ────────────────────────
   getLedgerRecent: (limit = 5) =>
     fetchJson(buildApiUrl('/ledger/recent', { limit }), undefined, 'Failed to fetch ledger'),
+  getLedgerPage: (query) =>
+    fetchJson(buildApiUrl('/ledger', query), undefined, 'Failed to fetch ledger'),
+  getLedgerFacets: () =>
+    fetchJson(`${API_BASE}/ledger/facets`, undefined, 'Failed to fetch ledger filters'),
   getLedgerSavings: () =>
     fetchJson(`${API_BASE}/ledger/savings`, undefined, 'Failed to fetch savings'),
 
