@@ -192,7 +192,46 @@ _DC_HWID_NEEDLE = b"SEGA SEGAKATANA"
 # Low-level ISO 9660 helpers
 # ===========================================================================
 
-def _read_pvd(f) -> Optional[bytes]:
+# Every length these helpers read comes out of the image (the PVD's root
+# directory size, a directory record's extent size), so every read is bounded
+# before it happens: by this parser limit, and by what the image actually holds
+# past the offset. A directory record table is a few KiB on a real disc and the
+# files read through here (SYSTEM.CNF, PARAM.SFO) are smaller still, so 1 MiB
+# leaves wide headroom. A size outside either bound is a parse failure, which
+# callers already treat as "no header": a planted image claiming 0xffffffff
+# bytes costs nothing, instead of a 4 GiB allocation.
+_MAX_ISO_READ = 1024 * 1024
+
+
+def _stream_size(f) -> int | None:
+    """Logical size of an ISO 9660 stream in bytes, when it can be known."""
+    size = getattr(f, "logical_size", None)
+    if size is not None:
+        return size
+    try:
+        return os.fstat(f.fileno()).st_size
+    except (AttributeError, OSError, ValueError):
+        return None
+
+
+def _bounded_read(f, offset: int, size: int) -> bytes | None:
+    """``size`` bytes at ``offset``, or None when the image cannot hold them.
+
+    Refuses a size above ``_MAX_ISO_READ`` or running past the end of the
+    image, without reading anything.
+    """
+    if size < 0 or size > _MAX_ISO_READ:
+        return None
+    total = _stream_size(f)
+    if total is not None and offset + size > total:
+        return None
+    try:
+        f.seek(offset)
+        return f.read(size)
+    except OSError:
+        return None
+
+def _read_pvd(f) -> bytes | None:
     """Return the 2048-byte PVD sector from a seekable ISO 9660 stream, or None."""
     try:
         f.seek(_PVD_SECTOR * _SECTOR_SIZE)
@@ -217,10 +256,8 @@ def _list_dir(f, lba: int, size: int) -> list[tuple[str, int, int, bool]]:
     Yield (name, lba, size, is_dir) for each entry in an ISO 9660 directory.
     Skips the '.' and '..' self-referencing entries.
     """
-    try:
-        f.seek(lba * _SECTOR_SIZE)
-        data = f.read(size)
-    except OSError:
+    data = _bounded_read(f, lba * _SECTOR_SIZE, size)
+    if data is None:
         return []
 
     entries: list[tuple[str, int, int, bool]] = []
@@ -303,12 +340,9 @@ def _find_file(f, root_lba: int, root_size: int, path_parts: list[str]) -> Optio
             return None
         _name, lba, size, is_dir = hit
         if i == len(path_parts) - 1:
-            # Final component, read and return the file
-            try:
-                f.seek(lba * _SECTOR_SIZE)
-                return f.read(size)
-            except OSError:
-                return None
+            # Final component, read and return the file (bounded, see
+            # _MAX_ISO_READ: None when its recorded size is implausible).
+            return _bounded_read(f, lba * _SECTOR_SIZE, size)
         if not is_dir:
             return None
         cur_lba, cur_size = lba, size
@@ -691,6 +725,15 @@ class _BinSectorStream:
         self._sector_size = sector_size
         self._header_size = header_size
         self._pos = 0  # logical position
+
+    @property
+    def logical_size(self) -> int | None:
+        """Bytes of 2048-byte user data the raw track holds (for read bounds)."""
+        try:
+            physical = os.fstat(self._f.fileno()).st_size
+        except (AttributeError, OSError, ValueError):
+            return None
+        return (physical // self._sector_size) * _SECTOR_SIZE
 
     def seek(self, pos: int) -> None:
         self._pos = pos
