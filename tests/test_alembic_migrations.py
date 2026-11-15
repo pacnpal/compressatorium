@@ -183,6 +183,25 @@ def test_0012_upgrades_and_downgrades(fresh_db_path: str):
     assert added <= set(inspect(engine).get_table_names())
 
 
+def test_0013_upgrades_and_downgrades(fresh_db_path: str):
+    """#305's migration: the check-time table comes and goes."""
+    from alembic import command
+
+    engine = _db.init_engine(fresh_db_path, create_schema=False)
+    _db.apply_migrations()
+    assert "image_checks" in inspect(engine).get_table_names()
+
+    cfg = _db._alembic_config(engine)
+    command.downgrade(cfg, "0012")
+
+    assert _current_rev(engine) == "0012"
+    assert "image_checks" not in inspect(engine).get_table_names()
+    assert "findings" in inspect(engine).get_table_names()
+
+    command.upgrade(cfg, "head")
+    assert "image_checks" in inspect(engine).get_table_names()
+
+
 # ---------------------------------------------------------------------------
 # Called-before-init guard
 # ---------------------------------------------------------------------------

@@ -33,7 +33,13 @@ from services import db as _db
 
 PLATFORM_CONFLICT = "platform_conflict"
 UNSORTED = "unsorted"
+# What a folder Library's walk reconciles. The walk sees every Image, so a
+# Finding of these kinds it does not see again is gone.
 KINDS = (PLATFORM_CONFLICT, UNSORTED)
+# A check Rule found the Image is not Intact (#305). A check sees a few Images
+# a night, never the whole Library, so these are written one Image at a time
+# (`observe`, `resolve`) and never by `reconcile`.
+NOT_INTACT = "not_intact"
 
 # Serialises a producer's write against forgetting its Library, so a walk that
 # outlives its Library cannot write after that Library's rows are dropped.
@@ -100,7 +106,7 @@ def reconcile(
     for item in observed:
         if item.kind in kinds:
             seen[(item.image_key, item.kind)] = item
-    counts = {"added": 0, "changed": 0, "cleared": 0}
+    counts = {"added": 0, "changed": 0, "cleared": 0, "kept": 0}
     with _write_lock, _session() as session:
         if current is not None and not current():
             return counts
@@ -125,35 +131,85 @@ def reconcile(
                 session.delete(row)
                 counts["cleared"] += 1
                 continue
-            fingerprint = item.fingerprint
-            if row.fingerprint != fingerprint:
-                counts["changed"] += 1
-                row.fingerprint = fingerprint
-                row.cause = dict(item.cause)
-                # The cause was seen to change, so the person decides again: a
-                # cause that later changes back to the dismissed one stays shown.
-                _dismissals(session, library_id, row.image_key, row.kind).delete()
-            row.reason = item.reason
-            row.path = item.path
-            row.last_seen = stamp
+            counts[_upsert(session, library_id, row, item, stamp)] += 1
         for key, item in seen.items():
-            if key in stored:
-                continue
-            # A dismissal of another cause for this Image and kind is out of
-            # date: the cause changed while the Image was out of the listing,
-            # so it must not hide a later return of that old cause.
-            _dismissals(session, library_id, item.image_key, item.kind).filter(
-                _db.FindingDismissalRecord.fingerprint != item.fingerprint,
-            ).delete(synchronize_session=False)
-            session.add(_db.FindingRecord(
-                library_id=library_id, image_key=item.image_key, kind=item.kind,
-                path=item.path, reason=item.reason, cause=dict(item.cause),
-                fingerprint=item.fingerprint,
-                first_seen=stamp, last_seen=stamp,
-            ))
-            counts["added"] += 1
+            if key not in stored:
+                counts[_upsert(session, library_id, None, item, stamp)] += 1
         session.commit()
+    counts.pop("kept", None)
     return counts
+
+
+def _upsert(
+    session, library_id: str, row: _db.FindingRecord | None, item: Observed, stamp: str,
+) -> str:
+    """Write *item* over *row* (None: a new Finding). Returns added, changed or kept."""
+    if row is None:
+        # A dismissal of another cause for this Image and kind is out of
+        # date: the cause changed while the Image was out of the listing,
+        # so it must not hide a later return of that old cause.
+        _dismissals(session, library_id, item.image_key, item.kind).filter(
+            _db.FindingDismissalRecord.fingerprint != item.fingerprint,
+        ).delete(synchronize_session=False)
+        session.add(_db.FindingRecord(
+            library_id=library_id, image_key=item.image_key, kind=item.kind,
+            path=item.path, reason=item.reason, cause=dict(item.cause),
+            fingerprint=item.fingerprint,
+            first_seen=stamp, last_seen=stamp,
+        ))
+        return "added"
+    outcome = "kept"
+    fingerprint = item.fingerprint
+    if row.fingerprint != fingerprint:
+        outcome = "changed"
+        row.fingerprint = fingerprint
+        row.cause = dict(item.cause)
+        # The cause was seen to change, so the person decides again: a
+        # cause that later changes back to the dismissed one stays shown.
+        _dismissals(session, library_id, row.image_key, row.kind).delete()
+    row.reason = item.reason
+    row.path = item.path
+    row.last_seen = stamp
+    return outcome
+
+
+def observe(
+    library_id: str, item: Observed, *, current: Callable[[], bool] | None = None,
+    now: str | None = None,
+) -> str | None:
+    """Upsert one Finding, on the same terms as :func:`reconcile`. Blocking.
+
+    For a producer that sees one Image at a time (a check Rule). Returns
+    ``added``, ``changed`` or ``kept``; None when *current* answered False.
+    """
+    with _write_lock, _session() as session:
+        if current is not None and not current():
+            return None
+        row = session.query(_db.FindingRecord).filter_by(
+            library_id=library_id, image_key=item.image_key, kind=item.kind,
+        ).first()
+        outcome = _upsert(session, library_id, row, item, now or _now())
+        session.commit()
+    return outcome
+
+
+def resolve(
+    library_id: str, image_key: str, kind: str, *,
+    current: Callable[[], bool] | None = None,
+) -> bool:
+    """Clear one Finding: its cause went away (a later check passed). Blocking.
+
+    Its dismissal is kept, as :func:`reconcile` keeps one for a row it drops.
+    True when a row was removed.
+    """
+    with _write_lock, _session() as session:
+        if current is not None and not current():
+            return False
+        removed = session.query(_db.FindingRecord).filter_by(
+            library_id=library_id, image_key=image_key, kind=kind,
+        ).delete()
+        session.commit()
+    return bool(removed)
 
 
 def _dismissals(session, library_id: str, image_key: str, kind: str):

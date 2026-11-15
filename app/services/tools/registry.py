@@ -421,6 +421,18 @@ class ToolRegistry:
         """
         return [t for t in self._tools.values() if t.verifies_path(path)]
 
+    def check_tool(self, path: str, slug: str | None) -> ToolPlugin | None:
+        """The tool a check Rule checks *path* with, or None when none can (#305).
+
+        The first tool whose Verify applies to the file (:meth:`tools_verifying_path`),
+        narrowed by the Image's Platform on :meth:`narrow_to_platform`'s terms:
+        a PS2 ``.iso`` is not handed to dolphin-tool just because GameCube discs
+        share the extension, since that check could only fail. May do disk I/O.
+        """
+        tools = {t.id: t for t in self.tools_verifying_path(path)}
+        kept = self.narrow_to_platform(list(tools), slug)
+        return tools[kept[0]] if kept else None
+
     def verify_extensions(self) -> tuple[str, ...]:
         """Union of every registered tool's verify_extensions.
 
