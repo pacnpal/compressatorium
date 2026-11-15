@@ -702,6 +702,7 @@ def test_a_hangup_stops_the_run_like_sigterm(volume, monkeypatch, capsys, signam
     """Closing the terminal of `docker exec -it ... compressatorium` sends SIGHUP."""
     import asyncio
     import os
+    import os
     import signal
 
     import cli
@@ -1002,6 +1003,7 @@ def test_a_stop_during_queueing_cancels_the_jobs_it_returned(
     one-shot cancel-all ran before the jobs existed, so they must be cancelled
     after the queue call returns, before any runs (Source deletion included)."""
     import asyncio
+    import os
     import os
     import signal
 
@@ -1678,3 +1680,32 @@ def test_delete_on_verify_keeps_a_source_whose_folder_another_process_locked(
     assert taken == [True]
     assert iso.exists(), lines
     assert lines[0]["source_deleted"] is False
+
+
+@pytest.mark.parametrize("command", [["verify"], ["convert", "--to", "rvz"]])
+def test_a_fifo_named_like_an_image_is_skipped_without_hanging(
+    volume, dolphin, capsys, command,
+):
+    """#294 refuses special files in detect_platform and resolve_track; a CLI
+    run over a folder holding a FIFO named game.iso must not block opening it."""
+    import os
+    import signal
+
+    fifo = volume / "gc" / "game.iso"
+    fifo.parent.mkdir()
+    os.mkfifo(fifo)
+
+    def timed_out(signum, frame):
+        raise TimeoutError("the CLI blocked on a FIFO")
+
+    previous = signal.signal(signal.SIGALRM, timed_out)
+    signal.alarm(20)
+    try:
+        code, lines = _cli(capsys, command[0], str(volume), *command[1:], "--json")
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous)
+
+    assert code == 0, lines
+    assert all(line["status"] == "skipped" for line in lines), lines
+    assert dolphin["runs"] == []

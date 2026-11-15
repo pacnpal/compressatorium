@@ -212,7 +212,7 @@ Volume behavior:
 | `COMPRESSATORIUM_SEARCH_AUTO_RETURN_TO_FILE_LIST` | `true` | Web UI: when true, `Search All` conversions return to the previous file-list view after queueing |
 | `CHD_SEARCH_AUTO_RETURN_TO_FILE_LIST` | `true` | Legacy alias for `COMPRESSATORIUM_SEARCH_AUTO_RETURN_TO_FILE_LIST` |
 | `CHD_TEMP_DIR` | `/config/temp` | Temporary working directory for archive extraction (auto-created) |
-| `CHD_CONCURRENCY_LOCK_DIR` | `/config/locks` | Directory for job lock files and conversion slots, shared by every container that mounts `/config` (falls back to `$TMPDIR/chd-locks` when `/config` is not writable) |
+| `CHD_CONCURRENCY_LOCK_DIR` | `/config/locks` | Directory for job lock files and conversion slots, shared by every container that mounts `/config`. Created at start; the process stops with an error if it can't be |
 | `COMPRESSATORIUM_DB_PATH` | `/config/compressatorium.db` | Unified SQLite database (DAT index, DAT-sync state, match cache, CHD metadata, verification state). On first startup, legacy JSON files are auto-migrated to this DB and renamed to `*.migrated.bak` (never deleted). Custom legacy paths set via `CHD_METADATA_STORE` / `CHD_VERIFICATION_STORE` are honored during migration. |
 | `CHD_METADATA_STORE` | *(deprecated)* | Legacy JSON path; auto-migrated to SQLite on first startup (custom path honored if set) |
 | `CHD_VERIFICATION_STORE` | *(deprecated)* | Legacy JSON path; auto-migrated to SQLite on first startup (custom path honored if set) |

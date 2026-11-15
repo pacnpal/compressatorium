@@ -1266,11 +1266,12 @@ async def plan_auto_targets(
 ) -> list:
     """``plan_auto`` with each saved compression checked against its mode.
 
-    The CLI's ``--auto`` (#306) uses it on paths it has already checked against
-    the Volumes; ``prefs`` is the saved ``conversion`` preference and
+    The CLI's ``--auto`` (#306); the Auto route plans the same way through
+    ``_plan_auto``, which adds the Volume checks and the 30 s bound an HTTP
+    request needs. ``prefs`` is the saved ``conversion`` preference and
     ``ready_tool_ids`` the tools that can run here
-    (``registry.ready_tool_ids()``). The Auto route plans through
-    ``_checked_auto_plan`` instead, which adds its Volume checks.
+    (``registry.ready_tool_ids()``). Off the event loop, unbounded: a CLI run
+    plans a whole library and has no request to time out.
     """
     plan = await run_in_threadpool(
         plan_auto, paths, compression_prefs=prefs, output_dir=output_dir,

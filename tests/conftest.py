@@ -9,11 +9,35 @@ boilerplate.
 
 from __future__ import annotations
 
+import os
+import tempfile
 from pathlib import Path
 
 import pytest
 
-from services import db as _db
+# Before anything imports config: a test run gets a lock dir of its own. With
+# no data dir configured the default is the one fixed /tmp/chd-locks (#306),
+# so two test runs at once (two worktrees, a reviewer's copy) would otherwise
+# share one conversion slot and queue and wait on each other.
+os.environ.setdefault(
+    "CHD_CONCURRENCY_LOCK_DIR", tempfile.mkdtemp(prefix="compressatorium-test-locks-"),
+)
+
+from services import db as _db  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _release_leaked_tickets():
+    """A job a test creates but never runs keeps its FIFO ticket in the lock
+    dir, held by this live process, so it is never pruned and sits ahead of
+    every later test's jobs: a later ``_process_job`` waits for its turn
+    forever. Release whatever tickets a test reserved and left behind."""
+    from services.concurrency_manager import concurrency_manager
+
+    before = set(concurrency_manager._ticket_handles)
+    yield
+    for key in set(concurrency_manager._ticket_handles) - before:
+        concurrency_manager.release(key)
 
 
 @pytest.fixture

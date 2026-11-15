@@ -3163,9 +3163,17 @@ that leaves `.chd` out of its tool-wide inputs.
 `CHD_CONCURRENCY_LOCK_DIR`, and the conversion slots and FIFO tickets live
 there too, so a CLI process and the server contend for the same outputs and
 slots. The default is now `<data dir>/locks` (`config._default_lock_dir`), so a
-separate container that mounts the same `/config` shares them; it falls back to
-`$TMPDIR/chd-locks` when the data dir is not writable. Two rules keep a lock
-file meaningful across processes (`LockManager`):
+separate container that mounts the same `/config` shares them. The choice is a
+pure function of configuration, never of whether a folder exists yet: with a
+data dir configured (`CHD_DATA_DIR` or the constructor; the image sets
+`CHD_DATA_DIR=/config`) it is always `<data dir>/locks`, created when chosen
+(parents included, `0o700`), and one that can't be created raises at startup
+instead of moving the locks. Only with no data dir configured at all is it the
+fixed `/tmp/chd-locks`, the same for every process whatever `TMPDIR` says.
+Before, a data dir that did not exist yet sent the first process to
+`$TMPDIR/chd-locks` and, once database init had made the folder, the next one to
+`<data dir>/locks`. Two rules keep a lock file meaningful across processes
+(`LockManager`):
 
 1. A lock file is unlinked only by a process holding its flock, while it holds
    it, and only when the path still names the held file (`_unlink_held`).
@@ -3200,7 +3208,7 @@ user) would make that process look dead. `_ensure_holder`, called on every wait
 poll, checks the held handle against the path (`still_linked`); when they
 differ it makes the holder again under the same id and writes back every
 ticket the process holds. Slot files have no such repair: a cleaner that
-deletes `convert_slot_<i>.lock` on the `$TMPDIR/chd-locks` fallback lets two
+deletes `convert_slot_<i>.lock` on the `/tmp/chd-locks` fallback lets two
 processes lock different files for one slot. Keep the lock dir out of reach of
 age-based cleaners; `/config/locks`, the default, is.
 
@@ -3219,8 +3227,8 @@ write, across groups and re-planned batches, and skips a later Image that
 writes one already taken ("Same output as X"). The planner's own collapse
 works within one batch only.
 
-**Lazy, and read-only for a dry run.** Choosing the lock dir creates nothing
-(`config._default_lock_dir`; it warns when it falls back to `$TMPDIR`). The
+**Lazy, and read-only for a dry run.** Choosing the lock dir creates the
+directory and nothing in it (`config._default_lock_dir`). The
 module singletons `lock_manager` and `concurrency_manager` are built
 `lazy=True`: the directory, `queue_counter`, the stale sweep and the ticket
 prune happen on first use. A dry run wraps the run in `lock_manager.read_only()`,
