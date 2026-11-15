@@ -40,6 +40,7 @@ from typing import Any
 
 from logging_setup import get_logger
 from models import ConversionMode, JobStatus
+from services import notifications
 from services import subprocess_runner
 from services.image_sets import image_fingerprint
 from services.job_manager import (
@@ -1039,14 +1040,24 @@ async def sweep(
                 "errors": [{"platform_id": None, "error": blocked}],
                 **await library.sweep_extras(),
             }
-        result = await _sweep_locked(
-            library,
-            platform_ids=platform_ids,
-            ignore_schedule=ignore_schedule,
-            dry_run=dry_run,
-            overall_limit=overall_limit,
-            should_stop=should_stop,
-        )
+        # Closed even if the sweep raises after queueing jobs: the default is the
+        # failure, replaced by the real result on success. A cancel (shutdown)
+        # is not a failure to report.
+        notified: dict = {"errors": [{"platform_id": None, "error": "sweep_failed"}]}
+        try:
+            result = notified = await _sweep_locked(
+                library,
+                platform_ids=platform_ids,
+                ignore_schedule=ignore_schedule,
+                dry_run=dry_run,
+                overall_limit=overall_limit,
+                should_stop=should_stop,
+            )
+        except asyncio.CancelledError:
+            notified = {"errors": []}
+            raise
+        finally:
+            notifications.sweep_finished(notified, dry_run=dry_run, library_id=library.id)
     # The sweep is finished: every sweep that ran returns through here, after
     # the lock is released. `result["dry_run"]` tells a preview from a run.
     return result
@@ -1480,6 +1491,7 @@ async def _sweep_locked(
                     # this batch, and leave the Platform's clock alone.
                     result["stopped_reason"] = "stopped"
                     break
+                owner = notifications.sweep_owner()
                 jobs = await job_manager.create_batch_jobs(
                     batch,
                     ConversionMode(rule["mode"]),
@@ -1500,6 +1512,7 @@ async def _sweep_locked(
                     # second, possibly different one.
                     output_paths=destinations,
                     allow_overwrite=rule["duplicate_action"] == "overwrite",
+                    owner=owner,
                 )
                 summary["queued"] = len(jobs)
                 result["queued"] += len(jobs)
@@ -1522,6 +1535,7 @@ async def _sweep_locked(
                         for path in batch
                     },
                 )
+                notifications.sweep_jobs_queued(jobs)  # sync, before any await
 
                 # Only now, with the jobs actually queued: the steps only this
                 # Library performs (RomM snapshots metadata for formats it

@@ -10,6 +10,7 @@
   import RommView from '$lib/components/views/RommView.svelte';
   import RulesView from '$lib/components/views/RulesView.svelte';
   import DATView from '$lib/components/views/DATView.svelte';
+  import SettingsView from '$lib/components/views/SettingsView.svelte';
   import LedgerView from '$lib/components/views/LedgerView.svelte';
   import HelpView from '$lib/components/views/HelpView.svelte';
   import EmptyState from '$lib/components/ui/EmptyState.svelte';
@@ -188,6 +189,7 @@
         {:else if ui.activeView === 'romm'}<RommView />
         {:else if ui.activeView === 'rules'}<RulesView />
         {:else if ui.activeView === 'dat'}<DATView />
+        {:else if ui.activeView === 'settings'}<SettingsView />
         {:else if ui.activeView === 'ledger'}<LedgerView />
         {:else if ui.activeView === 'help'}<HelpView />
         {/if}

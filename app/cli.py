@@ -754,10 +754,11 @@ async def _job_runner(state: RunState, *listeners):
     its jobs inside the block. On the way out the dispatcher stops and the
     listeners' own work (a Ledger write) is finished.
     """
-    from services import ledger
+    from services import ledger, notifications
     from services.job_manager import job_manager
 
     job_manager.add_terminal_listener(ledger.record)
+    notifications.attach(job_manager)  # the server's own listener, so a pass reports too
     for listener in listeners:
         job_manager.add_terminal_listener(listener)
     runner = asyncio.create_task(job_manager.process_queue())
@@ -773,6 +774,9 @@ async def _job_runner(state: RunState, *listeners):
         with contextlib.suppress(asyncio.CancelledError):
             await runner
         await job_manager.shutdown()
+        # Queued sends finish before the loop closes (bounded: a dead destination
+        # must not hold the command).
+        await notifications.drain(timeout=notifications.SEND_TIMEOUT_S + 2)
 
 
 async def _run_jobs(prepared: list[tuple], printer: Printer, state: RunState) -> None:

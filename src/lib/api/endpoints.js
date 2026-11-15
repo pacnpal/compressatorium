@@ -64,6 +64,38 @@ export const api = {
   // ─── Version ──────────────────────────────────────────────────────────
   getVersion: () => fetchJson(`${API_BASE}/version`, undefined, 'Failed to fetch version'),
 
+  // ─── Notifications (webhook / Apprise destinations) ─────────────────────
+  // The server never returns a saved URL; edits that omit `url` keep it.
+  getNotifications: () =>
+    fetchJson(`${API_BASE}/notifications`, undefined, 'Failed to load notifications'),
+  addNotificationDestination: (body) =>
+    jsonPost(`${API_BASE}/notifications/destinations`, body, {}, 'Failed to add destination'),
+  editNotificationDestination: (id, body) =>
+    fetchJson(
+      `${API_BASE}/notifications/destinations/${encodeURIComponent(id)}`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+      'Failed to save destination',
+    ),
+  deleteNotificationDestination: (id) =>
+    fetchJson(
+      `${API_BASE}/notifications/destinations/${encodeURIComponent(id)}`,
+      { method: 'DELETE' },
+      'Failed to remove destination',
+    ),
+  testNotificationDestination: (id) =>
+    jsonPost(
+      `${API_BASE}/notifications/destinations/${encodeURIComponent(id)}/test`,
+      {},
+      {},
+      'Test failed',
+    ),
+  testNotificationDraft: (body) =>
+    jsonPost(`${API_BASE}/notifications/test`, body, {}, 'Test failed'),
+
   // ─── Ledger (permanent record of finished jobs) ────────────────────────
   getLedgerRecent: (limit = 5) =>
     fetchJson(buildApiUrl('/ledger/recent', { limit }), undefined, 'Failed to fetch ledger'),

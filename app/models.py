@@ -1,7 +1,7 @@
 from datetime import datetime
 from enum import Enum
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, PrivateAttr
 
 
 class InputKind(str, Enum):
@@ -194,6 +194,11 @@ class ConversionJob(BaseModel):
     # {"referrer": id, "target": file, "status": "updated" | "failed" |
     # "skipped", "reason": why, for failed and skipped}.
     referrers_updated: list[dict] = []
+    # Who queued the job when it is not a person (a sweep passes its token), so a
+    # terminal listener can tell the two apart from the first moment the job
+    # exists. A private attribute: not a field, so it is in neither the API schema
+    # nor any serialized form.
+    _sweep_owner: str | None = PrivateAttr(default=None)
 
 
 class JobCreateRequest(BaseModel):

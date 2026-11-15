@@ -578,6 +578,22 @@
   wait: 1800
   javascript: *js_theme_dark
 
+# --- Settings: notifications ----------------------------------------------
+# No destination is configured in the fixture, so this captures the first-run
+# state: nothing is sent until one is added.
+- url: http://127.0.0.1:8099/?s=settings-light#/settings
+  output: docs/screenshots/settings-light.png
+  width: 1280
+  height: 900
+  wait: 1800
+  javascript: *js_theme_light
+- url: http://127.0.0.1:8099/?s=settings-dark#/settings
+  output: docs/screenshots/settings-dark.png
+  width: 1280
+  height: 900
+  wait: 1800
+  javascript: *js_theme_dark
+
 # --- Help -----------------------------------------------------------------
 - url: http://127.0.0.1:8099/?s=help-light#/help
   output: docs/screenshots/help-light.png
