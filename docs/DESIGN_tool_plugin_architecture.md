@@ -2637,6 +2637,11 @@ deletes `convert_slot_<i>.lock` on the `$TMPDIR/chd-locks` fallback lets two
 processes lock different files for one slot. Keep the lock dir out of reach of
 age-based cleaners; `/config/locks`, the default, is.
 
+The directory is made again (`_ensure_dir`, owner only) whenever a holder,
+ticket or slot file is created, not only on first use, so a lock directory
+deleted while a process runs (a tmp cleaner on the `$TMPDIR` fallback, someone
+clearing `/config/locks`) no longer leaves every later job waiting forever.
+
 A queue that cannot be listed (EMFILE, an I/O error) is never read as empty:
 `_list_tickets` raises, and `_wait_for_turn` logs it (at most every 30 s) and
 retries. The shared counter is retried before the in-process fallback, whose

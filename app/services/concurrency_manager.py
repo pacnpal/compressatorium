@@ -72,11 +72,20 @@ class ConcurrencyManager:
         if not lazy:
             self._ensure_ready()
 
+    def _ensure_dir(self) -> None:
+        """Make the lock directory (owner only) if it is missing.
+
+        Asked every time a holder, ticket or slot file is created, not only on
+        first use: a directory deleted while the process runs (a tmp cleaner on
+        the ``$TMPDIR/chd-locks`` fallback, someone clearing ``/config/locks``)
+        would otherwise make every later job wait forever (#307).
+        """
+        os.makedirs(self.lock_dir, mode=0o700, exist_ok=True)
+
     def _ensure_ready(self) -> None:
         if self._ready:
             return
-        # Create lock directory with restrictive permissions (owner only)
-        os.makedirs(self.lock_dir, mode=0o700, exist_ok=True)
+        self._ensure_dir()
         self._ready = True
         with contextlib.suppress(OSError):
             self._ensure_holder()
@@ -125,6 +134,7 @@ class ConcurrencyManager:
         self._make_holder()
 
     def _make_holder(self) -> None:
+        self._ensure_dir()
         tmp_path = f"{self._holder_path}.{os.getpid()}.tmp"
         handle = open(tmp_path, "w", encoding="utf-8")  # noqa: SIM115 - held for life
         try:
@@ -182,6 +192,8 @@ class ConcurrencyManager:
         while True:
             if cancel_event and cancel_event.is_set():
                 return False
+            with contextlib.suppress(OSError):
+                self._ensure_dir()
             for idx, path in enumerate(self._slot_paths):
                 try:
                     # Binary mode avoids an "unspecified-encoding" lint warning; this
@@ -499,6 +511,7 @@ class ConcurrencyManager:
         written; ``_wait_for_turn`` writes it again."""
         tmp_path = f"{ticket_path}.tmp"
         try:
+            self._ensure_dir()
             payload = {
                 "ticket": ticket,
                 "pid": os.getpid(),
