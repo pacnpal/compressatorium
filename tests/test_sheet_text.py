@@ -101,7 +101,9 @@ def test_an_oversized_cue_lists_no_partial_tracks_and_is_not_cached(tmp_path, mo
     )
     platform_detect.clear_cache()
 
-    assert sheet_track_paths(path) is None            # unknown, not "no tracks"
+    # No partial list: grouping sees an Image of its own...
+    assert sheet_track_paths(path) == []
+    # ...while the cache, which must not mistake it for "no tracks", sees None.
     assert registry.get("chdman").header_reads(path) is None
     platform_detect.detect_platform(path)
     assert path not in platform_detect._cache

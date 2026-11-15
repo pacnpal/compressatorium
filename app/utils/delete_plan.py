@@ -61,16 +61,17 @@ def _gdi_tracks_from_text(text: str) -> list[str]:
     return [track.name for track in gdi_tracks(text)]
 
 
-def sheet_track_paths(sheet_path: str) -> list[str] | None:
+def sheet_track_paths(sheet_path: str) -> list[str]:
     """The track files a ``.cue`` or ``.gdi`` sheet names, resolved beside it.
 
     The same parsing and containment rules the delete plan uses, so a track
     reference that escapes the sheet's folder is left out, and the same
     decoding the disc-ID probe uses (``utils.sheet_text``): the first spelling
     of a name that exists wins. Tracks are listed whether or not they exist
-    yet. Empty for a file that is not a sheet. None when the sheet is
-    unreadable (missing, or over the size cap ``utils.sheet_text`` enforces):
-    its tracks are unknown, which is not the same as none.
+    yet. Empty for a file that is not a sheet, and for a sheet that is
+    unreadable (missing, or over the size cap ``utils.sheet_text`` enforces;
+    never a partial list). A caller for whom "unreadable" must not read as "no
+    tracks" checks ``utils.sheet_text.sheet_is_readable`` itself.
     """
     sheet = Path(sheet_path)
     parse = {".cue": cue_tracks, ".gdi": _gdi_tracks_from_text}.get(
@@ -78,11 +79,7 @@ def sheet_track_paths(sheet_path: str) -> list[str] | None:
     )
     if parse is None:
         return []
-    texts = sheet_readings(sheet)
-    if not texts:
-        # Unreadable (missing, or over the size cap): unknown, not "no tracks".
-        return None
-    readings = [parse(text) for text in texts]
+    readings = [parse(text) for text in sheet_readings(sheet)]
     tracks = pick_existing(readings, lambda ref: _resolve_track_path(sheet.parent, ref))
     return [str(track) for track in tracks]
 

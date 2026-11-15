@@ -46,6 +46,11 @@ def sheet_readings(path: str | Path) -> list[str]:
     return [first, raw.decode("latin-1")]
 
 
+def sheet_is_readable(path: str | Path) -> bool:
+    """Whether the sheet can be read whole (exists, readable, within the cap)."""
+    return bool(sheet_readings(path))
+
+
 def cue_tracks(text: str) -> list[str]:
     """The file name of every ``FILE`` line of a ``.cue`` sheet, in order.
 
