@@ -2562,7 +2562,15 @@ queued (`job_manager.cancel_job`) and returns the error. A job that had already
 finished cannot be withdrawn: its output stays, it is logged, and the error
 returns it, for an HTTP error from the queue and for an unexpected exception
 alike (the latter logged with its traceback and returned as a 500; a
-cancellation still propagates). An Image that preparation skipped (its output
+cancellation still propagates). Nothing in either Auto endpoint, or in the
+batch preparation they share, touches a Volume on the event loop: the per-path
+Volume checks run together with planning (`_checked_auto_plan`) or on their
+own (`_check_within_volumes`) through `_off_loop_bounded`, a `run_detached`
+call bounded by `VOLUME_PROBE_TIMEOUT_SECONDS` (30 s, beside
+`ROLLBACK_WAIT_CAP_SECONDS` in `job_manager`). Past the bound the request
+answers 503 "A Volume isn't responding"; the abandoned thread may linger until
+the mount answers, holding no shared pool worker, and its result is dropped.
+An Image that preparation skipped (its output
 appeared after planning) is marked skipped in the returned plan with
 preparation's reason. In the browser, `conversion.runAuto` runs the flow once
 at a time (an in-flight guard), on the selection and RomM context captured
