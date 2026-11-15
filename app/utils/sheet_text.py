@@ -37,6 +37,43 @@ def sheet_readings(path: str | Path) -> list[str]:
     return [first, raw.decode("latin-1")]
 
 
+def cue_tracks(text: str) -> list[str]:
+    """The file name of every ``FILE`` line of a ``.cue`` sheet, in order.
+
+    ``FILE "name" TYPE``: the name is everything between the quotes, spaces
+    included. Unquoted, ``FILE name TYPE``: everything before the last word
+    (the file type), so ``FILE Game (Track 1).bin BINARY`` keeps its spaces; a
+    line with no type keeps the whole rest. ``REM`` lines and other commands
+    are not tracks. The one CUE FILE-line parser: the disc-ID probe, the delete
+    plan and the detection cache's track list all read sheets through it.
+    """
+    names: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        head, _, rest = stripped.partition(" ")
+        if head.upper() != "FILE":
+            # A tab after FILE is as valid as a space.
+            head, _, rest = stripped.partition("\t")
+            if head.upper() != "FILE":
+                continue
+        rest = rest.strip()
+        if rest.startswith('"'):
+            body = rest[1:]
+            closing = body.find('"')
+            if closing >= 0:
+                name = body[:closing]
+            else:  # an unbalanced quote: read it as unquoted
+                parts = body.rsplit(None, 1)
+                name = parts[0] if len(parts) == 2 else body
+        else:
+            parts = rest.rsplit(None, 1)
+            name = parts[0] if len(parts) == 2 else rest
+        name = name.strip()
+        if name:
+            names.append(name)
+    return names
+
+
 @dataclass(frozen=True)
 class GdiTrack:
     """One track line of a ``.gdi``: ``number lba type sector_size "name" offset``."""

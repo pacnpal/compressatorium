@@ -1,11 +1,10 @@
 import os
 import re
-import shlex
 from pathlib import Path
 from typing import Dict, List, Set
 
 from utils.path_utils import strip_archive_path
-from utils.sheet_text import gdi_tracks, pick_existing, sheet_readings
+from utils.sheet_text import cue_tracks, gdi_tracks, pick_existing, sheet_readings
 
 
 _WIN_ABS_RE = re.compile(r"^[a-zA-Z]:[\\/]")
@@ -51,29 +50,7 @@ def _read_sheet(sheet_path: Path) -> list[str]:
 
 
 def _parse_cue_tracks(cue_path: Path) -> list[str]:
-    return _cue_tracks_from_text(_read_sheet(cue_path)[0])
-
-
-def _cue_tracks_from_text(text: str) -> list[str]:
-    tracks: list[str] = []
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped:
-            continue
-        if stripped.upper().startswith("REM"):
-            continue
-        if not stripped.upper().startswith("FILE"):
-            continue
-        try:
-            parts = shlex.split(stripped, comments=True, posix=True)
-        except ValueError:
-            continue
-        if len(parts) < 3 or parts[0].upper() != "FILE":
-            continue
-        name = parts[1].strip()
-        if name:
-            tracks.append(name)
-    return tracks
+    return cue_tracks(_read_sheet(cue_path)[0])
 
 
 def _parse_gdi_tracks(gdi_path: Path) -> list[str]:
@@ -95,7 +72,7 @@ def sheet_track_paths(sheet_path: str) -> list[str]:
     cannot be read.
     """
     sheet = Path(sheet_path)
-    parse = {".cue": _cue_tracks_from_text, ".gdi": _gdi_tracks_from_text}.get(
+    parse = {".cue": cue_tracks, ".gdi": _gdi_tracks_from_text}.get(
         sheet.suffix.lower(),
     )
     if parse is None:
