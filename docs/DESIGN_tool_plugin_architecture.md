@@ -4239,6 +4239,19 @@ is a counted `kept` attempt (codex 4579683118):
   (`update_before_source_removal(bound=...)`), and the store clears
   (`clear_blocking`), where a timeout after the unlinks only leaves a stale
   record of a Source that is gone.
+- **A started delete is one unit** (codex 4580176201). The whole set of
+  planned unlinks (`_remove_in_order`) is one mutation, for the job and the
+  retry alike: a caller that stops waiting hands the rest of the plan and its
+  locks to the worker, which removes every planned file before it lets go.
+  An `unknown` retry moves its entry to `state: deleting` with the planned
+  list; the next sweep does not plan it again (a part-deleted Source is
+  expected) but calls `JobManager.finish_kept_delete`: under the output's,
+  companions' and remaining files' locks it re-checks that the output and its
+  companions are still the checked ones and that each remaining file is one
+  the check fingerprinted, unchanged, then removes them. If the output no
+  longer stands, the remaining files stay, the entry is dropped and a
+  `source_kept` Finding names the part-deleted Source; it is never dropped
+  silently.
 - Each unlink is a mutation, not a probe, so it is never abandoned with its
   locks (below). One that outlives `KEPT_DELETE_PROBE_SECONDS` makes the
   retry's outcome `unknown`: the Source may or may not be gone. That is not

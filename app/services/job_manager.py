@@ -45,6 +45,7 @@ from services.round_trip import round_trip, round_trip_applies
 from services.subprocess_runner import (
     DeadlineExpired,
     MutationInFlight,
+    MutationNotStarted,
     ProbeCapacityExceeded,
     ReadCancelled,
     run_detached,
@@ -96,6 +97,9 @@ class KeptDeleteRetry:
     status: str
     reason: Optional[str] = None
     deleted: Tuple[str, ...] = ()
+    # The files the delete planned to remove, in order, once it started: an
+    # `unknown` outcome's entry finishes them on the next sweep.
+    planned: Tuple[str, ...] = ()
 
 
 @dataclass
@@ -143,6 +147,15 @@ class HeldLocks:
     def release(self) -> None:
         """Let go of whatever the owner still holds. Blocking (lock file I/O)."""
         _let_go(self.take())
+
+
+def _remove_in_order(paths: Iterable[str], removed: List[str]) -> None:
+    """Remove every file of *paths* in order, appending each to *removed* as
+    it goes. Blocking: one mutation (``run_detached_mutation``) for a whole
+    Source set, so a started delete is never left half done."""
+    for path in paths:
+        os.remove(path)
+        removed.append(path)
 
 
 def _let_go(paths: Optional[Iterable[str]]) -> None:
@@ -3191,6 +3204,7 @@ class JobManager:
         deleted: List[str],
         probe_seconds: Optional[float] = None,
         travelling_locks: Optional["HeldLocks"] = None,
+        planned: Optional[List[str]] = None,
     ) -> _SourceDelete:
         """The delete step, shared by a job and a retried delete (#329).
 
@@ -3273,14 +3287,23 @@ class JobManager:
             await self._release_delete_holds_in_background(owner_id, probe_seconds)
             outcome.cancelled = True
             return outcome
-        for path in delete_order:
-            await run_detached_mutation(
-                os.remove, path, timeout=probe_seconds,
-                hand_off=lambda: self._hand_off_locks(owner_id, travelling_locks),
-            )
-            deleted.append(path)
+        if planned is not None:
+            planned[:] = delete_order
+        # The whole set is one mutation (codex 4580176201): a caller that stops
+        # waiting hands the rest of the plan to the worker with the locks, and
+        # the worker removes every planned file before it lets them go.
+        await run_detached_mutation(
+            _remove_in_order, delete_order, deleted, timeout=probe_seconds,
+            hand_off=lambda: self._hand_off_locks(owner_id, travelling_locks),
+        )
         await self._release_delete_holds_in_background(owner_id, probe_seconds)
+        await self._clear_source_records(file_path, probe_seconds)
+        return outcome
 
+    async def _clear_source_records(
+        self, file_path: str, probe_seconds: Optional[float],
+    ) -> None:
+        """Drop the check and metadata records of a Source just deleted."""
         ext = os.path.splitext(file_path)[1].lower()
         clears = []
         if ext in registry.verify_extensions():
@@ -3301,7 +3324,6 @@ class JobManager:
                     "Clearing the records of deleted %s did not finish", file_path,
                     exc_info=True,
                 )
-        return outcome
 
     @staticmethod
     async def _let_go_in_background(
@@ -3426,6 +3448,7 @@ class JobManager:
         # outlives this call, so it is released only from this list.
         travelling = HeldLocks()
         deleted: List[str] = []
+        planned: List[str] = []
         try:
             # Bounded, like every probe here: taking a lock stats the path, and
             # a lock taken after this gave up is let go (codex 4579529051).
@@ -3522,10 +3545,14 @@ class JobManager:
                     deleted=deleted,
                     probe_seconds=KEPT_DELETE_PROBE_SECONDS,
                     travelling_locks=travelling,
+                    planned=planned,
                 )
             except MutationInFlight as exc:
-                # Its locks went with it; they are let go once it has finished.
-                return KeptDeleteRetry(KEPT_UNKNOWN, str(exc), tuple(deleted))
+                # Its locks went with it, and the rest of the plan; the worker
+                # removes every planned file, then lets them go.
+                return KeptDeleteRetry(
+                    KEPT_UNKNOWN, str(exc), tuple(deleted), tuple(planned),
+                )
             except (RuntimeError, OSError) as exc:
                 # A refusal, or a removal the filesystem refused part way
                 # (codex 4579529048): counted, with whatever was removed.
@@ -3540,6 +3567,135 @@ class JobManager:
             # Off the loop: lock files are I/O (codex 4579852997).
             holds = self._delete_holds.pop(owner_id, [])
             await self._let_go_in_background([*holds, *travelling.take()])
+
+    def _finish_problem(
+        self, source_path: str, output_path: str, meta: dict, recorded_source: str,
+        remaining: List[str], owner_id: str, jobs: List[ConversionJob],
+    ) -> Optional[str]:
+        """Why a part-deleted Source's remaining files must stay, or None.
+        Blocking; run under the locks (:meth:`finish_kept_delete`)."""
+        if os.path.realpath(source_path) != recorded_source:
+            return "the output's check record names another Source"
+        if self._output_fingerprint(output_path) != meta.get("output"):
+            return "the output is gone or changed since its check"
+        if self._companion_fingerprints(
+            output_path, str(meta.get("mode") or ""),
+        ) != (meta.get("companions") or {}):
+            return "a companion output is gone or changed since its check"
+        # Each remaining file is one the delete planned and the check
+        # fingerprinted, unchanged, and still safe to remove.
+        by_real = {
+            os.path.realpath(path): fp for path, fp in (meta.get("source") or {}).items()
+        }
+        fingerprints = {}
+        for path in remaining:
+            fp = by_real.get(os.path.realpath(path))
+            if fp is None:
+                return "a remaining file is not one the check fingerprinted"
+            fingerprints[path] = fp
+        return self._delete_path_problem(
+            owner_id, remaining, fingerprints, os.path.realpath(output_path),
+            set(remaining), jobs,
+        )
+
+    async def finish_kept_delete(
+        self, *, source_path: str, output_path: str, planned: List[str],
+        required_check: Optional[str] = None,
+    ) -> KeptDeleteRetry:
+        """Finish a retried delete that outlived its wait (codex 4580176201).
+
+        The Source is part deleted by design, so it is not planned again.
+        Under the output's, its companions' and the remaining files' locks,
+        this re-checks that the output and its companions are still exactly
+        the checked ones and that every remaining file is one the check
+        fingerprinted, unchanged; then removes them in order, as one mutation.
+        ``deleted`` when nothing of the plan is left; ``stale`` when the output
+        no longer stands (the remaining files stay, and the caller reports the
+        part-deleted Source); ``reader``, ``kept`` or ``unknown`` as for
+        :meth:`retry_kept_delete`.
+        """
+        owner_id = f"kept-finish:{uuid.uuid4().hex}"
+        travelling = HeldLocks()
+        removed: List[str] = []
+        try:
+            try:
+                output_held = await run_detached_undoable(
+                    lock_manager.acquire_lock, output_path, allow_existing=True,
+                    timeout=KEPT_DELETE_PROBE_SECONDS,
+                    undo=lambda held: _let_go([output_path] if held else []),
+                )
+            except DeadlineExpired:
+                return KeptDeleteRetry(KEPT_KEPT, KEPT_DELETE_UNANSWERED)
+            except (LockFailed, OSError) as exc:
+                return KeptDeleteRetry(KEPT_KEPT, str(exc))
+            if not output_held:
+                return KeptDeleteRetry(KEPT_READER, "the output is in use by another job")
+            travelling.add(output_path)
+            try:
+                record = await run_detached_bounded(
+                    verification_store.get_record_blocking, output_path,
+                    timeout=KEPT_DELETE_PROBE_SECONDS,
+                )
+            except DeadlineExpired:
+                return KeptDeleteRetry(KEPT_KEPT, KEPT_DELETE_UNANSWERED)
+            except OSError as exc:
+                return KeptDeleteRetry(KEPT_KEPT, str(exc))
+            check = (record or {}).get("check_passed")
+            meta = (record or {}).get("produced_meta")
+            if (
+                not record or check not in _CHECK_LABELS
+                or not _check_satisfies(check, required_check)
+                or not record.get("source_path") or not isinstance(meta, dict)
+                or not meta.get("source") or not meta.get("output")
+            ):
+                return KeptDeleteRetry(
+                    KEPT_STALE, "the output's check record no longer matches",
+                )
+            try:
+                remaining = await run_detached_bounded(
+                    lambda: [path for path in planned if os.path.lexists(path)],
+                    timeout=KEPT_DELETE_PROBE_SECONDS,
+                )
+                taken = await run_detached_undoable(
+                    self._take_exclusively,
+                    [*(meta.get("companions") or {}), *remaining],
+                    timeout=KEPT_DELETE_PROBE_SECONDS, undo=_let_go,
+                )
+            except DeadlineExpired:
+                return KeptDeleteRetry(KEPT_KEPT, KEPT_DELETE_UNANSWERED)
+            except (LockFailed, OSError) as exc:
+                return KeptDeleteRetry(KEPT_KEPT, str(exc))
+            if taken is None:
+                return KeptDeleteRetry(KEPT_READER, SOURCE_KEPT_FOR_READERS)
+            for path in taken:
+                travelling.add(path)
+            try:
+                problem = await run_detached_bounded(
+                    self._finish_problem, source_path, output_path, meta,
+                    record["source_path"], remaining, owner_id,
+                    list(self.jobs.values()),  # a snapshot, taken on the loop
+                    timeout=KEPT_DELETE_PROBE_SECONDS,
+                )
+            except DeadlineExpired:
+                return KeptDeleteRetry(KEPT_KEPT, KEPT_DELETE_UNANSWERED)
+            if problem:
+                return KeptDeleteRetry(KEPT_STALE, problem, (), tuple(remaining))
+            try:
+                await run_detached_mutation(
+                    _remove_in_order, remaining, removed,
+                    timeout=KEPT_DELETE_PROBE_SECONDS,
+                    hand_off=lambda: self._hand_off_locks(owner_id, travelling),
+                )
+            except MutationInFlight as exc:
+                return KeptDeleteRetry(
+                    KEPT_UNKNOWN, str(exc), tuple(removed), tuple(planned),
+                )
+            except (MutationNotStarted, OSError) as exc:
+                return KeptDeleteRetry(KEPT_KEPT, str(exc), tuple(removed))
+            await self._clear_source_records(source_path, KEPT_DELETE_PROBE_SECONDS)
+            return KeptDeleteRetry(KEPT_DELETED, None, tuple(removed))
+        finally:
+            await self._let_go_in_background(travelling.take())
 
     async def _delete_check(
         self, job, tool, source_path: str, output_path: str, cancel_event,

@@ -1354,3 +1354,126 @@ def test_an_untouched_companion_output_is_deleted_with_its_source(
     assert code == 0, lines
     assert not kept["iso"].exists()
     assert kept["output"].with_suffix(".bin").exists()
+
+
+# --------------------------------------------------------------------------- #
+# A started delete is one unit: it finishes or is reported (Codex 4580176201)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture(name="two_file_source")
+def _two_file_source(monkeypatch):
+    """The dolphin Source is two files, like a split dump: ``Game.iso`` and
+    ``Game.iso.part2`` beside it (the registry's ``source_companions``)."""
+    tool = registry.get("dolphin")
+
+    def companions(path):
+        part = path + ".part2"
+        return [part] if os.path.exists(part) else []
+
+    monkeypatch.setitem(vars(tool), "source_companions", companions)
+
+
+def _part2(env):
+    part = env["shelf"].root / "gc" / "Game.iso.part2"
+    part.write_bytes(b"the second part")
+    return part
+
+
+def test_an_unlink_set_that_outlives_the_deadline_is_finished(
+    env, dolphin, two_file_source, capsys, monkeypatch,
+):
+    """Codex's repro: the first file's unlink outlives the retry's wait. The
+    whole remaining set goes to the worker, which removes every planned file;
+    the next sweep finds the delete finished and clears the entry."""
+    from services import job_manager as job_manager_module
+
+    part = _part2(env)
+    kept = _keep(env, capsys, monkeypatch)
+    with monkeypatch.context() as patch:
+        patch.setattr(job_manager_module, "KEPT_DELETE_PROBE_SECONDS", 0.3)
+        _slow_unlink(patch, part)
+        _cli(capsys, "run-rules", "--json")
+        pending = _rule_state(env)["gc"]["kept_sources"]["Game.iso"]
+        assert pending["state"] == "deleting"
+        assert _wait_for(lambda: not part.exists() and not kept["iso"].exists())
+        assert _wait_for(lambda: not _source_locked(kept["iso"]))
+
+    code, lines, _err = _cli(capsys, "run-rules", "--json")
+
+    assert code == 0, lines
+    assert not part.exists() and not kept["iso"].exists()
+    assert not _rule_state(env)["gc"].get("kept_sources")
+
+
+def test_a_part_deleted_source_whose_output_changed_is_kept_and_reported(
+    env, dolphin, two_file_source, capsys, monkeypatch,
+):
+    """The worker stops part way (the slow unlink then fails), and the output
+    changes before the next sweep: the files left are kept, the entry dropped,
+    and a Finding says the Source is part deleted."""
+    from services import findings
+    from services import job_manager as job_manager_module
+
+    part = _part2(env)
+    kept = _keep(env, capsys, monkeypatch)
+    with monkeypatch.context() as patch:
+        patch.setattr(job_manager_module, "KEPT_DELETE_PROBE_SECONDS", 0.3)
+        _slow_unlink(patch, part, then_fail=True)
+        _cli(capsys, "run-rules", "--json")
+        assert _wait_for(lambda: not _source_locked(kept["iso"]))
+    kept["output"].write_bytes(b"something else entirely")
+
+    code, lines, _err = _cli(capsys, "run-rules", "--json")
+
+    assert code == 0, lines
+    assert part.exists() and kept["iso"].exists()
+    assert not _rule_state(env)["gc"].get("kept_sources")
+    reported = [f for f in findings.list_findings() if f["kind"] == findings.SOURCE_KEPT]
+    assert len(reported) == 1
+    assert "part" in reported[0]["reason"]
+
+
+def test_a_job_cancelled_during_its_unlinks_still_removes_every_planned_file(
+    env, dolphin, two_file_source, monkeypatch,
+):
+    import threading
+    import time
+
+    import cli
+    from models import ConversionMode, DuplicateAction, JobCreateRequest
+    from routes import convert as convert_routes
+
+    cli._open_db(False)
+    iso = _iso(env)
+    part = _part2(env)
+    began = threading.Event()
+    real_remove = os.remove
+
+    def slow_remove(path, *args, **kwargs):
+        if os.path.realpath(str(path)) == os.path.realpath(str(part)):
+            began.set()
+            time.sleep(1.0)
+        return real_remove(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "remove", slow_remove)
+
+    async def run():
+        job = await convert_routes.create_job(JobCreateRequest(
+            file_path=str(iso), mode=ConversionMode.DOLPHIN_RVZ,
+            duplicate_action=DuplicateAction.SKIP, delete_on_verify=True,
+            container_only=True,
+        ))
+        task = asyncio.create_task(convert_routes.job_manager._process_job(job.id))
+        deadline = time.monotonic() + 20
+        while not began.is_set():
+            assert not task.done(), (job.status, job.error_message)
+            assert time.monotonic() < deadline
+            await asyncio.sleep(0.02)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run())
+
+    assert _wait_for(lambda: not part.exists() and not iso.exists())

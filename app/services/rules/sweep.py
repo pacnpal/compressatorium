@@ -998,6 +998,77 @@ async def _current_plan(
     )
 
 
+KEPT_DELETING = "deleting"  # a pending delete's state once its unlinks began
+
+
+async def _report_kept_source(
+    library: Library, image_key: str, pending: dict, reason: str, path: str,
+) -> None:
+    """File the ``source_kept`` Finding for a pending delete given up on,
+    bound to the Library's generation (codex 4580078026)."""
+    generation = _generations.get(library.id, 0)
+    await _probe(
+        functools.partial(
+            findings.observe,
+            current=lambda: _generations.get(library.id, 0) == generation,
+        ),
+        library.id, findings.Observed(
+            kind=findings.SOURCE_KEPT, image_key=str(image_key), path=path,
+            reason=reason,
+            cause={"source": pending.get("source"), "output": pending.get("output")},
+        ),
+        default=None,
+    )
+
+
+async def _finish_deleting(
+    library: Library, image_key: str, pending: dict, rule: dict | None,
+) -> dict | bool | None:
+    """Finish a pending delete whose unlinks began (``state: deleting``).
+
+    None when the plan is done (the entry goes), False when it is given up
+    on (reported, and the entry goes), else the entry to keep.
+    """
+    planned = [str(path) for path in pending.get("planned") or []]
+    try:
+        outcome = await job_manager.finish_kept_delete(
+            source_path=str(pending.get("source") or ""),
+            output_path=str(pending.get("output") or ""),
+            planned=planned,
+            required_check=effective_check_level(rule) if rule else None,
+        )
+    except Exception as exc:
+        logger.warning(
+            "rules: finishing the delete of %s failed", pending.get("source"),
+            exc_info=True,
+        )
+        outcome = KeptDeleteRetry(KEPT_KEPT, str(exc) or type(exc).__name__)
+    if outcome.status == KEPT_DELETED:
+        return None
+    if outcome.status == KEPT_UNKNOWN:
+        return {**pending, "last_reason": outcome.reason}
+    left = list(outcome.planned) or planned
+    if outcome.status == KEPT_STALE:
+        # The output no longer stands: the files left stay, and say so.
+        await _report_kept_source(
+            library, image_key, pending,
+            f"Source part deleted and kept: {outcome.reason}; "
+            f"{len(left)} of its files remain",
+            left[0] if left else str(pending.get("source") or ""),
+        )
+        return False
+    attempts = int(pending.get("attempts") or 0) + 1
+    if attempts < KEPT_DELETE_MAX_ATTEMPTS:
+        return {**pending, "attempts": attempts, "last_reason": outcome.reason}
+    await _report_kept_source(
+        library, image_key, pending,
+        f"Source part deleted and kept: still in use after {attempts} tries to "
+        f"finish deleting it ({outcome.reason})",
+        left[0] if left else str(pending.get("source") or ""),
+    )
+    return False
+
+
 def _rule_paused(rule: dict, wanted: set[str] | None) -> bool:
     """The `enabled` gate (see `_sweep_locked`): an operator's pause holds
     unless the Platform is named, and a validation pause holds always."""
@@ -1058,6 +1129,20 @@ async def _retry_kept_deletes(
             if stopping() or budget <= 0:
                 break
             pending = kept[image_key]
+            if isinstance(pending, dict) and pending.get("state") == KEPT_DELETING:
+                # A delete already under way: finish it, never plan it again.
+                budget -= 1
+                remaining_entry = await _finish_deleting(library, image_key, pending, rule)
+                if remaining_entry is None:
+                    remaining.pop(image_key)
+                    result["kept_sources_deleted"] = (
+                        result.get("kept_sources_deleted", 0) + 1
+                    )
+                elif remaining_entry is False:
+                    remaining.pop(image_key)
+                else:
+                    remaining[image_key] = remaining_entry
+                continue
             if (
                 not rule or not rule.get("delete_on_verify")
                 or not isinstance(pending, dict)
@@ -1113,9 +1198,13 @@ async def _retry_kept_deletes(
                 result["kept_sources_deleted"] = result.get("kept_sources_deleted", 0) + 1
                 continue
             if outcome.status == KEPT_UNKNOWN:
-                # An unlink outlived the wait: the Source may be gone or not.
-                # Not an attempt; the next sweep's own checks settle it.
-                remaining[image_key] = {**pending, "last_reason": outcome.reason}
+                # The unlinks outlived the wait: the worker removes the rest of
+                # the plan. Not an attempt; the next sweep finishes it from the
+                # recorded plan, not a new one (codex 4580176201).
+                remaining[image_key] = {
+                    **pending, "state": KEPT_DELETING,
+                    "planned": list(outcome.planned), "last_reason": outcome.reason,
+                }
                 continue
             if outcome.status == KEPT_STALE:
                 logger.info(
@@ -1132,27 +1221,11 @@ async def _retry_kept_deletes(
                 continue
             remaining.pop(image_key)
             result["kept_sources_given_up"] = result.get("kept_sources_given_up", 0) + 1
-            generation = _generations.get(library.id, 0)
-            await _probe(
-                functools.partial(
-                    findings.observe,
-                    # Under the Findings write lock: a write that outlives this
-                    # wait writes nothing once the Library was forgotten or
-                    # its identity changed (codex 4580078026).
-                    current=lambda generation=generation: (
-                        _generations.get(library.id, 0) == generation
-                    ),
-                ),
-                library.id, findings.Observed(
-                    kind=findings.SOURCE_KEPT, image_key=str(image_key),
-                    path=str(pending.get("source") or ""),
-                    reason=(
-                        f"Source kept: still in use after {attempts} tries to delete it "
-                        f"({outcome.reason})"
-                    ),
-                    cause={"source": pending.get("source"), "output": pending.get("output")},
-                ),
-                default=None,
+            await _report_kept_source(
+                library, image_key, pending,
+                f"Source kept: still in use after {attempts} tries to delete it "
+                f"({outcome.reason})",
+                str(pending.get("source") or ""),
             )
         if remaining != kept:
             entry = dict(entry)
