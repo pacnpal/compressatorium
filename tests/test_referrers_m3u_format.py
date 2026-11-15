@@ -574,6 +574,58 @@ async def test_a_utf16_playlist_with_a_bom_is_rewritten_in_its_own_encoding(
 
 
 @pytest.mark.asyncio
+async def test_a_utf16_comment_doesnt_hide_an_appended_8_bit_entry(tmp_path):
+    """Codex's repro: the UTF-16 part only mentions the Source in a comment;
+    the appended 8-bit line is a real entry that a line reader follows. The
+    UTF-16 entries don't reach it, so the Source is kept."""
+    _disc(tmp_path, "Game.cue")
+    playlist = tmp_path / "Game.m3u"
+    data = "# Game.cue\n".encode("utf-16") + b"\nGame.cue\n"
+    playlist.write_bytes(data)
+
+    outcome = await _replace(tmp_path, "Game.cue", "Game.chd")
+
+    assert not outcome.ok
+    assert playlist.read_bytes() == data
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("codec", list(_UTF16_WITH_BOM))
+async def test_a_leading_feff_in_the_first_utf16_entry_is_part_of_its_name(tmp_path, codec):
+    """After the BOM, a first filename that itself starts with U+FEFF names a
+    different file. Converting Game.cue must leave that entry alone."""
+    _disc(tmp_path, "Game.cue")
+    _disc(tmp_path, "﻿Game.cue")
+    playlist = tmp_path / "Game.m3u"
+    data = _UTF16_WITH_BOM[codec] + "﻿Game.cue\r\n".encode(codec)
+    playlist.write_bytes(data)
+
+    outcome = await _replace(tmp_path, "Game.cue", "Game.chd")
+
+    assert outcome.ok, outcome.reason
+    assert outcome.updated == []
+    assert playlist.read_bytes() == data
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("codec", list(_UTF16_WITH_BOM))
+async def test_a_utf16_entry_after_a_comment_naming_it_is_rewritten(tmp_path, codec):
+    """A genuine UTF-16 reference is still rewritten, comment or not."""
+    _disc(tmp_path, "Game.cue")
+    playlist = tmp_path / "Game.m3u"
+
+    def render(entry: str) -> bytes:
+        return _UTF16_WITH_BOM[codec] + f"# Game.cue\r\n{entry}\r\n".encode(codec)
+
+    playlist.write_bytes(render("Game.cue"))
+
+    outcome = await _replace(tmp_path, "Game.cue", "Game.chd")
+
+    assert outcome.ok, outcome.reason
+    assert playlist.read_bytes() == render("Game.chd")
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("codec", list(_UTF16_WITH_BOM))
 async def test_a_utf16_playlist_with_a_bom_not_naming_the_source_is_untouched(
     tmp_path, codec,
