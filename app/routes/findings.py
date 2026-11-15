@@ -78,6 +78,14 @@ async def dismiss_finding(finding_id: int) -> dict:
     return {"dismissed": finding_id}
 
 
+@router.post("/findings/{finding_id}/undismiss")
+async def undismiss_finding(finding_id: int) -> dict:
+    """Show a dismissed Finding again."""
+    if not await run_in_threadpool(findings.undismiss, finding_id):
+        raise HTTPException(status_code=404, detail="Finding not found")
+    return {"undismissed": finding_id}
+
+
 @router.post("/findings/check")
 async def check_findings() -> dict:
     """Walk every folder Library now, so its Findings are current."""

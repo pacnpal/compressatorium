@@ -47,6 +47,13 @@ class FindingsStore {
     this.dismissed += 1;
   }
 
+  /** Show a dismissed Finding again. */
+  async undismiss(id) {
+    await api.undismissFinding(id);
+    this.list = this.list.map((f) => (f.id === id ? { ...f, dismissed: false } : f));
+    this.dismissed = Math.max(0, this.dismissed - 1);
+  }
+
   /** Walk every folder Library now, then list what it found. */
   async check() {
     this.checking = true;

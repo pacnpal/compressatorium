@@ -347,6 +347,32 @@ def test_dismissing_an_unknown_finding_says_so(db: Path) -> None:
     assert findings.dismiss(12345) is False
 
 
+def test_a_dismissed_finding_can_be_shown_again(db: Path) -> None:
+    from services import findings
+
+    findings.reconcile("folder:1", [_conflict("ps2/a.iso")])
+    finding_id = _open()[0]["id"]
+    findings.dismiss(finding_id)
+
+    assert findings.undismiss(finding_id) is True
+    findings.reconcile("folder:1", [_conflict("ps2/a.iso")])
+
+    assert [(r["id"], r["dismissed"]) for r in _open()] == [(finding_id, False)]
+    assert findings.undismiss(12345) is False
+
+
+def test_a_cause_that_changes_back_stays_shown(db: Path) -> None:
+    """Dismissed under A, shown under B, back to A: still shown (its cause changed twice)."""
+    from services import findings
+
+    findings.reconcile("folder:1", [_conflict("ps2/a.iso", header="ngc")])
+    findings.dismiss(_open()[0]["id"])
+    findings.reconcile("folder:1", [_conflict("ps2/a.iso", header="wii")])
+    findings.reconcile("folder:1", [_conflict("ps2/a.iso", header="ngc")])
+
+    assert [r["dismissed"] for r in _open(include_dismissed=True)] == [False]
+
+
 def test_forgetting_a_library_drops_its_findings(db: Path) -> None:
     from services import findings
 
@@ -543,6 +569,26 @@ async def test_dismissing_through_the_route_hides_the_finding(tree: Path) -> Non
     assert listed["dismissed"] == 1
     with pytest.raises(HTTPException) as err:
         await routes.dismiss_finding(99999)
+    assert err.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_showing_a_dismissed_finding_again_through_the_route(tree: Path) -> None:
+    from fastapi import HTTPException
+    from routes import findings as routes
+
+    await _register(tree)
+    await routes.check_findings()
+    first = (await routes.list_findings())["findings"][0]
+    await routes.dismiss_finding(first["id"])
+
+    await routes.undismiss_finding(first["id"])
+
+    listed = await routes.list_findings()
+    assert first["id"] in [r["id"] for r in listed["findings"]]
+    assert listed["dismissed"] == 0
+    with pytest.raises(HTTPException) as err:
+        await routes.undismiss_finding(99999)
     assert err.value.status_code == 404
 
 

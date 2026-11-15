@@ -20,6 +20,7 @@
   import FolderOpen from '@lucide/svelte/icons/folder-open';
   import FolderPen from '@lucide/svelte/icons/folder-pen';
   import EyeOff from '@lucide/svelte/icons/eye-off';
+  import Eye from '@lucide/svelte/icons/eye';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
 
   const KIND_LABEL = { platform_conflict: 'Platform conflict', unsorted: 'Unsorted' };
@@ -47,6 +48,14 @@
       }
     } catch (e) {
       toast.error(e?.message ?? 'Could not check the Libraries');
+    }
+  }
+
+  async function undismiss(row) {
+    try {
+      await findings.undismiss(row.id);
+    } catch (e) {
+      toast.error(e?.message ?? 'Could not show the Finding again');
     }
   }
 
@@ -124,7 +133,11 @@
             <Button variant="ghost" size="sm" icon={mapIcon} onclick={() => findings.openMapping(row.folder)}>
               Set Platform
             </Button>
-            {#if !row.dismissed}
+            {#if row.dismissed}
+              <Button variant="ghost" size="sm" icon={showIcon} onclick={() => undismiss(row)}>
+                Show again
+              </Button>
+            {:else}
               <Button variant="ghost" size="sm" icon={dismissIcon} onclick={() => dismiss(row)}>
                 Dismiss
               </Button>
@@ -140,6 +153,7 @@
 {#snippet openIcon()}<FolderOpen size={14} />{/snippet}
 {#snippet mapIcon()}<FolderPen size={14} />{/snippet}
 {#snippet dismissIcon()}<EyeOff size={14} />{/snippet}
+{#snippet showIcon()}<Eye size={14} />{/snippet}
 
 <style>
   .findings-view {

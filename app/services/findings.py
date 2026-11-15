@@ -91,6 +91,9 @@ def reconcile(
                 counts["changed"] += 1
                 row.fingerprint = fingerprint
                 row.cause = dict(item.cause)
+                # The cause changed, so the person decides again: a cause
+                # that later changes back to the dismissed one stays shown.
+                row.dismissed_fingerprint = None
             row.reason = item.reason
             row.path = item.path
             row.last_seen = stamp
@@ -150,6 +153,17 @@ def dismiss(finding_id: int) -> bool:
         if row is None:
             return False
         row.dismissed_fingerprint = row.fingerprint
+        session.commit()
+    return True
+
+
+def undismiss(finding_id: int) -> bool:
+    """Show a dismissed Finding again. False when there is no such Finding."""
+    with _session() as session:
+        row = session.get(_db.FindingRecord, finding_id)
+        if row is None:
+            return False
+        row.dismissed_fingerprint = None
         session.commit()
     return True
 

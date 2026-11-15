@@ -50,6 +50,7 @@ const __call = (name) => async (...args) => {
 const api = {
   listFindings: __call('listFindings'),
   dismissFinding: __call('dismissFinding'),
+  undismissFinding: __call('undismissFinding'),
   checkFindings: __call('checkFindings'),
   listPlatforms: __call('listPlatforms'),
   setPlatformMapping: __call('setPlatformMapping'),
@@ -105,6 +106,24 @@ process.stdout.write(JSON.stringify({{
     assert data["ids"] == [2], data
     assert data["dismissed"] == 1, data
     assert data["call"] == ["dismissFinding", 1], data
+
+
+def test_showing_a_dismissed_finding_again(tmp_path):
+    rows = _ROWS.replace("dismissed: false }", "dismissed: true }", 1)
+    data = _run(tmp_path, f"""
+__answers.listFindings = {{ findings: {rows}, dismissed: 1 }};
+__answers.undismissFinding = {{ undismissed: 1 }};
+findings.showDismissed = true;
+await findings.load();
+await findings.undismiss(1);
+process.stdout.write(JSON.stringify({{
+  rows: findings.list.map((f) => [f.id, f.dismissed]), dismissed: findings.dismissed,
+  call: __log.find((c) => c[0] === 'undismissFinding'),
+}}));
+""")
+    assert data["rows"] == [[1, False], [2, False]], data
+    assert data["dismissed"] == 0, data
+    assert data["call"] == ["undismissFinding", 1], data
 
 
 def test_showing_dismissed_findings_asks_for_them(tmp_path):
@@ -179,6 +198,9 @@ def test_each_finding_links_to_the_actions_that_fix_it():
     assert "fileBrowser.openFolder(" in view
     assert "findings.openMapping(" in view
     assert "findings.dismiss(" in view
+    # A dismissed row (shown with "Show dismissed") can be shown again.
+    assert "findings.undismiss(" in view
+    assert "Show again" in view
     for column in ("Library", "Image", "Kind", "First seen", "Last seen"):
         assert column in view, column
 

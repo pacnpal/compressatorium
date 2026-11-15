@@ -709,6 +709,12 @@ export const api = {
       'Failed to dismiss the Finding',
     ),
 
+  undismissFinding: (id) =>
+    jsonPost(
+      `${API_BASE}/findings/${encodeURIComponent(id)}/undismiss`, {}, {},
+      'Failed to show the Finding again',
+    ),
+
   checkFindings: () =>
     jsonPost(`${API_BASE}/findings/check`, {}, {}, 'Failed to check the Libraries'),
 
