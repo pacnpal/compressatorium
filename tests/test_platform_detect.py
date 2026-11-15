@@ -549,3 +549,46 @@ def test_a_gdi_lists_its_tracks_as_header_reads(tmp_path):
     reads = registry.get("chdman").header_reads(gdi)
 
     assert reads == [str(folder / "track01.bin"), str(folder / "track02.raw")]
+
+
+# --- Cache validity: refused tracks, folder resolution (CodeRabbit 4577311048,
+# 4577311046) --------------------------------------------------------------- #
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs os.mkfifo")
+def test_a_cue_whose_track_was_refused_is_detected_afresh_once_it_is_fixed(tmp_path):
+    from services.tools import registry
+
+    folder = tmp_path / "downloads"
+    folder.mkdir()
+    track = folder / "game.bin"
+    os.mkfifo(track)                                  # refused by resolve_track
+    cue = _write(folder / "game.cue", b'FILE "game.bin" BINARY\n  TRACK 01 MODE1/2352\n')
+
+    assert registry.get("chdman").header_reads(cue) is None   # unknown, not []
+    assert detect_platform(cue).platform is None
+    assert cue not in platform_detect._cache
+
+    track.unlink()
+    _sector0(track, b"SEGA SEGASATURN ", raw=True)   # now a real Saturn track
+
+    assert detect_platform(cue).platform == "saturn"
+
+
+def test_retargeting_the_folder_symlink_is_seen_by_the_cache(tmp_path):
+    # /volume/current -> /volume/ps2, then -> /volume/gamecube, both holding a
+    # hard link to the same headerless image: size, mtime and inode all match.
+    ps2 = tmp_path / "ps2"
+    ngc = tmp_path / "gamecube"
+    image = _blank(ps2 / "game.iso")
+    ngc.mkdir()
+    os.link(image, ngc / "game.iso")
+    current = tmp_path / "current"
+    current.symlink_to(ps2, target_is_directory=True)
+    path = str(current / "game.iso")
+
+    assert detect_platform(path).platform == "ps2"
+
+    current.unlink()
+    current.symlink_to(ngc, target_is_directory=True)
+
+    assert detect_platform(path).platform == "ngc"
