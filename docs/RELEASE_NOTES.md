@@ -14,8 +14,8 @@
     `emulatorjs.disable_batch_bootup` at `false`. Booting real games in RomM
     is still to be confirmed.
   - Only `mount`, `imgmount` and `boot` lines change; line endings and encoding
-    are kept. A game whose config still points outside itself finishes with a
-    warning.
+    are kept. A game whose config still points outside itself, or mounts a
+    folder on a drive other than C:, finishes with a warning.
   - The output is written beside the source as `Game.dosz`; the source is only
     read, and delete-source is not offered. Every repack checks every CRC and
     that `dosbox.conf` is at the root before keeping its output, and Verify on

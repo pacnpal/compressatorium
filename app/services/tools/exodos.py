@@ -22,14 +22,13 @@ import asyncio
 from collections.abc import AsyncGenerator
 
 from fastapi.concurrency import run_in_threadpool
-from models import BasicFileInfo, OutputStatus
+from models import BasicFileInfo
 from services.exodos import (
     EXODOS,
     INPUT_EXTENSIONS,
     OUTPUT_EXTENSION,
     exodos_service,
 )
-from services.lock_manager import lock_manager
 from services.subprocess_runner import run_detached
 
 from .base import BaseTool
@@ -78,21 +77,9 @@ class ExodosTool(BaseTool):
     def converts_path(self, path: str) -> bool:
         return self._service.is_repackable(path)
 
-    def detect_output(
-        self, input_path: str, *, from_archive: bool = False,
-    ) -> OutputStatus | None:
-        if from_archive or not self._service.is_repackable(input_path):
-            return None
-        candidate = self._service.get_output_path(input_path)
-        file_exists, is_converting = lock_manager.check_file_status(candidate)
-        if not (file_exists or is_converting):
-            return None
-        return OutputStatus(
-            tool_id=self.id,
-            exists=file_exists,
-            ready=file_exists and not is_converting,
-            path=candidate,
-        )
+    # No detect_output override: a .zip is listed as an archive row, and the
+    # listing never asks a tool for an archive row's outputs, so an "output
+    # exists" badge here could not be shown. BaseTool's None stands.
 
     def output_path(
         self,

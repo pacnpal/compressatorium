@@ -63,19 +63,6 @@ def test_the_tool_is_ready_only_with_a_template_tree(tree, monkeypatch):
     assert asyncio.run(tool.is_ready()) is False
 
 
-def test_a_finished_product_is_badged_beside_its_source(tree):
-    tool = registry.get("exodos")
-    product = tree["root"] / "Abaron (1995).dosz"
-    product.write_bytes(b"PK")
-
-    status = tool.detect_output(tree["game"])
-
-    assert status is not None
-    assert status.tool_id == "exodos"
-    assert status.path == str(product)
-    assert status.exists is True
-
-
 def test_the_product_verifies_through_this_tool():
     assert registry.tool_for_verify("Abaron (1995).dosz").id == "exodos"
 

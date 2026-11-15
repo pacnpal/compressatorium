@@ -84,11 +84,20 @@ class ConfRewrite:
     # Lines (comments aside) that still point into the pack after the rewrite:
     # the game reaches outside its own folder and will probably not start.
     leftovers: list[str]
+    # Folder mounts on a drive other than C:. DOSBox Pure's MOUNT reads the
+    # host filesystem, not the loaded file, so these cannot work from inside
+    # it (C: is the file itself; IMGMOUNT and BOOT do read from it).
+    folder_mounts: list[str] = field(default_factory=list)
 
 
 # A line DOSBox runs as a mount: optional blanks, an optional ``@``, then the
 # command as the first word.
 _MOUNT_LINE = re.compile(rb"^[ \t]*(?:@[ \t]*)?(?:mount|imgmount|boot)(?:[ \t]|$)", re.IGNORECASE)
+# ``mount <drive> <path>``, the drive written with or without its colon. A
+# switch in place of the drive (``mount -u d``) does not match.
+_FOLDER_MOUNT = re.compile(
+    rb"^[ \t]*(?:@[ \t]*)?mount[ \t]+([a-z]):?[ \t]+[^-\s]", re.IGNORECASE,
+)
 _COMMENT_LINE = re.compile(rb"^[ \t]*(?:#|@?[ \t]*rem(?:[ \t]|$))", re.IGNORECASE)
 # What may follow a path that ends at the pack or game folder.
 _PATH_ENDS = (b"", b" ", b"\t", b'"')
@@ -145,14 +154,20 @@ def rewrite_conf(data: bytes, top: str, profile: CollectionProfile = EXODOS) -> 
     top_bytes = top.lower().encode("cp437", errors="replace")
     lines: list[bytes] = []
     leftovers: list[str] = []
+    folder_mounts: list[str] = []
     for line in data.splitlines(keepends=True):
         body, eol = _split_eol(line)
         if _MOUNT_LINE.match(body):
             body = _rewrite_line(body, profile.needle, top_bytes)
         if profile.needle in body.lower() and not _COMMENT_LINE.match(body):
             leftovers.append(body.strip().decode("cp437"))
+        drive = _FOLDER_MOUNT.match(body)
+        if drive and drive.group(1).lower() != b"c":
+            folder_mounts.append(body.strip().decode("cp437"))
         lines.append(body + eol)
-    return ConfRewrite(data=b"".join(lines), leftovers=leftovers)
+    return ConfRewrite(
+        data=b"".join(lines), leftovers=leftovers, folder_mounts=folder_mounts,
+    )
 
 
 class NotRepackable(ValueError):
@@ -240,6 +255,12 @@ class ExodosService:
                 segments = archive_service.member_segments(name)
             except ValueError as exc:
                 raise NotRepackable(f"{exc}: {info.filename!r}") from exc
+            # The shared rules check a stripped name; the repack slices the
+            # raw one. Refuse any name the two would read differently.
+            if "/".join(segments) != name:
+                raise NotRepackable(
+                    f"Member name has leading or trailing spaces: {info.filename!r}",
+                )
             if len(segments) == 1 and not info.is_dir():
                 raise NotRepackable(
                     "The zip does not hold a single game folder "
@@ -342,13 +363,21 @@ class ExodosService:
             }
             last = done
         task.result()
+        caveats = []
         if rewrite.leftovers:
+            caveats.append(
+                "the conf still points outside the game: "
+                + "; ".join(rewrite.leftovers),
+            )
+        if rewrite.folder_mounts:
+            caveats.append(
+                "these folder mounts read the host disk, not the file: "
+                + "; ".join(rewrite.folder_mounts),
+            )
+        if caveats:
             yield {
                 "progress": 100,
-                "message": (
-                    "Repacked, but the conf still points outside the game, so it "
-                    f"may not start: {'; '.join(rewrite.leftovers)}"
-                ),
+                "message": f"Repacked, but it may not start. {'. '.join(caveats)}",
                 "warning": True,
             }
         else:
@@ -456,14 +485,26 @@ class ExodosService:
         return self.get_output_path(input_path, output_dir, treat_as_stem=treat_as_stem)
 
 
-@functools.lru_cache(maxsize=4096)
 def _probe(
     profile: CollectionProfile, path: str, size: int, mtime_ns: int, root: str,
 ) -> bool:
+    """Whether the zip can be repacked. Only a yes is cached.
+
+    A no can turn into a yes without the zip changing (its template appears
+    in the tree mid-way through an eXoDOS update), so it is asked again.
+    """
     try:
-        ExodosService(profile)._inspect(path, root)
+        return _probe_yes(profile, path, size, mtime_ns, root)
     except NotRepackable:
         return False
+
+
+@functools.lru_cache(maxsize=4096)
+def _probe_yes(
+    profile: CollectionProfile, path: str, size: int, mtime_ns: int, root: str,
+) -> bool:
+    # lru_cache does not cache a raised exception, so only a yes is kept.
+    ExodosService(profile)._inspect(path, root)
     return True
 
 

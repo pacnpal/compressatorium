@@ -379,3 +379,51 @@ def test_repacking_twice_gives_the_same_bytes(tree, tmp_path):
     _convert(service, source, second)
 
     assert Path(first).read_bytes() == Path(second).read_bytes()
+
+
+# --- review round 1 --------------------------------------------------------
+
+
+def test_convert_warns_about_folder_mounts_on_other_drives(tree):
+    (tree["dos"] / "Abaron" / "dosbox.conf").write_bytes(
+        TEMPLATE + b"mount e .\\eXoDOS\\Abaron\\CD -t cdrom\r\n",
+    )
+    service = ExodosService()
+    source = _game_zip(tree)
+
+    updates = _convert(service, source, service.get_output_path(source))
+
+    assert updates[-1]["warning"] is True
+    assert "mount e .\\CD -t cdrom" in updates[-1]["message"]
+
+
+def test_a_template_added_later_is_seen_without_a_restart(tree):
+    service = ExodosService()
+    path = _game_zip(tree, ["Zork/ZORK.EXE"], name="Zork.zip")
+
+    assert service.is_repackable(path) is False
+    (tree["dos"] / "Zork").mkdir()
+    (tree["dos"] / "Zork" / "dosbox.conf").write_bytes(b"[autoexec]\r\n")
+
+    assert service.is_repackable(path) is True
+
+
+def test_a_member_name_padded_with_spaces_is_refused(tree):
+    path = _game_zip(tree, ["Abaron/A.EXE", " Abaron/B.EXE"])
+
+    with pytest.raises(NotRepackable, match="spaces"):
+        ExodosService().inspect(path)
+
+
+def test_inspect_applies_the_member_size_limit(tree, monkeypatch):
+    monkeypatch.setattr(exodos_module.settings, "archive_max_member_size", 5)
+
+    with pytest.raises(NotRepackable, match="max size"):
+        ExodosService().inspect(_game_zip(tree))
+
+
+def test_inspect_applies_the_total_size_limit(tree, monkeypatch):
+    monkeypatch.setattr(exodos_module.settings, "archive_max_total_size", 10)
+
+    with pytest.raises(NotRepackable, match="max total size"):
+        ExodosService().inspect(_game_zip(tree))

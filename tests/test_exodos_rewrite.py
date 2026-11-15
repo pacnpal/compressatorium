@@ -95,3 +95,23 @@ def test_bytes_outside_ascii_pass_through_untouched():
     conf = b"echo Caf\x82 \x9b\r\nmount c .\\eXoDOS\\Abaron\\D\x82J\r\n"
 
     assert _rw(conf).data == b"echo Caf\x82 \x9b\r\nmount c .\\D\x82J\r\n"
+
+
+def test_folder_mounts_on_other_drives_are_reported():
+    """DOSBox Pure's MOUNT reads the host filesystem, so inside the file only
+    C: (the file itself), IMGMOUNT and BOOT can work."""
+    conf = (
+        b"mount c .\\eXoDOS\\Abaron\r\n"
+        b"mount d .\\eXoDOS\\Abaron\\CD -t cdrom\r\n"
+        b"@MOUNT A: .\\eXoDOS\\Abaron\\FLOPPY -t floppy\r\n"
+        b"mount -u d\r\n"
+        b"imgmount d .\\eXoDOS\\Abaron\\CD\\A.CUE -t cdrom\r\n"
+    )
+
+    result = _rw(conf)
+
+    assert result.folder_mounts == [
+        "mount d .\\CD -t cdrom",
+        "@MOUNT A: .\\FLOPPY -t floppy",
+    ]
+    assert result.leftovers == []
