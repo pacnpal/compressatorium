@@ -49,7 +49,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
 from services.lock_manager import LockWaitTimeout, lock_manager
-from utils.path_utils import FileIdentity, file_identity, same_identity, volume_root_for
+from utils.path_utils import FileIdentity, file_identity, lock_boundary_root, same_identity
 
 from .base import (
     Referrer,
@@ -112,7 +112,8 @@ def _playlists(directory: str) -> list[str]:
 def _search_dirs(path: str) -> list[str]:
     """*path*'s resolved folder and each folder above it up to its Volume root."""
     start = os.path.dirname(os.path.realpath(path))
-    root = volume_root_for(start)
+    boundary = lock_boundary_root(start)
+    root = str(boundary) if boundary is not None else None
     dirs = [start]
     if root is None or not (start == root or start.startswith(root.rstrip(os.sep) + os.sep)):
         return dirs

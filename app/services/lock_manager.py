@@ -284,9 +284,9 @@ class LockManager:
     def folder_locked_above(self, path: str) -> str | None:
         """A folder above ``path``, up to its Volume root, that some process
         holds a lock on (``locked_folder_above`` without the path itself)."""
-        from utils.path_utils import containing_volume_root
+        from utils.path_utils import lock_boundary_root
 
-        root = containing_volume_root(path)
+        root = lock_boundary_root(path)
         return self.locked_folder_above(
             path, str(root) if root is not None else None, include_self=False,
         )
@@ -549,14 +549,14 @@ class LockManager:
         resolved again, so the non-following destination of a symlinked
         output is checked where the converter will write.
         """
-        from utils.path_utils import containing_volume_root
+        from utils.path_utils import lock_boundary_root
 
         for key in keys:
             with self._lock_mutex:
                 for locked_dir in self._dir_locks:
                     if self._path_within(key, locked_dir):
                         return locked_dir
-            root = containing_volume_root(key)
+            root = lock_boundary_root(key)
             above = self.locked_folder_above(
                 os.path.dirname(key), str(root) if root is not None else None,
             )
