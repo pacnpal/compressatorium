@@ -10,6 +10,7 @@
   import RommView from '$lib/components/views/RommView.svelte';
   import RulesView from '$lib/components/views/RulesView.svelte';
   import DATView from '$lib/components/views/DATView.svelte';
+  import SettingsView from '$lib/components/views/SettingsView.svelte';
   import LedgerView from '$lib/components/views/LedgerView.svelte';
   import HelpView from '$lib/components/views/HelpView.svelte';
   import EmptyState from '$lib/components/ui/EmptyState.svelte';
@@ -26,6 +27,7 @@
   import { STORAGE_KEYS } from '$lib/util/localStorage.js';
   import BulkVerifyModal from '$lib/components/modals/BulkVerifyModal.svelte';
   import BulkDeleteModal from '$lib/components/modals/BulkDeleteModal.svelte';
+  import PlaylistModal from '$lib/components/modals/PlaylistModal.svelte';
   import DeleteModal from '$lib/components/modals/DeleteModal.svelte';
   import RenameModal from '$lib/components/modals/RenameModal.svelte';
   import FileInfoModal from '$lib/components/modals/FileInfoModal.svelte';
@@ -166,6 +168,7 @@
 <!-- Modal portal, each component self-renders based on its ui store target. -->
 <BulkVerifyModal />
 <BulkDeleteModal />
+<PlaylistModal />
 <DeleteModal />
 <RenameModal />
 <FileInfoModal />
@@ -186,6 +189,7 @@
         {:else if ui.activeView === 'romm'}<RommView />
         {:else if ui.activeView === 'rules'}<RulesView />
         {:else if ui.activeView === 'dat'}<DATView />
+        {:else if ui.activeView === 'settings'}<SettingsView />
         {:else if ui.activeView === 'ledger'}<LedgerView />
         {:else if ui.activeView === 'help'}<HelpView />
         {/if}

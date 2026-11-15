@@ -4,6 +4,20 @@
 
 ### Added
 
+- **Notifications: webhook and Apprise** (#293). Add a webhook URL or an Apprise
+  URL under the new **Settings** page and get one message when a sweep finishes
+  (counts, space saved, and the failures inside it) and one when a job you
+  started by hand fails. **Test** sends a sample and shows the error if it fails.
+  Nothing is sent until a destination is added. Saved URLs are never sent back
+  to the browser, and a destination that errors or hangs never fails or delays a
+  job. Apprise is bundled in the Docker image and imported only when used;
+  webhooks need no extra package.
+  Webhook delivery does not follow redirects (Test reports "HTTP 30x") and does not
+  use `HTTP(S)_PROXY`.
+  A native **Discord webhook** destination (any https URL that speaks Discord's
+  webhook format, no Apprise needed) posts one embed per message with mentions
+  disabled; the generic webhook's JSON is unchanged.
+
 - **`compressatorium convert` and `compressatorium verify`** (#306). A command
   line for shells and cron that covers every tool, recurses into subfolders and
   archives, and uses the web UI's planner, delete checks and Ledger.
@@ -31,6 +45,13 @@
   without queuing anything while it is held. A server started during a
   `run-rules` pass, or beside another server on the same `/config`, waits for
   the lock (logging who holds it) and then starts.
+- **Create an `.m3u` from selected discs** (#299). Tick two or more disc
+  images of one game in a folder and press **Create .m3u** in the selection bar.
+  A preview shows the file name (the title without `(Disc N)` / `CD N`,
+  editable) and the entries in disc order before anything is written. An
+  existing playlist is never overwritten; a taken name gets the next free one,
+  such as `Game (2).m3u`. New endpoints: `POST /api/files/playlist/preview` and
+  `POST /api/files/playlist`.
 - **`.m3u` playlists follow a converted disc** (#295). With delete-on-verify,
   an `.m3u` that names the Source, in its folder or any folder above it up to
   the volume root, is rewritten to the output before the Source is deleted.

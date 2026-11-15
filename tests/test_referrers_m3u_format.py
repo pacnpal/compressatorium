@@ -122,6 +122,208 @@ async def test_playlist_in_an_ancestor_folder_is_rewritten(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_an_unavailable_volume_boundary_keeps_the_source(tmp_path, monkeypatch):
+    """If the fresh Volume-root probe can't answer (it went over its bound),
+    the folders above the disc can't be searched, so the Source is kept."""
+    from utils import path_utils
+
+    (tmp_path / "discs").mkdir()
+    _disc(tmp_path / "discs", "Game.cue")
+    _disc(tmp_path / "discs", "Game.chd")
+    playlist = tmp_path / "Game.m3u"
+    playlist.write_bytes(b"discs/Game.cue\n")
+    monkeypatch.setattr(path_utils, "_fresh_root", lambda _configured: None)
+
+    outcome = await _replace(tmp_path / "discs", "Game.cue", "Game.chd")
+
+    assert not outcome.ok
+    assert playlist.read_bytes() == b"discs/Game.cue\n"
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_playlist_containment_keeps_the_source(tmp_path, monkeypatch):
+    """The fresh root probe answers for the walk's boundary, then fails during
+    the playlist's containment check. "Couldn't tell" is not "outside": the
+    playlist isn't skipped, the Source is kept."""
+    from utils import path_utils
+
+    _disc(tmp_path, "Game.cue")
+    _disc(tmp_path, "Game.chd")
+    playlist = tmp_path / "Game.m3u"
+    playlist.write_bytes(b"Game.cue\n")
+    real_fresh_root, real_search_dirs = path_utils._fresh_root, m3u_module._search_dirs
+    probe_down = []
+
+    def search_dirs_then_probe_fails(path):
+        # Each walk sees a healthy probe; whatever runs after it (the
+        # playlist's containment check) sees the probe fail.
+        probe_down.clear()
+        dirs = real_search_dirs(path)
+        probe_down.append(True)
+        return dirs
+
+    def fresh_root(configured):
+        return None if probe_down else real_fresh_root(configured)
+
+    monkeypatch.setattr(m3u_module, "_search_dirs", search_dirs_then_probe_fails)
+    monkeypatch.setattr(path_utils, "_fresh_root", fresh_root)
+
+    outcome = await _replace(tmp_path, "Game.cue", "Game.chd")
+
+    assert probe_down
+    assert not outcome.ok
+    assert playlist.read_bytes() == b"Game.cue\n"
+
+
+def _eio_resolving(monkeypatch, name: str) -> None:
+    """``Path.resolve`` raises EIO for any path ending in *name* (a flaky NAS)."""
+    import errno
+    from pathlib import Path as _Path
+
+    real_resolve = _Path.resolve
+
+    def resolve(self, *args, **kwargs):
+        if str(self).endswith(name):
+            raise OSError(errno.EIO, "Input/output error", str(self))
+        return real_resolve(self, *args, **kwargs)
+
+    monkeypatch.setattr(_Path, "resolve", resolve)
+
+
+@pytest.mark.asyncio
+async def test_an_eio_resolving_the_playlist_keeps_the_source(tmp_path, monkeypatch):
+    """Codex's repro: resolving Game.m3u itself fails with EIO. That is
+    "couldn't tell", not "outside", so the playlist isn't skipped."""
+    _disc(tmp_path, "Game.cue")
+    _disc(tmp_path, "Game.chd")
+    playlist = tmp_path / "Game.m3u"
+    playlist.write_bytes(b"Game.cue\n")
+    _eio_resolving(monkeypatch, "Game.m3u")
+
+    outcome = await _replace(tmp_path, "Game.cue", "Game.chd")
+
+    assert not outcome.ok
+    assert playlist.read_bytes() == b"Game.cue\n"
+
+
+def test_volume_containment_resolve_error_is_unknown(tmp_path, monkeypatch):
+    from utils import path_utils
+
+    target = _disc(tmp_path, "Game.m3u")
+    _eio_resolving(monkeypatch, "Game.m3u")
+
+    assert path_utils.volume_containment(str(target), treat_archives=False) is None
+    assert path_utils.is_within_configured_volumes(str(target), treat_archives=False) is False
+
+
+def test_volume_containment_missing_alias_spelling_is_unknown(tmp_path, monkeypatch):
+    """A Volume configured through a symlink whose root couldn't be resolved
+    for the cache: a path spelled through the target can't be matched, which
+    is "couldn't tell", not "outside"."""
+    from utils import path_utils
+
+    data = tmp_path / "data"
+    data.mkdir()
+    (tmp_path / "all").symlink_to(data)
+    target = _disc(data, "Game.m3u")
+    monkeypatch.setattr(settings, "chd_volumes", str(tmp_path / "all"))
+
+    def probe_fails(configured, box):
+        box["failed"] = True
+
+    monkeypatch.setattr(path_utils, "_resolve_root_into", probe_fails)
+    path_utils.refresh_volume_roots()
+
+    assert path_utils.volume_containment(str(target), treat_archives=False) is None
+
+
+def test_volume_containment_verdicts_are_false(tmp_path):
+    """Positive evidence of "outside" stays False."""
+    from utils import path_utils
+
+    inside = _disc(tmp_path, "Game.m3u")
+    (tmp_path / "loop").symlink_to(tmp_path / "loop")
+
+    assert path_utils.volume_containment(str(inside), treat_archives=False) is True
+    assert path_utils.volume_containment(str(tmp_path / ".." / "x.m3u")) is False
+    assert path_utils.volume_containment("/definitely/not/a/volume/x.m3u") is False
+    assert path_utils.volume_containment(str(tmp_path / "loop"), treat_archives=False) is False
+
+
+@pytest.mark.parametrize(("probe", "expected"), [("ok", True), ("down", None)])
+def test_volume_containment_tells_unknown_from_outside(tmp_path, monkeypatch, probe, expected):
+    from utils import path_utils
+
+    inside = _disc(tmp_path, "Game.m3u")
+    if probe == "down":
+        monkeypatch.setattr(path_utils, "_fresh_root", lambda _configured: None)
+
+    assert path_utils.volume_containment(str(inside), treat_archives=False) is expected
+    assert path_utils.volume_containment("/definitely/not/a/volume/x.m3u") is False
+    assert path_utils.is_within_configured_volumes(str(inside), treat_archives=False) is (
+        expected is True
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_playlist_outside_the_volumes_now_is_left_alone(tmp_path, monkeypatch):
+    """Codex's repro: Volumes /all -> data and /inner -> data/roms, the root
+    cache populated, then /all repointed elsewhere. data/All.m3u is no longer
+    inside any Volume, so it is neither read for planning nor written."""
+    from utils import path_utils
+
+    data = tmp_path / "data"
+    (data / "roms").mkdir(parents=True)
+    (tmp_path / "elsewhere").mkdir()
+    (tmp_path / "all").symlink_to(data)
+    (tmp_path / "inner").symlink_to(data / "roms")
+    _disc(data / "roms", "Game.cue")
+    _disc(data / "roms", "Game.chd")
+    outer = data / "All.m3u"
+    outer.write_bytes(b"roms/Game.cue\n")
+    monkeypatch.setattr(settings, "chd_volumes", f"{tmp_path / 'all'},{tmp_path / 'inner'}")
+    path_utils.refresh_volume_roots()
+    (tmp_path / "all").unlink()
+    (tmp_path / "all").symlink_to(tmp_path / "elsewhere")
+    assert not path_utils.is_within_configured_volumes(str(outer), treat_archives=False)
+
+    outcome = await referrers.update_before_source_removal(
+        str(data / "roms" / "Game.cue"),
+        {str(data / "roms" / "Game.cue"): str(data / "roms" / "Game.chd")},
+    )
+
+    assert outer.read_bytes() == b"roms/Game.cue\n"
+    assert all(r["target"] != str(outer) for r in outcome.updated)
+
+
+def test_a_playlist_that_leaves_the_volumes_after_planning_is_not_written(
+    tmp_path, monkeypatch,
+):
+    """The Volume check runs again right before the write."""
+    from utils import path_utils
+
+    data = tmp_path / "data"
+    data.mkdir()
+    (tmp_path / "all").symlink_to(data)
+    (tmp_path / "elsewhere").mkdir()
+    _disc(data, "Game.cue")
+    _disc(data, "Game.chd")
+    playlist = data / "Game.m3u"
+    playlist.write_bytes(b"Game.cue\n")
+    monkeypatch.setattr(settings, "chd_volumes", str(tmp_path / "all"))
+    path_utils.refresh_volume_roots()
+    m3u = M3uReferrer()
+    [change] = m3u.plan({str(data / "Game.cue"): str(data / "Game.chd")})
+
+    (tmp_path / "all").unlink()
+    (tmp_path / "all").symlink_to(tmp_path / "elsewhere")
+
+    with pytest.raises(referrers.ReferrerError, match="Volumes"):
+        m3u.apply(change)
+    assert playlist.read_bytes() == b"Game.cue\n"
+
+
+@pytest.mark.asyncio
 async def test_playlists_above_the_volume_root_are_not_read(tmp_path, monkeypatch):
     volume = tmp_path / "vol"
     volume.mkdir()

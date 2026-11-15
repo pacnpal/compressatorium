@@ -81,6 +81,8 @@ class DolphinTool(BaseTool):
     modes = _build_modes()
     output_extensions = frozenset({".rvz", ".wia", ".gcz", ".iso"})
     verify_extensions = frozenset(DOLPHIN_CONVERTIBLE_EXTENSIONS)
+    # Each of these is one GameCube / Wii disc, so an .m3u can list them.
+    disc_extensions = frozenset({".iso", ".gcz", ".wia", ".rvz", ".wbfs"})
     # The compressed/container formats (.rvz/.wia/.gcz/.wbfs) are recompressed
     # by dolphin-tool, so their on-disk bytes never appear in a DAT — only the
     # reconstructed disc SHA1 does. A disc-hash miss is therefore definitive;

@@ -45,6 +45,14 @@ for disc in 1 2; do
 done
 printf 'Final Quest (Disc 1).cue\nFinal Quest (Disc 2).cue\n' > "$root/PlayStation/Final Quest.m3u"
 
+# A three-disc game with no playlist yet, for "Create .m3u from selected discs".
+for disc in 3 1 2; do
+  name="Star Saga (Disc $disc)"
+  printf 'FILE "%s.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n' "$name" \
+    > "$root/PlayStation/$name.cue"
+  placeholder "$root/PlayStation/$name.bin" 512
+done
+
 # Dolphin: a GameCube/Wii disc image plus an already-compressed RVZ.
 placeholder "$root/GameCube/mario-kart.iso" 4096
 placeholder "$root/GameCube/zelda-wind-waker.rvz" 1024
