@@ -203,3 +203,79 @@ async def test_the_web_batch_refuses_an_archive_with_an_unsafe_member(tmp_path, 
     assert exc.value.status_code == 400
     assert escape in exc.value.detail
     assert not (tmp_path.parent / escape[3:]).exists()
+
+
+# --------------------------------------------------------------------------- #
+# Review r10: the layout lives under the app's temp dir; duplicate and
+# non-canonical names; an ambiguous sheet
+# --------------------------------------------------------------------------- #
+
+
+def test_the_membership_check_works_with_an_unwritable_system_temp(tmp_path, monkeypatch):
+    """r10 I1: a read-only root (system temp unwritable) must not refuse every
+    archive delete; the check works under the app's own temp dir."""
+    import os
+    import tempfile
+
+    from config import settings
+
+    blocked = tmp_path / "ro-tmp"
+    blocked.mkdir()
+    os.chmod(blocked, 0o500)
+    monkeypatch.setenv("TMPDIR", str(blocked))
+    monkeypatch.setattr(tempfile, "tempdir", str(blocked))
+    monkeypatch.setattr(settings, "temp_dir", str(tmp_path / "app-temp"))
+    pack = _zip(tmp_path / "cd.zip", {
+        "Game.cue": _CUE,
+        "Game (Track 1).bin": b"1" * 64,
+        "Game (Track 2).bin": b"2" * 64,
+    })
+    try:
+        assert _errors(f"{pack}::Game.cue") == []
+        assert os.listdir(blocked) == []
+    finally:
+        os.chmod(blocked, 0o700)
+
+
+def test_a_duplicated_member_name_keeps_the_archive(tmp_path):
+    """r10 M1: two entries named Game.iso are two different files; only one
+    can be the converted Image."""
+    import warnings
+
+    pack = tmp_path / "pack.zip"
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # zipfile warns on the duplicate
+        with zipfile.ZipFile(pack, "w") as zf:
+            zf.writestr("Game.iso", b"one")
+            zf.writestr("Game.iso", b"two")
+
+    errors = _errors(f"{pack}::Game.iso")
+
+    assert any("Game.iso" in error for error in errors), errors
+
+
+@pytest.mark.parametrize("other", ["./Game.iso", "sub/../Game.iso", "a//Game.iso"])
+def test_a_non_canonical_member_name_keeps_the_archive(tmp_path, other):
+    """r10 M1: such a name is refused, never collapsed onto the Image."""
+    pack = _zip(tmp_path / "pack.zip", {"Game.iso": b"one", other: b"two"})
+
+    errors = _errors(f"{pack}::Game.iso")
+
+    assert any(other in error for error in errors), errors
+
+
+def test_a_sheet_whose_spellings_match_two_members_keeps_the_archive(tmp_path):
+    """r10 M2: the UTF-8 and Latin-1 readings of one track name match two
+    different members; chdman opens only one, so the sheet is ambiguous."""
+    utf8_name = "Café.bin"
+    latin1_name = utf8_name.encode("utf-8").decode("latin-1")  # "CafÃ©.bin"
+    cue = f'FILE "{utf8_name}" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n'
+    pack = _zip(tmp_path / "cd.zip", {
+        "Game.cue": cue.encode("utf-8"),
+        utf8_name: b"1" * 64,
+        latin1_name: b"2" * 64,
+    })
+
+    errors = _errors(f"{pack}::Game.cue")
+
+    assert errors, "an ambiguous sheet must keep the archive"

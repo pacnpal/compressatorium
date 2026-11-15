@@ -72,6 +72,14 @@ def _unsafe_member_reason(entry) -> str | None:
     return None
 
 
+class _AmbiguousSheet(Exception):
+    """Two spellings of one track name match two different members."""
+
+    def __init__(self, members: list[str]):
+        super().__init__(", ".join(members))
+        self.members = members
+
+
 def _image_members(archive: str, member: str, names: set[str]) -> set[str]:
     """The members that belong to the Image ``member``: itself, the tracks its
     sheet names, and its split parts. Raises when the sheet can't be read.
@@ -87,7 +95,6 @@ def _image_members(archive: str, member: str, names: set[str]) -> set[str]:
     real path to stay inside that root).
     """
     import shutil
-    import tempfile
 
     from services.archive import archive_service
     from services.tools import registry
@@ -98,19 +105,33 @@ def _image_members(archive: str, member: str, names: set[str]) -> set[str]:
         extracted, temp_dir = archive_service.extract_file(archive, member)
         try:
             parse = cue_tracks if member.lower().endswith(".cue") else _gdi_tracks_from_text
-            # Every spelling of the sheet (chdman opens one of them).
-            refs = [ref for text in _read_sheet(Path(extracted)) for ref in parse(text)]
+            # Every spelling of the sheet, in the same track order (chdman
+            # opens one of them).
+            readings = [parse(text) for text in _read_sheet(Path(extracted))]
             sheet_dir = os.path.dirname(extracted)
-            for ref in refs:
-                try:
-                    track = resolve_track(sheet_dir, ref, within=[temp_dir])
-                except ValueError:
-                    continue  # names nothing in the archive
-                rel = os.path.relpath(str(track), sheet_dir).replace(os.sep, "/")
-                owned.add(posixpath.normpath(posixpath.join(parent, rel)))
+            for index in range(len(readings[0]) if readings else 0):
+                matched = set()
+                for spelling in readings:
+                    if index >= len(spelling):
+                        continue
+                    try:
+                        track = resolve_track(sheet_dir, spelling[index], within=[temp_dir])
+                    except ValueError:
+                        continue  # names nothing in the archive
+                    rel = os.path.relpath(str(track), sheet_dir).replace(os.sep, "/")
+                    name = posixpath.normpath(posixpath.join(parent, rel))
+                    if name in names:
+                        matched.add(name)
+                if len(matched) > 1:
+                    # Which one chdman opens depends on the reading: keep the
+                    # archive rather than guess (the rule #294 uses on disk).
+                    raise _AmbiguousSheet(sorted(matched))
+                owned |= matched
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
-    temp_root = tempfile.mkdtemp(prefix="delete-plan-")
+    # Under the app's temp dir (CHD_TEMP_DIR), as extraction is: a read-only
+    # system temp must not refuse every archive delete.
+    temp_root = archive_service._create_temp_dir()
     try:
         for name in names:
             if name.endswith("/"):
@@ -162,12 +183,20 @@ def archive_members_beyond_image(source_path: str) -> List[str]:
     # Fail closed on a name or kind the extraction validator refuses, before
     # anything is created from any name (codex 4577029535).
     unsafe = [m.name for m in members if _unsafe_member_reason(m)]
+    # A name listed twice is two different files; only one can be the Image.
+    seen: set[str] = set()
+    for entry in members:
+        if entry.name in seen and entry.name not in unsafe:
+            unsafe.append(entry.name)
+        seen.add(entry.name)
     if unsafe:
         return unsafe
     names = {m.name + ("/" if m.is_dir and not m.name.endswith("/") else "")
              for m in members}
     try:
         owned = _image_members(archive, member, names)
+    except _AmbiguousSheet as exc:
+        return exc.members
     except Exception:  # noqa: BLE001 - an unreadable sheet: keep the archive
         return [os.path.basename(archive)]
     owned_dirs = set()
@@ -181,7 +210,7 @@ def archive_members_beyond_image(source_path: str) -> List[str]:
         if name.endswith("/"):
             if name.rstrip("/") in owned_dirs:
                 continue
-        elif posixpath.normpath(name) in owned:
+        elif name in owned:  # names are canonical: the validator passed them
             continue
         extras.append(name)
     return extras
