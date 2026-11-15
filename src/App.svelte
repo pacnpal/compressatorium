@@ -27,6 +27,7 @@
   import { STORAGE_KEYS } from '$lib/util/localStorage.js';
   import BulkVerifyModal from '$lib/components/modals/BulkVerifyModal.svelte';
   import BulkDeleteModal from '$lib/components/modals/BulkDeleteModal.svelte';
+  import PlaylistModal from '$lib/components/modals/PlaylistModal.svelte';
   import DeleteModal from '$lib/components/modals/DeleteModal.svelte';
   import RenameModal from '$lib/components/modals/RenameModal.svelte';
   import FileInfoModal from '$lib/components/modals/FileInfoModal.svelte';
@@ -167,6 +168,7 @@
 <!-- Modal portal, each component self-renders based on its ui store target. -->
 <BulkVerifyModal />
 <BulkDeleteModal />
+<PlaylistModal />
 <DeleteModal />
 <RenameModal />
 <FileInfoModal />

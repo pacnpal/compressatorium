@@ -45,6 +45,13 @@
   without queuing anything while it is held. A server started during a
   `run-rules` pass, or beside another server on the same `/config`, waits for
   the lock (logging who holds it) and then starts.
+- **Create an `.m3u` from selected discs** (#299). Tick two or more disc
+  images of one game in a folder and press **Create .m3u** in the selection bar.
+  A preview shows the file name (the title without `(Disc N)` / `CD N`,
+  editable) and the entries in disc order before anything is written. An
+  existing playlist is never overwritten; a taken name gets the next free one,
+  such as `Game (2).m3u`. New endpoints: `POST /api/files/playlist/preview` and
+  `POST /api/files/playlist`.
 - **`.m3u` playlists follow a converted disc** (#295). With delete-on-verify,
   an `.m3u` that names the Source, in its folder or any folder above it up to
   the volume root, is rewritten to the output before the Source is deleted.

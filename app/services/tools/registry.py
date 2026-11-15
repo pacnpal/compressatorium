@@ -508,6 +508,17 @@ class ToolRegistry:
             set().union(*(t.output_extensions for t in self._tools.values()))
         ))
 
+    def disc_extensions(self) -> tuple[str, ...]:
+        """Union of every registered tool's disc_extensions.
+
+        The file types that are one disc of a multi-disc game on their own,
+        which is what "Create an .m3u from selected discs" accepts. Declared
+        per tool, so a new disc format is a one-line change in its tool.
+        """
+        return tuple(sorted(
+            set().union(*(t.disc_extensions for t in self._tools.values()))
+        ))
+
     def scannable_path(self, path: str) -> bool:
         """Whether the metadata scan should read this concrete path.
 

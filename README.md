@@ -570,6 +570,16 @@ and the job ends as `converted, source kept: couldn't update <playlist>
 (<reason>)`. The Ledger row records each playlist updated, or the one that
 kept the source and why.
 
+**Create an `.m3u` from selected discs.** Tick the discs of one game in the file
+list (two or more disc images in the same folder, such as `.cue`, `.gdi`, `.iso`,
+`.chd`, `.rvz` or `.cso`) and press **Create .m3u**. Ticked `.bin` tracks of a
+`.cue` are left out; two formats of one disc are refused. A preview shows the playlist name and its
+entries before anything is written. The name drops the `(Disc N)` / `CD N` part
+(`Final Quest (Disc 1).cue` gives `Final Quest.m3u`) and can be edited. Entries
+go in disc order, by the number in the name and otherwise by name, as file names
+beside the playlist. An existing playlist is never overwritten: if the name is
+taken, the preview offers the next free one (`Final Quest (2).m3u`).
+
 ### File info
 
 Click a file to open the inspector — it shows the format/version, compression,
@@ -960,6 +970,12 @@ A three-pane layout: navigation and tool picker on the left, the volume and file
 | Light | Dark |
 |-------|------|
 | ![Auto plan, light](docs/screenshots/workspace-auto-plan-light.png) | ![Auto plan, dark](docs/screenshots/workspace-auto-plan-dark.png) |
+
+**Create .m3u from selected discs.** Select the discs of one game and the dialog previews the playlist name and the entries in disc order before it writes anything.
+
+| Light | Dark |
+|-------|------|
+| ![Create .m3u preview, light](docs/screenshots/playlist-light.png) | ![Create .m3u preview, dark](docs/screenshots/playlist-dark.png) |
 
 **Dolphin (GameCube / Wii).** Compress discs to RVZ, WIA, or GCZ, with a codec and compression-level picker.
 
@@ -2002,6 +2018,8 @@ The Web UI communicates with a REST API that can also be used directly. Interact
 | GET | `/api/files/search` | Recursively search for convertible files |
 | GET | `/api/files/archive` | List contents of an archive file |
 | POST | `/api/files/rename` | Rename a file or directory |
+| POST | `/api/files/playlist/preview` | Preview the `.m3u` that selected discs would make (name, folder, ordered entries). Writes nothing |
+| POST | `/api/files/playlist` | Write the previewed `.m3u` beside the discs. Never overwrites: a taken name is a 409 with `detail.suggested_name` |
 | DELETE | `/api/files/delete` | Delete a single file or empty directory |
 | POST | `/api/files/delete-batch` | Delete multiple files at once |
 

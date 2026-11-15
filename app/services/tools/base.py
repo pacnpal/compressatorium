@@ -90,6 +90,10 @@ class ToolPlugin(Protocol):
     input_extensions: frozenset[str]    # convertible-from
     output_extensions: frozenset[str]   # produced ("output exists" badges + scan discovery)
     verify_extensions: frozenset[str]   # accepted by verify()
+    # Extensions of this tool's files that are one disc of a multi-disc game on
+    # their own (a .cue sheet, a .chd, an .iso), so an .m3u can list them. Empty
+    # for a tool with no such files. Read by ToolRegistry.disc_extensions().
+    disc_extensions: frozenset[str]
     # When the tool's embedded_hashes are *exhaustive*: a miss of every
     # reported content hash means the file definitively isn't in the DAT, so
     # the DAT matcher must NOT fall back to a file-level SHA1 of the container
@@ -497,6 +501,7 @@ class BaseTool:
     modes: Sequence[ModeSpec] = ()
     output_extensions: frozenset[str] = frozenset()
     verify_extensions: frozenset[str] = frozenset()
+    disc_extensions: frozenset[str] = frozenset()
     # The ``SubprocessRunner`` owner name this tool's service runs under, which
     # is what the shared nice/ioprio/timeout policy keys its per-tool overrides
     # on (``COMPRESSATORIUM_<OWNER>_*``). It is *not* always ``id``: the plugin

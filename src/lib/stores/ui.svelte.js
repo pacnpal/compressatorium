@@ -49,6 +49,8 @@ class UIStore {
   deleteTarget = $state(null);
   bulkDeleteEntries = $state(null);
   bulkVerifyItems = $state(null);
+  // Full paths of the discs a playlist is being made from (null = closed).
+  playlistPaths = $state(null);
   duplicateCheck = $state(null);
   deletePlan = $state(null);
   showCancelAll = $state(false);
@@ -80,6 +82,7 @@ class UIStore {
       !!this.deleteTarget ||
       !!this.bulkDeleteEntries ||
       !!this.bulkVerifyItems ||
+      !!this.playlistPaths ||
       !!this.duplicateCheck ||
       !!this.deletePlan ||
       this.duplicatePromptOpen ||

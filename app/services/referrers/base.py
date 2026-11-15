@@ -27,7 +27,12 @@ from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from typing import Any
 
-from utils.path_utils import FileIdentity, file_identity, same_identity
+from utils.path_utils import (
+    FileIdentity,
+    file_identity,
+    place_without_clobbering,
+    same_identity,
+)
 
 
 class ReferrerError(Exception):
@@ -144,6 +149,13 @@ def _keep_owner(tmp: str, original: os.stat_result) -> None:
         ) from exc
 
 
+def _temp_file(directory: str) -> tuple[int, str]:
+    """A new hidden temp file in *directory*. Its name is short and fixed-length
+    (``.tmp-`` plus random characters), never built from the target's name, so a
+    target near the 255-byte file name limit can still be written."""
+    return tempfile.mkstemp(dir=directory, prefix=".tmp-")
+
+
 def atomic_write_bytes(
     path: str, data: bytes, *, like: str | None = None,
     guard: Callable[[], None] | None = None,
@@ -161,9 +173,7 @@ def atomic_write_bytes(
     while its caller gave up must not land afterwards).
     """
     directory = os.path.dirname(path) or "."
-    fd, tmp = tempfile.mkstemp(
-        dir=directory, prefix=f".{os.path.basename(path)}.", suffix=".tmp",
-    )
+    fd, tmp = _temp_file(directory)
     try:
         with os.fdopen(fd, "wb") as f:
             f.write(data)
@@ -187,3 +197,35 @@ def atomic_write_bytes(
         with suppress(OSError):
             os.unlink(tmp)
         raise
+
+
+def write_new_bytes(
+    path: str, data: bytes, *, guard: Callable[[], None] | None = None,
+) -> None:
+    """Create *path* holding *data*, or raise ``FileExistsError`` if anything is there.
+
+    The no-overwrite sibling of ``atomic_write_bytes``. It writes and fsyncs a
+    temp file in the same directory, then places it with
+    ``place_without_clobbering`` (a hard link or a no-replace rename), so the
+    existence check and the creation are one atomic step: two writers racing
+    for one name have exactly one winner, and a file or symlink already at
+    *path* is never touched. The new file has the default ``0o644`` mode.
+
+    *guard* is the same publish step as in ``atomic_write_bytes``: it runs once
+    the temp file is written and synced, right before it is placed, and if it
+    raises nothing is published.
+    """
+    directory = os.path.dirname(path) or "."
+    fd, tmp = _temp_file(directory)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp, 0o644)
+        if guard is not None:
+            guard()
+        place_without_clobbering(tmp, path)
+    finally:
+        with suppress(OSError):
+            os.unlink(tmp)

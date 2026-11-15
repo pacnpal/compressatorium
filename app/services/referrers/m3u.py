@@ -278,6 +278,17 @@ def entry_for(playlist_dir: str, path: str, *, first_line: bool) -> str | None:
     )
 
 
+def playlist_bytes(lines: list[str]) -> bytes:
+    """Render a fresh playlist from entries made by ``entry_for``: one per line,
+    ``\\n`` endings, no BOM, UTF-8 with ``surrogateescape``. The rendered file
+    is read back with ``entries``; a ``ValueError`` is raised unless that gives
+    exactly *lines*. Write it with ``write_new_bytes``."""
+    data = "".join(line + "\n" for line in lines).encode(*_ENC)
+    if entries(data) != lines:
+        raise ValueError("an entry would not read back as written")
+    return data
+
+
 def _points_at(playlist_dir: str, entry: str, target: _Target, *, strict: bool) -> bool:
     """Whether *entry*, read from *playlist_dir*, reaches the output.
 
