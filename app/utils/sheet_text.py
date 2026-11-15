@@ -58,13 +58,18 @@ def chd_tokens(line: str) -> list[str]:
     ``a"b c"d`` is ``ab cd`` and an unclosed quote runs to the end of the line.
     A quoted empty string is an empty token.
     """
+    return _chd_scan(line)[0]
+
+
+def _chd_scan(line: str) -> tuple[list[str], bool]:
+    """``chd_tokens`` plus whether every quote on the line closed."""
     tokens: list[str] = []
     i, end = 0, len(line)
     while True:
         while i < end and line[i] in _C_SPACE:
             i += 1
         if i >= end:
-            return tokens
+            return tokens, True
         token: list[str] = []
         single = double = False
         while i < end:
@@ -79,6 +84,24 @@ def chd_tokens(line: str) -> list[str]:
                 token.append(char)
             i += 1
         tokens.append("".join(token))
+        if single or double:
+            return tokens, False
+
+
+def _quotes_close(text: str, *, cue: bool) -> bool:
+    """Whether every line's quotes close the way chdman reads them.
+
+    An unclosed quote runs to the end of chdman's read, newline included, so
+    ``1 0 4 2048 'pipe`` opens a file named ``pipe\\n`` while a reader that
+    strips the newline checks ``pipe``. A CUE ``REM`` line is exempt: chdman
+    reads no file name from one, and comments carry apostrophes.
+    """
+    for line in _sheet_lines(text):
+        tokens, closed = _chd_scan(line)
+        if closed or (cue and tokens and tokens[0] == "REM"):
+            continue
+        return False
+    return True
 
 
 def _sheet_lines(text: str) -> list[str]:
@@ -135,7 +158,11 @@ def _sheet_spellings(path: str | Path) -> tuple[list[str], str] | None:
         first = raw.decode("utf-8")
     except UnicodeDecodeError:
         first = raw.decode("cp1252", errors="replace")
-    readings = [first, raw.decode("latin-1")]
+    latin1 = raw.decode("latin-1")
+    # Quotes and whitespace are ASCII, the same in every spelling.
+    if not _quotes_close(latin1, cue=Path(path).suffix.lower() == ".cue"):
+        return None
+    readings = [first, latin1]
     # The raw bytes as the OS spells a file name: what chdman opens.
     native = os.fsdecode(raw)
     if native not in readings:
