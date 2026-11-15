@@ -688,8 +688,10 @@ until its cause changes (a dismissed conflict comes back if the header or
 folder later says something else). **Show dismissed** lists the hidden ones,
 each with **Show again**. **Check now** lists every folder Library again.
 Findings are written each time a Library is listed or swept, and cleared once
-the cause is gone. A subfolder that cannot be read during a listing keeps its
-Findings (and their dismissals) until it can.
+the cause is gone. A subfolder or file that cannot be read during a listing
+keeps its Findings as they were until it can. A dismissal is kept even when its
+Image drops out of a listing for a while (a share that was unmounted): the
+Finding comes back dismissed if its cause is the same.
 
 **Set Platform** ("this folder is PSP") is also on a folder's row menu in the
 Workspace, for any folder inside a folder Library. Walking up from an Image,
