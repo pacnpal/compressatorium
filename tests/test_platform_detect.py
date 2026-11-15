@@ -24,6 +24,15 @@ def _fresh_cache():
     platform_detect.clear_cache()
 
 
+@pytest.fixture(autouse=True)
+def _volume(tmp_path, monkeypatch):
+    """``tmp_path`` is the configured Volume, so the folder walk reaches every
+    folder a test builds under it (and nothing above it)."""
+    from config import settings
+
+    monkeypatch.setattr(settings, "chd_volumes", str(tmp_path))
+
+
 def _write(path: Path, data: bytes) -> str:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data)
@@ -81,7 +90,7 @@ def _sector0(path: Path, magic: bytes, *, raw: bool = False) -> str:
         (_gamecube, "game.iso", "ngc"),
         (_wii, "game.iso", "wii"),
         (_ps2, "game.iso", "ps2"),
-        (_ps1, "game.iso", "ps"),
+        (_ps1, "game.iso", "psx"),
         (_psp, "game.iso", "psp"),
         (lambda p: _sector0(p, b"SEGA SEGASATURN "), "game.iso", "saturn"),
         (lambda p: _sector0(p, b"SEGA SEGASATURN ", raw=True), "game.bin", "saturn"),
@@ -142,7 +151,7 @@ def test_dreamcast_gdi_reads_its_first_track(tmp_path):
         ("ps2", "ps2"), ("psp", "psp"), ("ngc", "ngc"), ("wii", "wii"),
         ("xbox", "xbox"), ("dc", "dc"), ("saturn", "saturn"), ("segacd", "segacd"),
         # ES-DE / Batocera names for the same consoles.
-        ("psx", "ps"), ("gc", "ngc"), ("gamecube", "ngc"), ("dreamcast", "dc"),
+        ("psx", "psx"), ("ps1", "psx"), ("gc", "ngc"), ("gamecube", "ngc"), ("dreamcast", "dc"),
         ("megacd", "segacd"), ("PS2", "ps2"),
     ],
 )
@@ -161,8 +170,8 @@ def test_folder_name_names_the_platform_when_there_is_no_header(
 FRONTEND_FOLDERS = [
     ("pcenginecd", "turbografx-cd"), ("tg-cd", "turbografx-cd"),
     ("cdi", "philips-cd-i"), ("cdimono1", "philips-cd-i"),
-    ("megadrive", "genesis-slash-megadrive"), ("genesis", "genesis-slash-megadrive"),
-    ("segamd", "genesis-slash-megadrive"),
+    ("megadrive", "genesis"), ("genesis-slash-megadrive", "genesis"),
+    ("segamd", "genesis"),
     ("mastersystem", "sms"), ("gg", "gamegear"), ("game-gear", "gamegear"),
     ("atarilynx", "lynx"), ("ngp", "neo-geo-pocket"), ("ngpc", "neo-geo-pocket-color"),
     ("wonderswancolor", "wonderswan-color"), ("n3ds", "3ds"),
@@ -193,6 +202,26 @@ def test_every_alias_names_its_romm_slug(tmp_path, alias, slug):
     assert detect_platform(path).platform == slug
 
 
+# RomM's own slugs for every Platform the tools serve: the values of RomM's
+# `UniversalPlatformSlug` enum (rommapp/romm, backend/utils/platform_slugs.py).
+# RomM's slug differs from IGDB's in places (`psx`, not `ps`; `genesis`, not
+# `genesis-slash-megadrive`), and Detection answers in RomM's.
+ROMM_SLUGS = frozenset({
+    "3do", "3ds", "arcade", "atari2600", "atari7800", "c64", "dc", "gamegear",
+    "gb", "gba", "gbc", "genesis", "laseractive", "lynx", "n64", "nds",
+    "neo-geo-cd", "neo-geo-pocket", "neo-geo-pocket-color", "nes",
+    "new-nintendo-3ds", "ngc", "pc-fx", "philips-cd-i", "ps2", "ps3", "psp",
+    "psx", "saturn", "segacd", "sms", "snes", "switch", "turbografx-cd",
+    "virtualboy", "wii", "wiiu", "wonderswan", "wonderswan-color", "xbox",
+    "xbox360",
+})
+
+
+@pytest.mark.parametrize("slug", sorted(platform_detect._ALIASES))
+def test_every_canonical_key_is_a_romm_slug(slug):
+    assert slug in ROMM_SLUGS
+
+
 def test_aliases_are_unambiguous():
     rows = _alias_rows()
     names = [alias for alias, _slug in rows]
@@ -217,6 +246,41 @@ def test_every_declared_slug_maps_onto_a_romm_slug_in_the_table(declared):
     assert platform_detect.canonical_slug(declared) in platform_detect._ALIASES
 
 
+def test_folder_walk_stops_at_the_volume_root(tmp_path, monkeypatch):
+    from config import settings
+
+    # The Volume sits under a folder named like a Platform (`md` is Genesis).
+    volume = tmp_path / "mnt" / "md" / "library"
+    monkeypatch.setattr(settings, "chd_volumes", str(volume))
+    headered = _ps2(volume / "pile" / "game.iso")
+    blank = _blank(volume / "pile" / "other.iso")
+
+    assert (detect_platform(headered).platform, detect_platform(headered).how) == (
+        "ps2", "header",
+    )
+    assert detect_platform(blank).how == "unsorted"
+
+
+def test_the_volume_root_itself_can_name_the_platform(tmp_path, monkeypatch):
+    from config import settings
+
+    volume = tmp_path / "psx"
+    monkeypatch.setattr(settings, "chd_volumes", str(volume))
+
+    assert detect_platform(_blank(volume / "game.iso")).platform == "psx"
+
+
+def test_a_path_outside_every_volume_uses_only_its_own_folder(tmp_path, monkeypatch):
+    from config import settings
+
+    monkeypatch.setattr(settings, "chd_volumes", str(tmp_path / "volume"))
+    own = _blank(tmp_path / "elsewhere" / "ps2" / "game.iso")
+    above = _blank(tmp_path / "elsewhere" / "ps2" / "Game (USA)" / "game.iso")
+
+    assert detect_platform(own).platform == "ps2"
+    assert detect_platform(above).how == "unsorted"
+
+
 def test_nearest_platform_folder_wins(tmp_path):
     path = _write(tmp_path / "ps2" / "psp" / "game.iso", b"\0" * 64)
 
@@ -238,7 +302,7 @@ def test_archive_member_uses_the_archive_folder(tmp_path):
 
     result = detect_platform(f"{archive}::disc.cue")
 
-    assert (result.platform, result.how) == ("ps", "folder")
+    assert (result.platform, result.how) == ("psx", "folder")
 
 
 def test_missing_file_is_unsorted(tmp_path):
@@ -392,6 +456,59 @@ def test_a_cue_is_re_probed_when_its_track_changes(tmp_path):
     os.utime(track, ns=(st.st_atime_ns, st.st_mtime_ns + 5_000_000_000))
 
     assert detect_platform(cue).platform == "segacd"
+
+
+_ACCENTED = "Jeu (\u00c9dition).bin"
+
+
+@pytest.mark.parametrize(
+    "encode",
+    [
+        lambda text: text.encode("utf-8"),
+        lambda text: b"\xef\xbb\xbf" + text.encode("utf-8"),   # UTF-8 with a BOM
+        lambda text: text.encode("cp1252"),
+    ],
+    ids=["utf-8", "utf-8-bom", "cp1252"],
+)
+def test_a_cue_naming_an_accented_track_is_followed(tmp_path, encode):
+    folder = tmp_path / "downloads"
+    _sector0(folder / _ACCENTED, b"SEGA SEGASATURN ", raw=True)
+    sheet = f'FILE "{_ACCENTED}" BINARY\n  TRACK 01 MODE1/2352\n'
+    cue = _write(folder / "game.cue", encode(sheet))
+
+    assert detect_platform(cue).platform == "saturn"
+
+
+def test_a_cp1252_cue_lists_its_accented_track_and_is_cached(tmp_path):
+    from services.tools import registry
+
+    folder = tmp_path / "downloads"
+    track = _sector0(folder / _ACCENTED, b"SEGA SEGASATURN ", raw=True)
+    sheet = f'FILE "{_ACCENTED}" BINARY\n  TRACK 01 MODE1/2352\n'
+    cue = _write(folder / "game.cue", sheet.encode("cp1252"))
+
+    # The cache's dependency list reads the sheet the way the probe does.
+    assert registry.get("chdman").header_reads(cue) == [track]
+    assert detect_platform(cue).platform == "saturn"
+    assert cue in platform_detect._cache
+
+
+@pytest.mark.parametrize(
+    ("track_name", "listed"),
+    [("Game (Track 1).bin", '"Game (Track 1).bin"'), ("track01.bin", "track01.bin")],
+    ids=["quoted-with-spaces", "unquoted"],
+)
+def test_a_gdi_track_name_is_read_whole(tmp_path, track_name, listed):
+    from services.tools import registry
+
+    folder = tmp_path / "stuff"
+    raw = bytearray(2352)
+    raw[16:16 + 0x200] = _make_ipbin()
+    track = _write(folder / track_name, bytes(raw))
+    gdi = _write(folder / "game.gdi", f"1\n1 0 4 2352 {listed} 0\n".encode())
+
+    assert detect_platform(gdi).platform == "dc"
+    assert registry.get("chdman").header_reads(gdi) == [track]
 
 
 def test_a_gdi_lists_its_tracks_as_header_reads(tmp_path):

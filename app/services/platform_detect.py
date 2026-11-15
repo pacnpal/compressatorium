@@ -26,11 +26,11 @@ import threading
 from collections import OrderedDict
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
-from pathlib import PurePath
+from pathlib import Path, PurePath
 
 from logging_setup import get_logger
 from models import InputKind
-from utils.path_utils import match_extension
+from utils.path_utils import containing_volume_root, match_extension
 
 logger = get_logger("platform_detect")
 
@@ -39,14 +39,16 @@ FOLDER = "folder"
 CONFLICT = "conflict"
 UNSORTED = "unsorted"
 
-# Platform slug (RomM's, which is IGDB's) -> every other name for the same
-# console: the tools' and the disc-ID parser's own vocabulary, and the folder
-# names ES-DE (es_systems.xml) and Batocera use. Detection always answers with
-# the key. Every slug a tool declares must appear here, as a key or an alias;
+# Platform slug -> every other name for the same console: IGDB's slug where
+# RomM's differs, the tools' and the disc-ID parser's own vocabulary, and the
+# folder names ES-DE (es_systems.xml) and Batocera use. Each key is RomM's own
+# slug (its ``UniversalPlatformSlug`` value, e.g. ``psx`` and ``genesis`` where
+# IGDB says ``ps`` and ``genesis-slash-megadrive``), and Detection always
+# answers with the key. Every slug a tool declares must appear here, as a key or an alias;
 # tests/test_platform_detect.py fails when a new tool brings one that is not.
 _ALIASES: dict[str, tuple[str, ...]] = {
     # Sony
-    "ps": ("psx", "ps1", "playstation", "sony-playstation"),
+    "psx": ("ps", "ps1", "playstation", "sony-playstation"),
     "ps2": ("playstation2", "playstation-2"),
     "psp": ("playstation-portable",),
     "ps3": ("playstation3", "playstation-3"),
@@ -69,8 +71,9 @@ _ALIASES: dict[str, tuple[str, ...]] = {
     "dc": ("dreamcast", "sega-dreamcast"),
     "saturn": ("segasaturn", "sega-saturn", "saturnjp"),
     "segacd": ("sega-cd", "megacd", "mega-cd", "megacdjp"),
-    "genesis-slash-megadrive": (
-        "genesis", "megadrive", "mega-drive", "megadrivejp", "segamd", "md",
+    "genesis": (
+        "genesis-slash-megadrive", "megadrive", "mega-drive", "megadrivejp",
+        "segamd", "md",
     ),
     "sms": ("mastersystem", "master-system", "sega-master-system"),
     "gamegear": ("gg", "game-gear"),
@@ -147,15 +150,29 @@ def _split_member(path: str) -> tuple[str, bool]:
     return path, False
 
 
+def _probes(tool, path: str, is_dir: bool) -> bool:
+    """Whether ``tool`` is asked for ``path``'s header.
+
+    A file: when the tool takes its extension. A folder: when the tool takes
+    that folder as its input unit (``accepts_directory``, e.g. a PS3 disc
+    folder), the directory analogue the rest of the registry already uses.
+    """
+    if is_dir:
+        accepts = getattr(tool, "accepts_directory", None)
+        return bool(accepts and accepts(path))
+    return match_extension(path, tool.input_extensions) is not None
+
+
 def _header(path: str, tools: Iterable) -> tuple[set[str], list[str]]:
     found: set[str] = set()
     sources: list[str] = []
     seen: set[int] = set()
+    is_dir = os.path.isdir(path)
     for tool in tools:
         if id(tool) in seen:
             continue
         seen.add(id(tool))
-        if match_extension(path, tool.input_extensions) is None:
+        if not _probes(tool, path, is_dir):
             continue
         try:
             raw = tool.header_platform(path)
@@ -169,8 +186,28 @@ def _header(path: str, tools: Iterable) -> tuple[set[str], list[str]]:
     return found, sources
 
 
+def _candidate_folders(path: str) -> list[str]:
+    """Folder names the walk may read for ``path``, nearest first.
+
+    From the Image's own folder up to the root of the Volume that holds it,
+    root included, never above: a Volume mounted under ``/mnt/md/...`` must not
+    make every Image in it a Genesis Image. A path in no configured Volume
+    uses only its own folder.
+    """
+    parent = PurePath(path).parent
+    root = containing_volume_root(path)
+    if root is None:
+        return [parent.name] if parent.name else []
+    resolved = Path(os.path.realpath(path)).parent
+    try:
+        below = resolved.relative_to(root).parts
+    except ValueError:
+        return [parent.name] if parent.name else []
+    return [*reversed(below), root.name]
+
+
 def _folder(path: str, names: dict[str, str]) -> tuple[str | None, str | None]:
-    for part in reversed(PurePath(path).parent.parts):
+    for part in _candidate_folders(path):
         slug = names.get(part.lower())
         if slug:
             return slug, part
@@ -571,6 +608,8 @@ def _no_target_reason(path: str, platform: str, tools_registry) -> str:
     if not _auto_candidates(platform, tools_registry):
         return f"No tool converts {platform} Images"
     name = path.split("::", 1)[-1]
+    if "::" not in path and os.path.isdir(path):
+        return f"No {platform} target takes this folder"
     ext = os.path.splitext(name)[1].lower() or name
     return f"No {platform} target reads {ext} files"
 

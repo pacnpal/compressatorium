@@ -170,9 +170,17 @@ class ConversionStore {
    */
   allowsInputEntry(entry) {
     if (!entry) return false;
-    // Auto decides per file on the backend; any file can be offered, and the
-    // plan reports the ones it leaves alone.
-    if (this.auto) return entry.type !== 'directory' && entry.type !== 'archive';
+    // Auto decides per Image on the backend; any file can be offered, and the
+    // plan reports the ones it leaves alone. A folder qualifies when the
+    // backend marked it convertible by a tool that has a folder-input mode
+    // (`inputKinds: ['directory']`, e.g. a PS3 disc folder for folder_to_iso).
+    if (this.auto) {
+      if (entry.type === 'archive') return false;
+      if (entry.type !== 'directory') return true;
+      return Array.isArray(entry.convertible_by)
+        && entry.convertible_by.some((id) => (registry.forTool(id)?.modes ?? [])
+          .some((m) => Array.isArray(m.inputKinds) && m.inputKinds.includes('directory')));
+    }
     if (this.isDirectoryMode) {
       return (
         entry.type === 'directory'
@@ -372,6 +380,23 @@ class ConversionStore {
     this.autoPlan = null;
   }
 
+  /**
+   * The user picked a target by hand (the mode dropdown, RomM's "Convert to").
+   * That choice wins over Auto, so Auto turns off and says so; every selector
+   * goes through here. `setMode` stays the programmatic path (platform
+   * adoption, tool switches), which leaves Auto alone.
+   */
+  chooseTarget(mode) {
+    if (!registry.specFor(mode)) return;
+    this.setMode(mode);
+    if (this.auto) {
+      this.auto = false;
+      toast.info(
+        `Auto is off: converting with ${registry.specFor(mode)?.label ?? mode}`,
+      );
+    }
+  }
+
   setMode(mode) {
     if (!registry.specFor(mode)) return;
     this.mode = mode;
@@ -568,7 +593,21 @@ class ConversionStore {
       groupByMode(Object.keys(modeOf), modeOf),
       { duplicateAction: 'skip', rommRepin, rommPlatformId },
       async () => {
-        const result = await api.createAutoJobs(filePaths, this.outputDir || null, 'skip');
+        let result;
+        try {
+          result = await api.createAutoJobs(filePaths, this.outputDir || null, 'skip');
+        } catch (e) {
+          // A later group was refused after earlier jobs had already
+          // finished: the route returns those in `detail.jobs`. They are real
+          // jobs, so adopt them and let the shared path reconcile against
+          // them before it retires any snapshot.
+          const kept = Array.isArray(e?.detail?.jobs) ? e.detail.jobs : null;
+          if (kept) {
+            jobs.adopt(kept);
+            e.createdJobs = kept;
+          }
+          throw e;
+        }
         const createdJobs = Array.isArray(result?.jobs) ? result.jobs : [];
         jobs.adopt(createdJobs);
         return { result, createdJobs };
@@ -666,7 +705,17 @@ class ConversionStore {
         recorded = planned.recorded_paths;
         recordedIds = planned.recorded_ids;
       }
-      const { result, createdJobs } = await queue();
+      // A queue step that failed but still created jobs (they carry
+      // `createdJobs`) is reconciled like a success, then its error is
+      // rethrown: only snapshots with no job behind them are retired.
+      let queued;
+      try {
+        queued = await queue();
+      } catch (e) {
+        if (!Array.isArray(e?.createdJobs)) throw e;
+        queued = { result: null, createdJobs: e.createdJobs, error: e };
+      }
+      const { result, createdJobs, error } = queued;
       // Report what the backend actually created. createBatch can
       // legitimately return fewer jobs than requested when the user
       // chose duplicateAction: 'skip', or when create_batch_jobs
@@ -675,12 +724,15 @@ class ConversionStore {
       // N rows were skipped is misleading.
       const created = createdJobs.length;
       const requested = filePaths.length;
-      if (created === 0) {
-        toast.warning(`No jobs queued (all ${requested} skipped)`);
-      } else if (created < requested) {
-        toast.success(`Queued ${created} of ${requested} job(s); ${requested - created} skipped`);
-      } else {
-        toast.success(`Queued ${created} job(s)`);
+      // On a partial failure the error toast below says what happened.
+      if (!error) {
+        if (created === 0) {
+          toast.warning(`No jobs queued (all ${requested} skipped)`);
+        } else if (created < requested) {
+          toast.success(`Queued ${created} of ${requested} job(s); ${requested - created} skipped`);
+        } else {
+          toast.success(`Queued ${created} job(s)`);
+        }
       }
       // Reconcile the planned rows against what the queue actually did.
       //
@@ -827,6 +879,7 @@ class ConversionStore {
       this.lastRepinRecorded = Math.max(
         0, this.lastRepinRecorded - Object.keys(recorded).length,
       );
+      if (error) throw error;
       return result;
     } catch (e) {
       toast.error(e?.message ?? 'Failed to create jobs');
