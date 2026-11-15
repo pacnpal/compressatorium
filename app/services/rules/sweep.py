@@ -190,6 +190,9 @@ _active_check_runs: set[tuple[str, str]] = set()
 # by `_mark_converted`; see there. Bounded by the same thing that bounds
 # `_job_owners`: one entry per queued conversion, removed when it is applied.
 _late_verdicts: dict[str, bool] = {}
+# The Library's identity (`_library_identity`) when each owned job was queued:
+# a job that ends after its Library changed records no pending delete (#329).
+_job_library: dict[str, list] = {}
 
 
 async def get_rules(library: Library, kind: str = CONVERT) -> dict[str, dict]:
@@ -375,9 +378,8 @@ async def set_rules(library: Library, raw: Any, *, strict: bool = False) -> dict
         # to notice, because a retry compares the new rule with itself and
         # computes no stale platform at all. Recoverable beats silent.
         if stale:
+            # Its pending deletes too: they were decided under the former output.
             await forget_converted_locked(library, stale)
-            # A pending delete was decided under the former output too.
-            await _forget_kept_sources_locked(library, stale)
         await store.write(store.RULES_KEY, library, rules)
         return rules
 
@@ -398,7 +400,14 @@ async def forget_converted(
 async def forget_converted_locked(
     library: Library, platform_ids: list[str] | None = None,
 ) -> int:
-    """:func:`forget_converted` for a caller already inside :func:`paused`."""
+    """:func:`forget_converted` for a caller already inside :func:`paused`.
+
+    The one point that invalidates what a Rule decided for its Images: the
+    converted history, the failed holds, and the Sources kept for a reader
+    that are waiting to be deleted (#329). Every invalidation goes through
+    here: Forget history, a Rule's retarget (``set_rules``), RomM's identity
+    cleanup.
+    """
     state = await get_state(library)
     targets = (
         [str(p) for p in platform_ids] if platform_ids is not None else list(state)
@@ -408,6 +417,7 @@ async def forget_converted_locked(
         entry = state.get(pid)
         if isinstance(entry, dict) and (
             entry.get("converted") or entry.get("converted_ids") or entry.get("failed")
+            or entry.get(KEPT_SOURCES)
         ):
             entry = dict(entry)
             entry.pop("converted", None)
@@ -415,6 +425,9 @@ async def forget_converted_locked(
             # The failed hold too: "forget" is how an operator retries an
             # Image without changing its file.
             entry.pop("failed", None)
+            # And a pending delete: the decision that kept the Source no
+            # longer stands once its history is forgotten.
+            entry.pop(KEPT_SOURCES, None)
             state[pid] = entry
             cleared += 1
     if cleared:
@@ -445,6 +458,7 @@ async def forget_library(library: Library) -> None:
         for job_id, owner in list(_job_owners.items()):
             if owner[0].id == library.id:
                 _job_owners.pop(job_id, None)
+                _job_library.pop(job_id, None)
         for key in [k for k in _unreadable if k[0] == library.id]:
             _unreadable.pop(key, None)
         for kind in RULE_KINDS:
@@ -760,6 +774,7 @@ async def note_job_finished(job) -> None:
     # `_mark_converted` indexes every one of those. So a miss means the job is
     # not ours, and there is nothing to write.
     owner = _job_owners.pop(job_id, None)
+    library_identity = _job_library.pop(job_id, None)
     if owner is None:
         return
     library, platform_id, rom_id, identity, queued_fingerprint = owner
@@ -771,7 +786,7 @@ async def note_job_finished(job) -> None:
         and getattr(job, "warning", None) == SOURCE_KEPT_FOR_READERS
     ):
         await _remember_kept_source(
-            library, platform_id, rom_id, job, generation, identity,
+            library, platform_id, rom_id, job, generation, identity, library_identity,
         )
     if (
         FAILED_HOLD in library.capabilities and status != JobStatus.CANCELLED
@@ -817,7 +832,7 @@ async def note_job_finished(job) -> None:
 
 async def _remember_kept_source(
     library: Library, platform_id: str, image_key: str, job, generation: int,
-    identity: tuple | None,
+    identity: tuple | None, library_identity: list | None,
 ) -> None:
     """Note a Source the delete step kept for a reader, for a later sweep to
     retry (#329). Any Library: it needs no converted history.
@@ -825,10 +840,13 @@ async def _remember_kept_source(
     Bound to the Rule that queued the job (*identity*, its
     ``_output_identity``): a retry deletes only while the Rule still asks for
     the same output, and a job that ends after its Rule was retargeted
-    records nothing (codex 4579529043).
+    records nothing (codex 4579529043). Likewise bound to the Library as it
+    was when the job was queued (*library_identity*): a job that ends after
+    the Library changed (its root, RomM's instance) records nothing
+    (codex 4579589757).
     """
-    if identity is None:
-        return  # no Rule to bind it to: never retried
+    if identity is None or library_identity is None:
+        return  # nothing to bind it to: never retried
     pending = {
         "source": getattr(job, "file_path", None),
         "output": getattr(job, "output_path", None),
@@ -836,6 +854,7 @@ async def _remember_kept_source(
         "kept_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "attempts": 0,
         "rule_identity": list(identity),
+        "library_identity": library_identity,
     }
     if not pending["source"] or not pending["output"]:
         return
@@ -844,6 +863,8 @@ async def _remember_kept_source(
             return  # removed meanwhile
         if not await _same_rule(library, platform_id, identity):
             return  # retargeted meanwhile: the old decision no longer stands
+        if _library_identity(library) != library_identity:
+            return  # the Library changed meanwhile
         state = await get_state(library)
         entry = dict(state.get(platform_id) or {})
         kept = dict(entry.get(KEPT_SOURCES) or {})
@@ -859,20 +880,25 @@ def _rule_paused(rule: dict, wanted: set[str] | None) -> bool:
     return not rule["enabled"] and (wanted is None or _validation_paused(rule))
 
 
-async def _forget_kept_sources_locked(library: Library, platform_ids: list[str]) -> None:
-    """Drop the kept Sources of *platform_ids*, whose Rules now ask for another
-    output (``set_rules``' retarget). Called with ``_sweep_lock`` held."""
-    state = await get_state(library)
-    changed = False
-    for pid in platform_ids:
-        entry = state.get(str(pid))
-        if isinstance(entry, dict) and entry.get(KEPT_SOURCES):
-            entry = dict(entry)
-            entry.pop(KEPT_SOURCES, None)
-            state[str(pid)] = entry
-            changed = True
-    if changed:
-        await store.write(store.STATE_KEY, library, state)
+def _library_identity(library: Library) -> list:
+    """What a Library is, for a pending delete (#329): its id and root, and
+    whatever else names it (``decision_identity``: RomM's instance URL). A
+    Source kept under one of these is deleted only while it is the same."""
+    extra = getattr(library, "decision_identity", None)
+    root = getattr(library, "root", None)
+    return [library.id, str(root) if root else None, *(extra() if callable(extra) else ())]
+
+
+def _inside_library(source: str, root: str | None) -> bool:
+    """Whether *source* is inside *root* as both resolve now. Blocking."""
+    if not root or not source:
+        return False
+    real_root = os.path.realpath(root)
+    real_source = os.path.realpath(source.split("::", 1)[0])
+    try:
+        return os.path.commonpath([real_root, real_source]) == real_root
+    except ValueError:
+        return False
 
 
 async def _retry_kept_deletes(
@@ -911,13 +937,26 @@ async def _retry_kept_deletes(
                 not rule or not rule.get("delete_on_verify")
                 or not isinstance(pending, dict)
                 or pending.get("rule_identity") != list(_output_identity(rule))
+                or pending.get("library_identity") != _library_identity(library)
             ):
                 # The Rule is gone, keeps its Sources now, or asks for another
-                # output: the decision that kept this one no longer stands.
+                # output, or the Library is another one now: the decision that
+                # kept this Source no longer stands.
+                remaining.pop(image_key)
+                continue
+            # And the Source is still inside the Library as it is now, checked
+            # fresh (bounded; an unanswered volume is an attempt, not a verdict).
+            inside = await _probe(
+                _inside_library, str(pending.get("source") or ""),
+                getattr(library, "root", None), default=None,
+            )
+            if inside is False:
                 remaining.pop(image_key)
                 continue
             budget -= 1
             try:
+                if inside is None:
+                    raise OSError("the Library's volume did not answer")
                 outcome = await job_manager.retry_kept_delete(
                     source_path=str(pending.get("source") or ""),
                     output_path=str(pending.get("output") or ""),
@@ -1087,6 +1126,7 @@ def _own_jobs(
             _job_owners[job_id] = (
                 library, str(platform_id), str(rom_id), own_identity, fingerprint,
             )
+            _job_library.setdefault(job_id, _library_identity(library))
 
 
 def _converted_entries(produced: list[tuple]) -> dict:
@@ -1948,6 +1988,7 @@ def forget_checks_locked(library: Library) -> None:
     """
     _generations[library.id] = _generations.get(library.id, 0) + 1
     findings.forget_kind(library.id, findings.NOT_INTACT)
+    findings.forget_kind(library.id, findings.SOURCE_KEPT)
     image_checks.forget_library(library.id)
 
 

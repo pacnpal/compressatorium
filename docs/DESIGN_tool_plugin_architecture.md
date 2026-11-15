@@ -4109,9 +4109,12 @@ job keeps its Source for a reader, the sweep's terminal listener
 (`note_job_finished`) records it in that Platform's Rule state, the same
 `rules.state` row (`services/rules/store.py`) that holds the converted
 history and the failed holds: `kept_sources[image key] = {source, output,
-job_id, kept_at, attempts, rule_identity}`. `rule_identity` is the Rule's
-`_output_identity` when the job was queued; a job that ends after its Rule
-was retargeted records nothing. Every later sweep, the web app's and
+job_id, kept_at, attempts, rule_identity, library_identity}`.
+`rule_identity` is the Rule's `_output_identity` when the job was queued, and
+`library_identity` the Library's (`_library_identity`: its id and root, plus
+`decision_identity()` where a Library has one, RomM's instance URL), taken
+when the job was queued; a job that ends after either changed records
+nothing. Every later sweep, the web app's and
 `compressatorium run-rules`'s alike (`_retry_kept_deletes`, before any
 planning, never in a preview), calls `JobManager.retry_kept_delete(source,
 output)` for each, at most `KEPT_DELETES_PER_SWEEP` a sweep:
@@ -4141,9 +4144,17 @@ It may only proceed while the decision that kept the Source still stands:
   operator's pause holds unless the Platform is named, a validation pause
   always), and its entries are neither retried nor dropped.
 - A Rule that is gone, no longer deletes its Sources, or asks for another
-  output (`rule_identity` differs) drops its entries without deleting.
-  `set_rules`' retarget path also drops them, under the same lock as
-  `forget_converted_locked`.
+  output (`rule_identity` differs), or a Library that is another one now
+  (`library_identity` differs), drops its entries without deleting. So does a
+  Source no longer inside the Library's root as it resolves now (checked
+  fresh, bounded; an unanswered volume is an attempt).
+- `forget_converted_locked` is the one point that invalidates a Rule's
+  decisions, pending deletes included, so every caller drops them: Forget
+  history (`forget_converted`, the Rules and Libraries routes, RomM's), a
+  Rule's retarget (`set_rules`), and RomM's identity cleanup
+  (`routes/romm.py::_run_identity_cleanup`). `forget_checks_locked`, which
+  that cleanup also calls, drops the `source_kept` Findings, keyed by Image
+  like the "not Intact" ones.
 - One entry's exception is that entry's `kept` attempt, logged with its
   traceback; the sweep goes on to the other entries and Platforms.
 

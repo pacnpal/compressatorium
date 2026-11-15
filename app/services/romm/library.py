@@ -92,6 +92,11 @@ class RommLibrary(LibraryDefaults):
     def configured(self) -> bool:
         return bool(romm_client.configured and romm_client.library_root)
 
+    def decision_identity(self) -> tuple:
+        """What names this Library besides its root: the RomM instance. A
+        pending delete (#329) is decided against both."""
+        return (romm_client.base_url,)
+
     def canonical_platform_id(self, raw: Any) -> str | None:
         try:
             return str(int(raw))

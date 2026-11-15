@@ -340,3 +340,125 @@ def test_a_stalled_path_resolve_in_the_delete_step_is_off_the_loop_and_bounded(
     assert elapsed < 0.9
     assert ticks >= 3, "the event loop kept running"
     assert kept["iso"].exists()
+
+
+# --------------------------------------------------------------------------- #
+# The Library is part of the decision (Codex 4579589757)
+# --------------------------------------------------------------------------- #
+
+
+def _seed_kept(library, source="/v/Game.iso", output="/v/out/Game.rvz", pid="gc"):
+    from services.rules import sweep as rules_sweep
+
+    async def seed():
+        state = await rules_sweep.get_state(library)
+        entry = dict(state.get(pid) or {})
+        entry[rules_sweep.KEPT_SOURCES] = {"Game.iso": {
+            "source": source, "output": output, "attempts": 0,
+            "rule_identity": [], "library_identity": [],
+        }}
+        state[pid] = entry
+        await rules_sweep.store.write(rules_sweep.store.STATE_KEY, library, state)
+
+    asyncio.run(seed())
+
+
+def test_a_folder_library_root_change_drops_the_entry_without_deleting(
+    env, dolphin, capsys, kept,
+):
+    """The Library now names another folder: the decision that kept the
+    Source was made for the old one."""
+    moved = env["vol"] / "moved"
+    (moved / "gc").mkdir(parents=True)
+    env["shelf"].root = moved
+
+    code, lines, _err = _cli(capsys, "run-rules", "--json")
+
+    assert code == 0, lines
+    assert kept["iso"].exists()
+    assert not _rule_state(env)["gc"].get("kept_sources")
+
+
+def test_a_source_outside_the_librarys_root_is_not_deleted(env, dolphin, capsys, kept):
+    """Checked fresh at retry: the Source must still be inside the Library as
+    it is now, even when the recorded identity matches."""
+    from services.rules import sweep as rules_sweep
+
+    async def retarget_entry():
+        state = await rules_sweep.get_state(env["shelf"])
+        pending = state["gc"]["kept_sources"]["Game.iso"]
+        elsewhere = env["vol"] / "attic" / "gc" / "Game.iso"
+        elsewhere.write_bytes(kept["iso"].read_bytes())
+        pending["source"] = str(elsewhere)
+        await rules_sweep.store.write(rules_sweep.store.STATE_KEY, env["shelf"], state)
+        return elsewhere
+
+    elsewhere = asyncio.run(retarget_entry())
+
+    code, lines, _err = _cli(capsys, "run-rules", "--json")
+
+    assert code == 0, lines
+    assert elsewhere.exists()
+    assert not _rule_state(env)["gc"].get("kept_sources")
+
+
+def test_a_late_completion_from_a_former_library_identity_records_nothing(
+    env, dolphin, capsys, monkeypatch,
+):
+    """The job was queued while the Library named one folder and ends after it
+    names another: nothing is remembered to delete."""
+    from services import job_manager as job_manager_module
+    from services.job_manager import JobManager
+    from services.lock_manager import LockManager, lock_manager
+
+    monkeypatch.setattr(job_manager_module, "DELETE_READER_WAIT_SECONDS", 0.3)
+    monkeypatch.setattr(job_manager_module, "DELETE_READER_POLL_SECONDS", 0.05)
+    iso = _iso(env)
+    out_dir = env["vol"] / "out"
+    out_dir.mkdir()
+    _store_rules(env, {"shelf": _rule(env)})
+    reader = LockManager()
+    reader._lock_dir = lock_manager._lock_dir
+    original = JobManager._release_inputs
+    moved = env["vol"] / "moved"
+    (moved / "gc").mkdir(parents=True)
+
+    def release_then_read(self, job_id):
+        original(self, job_id)
+        reader.acquire_dir_lock(str(iso.parent))
+        env["shelf"].root = moved  # the Library moves while the job runs
+
+    monkeypatch.setattr(JobManager, "_release_inputs", release_then_read)
+    try:
+        _cli(capsys, "run-rules", "--json")
+    finally:
+        reader.release_dir_lock(str(iso.parent))
+
+    assert iso.exists()
+    assert not _rule_state(env)["gc"].get("kept_sources")
+
+
+def test_every_history_invalidation_drops_pending_deletes(env, dolphin, capsys):
+    """Every caller of ``forget_converted_locked`` (Forget history, a Rule's
+    retarget through ``set_rules``, RomM's identity cleanup) leaves no
+    ``kept_sources`` behind: one invalidation point."""
+    from routes import romm as romm_routes
+    from services.romm.library import romm_library
+    from services.rules import sweep as rules_sweep
+
+    _store_rules(env, {"shelf": _rule(env)})
+
+    _seed_kept(env["shelf"])
+    asyncio.run(rules_sweep.forget_converted(env["shelf"]))
+    assert not _rule_state(env)["gc"].get("kept_sources"), "Forget history"
+
+    _seed_kept(env["shelf"])
+    elsewhere = env["vol"] / "elsewhere"
+    elsewhere.mkdir()
+    _store_rules(env, {"shelf": _rule(env, output_dir=str(elsewhere))})
+    assert not _rule_state(env)["gc"].get("kept_sources"), "a retarget"
+
+    _seed_kept(romm_library, pid="7")
+    asyncio.run(romm_routes._run_identity_cleanup())
+    state = asyncio.run(rules_sweep.get_state(romm_library))
+    assert not (state.get("7") or {}).get("kept_sources"), "RomM's identity cleanup"
