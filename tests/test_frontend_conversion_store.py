@@ -807,3 +807,72 @@ def test_an_abort_during_the_snapshot_never_queues_and_retires_the_metadata(tmp_
     assert data == {
         "result": None, "queued": 0, "retired": [[42]], "errors": [], "inFlight": False,
     }, data
+
+
+# CodeRabbit 4578050381: the snapshot can stay pending (a stalled RomM). The
+# wait for it is abort-aware: closing the panel frees Start at once (neither
+# autoInFlight nor converting stays set), and the rows the stalled snapshot
+# records when it finally returns are retired on their own, without touching
+# a newer run's state.
+_RUN_AUTO_ABORT_WHILE_THE_SNAPSHOT_STALLS = """
+const store = new ConversionStore();
+let releaseOld;
+planAnswer = (paths) => new Promise((resolve) => {
+  releaseOld = () => resolve({
+    recorded: 1, pending: 1,
+    recorded_paths: { [paths[0]]: '/out/a.chd' }, recorded_ids: { [paths[0]]: 42 },
+  });
+});
+const controller = new AbortController();
+const run = store.runAuto({
+  paths: ['/v/a.iso'], rommPlatformId: 3, confirm: () => Promise.resolve(true),
+  signal: controller.signal,
+});
+for (let i = 0; i < 5 && !releaseOld; i += 1) {
+  await new Promise((resolve) => setTimeout(resolve, 0));  // the snapshot is pending
+}
+controller.abort();                                        // the panel closes
+const result = await run;                                  // no release: it stalls
+const freed = { inFlight: store.autoInFlight, converting: store.converting };
+
+// A new run on the returning panel, with a snapshot that answers.
+planAnswer = (paths) => ({
+  recorded: 1, pending: 7,
+  recorded_paths: { [paths[0]]: '/out/b.chd' }, recorded_ids: { [paths[0]]: 77 },
+});
+autoAnswer = (items) => ({
+  plan: [], jobs: [{ id: 'j2', file_path: items[0].file_path, output_path: '/out/b.chd' }],
+});
+const second = await store.runAuto({
+  paths: ['/v/b.iso'], rommPlatformId: 3, confirm: () => Promise.resolve(true),
+});
+const newRun = { pending: store.lastRepinPending, recorded: store.lastRepinRecorded };
+
+releaseOld();                                              // the stalled snapshot returns
+await new Promise((resolve) => setTimeout(resolve, 0));
+await new Promise((resolve) => setTimeout(resolve, 0));
+process.stdout.write(JSON.stringify({
+  result, freed, secondQueued: second !== null, newRun,
+  afterLate: { pending: store.lastRepinPending, recorded: store.lastRepinRecorded,
+               converting: store.converting, inFlight: store.autoInFlight },
+  queued: calls.auto.map((args) => args[0].map((item) => item.file_path)),
+  retired: calls.cancel,
+}));
+"""
+
+
+def test_an_abort_while_the_snapshot_stalls_frees_start_and_the_late_rows_retire_alone(
+    tmp_path,
+):
+    data = _run(tmp_path, _RUN_AUTO_ABORT_WHILE_THE_SNAPSHOT_STALLS)
+
+    assert data["result"] is None, data
+    assert data["freed"] == {"inFlight": False, "converting": False}, data
+    assert data["secondQueued"] is True, data
+    assert data["queued"] == [["/v/b.iso"]], data              # only the new run queued
+    assert data["afterLate"] == {
+        "pending": data["newRun"]["pending"], "recorded": data["newRun"]["recorded"],
+        "converting": False, "inFlight": False,
+    }, data
+    assert [42] in data["retired"], data                       # the late rows, retired
+    assert all(77 not in ids for ids in data["retired"]), data # the new run's row kept

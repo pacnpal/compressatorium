@@ -14,14 +14,9 @@ from app.models import (
 )
 from app.routes import convert as convert_routes
 
-from .test_archive_conversion_e2e import _e2e_env  # noqa: F401
-from .test_auto_convert import (  # noqa: F401
-    _confirmed,
-    _fresh_cache,
-    _mixed_selection,
-    _route_env,
-    _volume,
-)
+from .test_auto_convert import _confirmed, _mixed_selection
+
+pytestmark = pytest.mark.usefixtures("fresh_detect_cache", "tmp_volume")
 
 
 @pytest.mark.asyncio

@@ -21,8 +21,6 @@ from app.models import (
 )
 from app.routes import convert as convert_routes
 
-from .test_auto_convert import _route_env  # noqa: F401
-
 _BLOCK_SECONDS = 3.0
 
 
