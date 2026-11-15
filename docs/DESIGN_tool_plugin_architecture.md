@@ -4646,7 +4646,11 @@ tool: it registers with an empty binary path and reports no pids.
   #306 adds for a kept Source), so the caveat outlives later messages such as
   the verify step's; the job row shows it under the output path
   (`src/lib/util/jobDetail.js`).
-- **A volume that stops answering.** The rewrite runs through `run_detached`
+- **A volume that stops answering.** The two reads before the rewrite (the
+  zip's directory in `inspect`, the template) go through
+  `run_detached_within_stall_bound`, like xiso's header reads: Cancel returns at
+  once (`ReadCancelled` becomes `ConversionCancelled`) and a read with no answer
+  past the bound fails the job. The rewrite itself runs through `run_detached`
   (a daemon thread, reported to any `collect_abandonment()` sink if it is left
   behind), never the shared pool. Cancel returns at once: `run_detached` raises
   `ReadCancelled` the moment the event fires. A worker that stops polling its

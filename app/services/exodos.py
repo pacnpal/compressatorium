@@ -33,7 +33,6 @@ from collections.abc import AsyncGenerator, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from fastapi.concurrency import run_in_threadpool
 from services.archive import ArchiveSafetyRefused, archive_service
 from services.archive_edit import rewrite_zip
 from services.subprocess_runner import (
@@ -43,6 +42,7 @@ from services.subprocess_runner import (
     collect_verify,
     conversion_stall_bound,
     run_detached,
+    run_detached_within_stall_bound,
     verify_preflight,
 )
 from utils.path_utils import is_within_configured_volumes, read_beneath
@@ -361,8 +361,21 @@ class ExodosService:
         The last update carries ``warning`` when the conf still points outside
         the game.
         """
-        plan = await run_in_threadpool(self.inspect, input_path)
-        template = await run_in_threadpool(self._read_template, plan.root, plan.top)
+        # These reads run before the rewrite's own watchdog exists, so each is
+        # bounded by the same no-progress timeout and raced against Cancel, as
+        # xiso's are: a Volume that hangs here can't hold the job, or the
+        # queue slot behind it, and the Source is only ever read.
+        try:
+            plan = await run_detached_within_stall_bound(
+                self.inspect, input_path,
+                what="Reading the game zip", cancel_event=cancel_event,
+            )
+            template = await run_detached_within_stall_bound(
+                self._read_template, plan.root, plan.top,
+                what="Reading the dosbox.conf template", cancel_event=cancel_event,
+            )
+        except ReadCancelled as exc:
+            raise ConversionCancelled("Conversion cancelled") from exc
         rewrite = rewrite_conf(template, plan.top, self.profile)
         prefix = f"{plan.top}/"
         # "beats" counts the worker's polls of is_cancelled, which it makes

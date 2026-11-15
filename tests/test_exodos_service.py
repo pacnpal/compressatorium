@@ -684,3 +684,68 @@ def test_an_unreadable_member_fails_verify_instead_of_raising(tree, flag, method
 
     assert result["valid"] is False
     assert "G.EXE" in result["message"]
+
+
+# --- the reads before the rewrite are bounded too (PR #324 Codex review) ----
+
+
+@pytest.fixture
+def blocked_step(monkeypatch):
+    """Make one pre-rewrite read block, as a hung Volume would."""
+    release = threading.Event()
+
+    def block(name):
+        real = getattr(ExodosService, name)
+
+        def stuck(self, *args):
+            release.wait(30)
+            return real(self, *args)
+
+        monkeypatch.setattr(ExodosService, name, stuck)
+
+    yield block
+    release.set()
+
+
+@pytest.mark.parametrize("step", ["inspect", "_read_template"])
+def test_cancel_returns_while_a_pre_rewrite_read_is_blocked(tree, blocked_step, step):
+    blocked_step(step)
+    service = ExodosService()
+    source = _game_zip(tree)
+    before = Path(source).read_bytes()
+    cancel = asyncio.Event()
+
+    async def run():
+        asyncio.get_running_loop().call_later(0.3, cancel.set)
+        return [u async for u in service.convert(
+            source, service.get_output_path(source), "exodos_repack", cancel_event=cancel,
+        )]
+
+    started = time.monotonic()
+    with pytest.raises(ConversionCancelled):
+        asyncio.run(run())
+
+    assert time.monotonic() - started < 3
+    assert Path(source).read_bytes() == before
+
+
+@pytest.mark.parametrize("step", ["inspect", "_read_template"])
+def test_a_stalled_pre_rewrite_read_fails_the_job_and_keeps_the_source(
+    tree, blocked_step, monkeypatch, step,
+):
+    from services import subprocess_runner
+
+    monkeypatch.setattr(exodos_module.settings, "progress_timeout", 1)
+    monkeypatch.setattr(subprocess_runner, "_MIN_STALL_TIMEOUT", 1)
+    blocked_step(step)
+    service = ExodosService()
+    source = _game_zip(tree)
+    before = Path(source).read_bytes()
+
+    started = time.monotonic()
+    with pytest.raises(RuntimeError, match="stopped responding"):
+        _convert(service, source, service.get_output_path(source))
+
+    assert time.monotonic() - started < 5
+    assert Path(source).read_bytes() == before
+    assert sorted(os.listdir(tree["games"])) == ["!dos", "Abaron (1995).zip"]
