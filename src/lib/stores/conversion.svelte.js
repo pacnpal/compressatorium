@@ -7,6 +7,7 @@ import { api } from '$lib/api/endpoints.js';
 import { registry, DEFAULT_COMPRESSION_LEVEL_RANGE } from '$lib/tools/registry.js';
 import { STORAGE_KEYS, readString, writeString } from '$lib/util/localStorage.js';
 import { jobs } from './jobs.svelte.js';
+import { deleteCheckFor } from '$lib/util/deleteCheck.js';
 
 function loadPrimaryTool() {
   const raw = readString(STORAGE_KEYS.PRIMARY_TOOL, 'chdman') ?? 'chdman';
@@ -109,6 +110,14 @@ class ConversionStore {
 
   get supportsRoundTrip() {
     return !!this.currentSpec?.supportsRoundTrip;
+  }
+
+  /** The check a delete-source job will pass before its sources go. */
+  get deleteCheck() {
+    return deleteCheckFor({
+      supportsRoundTrip: this.supportsRoundTrip,
+      containerOnly: this.containerOnly,
+    });
   }
 
   get supportsSplit() {
