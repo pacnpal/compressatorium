@@ -164,18 +164,23 @@ export function verifyEventSource(url, onProgress, { failureFallback = 'Verifica
 
     es.addEventListener('verify_error', (ev) => {
       let message = failureFallback;
+      let uncheckable = false;
       if (ev.data) {
         try {
           const data = JSON.parse(ev.data);
           if (data && typeof data === 'object' && typeof data.message === 'string') {
             message = data.message;
           }
+          uncheckable = Boolean(data?.uncheckable);
         } catch (_e) {
           // keep fallback
         }
       }
       cleanup();
-      reject(new Error(message));
+      // "Can't be checked here" (an archive safety rule refused it) is no
+      // verdict: an answer, not an error.
+      if (uncheckable) resolve({ valid: false, uncheckable: true, message });
+      else reject(new Error(message));
     });
 
     es.onerror = () => {
