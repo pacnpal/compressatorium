@@ -70,6 +70,7 @@ const api = {
   updateLibrary: __defer('updateLibrary'),
   forgetLibraryConverted: __defer('forgetLibraryConverted'),
   getLibraryPlatforms: __defer('getLibraryPlatforms'),
+  registerLibrary: __defer('registerLibrary'),
 };
 const romm = { isRomm: true };
 const ui = { navigated: null, navigate(v) { this.navigated = v; } };
@@ -172,6 +173,92 @@ process.stdout.write(JSON.stringify({{
 """)
     assert data["scheduled"] is True, data
     assert data["row"] is True, data
+
+
+def test_a_library_registered_during_a_list_load_is_kept(tmp_path):
+    """CodeRabbit 4578050384: an older catalogue cannot drop a new Library.
+
+    A list load starts, a folder is registered and selected, then the load
+    answers with the catalogue as it was before: the new Library stays, and
+    so does the selection.
+    """
+    data = _run(tmp_path, f"""
+const loading = libraries.load();
+await tick();
+const registering = libraries.register('/v/new');
+await tick();
+__calls[1].resolve({{ id: 'folder:9', kind: 'folder', name: 'new', root: '/v/new' }});
+await registering;
+libraries.select('folder:9');
+__calls[0].resolve([{_FOLDER}]);
+await loading;
+process.stdout.write(JSON.stringify({{
+  ids: libraries.list.map((lib) => lib.id), selected: libraries.selectedId,
+}}));
+""")
+    assert data["ids"] == ["folder:3", "folder:9"], data
+    assert data["selected"] == "folder:9", data
+
+
+def test_only_the_latest_settings_save_is_adopted(tmp_path):
+    """CodeRabbit 4578050386: two quick toggles; the older answer lands last.
+
+    On, then off: the off save answers first, the on save after it. The
+    switch shows off, as the backend has it.
+    """
+    data = _run(tmp_path, f"""
+const loadOnce = libraries.load();
+await tick();
+__calls[0].resolve([{{ ...{_FOLDER}, schedule_enabled: false }}]);
+await loadOnce;
+const source = libraries.sourceFor('folder:3');
+const first = source.setScheduleEnabled(true);
+await tick();
+const second = source.setScheduleEnabled(false);
+await tick();
+__calls[2].resolve({{ ...{_FOLDER}, schedule_enabled: false }});
+await second;
+__calls[1].resolve({{ ...{_FOLDER}, schedule_enabled: true }});
+await first;
+process.stdout.write(JSON.stringify({{
+  scheduled: source.scheduleEnabled,
+  row: libraries.list.find((lib) => lib.id === 'folder:3').schedule_enabled,
+}}));
+""")
+    assert data["scheduled"] is False, data
+    assert data["row"] is False, data
+
+
+def test_a_failed_latest_save_reloads_the_row(tmp_path):
+    """The latest save fails after an earlier one landed: the row is reloaded.
+
+    On, then off: on lands (not adopted, it is no longer the latest), off
+    fails. The store reads the Library back and shows what the server has.
+    """
+    data = _run(tmp_path, f"""
+const loadOnce = libraries.load();
+await tick();
+__calls[0].resolve([{{ ...{_FOLDER}, schedule_enabled: false }}]);
+await loadOnce;
+const source = libraries.sourceFor('folder:3');
+const first = source.setScheduleEnabled(true);
+await tick();
+const second = source.setScheduleEnabled(false).catch((e) => e.message);
+await tick();
+__calls[1].resolve({{ ...{_FOLDER}, schedule_enabled: true }});
+await first;
+__calls[2].reject(new Error('save failed'));
+await tick();
+const reloadCall = __log[3];
+__calls[3].resolve([{{ ...{_FOLDER}, schedule_enabled: true }}]);
+const error = await second;
+process.stdout.write(JSON.stringify({{
+  error, reloadCall, scheduled: source.scheduleEnabled,
+}}));
+""")
+    assert data["error"] == "save failed", data
+    assert data["reloadCall"] == ["listLibraries"], data
+    assert data["scheduled"] is True, data
 
 
 def test_a_listing_answered_after_removal_does_not_bring_the_library_back(tmp_path):

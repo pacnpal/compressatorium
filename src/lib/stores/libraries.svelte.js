@@ -135,6 +135,14 @@ class LibrariesStore {
   // started at; a Library row it brings back is adopted only if no save began
   // since, so a read older than a save never puts the old settings back.
   #settingsGenerations = new Map();
+  // Library id -> the ticket of the latest settings save started for it. Only
+  // that save's answer is adopted: two quick toggles can answer out of order.
+  #latestSave = new Map();
+  // Bumped by every registration. A Library registered after a list load set
+  // off is missing from that load's (older) catalogue and is kept, not dropped.
+  #catalogueEpoch = 0;
+  // Library id -> the catalogue epoch it was registered at.
+  #registeredAt = new Map();
 
   get selected() {
     return this.list.find((lib) => lib.id === this.selectedId) ?? null;
@@ -161,18 +169,25 @@ class LibrariesStore {
     this.loading = true;
     this.error = null;
     const readAt = new Map(this.#settingsGenerations);
+    const epoch = this.#catalogueEpoch;
     try {
       const data = await api.listLibraries();
       const current = new Map(this.list.map((lib) => [lib.id, lib]));
       // A row whose settings were saved while this read was out keeps the
       // saved row; see `adopt`.
-      this.list = (Array.isArray(data) ? data : [])
+      const rows = (Array.isArray(data) ? data : [])
         .filter((lib) => !this.#removed.has(lib.id))
         .map((lib) => (
           this.#isStale(lib.id, readAt.get(lib.id) ?? 0) && current.has(lib.id)
             ? current.get(lib.id)
             : lib
         ));
+      // A Library registered while this read was out is not in its catalogue.
+      const listed = new Set(rows.map((lib) => lib.id));
+      const added = this.list.filter((lib) => (
+        !listed.has(lib.id) && (this.#registeredAt.get(lib.id) ?? -1) >= epoch
+      ));
+      this.list = [...rows, ...added];
       this.#refreshSources(this.list);
       if (!this.list.some((lib) => lib.id === this.selectedId)) {
         this.selectedId = ROMM_LIBRARY_ID;
@@ -203,15 +218,38 @@ class LibrariesStore {
    * way a settings change is written from the app. Bumps the settings
    * generation as the save starts and again when it lands, so any read that
    * set off before the save answered is too old to adopt.
+   *
+   * Only the latest save started for the Library is adopted: two quick
+   * toggles can answer out of order, and the older answer must not win. If
+   * the latest save fails, the row is read back from the server, since an
+   * earlier save may have landed without being adopted.
    */
   async saveSettings(id, patch) {
+    const ticket = (this.#latestSave.get(id) ?? 0) + 1;
+    this.#latestSave.set(id, ticket);
     this.#bumpSettings(id);
+    let saved;
     try {
-      const saved = await api.updateLibrary(id, patch);
-      this.adopt(saved);
-      return saved;
+      saved = await api.updateLibrary(id, patch);
+    } catch (e) {
+      if (this.#latestSave.get(id) === ticket) await this.#reloadRow(id);
+      throw e;
     } finally {
       this.#bumpSettings(id);
+    }
+    if (this.#latestSave.get(id) === ticket) this.adopt(saved);
+    return saved;
+  }
+
+  /** Read Library *id*'s row back from the server, unless a save starts meanwhile. */
+  async #reloadRow(id) {
+    const readAt = this.settingsGeneration(id);
+    try {
+      const rows = await api.listLibraries();
+      const row = Array.isArray(rows) ? rows.find((lib) => lib.id === id) : null;
+      if (row) this.adopt(row, readAt);
+    } catch {
+      // The save's own error is what the caller reports; the next load fixes the row.
     }
   }
 
@@ -252,6 +290,7 @@ class LibrariesStore {
     this.registering = true;
     try {
       const library = await api.registerLibrary(path, name);
+      if (library?.id) this.#registeredAt.set(library.id, this.#catalogueEpoch++);
       this.adopt(library);
       return library;
     } finally {
