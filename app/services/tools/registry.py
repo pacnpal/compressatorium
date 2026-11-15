@@ -465,7 +465,7 @@ class ToolRegistry:
         (``.iso`` for folder_to_iso, so ``save.0`` never qualifies) and that
         mode's own ``companion_outputs`` for it (the lookup the delete and
         overwrite paths use) lists *path*. A suffix that isn't a number is
-        never one, and costs no disk I/O. Same rule as ``cli._split_owner``.
+        never one, and costs no disk I/O.
         """
         base, suffix = os.path.splitext(path)
         if not suffix[1:].isdigit():

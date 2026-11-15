@@ -364,7 +364,7 @@ def _logical_files(item) -> list[str]:
         logger.debug("No verify target for %s through %s: %s", item.path, mode, exc)
         return []
     files = [target] if target else []
-    return files + [p for p in _companion_outputs(mode, item.path) if p not in files]
+    return files + [p for p in registry._companions(mode, item.path) if p not in files]
 
 
 # --------------------------------------------------------------------------- #
@@ -1008,55 +1008,21 @@ def _tool_serves(tool, platform: str, registry) -> bool:
     return not any(platform in _tool_slugs(t) for t in registry.all())
 
 
-def _split_owner(path: str) -> tuple[str, str] | None:
-    """``(logical output, mode)`` when ``path`` is a numbered part of a split
-    output (``Game.iso.0``), else None.
-
-    Registry-driven: the candidate is the name without its last suffix, and it
-    counts only when it carries a mode's declared output extension (``.iso``
-    for folder_to_iso, so ``save.0`` never qualifies) and that mode's own
-    ``companion_outputs`` for it (the split-part lookup makeps3iso's delete
-    and overwrite paths use) lists ``path``. A suffix that isn't a number is
-    never one. A file that doesn't qualify stays a plain file for discovery.
-    """
-    from services.tools import registry
-    from utils.path_utils import match_extension
-
-    base, suffix = os.path.splitext(path)
-    if not suffix[1:].isdigit():
-        return None
-    real = os.path.realpath(path)
-    for spec in registry.mode_specs():
-        if not spec.output_ext or match_extension(base, {spec.output_ext}) is None:
-            continue  # this mode never writes a file named like the base
-        parts = _companion_outputs(spec.mode, base)
-        if real in {os.path.realpath(part) for part in parts}:
-            return base, spec.mode
-    return None
-
-
-def _companion_outputs(mode: str, base: str) -> list[str]:
-    """A mode's companion outputs for ``base``; [] when the tool's disk probe
-    fails (it owns nothing then), said at debug level."""
-    from services.tools import registry
-
-    try:
-        return registry.for_mode(mode).companion_outputs(base, mode)
-    except OSError as exc:
-        logger.debug("No companion outputs from %s for %s: %s", mode, base, exc)
-        return []
-
-
 def _is_split_part(path: str) -> bool:
-    return _split_owner(path) is not None
+    """A numbered part of a split output (``registry.split_owner``)."""
+    from services.tools import registry
+
+    return registry.split_owner(path) is not None
 
 
 def _to_logical(items: list[Item]) -> list[Item]:
     """Numbered parts become their one logical Image (#306), deduped."""
+    from services.tools import registry
+
     out: list[Item] = []
     index: dict[str, Item] = {}
     for item in items:
-        owner = None if item.status or "::" in item.path else _split_owner(item.path)
+        owner = None if item.status or "::" in item.path else registry.split_owner(item.path)
         if owner is not None:
             item = Item(path=owner[0], explicit=item.explicit, logical_mode=owner[1])
         key = os.path.realpath(item.path)
@@ -1126,7 +1092,7 @@ def _checked_at(record: dict | None) -> datetime | None:
         return None
 
 
-def _hold_for_check(path: str) -> list[str] | None:
+def _hold_for_check(path: str, also: list[str] | tuple = ()) -> list[str] | None:
     """Take the shared read lock jobs use on ``path`` and its companions.
 
     Held through the check and its record, so no other process can overwrite
@@ -1138,7 +1104,7 @@ def _hold_for_check(path: str) -> list[str] | None:
 
     held: list[str] = []
     try:
-        for each in dict.fromkeys([path, *registry.source_companions(path)]):
+        for each in dict.fromkeys([path, *also, *registry.source_companions(path)]):
             if not lock_manager.acquire_input_lock(each):
                 _let_go_of(held)
                 return None
@@ -1160,11 +1126,14 @@ def _let_go_of(held: list[str]) -> None:
 
 async def _verify_one(
     path: str, tool, has_db: bool, since, dry_run: bool, *, target: str | None = None,
+    also_lock: list[str] | tuple = (),
 ) -> dict:
     """Check one Image. The line carries ``_stop`` when the run must end.
 
     ``target`` is the file the check reads when it isn't ``path`` (a split
     output's first part); the line and the record stay on ``path``.
+    ``also_lock`` names more files the check depends on (a split output's
+    logical path and every part), held the same way for the whole check.
     """
     read = target or path
     from fastapi.concurrency import run_in_threadpool
@@ -1180,12 +1149,12 @@ async def _verify_one(
             return line
     if dry_run:
         # Read-only: look, take nothing.
-        if lock_manager.is_locked(read):
+        if any(lock_manager.is_locked(each) for each in (read, *also_lock)):
             line["status"], line["reason"] = "skipped", "Busy: another job is writing it"
         else:
             line["status"] = "planned"
         return line
-    held = await run_in_threadpool(_hold_for_check, read)
+    held = await run_in_threadpool(_hold_for_check, read, also_lock)
     if held is None:
         # A writer has it: no verdict either way, and what was stored stays.
         line["status"], line["reason"] = "skipped", "Busy: another job is writing it"
@@ -1299,8 +1268,16 @@ async def verify(args, printer: Printer, state: RunState) -> int:
             })
             failed = failed or item.explicit
             continue
+        # A logical Image (a split ISO) also holds its logical path, which a
+        # rebuild locks alone, and every part: an in-progress build makes the
+        # check skip as busy rather than judge a half-written set.
+        also_lock = (
+            [item.path, *registry._companions(item.logical_mode, item.path)]
+            if item.logical_mode else []
+        )
         line = await _verify_one(
             item.path, tool, has_db, since, args.dry_run, target=target,
+            also_lock=also_lock,
         )
         stop = line.pop("_stop", False)
         failed = failed or line["status"] == "failed"
