@@ -23,10 +23,12 @@ Design notes
 
 from __future__ import annotations
 
+import contextlib
 import json
 from logging_setup import get_logger
 import os
 import tempfile
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -1072,6 +1074,48 @@ def init_and_migrate(
     return eng
 
 
+# How long a process waits for another to finish initialising the database
+# (Alembic, the legacy import) before it gives up with an error. Generous: a
+# first run imports the legacy JSON stores (#306).
+INIT_LOCK_WAIT_SECONDS = 300.0
+
+
+@contextlib.contextmanager
+def _init_lock(lock_dir: str | None):
+    """Exclusive, cross-process: one process initialises the database at a
+    time (``init.lock`` in the shared lock dir, a blocking flock with a bound).
+
+    Several CLI processes, or a CLI beside the web, started on a fresh
+    database would otherwise all run Alembic at once and all but one fail
+    ("table already exists", "database is locked"). A process that waited
+    finds the schema at head when it gets the lock: ``apply_migrations``
+    reads the current revision then.
+    """
+    import fcntl
+
+    if not lock_dir:
+        yield
+        return
+    os.makedirs(lock_dir, mode=0o700, exist_ok=True)
+    deadline = time.monotonic() + INIT_LOCK_WAIT_SECONDS
+    with open(os.path.join(lock_dir, "init.lock"), "ab") as handle:
+        while True:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(
+                        "Another process is still initialising the database "
+                        f"(waited {INIT_LOCK_WAIT_SECONDS:.0f}s for {lock_dir}/init.lock)",
+                    ) from None
+                time.sleep(0.1)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
 def init_app_database(settings) -> str:
     """Open the app database for a process that will write to it.
 
@@ -1083,6 +1127,12 @@ def init_app_database(settings) -> str:
     import then refuses to fill. Returns the database path.
     """
     db_path = resolve_db_path(settings.db_path, data_dir=settings.data_dir)
+    with _init_lock(getattr(settings, "concurrency_lock_dir", None)):
+        return _init_app_database_locked(settings, db_path)
+
+
+def _init_app_database_locked(settings, db_path: str) -> str:
+    """``init_app_database`` under its cross-process lock."""
     # Initialise the engine *without* create_all, Alembic owns the
     # schema on the production path.  apply_migrations then stamps
     # pre-Alembic DBs or upgrades the rest.  Only after the schema is
