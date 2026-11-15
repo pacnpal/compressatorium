@@ -9,11 +9,10 @@ synchronous; the async contract is satisfied by running it in a threadpool.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Sequence
 from pathlib import Path
 
 from fastapi.concurrency import run_in_threadpool
-
 from models import CsoInfo, OutputStatus
 from services.lock_manager import lock_manager
 from services.maxcso import (
@@ -22,8 +21,10 @@ from services.maxcso import (
     maxcso_service,
     uncompressed_iso_size,
 )
+from services.stream_digest import content_digest_of, file_chunks
+from utils.cso_decode import iter_decoded
 
-from .base import BaseTool
+from .base import IMAGE_DATA_SHA1_KIND, BaseTool, ContentDigest
 from .spec import ModeKind, ModeSpec
 
 # The .iso a file-list row offers maps to its .cso sibling for the "output
@@ -52,6 +53,9 @@ class MaxcsoTool(BaseTool):
             # The UI sends an effort preset (fast|default|max), no numeric level.
             supports_compression=True,
             supports_delete_on_verify=True,
+            # The .iso is hashed as a file; the container is decoded to a
+            # hashing stream in Python (content_digest), no temp file.
+            supports_round_trip=True,
             allows_archive_input=True,
         ),
         ModeSpec(
@@ -64,6 +68,9 @@ class MaxcsoTool(BaseTool):
             input_extensions=frozenset(MAXCSO_COMPRESS_EXTENSIONS),
             supports_compression=True,
             supports_delete_on_verify=True,
+            # The .iso is hashed as a file; the container is decoded to a
+            # hashing stream in Python (content_digest), no temp file.
+            supports_round_trip=True,
             allows_archive_input=True,
         ),
         ModeSpec(
@@ -76,6 +83,9 @@ class MaxcsoTool(BaseTool):
             input_extensions=frozenset(MAXCSO_COMPRESS_EXTENSIONS),
             supports_compression=True,
             supports_delete_on_verify=True,
+            # The .iso is hashed as a file; the container is decoded to a
+            # hashing stream in Python (content_digest), no temp file.
+            supports_round_trip=True,
             allows_archive_input=True,
         ),
         ModeSpec(
@@ -88,6 +98,9 @@ class MaxcsoTool(BaseTool):
             input_extensions=frozenset(MAXCSO_COMPRESS_EXTENSIONS),
             supports_compression=True,
             supports_delete_on_verify=True,
+            # The .iso is hashed as a file; the container is decoded to a
+            # hashing stream in Python (content_digest), no temp file.
+            supports_round_trip=True,
             allows_archive_input=True,
         ),
         ModeSpec(
@@ -178,6 +191,30 @@ class MaxcsoTool(BaseTool):
 
     def info_model(self, raw: dict, path: str) -> CsoInfo:
         return CsoInfo(**self._basic_info_fields(raw))
+
+    async def content_digest(
+        self,
+        path: str,
+        *,
+        cancel_event: asyncio.Event | None = None,
+        within: Sequence[str] | None = None,  # reads no sheet, so unused
+    ) -> ContentDigest | None:
+        # Both sides are the SHA1 of the ISO image. An .iso is that image; a
+        # CSO/ZSO/DAX is decoded block by block and hashed as it streams
+        # (utils.cso_decode: maxcso itself cannot write to a pipe, #301). The
+        # kind is chdman's too, so cso_to_chd compares the decoded CSO with the
+        # CHD's data SHA1.
+        ext = Path(path).suffix.lower()
+        if ext in MAXCSO_COMPRESS_EXTENSIONS:
+            produce = file_chunks([path])
+        elif ext in MAXCSO_DECOMPRESS_EXTENSIONS:
+            def produce(stop):
+                return iter_decoded(path, stop)
+        else:
+            return None
+        return await content_digest_of(
+            produce, kind=IMAGE_DATA_SHA1_KIND, cancel_event=cancel_event,
+        )
 
     def expected_output_size(self, input_path: str, mode: str) -> int | None:
         # Decompress only: the CSO/ZSO/DAX header states the ISO size, which is

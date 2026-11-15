@@ -30,16 +30,31 @@ def compute_file_sha1_sync(file_path: str) -> str:
     return _sha1_sync(file_path)
 
 
-def _sha1_sync(file_path: str) -> str:
-    """Synchronous SHA1 computation."""
+def compute_files_sha1_sync(file_paths: list[str]) -> str:
+    """Blocking SHA-1 of several files read end to end, in the order given.
+
+    One digest for an image stored as several files (a cue's track files).
+    Same offload rule as :func:`compute_file_sha1_sync`. SHA-1 because the
+    Round-trip compares it with a CHD header's data SHA-1.
+    """
+    return _sha1_sync(*file_paths)
+
+
+def _sha1_sync(*file_paths: str) -> str:
+    """Synchronous SHA1 computation (several files: read end to end)."""
     h = hashlib.sha1(usedforsecurity=False)  # nosec # nosemgrep: insecure-hash-algorithm-sha1  # pylint: disable=unexpected-keyword-arg
+    for file_path in file_paths:
+        _update_from_file(h, file_path)
+    return h.hexdigest()
+
+
+def _update_from_file(h, file_path: str) -> None:
     with open(file_path, "rb") as f:
         while True:
             chunk = f.read(_CHUNK_SIZE)
             if not chunk:
                 break
             h.update(chunk)
-    return h.hexdigest()
 
 
 async def compute_file_sha1_with_size(file_path: str) -> tuple[str, int]:

@@ -424,6 +424,19 @@ class ToolRegistry:
         """
         return [t for t in self._tools.values() if t.verifies_path(path)]
 
+    def split_owner_name(self, path: str) -> str | None:
+        """The logical output a numbered split part would belong to, by name
+        alone: *path* without its last suffix, when that suffix is a number
+        and the rest carries some mode's declared output extension
+        (``Game.iso.3`` -> ``Game.iso``; ``save.0`` -> None). No disk I/O, so
+        a part that doesn't exist yet (still being written) has an owner too.
+        """
+        base, suffix = os.path.splitext(path)
+        if not suffix[1:].isdigit():
+            return None
+        exts = {spec.output_ext for spec in self.mode_specs() if spec.output_ext}
+        return base if match_extension(base, exts) is not None else None
+
     def split_owner(self, path: str) -> tuple[str, str] | None:
         """``(logical output, mode)`` when *path* is a numbered part of a split
         output (``Game.iso.0``), else None. May do disk I/O.
