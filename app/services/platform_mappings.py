@@ -39,6 +39,16 @@ _generation = 0
 _lock = threading.Lock()
 
 
+class MappingsUnavailable(RuntimeError):
+    """The mappings could not be read: no answer, which is not "none set".
+
+    A read that fails must not pass for an empty table, or an Image whose
+    folder is mapped would be decided without that evidence (a header taken
+    over the mapping it disagrees with). Detection answers Unsorted and a
+    folder Library's Rules listing stops until the mappings read again.
+    """
+
+
 class MappingError(ValueError):
     """A mapping cannot be set. ``status`` is the HTTP status that fits."""
 
@@ -92,14 +102,16 @@ def _loaded() -> dict[str, str]:
             return _index
         generation = _generation
     if _db.SessionLocal is None:
+        # No database in this process (a CLI dry run on a fresh data dir):
+        # there is no mapping table, so there is none set.
         return {}
     try:
         built = _build_index()
-    except Exception:
-        # Detection still answers from the header and the folder name; say so
-        # loudly rather than read a missing mapping as "none set".
+    except Exception as exc:
+        # Never read a failed read as "none set": nothing is cached, and the
+        # caller decides nothing on missing evidence.
         logger.warning("platform_mappings: could not read the mappings", exc_info=True)
-        return {}
+        raise MappingsUnavailable("the folder Platform mappings could not be read") from exc
     with _lock:
         if _generation == generation:
             _index = built
@@ -111,7 +123,8 @@ def mapped_folders() -> dict[str, str]:
 
     Platform detection walks an Image's parents against it, together with the
     Platform folder names (``platform_detect._place``). Blocking on first use
-    (reads the database); every later call returns the cached index.
+    (reads the database); every later call returns the cached index. Raises
+    :class:`MappingsUnavailable` when the database read fails.
     """
     return _loaded()
 
