@@ -61,6 +61,22 @@ def unlink_held(handle, path: str) -> bool:
     return True
 
 
+def open_lock_handle(path: str):
+    """Open (creating) a lock file for ``flock``, as ``open(path, "ab")`` does.
+
+    The handle is held past the call (for as long as its lock is), so it is
+    made from an ``os.open`` descriptor rather than a ``with`` block. Binary
+    append: a flock-only handle, or one that records a path with ``write``.
+    Shared by every lock file here and in ``concurrency_manager``.
+    """
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o666)
+    try:
+        return os.fdopen(fd, "ab")
+    except BaseException:
+        os.close(fd)
+        raise
+
+
 class LockManager:
     """Manages file locks to prevent concurrent conversions of the same file."""
 
@@ -772,8 +788,7 @@ class LockManager:
         """
         for _attempt in range(attempts):
             try:
-                # Binary mode: flock-only handle, no text is read or written.
-                handle = open(lock_file_path, "ab")  # noqa: SIM115 - held past this call
+                handle = open_lock_handle(lock_file_path)
             except OSError:
                 logger.error("Failed to open input lock %s", lock_file_path, exc_info=True)
                 return None
@@ -839,8 +854,7 @@ class LockManager:
         while True:
             if keep_waiting is not None:
                 keep_waiting()
-            # Binary mode: flock-only handle, held open past this call.
-            handle = open(lock_file_path, "ab")
+            handle = open_lock_handle(lock_file_path)
             try:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:

@@ -3220,7 +3220,9 @@ class JobManager:
                 inputs_held = job.input_kind == InputKind.DIRECTORY or await run_in_threadpool(
                     self._hold_inputs, job_id, job, self._begin_input_attempt(job_id),
                 )
-            except Exception as exc:  # noqa: BLE001 - never stay queued holding a slot
+            except Exception as exc:
+                # Never stay queued holding a slot: any failure ends the job.
+                logger.warning("Could not lock the Source of %s", job_id, exc_info=True)
                 await self._fail_before_start(
                     job_id, job, f"Could not lock the Source: {exc}",
                     dir_lock_held=dir_lock_acquired,

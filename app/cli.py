@@ -1184,7 +1184,9 @@ async def _check_held(
             result = await asyncio.wait_for(tool.verify(read), timeout=bound or None)
         except asyncio.TimeoutError:
             result = {"error": f"Verification timed out after {bound}s"}
-        except Exception as exc:  # noqa: BLE001 - one bad file must not stop the rest
+        except Exception as exc:
+            # One bad file must not stop the rest: it is reported failed.
+            logger.debug("Verification of %s could not run", read, exc_info=True)
             result = {"error": f"Verification could not run: {exc}"}
     if stops_verify_batch(result, abandoned):
         line["_stop"] = True

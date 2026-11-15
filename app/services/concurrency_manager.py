@@ -9,7 +9,7 @@ import uuid
 
 from config import settings
 from logging_setup import get_logger
-from services.lock_manager import still_linked, unlink_held
+from services.lock_manager import open_lock_handle, still_linked, unlink_held
 
 logger = get_logger("concurrency_manager")
 
@@ -126,7 +126,14 @@ class ConcurrencyManager:
 
     def _make_holder(self) -> None:
         tmp_path = f"{self._holder_path}.{os.getpid()}.tmp"
-        handle = open(tmp_path, "w", encoding="utf-8")  # noqa: SIM115 - held for life
+        # Held for the life of the process: an ``os.open`` descriptor, not a
+        # ``with`` block. Truncating text write, as ``open(tmp_path, "w")``.
+        fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o666)
+        try:
+            handle = os.fdopen(fd, "w", encoding="utf-8")
+        except BaseException:
+            os.close(fd)
+            raise
         try:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             handle.write(json.dumps({"pid": os.getpid(), "created_at": time.time()}))
@@ -184,9 +191,7 @@ class ConcurrencyManager:
                 return False
             for idx, path in enumerate(self._slot_paths):
                 try:
-                    # Binary mode avoids an "unspecified-encoding" lint warning; this
-                    # handle is used only for fcntl.flock(), no text is read or written.
-                    handle = open(path, "ab")  # noqa: SIM115,ASYNC230 - held for the slot
+                    handle = open_lock_handle(path)  # held for the slot
                 except OSError:
                     continue
                 try:
@@ -340,8 +345,7 @@ class ConcurrencyManager:
         """Remove a dead holder's files; leave a live holder's alone."""
         holder_path = os.path.join(self.lock_dir, f"holder_{holder}.lock")
         try:
-            # Binary mode: flock-only handle, no text is read or written.
-            handle = open(holder_path, "ab")  # noqa: SIM115 - closed below
+            handle = open_lock_handle(holder_path)  # closed below
         except FileNotFoundError:
             handle = None  # no holder file: nobody can be holding these
         except OSError:
