@@ -344,6 +344,16 @@ async def forget_converted_locked(
     return cleared
 
 
+def library_generation(library_id: str) -> int:
+    """*library_id*'s generation: it moves when that Library is removed.
+
+    Anything that writes on a Library's behalf from outside the sweep lock
+    (the Findings a folder walk records) captures it first and writes only
+    while it is unchanged. Safe from any thread: a plain dictionary read.
+    """
+    return _generations.get(library_id, 0)
+
+
 async def forget_library(library: Library) -> None:
     """Drop every Rule and all run state *library* has. Touches no files.
 

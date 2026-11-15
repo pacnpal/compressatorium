@@ -195,10 +195,13 @@ class FolderLibrary:
         # Bumped when something the last walk relied on changed (a mapping),
         # so the next listing walks again instead of serving it.
         self._generation = 0
-        # Set when the Library is removed: a walk that outlives it must not
-        # record Findings. (#303's Library generation token will take this
-        # job when it lands.)
-        self._removed = False
+        # The Rule engine's generation for this Library when this object was
+        # built (#303). Removing the Library moves it, so a walk of this
+        # object that finishes, or even starts, after the removal records no
+        # Findings. A re-registered Library is a new object with a new token.
+        from services.rules import sweep as rules_sweep
+
+        self._token = rules_sweep.library_generation(self.id)
         # The follow-up walk `_schedule_rewalk` started, if any (tests join it).
         self._rewalk_thread: threading.Thread | None = None
         # Serialises a settings change (database row, then this object), so
@@ -225,13 +228,11 @@ class FolderLibrary:
         if max_per_sweep is not None:
             self._max_per_sweep = int(max_per_sweep)
 
-    def mark_removed(self) -> None:
-        """This Library was removed; a walk still running records nothing."""
-        self._removed = True
-
     def is_current(self) -> bool:
-        """Still a registered Library. Asked under the Findings store's lock."""
-        return not self._removed
+        """Still a registered Library (#303's token). Asked under the Findings store's lock."""
+        from services.rules import sweep as rules_sweep
+
+        return rules_sweep.library_generation(self.id) == self._token
 
     def invalidate(self) -> None:
         """The last walk is out of date; the next listing walks again. Never waits."""

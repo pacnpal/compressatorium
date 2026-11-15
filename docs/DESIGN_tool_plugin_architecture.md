@@ -2752,10 +2752,13 @@ unavailable) never reaches the reconcile. A subfolder that does not list is
 passed as `keep_under`, so a mount blip at any depth clears no Finding.
 
 The walk's `current` check refuses the write in two cases. The Library was
-removed (`FolderLibrary.mark_removed()`, set by `libraries.remove` before its
-Findings are dropped; #303's Library generation token is meant to take this
-over). Or the Library's generation moved since the walk started: a mapping was
-set while it ran, so its detections are out of date. The walk then marks its
+removed: `FolderLibrary` captures the Rule engine's token for its id
+(`rules_sweep.library_generation`, #303) when it is built, and
+`rules_sweep.forget_library` moves it before `libraries.remove` drops the
+Findings, so a walk of the removed object writes nothing whether it was
+running then or starts later. Or the Library's own generation moved since the
+walk started: a mapping was set while it ran, so its detections are out of
+date. The walk then marks its
 Scan `stale` and, once its lock is released, `_schedule_rewalk` walks again on
 a daemon thread. A database error while reconciling is logged and costs only
 the Findings; the walk still serves the Rules. Nothing that reads the store
