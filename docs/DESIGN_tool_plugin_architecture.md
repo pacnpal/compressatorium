@@ -2361,7 +2361,7 @@ an earlier run left for that path is dropped. `ConversionJob.check_passed`
 (and so the Ledger row) still says `"intact"`, because the container check did
 pass.
 
-### 3.3.13 Platform detection (`services/platform_detect.py`, `ToolPlugin.header_platform`)
+### 3.3.14 Platform detection (`services/platform_detect.py`, `ToolPlugin.header_platform`)
 
 `detect_platform(path) -> Detection` is the one place an Image's Platform is
 worked out without a library manager. The convert panel's Auto choice uses it
