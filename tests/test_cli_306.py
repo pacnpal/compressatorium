@@ -1168,3 +1168,48 @@ def test_a_z3ds_verifier_killed_by_a_signal_keeps_the_stored_pass(
     assert lines[0]["status"] == "failed"
     assert "signal" in lines[0]["reason"]
     assert asyncio.run(verification_store.get_record(str(game))) is not None
+
+
+def test_a_cli_run_imports_the_legacy_verification_store_first(
+    volume, dolphin, capsys,
+):
+    """The first CLI write must not leave verified_chds.json behind forever: the
+    CLI runs the same legacy import the web startup does (codex 4576670759)."""
+    import asyncio
+    import json as json_module
+
+    from config import settings
+    from services.verification_store import verification_store
+
+    legacy_path = str((volume / "old" / "Game.chd").resolve())
+    legacy = Path(settings.data_dir) / "verified_chds.json"
+    legacy.write_text(json_module.dumps({
+        legacy_path: {
+            "chd_path": legacy_path, "source_path": None,
+            "verified_at": "2026-01-01T00:00:00Z",
+        },
+    }))
+    rvz = _rvz(volume)
+
+    code, _ = _cli(capsys, "verify", str(rvz), "--json")
+
+    assert code == 0
+    record = asyncio.run(verification_store.get_record(legacy_path))
+    assert record is not None and record["verified_at"] == "2026-01-01T00:00:00Z"
+    assert not legacy.exists()
+
+
+def test_a_dry_run_leaves_the_legacy_store_alone(volume, dolphin, capsys):
+    import json as json_module
+
+    from config import settings
+
+    legacy = Path(settings.data_dir) / "verified_chds.json"
+    legacy.write_text(json_module.dumps({}))
+    rvz = _rvz(volume)
+
+    code, _ = _cli(capsys, "verify", str(rvz), "--dry-run", "--json")
+
+    assert code == 0
+    assert legacy.exists()
+    assert not Path(settings.db_path).exists()

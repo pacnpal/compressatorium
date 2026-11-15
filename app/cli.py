@@ -335,9 +335,8 @@ def _open_db(dry_run: bool) -> bool:
             return False
         _db.init_engine(path, create_schema=False)
         return True
-    path = _db.resolve_db_path(settings.db_path, data_dir=settings.data_dir)
-    _db.init_engine(path, create_schema=False)
-    _db.apply_migrations()
+    # The web startup's own initialisation, legacy JSON import included.
+    _db.init_app_database(settings)
     return True
 
 
