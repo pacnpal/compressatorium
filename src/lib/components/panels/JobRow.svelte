@@ -60,6 +60,16 @@
 
   const StatusIcon = $derived(statusIcon(status));
 
+  // Delete-on-verify finished but deleted nothing: the Source was kept, for
+  // example because a playlist naming it couldn't be updated (#295). The
+  // job's message says why, so it stays visible after completion.
+  const sourceKept = $derived(
+    status === 'completed'
+      && !!job?.delete_on_verify
+      && !(job?.deleted_paths?.length)
+      && !!job?.message,
+  );
+
   async function handleCancel() {
     try {
       await jobs.cancel(job.id);
@@ -111,6 +121,9 @@
     <div class="error-message">{job.error_message}</div>
   {:else if status === 'completed' && job?.output_path}
     <div class="message muted" title={job.output_path}>→ {job.output_path}</div>
+  {/if}
+  {#if sourceKept}
+    <div class="kept-message" role="status">{job.message}</div>
   {/if}
 </li>
 
@@ -180,6 +193,14 @@
     color: var(--error);
     font-size: var(--text-xs);
     background: var(--error-muted);
+    border-radius: var(--radius-sm);
+    padding: var(--space-1) var(--space-2);
+  }
+
+  .kept-message {
+    color: var(--warning);
+    font-size: var(--text-xs);
+    background: var(--warning-muted);
     border-radius: var(--radius-sm);
     padding: var(--space-1) var(--space-2);
   }

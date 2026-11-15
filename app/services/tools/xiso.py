@@ -32,6 +32,7 @@ from services.extract_xiso import (
     XISO_CONVERTIBLE_EXTENSIONS,
     XISO_OUTPUT_EXTENSION,
     XISO_VERIFY_EXTENSIONS,
+    detect_console,
     extract_xiso_service,
 )
 from services.lock_manager import lock_manager
@@ -72,6 +73,10 @@ class XisoTool(BaseTool):
 
     def converts_path(self, path: str) -> bool:
         return self._service.is_convertible(path)
+
+    def header_platform(self, path: str) -> str | None:
+        # The XDVDFS volume's layout, or a trimmed image's boot executable.
+        return {"Xbox": "xbox", "Xbox 360": "xbox360"}.get(detect_console(path) or "")
 
     def detect_output(
         self, input_path: str, *, from_archive: bool = False,

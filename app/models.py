@@ -186,6 +186,10 @@ class ConversionJob(BaseModel):
     # no check ran.
     check_passed: str | None = None
     deleted_paths: list[str] = []
+    # What the Referrer hook did before the Source was to be removed (#295):
+    # {"referrer": id, "target": file, "status": "updated" | "failed" |
+    # "skipped", "reason": why, for failed and skipped}.
+    referrers_updated: list[dict] = []
 
 
 class JobCreateRequest(BaseModel):
@@ -214,6 +218,55 @@ class BatchJobCreateRequest(BaseModel):
     # Skip the Round-trip check and delete on the container check alone.
     container_only: bool = False
     split: bool = False  # makeps3iso folder->iso: split output into 4 GB parts
+
+
+class AutoPlanRequest(BaseModel):
+    """Images to send to their Platform's default target (the Auto choice)."""
+
+    file_paths: list[str]
+    output_dir: str | None = None
+
+
+class AutoJobItem(BaseModel):
+    """One Image of a confirmed Auto plan and the target the user saw for it."""
+
+    file_path: str
+    mode: str
+
+
+class AutoJobCreateRequest(BaseModel):
+    """Queue the Auto plan the user confirmed.
+
+    ``items`` are the plan's actionable rows only (an Image the preview
+    skipped is never sent). The route replans them and refuses with 409 when
+    any target changed, so what is queued is what was confirmed.
+    """
+
+    items: list[AutoJobItem]
+    output_dir: str | None = None
+    duplicate_action: DuplicateAction = DuplicateAction.SKIP
+
+
+class AutoPlanItem(BaseModel):
+    """One row of an Auto plan: the Image's Platform and where it goes.
+
+    ``how`` is ``header``, ``folder``, ``conflict`` or ``unsorted``. ``mode``
+    is None when the Image is skipped, and ``skip_reason`` then says why.
+    """
+
+    file_path: str
+    platform: str | None = None
+    how: str
+    reason: str
+    mode: str | None = None
+    tool_id: str | None = None
+    compression: str | None = None
+    skip_reason: str | None = None
+
+
+class AutoBatchResponse(BaseModel):
+    plan: list[AutoPlanItem]
+    jobs: list[ConversionJob]
 
 
 class CheckDuplicatesRequest(BaseModel):
@@ -272,6 +325,10 @@ class MetadataBatchRequest(BaseModel):
 class DeletePlanRequest(BaseModel):
     file_paths: list[str]
     mode: ConversionMode = ConversionMode.CREATECD
+    # Where the outputs will land, and how a taken output is handled (RENAME
+    # writes a numbered path), so Referrer changes name the file the job writes.
+    output_dir: str | None = None
+    duplicate_action: DuplicateAction = DuplicateAction.SKIP
 
 
 class DolphinDiscInfo(BaseModel):

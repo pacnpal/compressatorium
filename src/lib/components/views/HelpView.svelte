@@ -465,8 +465,8 @@
       <dt>A file didn't show up in the list</dt>
       <dd>Make sure the right tool is selected, since the list filters to it. Try Search All for a recursive sweep, or clear the extension filter.</dd>
 
-      <dt>An ISO went to the wrong tool</dt>
-      <dd>ISOs can belong to CHDMAN or Dolphin. The ISO handling toggle decides which one handles info, verify, and conversion. Set it to match the disc.</dd>
+      <dt>Not sure which tool an ISO needs</dt>
+      <dd>Tick Auto in the convert panel. It reads each Image's header (or its folder name, such as <code>ps2</code> or <code>gc</code>) and sends it to that Platform's default format with your saved compression. Images whose Platform is unclear are skipped and listed in the plan before anything is queued.</dd>
 
       <dt>A 3DS ROM failed to compress</dt>
       <dd>The ROM has to be decrypted first. Encrypted dumps won't work.</dd>

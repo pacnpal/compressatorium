@@ -34,6 +34,7 @@ from services.chdman import ConversionCancelled, chdman_service
 from services.disc_id import DiscIdStorageAbandoned
 from services.concurrency_manager import concurrency_manager
 from services.lock_manager import lock_manager
+from services import referrers
 from services.round_trip import round_trip, round_trip_applies
 from services.subprocess_runner import ReadCancelled, run_detached
 from services.tools import ModeKind, registry
@@ -227,6 +228,19 @@ async def _resolve_paths_bounded(paths: Iterable[str]) -> Dict[str, str]:
 
 # The statuses a job never leaves. Anything else is still in flight.
 _TERMINAL_STATUSES = (JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED)
+# How often `wait_until_terminal` re-reads job states.
+_SETTLE_POLL_SECONDS = 0.05
+# The longest a caller inside an HTTP request (the Auto rollback) waits in
+# `wait_until_terminal`, whatever the job progress timeout says (0 there means
+# no bound). A job still running at this cap is reported as kept, so a short
+# cap loses nothing and a stuck job cannot hang the request.
+ROLLBACK_WAIT_CAP_SECONDS = 30.0
+# The longest a route waits for its per-path Volume checks (and Auto's
+# planning) to come back from a disposable thread before it answers 503. A
+# Volume that stops answering would otherwise hold the request, or, checked on
+# the event loop, every request. The abandoned thread may linger until the
+# mount answers; it holds no shared pool worker (`run_detached`).
+VOLUME_PROBE_TIMEOUT_SECONDS = 30.0
 
 
 class DestinationUnresolvableError(RuntimeError):
@@ -511,6 +525,10 @@ class JobManager:
             "output_dir": output_dir,
             "output_path": output_path,
         }]
+        # History first: no await may follow a job's registration, or a
+        # cancellation there leaves it queued but never returned (see
+        # `create_jobs_atomic`).
+        await self._prune_jobs()
         # Outside the lock, and off the event loop: see `_reservation_keys`.
         reservation = await self._reservation_keys(specs, mode)
         async with self._create_lock:
@@ -533,7 +551,6 @@ class JobManager:
                 delete_snapshot=delete_snapshot,
                 reservation=reservation,
             )
-        await self._prune_jobs()
         return job
 
     async def create_jobs_atomic(
@@ -551,6 +568,12 @@ class JobManager:
             return []
 
         jobs: List[ConversionJob] = []
+        # History first, before anything is registered. The prune awaits
+        # (`delete_job` cleans temp dirs); after registration, a cancellation
+        # there would end this call with jobs queued that the caller never got
+        # back and so could not withdraw. It removes finished jobs only, so the
+        # claim check below answers the same either way.
+        await self._prune_jobs()
         # Outside the lock, and off the event loop: see `_reservation_keys`.
         reservation = await self._reservation_keys(job_specs, mode)
         async with self._create_lock:
@@ -582,7 +605,6 @@ class JobManager:
                         reservation=reservation,
                     )
                 )
-        await self._prune_jobs()
         return jobs
 
     async def create_batch_jobs(
@@ -917,6 +939,31 @@ class JobManager:
     def get_job(self, job_id: str) -> Optional[ConversionJob]:
         """Get a job by ID."""
         return self.jobs.get(job_id)
+
+    async def wait_until_terminal(
+        self, job_ids: Iterable[str], timeout: float | None,
+    ) -> None:
+        """Wait until every job in *job_ids* is terminal, at most *timeout* s.
+
+        ``cancel_job()`` returning True for a processing job means only that
+        its cancel event is set; a worker past its last check still finishes
+        the job. A caller that must know how a cancelled job really ended
+        waits here, then reads ``get_job()``. A job the queue no longer knows
+        counts as settled. None means no bound. Returns at the bound with any
+        job still running; the caller decides what that means.
+        """
+        ids = list(job_ids)
+        loop = asyncio.get_running_loop()
+        deadline = None if timeout is None else loop.time() + timeout
+        while True:
+            running = [
+                job_id for job_id in ids
+                if (job := self.jobs.get(job_id)) is not None
+                and job.status not in _TERMINAL_STATUSES
+            ]
+            if not running or (deadline is not None and loop.time() >= deadline):
+                return
+            await asyncio.sleep(_SETTLE_POLL_SECONDS)
 
     def add_terminal_listener(self, callback: Callable[[ConversionJob], object]) -> None:
         """Call *callback* once each job reaches a terminal status.
@@ -2539,6 +2586,62 @@ class JobManager:
         finally:
             self._semaphore.release()
 
+    async def _check_delete_paths(
+        self, job_id: str, paths: list[str], fingerprints: dict, output_real: str,
+    ) -> None:
+        """Raise RuntimeError unless every path is still safe to delete.
+
+        Lock, Volume, other-job, symlink, type, not-the-output, and the
+        snapshot's size / mtime / inode / device. Run before the Referrer hook
+        and again after it (#295), since the hook awaits a worker thread.
+        """
+        for path in paths:
+            _, is_locked = lock_manager.check_file_status(path)
+            if is_locked:
+                raise RuntimeError("Delete path is locked by an active conversion")
+            within_volumes = await run_in_threadpool(
+                is_within_configured_volumes, path, treat_archives=False,
+            )
+            if not within_volumes:
+                raise RuntimeError(
+                    "Delete path outside configured volumes; refusing to delete"
+                )
+            if self._is_path_in_use_by_other_job(job_id, path):
+                raise RuntimeError("Delete path is still in use by another job")
+            if os.path.islink(path):
+                raise RuntimeError("Delete path is a symlink; refusing to delete")
+            try:
+                st = os.stat(path, follow_symlinks=False)
+            except FileNotFoundError as exc:
+                raise RuntimeError(
+                    "Delete path no longer exists; refusing to delete"
+                ) from exc
+            if not os.path.isfile(path):
+                raise RuntimeError("Delete path is not a file; refusing to delete")
+            if os.path.realpath(path) == output_real:
+                raise RuntimeError("Delete path matches output path; refusing to delete")
+            fp = fingerprints.get(path)
+            if not fp:
+                raise RuntimeError("Delete fingerprint missing; refusing to delete")
+            mtime_ns = int(getattr(st, "st_mtime_ns", int(st.st_mtime * 1_000_000_000)))
+            if (
+                int(fp.get("size", -1)) != int(st.st_size)
+                or int(fp.get("mtime_ns", -1)) != mtime_ns
+            ):
+                raise RuntimeError("Delete path fingerprint mismatch; refusing to delete")
+            snapshot_inode = int(fp.get("inode", 0) or 0)
+            snapshot_device = int(fp.get("device", 0) or 0)
+            current_inode = int(getattr(st, "st_ino", 0) or 0)
+            current_device = int(getattr(st, "st_dev", 0) or 0)
+            if (
+                snapshot_inode > 0 and current_inode > 0
+                and snapshot_inode != current_inode
+            ) or (
+                snapshot_device > 0 and current_device > 0
+                and snapshot_device != current_device
+            ):
+                raise RuntimeError("Delete path fingerprint mismatch; refusing to delete")
+
     async def _delete_check(
         self, job, tool, source_path: str, output_path: str, cancel_event,
     ) -> tuple[str, str | None]:
@@ -2900,6 +3003,11 @@ class JobManager:
                 return
 
             input_path = job.file_path
+            # The trusted root(s) an extracted source's track sheet may name
+            # files under (utils.sheet_text.resolve_track's ``within``). None
+            # for a source in a Volume; the extraction dir for an archive
+            # member. Built once here and handed to every consumer.
+            within: list[str] | None = None
             if "::" in job.file_path:
                 extract_start = time.monotonic()
                 archive_path, internal_path = job.file_path.split("::", 1)
@@ -2927,6 +3035,7 @@ class JobManager:
                 except asyncio.CancelledError:
                     pass
                 job.temp_dir = temp_dir
+                within = [temp_dir]
                 await run_in_threadpool(
                     archive_service.extract_related_files,
                     archive_path,
@@ -3068,7 +3177,7 @@ class JobManager:
                 # is requested (deletion happens after verify).
                 try:
                     await registry.for_mode(job.mode.value).post_convert(
-                        input_path, job.output_path, job.mode.value,
+                        input_path, job.output_path, job.mode.value, within=within,
                     )
                 except DiscIdStorageAbandoned:
                     # Deliberately not swallowed with the rest. Everything below
@@ -3322,93 +3431,62 @@ class JobManager:
                         else:
                             delete_order = expected_paths
 
-                        for path in expected_paths:
-                            _, is_locked = lock_manager.check_file_status(path)
-                            if is_locked:
-                                raise RuntimeError(
-                                    "Delete path is locked by an active conversion"
-                                )
-                            within_volumes = await run_in_threadpool(
-                                is_within_configured_volumes,
-                                path,
-                                treat_archives=False,
+                        await self._check_delete_paths(
+                            job_id, expected_paths, fingerprints, output_real,
+                        )
+
+                        # Referrers (.m3u, ...) move to the output before the
+                        # Source goes; if any can't, the Source stays (#295).
+                        referrer_outcome = await referrers.update_before_source_removal(
+                            source_for_delete,
+                            {path: job.output_path for path in delete_order},
+                            cancel_event=cancel_event,
+                        )
+                        job.referrers_updated = referrer_outcome.records
+                        # The hook awaited a worker thread: re-ask cancel and
+                        # every per-path identity check before removing.
+                        kept_reason = None
+                        if cancel_event.is_set():
+                            kept_reason = (
+                                f"Output is {check_label}. Delete skipped (cancelled)."
                             )
-                            if not within_volumes:
-                                raise RuntimeError(
-                                    "Delete path outside configured volumes; refusing to delete"
-                                )
-                            if self._is_path_in_use_by_other_job(job_id, path):
-                                raise RuntimeError(
-                                    "Delete path is still in use by another job"
-                                )
-                            if os.path.islink(path):
-                                raise RuntimeError(
-                                    "Delete path is a symlink; refusing to delete"
-                                )
+                        elif not referrer_outcome.ok:
+                            kept_reason = referrer_outcome.kept_message
+                        else:
                             try:
-                                st = os.stat(path, follow_symlinks=False)
-                            except FileNotFoundError as exc:
-                                raise RuntimeError(
-                                    "Delete path no longer exists; refusing to delete"
-                                ) from exc
-                            if not os.path.isfile(path):
-                                raise RuntimeError(
-                                    "Delete path is not a file; refusing to delete"
+                                await self._check_delete_paths(
+                                    job_id, expected_paths, fingerprints, output_real,
                                 )
-                            if os.path.realpath(path) == output_real:
-                                raise RuntimeError(
-                                    "Delete path matches output path; refusing to delete"
+                            except RuntimeError as exc:
+                                kept_reason = f"converted, source kept: {exc}"
+                            # That check awaited too; a Cancel there still wins.
+                            if kept_reason is None and cancel_event.is_set():
+                                kept_reason = (
+                                    f"Output is {check_label}. Delete skipped (cancelled)."
                                 )
-                            fp = fingerprints.get(path)
-                            if not fp:
-                                raise RuntimeError(
-                                    "Delete fingerprint missing; refusing to delete"
-                                )
-                            mtime_ns = int(
-                                getattr(
-                                    st,
-                                    "st_mtime_ns",
-                                    int(st.st_mtime * 1_000_000_000),
-                                )
+                        if kept_reason:
+                            job.message = kept_reason
+                            await self._notify_subscribers(
+                                job_id,
+                                {
+                                    "type": "progress",
+                                    "job_id": job_id,
+                                    "progress": job.progress,
+                                    "message": job.message,
+                                },
                             )
-                            if (
-                                int(fp.get("size", -1)) != int(st.st_size)
-                                or int(fp.get("mtime_ns", -1)) != mtime_ns
-                            ):
-                                raise RuntimeError(
-                                    "Delete path fingerprint mismatch; refusing to delete"
-                                )
-                            snapshot_inode = int(fp.get("inode", 0) or 0)
-                            snapshot_device = int(fp.get("device", 0) or 0)
-                            current_inode = int(getattr(st, "st_ino", 0) or 0)
-                            current_device = int(getattr(st, "st_dev", 0) or 0)
-                            if (
-                                (
-                                    snapshot_inode > 0
-                                    and current_inode > 0
-                                    and snapshot_inode != current_inode
-                                )
-                                or (
-                                    snapshot_device > 0
-                                    and current_device > 0
-                                    and snapshot_device != current_device
-                                )
-                            ):
-                                raise RuntimeError(
-                                    "Delete path fingerprint mismatch; refusing to delete"
-                                )
+                        else:
+                            for path in delete_order:
+                                await run_in_threadpool(os.remove, path)
+                                job.deleted_paths.append(path)
 
-                        for path in delete_order:
-                            await run_in_threadpool(os.remove, path)
-                            job.deleted_paths.append(path)
+                            source_deleted = True
 
-                        source_deleted = True
-
-                        ext = os.path.splitext(job.file_path)[1].lower()
-                        if ext in registry.verify_extensions():
-                            await verification_store.clear(job.file_path)
-                        if ext == ".chd":
-                            await chd_metadata_store.clear(job.file_path)
+                            ext = os.path.splitext(job.file_path)[1].lower()
+                            if ext in registry.verify_extensions():
+                                await verification_store.clear(job.file_path)
+                            if ext == ".chd":
+                                await chd_metadata_store.clear(job.file_path)
 
                 job.status = JobStatus.COMPLETED
                 job.completed_at = datetime.now(timezone.utc)

@@ -1,126 +1,69 @@
 import os
 import re
-import shlex
 from pathlib import Path
 from typing import Dict, List, Set
 
-from utils.path_utils import strip_archive_path
+from utils.path_utils import is_within_configured_volumes, strip_archive_path
+from utils.sheet_text import (
+    cue_tracks,
+    gdi_tracks,
+    resolve_track,
+    sheet_ambiguity,
+    sheet_native_text,
+    sheet_readings,
+    sheet_tracks,
+)
 
 
-_WIN_ABS_RE = re.compile(r"^[a-zA-Z]:[\\/]")
+# The one confined track resolver lives in utils.sheet_text; this name stays
+# for the callers that import it from here.
+_resolve_track_path = resolve_track
 
 
-def _is_absolute_reference(ref: str) -> bool:
-    ref = ref.strip()
-    if not ref:
-        return False
-    if ref.startswith("~"):
-        return True
-    if ref.startswith("\\\\"):
-        return True
-    if _WIN_ABS_RE.match(ref):
-        return True
-    return Path(ref).is_absolute()
+def _read_sheet(sheet_path: Path) -> list[str]:
+    """The sheet's readings (``utils.sheet_text``); raises when unreadable."""
+    readings = sheet_readings(sheet_path)
+    if not readings:
+        raise OSError(f"Cannot read track sheet: {sheet_path}")
+    return readings
 
 
-def _resolve_track_path(base_dir: Path, ref: str) -> Path:
-    raw = ref.strip().strip('"')
-    if not raw:
-        raise ValueError("Empty track reference")
-    normalized_ref = raw.replace("\\", "/")
-    if _is_absolute_reference(normalized_ref):
-        raise ValueError(f"Absolute track reference is not allowed: {raw}")
-
-    base_resolved = Path(os.path.normpath(str(base_dir.absolute())))
-    candidate = Path(os.path.normpath(os.path.join(str(base_resolved), normalized_ref)))
-    try:
-        candidate.relative_to(base_resolved)
-    except ValueError as exc:
-        raise ValueError(f"Track reference escapes source directory: {raw}") from exc
-
-    return candidate
+def _gdi_tracks_from_text(text: str) -> list[str]:
+    return [track.name for track in gdi_tracks(text)]
 
 
-def resolve_track_path(base_dir: Path, ref: str) -> Path:
-    """A sheet's track reference resolved inside ``base_dir`` (``ValueError``
-    when it is absolute or escapes it). Shared with ``utils.disc_sheet``."""
-    return _resolve_track_path(base_dir, ref)
+def sheet_track_paths(sheet_path: str) -> list[str]:
+    """The track files a ``.cue`` or ``.gdi`` sheet names, resolved beside it.
 
-
-def _parse_cue_tracks(cue_path: Path) -> List[str]:
-    tracks: List[str] = []
-    with cue_path.open("r", encoding="utf-8", errors="ignore") as fh:
-        for line in fh:
-            stripped = line.strip()
-            if not stripped:
-                continue
-            if stripped.upper().startswith("REM"):
-                continue
-            if not stripped.upper().startswith("FILE"):
-                continue
-            try:
-                parts = shlex.split(stripped, comments=True, posix=True)
-            except ValueError:
-                continue
-            if len(parts) < 3 or parts[0].upper() != "FILE":
-                continue
-            name = parts[1].strip()
-            if name:
-                tracks.append(name)
-    return tracks
-
-
-def _parse_gdi_tracks(gdi_path: Path) -> List[str]:
-    tracks: List[str] = []
-    with gdi_path.open("r", encoding="utf-8", errors="ignore") as fh:
-        lines = [line.strip() for line in fh if line.strip()]
-
-    if not lines:
-        return tracks
-
-    def _split(line: str) -> List[str]:
-        try:
-            return shlex.split(line, comments=True, posix=True)
-        except ValueError:
-            return line.split()
-
-    head = _split(lines[0])
-    start_idx = 1 if head and head[0].isdigit() else 0
-    for line in lines[start_idx:]:
-        parts = _split(line)
-        if len(parts) < 5:
-            continue
-        name = parts[4].strip('"').strip()
-        if name:
-            tracks.append(name)
-    return tracks
-
-
-def sheet_track_paths(sheet_path: str) -> List[str]:
-    """The track files a ``.cue`` / ``.gdi`` sheet names, in sheet order.
-
-    Each file once, at its first mention (a single-bin cue names one file for
-    every track). Resolved with the same rules the delete plan uses, so a
-    reference that is absolute or escapes the sheet's folder raises
-    ``ValueError``. Any other extension names no tracks.
+    The same parsing and containment rules the delete plan uses, so a track
+    reference that escapes the sheet's folder is left out, and the same
+    decoding the disc-ID probe uses (``utils.sheet_text``): the first spelling
+    of a name that exists wins. Tracks are listed whether or not they exist
+    yet. Empty for a file that is not a sheet, and for a sheet that is
+    unreadable (missing, or over the size cap ``utils.sheet_text`` enforces;
+    never a partial list). A caller for whom "unreadable" must not read as "no
+    tracks" checks ``utils.sheet_text.sheet_is_readable`` itself.
     """
     sheet = Path(sheet_path)
-    ext = sheet.suffix.lower()
-    if ext == ".cue":
-        refs = _parse_cue_tracks(sheet)
-    elif ext == ".gdi":
-        refs = _parse_gdi_tracks(sheet)
-    else:
+    parse = {".cue": cue_tracks, ".gdi": _gdi_tracks_from_text}.get(
+        sheet.suffix.lower(),
+    )
+    if parse is None:
         return []
-    paths: List[str] = []
-    for ref in refs:
-        path = str(_resolve_track_path(sheet.parent, ref))
-        if path not in paths:
-            paths.append(path)
-    return paths
+    tracks = sheet_tracks(sheet, parse)
+    return [str(track) for track in tracks] if tracks else []
 
 
-def build_delete_plan(source_path: str) -> Dict[str, object]:
+def build_delete_plan(
+    source_path: str, *, confine_to_volumes: bool = False,
+) -> Dict[str, object]:
+    """The files a delete-on-verify would remove for *source_path*.
+
+    With *confine_to_volumes* (the delete-plan route), a resolved path outside
+    every configured Volume goes to ``unsafe_paths`` instead of
+    ``delete_paths``, so the plan is blocked and the Referrer scan never sees
+    it. The job's own delete step checks each path against the Volumes too.
+    """
     original_source = source_path
     is_archive_member = "::" in source_path
     plan_source = strip_archive_path(source_path) if is_archive_member else source_path
@@ -141,6 +84,13 @@ def build_delete_plan(source_path: str) -> Dict[str, object]:
         if real in resolved:
             return
         resolved.add(real)
+        # A track reached through a symlinked folder can resolve outside every
+        # Volume. It is never deleted, and the Referrer scan never sees it.
+        if confine_to_volumes and not is_within_configured_volumes(
+            real, treat_archives=False,
+        ):
+            unsafe_paths.append(f"Delete path outside configured volumes: {real}")
+            return
         delete_paths.append(real)
         if not os.path.exists(real):
             missing_paths.append(real)
@@ -162,14 +112,33 @@ def build_delete_plan(source_path: str) -> Dict[str, object]:
                 "warnings": warnings,
             }
         ext = source.suffix.lower()
-        track_refs: List[str] = []
-        if ext == ".cue":
-            track_refs = _parse_cue_tracks(source)
-        elif ext == ".gdi":
-            track_refs = _parse_gdi_tracks(source)
-        if ext in {".cue", ".gdi"} and not track_refs:
-            errors.append("No track references found")
+        parse = {".cue": cue_tracks, ".gdi": _gdi_tracks_from_text}.get(ext)
+        readings: list[list[str]] = [[]]
+        track_refs: list[str] = []
+        if parse:
+            # A decoded spelling naming another existing file than the bytes
+            # chdman opens: refuse rather than delete a file it never read.
+            ambiguity = sheet_ambiguity(source)
+            if ambiguity:
+                raise OSError(ambiguity)
+            readings = [parse(text) for text in _read_sheet(source)]
+            # Deletion targets come from the native spelling (the raw bytes as
+            # the OS spells a file name), which is what chdman opened; never
+            # from a decoded reading, which can name a different file.
+            native = sheet_native_text(source)
+            if native is None:
+                raise OSError(f"Cannot read track sheet: {source}")
+            track_refs = parse(native)
+            if not track_refs:
+                errors.append("No track references found")
 
+        # Every spelling is checked too, so none can name a file outside.
+        for spelling in readings:
+            for ref in spelling:
+                try:
+                    _resolve_track_path(base_dir, ref)
+                except ValueError as exc:
+                    unsafe_paths.append(str(exc))
         for ref in track_refs:
             try:
                 track_path = _resolve_track_path(base_dir, ref)
@@ -177,6 +146,7 @@ def build_delete_plan(source_path: str) -> Dict[str, object]:
                 unsafe_paths.append(str(exc))
                 continue
             _add_path(track_path)
+        unsafe_paths[:] = list(dict.fromkeys(unsafe_paths))
 
         # Sources that are really a *set* of files report the rest of the set
         # through the registry (jwud: a split Wii U dump's game_part2.wud …

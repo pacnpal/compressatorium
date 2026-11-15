@@ -9,7 +9,8 @@ from __future__ import annotations
 import asyncio
 import os
 import re
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Sequence
+from functools import partial
 from pathlib import Path
 
 from fastapi.concurrency import run_in_threadpool
@@ -21,6 +22,7 @@ from services.disc_id import (
     DiscIdStorageAbandoned,
     clear_embedded_disc_id,
     embed_in_chd,
+    disc_platform,
     extract_from_source,
     read_embedded_game_id,
 )
@@ -30,6 +32,7 @@ from services.lock_manager import lock_manager
 from services.subprocess_runner import ReadCancelled, run_detached
 from utils.delete_plan import sheet_track_paths
 from utils.disc_sheet import layout_fingerprint
+from utils.sheet_text import sheet_track_list
 
 from .base import BaseTool, ContentDigest, ContentDigestUnavailable
 from .spec import ModeKind, ModeSpec
@@ -63,13 +66,35 @@ _DVD_PLATFORMS = frozenset({"ps2", "psp"})
 _HD_PLATFORMS = frozenset({"arcade", "mame"})
 _LD_PLATFORMS = frozenset({"laseractive"})
 
-# mode -> (label, the platforms that mode's media command actually serves).
+# mode -> (label, the platforms that mode's media command actually serves,
+#          what the command can actually read, whether Auto may default to it).
+#
+# Manual selection still offers every create mode on all four source
+# extensions (``input_extensions``); the read set is what Auto checks. chdman
+# ``createcd`` parses a track sheet (``.cue``/``.gdi``) or a single-track
+# ``.iso``; a bare ``.bin`` has no table of contents, so the ``.cue`` beside it
+# is the Image. ``createdvd`` copies a flat 2048-byte image, so only ``.iso``.
+# The hard-disk, raw and laserdisc commands are never a default: they claim
+# the arcade Platforms, but a CD image in an ``arcade`` folder is a CD.
+#
+# The last column is the Platforms a mode is an Auto target for without being
+# offered for them by hand. Some PS2 titles shipped on CD-ROM and are kept as
+# cue/bin; only createcd reads those. Claiming ``ps2`` in ``platform_slugs``
+# instead would make createcd, the first create mode, the default of every
+# platform-narrowed PS2 panel and rule. Auto still sends a PS2 ``.iso`` to
+# createdvd, the smaller reader. PSP (UMD), PS3 and the Nintendo and Xbox discs
+# are never CDs chdman reads, so ``ps2`` is the only one.
+_CD_READS = frozenset({".cue", ".gdi", ".iso"})
+# Track sheets: the probe reads the tracks they name (``header_reads``).
+_SHEET_EXTS = frozenset({".cue", ".gdi"})
+_DVD_READS = frozenset({".iso"})
+_NONE: frozenset[str] = frozenset()
 _CREATE_MODES = {
-    "createraw": ("Create Raw", _HD_PLATFORMS),
-    "createhd": ("Create HD", _HD_PLATFORMS),
-    "createcd": ("Create CD", _CD_PLATFORMS),
-    "createdvd": ("Create DVD", _DVD_PLATFORMS),
-    "createld": ("Create LD", _LD_PLATFORMS),
+    "createraw": ("Create Raw", _HD_PLATFORMS, _NONE, False, _NONE),
+    "createhd": ("Create HD", _HD_PLATFORMS, _NONE, False, _NONE),
+    "createcd": ("Create CD", _CD_PLATFORMS, _CD_READS, True, frozenset({"ps2"})),
+    "createdvd": ("Create DVD", _DVD_PLATFORMS, _DVD_READS, True, _NONE),
+    "createld": ("Create LD", _LD_PLATFORMS, _NONE, False, _NONE),
 }
 # mode -> (label, primary output ext, companion exts). extractcd is the only
 # multi-file extract: chdman writes the .cue track sheet plus a sibling .bin
@@ -119,8 +144,11 @@ def _build_modes() -> list[ModeSpec]:
             supports_round_trip=mode in _ROUND_TRIP_MODES,
             allows_archive_input=True,
             platform_slugs=slugs,
+            reads_extensions=reads,
+            auto_target=auto_target,
+            auto_platform_slugs=auto_slugs,
         )
-        for mode, (label, slugs) in _CREATE_MODES.items()
+        for mode, (label, slugs, reads, auto_target, auto_slugs) in _CREATE_MODES.items()
     ]
     modes += [
         ModeSpec(
@@ -185,6 +213,22 @@ class ChdmanTool(BaseTool):
         super().__init__(binary_path)
         self._service = chdman_service
 
+    def header_platform(self, path: str) -> str | None:
+        # PS1/PS2/PSP/Dreamcast through the disc-ID parser, Saturn and Sega CD
+        # through their sector-0 system ids.
+        return disc_platform(path)
+
+    def header_reads(self, path: str) -> list[str] | None:
+        # A .cue/.gdi is answered from the tracks it names. None (unknown
+        # dependencies, so the answer is not cached) when the sheet is
+        # unreadable or any track is refused (sheet_track_list keeps that None
+        # apart from "no tracks"): a refused FIFO track later replaced by a
+        # real one must be detected afresh.
+        if Path(path).suffix.lower() not in _SHEET_EXTS:
+            return []
+        tracks = sheet_track_list(path)
+        return None if tracks is None else [str(track) for track in tracks]
+
     # chdman's extract/copy modes take .chd input, but a .chd is not a
     # "convertible-from" source in the file listing, only the create sources
     # are. Override the derived union so convertible_extensions() matches
@@ -238,6 +282,7 @@ class ChdmanTool(BaseTool):
 
     async def post_convert(
         self, input_path: str, output_path: str, mode: str,
+        *, within: Sequence[str] | None = None,
     ) -> None:
         """Embed disc-ID GAME/NAME tags into a freshly created CD/DVD CHD.
 
@@ -259,6 +304,11 @@ class ChdmanTool(BaseTool):
 
         ``GAME`` = normalized serial (emulator DB lookup key);
         ``NAME`` = human-readable title when available, serial otherwise.
+
+        ``within``: the trusted root an archive-extracted source sits under
+        (the worker's extraction dir); None means the configured Volumes. A
+        track sheet whose tracks are refused there, or that is unreadable,
+        stops tagging with a warning naming the sheet.
         """
         if mode not in _DISC_ID_MODES:
             return
@@ -267,8 +317,19 @@ class ChdmanTool(BaseTool):
         if not await run_in_threadpool(os.path.exists, output_path):
             return
         try:
-            disc_info = await run_in_threadpool(extract_from_source, input_path)
+            disc_info = await run_in_threadpool(
+                partial(extract_from_source, input_path, within=within),
+            )
             if not (disc_info and disc_info.get("game_id")):
+                if Path(input_path).suffix.lower() in _SHEET_EXTS and (
+                    await run_in_threadpool(
+                        partial(sheet_track_list, input_path, within=within),
+                    )
+                ) is None:
+                    logger.warning(
+                        "Disc ID not tagged for %s: its track sheet is unreadable "
+                        "or names a track outside the trusted roots", input_path,
+                    )
                 return
             game_id = disc_info["game_id"]
             existing = await read_embedded_game_id(output_path, self.binary_path)

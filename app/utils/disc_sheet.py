@@ -22,7 +22,7 @@ import re
 import shlex
 from pathlib import Path
 
-from utils.delete_plan import resolve_track_path
+from utils.sheet_text import resolve_track as resolve_track_path
 
 Track = tuple[object, ...]
 
