@@ -1556,6 +1556,12 @@ async def _sweep_locked(
                 )
                 summary["queued"] = len(jobs)
                 result["queued"] += len(jobs)
+                # The Library's Platform for each job, for its Ledger row
+                # (#346). Before any await, so a job that starts at once has it.
+                for job in jobs:
+                    queued_image = image_by_path.get(job.file_path)
+                    if queued_image is not None and queued_image.platform:
+                        job.platform = queued_image.platform
 
                 # Before the first await after acceptance. The terminal-job
                 # listener fires from the queue worker, so a fast conversion on

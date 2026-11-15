@@ -50,7 +50,7 @@ def _iso(dt: datetime) -> str:
 
 def _tool_and_platform(mode: str) -> tuple[str | None, str | None]:
     """Tool id from the registry, and the Platform when the mode serves
-    exactly one (otherwise unknown until detection lands, #294)."""
+    exactly one. A job's own Platform (``ConversionJob.platform``) comes first."""
     try:
         tool = registry.for_mode(mode).id
     except KeyError:
@@ -61,7 +61,10 @@ def _tool_and_platform(mode: str) -> tuple[str | None, str | None]:
 
 def row_from_job(job: ConversionJob) -> dict:
     mode = getattr(job.mode, "value", str(job.mode))
-    tool, platform = _tool_and_platform(mode)
+    tool, mode_platform = _tool_and_platform(mode)
+    # The Library's Platform or the detected one (#346); else the mode's own
+    # when it serves only one. None files the row under "unsorted".
+    platform = getattr(job, "platform", None) or mode_platform
     # Deterministic (never now()), so a repeated notification keys the same row.
     finished = job.completed_at or job.created_at
     duration = (

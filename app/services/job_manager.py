@@ -3122,6 +3122,35 @@ class JobManager:
             )
             return None
 
+    async def _detect_platform_bounded(
+        self, job: ConversionJob, cancel_event: Optional[asyncio.Event],
+    ) -> Optional[str]:
+        """The Platform shared detection gives the job's Source, for the
+        Ledger (#346), or None when it can't place it.
+
+        The detection Auto uses (``platform_detect.detect_platform``, with its
+        cache), on a detached thread with the same bound as the Source sizing:
+        optional bookkeeping, so a timeout leaves it unknown and a Cancel
+        returns now as a cancellation.
+        """
+        from services.platform_detect import detect_platform
+
+        try:
+            detection = await asyncio.wait_for(
+                run_detached(detect_platform, job.file_path, cancel_event=cancel_event),
+                timeout=_CANONICAL_PROBE_SECONDS,
+            )
+        except ReadCancelled:
+            raise ConversionCancelled("Conversion cancelled") from None
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Detecting the Platform of job %s did not finish in %.0fs; "
+                "the Ledger row will have none",
+                job.id, _CANONICAL_PROBE_SECONDS,
+            )
+            return None
+        return detection.platform
+
     async def _process_job(self, job_id: str):
         """Process a single conversion job."""
         job = self.jobs.get(job_id)
@@ -3363,6 +3392,10 @@ class JobManager:
             # locks. Optional data, so a timeout just leaves it unknown.
             if job.input_bytes is None:
                 job.input_bytes = await self._source_bytes_bounded(job, cancel_event)
+            # And the Platform the Ledger files it under (#346), for a job no
+            # Library placed (hand-started: file browser, Auto, the CLI).
+            if job.platform is None:
+                job.platform = await self._detect_platform_bounded(job, cancel_event)
 
             # Fast path: a re-queued job whose verified artifact already exists
             # completes as a no-op rather than re-spawning the converter (issue

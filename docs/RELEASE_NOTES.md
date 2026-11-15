@@ -324,6 +324,12 @@
 
 ### Fixed
 
+- **Ledger savings group hand-started jobs by Platform** (#346). A job started
+  from the file browser, Auto or the CLI now records the Platform its Source
+  was detected as (the same detection Auto uses), and a Rule's job records its
+  Library's Platform, so the savings breakdown no longer files a PS2 ISO under
+  "unsorted". "Unsorted" is left for Sources detection can't place. Rows
+  written before this keep what they had.
 - **Folder Platforms are never guessed past a read error** (#338). If the
   saved folder Platforms can't be read, folder Libraries list nothing and
   their Rules wait until they can, instead of taking a disc's header as its

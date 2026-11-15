@@ -185,6 +185,10 @@ class ConversionJob(BaseModel):
     # Ledger bookkeeping (#292). Source bytes are read before the converter
     # runs, so a row written after the Source was deleted still has them.
     input_bytes: int | None = None
+    # The Platform the Ledger files this job under (#346): the Library's
+    # Platform for a Rule's job, else what shared Platform detection made of
+    # the Source before the job could delete it. None when neither places it.
+    platform: str | None = None
     # Which check the output passed: "intact" (its tool's container check) or
     # "round_tripped" (its content digest equalled the Source's, #298). None if
     # no check ran.
