@@ -527,6 +527,33 @@ async def test_wud_digest_covers_every_part_of_a_split_set(tmp_path, small_wud):
 
 
 @pytest.mark.asyncio
+async def test_split_wud_parts_are_found_off_the_event_loop(tmp_path, small_wud, monkeypatch):
+    """Finding the sibling parts stats the Source's volume, so it must not run
+    on the event loop, where a dead mount would freeze every job."""
+    import threading
+
+    image = _wud_image(small_wud)
+    part = 2 * _WUX_SECTOR
+    for i in range(3):
+        (tmp_path / f"game_part{i + 1}.wud").write_bytes(image[i * part:(i + 1) * part])
+    tool = _jwud()
+    threads: list[str] = []
+    real = tool.source_companions
+
+    def recording(path):
+        threads.append(threading.current_thread().name)
+        return real(path)
+
+    monkeypatch.setattr(tool, "source_companions", recording)
+    loop_thread = threading.current_thread().name
+
+    digest = await tool.content_digest(str(tmp_path / "game_part1.wud"))
+
+    assert digest.value == _sha1(image)
+    assert threads and loop_thread not in threads
+
+
+@pytest.mark.asyncio
 async def test_a_wux_whose_sector_array_is_cut_short_is_unavailable(tmp_path, small_wud):
     out = tmp_path / "game.wux"
     write_wux(out, _wud_image(small_wud))

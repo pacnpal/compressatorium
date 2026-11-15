@@ -149,6 +149,50 @@ async def test_hash_stdout_cancel_stops_the_decoder():
 
 
 @pytest.mark.asyncio
+async def test_a_stuck_stdin_read_does_not_hold_up_a_cancel(tmp_path, monkeypatch):
+    """The input read blocks (a mount that stopped answering, here a FIFO
+    nobody writes to). Cancel must return promptly: the stuck handle is
+    abandoned, not closed, since closing waits on the read's lock."""
+    import os
+    import threading
+
+    from services import subprocess_runner
+
+    detached_calls: list[str] = []
+    real_run_detached = subprocess_runner.run_detached
+
+    async def recording(func, *args, **kwargs):
+        detached_calls.append(getattr(func, "__name__", repr(func)))
+        return await real_run_detached(func, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess_runner, "run_detached", recording)
+
+    fifo = tmp_path / "stuck"
+    os.mkfifo(fifo)
+    writer: list[int] = []
+    opener = threading.Thread(target=lambda: writer.append(os.open(fifo, os.O_WRONLY)))
+    opener.start()
+    runner = SubprocessRunner(owner="test")
+    cancel = asyncio.Event()
+    cat = _py("import shutil, sys\nshutil.copyfileobj(sys.stdin.buffer, sys.stdout.buffer)")
+    task = asyncio.ensure_future(
+        runner.hash_stdout(cat, stdin_path=str(fifo), cancel_event=cancel),
+    )
+    try:
+        await asyncio.sleep(0.5)
+        cancel.set()
+        with pytest.raises(ReadCancelled):
+            await asyncio.wait_for(task, timeout=20)
+        assert runner.active_pids() == []
+        assert "read" in detached_calls
+        assert "close" not in detached_calls  # abandoned with its stuck read
+    finally:
+        opener.join(5)
+        for fd in writer:
+            os.close(fd)  # unblocks the abandoned read so its thread can end
+
+
+@pytest.mark.asyncio
 async def test_hash_stdout_does_not_spawn_into_a_cancelled_operation():
     runner = SubprocessRunner(owner="test")
     cancel = asyncio.Event()

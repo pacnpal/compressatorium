@@ -226,7 +226,10 @@ class JwudTool(BaseTool):
         # decodes to, hashed as it streams (#301).
         ext = Path(path).suffix.lower()
         if ext in JWUD_COMPRESS_EXTENSIONS:
-            produce = file_chunks([path, *self.source_companions(path)])
+            def produce(stop):
+                # The sibling parts are found by stat-ing the Source's volume,
+                # so on the detached thread, never on the event loop.
+                return file_chunks([path, *self.source_companions(path)])(stop)
         elif ext in JWUD_DECOMPRESS_EXTENSIONS:
             def produce(stop):
                 return iter_wux_image(path, stop)

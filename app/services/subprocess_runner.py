@@ -1284,13 +1284,21 @@ class SubprocessRunner:
             # a dead mount the read can only be abandoned, never closed.
             def _open():
                 handle = open(stdin_path, "rb")  # noqa: SIM115
-                handle.seek(stdin_offset)
+                if stdin_offset:
+                    handle.seek(stdin_offset)
                 return handle
 
             handle = await run_detached(_open)
+            # Set while a read is in flight. If this task is cancelled then
+            # (a cancel, a deadline), the read is abandoned with its thread,
+            # and closing the handle would wait on the lock that read holds,
+            # so the handle is abandoned too, as z3ds verify does.
+            reading = False
             try:
                 while True:
+                    reading = True
                     chunk = await run_detached(handle.read, 1 << 20)
+                    reading = False
                     if not chunk:
                         break
                     process.stdin.write(chunk)
@@ -1300,8 +1308,9 @@ class SubprocessRunner:
             finally:
                 with contextlib.suppress(Exception):
                     process.stdin.close()
-                with contextlib.suppress(Exception):
-                    await run_detached(handle.close)
+                if not reading:
+                    with contextlib.suppress(Exception):
+                        await run_detached(handle.close)
 
         async def _drain_stdout() -> None:
             while True:
