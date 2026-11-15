@@ -1045,9 +1045,12 @@ def _inspect_candidate(
 
 
 def _active_source_paths() -> set[str]:
-    """Sources already queued or converting, resolved once per sweep."""
+    """Sources already queued or converting, or held by a running check (#330),
+    resolved once per sweep."""
     out: set[str] = set()
-    for _job_id, paths in job_manager.get_active_job_candidates():
+    held = [paths for _job_id, paths in job_manager.get_active_job_candidates()]
+    held.append(checks.in_flight_paths())
+    for paths in held:
         for candidate in paths:
             try:
                 out.add(str(Path(candidate).expanduser().resolve(strict=False)))

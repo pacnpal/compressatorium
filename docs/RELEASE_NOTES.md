@@ -4,6 +4,12 @@
 
 ### Added
 
+- **UTF-16 `.m3u` playlists follow a converted disc** (#334). A playlist saved
+  as UTF-16 with a BOM (Windows Notepad's "Unicode") that names the Source is
+  now rewritten like a UTF-8 one, keeping its encoding, BOM and line endings.
+  Before, the Source was kept and the playlist had to be fixed by hand. UTF-16
+  without a BOM still keeps the Source, since its encoding can't be told
+  safely.
 - **eXoDOS repack for RomM** (#323). A new **eXoDOS** tool turns an eXoDOS game
   zip into a `.dosz` laid out for RomM's in-browser DOS player (DOSBox Pure),
   with the game's own `dosbox.conf` as the file's first entry. The game moves
@@ -330,6 +336,11 @@
   Library's Platform, so the savings breakdown no longer files a PS2 ISO under
   "unsorted". "Unsorted" is left for Sources detection can't place. Rows
   written before this keep what they had.
+- **A conversion Rule waits for a running check** (#330). With a check Rule and
+  a conversion Rule on the same Platform, the conversion Rule no longer queues
+  an Image a running check has picked; it is converted on a sweep after the
+  check is done. Before, the conversion could fail on the check's lock or
+  keep its Source, and then wait for the Image to change before trying again.
 - **Folder Platforms are never guessed past a read error** (#338). If the
   saved folder Platforms can't be read, folder Libraries list nothing and
   their Rules wait until they can, instead of taking a disc's header as its
