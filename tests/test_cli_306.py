@@ -1457,11 +1457,13 @@ def test_a_stored_check_goes_back_to_the_tool_of_its_recorded_mode(
 
 def test_a_stored_check_skips_platform_narrowing(volume, dolphin, capsys):
     """r7 I2 / P7: a GameCube .iso with a stored Dolphin pass, header gone, in a
-    ps2 folder, still reaches Dolphin and fails."""
+    ps2 folder, still reaches Dolphin and fails. The record names the mode
+    that made it, as every conversion's record now does (codex 4577381607);
+    a record with no mode is routed by Platform instead (tested below)."""
     iso = volume / "ps2" / "Game.iso"
     iso.parent.mkdir()
     iso.write_bytes(b"\0" * 4096)
-    _store(iso)
+    _store(iso, produced_meta={"mode": "dolphin_iso", "tool": "dolphin"})
     dolphin["valid"] = False
 
     code, lines = _cli(capsys, "verify", str(iso), "--json")
@@ -2218,3 +2220,94 @@ def _all_records():
     return sorted(
         (r["chd_path"], r["verified_at"]) for r in asyncio.run(verification_store.all_records())
     )
+
+
+# --------------------------------------------------------------------------- #
+# Every conversion check records its producing mode (codex 4577381607)
+# --------------------------------------------------------------------------- #
+
+
+def test_a_verify_after_conversion_records_its_mode_and_the_cli_routes_by_it(
+    volume, dolphin, capsys, monkeypatch,
+):
+    """A folder_to_iso job with verify_after and no delete-source (a PS3
+    folder Rule) used to store its check with no mode, and the CLI then sent
+    the .iso to Dolphin. Nothing is seeded by hand here: the job writes the
+    record."""
+    import asyncio
+    from datetime import datetime, timezone
+
+    import cli
+    from models import ConversionJob, ConversionMode, InputKind, JobStatus
+    from services import job_manager as job_manager_module
+    from services.job_manager import job_manager
+    from tests.ps3_helpers import make_ps3_folder
+
+    cli._open_db(False)
+    folder = make_ps3_folder(volume / "games" / "GAME")
+    iso = volume / "games" / "GAME.iso"
+    makeps3iso = registry.get("makeps3iso")
+    checked_by = []
+
+    async def fake_convert(*_args, **_kwargs):
+        iso.write_bytes(b"\0" * 4096)
+        yield {"progress": 100, "message": "done"}
+
+    async def passing_verify(path, *args, **kwargs):
+        checked_by.append("makeps3iso")
+        return {"valid": True, "message": "File is Intact"}
+
+    monkeypatch.setattr(job_manager_module.registry.for_mode("folder_to_iso"),
+                        "convert", fake_convert)
+    monkeypatch.setattr(makeps3iso, "verify", passing_verify)
+    job = ConversionJob(
+        id="ps3verifyafter", file_path=str(folder), filename=folder.name,
+        mode=ConversionMode.FOLDER_TO_ISO, status=JobStatus.QUEUED,
+        created_at=datetime.now(timezone.utc), output_path=str(iso),
+        input_kind=InputKind.DIRECTORY, verify_after=True,
+    )
+    job_manager.jobs[job.id] = job
+    try:
+        asyncio.run(job_manager._process_job(job.id))
+    finally:
+        job_manager.jobs.pop(job.id, None)
+    assert job.status == JobStatus.COMPLETED, (job.error_message, job.message)
+    assert (_stored(iso)["produced_meta"] or {}).get("mode") == "folder_to_iso"
+
+    dolphin["valid"] = False  # a Dolphin check would fail it
+    code, lines = _cli(capsys, "verify", str(iso), "--json")
+
+    assert code == 0, lines
+    assert (lines[0]["tool"], lines[0]["status"]) == ("makeps3iso", "intact")
+
+
+def test_a_legacy_record_without_a_mode_routes_by_platform(volume, dolphin, capsys, monkeypatch):
+    """A stored record with no mode never guesses through the generic .iso
+    claimant: under a ps3 folder the Platform rule picks makeps3iso."""
+    from services import ps3
+
+    monkeypatch.setattr(ps3, "ps3_iso_title_id", lambda path, **kw: "BLES00000")
+    iso = volume / "ps3" / "Game.iso"
+    iso.parent.mkdir()
+    iso.write_bytes(b"\0" * 4096)
+    _store(iso)  # a legacy record: no produced_meta
+    dolphin["valid"] = False
+
+    code, lines = _cli(capsys, "verify", str(iso), "--json")
+
+    assert lines[0]["tool"] == "makeps3iso", lines
+    assert code == 0, lines
+
+
+def test_a_legacy_record_with_no_mode_and_no_platform_is_skipped(volume, dolphin, capsys):
+    iso = volume / "misc" / "Game.iso"
+    iso.parent.mkdir()
+    iso.write_bytes(b"\0" * 4096)
+    _store(iso)
+
+    code, lines = _cli(capsys, "verify", str(iso), "--json")
+
+    assert lines[0]["status"] == "skipped", lines
+    assert "Platform" in lines[0]["reason"]
+    assert dolphin["runs"] == [] or all("verify" not in str(r) for r in dolphin["runs"])
+    assert _stored(iso) is not None

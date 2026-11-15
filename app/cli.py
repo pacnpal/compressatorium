@@ -896,6 +896,42 @@ def _route_stored(path: str, record: dict, registry) -> tuple:
     tool = best if best is not None else (claimants[0] if claimants else None)
     if tool is None:
         return None, "It has a stored check, but no tool can check this kind of file"
+    # A record with no mode (a legacy one) never guesses among tools for
+    # different Platforms (a generic .iso): the detected Platform decides,
+    # and without one the file is skipped (the r7 order: stored mode, then
+    # Platform, then skip). codex 4577381607.
+    # Every tool whose verify reads the name: a stored check must reach its
+    # tool even when the file no longer looks like that tool's (damage must
+    # fail, not vanish), so this is wider than the content claim.
+    from utils.path_utils import match_extension
+
+    candidates = [
+        t for t in registry.all() if match_extension(path, t.verify_extensions)
+    ]
+    # And every tool with a checking mode that writes this kind of file (a
+    # PS3 ISO is makeps3iso's product though it declares no verify extension).
+    for spec in registry.mode_specs():
+        producer = registry.for_mode(spec.mode)
+        if (
+            producer not in candidates and spec.output_ext
+            and match_extension(path, {spec.output_ext}) is not None
+            and registry.mode_supports_verify(spec.mode)
+        ):
+            candidates.append(producer)
+    candidates = candidates or claimants or [tool]
+    if _shared_across_platforms(path, candidates, registry):
+        from services.platform_detect import detect_platform
+
+        platform = detect_platform(path).platform
+        if not platform:
+            return None, (
+                "Its stored check names no producing mode and its Platform "
+                "couldn't be determined, so no check was chosen"
+            )
+        narrowed = [t for t in candidates if _tool_serves(t, platform, registry)]
+        if not narrowed:
+            return None, f"No check for {platform} Images in this format"
+        return (best if best in narrowed else narrowed[0]), None
     return tool, None
 
 

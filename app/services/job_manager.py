@@ -2815,6 +2815,16 @@ class JobManager:
             "output": output_fp,
         }
 
+    @staticmethod
+    def _verifier_identity(job: ConversionJob) -> Dict[str, object]:
+        """The mode and tool that produced the job's output."""
+        identity: Dict[str, object] = {"mode": job.mode.value}
+        try:
+            identity["tool"] = registry.for_mode(job.mode.value).id
+        except KeyError:
+            pass
+        return identity
+
     def _produced_meta_matches(self, job: ConversionJob, meta: object) -> bool:
         """Whether the on-disk output is the *exact* result of THIS request.
 
@@ -2825,6 +2835,10 @@ class JobManager:
         with a fresh mtime can't pass). Any mismatch → re-convert.
         """
         if not isinstance(meta, dict):
+            return False
+        if not meta.get("output") or not meta.get("source"):
+            # Only the verifier identity was recorded (no delete snapshot):
+            # nothing proves the output is this request's exact result.
             return False
         if (
             meta.get("mode") != job.mode.value
@@ -3604,9 +3618,17 @@ class JobManager:
                     # no-op without re-spawning the converter (#184, site 1).
                     # The source still exists here (delete runs below), so its
                     # complete set can be fingerprinted.
-                    produced_meta = await run_in_threadpool(
+                    snapshot_meta = await run_in_threadpool(
                         self._build_produced_meta, job,
                     )
+                    # The verifier identity (the mode and tool that made the
+                    # output) is recorded for every passing check, with or
+                    # without a delete snapshot: the CLI routes the next check
+                    # by it (#306). The fingerprints that back the re-run fast
+                    # path come only from the snapshot.
+                    produced_meta = {
+                        **self._verifier_identity(job), **(snapshot_meta or {}),
+                    }
                     await verification_store.mark_verified(
                         job.output_path,
                         source_path=job.file_path,

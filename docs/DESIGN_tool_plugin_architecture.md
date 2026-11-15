@@ -3551,14 +3551,18 @@ Verify, single and batch) records it with `verification_store.refresh_check`,
 which updates when and which check passed and keeps the stored `produced_meta`
 and `source_path`: refreshing a check never erases the mode that made the file,
 which step 1 below routes by. A conversion records with `mark_verified`, which
-replaces both, `None` included, so an output rebuilt at the same path by
-another mode never inherits the old one.
+replaces both, so an output rebuilt at the same path by another mode never
+inherits the old one. Every passing conversion check records its verifier
+identity (`JobManager._verifier_identity`: `mode` and `tool`), with or without
+a delete snapshot; the fingerprints that back the re-run fast path come only
+from the snapshot, and `_produced_meta_matches` refuses a record that has no
+`source` and `output` fingerprints.
 
 **Which tool checks a file** (`cli._verify_tool`), in this order:
 
 | Step | When | Verifier |
 | --- | --- | --- |
-| 1. Stored record | the file has a stored check | the tool of the mode in its `produced_meta` (makeps3iso for a PS3 ISO it built); without one, the tool that claims the name. No Platform narrowing. A recorded mode that cannot verify is reported "can't be checked", the record kept, not a failure |
+| 1. Stored record | the file has a stored check | the tool of the mode in its `produced_meta` (makeps3iso for a PS3 ISO it built), with no Platform narrowing. A recorded mode that cannot verify is reported "can't be checked", the record kept, not a failure. A legacy record with no mode never guesses among tools for different Platforms: for a shared extension the detected Platform picks among every tool that reads or produces the name, and without a Platform it is skipped |
 | 2. Detected Platform | no record, and a tool for another Platform also reads the extension (a generic `.iso`) | the claimants that serve `detect_platform`'s answer; none serves it: skipped as unsupported |
 | 3. Skip | no record, a shared extension, and no Platform (Unsorted or Conflicted) | none: skipped, "its Platform couldn't be determined" |
 
