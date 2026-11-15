@@ -2449,6 +2449,28 @@ as cap + 1 bytes and never parsed partially), `sheet_tracks` returns None and
 the probe says nothing, so a planted sheet cannot make the probe read a file
 outside the Volumes.
 
+Sheets are read exactly the way chdman 0.285 reads them
+(`src/lib/util/cdrom.cpp` at mame0285), because chdman opens the tracks
+itself and any difference lets a name pass `resolve_track` while chdman opens
+another. `fgets(buf, 511)` reads at most 510 bytes per line (`CHD_READ_BYTES`),
+so a sheet with a longer line (a `REM` padded to hide a `FILE`) or a NUL byte
+is unreadable. `chd_tokens` is chdman's `tokenize`: C-locale whitespace,
+`"` and `'` each toggle a quoted run and are dropped, no comment syntax (a GDI
+`#name` is a name). A CUE track is the token after an exact `FILE`; a GDI
+track is a line's fifth token. `resolve_track` checks the name verbatim (no
+trimming, `\` a filename character on POSIX), and every spelling of every
+track is checked, including the raw-byte one (`os.fsdecode`) chdman opens for
+a sheet that is not UTF-8: one refused spelling refuses the sheet.
+
+Special files are never opened. Opening a FIFO with no writer blocks forever,
+which would strand the threadpool worker an Auto request runs detection on.
+`path_utils.is_special_file` (`lstat`, a symlink judged by its target) is
+asked at the top of `detect_platform`, before any header probe or open, so a
+FIFO, socket or device input gets no Platform ("not a regular file or
+folder"). `resolve_track` refuses a track that exists and is one of these, so
+a sheet cannot point the probe at one either; a missing track is still not
+refused.
+
 Disc-ID tagging reads the same sheets after a conversion. `_process_job`
 builds `within` once: None for a source in a Volume, `[temp_dir]` (the
 `mkdtemp` root it extracted into) for an archive member, never the input
@@ -2568,14 +2590,34 @@ queued (`job_manager.cancel_job`) and returns the error. A job that had already
 finished cannot be withdrawn: its output stays, it is logged, and the error
 returns it, for an HTTP error from the queue and for an unexpected exception
 alike (the latter logged with its traceback and returned as a 500; a
-cancellation still propagates). An Image that preparation skipped (its output
+cancellation still propagates). Nothing in either Auto endpoint, or in the
+batch preparation they share, touches a Volume on the event loop: the per-path
+Volume checks run together with planning (`_checked_auto_plan`) or on their
+own (`_check_within_volumes`) through `_off_loop_bounded`, a `run_detached`
+call bounded by `VOLUME_PROBE_TIMEOUT_SECONDS` (30 s, beside
+`ROLLBACK_WAIT_CAP_SECONDS` in `job_manager`). Past the bound the request
+answers 503 "A Volume isn't responding"; the abandoned thread may linger until
+the mount answers, holding no shared pool worker, and its result is dropped.
+An Image that preparation skipped (its output
 appeared after planning) is marked skipped in the returned plan with
 preparation's reason. In the browser, `conversion.runAuto` runs the flow once
 at a time (an in-flight guard), on the selection and RomM context captured
 before its first await, and updates the re-pin badge whether queueing
-succeeded or not; `jobs.adopt` applies the same freshness rule as `refresh()`
-(`snapshotIsNewer`). The error detail is then structured, `{"message": "... Already
-finished and kept: ...", "jobs": [...]}`, with `jobs` in the shape a success
+succeeded or not. It takes the caller's AbortSignal: `ConvertPanel` aborts it
+in `onDestroy`, so leaving the view mid-plan aborts the plan request, never
+opens the modal afterwards, resolves a pending confirmation as cancelled, and
+clears `autoInFlight` (the store stops waiting at the abort even when a request
+ignores the signal); `jobs.adopt` applies the same freshness rule as `refresh()`
+(`snapshotIsNewer`). The rollback (`_cancel_queued`) asks every queued job to
+cancel, then waits for them to settle with `JobManager.wait_until_terminal`,
+for at most `CHD_PROGRESS_TIMEOUT` or `ROLLBACK_WAIT_CAP_SECONDS` (30 s),
+whichever is shorter; the cap holds when the timeout is 0, since the wait runs
+inside the HTTP request. `cancel_job()` returning True for a
+processing job means only that its cancel event is set, and a worker past its
+last check (in `post_convert`) still completes, so the retained list is built
+from the real final states: completed with an output, or still running at the
+bound. The error detail is then structured, `{"message": "... Kept (finished
+or still running): ...", "jobs": [...]}`, with `jobs` in the shape a success
 returns. `client.fetchJson` keeps a structured detail on `err.detail`, the store
 adopts those jobs and reconciles its re-pin snapshots against them before it
 retires the rest, so a kept output keeps its record. Auto never deletes a

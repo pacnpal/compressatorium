@@ -50,6 +50,26 @@ function defaultLevelFor(toolId) {
 const PREF_SAVE_DEBOUNCE_MS = 500;
 const isBrowser = typeof window !== 'undefined';
 
+// What `untilAborted` settles with when the signal wins.
+const ABORTED = Object.freeze({ aborted: true });
+
+// Resolves with ABORTED once `signal` aborts (at once if it already has).
+function abortedPromise(signal) {
+  if (signal.aborted) return Promise.resolve(ABORTED);
+  return new Promise((resolve) => {
+    signal.addEventListener('abort', () => resolve(ABORTED), { once: true });
+  });
+}
+
+// Settles with `promise`, or with ABORTED as soon as `signal` aborts,
+// whichever comes first. A late rejection of `promise` is swallowed: the
+// caller has already moved on, and it must not go unhandled.
+function untilAborted(promise, signal) {
+  if (!signal) return promise;
+  promise.catch(() => {});
+  return Promise.race([promise, abortedPromise(signal)]);
+}
+
 const INITIAL_TOOL = loadPrimaryTool();
 
 class ConversionStore {
@@ -363,13 +383,20 @@ class ConversionStore {
     }, PREF_SAVE_DEBOUNCE_MS);
   }
 
-  /** Ask the backend where each Image would go. Sets and returns `autoPlan`. */
-  async fetchAutoPlan(filePaths) {
+  /**
+   * Ask the backend where each Image would go. Sets and returns `autoPlan`.
+   * With a `signal` that aborts, the request is aborted and its answer, if it
+   * still lands, is dropped without a toast.
+   */
+  async fetchAutoPlan(filePaths, { signal, outputDir = this.outputDir || null } = {}) {
     if (!filePaths?.length) return null;
     try {
-      this.autoPlan = await api.getAutoPlan(filePaths, this.outputDir || null);
+      const plan = await api.getAutoPlan(filePaths, outputDir, { signal });
+      if (signal?.aborted) return null;
+      this.autoPlan = plan;
       return this.autoPlan;
     } catch (e) {
+      if (signal?.aborted) return null;
       toast.error(e?.message ?? 'Failed to plan Auto conversion');
       this.autoPlan = null;
       throw e;
@@ -391,33 +418,48 @@ class ConversionStore {
   /**
    * The whole Auto flow: plan, confirm, queue.
    *
-   * The selection and the RomM context are captured before the first await,
-   * so what is queued is exactly what the confirmed plan showed, whatever the
-   * selection becomes while the modal is open. `confirm()` resolves true to
+   * The selection, the RomM context and the output folder are captured before
+   * the first await, so what is queued is exactly what the confirmed plan
+   * showed (the preview, the RomM snapshot and the queue all use that one
+   * folder), whatever the user changes while the plan loads or the modal is
+   * open. Auto's targets come from the plan itself. `confirm()` resolves true to
    * queue. `onRepinPending(count)` runs after queueing for a RomM listing,
    * on failure too (a failed batch can still have kept jobs whose metadata
    * was reconciled). Returns `submitAuto`'s result, or null when nothing was
-   * queued (refused, cancelled, or failed).
+   * queued (refused, cancelled, aborted, or failed).
+   *
+   * `signal` is the caller's AbortSignal (the panel aborts it when it
+   * unmounts). An aborted run stops waiting at once, even on a request that
+   * ignores the signal: it never calls `confirm()` after the abort, a pending
+   * `confirm()` counts as cancelled, nothing is queued, and `autoInFlight`
+   * clears, so Start works again.
    */
-  async runAuto({ paths, rommPlatformId = null, confirm, onRepinPending } = {}) {
-    if (this.#autoInFlight || !paths?.length) return null;
+  async runAuto({ paths, rommPlatformId = null, confirm, onRepinPending, signal } = {}) {
+    if (this.#autoInFlight || !paths?.length || signal?.aborted) return null;
     this.#autoInFlight = true;
     const snapshot = [...paths];
     const platformId = rommPlatformId;
     const fromRomm = platformId !== null && platformId !== undefined;
+    const outputDir = this.outputDir || null;
     try {
       try {
-        await this.fetchAutoPlan(snapshot);
+        await untilAborted(this.fetchAutoPlan(snapshot, { signal, outputDir }), signal);
       } catch (_e) {
         return null; // toast already raised
       }
-      const proceed = await confirm();
+      if (signal?.aborted) {
+        this.clearAutoPlan();
+        return null; // the panel is gone: never open its modal
+      }
+      const answer = await untilAborted(confirm(), signal);
+      // An abort resolves the confirmation as cancelled.
+      const proceed = !signal?.aborted && !answer?.aborted && Boolean(answer);
       const plan = this.autoPlan ?? [];
       this.clearAutoPlan();
       if (!proceed) return null;
       try {
         return await this.submitAuto(snapshot, {
-          plan, rommRepin: fromRomm, rommPlatformId: platformId,
+          plan, rommRepin: fromRomm, rommPlatformId: platformId, outputDir,
         });
       } catch (_e) {
         return null; // toast already raised in submitAuto
@@ -596,24 +638,30 @@ class ConversionStore {
     { duplicateAction = 'skip', rommRepin = false, rommPlatformId = null } = {},
   ) {
     if (!filePaths?.length) return null;
+    // The target and everything that depends on it, read once before the
+    // first await: the user can change them while the RomM snapshot is being
+    // taken, and what is queued must be what was planned.
+    const mode = this.mode;
+    const outputDir = this.outputDir || null;
+    const batchOpts = {
+      outputDir,
+      duplicateAction,
+      compression: this.compressionValue,
+      // Mask the flag at submit time too, defense in depth against
+      // any code path that might set deleteOnVerify true without
+      // going through setMode (the backend rejects the combination
+      // for extract/raw modes).
+      deleteOnVerify: this.supportsDeleteOnVerify && this.deleteOnVerify,
+      containerOnly: this.supportsRoundTrip && this.containerOnly,
+      // Same masking for the makeps3iso 4 GB FAT32 split toggle.
+      split: this.supportsSplit && this.split,
+    };
     return this.#queueWithRepin(
       filePaths,
-      { [this.mode]: filePaths },
-      { duplicateAction, rommRepin, rommPlatformId },
+      { [mode]: filePaths },
+      { duplicateAction, rommRepin, rommPlatformId, outputDir },
       async () => {
-        const result = await jobs.createBatch(filePaths, this.mode, {
-          outputDir: this.outputDir || null,
-          duplicateAction,
-          compression: this.compressionValue,
-          // Mask the flag at submit time too, defense in depth against
-          // any code path that might set deleteOnVerify true without
-          // going through setMode (the backend rejects the combination
-          // for extract/raw modes).
-          deleteOnVerify: this.supportsDeleteOnVerify && this.deleteOnVerify,
-          containerOnly: this.supportsRoundTrip && this.containerOnly,
-          // Same masking for the makeps3iso 4 GB FAT32 split toggle.
-          split: this.supportsSplit && this.split,
-        });
+        const result = await jobs.createBatch(filePaths, mode, batchOpts);
         return { result, createdJobs: Array.isArray(result) ? result : [] };
       },
     );
@@ -625,10 +673,15 @@ class ConversionStore {
    * `plan` is the backend's Auto plan the user confirmed: each row's `mode` is
    * the target its Image will be queued for. The RomM metadata snapshot and
    * its reconciliation run exactly as for `submit()`, once per target mode.
+   * `outputDir` is the folder the plan was made for (`runAuto` captures it
+   * before planning); by default the current one, read before any await.
    */
   async submitAuto(
     filePaths,
-    { plan = [], rommRepin = false, rommPlatformId = null } = {},
+    {
+      plan = [], rommRepin = false, rommPlatformId = null,
+      outputDir = this.outputDir || null,
+    } = {},
   ) {
     if (!filePaths?.length) return null;
     const wanted = new Set(filePaths);
@@ -640,11 +693,11 @@ class ConversionStore {
     return this.#queueWithRepin(
       filePaths,
       groupByMode(Object.keys(modeOf), modeOf),
-      { duplicateAction: 'skip', rommRepin, rommPlatformId },
+      { duplicateAction: 'skip', rommRepin, rommPlatformId, outputDir },
       async () => {
         let result;
         try {
-          result = await api.createAutoJobs(filePaths, this.outputDir || null, 'skip');
+          result = await api.createAutoJobs(filePaths, outputDir, 'skip');
         } catch (e) {
           // A later group was refused after earlier jobs had already
           // finished: the route returns those in `detail.jobs`. They are real
@@ -670,14 +723,14 @@ class ConversionStore {
    * `planRommRepin` call returns. `misdirected` re-records sources the queue
    * wrote somewhere other than planned.
    */
-  async #planRepin(groups, duplicateAction, rommPlatformId, misdirected, merged) {
+  async #planRepin(groups, { duplicateAction, rommPlatformId, outputDir }, misdirected, merged) {
     // `merged` belongs to the caller and is filled one group at a time, so the
     // rows earlier groups saved are still there when a later group's request
     // throws: they are real records on the server, and the caller has to
     // reconcile or retire them like any other.
     for (const [mode, paths] of Object.entries(groups)) {
       if (!paths.length) continue;
-      const args = [paths, mode, this.outputDir || null, duplicateAction, rommPlatformId];
+      const args = [paths, mode, outputDir, duplicateAction, rommPlatformId];
       if (misdirected) {
         args.push(Object.fromEntries(paths.map((p) => [p, misdirected[p]])));
       }
@@ -704,6 +757,12 @@ class ConversionStore {
    */
   async #queueWithRepin(filePaths, groups, opts, queue) {
     const { duplicateAction, rommRepin, rommPlatformId } = opts;
+    // The output folder the caller captured before its first await; every
+    // snapshot (and replan) records paths under the folder the queue writes.
+    const target = {
+      duplicateAction, rommPlatformId,
+      outputDir: opts.outputDir === undefined ? this.outputDir || null : opts.outputDir,
+    };
     const modeOf = {};
     for (const [mode, paths] of Object.entries(groups)) {
       for (const path of paths) modeOf[path] = mode;
@@ -734,7 +793,7 @@ class ConversionStore {
           // platform's full catalog looking for these paths, which on a large
           // instance is hundreds of serialised requests before a small batch
           // is even queued. These rows all came from one platform's listing.
-          await this.#planRepin(groups, duplicateAction, rommPlatformId, null, planned);
+          await this.#planRepin(groups, target, null, planned);
         } catch (e) {
           // Best-effort, like the disc-ID tagging hook: losing the metadata
           // snapshot costs a re-match in RomM, while refusing to convert costs
@@ -826,7 +885,7 @@ class ConversionStore {
         try {
           await this.#planRepin(
             groupByMode(Object.keys(misdirected), modeOf),
-            duplicateAction, rommPlatformId, misdirected, replanned,
+            target, misdirected, replanned,
           );
         } catch (e) {
           replanFailed = true;

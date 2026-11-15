@@ -11,14 +11,20 @@ from utils.sheet_text import cue_tracks
         ('FILE "track.bin" BINARY', "track.bin"),
         ('FILE "Game (Track 1).bin" BINARY', "Game (Track 1).bin"),
         ("FILE track.bin BINARY", "track.bin"),
-        ("FILE Game (Track 1).bin BINARY", "Game (Track 1).bin"),
-        ('  file "lower.bin" binary', "lower.bin"),
+        # chdman's tokenizer: an unquoted space ends the name...
+        ("FILE Game (Track 1).bin BINARY", "Game"),
         ("FILE track.bin", "track.bin"),
+        ("FILE 'single.bin' BINARY", "single.bin"),
     ],
-    ids=["quoted", "quoted-spaces", "unquoted", "unquoted-spaces", "lowercase", "no-type"],
+    ids=["quoted", "quoted-spaces", "unquoted", "unquoted-spaces", "no-type", "single-quoted"],
 )
-def test_a_file_line_gives_the_whole_name(line, name):
+def test_a_file_line_gives_the_name_chdman_opens(line, name):
     assert cue_tracks(f"{line}\n  TRACK 01 MODE1/2352\n") == [name]
+
+
+def test_a_lowercase_file_line_is_not_a_track():
+    # ...and FILE is matched case-sensitively, as chdman's strcmp does.
+    assert cue_tracks('  file "lower.bin" binary\n  TRACK 01 MODE1/2352\n') == []
 
 
 def test_rem_lines_and_other_commands_are_not_tracks():

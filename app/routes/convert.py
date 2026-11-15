@@ -28,6 +28,8 @@ from models import (
 from routes.preferences import CONVERSION_KEY as CONVERSION_PREFS_KEY
 from services.archive import archive_service
 from services.job_manager import (
+    ROLLBACK_WAIT_CAP_SECONDS,
+    VOLUME_PROBE_TIMEOUT_SECONDS,
     DestinationUnresolvableError,
     OutputClaimedError,
     QueueBackpressureError,
@@ -36,6 +38,7 @@ from services.job_manager import (
 from services.platform_detect import plan_auto
 from services.preferences_store import preferences_store
 from services.romz import romz_service
+from services.subprocess_runner import run_detached
 from services.output_conflicts import (
     OutputPathExhausted,
     OutputPathLocked,
@@ -1077,6 +1080,46 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
     return await queue_prepared(batch)
 
 
+def _check_within_volumes(file_paths, output_dir: str | None = None) -> None:
+    """403 unless every path (and the output dir) is inside the Volumes.
+
+    Blocking (``is_within_configured_volumes`` stats and resolves); run it
+    through ``_off_loop_bounded``, never on the event loop.
+    """
+    for file_path in file_paths:
+        if not is_within_configured_volumes(file_path):
+            raise HTTPException(
+                status_code=403,
+                detail="Access denied: path outside configured volumes",
+            )
+    if output_dir and not is_within_configured_volumes(
+        output_dir, treat_archives=False,
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied: output directory outside configured volumes",
+        )
+
+
+async def _off_loop_bounded(func, *args, **kwargs):
+    """Run blocking Volume work off the event loop, bounded; 503 past the bound.
+
+    On a disposable thread (``run_detached``), so a Volume that stops answering
+    holds neither the loop nor a shared pool worker. Past
+    ``VOLUME_PROBE_TIMEOUT_SECONDS`` the request answers 503 and the thread is
+    abandoned; it may linger until the mount answers, and its result is
+    dropped. A process-wide probe ceiling being full answers 503 the same way.
+    """
+    try:
+        return await asyncio.wait_for(
+            run_detached(func, *args, **kwargs), VOLUME_PROBE_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        raise HTTPException(
+            status_code=503, detail="A Volume isn't responding. Try again later.",
+        ) from None
+
+
 async def prepare_batch(request: BatchJobCreateRequest) -> PreparedBatch:
     """Validate and plan every file of a batch, queueing nothing.
 
@@ -1104,20 +1147,7 @@ async def prepare_batch(request: BatchJobCreateRequest) -> PreparedBatch:
                     "same archive"
                 ),
             )
-    for file_path in request.file_paths:
-        if not is_within_configured_volumes(file_path):
-            raise HTTPException(
-                status_code=403,
-                detail="Access denied: path outside configured volumes",
-            )
-
-    if output_dir and not is_within_configured_volumes(
-        output_dir, treat_archives=False,
-    ):
-        raise HTTPException(
-            status_code=403,
-            detail="Access denied: output directory outside configured volumes",
-        )
+    await _off_loop_bounded(_check_within_volumes, request.file_paths, output_dir)
 
     # Fast-fail when the queue is already at capacity, before planning any
     # candidate — planning a PS3 folder walks its whole source tree, so a
@@ -1204,21 +1234,26 @@ def checked_compression(mode: str, compression: str | None) -> str | None:
     return value
 
 
+def _checked_auto_plan(file_paths: list[str], **plan_kwargs) -> list:
+    """The Volume checks, then ``plan_auto``: one blocking unit, off the loop."""
+    _check_within_volumes(file_paths)
+    return plan_auto(file_paths, **plan_kwargs)
+
+
 async def _plan_auto(request: AutoPlanRequest) -> list:
-    for file_path in request.file_paths:
-        if not is_within_configured_volumes(file_path):
-            raise HTTPException(
-                status_code=403,
-                detail="Access denied: path outside configured volumes",
-            )
     prefs = await preferences_store.get(CONVERSION_PREFS_KEY) or {}
-    return await plan_auto_targets(
-        list(request.file_paths), normalize_output_dir(request.output_dir), prefs,
-        # The shared, bounded readiness probe (a tool that cannot run here, such
-        # as nsz without prod.keys, is skipped in the plan instead of queued to
-        # fail).
-        ready_tool_ids=await registry.ready_tool_ids(),
+    output_dir = normalize_output_dir(request.output_dir)
+    # The shared, bounded readiness probe (a tool that cannot run here, such as
+    # nsz without prod.keys, is skipped in the plan instead of queued to fail).
+    ready = await registry.ready_tool_ids()
+    # Every filesystem touch (the Volume checks and planning's header reads)
+    # runs together off the event loop, bounded: a Volume that stops answering
+    # gets a 503, never a frozen API.
+    plan = await _off_loop_bounded(
+        _checked_auto_plan, list(request.file_paths),
+        compression_prefs=prefs, output_dir=output_dir, ready_tool_ids=ready,
     )
+    return _with_checked_compression(plan)
 
 
 async def plan_auto_targets(
@@ -1230,14 +1265,21 @@ async def plan_auto_targets(
 ) -> list:
     """``plan_auto`` with each saved compression checked against its mode.
 
-    The Auto route and the CLI's ``--auto`` (#306) share it; ``prefs`` is the
-    saved ``conversion`` preference and ``ready_tool_ids`` the tools that can
-    run here (``registry.ready_tool_ids()``).
+    The CLI's ``--auto`` (#306); the Auto route plans the same way through
+    ``_plan_auto``, which adds the Volume checks and the 30 s bound an HTTP
+    request needs. ``prefs`` is the saved ``conversion`` preference and
+    ``ready_tool_ids`` the tools that can run here
+    (``registry.ready_tool_ids()``). Off the event loop, unbounded: a CLI run
+    plans a whole library and has no request to time out.
     """
     plan = await run_in_threadpool(
         plan_auto, paths, compression_prefs=prefs, output_dir=output_dir,
         ready_tool_ids=ready_tool_ids,
     )
+    return _with_checked_compression(plan)
+
+
+def _with_checked_compression(plan: list) -> list:
     return [
         replace(target, compression=checked_compression(target.mode, target.compression))
         if target.mode else target
@@ -1278,8 +1320,10 @@ async def create_auto_jobs(request: AutoJobCreateRequest):
     nothing. Each group is still its own atomic queue call, so if a later group
     is refused at queue time (another job took a destination, a volume stopped
     answering) the jobs this request already queued are withdrawn and the error
-    is returned. A job that already finished cannot be withdrawn; it is kept,
-    logged, and returned in the error as ``detail = {"message", "jobs"}``, with
+    is returned. The rollback waits for running jobs to settle
+    (``_cancel_queued``); a job that completed with an output, or is still
+    running at the bound, is kept, logged, and returned in the error as
+    ``detail = {"message", "jobs"}``, with
     ``jobs`` in the same shape a success returns.
     """
     plan = await _plan_auto(request)
@@ -1324,7 +1368,7 @@ async def create_auto_jobs(request: AutoJobCreateRequest):
                 # instead of retiring every snapshot it took for this batch.
                 names = ", ".join(job.filename or job.id for job in kept)
                 exc.detail = {
-                    "message": f"{exc.detail} Already finished and kept: {names}.",
+                    "message": f"{exc.detail} Kept (finished or still running): {names}.",
                     "jobs": [job.model_dump(mode="json") for job in kept],
                 }
             raise
@@ -1342,7 +1386,7 @@ async def create_auto_jobs(request: AutoJobCreateRequest):
             raise HTTPException(
                 status_code=500,
                 detail={
-                    "message": f"Auto batch failed. Already finished and kept: {names}.",
+                    "message": f"Auto batch failed. Kept (finished or still running): {names}.",
                     "jobs": [job.model_dump(mode="json") for job in kept],
                 },
             ) from exc
@@ -1357,25 +1401,43 @@ async def create_auto_jobs(request: AutoJobCreateRequest):
 async def _cancel_queued(jobs: list) -> list:
     """Withdraw jobs an Auto request queued before a later group failed.
 
-    Returns the jobs that could not be withdrawn because they had already
-    finished (a small job can complete before a later group is refused). Their
-    output stays; nothing is deleted.
+    Returns the jobs that were not withdrawn, judged by their real final
+    states, never by ``cancel_job()``'s answer: for a processing job that only
+    means its cancel event is set, and a worker past its last check (in
+    ``post_convert``, say) still completes. So every job is asked to cancel,
+    then the rollback waits for them to settle, for at most the job progress
+    timeout (``CHD_PROGRESS_TIMEOUT``) or ``ROLLBACK_WAIT_CAP_SECONDS``,
+    whichever is shorter. The cap applies even when the timeout is 0 (no job
+    bound), because this runs inside the HTTP request. Retained: a job that
+    completed with an output, and one still running at the bound (its output
+    may yet land). Cancelled and failed jobs are withdrawn. Nothing is deleted.
     """
+    for job in jobs:
+        try:
+            await job_manager.cancel_job(job.id)
+        except Exception:  # keep withdrawing the rest; judged by state below
+            logger.warning("Could not cancel Auto job %s", job.id, exc_info=True)
+    job_bound = max(0, int(getattr(settings, "progress_timeout", 0) or 0))
+    bound = min(job_bound, ROLLBACK_WAIT_CAP_SECONDS) if job_bound else ROLLBACK_WAIT_CAP_SECONDS
+    await job_manager.wait_until_terminal([job.id for job in jobs], bound)
+
     kept: list = []
     for job in jobs:
-        name = getattr(job, "filename", None) or job.id
-        try:
-            withdrawn = await job_manager.cancel_job(job.id)
-        except Exception:  # keep withdrawing the rest
-            logger.warning("Could not cancel Auto job %s", job.id, exc_info=True)
-            kept.append(job)
-            continue
-        if not withdrawn:
+        state = job_manager.get_job(job.id) or job
+        status = getattr(state, "status", None)
+        name = getattr(state, "filename", None) or job.id
+        if status == JobStatus.COMPLETED and getattr(state, "output_path", None):
             logger.warning(
-                "Auto job %s (%s) had already finished when its batch failed; "
+                "Auto job %s (%s) finished before its batch could withdraw it; "
                 "its output is kept", job.id, name,
             )
-            kept.append(job)
+            kept.append(state)
+        elif status in (JobStatus.QUEUED, JobStatus.PROCESSING):
+            logger.warning(
+                "Auto job %s (%s) was still running %ss after its batch failed; "
+                "it is kept, and its output may still land", job.id, name, bound,
+            )
+            kept.append(state)
     return kept
 
 

@@ -127,18 +127,6 @@ def test_archive_z3ds_decompress_member_reverses_output_extension():
 # preserve rejections the legacy per-tool fallback enforced.
 
 
-@pytest.fixture(autouse=True)
-def _release_queued_tickets():
-    """Each accepted job reserves a FIFO ticket in the shared lock dir and is
-    never run here. Left behind, its ticket (held by this live process, so
-    never pruned) sits ahead of every later test's jobs in the queue."""
-    from services.concurrency_manager import concurrency_manager
-
-    before = set(concurrency_manager._ticket_handles)
-    yield
-    for key in set(concurrency_manager._ticket_handles) - before:
-        concurrency_manager.release(key)
-
 
 @pytest.mark.asyncio
 async def test_z3ds_fallback_rejects_unsupported_extension():
