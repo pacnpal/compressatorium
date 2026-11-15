@@ -1014,7 +1014,7 @@
       />
     </div>
     <span class="hint">
-      Leave blank to run at any hour. Times are
+      Leave blank, or give the same start and end, to run at any hour. Times are
       {rule.timezone || browserZone}.
     </span>
   </label>

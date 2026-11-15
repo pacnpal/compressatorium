@@ -26,15 +26,15 @@ def _in_window(rule: dict, now: datetime) -> bool:
     22:00 UTC -- the middle of the working day for most of the world.
 
     A window whose end is before its start wraps midnight (22:00-04:00), which
-    is the shape an overnight conversion window actually takes. The weekday is
-    read in the same zone, so "Saturday" means the operator's Saturday.
+    is the shape an overnight conversion window actually takes. One whose start
+    equals its end (03:00-03:00) is the whole day, as no window is. The weekday
+    is read in the same zone, so "Saturday" means the operator's Saturday.
     """
     try:
         now = now.astimezone(ZoneInfo(rule.get("timezone") or "UTC"))
     except (ZoneInfoNotFoundError, ValueError, KeyError):
         pass
-    start = _parse_hhmm(rule["window_start"])
-    end = _parse_hhmm(rule["window_end"])
+    start, end = _window(rule)
     current = now.time()
 
     if start is None and end is None:
@@ -58,6 +58,20 @@ def _in_window(rule: dict, now: datetime) -> bool:
     return False
 
 
+def _window(rule: dict) -> tuple:
+    """The window's ``(start, end)`` times; ``(None, None)`` when it is the whole day.
+
+    No window, and a window whose start equals its end, are both the whole day:
+    read literally, 03:00-03:00 is open for one instant a day and a scheduler
+    ticking once a minute would almost never see it.
+    """
+    start = _parse_hhmm(rule["window_start"])
+    end = _parse_hhmm(rule["window_end"])
+    if start is not None and start == end:
+        return None, None
+    return start, end
+
+
 def _window_opened(rule: dict, now: datetime) -> datetime:
     """When the window *now* falls in opened, in the rule's zone.
 
@@ -70,7 +84,7 @@ def _window_opened(rule: dict, now: datetime) -> datetime:
     except (ZoneInfoNotFoundError, ValueError, KeyError):
         zone = timezone.utc
     local = now.astimezone(zone)
-    start = _parse_hhmm(rule["window_start"]) or time(0, 0)
+    start = _window(rule)[0] or time(0, 0)
     opened = _instant(datetime.combine(local.date(), start), zone)
     if opened > now:
         opened = _instant(datetime.combine(local.date() - timedelta(days=1), start), zone)

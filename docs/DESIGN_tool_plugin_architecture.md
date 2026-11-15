@@ -3015,8 +3015,10 @@ allowed weekday (an overnight window's tail belongs to the day it opened) and
 `last_run_at` is before the moment this window opened (`_window_opened`,
 which resolves the wall-clock start with `_instant`: a start in a
 spring-forward gap opens at the first real instant after it, a start in a
-fall-back repeated hour at its first occurrence, so either opens once; no
-window means the whole local day, opened at midnight). A run that starts late
+fall-back repeated hour at its first occurrence, so either opens once; a
+window whose start equals its end is the whole day (`schedule._window`, for
+every Rule kind), as is no
+window: the whole local day, opened at midnight). A run that starts late
 does not push the next night later, and one that crosses midnight counts for
 the window it started in. Its output folder is never read. Each kind has its own preference rows
 (`store.rules_key(kind)`, `store.state_key(kind)`: `rules` / `rules.state` and

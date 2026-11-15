@@ -702,7 +702,8 @@ much to read a night ("check 50 GB a night"), a time window and weekdays:
 - A check Rule runs once per window, on each weekday you allow, on its own
   clock: the conversion Rule on the same Platform keeps its own. A run that
   starts late in the window, or carries on past midnight, does not move the
-  next night's run. Nightly runs need **Run
+  next night's run. No window, or the same start and end (03:00 to 03:00),
+  means the whole day: once a day from local midnight. Nightly runs need **Run
   automatically** on for the Library. **Run now** runs both, and the check
   spends another budget's worth on top of the nightly run, which still comes
   when it is due.

@@ -221,6 +221,20 @@ def test_an_overnight_window_runs_once_a_night_across_both_changes() -> None:
         ]
 
 
+def test_a_window_whose_start_equals_its_end_is_open_all_day() -> None:
+    """r2 M1: 03:00-03:00 is the whole day, once per day from local midnight."""
+    start = datetime(2026, 11, 16, 0, 0, 17, tzinfo=timezone.utc)   # Monday, ticks at :17
+
+    every_day = _nightly(window_start="03:00", window_end="03:00")
+    assert every_day["enabled"] and not every_day["invalid_window"]
+    assert [r.strftime("%a %H:%M") for r in _runs(every_day, start, 72 * 60)] == [
+        "Mon 00:00", "Tue 00:00", "Wed 00:00",
+    ]
+
+    mondays = _nightly(window_start="03:00", window_end="03:00", days=[0])
+    assert [r.strftime("%a %H:%M") for r in _runs(mondays, start, 72 * 60)] == ["Mon 00:00"]
+
+
 def test_each_kind_keeps_to_its_own_shape() -> None:
     """A conversion Rule needs a target; a check Rule never has one."""
     from services.rules.rules import CHECK, CONVERT, normalize_rule
@@ -1311,3 +1325,84 @@ async def test_a_run_stopped_by_a_romm_change_reports_nothing_it_did_not_write(
     assert job.status.value == "cancelled"
     assert "not Intact" not in job.message.replace("0 not Intact", "")
     assert job.message == "Stopped: 0 Intact, 0 not Intact"
+
+
+@pytest.mark.asyncio
+async def test_a_conversion_that_finishes_during_a_check_keeps_its_source(
+    db: Path, ready, sent, monkeypatch,
+) -> None:
+    """While a check reads an Image, a delete-source conversion of it keeps the Source.
+
+    The real job pipeline (dolphin-tool's runner stubbed, as the other job
+    tests do): the conversion finishes while the check's Verify holds #306's
+    input lock, waits its short bound, completes with "Source kept", and the
+    check still records its result.
+    """
+    import asyncio
+    from collections import OrderedDict
+
+    from models import ConversionMode, JobStatus
+    from routes import libraries as routes
+    from services import image_checks
+    from services import job_manager as job_manager_module
+    from services.concurrency_manager import concurrency_manager
+    from services.job_manager import SOURCE_KEPT_FOR_READERS, job_manager
+    from services.rules import check
+    from utils.delete_plan import build_delete_snapshot
+
+    from .test_platform_detect import _gamecube
+
+    monkeypatch.setattr(job_manager, "jobs", OrderedDict())
+    monkeypatch.setattr(job_manager, "_queue", asyncio.PriorityQueue())
+    monkeypatch.setattr(job_manager_module, "DELETE_READER_WAIT_SECONDS", 0.3)
+    monkeypatch.setattr(job_manager_module, "DELETE_READER_POLL_SECONDS", 0.05)
+    roms = db / "roms"
+    iso = Path(_gamecube(roms / "gc" / "Game.iso"))
+    rvz = roms / "gc" / "Game.rvz"
+    tool = registry.get("dolphin")
+    runner = tool._service._runner
+
+    async def fake_run(cmd, *, input_path, output_path, **kwargs):
+        Path(output_path).write_bytes(b"converted output")
+        yield {"progress": 100, "message": "Conversion complete"}
+
+    async def fake_verify(cmd, *, path, **kwargs):
+        yield {"type": "complete", "valid": True, "message": "Disc image is Intact"}
+
+    monkeypatch.setattr(runner, "run", fake_run)
+    monkeypatch.setattr(runner, "run_verify", fake_verify)
+    real_verify = tool.verify
+    conversion: dict = {}
+
+    async def verify(path, *, cancel_event=None):
+        if Path(path) == iso:
+            # The check is reading Game.iso: the conversion finishes now.
+            job = await job_manager.create_job(
+                str(iso), ConversionMode.DOLPHIN_RVZ, output_path=str(rvz),
+                delete_on_verify=True, container_only=True,
+                delete_snapshot=build_delete_snapshot(str(iso)),
+            )
+            try:
+                await job_manager._process_job(job.id)
+            finally:
+                concurrency_manager.release(job.id)
+            conversion["job"] = job
+        return await real_verify(path, cancel_event=cancel_event)
+
+    monkeypatch.setattr(tool, "verify", verify)
+    created = await routes.register_library(routes.RegisterLibraryRequest(path=str(roms)))
+    await routes.put_library_rules(
+        created["id"], {"check_rules": {"gc": {"enabled": True, "check_budget_gb": 1}}},
+    )
+
+    await routes.run_library(created["id"])
+    await check.drain()
+
+    job = conversion["job"]
+    assert job.status == JobStatus.COMPLETED, job.error_message
+    assert job.warning == SOURCE_KEPT_FOR_READERS
+    assert "Source kept: it was being read by another job" in job.message
+    assert iso.exists()
+    assert rvz.exists()
+    # The check still records its result.
+    assert "gc/Game.iso" in image_checks.last_checked(created["id"])

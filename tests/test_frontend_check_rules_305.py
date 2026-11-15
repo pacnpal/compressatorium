@@ -123,6 +123,14 @@ def test_the_editor_says_how_the_budget_and_schedule_work() -> None:
     assert "Run now" in src and "another budget" in src
 
 
+def test_the_editor_and_readme_say_an_equal_window_is_all_day() -> None:
+    """r2 M1: 03:00-03:00 is the whole day, and both places say so."""
+    assert "same start and end" in _EDITOR.read_text(encoding="utf-8")
+    readme = (Path(__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8")
+    section = readme.split("### Check Rules", 1)[1].split("\n### ", 1)[0]
+    assert "same start and end" in section
+
+
 def test_a_not_intact_finding_has_a_label_and_no_set_platform() -> None:
     src = _FINDINGS.read_text(encoding="utf-8")
     assert "not_intact: 'Not Intact'" in src
