@@ -66,3 +66,5 @@ def test_the_tracker_resolves_completed_jobs_through_it():
     src = _TRACKER.read_text(encoding="utf-8")
     assert "from '$lib/util/jobToast.js'" in src
     assert "completionToast(job)" in src
+    # No data-driven method lookup (Semgrep unsafe-dynamic-method).
+    assert "toast[" not in src
