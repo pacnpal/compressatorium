@@ -237,7 +237,8 @@ def _discover(
     member listing hit the per-archive cap gets a line saying so. ``reads``
     (``--to``'s accepted extensions) also lists every file in a walked folder
     with one of them, which the tool-wide walk leaves out when the mode reads
-    what its tool doesn't (a ``.chd`` for chdman's extract modes).
+    what its tool doesn't (a ``.chd`` for chdman's extract modes), in the same
+    walk. A folder that can't be read is reported as skipped.
     """
     from routes.files import scan_tree
     from services.archive import archive_service
@@ -262,17 +263,20 @@ def _discover(
             if not for_verify and registry.tools_for_directory(path):
                 add(path, True)
                 continue
+            unreadable: list[tuple[str, str]] = []
             files, members, cut = scan_tree(
                 path, recurse, archives,
                 purpose="verify" if for_verify else "convert",
+                also_reads=reads, unreadable=unreadable,
             )
+            for folder, why in unreadable:
+                item = add(folder, False)
+                item.status = "skipped"
+                item.reason = f"This folder can't be read: {why}"
             for entry in files:
                 if for_verify and not entry.get("verifiable_by"):
                     continue
                 add(entry["path"], False)
-            if reads:
-                for file_path in _files_reading(path, reads, recurse):
-                    add(file_path, False)
             if not for_verify:  # a check reads files, never archive members
                 for entry in members:
                     add(entry["path"], False)
@@ -297,27 +301,6 @@ def _discover(
             if i.explicit or not archive_service.is_archive(i.path.split("::", 1)[0])
         ]
     return list(found.values())
-
-
-def _files_reading(root: str, reads: frozenset[str], recurse: bool) -> list[str]:
-    """Files under ``root`` whose name ends with one of ``reads``, in the same
-    sorted walk order as ``scan_tree``: junk skipped, symlinked folders not
-    followed, a folder that is itself an Image not walked into."""
-    from services.tools import registry
-    from utils.junk import is_junk_entry
-    from utils.path_utils import match_extension
-
-    found = []
-    for name in sorted(os.listdir(root)):
-        if is_junk_entry(name):
-            continue
-        path = os.path.join(root, name)
-        if os.path.isdir(path):
-            if recurse and not os.path.islink(path) and not registry.tools_for_directory(path):
-                found += _files_reading(path, reads, recurse)
-        elif os.path.isfile(path) and match_extension(name, reads) is not None:
-            found.append(path)
-    return found
 
 
 # --------------------------------------------------------------------------- #
@@ -1073,6 +1056,10 @@ async def verify(args, printer: Printer, state: RunState) -> int:
     for item in items:
         if state.stopping:
             break
+        if item.status:  # decided in discovery (a folder that can't be read)
+            printer.line({"path": item.path, "status": item.status, "tool": None,
+                          "reason": item.reason})
+            continue
         record = await verification_store.get_record(item.path) if has_db else None
         tool, unsupported = await run_in_threadpool(_verify_tool, item.path, record)
         if tool is None:

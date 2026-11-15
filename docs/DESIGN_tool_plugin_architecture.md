@@ -2753,13 +2753,16 @@ most twice `MAX_CONCURRENT_JOBS` of its jobs queued (never more than
 UI.
 
 **What a `--to` walk lists.** A folder walk lists what the web search lists
-(`scan_tree`, tool-wide inputs). With `--to`, `cli._discover` also lists every
-file whose name ends with an extension the target's modes accept
-(`platform_detect.target_reads_extensions`: a mode id's
-`mode_reads_extensions`, or for a format the union over the Auto-eligible
-modes), so a mode that reads what its tool leaves out of its inputs (chdman's
-extract modes and `.chd`) finds its files. `format_candidates` then decides
-per file. `--auto` keeps the tool-wide walk.
+(`scan_tree`, tool-wide inputs). With `--to`, the same single walk also lists
+every file whose name ends with an extension the target's modes accept and no
+tool-wide input matches (`scan_tree(also_reads=...)`, fed by
+`platform_detect.target_reads_extensions`: a mode id's `mode_reads_extensions`,
+or for a format the union over the Auto-eligible modes), so a mode that reads
+what its tool leaves out of its inputs (chdman's extract modes and `.chd`)
+finds its files. `format_candidates` then decides per file. `--auto` keeps the
+tool-wide walk. A folder that can't be read is skipped as the web search skips
+it, and with `scan_tree(unreadable=[...])` the CLI reports it as a skipped line
+("This folder can't be read: ..."), exit code unaffected.
 
 **Stopping during planning.** The CLI's planning runs blocking filesystem work
 on `run_in_threadpool`, which can't be cancelled: SIGINT, SIGTERM or SIGHUP

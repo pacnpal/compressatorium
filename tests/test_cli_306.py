@@ -1977,3 +1977,44 @@ def test_a_verify_lets_go_of_its_lock_when_the_check_raises(
     other = _other_process()
     assert other.acquire_lock(str(rvz), allow_existing=True)
     other.release_lock(str(rvz))
+
+
+def test_a_to_walk_skips_and_reports_an_unreadable_folder(volume, capsys):
+    """review r11 I1: one folder the user can't read must not crash a --to
+    run; the readable CHDs are discovered and the folder is reported."""
+    ok = volume / "ok"
+    ok.mkdir()
+    (ok / "A.chd").write_bytes(b"MComprHD" + b"\0" * 120)
+    locked = volume / "locked"
+    locked.mkdir()
+    (locked / "B.chd").write_bytes(b"MComprHD" + b"\0" * 120)
+    os.chmod(locked, 0)
+    try:
+        code, lines = _cli(
+            capsys, "convert", str(volume), "--to", "extractdvd", "--dry-run", "--json",
+        )
+    finally:
+        os.chmod(locked, 0o700)
+
+    assert code == 0, lines
+    by_name = {Path(x["path"]).name: x for x in lines}
+    assert by_name["A.chd"]["status"] == "planned"
+    assert by_name["locked"]["status"] == "skipped"
+    assert "read" in by_name["locked"]["reason"].lower()
+    assert "B.chd" not in by_name
+
+
+def test_verify_reports_an_unreadable_folder_too(volume, dolphin, capsys):
+    _rvz(volume, "gc/Game.rvz")
+    locked = volume / "locked"
+    locked.mkdir()
+    os.chmod(locked, 0)
+    try:
+        code, lines = _cli(capsys, "verify", str(volume), "--json")
+    finally:
+        os.chmod(locked, 0o700)
+
+    assert code == 0, lines
+    by_name = {Path(x["path"]).name: x for x in lines}
+    assert by_name["Game.rvz"]["status"] == "intact"
+    assert by_name["locked"]["status"] == "skipped"
