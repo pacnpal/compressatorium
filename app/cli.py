@@ -1229,7 +1229,9 @@ async def verify(args, printer: Printer, state: RunState) -> int:
     from services.verification_store import verification_store
 
     if has_db:
-        items = _with_stored_checks(items, paths, await verification_store.all_records())
+        # Every stored row, failed ones included: a file whose last check
+        # failed is re-checked from a folder run too.
+        items = _with_stored_checks(items, paths, await verification_store.all_provenance())
     # Once, on the final input set, before any verifier is chosen.
     await run_in_threadpool(_skip_outside_volumes, items)
     failed = False

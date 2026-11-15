@@ -2536,3 +2536,36 @@ def test_a_failed_check_keeps_the_mode_and_the_repaired_iso_routes_back(
     code, lines = _cli(capsys, "verify", str(iso), "--json")
     assert (code, lines[0]["tool"], lines[0]["status"]) == (0, "makeps3iso", "intact")
     assert _stored(iso)["produced_meta"]["mode"] == "folder_to_iso"
+
+
+def test_a_folder_verify_rechecks_a_ps3_iso_that_failed_last_time(
+    volume, dolphin, capsys, monkeypatch,
+):
+    """A failed record (not Intact) is still found from a folder run and goes
+    back to makeps3iso by its kept mode; after a repair it passes. No tool
+    claims the file from its content here, so only its stored record finds it
+    (as for any output no claimant recognises)."""
+    from routes import files as files_routes
+    from services import ps3
+
+    monkeypatch.setattr(files_routes, "checking_tools", lambda path: [])
+
+    iso = volume / "games" / "Game.iso"
+    iso.parent.mkdir()
+    iso.write_bytes(b"\0" * 4096)
+    _store(iso, produced_meta={"mode": "folder_to_iso", "tool": "makeps3iso"})
+    dolphin["valid"] = False
+
+    monkeypatch.setattr(ps3, "ps3_iso_title_id", lambda path, **kw: None)
+    code, lines = _cli(capsys, "verify", str(volume), "--json")
+    assert [(x["tool"], x["status"]) for x in lines] == [("makeps3iso", "failed")], lines
+
+    code, lines = _cli(capsys, "verify", str(volume), "--since", "30d", "--json")
+    assert [(x["tool"], x["status"]) for x in lines] == [("makeps3iso", "failed")], lines
+
+    monkeypatch.setattr(ps3, "ps3_iso_title_id", lambda path, **kw: "BLES00000")
+    code, lines = _cli(capsys, "verify", str(volume), "--json")
+    assert [(x["path"], x["tool"], x["status"]) for x in lines] == [
+        (str(iso), "makeps3iso", "intact"),
+    ], lines
+    assert code == 0

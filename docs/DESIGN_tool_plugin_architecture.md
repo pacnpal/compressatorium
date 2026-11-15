@@ -3089,7 +3089,11 @@ with its `produced_meta` and Source, `check_passed` becomes `FAILED`, and every
 read that means "this passed" (`is_verified`, `get_record`, `all_records`)
 skips it, while `produced_meta_blocking` still returns what made the file. The
 CLI routes a file with no passing record by that mode, so a repaired PS3 ISO
-goes back to makeps3iso. A job whose Round-trip fails records its own mode and
+goes back to makeps3iso. A folder verify finds such a file too: its stored
+checks come from `all_provenance` (every row's path and `produced_meta`,
+failed ones included), while `--since` and the re-run fast path stay on the
+passing-only reads, so a failed file is always re-checked. A job whose
+Round-trip fails records its own mode and
 tool for the output, marked failed. `clear` stays for a file that is gone or
 replaced: a deleted Source, an authorized overwrite, a web delete or rename.
 
