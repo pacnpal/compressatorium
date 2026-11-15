@@ -167,6 +167,17 @@ def _validated_files(paths: list[str]) -> tuple[str, dict[str, str]]:
     if len(directories) != 1:
         raise PlaylistError("The discs must be in one folder")
     directory = directories.pop()
+    # The .m3u Referrer looks only in a replaced file's resolved folder and the
+    # folders above it. A playlist elsewhere (beside symlinks into another
+    # folder) would not follow the discs when they convert, and the Source
+    # would be deleted with the playlist still naming it: refuse (fail safe).
+    playlist_dir = os.path.realpath(directory)
+    for real in seen:
+        source_dir = os.path.dirname(real)
+        if source_dir != playlist_dir and not source_dir.startswith(playlist_dir + os.sep):
+            raise PlaylistError(
+                "These discs are symlinks into another folder, so make the playlist there",
+            )
     files: dict[str, str] = {}
     for raw in seen.values():
         name = os.path.basename(raw)
