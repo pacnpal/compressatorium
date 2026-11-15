@@ -253,3 +253,8 @@ extend-exclude = [
     ".venv",
     "app/.venv",
 ]
+
+[tool.pytest.ini_options]
+# A stalled test fails with its name instead of hanging CI (#332). Generous on
+# purpose: the slowest real-binary tests take well under a minute.
+timeout = 600

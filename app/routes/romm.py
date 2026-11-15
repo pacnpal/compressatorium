@@ -48,6 +48,7 @@ from services.romm import (
     RommError,
     RommNotConfigured,
     UNHASHED_PLATFORM_SLUGS,
+    heartbeat_version,
     romm_client,
 )
 from services.romm import (
@@ -294,7 +295,7 @@ async def romm_status() -> dict:
         try:
             heartbeat = await run_in_threadpool(romm_client.heartbeat)
             result["connected"] = True
-            result["version"] = (heartbeat.get("VERSION") or heartbeat.get("version"))
+            result["version"] = heartbeat_version(heartbeat)
         except RommError as exc:
             logger.warning("romm: heartbeat failed: %s", exc)
             result["error"] = _safe_error(exc)
@@ -1791,7 +1792,7 @@ async def test_romm_connection(patch: RommSettingsPatch | None = None) -> dict:
     try:
         heartbeat = await run_in_threadpool(probe.heartbeat)
         result["reachable"] = True
-        result["version"] = heartbeat.get("VERSION") or heartbeat.get("version")
+        result["version"] = heartbeat_version(heartbeat)
     except RommError as exc:
         logger.warning("romm: connection test failed: %s", exc)
         result["error"] = _safe_error(exc)

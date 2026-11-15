@@ -5464,3 +5464,19 @@ def test_rom_at_path_matches_a_folder_record_under_a_symlinked_platform(
         # An exact file record still beats the folder.
         exact = {"id": 3, "full_path": "roms/switch/Game/Base.nsz"}
         assert client.rom_at_path(str(output), [*roms, exact])["id"] == 3
+
+
+@pytest.mark.parametrize(
+    ("heartbeat", "expected"),
+    [
+        ({"SYSTEM": {"VERSION": "5.4.1"}}, "5.4.1"),  # RomM 5.x
+        ({"VERSION": "4.9.0"}, "4.9.0"),  # older, flat
+        ({"SYSTEM": {}}, None),
+        ({}, None),
+    ],
+)
+def test_heartbeat_version_reads_nested_and_flat_shapes(heartbeat, expected) -> None:
+    """#335: RomM 5.x nests the version under SYSTEM.VERSION."""
+    from services.romm import heartbeat_version
+
+    assert heartbeat_version(heartbeat) == expected
