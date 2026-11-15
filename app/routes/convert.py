@@ -897,7 +897,12 @@ async def _add_referrer_changes(
         changes = await referrers.plan_changes_bounded(
             image_path, {p: output_path for p in delete_paths},
         )
-    except Exception as exc:  # noqa: BLE001 - the job would keep the Source too
+    except Exception as exc:
+        # Any planning failure is shown as "the source will be kept" (the job
+        # would keep it too), so the catch is deliberately broad.
+        logger.warning(
+            "delete-plan: Referrer planning failed for %s", image_path, exc_info=True,
+        )
         target = getattr(exc, "target", None) or image_path
         reason = getattr(exc, "reason", None) or str(exc)
         item.setdefault("warnings", []).append(
