@@ -358,7 +358,9 @@ def _strip_trailing_dot_and_seps(path: str) -> str:
     return (drive + tail) or path
 
 
-def source_companions_are_safe(file_path: str, mode: str) -> bool:
+def source_companions_are_safe(
+    file_path: str, mode: str, *, within: str | None = None,
+) -> bool:
     """Whether every sibling input this mode's tool also consumes stays in-volume.
 
     The single-file analogue of :func:`is_safe_directory_tree`, and it exists
@@ -386,13 +388,21 @@ def source_companions_are_safe(file_path: str, mode: str) -> bool:
     the volumes rejects the job (``delete_plan.sheet_reference_problems``). An
     empty companion list is never taken to mean safe.
 
+    ``within`` swaps the Volumes for an explicit containment root: the worker
+    passes the job's own extraction folder when the source came out of an
+    archive, since that folder is not a Volume. Companions and track
+    references must then resolve inside it. Omitted, the Volumes apply.
+
     Blocking I/O (an ``lstat`` and a ``realpath`` per companion); call it off
     the event loop.
     """
     from services.tools import registry  # local: avoids an import cycle
-    from utils.delete_plan import sheet_reference_problems  # local: cycle
+    from utils.delete_plan import (  # local: cycle
+        sheet_reference_problems,
+        source_input_is_contained,
+    )
 
-    if sheet_reference_problems(file_path):
+    if sheet_reference_problems(file_path, within=within):
         return False
 
     try:
@@ -402,9 +412,7 @@ def source_companions_are_safe(file_path: str, mode: str) -> bool:
     for companion in tool.source_companions(file_path):
         if os.path.islink(companion):
             return False
-        if not is_within_configured_volumes(
-            os.path.realpath(companion), treat_archives=False,
-        ):
+        if not source_input_is_contained(companion, within):
             return False
     return True
 

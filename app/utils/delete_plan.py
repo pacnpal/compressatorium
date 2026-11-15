@@ -86,17 +86,39 @@ def sheet_track_paths(sheet_path: str) -> list[str]:
 _SHEET_TEXT_PARSERS = {".cue": cue_tracks, ".gdi": _gdi_tracks_from_text}
 
 
-def sheet_reference_problems(sheet_path: str) -> list[str]:
+def source_input_is_contained(path: str, within: str | None = None) -> bool:
+    """Whether ``path`` resolves inside its containment root.
+
+    ``within`` is an explicit root the caller owns and trusts: the job worker
+    passes the folder it extracted an archive member into, which is not a
+    Volume. The real path (symlinks followed) must sit under that root's real
+    path. Without ``within`` the root is the configured Volumes. There is no
+    third case: no root never means anything goes.
+    """
+    real = os.path.realpath(path)
+    if within is None:
+        return is_within_configured_volumes(real, treat_archives=False)
+    root = os.path.realpath(within)
+    try:
+        return os.path.commonpath([real, root]) == root
+    except ValueError:  # different drives
+        return False
+
+
+def sheet_reference_problems(sheet_path: str, *, within: str | None = None) -> list[str]:
     """Why a ``.cue`` / ``.gdi`` sheet is unsafe to hand to a converter, or ``[]``.
 
     The converter opens the files a sheet names itself, so each reference has
-    to stay inside the configured Volumes or the job would pack a file from
-    elsewhere into its output. Unsafe: a reference that is absolute, one that
-    leaves the sheet's folder (``..``), and one that resolves (through a
-    symlink) outside the configured Volumes. Every decoding of the sheet is
-    checked (``utils.sheet_text``), so a name cannot hide in one spelling. A
-    sheet that exists but cannot be read is unsafe too: nothing was checked.
-    Empty for any other file. Blocking (reads the sheet, resolves each track).
+    to stay inside its containment root or the job would pack a file from
+    elsewhere into its output. The root is the configured Volumes, or
+    ``within`` when the caller passes one (the job's own extraction folder for
+    a sheet taken out of an archive; see :func:`source_input_is_contained`).
+    Unsafe: a reference that is absolute, one that leaves the sheet's folder
+    (``..``), and one that resolves (through a symlink) outside the root.
+    Every decoding of the sheet is checked (``utils.sheet_text``), so a name
+    cannot hide in one spelling. A sheet that exists but cannot be read is
+    unsafe too: nothing was checked. Empty for any other file. Blocking
+    (reads the sheet, resolves each track).
     """
     sheet = Path(sheet_path)
     parse = _SHEET_TEXT_PARSERS.get(sheet.suffix.lower())
@@ -113,9 +135,7 @@ def sheet_reference_problems(sheet_path: str) -> list[str]:
             except ValueError as exc:
                 problems.append(str(exc))
                 continue
-            if not is_within_configured_volumes(
-                os.path.realpath(track), treat_archives=False,
-            ):
+            if not source_input_is_contained(str(track), within):
                 problems.append(f"Track reference resolves outside the volumes: {ref}")
     return list(dict.fromkeys(problems))
 
