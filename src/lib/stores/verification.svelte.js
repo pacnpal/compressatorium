@@ -36,6 +36,10 @@ class VerificationStore {
   // lands first. Plain object: a bookkeeping table nothing renders.
   _seq = 0;
   _versions = Object.create(null);
+  // The number of the newest full answer applied. A full answer speaks for
+  // every path, the ones it never names too (codex 4579151542), so nothing
+  // older than it may set any path afterwards.
+  _floor = 0;
   // Re-reads of a check run's paths still in flight (see applyJobEvent).
   _lookups = new Set();
 
@@ -57,6 +61,7 @@ class VerificationStore {
       } else {
         const data = await api.getVerifiedCHDs();
         const passed = passedChecks(data);
+        this._floor = Math.max(this._floor, version);
         // Every path either side knows: the answer's, and ours (a path the
         // server no longer lists is no longer checked).
         for (const path of [...this.statuses]) {
@@ -102,9 +107,12 @@ class VerificationStore {
     this._set(path, null, ++this._seq);
   }
 
-  /** Write `path` unless something newer than `version` already set it. */
+  /**
+   * Write `path` unless something newer than `version` already spoke for it:
+   * a write to that path, or a full answer, which covers every path.
+   */
   _set(path, check, version) {
-    if ((this._versions[path] ?? 0) > version) return;
+    if (version < Math.max(this._versions[path] ?? 0, this._floor)) return;
     this._versions[path] = version;
     this._write(path, check);
   }

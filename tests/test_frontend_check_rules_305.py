@@ -293,6 +293,32 @@ process.stdout.write(JSON.stringify({
     assert data == {"afterLookup": None, "bolt": None, "keep": "intact", "fresh": "intact"}
 
 
+def test_an_older_lookup_never_undoes_a_newer_full_load(tmp_path) -> None:
+    """Codex 4579151542, the reverse order: a lookup is still out when a newer
+    full reload answers first and says the path has no check. A full answer
+    covers every path, even one it never names, so the older lookup that
+    lands after it cannot bring the badge back. A live write after the full
+    answer still applies."""
+    data = _run_verification(tmp_path, """
+let __answerLookup;
+api.getVerifiedFor = () => new Promise((resolve) => { __answerLookup = resolve; });
+const store = new VerificationStore();
+store.markChecked('/v/bolt.chd');
+store.forget('/v/bolt.chd');
+store.applyJobEvent({ type: 'complete', job: { id: 'check1' },
+  verification_paths: ['/v/bolt.chd'] });       // the older request
+const full = store.loadVerified();              // the newer one
+__resolve({ verified: [], checks: {} });        // lands first: no checks
+await full;
+__answerLookup({ verified: ['/v/bolt.chd'], checks: { '/v/bolt.chd': 'intact' } });
+await store.pendingLookups();
+const bolt = store.checkFor('/v/bolt.chd');
+store.markChecked('/v/later.rvz', 'round_tripped');  // live, after the full answer
+process.stdout.write(JSON.stringify({ bolt, later: store.checkFor('/v/later.rvz') }));
+""")
+    assert data == {"bolt": None, "later": "round_tripped"}
+
+
 def test_the_jobs_stream_hands_its_job_events_to_the_verification_store() -> None:
     src = (Path(__file__).resolve().parents[1] / "src" / "lib" / "stores"
            / "jobs.svelte.js").read_text(encoding="utf-8")
