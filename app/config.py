@@ -201,6 +201,11 @@ class Settings(BaseSettings):
     # the source of truth when set. When unset, the app best-effort searches the
     # standard locations (~/.switch, ~/.config/nsz) at runtime.
     switch_keys_dir: str | None = Field(default=None, alias="SWITCH_KEYS")
+    # eXoDOS's per-game template tree (the `!dos` folder holding
+    # `<Game>/dosbox.conf`), which the eXoDOS repack reads beside each game zip.
+    # The operator supplies their own eXoDOS; nothing is shipped or downloaded.
+    # Must sit inside a configured volume. Unset hides the tool.
+    exodos_dos_dir: str | None = Field(default=None, alias="EXODOS_DOS_DIR")
     # zstandard level for nsz compression (1-22, nsz default is 18).
     nsz_compression_level: int = Field(
         default=18, alias="NSZ_COMPRESSION_LEVEL", ge=1, le=22,

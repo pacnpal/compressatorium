@@ -21,8 +21,21 @@ Behaviour modelled on derkommutator/eXo2romm (Unlicense); no code is shared.
 """
 from __future__ import annotations
 
+import functools
+import os
 import re
+import zipfile
 from dataclasses import dataclass, field
+from pathlib import Path
+
+from services.archive import archive_service
+from utils.path_utils import is_within_configured_volumes
+
+from config import settings
+
+# The product's extension: a zip, under the name DOSBox Pure documents for one.
+OUTPUT_EXTENSION = ".dosz"
+INPUT_EXTENSIONS = frozenset({".zip"})
 
 
 @dataclass(frozen=True)
@@ -126,3 +139,146 @@ def rewrite_conf(data: bytes, top: str, profile: CollectionProfile = EXODOS) -> 
             leftovers.append(body.strip().decode("cp437"))
         lines.append(body + eol)
     return ConfRewrite(data=b"".join(lines), leftovers=leftovers)
+
+
+class NotRepackable(ValueError):
+    """The file is not an eXoDOS game zip this tool can repack, and why."""
+
+
+@dataclass(frozen=True)
+class RepackPlan:
+    top: str          # the game folder every member sits in, "Abaron"
+    template: str     # realpath of that game's template, inside the tree
+    total_size: int   # uncompressed bytes of every member
+
+
+class ExodosService:
+    """Reads one eXo pack's game zips and template tree. Holds no state."""
+
+    def __init__(self, profile: CollectionProfile = EXODOS) -> None:
+        self.profile = profile
+
+    # --- gating ------------------------------------------------------------
+
+    def dos_dir(self) -> str | None:
+        """The template tree's real path, or ``None`` when it cannot be used.
+
+        ``EXODOS_DOS_DIR`` is the only source, so a wrong value shows as an
+        unavailable tool rather than a silent fallback. It must be a directory
+        inside a configured Volume, the outer boundary of what the app reads.
+        """
+        raw = settings.exodos_dos_dir
+        if not raw:
+            return None
+        real = os.path.realpath(raw)
+        if not os.path.isdir(real):
+            return None
+        if not is_within_configured_volumes(real, treat_archives=False):
+            return None
+        return real
+
+    def is_ready(self) -> bool:
+        return self.dos_dir() is not None
+
+    # --- inspection --------------------------------------------------------
+
+    def inspect(self, path: str) -> RepackPlan:
+        """Plan a repack, or raise :class:`NotRepackable` saying why not.
+
+        Reads only the zip's directory. Every member name passes the shared
+        archive path rules and the shared entry/size limits, all members sit in
+        one game folder, and that game's template resolves inside the tree.
+        """
+        root = self.dos_dir()
+        if root is None:
+            raise NotRepackable(
+                "No eXoDOS template tree: set EXODOS_DOS_DIR to the "
+                f"{self.profile.template_dir} folder, inside a volume",
+            )
+        return self._inspect(path, root)
+
+    def _inspect(self, path: str, root: str) -> RepackPlan:
+        try:
+            with zipfile.ZipFile(path) as zf:
+                infos = zf.infolist()
+        except (OSError, zipfile.BadZipFile) as exc:
+            raise NotRepackable(f"Cannot read zip: {exc}") from exc
+        top = self._game_folder(infos)
+        return RepackPlan(
+            top=top,
+            template=self._template(root, top),
+            total_size=sum(info.file_size for info in infos),
+        )
+
+    @staticmethod
+    def _game_folder(infos: list[zipfile.ZipInfo]) -> str:
+        try:
+            archive_service.enforce_archive_limits(
+                [(info.filename, info.file_size) for info in infos],
+            )
+        except ValueError as exc:
+            raise NotRepackable(str(exc)) from exc
+        tops: set[str] = set()
+        has_file = False
+        for info in infos:
+            name = info.filename[:-1] if info.is_dir() else info.filename
+            try:
+                segments = archive_service.member_segments(name)
+            except ValueError as exc:
+                raise NotRepackable(f"{exc}: {info.filename!r}") from exc
+            tops.add(segments[0])
+            has_file = has_file or (len(segments) > 1 and not info.is_dir())
+        if len(tops) != 1 or not has_file:
+            raise NotRepackable("The zip does not hold a single game folder")
+        return tops.pop()
+
+    def _template(self, root: str, top: str) -> str:
+        real = os.path.realpath(os.path.join(root, top, self.profile.conf_name))
+        if os.path.commonpath([real, root]) != root:
+            raise NotRepackable(
+                f"The template for {top} resolves outside EXODOS_DOS_DIR",
+            )
+        if not os.path.isfile(real):
+            raise NotRepackable(
+                f"The game has no template: {top}/{self.profile.conf_name} "
+                "is not in EXODOS_DOS_DIR",
+            )
+        return real
+
+    def is_repackable(self, path: str) -> bool:
+        """Whether ``path`` can be repacked. Cached per (path, size, mtime)."""
+        if Path(path).suffix.lower() not in INPUT_EXTENSIONS:
+            return False
+        root = self.dos_dir()
+        if root is None:
+            return False
+        try:
+            st = os.stat(path)
+        except OSError:
+            return False
+        return _probe(self.profile, path, st.st_size, st.st_mtime_ns, root)
+
+    # --- output ------------------------------------------------------------
+
+    @staticmethod
+    def get_output_path(
+        input_path: str, output_dir: str | None = None, *, treat_as_stem: bool = False,
+    ) -> str:
+        """``<name>.dosz`` beside the Source, or in ``output_dir``."""
+        source = Path(input_path)
+        filename = f"{source.stem}{OUTPUT_EXTENSION}"
+        return str(Path(output_dir) / filename if output_dir else source.parent / filename)
+
+
+@functools.lru_cache(maxsize=4096)
+def _probe(
+    profile: CollectionProfile, path: str, size: int, mtime_ns: int, root: str,
+) -> bool:
+    try:
+        ExodosService(profile)._inspect(path, root)
+    except NotRepackable:
+        return False
+    return True
+
+
+exodos_service = ExodosService()
