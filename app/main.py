@@ -328,7 +328,7 @@ async def _serve(app: FastAPI):
     job_manager.add_terminal_listener(ledger.record)
     # A failed manual job and a finished sweep each send one message, if any
     # destination is configured (#293).
-    job_manager.add_terminal_listener(notifications.on_job_finished)
+    notifications.attach(job_manager)
 
     # The unattended-conversion scheduler always runs; it checks the master
     # switch each tick, so toggling auto-convert in the app takes effect

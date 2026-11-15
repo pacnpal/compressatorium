@@ -543,13 +543,31 @@ def notify(event: Event) -> None:
         pass  # no loop (a synchronous harness): nothing to send on
 
 
-async def drain() -> None:
-    """Wait for queued sends (tests and shutdown)."""
-    while True:
-        running = [t for t in _tasks if not t.done()]
-        if not running:
-            return
-        await asyncio.gather(*running, return_exceptions=True)
+async def drain(timeout: float | None = None) -> None:
+    """Wait for queued sends (tests, and a CLI run before its loop closes).
+    With *timeout*, give up after that long and say what was left."""
+
+    async def settle() -> None:
+        while True:
+            running = [t for t in _tasks if not t.done()]
+            if not running:
+                return
+            await asyncio.gather(*running, return_exceptions=True)
+
+    if timeout is None:
+        await settle()
+        return
+    try:
+        await asyncio.wait_for(settle(), timeout)
+    except asyncio.TimeoutError:
+        logger.warning("Gave up waiting for notifications after %.0fs", timeout)
+
+
+def attach(job_manager) -> None:
+    """Register the terminal listener on *job_manager*. The server's lifespan and
+    the CLI's job runner both call this, so the two cannot drift. Idempotent."""
+    if on_job_finished not in job_manager._terminal_listeners:
+        job_manager.add_terminal_listener(on_job_finished)
 
 
 # ----------------------------------------------------------------------
