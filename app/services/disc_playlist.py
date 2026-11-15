@@ -199,20 +199,24 @@ def _named_tracks(sheet: str) -> set[str]:
 
 
 def _split_discs_and_tracks(files: dict[str, str]) -> tuple[list[str], list[str]]:
-    """Disc image names, and the other selected files that are tracks of them.
+    """Disc image names, and the selected files that are tracks of them.
 
-    A ticked ``.bin`` named by a ticked ``.cue`` / ``.gdi`` is that disc's
-    track, not another disc: it is left out. Any other non-disc file refuses.
+    A file named by a selected ``.cue`` / ``.gdi`` is that disc's track, never a
+    disc of its own, whatever its extension (an ``.iso`` track included): it is
+    left out. Any other file that is not a disc image refuses.
     """
     disc_exts = registry.disc_extensions()
-    discs = [n for n in files if match_extension(n, disc_exts) is not None]
-    others = [n for n in files if n not in discs]
-    sheets = [files[n] for n in discs if n.lower().endswith((".cue", ".gdi"))]
+    sheets = [files[n] for n in files if n.lower().endswith((".cue", ".gdi"))]
     named = set().union(*(_named_tracks(s) for s in sheets)) if sheets else set()
-    for name in others:
-        if name.casefold() not in named:
+    tracks = [n for n in files if n.casefold() in named]
+    discs = []
+    for name in files:
+        if name.casefold() in named:
+            continue
+        if match_extension(name, disc_exts) is None:
             raise PlaylistError(f"{name} is not a disc image")
-    return discs, others
+        discs.append(name)
+    return discs, tracks
 
 
 def _refuse_duplicate_discs(names: list[str]) -> None:
