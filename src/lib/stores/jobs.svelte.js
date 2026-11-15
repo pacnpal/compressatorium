@@ -610,6 +610,11 @@ class JobsStore {
         evicted: {},
         max_job_history: this.historyLimit,
       });
+      // The backend no longer has the finished jobs either: tombstone them
+      // like evictions, so a late Auto response cannot adopt one back.
+      this._rememberEvicted(
+        this.jobs.filter((j) => TERMINAL_STATUSES.has(j.status)).map((j) => j.id),
+      );
       this.jobs = this.jobs.filter((j) => !TERMINAL_STATUSES.has(j.status));
       this._byId.clear();
       for (const job of this.jobs) this._byId.set(job.id, job);

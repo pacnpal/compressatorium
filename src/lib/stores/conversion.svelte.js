@@ -53,6 +53,17 @@ const isBrowser = typeof window !== 'undefined';
 // What `untilAborted` settles with when the signal wins.
 const ABORTED = Object.freeze({ aborted: true });
 
+// Retire the rows an abandoned RomM snapshot records once it finally returns.
+// Only the server rows: no store state, so a newer run is never touched.
+function retireLateSnapshot(planning, planned) {
+  planning
+    .catch(() => {})
+    .then(() => {
+      const ids = Object.values(planned.recorded_ids).filter((id) => id != null);
+      if (ids.length) api.cancelRommRepin(ids).catch(() => {});
+    });
+}
+
 // Resolves with ABORTED once `signal` aborts (at once if it already has).
 function abortedPromise(signal) {
   if (signal.aborted) return Promise.resolve(ABORTED);
@@ -715,7 +726,7 @@ class ConversionStore {
     return this.#queueWithRepin(
       items.map((item) => item.file_path),
       groupByMode(Object.keys(modeOf), modeOf),
-      { duplicateAction: 'skip', rommRepin, rommPlatformId, outputDir },
+      { duplicateAction: 'skip', rommRepin, rommPlatformId, outputDir, signal },
       async () => {
         let result;
         try {
@@ -823,8 +834,21 @@ class ConversionStore {
           // platform's full catalog looking for these paths, which on a large
           // instance is hundreds of serialised requests before a small batch
           // is even queued. These rows all came from one platform's listing.
-          await this.#planRepin(groups, target, null, planned);
+          //
+          // Abort-aware: a stalled RomM must not hold the run (and Start) once
+          // the caller aborts. The snapshot keeps going on its own; whatever
+          // it records is retired when it returns, apart from this run's
+          // state, so a late answer never touches a newer run.
+          const planning = this.#planRepin(groups, target, null, planned);
+          const outcome = await untilAborted(planning, opts.signal);
+          if (outcome?.aborted) {
+            retireLateSnapshot(planning, planned);
+            const stopped = new Error('Auto run aborted');
+            stopped.aborted = true;
+            throw stopped;
+          }
         } catch (e) {
+          if (e?.aborted) throw e;
           // Best-effort, like the disc-ID tagging hook: losing the metadata
           // snapshot costs a re-match in RomM, while refusing to convert costs
           // the user the thing they actually asked for.

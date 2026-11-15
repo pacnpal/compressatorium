@@ -80,8 +80,9 @@ async def test_repeated_terminal_notification_writes_one_row():
 
 
 def test_source_bytes_counts_cue_tracks(tmp_path, monkeypatch):
-    from config import settings
     from services.job_manager import _source_bytes
+
+    from config import settings
 
     monkeypatch.setattr(settings, "chd_volumes", str(tmp_path))  # tracks resolve in a Volume
 
