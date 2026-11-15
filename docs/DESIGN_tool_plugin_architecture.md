@@ -2598,7 +2598,7 @@ Precedence is fixed and never guesses:
    marks it convertible by a tool with a folder-input mode.
 2. **The nearest folder that says** (`_place`). Walking up from the Image's
    folder, the first folder that either carries the user's mapping (#304,
-   §3.3.14) or has a name that is a key or alias in `_ALIASES` decides. At the
+   §3.3.16) or has a name that is a key or alias in `_ALIASES` decides. At the
    same folder the mapping wins. `_ALIASES` holds RomM's slug for each
    Platform a tool declares, with every other name for it (the tools' own
    spellings and the folder names ES-DE and Batocera use: `ps1`, `gc`,
@@ -2862,7 +2862,7 @@ The legacy UI's "ISO handling" toggle is gone. It lived only in the browser,
 under the `primary_tool_preference` key that now names the selected tool tab;
 its values were tool ids, so a value left from it still loads as a tab.
 
-### 3.3.14 Folder Platform mappings and the Findings store (`services/platform_mappings.py`, `services/findings.py`)
+### 3.3.16 Folder Platform mappings and the Findings store (`services/platform_mappings.py`, `services/findings.py`)
 
 **Mappings.** A row of `platform_mappings` says "this folder is PSP": a
 `library_id`, the folder's path relative to that Library's root (`/`
