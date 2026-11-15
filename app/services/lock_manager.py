@@ -251,7 +251,8 @@ class LockManager:
         """
         try:
             if os.fstat(handle.fileno()).st_size == 0:
-                handle.write(locked_path.encode("utf-8", "surrogateescape") + b"\n")
+                # Filesystem bytes, so ``_recorded_path`` round-trips it.
+                handle.write(os.fsencode(locked_path) + b"\n")
                 handle.flush()
         except OSError:
             logger.debug("Could not record the path of a lock", exc_info=True)
@@ -265,7 +266,7 @@ class LockManager:
             return None
         if not first.endswith(b"\n"):
             return None  # empty, or being written right now
-        return first[:-1].decode("utf-8", "surrogateescape") or None
+        return os.fsdecode(first[:-1]) or None
 
     def dir_lock_would_conflict(self, dir_path: str) -> bool:
         """Whether :meth:`acquire_dir_lock` for ``dir_path`` would currently
@@ -315,7 +316,10 @@ class LockManager:
 
     def _lock_file_path(self, normalized_path: str) -> str:
         # Use a stable hash to avoid path length issues and keep locks in /tmp.
-        digest = hashlib.sha256(normalized_path.encode("utf-8")).hexdigest()
+        # Hashed as filesystem bytes (#306): a native name a sheet reads
+        # (``Caf\xe9.bin``, carried as a surrogate escape) is a path like any
+        # other, and every key derivation here goes through this one place.
+        digest = hashlib.sha256(os.fsencode(normalized_path)).hexdigest()
         base = os.path.basename(normalized_path) or "chd"
         safe_base = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in base)
         filename = f"filelock-{safe_base}-{digest}.lock"
