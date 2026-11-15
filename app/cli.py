@@ -327,15 +327,44 @@ def _skip_outside_volumes(items) -> None:
     from utils.path_utils import is_within_configured_volumes
 
     verdicts: dict[str, bool] = {}
+
+    def inside(path: str) -> bool:
+        if path not in verdicts:
+            verdicts[path] = is_within_configured_volumes(path, treat_archives=False)
+        return verdicts[path]
+
     for item in items:
-        if item.explicit or item.status:
+        if item.status:
             continue
-        base = item.path.split("::", 1)[0]
-        if base not in verdicts:
-            verdicts[base] = is_within_configured_volumes(base, treat_archives=False)
-        if not verdicts[base]:
+        if item.logical_mode:
+            # A logical Image (a split ISO): every file the check reads, the
+            # verify target and every part, named or not. One outside skips
+            # the whole Image.
+            read = _logical_files(item)
+            if not read or not all(inside(path) for path in read):
+                item.status = "skipped"
+                item.reason = "It resolves outside the configured Volumes"
+            continue
+        if item.explicit:
+            continue
+        if not inside(item.path.split("::", 1)[0]):
             item.status = "skipped"
             item.reason = "It resolves outside the configured Volumes"
+
+
+def _logical_files(item) -> list[str]:
+    """The real files a logical Image's check reads: its producing tool's
+    verify target and every split part (``companion_outputs``)."""
+    from services.tools import registry
+
+    mode = item.logical_mode
+    try:
+        target = registry.for_mode(mode).verify_target(item.path, mode)
+    except (KeyError, OSError) as exc:
+        logger.debug("No verify target for %s through %s: %s", item.path, mode, exc)
+        return []
+    files = [target] if target else []
+    return files + [p for p in _companion_outputs(mode, item.path) if p not in files]
 
 
 # --------------------------------------------------------------------------- #
@@ -984,17 +1013,22 @@ def _split_owner(path: str) -> tuple[str, str] | None:
     output (``Game.iso.0``), else None.
 
     Registry-driven: the candidate is the name without its last suffix, and it
-    counts only when a mode's own ``companion_outputs`` for that output (the
-    split-part lookup makeps3iso's delete and overwrite paths use) lists
-    ``path``. A suffix that isn't a number is never one.
+    counts only when it carries a mode's declared output extension (``.iso``
+    for folder_to_iso, so ``save.0`` never qualifies) and that mode's own
+    ``companion_outputs`` for it (the split-part lookup makeps3iso's delete
+    and overwrite paths use) lists ``path``. A suffix that isn't a number is
+    never one. A file that doesn't qualify stays a plain file for discovery.
     """
     from services.tools import registry
+    from utils.path_utils import match_extension
 
     base, suffix = os.path.splitext(path)
     if not suffix[1:].isdigit():
         return None
     real = os.path.realpath(path)
     for spec in registry.mode_specs():
+        if not spec.output_ext or match_extension(base, {spec.output_ext}) is None:
+            continue  # this mode never writes a file named like the base
         parts = _companion_outputs(spec.mode, base)
         if real in {os.path.realpath(part) for part in parts}:
             return base, spec.mode
