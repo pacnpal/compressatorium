@@ -1132,3 +1132,29 @@ def test_a_stalled_lock_release_neither_holds_the_sweep_nor_the_pool(
     # The worker finishes on its own: every lock is let go in the end.
     assert _wait_for(lambda: not lock_manager.is_locked(str(kept["output"])))
     assert _wait_for(lambda: not lock_manager.check_file_status(str(kept["iso"]))[1])
+
+
+# --------------------------------------------------------------------------- #
+# The retry asks the sweep's own plan (Codex security review 4580012814)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("narrowing", [
+    {"exclude_pattern": r"Game\.iso$"},
+    {"include_pattern": r"^Other"},
+    {"min_size_mb": 1},
+    {"only_matched": True},
+], ids=["exclude", "include", "size", "match"])
+def test_a_rule_that_no_longer_selects_the_source_keeps_it(
+    env, dolphin, capsys, kept, narrowing,
+):
+    """The Rule now leaves this Source out: the retry re-runs the sweep's own
+    selection and plan for it, finds it no longer converted, and drops the
+    entry without deleting."""
+    _store_rules(env, {"shelf": _rule(env, **narrowing)})
+
+    code, lines, _err = _cli(capsys, "run-rules", "--json")
+
+    assert code == 0, lines
+    assert kept["iso"].exists()
+    assert not _rule_state(env)["gc"].get("kept_sources")

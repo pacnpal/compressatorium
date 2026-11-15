@@ -4173,6 +4173,17 @@ It may only proceed while the decision that kept the Source still stands:
 - An entry whose `decision` differs from the one recomputed from the current
   Rule and Library, or whose generation is not the current one, is dropped
   without deleting. So is one whose Rule is gone or keeps its Sources.
+- **The authority is the sweep's own plan** (codex 4580012814). The decision
+  identity and the generation are fast pre-checks; before deleting, the retry
+  asks the function the sweep decides with, `_inspect_candidate`, for this one
+  Source under the current Rule and Library (`_current_plan` →
+  `_planned_delete`: the Platform's Images listed once, the mode's Platform
+  check, then the name, size and match filters, containment, the input
+  check, the companions and the destination, bounded on a detached thread).
+  Only a plan that still converts this Source to the same output deletes;
+  any other answer drops the entry without deleting, and an unanswered or
+  busy one is an attempt. The output exists by then, so the destination is
+  asked as `overwrite` would; the duplicate policy is an identity input.
 - Apart from that, the record's check must meet the Rule's current effective
   check level (`retry_kept_delete(required_check=...)`, `_check_satisfies`):
   Round-tripped meets either level, Intact only the container check. So does a

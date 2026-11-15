@@ -929,6 +929,67 @@ def _invalidate_decisions(state: dict, platform_ids) -> bool:
     return bool(platform_ids)
 
 
+# What the sweep's own plan says of a pending delete's Source (`_current_plan`).
+PLAN_SAME = "same"  # selected, and converted by this Rule to the same output
+PLAN_OTHER = "other"  # not selected, or planned differently: never delete it
+PLAN_UNANSWERED = "unanswered"  # could not be read now: an attempt
+
+
+def _planned_delete(image: Image, rule: dict, tool, spec, source: str, output: str) -> str:
+    """The sweep's own plan for *image* under *rule*, set against a pending
+    delete of *source* to *output*. Blocking.
+
+    ``_inspect_candidate`` is the function the sweep decides with: name, size
+    and match filters, containment, the mode's input check, the Source's
+    companions, and the destination the Rule maps it to. The output exists by
+    now, so the destination is asked as ``overwrite`` would (where this Rule
+    writes it, not whether to write it again); the duplicate policy itself is
+    a decision-identity input.
+    """
+    plan = _inspect_candidate(
+        image, {**rule, "duplicate_action": "overwrite"}, tool, spec, None,
+    )
+    if plan["skip"] == SKIP_LOCKED:
+        return PLAN_UNANSWERED  # the output is busy right now: ask again later
+    if plan["skip"] is not None or not plan["destination"] or not plan["path"]:
+        return PLAN_OTHER
+    same = (
+        os.path.realpath(plan["destination"]) == os.path.realpath(output)
+        and os.path.realpath(plan["path"]) == os.path.realpath(source)
+    )
+    return PLAN_SAME if same else PLAN_OTHER
+
+
+async def _current_plan(
+    library: Library, platform_id: str, rule: dict, image_key: str, pending: dict,
+    listings: dict, stopping: Callable[[], bool],
+) -> str:
+    """Whether the sweep, planning now, would still convert this kept Source
+    to the same output with its delete on: ``PLAN_SAME``, ``PLAN_OTHER`` or
+    ``PLAN_UNANSWERED``. Lists the Platform's Images once (*listings*) and asks
+    the sweep's own ``_inspect_candidate``, both bounded and off the loop."""
+    try:
+        spec = registry.spec(rule["mode"])
+        tool = registry.for_mode(rule["mode"])
+    except KeyError:
+        return PLAN_OTHER
+    if platform_id not in listings:
+        listings[platform_id] = await _list_images(
+            library, platform_id, {"errors": [], "stopped_reason": None}, stopping,
+        )
+    images = listings[platform_id]
+    if images is None:
+        return PLAN_UNANSWERED
+    image = next((i for i in images if str(i.key) == image_key), None)
+    if image is None or not registry.mode_allows_platform(rule["mode"], image.platform):
+        return PLAN_OTHER
+    return await _probe(
+        _planned_delete, image, rule, tool, spec,
+        str(pending.get("source") or ""), str(pending.get("output") or ""),
+        default=PLAN_UNANSWERED,
+    )
+
+
 def _rule_paused(rule: dict, wanted: set[str] | None) -> bool:
     """The `enabled` gate (see `_sweep_locked`): an operator's pause holds
     unless the Platform is named, and a validation pause holds always."""
@@ -984,6 +1045,7 @@ async def _retry_kept_deletes(
             # neither retried nor dropped (codex 4579529040).
             continue
         remaining = dict(kept)
+        listings: dict = {}  # this Platform's Images, listed once if needed
         for image_key in sorted(kept):
             if stopping() or budget <= 0:
                 break
@@ -1009,10 +1071,22 @@ async def _retry_kept_deletes(
             if inside is False:
                 remaining.pop(image_key)
                 continue
+            # The authority: the sweep's own selection and plan for this one
+            # Source under the current Rule and Library. Deleted only while
+            # that plan is still this conversion to this output (codex
+            # 4580012814); the identity above is the fast pre-check.
+            plan = await _current_plan(
+                library, platform_id, rule, str(image_key), pending, listings, stopping,
+            )
+            if plan == PLAN_OTHER:
+                remaining.pop(image_key)
+                continue
             budget -= 1
             try:
                 if inside is None:
                     raise OSError("the Library's volume did not answer")
+                if plan == PLAN_UNANSWERED:
+                    raise OSError("the current plan for this Source could not be read")
                 outcome = await job_manager.retry_kept_delete(
                     source_path=str(pending.get("source") or ""),
                     output_path=str(pending.get("output") or ""),
