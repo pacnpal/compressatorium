@@ -1639,3 +1639,42 @@ def test_a_cli_job_holds_its_input_for_other_processes(volume, dolphin, capsys, 
     assert code == 0, lines
     assert seen == [True]
     assert server.check_file_status(str(wia))[1] is False
+
+
+def test_delete_on_verify_keeps_a_source_whose_folder_another_process_locked(
+    volume, dolphin, capsys, monkeypatch,
+):
+    """codex 4576810647: in the window after the job lets go of its read locks,
+    another process takes the Source's folder (makeps3iso packing it). The
+    delete check sees that lock above the Source and keeps it."""
+    from services.job_manager import JobManager
+    from services.lock_manager import LockManager, lock_manager
+
+    game = volume / "gc" / "GAME"
+    game.mkdir(parents=True)
+    iso = game / "Game.iso"
+    iso.write_bytes(b"the disc" * 512)
+    out_dir = volume / "out"
+    out_dir.mkdir()
+    packer = LockManager()
+    packer._lock_dir = lock_manager._lock_dir
+    original = JobManager._release_inputs
+    taken = []
+
+    def release_then_pack(self, job_id):
+        original(self, job_id)
+        if not taken:
+            taken.append(packer.acquire_dir_lock(str(game)))
+
+    monkeypatch.setattr(JobManager, "_release_inputs", release_then_pack)
+    try:
+        code, lines = _cli(
+            capsys, "convert", str(iso), "--to", "rvz", "--delete-source",
+            "--container-only", "--output-dir", str(out_dir), "--json",
+        )
+    finally:
+        packer.release_dir_lock(str(game))
+
+    assert taken == [True]
+    assert iso.exists(), lines
+    assert lines[0]["source_deleted"] is False

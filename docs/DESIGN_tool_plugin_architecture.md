@@ -2447,7 +2447,19 @@ archived set; an empty `within` is refused). When any track of a sheet is
 refused, or the sheet is unreadable (missing, or over `MAX_SHEET_BYTES`, read
 as cap + 1 bytes and never parsed partially), `sheet_tracks` returns None and
 the probe says nothing, so a planted sheet cannot make the probe read a file
-outside the Volumes. `header_reads` returns None for an unreadable sheet and
+outside the Volumes.
+
+Disc-ID tagging reads the same sheets after a conversion. `_process_job`
+builds `within` once: None for a source in a Volume, `[temp_dir]` (the
+`mkdtemp` root it extracted into) for an archive member, never the input
+file's parent. It passes that one value to the job gate and to
+`post_convert(input_path, output_path, mode, *, within=None)`, which every
+plugin accepts. CHDMAN's hook hands it to `disc_id.extract_from_source`, whose
+cue/gdi readers resolve tracks through `sheet_tracks(..., within=within)`.
+When a refused or unreadable track stops tagging, the hook logs a warning
+naming the sheet (`sheet_text.sheet_track_list` tells that case apart from a
+disc with no ID); it never skips silently, and a refused track is never
+opened. `header_reads` returns None for an unreadable sheet and
 a failing `header_reads` is treated the same way, so neither is cached. A
 folder Image (a PS3 disc folder) is never cached: its answer depends on files
 below it.
@@ -2621,9 +2633,17 @@ that leaves `.chd` out of its tool-wide inputs.
 `CHD_CONCURRENCY_LOCK_DIR`, and the conversion slots and FIFO tickets live
 there too, so a CLI process and the server contend for the same outputs and
 slots. The default is now `<data dir>/locks` (`config._default_lock_dir`), so a
-separate container that mounts the same `/config` shares them; it falls back to
-`$TMPDIR/chd-locks` when the data dir is not writable. Two rules keep a lock
-file meaningful across processes (`LockManager`):
+separate container that mounts the same `/config` shares them. The choice is a
+pure function of configuration, never of whether a folder exists yet: with a
+data dir configured (`CHD_DATA_DIR` or the constructor; the image sets
+`CHD_DATA_DIR=/config`) it is always `<data dir>/locks`, created when chosen
+(parents included, `0o700`), and one that can't be created raises at startup
+instead of moving the locks. Only with no data dir configured at all is it the
+fixed `/tmp/chd-locks`, the same for every process whatever `TMPDIR` says.
+Before, a data dir that did not exist yet sent the first process to
+`$TMPDIR/chd-locks` and, once database init had made the folder, the next one to
+`<data dir>/locks`. Two rules keep a lock file meaningful across processes
+(`LockManager`):
 
 1. A lock file is unlinked only by a process holding its flock, while it holds
    it, and only when the path still names the held file (`_unlink_held`).
@@ -2658,7 +2678,7 @@ user) would make that process look dead. `_ensure_holder`, called on every wait
 poll, checks the held handle against the path (`still_linked`); when they
 differ it makes the holder again under the same id and writes back every
 ticket the process holds. Slot files have no such repair: a cleaner that
-deletes `convert_slot_<i>.lock` on the `$TMPDIR/chd-locks` fallback lets two
+deletes `convert_slot_<i>.lock` on the `/tmp/chd-locks` fallback lets two
 processes lock different files for one slot. Keep the lock dir out of reach of
 age-based cleaners; `/config/locks`, the default, is.
 
@@ -2682,8 +2702,8 @@ write, across groups and re-planned batches, and skips a later Image that
 writes one already taken ("Same output as X"). The planner's own collapse
 works within one batch only.
 
-**Lazy, and read-only for a dry run.** Choosing the lock dir creates nothing
-(`config._default_lock_dir`; it warns when it falls back to `$TMPDIR`). The
+**Lazy, and read-only for a dry run.** Choosing the lock dir creates the
+directory and nothing in it (`config._default_lock_dir`). The
 module singletons `lock_manager` and `concurrency_manager` are built
 `lazy=True`: the directory, `queue_counter`, the stale sweep and the ticket
 prune happen on first use. A dry run wraps the run in `lock_manager.read_only()`,
@@ -2729,6 +2749,25 @@ handle means a job in some process writes or reads something inside, and a
 rename or delete of the folder answers 409. So a recursive delete of `vol/ps3`
 is refused while another process packs `vol/ps3/GAME`, converts
 `vol/ps3/Game.wia`, or writes an output there.
+
+**Subtree exclusion across processes.** A folder lock and a lock on anything
+inside it never coexist, whichever processes hold them and in whichever order
+they were taken. Each acquirer takes its own lock first, then looks for the
+other kind, and lets go and returns False on a conflict:
+
+- `acquire_lock` (an output) and `acquire_input_lock` (a Source) look for a
+  folder lock above the path, up to its Volume root (`folder_locked_above`,
+  which is `locked_folder_above(..., include_self=False)`);
+- `acquire_dir_lock` looks for any lock inside the folder
+  (`locked_path_below(..., include_self=False)`) and for a folder lock above.
+
+Since both sides lock before they look, two racing acquirers can't both miss
+each other; at worst both back off. The job manager defers a job that hit
+such a conflict (`_blocked_by_dir_lock` now also asks `folder_locked_above`)
+and re-queues it after the retry delay plus random jitter, so two processes
+don't retry in lockstep. The delete-on-verify check also asks
+`folder_locked_above` for each delete path, for a folder another process took
+after the job let go of its read locks.
 
 **Limits of the lock dir.**
 

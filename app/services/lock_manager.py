@@ -163,7 +163,9 @@ class LockManager:
                 return False
             return self._within_locked_dir_locked(self._resolve(path))
 
-    def locked_folder_above(self, path: str, stop_at: str | None = None) -> str | None:
+    def locked_folder_above(
+        self, path: str, stop_at: str | None = None, *, include_self: bool = True,
+    ) -> str | None:
         """The nearest folder at or above ``path`` another process has dir-locked.
 
         A directory lock (makeps3iso packing a folder) protects its subtree only
@@ -173,21 +175,35 @@ class LockManager:
         each one's lock file without blocking: one held by someone else means
         the folder is being read (#306). A stale lock file found on the way is
         removed, as ``check_file_status`` does. Returns the folder, or None.
+        ``include_self=False`` starts at the parent: a caller that holds the
+        path's own lock asks only about the folders around it.
         """
         current = self._resolve(path)
         stop = self._resolve(stop_at) if stop_at else None
+        first = True
         while True:
             lock_file = self._lock_file_path(current)
-            if os.path.exists(lock_file) and (
+            if (include_self or not first) and os.path.exists(lock_file) and (
                 self.is_read_only or self._remove_if_stale(lock_file) is False
             ):
                 return current
+            first = False
             parent = os.path.dirname(current)
             if current in (stop, parent):
                 return None
             current = parent
 
-    def locked_path_below(self, dir_path: str) -> str | None:
+    def folder_locked_above(self, path: str) -> str | None:
+        """A folder above ``path``, up to its Volume root, that some process
+        holds a lock on (``locked_folder_above`` without the path itself)."""
+        from utils.path_utils import containing_volume_root
+
+        root = containing_volume_root(path)
+        return self.locked_folder_above(
+            path, str(root) if root is not None else None, include_self=False,
+        )
+
+    def locked_path_below(self, dir_path: str, *, include_self: bool = True) -> str | None:
         """A path at or inside ``dir_path`` that some process holds a lock on.
 
         Lock files are named by a hash, so each one records the path it locks
@@ -197,6 +213,7 @@ class LockManager:
         process, or another handle here) means something inside is being
         written or read, so the folder must not be renamed or deleted (#306).
         A stale one found on the way is removed. Returns that path, or None.
+        ``include_self=False`` skips the folder's own lock (a caller holding it).
         """
         prefixes = {os.path.normpath(dir_path), self._resolve(dir_path)}
         try:
@@ -212,6 +229,8 @@ class LockManager:
             if not locked or not any(
                 self._path_within(locked, prefix) for prefix in prefixes
             ):
+                continue
+            if not include_self and locked in prefixes:
                 continue
             if self.is_read_only or self._remove_if_stale(lock_file) is False:
                 return locked
@@ -394,14 +413,33 @@ class LockManager:
         # before.
         return removed is False
 
+    # Subtree exclusion across processes (#306). A folder lock (makeps3iso
+    # packing a folder) and a lock on anything inside it never coexist, in any
+    # two processes and in either order. Each acquirer takes its own lock first
+    # and then looks for the other kind: a file, output or input lock looks for
+    # a folder lock above it, up to the Volume root (`folder_locked_above`); a
+    # folder lock looks for any lock inside it (`locked_path_below`) and for a
+    # folder lock above. On a conflict it lets go and reports failure, and the
+    # job manager defers and retries with jitter. Because both sides lock
+    # before they look, two racing acquirers can't both miss each other: at
+    # worst both back off and retry.
+
     def acquire_lock(self, output_path: str, *, allow_existing: bool = False) -> bool:
         """Acquire a lock for the output file path.
 
         Returns:
-            True if lock was acquired, False if already locked or CHD exists and overwrite is
-            not allowed
+            True if lock was acquired, False if already locked, CHD exists and
+            overwrite is not allowed, or some process holds a folder above it
 
         """
+        if not self._take_lock(output_path, allow_existing=allow_existing):
+            return False
+        if self.folder_locked_above(output_path) is not None:
+            self.release_lock(output_path)
+            return False
+        return True
+
+    def _take_lock(self, output_path: str, *, allow_existing: bool) -> bool:
         if self.is_read_only:
             return False
         self._ensure_ready()
@@ -531,6 +569,23 @@ class LockManager:
     def acquire_dir_lock(self, dir_path: str) -> bool:
         """Acquire an exclusive lock over a directory and its entire subtree.
 
+        Also fails, after taking it, when any process holds a lock on a path
+        inside the folder or on a folder above it (see the note above
+        ``acquire_lock``).
+        """
+        if not self._take_dir_lock(dir_path):
+            return False
+        if (
+            self.locked_path_below(dir_path, include_self=False) is not None
+            or self.folder_locked_above(dir_path) is not None
+        ):
+            self.release_dir_lock(dir_path)
+            return False
+        return True
+
+    def _take_dir_lock(self, dir_path: str) -> bool:
+        """The exclusive lock itself, with the in-process overlap checks.
+
         Used by a directory-input job (makeps3iso folder->iso) so any concurrent
         operation whose path falls inside the folder contends on this lock
         instead of mutating the tree while it is being packed. Fails when the
@@ -625,6 +680,10 @@ class LockManager:
         self._record_path(handle, normalized)
         with self._lock_mutex:
             self._input_handles.setdefault(normalized, []).append(handle)
+        if self.folder_locked_above(path) is not None:
+            # A folder above is being packed: reading inside it is a conflict.
+            self.release_input_lock(path)
+            return False
         return True
 
     def release_input_lock(self, path: str) -> None:

@@ -410,6 +410,10 @@ ENV APP_VERSION=${APP_VERSION}
 
 # Configuration
 ENV COMPRESSATORIUM_MOUNT_ROOT="/data"
+# Named, not left to the default, so the job lock dir is /config/locks in every
+# container that mounts /config (the web UI, a CLI container): see
+# config._default_lock_dir.
+ENV CHD_DATA_DIR="/config"
 ENV CHD_MODE="webui"
 ENV CHDMAN_MODE="createcd"
 ENV MAX_CONCURRENT_JOBS=1
