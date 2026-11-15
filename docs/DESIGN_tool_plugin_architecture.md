@@ -2728,6 +2728,25 @@ rename or delete of the folder answers 409. So a recursive delete of `vol/ps3`
 is refused while another process packs `vol/ps3/GAME`, converts
 `vol/ps3/Game.wia`, or writes an output there.
 
+**Subtree exclusion across processes.** A folder lock and a lock on anything
+inside it never coexist, whichever processes hold them and in whichever order
+they were taken. Each acquirer takes its own lock first, then looks for the
+other kind, and lets go and returns False on a conflict:
+
+- `acquire_lock` (an output) and `acquire_input_lock` (a Source) look for a
+  folder lock above the path, up to its Volume root (`folder_locked_above`,
+  which is `locked_folder_above(..., include_self=False)`);
+- `acquire_dir_lock` looks for any lock inside the folder
+  (`locked_path_below(..., include_self=False)`) and for a folder lock above.
+
+Since both sides lock before they look, two racing acquirers can't both miss
+each other; at worst both back off. The job manager defers a job that hit
+such a conflict (`_blocked_by_dir_lock` now also asks `folder_locked_above`)
+and re-queues it after the retry delay plus random jitter, so two processes
+don't retry in lockstep. The delete-on-verify check also asks
+`folder_locked_above` for each delete path, for a folder another process took
+after the job let go of its read locks.
+
 **Limits of the lock dir.**
 
 - Keys are container-local paths. Containers that share `/config` (the web UI

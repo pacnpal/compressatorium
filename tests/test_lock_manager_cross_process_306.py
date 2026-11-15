@@ -327,3 +327,51 @@ async def test_the_server_refuses_to_delete_or_rename_a_folder_holding_a_lock(
         assert g.inner.exists()
     finally:
         g.cli.release_dir_lock(str(g.folder))
+
+
+# --------------------------------------------------------------------------- #
+# Subtree exclusion across processes, both orders (codex 4576810647)
+# --------------------------------------------------------------------------- #
+
+
+def test_no_output_inside_a_folder_another_process_packs(tmp_path):
+    packer, cli = _manager(tmp_path / "locks"), _manager(tmp_path / "locks")
+    game = tmp_path / "vol" / "ps3" / "GAME"
+    game.mkdir(parents=True)
+    out = str(game / "new.rvz")
+
+    assert packer.acquire_dir_lock(str(game))
+    assert not cli.acquire_lock(out)
+    assert not cli.acquire_input_lock(str(game / "Game.iso"))
+    assert cli.folder_locked_above(out) == os.path.realpath(game)
+    packer.release_dir_lock(str(game))
+    assert cli.folder_locked_above(out) is None
+    assert cli.acquire_lock(out)
+    cli.release_lock(out)
+
+
+def test_no_folder_lock_over_a_path_another_process_holds(tmp_path):
+    cli, packer = _manager(tmp_path / "locks"), _manager(tmp_path / "locks")
+    game = tmp_path / "vol" / "ps3" / "GAME"
+    game.mkdir(parents=True)
+    out = str(game / "new.rvz")
+    source = str(game / "Game.iso")
+
+    assert cli.acquire_lock(out)
+    assert not packer.acquire_dir_lock(str(game))
+    cli.release_lock(out)
+    assert cli.acquire_input_lock(source)
+    assert not packer.acquire_dir_lock(str(game))
+    cli.release_input_lock(source)
+    assert packer.acquire_dir_lock(str(game))
+    packer.release_dir_lock(str(game))
+
+
+def test_a_folder_lock_does_not_trip_over_its_own_lock_file(tmp_path):
+    manager = _manager(tmp_path / "locks")
+    game = tmp_path / "vol" / "GAME"
+    game.mkdir(parents=True)
+    assert manager.acquire_lock(str(tmp_path / "vol" / "GAME.iso"))  # beside it
+    assert manager.acquire_dir_lock(str(game))
+    manager.release_dir_lock(str(game))
+    manager.release_lock(str(tmp_path / "vol" / "GAME.iso"))
