@@ -62,3 +62,34 @@ def test_a_sheet_the_shared_reader_refuses_names_no_tracks(vol: Path):
     paths += _cue_disc(vol, "Game (Disc 2)")[:1]
     with pytest.raises(disc_playlist.PlaylistError, match="not a disc image"):
         disc_playlist.plan_playlist(paths)
+
+
+def _cue_naming(folder: Path, sheet: str, track: str) -> list[str]:
+    (folder / track).write_bytes(b"x")
+    (folder / sheet).write_text(
+        f'FILE "{track}" BINARY\n  TRACK 01 MODE1/2048\n    INDEX 01 00:00:00\n',
+    )
+    return [str(folder / sheet), str(folder / track)]
+
+
+def test_iso_tracks_named_by_selected_sheets_are_not_discs_of_their_own(vol: Path):
+    paths = _cue_naming(vol, "Game (Disc 1).cue", "track1.iso")
+    paths += _cue_naming(vol, "Game (Disc 2).cue", "track2.iso")
+    plan = disc_playlist.plan_playlist(paths)
+    assert plan.entries == ["Game (Disc 1).cue", "Game (Disc 2).cue"]
+    assert any("2 track files" in w for w in plan.warnings)
+
+
+def test_iso_tracks_with_the_sheets_stems_are_not_duplicate_discs(vol: Path):
+    paths = _cue_naming(vol, "Game (Disc 1).cue", "Game (Disc 1).iso")
+    paths += _cue_naming(vol, "Game (Disc 2).cue", "Game (Disc 2).iso")
+    plan = disc_playlist.plan_playlist(paths)
+    assert plan.entries == ["Game (Disc 1).cue", "Game (Disc 2).cue"]
+
+
+def test_an_iso_no_selected_sheet_names_is_still_a_disc(vol: Path):
+    paths = _cue_naming(vol, "Game (Disc 1).cue", "track1.iso")
+    (vol / "Game (Disc 2).iso").write_bytes(b"x")
+    paths.append(str(vol / "Game (Disc 2).iso"))
+    plan = disc_playlist.plan_playlist(paths)
+    assert plan.entries == ["Game (Disc 1).cue", "Game (Disc 2).iso"]
