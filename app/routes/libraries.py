@@ -87,7 +87,10 @@ async def register_library(payload: RegisterLibraryRequest) -> dict:
     except asyncio.TimeoutError:
         raise HTTPException(
             status_code=504,
-            detail="The folder or RomM's library folder did not answer in time",
+            detail=(
+                "The folder or RomM's library folder did not answer in time. The "
+                "registration may still finish; list the Libraries before retrying"
+            ),
         ) from None
     return await run_in_threadpool(libraries.describe, library)
 

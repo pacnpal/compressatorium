@@ -182,7 +182,13 @@ def register(path: str, name: str | None = None) -> FolderLibrary:
             others.append((romm_library.name, romm_root))
         for other_name, other_root in others:
             if root == other_root:
-                raise LibraryPathError(409, f"Already the Library {other_name!r}")
+                # Most often a retry after a 504: the first registration went
+                # on and finished.
+                raise LibraryPathError(
+                    409,
+                    f"Already the Library {other_name!r}: an earlier registration "
+                    "of this folder has finished",
+                )
             if _overlaps(root, other_root):
                 raise LibraryPathError(
                     409, f"Overlaps the Library {other_name!r} at {other_root}",
@@ -282,7 +288,6 @@ def describe(library: Library) -> dict[str, Any]:
         "kind": library.kind,
         "name": library.name,
         "root": library.root,
-        "configured": library.configured(),
         "capabilities": sorted(library.capabilities),
         "duplicate_actions": list(duplicate_actions(library)),
         "schedule_enabled": library.schedule_enabled(),
