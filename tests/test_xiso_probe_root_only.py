@@ -41,8 +41,9 @@ def test_console_comes_from_the_root_however_many_folders(tmp_path):
 
 
 def test_detection_names_the_trimmed_image(tmp_path, monkeypatch):
-    from config import settings
     from services import platform_detect
+
+    from config import settings
 
     monkeypatch.setattr(settings, "chd_volumes", str(tmp_path))
     platform_detect.clear_cache()
