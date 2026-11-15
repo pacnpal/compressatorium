@@ -2750,7 +2750,12 @@ right before a batch is queued; once true the sweep queues nothing more and
 ends with `stopped_reason == "stopped"`. The server passes nothing. On SIGTERM,
 SIGINT or SIGHUP `run-rules` sets `state.stopping` (which `should_stop`
 reads) and cancels the queued and running jobs; after the sweep returns it
-cancels again, for a batch let in between, and only then drains.
+cancels again, for a batch let in between, and only then drains. A Library's
+`before_pass` does not read the flag (RomM's settle pass gives a large output
+its full hashing time, `bounded=False`, which can run for an hour), so
+`cli._until_stopped` runs it as a task and cancels it once `state.stopping` is
+set (checked every 0.2 s); the Library is reported `stopped` and no later
+Library runs.
 
 `--dry-run` is `sweep(library, dry_run=True)` inside
 `preferences_store.read_only()`: the Rule store's first read can write (the
@@ -2759,7 +2764,9 @@ lands in an in-memory overlay that later reads return, so the database is left
 as it was. The overlay is on the store instance, not per task, so it is for a
 process doing one thing (the CLI), never the server. Unlike the editor's
 Preview it keeps the Rule clock (`ignore_schedule` is not set). With no
-database a dry run reports `no_rules` without listing Libraries.
+database a dry run still lists the Libraries (`all_libraries()` must answer
+with no database, giving the ones that need none), so an unknown `--library`
+exits 2, then reports `no_rules` for each.
 
 **One scheduler per data directory (`services/scheduler_lock.py`).** The server
 and `run-rules` each hold an exclusive `flock` on `scheduler.lock` in the lock
@@ -2783,6 +2790,16 @@ holder writes a note into it (`by`, `pid`, `host`, `since`) that
   wraps its handlers for the wait: a SIGTERM or SIGINT is noted, passed on to
   uvicorn's handler, and ends the wait with `StoppedWaiting`, which startup
   turns into a `RuntimeError`. The lock file is closed on every way out.
+- uvicorn opens its port only once startup returns, so a waiting server answers
+  nothing, not even `/health`. While it waits, `acquire_waiting` keeps
+  `<lock dir>/scheduler.waiting.<hostname>` (the holder note inside, rewritten
+  each time it logs) and removes it in `finally`: on success, on
+  `StoppedWaiting`, on cancellation. A marker left by a waiter killed outright
+  is removed by the next `acquire_waiting` on that host. The Docker
+  `HEALTHCHECK` exits 0 while the marker for its own `$(hostname)` exists, so the
+  container is not marked unhealthy during a long `run-rules` pass. It is named
+  per host because containers sharing `/config` share the lock dir, and one
+  container's wait must not make another's broken server look healthy.
 - A dry run only calls `check()`: it opens an existing file read-only and
   probes with a shared non-blocking `flock`, creating nothing.
 

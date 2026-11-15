@@ -1680,7 +1680,8 @@ runs the Rules. While that lock is held, `run-rules` prints who holds it and
 exits `3` without queuing anything. A server started while a `run-rules` pass
 (or another server) holds the lock waits for it before it opens anything,
 logging who it waits for every 30 seconds, then starts; `docker stop` still
-stops it while it waits. Use `run-rules` where the server is not running all the
+stops it while it waits. The web UI does not answer while it waits, but the
+container's health check counts the wait as healthy. Use `run-rules` where the server is not running all the
 time: start a one-off container with the same `/config` and the same Volume
 mounts as the server (RomM's library root must resolve to the same path).
 

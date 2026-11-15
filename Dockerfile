@@ -426,9 +426,15 @@ VOLUME ["/data/games"]
 # Expose web port
 EXPOSE 8080
 
-# Health check (only applies in webui mode)
+# Health check (only applies in webui mode). A server waiting for the Rule
+# scheduler lock (a `run-rules` pass holds it, #307) has not opened its port
+# yet; while it waits it keeps <lock dir>/scheduler.waiting.<hostname>, which
+# counts as healthy.
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
     CMD if [ "${CHD_MODE:-webui}" = "cli" ]; then \
+            exit 0; \
+        fi; \
+        if [ -e "${CHD_CONCURRENCY_LOCK_DIR:-${CHD_DATA_DIR:-/config}/locks}/scheduler.waiting.$(hostname)" ]; then \
             exit 0; \
         fi; \
         if [ "$(/usr/bin/id -u)" = "0" ]; then \

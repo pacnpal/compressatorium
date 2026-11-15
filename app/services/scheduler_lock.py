@@ -37,6 +37,11 @@ from pathlib import Path
 from config import settings
 
 LOCK_FILE = "scheduler.lock"
+# Present while a server waits for the lock (`acquire_waiting`). uvicorn opens
+# its port only once startup returns, so the Docker HEALTHCHECK reads this
+# instead. Named per host (a container's hostname): containers that share
+# /config must not answer for each other.
+WAITING_FILE = "scheduler.waiting"
 
 # How long `acquire` retries. A dry run's probe holds the lock shared for an
 # instant; a real start must not be refused over that.
@@ -53,6 +58,22 @@ def lock_dir() -> str:
 
 def lock_path() -> str:
     return os.path.join(lock_dir(), LOCK_FILE)
+
+
+def waiting_path() -> str:
+    return os.path.join(lock_dir(), f"{WAITING_FILE}.{socket.gethostname()}")
+
+
+def _mark_waiting(holder: dict) -> None:
+    try:
+        Path(waiting_path()).write_text(json.dumps(holder), encoding="utf-8")
+    except OSError:
+        pass  # the marker only keeps the health check green
+
+
+def _unmark_waiting() -> None:
+    with contextlib.suppress(OSError):
+        os.remove(waiting_path())
 
 
 class SchedulerLockHeld(Exception):
@@ -173,6 +194,10 @@ async def acquire_waiting(
     who holds it on the first miss and then every ``_WAIT_LOG_EVERY`` seconds.
     Raises :class:`StoppedWaiting` once ``should_stop()`` is true (a SIGTERM
     during startup). The file is closed on every way out but success.
+
+    While it waits, ``waiting_path()`` exists and names the holder; it is
+    removed on every way out, and a stale one (a waiter killed outright) is
+    removed by the next call on this host.
     """
     fd = _open()
     told_at: float | None = None
@@ -182,12 +207,16 @@ async def acquire_waiting(
                 raise StoppedWaiting("Stopped while waiting for the Rule scheduler lock")
             now = time.monotonic()
             if told_at is None or now - told_at >= _WAIT_LOG_EVERY:
-                on_wait(SchedulerLockHeld(_read_holder(fd)))
+                holder = _read_holder(fd)
+                _mark_waiting(holder)
+                on_wait(SchedulerLockHeld(holder))
                 told_at = now
             await asyncio.sleep(_WAIT_POLL)
     except BaseException:
         os.close(fd)
         raise
+    finally:
+        _unmark_waiting()
     return _held_by(fd, by)
 
 

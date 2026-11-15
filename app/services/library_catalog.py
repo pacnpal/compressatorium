@@ -4,6 +4,8 @@ One list for both schedulers, the server's (``rules.sweep.run_forever``, via
 ``romm.auto``) and ``compressatorium run-rules`` (#307), so a Library added
 here is swept by both. RomM is the only Library so far. Callers ask for the
 list once the database is open, so a Library stored there can be listed.
+With no database (a dry run on a fresh install) it must still answer, with
+the Libraries that need none, so ``run-rules --library`` can be checked.
 """
 
 from __future__ import annotations

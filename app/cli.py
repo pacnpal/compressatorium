@@ -1018,6 +1018,33 @@ def _print_sweep(printer: Printer, library, result: dict) -> bool:
     return bool(result["errors"]) or stopped in _FAILED_STOPS
 
 
+# How often a running hook looks for a stop.
+_STOP_POLL = 0.2
+
+
+async def _until_stopped(work, state: RunState) -> bool:
+    """Run ``work`` until it ends or the run is stopping. False when stopped.
+
+    A Library's ``before_pass`` can run long (RomM's settle pass gives each
+    large output its full hashing time), and nothing in it reads the stop
+    flag, so it is cancelled from here. Its exceptions propagate.
+    """
+    task = asyncio.ensure_future(work)
+    try:
+        while not task.done():
+            await asyncio.wait({task}, timeout=_STOP_POLL)
+            if state.stopping and not task.done():
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+                return False
+        task.result()
+        return True
+    finally:
+        if not task.done():
+            task.cancel()
+
+
 async def _sweep_one(printer: Printer, library, state: RunState, *, dry_run: bool) -> bool:
     """The Library's ``before_pass`` hook, then its sweep. True on any error.
 
@@ -1027,7 +1054,10 @@ async def _sweep_one(printer: Printer, library, state: RunState, *, dry_run: boo
     from services.rules import sweep as rules_sweep
 
     try:
-        await library.before_pass(dry_run=dry_run)
+        if not await _until_stopped(library.before_pass(dry_run=dry_run), state):
+            line = _rules_line(library.id, status="stopped", reason="stopped")
+            printer.summary(line, _rules_text(line))
+            return False  # the stop itself makes the run exit 1
         result = await rules_sweep.sweep(
             library, dry_run=dry_run, should_stop=lambda: state.stopping,
         )
@@ -1061,12 +1091,17 @@ async def run_rules(args, printer: Printer, state: RunState) -> int:
         else:
             # Before the database is opened: a refused run touches nothing.
             held.callback(scheduler_lock.acquire("run-rules").release)
-        if not _open_db(args.dry_run):
-            # A dry run with no database: nothing is stored, so no Rules.
-            line = _rules_line(args.library, status="skipped", reason="no_rules")
-            printer.summary(line, _rules_text(line))
-            return EXIT_OK
+        has_db = _open_db(args.dry_run)
+        # Listed once the database is open (a Library list can live there);
+        # with none, `all_libraries` lists the Libraries that need none, so a
+        # mistyped --library is still refused.
         chosen = _choose_libraries(args.library)
+        if not has_db:
+            # A dry run with no database: nothing is stored, so no Rules.
+            for library in chosen:
+                line = _rules_line(library.id, status="skipped", reason="no_rules")
+                printer.summary(line, _rules_text(line))
+            return EXIT_OK
         if not args.dry_run:
             return await _run_rules_pass(chosen, printer, state)
         failed = False

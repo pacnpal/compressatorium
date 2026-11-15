@@ -722,3 +722,111 @@ def test_romm_before_pass_does_what_the_server_does_at_startup(env, monkeypatch)
     calls.clear()
     asyncio.run(romm_library.before_pass(dry_run=False))
     assert calls == ["load", "replay_identity_cleanup", "settle_once"]
+
+
+# --------------------------------------------------------------------------- #
+# review r2: a stop during upkeep, the waiting marker, --library with no DB
+# --------------------------------------------------------------------------- #
+
+
+def test_a_stop_during_before_pass_ends_the_run_promptly(env, dolphin, capsys):
+    """The upkeep (RomM's settle pass) can take long; a stop cancels it."""
+    import os
+    import signal
+    import time
+
+    _iso(env)
+    _store_rules(env, {"shelf": RVZ_RULE, "attic": RVZ_RULE})
+
+    async def slow_upkeep(*, dry_run):
+        env["shelf"].calls.append(("before_pass", dry_run))
+        os.kill(os.getpid(), signal.SIGTERM)
+        await asyncio.sleep(30)
+
+    env["shelf"].before_pass = slow_upkeep
+    started = time.monotonic()
+
+    code, _lines, _err = _cli(capsys, "run-rules", "--json")
+
+    assert code == 1
+    assert time.monotonic() - started < 10, "the upkeep was cancelled"
+    assert dolphin["runs"] == []
+    assert env["shelf"].calls == [("before_pass", False)]
+    assert env["attic"].calls == [], "no Library after the stop"
+
+
+def test_dry_run_with_no_database_still_checks_library(env, dolphin, capsys):
+    code, lines, err = _cli(capsys, "run-rules", "--dry-run", "--library", "typo", "--json")
+
+    assert (code, lines) == (2, [])
+    assert "typo" in err
+    assert "shelf" in err
+    assert not (env["config"] / "compressatorium.db").exists()
+
+
+@pytest.mark.parametrize("ending", ["acquired", "stopped", "cancelled"])
+def test_a_waiting_server_keeps_a_marker_only_while_it_waits(env, monkeypatch, ending):
+    from services import scheduler_lock
+
+    monkeypatch.setattr(scheduler_lock, "_WAIT_POLL", 0.02)
+    first = scheduler_lock.acquire("run-rules")
+    marker = Path(scheduler_lock.waiting_path())
+    stop = []
+
+    async def scenario():
+        task = asyncio.create_task(scheduler_lock.acquire_waiting(
+            "server", on_wait=lambda held: None, should_stop=lambda: bool(stop),
+        ))
+        await asyncio.sleep(0.2)
+        seen = marker.exists() and "run-rules" in marker.read_text()
+        if ending == "acquired":
+            first.release()
+            (await asyncio.wait_for(task, 5)).release()
+        elif ending == "stopped":
+            stop.append(True)
+            with pytest.raises(scheduler_lock.StoppedWaiting):
+                await asyncio.wait_for(task, 5)
+        else:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        return seen
+
+    try:
+        assert asyncio.run(scenario()), "the marker names the holder while waiting"
+    finally:
+        first.release()
+    assert not marker.exists()
+
+
+def _healthcheck_script() -> str:
+    """The HEALTHCHECK's shell command, from the Dockerfile."""
+    import re
+
+    dockerfile = (Path(__file__).resolve().parent.parent / "Dockerfile").read_text()
+    block = re.search(r"HEALTHCHECK [^\n]*\\\n((?:.*\\\n)*.*\n)", dockerfile).group(1)
+    command = block.replace("\\\n", "\n").strip()
+    assert command.startswith("CMD ")
+    return command[len("CMD "):]
+
+
+@pytest.mark.parametrize("waiting", [True, False])
+def test_the_healthcheck_counts_a_waiting_server_as_healthy(env, waiting):
+    """Nothing listens on 8080 while the server waits for the lock; the
+    marker keeps Docker from calling it unhealthy."""
+    import os
+
+    from services import scheduler_lock
+
+    if waiting:
+        env["locks"].mkdir(parents=True, exist_ok=True)
+        Path(scheduler_lock.waiting_path()).write_text("{}")
+    run_env = {k: v for k, v in os.environ.items() if not k.startswith("CHD_")}
+    run_env.update(CHD_DATA_DIR=str(env["config"]), CHD_MODE="webui")
+
+    done = subprocess.run(
+        ["sh", "-c", _healthcheck_script()], env=run_env, capture_output=True, timeout=30,
+        check=False,
+    )
+
+    assert (done.returncode == 0) is waiting, done.stderr
