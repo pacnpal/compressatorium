@@ -2,6 +2,7 @@ import json
 import logging
 from logging_setup import get_logger
 import os
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -18,6 +19,7 @@ from routes import rules as rules_routes
 from services import ledger
 from services.job_manager import job_manager
 from services.nsz import nsz_service
+from utils.path_utils import refresh_volume_roots
 
 
 # package.json (repo root) is the single source of truth for the version.
@@ -264,6 +266,10 @@ async def lifespan(app: FastAPI):
         discovered_volumes,
         settings.volumes,
     )
+    # Resolve the configured Volume roots once, off the startup path: the
+    # containment gate reads these cached spellings for aliases and symlinks
+    # across Volumes, each root bounded on its own (utils.path_utils).
+    threading.Thread(target=refresh_volume_roots, daemon=True).start()
     # Surface the Switch (nsz) key-discovery decision so operators can see
     # whether the tool is enabled and, if not, where keys were looked for.
     nsz_service.log_startup_status()
