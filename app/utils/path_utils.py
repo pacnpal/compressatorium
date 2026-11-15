@@ -234,13 +234,49 @@ def _resolve_volume(volume_path: str) -> Optional[Path]:
         return None
 
 
+def _volume_root_spellings() -> list[str]:
+    """Every configured Volume root, as configured and as resolved.
+
+    Both are trusted (they come from the deployment, not a request). Keeping
+    both lets a path spelled either way pass the lexical check below; the
+    resolved check afterwards is what decides.
+    """
+    roots: list[str] = []
+    for volume in settings.volumes:
+        configured = os.path.normpath(os.path.abspath(os.path.expanduser(volume)))
+        roots.append(configured)
+        real = os.path.realpath(configured)
+        if real != configured:
+            roots.append(real)
+    return roots
+
+
+def _confine_to_volumes(raw_path: str) -> str | None:
+    """``raw_path`` normalised, if it lies lexically inside a Volume root.
+
+    The first gate for a user-supplied path, before any filesystem call sees
+    it: ``..`` segments are folded by ``normpath``, and the result must equal a
+    root or start with ``root + os.sep``. Only a path that passes is resolved
+    on disk, and the resolved path is checked again (a symlink inside a Volume
+    can still point out of it).
+    """
+    candidate = os.path.normpath(os.path.abspath(os.path.expanduser(raw_path)))
+    for root in _volume_root_spellings():
+        if candidate == root or candidate.startswith(root.rstrip(os.sep) + os.sep):
+            return candidate
+    return None
+
+
 def containing_volume_root(path: str) -> Path | None:
     """The resolved root of the configured Volume that holds ``path``, or None.
 
     The most specific one when Volumes nest. ``path`` may be an archive member
     (``a.zip::disc.iso``); the archive's own location decides.
     """
-    real_path = _resolve_path(strip_archive_path(path), strict=False)
+    confined = _confine_to_volumes(strip_archive_path(path))
+    if confined is None:
+        return None
+    real_path = _resolve_path(confined, strict=False)
     if real_path is None:
         return None
     holders = [
@@ -251,9 +287,16 @@ def containing_volume_root(path: str) -> Path | None:
 
 
 def is_within_configured_volumes(path: str, *, treat_archives: bool = True) -> bool:
-    """Check whether the given path lies inside one of the configured CHD volumes."""
+    """Check whether the given path lies inside one of the configured CHD volumes.
+
+    Confined lexically first (``_confine_to_volumes``), so a path outside every
+    Volume never reaches the filesystem; then resolved and checked again.
+    """
     base_path = strip_archive_path(path) if treat_archives else path
-    real_path = _resolve_path(base_path, strict=False)
+    confined = _confine_to_volumes(base_path)
+    if confined is None:
+        return False
+    real_path = _resolve_path(confined, strict=False)
     if real_path is None:
         return False
 
