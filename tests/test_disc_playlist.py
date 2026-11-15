@@ -503,3 +503,15 @@ def test_a_name_with_no_room_for_its_backup_is_refused(vol: Path):
     paths = _discs(vol, "Game (Disc 1).cue", "Game (Disc 2).cue")
     with pytest.raises(disc_playlist.PlaylistError, match="too long"):
         disc_playlist.create_playlist(paths, "x" * 248 + ".m3u")
+
+
+def test_write_new_bytes_guard_can_stop_the_publish(tmp_path: Path):
+    def refuse() -> None:
+        raise RuntimeError("abandoned")
+
+    target = tmp_path / "Game.m3u"
+    with pytest.raises(RuntimeError):
+        write_new_bytes(str(target), b"x\n", guard=refuse)
+    assert list(tmp_path.iterdir()) == []  # nothing published, temp removed
+    write_new_bytes(str(target), b"x\n", guard=lambda: None)
+    assert target.read_bytes() == b"x\n"

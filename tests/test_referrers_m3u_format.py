@@ -1101,6 +1101,62 @@ async def test_an_abandoned_hook_never_writes_after_cancel(tmp_path, monkeypatch
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("with_backup", [False, True], ids=["first-write", "backup-exists"])
+async def test_a_write_stalled_in_fsync_is_never_published_after_cancel(
+    tmp_path, monkeypatch, with_backup,
+):
+    """Codex's sequence: the guard passes, the temp file's fsync stalls, the
+    hook is cancelled and the output replaced, then fsync returns. The write
+    must not be published: playlist unchanged, no temp file left, and any
+    .bak is still the original."""
+    import threading
+
+    _disc(tmp_path, "Game.cue")
+    out = _disc(tmp_path, "Game.chd")
+    playlist = tmp_path / "Game.m3u"
+    playlist.write_text("Game.cue\n")
+    if with_backup:
+        (tmp_path / "Game.m3u.bak").write_text("Game.cue\n")
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+    real_fsync, real_update = os.fsync, referrers._update_sync
+
+    def stalled_fsync(fd):
+        if not entered.is_set():
+            entered.set()
+            release.wait(30)
+        return real_fsync(fd)
+
+    def update_then_signal(*args, **kwargs):
+        try:
+            return real_update(*args, **kwargs)
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(os, "fsync", stalled_fsync)
+    monkeypatch.setattr(referrers, "_update_sync", update_then_signal)
+    cancel = asyncio.Event()
+
+    hook = asyncio.create_task(referrers.update_before_source_removal(
+        str(tmp_path / "Game.cue"), {str(tmp_path / "Game.cue"): str(out)},
+        cancel_event=cancel,
+    ))
+    try:
+        assert await asyncio.to_thread(entered.wait, 10)
+        cancel.set()
+        outcome = await asyncio.wait_for(hook, timeout=5)
+        _replace_output(out)
+    finally:
+        release.set()
+    assert await asyncio.to_thread(finished.wait, 10), "the late worker didn't finish"
+
+    assert not outcome.ok
+    assert playlist.read_text() == "Game.cue\n"
+    assert not [p.name for p in tmp_path.iterdir() if p.name.endswith(".tmp")]
+    backup = tmp_path / "Game.m3u.bak"
+    assert not backup.exists() or backup.read_text() == "Game.cue\n"
+
+
+@pytest.mark.asyncio
 async def test_an_output_replaced_during_the_hook_is_never_pointed_at(tmp_path, monkeypatch):
     """Even before any timeout: the output must still be the one verified
     (same device, inode, size, mtime) when the playlist is written."""
