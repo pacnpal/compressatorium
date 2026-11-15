@@ -2577,6 +2577,15 @@ killed by SIGKILL, SIGHUP or the OOM killer stops blocking the server's queue as
 soon as the server's next job waits. Tickets and temp files from older versions
 (no holder in the name) go when they can be locked.
 
+A holder file deleted from outside while its process runs (a tmp cleaner, a
+user) would make that process look dead. `_ensure_holder`, called on every wait
+poll, checks the held handle against the path (`still_linked`); when they
+differ it makes the holder again under the same id and writes back every
+ticket the process holds. Slot files have no such repair: a cleaner that
+deletes `convert_slot_<i>.lock` on the `$TMPDIR/chd-locks` fallback lets two
+processes lock different files for one slot. Keep the lock dir out of reach of
+age-based cleaners; `/config/locks`, the default, is.
+
 A queue that cannot be listed (EMFILE, an I/O error) is never read as empty:
 `_list_tickets` raises, and `_wait_for_turn` logs it (at most every 30 s) and
 retries. The shared counter is retried before the in-process fallback, whose
