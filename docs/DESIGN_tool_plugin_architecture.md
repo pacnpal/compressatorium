@@ -2749,6 +2749,11 @@ tool: it registers with an empty binary path and reports no pids.
   `supports_delete_on_verify` (listed in the registry test's declined set): the
   product differs from its Source by design, and the Source is the operator's
   eXoDOS install.
+- **Never automatic.** The mode sets `automatable=False` (Rules refuse it)
+  and `auto_target=False` (§3.3.14: Auto never picks it, so a `dos` folder's
+  zips are skipped with a reason by the convert panel's Auto choice and by
+  `compressatorium convert --auto`). `dos` is in Platform detection's alias
+  table like every other Platform a tool declares.
 - **Extending.** The pack-specific facts (template folder, pack folder name, conf
   name, Platform slug) live in a `CollectionProfile`. eXoWin3x and the other eXo
   packs are a new profile, not new logic. Only eXoDOS ships.

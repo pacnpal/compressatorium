@@ -1633,8 +1633,9 @@ copied into RomM alone does not start.
   with the same rules as archive extraction (no absolute paths, no `..`), the
   archive size limits apply, and the template must resolve inside `EXODOS_DOS_DIR`.
 - **Not from archives**: the repack needs the zip itself and the `!dos` folder.
-- **Manual only.** Run it from the file browser. Rules never offer it, and a
-  stored Rule that names it is refused, because a Rule over RomM's `dos` folder
+- **Manual only.** Run it from the file browser. Rules never offer it, a
+  stored Rule that names it is refused, and Auto leaves a `dos` folder's zips
+  alone, because a Rule over RomM's `dos` folder
   would write a second copy of every game beside it.
 
 **In RomM**, DOSBox Pure only reads a `dosbox.conf` when its core option

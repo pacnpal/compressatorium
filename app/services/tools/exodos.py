@@ -60,6 +60,9 @@ class ExodosTool(BaseTool):
             # copy of every game beside it, and its verify step would hide the
             # conf warning nobody is there to read.
             automatable=False,
+            # Nor an Auto target: a `dos` folder's zips are left alone by Auto
+            # and `compressatorium convert --auto`, with a reason (#294).
+            auto_target=False,
         ),
     )
     output_extensions = frozenset({OUTPUT_EXTENSION})

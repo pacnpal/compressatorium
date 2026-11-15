@@ -6,7 +6,7 @@ so the test sees whether a passing check is recorded.
 from __future__ import annotations
 
 import zipfile
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -17,8 +17,10 @@ from app.routes import info as info_routes
 def _volume(tmp_path, monkeypatch):
     monkeypatch.setattr(info_routes.settings, "chd_volumes", str(tmp_path))
     monkeypatch.setattr(info_routes.settings, "data_mount_root", str(tmp_path))
-    store = Mock()
-    store.mark_verified = AsyncMock()
+    # Every store method is a coroutine: a pass is recorded with
+    # ``mark_verified`` on ``latest`` and with ``refresh_check`` once #306's
+    # re-check lands, so the stub answers both.
+    store = AsyncMock()
     monkeypatch.setattr(info_routes, "verification_store", store)
     return {"root": tmp_path, "store": store}
 
@@ -29,6 +31,15 @@ def _product(path, *, members=None, compression=zipfile.ZIP_DEFLATED):
         for name, data in members.items():
             zf.writestr(name, data)
     return str(path)
+
+
+def _recorded(store) -> list[str]:
+    """The paths a pass was recorded for, whichever store call recorded it."""
+    return [
+        call.args[0]
+        for method in (store.mark_verified, store.refresh_check)
+        for call in method.await_args_list
+    ]
 
 
 def test_verify_routes_are_registered():
@@ -48,7 +59,7 @@ async def test_web_verify_passes_a_good_product_and_records_it(volume):
     result = await info_routes.verify_exodos(path=path)
 
     assert result["valid"] is True
-    volume["store"].mark_verified.assert_awaited_once_with(path)
+    assert _recorded(volume["store"]) == [path]
 
 
 @pytest.mark.asyncio
@@ -63,4 +74,4 @@ async def test_web_verify_fails_a_corrupt_product_and_records_nothing(volume):
 
     assert result["valid"] is False
     assert "GAME.EXE" in result["message"]
-    volume["store"].mark_verified.assert_not_awaited()
+    assert _recorded(volume["store"]) == []
