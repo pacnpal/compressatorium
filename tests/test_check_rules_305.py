@@ -2192,6 +2192,62 @@ async def test_a_scheduled_check_run_holds_its_window_until_it_ends(
 
 
 @pytest.mark.asyncio
+async def test_a_tick_that_finds_every_image_held_by_run_now_stays_due(
+    tree: Path, ready, sent, monkeypatch,
+) -> None:
+    """Codex 4578116078: while Run now is checking every Image of a Platform,
+    a scheduler tick selects none of them. That empty pick is not the night's
+    run: nothing is recorded, and once Run now is cancelled the next tick picks."""
+    from models import ConversionMode
+    from routes import libraries as routes
+    from services.job_manager import job_manager
+    from services.rules import check as checks
+    from services.rules import sweep
+    from services.rules.rules import CHECK
+
+    tool = registry.get("chdman")
+    gate = asyncio.Event()
+
+    async def verify(path, *, cancel_event=None):
+        waits = {asyncio.ensure_future(gate.wait())}
+        if cancel_event is not None:
+            waits.add(asyncio.ensure_future(cancel_event.wait()))
+        _done, pending = await asyncio.wait(waits, return_when=asyncio.FIRST_COMPLETED)
+        for task in pending:
+            task.cancel()
+        if cancel_event is not None and cancel_event.is_set():
+            return {"valid": False, "cancelled": True, "message": "Verification cancelled"}
+        return {"valid": True, "message": "Intact"}
+
+    async def bound(path, *, cancel_event=None):
+        return 0
+
+    monkeypatch.setitem(vars(tool), "verify", verify)
+    monkeypatch.setitem(vars(tool), "verify_timeout", bound)
+    lib = await _folder_library(tree, {"enabled": True, "check_budget_gb": 100})
+    library = routes._library(lib)
+
+    manual = await sweep.sweep(library, ignore_schedule=True)  # Run now: all four
+    assert manual["checks"] == 4
+
+    tick = await sweep.sweep(library)
+    assert tick.get("checks", 0) == 0
+    assert not ((await sweep.get_state(library, CHECK)).get("ps2") or {}).get("last_run_at")
+
+    (running,) = [
+        j for j in job_manager.jobs.values()
+        if j.mode == ConversionMode.CHECK and j.status.value == "processing"
+    ]
+    await job_manager.cancel_job(running.id)
+    await checks.drain()
+
+    again = await sweep.sweep(library)
+    assert again["checks"] == 4
+    gate.set()
+    await checks.drain()
+
+
+@pytest.mark.asyncio
 async def test_a_run_stopped_by_an_abandoned_verifier_leaves_its_rule_due(
     tree: Path, ready, verifier, sent,
 ) -> None:

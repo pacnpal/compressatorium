@@ -1852,7 +1852,7 @@ async def _sweep_check(
     last = await checks.order_stamps(library.id)
     ready: dict[str, bool] = {}
     chosen: list[checks.Check] = []
-    spent = considered = uncheckable = 0
+    spent = considered = uncheckable = held_elsewhere = 0
     unresponsive = not_ready = False
     for image in checks.stalest_first(images, last):
         if stopping():
@@ -1861,7 +1861,9 @@ async def _sweep_check(
             return True
         considered += 1
         if checks.in_flight(library.id, str(image.key)):
+            # Another check run (Run now) has it; that is not this run's pick.
             result["skipped_active"] += 1
+            held_elsewhere += 1
             continue
         try:
             # Detached and bounded, as a conversion candidate's probes are.
@@ -1935,7 +1937,12 @@ async def _sweep_check(
     if not dry_run:
         picked.extend(chosen)
         # A Platform whose tool is missing waits for the next tick, not a day.
-        if not unresponsive and not (not_ready and not chosen):
+        # Nor is a pick that came up empty only because another check run holds
+        # its Images the night's run (4578116078): if that run is cancelled,
+        # the Rule must still be due.
+        if not unresponsive and not (
+            not chosen and (not_ready or held_elsewhere)
+        ):
             check_runs.append(
                 (platform_id, summary, manual, now, frozenset(c.key for c in chosen)),
             )
