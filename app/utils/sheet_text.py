@@ -58,13 +58,18 @@ def chd_tokens(line: str) -> list[str]:
     ``a"b c"d`` is ``ab cd`` and an unclosed quote runs to the end of the line.
     A quoted empty string is an empty token.
     """
+    return _chd_scan(line)[0]
+
+
+def _chd_scan(line: str) -> tuple[list[str], bool]:
+    """``chd_tokens`` plus whether every quote on the line closed."""
     tokens: list[str] = []
     i, end = 0, len(line)
     while True:
         while i < end and line[i] in _C_SPACE:
             i += 1
         if i >= end:
-            return tokens
+            return tokens, True
         token: list[str] = []
         single = double = False
         while i < end:
@@ -79,6 +84,24 @@ def chd_tokens(line: str) -> list[str]:
                 token.append(char)
             i += 1
         tokens.append("".join(token))
+        if single or double:
+            return tokens, False
+
+
+def _quotes_close(text: str, *, cue: bool) -> bool:
+    """Whether every line's quotes close the way chdman reads them.
+
+    An unclosed quote runs to the end of chdman's read, newline included, so
+    ``1 0 4 2048 'pipe`` opens a file named ``pipe\\n`` while a reader that
+    strips the newline checks ``pipe``. A CUE ``REM`` line is exempt: chdman
+    reads no file name from one, and comments carry apostrophes.
+    """
+    for line in _sheet_lines(text):
+        tokens, closed = _chd_scan(line)
+        if closed or (cue and tokens and tokens[0] == "REM"):
+            continue
+        return False
+    return True
 
 
 def _sheet_lines(text: str) -> list[str]:
@@ -104,24 +127,130 @@ def sheet_readings(path: str | Path) -> list[str]:
     behind a megabyte of ``REM`` lines that the tool reading the whole sheet
     still opens), so such a sheet is unreadable and every reader built on this
     treats it as unknown or unsafe.
+
+    Empty too when the sheet is ambiguous (``sheet_ambiguity``): a decoded
+    spelling and the native one name different existing files, so a reader
+    acting on the decoded name (a delete plan) would touch a file chdman
+    never opened. Checked here against the configured Volumes, so every
+    reader built on this, the job gate included, refuses such a sheet;
+    ``sheet_tracks`` checks again under its own ``within``.
     """
+    spellings = _sheet_spellings(path)
+    if spellings is None:
+        return []
+    readings, native = spellings
+    if _ambiguity(path, readings, native, within=None):
+        return []
+    return readings
+
+
+def _sheet_spellings(path: str | Path) -> tuple[list[str], str] | None:
+    """``(readings, native)`` of a readable sheet, or None (see ``sheet_readings``)."""
     try:
         with open(path, "rb") as fh:
             raw = fh.read(MAX_SHEET_BYTES + 1)
     except OSError:
-        return []
+        return None
     if len(raw) > MAX_SHEET_BYTES or not _chd_framing_ok(raw):
-        return []
+        return None
     raw = raw.removeprefix(_UTF8_BOM)
     try:
         first = raw.decode("utf-8")
     except UnicodeDecodeError:
         first = raw.decode("cp1252", errors="replace")
-    readings = [first, raw.decode("latin-1")]
+    latin1 = raw.decode("latin-1")
+    # Quotes and whitespace are ASCII, the same in every spelling.
+    if not _quotes_close(latin1, cue=Path(path).suffix.lower() == ".cue"):
+        return None
+    readings = [first, latin1]
+    # The raw bytes as the OS spells a file name: what chdman opens.
     native = os.fsdecode(raw)
     if native not in readings:
         readings.append(native)
-    return readings
+    return readings, native
+
+
+def sheet_native_text(path: str | Path) -> str | None:
+    """The sheet in its native spelling (``os.fsdecode`` of the raw bytes).
+
+    Its names are the files chdman opens, so this is the reading a caller
+    that acts on the tracks (deleting them) must use. None when the sheet is
+    unreadable or ambiguous (``sheet_readings``).
+    """
+    spellings = _sheet_spellings(path)
+    if spellings is None:
+        return None
+    readings, native = spellings
+    if _ambiguity(path, readings, native, within=None):
+        return None
+    return native
+
+
+def sheet_ambiguity(
+    path: str | Path, *, within: Sequence[str | Path] | None = None,
+) -> str | None:
+    """Why the sheet's decoded and native spellings disagree on a file, or None.
+
+    For a sheet that is not UTF-8 a decoded name (cp1252 or Latin-1, re-encoded
+    as UTF-8 by the OS) and the raw bytes chdman opens can name two different
+    files. When both exist the sheet is ambiguous: refuse it rather than guess.
+    Names are compared through ``resolve_track`` (``within`` as there); one it
+    refuses is refused on its own elsewhere.
+    """
+    spellings = _sheet_spellings(path)
+    if spellings is None:
+        return None
+    readings, native = spellings
+    return _ambiguity(path, readings, native, within=within)
+
+
+def _ambiguity(
+    path: str | Path,
+    readings: Sequence[str],
+    native: str,
+    *,
+    within: Sequence[str | Path] | None,
+) -> str | None:
+    parse = _parser_for(path)
+    if parse is None or all(text == native for text in readings):
+        return None
+    folder = Path(path).parent
+    native_names = parse(native)
+    for text in readings:
+        if text == native:
+            continue
+        for decoded, opened in zip(parse(text), native_names):
+            if decoded == opened:
+                continue
+            try:
+                decoded_path = resolve_track(folder, decoded, within=within)
+                opened_path = resolve_track(folder, opened, within=within)
+            except ValueError:
+                continue
+            try:
+                both = decoded_path.exists() and opened_path.exists()
+                if both and not os.path.samefile(decoded_path, opened_path):
+                    return (
+                        f"Ambiguous track sheet: {decoded!r} names a different file "
+                        "than the bytes chdman opens"
+                    )
+            except OSError:
+                continue
+    return None
+
+
+def _parser_for(path: str | Path) -> Callable[[str], list[str]] | None:
+    suffix = Path(path).suffix.lower()
+    if suffix == ".cue":
+        return cue_tracks
+    if suffix == ".gdi":
+        return gdi_track_names
+    return None
+
+
+def gdi_track_names(text: str) -> list[str]:
+    """The file name of every ``gdi_tracks`` line, in order."""
+    return [track.name for track in gdi_tracks(text)]
 
 
 _WIN_ABS_RE = re.compile(r"^[a-zA-Z]:[\\/]")
@@ -222,6 +351,8 @@ def sheet_tracks(
     texts = sheet_readings(path)
     if not texts:
         return None
+    if within is not None and sheet_ambiguity(path, within=within):
+        return None   # ambiguous under the caller's roots (an extracted set)
     readings = [parse(text) for text in texts]
     folder = Path(path).parent
     for names in readings:
@@ -247,7 +378,7 @@ def sheet_track_list(
     if suffix == ".cue":
         return sheet_tracks(path, cue_tracks, within=within)
     if suffix == ".gdi":
-        return sheet_tracks(path, lambda text: [t.name for t in gdi_tracks(text)], within=within)
+        return sheet_tracks(path, gdi_track_names, within=within)
     return None
 
 

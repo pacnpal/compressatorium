@@ -2451,7 +2451,27 @@ is unreadable. `chd_tokens` is chdman's `tokenize`: C-locale whitespace,
 track is a line's fifth token. `resolve_track` checks the name verbatim (no
 trimming, `\` a filename character on POSIX), and every spelling of every
 track is checked, including the raw-byte one (`os.fsdecode`) chdman opens for
-a sheet that is not UTF-8: one refused spelling refuses the sheet.
+a sheet that is not UTF-8: one refused spelling refuses the sheet. The delete
+plan takes its targets from that native spelling (`sheet_native_text`), never
+from a decoded reading, and a sheet whose decoded and native spellings name
+two different existing files is ambiguous (`sheet_ambiguity`): unreadable for
+every reader, so the job gate and the delete plan refuse it. So is a sheet
+with a line whose quote never closes: chdman keeps the newline inside the
+quote (`'pipe` opens `pipe\n`). A CUE `REM` line is exempt, since chdman reads
+no file name from one.
+
+The containment gate (`path_utils._confined_real_path`) checks a path's
+lexical root inline, right before it resolves the path: first against the
+configured root spellings (no filesystem call), then against the cached
+resolved spellings of the roots (a Volume configured through a symlink). The
+roots come from the deployment, so their resolved spellings are cached:
+built at startup (`refresh_volume_roots`) and whenever the configured Volumes
+change, refreshed in the background once older than `ROOT_REFRESH_SECONDS`,
+each root resolved on its own thread with its own `ROOT_PROBE_SECONDS` bound.
+A root that times out keeps its last good spelling. The final check resolves
+the submitted path itself and accepts a real path inside the matched root or
+inside any Volume's cached resolved root, so a symlink from one Volume into
+another (Unraid shares) is accepted and a stalled Volume is never waited on.
 
 Special files are never opened. Opening a FIFO with no writer blocks forever,
 which would strand the threadpool worker an Auto request runs detection on.

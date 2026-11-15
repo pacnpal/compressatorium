@@ -272,3 +272,66 @@ def test_a_line_one_byte_over_a_chdman_read_is_unreadable(layout):
     cue.write_text(f"{line}\n  TRACK 01 MODE1/2352\n")
 
     assert sheet_readings(cue) == []
+
+
+# --------------------------------------------------------------------------- #
+# Unterminated quotes (CodeRabbit 4577045037)
+# --------------------------------------------------------------------------- #
+# chdman's tokenizer keeps the line's "\n" inside an unclosed quote, so
+# `1 0 4 2048 'pipe` opens a file named "pipe\n". A sheet with a line whose
+# quote never closes is unreadable, for CUE and GDI alike. A CUE `REM` line is
+# exempt: chdman reads no file name from one, and comments carry apostrophes.
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs os.mkfifo")
+def test_a_gdi_unclosed_quote_naming_a_fifo_is_refused_and_never_opened(layout, opened):
+    import threading
+
+    fifo = layout["folder"] / "pipe\n"
+    os.mkfifo(fifo)
+    sheet = layout["folder"] / "game.gdi"
+    sheet.write_bytes(b"1\n1 0 4 2048 'pipe\n")
+
+    assert sheet_readings(sheet) == []
+    with pytest.raises(ValueError):
+        build_delete_snapshot(str(sheet))
+    assert sheet_track_list(sheet) is None
+
+    box: dict = {}
+    worker = threading.Thread(
+        target=lambda: box.setdefault("result", detect_platform(str(sheet))), daemon=True,
+    )
+    worker.start()
+    worker.join(3)
+    if worker.is_alive():                      # unblock a stuck reader, then fail
+        fd = os.open(fifo, os.O_WRONLY | os.O_NONBLOCK)
+        os.close(fd)
+        pytest.fail("detection opened the FIFO named by the unclosed quote")
+    assert box["result"].platform is None
+    assert not any(p.endswith("pipe\n") for p in opened)
+
+
+@pytest.mark.parametrize(
+    "sheet_name,body",
+    [
+        ("game.cue", b"FILE 'x.bin BINARY\n  TRACK 01 MODE1/2352\n"),
+        ("game.cue", b'FILE "x.bin BINARY\n  TRACK 01 MODE1/2352\n'),
+        ("game.cue", b'FILE "x.bin" BINARY\n  TRACK 01 MODE1/2352 "\n'),
+        ("game.gdi", b'1\n1 0 4 2352 "x.bin 0\n'),
+    ],
+    ids=["cue-single", "cue-double", "cue-later-line", "gdi-double"],
+)
+def test_any_unclosed_quote_makes_the_sheet_unreadable(layout, sheet_name, body):
+    sheet = layout["folder"] / sheet_name
+    sheet.write_bytes(body)
+
+    assert sheet_readings(sheet) == []
+
+
+def test_an_apostrophe_in_a_rem_comment_is_still_readable(layout):
+    sheet = layout["folder"] / "game.cue"
+    sheet.write_bytes(
+        b"REM COMMENT Don't panic\n"
+        b'FILE "it\'s.bin" BINARY\n  TRACK 01 MODE1/2352\n',
+    )
+
+    assert cue_tracks(sheet_readings(sheet)[0]) == ["it's.bin"]

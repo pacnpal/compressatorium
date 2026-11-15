@@ -1195,7 +1195,6 @@ def _extract_gdi(path: str, within=None) -> Optional[dict]:
     Track 1 is always the first data area (IP.BIN).
     """
     try:
-        gdi_dir = Path(path).parent
         # The shared sheet parsing (utils.sheet_text): quoted names keep their
         # spaces, and the first spelling of a name that exists on disk wins.
         files = sheet_tracks(
