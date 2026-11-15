@@ -291,14 +291,16 @@ _probe_lock = threading.Lock()
 _probes_in_flight: dict[str, tuple[threading.Thread, dict]] = {}
 
 
-def _root_probe(configured: str) -> tuple[threading.Thread, dict]:
+def _root_probe(configured: str) -> tuple[threading.Thread, dict, float]:
     """The live probe resolving ``configured``, started if none is running.
 
-    One registry for every resolution of a root (cache refreshes and
-    ``_fresh_root``): there is never more than one live probe per root, so
-    a mount that stays blocked strands one thread, however many refreshes
-    and requests ask. A finished probe is never reused; its answer may be
-    stale.
+    Returns ``(thread, box, started_at)``, ``started_at`` on the monotonic
+    clock, so a caller can tell a probe that began before it from one that
+    began after. One registry for every resolution of a root (cache
+    refreshes and ``_fresh_root``): there is never more than one live probe
+    per root, so a mount that stays blocked strands one thread, however many
+    refreshes and requests ask. A finished probe is never reused; its answer
+    may be stale.
     """
     with _probe_lock:
         entry = _probes_in_flight.get(configured)
@@ -308,7 +310,7 @@ def _root_probe(configured: str) -> tuple[threading.Thread, dict]:
                 target=_resolve_root_into, args=(configured, box), daemon=True,
                 name=f"volume-root-probe:{configured}",
             )
-            entry = (thread, box)
+            entry = (thread, box, time.monotonic())
             _probes_in_flight[configured] = entry
             thread.start()
         return entry
@@ -328,7 +330,9 @@ def refresh_volume_roots(*, timeout: float | None = None) -> None:
     probes = []
     for volume in volumes:
         configured = _configured_root(volume)
-        thread, box = _root_probe(configured)
+        # A probe already running may have started before this refresh; the
+        # cache only selects roots, so its answer is good enough here.
+        thread, box, _started = _root_probe(configured)
         probes.append((configured, thread, box))
     deadline = time.monotonic() + bound
     for _configured, thread, _box in probes:
@@ -464,12 +468,25 @@ def _fresh_root(configured: str) -> Path | None:
     """``configured`` resolved now, within ``ROOT_PROBE_SECONDS``; None otherwise.
 
     Fails closed: a probe that times out or fails gives None, never the
-    cached spelling. Through the per-root registry (``_root_probe``): a check
-    that arrives while a probe runs waits on it (under its own bound) instead
-    of starting another.
+    cached spelling. Only a resolution that *started* at or after this check
+    began authorises: a probe already running may have resolved the root
+    before it was repointed. Through the per-root registry (``_root_probe``),
+    so one live probe per root still holds: a check that finds an older probe
+    running waits for it to finish, then starts its own, all within one
+    ``ROOT_PROBE_SECONDS`` budget. The older probe's answer is never used.
     """
-    thread, box = _root_probe(configured)
-    thread.join(ROOT_PROBE_SECONDS)
+    check_started = time.monotonic()
+    deadline = check_started + ROOT_PROBE_SECONDS
+    thread, box, probe_started = _root_probe(configured)
+    if probe_started < check_started:
+        thread.join(max(0.0, deadline - time.monotonic()))
+        if thread.is_alive():
+            return None              # the older probe is stuck: fail closed
+        # The older probe is done, so the next one began after this check did.
+        thread, box, probe_started = _root_probe(configured)
+        if probe_started < check_started:
+            return None
+    thread.join(max(0.0, deadline - time.monotonic()))
     if thread.is_alive() or "real" not in box:
         return None
     return Path(box["real"])
