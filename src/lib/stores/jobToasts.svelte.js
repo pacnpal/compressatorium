@@ -11,6 +11,7 @@
 
 import { toast } from 'svelte-sonner';
 import { registry } from '$lib/tools/registry.js';
+import { completionToast } from '$lib/util/jobToast.js';
 import { EXTERNAL_SCAN_MODES, TERMINAL_STATUSES } from './jobConstants.js';
 
 function filenameOf(job) {
@@ -115,11 +116,13 @@ class JobToastTracker {
   _resolve(job, toastId) {
     const title = filenameOf(job);
     if (job.status === 'completed') {
-      toast.success(title, {
-        id: toastId,
-        description: job.output_path ? `→ ${job.output_path}` : 'Completed',
-        duration: 4000,
-      });
+      // A warning (a Source kept for a reader, a tool's caveat) is not a
+      // plain success.
+      const { kind, description, duration } = completionToast(job);
+      const options = { id: toastId, description, duration };
+      // An explicit choice, never a property looked up from data.
+      if (kind === 'warning') toast.warning(title, options);
+      else toast.success(title, options);
     } else if (job.status === 'failed') {
       toast.error(title, {
         id: toastId,

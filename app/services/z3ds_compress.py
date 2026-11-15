@@ -16,10 +16,14 @@ from services.subprocess_runner import (
     collect_verify,
     ioprio_prefix,
     ReadCancelled,
+    feed_stdin_from_file,
     remove_partial_output,
     resolve_verify_timeout,
     run_detached,
     verify_preflight,
+    ToolUnavailable,
+    verify_exception_event,
+    verify_exit_event,
 )
 
 # Compress inputs (raw 3DS ROMs). The upstream fork
@@ -139,6 +143,38 @@ class Z3DSCompressService:
             return payload_offset
 
         return await run_detached(_read_offset, cancel_event=cancel_event)
+
+    @staticmethod
+    def decode_command() -> list[str] | None:
+        """The decoder the Round-trip pipes a Z3DS payload through, or None.
+
+        The payload after the header and metadata is seekable zstd: ordinary
+        zstd frames holding the ROM, then a skippable seek-table frame that
+        ``zstd -d`` passes over. The same binary ``verify`` uses for ``-t``.
+        """
+        zstd_path = shutil.which("zstd")
+        return [zstd_path, "-d", "-c", "-q"] if zstd_path else None
+
+    async def decoded_sha256(
+        self, file_path: str, *, cancel_event: asyncio.Event | None = None,
+    ) -> str:
+        """SHA-256 of the ROM a Z3DS container decodes to, streamed (#301).
+
+        The payload is fed to ``zstd -dc`` and its stdout hashed as it arrives
+        (``SubprocessRunner.hash_stdout``), so no decoded ROM is written. The
+        caller bounds the call; a cancel stops zstd and raises ReadCancelled.
+        """
+        # The PATH lookup stats directories, so it runs off the event loop too.
+        cmd = await run_detached(self.decode_command, cancel_event=cancel_event)
+        if cmd is None:
+            raise RuntimeError("zstd not found; the decoded ROM cannot be hashed")
+        offset = await self._get_verify_payload_offset(
+            file_path, cancel_event=cancel_event,
+        )
+        return await self._runner.hash_stdout(
+            cmd, algorithm="sha256", stdin_path=file_path, stdin_offset=offset,
+            cancel_event=cancel_event,
+        )
 
     def get_output_path(self, input_path: str, output_dir: str | None = None) -> str:
         """Calculate output path for a 3DS file.
@@ -371,11 +407,9 @@ class Z3DSCompressService:
         try:
             zstd_path = shutil.which("zstd")
             if not zstd_path:
-                yield {
-                    "type": "error",
-                    "valid": False,
-                    "message": "zstd not found; full integrity verification is unavailable",
-                }
+                yield verify_exception_event(ToolUnavailable(
+                    "zstd not found; full integrity verification is unavailable",
+                ), prefix="Verification could not run")
                 return
 
             payload_offset = await self._get_verify_payload_offset(
@@ -435,69 +469,19 @@ class Z3DSCompressService:
                                 payload_offset,
                             )
 
-                        # Plain file object read through the shared detached
-                        # seam, deliberately *not* an async file context (this
-                        # replaced the aiofiles one, the app's last user of it):
-                        # on an unresponsive volume the read can only be
-                        # abandoned, and a context manager's exit would then
-                        # await a close that waits on the very lock the stuck
-                        # read holds -- turning the cleanup below into another
-                        # unbounded wait. So the handle is closed only on the
-                        # paths that got that far, and simply abandoned (with
-                        # its thread) otherwise.
-                        def _open_payload():
-                            handle = open(file_path, "rb")  # noqa: SIM115
-                            handle.seek(payload_offset)
-                            return handle
-
-                        f = await run_detached(_open_payload, cancel_event=cancel_event)
-                        abandoned = False
-                        try:
-                            while True:
-                                if cancel_event is not None and cancel_event.is_set():
-                                    # Stop feeding immediately; the waiter below
-                                    # reports the cancel and the finally reaps
-                                    # zstd. One chunk of latency at most.
-                                    # Not `abandoned`: this break happens
-                                    # *between* reads, so no thread holds the
-                                    # handle and closing it is safe and bounded.
-                                    # Only a read still in flight makes close
-                                    # itself a wait we cannot afford.
-                                    break
-                                try:
-                                    chunk = await run_detached(
-                                        f.read, chunk_size, cancel_event=cancel_event,
-                                    )
-                                except ReadCancelled:
-                                    abandoned = True
-                                    break
-                                if not chunk:
-                                    break
-                                try:
-                                    if process.stdin is None:
-                                        raise RuntimeError("zstd stdin is unavailable")
-                                    process.stdin.write(chunk)
-                                    await process.stdin.drain()
-                                except BrokenPipeError:
-                                    # zstd closed stdin early due to integrity failure.
-                                    break
-                        except (asyncio.CancelledError, GeneratorExit):
-                            # The feeder task itself was cancelled (SSE
-                            # disconnect, timeout, the cancel race below). Same
-                            # rule as ReadCancelled: a read may still hold the
-                            # handle's lock, so closing it here would block
-                            # behind that read and turn cleanup into one more
-                            # unbounded wait. Abandon it with its thread.
-                            abandoned = True
-                            raise
-                        finally:
-                            if not abandoned:
-                                with contextlib.suppress(Exception):
-                                    await run_detached(f.close)
-
+                        # The shared feeder: detached reads, and a read still in
+                        # flight on a cancel is abandoned with its handle rather
+                        # than closed (closing would wait on that read's lock).
+                        # It closes stdin when it is done.
+                        await feed_stdin_from_file(
+                            process, file_path, offset=payload_offset,
+                            cancel_event=cancel_event, chunk_size=chunk_size,
+                        )
                         if process.stdin is not None:
-                            process.stdin.close()
-                            await process.stdin.wait_closed()
+                            # zstd that quit early on bad data closed its end
+                            # first; its exit code and stderr are the verdict.
+                            with contextlib.suppress(BrokenPipeError, ConnectionResetError):
+                                await process.stdin.wait_closed()
 
                     except Exception as stream_err:
                         logger.error("Error streaming to zstd: %s", stream_err)
@@ -559,11 +543,12 @@ class Z3DSCompressService:
                             "message": "Verification cancelled",
                         }
                     else:
-                        yield {
-                            "type": "error",
-                            "valid": False,
-                            "message": f"Verification timed out after {overall_timeout}s",
-                        }
+                        # The shared shape, so the bound expiring is marked
+                        # inconclusive like every other verifier's (#306).
+                        yield SubprocessRunner._verify_error(
+                            f"Verification timed out after {overall_timeout}s",
+                            inconclusive=True,
+                        )
                     return
 
                 _stdout, stderr = feed.result()
@@ -576,12 +561,12 @@ class Z3DSCompressService:
                         "message": "File is Intact"
                     }
                 else:
+                    # zstd runs outside the shared runner; its exit status is
+                    # classified by the same helper (a signal is no verdict).
                     stderr_text = stderr.decode("utf-8", errors="replace").strip()
-                    yield {
-                        "type": "error",
-                        "valid": False,
-                        "message": f"Integrity check failed: {stderr_text}"
-                    }
+                    yield verify_exit_event(
+                        process.returncode, f"Integrity check failed: {stderr_text}",
+                    )
             finally:
                 # Bounded TERM -> KILL ladder rather than kill()+wait(): a child
                 # blocked in uninterruptible I/O never answers either, and an
@@ -602,11 +587,7 @@ class Z3DSCompressService:
             }
         except Exception as e:
             logger.exception("Error during 3DS verification: %s", e)
-            yield {
-                "type": "error",
-                "valid": False,
-                "message": f"Verification error: {str(e)}"
-            }
+            yield verify_exception_event(e)
 
 
 # Global service instance

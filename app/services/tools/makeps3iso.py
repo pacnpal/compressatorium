@@ -69,6 +69,10 @@ class MakePs3IsoTool(BaseTool):
         # disc rips). Does disk I/O — callers run it off the event loop.
         return ps3.is_ps3_iso_source(path)
 
+    def header_platform(self, path: str) -> str | None:
+        # A folder with the PS3 disc layout is a PS3 Image, wherever it sits.
+        return "ps3" if self.accepts_directory(path) else None
+
     def detect_output(
         self, input_path: str, *, from_archive: bool = False,
     ) -> OutputStatus | None:

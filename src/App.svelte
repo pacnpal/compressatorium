@@ -8,6 +8,7 @@
   import Dashboard from '$lib/components/views/Dashboard.svelte';
   import WorkArea from '$lib/components/views/WorkArea.svelte';
   import RommView from '$lib/components/views/RommView.svelte';
+  import RulesView from '$lib/components/views/RulesView.svelte';
   import DATView from '$lib/components/views/DATView.svelte';
   import LedgerView from '$lib/components/views/LedgerView.svelte';
   import HelpView from '$lib/components/views/HelpView.svelte';
@@ -183,6 +184,7 @@
         {#if ui.activeView === 'dashboard'}<Dashboard />
         {:else if ui.activeView === 'workspace'}<WorkArea />
         {:else if ui.activeView === 'romm'}<RommView />
+        {:else if ui.activeView === 'rules'}<RulesView />
         {:else if ui.activeView === 'dat'}<DATView />
         {:else if ui.activeView === 'ledger'}<LedgerView />
         {:else if ui.activeView === 'help'}<HelpView />

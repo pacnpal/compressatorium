@@ -1,8 +1,9 @@
 import asyncio
+import functools
 from logging_setup import get_logger
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path
 from typing import Optional
@@ -11,6 +12,10 @@ from config import settings
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from models import (
+    AutoBatchResponse,
+    AutoJobCreateRequest,
+    AutoPlanItem,
+    AutoPlanRequest,
     BatchJobCreateRequest,
     CheckDuplicatesRequest,
     ConversionJob,
@@ -21,14 +26,21 @@ from models import (
     JobCreateRequest,
     JobStatus,
 )
+from routes.preferences import CONVERSION_KEY as CONVERSION_PREFS_KEY
 from services.archive import archive_service
 from services.job_manager import (
+    ROLLBACK_WAIT_CAP_SECONDS,
+    VOLUME_PROBE_TIMEOUT_SECONDS,
     DestinationUnresolvableError,
     OutputClaimedError,
     QueueBackpressureError,
     job_manager,
 )
+from services import referrers
+from services.platform_detect import plan_auto
+from services.preferences_store import preferences_store
 from services.romz import romz_service
+from services.subprocess_runner import run_detached
 from services.output_conflicts import (
     OutputPathExhausted,
     OutputPathLocked,
@@ -46,6 +58,7 @@ from utils.path_utils import (
     is_within_configured_volumes,
     match_extension,
     source_companions_are_safe,
+    strip_archive_path,
 )
 
 router = APIRouter()
@@ -544,7 +557,9 @@ async def _plan_directory_job(
     )
     if output_exists or is_locked:
         if duplicate_action == DuplicateAction.SKIP:
-            raise SkipFile(SkipReason.OUTPUT_EXISTS)
+            raise SkipFile(
+                SkipReason.OUTPUT_LOCKED if is_locked else SkipReason.OUTPUT_EXISTS,
+            )
         if duplicate_action == DuplicateAction.OVERWRITE:
             if is_locked:
                 raise SkipFile(SkipReason.OUTPUT_LOCKED)
@@ -649,12 +664,14 @@ async def plan_job(
         output_exists, is_locked = check_output_conflicts(mode, output_path)
         if output_exists or is_locked:
             if duplicate_action == DuplicateAction.SKIP:
-                raise SkipFile(SkipReason.OUTPUT_EXISTS)
+                raise SkipFile(
+                    SkipReason.OUTPUT_LOCKED if is_locked else SkipReason.OUTPUT_EXISTS,
+                )
             if duplicate_action == DuplicateAction.OVERWRITE:
                 if is_locked:
                     raise SkipFile(SkipReason.OUTPUT_LOCKED)
             elif duplicate_action == DuplicateAction.RENAME:
-                output_path = get_unique_output_path(output_path, mode)
+                output_path = _renamed_output(mode, output_path, duplicate_action)
 
     if "::" not in file_path and not os.path.isfile(file_path):
         raise SkipFile(SkipReason.FILE_NOT_FOUND)
@@ -743,12 +760,14 @@ async def plan_job(
         output_exists, is_locked = check_output_conflicts(mode, output_path)
         if output_exists or is_locked:
             if duplicate_action == DuplicateAction.SKIP:
-                raise SkipFile(SkipReason.OUTPUT_EXISTS)
+                raise SkipFile(
+                    SkipReason.OUTPUT_LOCKED if is_locked else SkipReason.OUTPUT_EXISTS,
+                )
             if duplicate_action == DuplicateAction.OVERWRITE:
                 if is_locked:
                     raise SkipFile(SkipReason.OUTPUT_LOCKED)
             elif duplicate_action == DuplicateAction.RENAME:
-                output_path = get_unique_output_path(output_path, mode)
+                output_path = _renamed_output(mode, output_path, duplicate_action)
 
     if (
         spec.kind != ModeKind.COPY
@@ -785,6 +804,21 @@ async def plan_job(
     )
 
 
+async def _planned_output_path(mode: str, file_path: str, output_dir: str | None) -> str:
+    """The output a conversion of *file_path* would be planned to write."""
+    if "::" not in file_path:
+        return await run_in_threadpool(_get_output_path, mode, file_path, output_dir)
+    # An archive member is named from its internal filename and lands beside
+    # the archive unless an output folder was chosen. Off the event loop: romz
+    # extract reads the archive to name its output.
+    archive_path, internal_path = file_path.split("::", 1)
+    output_name = archive_service._output_name_for_member(internal_path)
+    return await run_in_threadpool(
+        _get_output_path, mode, output_name, output_dir or os.path.dirname(archive_path),
+        treat_as_stem=True,
+    )
+
+
 @router.post("/jobs/check-duplicates", response_model=list[DuplicateInfo])
 async def check_duplicates(request: CheckDuplicatesRequest):
     """Check which output files already exist for the given input files."""
@@ -809,29 +843,7 @@ async def check_duplicates(request: CheckDuplicatesRequest):
         if not is_within_configured_volumes(file_path):
             continue
 
-        # Handle archive paths - get the actual filename and determine output location
-        actual_filename = file_path
-        effective_output_dir = output_dir
-
-        if "::" in file_path:
-            # For archive files, use the internal filename for the CHD name
-            # and save next to the archive (unless output_dir is specified)
-            archive_path, internal_path = file_path.split("::", 1)
-            actual_filename = internal_path
-            if not effective_output_dir:
-                effective_output_dir = os.path.dirname(archive_path)
-
-        # Off the event loop: romz extract reads the archive to name its output.
-        if "::" in file_path:
-            output_name = archive_service._output_name_for_member(actual_filename)
-            output_path = await run_in_threadpool(
-                _get_output_path, mode, output_name, effective_output_dir,
-                treat_as_stem=True,
-            )
-        else:
-            output_path = await run_in_threadpool(
-                _get_output_path, mode, actual_filename, effective_output_dir,
-            )
+        output_path = await _planned_output_path(mode, file_path, output_dir)
         exists, _ = await run_in_threadpool(
             check_output_conflicts, mode, output_path,
         )
@@ -841,6 +853,70 @@ async def check_duplicates(request: CheckDuplicatesRequest):
         )
 
     return results
+
+
+def _renamed_output(mode: str, output_path: str, duplicate_action: DuplicateAction) -> str:
+    """The path a RENAME job writes when *output_path* is taken (or locked).
+
+    Shared by ``plan_job`` and the delete-plan preview, so the confirmation
+    names the same numbered output the job will write.
+    """
+    if duplicate_action != DuplicateAction.RENAME:
+        return output_path
+    exists, locked = check_output_conflicts(mode, output_path)
+    return get_unique_output_path(output_path, mode) if exists or locked else output_path
+
+
+async def _add_referrer_changes(
+    item: dict, mode: str, file_path: str, output_dir: str | None,
+    duplicate_action: DuplicateAction = DuplicateAction.SKIP,
+) -> None:
+    """List each Referrer's planned change on a delete-plan *item* (#295).
+
+    The same renames the job hands the Referrer hook: every file the delete
+    removes, mapped to the output the job will write (a RENAME's numbered
+    path included).
+    """
+    item["referrer_changes"] = []
+    delete_paths = item.get("delete_paths") or []
+    if not delete_paths:
+        return
+    try:
+        output_path = await run_in_threadpool(
+            _renamed_output, mode,
+            await _planned_output_path(mode, file_path, output_dir), duplicate_action,
+        )
+    except SkipFile as skip:
+        # RENAME couldn't settle on an output name (no free numbered name, or
+        # the output folder is busy right now). Record it as an error on this
+        # item instead of a 500. Any item error sets the plan-wide `blocked`,
+        # so this disables Confirm for the whole batch, and the message says so.
+        logger.debug("delete-plan: no RENAME output for %s: %s", file_path, skip.reason)
+        item.setdefault("errors", []).append(
+            "Can't settle the output name a rename would use (no free numbered "
+            "name, or the output folder is busy). This blocks the whole delete "
+            "plan: retry, or leave this file out of the selection.",
+        )
+        return
+    image_path = strip_archive_path(file_path) if "::" in file_path else file_path
+    try:
+        changes = await referrers.plan_changes_bounded(
+            image_path, {p: output_path for p in delete_paths},
+        )
+    except Exception as exc:
+        # Any planning failure is shown as "the source will be kept" (the job
+        # would keep it too), so the catch is deliberately broad.
+        logger.warning(
+            "delete-plan: Referrer planning failed for %s", image_path, exc_info=True,
+        )
+        target = getattr(exc, "target", None) or image_path
+        reason = getattr(exc, "reason", None) or str(exc)
+        item.setdefault("warnings", []).append(
+            f"Couldn't update {os.path.basename(target)} ({reason}); "
+            "the source will be kept",
+        )
+        return
+    item["referrer_changes"] = [c.to_dict() for c in changes]
 
 
 @router.post("/jobs/delete-plan")
@@ -854,6 +930,15 @@ async def delete_plan(request: DeletePlanRequest) -> dict:
         raise HTTPException(
             status_code=400,
             detail=_DELETE_ON_VERIFY_UNSUPPORTED_DETAIL,
+        )
+
+    output_dir = normalize_output_dir(request.output_dir)
+    if output_dir and not is_within_configured_volumes(
+        output_dir, treat_archives=False,
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied: output directory outside configured volumes",
         )
 
     disallowed_archives = get_disallowed_archive_paths(request.file_paths)
@@ -873,7 +958,12 @@ async def delete_plan(request: DeletePlanRequest) -> dict:
                 "errors": [],
             }
         else:
-            item = await run_in_threadpool(build_delete_plan, file_path)
+            item = await run_in_threadpool(
+                functools.partial(build_delete_plan, file_path, confine_to_volumes=True),
+            )
+            await _add_referrer_changes(
+                item, mode, file_path, output_dir, request.duplicate_action,
+            )
 
         if "::" in file_path:
             archive_path = file_path.split("::", 1)[0]
@@ -985,9 +1075,131 @@ async def create_job(request: JobCreateRequest):
     return job
 
 
+@dataclass
+class PreparedBatch:
+    """A batch planned to the last detail and not yet queued."""
+
+    request: BatchJobCreateRequest
+    compression: str | None
+    plans: list[JobPlan]
+    # file path -> why it was left out: a ``plan_job`` skip (the same words a
+    # single-job request would get), or a file whose output another file of
+    # the batch writes. Auto says so in its plan; the CLI reports each one
+    # (#294, #306).
+    skipped: dict[str, str] = field(default_factory=dict)
+
+    @property
+    def job_specs(self) -> list[dict]:
+        return [
+            {
+                "file_path": plan.file_path,
+                "output_path": plan.output_path,
+                "allow_overwrite": plan.allow_overwrite,
+                "filename_override": plan.display_filename,
+                "delete_snapshot": plan.delete_snapshot,
+            }
+            for plan in self.plans
+        ]
+
+
+def _check_queue_room(adding: int) -> None:
+    """429 when ``adding`` more jobs would push the queue past its depth."""
+    max_depth = max(0, int(getattr(settings, "max_queue_depth", 0) or 0))
+    if max_depth > 0 and job_manager.get_queue_depth() + adding > max_depth:
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                f"Conversion queue would exceed capacity "
+                f"({max_depth} jobs). Retry later."
+            ),
+        )
+
+
+async def queue_prepared(batch: PreparedBatch) -> list[ConversionJob]:
+    """Queue a prepared batch as one atomic job-manager call."""
+    try:
+        return await job_manager.create_jobs_atomic(
+            batch.job_specs,
+            batch.request.mode,
+            compression=batch.compression,
+            delete_on_verify=batch.request.delete_on_verify,
+            container_only=batch.request.container_only,
+            split=batch.request.split,
+        )
+    except OutputClaimedError as exc:
+        # A concurrency outcome, not a malformed request: another live job took
+        # this destination between planning and queueing. 409 so the caller can
+        # retry or skip; a 500 said "server broke" for something working
+        # exactly as designed.
+        raise HTTPException(status_code=409, detail=exc.detail) from exc
+    except DestinationUnresolvableError as exc:
+        # Transient and on the storage's side, not the caller's: the volume
+        # holding the destination did not answer inside the probe bound, so the
+        # collision check could not be made and nothing was queued. 503 says
+        # "come back", which is the truth -- a 500 would read as a bug and a
+        # 400 as a bad request.
+        raise HTTPException(status_code=503, detail=exc.detail) from exc
+    except QueueBackpressureError as exc:
+        raise HTTPException(status_code=429, detail=exc.detail) from exc
+
+
 @router.post("/jobs/batch", response_model=list[ConversionJob])
 async def create_batch_jobs(request: BatchJobCreateRequest):
     """Create multiple conversion jobs."""
+    batch = await prepare_batch(request)
+    # Proactive batch backpressure: reject before enqueuing any jobs if
+    # accepting the batch would push the queue past ``max_queue_depth``.
+    # Keeps single-job and batch submission behaviour consistent.
+    _check_queue_room(len(batch.plans))
+    return await queue_prepared(batch)
+
+
+def _check_within_volumes(file_paths, output_dir: str | None = None) -> None:
+    """403 unless every path (and the output dir) is inside the Volumes.
+
+    Blocking (``is_within_configured_volumes`` stats and resolves); run it
+    through ``_off_loop_bounded``, never on the event loop.
+    """
+    for file_path in file_paths:
+        if not is_within_configured_volumes(file_path):
+            raise HTTPException(
+                status_code=403,
+                detail="Access denied: path outside configured volumes",
+            )
+    if output_dir and not is_within_configured_volumes(
+        output_dir, treat_archives=False,
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied: output directory outside configured volumes",
+        )
+
+
+async def _off_loop_bounded(func, *args, **kwargs):
+    """Run blocking Volume work off the event loop, bounded; 503 past the bound.
+
+    On a disposable thread (``run_detached``), so a Volume that stops answering
+    holds neither the loop nor a shared pool worker. Past
+    ``VOLUME_PROBE_TIMEOUT_SECONDS`` the request answers 503 and the thread is
+    abandoned; it may linger until the mount answers, and its result is
+    dropped. A process-wide probe ceiling being full answers 503 the same way.
+    """
+    try:
+        return await asyncio.wait_for(
+            run_detached(func, *args, **kwargs), VOLUME_PROBE_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        raise HTTPException(
+            status_code=503, detail="A Volume isn't responding. Try again later.",
+        ) from None
+
+
+async def prepare_batch(request: BatchJobCreateRequest) -> PreparedBatch:
+    """Validate and plan every file of a batch, queueing nothing.
+
+    Raises the same HTTP errors ``create_batch_jobs`` always has. Split out so
+    Auto can prepare every group before it queues any of them.
+    """
     if request.mode in (ConversionMode.METADATA_SCAN, ConversionMode.DAT_MATCH):
         raise HTTPException(
             status_code=400,
@@ -1009,20 +1221,7 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
                     "same archive"
                 ),
             )
-    for file_path in request.file_paths:
-        if not is_within_configured_volumes(file_path):
-            raise HTTPException(
-                status_code=403,
-                detail="Access denied: path outside configured volumes",
-            )
-
-    if output_dir and not is_within_configured_volumes(
-        output_dir, treat_archives=False,
-    ):
-        raise HTTPException(
-            status_code=403,
-            detail="Access denied: output directory outside configured volumes",
-        )
+    await _off_loop_bounded(_check_within_volumes, request.file_paths, output_dir)
 
     # Fast-fail when the queue is already at capacity, before planning any
     # candidate — planning a PS3 folder walks its whole source tree, so a
@@ -1036,7 +1235,7 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
             detail=f"Conversion queue full ({max_depth} jobs). Retry later.",
         )
 
-    skipped = []
+    skipped: dict[str, str] = {}
     candidates: list[JobPlan] = []
 
     for file_path in request.file_paths:
@@ -1049,8 +1248,8 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
                 duplicate_action=request.duplicate_action,
                 delete_on_verify=request.delete_on_verify,
             )
-        except SkipFile:
-            skipped.append(file_path)
+        except SkipFile as skip:
+            skipped[file_path] = _SKIP_HTTP.get(skip.reason, (0, skip.reason.value))[1]
             continue
         except DeleteSnapshotError as exc:
             raise HTTPException(
@@ -1071,63 +1270,278 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
             selected[key] = plan
             order.append(key)
             continue
+        loser = existing
         if plan.priority > existing.priority:
             selected[key] = plan
+        else:
+            loser = plan
+        skipped[loser.file_path] = (
+            f"Same output as {os.path.basename(selected[key].file_path)}"
+        )
 
-    job_specs = []
-    for key in order:
-        plan = selected[key]
-        job_specs.append(
-            {
-                "file_path": plan.file_path,
-                "output_path": plan.output_path,
-                "allow_overwrite": plan.allow_overwrite,
-                "filename_override": plan.display_filename,
-                "delete_snapshot": plan.delete_snapshot,
+    return PreparedBatch(
+        request=request,
+        compression=compression,
+        plans=[selected[key] for key in order],
+        skipped=skipped,
+    )
+
+
+def checked_compression(mode: str, compression: str | None) -> str | None:
+    """A saved compression for ``mode``, if the mode accepts it.
+
+    A saved value the mode would refuse (left over from an older picker) falls
+    back to the tool default rather than failing the whole batch. Used for
+    Auto targets and by the CLI (#306).
+    """
+    if not compression:
+        return None
+    try:
+        value = normalize_compression(compression)
+        _validate_request_compression(registry.spec(mode), mode, value)
+    except HTTPException:
+        logger.warning(
+            "Saved compression %r does not fit %s; using the tool default",
+            compression, mode,
+        )
+        return None
+    return value
+
+
+def _checked_auto_plan(file_paths: list[str], **plan_kwargs) -> list:
+    """The Volume checks, then ``plan_auto``: one blocking unit, off the loop."""
+    _check_within_volumes(file_paths)
+    return plan_auto(file_paths, **plan_kwargs)
+
+
+async def _plan_auto(request: AutoPlanRequest) -> list:
+    prefs = await preferences_store.get(CONVERSION_PREFS_KEY) or {}
+    output_dir = normalize_output_dir(request.output_dir)
+    # The shared, bounded readiness probe (a tool that cannot run here, such as
+    # nsz without prod.keys, is skipped in the plan instead of queued to fail).
+    ready = await registry.ready_tool_ids()
+    # Every filesystem touch (the Volume checks and planning's header reads)
+    # runs together off the event loop, bounded: a Volume that stops answering
+    # gets a 503, never a frozen API.
+    plan = await _off_loop_bounded(
+        _checked_auto_plan, list(request.file_paths),
+        compression_prefs=prefs, output_dir=output_dir, ready_tool_ids=ready,
+    )
+    return _with_checked_compression(plan)
+
+
+async def plan_auto_targets(
+    paths: list[str],
+    output_dir: str | None,
+    prefs: dict,
+    *,
+    ready_tool_ids: list[str] | None = None,
+) -> list:
+    """``plan_auto`` with each saved compression checked against its mode.
+
+    The CLI's ``--auto`` (#306); the Auto route plans the same way through
+    ``_plan_auto``, which adds the Volume checks and the 30 s bound an HTTP
+    request needs. ``prefs`` is the saved ``conversion`` preference and
+    ``ready_tool_ids`` the tools that can run here
+    (``registry.ready_tool_ids()``). Off the event loop, unbounded: a CLI run
+    plans a whole library and has no request to time out.
+    """
+    plan = await run_in_threadpool(
+        plan_auto, paths, compression_prefs=prefs, output_dir=output_dir,
+        ready_tool_ids=ready_tool_ids,
+    )
+    return _with_checked_compression(plan)
+
+
+def _with_checked_compression(plan: list) -> list:
+    return [
+        replace(target, compression=checked_compression(target.mode, target.compression))
+        if target.mode else target
+        for target in plan
+    ]
+
+
+def _plan_item(target) -> AutoPlanItem:
+    return AutoPlanItem(
+        file_path=target.file_path,
+        platform=target.detection.platform,
+        how=target.detection.how,
+        reason=target.detection.reason,
+        mode=target.mode,
+        tool_id=target.tool_id,
+        compression=target.compression,
+        skip_reason=target.skip_reason,
+    )
+
+
+@router.post("/jobs/auto-plan", response_model=list[AutoPlanItem])
+async def auto_plan(request: AutoPlanRequest):
+    """Each Image's Platform and default target, without queueing anything."""
+    return [_plan_item(target) for target in await _plan_auto(request)]
+
+
+@router.post("/jobs/auto", response_model=AutoBatchResponse)
+async def create_auto_jobs(request: AutoJobCreateRequest):
+    """Queue the Auto plan the user confirmed.
+
+    ``request.items`` are the confirmed plan's actionable rows, each
+    ``{file_path, mode}``; an Image the preview skipped (Conflicted, Unsorted,
+    an output another Image writes) is never sent. The paths are planned
+    again, and if any item's target differs from the confirmed one (another
+    tool, or now skipped) the request is refused with 409 and
+    ``detail = {"message", "plan"}``, the new plan, before anything is
+    queued: the client shows it and asks again. Queueing what the user never
+    saw would also skip its RomM metadata snapshot.
+
+    Images are grouped by target mode and each group goes through the ordinary
+    batch planning, so validation, duplicate handling and backpressure are the
+    same as a hand-picked batch. An Image preparation skips is reported in the
+    returned plan.
+
+    Every group is prepared before any is queued, so a planning error queues
+    nothing. Each group is still its own atomic queue call, so if a later group
+    is refused at queue time (another job took a destination, a volume stopped
+    answering) the jobs this request already queued are withdrawn and the error
+    is returned. The rollback waits for running jobs to settle
+    (``_cancel_queued``); a job that completed with an output, or is still
+    running at the bound, is kept, logged, and returned in the error as
+    ``detail = {"message", "jobs"}``, with
+    ``jobs`` in the same shape a success returns.
+    """
+    confirmed: dict[str, str] = {}
+    for item in request.items:
+        if item.file_path in confirmed:
+            raise HTTPException(
+                status_code=400, detail=f"Listed twice in the Auto plan: {item.file_path}",
+            )
+        confirmed[item.file_path] = item.mode
+    if not confirmed:
+        return AutoBatchResponse(plan=[], jobs=[])
+    plan = await _plan_auto(AutoPlanRequest(
+        file_paths=list(confirmed), output_dir=request.output_dir,
+    ))
+    if any(target.mode != confirmed.get(target.file_path) for target in plan) or (
+        {target.file_path for target in plan} != set(confirmed)
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "The plan changed since you confirmed it. Review it and confirm again.",
+                "plan": [_plan_item(target).model_dump(mode="json") for target in plan],
             },
         )
-
-    # Proactive batch backpressure: reject before enqueuing any jobs if
-    # accepting the batch would push the queue past ``max_queue_depth``.
-    # Keeps single-job and batch submission behaviour consistent.
-    max_depth = max(0, int(getattr(settings, "max_queue_depth", 0) or 0))
-    if max_depth > 0:
-        projected = job_manager.get_queue_depth() + len(job_specs)
-        if projected > max_depth:
-            raise HTTPException(
-                status_code=429,
-                detail=(
-                    f"Conversion queue would exceed capacity "
-                    f"({max_depth} jobs). Retry later."
-                ),
+    groups: dict[tuple[str, str | None], list[str]] = {}
+    for target in plan:
+        if target.mode:
+            groups.setdefault((target.mode, target.compression), []).append(
+                target.file_path,
             )
 
-    try:
-        jobs = await job_manager.create_jobs_atomic(
-            job_specs,
-            request.mode,
+    prepared = [
+        await prepare_batch(BatchJobCreateRequest(
+            file_paths=paths,
+            mode=ConversionMode(mode),
+            output_dir=request.output_dir,
+            duplicate_action=request.duplicate_action,
             compression=compression,
-            delete_on_verify=request.delete_on_verify,
-            container_only=request.container_only,
-            split=request.split,
-        )
-    except OutputClaimedError as exc:
-        # A concurrency outcome, not a malformed request: another live job took
-        # this destination between planning and queueing. 409 so the caller can
-        # retry or skip; a 500 said "server broke" for something working
-        # exactly as designed.
-        raise HTTPException(status_code=409, detail=exc.detail) from exc
-    except DestinationUnresolvableError as exc:
-        # Transient and on the storage's side, not the caller's: the volume
-        # holding the destination did not answer inside the probe bound, so the
-        # collision check could not be made and nothing was queued. 503 says
-        # "come back", which is the truth -- a 500 would read as a bug and a
-        # 400 as a bad request.
-        raise HTTPException(status_code=503, detail=exc.detail) from exc
-    except QueueBackpressureError as exc:
-        raise HTTPException(status_code=429, detail=exc.detail) from exc
+        ))
+        for (mode, compression), paths in groups.items()
+    ]
+    _check_queue_room(sum(len(batch.plans) for batch in prepared))
+    # An Image preparation skipped (its output appeared after planning, say)
+    # is reported in the plan, not shown as headed for a target it never got.
+    skipped_now = {
+        path: reason for batch in prepared for path, reason in batch.skipped.items()
+    }
+    plan = [
+        replace(t, mode=None, tool_id=None, compression=None, skip_reason=skipped_now[t.file_path])
+        if t.mode and t.file_path in skipped_now else t
+        for t in plan
+    ]
 
-    return jobs
+    jobs: list[ConversionJob] = []
+    for batch in prepared:
+        try:
+            jobs += await queue_prepared(batch)
+        except HTTPException as exc:
+            kept = await _cancel_queued(jobs)
+            if kept:
+                # The kept jobs go back in the shape a success returns them,
+                # so the client can adopt them and keep their re-pin records
+                # instead of retiring every snapshot it took for this batch.
+                names = ", ".join(job.filename or job.id for job in kept)
+                exc.detail = {
+                    "message": f"{exc.detail} Kept (finished or still running): {names}.",
+                    "jobs": [job.model_dump(mode="json") for job in kept],
+                }
+            raise
+        except Exception as exc:
+            # An unexpected failure: withdraw, log the original error with its
+            # traceback, and still hand back any job that finished, in the
+            # same shape as above, so the client keeps its re-pin records.
+            kept = await _cancel_queued(jobs)
+            logger.error(
+                "Auto batch failed after %d job(s) were queued", len(jobs), exc_info=exc,
+            )
+            if not kept:
+                raise
+            names = ", ".join(job.filename or job.id for job in kept)
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "message": f"Auto batch failed. Kept (finished or still running): {names}.",
+                    "jobs": [job.model_dump(mode="json") for job in kept],
+                },
+            ) from exc
+        except BaseException:
+            # A client disconnect's CancelledError and the like: still withdraw
+            # what this request queued, then let it propagate.
+            await _cancel_queued(jobs)
+            raise
+    return AutoBatchResponse(plan=[_plan_item(t) for t in plan], jobs=jobs)
+
+
+async def _cancel_queued(jobs: list) -> list:
+    """Withdraw jobs an Auto request queued before a later group failed.
+
+    Returns the jobs that were not withdrawn, judged by their real final
+    states, never by ``cancel_job()``'s answer: for a processing job that only
+    means its cancel event is set, and a worker past its last check (in
+    ``post_convert``, say) still completes. So every job is asked to cancel,
+    then the rollback waits for them to settle, for at most the job progress
+    timeout (``CHD_PROGRESS_TIMEOUT``) or ``ROLLBACK_WAIT_CAP_SECONDS``,
+    whichever is shorter. The cap applies even when the timeout is 0 (no job
+    bound), because this runs inside the HTTP request. Retained: a job that
+    completed with an output, and one still running at the bound (its output
+    may yet land). Cancelled and failed jobs are withdrawn. Nothing is deleted.
+    """
+    for job in jobs:
+        try:
+            await job_manager.cancel_job(job.id)
+        except Exception:  # keep withdrawing the rest; judged by state below
+            logger.warning("Could not cancel Auto job %s", job.id, exc_info=True)
+    job_bound = max(0, int(getattr(settings, "progress_timeout", 0) or 0))
+    bound = min(job_bound, ROLLBACK_WAIT_CAP_SECONDS) if job_bound else ROLLBACK_WAIT_CAP_SECONDS
+    await job_manager.wait_until_terminal([job.id for job in jobs], bound)
+
+    kept: list = []
+    for job in jobs:
+        state = job_manager.get_job(job.id) or job
+        status = getattr(state, "status", None)
+        name = getattr(state, "filename", None) or job.id
+        if status == JobStatus.COMPLETED and getattr(state, "output_path", None):
+            logger.warning(
+                "Auto job %s (%s) finished before its batch could withdraw it; "
+                "its output is kept", job.id, name,
+            )
+            kept.append(state)
+        elif status in (JobStatus.QUEUED, JobStatus.PROCESSING):
+            logger.warning(
+                "Auto job %s (%s) was still running %ss after its batch failed; "
+                "it is kept, and its output may still land", job.id, name, bound,
+            )
+            kept.append(state)
+    return kept
 
 
 @router.get("/jobs", response_model=list[ConversionJob])

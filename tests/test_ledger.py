@@ -79,8 +79,11 @@ async def test_repeated_terminal_notification_writes_one_row():
     assert len(await ledger.recent(10)) == 1
 
 
-def test_source_bytes_counts_cue_tracks(tmp_path):
+def test_source_bytes_counts_cue_tracks(tmp_path, monkeypatch):
+    from config import settings
     from services.job_manager import _source_bytes
+
+    monkeypatch.setattr(settings, "chd_volumes", str(tmp_path))  # tracks resolve in a Volume
 
     (tmp_path / "Game (Track 1).bin").write_bytes(b"x" * 700)
     (tmp_path / "Game (Track 2).bin").write_bytes(b"x" * 300)

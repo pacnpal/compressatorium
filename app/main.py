@@ -2,7 +2,8 @@ import json
 import logging
 from logging_setup import get_logger
 import os
-from contextlib import asynccontextmanager
+import threading
+from contextlib import asynccontextmanager, contextmanager, suppress
 from pathlib import Path
 
 from auth import ensure_auth_token, require_auth_middleware
@@ -12,10 +13,12 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from routes import convert, dat, files, info, preferences, romm
 from routes import ledger as ledger_routes
+from routes import libraries as library_routes
 from routes import rules as rules_routes
 from services import ledger
 from services.job_manager import job_manager
 from services.nsz import nsz_service
+from utils.path_utils import refresh_volume_roots
 
 
 # package.json (repo root) is the single source of truth for the version.
@@ -159,84 +162,86 @@ def configure_logging() -> None:
         )
 
 
+@contextmanager
+def _watch_stop_signals():
+    """While the block runs, note SIGTERM and SIGINT, and still pass them on.
+
+    Yields a callable: true once either arrived. uvicorn installs its own
+    handlers with ``signal.signal`` before startup and only acts on them once
+    startup returns, so a startup that waits must notice them itself.
+    """
+    import signal
+
+    seen: list[int] = []
+    previous: dict = {}
+
+    def note(signum, frame):
+        seen.append(signum)
+        handler = previous.get(signum)
+        if callable(handler):
+            handler(signum, frame)
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            previous[sig] = signal.signal(sig, note)
+        except ValueError:  # not the main thread: nothing to watch
+            pass
+    try:
+        yield lambda: bool(seen)
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """Wait for the Rule scheduler lock, then start the app (``_serve``).
+
+    One Rule scheduler per data directory (#307). The lock is held for the
+    server's whole life and taken before anything touches the data directory.
+    While a `run-rules` pass (or another server) holds it, startup waits and
+    says so every ``scheduler_lock._WAIT_LOG_EVERY`` seconds; a SIGTERM while
+    waiting stops startup.
+    """
+    configure_logging()
+    logger = get_logger()
+    from services import scheduler_lock
+
+    def waiting(held: scheduler_lock.SchedulerLockHeld) -> None:
+        logger.warning("Waiting for the Rule scheduler lock: %s", held)
+
+    with _watch_stop_signals() as stopped:
+        try:
+            scheduler = await scheduler_lock.acquire_waiting(
+                "server", on_wait=waiting, should_stop=stopped,
+            )
+        except scheduler_lock.StoppedWaiting as exc:
+            raise RuntimeError(str(exc)) from None
+    try:
+        async with _serve(app):
+            yield
+    finally:
+        scheduler.release()
+
+
+@asynccontextmanager
+async def _serve(app: FastAPI):
     """Start background job processor and run startup migrations."""
     import asyncio
 
     configure_logging()
     logger = get_logger()
+    # One budget for sockets, SQLite, tool subprocesses and lock files (#306).
+    from utils.process_limits import raise_open_file_limit
+
+    raise_open_file_limit()
 
     # Initialise the SQLite DB and run any pending JSON → SQLite migrations
-    # BEFORE any store is touched (dat_store.has_dats() below needs it).
-    from pathlib import Path
+    # BEFORE any store is touched (dat_store.has_dats() below needs it). The
+    # CLI runs the same function before it writes anything (#306).
     from services import db as _db
 
-    db_path = _db.resolve_db_path(settings.db_path, data_dir=settings.data_dir)
-    # Initialise the engine *without* create_all, Alembic owns the
-    # schema on the production path.  apply_migrations then stamps
-    # pre-Alembic DBs or upgrades the rest.  Only after the schema is
-    # guaranteed at head do we run the JSON→SQLite importers.
-    _db.init_engine(db_path, create_schema=False)
-    _db.apply_migrations()
-
-    _config_dir = Path(settings.data_dir)
-
-    def _resolve_legacy_json_store(env_var: str, default_filename: str) -> Path:
-        """Return the JSON migration source path, honouring any legacy env-var override."""
-        default_path = _config_dir / default_filename
-        legacy_override = os.environ.get(env_var)
-        if not legacy_override:
-            return default_path
-        resolved_path = Path(legacy_override)
-        if not resolved_path.exists():
-            logger.warning(
-                "db.migrate: legacy JSON store override %s=%s does not exist; "
-                "falling back to default store %s",
-                env_var,
-                resolved_path,
-                default_path,
-            )
-            return default_path
-        if not resolved_path.is_file() or not os.access(resolved_path, os.R_OK):
-            logger.warning(
-                "db.migrate: legacy JSON store override %s=%s is not a readable file; "
-                "falling back to default store %s",
-                env_var,
-                resolved_path,
-                default_path,
-            )
-            return default_path
-        logger.info(
-            "db.migrate: using legacy JSON store override for migration %s=%s",
-            env_var,
-            resolved_path,
-        )
-        if resolved_path != default_path and default_path.exists():
-            logger.warning(
-                "db.migrate: legacy JSON store override %s=%s will be used for migration; "
-                "default store %s also exists and will not be imported in this run",
-                env_var,
-                resolved_path,
-                default_path,
-            )
-        return resolved_path
-
-    _db.init_and_migrate(
-        db_path,
-        dat_store_json=_resolve_legacy_json_store(
-            "CHD_DAT_STORE", "dat_store.json",
-        ),
-        verification_json=_resolve_legacy_json_store(
-            "CHD_VERIFICATION_STORE", "verified_chds.json",
-        ),
-        chd_metadata_json=_resolve_legacy_json_store(
-            "CHD_METADATA_STORE", "chd_metadata.json",
-        ),
-        dat_sync_json=_resolve_legacy_json_store(
-            "CHD_DAT_SYNC_STORE", "dat_sync.json",
-        ),
-    )
+    _db.init_app_database(settings)
     explicit_volumes = [v.strip() for v in str(settings.chd_volumes).split(",") if v.strip()]
     discovered_volumes = [] if explicit_volumes else settings.scan_data_mounts_on_startup()
     logger.info(f"Compressatorium v{get_version()} starting...")
@@ -262,6 +267,10 @@ async def lifespan(app: FastAPI):
         discovered_volumes,
         settings.volumes,
     )
+    # Resolve the configured Volume roots once, off the startup path: the
+    # containment gate reads these cached spellings for aliases and symlinks
+    # across Volumes, each root bounded on its own (utils.path_utils).
+    threading.Thread(target=refresh_volume_roots, daemon=True).start()
     # Surface the Switch (nsz) key-discovery decision so operators can see
     # whether the tool is enabled and, if not, where keys were looked for.
     nsz_service.log_startup_status()
@@ -320,14 +329,17 @@ async def lifespan(app: FastAPI):
     # The unattended-conversion scheduler always runs; it checks the master
     # switch each tick, so toggling auto-convert in the app takes effect
     # without a restart.  It sleeps first, so startup never queues anything.
-    romm_auto_task = asyncio.create_task(romm_auto.run_forever())
+    # Every Library (RomM and each registered folder) is asked on each tick.
+    from services import libraries as library_catalogue
+
+    romm_auto_task = asyncio.create_task(library_catalogue.run_forever())
     app.state.background_tasks.add(romm_auto_task)
     romm_auto_task.add_done_callback(app.state.background_tasks.discard)
 
     def _log_romm_auto_error(t: asyncio.Task) -> None:
         if not t.cancelled() and t.exception() is not None:
             logger.error(
-                "RomM auto-convert scheduler exited unexpectedly",
+                "Rules scheduler exited unexpectedly",
                 exc_info=t.exception(),
             )
 
@@ -388,6 +400,11 @@ async def lifespan(app: FastAPI):
         )
 
     yield
+    # The Rule scheduler stops before the lock is let go (`lifespan`), so a
+    # `run-rules` pass that takes it next never sweeps beside it.
+    romm_auto_task.cancel()
+    with suppress(asyncio.CancelledError):
+        await romm_auto_task
 
 
 app = FastAPI(
@@ -416,6 +433,7 @@ app.include_router(dat.router, prefix="/api", tags=["dat"])
 app.include_router(preferences.router, prefix="/api", tags=["preferences"])
 app.include_router(romm.router, prefix="/api", tags=["romm"])
 app.include_router(ledger_routes.router, prefix="/api", tags=["ledger"])
+app.include_router(library_routes.router, prefix="/api", tags=["libraries"])
 app.include_router(rules_routes.router, prefix="/api", tags=["rules"])
 
 

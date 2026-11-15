@@ -39,6 +39,20 @@ ARCHIVE_EXTENSIONS = {".zip", ".7z", ".rar"}
 logger = get_logger("archive")
 
 
+class ArchiveSafetyRefused(ValueError):
+    """An archive a safety rule refuses: a limit it exceeds, or a member that
+    is a symlink, has an absolute or ``..`` path, or is encrypted (#306).
+
+    Says nothing about whether the archive is damaged. ``rule`` names the rule
+    in words, for a caller that reports the file as not checkable here rather
+    than as failed. A ``ValueError``, so existing callers are unchanged.
+    """
+
+    def __init__(self, message: str, *, rule: str):
+        super().__init__(message)
+        self.rule = rule
+
+
 class ArchiveService:
     """Service for handling compressed archives."""
 
@@ -75,15 +89,17 @@ class ArchiveService:
     def _check_member_size(self, size: int, *, member: str) -> None:
         _, max_member_size, _ = self._archive_limits()
         if max_member_size > 0 and size > max_member_size:
-            raise ValueError(
-                f"Archive member exceeds max size: {member} ({self._format_size(size)})"
+            raise ArchiveSafetyRefused(
+                f"Archive member exceeds max size: {member} ({self._format_size(size)})",
+                rule=f"{member} is over CHD_ARCHIVE_MAX_MEMBER_SIZE",
             )
 
     def _check_total_size(self, total_size: int) -> None:
         _, _, max_total_size = self._archive_limits()
         if max_total_size > 0 and total_size > max_total_size:
-            raise ValueError(
-                f"Archive extraction exceeds max total size ({self._format_size(total_size)})"
+            raise ArchiveSafetyRefused(
+                f"Archive extraction exceeds max total size ({self._format_size(total_size)})",
+                rule="its contents are over CHD_ARCHIVE_MAX_TOTAL_SIZE",
             )
 
     def _size_limits_enabled(self) -> bool:
@@ -103,7 +119,10 @@ class ArchiveService:
         """
         max_entries, _, _ = self._archive_limits()
         if max_entries > 0 and len(members) > max_entries:
-            raise ValueError(f"Archive exceeds max entries ({max_entries})")
+            raise ArchiveSafetyRefused(
+                f"Archive exceeds max entries ({max_entries})",
+                rule="it has more entries than CHD_ARCHIVE_MAX_ENTRIES",
+            )
         total = 0
         for name, size in members:
             self._check_member_size(size, member=name)
@@ -385,6 +404,8 @@ class ArchiveService:
 
     def _validate_member(self, member: str) -> List[str]:
         """Ensure an archive member path cannot escape the extraction directory."""
+        if "\x00" in member:
+            raise ValueError("NUL bytes are not allowed in archive members")
         if "\\" in member:
             raise ValueError("Backslashes are not allowed in archive members")
         normalized = member.strip()

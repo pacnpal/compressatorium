@@ -2,7 +2,7 @@
 
 These lock the wire contract that ``register_verify_routes`` regenerates:
 the exact URL paths/methods, the SSE event names + JSON payloads (including
-the 2-second heartbeat), the ``verification_store.mark_verified`` side-effect,
+the 2-second heartbeat), the ``verification_store.refresh_check`` side-effect,
 and the sync 429 / SSE ``verify_error`` backpressure behavior.
 """
 import asyncio
@@ -86,7 +86,7 @@ def verify_env(tmp_path, monkeypatch):
     monkeypatch.setattr(info_routes.settings, "chd_volumes", str(tmp_path))
     monkeypatch.setattr(info_routes.settings, "data_mount_root", str(tmp_path))
     store = Mock()
-    store.mark_verified = AsyncMock()
+    store.refresh_check = AsyncMock()
     monkeypatch.setattr(info_routes, "verification_store", store)
     return {"tmp_path": tmp_path, "store": store}
 
@@ -141,7 +141,7 @@ async def test_sse_event_shape_snapshot(tool_id, verify_env, monkeypatch):
         {"event": "verify_progress", "data": json.dumps(updates[0])},
         {"event": "verify_complete", "data": json.dumps(updates[1])},
     ]
-    verify_env["store"].mark_verified.assert_called_once_with(path)
+    verify_env["store"].refresh_check.assert_called_once_with(path)
 
 
 @pytest.mark.parametrize("tool_id", list(_TOOLS))
@@ -178,7 +178,7 @@ async def test_batch_sse_event_shape_snapshot(tool_id, verify_env, monkeypatch):
         {"event": "verify_batch_complete", "data": json.dumps({
             "total": 1, "verified": 1, "failed": 0})},
     ]
-    verify_env["store"].mark_verified.assert_called_once_with(path)
+    verify_env["store"].refresh_check.assert_called_once_with(path)
 
 
 @pytest.mark.parametrize("tool_id", list(_TOOLS))
@@ -258,3 +258,31 @@ async def test_sse_emits_verify_error_when_lane_saturated(
         "valid": False,
         "message": info_routes._verification_backpressure_detail(),
     }
+
+
+@pytest.mark.asyncio
+async def test_batch_reports_a_file_that_cant_be_checked_apart_from_failures(
+    verify_env, monkeypatch,
+):
+    """review r9 M8: a refused archive (``uncheckable``) is "can't be checked",
+    not a failure, and its stored check stays."""
+    from models import BulkVerifyRequest
+
+    spec = _TOOLS["chdman"]  # the batch route is the same for every tool
+    path = _make_file(verify_env["tmp_path"], spec["ext"])
+    message = "This archive can't be checked (refused by the archive safety rules: x)"
+    _install_stream(monkeypatch, spec["service_attr"], [
+        {"type": "error", "valid": False, "message": message, "uncheckable": True},
+    ])
+
+    response = await getattr(info_routes, spec["batch"])(BulkVerifyRequest(paths=[path]))
+    events = await _collect(response)
+
+    complete = json.loads(next(
+        e["data"] for e in events if e["event"] == "verify_batch_file_complete"
+    ))
+    assert complete["status"] == "uncheckable"
+    assert (complete["failed"], complete["uncheckable"]) == (0, 1)
+    summary = json.loads(events[-1]["data"])
+    assert (summary["failed"], summary["uncheckable"]) == (0, 1)
+    verify_env["store"].refresh_check.assert_not_called()

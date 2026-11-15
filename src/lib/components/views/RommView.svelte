@@ -21,7 +21,7 @@
   import ConvertPanel from '$lib/components/panels/ConvertPanel.svelte';
   import JobsPanel from '$lib/components/panels/JobsPanel.svelte';
   import RommSettings from '$lib/components/views/RommSettings.svelte';
-  import RommAutomation from '$lib/components/views/RommAutomation.svelte';
+  import RulesView from '$lib/components/views/RulesView.svelte';
   import Splitter from '$lib/components/ui/Splitter.svelte';
   import Select from '$lib/components/ui/Select.svelte';
   import Button from '$lib/components/ui/Button.svelte';
@@ -74,7 +74,7 @@
       conversion.setPrimaryTool(tool.id);
       ui.workspaceTool = tool.id;
     }
-    conversion.setMode(mode);
+    conversion.chooseTarget(mode);
   }
 
   const selectedPlatformName = $derived(
@@ -313,7 +313,8 @@
   {#if tab === 'settings'}
     <RommSettings onsaved={() => { if (romm.usable) { reloadAfterSave(); } }} />
   {:else if tab === 'automation'}
-    <RommAutomation />
+    <!-- The Rules view, opened on the RomM Library. -->
+    <RulesView embedded />
   {:else if romm.statusLoading}
     <div class="notice"><Spinner /> Checking RomM connection…</div>
   {:else if !romm.configured}

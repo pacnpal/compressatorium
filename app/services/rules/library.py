@@ -20,9 +20,9 @@ from collections.abc import Callable, Hashable, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-# Capabilities a Library can declare. The engine does not gate on them yet;
-# they say what a Library supports so a Rules editor, and the folder Library
-# (#303), can offer only what applies.
+# Capabilities a Library can declare. They say what a Library supports, so a
+# Rules editor offers only what applies and the engine refuses the rest (see
+# `duplicate_actions`).
 #
 # Images carry the Library's own identification (``Image.recognized``), so a
 # Rule's only_matched / only_unmatched filters mean something.
@@ -30,10 +30,71 @@ RECOGNIZED_FILTER = "recognized_filter"
 # A Rule may use the ``overwrite`` and ``rename`` duplicate policies. Both need
 # the converted-history memory, keyed by Image key, to stay idempotent.
 CONVERTED_HISTORY = "converted_history"
+# An Image whose conversion failed is not queued again until its file changes
+# (size or mtime). Without it a sweep re-queues a failing Image every run,
+# which is what RomM's Rules have always done.
+FAILED_HOLD = "failed_hold"
+
+
+def duplicate_actions(library: Library) -> tuple[str, ...]:
+    """The duplicate policies *library*'s Rules may use.
+
+    ``skip`` is idempotent from the destination alone, so every Library has
+    it. ``overwrite`` and ``rename`` need the converted history to stop, so
+    they need :data:`CONVERTED_HISTORY`.
+    """
+    from services.rules.rules import DUPLICATE_ACTIONS
+
+    if CONVERTED_HISTORY in library.capabilities:
+        return DUPLICATE_ACTIONS
+    return ("skip",)
+
+
+class UnsupportedPolicy(ValueError):
+    """A submitted Rule asks for a duplicate policy its Library cannot honour."""
+
+    def __init__(self, platform_id: str, policy: str, allowed: tuple[str, ...]) -> None:
+        super().__init__(f"{policy!r} is not available here; allowed: {', '.join(allowed)}")
+        self.platform_id = platform_id
+        self.policy = policy
+        self.allowed = allowed
+
+    def detail(self) -> dict:
+        return {
+            "error": "duplicate_action_unsupported",
+            "platform_id": self.platform_id,
+            "duplicate_action": self.policy,
+            "allowed": list(self.allowed),
+        }
+
+
+def refuse_unsupported_policies(library: Library, raw: Any) -> None:
+    """Raise :class:`UnsupportedPolicy` for a submitted Rule *library* cannot honour.
+
+    For submissions. A stored blob is read leniently instead: ``normalize_rule``
+    falls an unsupported policy back to ``skip``.
+    """
+    if not isinstance(raw, Mapping):
+        return
+    allowed = duplicate_actions(library)
+    for platform_id, rule in raw.items():
+        if not isinstance(rule, Mapping):
+            continue
+        policy = rule.get("duplicate_action")
+        if policy is not None and policy not in allowed:
+            raise UnsupportedPolicy(str(platform_id), str(policy), allowed)
 
 
 class LibraryUnreadable(Exception):
-    """The Library could not list a Platform's Images right now."""
+    """The Library could not list a Platform's Images right now.
+
+    ``code`` is what the sweep reports for the Platform (``"unreadable"`` by
+    default). A Library raises a subclass with its own code when the reason is
+    worth telling apart (a folder Library: ``root_unavailable``,
+    ``listing_in_progress``).
+    """
+
+    code = "unreadable"
 
 
 @dataclass(frozen=True)
@@ -131,6 +192,12 @@ class Library(Protocol):
 
     # Stable id. Stored Rule and state keys are ``f"{id}:{platform_id}"``.
     id: str
+    # What kind of Library this is (``"romm"``, ``"folder"``), its display
+    # name, and its root folder here (None when it has none). For the API and
+    # the Rules view; the engine never reads them.
+    kind: str
+    name: str
+    root: str | None
     # A set of the capability names above.
     capabilities: frozenset[str]
     # Where an earlier release kept this Library's Rules or state without the
@@ -164,6 +231,17 @@ class Library(Protocol):
 
     # ---- hooks for steps only this Library performs ----
 
+    async def before_pass(self, *, dry_run: bool) -> None:
+        """Called by ``run-rules`` (#307) before it sweeps this Library.
+
+        The work the server does at startup or in its background loops that a
+        sweep relies on: load saved settings, and, on a real pass, the
+        maintenance only this Library has. A dry run must write nothing. A
+        Library with nothing to do inherits the no-op from
+        :class:`LibraryDefaults`. Errors propagate: ``run-rules`` reports them
+        for this Library and goes on.
+        """
+
     def sweep_blocked(self) -> str | None:
         """An error code when the Library must not be swept now, else None."""
 
@@ -178,3 +256,16 @@ class Library(Protocol):
 
     async def sweep_extras(self) -> Mapping[str, Any]:
         """Extra keys added to a sweep's result when it ends."""
+
+
+class LibraryDefaults:
+    """Defaults for the optional parts of the :class:`Library` contract.
+
+    A Library class inherits this so that a hook it has no use for is a no-op,
+    rather than a missing attribute that fails a caller such as ``run-rules``.
+    Only hooks with a safe "nothing to do" answer belong here; everything
+    else in the Protocol a Library must implement itself.
+    """
+
+    async def before_pass(self, *, dry_run: bool) -> None:
+        """No upkeep before ``run-rules`` sweeps this Library."""

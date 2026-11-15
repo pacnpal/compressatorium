@@ -277,11 +277,16 @@
     <p>
       Verify reads the whole output back and checks it against the hashes baked into the
       file. A file that passes is Intact. If you turn on delete-on-verify, the source is
-      removed only after the output passes its check, and never if it fails. For GameCube
-      and Wii (Dolphin) the default check is stronger: the output must be Round-tripped,
-      meaning the disc it decodes to has the same SHA1 as the source disc. Tick
+      removed only after the output passes its check, and never if it fails. By default
+      the check is stronger: the output must be Round-tripped, meaning the content it
+      decodes to matches the source (the same disc, ROM or image, or for a 7z/zip ROM
+      archive the same member by name, size and CRC). CHDMAN Create LD offers no
+      delete-on-verify, since an AVI cannot be compared with the CHD. A CD CHD is
+      extracted to a temp folder for this, and
+      both its track data and its track table must match the source sheet. Without free
+      scratch space about the size of the disc, the job keeps the source and fails. Tick
       <em>Container check only (faster, weaker)</em> in the convert panel to drop back to
-      the Intact check for that job. Other tools use the Intact check. You get a confirmation
+      the Intact check for that job. You get a confirmation
       list of everything that will be deleted before anything happens, including the
       <code>.cue</code> and <code>.gdi</code> track files that ride along with a
       <code>.bin</code>, and the whole archive if the source came from one.
@@ -462,8 +467,8 @@
       <dt>A file didn't show up in the list</dt>
       <dd>Make sure the right tool is selected, since the list filters to it. Try Search All for a recursive sweep, or clear the extension filter.</dd>
 
-      <dt>An ISO went to the wrong tool</dt>
-      <dd>ISOs can belong to CHDMAN or Dolphin. The ISO handling toggle decides which one handles info, verify, and conversion. Set it to match the disc.</dd>
+      <dt>Not sure which tool an ISO needs</dt>
+      <dd>Tick Auto in the convert panel. It reads each Image's header (or its folder name, such as <code>ps2</code> or <code>gc</code>) and sends it to that Platform's default format with your saved compression. Images whose Platform is unclear are skipped and listed in the plan before anything is queued.</dd>
 
       <dt>A 3DS ROM failed to compress</dt>
       <dd>The ROM has to be decrypted first. Encrypted dumps won't work.</dd>
