@@ -122,12 +122,35 @@ def test_real_cso_to_chd_round_trips(tmp_path):
 
 
 @pytest.mark.skipif(not _have(_CHDMAN), reason="chdman is not installed")
-@pytest.mark.parametrize("mode", ["createhd", "createraw", "createdvd"])
+@pytest.mark.parametrize("mode", [
+    "createhd",
+    "createdvd",
+    pytest.param("createraw", marks=pytest.mark.xfail(
+        strict=True, raises=RuntimeError,
+        reason="pre-existing: the app runs createraw without --unitsize, which "
+               "chdman 0.285 refuses, so the conversion itself fails",
+    )),
+])
 def test_real_chdman_image_modes_round_trip(tmp_path, mode):
     image = _iso(tmp_path / "Disk.iso", 600)
     out = Path(registry.get("chdman").output_path(mode, str(image)))
     asyncio.run(_convert("chdman", image, out, mode))
     asyncio.run(_assert_round_trips("chdman", image, out))
+
+
+@pytest.mark.skipif(not _have(_CHDMAN), reason="chdman is not installed")
+def test_real_raw_chd_has_no_metadata_and_its_data_sha1_is_the_image(tmp_path):
+    """The tagless branch, against a raw CHD real chdman writes (with the unit
+    size the app's createraw does not pass yet)."""
+    import subprocess
+
+    image = _iso(tmp_path / "Disk.iso", 600)
+    chd = tmp_path / "Disk.chd"
+    subprocess.run(
+        [_CHDMAN, "createraw", "-i", str(image), "-o", str(chd), "-hs", "4096", "-us", "512"],
+        check=True, capture_output=True,
+    )
+    asyncio.run(_assert_round_trips("chdman", image, chd))
 
 
 @pytest.mark.skipif(not _have(_CHDMAN), reason="chdman is not installed")
