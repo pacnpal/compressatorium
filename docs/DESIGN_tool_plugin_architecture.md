@@ -2397,19 +2397,49 @@ Precedence is fixed and never guesses:
    Wii at 0x18). xiso answers through `extract_xiso.detect_console` (the XDVDFS
    layout, or a trimmed image's boot executable). A probe that raises is
    treated as no answer. A new console is taught to detection by its tool's
-   override, not by an edit here.
+   override, not by an edit here. Probes run on any file Auto is pointed at,
+   including through an unauthenticated `/api/jobs/auto-plan`, so a probe
+   must never let a size read from the image drive a read. The ISO 9660
+   helpers in `disc_id` (`_bounded_read`) refuse any directory or file extent
+   above `_MAX_ISO_READ` (1 MiB) or past the end of the image (a raw `.bin`
+   reports its user-data size as `logical_size`), and a refused read is no
+   header. The other probes read fixed-size windows, cap the sheet at 1 MiB
+   (`utils.sheet_text`). The XDVDFS walk takes its limits as parameters:
+   conversion and info keep `_MAX_DIR_TABLE` (64 MiB per table), while the
+   probe (`detect_console`) passes 1 MiB per table and 4 MiB per walk.
+   `tests/test_header_probe_bounds.py` probes images whose sizes are hostile.
+
+   A folder is probed by the tools that take it as their input unit
+   (`accepts_directory`): makeps3iso answers `ps3` for a PS3 disc folder, and
+   `default_mode` sends a folder to the Platform's first folder-input mode
+   (`InputKind.DIRECTORY`) whose tool accepts it, so a PS3 folder goes to
+   `folder_to_iso`. The web UI offers a folder under Auto when the listing
+   marks it convertible by a tool with a folder-input mode.
 2. **Folder name.** The nearest parent folder whose name is a key or alias in
    `_ALIASES`: RomM's slug for each Platform a tool declares, with every other
    name for it (the tools' own spellings and the folder names ES-DE and
-   Batocera use: `psx`, `gc`, `megacd`, `pcenginecd`, `cdi`, `megadrive`,
+   Batocera use: `ps1`, `gc`, `megacd`, `pcenginecd`, `cdi`, `megadrive`,
    `mastersystem`, `n3ds`, ...). Archive members (`a.zip::disc.iso`) skip the
-   header and use the archive's folder.
+   header and use the archive's folder. The walk runs from the Image's own
+   folder up to the root of the Volume that holds it, root included, and never
+   above (`utils.path_utils.containing_volume_root`), so a Volume mounted under
+   `/mnt/md/...` does not make every Image in it a Genesis Image. A path in no
+   configured Volume uses only its own folder.
 
-Every answer goes through `canonical_slug`, which maps aliases and the tools'
-own vocabulary (`ps1`, `gamecube`, `neogeocd`, `genesis`) onto RomM's slugs
-(`ps`, `ngc`, `neo-geo-cd`, `genesis-slash-megadrive`). A test fails when a
-tool declares a slug the table does not cover, so a new Platform brings its
-folder names with it. A header that disagrees with the folder, or two headers that disagree,
+Track sheets are read one way everywhere, through `utils.sheet_text`: as UTF-8
+(a BOM stripped), as cp1252 when they are not valid UTF-8, and as Latin-1 last,
+and the first spelling of a track name that exists beside the sheet wins. The
+disc-ID probe (`disc_id._cue_track_paths`), the header-dependency list
+(`delete_plan.sheet_track_paths`) and the delete plan all use it, so
+`Jeu (Édition).bin` resolves, and is cached, from either encoding.
+
+Every answer goes through `canonical_slug`, which maps aliases, IGDB's slugs
+and the tools' own vocabulary (`ps`, `ps1`, `gamecube`, `neogeocd`,
+`genesis-slash-megadrive`) onto RomM's own slugs (`psx`, `ngc`, `neo-geo-cd`,
+`genesis`). RomM's slug is its `UniversalPlatformSlug` value, which differs
+from IGDB's for PlayStation and Genesis; `test_every_canonical_key_is_a_romm_slug`
+pins every key to RomM's list. A test also fails when a tool declares a slug
+the table does not cover, so a new Platform brings its folder names with it. A header that disagrees with the folder, or two headers that disagree,
 is a `conflict` with no Platform. Nothing at all is `unsorted`. Results are
 cached per path in a bounded LRU and dropped when the file's size or mtime
 changes; `clear_cache()` exists for tests. A header probe that reads other
@@ -2505,8 +2535,18 @@ a destination, 503 when a volume stops answering), and earlier jobs may have
 started by then. On any failure the route withdraws the jobs this request
 queued (`job_manager.cancel_job`) and returns the error. A job that had already
 finished cannot be withdrawn: its output stays, it is logged, and the error
-names it ("Already finished and kept: ..."). Auto never deletes a Source (no
-delete-on-verify), so nothing is lost either way.
+returns it. The error detail is then structured, `{"message": "... Already
+finished and kept: ...", "jobs": [...]}`, with `jobs` in the shape a success
+returns. `client.fetchJson` keeps a structured detail on `err.detail`, the store
+adopts those jobs and reconciles its re-pin snapshots against them before it
+retires the rest, so a kept output keeps its record. Auto never deletes a
+Source (no delete-on-verify), so nothing is lost either way.
+
+An explicit target choice wins over Auto. Every mode selector (the convert
+panel's dropdown, RomM's "Convert to") calls `conversion.chooseTarget(mode)`,
+which sets the mode and, if Auto was on, turns it off with an "Auto is off"
+notice. `setMode` stays the programmatic path (platform adoption, tool
+switches) and leaves Auto alone.
 
 The legacy UI's "ISO handling" toggle is gone. It lived only in the browser,
 under the `primary_tool_preference` key that now names the selected tool tab;
@@ -2634,13 +2674,31 @@ reading file"); not for an empty file or a wrong extension, which are verdicts.
 `valid` stays False, so nothing is deleted on it, but the CLI's verify keeps a
 stored check unless the failure is conclusive.
 
-The services report a missing prerequisite (nsz without `prod.keys`) and their
-"could not run" catch-alls (a verifier that failed to launch, an unexpected
-error; romz's unreadable archive) as `inconclusive` too, through the same
-helper. The CLI also asks `registry.tool_is_ready` first and skips a tool that
-cannot run here. `subprocess_runner.stops_verify_batch(result)` (true for
-`abandoned`) and `BATCH_STOPPED_MESSAGE` are the one stop rule for a walk over
-many files: the web UI's batch verify and the CLI's `verify` both end there.
+`inconclusive` is an allowlist, never a catch-all. An exception a check raises
+is classified by one helper, `subprocess_runner.verify_exception_event`, for
+every tool (maxcso, nsz, jwud, xiso, z3ds, romz): `ToolUnavailable` (a missing
+program, library or prerequisite, e.g. zstd or py7zr), any `OSError` (a failed
+launch, an input that could not be read) and a timeout are inconclusive; a
+header or format error, a bad archive, and a `BrokenPipeError` or reset from a
+decoder that quit early on bad data are verdicts. nsz without `prod.keys` and
+z3ds without `zstd` say so the same way, and the ISO reader behind the
+makeps3iso read-back raises its I/O errors (`read_iso_file(strict=True)`, down
+through `_read_pvd` and `_list_dir`).
+
+Readiness is per operation: `ToolPlugin.verify_is_ready()` (default
+`is_ready()`), asked through `registry.tool_is_ready(tool, purpose="verify")`.
+jwud's WUX check needs no JWUDTool or Java; z3ds's needs `zstd`
+(`verify_not_ready_reason` says so). The CLI asks once per tool per run, dry
+runs included, and skips a tool that cannot check here: exit 1 when the file
+was named on the command line, a reported skip inside a folder.
+
+`subprocess_runner.stops_verify_batch(result, abandoned)` and
+`BATCH_STOPPED_MESSAGE` are the one stop rule for a walk over many files: true
+when the result says `abandoned` or when the check's `collect_abandonment()`
+sink caught something (a deadline that cancelled a check stuck on dead storage
+leaves its detached read behind without saying so in any result). The web UI's
+batch verify and the CLI's `verify` both wrap each check in the sink and end
+there.
 
 **`JobManager.drain()`** waits until every queued run has ended, cleanup
 included: a job notifies its listeners before `_process_job` removes its temp

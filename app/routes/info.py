@@ -1834,7 +1834,7 @@ def _sse_batch_from_verify_stream(
                     ),
                 }
 
-                if stops_verify_batch(final_result) or abandoned:
+                if stops_verify_batch(final_result, abandoned):
                     # The verifier outlived SIGKILL, so it is still reading the
                     # storage this batch is walking. Every remaining file lives
                     # on that same storage, so continuing would spawn one more

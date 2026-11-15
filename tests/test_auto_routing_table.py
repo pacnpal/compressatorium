@@ -17,8 +17,9 @@ Rows worth knowing about:
   format is the input's, so converting would only re-encode it. That is the
   only row of this kind today; no other default target writes an extension it
   also reads.
-- ``laseractive`` and ``ps3`` have no rows: ``createld`` is never an Auto
-  default, and ``folder_to_iso`` takes a folder, not a file.
+- ``laseractive`` and ``ps3`` have no rows here: ``createld`` is never an Auto
+  default, and ``folder_to_iso`` takes a folder, not a file. A PS3 disc
+  folder goes to ``folder_to_iso`` (``test_auto_convert``).
 """
 from __future__ import annotations
 
@@ -50,7 +51,7 @@ ROM = dict.fromkeys(
 
 ROUTES: dict[str, dict[str, str]] = {
     # Sony
-    "ps": CD,
+    "psx": CD,
     "ps2": {".cue": "createcd", ".gdi": "createcd", ".iso": "createdvd", **CSO_TO_CHD},
     "psp": {".iso": "createdvd", **CSO_TO_CHD},
     # Sega, NEC, SNK, Philips, Panasonic, arcade: CD images
@@ -68,7 +69,7 @@ ROUTES: dict[str, dict[str, str]] = {
         slug: ROM
         for slug in (
             "gb", "gbc", "gba", "nds", "nes", "snes", "n64", "virtualboy",
-            "sms", "genesis-slash-megadrive", "gamegear", "wonderswan",
+            "sms", "genesis", "gamegear", "wonderswan",
             "neo-geo-pocket", "lynx", "c64", "atari2600", "atari7800",
         )
     },

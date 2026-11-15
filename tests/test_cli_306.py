@@ -860,7 +860,7 @@ def test_verify_skips_a_tool_that_cannot_run_here_and_keeps_its_check(
     async def not_ready(self):
         return False
 
-    monkeypatch.setattr(type(tool), "is_ready", not_ready)
+    monkeypatch.setattr(type(tool), "verify_is_ready", not_ready)
 
     code, lines = _cli(capsys, "verify", str(volume), "--json")
 
@@ -882,3 +882,113 @@ def test_the_shared_scan_lists_what_a_check_reads_for_verify(volume):
 
     assert str(chd) not in [f["path"] for f in convert_files]
     assert [f["path"] for f in verify_files] == [str(chd)]
+
+
+def _not_ready(monkeypatch, tool, calls=None):
+    async def not_ready(self):
+        if calls is not None:
+            calls.append(self.id)
+        return False
+
+    monkeypatch.setattr(type(tool), "verify_is_ready", not_ready)
+
+
+def test_verify_probes_readiness_once_per_run(volume, dolphin, capsys, monkeypatch):
+    calls = []
+    for name in ("A", "B", "C"):
+        _rvz(volume, f"gc/{name}.rvz")
+    _not_ready(monkeypatch, registry.get("dolphin"), calls)
+
+    code, lines = _cli(capsys, "verify", str(volume), "--json")
+
+    assert [line["status"] for line in lines] == ["skipped"] * 3
+    assert calls.count("dolphin") == 1
+
+
+def test_verify_dry_run_reports_readiness_too(volume, dolphin, capsys, monkeypatch):
+    _rvz(volume)
+    _not_ready(monkeypatch, registry.get("dolphin"))
+
+    code, lines = _cli(capsys, "verify", str(volume), "--dry-run", "--json")
+
+    assert code == 0
+    assert lines[0]["status"] == "skipped"
+    assert "isn't ready" in lines[0]["reason"]
+
+
+def test_an_unready_tool_named_explicitly_exits_1(volume, dolphin, capsys, monkeypatch):
+    rvz = _rvz(volume)
+    _not_ready(monkeypatch, registry.get("dolphin"))
+
+    code, lines = _cli(capsys, "verify", str(rvz), "--json")
+
+    assert code == 1
+    assert lines[0]["status"] == "skipped"
+
+
+def test_verify_stops_on_the_abandonment_sink(volume, dolphin, capsys, monkeypatch):
+    """A read the check abandoned is reported only to the sink; the run stops
+    on it as the web batch does."""
+    import json as json_module
+
+    import cli
+    from services.subprocess_runner import BATCH_STOPPED_MESSAGE, _note_abandoned
+
+    _rvz(volume, "gc/A.rvz")
+    _rvz(volume, "gc/B.rvz")
+    service = registry.get("dolphin")._service
+
+    async def leaves_a_read_behind(cmd, *, path, **kwargs):
+        _note_abandoned("read of A.rvz")
+        yield {"type": "error", "valid": False, "message": "timed out",
+               "inconclusive": True}
+
+    monkeypatch.setattr(service._runner, "run_verify", leaves_a_read_behind)
+
+    code = cli.main(["verify", str(volume), "--json"])
+    captured = capsys.readouterr()
+    lines = [json_module.loads(x) for x in captured.out.splitlines() if x.strip()]
+
+    assert code == 1
+    assert len(lines) == 1
+    assert BATCH_STOPPED_MESSAGE in captured.err
+
+
+
+def test_verify_stops_when_its_own_deadline_abandons_a_read(
+    volume, dolphin, capsys, monkeypatch,
+):
+    """The CLI's outer deadline cancels a check stuck on dead storage; the
+    detached read it leaves behind is reported to the abandonment sink, not in
+    any result, and the run must stop on it."""
+    import asyncio
+    import json as json_module
+
+    import cli
+    from services.subprocess_runner import BATCH_STOPPED_MESSAGE, _note_abandoned
+
+    _rvz(volume, "gc/A.rvz")
+    _rvz(volume, "gc/B.rvz")
+    tool = registry.get("dolphin")
+
+    async def stuck(self, path, *, cancel_event=None):
+        try:
+            await asyncio.sleep(30)
+        finally:
+            _note_abandoned(f"read of {path}")
+        return {"valid": True, "message": "never"}
+
+    async def tiny_bound(self, path, *, cancel_event=None):
+        return 0.2
+
+    monkeypatch.setattr(type(tool), "verify", stuck)
+    monkeypatch.setattr(type(tool), "verify_timeout", tiny_bound)
+
+    code = cli.main(["verify", str(volume), "--json"])
+    captured = capsys.readouterr()
+    lines = [json_module.loads(x) for x in captured.out.splitlines() if x.strip()]
+
+    assert code == 1
+    assert len(lines) == 1
+    assert "timed out" in lines[0]["reason"]
+    assert BATCH_STOPPED_MESSAGE in captured.err

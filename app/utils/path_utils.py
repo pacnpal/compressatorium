@@ -234,6 +234,22 @@ def _resolve_volume(volume_path: str) -> Optional[Path]:
         return None
 
 
+def containing_volume_root(path: str) -> Path | None:
+    """The resolved root of the configured Volume that holds ``path``, or None.
+
+    The most specific one when Volumes nest. ``path`` may be an archive member
+    (``a.zip::disc.iso``); the archive's own location decides.
+    """
+    real_path = _resolve_path(strip_archive_path(path), strict=False)
+    if real_path is None:
+        return None
+    holders = [
+        root for root in map(_resolve_volume, settings.volumes)
+        if root is not None and (real_path == root or root in real_path.parents)
+    ]
+    return max(holders, key=lambda root: len(root.parts), default=None)
+
+
 def is_within_configured_volumes(path: str, *, treat_archives: bool = True) -> bool:
     """Check whether the given path lies inside one of the configured CHD volumes."""
     base_path = strip_archive_path(path) if treat_archives else path

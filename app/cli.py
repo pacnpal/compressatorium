@@ -831,20 +831,12 @@ def _checked_at(record: dict | None) -> datetime | None:
 
 
 async def _verify_one(path: str, tool, has_db: bool, since, dry_run: bool) -> dict:
+    """Check one Image. The line carries ``_stop`` when the run must end."""
     from services.lock_manager import lock_manager
-    from services.subprocess_runner import stops_verify_batch
+    from services.subprocess_runner import collect_abandonment, stops_verify_batch
     from services.verification_store import verification_store
 
     line = {"path": path, "status": None, "tool": tool.id, "reason": None}
-    if not dry_run:
-        from services.tools import registry
-
-        if not await registry.tool_is_ready(tool):
-            # Nothing can be checked here (a missing binary, no prod.keys):
-            # no verdict, so the stored check stays.
-            line["status"] = "skipped"
-            line["reason"] = f"{tool.display_name} isn't ready: {tool.not_ready_reason}"
-            return line
     if since is not None and has_db:
         checked = _checked_at(await verification_store.get_record(path))
         if checked is not None and checked >= datetime.now(timezone.utc) - since:
@@ -858,19 +850,22 @@ async def _verify_one(path: str, tool, has_db: bool, since, dry_run: bool) -> di
         line["status"] = "planned"
         return line
     bound = await tool.verify_timeout(path)
-    try:
-        result = await asyncio.wait_for(tool.verify(path), timeout=bound or None)
-    except asyncio.TimeoutError:
-        result = {"error": f"Verification timed out after {bound}s"}
-    except Exception as exc:  # noqa: BLE001 - one bad file must not stop the rest
-        result = {"error": f"Verification could not run: {exc}"}
+    # The sink sees what the check wrote off on the way, including a detached
+    # read left behind when this deadline cancels it; no result says so.
+    with collect_abandonment() as abandoned:
+        try:
+            result = await asyncio.wait_for(tool.verify(path), timeout=bound or None)
+        except asyncio.TimeoutError:
+            result = {"error": f"Verification timed out after {bound}s"}
+        except Exception as exc:  # noqa: BLE001 - one bad file must not stop the rest
+            result = {"error": f"Verification could not run: {exc}"}
+    if stops_verify_batch(result, abandoned):
+        line["_stop"] = True
     if result.get("valid"):
         line["status"], line["reason"] = "intact", result.get("message")
         await verification_store.mark_verified(path)
         return line
     line["status"] = "failed"
-    if stops_verify_batch(result):
-        line["_stop"] = True
     no_verdict = ("cancelled", "abandoned", "inconclusive")
     if "error" in result or any(result.get(flag) for flag in no_verdict):
         # No verdict: a timeout or stall, a file that could not be read, a tool
@@ -887,6 +882,7 @@ async def _verify_one(path: str, tool, has_db: bool, since, dry_run: bool) -> di
 
 async def verify(args, printer: Printer, state: RunState) -> int:
     from services.subprocess_runner import BATCH_STOPPED_MESSAGE
+    from services.tools import registry
 
     since = parse_age(args.since) if args.since else None
     paths = _check_paths(args.paths)
@@ -895,6 +891,9 @@ async def verify(args, printer: Printer, state: RunState) -> int:
     has_db = _open_db(args.dry_run)
     items = await run_in_threadpool(lambda: _discover(paths, for_verify=True))
     failed = False
+    # Asked once per tool per run, dry runs included: a probe can walk the
+    # volumes (nsz looking for prod.keys), so never once per file.
+    ready: dict[str, bool] = {}
     for item in items:
         if state.stopping:
             break
@@ -903,6 +902,18 @@ async def verify(args, printer: Printer, state: RunState) -> int:
             if item.explicit:
                 printer.line({"path": item.path, "status": "skipped", "tool": None,
                               "reason": "No tool checks this file"})
+            continue
+        if tool.id not in ready:
+            ready[tool.id] = await registry.tool_is_ready(tool, purpose="verify")
+        if not ready[tool.id]:
+            # Nothing can be checked here: no verdict, so the stored check
+            # stays. A file the user named is a failure to do what was asked;
+            # inside a folder it is reported and the run goes on.
+            printer.line({
+                "path": item.path, "status": "skipped", "tool": tool.id,
+                "reason": f"{tool.display_name} isn't ready: {tool.verify_not_ready_reason}",
+            })
+            failed = failed or item.explicit
             continue
         line = await _verify_one(item.path, tool, has_db, since, args.dry_run)
         stop = line.pop("_stop", False)
