@@ -386,30 +386,29 @@ def _lexically_under(candidate: str, root: str) -> bool:
 
 
 def _matching_volumes(candidate: str) -> list[str]:
-    """The Volumes whose root spells a prefix of ``candidate``, laziest first.
+    """Every Volume whose root spells a prefix of ``candidate``: candidates
+    for the most specific holder (``containing_volume_root``).
 
-    The configured spellings first, with no filesystem call, so a path on a
-    healthy Volume never waits on another Volume's stalled mount. Only when
-    none matches are the roots' cached resolved spellings consulted (a root
-    configured through a symlink, with the path spelled through its target;
-    ``_resolved_root_spellings``). Both spellings are trusted (they come from
-    the deployment, not a request); the resolved check afterwards is what
-    decides.
+    Both kinds of spelling, merged: the configured ones (no filesystem call)
+    and the roots' cached resolved spellings (a root configured through a
+    symlink, the path spelled through its target; ``_resolved_root_spellings``,
+    which never waits on a stalled mount). A configured match must not hide
+    a deeper alias: with ``/mnt`` configured and ``/games -> /mnt/ps2/library``,
+    ``/mnt/ps2/library/game.iso`` belongs to ``/games``. Nested aliases all
+    match too. Both spellings are trusted (they come from the deployment, not
+    a request); the caller's fresh, bounded check of each candidate decides.
     """
     volumes = list(settings.volumes)
-    matching = [v for v in volumes if _lexically_under(candidate, _configured_root(v))]
-    if matching:
-        return matching
-    # Every matching alias, not the first: nested Volumes configured through
-    # symlinks (/outer -> /data/PS2, /inner -> /data/PS2/library) both match,
-    # and a caller choosing the most specific root needs them all.
     resolved_roots = _resolved_root_spellings()
-    return [
-        volume for volume in volumes
-        if (real := resolved_roots.get(_configured_root(volume))) is not None
-        and real != _configured_root(volume)
-        and _lexically_under(candidate, real)
-    ]
+    matching = []
+    for volume in volumes:
+        configured = _configured_root(volume)
+        alias = resolved_roots.get(configured)
+        if _lexically_under(candidate, configured) or (
+            alias is not None and alias != configured and _lexically_under(candidate, alias)
+        ):
+            matching.append(volume)
+    return matching
 
 
 def _has_parent_segment(raw_path: str) -> bool:

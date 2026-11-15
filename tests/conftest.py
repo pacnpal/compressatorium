@@ -9,6 +9,7 @@ boilerplate.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -41,6 +42,109 @@ def reset_db_engine():
         _db.SessionLocal = None
 
     return _reset
+
+
+# --- Auto and archive-conversion route fixtures ------------------------------
+# Shared by the Auto route tests and the archive end-to-end tests. Module-level
+# setup a test file wants for every test (a clear detection cache, tmp_path as
+# the Volume) is opted into with `pytest.mark.usefixtures`, not autouse here.
+
+@pytest.fixture
+def fresh_detect_cache():
+    """The Platform-detection cache empty before and after the test."""
+    from services import platform_detect
+
+    platform_detect.clear_cache()
+    yield
+    platform_detect.clear_cache()
+
+
+@pytest.fixture
+def tmp_volume(tmp_path: Path, monkeypatch):
+    """``tmp_path`` is the configured Volume, so the folder walk reaches every
+    folder a test builds under it (and nothing above it)."""
+    from config import settings
+
+    monkeypatch.setattr(settings, "chd_volumes", str(tmp_path))
+
+
+@pytest.fixture
+def route_env(tmp_path: Path, monkeypatch):
+    """Routes confined to ``tmp_path``; the queue and preferences stubbed."""
+    from app.routes import convert as convert_routes
+
+    monkeypatch.setattr(convert_routes.settings, "chd_volumes", str(tmp_path))
+    monkeypatch.setattr(convert_routes.settings, "data_mount_root", str(tmp_path))
+    monkeypatch.setattr(convert_routes.settings, "max_queue_depth", 0)
+    monkeypatch.setattr(convert_routes.job_manager, "get_queue_depth", lambda: 0)
+
+    queued: list[dict] = []
+
+    async def fake_atomic(job_specs, mode, **kwargs):
+        queued.append({
+            "mode": mode.value,
+            "files": [Path(s["file_path"]).name for s in job_specs],
+            "compression": kwargs.get("compression"),
+        })
+        return []
+
+    monkeypatch.setattr(convert_routes.job_manager, "create_jobs_atomic", fake_atomic)
+
+    async def fake_prefs(key):
+        assert key == "conversion"
+        return {"chdman": "zlib,lzma", "dolphin": "zstd:19"}
+
+    monkeypatch.setattr(convert_routes.preferences_store, "get", fake_prefs)
+    return {"tmp_path": tmp_path, "queued": queued}
+
+
+@pytest.fixture
+def e2e_env(tmp_path: Path, monkeypatch):
+    """Confine the route to ``tmp_path`` and stub the converter binary.
+
+    Returns the recorded ``(input_path, output_path)`` the stub was invoked
+    with so tests can assert the real extracted file reached the tool.
+    """
+    from app.routes import convert as convert_routes
+
+    # Confine path validation + extraction temp dir to the test directory.
+    monkeypatch.setattr(convert_routes.settings, "chd_volumes", str(tmp_path))
+    monkeypatch.setattr(convert_routes.settings, "data_mount_root", str(tmp_path))
+    monkeypatch.setattr(convert_routes.settings, "temp_dir", str(tmp_path / "temp"))
+    monkeypatch.setattr(convert_routes.settings, "max_queue_depth", 0)
+
+    calls: list[dict] = []
+
+    async def fake_convert(input_path, output_path, mode, *, compression=None,
+                           split=False, cancel_event=None):
+        # The member must have been extracted to a real temp file before the
+        # tool is invoked, this is the core of the archive-conversion path.
+        assert os.path.isfile(input_path), f"member not extracted: {input_path}"
+        # Capture the extracted bytes now: the temp dir is removed during the
+        # job's cleanup, so it can't be re-read after _process_job returns.
+        calls.append({
+            "input": input_path,
+            "output": output_path,
+            "content": Path(input_path).read_bytes(),
+        })
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        # Stand in for the binary: produce the output file.
+        Path(output_path).write_bytes(Path(input_path).read_bytes())
+        yield {"progress": 50, "message": "working"}
+        yield {"progress": 100, "message": "done"}
+
+    async def noop_post_convert(input_path, output_path, mode, **_kwargs):
+        # createcd/createdvd would otherwise read a disc serial off the (junk)
+        # source via ChdmanTool.post_convert; stub the hook so the test stays
+        # deterministic and offline.
+        return None
+
+    # registry is the shared singleton job_manager dispatches through.
+    for tool in convert_routes.registry.all():
+        monkeypatch.setattr(tool, "convert", fake_convert)
+        monkeypatch.setattr(tool, "post_convert", noop_post_convert)
+
+    return {"tmp_path": tmp_path, "calls": calls}
 
 
 SAMPLE_DAT_STORE = {
