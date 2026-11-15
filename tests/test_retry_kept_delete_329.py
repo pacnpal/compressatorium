@@ -1477,3 +1477,93 @@ def test_a_job_cancelled_during_its_unlinks_still_removes_every_planned_file(
     asyncio.run(run())
 
     assert _wait_for(lambda: not part.exists() and not iso.exists())
+
+
+# --------------------------------------------------------------------------- #
+# Once a file is removed, the delete has started (Codex 4580227623)
+# --------------------------------------------------------------------------- #
+
+
+def _refuse_unlink(monkeypatch, target):
+    """``os.remove`` refuses *target* at once (a read-only primary)."""
+    real = os.remove
+
+    def refuse(path, *args, **kwargs):
+        if os.path.realpath(str(path)) == os.path.realpath(str(target)):
+            raise PermissionError(13, "Permission denied", str(path))
+        return real(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "remove", refuse)
+
+
+def test_a_delete_that_fails_after_a_file_is_removed_is_finished_later(
+    env, dolphin, two_file_source, capsys, monkeypatch,
+):
+    part = _part2(env)
+    kept = _keep(env, capsys, monkeypatch)
+    with monkeypatch.context() as patch:
+        _refuse_unlink(patch, kept["iso"])
+        _cli(capsys, "run-rules", "--json")
+        assert not part.exists() and kept["iso"].exists()
+        pending = _rule_state(env)["gc"]["kept_sources"]["Game.iso"]
+        assert pending["state"] == "deleting"
+        assert pending["planned"] == [str(kept["iso"])]
+
+    code, lines, _err = _cli(capsys, "run-rules", "--json")
+
+    assert code == 0, lines
+    assert not kept["iso"].exists()
+    assert not _rule_state(env)["gc"].get("kept_sources")
+
+
+def test_a_started_delete_whose_output_then_changed_is_reported(
+    env, dolphin, two_file_source, capsys, monkeypatch,
+):
+    from services import findings
+
+    part = _part2(env)
+    kept = _keep(env, capsys, monkeypatch)
+    with monkeypatch.context() as patch:
+        _refuse_unlink(patch, kept["iso"])
+        _cli(capsys, "run-rules", "--json")
+    kept["output"].write_bytes(b"something else entirely")
+
+    _cli(capsys, "run-rules", "--json")
+
+    assert not part.exists() and kept["iso"].exists()
+    assert not _rule_state(env)["gc"].get("kept_sources")
+    reported = [f for f in findings.list_findings() if f["kind"] == findings.SOURCE_KEPT]
+    assert len(reported) == 1 and "part" in reported[0]["reason"]
+
+
+def test_a_job_whose_delete_fails_part_way_is_reported(
+    env, dolphin, two_file_source, monkeypatch,
+):
+    """A hand-started job (no Rule to keep a pending delete) that removed a
+    file and then failed files a Finding naming the part-deleted Source."""
+    import cli
+    from models import ConversionMode, DuplicateAction, JobCreateRequest, JobStatus
+    from routes import convert as convert_routes
+    from services import findings
+
+    cli._open_db(False)
+    iso = _iso(env)
+    part = _part2(env)
+    _refuse_unlink(monkeypatch, iso)
+
+    async def run():
+        job = await convert_routes.create_job(JobCreateRequest(
+            file_path=str(iso), mode=ConversionMode.DOLPHIN_RVZ,
+            duplicate_action=DuplicateAction.SKIP, delete_on_verify=True,
+            container_only=True,
+        ))
+        await convert_routes.job_manager._process_job(job.id)
+        return job
+
+    job = asyncio.run(run())
+
+    assert job.status == JobStatus.FAILED
+    assert not part.exists() and iso.exists()
+    assert "part deleted" in (job.error_message or "")
+    reported = [f for f in findings.list_findings() if f["kind"] == findings.SOURCE_KEPT]
+    assert [f["path"] for f in reported] == [str(iso)]

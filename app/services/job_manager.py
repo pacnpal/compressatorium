@@ -85,6 +85,12 @@ KEPT_STALE = "stale"  # what the delete stood on no longer holds: never retry
 # An unlink was still running when the retry stopped waiting: the Source may or
 # may not be gone. Not an attempt; the next sweep's own checks settle it.
 KEPT_UNKNOWN = "unknown"
+# Some planned files are removed, not all (an unlink failed after another
+# succeeded): the delete has started, and is finished on the next sweep.
+KEPT_STARTED = "started"
+# The Findings "Library" for a hand-started job's part-deleted Source: it has
+# no Library or pending store of its own.
+HAND_STARTED_FINDINGS = "jobs"
 # How long a retry waits for the Source's volume to answer its stat checks.
 KEPT_DELETE_PROBE_SECONDS = 30.0
 KEPT_DELETE_UNANSWERED = "the Source's volume did not answer"
@@ -147,6 +153,18 @@ class HeldLocks:
     def release(self) -> None:
         """Let go of whatever the owner still holds. Blocking (lock file I/O)."""
         _let_go(self.take())
+
+
+def unfinished_delete(planned: Iterable[str], removed: Iterable[str]) -> Optional[List[str]]:
+    """The one decision about a delete step that stopped (#329): once any
+    planned file was removed the delete has started, and every outcome but
+    "all removed" leaves the files still to remove (the ``deleting``
+    lifecycle). None when it never started or finished."""
+    removed = set(removed)
+    if not removed:
+        return None
+    rest = [path for path in planned if path not in removed]
+    return rest or None
 
 
 def _remove_in_order(paths: Iterable[str], removed: List[str]) -> None:
@@ -3554,11 +3572,15 @@ class JobManager:
                     KEPT_UNKNOWN, str(exc), tuple(deleted), tuple(planned),
                 )
             except (RuntimeError, OSError) as exc:
-                # A refusal, or a removal the filesystem refused part way
-                # (codex 4579529048): counted, with whatever was removed.
                 logger.warning(
                     "Retrying the delete of %s kept it", source_path, exc_info=True,
                 )
+                rest = unfinished_delete(planned, deleted)
+                if rest:
+                    # Started, then refused part way (codex 4580227623): the
+                    # rest is finished on the next sweep, never dropped.
+                    return KeptDeleteRetry(KEPT_STARTED, str(exc), tuple(deleted), tuple(rest))
+                # A refusal before any file went: an attempt (codex 4579529048).
                 return KeptDeleteRetry(KEPT_KEPT, str(exc), tuple(deleted))
             if removal.kept_reason:
                 return KeptDeleteRetry(KEPT_KEPT, removal.kept_reason)
@@ -3597,6 +3619,36 @@ class JobManager:
             owner_id, remaining, fingerprints, os.path.realpath(output_path),
             set(remaining), jobs,
         )
+
+    async def _report_unfinished_delete(
+        self, job: ConversionJob, rest: List[str], exc: BaseException,
+    ) -> None:
+        """A job's delete step stopped part way (#329). A Rule's job hands the
+        rest to its sweep (``job._unfinished_delete``, finished like a kept
+        Source); a hand-started job has no pending store, so a ``source_kept``
+        Finding names the part-deleted Source at once."""
+        job._unfinished_delete = list(rest)
+        if job._sweep_owner is not None:
+            return
+        from services import findings
+
+        try:
+            await run_detached_bounded(
+                findings.observe, HAND_STARTED_FINDINGS, findings.Observed(
+                    kind=findings.SOURCE_KEPT, image_key=job.file_path, path=rest[0],
+                    reason=(
+                        f"Source part deleted and kept: {len(rest)} of its files "
+                        f"remain ({exc})"
+                    ),
+                    cause={"source": job.file_path, "output": job.output_path},
+                ),
+                timeout=KEPT_DELETE_PROBE_SECONDS,
+            )
+        except (DeadlineExpired, OSError):
+            logger.warning(
+                "Could not record the part-deleted Source of %s", job.file_path,
+                exc_info=True,
+            )
 
     async def finish_kept_delete(
         self, *, source_path: str, output_path: str, planned: List[str],
@@ -3691,6 +3743,9 @@ class JobManager:
                     KEPT_UNKNOWN, str(exc), tuple(removed), tuple(planned),
                 )
             except (MutationNotStarted, OSError) as exc:
+                rest = unfinished_delete(remaining, removed)
+                if rest:
+                    return KeptDeleteRetry(KEPT_STARTED, str(exc), tuple(removed), tuple(rest))
                 return KeptDeleteRetry(KEPT_KEPT, str(exc), tuple(removed))
             await self._clear_source_records(source_path, KEPT_DELETE_PROBE_SECONDS)
             return KeptDeleteRetry(KEPT_DELETED, None, tuple(removed))
@@ -4536,20 +4591,35 @@ class JobManager:
                         # the unlinks finish (``_hold_delete_paths_waiting``,
                         # above): no job can start reading one between the
                         # checks and its unlink (#306).
-                        removal = await self._delete_source_set(
-                            job_id,
-                            file_path=job.file_path,
-                            output_path=job.output_path,
-                            expected_paths=list(snapshot.get("paths", [])),
-                            fingerprints=snapshot.get("fingerprints") or {},
-                            check_label=check_label,
-                            cancel_event=cancel_event,
-                            cancelled=lambda: job_id in self._cancelled,
-                            deleted=job.deleted_paths,
-                            # The output locks travel with an unlink this job
-                            # stops waiting for (a cancel), like a retry's.
-                            travelling_locks=self._output_locks.get(job_id),
-                        )
+                        job_planned: List[str] = []
+                        try:
+                            removal = await self._delete_source_set(
+                                job_id,
+                                file_path=job.file_path,
+                                output_path=job.output_path,
+                                expected_paths=list(snapshot.get("paths", [])),
+                                fingerprints=snapshot.get("fingerprints") or {},
+                                check_label=check_label,
+                                cancel_event=cancel_event,
+                                cancelled=lambda: job_id in self._cancelled,
+                                deleted=job.deleted_paths,
+                                # The output locks travel with an unlink this
+                                # job stops waiting for (a cancel), like a
+                                # retry's.
+                                travelling_locks=self._output_locks.get(job_id),
+                                planned=job_planned,
+                            )
+                        except (RuntimeError, OSError) as exc:
+                            rest = unfinished_delete(job_planned, job.deleted_paths)
+                            if rest is None:
+                                raise
+                            # Started, then refused part way: never silent.
+                            await self._report_unfinished_delete(job, rest, exc)
+                            raise RuntimeError(
+                                f"Source part deleted: {len(job.deleted_paths)} of "
+                                f"{len(job_planned)} files removed, {len(rest)} remain "
+                                f"({exc})",
+                            ) from exc
                         job.referrers_updated = removal.referrer_records
                         if removal.cancelled:
                             # One last look before anything is unlinked

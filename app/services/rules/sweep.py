@@ -46,6 +46,7 @@ from services.job_manager import (
     KEPT_DELETED,
     KEPT_KEPT,
     KEPT_STALE,
+    KEPT_STARTED,
     KEPT_UNKNOWN,
     SOURCE_KEPT_FOR_READERS,
     KeptDeleteRetry,
@@ -795,7 +796,15 @@ async def note_job_finished(job) -> None:
     done = status == JobStatus.COMPLETED
     # Captured before any await; see `_generations`.
     generation = _generations.get(library.id, 0)
-    if (
+    unfinished = getattr(job, "_unfinished_delete", None)
+    if unfinished:
+        # Its delete stopped part way: finish it like a kept Source, from the
+        # files still to remove (codex 4580227623).
+        await _remember_kept_source(
+            library, platform_id, rom_id, job, generation, decision,
+            unfinished=list(unfinished),
+        )
+    elif (
         done and getattr(job, "delete_on_verify", False)
         and getattr(job, "warning", None) == SOURCE_KEPT_FOR_READERS
     ):
@@ -844,7 +853,7 @@ async def note_job_finished(job) -> None:
 
 async def _remember_kept_source(
     library: Library, platform_id: str, image_key: str, job, generation: int,
-    decision: tuple[dict, int] | None,
+    decision: tuple[dict, int] | None, *, unfinished: list[str] | None = None,
 ) -> None:
     """Note a Source the delete step kept for a reader, for a later sweep to
     retry (#329). Any Library: it needs no converted history.
@@ -855,8 +864,14 @@ async def _remember_kept_source(
     after its Rule, its Library or its history changed (a retarget, a new
     check level, Forget history, RomM's identity cleanup) records nothing
     (codex 4579636593, 4579636594).
+
+    *unfinished* is a delete that stopped part way: the files still to
+    remove. Recorded as ``state: deleting`` to be finished; when it cannot be
+    recorded it is reported (a ``source_kept`` Finding), never dropped.
     """
     if decision is None:
+        if unfinished:
+            await _report_unfinished(library, image_key, job, unfinished)
         return  # not decided by a Rule this process queued: never retried
     identity, queued_generation = decision
     pending = {
@@ -868,23 +883,40 @@ async def _remember_kept_source(
         "decision": identity,
         "decision_generation": queued_generation,
     }
+    if unfinished:
+        pending.update({"state": KEPT_DELETING, "planned": list(unfinished)})
     if not pending["source"] or not pending["output"]:
         return
+    recorded = False
     async with _sweep_lock:
         if _generations.get(library.id, 0) != generation:
             return  # removed meanwhile
         state = await get_state(library)
         entry = dict(state.get(platform_id) or {})
-        if _decision_generation(entry) != queued_generation:
-            return  # invalidated meanwhile
         rule = (await get_rules(library)).get(platform_id)
-        if _delete_decision_identity(rule, library) != identity:
-            return  # the Rule or the Library changed meanwhile
-        kept = dict(entry.get(KEPT_SOURCES) or {})
-        kept[str(image_key)] = pending
-        entry[KEPT_SOURCES] = kept
-        state[platform_id] = entry
-        await store.write(store.STATE_KEY, library, state)
+        if (
+            # Invalidated, or the Rule or the Library changed meanwhile.
+            _decision_generation(entry) == queued_generation
+            and _delete_decision_identity(rule, library) == identity
+        ):
+            kept = dict(entry.get(KEPT_SOURCES) or {})
+            kept[str(image_key)] = pending
+            entry[KEPT_SOURCES] = kept
+            state[platform_id] = entry
+            await store.write(store.STATE_KEY, library, state)
+            recorded = True
+    if unfinished and not recorded:
+        await _report_unfinished(library, image_key, job, unfinished)
+
+
+async def _report_unfinished(library: Library, image_key: str, job, unfinished: list[str]):
+    """A part-deleted Source no pending delete can finish: say so."""
+    await _report_kept_source(
+        library, image_key,
+        {"source": getattr(job, "file_path", None), "output": getattr(job, "output_path", None)},
+        f"Source part deleted and kept: {len(unfinished)} of its files remain",
+        unfinished[0],
+    )
 
 
 # Every Rule field that decides whether a delete is allowed (#329): what the
@@ -1047,6 +1079,8 @@ async def _finish_deleting(
         return None
     if outcome.status == KEPT_UNKNOWN:
         return {**pending, "last_reason": outcome.reason}
+    if outcome.status == KEPT_STARTED:
+        return {**pending, "planned": list(outcome.planned), "last_reason": outcome.reason}
     left = list(outcome.planned) or planned
     if outcome.status == KEPT_STALE:
         # The output no longer stands: the files left stay, and say so.
@@ -1197,10 +1231,11 @@ async def _retry_kept_deletes(
                 remaining.pop(image_key)
                 result["kept_sources_deleted"] = result.get("kept_sources_deleted", 0) + 1
                 continue
-            if outcome.status == KEPT_UNKNOWN:
-                # The unlinks outlived the wait: the worker removes the rest of
-                # the plan. Not an attempt; the next sweep finishes it from the
-                # recorded plan, not a new one (codex 4580176201).
+            if outcome.status in (KEPT_UNKNOWN, KEPT_STARTED):
+                # The delete started: the unlinks outlived the wait (the worker
+                # removes the rest of the plan), or one failed after another
+                # succeeded. Not an attempt; the next sweep finishes it from the
+                # recorded plan, not a new one (codex 4580176201, 4580227623).
                 remaining[image_key] = {
                     **pending, "state": KEPT_DELETING,
                     "planned": list(outcome.planned), "last_reason": outcome.reason,

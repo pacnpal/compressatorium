@@ -4252,6 +4252,17 @@ is a counted `kept` attempt (codex 4579683118):
   longer stands, the remaining files stay, the entry is dropped and a
   `source_kept` Finding names the part-deleted Source; it is never dropped
   silently.
+- **Once a file is removed, the delete has started** (codex 4580227623). One
+  decision, `job_manager.unfinished_delete(planned, removed)`, applies to
+  every outcome: once any planned file is gone, anything but "all removed"
+  (an error, a timeout, a cancel) leaves the files still to remove, and the
+  entry goes to `deleting` (`KEPT_STARTED`, or `KEPT_UNKNOWN` for a timeout);
+  only a failure before the first removal is a plain `kept` attempt. A Rule's
+  job that stops part way hands the rest to its sweep
+  (`job._unfinished_delete`, recorded as a `deleting` entry, or a Finding if
+  its decision no longer stands); a hand-started job, which has no pending
+  store, files the `source_kept` Finding at once (under the Findings Library
+  id `jobs`) and fails saying how much of the Source is gone.
 - Each unlink is a mutation, not a probe, so it is never abandoned with its
   locks (below). One that outlives `KEPT_DELETE_PROBE_SECONDS` makes the
   retry's outcome `unknown`: the Source may or may not be gone. That is not
