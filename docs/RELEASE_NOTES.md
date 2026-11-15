@@ -324,6 +324,11 @@
 
 ### Fixed
 
+- **A conversion Rule waits for a running check** (#330). With a check Rule and
+  a conversion Rule on the same Platform, the conversion Rule no longer queues
+  an Image a running check has picked; it is converted on a sweep after the
+  check is done. Before, the conversion could fail on the check's lock or
+  keep its Source, and then wait for the Image to change before trying again.
 - **Folder Platforms are never guessed past a read error** (#338). If the
   saved folder Platforms can't be read, folder Libraries list nothing and
   their Rules wait until they can, instead of taking a disc's header as its
