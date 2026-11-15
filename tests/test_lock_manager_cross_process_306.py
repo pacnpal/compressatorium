@@ -375,3 +375,55 @@ def test_a_folder_lock_does_not_trip_over_its_own_lock_file(tmp_path):
     assert manager.acquire_dir_lock(str(game))
     manager.release_dir_lock(str(game))
     manager.release_lock(str(tmp_path / "vol" / "GAME.iso"))
+
+
+# --------------------------------------------------------------------------- #
+# Lock identity is the real path (codex 4576966571, review r9 M3)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_an_input_reached_through_a_symlinked_folder_is_seen_on_the_real_path(
+    guarded_volume,
+):
+    from fastapi import HTTPException
+
+    g = guarded_volume
+    vol = g.folder.parent.parent
+    real = vol / "real"
+    real.mkdir()
+    wia = real / "Game.wia"
+    wia.write_bytes(b"wia")
+    (vol / "alias").symlink_to(real, target_is_directory=True)
+    alias_path = str(vol / "alias" / "Game.wia")
+    probe = _manager(g.cli._lock_dir)
+
+    assert g.cli.acquire_input_lock(alias_path)
+    try:
+        assert probe.check_file_status(str(wia))[1] is True
+        assert probe.locked_path_below(str(real)) == os.path.realpath(wia)
+        assert not probe.acquire_dir_lock(str(real))  # packing the real parent
+        with pytest.raises(HTTPException) as exc:
+            await g.routes.delete_file(g.request("delete-file"), path=str(wia), recursive=False)
+        assert exc.value.status_code == 409
+        assert wia.exists()
+    finally:
+        g.cli.release_input_lock(alias_path)
+
+    assert probe.check_file_status(str(wia))[1] is False
+    assert probe.acquire_dir_lock(str(real))
+    probe.release_dir_lock(str(real))
+
+
+def test_an_output_lock_through_an_alias_is_one_lock_with_the_real_path(tmp_path):
+    first, second = _manager(tmp_path / "locks"), _manager(tmp_path / "locks")
+    real = tmp_path / "real"
+    real.mkdir()
+    (tmp_path / "alias").symlink_to(real, target_is_directory=True)
+
+    assert first.acquire_lock(str(tmp_path / "alias" / "Game.rvz"))
+    assert not second.acquire_lock(str(real / "Game.rvz"))
+    assert second.check_file_status(str(real / "Game.rvz"))[1] is True
+    first.release_lock(str(tmp_path / "alias" / "Game.rvz"))
+    assert second.acquire_lock(str(real / "Game.rvz"))
+    second.release_lock(str(real / "Game.rvz"))

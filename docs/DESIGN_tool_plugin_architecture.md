@@ -2749,6 +2749,16 @@ Volume root, and refuses with 409 when another process holds one. So a CLI job
 packing a folder blocks a web rename or delete inside it. The exact-path check
 (`check_file_status`) runs first, as before.
 
+**Lock identity is the real path.** Output and input locks are keyed, named
+and recorded by `os.path.realpath` of the path, as folder locks always were
+(the same rule `resolve_track` uses). A path reached through a symlinked folder
+(`/volume/alias/Game.wia` into `/volume/real`) therefore locks the file it
+names, and every probe (`check_file_status`, `locked_folder_above`,
+`locked_path_below`) realpaths its query the same way, so a delete through the
+real path, or packing the real parent, sees it. The identity is fixed when the
+lock is taken (`_lock_keys` for outputs, the key stored beside each input
+handle) and the release uses exactly that, even if a symlink changed since.
+
 **Archive deletion fails closed.** Deleting an archive member's Source deletes
 the archive, so `build_delete_plan` (shared by the web batch, the job's
 delete-time recheck, Rule sweeps and the CLI) refuses unless every member
