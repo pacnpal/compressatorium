@@ -2381,7 +2381,10 @@ way to produce an edited copy of a zip. The first user is the eXoDOS repack
   `mkstemp` file named `.<dst name>.partial-*.tmp` in the destination
   directory (hidden, and ending in `.tmp`, which RomM's scanner skips by
   default, so a partial file is never listed as a game), fsynced, passed to
-  the caller's optional `check(temp_path)`, then placed with
+  the caller's optional `check(temp_path)`, given the Source's permission
+  bits without setuid, setgid or sticky (`mkstemp` makes it `0600`, which a
+  player running as another user could not read; `0o666 & ~umask` if the
+  Source cannot be stat-ed), then placed with
   `utils.path_utils.place_without_clobbering`, the atomic no-replace move, and
   the directory is fsynced. Any failure, including
   `ConversionCancelled` from `is_cancelled`, unlinks the temporary file. An

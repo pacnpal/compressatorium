@@ -7,6 +7,7 @@ at the destination.
 from __future__ import annotations
 
 import os
+import stat
 import struct
 import zipfile
 from pathlib import Path
@@ -238,3 +239,25 @@ def test_a_destination_that_appears_mid_write_is_never_replaced(tmp_path):
 
     assert dst.read_bytes() == b"someone else's"
     assert _leftovers(tmp_path, {"in.zip", "out.zip"}) == []
+
+
+@pytest.mark.parametrize("mode", [0o644, 0o640])
+def test_the_product_takes_the_sources_permissions(tmp_path, mode):
+    """mkstemp makes 0600 files; a player running as another user must still read it."""
+    src = _make_zip(tmp_path / "in.zip", {"A": b"a"})
+    os.chmod(src, mode)
+    dst = tmp_path / "out.zip"
+
+    rewrite_zip(src, str(dst))
+
+    assert stat.S_IMODE(os.stat(dst).st_mode) == mode
+
+
+def test_special_permission_bits_are_not_copied(tmp_path):
+    src = _make_zip(tmp_path / "in.zip", {"A": b"a"})
+    os.chmod(src, 0o6755)
+    dst = tmp_path / "out.zip"
+
+    rewrite_zip(src, str(dst))
+
+    assert stat.S_IMODE(os.stat(dst).st_mode) == 0o755

@@ -1656,7 +1656,8 @@ matter when your *platform* is a game image processed by chdman.
   timestamp), reads every member through zipfile (so a bad CRC fails the
   copy), writes under a hidden `.<name>.partial-*.tmp` name in the destination
   folder (library scanners such as RomM's skip `.tmp`), fsyncs, runs an
-  optional `check(temp_path)`, and places the result with the no-replace move.
+  optional `check(temp_path)`, gives it the Source's permission bits, and
+  places the result with the no-replace move.
   Use it instead of hand-rolling a zip rewrite. Pair it with
   `archive_service.member_segments(name)` and
   `archive_service.enforce_archive_limits(...)` when your tool reads a zip's

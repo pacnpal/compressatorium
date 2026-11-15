@@ -11,7 +11,8 @@ eXoDOS repack today, the Patch bench later). The Source is only ever read.
 * **Nothing that looks finished appears early.** The archive is written under
   a hidden temporary name in the destination directory
   (``.<name>.partial-*.tmp``, which library scanners such as RomM's skip by
-  default), fsynced, optionally checked by the caller, and only
+  default), fsynced, optionally checked by the caller, given the Source's
+  permission bits (``mkstemp`` makes it ``0600``), and only
   then moved into place with :func:`utils.path_utils.place_without_clobbering`,
   an atomic no-replace move. A crash, a cancel or an error leaves no product,
   and an existing file at the destination is never replaced.
@@ -19,6 +20,7 @@ eXoDOS repack today, the Patch bench later). The Source is only ever read.
 from __future__ import annotations
 
 import os
+import stat
 import tempfile
 import zipfile
 from collections.abc import Callable, Mapping
@@ -95,6 +97,21 @@ def _copy_member(
                 break
             writer.write(chunk)
             tick(len(chunk))
+
+
+def _product_mode(src: str) -> int:
+    """The product's permission bits: the Source's, without setuid/setgid/sticky.
+
+    ``mkstemp`` creates the file ``0600``, so without this a player running
+    as another user (RomM in its own container) could not read the product.
+    Falls back to what a new file would normally get, ``0o666 & ~umask``.
+    """
+    try:
+        return stat.S_IMODE(os.stat(src).st_mode) & 0o777
+    except OSError:
+        umask = os.umask(0)
+        os.umask(umask)
+        return 0o666 & ~umask
 
 
 def _fsync_dir(directory: str) -> None:
@@ -177,6 +194,7 @@ def rewrite_zip(
             on_progress(total, total)
         if check is not None:
             check(tmp)
+        os.chmod(tmp, _product_mode(src))
         place_without_clobbering(tmp, dst)
         _fsync_dir(directory)
     except BaseException:
