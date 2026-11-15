@@ -905,6 +905,71 @@ def get_volume_name_for_path(path: str) -> Optional[str]:
     return None
 
 
+# Flags for one component of a confined, no-follow walk. O_NONBLOCK so a FIFO
+# planted where a file is expected cannot block the open; it is then refused by
+# the regular-file check.
+_BENEATH_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0) | os.O_NONBLOCK
+_BENEATH_DIR_FLAGS = _BENEATH_FLAGS | getattr(os, "O_DIRECTORY", 0)
+_BENEATH_CHUNK = 64 * 1024
+
+
+def _beneath_parts(relative: str) -> list[str]:
+    if not relative or relative.startswith("/"):
+        raise ValueError(f"Not a relative path below the root: {relative!r}")
+    parts = relative.split("/")
+    if any(part in ("", ".", "..") or "\\" in part for part in parts):
+        raise ValueError(f"Path leaves or bends the tree: {relative!r}")
+    return parts
+
+
+def read_beneath(root: str, relative: str, *, max_bytes: int) -> bytes:
+    """Read the regular file ``root/relative`` without following any symlink.
+
+    For a file that someone with write access to a Volume could swap between a
+    check and the read (a template a tool copies into its product). Every
+    component, of ``root`` from ``/`` down and then of ``relative``, is opened
+    with ``O_NOFOLLOW`` relative to the directory descriptor above it, so a
+    symlink anywhere fails the open (``OSError``, usually ``ELOOP``). The file
+    itself must be a regular file (``fstat``), and the bytes come only from
+    that one descriptor: no second, path-based open. Linux's ``openat2`` with
+    ``RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS`` would do the same in one call, but
+    Python exposes neither it nor those flags, and this walk works on macOS too.
+
+    ``root`` must be absolute and already symlink-free (``os.path.realpath``);
+    ``relative`` uses ``/`` and may not hold ``..``, ``.`` or empty parts
+    (``ValueError``). A file over ``max_bytes`` is refused with ``ValueError``.
+    Blocking: run it off the event loop.
+    """
+    if not os.path.isabs(root):
+        raise ValueError(f"The root must be absolute: {root!r}")
+    root_parts = [part for part in root.split(os.sep) if part]
+    parts = _beneath_parts(relative)
+    fd = os.open("/", _BENEATH_DIR_FLAGS)
+    try:
+        for part in (*root_parts, *parts[:-1]):
+            child = os.open(part, _BENEATH_DIR_FLAGS, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        child = os.open(parts[-1], _BENEATH_FLAGS, dir_fd=fd)
+        os.close(fd)
+        fd = child
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise OSError(errno.EINVAL, "Not a regular file", os.path.join(root, relative))
+        if info.st_size > max_bytes:
+            raise ValueError(f"{relative} is larger than {max_bytes} bytes")
+        chunks: list[bytes] = []
+        total = 0
+        while chunk := os.read(fd, _BENEATH_CHUNK):
+            total += len(chunk)
+            if total > max_bytes:
+                raise ValueError(f"{relative} is larger than {max_bytes} bytes")
+            chunks.append(chunk)
+        return b"".join(chunks)
+    finally:
+        os.close(fd)
+
+
 def safe_join(base_dir: str, *parts: str) -> Path:
     """Join parts to a base directory while ensuring the result stays inside the base.
 

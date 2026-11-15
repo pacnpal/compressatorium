@@ -538,3 +538,41 @@ def test_a_stalled_repack_fails_and_the_late_worker_publishes_nothing(
     hung_write["release"].set()
     assert hung_write["finished"].wait(10)
     assert _no_product_and_no_temp(tree)
+
+
+# --- the template read is confined (PR #324 security review) ---------------
+
+
+def test_a_template_swapped_for_a_symlink_after_inspect_is_refused(tree, tmp_path, monkeypatch):
+    """Codex's repro: swap dosbox.conf for a link between inspect and the read."""
+    secret = tmp_path / "secret.txt"
+    secret.write_bytes(b"API_TOKEN=hunter2")
+    template = tree["dos"] / "Abaron" / "dosbox.conf"
+    real_inspect = ExodosService.inspect
+
+    def inspect_then_swap(self, path):
+        plan = real_inspect(self, path)
+        template.unlink()
+        template.symlink_to(secret)
+        return plan
+
+    monkeypatch.setattr(ExodosService, "inspect", inspect_then_swap)
+    service = ExodosService()
+    source = _game_zip(tree)
+    before = Path(source).read_bytes()
+
+    with pytest.raises(NotRepackable):
+        _convert(service, source, service.get_output_path(source))
+
+    assert sorted(os.listdir(tree["games"])) == ["!dos", "Abaron (1995).zip"]
+    assert Path(source).read_bytes() == before
+
+
+def test_a_symlinked_game_folder_inside_the_tree_is_refused(tree):
+    (tree["dos"] / "Other").mkdir()
+    (tree["dos"] / "Other" / "dosbox.conf").write_bytes(b"[autoexec]\r\n")
+    (tree["dos"] / "Zork").symlink_to(tree["dos"] / "Other")
+    path = _game_zip(tree, ["Zork/ZORK.EXE"], name="Zork.zip")
+
+    with pytest.raises(NotRepackable, match="link"):
+        ExodosService().inspect(path)

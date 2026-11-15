@@ -3048,6 +3048,16 @@ Precedence is fixed and never guesses:
    is noted through `_note_unknown`). `is_within_configured_volumes` is that answer with None
    counted as outside; a caller that must not mistake a stalled mount for
    "outside" (the `.m3u` Referrer, §3.3.15) uses the three-way form.
+   A containment check proves where a path pointed when it was checked, not
+   where a later `open()` lands: anyone who can write the Volume can swap a
+   component for a symlink in between. A file whose bytes a tool copies into
+   its product is therefore read with `utils.path_utils.read_beneath(root,
+   relative, max_bytes=)`, which opens every component, of the root from `/`
+   and then of the relative path, with `O_NOFOLLOW` against the directory
+   descriptor above it (Python exposes no `openat2`, and the walk also runs on
+   macOS), requires a regular file (`fstat`), and reads only from that one
+   descriptor. Any symlink, `..`, non-regular file or oversized file is
+   refused. The eXoDOS repack reads its templates this way (§3.3.19).
 
 Track sheets are read one way everywhere, through `utils.sheet_text`: as UTF-8
 (a BOM stripped), as cp1252 when they are not valid UTF-8, and as Latin-1 last,
@@ -4606,8 +4616,11 @@ tool: it registers with an empty binary path and reports no pids.
   `converts_path` reads the zip's directory: every name passes
   `member_segments` and `enforce_archive_limits`, every member sits in one game
   folder (a loose root file refuses it), and `<tree>/<game>/dosbox.conf`
-  resolves (realpath) inside the tree. The answer is cached per (path, size,
-  mtime). `_NOT_CONVERTIBLE_REASON["exodos"]` names the plan-time reason. The
+  is read through `read_beneath` (no symlink on any component, a regular
+  file, one descriptor). The answer is cached per (path, size, mtime), and
+  `convert` reads the template again the same way rather than trusting the
+  earlier check, so a template swapped for a link in between is refused and
+  the job fails with the Source untouched. `_NOT_CONVERTIBLE_REASON["exodos"]` names the plan-time reason. The
   frontend descriptor is *not* `contentRefined`: a `.zip` is an archive row,
   and the listing never annotates archive rows with `convertible_by`, so the
   content gate would refuse every zip. Any `.zip` can be ticked in this mode;

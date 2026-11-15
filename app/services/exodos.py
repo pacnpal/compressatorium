@@ -44,7 +44,7 @@ from services.subprocess_runner import (
     run_detached,
     verify_preflight,
 )
-from utils.path_utils import is_within_configured_volumes
+from utils.path_utils import is_within_configured_volumes, read_beneath
 
 from config import settings
 
@@ -186,8 +186,9 @@ class NotRepackable(ValueError):
 @dataclass(frozen=True)
 class RepackPlan:
     top: str          # the game folder every member sits in, "Abaron"
-    template: str     # realpath of that game's template, inside the tree
+    template: str     # that game's template path, for messages only
     total_size: int   # uncompressed bytes of every member
+    root: str = ""    # the tree's real path; reads go through read_beneath
 
 
 class ExodosService:
@@ -246,6 +247,7 @@ class ExodosService:
             top=top,
             template=self._template(root, top),
             total_size=sum(info.file_size for info in infos),
+            root=root,
         )
 
     @staticmethod
@@ -282,17 +284,9 @@ class ExodosService:
         return tops.pop()
 
     def _template(self, root: str, top: str) -> str:
-        real = os.path.realpath(os.path.join(root, top, self.profile.conf_name))
-        if os.path.commonpath([real, root]) != root:
-            raise NotRepackable(
-                f"The template for {top} resolves outside EXODOS_DOS_DIR",
-            )
-        if not os.path.isfile(real):
-            raise NotRepackable(
-                f"The game has no template: {top}/{self.profile.conf_name} "
-                "is not in EXODOS_DOS_DIR",
-            )
-        return real
+        """The template's path, once it has been read the confined way."""
+        self._read_template(root, top)
+        return os.path.join(root, top, self.profile.conf_name)
 
     def is_repackable(self, path: str) -> bool:
         """Whether ``path`` can be repacked. Cached per (path, size, mtime)."""
@@ -307,11 +301,30 @@ class ExodosService:
             return False
         return _probe(self.profile, path, st.st_size, st.st_mtime_ns, root)
 
-    def _read_template(self, path: str) -> bytes:
-        if os.path.getsize(path) > _MAX_TEMPLATE_BYTES:
-            raise NotRepackable(f"The template is larger than {_MAX_TEMPLATE_BYTES} bytes")
-        with open(path, "rb") as handle:
-            return handle.read()
+    def _read_template(self, root: str, top: str) -> bytes:
+        """Read ``<root>/<top>/dosbox.conf`` through one confined descriptor.
+
+        Every template byte comes from :func:`utils.path_utils.read_beneath`:
+        no component may be a symlink, the file must be a regular file, and
+        nothing is opened by path afterwards. Someone who can write the Volume
+        therefore cannot swap the template for a link between the check in
+        ``inspect`` and this read (PR #324's security review). Any refusal is
+        ``NotRepackable``, which fails the job and keeps the Source.
+        """
+        relative = f"{top}/{self.profile.conf_name}"
+        try:
+            return read_beneath(root, relative, max_bytes=_MAX_TEMPLATE_BYTES)
+        except FileNotFoundError as exc:
+            raise NotRepackable(
+                f"The game has no template: {relative} is not in EXODOS_DOS_DIR",
+            ) from exc
+        except OSError as exc:
+            raise NotRepackable(
+                f"The template for {top} is a link, not a plain file, or lies "
+                f"outside EXODOS_DOS_DIR: {exc}",
+            ) from exc
+        except ValueError as exc:
+            raise NotRepackable(f"The template for {top} was refused: {exc}") from exc
 
     # --- convert -----------------------------------------------------------
 
@@ -333,7 +346,7 @@ class ExodosService:
         the game.
         """
         plan = await run_in_threadpool(self.inspect, input_path)
-        template = await run_in_threadpool(self._read_template, plan.template)
+        template = await run_in_threadpool(self._read_template, plan.root, plan.top)
         rewrite = rewrite_conf(template, plan.top, self.profile)
         prefix = f"{plan.top}/"
         # "beats" counts the worker's polls of is_cancelled, which it makes
