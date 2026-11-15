@@ -15,6 +15,7 @@ from services.dolphin_tool import (
     DOLPHIN_OUTPUT_FORMATS,
     dolphin_tool_service,
 )
+from services.disc_id import nintendo_disc_platform
 from services.file_hasher import compute_file_sha1_sync
 from services.lock_manager import lock_manager
 from services.subprocess_runner import ReadCancelled, run_detached
@@ -91,6 +92,11 @@ class DolphinTool(BaseTool):
     def __init__(self, binary_path: str) -> None:
         super().__init__(binary_path)
         self._service = dolphin_tool_service
+
+    def header_platform(self, path: str) -> str | None:
+        # The magic numbers in a raw disc header. Dolphin's own containers
+        # (RVZ/WIA/GCZ) hold that header compressed, so they answer None.
+        return nintendo_disc_platform(path)
 
     def detect_output(
         self, input_path: str, *, from_archive: bool = False,

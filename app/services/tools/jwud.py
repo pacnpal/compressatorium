@@ -37,6 +37,7 @@ class JwudTool(BaseTool):
     default_compression = "verify"
     policy_owner = "jwud"
     display_name = "Wii U"
+    not_ready_reason = "the JWUDTool launcher or its Java runtime is missing"
     modes = (
         ModeSpec(
             mode="jwud_compress",
