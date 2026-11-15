@@ -1642,3 +1642,39 @@ async def test_a_split_part_added_later_joins_its_image(db: Path) -> None:
 
     images = library.images("wiiu")
     assert [(i.key, i.size) for i in images] == [("wiiu/game_part1.wud", 30)]
+
+
+@pytest.mark.asyncio
+async def test_a_walk_builds_each_folders_listing_marker_once(db: Path, monkeypatch) -> None:
+    """Codex 4576751001: the membership cache key holds a per-folder marker.
+
+    Each folder's listing is turned into one generation marker per walk, and
+    every file in it shares that marker, so a cached walk compares a short
+    value per file instead of the whole folder's names (quadratic before).
+    """
+    from services import libraries
+    from services.libraries import folder as folder_mod
+
+    roms = db / "roms"
+    for name, count in (("a", 40), ("b", 25)):
+        (roms / name).mkdir(parents=True)
+        for i in range(count):
+            (roms / name / f"g{i}.iso").write_bytes(b"\0" * 16)
+    lib = await _register(roms)
+    library = libraries.get(lib["id"])
+
+    built: list[int] = []
+    real = folder_mod._folder_generation
+
+    def counting(names) -> str:
+        built.append(len(names))
+        return real(names)
+
+    monkeypatch.setattr(folder_mod, "_folder_generation", counting)
+    for _ in range(2):  # a cold walk, then a cached one
+        built.clear()
+        library.scan(refresh=True)
+        assert sorted(built) == [25, 40]  # one listing per folder per walk
+
+    for key, _value in library._members.values():
+        assert all(not isinstance(part, (set, frozenset)) for part in key)
