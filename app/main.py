@@ -12,6 +12,7 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from routes import convert, dat, files, info, preferences, romm
+from routes import findings as findings_routes
 from routes import ledger as ledger_routes
 from routes import notifications as notification_routes
 from routes import libraries as library_routes
@@ -440,6 +441,7 @@ app.include_router(ledger_routes.router, prefix="/api", tags=["ledger"])
 app.include_router(notification_routes.router, prefix="/api", tags=["notifications"])
 app.include_router(library_routes.router, prefix="/api", tags=["libraries"])
 app.include_router(rules_routes.router, prefix="/api", tags=["rules"])
+app.include_router(findings_routes.router, prefix="/api", tags=["findings"])
 
 
 @app.get("/health")

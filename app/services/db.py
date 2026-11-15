@@ -323,6 +323,84 @@ class FolderLibraryRecord(Base):
     created_at = Column(String, nullable=False)
 
 
+class PlatformMappingRecord(Base):
+    """The user's word on a folder's Platform: "this folder is PSP" (#304).
+
+    Keyed by Library and the folder's path relative to the Library root
+    (``/`` separators, ``""`` for the root itself), so it follows the Library
+    rather than a mount path. Platform detection reads it as folder evidence:
+    walking up from an Image, the nearest folder with a mapping or a Platform
+    name decides (the mapping wins on the same folder), and the header beats
+    both.
+    """
+
+    __tablename__ = "platform_mappings"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    library_id = Column(String, nullable=False)
+    folder = Column(String, nullable=False)
+    platform = Column(String, nullable=False)
+    updated_at = Column(String, nullable=False)
+    __table_args__ = (
+        Index("ux_platform_mappings_library_folder", "library_id", "folder", unique=True),
+    )
+
+
+class FindingRecord(Base):
+    """Something the app noticed about an Image that a person has to decide (#304).
+
+    One open row per (Library, Image, kind), upserted by whatever noticed it
+    (a folder Library's walk) and deleted when the cause goes away. Library
+    agnostic: ``library_id`` is the Rule engine's id (``romm``, ``folder:3``)
+    and ``image_key`` the Library's own Image key. ``fingerprint`` is a digest
+    of the cause. Whether a row is dismissed lives in ``finding_dismissals``,
+    not here, so a row that is cleared and comes back keeps it. Nothing acts
+    on a row.
+    """
+
+    __tablename__ = "findings"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    library_id = Column(String, nullable=False)
+    image_key = Column(String, nullable=False)
+    kind = Column(String, nullable=False)
+    path = Column(String, nullable=False)
+    reason = Column(String, nullable=False)
+    cause = Column(JSON, nullable=False, default=dict)
+    fingerprint = Column(String, nullable=False)
+    first_seen = Column(String, nullable=False)
+    last_seen = Column(String, nullable=False)
+    __table_args__ = (
+        Index("ux_findings_library_image_kind", "library_id", "image_key", "kind", unique=True),
+        # AUTOINCREMENT: a cleared Finding's id is never handed to another, so
+        # a row still on someone's screen can never act on a different Image.
+        {"sqlite_autoincrement": True},
+    )
+
+
+class FindingDismissalRecord(Base):
+    """The owner's "not now" on one Finding's cause (#304).
+
+    Keyed by (Library, Image, kind, cause fingerprint) and kept apart from the
+    Finding row: a walk that does not see the Image (an unmounted share) drops
+    the row, and when it comes back with the same cause it comes back
+    dismissed. Show again deletes it; a cause seen to change deletes it;
+    removing the Library deletes it.
+    """
+
+    __tablename__ = "finding_dismissals"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    library_id = Column(String, nullable=False)
+    image_key = Column(String, nullable=False)
+    kind = Column(String, nullable=False)
+    fingerprint = Column(String, nullable=False)
+    dismissed_at = Column(String, nullable=False)
+    __table_args__ = (
+        Index(
+            "ux_finding_dismissals_key", "library_id", "image_key", "kind", "fingerprint",
+            unique=True,
+        ),
+    )
+
+
 class LedgerTotal(Base):
     """Running per-status totals behind the Prometheus counters (#297).
 

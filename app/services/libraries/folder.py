@@ -40,6 +40,15 @@ that caps the stuck threads at one per Library, and every later sweep releases
 the sweep lock immediately. Settings (name, schedule switch, cap) change in
 place and never wait for a walk.
 
+**Findings.** Every walk (never a listing served from the last one) hands
+the Findings store what it saw (:func:`services.findings.reconcile`): a
+Platform conflict per conflicted Image, an Unsorted Finding per Image whose
+Platform nobody could work out, and one per Image file the walk could not
+read. A walk that fails (the root is gone) records nothing, and a subfolder
+that does not list leaves the Findings under it as they are (dismissal
+included), so a mount blip clears no Finding. Findings never move or delete
+an Image.
+
 Folder Rules support the skip policy only (no ``CONVERTED_HISTORY``), and a
 failed Image waits until its file changes (``FAILED_HOLD``).
 """
@@ -57,7 +66,7 @@ from types import MappingProxyType
 from typing import Any
 
 from logging_setup import get_logger
-from services import image_sets, platform_detect
+from services import findings, image_sets, platform_detect
 from services.platform_detect import CONFLICT, Detection
 from services.rules.library import (
     FAILED_HOLD,
@@ -69,7 +78,11 @@ from services.rules.library import (
     QueuedImage,
 )
 from services.tools import registry
-from utils.path_utils import is_within_configured_volumes, match_extension
+from utils.path_utils import (
+    is_within_configured_volumes,
+    match_extension,
+    platform_boundary_root,
+)
 
 logger = get_logger("folder_library")
 
@@ -110,7 +123,17 @@ class Scan:
     entries: list[Entry] = field(default_factory=list)
     # Image files and folders that could not be read. Never queued.
     unreadable: int = 0
+    # The Image files among them, by path.
+    unreadable_files: list[str] = field(default_factory=list)
+    # Folders under the root that could not be listed: the walk did not see
+    # into them, so their Findings are left alone.
+    unwalked: list[str] = field(default_factory=list)
     taken_at: float = 0.0
+    # The Library's generation when the walk started (`FolderLibrary.invalidate`).
+    generation: int = 0
+    # True when the generation moved during the walk (a mapping was set): its
+    # Findings were not written and a fresh walk was asked for.
+    stale: bool = False
 
     def by_platform(self) -> dict[str, list[Entry]]:
         out: dict[str, list[Entry]] = {}
@@ -186,6 +209,18 @@ class FolderLibrary(LibraryDefaults):
         # Held for a whole walk. Only ever acquired without blocking (`scan`).
         self._lock = threading.Lock()
         self._scan: Scan | None = None
+        # Bumped when something the last walk relied on changed (a mapping),
+        # so the next listing walks again instead of serving it.
+        self._generation = 0
+        # The Rule engine's generation for this Library when this object was
+        # built (#303). Removing the Library moves it, so a walk of this
+        # object that finishes, or even starts, after the removal records no
+        # Findings. A re-registered Library is a new object with a new token.
+        from services.rules import sweep as rules_sweep
+
+        self._token = rules_sweep.library_generation(self.id)
+        # The follow-up walk `_schedule_rewalk` started, if any (tests join it).
+        self._rewalk_thread: threading.Thread | None = None
         # Serialises a settings change (database row, then this object), so
         # two concurrent edits leave both saying the same thing. Never the walk
         # lock: a settings edit must not wait for a walk.
@@ -211,10 +246,24 @@ class FolderLibrary(LibraryDefaults):
         if max_per_sweep is not None:
             self._max_per_sweep = int(max_per_sweep)
 
+    def is_current(self) -> bool:
+        """Still a registered Library (#303's token). Asked under the Findings store's lock."""
+        from services.rules import sweep as rules_sweep
+
+        return rules_sweep.library_generation(self.id) == self._token
+
+    def invalidate(self) -> None:
+        """The last walk is out of date; the next listing walks again. Never waits."""
+        self._generation += 1
+
     # ---- the walk ----
 
-    def _files(self) -> tuple[list[tuple[str, os.stat_result]], int]:
-        """Every regular, readable file with an Image extension, and how many were not readable."""
+    def _files(self) -> tuple[list[tuple[str, os.stat_result]], int, list[str], list[str]]:
+        """Every regular, readable file with an Image extension, and the unreadable ones.
+
+        ``(files, how many files and folders could not be read, the unreadable
+        Image files, the folders that could not be listed)``.
+        """
         root = self.root
         # Checked on every walk, never remembered: a mount that blips fails
         # this listing only.
@@ -225,6 +274,8 @@ class FolderLibrary(LibraryDefaults):
         extensions = _image_extensions()
         files: list[tuple[str, os.stat_result]] = []
         unreadable = 0
+        unreadable_files: list[str] = []
+        unwalked: list[str] = []
         root_errors: list[OSError] = []
 
         def on_error(exc: OSError) -> None:
@@ -233,6 +284,8 @@ class FolderLibrary(LibraryDefaults):
                 root_errors.append(exc)
             else:
                 unreadable += 1
+                if getattr(exc, "filename", None):
+                    unwalked.append(os.fspath(exc.filename))
 
         for current, dirs, names in os.walk(root, followlinks=False, onerror=on_error):
             dirs.sort()
@@ -244,20 +297,25 @@ class FolderLibrary(LibraryDefaults):
                     st = os.lstat(path)
                 except OSError:
                     unreadable += 1
+                    unreadable_files.append(path)
                     continue
                 if not stat.S_ISREG(st.st_mode):
                     continue
                 if not os.access(path, os.R_OK):
                     unreadable += 1
+                    unreadable_files.append(path)
                     continue
                 files.append((path, st))
         if root_errors:
             raise LibraryUnreadable(str(root_errors[0]))
-        return files, unreadable
+        return files, unreadable, unreadable_files, unwalked
 
     def _walk(self) -> Scan:
         """Walk the root once, group the files into Images and detect each Platform."""
-        files, unreadable = self._files()
+        # What this walk's detections are valid for: a mapping set while it
+        # runs bumps the generation, and its Findings are then not written.
+        walk_generation = self._generation
+        files, unreadable, unreadable_files, unwalked = self._files()
         stats = dict(files)
         known = {os.path.normpath(p): st for p, st in files}
         members_cache: dict[str, tuple[tuple, list[str]]] = {}
@@ -286,14 +344,28 @@ class FolderLibrary(LibraryDefaults):
             members_cache[path] = (key, value)
             return value
 
-        scan = Scan(unreadable=unreadable)
+        scan = Scan(
+            unreadable=unreadable, unreadable_files=unreadable_files,
+            unwalked=unwalked, generation=walk_generation,
+        )
         root = self.root
+        # The folder context the folder-name fallback reads beyond the file's
+        # own stat: where the root really is (an ancestor renamed and replaced
+        # by a symlink keeps the Library path and every file stat, while the
+        # folders around the Image change) and the Volume root the fallback
+        # stops at (`platform_boundary_root`, the same boundary detection
+        # uses). Resolved once per walk, not per Image: the walk does not
+        # follow symlinks below the root, so every path under it shares this.
+        context = (os.path.realpath(root), str(platform_boundary_root(root) or ""))
         for path in image_sets.group_images([p for p, _ in files], members=members):
             st = stats[path]
             # Detection's own key: the file and the tracks its header probe
-            # reads, so a changed track re-detects its sheet. None (a track
-            # missing) means answer now and remember nothing.
+            # reads, so a changed track re-detects its sheet, plus the walk's
+            # folder context. None (a track missing) means answer now and
+            # remember nothing.
             key = platform_detect.detection_key(path, st)
+            if key is not None:
+                key = (*key, context)
             hit = self._detections.get(path)
             if key is not None and hit is not None and hit[0] == key:
                 detection = hit[1]
@@ -302,41 +374,151 @@ class FolderLibrary(LibraryDefaults):
             if key is not None:
                 detections[path] = (key, detection)
             scan.entries.append(Entry(
-                key=Path(os.path.relpath(path, root)).as_posix(),
+                key=self._key(path),
                 path=path,
                 # The whole Image (a sheet and its tracks), so size filters
                 # and the size orders judge the set, not a 67-byte .cue.
                 size=image_sets.image_size(path, members=members, known=known),
                 mtime=st.st_mtime, detection=detection,
             ))
+        # An unreadable file a readable sheet lists is that sheet's track, not
+        # an Image of its own, so it gets no Finding (CONTEXT.md).
+        owned = {
+            os.path.normpath(member)
+            for _key, listed in members_cache.values() for member in listed
+        }
+        scan.unreadable_files = [
+            p for p in scan.unreadable_files if os.path.normpath(p) not in owned
+        ]
         # Only what this walk saw, so the caches are as large as the Library.
         self._members = members_cache
         self._detections = detections
         # The reuse window starts once the walk is ready, not when it began:
         # a walk whose detection outlasts SCAN_TTL_SECONDS is still shared.
         scan.taken_at = time.monotonic()
+        self._record_findings(scan)
         return scan
 
-    def scan(self, *, refresh: bool = False) -> Scan:
+    def _key(self, path: str) -> str:
+        return Path(os.path.relpath(path, self.root)).as_posix()
+
+    def _findings(self, scan: Scan) -> list[findings.Observed]:
+        """What this walk noticed that needs a person: conflicts and Unsorted Images."""
+        out = []
+        for entry in scan.entries:
+            found = entry.detection
+            if found.platform:
+                continue
+            # The evidence that decided, and only that: a Platform folder name
+            # a nearer mapping overruled is no part of the cause.
+            cause = {
+                "how": found.how, "header": found.header,
+                "folder": self._key(found.place) if found.place else None,
+                "folder_platform": found.place_platform, "mapped": found.mapped,
+            }
+            if found.headers:
+                # Which headers disagree: a different pair is a new cause.
+                cause["headers"] = list(found.headers)
+            kind = findings.PLATFORM_CONFLICT if found.how == CONFLICT else findings.UNSORTED
+            out.append(findings.Observed(
+                kind=kind, image_key=entry.key, path=entry.path,
+                reason=found.reason, cause=cause,
+            ))
+        for path in scan.unreadable_files:
+            out.append(findings.Observed(
+                kind=findings.UNSORTED, image_key=self._key(path), path=path,
+                reason="the file could not be read", cause={"how": "unreadable"},
+                # A file that was readable before (and may have a dismissed
+                # Finding) keeps what it has: not read is not changed.
+                only_if_new=True,
+            ))
+        return out
+
+    def _record_findings(self, scan: Scan) -> None:
+        """Hand the Findings store what this walk saw. A failure costs the Findings only.
+
+        Written only while nothing the walk relied on has changed: asked under
+        the store's write lock, a removed Library writes nothing, and a walk
+        that a mapping change overtook writes nothing and marks itself stale
+        so :meth:`scan` asks for a fresh walk.
+        """
+        observed = self._findings(scan)
+
+        def current() -> bool:
+            if not self.is_current():
+                return False
+            if self._generation != scan.generation:
+                scan.stale = True
+                return False
+            return True
+
+        try:
+            findings.reconcile(
+                self.id, observed,
+                keep_under=[self._key(path) for path in scan.unwalked],
+                current=current,
+            )
+        except Exception:
+            # The walk is still good for Rules; the Findings view is behind
+            # until the next walk. Logged, not swallowed.
+            logger.warning(
+                "folder_library: could not record the Findings of %s", self.root,
+                exc_info=True,
+            )
+
+    def _is_stale(self, scan: Scan) -> bool:
+        """A mapping changed during this walk (before or after its Findings write)."""
+        return scan.stale or scan.generation != self._generation
+
+    def scan(self, *, refresh: bool = False, rewalk_if_stale: bool = True) -> Scan:
         """The latest walk, taking a new one when asked or when it is stale. Blocking.
 
         Raises :class:`LibraryUnreadable` at once when another walk of this
-        Library is still running, rather than waiting behind it.
+        Library is still running, rather than waiting behind it. A walk that a
+        mapping change overtook is still returned (the listing and Findings
+        path); it starts a follow-up walk unless *rewalk_if_stale* is False,
+        for a caller that walks again itself (:meth:`images`).
         """
         if not self._lock.acquire(blocking=False):
             raise ListingInProgress(
                 f"previous listing of {self.root} still running",
             )
         try:
+            generation = self._generation
             fresh = (
                 self._scan is not None
+                and self._scan.generation == generation
                 and time.monotonic() - self._scan.taken_at < SCAN_TTL_SECONDS
             )
+            walked = None
             if refresh or not fresh:
-                self._scan = self._walk()
-            return self._scan
+                walked = self._scan = self._walk()
+            scan = self._scan
         finally:
             self._lock.release()
+        if walked is not None and rewalk_if_stale and self._is_stale(walked):
+            # A mapping changed under this walk, before its Findings were
+            # written (they were dropped) or after (they are out of date).
+            # Started after the lock is released, so the follow-up walk is not
+            # refused as "still running".
+            self._schedule_rewalk()
+        return scan
+
+    def _schedule_rewalk(self) -> None:
+        """Walk again on a daemon thread, as #303's walks run: never a pool worker."""
+        def rewalk() -> None:
+            try:
+                self.scan(refresh=True)
+            except (LibraryUnreadable, OSError) as exc:
+                # Another walk took over (it sees the new mapping), or the root
+                # blipped: the next listing or sweep walks again.
+                logger.info("folder_library: follow-up walk of %s: %s", self.root, exc)
+
+        thread = threading.Thread(
+            target=rewalk, name=f"folder-rewalk-{self.record_id}", daemon=True,
+        )
+        self._rewalk_thread = thread
+        thread.start()
 
     def summary(self, *, refresh: bool = False) -> dict[str, Any]:
         """Detected Platforms with Image counts, and the Images left out."""
@@ -387,9 +569,29 @@ class FolderLibrary(LibraryDefaults):
             for p in self.summary()["platforms"]
         ]
 
+    def _scan_for_rules(self) -> Scan:
+        """A walk no mapping change overtook, for Rules. Blocking.
+
+        A stale walk is walked once more. If that one is stale too, the
+        listing fails with the transient ``listing_in_progress`` (the sweep
+        skips this Library for the tick and retries on the next), and a
+        follow-up walk is started for the Findings. Rules never see Platform
+        assignments a mapping already changed (PR #322).
+        """
+        scan = self.scan(rewalk_if_stale=False)
+        if not self._is_stale(scan):
+            return scan
+        scan = self.scan(refresh=True, rewalk_if_stale=False)
+        if not self._is_stale(scan):
+            return scan
+        self._schedule_rewalk()
+        raise ListingInProgress(
+            f"Platform mappings changed while {self.root} was listed; listing it again",
+        )
+
     def images(self, platform_id: str) -> list[Image]:
         try:
-            scan = self.scan()
+            scan = self._scan_for_rules()
         except OSError as exc:
             raise LibraryUnreadable(str(exc)) from exc
         entries = scan.by_platform().get(platform_id, [])

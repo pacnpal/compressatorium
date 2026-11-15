@@ -4,6 +4,18 @@
 
 ### Added
 
+- **Findings view and folder Platforms** (#304). A new **Findings** view lists
+  the Images in your folder Libraries that need a decision: a Platform
+  conflict (the header disagrees with the folder) or an Unsorted Image. Each
+  row shows the Library, the Image, the kind, first and last seen, and links
+  to **Open folder** and **Set Platform**; **Dismiss** hides it until its cause
+  changes, and **Show again** undoes that. **Set Platform** ("this folder is
+  PSP") is also on a folder's row menu. Below the header, the nearest folder
+  that is set to or named after a Platform decides (on the same folder, the one
+  you set wins), and a header that disagrees is a conflict. The app never moves or deletes an Image over a
+  Finding. API: `/api/findings`, `/api/platform-mappings`, `/api/platforms`.
+  New tables `platform_mappings`, `findings` and `finding_dismissals`
+  (migration 0013, on top of #303's 0012).
 - **Notifications: webhook and Apprise** (#293). Add a webhook URL or an Apprise
   URL under the new **Settings** page and get one message when a sweep finishes
   (counts, space saved, and the failures inside it) and one when a job you

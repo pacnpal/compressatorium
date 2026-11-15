@@ -754,6 +754,49 @@ export const api = {
   runLibrary: (id, body = {}) =>
     jsonPost(`${API_BASE}/libraries/${encodeURIComponent(id)}/run`, body, {}, 'Run failed'),
 
+  // ── Findings and folder Platform mappings (#304) ───────────────────────
+  listFindings: (includeDismissed = false) =>
+    fetchJson(
+      `${API_BASE}/findings${includeDismissed ? '?include_dismissed=true' : ''}`,
+      undefined,
+      'Failed to list the Findings',
+    ),
+
+  // `fingerprint` is the cause the user was shown; the backend answers 409
+  // when the Finding changed since, so a stale row acts on nothing else.
+  dismissFinding: (id, fingerprint) =>
+    jsonPost(
+      `${API_BASE}/findings/${encodeURIComponent(id)}/dismiss`, { fingerprint }, {},
+      'Failed to dismiss the Finding',
+    ),
+
+  undismissFinding: (id, fingerprint) =>
+    jsonPost(
+      `${API_BASE}/findings/${encodeURIComponent(id)}/undismiss`, { fingerprint }, {},
+      'Failed to show the Finding again',
+    ),
+
+  checkFindings: () =>
+    jsonPost(`${API_BASE}/findings/check`, {}, {}, 'Failed to check the Libraries'),
+
+  listPlatforms: () =>
+    fetchJson(`${API_BASE}/platforms`, undefined, 'Failed to list the Platforms'),
+
+  listPlatformMappings: () =>
+    fetchJson(`${API_BASE}/platform-mappings`, undefined, 'Failed to list the mappings'),
+
+  // `platform: null` clears the folder's mapping.
+  setPlatformMapping: (path, platform) =>
+    fetchJson(
+      `${API_BASE}/platform-mappings`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path, platform }),
+      },
+      'Failed to set the Platform',
+    ),
+
   // Records the metadata to carry across a conversion. MUST be called before
   // the batch is submitted: the provider ids are read from the RomM record for
   // the source file, which goes stale once that file is converted.

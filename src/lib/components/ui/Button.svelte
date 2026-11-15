@@ -8,6 +8,7 @@
    * @property {boolean} [loading]
    * @property {boolean} [fullWidth]
    * @property {string} [title]
+   * @property {string} [ariaLabel] - accessible name when the visible label repeats (per-row actions)
    * @property {(e: MouseEvent) => void} [onclick]
    * @property {import('svelte').Snippet} [children]
    * @property {import('svelte').Snippet} [icon]
@@ -22,6 +23,7 @@
     loading = false,
     fullWidth = false,
     title,
+    ariaLabel,
     onclick,
     children,
     icon,
@@ -31,6 +33,7 @@
 <button
   {type}
   {title}
+  aria-label={ariaLabel}
   class="btn {variant} size-{size}"
   class:full-width={fullWidth}
   class:loading
