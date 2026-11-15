@@ -23,10 +23,16 @@ from services.tools.base import ContentDigest, ContentDigestUnavailable
 from .cso_fixtures import write_ciso, write_dax
 
 IMAGE = "image_data_sha1"
+# z3ds and JWUDTool compare only digests they make themselves, so SHA-256.
+IMAGE256 = "image_data_sha256"
 
 
 def _sha1(data: bytes) -> str:
     return hashlib.sha1(data).hexdigest()
+
+
+def _sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
 
 
 def _image(size: int = 6 * 2048) -> bytes:
@@ -423,11 +429,11 @@ def _z3ds_decoder(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_z3ds_rom_digest_is_the_file_sha1(tmp_path):
+async def test_z3ds_rom_digest_is_the_file_sha256(tmp_path):
     rom = tmp_path / "Game.3ds"
     rom.write_bytes(b"cartridge" * 999)
     assert await _z3ds().content_digest(str(rom)) == ContentDigest(
-        kind=IMAGE, value=_sha1(rom.read_bytes()),
+        kind=IMAGE256, value=_sha256(rom.read_bytes()),
     )
 
 
@@ -437,7 +443,7 @@ async def test_z3ds_container_digest_hashes_the_decoded_payload(tmp_path, z3ds_d
     out = tmp_path / "Game.z3ds"
     write_z3ds(out, rom)
     assert await _z3ds().content_digest(str(out)) == ContentDigest(
-        kind=IMAGE, value=_sha1(rom),
+        kind=IMAGE256, value=_sha256(rom),
     )
 
 
@@ -502,7 +508,7 @@ async def test_real_zstd_decodes_a_multi_frame_payload(tmp_path):
 
     digest = await _z3ds().content_digest(str(out))
 
-    assert digest.value == _sha1(rom)
+    assert digest.value == _sha256(rom)
 
 
 # ---------------------------------------------------------------------------
@@ -553,13 +559,13 @@ def write_wux(path: Path, image: bytes) -> None:
 
 
 @pytest.mark.asyncio
-async def test_wux_digest_is_the_sha1_of_the_image_it_decodes_to(tmp_path, small_wud):
+async def test_wux_digest_is_the_sha256_of_the_image_it_decodes_to(tmp_path, small_wud):
     image = _wud_image(small_wud)
     out = tmp_path / "game.wux"
     write_wux(out, image)
 
     assert await _jwud().content_digest(str(out)) == ContentDigest(
-        kind=IMAGE, value=_sha1(image),
+        kind=IMAGE256, value=_sha256(image),
     )
 
 
@@ -572,7 +578,7 @@ async def test_wud_digest_covers_every_part_of_a_split_set(tmp_path, small_wud):
 
     digest = await _jwud().content_digest(str(tmp_path / "game_part1.wud"))
 
-    assert digest == ContentDigest(kind=IMAGE, value=_sha1(image))
+    assert digest == ContentDigest(kind=IMAGE256, value=_sha256(image))
 
 
 @pytest.mark.asyncio
@@ -598,7 +604,7 @@ async def test_split_wud_parts_are_found_off_the_event_loop(tmp_path, small_wud,
 
     digest = await tool.content_digest(str(tmp_path / "game_part1.wud"))
 
-    assert digest.value == _sha1(image)
+    assert digest.value == _sha256(image)
     assert threads and loop_thread not in threads
 
 

@@ -26,7 +26,7 @@ from services.lock_manager import lock_manager
 from services.stream_digest import content_digest_of, file_chunks
 from services.subprocess_runner import run_detached
 
-from .base import IMAGE_DATA_SHA1_KIND, BaseTool, ContentDigest
+from .base import IMAGE_DATA_SHA256_KIND, BaseTool, ContentDigest
 from .spec import ModeKind, ModeSpec
 
 
@@ -226,7 +226,7 @@ class JwudTool(BaseTool):
         cancel_event: asyncio.Event | None = None,
         within: Sequence[str] | None = None,  # reads no sheet, so unused
     ) -> ContentDigest | None:
-        # Both sides are the SHA1 of the 25 GB disc image: a .wud (with every
+        # Both sides are the SHA-256 of the 25 GB disc image: a .wud (with every
         # part of a split set, in order), or what a .wux's sector table
         # decodes to, hashed as it streams (#301).
         ext = Path(path).suffix.lower()
@@ -241,7 +241,8 @@ class JwudTool(BaseTool):
         else:
             return None
         return await content_digest_of(
-            produce, kind=IMAGE_DATA_SHA1_KIND, cancel_event=cancel_event,
+            produce, kind=IMAGE_DATA_SHA256_KIND, algorithm="sha256",
+            cancel_event=cancel_event,
         )
 
     def active_pids(self) -> list[int]:

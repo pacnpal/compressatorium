@@ -67,6 +67,9 @@ class ContentDigest:
 # DVD, maxcso, z3ds, JWUDTool). One kind is what lets a chain compare a CSO's
 # decoded image with a CHD's data SHA1 (#301).
 IMAGE_DATA_SHA1_KIND = "image_data_sha1"
+# The same, SHA-256, for a tool whose two sides are both digests it makes
+# itself (z3ds, JWUDTool): no outside SHA-1 to match, so SHA-1 is not used.
+IMAGE_DATA_SHA256_KIND = "image_data_sha256"
 
 
 class ContentDigestUnavailable(Exception):

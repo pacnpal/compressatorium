@@ -22,7 +22,7 @@ from services.z3ds_compress import (
 )
 
 from .base import (
-    IMAGE_DATA_SHA1_KIND,
+    IMAGE_DATA_SHA256_KIND,
     BaseTool,
     ContentDigest,
     ContentDigestUnavailable,
@@ -150,22 +150,22 @@ class Z3dsTool(BaseTool):
         cancel_event: asyncio.Event | None = None,
         within: Sequence[str] | None = None,  # reads no sheet, so unused
     ) -> ContentDigest | None:
-        # Both sides are the SHA1 of the raw ROM: the ROM file itself, or what
-        # a Z3DS container's zstd payload decodes to (no temp file, #301).
+        # Both sides are the SHA-256 of the raw ROM: the ROM file itself, or
+        # what a Z3DS container's zstd payload decodes to (no temp file, #301).
         ext = Path(path).suffix.lower()
         if ext in Z3DS_CONVERTIBLE_EXTENSIONS:
             return await content_digest_of(
-                file_chunks([path]), kind=IMAGE_DATA_SHA1_KIND,
-                cancel_event=cancel_event,
+                file_chunks([path]), kind=IMAGE_DATA_SHA256_KIND,
+                algorithm="sha256", cancel_event=cancel_event,
             )
         if ext not in Z3DS_DECOMPRESS_EXTENSIONS:
             return None
         try:
-            value = await self._service.decoded_sha1(path, cancel_event=cancel_event)
+            value = await self._service.decoded_sha256(path, cancel_event=cancel_event)
         except (RuntimeError, ValueError, OSError) as e:
             # ReadCancelled is none of these, so a cancel propagates untouched.
             raise ContentDigestUnavailable(str(e)) from e
-        return ContentDigest(kind=IMAGE_DATA_SHA1_KIND, value=value)
+        return ContentDigest(kind=IMAGE_DATA_SHA256_KIND, value=value)
 
     def active_pids(self) -> list[int]:
         return self._service.active_pids()

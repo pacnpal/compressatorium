@@ -33,6 +33,19 @@ async def test_hash_stream_hashes_every_chunk_in_order():
     )
 
 
+def test_the_sha1_hasher_is_declared_not_for_security():
+    """SHA-1 stays only where a CHD header's data SHA-1 is on the other side;
+    it is created as a non-security hash, so no scanner suppression is needed."""
+    import inspect
+
+    from services import stream_digest
+
+    source = inspect.getsource(stream_digest)
+    assert "hashlib.sha1(" not in source
+    assert "nosec" not in source and "nosemgrep" not in source
+    assert stream_digest.new_hasher("sha1").hexdigest() == hashlib.sha1(b"").hexdigest()
+
+
 @pytest.mark.asyncio
 async def test_hash_files_reads_the_files_end_to_end(tmp_path):
     a, b = tmp_path / "a", tmp_path / "b"

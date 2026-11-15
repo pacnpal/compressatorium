@@ -152,10 +152,10 @@ class Z3DSCompressService:
         zstd_path = shutil.which("zstd")
         return [zstd_path, "-d", "-c", "-q"] if zstd_path else None
 
-    async def decoded_sha1(
+    async def decoded_sha256(
         self, file_path: str, *, cancel_event: asyncio.Event | None = None,
     ) -> str:
-        """SHA1 of the ROM a Z3DS container decodes to, streamed (#301).
+        """SHA-256 of the ROM a Z3DS container decodes to, streamed (#301).
 
         The payload is fed to ``zstd -dc`` and its stdout hashed as it arrives
         (``SubprocessRunner.hash_stdout``), so no decoded ROM is written. The
@@ -169,7 +169,7 @@ class Z3DSCompressService:
             file_path, cancel_event=cancel_event,
         )
         return await self._runner.hash_stdout(
-            cmd, stdin_path=file_path, stdin_offset=offset,
+            cmd, algorithm="sha256", stdin_path=file_path, stdin_offset=offset,
             cancel_event=cancel_event,
         )
 

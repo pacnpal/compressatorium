@@ -43,9 +43,10 @@ def new_hasher(algorithm: str):
     """A hasher with ``update``/``hexdigest``: ``sha1``, ``sha256`` or ``crc32``."""
     if algorithm == "crc32":
         return _Crc32()
-    if algorithm == "sha1":
-        return hashlib.sha1(usedforsecurity=False)  # nosec # nosemgrep: insecure-hash-algorithm-sha1  # pylint: disable=unexpected-keyword-arg
-    return hashlib.new(algorithm)
+    # SHA-1 only where the other side of a comparison is a SHA-1 the app does
+    # not choose (a CHD header's data SHA-1: maxcso and cso_to_chd). It is a
+    # content fingerprint, never a security check, and is declared so.
+    return hashlib.new(algorithm, usedforsecurity=False)
 
 
 async def hash_stream(

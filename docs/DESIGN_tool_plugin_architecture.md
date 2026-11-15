@@ -2372,8 +2372,8 @@ in `_verifying` so the stall reporter treats it like the container check.
 | dolphin | `.iso`: SHA1 of the file (detached read, no subprocess). `.rvz`/`.wia`/`.gcz`/`.wbfs`: `dolphin-tool verify --algorithm sha1` | same rule by extension |
 | chdman (`createcd`, `createdvd`) | `.iso`/`.bin`: SHA1 of the file. `.cue`/`.gdi`: SHA1 of the track files the sheet names, read end to end in sheet order, each file once, plus the sheet's track table | `.chd`: `chdman info`, then by metadata tag. DVD (`DVD `) or hard disk (`GDDD`): the `Data SHA1` line. CD (`CHCD`/`CHTR`/`CHT2`): `chdman extractcd` to a `.cue` in a scratch dir, then the sheet rule. GD-ROM (`CHGT`/`CHGD`): the same, extracted as a `.gdi` |
 | maxcso (`cso_compress`, `cso2_compress`, `zso_compress`, `dax_compress`) | `.iso`: SHA1 of the file | `.cso`/`.zso`/`.dax`: decoded in Python by `utils.cso_decode` and hashed as it streams (no temp file) |
-| z3ds (`z3ds_compress`) | the ROM: SHA1 of the file | the payload after the Z3DS header and metadata, fed to `zstd -dc`; stdout hashed by `SubprocessRunner.hash_stdout` (no temp file) |
-| jwud (`jwud_compress`) | `.wud`: SHA1 of the file, or of every part of a split set in order | `.wux`: the sector table decoded in Python by `jwudtool.iter_wux_image` and hashed as it streams (no temp file) |
+| z3ds (`z3ds_compress`) | the ROM: SHA-256 of the file | the payload after the Z3DS header and metadata, fed to `zstd -dc`; stdout hashed by `SubprocessRunner.hash_stdout` (no temp file) |
+| jwud (`jwud_compress`) | `.wud`: SHA-256 of the file, or of every part of a split set in order | `.wux`: the sector table decoded in Python by `jwudtool.iter_wux_image` and hashed as it streams (no temp file) |
 | nsz (`nsz_compress`) | `.nsp`/`.xci`: SHA256 of the file | `.nsz`: the `[NSP SHA256]` line `nsz -V` prints for the NSP it rebuilds in a hashing stream. `.xcz`: `nsz -D` into a headroom-checked scratch dir, then SHA256 of the `.xci` |
 | romz (`romz_7z`, `romz_zip`) | the ROM: its basename, size and CRC32, as the one member it is archived as | `.7z`/`.zip`: every member's name, size and stored CRC32, read from the listing (`archive_members.read_member_crcs`) |
 | chain (`cso_to_chd`) | the first step's tool (maxcso: the decoded CSO) | the final step's tool (chdman: the CHD's data SHA1) |
@@ -2485,10 +2485,14 @@ Round-trips (a test pins zero exceptions). PS3 folder to ISO (`folder_to_iso`),
 the XISO trim (`xiso_rewrite`) and chdman `createld` offer no delete-source at
 all, and `nkit_to_rvz` still does not (its comment says why), so none of them
 needs a digest. Kinds:
-maxcso, z3ds and jwud use chdman's `image_data_sha1` (now
-`tools.base.IMAGE_DATA_SHA1_KIND`): the SHA1 of the image's bytes. nsz uses
-`switch_image_sha256`, romz `rom_members_crc32` (SHA1 of the sorted
-`name, size, crc` lines, so a missing, extra or renamed member, or another
+maxcso uses chdman's `image_data_sha1` (now
+`tools.base.IMAGE_DATA_SHA1_KIND`): the SHA-1 of the image's bytes. SHA-1
+because `cso_to_chd` compares the decoded CSO with a CHD header's data SHA-1,
+which the app does not choose; `stream_digest.new_hasher` creates it with
+`usedforsecurity=False`, so no scanner suppression is needed. z3ds and JWUDTool
+compare only digests they make themselves, so they use `image_data_sha256`
+(`IMAGE_DATA_SHA256_KIND`, SHA-256). nsz uses `switch_image_sha256`, romz
+`rom_members_crc32` (SHA-256 of the sorted `name, size, crc` lines, so a missing, extra or renamed member, or another
 size or CRC, gives another value). romz trusts the CRCs the archive stores
 because the container check before it (`7z t`) decompresses every member and
 checks it against that CRC. A zip name written without the UTF-8 flag (p7zip
