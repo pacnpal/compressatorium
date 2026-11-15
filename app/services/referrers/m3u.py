@@ -161,8 +161,8 @@ def _parse_line(text: str) -> _Line | None:
     entry = text[start:end]
     if not entry or entry.startswith("#"):
         return None
-    head, bar, _ = entry.partition("|")
-    core = head.rstrip(_WS) if bar else head
+    head, label_sep, _ = entry.partition("|")
+    core = head.rstrip(_WS) if label_sep else head
     quote = ""
     if len(core) >= 2 and core[0] == core[-1] and core[0] in "\"'":
         quote, core = core[0], core[1:-1]
