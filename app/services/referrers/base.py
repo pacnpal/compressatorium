@@ -20,9 +20,10 @@ from __future__ import annotations
 
 import os
 import tempfile
+import threading
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -74,6 +75,62 @@ class Referrer(ABC):
     @abstractmethod
     def apply(self, change: ReferrerChange) -> None:
         """Write *change* atomically with a one-time backup, or raise ReferrerError."""
+
+
+def file_identity(path: str) -> tuple[int, int, int, int] | None:
+    """``(st_dev, st_ino, size, mtime_ns)`` of *path*, or None if it's gone."""
+    try:
+        st = os.stat(path)
+    except (OSError, ValueError):
+        return None
+    return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
+
+
+@dataclass
+class WriteGuard:
+    """What must still hold when a Referrer writes, checked under its lock.
+
+    The hook runs on a thread it can abandon (timeout, Cancel). After that the
+    job lets go of the output lock and another conversion may replace the
+    output, so a late write could point a playlist at a different disc.
+    ``abandoned`` is set by the hook when it stops waiting; ``outputs`` holds
+    each output's identity captured when the hook started.
+    """
+
+    abandoned: threading.Event
+    outputs: dict[str, tuple[int, int, int, int] | None]
+
+    def check(self, target: str) -> None:
+        if self.abandoned.is_set():
+            raise ReferrerError(target, "the job stopped waiting for it; not writing")
+        for path, identity in self.outputs.items():
+            if file_identity(path) != identity:
+                raise ReferrerError(
+                    target, f"the output {os.path.basename(path)} changed after its check",
+                )
+
+
+_guard = threading.local()
+
+
+@contextmanager
+def write_guard(guard: WriteGuard):
+    """Make *guard* the one ``check_write`` consults on this thread."""
+    previous = getattr(_guard, "current", None)
+    _guard.current = guard
+    try:
+        yield guard
+    finally:
+        _guard.current = previous
+
+
+def check_write(target: str) -> None:
+    """Raise ReferrerError unless writing *target* is still allowed. Call it
+    under the target's lock, right before each write. A no-op outside the hook
+    (planning, or a caller that writes a new playlist)."""
+    guard = getattr(_guard, "current", None)
+    if guard is not None:
+        guard.check(target)
 
 
 def _keep_owner(tmp: str, original: os.stat_result) -> None:

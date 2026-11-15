@@ -9,7 +9,8 @@ folder and the discs in a (hidden) subfolder.
 One reader (``_read_line``) reads every line the way a C byte reader does:
 first-line BOM dropped, C-locale spaces trimmed (Unicode spaces are part of
 the name), ``#`` lines skipped, a RetroArch ``path|label`` split at the first
-``|``, quotes around the path dropped, and a slash-free entry with
+``|``, quotes around the path dropped (as some readers do; RetroArch keeps
+them, and ``_rewrite`` checks that reading too, failing safe), and a slash-free entry with
 backslashes read as backslash-separated.
 
 An entry is rewritten only when its path resolves exactly to a replaced file,
@@ -47,7 +48,13 @@ from dataclasses import dataclass
 
 from utils.path_utils import volume_root_for
 
-from .base import Referrer, ReferrerChange, ReferrerError, atomic_write_bytes
+from .base import (
+    Referrer,
+    ReferrerChange,
+    ReferrerError,
+    atomic_write_bytes,
+    check_write,
+)
 
 PLAYLIST_EXT = ".m3u"
 BACKUP_SUFFIX = ".bak"
@@ -310,26 +317,30 @@ def _wide_text_check(playlist: str, data: bytes, renames: _Renames) -> bool:
     encoding = _utf16_encoding(data)
     if encoding is None and b"\x00" not in data:
         return False
-    texts: list[str] = []
+    readings: list[tuple[str, str]] = []  # (how it was read, text)
     if encoding is not None:
         try:
-            texts = [data.decode(encoding)]
+            readings = [("UTF-16", data.decode(encoding))]
         except UnicodeDecodeError:
-            texts = [data.decode(encoding, errors="replace")]
-    if not data.startswith((b"\xff\xfe", b"\xfe\xff")):
-        # Without a BOM the UTF-16 guess may be wrong (an 8-bit file with a
-        # zero-filled tail fills one parity with NULs), and a NUL-stripped
-        # 8-bit reading is what a byte reader sees. Always check those too.
-        stripped = data.replace(b"\x00", b"")
-        texts += [
-            stripped.decode("utf-8", errors="replace"),
-            stripped.decode("cp1252", errors="replace"),
-        ]
-    for text in texts:
+            readings = [("UTF-16", data.decode(encoding, errors="replace"))]
+    # The UTF-16 guess may be wrong (an 8-bit file with a zero-filled tail
+    # fills one parity with NULs), and a file can mix content (an 8-bit line
+    # appended to a UTF-16 one). A NUL-stripped 8-bit reading is what a line
+    # reader sees, so always check those too: for real UTF-16 ASCII text it
+    # is the same text, so this adds no false keeps.
+    stripped = data.replace(b"\x00", b"")
+    readings += [
+        ("NUL bytes", stripped.decode("utf-8", errors="replace")),
+        ("NUL bytes", stripped.decode("cp1252", errors="replace")),
+        # Long non-ASCII names in UTF-16 have too few NULs for the parity
+        # guess: read both byte orders as well.
+        ("UTF-16", data.decode("utf-16-le", errors="replace")),
+        ("UTF-16", data.decode("utf-16-be", errors="replace")),
+    ]
+    for kind, text in readings:
         folded = _fold(text)
         mention = next((n for n in sorted(renames.names) if n and n in folded), None)
         if mention:
-            kind = "UTF-16" if encoding else "NUL bytes"
             raise ReferrerError(
                 playlist, f"isn't plain text ({kind}) and may name {mention}",
             )
@@ -393,13 +404,16 @@ def _rewrite(
             named = None
             if key is None and _named_file(parsed.path) in renames.names:
                 named = _named_file(parsed.path)
-            elif parsed.path != parsed.entry and _raw_names_a_source(
-                parsed.entry, playlist_dir, renames,
-            ):
-                # A plain line reader (no label split, no unquoting) would
-                # reach a replaced file through this line; the label/quote
-                # reading doesn't. Don't guess: keep the Source.
-                named = _named_file(parsed.entry)
+            elif parsed.path != parsed.entry:
+                # Other readers read this line differently: a plain line
+                # reader takes it whole; RetroArch splits the label but keeps
+                # quotes. If either reaches or names a replaced file, the
+                # label/quote reading doesn't, so don't guess: keep the Source.
+                label_split = parsed.entry.partition("|")[0].rstrip(_WS)
+                for literal in dict.fromkeys((parsed.entry, label_split)):
+                    if literal and _raw_names_a_source(literal, playlist_dir, renames):
+                        named = _named_file(literal)
+                        break
             if named is not None:
                 raise ReferrerError(
                     playlist, f"line {number} names {named} but doesn't point at it",
@@ -510,7 +524,9 @@ class M3uReferrer(Referrer):
             try:
                 backup = path + BACKUP_SUFFIX
                 if not os.path.lexists(backup):
+                    check_write(path)
                     atomic_write_bytes(backup, original, like=path)
+                check_write(path)
                 atomic_write_bytes(path, updated)
             except OSError as exc:
                 raise ReferrerError(path, exc.strerror or str(exc)) from exc

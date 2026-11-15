@@ -884,8 +884,8 @@ async def _add_referrer_changes(
         return
     image_path = strip_archive_path(file_path) if "::" in file_path else file_path
     try:
-        changes = await run_in_threadpool(
-            referrers.plan_changes, image_path, {p: output_path for p in delete_paths},
+        changes = await referrers.plan_changes_bounded(
+            image_path, {p: output_path for p in delete_paths},
         )
     except Exception as exc:  # noqa: BLE001 - the job would keep the Source too
         target = getattr(exc, "target", None) or image_path
