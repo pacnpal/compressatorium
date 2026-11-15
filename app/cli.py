@@ -82,6 +82,8 @@ class Item:
     check: str | None = None
     source_deleted: bool = False
     delete_source: bool = False
+    # --delete-source was asked for and this Source is kept: the run reports it.
+    kept_source: bool = False
     reason: str | None = None
 
     def convert_line(self) -> dict:
@@ -354,9 +356,8 @@ def _open_db(dry_run: bool) -> bool:
             return False
         _db.init_engine(path, create_schema=False)
         return True
-    path = _db.resolve_db_path(settings.db_path, data_dir=settings.data_dir)
-    _db.init_engine(path, create_schema=False)
-    _db.apply_migrations()
+    # The web startup's own initialisation, legacy JSON import included.
+    _db.init_app_database(settings)
     return True
 
 
@@ -528,6 +529,8 @@ def _decide_deletes(items: list[Item], args) -> None:
 
     if not args.delete_source:
         return
+    from utils.delete_plan import other_images_in_archive
+
     routed = [i for i in items if i.mode and not i.status]
     shared = get_disallowed_archive_paths([i.path for i in routed])
     for item in routed:
@@ -535,8 +538,16 @@ def _decide_deletes(items: list[Item], args) -> None:
             item.reason = f"Source kept: {item.mode} cannot delete its Source"
         elif "::" in item.path and item.path.split("::", 1)[0] in shared:
             item.reason = "Source kept: several Images come from this archive"
+        elif others := other_images_in_archive(item.path):
+            # The archive's whole membership, whatever routing kept: an archive
+            # goes only when this is the only Image in it (the delete plan's
+            # own rule, which the web submit hits too).
+            archive = os.path.basename(item.path.split("::", 1)[0])
+            item.reason = f"Source kept: {archive} also holds {', '.join(others[:3])}"
         else:
             item.delete_source = True
+            continue
+        item.kept_source = True
 
 
 async def _prepare_group(request, group: list[Item]):
@@ -604,7 +615,7 @@ async def _prepare(items: list[Item], args) -> list[tuple]:
             by_path[item.path] = item
             by_path.setdefault(os.path.realpath(item.path), item)
         for batch in await _prepare_group(request, group):
-            for path, reason in batch.skipped:
+            for path, reason in batch.skipped.items():
                 item = by_path.get(path)
                 if item is None:
                     continue
@@ -806,7 +817,7 @@ async def convert(args, printer: Printer, state: RunState) -> int:
                 printer.line(item.convert_line())
     else:
         await _run_jobs(prepared, printer, state)
-    failed = any(i.status in ("failed", "cancelled") for i in items)
+    failed = any(i.status in ("failed", "cancelled") or i.kept_source for i in items)
     return EXIT_FAILED if failed else EXIT_OK
 
 
@@ -815,52 +826,95 @@ async def convert(args, printer: Printer, state: RunState) -> int:
 # --------------------------------------------------------------------------- #
 
 
-def _verify_tool(path: str, has_db: bool = False) -> tuple:
+def _verify_tool(path: str, record: dict | None = None) -> tuple:
     """``(tool, None)`` to check ``path`` with, ``(None, reason)`` to skip it.
 
-    ``(None, None)`` means no tool checks this kind of file at all.
+    ``(None, None)`` means no tool checks this kind of file at all. The order
+    (#306, review r7):
 
-    * A file with a stored check was an Image this app checked, so it is
-      checked again with the tool that claims its name even when that tool's
-      content probe no longer recognises it (a damaged ``.gba.zip`` stops
-      looking like a single-ROM archive): damage must fail, not vanish.
-    * Where the extension is shared across Platforms (a generic ``.iso``), the
-      Image's Platform (``detect_platform``) picks among the claimants; when no
-      claimant serves it, the Image is skipped as unsupported.
+    1. **A stored check** (``record``): this app checked the file before, so
+       it goes back to the tool of the mode recorded in ``produced_meta``
+       (makeps3iso for a PS3 ISO it built), else to the tool that claims its
+       name, with no Platform narrowing: damage must fail, not vanish. A
+       recorded mode whose tool cannot verify is reported, not failed.
+    2. **The detected Platform**, where the extension is shared with a tool
+       for another Platform (a generic ``.iso``): it picks among the
+       claimants, and an Image no claimant serves is skipped as unsupported.
+    3. **Skip**: a shared extension whose Platform cannot be determined is
+       never handed to a guessed verifier.
     """
-    from services.platform_detect import canonical_slug, detect_platform
     from services.tools import registry
-    from services.verification_store import verification_store
-    from utils.path_utils import match_extension
 
+    if record is not None:
+        return _route_stored(path, record, registry)
     tools = registry.tools_checking_path(path)
-    if not tools and has_db and verification_store._get_record_sync(path):
-        claimed = registry.tool_for_verify(path)
-        tools = [claimed] if claimed is not None else []
     if not tools:
         return None, None
-    shared = any(
-        tool not in tools
-        and match_extension(path, tool.input_extensions | tool.verify_extensions)
-        for tool in registry.all()
-    )
-    if shared:
-        platform = detect_platform(path).platform
-        if platform:
-            def serves(tool) -> bool:
-                slugs = {canonical_slug(s) for s in tool.platform_slugs}
-                return not slugs or platform in slugs
+    if _shared_across_platforms(path, tools, registry):
+        from services.platform_detect import detect_platform
 
-            claimed_anywhere = any(
-                platform in {canonical_slug(s) for s in t.platform_slugs}
-                for t in registry.all()
-            )
-            narrowed = [t for t in tools if serves(t)] if claimed_anywhere else tools
-            if not narrowed:
-                return None, f"No check for {platform} Images in this format"
-            tools = narrowed
+        platform = detect_platform(path).platform
+        if not platform:
+            return None, "Its Platform couldn't be determined, so no check was chosen"
+        narrowed = [t for t in tools if _tool_serves(t, platform, registry)]
+        if not narrowed:
+            return None, f"No check for {platform} Images in this format"
+        tools = narrowed
     best = registry.tool_for_verify(path)
     return (best if best in tools else tools[0]), None
+
+
+def _route_stored(path: str, record: dict, registry) -> tuple:
+    mode = (record.get("produced_meta") or {}).get("mode")
+    if mode:
+        try:
+            tool = registry.for_mode(mode)
+        except KeyError:
+            tool = None
+        if tool is not None:
+            if registry.mode_supports_verify(mode):
+                return tool, None
+            return None, f"Its stored check came from {mode}, which can't be checked here"
+    claimants = registry.tools_checking_path(path)
+    best = registry.tool_for_verify(path)
+    tool = best if best is not None else (claimants[0] if claimants else None)
+    if tool is None:
+        return None, "It has a stored check, but no tool can check this kind of file"
+    return tool, None
+
+
+def _tool_slugs(tool) -> set:
+    from services.platform_detect import canonical_slug
+
+    return {canonical_slug(slug) for slug in tool.platform_slugs}
+
+
+def _shared_across_platforms(path: str, tools: list, registry) -> bool:
+    """Whether a tool for another Platform also reads ``path``'s extension.
+
+    A generic ``.iso`` is (chdman's PS2 discs, Dolphin's GameCube discs); a
+    ``.cso`` is not, though the chain tool also reads it, because the chain
+    names no Platform of its own.
+    """
+    from utils.path_utils import match_extension
+
+    claimed = set().union(*(_tool_slugs(t) for t in tools))
+    for other in registry.all():
+        if other in tools:
+            continue
+        if not match_extension(path, other.input_extensions | other.verify_extensions):
+            continue
+        if _tool_slugs(other) - claimed:
+            return True
+    return False
+
+
+def _tool_serves(tool, platform: str, registry) -> bool:
+    slugs = _tool_slugs(tool)
+    if not slugs or platform in slugs:
+        return True
+    # A Platform no tool names rules nothing out (as `serves_platform` does).
+    return not any(platform in _tool_slugs(t) for t in registry.all())
 
 
 def _with_stored_checks(items: list[Item], paths: list[str], records: list[dict]) -> list[Item]:
@@ -929,6 +983,11 @@ async def _verify_one(path: str, tool, has_db: bool, since, dry_run: bool) -> di
         line["status"], line["reason"] = "intact", result.get("message")
         await verification_store.mark_verified(path)
         return line
+    if result.get("uncheckable"):
+        # The tool won't check it here (an archive safety rule refused it):
+        # not a failure, and what was stored stays.
+        line["status"], line["reason"] = "skipped", result.get("message")
+        return line
     line["status"] = "failed"
     no_verdict = ("cancelled", "abandoned", "inconclusive")
     if "error" in result or any(result.get(flag) for flag in no_verdict):
@@ -954,9 +1013,9 @@ async def verify(args, printer: Printer, state: RunState) -> int:
 
     has_db = _open_db(args.dry_run)
     items = await run_in_threadpool(lambda: _discover(paths, for_verify=True))
-    if has_db:
-        from services.verification_store import verification_store
+    from services.verification_store import verification_store
 
+    if has_db:
         items = _with_stored_checks(items, paths, await verification_store.all_records())
     failed = False
     # Asked once per tool per run, dry runs included: a probe can walk the
@@ -965,7 +1024,8 @@ async def verify(args, printer: Printer, state: RunState) -> int:
     for item in items:
         if state.stopping:
             break
-        tool, unsupported = await run_in_threadpool(_verify_tool, item.path, has_db)
+        record = await verification_store.get_record(item.path) if has_db else None
+        tool, unsupported = await run_in_threadpool(_verify_tool, item.path, record)
         if tool is None:
             if unsupported or item.explicit:
                 printer.line({"path": item.path, "status": "skipped", "tool": None,

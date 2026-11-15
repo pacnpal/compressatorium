@@ -335,6 +335,8 @@ class JobManager:
         # would each be accepted. Dropped when the job leaves the queue; only
         # live jobs are ever consulted.
         self._output_keys: Dict[str, Tuple[str, ...]] = {}
+        # The files each running job holds a shared input lock on (#306).
+        self._input_locks: Dict[str, List[str]] = {}
         # Jobs currently inside the verify phase, mapped to the monotonic clock
         # reading when that phase began. Verification emits no progress and can
         # legitimately run for many minutes, so the stalled-job warning reports
@@ -1235,7 +1237,13 @@ class JobManager:
             paths.append(job.file_path)
         return any(lock_manager.is_within_locked_dir(p) for p in paths if p)
 
-    async def _defer_blocked_job(self, job_id: str, *, output_lock_held: bool) -> None:
+    async def _defer_blocked_job(
+        self,
+        job_id: str,
+        *,
+        output_lock_held: bool,
+        message: str = "Waiting for an in-progress folder conversion to finish...",
+    ) -> None:
         """Release a job blocked by a directory subtree lock and re-queue it.
 
         The job waits its turn in the queue and is re-dispatched once the folder
@@ -1250,7 +1258,7 @@ class JobManager:
             del self._cancel_events[job_id]
         concurrency_manager.release(job_id)
         if job is not None:
-            job.message = "Waiting for an in-progress folder conversion to finish..."
+            job.message = message
             await self._notify_subscribers(
                 job_id,
                 {
@@ -1341,6 +1349,29 @@ class JobManager:
             if os.path.exists(path):
                 tracks.append(path)
         return tracks
+
+    def _input_paths(self, job: ConversionJob) -> List[str]:
+        """The files a file-input job reads: its Source (the archive, for a
+        member) and the Source's companions (cue/gdi tracks, split parts)."""
+        if "::" in job.file_path:
+            return [job.file_path.split("::", 1)[0]]
+        return [job.file_path, *self._track_candidate_paths(job.file_path)]
+
+    def _hold_inputs(self, job_id: str, job: ConversionJob) -> bool:
+        """Take a shared lock on every file the job reads, or none of them."""
+        held: List[str] = []
+        for path in dict.fromkeys(self._input_paths(job)):
+            if not lock_manager.acquire_input_lock(path):
+                for taken in held:
+                    lock_manager.release_input_lock(taken)
+                return False
+            held.append(path)
+        self._input_locks[job_id] = held
+        return True
+
+    def _release_inputs(self, job_id: str) -> None:
+        for path in self._input_locks.pop(job_id, []):
+            lock_manager.release_input_lock(path)
 
     def _candidate_paths(self, job: ConversionJob) -> List[str]:
         paths = []
@@ -2875,6 +2906,21 @@ class JobManager:
                 await self._defer_blocked_job(job_id, output_lock_held=True)
                 return
 
+        # Every job, whichever entry point queued it, holds a shared lock on
+        # the files it reads until it ends (#306). Other processes see it: the
+        # web guard's exact-path probe refuses to rename or delete them, and a
+        # job writing one of those paths can't take its output lock. Readers
+        # share it. A folder input already holds its subtree lock above.
+        if job.input_kind != InputKind.DIRECTORY and not await run_in_threadpool(
+            self._hold_inputs, job_id, job,
+        ):
+            await self._defer_blocked_job(
+                job_id,
+                output_lock_held=True,
+                message="Waiting for another job to finish writing the Source...",
+            )
+            return
+
         job.status = JobStatus.PROCESSING
         job.started_at = datetime.now(timezone.utc)
         # Restart the progress clock at the moment work actually begins. It was
@@ -3376,6 +3422,10 @@ class JobManager:
                         else:
                             delete_order = expected_paths
 
+                        # Let go of this job's own read locks first, or the
+                        # check below would find its Source held by itself.
+                        # Another job reading it still holds its own.
+                        self._release_inputs(job_id)
                         for path in expected_paths:
                             _, is_locked = lock_manager.check_file_status(path)
                             if is_locked:
@@ -3509,6 +3559,7 @@ class JobManager:
             # Release the directory subtree lock held by a folder->iso job.
             if dir_lock_acquired:
                 lock_manager.release_dir_lock(job.file_path)
+            self._release_inputs(job_id)
 
             concurrency_manager.release(job_id)
 

@@ -26,6 +26,7 @@ from services.disc_id import (
 )
 from services.lock_manager import lock_manager
 from utils.delete_plan import sheet_track_paths
+from utils.sheet_text import sheet_is_readable
 
 from .base import BaseTool
 from .spec import ModeKind, ModeSpec
@@ -78,6 +79,8 @@ _LD_PLATFORMS = frozenset({"laseractive"})
 # createdvd, the smaller reader. PSP (UMD), PS3 and the Nintendo and Xbox discs
 # are never CDs chdman reads, so ``ps2`` is the only one.
 _CD_READS = frozenset({".cue", ".gdi", ".iso"})
+# Track sheets: the probe reads the tracks they name (``header_reads``).
+_SHEET_EXTS = frozenset({".cue", ".gdi"})
 _DVD_READS = frozenset({".iso"})
 _NONE: frozenset[str] = frozenset()
 _CREATE_MODES = {
@@ -188,8 +191,11 @@ class ChdmanTool(BaseTool):
         # through their sector-0 system ids.
         return disc_platform(path)
 
-    def header_reads(self, path: str) -> list[str]:
-        # A .cue/.gdi is answered from the tracks it names.
+    def header_reads(self, path: str) -> list[str] | None:
+        # A .cue/.gdi is answered from the tracks it names; None when the
+        # sheet is unreadable (oversized), so the answer is not cached.
+        if Path(path).suffix.lower() in _SHEET_EXTS and not sheet_is_readable(path):
+            return None
         return sheet_track_paths(path)
 
     # chdman's extract/copy modes take .chd input, but a .chd is not a

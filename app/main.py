@@ -234,75 +234,11 @@ async def _serve(app: FastAPI):
     raise_open_file_limit()
 
     # Initialise the SQLite DB and run any pending JSON → SQLite migrations
-    # BEFORE any store is touched (dat_store.has_dats() below needs it).
-    from pathlib import Path
+    # BEFORE any store is touched (dat_store.has_dats() below needs it). The
+    # CLI runs the same function before it writes anything (#306).
     from services import db as _db
 
-    db_path = _db.resolve_db_path(settings.db_path, data_dir=settings.data_dir)
-    # Initialise the engine *without* create_all, Alembic owns the
-    # schema on the production path.  apply_migrations then stamps
-    # pre-Alembic DBs or upgrades the rest.  Only after the schema is
-    # guaranteed at head do we run the JSON→SQLite importers.
-    _db.init_engine(db_path, create_schema=False)
-    _db.apply_migrations()
-
-    _config_dir = Path(settings.data_dir)
-
-    def _resolve_legacy_json_store(env_var: str, default_filename: str) -> Path:
-        """Return the JSON migration source path, honouring any legacy env-var override."""
-        default_path = _config_dir / default_filename
-        legacy_override = os.environ.get(env_var)
-        if not legacy_override:
-            return default_path
-        resolved_path = Path(legacy_override)
-        if not resolved_path.exists():
-            logger.warning(
-                "db.migrate: legacy JSON store override %s=%s does not exist; "
-                "falling back to default store %s",
-                env_var,
-                resolved_path,
-                default_path,
-            )
-            return default_path
-        if not resolved_path.is_file() or not os.access(resolved_path, os.R_OK):
-            logger.warning(
-                "db.migrate: legacy JSON store override %s=%s is not a readable file; "
-                "falling back to default store %s",
-                env_var,
-                resolved_path,
-                default_path,
-            )
-            return default_path
-        logger.info(
-            "db.migrate: using legacy JSON store override for migration %s=%s",
-            env_var,
-            resolved_path,
-        )
-        if resolved_path != default_path and default_path.exists():
-            logger.warning(
-                "db.migrate: legacy JSON store override %s=%s will be used for migration; "
-                "default store %s also exists and will not be imported in this run",
-                env_var,
-                resolved_path,
-                default_path,
-            )
-        return resolved_path
-
-    _db.init_and_migrate(
-        db_path,
-        dat_store_json=_resolve_legacy_json_store(
-            "CHD_DAT_STORE", "dat_store.json",
-        ),
-        verification_json=_resolve_legacy_json_store(
-            "CHD_VERIFICATION_STORE", "verified_chds.json",
-        ),
-        chd_metadata_json=_resolve_legacy_json_store(
-            "CHD_METADATA_STORE", "chd_metadata.json",
-        ),
-        dat_sync_json=_resolve_legacy_json_store(
-            "CHD_DAT_SYNC_STORE", "dat_sync.json",
-        ),
-    )
+    _db.init_app_database(settings)
     explicit_volumes = [v.strip() for v in str(settings.chd_volumes).split(",") if v.strip()]
     discovered_volumes = [] if explicit_volumes else settings.scan_data_mounts_on_startup()
     logger.info(f"Compressatorium v{get_version()} starting...")

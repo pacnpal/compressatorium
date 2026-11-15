@@ -29,7 +29,7 @@ from pathlib import Path
 
 from config import settings
 from logging_setup import get_logger
-from services.archive import archive_service
+from services.archive import ArchiveSafetyRefused, archive_service
 from services.archive_members import read_archive_members
 from services.subprocess_runner import (
     ConversionCancelled,
@@ -44,6 +44,12 @@ from services.subprocess_runner import (
     verify_exception_event,
 )
 from utils.junk import is_junk_path
+
+try:
+    from py7zr.exceptions import PasswordRequired as _PasswordRequired
+except ImportError:  # pragma: no cover - py7zr ships in requirements
+    class _PasswordRequired(Exception):
+        """Stands in when py7zr is missing; never raised."""
 
 # SubprocessRunner "owner" for the shared priority/timeout policy. An optional
 # COMPRESSATORIUM_ROMZ_* override takes precedence over the tool-neutral
@@ -138,6 +144,14 @@ class NotSingleRomArchive(ValueError):
     """A readable archive that holds no ROM, or more than one file."""
 
 
+# Every 7z command that reads an archive names a password, so 7z never stops
+# to ask for one: an encrypted archive fails at once ("Wrong password") rather
+# than waiting on the terminal of a CLI run (#306). Not on `a`, where the
+# switch would encrypt the archive being written. The shared runner also gives
+# every child /dev/null for stdin.
+_NO_PASSWORD = "-pcompressatorium-no-password"
+
+
 class RomzService:
     """Wrapper for the 7z binary, packing/unpacking handheld ROM dumps."""
 
@@ -173,7 +187,15 @@ class RomzService:
         entries: list[tuple[str, int, bool]] = []
         for member in read_archive_members(archive_path):
             if member.is_symlink:
-                raise ValueError("Archive contains a symlink member")
+                raise ArchiveSafetyRefused(
+                    "Archive contains a symlink member", rule="a symlink member",
+                )
+            if member.is_encrypted:
+                # romz never writes one, and 7z could only ask for a password.
+                raise ArchiveSafetyRefused(
+                    f"Archive member is encrypted: {member.name}",
+                    rule=f"an encrypted member ({member.name})",
+                )
             # size is None only when the container omits an uncompressed size;
             # treat that as 0 for the entry/limit accounting (matches the prior
             # ``entry.uncompressed or 0``).
@@ -245,19 +267,40 @@ class RomzService:
     def claims_for_verify(cls, archive_path: str) -> bool:
         """Whether a check of ``archive_path`` belongs to romz (#306).
 
-        Only a readable archive that is plainly not a single-ROM one (no ROM,
-        or more than one file) is someone else's. An archive that cannot be
-        read, or that the single-ROM rules reject for another reason, is
-        claimed, so the check runs and reports it: a truncated ``.gba.zip``
-        must fail, not go unchecked. The listing's ``is_single_rom_archive``
+        The one place romz classifies an archive for a verify run. The shape
+        is decided first, from the raw member listing and before any safety
+        rule: an archive that reads and is plainly not a single-ROM archive
+        (no ROM, more than one file, thousands of members, a symlink or ``..``
+        beside other files, an encrypted header romz never writes) is someone
+        else's (``NotSingleRomArchive``) and is skipped as unsupported. One
+        that cannot be read or decoded (truncated, a bad zip, a CRC or LZMA
+        error) is claimed, and so is a single-ROM archive a safety rule rejects:
+        the check runs and fails it. The listing's ``is_single_rom_archive``
         stays strict.
         """
         try:
-            cls._single_rom_member(archive_path)
+            cls._single_rom_shape(archive_path)
         except NotSingleRomArchive:
             return False
-        except Exception:  # noqa: BLE001 - unreadable or rejected: the check fails it
+        except Exception:  # noqa: BLE001 - unreadable: the check runs and fails it
             return True
+        return True
+
+    @classmethod
+    def _single_rom_shape(cls, archive_path: str) -> bool:
+        """Raise ``NotSingleRomArchive`` unless the archive looks single-ROM.
+
+        Reads the member listing only (no limits, no traversal or symlink
+        rules); a read or decode error propagates as itself.
+        """
+        try:
+            members = read_archive_members(archive_path)
+        except _PasswordRequired as exc:
+            # An encrypted header: romz never writes one.
+            raise NotSingleRomArchive("Archive is encrypted") from exc
+        files = [(m.name, int(m.size or 0)) for m in members if not m.is_dir]
+        if cls._resolve_single_rom(files) is None:
+            raise NotSingleRomArchive("Archive is not a single-ROM archive")
         return True
 
     @staticmethod
@@ -281,7 +324,10 @@ class RomzService:
         # POSIX separator only: `\\` is a legal filename character here, not a
         # path component boundary.
         if stripped.startswith("/") or ".." in stripped.split("/"):
-            raise ValueError(f"Unsafe archive member path: {name}")
+            raise ArchiveSafetyRefused(
+                f"Unsafe archive member path: {name}",
+                rule=f"an absolute or .. member path ({name})",
+            )
 
     @classmethod
     def _single_rom_member(cls, archive_path: str) -> str:
@@ -345,7 +391,7 @@ class RomzService:
             # relative path under it, so the validated member lands at
             # ``<root>/<member>`` (the caller's runner_output) — including ROMs
             # stored under a top-level folder.
-            switches = [f"-o{output_target}", "-bsp1", "-y"]
+            switches = [f"-o{output_target}", _NO_PASSWORD, "-bsp1", "-y"]
             # Extract the whole archive (no positional member selector) with
             # `x`, which PRESERVES member paths. Two reasons we don't name the
             # member or use `e` (flatten):
@@ -365,6 +411,11 @@ class RomzService:
         # SubprocessRunner.run's preexec); both honor the COMPRESSATORIUM_ROMZ_*
         # overrides, falling back to the tool-neutral policy.
         return ioprio_prefix(_OWNER) + cmd
+
+    def _test_command(self, archive_path: str) -> list[str]:
+        """``7z t``: tests every member's CRC. ``--`` keeps an archive name
+        beginning with ``-`` a positional filename."""
+        return [self.sevenzip_path, "t", _NO_PASSWORD, "--", archive_path]
 
     def active_pids(self) -> list[int]:
         return self._runner.active_pids()
@@ -646,6 +697,15 @@ class RomzService:
                 "message": "Verification cancelled",
             }
             return
+        except ArchiveSafetyRefused as exc:
+            # A rule this app sets, not damage: the file can't be checked here,
+            # and a stored pass stays (#306).
+            yield SubprocessRunner._verify_error(
+                "This archive can't be checked (refused by the archive safety "
+                f"rules: {exc.rule})",
+                uncheckable=True,
+            )
+            return
         except ValueError as exc:
             yield {"type": "error", "valid": False, "message": str(exc)}
             return
@@ -653,9 +713,8 @@ class RomzService:
             yield verify_exception_event(exc, prefix="Cannot read archive")
             return
 
-        # `--` keeps an archive name beginning with `-` a positional filename.
         async for update in self._runner.capture_verify(
-            [self.sevenzip_path, "t", "--", file_path],
+            self._test_command(file_path),
             path=file_path,
             success_message="File is Intact",
             cancel_event=cancel_event,

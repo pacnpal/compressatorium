@@ -15,6 +15,32 @@ import {
 
 const MAX_OPTIMISTIC_PLACEHOLDERS = 100;
 
+/**
+ * Whether an HTTP snapshot of a job we already hold is newer than our copy,
+ * so it should replace it. Shared by refresh() and adopt().
+ *
+ * - Terminal is final on the backend: an active snapshot for an already
+ *   terminal local job is stale. Keep ours.
+ * - A terminal snapshot for a job we hold as active heals a missed SSE
+ *   terminal event (network blip, tab backgrounded). Take it.
+ * - Both active: take a queued -> processing transition or a progress bump
+ *   on the same status. A job picked up as `queued` from a poll never gets a
+ *   PROCESSING frame if our stream wasn't open when it moved, so without
+ *   this the row would sit at queued forever.
+ * - Otherwise (both terminal, or no useful progression) the SSE-derived
+ *   state is at least as fresh. Keep ours.
+ */
+function snapshotIsNewer(existing, incoming) {
+  const existingTerminal = TERMINAL_STATUSES.has(existing.status);
+  const incomingTerminal = TERMINAL_STATUSES.has(incoming.status);
+  if (existingTerminal) return false;
+  if (incomingTerminal) return true;
+  const queuedToProcessing = existing.status === 'queued' && incoming.status === 'processing';
+  const progressBump = existing.status === incoming.status
+    && (incoming.progress ?? 0) > (existing.progress ?? 0);
+  return queuedToProcessing || progressBump;
+}
+
 class JobsStore {
   jobs = $state([]);
   creatingJobs = $state([]);
@@ -360,38 +386,7 @@ class JobsStore {
           this._byId.set(job.id, job);
           continue;
         }
-        const existingTerminal = TERMINAL_STATUSES.has(existing.status);
-        const incomingTerminal = TERMINAL_STATUSES.has(job.status);
-        if (existingTerminal && !incomingTerminal) {
-          // Terminal is final on the backend; an active snapshot for
-          // an already-terminal local job is stale. Keep ours.
-          continue;
-        }
-        if (!existingTerminal && incomingTerminal) {
-          // Heal: SSE must have missed the terminal event (network
-          // blip, tab backgrounded, etc.). The snapshot is the
-          // source of truth for terminal jobs.
-          this._applyJob(job);
-          continue;
-        }
-        // Both active. Apply queued → processing transitions (and any
-        // progress bump on a processing job) when the SSE missed
-        // them. We only landed here for the OTHER-client polling
-        // case: a job we picked up as `queued` from a poll never
-        // gets a PROCESSING SSE frame from the backend if our SSE
-        // stream wasn't open when it transitioned, so the row would
-        // sit stuck at queued forever. The terminal+heal branch
-        // already covers terminal-while-active; this covers the
-        // queued-while-running progression.
-        const queuedToProcessing = existing.status === 'queued' && job.status === 'processing';
-        const progressBump = existing.status === job.status
-          && (job.progress ?? 0) > (existing.progress ?? 0);
-        if (queuedToProcessing || progressBump) {
-          this._applyJob(job);
-        }
-        // Both terminal or both active with no useful progression:
-        // leave SSE-derived state alone; live updates are at least
-        // as fresh as the snapshot.
+        if (snapshotIsNewer(existing, job)) this._applyJob(job);
       }
       // Reconcile deletions. When another tab clears completed history
       // (or the backend prunes old terminal jobs on its own), /api/jobs
@@ -514,7 +509,12 @@ class JobsStore {
   /** Add jobs another endpoint created (Auto) to the live list. */
   adopt(created) {
     if (!Array.isArray(created)) return;
-    for (const job of created) this._applyJob(job);
+    for (const job of created) {
+      // An HTTP response can be older than the SSE events that beat it here
+      // (the job already finished): the same freshness rule as refresh().
+      const existing = this._byId.get(job?.id);
+      if (!existing || snapshotIsNewer(existing, job)) this._applyJob(job);
+    }
   }
 
   // ─── Cancellation / cleanup ──────────────────────────────────────────

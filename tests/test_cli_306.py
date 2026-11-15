@@ -899,7 +899,7 @@ def test_verify_probes_readiness_once_per_run(volume, dolphin, capsys, monkeypat
         _rvz(volume, f"gc/{name}.rvz")
     _not_ready(monkeypatch, registry.get("dolphin"), calls)
 
-    code, lines = _cli(capsys, "verify", str(volume), "--json")
+    _code, lines = _cli(capsys, "verify", str(volume), "--json")
 
     assert [line["status"] for line in lines] == ["skipped"] * 3
     assert calls.count("dolphin") == 1
@@ -1130,3 +1130,487 @@ def test_a_multi_rom_archive_is_still_not_a_rom_archive(volume, dolphin, capsys)
 
     code, lines = _cli(capsys, "verify", str(volume), "--json")
     assert (code, lines) == (0, [])
+
+
+
+def test_a_z3ds_verifier_killed_by_a_signal_keeps_the_stored_pass(
+    volume, dolphin, capsys, monkeypatch,
+):
+    """z3ds runs zstd itself, outside the shared runner: its signal death goes
+    through the same killed_verify_error classification (codex 4576670747)."""
+    import asyncio
+    import shutil
+    import struct
+
+    from services.verification_store import verification_store
+
+    payload = b"payload" * 64
+    header = struct.pack("<4s4sBBHIQQ", b"Z3DS", b"NCSD", 1, 0, 0x20, 0, len(payload), 0)
+    game = volume / "3ds" / "Game.z3ds"
+    game.parent.mkdir(parents=True)
+    game.write_bytes(header + payload)
+    (volume / "empty").mkdir()
+    _cli(capsys, "verify", str(volume / "empty"))  # creates the database
+    asyncio.run(verification_store.mark_verified(str(game)))
+
+    zstd = volume.parent / "bin" / "zstd"
+    zstd.parent.mkdir()
+    zstd.write_text("#!/bin/sh\nkill -KILL $$\n")
+    zstd.chmod(0o755)
+    real_which = shutil.which
+    monkeypatch.setattr(
+        shutil, "which", lambda name, *a, **k: str(zstd) if name == "zstd" else real_which(name),
+    )
+
+    code, lines = _cli(capsys, "verify", str(game), "--json")
+
+    assert code == 1
+    assert lines[0]["status"] == "failed"
+    assert "signal" in lines[0]["reason"]
+    assert asyncio.run(verification_store.get_record(str(game))) is not None
+
+
+def test_a_cli_run_imports_the_legacy_verification_store_first(
+    volume, dolphin, capsys,
+):
+    """The first CLI write must not leave verified_chds.json behind forever: the
+    CLI runs the same legacy import the web startup does (codex 4576670759)."""
+    import asyncio
+    import json as json_module
+
+    from services.verification_store import verification_store
+
+    from config import settings
+
+    legacy_path = str((volume / "old" / "Game.chd").resolve())
+    legacy = Path(settings.data_dir) / "verified_chds.json"
+    legacy.write_text(json_module.dumps({
+        legacy_path: {
+            "chd_path": legacy_path, "source_path": None,
+            "verified_at": "2026-01-01T00:00:00Z",
+        },
+    }))
+    rvz = _rvz(volume)
+
+    code, _ = _cli(capsys, "verify", str(rvz), "--json")
+
+    assert code == 0
+    record = asyncio.run(verification_store.get_record(legacy_path))
+    assert record is not None and record["verified_at"] == "2026-01-01T00:00:00Z"
+    assert not legacy.exists()
+
+
+def test_a_dry_run_leaves_the_legacy_store_alone(volume, dolphin, capsys):
+    import json as json_module
+
+    from config import settings
+
+    legacy = Path(settings.data_dir) / "verified_chds.json"
+    legacy.write_text(json_module.dumps({}))
+    rvz = _rvz(volume)
+
+    code, _ = _cli(capsys, "verify", str(rvz), "--dry-run", "--json")
+
+    assert code == 0
+    assert legacy.exists()
+    assert not Path(settings.db_path).exists()
+
+
+
+# --------------------------------------------------------------------------- #
+# Review r7: what romz claims, stored-check routing, unknown Platforms
+# --------------------------------------------------------------------------- #
+
+
+def _stub_7z_passes(monkeypatch):
+    calls = []
+
+    async def seven_zip_passes(cmd, *, path, success_message, **kwargs):
+        calls.append(path)
+        yield {"type": "complete", "valid": True, "message": success_message}
+
+    monkeypatch.setattr(registry.get("romz")._service._runner, "capture_verify",
+                        seven_zip_passes)
+    return calls
+
+
+def test_healthy_archives_that_are_not_rom_archives_are_not_checked(
+    volume, dolphin, capsys, monkeypatch,
+):
+    """r7 I1: a big texture pack, a zip with a symlink, a zip with a `..` member
+    are plainly not single-ROM archives: skipped, never failed."""
+    _stub_7z_passes(monkeypatch)
+    misc = volume / "misc"
+    misc.mkdir()
+    with zipfile.ZipFile(misc / "Textures.zip", "w") as zf:
+        for i in range(5001):
+            zf.writestr(f"t/{i}.png", b"x")
+    with zipfile.ZipFile(misc / "Tools.zip", "w") as zf:
+        zf.writestr("readme.txt", b"x")
+        link = zipfile.ZipInfo("link")
+        link.external_attr = 0o120777 << 16
+        zf.writestr(link, "readme.txt")
+        zf.writestr("bin/tool", b"y")
+    with zipfile.ZipFile(misc / "Patch.zip", "w") as zf:
+        zf.writestr("../escape.txt", b"x")
+        zf.writestr("other.txt", b"y")
+
+    code, lines = _cli(capsys, "verify", str(volume), "--json")
+    assert (code, lines) == (0, [])
+    for name in ("Textures.zip", "Tools.zip", "Patch.zip"):
+        code, lines = _cli(capsys, "verify", str(misc / name), "--json")
+        assert code == 0, name
+        assert lines[0]["status"] == "skipped", name
+
+
+def test_a_7z_with_an_encrypted_header_is_not_a_rom_archive(
+    volume, dolphin, capsys, monkeypatch,
+):
+    py7zr = pytest.importorskip("py7zr")
+    _stub_7z_passes(monkeypatch)
+    misc = volume / "misc"
+    misc.mkdir()
+    for name in ("a.txt", "b.txt"):
+        (misc / name).write_bytes(b"x")
+    archive = misc / "Private.7z"
+    with py7zr.SevenZipFile(archive, "w", password="pw", header_encryption=True) as z:
+        z.write(misc / "a.txt", "a.txt")
+        z.write(misc / "b.txt", "b.txt")
+    (misc / "a.txt").unlink()
+    (misc / "b.txt").unlink()
+
+    code, lines = _cli(capsys, "verify", str(volume), "--json")
+
+    assert (code, lines) == (0, [])
+
+
+def _assert_refused(lines, code, archive, calls, rule):
+    """review r8 I1: a safety rule refused it, so it can't be checked here:
+    skipped, no failure, the stored pass kept, and 7z never run."""
+    assert code == 0, lines
+    assert [(Path(line["path"]).name, line["status"]) for line in lines] == [
+        (archive.name, "skipped"),
+    ]
+    reason = lines[0]["reason"]
+    assert "can't be checked" in reason and "archive safety rules" in reason
+    assert rule in reason
+    assert calls == []
+    assert _stored(archive) is not None
+
+
+def test_a_single_rom_archive_with_an_unsafe_junk_member_is_skipped(
+    volume, dolphin, capsys, monkeypatch,
+):
+    calls = _stub_7z_passes(monkeypatch)
+    archive = volume / "gba" / "Game.gba.zip"
+    archive.parent.mkdir(parents=True)
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("Game.gba", b"rom" * 64)
+        zf.writestr("__MACOSX/../../victim.gba", b"x")
+    _store(archive)
+
+    code, lines = _cli(capsys, "verify", str(volume), "--json")
+
+    _assert_refused(lines, code, archive, calls, "..")
+
+
+def test_a_healthy_rom_archive_over_a_size_cap_is_skipped(
+    volume, dolphin, capsys, monkeypatch,
+):
+    """review r8 Q2: an operator's size cap is not damage."""
+    from config import settings
+
+    calls = _stub_7z_passes(monkeypatch)
+    archive = volume / "nds" / "Game.nds.zip"
+    archive.parent.mkdir(parents=True)
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("Game.nds", b"rom" * 4096)
+    _store(archive)
+    monkeypatch.setattr(settings, "archive_max_member_size", 1024)
+
+    code, lines = _cli(capsys, "verify", str(volume), "--json")
+
+    _assert_refused(lines, code, archive, calls, "CHD_ARCHIVE_MAX_MEMBER_SIZE")
+
+
+def _encrypt_zip_members(path):
+    """Set the encryption bit on every member, as an encrypting zip tool does."""
+    data = bytearray(path.read_bytes())
+    for signature, flag_at in ((b"PK\x03\x04", 6), (b"PK\x01\x02", 8)):
+        start = 0
+        while (at := data.find(signature, start)) != -1:
+            data[at + flag_at] |= 0x01
+            start = at + 4
+    path.write_bytes(bytes(data))
+
+
+def test_a_rom_archive_with_an_encrypted_member_is_skipped(
+    volume, dolphin, capsys, monkeypatch,
+):
+    calls = _stub_7z_passes(monkeypatch)
+    archive = _romz_zip(volume / "gba" / "Game.gba.zip")
+    _encrypt_zip_members(archive)
+    _store(archive)
+
+    code, lines = _cli(capsys, "verify", str(volume), "--json")
+
+    _assert_refused(lines, code, archive, calls, "encrypted")
+
+
+def test_a_7z_rom_archive_with_encrypted_content_is_skipped(
+    volume, dolphin, capsys, monkeypatch,
+):
+    py7zr = pytest.importorskip("py7zr")
+    calls = _stub_7z_passes(monkeypatch)
+    rom = volume / "Game.gba"
+    rom.write_bytes(b"rom" * 64)
+    archive = volume / "gba" / "Game.gba.7z"
+    archive.parent.mkdir()
+    with py7zr.SevenZipFile(archive, "w", password="pw") as z:
+        z.write(rom, "Game.gba")
+    rom.unlink()
+    _store(archive)
+
+    code, lines = _cli(capsys, "verify", str(volume), "--json")
+
+    _assert_refused(lines, code, archive, calls, "encrypted")
+
+
+def test_7z_never_waits_for_a_password(monkeypatch):
+    """review r8: every 7z command that reads an archive names a password, so
+    an encrypted one fails at once instead of prompting. Compressing names
+    none: there the switch would encrypt the new archive."""
+    from services.romz import ROMZ_EXTRACT_MODE, romz_service
+
+    def password_switches(cmd):
+        return [a for a in cmd[: cmd.index("--")] if a.startswith("-p")]
+
+    for cmd in (
+        romz_service._build_command("/i/Game.gba.7z", "/o", ROMZ_EXTRACT_MODE, None),
+        romz_service._test_command("/i/Game.gba.7z"),
+    ):
+        assert [len(a) > 2 for a in password_switches(cmd)] == [True], cmd
+    compress = romz_service._build_command("Game.gba", "/o/Game.gba.7z", "romz_7z", None)
+    assert password_switches(compress) == []
+
+
+def _store(path, **meta):
+    import asyncio
+
+    import cli
+    from services.verification_store import verification_store
+
+    cli._open_db(False)
+    asyncio.run(verification_store.mark_verified(str(path), **meta))
+
+
+def _stored(path):
+    import asyncio
+
+    from services.verification_store import verification_store
+
+    return asyncio.run(verification_store.get_record(str(path)))
+
+
+def test_a_stored_check_goes_back_to_the_tool_of_its_recorded_mode(
+    volume, dolphin, capsys,
+):
+    """r7 I2 / P9: a PS3 .iso makeps3iso built and checked is checked by
+    makeps3iso again, whatever the Platform narrowing would say."""
+    iso = volume / "ps3" / "Game.iso"
+    iso.parent.mkdir()
+    iso.write_bytes(b"\0" * 4096)  # damaged: no PARAM.SFO any more
+    _store(iso, produced_meta={"mode": "folder_to_iso"})
+
+    code, lines = _cli(capsys, "verify", str(volume), "--json")
+
+    assert code == 1
+    assert (lines[0]["tool"], lines[0]["status"]) == ("makeps3iso", "failed")
+    assert _stored(iso) is None
+
+
+def test_a_stored_check_skips_platform_narrowing(volume, dolphin, capsys):
+    """r7 I2 / P7: a GameCube .iso with a stored Dolphin pass, header gone, in a
+    ps2 folder, still reaches Dolphin and fails."""
+    iso = volume / "ps2" / "Game.iso"
+    iso.parent.mkdir()
+    iso.write_bytes(b"\0" * 4096)
+    _store(iso)
+    dolphin["valid"] = False
+
+    code, lines = _cli(capsys, "verify", str(iso), "--json")
+
+    assert code == 1
+    assert (lines[0]["tool"], lines[0]["status"]) == ("dolphin", "failed")
+    assert _stored(iso) is None
+
+
+def test_only_the_stored_check_can_reach_a_replaced_archive(
+    volume, dolphin, capsys, monkeypatch,
+):
+    """r7 M1: a stored-pass .gba.zip replaced by a two-ROM zip is no longer
+    romz's by shape; only the stored check routes it, and the check fails."""
+    _stub_7z_passes(monkeypatch)
+    archive = _romz_zip(volume / "gba" / "Game.gba.zip")
+    _store(archive)
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("A.gba", b"a" * 64)
+        zf.writestr("B.gba", b"b" * 64)
+
+    code, lines = _cli(capsys, "verify", str(volume), "--json")
+
+    assert code == 1
+    assert (lines[0]["path"], lines[0]["status"]) == (str(archive), "failed")
+
+
+def test_a_recorded_mode_that_cannot_verify_is_reported_not_failed(volume, dolphin, capsys):
+    cue = volume / "psx" / "Game.cue"
+    cue.parent.mkdir()
+    cue.write_text("FILE \"Game.bin\" BINARY\n")
+    _store(cue, produced_meta={"mode": "extractcd"})
+
+    code, lines = _cli(capsys, "verify", str(volume), "--json")
+
+    assert code == 0
+    assert lines[0]["status"] == "skipped"
+    assert "can't be checked" in lines[0]["reason"]
+    assert _stored(cue) is not None
+
+
+def test_a_stored_check_no_tool_reads_is_reported_in_a_folder_run(volume, dolphin, capsys):
+    """r7 M2: it used to vanish from a folder run."""
+    thing = volume / "misc" / "Thing.bin"
+    thing.parent.mkdir()
+    thing.write_bytes(b"x" * 10)
+    _store(thing)
+
+    code, lines = _cli(capsys, "verify", str(volume), "--json")
+
+    assert code == 0
+    assert [(line["path"], line["status"]) for line in lines] == [(str(thing), "skipped")]
+
+
+def test_an_iso_whose_platform_is_unknown_is_skipped_not_failed(volume, dolphin, capsys):
+    """r7 I4 / P1: no stored check and no Platform: never guess Dolphin."""
+    iso = volume / "misc" / "Linux.iso"
+    iso.parent.mkdir()
+    iso.write_bytes(b"\0" * 32768 + b"\x01CD001\x01" + b"\0" * 4096)
+    dolphin["valid"] = False
+
+    code, lines = _cli(capsys, "verify", str(volume), "--json")
+
+    assert code == 0
+    assert lines[0]["status"] == "skipped"
+    assert "Platform" in lines[0]["reason"] and "determined" in lines[0]["reason"]
+
+
+# --------------------------------------------------------------------------- #
+# Codex on 618b0aa
+# --------------------------------------------------------------------------- #
+
+
+def test_an_archive_holding_another_image_is_kept(volume, dolphin, capsys):
+    """codex 4576728587: converting only Game.iso out of pack.zip must not
+    delete pack.zip, which also holds Other.nsp."""
+    pack = volume / "gc" / "pack.zip"
+    pack.parent.mkdir()
+    with zipfile.ZipFile(pack, "w") as zf:
+        zf.writestr("Game.iso", b"the disc" * 512)
+        zf.writestr("Other.nsp", b"switch" * 64)
+
+    code, lines = _cli(
+        capsys, "convert", str(volume), "--to", "rvz", "--delete-source",
+        "--container-only", "--json",
+    )
+
+    assert pack.exists()
+    with zipfile.ZipFile(pack) as zf:
+        assert "Other.nsp" in zf.namelist()
+    line = next(x for x in lines if x["path"].endswith("::Game.iso"))
+    assert line["status"] == "completed"
+    assert line["source_deleted"] is False
+    assert "Other.nsp" in line["reason"]
+    assert code == 1  # a Source that was asked to go was kept
+
+
+def test_a_single_image_archive_is_still_deleted(volume, dolphin, capsys):
+    pack = volume / "gc" / "pack.zip"
+    pack.parent.mkdir()
+    with zipfile.ZipFile(pack, "w") as zf:
+        zf.writestr("Game.iso", b"the disc" * 512)
+        zf.writestr("readme.txt", b"notes")
+
+    code, lines = _cli(
+        capsys, "convert", str(volume), "--to", "rvz", "--delete-source",
+        "--container-only", "--json",
+    )
+
+    assert code == 0, lines
+    assert not pack.exists()
+
+
+def test_refreshing_a_check_keeps_the_recorded_mode(volume, dolphin, capsys, monkeypatch):
+    """codex 4576728584: a passing re-check wrote produced_meta=None, so the
+    next run lost the recorded mode and sent the PS3 ISO to Dolphin."""
+    from services import ps3
+
+    monkeypatch.setattr(ps3, "ps3_iso_title_id", lambda path, **kw: "BLES00000")
+    iso = volume / "misc" / "Game.iso"
+    iso.parent.mkdir()
+    iso.write_bytes(b"\0" * 4096)
+    _store(iso, produced_meta={"mode": "folder_to_iso"})
+
+    for _ in range(2):
+        code, lines = _cli(capsys, "verify", str(iso), "--json")
+        assert code == 0, lines
+        assert (lines[0]["tool"], lines[0]["status"]) == ("makeps3iso", "intact")
+    assert _stored(iso)["produced_meta"] == {"mode": "folder_to_iso"}
+
+
+def test_a_ps3_iso_goes_to_makeps3iso_on_every_run(volume, dolphin, capsys, monkeypatch):
+    """review r8 C1 / Q1: a PS3 ISO makeps3iso built, verified twice over the
+    whole volume, with Dolphin failing anything it is handed. Both runs go to
+    makeps3iso and pass, and the record keeps its mode."""
+    from services import ps3
+
+    monkeypatch.setattr(ps3, "ps3_iso_title_id", lambda path, **kw: "BLES00000")
+    dolphin["valid"] = False
+    iso = volume / "ps3" / "Game.iso"
+    iso.parent.mkdir()
+    iso.write_bytes(b"\0" * 4096)
+    _store(iso, produced_meta={"mode": "folder_to_iso"})
+
+    for _ in range(2):
+        code, lines = _cli(capsys, "verify", str(volume), "--json")
+        assert code == 0, lines
+        assert [(x["tool"], x["status"]) for x in lines] == [("makeps3iso", "intact")]
+    assert _stored(iso)["produced_meta"] == {"mode": "folder_to_iso"}
+
+
+def test_a_cli_job_holds_its_input_for_other_processes(volume, dolphin, capsys, monkeypatch):
+    """codex 4576728590: while a job reads Game.wia, another process sees the
+    input as taken (the web guard's exact-path probe refuses with 409)."""
+    from services.lock_manager import LockManager, lock_manager
+
+    wia = volume / "gc" / "Game.wia"
+    wia.parent.mkdir()
+    wia.write_bytes(b"wia" * 64)
+    server = LockManager()
+    server._lock_dir = lock_manager._lock_dir
+    seen = []
+    service = registry.get("dolphin")._service
+    original = service._runner.run
+
+    async def watching_run(cmd, *, input_path, output_path, **kwargs):
+        seen.append(server.check_file_status(input_path)[1])
+        async for update in original(cmd, input_path=input_path,
+                                     output_path=output_path, **kwargs):
+            yield update
+
+    monkeypatch.setattr(service._runner, "run", watching_run)
+
+    code, lines = _cli(capsys, "convert", str(volume), "--to", "rvz", "--json")
+
+    assert code == 0, lines
+    assert seen == [True]
+    assert server.check_file_status(str(wia))[1] is False

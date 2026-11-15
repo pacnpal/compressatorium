@@ -46,6 +46,15 @@ from app.services.disc_id import (
     read_embedded_game_id,
 )
 
+
+@pytest.fixture(autouse=True)
+def _volume(tmp_path, monkeypatch):
+    """``tmp_path`` is the configured Volume: sheet tracks resolve only inside one."""
+    from config import settings
+
+    monkeypatch.setattr(settings, "chd_volumes", str(tmp_path))
+
+
 # ---------------------------------------------------------------------------
 # Helpers to build minimal disc images in memory
 # ---------------------------------------------------------------------------
