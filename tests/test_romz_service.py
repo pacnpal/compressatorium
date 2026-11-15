@@ -592,4 +592,8 @@ def test_verify_passes_dash_safe_separator(tmp_path, stub_runner):
     svc, calls = stub_runner
     archive = _make_zip(tmp_path / "Game.zip", {"Game.gba": b"ROM"})
     asyncio.run(svc.verify(str(archive)))
-    assert calls["capture_cmd"][:3] == [svc.sevenzip_path, "t", "--"]
+    cmd = calls["capture_cmd"]
+    assert cmd[:2] == [svc.sevenzip_path, "t"]
+    # The password switch (#306) sits before `--`, and the archive after it.
+    assert cmd[-2:] == ["--", str(archive)]
+    assert [a for a in cmd[2:-2] if a.startswith("-p")] == cmd[2:-2]

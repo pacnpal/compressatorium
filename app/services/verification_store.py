@@ -21,6 +21,13 @@ from services import db as _db
 logger = get_logger("verification_store")
 
 
+# ``check_passed`` of a record whose last check failed (#305). The row stays so
+# the provenance (the producing mode and tool in ``produced_meta``, the Source)
+# survives the failure, but every read that means "this file passed" skips it:
+# no Intact badge, no re-run fast path, no ``--since`` skip.
+FAILED = "failed"
+
+
 def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -69,6 +76,7 @@ class VerificationStore:
         source_path: str | None,
         produced_meta: dict | None = None,
         check: str = "intact",
+        keep_provenance: bool = False,
     ) -> None:
         normalized = self._normalize(chd_path)
         normalized_source = self._normalize(source_path) if source_path else None
@@ -79,15 +87,20 @@ class VerificationStore:
             produced_meta=produced_meta,
             check_passed=check,
         )
-        stmt = stmt.on_conflict_do_update(
-            index_elements=["chd_path"],
-            set_={
-                "source_path": stmt.excluded.source_path,
-                "verified_at": stmt.excluded.verified_at,
-                "produced_meta": stmt.excluded.produced_meta,
-                "check_passed": stmt.excluded.check_passed,
-            },
-        )
+        updates = {
+            "verified_at": stmt.excluded.verified_at,
+            "check_passed": stmt.excluded.check_passed,
+        }
+        # A conversion's record replaces what was there, None included, so an
+        # output rebuilt at the same path never inherits an old mode. A plain
+        # re-check (``refresh_check``) keeps the mode that made the file
+        # (which the CLI routes the next check by) and its Source (which the
+        # re-run fast path reads): refreshing a check never erases provenance
+        # (#306).
+        if not keep_provenance:
+            updates["produced_meta"] = stmt.excluded.produced_meta
+            updates["source_path"] = stmt.excluded.source_path
+        stmt = stmt.on_conflict_do_update(index_elements=["chd_path"], set_=updates)
         with self._session() as session:
             session.execute(stmt)
             session.commit()
@@ -104,11 +117,44 @@ class VerificationStore:
 
         ``check`` names which one (#298): ``"intact"``, its tool's container
         check (every manual Verify), or ``"round_tripped"``, its content digest
-        equalled its Source's at conversion time.
+        equalled its Source's at conversion time. This is a conversion's
+        record: it replaces any stored provenance, ``None`` included. A plain
+        re-check uses :meth:`refresh_check`.
         """
         await run_in_threadpool(
             self._mark_sync, chd_path, source_path, produced_meta, check,
         )
+
+    async def refresh_check(self, chd_path: str, *, check: str = "intact") -> None:
+        """Record that ``chd_path`` passed a plain re-check (#306).
+
+        Updates when and which check passed, and keeps the stored
+        ``produced_meta`` and ``source_path``: refreshing a check never erases
+        what made the file. A file with no record gets a plain one.
+        """
+        await run_in_threadpool(
+            self._mark_sync, chd_path, None, None, check, True,
+        )
+
+    def _mark_failed_sync(self, chd_path: str) -> None:
+        normalized = self._normalize(chd_path)
+        with self._session() as session:
+            row = session.get(_db.Verification, normalized)
+            if row is not None:
+                row.check_passed = FAILED
+                session.commit()
+
+    async def mark_failed(self, chd_path: str) -> None:
+        """Record that ``chd_path`` failed a check (#305).
+
+        It is no longer verified (:meth:`is_verified`, :meth:`get_record` and
+        :meth:`all_records` skip it), but ``produced_meta`` and ``source_path``
+        are kept, as :meth:`refresh_check` keeps them: a check that fails
+        never erases what made the file, so the next check still goes to the
+        tool that made it, and a later pass (:meth:`refresh_check`) restores
+        the record. A file with no record stays without one.
+        """
+        await run_in_threadpool(self._mark_failed_sync, chd_path)
 
     def _clear_sync(self, chd_path: str) -> None:
         normalized = self._normalize(chd_path)
@@ -164,7 +210,8 @@ class VerificationStore:
     def _is_verified_sync(self, chd_path: str) -> bool:
         normalized = self._normalize(chd_path)
         with self._session() as session:
-            return session.get(_db.Verification, normalized) is not None
+            row = session.get(_db.Verification, normalized)
+            return row is not None and row.check_passed != FAILED
 
     async def is_verified(self, chd_path: str) -> bool:
         return await run_in_threadpool(self._is_verified_sync, chd_path)
@@ -173,7 +220,7 @@ class VerificationStore:
         normalized = self._normalize(chd_path)
         with self._session() as session:
             row = session.get(_db.Verification, normalized)
-            if row is None:
+            if row is None or row.check_passed == FAILED:
                 return None
             return {
                 "chd_path": row.chd_path,
@@ -186,13 +233,44 @@ class VerificationStore:
     async def get_record(self, chd_path: str) -> dict[str, str | None] | None:
         return await run_in_threadpool(self._get_record_sync, chd_path)
 
+    def produced_meta_blocking(self, chd_path: str) -> dict | None:
+        """What made ``chd_path``, passing or not: its ``produced_meta``. Blocking.
+
+        Kept through a failed check (:meth:`mark_failed`), so a check Rule
+        still routes the file to the tool that made it (#305).
+        """
+        normalized = self._normalize(chd_path)
+        with self._session() as session:
+            row = session.get(_db.Verification, normalized)
+            return row.produced_meta if row is not None else None
+
+    async def all_provenance(self) -> list[dict[str, object]]:
+        """Every row's path and ``produced_meta``, failed ones included (#306).
+
+        For discovery and routing only: a file whose last check failed is still
+        found from a folder run and goes back to the tool that made it. Reads
+        that mean "this passed" (``all_records``, ``get_record``) skip a failed
+        row, and ``--since`` and the re-run fast path stay on those.
+        """
+        return await run_in_threadpool(self._all_provenance_sync)
+
+    def _all_provenance_sync(self) -> list[dict[str, object]]:
+        with self._session() as session:
+            rows = session.scalars(select(_db.Verification)).all()
+            return [
+                {"chd_path": r.chd_path, "produced_meta": r.produced_meta}
+                for r in rows
+            ]
+
     async def all_records(self) -> list[dict[str, str | None]]:
         return await run_in_threadpool(self._all_records_sync)
 
     def _all_records_sync(self) -> list[dict[str, str | None]]:
         """Synchronous fetch of every verification record (internal seam for tests)."""
         with self._session() as session:
-            rows = session.scalars(select(_db.Verification)).all()
+            rows = session.scalars(
+                select(_db.Verification).where(_db.Verification.check_passed != FAILED),
+            ).all()
             return [
                 {
                     "chd_path": r.chd_path,

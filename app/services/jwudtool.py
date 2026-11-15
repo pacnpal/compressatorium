@@ -59,6 +59,7 @@ from services.subprocess_runner import (
     remove_partial_tree,
     run_detached,
     verify_preflight,
+    verify_exception_event,
 )
 
 # Compress takes the raw dump, decompress takes the compressed container.
@@ -755,7 +756,7 @@ class JwudToolService:
             yield cancelled_event
         except Exception as e:
             logger.exception("Error during Wii U verification: %s", e)
-            yield {"type": "error", "valid": False, "message": f"Verification error: {e}"}
+            yield verify_exception_event(e)
 
 
 # Global service instance

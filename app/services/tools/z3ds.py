@@ -6,6 +6,7 @@ by running it in a threadpool.
 from __future__ import annotations
 
 import asyncio
+import shutil
 from collections.abc import AsyncGenerator, Sequence
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from fastapi.concurrency import run_in_threadpool
 from models import OutputStatus, Z3DSInfo
 from services.lock_manager import lock_manager
 from services.stream_digest import content_digest_of, file_chunks
+from services.subprocess_runner import run_detached
 from services.z3ds_compress import (
     Z3DS_CONVERTIBLE_EXTENSIONS,
     Z3DS_DECOMPRESS_EXTENSIONS,
@@ -73,6 +75,15 @@ class Z3dsTool(BaseTool):
     )
     output_extensions = _Z3DS_COMPRESSED | _Z3DS_DECOMPRESSED
     verify_extensions = _Z3DS_COMPRESSED
+
+    @property
+    def verify_not_ready_reason(self) -> str:
+        return "zstd is not installed, so 3DS files cannot be checked"
+
+    async def verify_is_ready(self) -> bool:
+        # The check streams the payload through `zstd -t` (#306). Detached: a
+        # PATH lookup stats directories, and readiness callers fan out.
+        return await run_detached(shutil.which, "zstd") is not None
 
     def __init__(self, binary_path: str) -> None:
         super().__init__(binary_path)

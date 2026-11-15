@@ -15,7 +15,7 @@ if [ "$(/usr/bin/id -u)" = "0" ]; then
     if [ "$(/usr/bin/id -g converter)" != "$PGID" ]; then
         if ! groupmod_error="$(/usr/sbin/groupmod -g "$PGID" converter 2>&1)"; then
             if /usr/bin/getent group "$PGID" >/dev/null; then
-                echo "GID $PGID already exists; assigning converter to the existing group."
+                echo "GID $PGID already exists; assigning converter to the existing group." >&2
                 /usr/sbin/usermod -g "$PGID" converter
             else
                 echo "Failed to remap converter to PGID $PGID: $groupmod_error" >&2
@@ -59,20 +59,29 @@ elif [ -n "${PUID:-}" ] || [ -n "${PGID:-}" ]; then
     echo "Warning: PUID/PGID remap requires container startup as root; current UID is $(/usr/bin/id -u). Ignoring PUID/PGID." >&2
 fi
 
+# `/entrypoint.sh compressatorium ...`: what the `compressatorium` command runs
+# when it starts as root (`docker exec`, `--entrypoint compressatorium`). The
+# block above has remapped PUID/PGID and dropped to converter; run the command
+# now, before anything below prints to stdout (its --json output).
+if [ "${1:-}" = "compressatorium" ]; then
+    shift
+    exec /usr/local/bin/compressatorium "$@"
+fi
+
 # Check if /config is mounted
 if ! mountpoint -q /config 2>/dev/null; then
-    echo ""
-    echo "┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓"
-    echo "┃  🚨 WHOOPS! You forgot to mount /config!                                ┃"
-    echo "┃                                                                         ┃"
-    echo "┃  Your verification data is going to disappear when this container       ┃"
-    echo "┃  restarts. Like tears in rain. Gone. Poof. Vanished.                    ┃"
-    echo "┃                                                                         ┃"
-    echo "┃  Fix it:  -v /path/to/config:/config                                    ┃"
-    echo "┃                                                                         ┃"
-    echo "┃  Docs: https://github.com/pacnpal/Compressatorium                      ┃"
-    echo "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
-    echo ""
+    echo "" >&2
+    echo "┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓" >&2
+    echo "┃  🚨 WHOOPS! You forgot to mount /config!                                ┃" >&2
+    echo "┃                                                                         ┃" >&2
+    echo "┃  Your verification data is going to disappear when this container       ┃" >&2
+    echo "┃  restarts. Like tears in rain. Gone. Poof. Vanished.                    ┃" >&2
+    echo "┃                                                                         ┃" >&2
+    echo "┃  Fix it:  -v /path/to/config:/config                                    ┃" >&2
+    echo "┃                                                                         ┃" >&2
+    echo "┃  Docs: https://github.com/pacnpal/Compressatorium                      ┃" >&2
+    echo "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛" >&2
+    echo "" >&2
 fi
 
 # CHD_MODE: "webui" (default) or "cli"
@@ -128,7 +137,7 @@ discover_volumes() {
 VOLUMES_EFFECTIVE="$(discover_volumes "$MOUNT_ROOT" "$EXPLICIT_VOLUMES")"
 
 if [[ "$MODE" == "cli" ]]; then
-    # Original CLI behavior - convert all files in volumes
+    # CHD_MODE=cli: convert every Volume to CHD, then exit
     CHDMAN_MODE="${CHDMAN_MODE:-createcd}"
 
     case "$CHDMAN_MODE" in
@@ -138,48 +147,47 @@ if [[ "$MODE" == "cli" ]]; then
         *) echo "Unsupported CHDMAN_MODE: '$CHDMAN_MODE'. Use 'createcd' or 'createdvd'." >&2; exit 1 ;;
     esac
 
-    echo "Running in CLI mode with CHDMAN_MODE=$CHDMAN_MODE"
-    echo "Volume root: $MOUNT_ROOT"
+    echo "Running in CLI mode with CHDMAN_MODE=$CHDMAN_MODE" >&2
+    echo "Volume root: $MOUNT_ROOT" >&2
     if [[ -n "$EXPLICIT_VOLUMES" ]]; then
-        echo "Using explicit COMPRESSATORIUM_VOLUMES: $VOLUMES_EFFECTIVE"
+        echo "Using explicit COMPRESSATORIUM_VOLUMES: $VOLUMES_EFFECTIVE" >&2
     else
-        echo "Discovered volumes: $VOLUMES_EFFECTIVE"
+        echo "Discovered volumes: $VOLUMES_EFFECTIVE" >&2
     fi
 
+    # Alias for `compressatorium convert <each Volume> --to $CHDMAN_MODE`: the
+    # same planner, job queue, locks and Ledger as the web UI. Existing outputs
+    # are skipped, as before.
     IFS=',' read -r -a volume_list <<< "$VOLUMES_EFFECTIVE"
+    existing=()
     for volume in "${volume_list[@]}"; do
         # Trim incidental whitespace around comma-separated entries.
         volume="${volume#"${volume%%[![:space:]]*}"}"
         volume="${volume%"${volume##*[![:space:]]}"}"
         [[ -z "$volume" ]] && continue
         if [[ -d "$volume" ]]; then
-            echo "Processing volume: $volume"
-            cd "$volume"
-            shopt -s nullglob
-            for i in *.gdi *.iso *.cue; do
-                [[ -e "$i" ]] || continue
-                [[ -e "${i%.*}.chd" ]] && { echo "Skipping '$i' (CHD exists)."; continue; }
-                echo "Converting '$i' using chdman ${CHDMAN_MODE} ..."
-                if [[ "$CHDMAN_MODE" == "createdvd" ]]; then
-                    chdman createdvd -hs 2048 -f -i "$i" -o "${i%.*}.chd"
-                else
-                    chdman createcd -f -i "$i" -o "${i%.*}.chd"
-                fi
-            done
+            echo "Processing volume: $volume" >&2
+            existing+=("$volume")
         else
-            echo "Warning: Volume '$volume' does not exist, skipping."
+            echo "Warning: Volume '$volume' does not exist, skipping." >&2
         fi
     done
-    echo "CLI conversion complete."
+    if [[ ${#existing[@]} -eq 0 ]]; then
+        echo "No volumes to convert." >&2
+        exit 0
+    fi
+    # Today's scope and defaults: the top level of each Volume, no archives,
+    # no Platform check, chdman's own compression.
+    exec compressatorium convert "${existing[@]}" --to "$CHDMAN_MODE" --no-recurse --no-archives --any-platform --compression default
 else
     # Web UI mode (default)
-    echo "Starting CHD Converter Web UI..."
-    echo "Volume root: $MOUNT_ROOT"
+    echo "Starting CHD Converter Web UI..." >&2
+    echo "Volume root: $MOUNT_ROOT" >&2
     if [[ -n "$EXPLICIT_VOLUMES" ]]; then
-        echo "Using explicit COMPRESSATORIUM_VOLUMES: $VOLUMES_EFFECTIVE"
+        echo "Using explicit COMPRESSATORIUM_VOLUMES: $VOLUMES_EFFECTIVE" >&2
     else
-        echo "Discovered volumes: $VOLUMES_EFFECTIVE"
+        echo "Discovered volumes: $VOLUMES_EFFECTIVE" >&2
     fi
-    echo "Access the web interface at http://localhost:8080"
+    echo "Access the web interface at http://localhost:8080" >&2
     exec uvicorn main:app --host 0.0.0.0 --port 8080 --workers 1
 fi

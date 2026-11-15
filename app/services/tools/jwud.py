@@ -98,6 +98,11 @@ class JwudTool(BaseTool):
         # thread rather than one of the shared pool's few workers.
         return await run_detached(self._service.binary_available)
 
+    async def verify_is_ready(self) -> bool:
+        # The WUX check is pure Python (header, index table, size): it never
+        # spawns JWUDTool or Java, so it runs where conversion cannot (#306).
+        return True
+
     def converts_path(self, path: str) -> bool:
         # A split dump is one disc image spread over game_part1…12.wud, and
         # JWUDTool joins it from part 1. The other parts stay listed (you may

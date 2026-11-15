@@ -72,9 +72,11 @@ def _volume(tmp_path: Path, monkeypatch):
         return None
 
     for tool in convert_routes.registry.all():
-        monkeypatch.setattr(tool, "convert", fake_convert)
-        monkeypatch.setattr(tool, "post_convert", noop_post_convert)
-        monkeypatch.setattr(tool, "verify", fake_verify, raising=False)
+        # On the instance's own dict, so the undo deletes the override rather
+        # than pinning the class's bound method on the instance.
+        monkeypatch.setitem(vars(tool), "convert", fake_convert)
+        monkeypatch.setitem(vars(tool), "post_convert", noop_post_convert)
+        monkeypatch.setitem(vars(tool), "verify", fake_verify)
     monkeypatch.setattr(job_manager_module.verification_store, "mark_verified", noop)
     monkeypatch.setattr(job_manager_module.verification_store, "clear", noop)
     monkeypatch.setattr(job_manager_module.chd_metadata_store, "clear", noop)
@@ -160,6 +162,8 @@ async def test_read_only_playlist_keeps_the_source(volume, db_path, reset_db_eng
 
     assert job.status == JobStatus.COMPLETED, job.error_message
     assert job.message == "converted, source kept: couldn't update Game.m3u (is read-only)"
+    # The reason is also the job's warning, which the CLI reports (#306).
+    assert job.warning == job.message
     assert playlist.read_bytes() == M3U
     assert (volume / "Game (Disc 1).cue").is_file()
     assert (volume / "Game (Disc 1).bin").is_file()
@@ -181,11 +185,15 @@ async def test_read_only_playlist_keeps_the_source(volume, db_path, reset_db_eng
 
 def test_a_completed_job_that_kept_its_source_shows_why():
     """Static check: JobRow shows the message on a completed job whose
-    delete-on-verify kept the Source."""
-    row = (Path(__file__).resolve().parents[1] / "src" / "lib" / "components"
-           / "panels" / "JobRow.svelte").read_text()
-    assert "sourceKept" in row
-    assert "delete_on_verify" in row and "deleted_paths" in row
+    delete-on-verify kept the Source. The rule lives in jobDetailLines
+    (#306), which JobRow renders; tests/test_frontend_job_kept_once_306.py
+    renders the row."""
+    src = Path(__file__).resolve().parents[1] / "src" / "lib"
+    detail = (src / "util" / "jobDetail.js").read_text()
+    row = (src / "components" / "panels" / "JobRow.svelte").read_text()
+    assert "sourceKept" in detail
+    assert "delete_on_verify" in detail and "deleted_paths" in detail
+    assert "line.kind === 'kept'" in row
 
 
 @pytest.mark.asyncio

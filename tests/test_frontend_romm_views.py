@@ -29,7 +29,7 @@ import pytest
 
 _SRC = Path(__file__).resolve().parents[1] / "src"
 _SETTINGS = _SRC / "lib" / "components" / "views" / "RommSettings.svelte"
-_AUTOMATION = _SRC / "lib" / "components" / "views" / "RommAutomation.svelte"
+_AUTOMATION = _SRC / "lib" / "components" / "views" / "RuleEditor.svelte"
 
 
 def _find_node() -> str | None:
@@ -289,12 +289,12 @@ def test_an_action_refuses_when_its_rule_save_was_superseded():
         r"async function commitPendingEdits\(\) \{(.*?)\n  \}\n", src, re.DOTALL,
     )
     assert body, "commitPendingEdits is no longer where this guard looks"
-    assert "romm.rulesDirty" in body.group(1), (
+    assert "source.rulesDirty" in body.group(1), (
         "commitPendingEdits reports success without checking whether the save "
         "was superseded by an edit made while it was in flight"
     )
     # ...and it does not simply proceed: the failure path returns false.
-    assert re.search(r"if \(romm\.rulesDirty\)", body.group(1)), body.group(1)
+    assert re.search(r"if \(source\.rulesDirty\)", body.group(1)), body.group(1)
     assert "return false;" in body.group(1)
 
 
@@ -307,7 +307,7 @@ def test_automation_offers_neither_unpacking_nor_self_multiplying_modes():
     """
     src = _AUTOMATION.read_text(encoding="utf-8")
     assert "m.kind === 'extract'" in src
-    assert "romm.modeIsAutomatable(m.mode)" in src, (
+    assert "source.modeIsAutomatable(m.mode)" in src, (
         "the editor offers modes the backend refuses to run unattended"
     )
 
@@ -322,7 +322,7 @@ def test_the_repin_promise_is_qualified_for_split_builds():
     """
     src = _AUTOMATION.read_text(encoding="utf-8")
     block = re.search(
-        r"\{#if romm\.losesDatMatch\(spec\)\}(.*?)\{/if\}", src, re.DOTALL,
+        r"\{#if source\.losesDatMatch\(spec\)\}(.*?)\{/if\}", src, re.DOTALL,
     )
     assert block, "the lost-DAT-match warning is no longer where this guard can find it"
     warning = block.group(1)

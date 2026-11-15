@@ -9,25 +9,36 @@
 * :mod:`~services.rules.sweep` -- the sweep, the converted history and the
   scheduler.
 
-RomM is the first Library (:mod:`services.romm.library`).
+RomM is the first Library (:mod:`services.romm.library`); folders registered
+as Libraries are the second (:mod:`services.libraries.folder`).
 """
 
 from .library import (
     CONVERTED_HISTORY,
+    FAILED_HOLD,
     RECOGNIZED_FILTER,
     Image,
     Library,
+    LibraryDefaults,
     LibraryUnreadable,
     Platform,
     QueuedImage,
+    UnsupportedPolicy,
+    duplicate_actions,
+    refuse_unsupported_policies,
 )
 
 __all__ = [
     "CONVERTED_HISTORY",
+    "FAILED_HOLD",
     "RECOGNIZED_FILTER",
     "Image",
     "Library",
+    "LibraryDefaults",
     "LibraryUnreadable",
     "Platform",
     "QueuedImage",
+    "UnsupportedPolicy",
+    "duplicate_actions",
+    "refuse_unsupported_policies",
 ]
