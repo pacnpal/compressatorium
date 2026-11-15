@@ -396,10 +396,14 @@ def _resolve_in_volumes(path: str, *, folder: bool) -> str:
     return resolved_str
 
 
-def _listing_root(path: str) -> tuple[str, str]:
-    """The listing's resolved folder and its Volume's name. Blocking; via ``off_loop_bounded``."""
-    resolved_str = _resolve_in_volumes(path, folder=True)
-    return resolved_str, get_volume_name_for_path(path) or ""
+def _listing_volume(path: str) -> str:
+    """The name of the Volume the listed folder is in, after the folder checks.
+
+    403 outside the Volumes, 404 if it isn't a folder; the listing itself reads
+    *path* as given, as it always has. Blocking; via ``off_loop_bounded``.
+    """
+    _resolve_in_volumes(path, folder=True)
+    return get_volume_name_for_path(path) or ""
 
 
 @router.get("/files", response_model=DirectoryListing)
@@ -411,7 +415,7 @@ async def list_files(
     """List files in a directory."""
     # Containment, the folder check and the Volume's name, off the event loop
     # and bounded (#327).
-    resolved_str, volume_name = await off_loop_bounded(_listing_root, path)
+    volume_name = await off_loop_bounded(_listing_volume, path)
 
     def scan_directory(
         target_path: str, show_archives_flag: bool, summarize_archives_flag: bool,
