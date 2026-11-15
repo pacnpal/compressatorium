@@ -148,11 +148,18 @@ async def list_platform_mappings() -> list[dict]:
 async def set_platform_mapping(payload: MappingRequest) -> dict:
     """Set, or with ``platform: null`` clear, the Platform of a folder in a Library."""
     try:
-        saved = await asyncio.wait_for(
-            run_detached(platform_mappings.set_mapping, payload.path, payload.platform),
-            _MAPPING_SECONDS,
+        # Admission-controlled, as registration is (#303's
+        # `libraries.run_admitted`): the save resolves and stats a folder on a
+        # mount that may have stopped answering. Its worker keeps a slot until
+        # it actually returns, and with every slot held this answers 503 and
+        # starts nothing, so retries cannot use up the shared probe ceiling.
+        saved = await libraries.run_admitted(
+            platform_mappings.set_mapping, payload.path, payload.platform,
+            timeout=_MAPPING_SECONDS,
         )
     except platform_mappings.MappingError as exc:
+        raise HTTPException(status_code=exc.status, detail=str(exc)) from None
+    except libraries.LibraryPathError as exc:
         raise HTTPException(status_code=exc.status, detail=str(exc)) from None
     except asyncio.TimeoutError:
         # The save runs on a detached thread and may still land: say so.

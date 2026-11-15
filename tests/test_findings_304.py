@@ -1274,3 +1274,62 @@ async def test_a_mapping_landing_after_the_write_still_walks_again(
     library.summary(refresh=True)
     assert "misc/Loose.iso" not in _kinds()
 
+
+
+@pytest.mark.asyncio
+async def test_stuck_mapping_saves_are_capped_and_leave_probes_for_others(
+    db: Path, monkeypatch,
+) -> None:
+    """Codex on PR #322 (4577281879): mapping saves go through #303's admission control.
+
+    Two saves stuck on a dead mount time out (504) but keep their slots until
+    their workers return. A third is refused at once (503) and starts nothing,
+    so retries cannot use up the shared filesystem-probe ceiling, and an
+    unrelated probe on a healthy Volume still runs.
+    """
+    import asyncio
+    import threading
+
+    from fastapi import HTTPException
+    from routes import findings as routes
+    from services import libraries, platform_mappings
+    from services import subprocess_runner as runner
+
+    folders = [db / "roms" / name for name in ("a", "b", "c")]
+    for folder in folders:
+        folder.mkdir(parents=True)
+    await _register(db / "roms")
+    release = threading.Event()
+    entered: list[str] = []
+    real_check = platform_mappings.ensure_path_within_volumes
+
+    def hung_check(path, **kwargs):
+        entered.append(path)
+        release.wait(10)
+        return real_check(path, **kwargs)
+
+    monkeypatch.setattr(platform_mappings, "ensure_path_within_volumes", hung_check)
+    monkeypatch.setattr(routes, "_MAPPING_SECONDS", 0.2)
+    monkeypatch.setattr(libraries, "_worker_slots", threading.BoundedSemaphore(2))
+    # A small shared probe ceiling, as Codex reproduced it: without admission
+    # control every retry would take one of these until the mount answered.
+    monkeypatch.setattr(runner, "_probe_slots", threading.Semaphore(3))
+    try:
+        for folder in folders[:2]:
+            with pytest.raises(HTTPException) as timed_out:
+                await routes.set_platform_mapping(
+                    routes.MappingRequest(path=str(folder), platform="psp"),
+                )
+            assert timed_out.value.status_code == 504
+        for _ in range(3):  # retries past the cap
+            with pytest.raises(HTTPException) as full:
+                await routes.set_platform_mapping(
+                    routes.MappingRequest(path=str(folders[2]), platform="psp"),
+                )
+            assert full.value.status_code == 503
+        assert len(entered) == 2  # the refused saves started nothing
+
+        # An unrelated probe still gets a slot.
+        assert await asyncio.wait_for(runner.run_detached(lambda: "healthy"), 2) == "healthy"
+    finally:
+        release.set()
