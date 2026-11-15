@@ -2464,8 +2464,11 @@ free one if it was taken since, never picking a different name on its own.
   matched by `(st_dev, st_ino)` so any spelling that reaches the file counts
   (relative, absolute, `./`, other case on a case-insensitive volume).
   Everything else is kept byte for byte: `#` lines, other entries, blank
-  lines, line endings, a UTF-8 BOM, and non-UTF-8 bytes (entries decode with
-  `surrogateescape`).
+  lines, line endings and a UTF-8 BOM. A playlist that isn't valid UTF-8
+  (Windows-1252, Latin-1) is never rewritten: it is read as cp1252 only to
+  look for a replaced file's name, and if any entry could name one the Source
+  is kept ("playlist isn't UTF-8 and may name this disc"); otherwise it is
+  left alone.
 - *Fail safe.* An entry that does not resolve but whose file name matches a
   replaced file's name (after dropping a `|label` suffix and quotes, splitting
   on `/` or `\`, ignoring case, both sides in Unicode NFC) is not guessed at: `plan` raises

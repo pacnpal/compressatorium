@@ -9,8 +9,9 @@ folder and the discs in a (hidden) subfolder.
 An entry is rewritten only when it resolves exactly to a replaced file,
 matched by ``(st_dev, st_ino)`` so any spelling that reaches the file counts.
 Everything else is left byte for byte: comment and directive lines, other
-entries, blank lines, line endings, a UTF-8 BOM and any non-UTF-8 bytes
-(entries are decoded with ``surrogateescape``).
+entries, blank lines, line endings and a UTF-8 BOM. A playlist that isn't
+valid UTF-8 is never rewritten; if it may name a replaced file the Source is
+kept (``_legacy_text_check``).
 
 Fail safe: an entry that does not resolve but whose file name (after
 stripping a ``|label`` suffix and quotes, splitting on either separator,
@@ -262,11 +263,32 @@ def _wide_text_check(playlist: str, data: bytes, renames: _Renames) -> bool:
     return True
 
 
+def _legacy_text_check(playlist: str, data: bytes, renames: _Renames) -> None:
+    """A playlist that isn't valid UTF-8 (Windows-1252, Latin-1) can't be
+    matched reliably byte for byte. Read it as cp1252 only to look for a
+    replaced file's name; if any entry could name one, keep the Source rather
+    than rewrite it."""
+    try:
+        data.decode("utf-8")
+        return
+    except UnicodeDecodeError:
+        pass
+    text = data.removeprefix(_BOM).decode("cp1252", errors="replace")
+    for line in text.splitlines():
+        parsed = _parse_line(line)
+        if parsed is not None and _named_file(parsed[0]) in renames.names:
+            raise ReferrerError(
+                playlist,
+                f"playlist isn't UTF-8 and may name this disc ({_named_file(parsed[0])})",
+            )
+
+
 def _rewrite(
     playlist: str, data: bytes, playlist_dir: str, renames: _Renames,
 ) -> tuple[bytes, list[tuple[str, str]]]:
     if _wide_text_check(playlist, data, renames):
         return data, []
+    _legacy_text_check(playlist, data, renames)
     out: list[bytes] = []
     edits: list[tuple[str, str]] = []
     rewritten: dict[int, _Target] = {}  # entry position -> where it must point

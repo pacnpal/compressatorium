@@ -40,20 +40,33 @@ async def _replace(folder: Path, old: str, new: str):
 
 
 @pytest.mark.asyncio
-async def test_bom_and_non_utf8_bytes_survive(tmp_path):
+async def test_bom_endings_and_utf8_survive(tmp_path):
     _disc(tmp_path, "Game (Disc 1).cue")
     playlist = tmp_path / "Game.m3u"
-    # UTF-8 BOM, a Latin-1 byte in an unrelated entry, mixed endings, no final newline.
-    playlist.write_bytes(
-        b"\xef\xbb\xbfGame (Disc 1).cue\n# Pok\xe9mon\r\nPok\xe9mon.cue\rlast.cue"
-    )
+    # UTF-8 BOM, non-ASCII in an unrelated entry, mixed endings, no final newline.
+    data = "﻿Game (Disc 1).cue\n# Pokémon\r\nPokémon.cue\rlast.cue".encode()
+    playlist.write_bytes(data)
 
     outcome = await _replace(tmp_path, "Game (Disc 1).cue", "Game (Disc 1).chd")
 
     assert outcome.ok
-    assert playlist.read_bytes() == (
-        b"\xef\xbb\xbfGame (Disc 1).chd\n# Pok\xe9mon\r\nPok\xe9mon.cue\rlast.cue"
-    )
+    assert playlist.read_bytes() == data.replace(b"(Disc 1).cue", b"(Disc 1).chd")
+
+
+@pytest.mark.asyncio
+async def test_a_non_utf8_playlist_naming_the_source_is_not_rewritten(tmp_path):
+    """A Latin-1 byte anywhere means the file isn't UTF-8; it is never
+    rewritten, so an entry naming the Source keeps the Source."""
+    _disc(tmp_path, "Game (Disc 1).cue")
+    playlist = tmp_path / "Game.m3u"
+    data = b"\xef\xbb\xbfGame (Disc 1).cue\n# Pok\xe9mon\r\nPok\xe9mon.cue\rlast.cue"
+    playlist.write_bytes(data)
+
+    outcome = await _replace(tmp_path, "Game (Disc 1).cue", "Game (Disc 1).chd")
+
+    assert not outcome.ok
+    assert "isn't UTF-8" in outcome.reason
+    assert playlist.read_bytes() == data
 
 
 @pytest.mark.asyncio
@@ -461,6 +474,44 @@ async def test_awkward_output_names_round_trip_or_keep_the_source(
     assert len(entries) == 2
     assert os.path.samefile(tmp_path / entries[0], out)
     assert entries[1] == "Other.cue"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("encoding", ["cp1252", "latin-1"])
+@pytest.mark.parametrize("source", [
+    "Pokémon.cue", "Café (Disc 1).cue", unicodedata.normalize("NFD", "Pokémon.cue"),
+], ids=repr)
+@pytest.mark.parametrize("entry_form", ["{}", "/userdata/roms/psx/{}", "{}|Disc 1"])
+async def test_awkward_playlist_encodings_naming_the_source_keep_it(
+    tmp_path, encoding, source, entry_form,
+):
+    """A playlist that isn't UTF-8 and names the Source is never rewritten,
+    and the Source is kept."""
+    _disc(tmp_path, source)
+    _disc(tmp_path, "Other.cue")
+    playlist = tmp_path / "P.m3u"
+    entry = entry_form.format(unicodedata.normalize("NFC", source))
+    data = f"#EXTM3U\nOther.cue\n{entry}\n".encode(encoding)
+    playlist.write_bytes(data)
+
+    outcome = await _replace(tmp_path, source, "Pokemon.chd")
+
+    assert not outcome.ok
+    assert "isn't UTF-8" in outcome.reason
+    assert playlist.read_bytes() == data
+
+
+@pytest.mark.asyncio
+async def test_a_non_utf8_playlist_naming_other_files_does_not_block(tmp_path):
+    _disc(tmp_path, "Game.cue")
+    playlist = tmp_path / "P.m3u"
+    data = "Café.cue\n".encode("cp1252")
+    playlist.write_bytes(data)
+
+    outcome = await _replace(tmp_path, "Game.cue", "Game.chd")
+
+    assert outcome.ok
+    assert playlist.read_bytes() == data
 
 
 @pytest.mark.asyncio
