@@ -1010,9 +1010,11 @@ def test_no_filesystem_probe_runs_while_the_mutex_is_held(tmp_path, monkeypatch)
     assert manager.acquire_lock(str(target), allow_existing=True)
     manager.check_file_status(str(target))
     manager.is_within_locked_dir(str(target))
-    manager.release_lock(str(target))
+    # With an output lock held, the folder-lock overlap check walks it.
+    manager.dir_lock_would_conflict(str(folder))
     assert manager.acquire_dir_lock(str(folder))
     manager.is_within_locked_dir(str(folder / "x"))
     manager.release_dir_lock(str(folder))
+    manager.release_lock(str(target))
 
     assert held == []

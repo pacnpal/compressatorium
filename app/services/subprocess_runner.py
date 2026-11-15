@@ -785,8 +785,15 @@ async def run_detached_undoable(
         with guard:
             state["abandoned"] = True
             delivered, result, error = state["delivered"], state["result"], state["error"]
-        if error is not None or isinstance(exc, ProbeCapacityExceeded):
-            raise  # the call's own failure, or it never started: nothing taken
+        if isinstance(exc, ProbeCapacityExceeded):
+            raise  # it never started: nothing taken
+        if error is not None:
+            # It took nothing, or let go of it itself. Its own failure is that
+            # failure, also when it landed just as the wait ran out; a caller's
+            # cancel still propagates as the cancel.
+            if error is exc or not isinstance(exc, asyncio.TimeoutError):
+                raise
+            raise error from None
         if delivered and isinstance(exc, asyncio.TimeoutError):
             return result  # answered just as the wait ran out: the caller's now
         if delivered:
@@ -885,8 +892,8 @@ async def run_detached_mutation(
             # The mutation finished; the locks are still the caller's. Its own
             # failure (an ETIMEDOUT from a network filesystem included) is
             # that failure, not the wait running out (codex 4579904147).
-            if error is exc:
-                raise  # the mutation's own failure, as it was raised
+            if error is exc or not isinstance(exc, asyncio.TimeoutError):
+                raise  # its own failure as raised, or the caller's cancel
             if error is not None:
                 # The wait ran out just as it failed: the timeout did not
                 # cause the failure, so it is not chained on.
@@ -1054,7 +1061,10 @@ async def run_detached_bounded(
         settled, error, result = finished.snapshot()
         if isinstance(exc, ProbeCapacityExceeded) or error is exc:
             raise
-        if settled and error is None:
+        if error is not None:
+            # It failed just as the wait ran out: that failure, not a timeout.
+            raise error from None
+        if settled:
             return result
         raise DeadlineExpired(f"no answer in {timeout:g}s") from exc
 
@@ -1099,7 +1109,9 @@ async def run_detached_within_stall_bound(
         settled, error, result = finished.snapshot()
         if isinstance(exc, ProbeCapacityExceeded) or error is exc:
             raise
-        if settled and error is None:
+        if error is not None:
+            raise error from None  # it failed just as the bound ran out
+        if settled:
             return result
         raise RuntimeError(
             f"{what} stopped responding (no answer in {bound:.0f}s)",

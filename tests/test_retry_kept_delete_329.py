@@ -15,8 +15,10 @@ Driven through ``compressatorium run-rules`` (the web sweep runs the same
 from __future__ import annotations
 
 import asyncio
+import os
 
 import pytest
+from services.tools import registry
 
 from .test_cli_run_rules_307 import (  # the fixtures, registered by import
     _cli,
@@ -1291,3 +1293,64 @@ def test_a_late_finding_write_after_the_library_is_forgotten_writes_nothing(
     time.sleep(0.1)
 
     assert not [f for f in findings.list_findings() if f["kind"] == findings.SOURCE_KEPT]
+
+
+# --------------------------------------------------------------------------- #
+# Companion outputs are part of the output (CodeRabbit 4580102953)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture(name="with_companion")
+def _with_companion(dolphin, monkeypatch):
+    """The dolphin mode writes a ``.bin`` companion beside its output, like
+    extractcd's ``.cue`` + ``.bin``."""
+    from pathlib import Path
+
+    tool = registry.get("dolphin")
+    service = tool._service
+    real_run = service._runner.run
+
+    async def run_with_companion(cmd, *, input_path, output_path, **kwargs):
+        async for update in real_run(
+            cmd, input_path=input_path, output_path=output_path, **kwargs,
+        ):
+            yield update
+        Path(output_path).with_suffix(".bin").write_bytes(b"companion data")
+
+    def companions(output_path, mode):
+        bin_path = str(Path(output_path).with_suffix(".bin"))
+        return [bin_path] if os.path.exists(bin_path) else []
+
+    monkeypatch.setattr(service._runner, "run", run_with_companion)
+    monkeypatch.setitem(vars(tool), "companion_outputs", companions)
+
+
+@pytest.mark.parametrize("change", ["changed", "removed"])
+def test_a_companion_output_changed_since_its_check_keeps_the_source(
+    env, dolphin, with_companion, capsys, monkeypatch, change,
+):
+    kept = _keep(env, capsys, monkeypatch)
+    companion = kept["output"].with_suffix(".bin")
+    assert companion.exists()
+    if change == "changed":
+        companion.write_bytes(b"something else entirely")
+    else:
+        companion.unlink()
+
+    code, lines, _err = _cli(capsys, "run-rules", "--json")
+
+    assert code == 0, lines
+    assert kept["iso"].exists()
+    assert not _rule_state(env)["gc"].get("kept_sources")
+
+
+def test_an_untouched_companion_output_is_deleted_with_its_source(
+    env, dolphin, with_companion, capsys, monkeypatch,
+):
+    kept = _keep(env, capsys, monkeypatch)
+
+    code, lines, _err = _cli(capsys, "run-rules", "--json")
+
+    assert code == 0, lines
+    assert not kept["iso"].exists()
+    assert kept["output"].with_suffix(".bin").exists()

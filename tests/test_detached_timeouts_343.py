@@ -102,3 +102,52 @@ def test_a_stall_bounded_reads_own_timeout_error_propagates(monkeypatch):
             _etimedout, what="Reading",
         ))
     assert caught.value.errno == errno.ETIMEDOUT
+
+
+def _fails_at_the_deadline(seconds):
+    """Raises its own error just as a wait of *seconds* expires."""
+    def call(*_args, **_kwargs):
+        time.sleep(seconds)
+        raise ValueError("the call's own failure")
+    return call
+
+
+@pytest.mark.parametrize("helper", ["bounded", "undoable", "mutation", "stall"])
+def test_a_failure_that_lands_at_the_deadline_is_that_failure(helper, monkeypatch):
+    """CodeRabbit 4580102968: the worker settles with its own error just as
+    the wait runs out; every helper re-raises that error, not a timeout."""
+    from services import subprocess_runner
+
+    seconds = 0.2
+    func = _fails_at_the_deadline(seconds)
+    # The wait's deadline lands just after the worker failed: the snapshot
+    # sees a settled worker with an error, and the wait's TimeoutError.
+    original_wait_for = asyncio.wait_for
+
+    async def late_wait_for(awaitable, timeout):
+        future = asyncio.ensure_future(awaitable)
+        await asyncio.sleep(seconds + 0.2)
+        future.cancel()
+        raise asyncio.TimeoutError()
+
+    monkeypatch.setattr(subprocess_runner.asyncio, "wait_for", late_wait_for)
+
+    async def attempt():
+        if helper == "bounded":
+            return await subprocess_runner.run_detached_bounded(func, timeout=seconds)
+        if helper == "undoable":
+            return await subprocess_runner.run_detached_undoable(
+                func, timeout=seconds, undo=lambda _r: None,
+            )
+        if helper == "mutation":
+            return await subprocess_runner.run_detached_mutation(
+                func, timeout=seconds, hand_off=lambda: (lambda: None),
+            )
+        monkeypatch.setattr(subprocess_runner, "conversion_stall_bound", lambda: 5)
+        return await subprocess_runner.run_detached_within_stall_bound(func, what="x")
+
+    try:
+        with pytest.raises(ValueError, match="own failure"):
+            asyncio.run(attempt())
+    finally:
+        monkeypatch.setattr(subprocess_runner.asyncio, "wait_for", original_wait_for)

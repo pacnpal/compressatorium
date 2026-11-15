@@ -2945,13 +2945,38 @@ class JobManager:
         output_fp = self._output_fingerprint(job.output_path)
         if not output_fp:
             return None
+        companions = self._companion_fingerprints(job.output_path, job.mode.value)
+        if companions is None:
+            return None
         return {
             "mode": job.mode.value,
             "compression": job.compression,
             "split": bool(job.split),
             "source": source_fp,
             "output": output_fp,
+            # Every companion output (extractcd's .bin) as it was checked: a
+            # retried delete re-checks them too (CodeRabbit 4580102953).
+            "companions": companions,
         }
+
+    @classmethod
+    def _companion_fingerprints(
+        cls, output_path: str, mode: str,
+    ) -> Optional[Dict[str, Dict[str, int]]]:
+        """``{path: fingerprint}`` of the mode's companion outputs beside
+        *output_path* (the registry's ``companion_outputs``), or None when one
+        cannot be fingerprinted or the mode is unknown. Blocking."""
+        try:
+            paths = registry.for_mode(mode).companion_outputs(output_path, mode)
+        except (KeyError, OSError):
+            return None
+        out: Dict[str, Dict[str, int]] = {}
+        for path in paths:
+            fingerprint = cls._output_fingerprint(path)
+            if fingerprint is None:
+                return None
+            out[path] = fingerprint
+        return out
 
     @staticmethod
     def _verifier_identity(job: ConversionJob) -> Dict[str, object]:
@@ -3342,6 +3367,12 @@ class JobManager:
             return "the Source is not inside the configured volumes"
         if self._output_fingerprint(output_path) != meta.get("output"):
             return "the output is gone or changed since its check"
+        # And every companion output, as the check recorded it: one gone,
+        # changed or new means the output is not the checked one.
+        if self._companion_fingerprints(
+            output_path, str(meta.get("mode") or ""),
+        ) != (meta.get("companions") or {}):
+            return "a companion output is gone or changed since its check"
         try:
             snapshot = build_delete_snapshot(source_path)
         except (OSError, ValueError) as exc:
@@ -3434,6 +3465,23 @@ class JobManager:
                 return KeptDeleteRetry(
                     KEPT_STALE, "the output's check record no longer matches",
                 )
+            # The companion outputs too, as the job held them (#329,
+            # CodeRabbit 4580102953): nobody may change one while this runs.
+            companions = list(meta.get("companions") or {})
+            if companions:
+                try:
+                    taken_companions = await run_detached_undoable(
+                        self._take_exclusively, companions,
+                        timeout=KEPT_DELETE_PROBE_SECONDS, undo=_let_go,
+                    )
+                except DeadlineExpired:
+                    return KeptDeleteRetry(KEPT_KEPT, KEPT_DELETE_UNANSWERED)
+                except (LockFailed, OSError) as exc:
+                    return KeptDeleteRetry(KEPT_KEPT, str(exc))
+                if taken_companions is None:
+                    return KeptDeleteRetry(KEPT_READER, "a companion output is in use")
+                for path in taken_companions:
+                    travelling.add(path)
             snapshot = await self._kept_delete_snapshot_bounded(
                 source_path, output_path, meta, record["source_path"],
             )

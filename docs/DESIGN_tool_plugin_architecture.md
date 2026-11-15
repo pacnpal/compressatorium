@@ -4053,7 +4053,8 @@ each delete path (below), which also asks `folder_locked_above`.
   guards only in-memory state: an acquirer claims the identity in `_locks`
   (or `_dir_locks`) under it, then resolves paths, stats the target and
   opens and flocks the lock file without it, and takes it again only to
-  record the handle or roll the claim back; a release takes the identity out
+  record the handle or roll the claim back (the overlap checks compare the
+  stored, already resolved keys as they are); a release takes the identity out
   of memory under it and unlinks and closes the lock file after. A path
   resolve or stat that stalls on a dead mount therefore never holds the
   mutex against another caller, the event loop included.
@@ -4159,7 +4160,10 @@ output)` for each, at most `KEPT_DELETES_PER_SWEEP` a sweep:
   inode, device); the Source is inside the Volumes
   (`is_within_configured_volumes`); and a fresh delete snapshot of the Source
   equals the `produced_meta` Source fingerprints. Any of these not holding is
-  `stale`: the entry is dropped and the Source kept for good. So is an
+  `stale`: the entry is dropped and the Source kept for good. The companion
+  outputs count as the output (CodeRabbit 4580102953): `produced_meta`
+  records each one's fingerprint (`companions`), the retry takes their locks
+  with the output's, and a companion gone, changed or new is `stale`. So is an
   archive member's Source, which has no `produced_meta`.
 - Then `_delete_source_set` runs, as for the job. A Referrer or path check
   that keeps the Source, or a removal the filesystem refuses part way, is
@@ -4254,7 +4258,9 @@ A bounded helper tells its deadline from the call's own `TimeoutError` (a
 network filesystem's `ETIMEDOUT`; `asyncio.TimeoutError` is the built-in
 `TimeoutError`) by who finished, not by type (codex 4579904147): the call
 records that it settled, and how, before it returns or raises (`_Finished`).
-A call that settled with its own error has that error re-raised as itself; an
+A call that settled with its own error has that error re-raised as itself,
+also when it failed just as the wait ran out (CodeRabbit 4580102968; a
+caller's cancel still propagates as the cancel); an
 answer that came just as the wait ran out is returned; only a wait that ran
 out while the call still ran is the deadline: `DeadlineExpired` from
 `run_detached_bounded` (the read-only probe form) and `run_detached_undoable`,

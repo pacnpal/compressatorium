@@ -231,7 +231,9 @@ class LockManager:
         """
         if resolved in self._dir_locks:
             return True
-        if any(self._path_within(self._resolve(p), resolved) for p in self._locks):
+        # The keys are resolved identities already (`_output_keys`): compared
+        # as they are, with no path resolution under the mutex.
+        if any(self._path_within(p, resolved) for p in self._locks):
             return True
         return any(
             self._path_within(resolved, d) or self._path_within(d, resolved)
