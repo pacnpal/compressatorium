@@ -1,5 +1,4 @@
 import os
-import re
 from pathlib import Path
 from typing import Dict, List, Set
 
@@ -13,7 +12,6 @@ from utils.sheet_text import (
     sheet_readings,
     sheet_tracks,
 )
-
 
 # The one confined track resolver lives in utils.sheet_text; this name stays
 # for the callers that import it from here.

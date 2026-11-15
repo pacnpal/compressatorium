@@ -21,8 +21,8 @@ from services.chdman import CHDMAN_CONVERTIBLE_EXTENSIONS, chdman_service
 from services.disc_id import (
     DiscIdStorageAbandoned,
     clear_embedded_disc_id,
-    embed_in_chd,
     disc_platform,
+    embed_in_chd,
     extract_from_source,
     read_embedded_game_id,
 )
