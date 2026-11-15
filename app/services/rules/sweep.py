@@ -1683,30 +1683,34 @@ async def _sweep_locked(
         # their runs are not recorded, so the next sweep picks them again.
         result["stopped_reason"] = "stopped"
     elif not dry_run:
-        async def record_check_runs() -> None:
+        async def record_check_runs(attempted: frozenset[str] | None = None) -> None:
             # Stamped with the moment the sweep found each Rule due, not when
             # the run finished: a night's run that ends past midnight still
             # counts for the window that picked it, so the next one keeps its
             # own run (4577171597). The reservation covers the time between.
-            for platform_id, summary, manual, at in check_runs:
+            # With *attempted*, only a Rule whose picked Images the run all
+            # reached is recorded: one it never got to (a stop on an abandoned
+            # verifier, a cancel) stays due (4578054443).
+            for platform_id, summary, manual, at, keys in check_runs:
+                if attempted is not None and not keys <= attempted:
+                    continue
                 await _record_run(library, platform_id, summary, CHECK, manual=manual, at=at)
 
         # The scheduled runs this job carries hold their windows until it ends.
         reserved = {
             (library.id, str(platform_id))
-            for platform_id, _summary, manual, _at in check_runs if not manual
+            for platform_id, _summary, manual, _at, _keys in check_runs if not manual
         }
 
-        async def check_run_ended(completed: bool) -> None:
+        async def check_run_ended(attempted: frozenset[str]) -> None:
             try:
-                if completed:
-                    # From the check run, after this sweep let go of the lock:
-                    # taken again so the write cannot interleave with another
-                    # sweep's.
-                    async with _sweep_lock:
-                        await record_check_runs()
+                # From the check run, after this sweep let go of the lock:
+                # taken again so the write cannot interleave with another
+                # sweep's.
+                async with _sweep_lock:
+                    await record_check_runs(attempted)
             finally:
-                # Recorded or not: a run cut short leaves its Rule due.
+                # Recorded or not: a Rule the run did not finish stays due.
                 _active_check_runs.difference_update(reserved)
 
         if picked:
@@ -1932,7 +1936,9 @@ async def _sweep_check(
         picked.extend(chosen)
         # A Platform whose tool is missing waits for the next tick, not a day.
         if not unresponsive and not (not_ready and not chosen):
-            check_runs.append((platform_id, summary, manual, now))
+            check_runs.append(
+                (platform_id, summary, manual, now, frozenset(c.key for c in chosen)),
+            )
     return False
 
 

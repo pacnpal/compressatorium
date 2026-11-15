@@ -2191,6 +2191,41 @@ async def test_a_scheduled_check_run_holds_its_window_until_it_ends(
     assert fourth.get("checks", 0) == 0
 
 
+@pytest.mark.asyncio
+async def test_a_run_stopped_by_an_abandoned_verifier_leaves_its_rule_due(
+    tree: Path, ready, verifier, sent,
+) -> None:
+    """Codex 4578054443: two picked Images, the first verifier abandoned on
+    stalled storage. The run stops before the second, so the Rule is not
+    recorded as run, and the next tick picks again."""
+    from routes import libraries as routes
+    from services.rules import check as checks
+    from services.rules import sweep
+    from services.rules.rules import CHECK
+
+    verdicts, calls = verifier
+    lib = await _folder_library(tree, {"enabled": True, "check_budget_gb": 6})
+    _seed(lib, {"ps2/Aria.chd": 2, "ps2/Bolt.chd": 10, "ps2/Dune.chd": 1})
+    # Cove (never checked) goes first, then Bolt.
+    verdicts["Cove.chd"] = {"valid": False, "abandoned": True,
+                            "message": "the verifier did not exit"}
+    library = routes._library(lib)
+
+    first = await sweep.sweep(library)
+    await checks.drain()
+
+    assert first["checks"] == 2
+    assert calls == ["Cove.chd"]  # stopped before Bolt
+    state = (await sweep.get_state(library, CHECK)).get("ps2") or {}
+    assert not state.get("last_run_at")
+
+    verdicts.pop("Cove.chd")
+    second = await sweep.sweep(library)  # still due
+    await checks.drain()
+    assert second["checks"] == 2
+    assert ((await sweep.get_state(library, CHECK)).get("ps2") or {}).get("last_run_at")
+
+
 def test_a_numbered_file_is_a_split_part_only_beside_a_modes_output_name(db: Path) -> None:
     """#306 ab2d818: ``save.0`` is no split part, so a folder Library never lists
     it; ``Game.iso.0`` with its ``.1`` is."""

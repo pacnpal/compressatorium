@@ -350,17 +350,20 @@ async def _verify(
 
 def start(
     library: Library, picked: list[Check], *, generation: int,
-    on_finished: Callable[[bool], Awaitable[None]] | None = None,
+    on_finished: Callable[[frozenset[str]], Awaitable[None]] | None = None,
 ) -> Any:
     """Check *picked* in the background, as one external job. Returns the job.
 
     *generation* is the Library's (``sweep.library_generation``) when the
     sweep picked them: once it moves (the Library was removed) nothing more
     is written for it. *on_finished* is awaited exactly once as the run ends,
-    with True when it checked everything it picked and False when it was
-    cancelled, crashed or its Library changed: the sweep records the check
-    Rules' runs on True and lets their windows go either way, so a check that
-    never finished does not use up its night.
+    with the keys of the picked Images it attempted (a verdict either way, no
+    verdict, or skipped as gone, changed or in use). A run cut short (a stop
+    on an abandoned verifier, a cancel) attempted only some; one that crashed,
+    or whose Library changed, reports none. The sweep records a check Rule's
+    run only when every Image it picked was attempted, and lets the windows
+    go either way, so a check that never reached an Image does not use up
+    its night.
     """
     count = len(picked)
     job = job_manager.create_external_job(
@@ -433,34 +436,35 @@ def _apply(library_id: str, check: Check, verdict: str, message: str, current) -
 
 async def _run(
     library: Library, picked: list[Check], job_id: str, generation: int,
-    on_finished: Callable[[bool], Awaitable[None]] | None = None,
+    on_finished: Callable[[frozenset[str]], Awaitable[None]] | None = None,
 ) -> None:
-    """One check run, telling *on_finished* how it ended exactly once."""
+    """One check run, telling *on_finished* what it attempted, exactly once."""
     reported = False
 
-    async def report(completed: bool) -> None:
+    async def report(attempted: frozenset[str]) -> None:
         nonlocal reported
         reported = True
-        await _report_end(on_finished, completed, library.id)
+        await _report_end(on_finished, attempted, library.id)
 
     try:
         await _run_checks(library, picked, job_id, generation, report)
     finally:
         if not reported:
-            # Cancelled, crashed, or the task itself was cancelled: no run to
-            # record, and the Rules' windows go free.
-            await _report_end(on_finished, False, library.id)
+            # Crashed, or the task itself was cancelled: no run to record, and
+            # the Rules' windows go free.
+            await _report_end(on_finished, frozenset(), library.id)
 
 
 async def _report_end(
-    on_finished: Callable[[bool], Awaitable[None]] | None, completed: bool, library_id: str,
+    on_finished: Callable[[frozenset[str]], Awaitable[None]] | None,
+    attempted: frozenset[str], library_id: str,
 ) -> None:
     """Tell the sweep how a run ended. A failure to record must not leave the
     job unfinished: the verdicts are written, and the Rule is simply due again."""
     if on_finished is None:
         return
     try:
-        await on_finished(completed)
+        await on_finished(attempted)
     except Exception:
         logger.warning(
             "romm_auto: recording the check run for %s failed", library_id, exc_info=True,
@@ -469,7 +473,7 @@ async def _report_end(
 
 async def _run_checks(
     library: Library, picked: list[Check], job_id: str, generation: int,
-    report: Callable[[bool], Awaitable[None]],
+    report: Callable[[frozenset[str]], Awaitable[None]],
 ) -> None:
     from services.rules.sweep import library_generation
 
@@ -479,6 +483,8 @@ async def _run_checks(
     cancel_event = job_manager.get_cancel_event(job_id)
     counts = {INTACT: 0, NOT_INTACT: 0, INCONCLUSIVE: 0, SKIPPED: 0}
     failed: list[tuple[Check, str]] = []
+    # The picked Images the run reached and settled, in any way.
+    attempted: set[str] = set()
     cancelled = False
     try:
         for index, check in enumerate(picked):
@@ -513,6 +519,7 @@ async def _run_checks(
             finally:
                 _in_flight.discard((library.id, check.key))
             if verdict == SKIPPED:
+                attempted.add(check.key)
                 counts[SKIPPED] += 1
                 continue
             if verdict == CANCELLED:
@@ -523,6 +530,7 @@ async def _run_checks(
                 # this Image, so it is not counted or reported, and the run ends.
                 cancelled = True
                 break
+            attempted.add(check.key)
             counts[verdict] += 1
             if verdict == NOT_INTACT:
                 failed.append((check, message))
@@ -549,10 +557,12 @@ async def _run_checks(
     )
     _outcomes[job_id] = {"counts": dict(counts), "cancelled": cancelled, "crashed": False}
     if cancelled:
+        # Only the Rules whose Images were all reached count as run.
+        await report(frozenset(attempted) if current() else frozenset())
         await job_manager.finish_external_job_cancelled(job_id, message=f"Stopped: {summary}")
         return
-    # The check Rules' runs, recorded once their checks are done.
-    await report(current())
+    # The check Rules' runs, recorded for the Images their checks reached.
+    await report(frozenset(attempted) if current() else frozenset())
     job = job_manager.get_job(job_id)
     if job is not None:
         job.message = summary

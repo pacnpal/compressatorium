@@ -4357,16 +4357,20 @@ split part or track) must be inside the Volumes, or the Image is skipped as
 `check.start` once, after its loop, so a sweep is one run, one external job
 (`ConversionMode.CHECK`, in `_EXTERNAL_JOB_MODES`) and at most one
 notification. Each check Rule's run is recorded only once that job has
-checked everything it picked (`check.start(..., on_finished=...)`, under the
+reached every Image the Rule picked (`check.start(..., on_finished=...)`, under the
 sweep lock), so a run cut short by a cancel, a stop or a restart leaves its
 Rule due. A sweep that picked nothing records at once. The stamp is still the
 moment the sweep found the Rule due, so a night's run that ends past midnight
 counts for the window that picked it. Until the run ends, its scheduled Rules
 are held in `sweep._active_check_runs` (by Library and Platform), and the
 scheduler picks nothing more for them, so the budget applies once per window.
-`on_finished(completed)` is called exactly once as the run ends; the hold is
-let go either way, and only a completed run is recorded. Run now is not held
-back by it. The hold is in memory: one scheduler runs per data directory
+`on_finished(attempted)` is called exactly once as the run ends, with the keys
+of the picked Images the run reached and settled (a verdict either way, no
+verdict, or skipped as gone, changed or in use); a crash, a cancelled task or a
+changed Library reports none. A Rule is recorded only when every Image it
+picked is in that set, so a run that stops early (an abandoned verifier, a
+cancel) leaves the Rules it never reached due; the stop itself still ends the
+run at once. The hold is let go either way. Run now is not held back by it. The hold is in memory: one scheduler runs per data directory
 (#307's scheduler lock), and a restart ends every run. A stop (#307's
 `should_stop`, asked before each Platform, while a Platform lists, before each
 Image is inspected and once more after the loop) starts nothing new: the
