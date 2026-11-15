@@ -76,6 +76,23 @@ async def _digest(
     return digest
 
 
+async def _source_problem(
+    tool: ToolPlugin, path: str, cancel_event: asyncio.Event | None,
+) -> str | None:
+    """The tool's own check of the Source, under the same bound as a digest."""
+    try:
+        bound = await tool.verify_timeout(path, cancel_event=cancel_event)
+        return await asyncio.wait_for(
+            tool.source_problem(path, cancel_event=cancel_event),
+            timeout=bound or None,
+        )
+    except asyncio.TimeoutError:
+        return f"checking {os.path.basename(path)} did not finish in time"
+    except Exception as e:  # any failure means "not proven"
+        logger.warning("Round-trip could not check the Source %s", path, exc_info=True)
+        return f"could not check {os.path.basename(path)}: {e}"
+
+
 async def round_trip(
     tool: ToolPlugin,
     source_path: str,
@@ -95,6 +112,12 @@ async def round_trip(
     def _is_cancelled() -> bool:
         return cancel_event is not None and cancel_event.is_set()
 
+    problem = await _source_problem(tool, source_path, cancel_event)
+    if _is_cancelled():
+        return cancelled
+    if problem:
+        logger.warning("Round-trip refused the Source %s: %s", source_path, problem)
+        return RoundTripOutcome(passed=False, message=f"Round-trip failed: {problem}. Source kept.")
     try:
         source = await _digest(tool, source_path, cancel_event)
         if _is_cancelled():

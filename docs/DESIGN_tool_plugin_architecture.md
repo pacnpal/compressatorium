@@ -2333,6 +2333,14 @@ result to the Ledger and to the job's `complete` event. On a pass,
 `check_passed="intact"`, stores nothing for the output (see below), keeps the
 Source and fails the job with the reason.
 
+**`ToolPlugin.source_problem(path)`** (#301) is asked once before any
+digest, under the same `verify_timeout` bound: a reason the Source must not be
+trusted, or None (`BaseTool`'s default). chdman answers it for a `.chd` Source
+(Copy) by running its verify; every other tool has nothing to check. A reason
+keeps the Source with "Round-trip failed: <reason>. Source kept.", an
+exception or a timeout counts as a reason, and a cancel is reported as
+cancelled.
+
 **`services/round_trip.round_trip(tool, source, output)`** owns everything a
 tool should not repeat: one side at a time (both are usually on the same
 volume), each bounded by `tool.verify_timeout(path)`, any exception folded into
@@ -2389,14 +2397,20 @@ passes only when the output has `Raw SHA1 verification successful!` and no
 rule also makes the plain Intact check of every chdman mode stricter.
 
 The tag is read strictly from the `Metadata: Tag='XXXX'` lines. A CHD with no
-metadata at all (what `createraw` writes) is read by its data SHA1 too, which
-for a raw CHD is the SHA1 of the input bytes (checked against real chdman
-0.285). A CHD with another tag (LaserDisc `AVAV`) is "not proven".
+`Metadata:` lines at all (what `createraw` writes) is read by its data SHA1 too,
+which for a raw CHD is the SHA1 of the input bytes (checked against real chdman
+0.285). `Metadata:` lines the tag reader cannot parse are not "no metadata":
+that CHD is "not proven", like one with another tag (LaserDisc `AVAV`).
 `createhd`, `createraw` and `copy` declare `supports_round_trip` since #301:
 Create HD and Create raw compare the input's SHA1 with the CHD's data SHA1
 (`createhd` may pad the image to its geometry, which reads as a mismatch, so
 the Source is kept, never a false pass), and Copy digests both CHDs the same
-way (a CD CHD Copy extracts both, one at a time). `createld` has no
+way (a CD CHD Copy extracts both, one at a time). Before comparing, a Copy
+checks its Source CHD with the same strict `chdman verify` (`source_problem`,
+below): a Source that is not Intact is kept, with that reason, rather than
+compared with an output that faithfully copied its damage. A Copy of a
+LaserDisc CHD always keeps its Source ("no CD, DVD or hard-disk metadata"),
+since an `AVAV` CHD has no digest. `createld` has no
 delete-source since #301: its Source is an AVI, the CHD's data SHA1 covers
 chdman's A/V hunk encoding, and `extractld` does not rebuild the AVI byte for
 byte, so there is nothing to compare. Note that the app's `createraw` passes

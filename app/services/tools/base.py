@@ -322,6 +322,18 @@ class ToolPlugin(Protocol):
         bounds the call with ``verify_timeout(path)``.
         """
 
+    async def source_problem(
+        self, path: str, *, cancel_event: asyncio.Event | None = None,
+    ) -> str | None:
+        """Why the Round-trip must not trust ``path`` as a Source, or None.
+
+        Asked once, before any digest, under the same bound. A Source whose
+        format carries its own checksum (a CHD for chdman Copy) is checked
+        with it first: a Source that is not Intact would compare its damage
+        with an output that faithfully copied it. Return a reason to keep the
+        Source without comparing; ``BaseTool`` returns None.
+        """
+
     async def is_ready(self) -> bool:
         """Whether this tool's runtime prerequisites are met.
 
@@ -545,6 +557,12 @@ class BaseTool:
     ) -> list[tuple[str, str]]:
         # Default: no embedded hash; callers fall back to file-level SHA1.
         return []
+
+    async def source_problem(
+        self, path: str, *, cancel_event: asyncio.Event | None = None,
+    ) -> str | None:
+        # Default: a Source carries no checksum of its own to check first.
+        return None
 
     async def content_digest(
         self, path: str, *, cancel_event: asyncio.Event | None = None,

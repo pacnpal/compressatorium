@@ -377,6 +377,19 @@ class ChdmanTool(BaseTool):
             return None
         return ContentDigest(kind=IMAGE_DATA_SHA1_KIND, value=value.lower())
 
+    async def source_problem(
+        self, path: str, *, cancel_event: asyncio.Event | None = None,
+    ) -> str | None:
+        # A CHD Source (Copy) is only a claim until chdman verify recomputes
+        # its data SHA1: a damaged Source must not be compared, and deleted, as
+        # if it were good. An image Source has nothing of its own to check.
+        if Path(path).suffix.lower() != ".chd":
+            return None
+        result = await self.verify(path, cancel_event=cancel_event)
+        if result.get("valid") or result.get("cancelled"):
+            return None
+        return f"the Source CHD is not Intact ({result.get('message') or 'verify failed'})"
+
     async def _chd_image_sha1(
         self, path: str, cancel_event: asyncio.Event | None,
     ) -> str:
@@ -395,9 +408,11 @@ class ChdmanTool(BaseTool):
         except Exception as e:  # chdman failed, timed out, or left a child behind
             raise ContentDigestUnavailable(f"chdman info failed: {e}") from e
         tags = set(_TAG_RE.findall(info.get("raw_data", "")))
-        # DVD/HD, or no metadata at all (a createraw CHD): the data SHA1 is the
-        # SHA1 of the image's bytes, proven by the container check before this.
-        if tags & _IMAGE_TAGS or not tags:
+        # DVD/HD, or no Metadata lines at all (a createraw CHD): the data SHA1
+        # is the SHA1 of the image's bytes, proven by the container check
+        # before this. Metadata lines the tag reader cannot parse are not "no
+        # metadata": they fall through to "not proven" below.
+        if tags & _IMAGE_TAGS or not (tags or info.get("metadata_lines")):
             data_sha1 = (info.get("data_sha1") or "").strip()
             if not _SHA1_RE.fullmatch(data_sha1):
                 raise ContentDigestUnavailable("chdman info gave no data SHA1")

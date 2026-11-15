@@ -76,6 +76,9 @@
     and nothing a LaserDisc CHD decodes to can be compared with the AVI byte
     for byte, so the AVI cannot be proven and is never deleted. Rules on Create
     LD lose their delete-source setting.
+  - chdman Copy first checks the Source CHD with chdman verify; a Source that
+    is not Intact is kept and the job says so. A Copy of a LaserDisc CHD always
+    keeps its Source: a LaserDisc CHD has no content digest to compare.
   - **Behaviour change:** these delete-source jobs read the Source and the
     output once more, so they take longer, RomM Rule sweeps included.
   - An XCZ is decompressed to the scratch volume to be compared, so an XCI job

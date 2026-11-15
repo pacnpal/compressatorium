@@ -1080,6 +1080,93 @@ async def test_a_chd_with_no_metadata_is_digested_by_its_data_sha1(tmp_path, chd
 
 
 @pytest.mark.asyncio
+async def test_metadata_lines_that_do_not_parse_are_not_read_as_a_raw_chd(
+    tmp_path, monkeypatch,
+):
+    """Only a CHD with no Metadata lines at all is read like a createraw CHD.
+    Lines in a format the tag reader does not know keep the Source."""
+    chd = tmp_path / "Game.chd"
+    chd.write_bytes(b"x")
+    drifted = _info("ab" * 20, None) + b"Metadata:     Type=CHT2 (format changed)\n"
+
+    async def fake_capture(cmd, **kwargs):
+        return 0, drifted, b""
+
+    monkeypatch.setattr(
+        registry.get("chdman")._service._runner, "run_capture", fake_capture,
+    )
+    with pytest.raises(ContentDigestUnavailable, match="metadata"):
+        await registry.get("chdman").content_digest(str(chd))
+
+
+@pytest.fixture(name="chd_verify")
+def _chd_verify(monkeypatch):
+    """chdman verify per CHD path: ``{path: (valid, message)}``; default passes."""
+    results: dict[str, tuple[bool, str]] = {}
+    calls: list[str] = []
+
+    async def fake_verify(path, *, cancel_event=None):
+        calls.append(path)
+        valid, message = results.get(path, (True, "ok"))
+        return {"valid": valid, "message": message}
+
+    monkeypatch.setattr(registry.get("chdman")._service, "verify", fake_verify)
+    return results, calls
+
+
+@pytest.mark.asyncio
+async def test_a_copy_whose_source_chd_is_not_intact_keeps_it_and_says_so(
+    e2e, chd_infos, chd_verify,
+):
+    results, calls = chd_verify
+    source = e2e["tmp_path"] / "Game.chd"
+    source.write_bytes(b"MComprHD source")
+    chd_infos[str(source)] = ("ab" * 20, "DVD ")
+    results[str(source)] = (False, "Raw SHA1 in header = ab..., actual = cd...")
+
+    def write(_src, out):
+        out.write_bytes(b"MComprHD copy")
+        chd_infos[str(out)] = ("ab" * 20, "DVD ")
+
+    e2e["writer"] = write
+    job = await _run(e2e, source, "copy")
+
+    _assert_kept(job, source, reason="the Source CHD is not Intact")
+    assert str(source) in calls
+
+
+@pytest.mark.asyncio
+async def test_a_copy_checks_its_source_chd_before_comparing(e2e, chd_infos, chd_verify):
+    _results, calls = chd_verify
+    source = e2e["tmp_path"] / "Game.chd"
+    source.write_bytes(b"MComprHD source")
+    chd_infos[str(source)] = ("ab" * 20, "DVD ")
+
+    def write(_src, out):
+        out.write_bytes(b"MComprHD copy")
+        chd_infos[str(out)] = ("ab" * 20, "DVD ")
+
+    e2e["writer"] = write
+    _assert_round_tripped(await _run(e2e, source, "copy"), source)
+    assert calls.count(str(source)) == 1
+
+
+@pytest.mark.asyncio
+async def test_create_jobs_do_not_verify_their_image_source(e2e, chd_infos, chd_verify):
+    _results, calls = chd_verify
+    image = e2e["tmp_path"] / "Disk.bin"
+    image.write_bytes(b"sector" * 2048)
+
+    def write(_src, out):
+        out.write_bytes(b"MComprHD")
+        chd_infos[str(out)] = (_sha1(image.read_bytes()), "GDDD")
+
+    e2e["writer"] = write
+    _assert_round_tripped(await _run(e2e, image, "createhd"), image)
+    assert str(image) not in calls
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(("mode", "tag"), [("createhd", "GDDD"), ("createraw", None)])
 async def test_chdman_hd_and_raw_jobs_with_the_same_image_delete_it(
     e2e, chd_infos, mode, tag,
