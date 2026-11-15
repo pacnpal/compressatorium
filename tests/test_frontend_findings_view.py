@@ -243,6 +243,91 @@ process.stdout.write(JSON.stringify({ here, none }));
     assert data == {"here": "psp", "none": None}, data
 
 
+_DEFERRED_MAPPINGS = """
+const __pending = [];
+__answers.listPlatformMappings = () => new Promise((resolve, reject) => {
+  __pending.push({ resolve, reject });
+});
+__answers.listPlatforms = [{ slug: 'psp', name: 'PSP' }, { slug: 'ps2', name: 'PS2' }];
+const tick = () => new Promise((r) => setImmediate(r));
+const row = (platform) => [{ path: '/v/roms/misc', platform }];
+"""
+
+
+def test_a_response_from_an_earlier_opening_is_ignored(tmp_path):
+    """CodeRabbit 4579059374: each opening of the dialog owns its own read.
+
+    Opened, closed and opened again on the same folder: the first read
+    (``ps2``, from before a save) answers after the second (``psp``). The
+    dialog shows ``psp``.
+    """
+    data = _run(tmp_path, _DEFERRED_MAPPINGS + """
+findings.openMapping('/v/roms/misc', 'misc');
+await tick();
+findings.closeMapping();
+findings.openMapping('/v/roms/misc', 'misc');
+await tick();
+__pending[1].resolve(row('psp'));
+await tick();
+__pending[0].resolve(row('ps2'));
+await tick();
+process.stdout.write(JSON.stringify({
+  current: findings.mappingCurrent, state: findings.mappingState,
+}));
+""")
+    assert data == {"current": "psp", "state": "loaded"}, data
+
+
+def test_an_error_from_an_earlier_opening_is_ignored(tmp_path):
+    """The same ownership check for a failure: an old read's error is dropped."""
+    data = _run(tmp_path, _DEFERRED_MAPPINGS + """
+findings.openMapping('/v/roms/misc', 'misc');
+await tick();
+findings.openMapping('/v/roms/misc', 'misc');
+await tick();
+__pending[1].resolve(row('psp'));
+await tick();
+__pending[0].reject(new Error('stale failure'));
+await tick();
+process.stdout.write(JSON.stringify({
+  current: findings.mappingCurrent, state: findings.mappingState,
+  error: findings.mappingError,
+}));
+""")
+    assert data == {"current": "psp", "state": "loaded", "error": None}, data
+
+
+def test_a_failed_mapping_read_is_shown_and_can_be_retried(tmp_path):
+    """CodeRabbit 4579059377: "couldn't load" is not "no mapping", and Retry reads again."""
+    data = _run(tmp_path, _DEFERRED_MAPPINGS + """
+findings.openMapping('/v/roms/misc', 'misc');
+await tick();
+__pending[0].reject(new Error('Failed to list the mappings'));
+await tick();
+const failed = {
+  current: findings.mappingCurrent, state: findings.mappingState, error: findings.mappingError,
+};
+findings.loadCurrentMapping();
+await tick();
+__pending[1].resolve(row('psp'));
+await tick();
+process.stdout.write(JSON.stringify({
+  failed, retried: { current: findings.mappingCurrent, state: findings.mappingState },
+}));
+""")
+    assert data["failed"] == {
+        "current": None, "state": "error", "error": "Failed to list the mappings",
+    }, data
+    assert data["retried"] == {"current": "psp", "state": "loaded"}, data
+
+
+def test_the_mapping_dialog_shows_a_read_failure_with_retry():
+    modal = _MODAL.read_text(encoding="utf-8")
+    assert "findings.mappingState === 'error'" in modal
+    assert "findings.loadCurrentMapping()" in modal
+    assert ".catch(() => {})" not in modal
+
+
 def test_check_now_walks_then_reloads(tmp_path):
     data = _run(tmp_path, """
 __answers.checkFindings = { libraries: [{ id: 'folder:1', status: 'ok' }] };

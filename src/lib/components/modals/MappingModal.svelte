@@ -24,8 +24,14 @@
   let platform = $state('');
   let busy = $state(false);
   let loadError = $state(null);
-  // What the folder is set to now (null: nothing set), preselected.
-  let current = $state(null);
+  // Which opening of the dialog an async update belongs to: a Platform-list
+  // failure from an earlier opening must not show on this one.
+  let opening = 0;
+
+  // What the folder is set to now, read by the store for this opening
+  // (`findings.loadCurrentMapping`): `loaded` with a slug or null (none set),
+  // or `error`, which is never shown as "none set".
+  const current = $derived(findings.mappingState === 'loaded' ? findings.mappingCurrent : null);
 
   const options = $derived([
     { value: '', label: 'Choose a Platform…' },
@@ -35,20 +41,23 @@
   // A fresh choice each time the dialog opens on a folder. Untracked: the
   // Platform list loading must not reset what was picked.
   $effect(() => {
+    const mine = ++opening;
     if (!target) return;
-    const path = target.path;
     untrack(() => {
       platform = '';
-      current = null;
       loadError = null;
       findings.loadPlatforms().catch((e) => {
-        loadError = e?.message ?? 'Could not list the Platforms';
+        if (mine === opening) loadError = e?.message ?? 'Could not list the Platforms';
       });
-      findings.currentMapping(path).then((slug) => {
-        if (findings.mappingTarget?.path !== path) return;
-        current = slug;
-        if (slug && !platform) platform = slug;
-      }).catch(() => {});
+    });
+  });
+
+  // Preselect what the folder is set to, once this opening's read answers.
+  // Tracks only the read: choosing another Platform must not snap back.
+  $effect(() => {
+    const slug = current;
+    untrack(() => {
+      if (slug && !platform) platform = slug;
     });
   });
 
@@ -97,6 +106,16 @@
     {:else}
       <Select label="Platform" bind:value={platform} {options} />
     {/if}
+    {#if findings.mappingState === 'error'}
+      <div class="read-error" role="alert">
+        <p class="error">
+          Couldn't read this folder's current Platform: {findings.mappingError}
+        </p>
+        <Button variant="secondary" size="sm" onclick={() => findings.loadCurrentMapping()}>
+          Retry
+        </Button>
+      </div>
+    {/if}
   {/snippet}
   {#snippet footer()}
     <Button variant="ghost" onclick={() => save(null)} disabled={busy || !current}>Clear mapping</Button>
@@ -115,4 +134,10 @@
     overflow-wrap: anywhere;
   }
   .error { color: var(--danger, #d33); margin: 0; }
+  .read-error {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2, 8px);
+    margin-top: var(--space-3, 12px);
+  }
 </style>
