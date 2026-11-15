@@ -1403,6 +1403,7 @@ class SubprocessRunner:
         nice_via_wrapper: bool = False,
         env: Mapping[str, str] | None = None,
         start_message: str = "Verifying integrity...",
+        on_success_output: Callable[[bytes], None] | None = None,
     ) -> AsyncGenerator[dict, None]:
         """Run a one-shot verifier, yielding this tool's verify events.
 
@@ -1414,6 +1415,10 @@ class SubprocessRunner:
         events the SSE routes expect. ``run_capture`` reports both an abort and
         a timeout as a ``None`` return code, so the two are told apart here by
         asking the cancel event which one happened.
+
+        ``on_success_output`` gets the verifier's output after a passing run,
+        for a tool whose verifier also prints a hash the Round-trip can reuse
+        (nsz's ``[NSP SHA256]``), so that verifier runs once per job.
         """
         yield {"type": "progress", "progress": 0, "message": start_message}
         timeout = await resolve_verify_timeout(
@@ -1441,6 +1446,8 @@ class SubprocessRunner:
             yield abandoned_verify_error(abandoned_pid[0])
             return
         if returncode == 0:
+            if on_success_output is not None:
+                on_success_output(stdout or b"")
             yield {"type": "progress", "progress": 100, "message": "Integrity check passed"}
             yield {"type": "complete", "valid": True, "message": success_message}
             return

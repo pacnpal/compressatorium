@@ -30,6 +30,10 @@ from .spec import ModeKind, ModeSpec
 
 # SHA256 of a whole NSP/XCI image: what nsz -V prints for the NSP it rebuilds.
 SWITCH_IMAGE_SHA256_KIND = "switch_image_sha256"
+# nsz rebuilds an XCI from the XCZ's first 0x200 header bytes, zeros to 0xF000
+# and the partitions back to back (nsz/Fs/Xci.py XciStream), so a real dump
+# rarely comes back byte for byte (DESIGN §3.3.12).
+_XCI_MISMATCH = "nsz did not rebuild this XCI byte-for-byte, so the Source is kept"
 
 
 class NszTool(BaseTool):
@@ -87,10 +91,12 @@ class NszTool(BaseTool):
                 file_chunks([path]), kind=SWITCH_IMAGE_SHA256_KIND,
                 algorithm="sha256", cancel_event=cancel_event,
             )
+        reason = ""
         if ext == ".nsz":
             rebuild = self._service.rebuilt_nsp_sha256
         elif ext == ".xcz":
             rebuild = self._service.decompressed_sha256
+            reason = _XCI_MISMATCH
         else:
             return None
         try:
@@ -99,7 +105,9 @@ class NszTool(BaseTool):
             raise
         except (RuntimeError, ValueError, OSError) as e:
             raise ContentDigestUnavailable(str(e)) from e
-        return ContentDigest(kind=SWITCH_IMAGE_SHA256_KIND, value=value)
+        return ContentDigest(
+            kind=SWITCH_IMAGE_SHA256_KIND, value=value, mismatch_reason=reason,
+        )
 
     def __init__(self, binary_path: str) -> None:
         super().__init__(binary_path)

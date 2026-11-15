@@ -70,12 +70,25 @@ _XCI_HEAD = 0x100
 _XCI_PAGE = 0x200
 
 
+def _identity(path: str) -> tuple:
+    """A file's identity for the rebuilt-hash hand-off: changes with its bytes."""
+    st = os.stat(path)
+    return (os.path.realpath(path), st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
+
+
+def _one_nsp_sha256(text: str) -> str | None:
+    """The one ``[NSP SHA256]`` line of an ``nsz -V`` run, or None."""
+    hashes = _NSP_SHA256_RE.findall(text)
+    return hashes[0].lower() if len(hashes) == 1 else None
+
+
 def xcz_decoded_size(path: str) -> int:
     """About how many bytes ``nsz -D`` writes for this XCZ, for the headroom check.
 
     An XCZ keeps the cart header of the XCI it came from, whose valid-data-end
-    page bounds the XCI. When that cannot be read, four times the container
-    size (Switch NCAs rarely compress better than that) is asked for instead.
+    page bounds the XCI, floored at twice the container size. When that cannot
+    be read, four times the container size (Switch NCAs rarely compress better
+    than that) is asked for instead.
     """
     size = os.path.getsize(path)
     with open(path, "rb") as fh:
@@ -83,7 +96,9 @@ def xcz_decoded_size(path: str) -> int:
         head = fh.read(0x20)
     if len(head) == 0x20 and head[:4] == b"HEAD":
         last_page = int.from_bytes(head[0x18:0x1C], "little")
-        return max(size, (last_page + 1) * _XCI_PAGE)
+        # Never below twice the container: a header that understates the XCI
+        # would let nsz -D fill the scratch volume under other jobs.
+        return max(size * 2, (last_page + 1) * _XCI_PAGE)
     return size * 4
 
 
@@ -92,6 +107,10 @@ class NszService:
 
     def __init__(self):
         self.nsz_path = settings.nsz_path
+        # The [NSP SHA256] a passing `nsz -V` container check printed, keyed by
+        # the file's identity, so the Round-trip right after it does not run
+        # nsz -V a second time (#301). Taken once; a changed file misses.
+        self._rebuilt_hashes: dict[tuple, str] = {}
         # _run_convert() delegates its streaming loop to the runner; verify_stream()
         # still spawns nsz -V directly but tracks its PID in the same set, so
         # active_pids() reflects both.
@@ -494,13 +513,17 @@ class NszService:
         -V on its own only checks each NCA against the output's own metadata
         (DESIGN §3.3.12, the #301 spike).
         """
+        identity = await run_detached(_identity, file_path, cancel_event=cancel_event)
+        cached = self._rebuilt_hashes.pop(identity, None)
+        if cached is not None:
+            return cached
         keys_file = await self._keys_for_digest(cancel_event)
         cmd = nice_prefix("nsz") + ioprio_prefix("nsz") + [self.nsz_path, "-V", file_path]
         text = await self._capture(cmd, keys_file, cancel_event)
-        hashes = _NSP_SHA256_RE.findall(text)
-        if len(hashes) != 1:
+        hashes = _one_nsp_sha256(text)
+        if hashes is None:
             raise RuntimeError("nsz -V did not print one NSP SHA256")
-        return hashes[0].lower()
+        return hashes
 
     async def decompressed_sha256(
         self, file_path: str, *, cancel_event: asyncio.Event | None = None,
@@ -591,6 +614,19 @@ class NszService:
             return
 
         try:
+            identity = None
+            if Path(file_path).suffix.lower() == ".nsz":
+                identity = await run_detached(
+                    _identity, file_path, cancel_event=cancel_event,
+                )
+
+            def _keep_rebuilt_hash(output: bytes) -> None:
+                # A passing check printed the hash of the NSP it rebuilt; hand
+                # it to the Round-trip that follows (rebuilt_nsp_sha256).
+                found = _one_nsp_sha256(output.decode("utf-8", errors="replace"))
+                if identity is not None and found is not None:
+                    self._rebuilt_hashes[identity] = found
+
             with self._keys_home(keys_file) as env:
                 verify_cmd = (
                     nice_prefix("nsz")
@@ -604,6 +640,7 @@ class NszService:
                     cancel_event=cancel_event,
                     nice_via_wrapper=True,
                     env=env,
+                    on_success_output=_keep_rebuilt_hash,
                 ):
                     yield update
         except Exception as e:

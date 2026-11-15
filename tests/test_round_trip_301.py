@@ -237,7 +237,7 @@ def _assert_round_tripped(job, *sources):
 def _assert_kept(job, *sources, reason="content differs"):
     assert job.status.value == "failed"
     assert reason in job.error_message, job.error_message
-    assert "Source kept" in job.error_message
+    assert "Source kept" in job.error_message or "Source is kept" in job.error_message
     assert job.check_passed == "intact"
     for source in sources:
         assert Path(source).exists(), source
@@ -741,6 +741,61 @@ async def test_an_xcz_with_no_scratch_room_is_unavailable_without_decompressing(
     with pytest.raises(ContentDigestUnavailable, match="space"):
         await _nsz().content_digest(str(out))
     assert nsz_fake.calls == []
+
+
+@pytest.mark.asyncio
+async def test_the_container_check_hash_is_reused_so_nsz_verify_runs_once(
+    tmp_path, nsz_fake,
+):
+    out = tmp_path / "Game.nsz"
+    out.write_bytes(b"PFS0 ncz")
+    nsz_fake.verify_stdout = _verify_stdout("cd" * 32)
+
+    check = await _nsz().verify(str(out))
+    digest = await _nsz().content_digest(str(out))
+
+    assert check["valid"] is True
+    assert digest == ContentDigest(kind=SWITCH, value="cd" * 32)
+    assert sum("-V" in c for c in nsz_fake.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_changed_nsz_is_not_given_the_earlier_hash(tmp_path, nsz_fake):
+    out = tmp_path / "Game.nsz"
+    out.write_bytes(b"PFS0 ncz")
+    nsz_fake.verify_stdout = _verify_stdout("cd" * 32)
+    await _nsz().verify(str(out))
+    out.write_bytes(b"PFS0 another ncz")
+    nsz_fake.verify_stdout = _verify_stdout("ef" * 32)
+
+    digest = await _nsz().content_digest(str(out))
+
+    assert digest.value == "ef" * 32
+    assert sum("-V" in c for c in nsz_fake.calls) == 2
+
+
+def test_xcz_scratch_size_never_trusts_a_small_cart_header(tmp_path):
+    from services.nsz import xcz_decoded_size
+
+    out = tmp_path / "Game.xcz"
+    head = bytearray(0x200)
+    head[0x100:0x104] = b"HEAD"
+    head[0x118:0x11C] = (0).to_bytes(4, "little")  # claims one page
+    out.write_bytes(bytes(head) + b"\0" * 10_000)
+    assert xcz_decoded_size(str(out)) >= 2 * out.stat().st_size
+
+
+@pytest.mark.asyncio
+async def test_an_xci_nsz_does_not_rebuild_keeps_the_source_and_says_why(e2e, nsz_fake):
+    xci = e2e["tmp_path"] / "Game.xci"
+    xci.write_bytes(b"HEAD" * 4000)
+    e2e["writer"] = lambda src, out: out.write_bytes(b"xcz container")
+    nsz_fake.decompressed = b"HEAD" * 3999 + b"\0\0\0\0"
+
+    job = await _run(e2e, xci, "nsz_compress")
+
+    _assert_kept(job, xci, reason="nsz did not rebuild this XCI byte-for-byte")
+    assert "so the Source is kept" in job.error_message
 
 
 def test_nsz_compress_declares_round_trip():

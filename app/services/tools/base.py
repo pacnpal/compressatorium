@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
@@ -49,6 +49,10 @@ class ContentDigest:
 
     kind: str
     value: str
+    # What to tell the user when this digest does not match the other side,
+    # for a tool that knows a mismatch is expected rather than a sign of
+    # damage (nsz rebuilding an XCI). Not part of the comparison.
+    mismatch_reason: str = field(default="", compare=False)
 
     def same_content(self, other: ContentDigest) -> bool:
         if self.kind != other.kind:

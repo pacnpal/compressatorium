@@ -121,6 +121,11 @@ async def round_trip(
         "Round-trip mismatch: %s %s=%s, output %s=%s",
         source_path, source.kind, source.value, output_path, output.value,
     )
+    reason = output.mismatch_reason or source.mismatch_reason
+    if reason:
+        # The tool knows why its digests can differ (#301); say that rather
+        # than a bare "content differs", which reads like damage.
+        return RoundTripOutcome(passed=False, message=f"Round-trip failed: {reason}.")
     return RoundTripOutcome(
         passed=False,
         message=(
