@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
+from logging_setup import get_logger
 from pydantic import BaseModel
 
 from models import OutputStatus
@@ -21,6 +22,8 @@ from services.subprocess_runner import resolve_verify_timeout
 from utils.path_utils import match_extension
 
 from .spec import ModeSpec
+
+logger = get_logger("tools.base")
 
 
 class EmbeddedHashUnavailable(Exception):
@@ -108,11 +111,10 @@ class ToolPlugin(Protocol):
     # an implementation that satisfies the protocol without it would fail there
     # rather than at registration. See BaseTool.platform_slugs for the semantics.
     platform_slugs: frozenset[str]
-    # The codec this tool falls back to when a caller asks for a compression
-    # level but leaves the codec on "tool default". Part of the contract
-    # because `ToolRegistry.default_compression` reads it off every registered
-    # tool. None means "this tool names no default" -- see
-    # BaseTool.default_compression for what that costs.
+    # The codec a job of this tool runs with when it needs one and none was
+    # chosen (#345): a mode that requires a codec, or a level set with the
+    # codec on "tool default". Read by :meth:`compression_for`. None means
+    # "this tool names no default" -- see BaseTool.default_compression.
     default_compression: str | None
     # What to tell the user when ``is_ready()`` is False: why this tool cannot
     # run here. Auto shows it beside an Image it skipped for that reason.
@@ -122,6 +124,16 @@ class ToolPlugin(Protocol):
 
     def spec(self, mode: str) -> ModeSpec:
         """Return the ModeSpec for a mode this tool owns."""
+
+    def compression_for(self, mode: str, compression: str | None) -> str | None:
+        """The compression a job of *mode* runs with, given what it chose (#345).
+
+        Every job reaches its tool through this, whoever queued it (Auto, a
+        single job, the CLI, a Rule), so the tool's default applies in one
+        place. *compression* is ``"codec"``, ``"codec:level"``, ``":level"``
+        (a level with the codec on "tool default"), or None/"" for nothing
+        chosen. A chosen codec is returned as it is.
+        """
 
     def output_path(
         self,
@@ -564,6 +576,29 @@ class BaseTool:
             if m.mode == mode:
                 return m
         raise KeyError(mode)
+
+    def compression_for(self, mode: str, compression: str | None) -> str | None:
+        # Only a mode with a codec picker can be missing a codec. Where a mode
+        # has none (nsz picks a solid/block *layout*) the empty part of ":18"
+        # reads as the tool's own layout and is kept.
+        spec = self.spec(mode)
+        codec, _, level = (compression or "").partition(":")
+        if codec or not spec.supports_compression:
+            return compression
+        if not (spec.requires_codec or level):
+            # Nothing chosen and nothing needed: the tool picks (chdman's own
+            # default is better than naming one).
+            return compression or None
+        if not self.default_compression:
+            if level:
+                # A level cannot be sent without a codec, and inventing one
+                # would convert with a setting nobody chose: drop it, say so.
+                logger.warning(
+                    "%s needs a codec alongside a compression level and declares no "
+                    "default; ignoring the level", mode,
+                )
+            return None
+        return f"{self.default_compression}:{level}" if level else self.default_compression
 
     @staticmethod
     def _basic_info_fields(raw: dict) -> dict:

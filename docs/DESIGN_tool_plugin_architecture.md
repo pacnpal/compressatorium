@@ -5010,14 +5010,25 @@ is meaningful is a per-tool fact:
   blank, not a default. `DolphinTool._build_convert_command` emits
   `-c "" -l 19`, which dolphin-tool refuses.
 
-**`ToolPlugin.default_compression: str | None`** names the codec to use in the
-second case, so the resolution stays a per-tool declaration instead of an
-if-ladder on tool identity at the call site.
-`registry.default_compression(mode)` applies it *only* to codec-offering modes,
-returning `None` elsewhere so nsz's meaningful empty part survives. The RomM
-sweep (`services/rules/sweep._compression_arg`) is the current consumer: with no
-declared default it drops the level and logs, rather than queue a job the tool
-will reject or invent a codec the operator did not choose.
+A mode can also need a codec when nothing at all was chosen: dolphin-tool
+refuses RVZ and WIA without `-c`. Those modes declare
+**`ModeSpec.requires_codec=True`**; a mode that works without one (chdman picks
+its own best codecs) leaves it False and is sent nothing.
+
+**`ToolPlugin.default_compression: str | None`** names the codec to use in both
+cases, so the resolution stays a per-tool declaration instead of an if-ladder on
+tool identity at the call site. **`ToolPlugin.compression_for(mode,
+compression)`** (`BaseTool` implements it) applies it: a chosen codec is
+returned as it is; on a codec-offering mode, `":level"` becomes
+`"<default>:level"` and nothing chosen becomes `"<default>"` when the mode
+`requires_codec`; a mode without a codec picker keeps its string (nsz's
+meaningful empty part survives); and with no declared default a level is
+dropped and logged rather than send a job the tool will reject or invent a
+codec the operator did not choose. `JobManager` calls it once, where every job
+reaches its tool's `convert`, so Auto, a single job, the CLI (`--compression
+default` included) and a Rule all run with the same default (#345). The job
+keeps what it chose, so the re-run fast path still compares like with like;
+the Rules sweep (`_compression_arg`) passes the Rule's choice through as it is.
 
 The value mirrors `defaultCompression` in `src/lib/tools/registry.js`, which
 seeds the same choice in the manual picker — `tests/test_frontend_parity_186.py`

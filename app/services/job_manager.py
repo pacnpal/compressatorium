@@ -3527,7 +3527,12 @@ class JobManager:
                 input_path,
                 job.output_path,
                 job.mode.value,
-                compression=job.compression,
+                # What the job chose, with the tool's default where the mode
+                # needs a codec and none was chosen (#345): the one place the
+                # default applies, whoever queued the job.
+                compression=_convert_service.compression_for(
+                    job.mode.value, job.compression,
+                ),
                 split=job.split,
                 cancel_event=cancel_event,
             ):

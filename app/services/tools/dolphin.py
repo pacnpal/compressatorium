@@ -33,7 +33,9 @@ from .spec import ModeKind, ModeSpec
 # GameCube/Wii disc image, the same hash Redump indexes.
 DISC_SHA1_KIND = "gc_wii_disc_sha1"
 
-# mode -> (label, output_ext, kind, supports_compression, supports_level)
+# mode -> (label, output_ext, kind, supports_compression, supports_level).
+# A mode with a codec picker is RVZ or WIA, which dolphin-tool refuses without
+# `-c`: those two require a codec (`ModeSpec.requires_codec`).
 _MODES = {
     "dolphin_rvz": ("Dolphin RVZ", ".rvz", ModeKind.COMPRESS, True, True),
     "dolphin_wia": ("Dolphin WIA", ".wia", ModeKind.COMPRESS, True, True),
@@ -60,6 +62,7 @@ def _build_modes() -> list[ModeSpec]:
             input_extensions=frozenset(DOLPHIN_CONVERTIBLE_EXTENSIONS),
             supports_compression=supports_compression,
             supports_compression_level=supports_level,
+            requires_codec=supports_compression,
             supports_delete_on_verify=True,
             # Every input and output extension has a disc-SHA1 content digest.
             supports_round_trip=True,

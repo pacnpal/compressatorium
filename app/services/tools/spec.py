@@ -35,6 +35,11 @@ class ModeSpec:
     input_extensions: frozenset[str]
     supports_compression: bool = False
     supports_compression_level: bool = False  # dolphin rvz/wia only
+    # The tool refuses this mode without a codec (dolphin-tool's RVZ and WIA):
+    # a job that chose none runs with the tool's `default_compression`, through
+    # `ToolPlugin.compression_for`. A mode that works without one (chdman picks
+    # its own best codecs) leaves it False and is sent nothing.
+    requires_codec: bool = False
     supports_delete_on_verify: bool = False
     # Whether the tool can verify this mode's product *without* the question of
     # deleting anything. Implied by `supports_delete_on_verify` (deleting needs
@@ -132,6 +137,8 @@ class ChainSpec:
     verify_step: int = -1           # index of the step whose tool verifies the final output
     supports_compression: bool = False
     supports_compression_level: bool = False
+    # Structural parity with ModeSpec: `ToolPlugin.compression_for` reads it.
+    requires_codec: bool = False
     supports_delete_on_verify: bool = True   # of the ORIGINAL source, gated on final verify
     # Structural parity with ModeSpec: a chain's final step verifies the
     # output, and its delete flag already implies that, so this stays False and

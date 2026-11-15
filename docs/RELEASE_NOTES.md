@@ -324,6 +324,11 @@
 
 ### Fixed
 
+- **RVZ and WIA work before you save a compression** (#345). On a fresh install,
+  an Auto convert of a GameCube or Wii image, a single RVZ or WIA job, and
+  `compressatorium convert --to rvz` (or `--compression default`) failed with
+  "Compression method must be set for WIA or RVZ". They now use Dolphin's
+  default codec, zstd, as a Rule already did. A codec you choose still wins.
 - **Folder Platforms are never guessed past a read error** (#338). If the
   saved folder Platforms can't be read, folder Libraries list nothing and
   their Rules wait until they can, instead of taking a disc's header as its

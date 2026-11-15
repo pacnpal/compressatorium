@@ -2086,18 +2086,24 @@ def test_a_level_without_a_codec_names_the_tools_default() -> None:
     from services.romm import auto as romm_auto
     from services.tools import registry
 
+    # The sweep sends what the Rule says; the tool names its own codec when the
+    # job runs (`ToolPlugin.compression_for`, #345), as for any other job.
+    rvz = registry.for_mode("dolphin_rvz")
     rule = romm_auto.normalize_rule({
         "mode": "dolphin_rvz", "compression_level": 19,
     })
     assert rule["compression"] is None
-    assert rules_sweep._compression_arg(rule) == "zstd:19"
+    assert rules_sweep._compression_arg(rule) == ":19"
+    assert rvz.compression_for("dolphin_rvz", ":19") == "zstd:19"
     # A codec the operator did pick is never second-guessed.
     chosen = romm_auto.normalize_rule({
         "mode": "dolphin_rvz", "compression": "lzma2", "compression_level": 9,
     })
     assert rules_sweep._compression_arg(chosen) == "lzma2:9"
+    assert rvz.compression_for("dolphin_rvz", "lzma2:9") == "lzma2:9"
     # And the mode that has no codec picker keeps its meaningful empty part.
-    assert registry.default_compression("nsz_compress") is None
+    nsz = registry.for_mode("nsz_compress")
+    assert nsz.compression_for("nsz_compress", ":12") == ":12"
 
 
 def test_a_codec_mode_with_no_declared_default_drops_the_level(monkeypatch) -> None:
@@ -2110,13 +2116,12 @@ def test_a_codec_mode_with_no_declared_default_drops_the_level(monkeypatch) -> N
     from services.romm import auto as romm_auto
     from services.tools import registry
 
-    monkeypatch.setattr(
-        registry.for_mode("dolphin_rvz"), "default_compression", None,
-    )
+    tool = registry.for_mode("dolphin_rvz")
+    monkeypatch.setattr(tool, "default_compression", None)
     rule = romm_auto.normalize_rule({
         "mode": "dolphin_rvz", "compression_level": 19,
     })
-    assert rules_sweep._compression_arg(rule) is None
+    assert tool.compression_for("dolphin_rvz", rules_sweep._compression_arg(rule)) is None
 
 
 def test_a_polynomial_filter_pattern_is_refused_too() -> None:
