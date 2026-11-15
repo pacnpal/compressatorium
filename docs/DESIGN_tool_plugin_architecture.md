@@ -4359,7 +4359,15 @@ split part or track) must be inside the Volumes, or the Image is skipped as
 notification. Each check Rule's run is recorded only once that job has
 checked everything it picked (`check.start(..., on_finished=...)`, under the
 sweep lock), so a run cut short by a cancel, a stop or a restart leaves its
-Rule due. A sweep that picked nothing records at once. A stop (#307's
+Rule due. A sweep that picked nothing records at once. The stamp is still the
+moment the sweep found the Rule due, so a night's run that ends past midnight
+counts for the window that picked it. Until the run ends, its scheduled Rules
+are held in `sweep._active_check_runs` (by Library and Platform), and the
+scheduler picks nothing more for them, so the budget applies once per window.
+`on_finished(completed)` is called exactly once as the run ends; the hold is
+let go either way, and only a completed run is recorded. Run now is not held
+back by it. The hold is in memory: one scheduler runs per data directory
+(#307's scheduler lock), and a restart ends every run. A stop (#307's
 `should_stop`, asked before each Platform, while a Platform lists, before each
 Image is inspected and once more after the loop) starts nothing new: the
 picked Images are dropped and no run is recorded, so the next sweep picks them
@@ -4374,7 +4382,10 @@ is recorded for the Image in hand. `check.run_outcome(job_id)` holds each
 run's counts; `cli._finish_check_run` fails the pass under the CLI's rule
 (exit 1 when any Image failed, as `verify` does): an Image not Intact, or one
 whose check reached no verdict. A cancelled or crashed run is already a
-cancelled or failed job. For each Image in order the run waits for a slot on the
+cancelled or failed job. The run's `check_failed` alert goes through the queued
+`notifications.notify`, so `cli._job_runner` awaits `notifications.drain()`
+before `job_manager.shutdown()` for every command that runs jobs, bounded by
+three `SEND_TIMEOUT_S` sends in a row. For each Image in order the run waits for a slot on the
 `verify` workload lane, the one the Verify action uses (raced against the job's
 cancel event, so Cancel ends a queued run at once), and only then takes
 #306's shared input lock (`lock_manager.acquire_input_lock`) on the Image and

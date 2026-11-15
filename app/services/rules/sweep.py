@@ -163,6 +163,14 @@ _generations: dict[str, int] = {}
 # this logs the change of state, once each way, instead of every tick.
 _unreadable: dict[tuple[str, str], str] = {}
 
+# (library id, platform id) of each check Rule whose scheduled run is still
+# checking (#305). Its run is recorded only when that run finishes, so until
+# then the Rule would read as due and the next tick would pick another budget's
+# worth; while it is here the scheduler picks nothing more for it. Cleared as
+# the run ends, recorded or not. In memory: one scheduler runs per data
+# directory (#307's scheduler lock), and a restart ends every run.
+_active_check_runs: set[tuple[str, str]] = set()
+
 # job id -> outcome, for a job that ended before its record was written. Drained
 # by `_mark_converted`; see there. Bounded by the same thing that bounds
 # `_job_owners`: one entry per queued conversion, removed when it is applied.
@@ -1238,6 +1246,12 @@ async def _sweep_locked(
             rule, states[kind].get(platform_id, {}), now,
         ):
             continue
+        if (
+            kind == CHECK and not ignore_schedule
+            and (library.id, str(platform_id)) in _active_check_runs
+        ):
+            # Its scheduled run is still checking: one budget per window.
+            continue
 
         if kind == CHECK:
             if await _sweep_check(
@@ -1670,22 +1684,39 @@ async def _sweep_locked(
         result["stopped_reason"] = "stopped"
     elif not dry_run:
         async def record_check_runs() -> None:
+            # Stamped with the moment the sweep found each Rule due, not when
+            # the run finished: a night's run that ends past midnight still
+            # counts for the window that picked it, so the next one keeps its
+            # own run (4577171597). The reservation covers the time between.
             for platform_id, summary, manual, at in check_runs:
                 await _record_run(library, platform_id, summary, CHECK, manual=manual, at=at)
 
-        async def record_check_runs_later() -> None:
-            # From the check run, after this sweep let go of the lock: taken
-            # again so the write cannot interleave with another sweep's.
-            async with _sweep_lock:
-                await record_check_runs()
+        # The scheduled runs this job carries hold their windows until it ends.
+        reserved = {
+            (library.id, str(platform_id))
+            for platform_id, _summary, manual, _at in check_runs if not manual
+        }
+
+        async def check_run_ended(completed: bool) -> None:
+            try:
+                if completed:
+                    # From the check run, after this sweep let go of the lock:
+                    # taken again so the write cannot interleave with another
+                    # sweep's.
+                    async with _sweep_lock:
+                        await record_check_runs()
+            finally:
+                # Recorded or not: a run cut short leaves its Rule due.
+                _active_check_runs.difference_update(reserved)
 
         if picked:
             # One job and, if anything fails, one notification for the sweep.
             # The check Rules' runs are recorded once it has checked them all,
             # so a check cut short (a stop, a restart) leaves its Rule due.
+            _active_check_runs.update(reserved)
             checks.start(
                 library, picked, generation=_generations.get(library.id, 0),
-                on_finished=record_check_runs_later,
+                on_finished=check_run_ended,
             )
         else:
             await record_check_runs()

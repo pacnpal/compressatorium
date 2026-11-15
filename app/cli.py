@@ -772,7 +772,30 @@ async def _job_runner(state: RunState, *listeners):
         runner.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await runner
+        await _drain_notifications()
         await job_manager.shutdown()
+
+
+async def _drain_notifications() -> None:
+    """Send what is queued before the loop closes, within a bound.
+
+    ``notifications.notify`` queues and returns (a check run's alert, #305), so
+    a command that exited at once would drop it. Each send is already bounded
+    by ``SEND_TIMEOUT_S``; the wait here allows a few of them in a row, then
+    gives up rather than hold the exit on a dead destination.
+    """
+    from services import notifications
+
+    try:
+        await asyncio.wait_for(
+            notifications.drain(), _NOTIFY_DRAIN_SENDS * notifications.SEND_TIMEOUT_S,
+        )
+    except asyncio.TimeoutError:
+        logger.warning("Exiting with notifications still unsent (destinations not answering)")
+
+
+# How many sends in a row the exit waits for (see `_drain_notifications`).
+_NOTIFY_DRAIN_SENDS = 3
 
 
 async def _run_jobs(prepared: list[tuple], printer: Printer, state: RunState) -> None:

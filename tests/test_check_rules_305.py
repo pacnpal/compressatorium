@@ -10,6 +10,7 @@ Only the verifier is stubbed: it is the one external binary a check runs.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -2112,6 +2113,82 @@ async def test_a_stop_while_images_are_picked_starts_no_check(
     state = await sweep.get_state(routes._library(lib), CHECK)
     assert not (state.get("ps2") or {}).get("last_run_at")
     assert not (state.get("ps2") or {}).get("last_manual_run_at")
+
+
+@pytest.mark.asyncio
+async def test_a_scheduled_check_run_holds_its_window_until_it_ends(
+    tree: Path, ready, sent, monkeypatch,
+) -> None:
+    """Codex 4578034601: while a scheduled check run is still checking, the next
+    tick picks nothing more for that Rule, so the budget applies once per
+    window. A run that is cancelled leaves the Rule due, and the next tick
+    picks again; one that finishes records the run."""
+    from models import ConversionMode
+    from routes import libraries as routes
+    from services.job_manager import job_manager
+    from services.rules import check as checks
+    from services.rules import sweep
+    from services.rules.rules import CHECK
+
+    tool = registry.get("chdman")
+    gate = asyncio.Event()
+    calls: list[str] = []
+
+    async def verify(path, *, cancel_event=None):
+        calls.append(Path(path).name)
+        waits = {asyncio.ensure_future(gate.wait())}
+        if cancel_event is not None:
+            waits.add(asyncio.ensure_future(cancel_event.wait()))
+        _done, pending = await asyncio.wait(waits, return_when=asyncio.FIRST_COMPLETED)
+        for task in pending:
+            task.cancel()
+        if cancel_event is not None and cancel_event.is_set():
+            return {"valid": False, "cancelled": True, "message": "Verification cancelled"}
+        return {"valid": True, "message": "Intact"}
+
+    async def bound(path, *, cancel_event=None):
+        return 0
+
+    monkeypatch.setitem(vars(tool), "verify", verify)
+    monkeypatch.setitem(vars(tool), "verify_timeout", bound)
+    lib = await _folder_library(tree, {"enabled": True, "check_budget_gb": 3})
+    library = routes._library(lib)
+
+    async def tick() -> dict:
+        return await sweep.sweep(library)  # the scheduler's tick, not Run now
+
+    async def until(predicate) -> None:
+        for _ in range(200):
+            if predicate():
+                return
+            await asyncio.sleep(0.01)
+        raise AssertionError("timed out")
+
+    first = await tick()
+    assert first["checks"] == 1
+    await until(lambda: len(calls) == 1)
+
+    second = await tick()
+    assert second.get("checks", 0) == 0  # held open: nothing more this window
+    assert len(calls) == 1
+    assert not ((await sweep.get_state(library, CHECK)).get("ps2") or {}).get("last_run_at")
+
+    (running,) = [
+        j for j in job_manager.jobs.values()
+        if j.mode == ConversionMode.CHECK and j.status.value == "processing"
+    ]
+    await job_manager.cancel_job(running.id)
+    await checks.drain()
+    assert not ((await sweep.get_state(library, CHECK)).get("ps2") or {}).get("last_run_at")
+
+    third = await tick()  # still due after the cancel
+    assert third["checks"] == 1
+    await until(lambda: len(calls) == 2)
+    gate.set()
+    await checks.drain()
+    assert ((await sweep.get_state(library, CHECK)).get("ps2") or {}).get("last_run_at")
+    fourth = await tick()  # recorded: not due again this window
+    assert fourth.get("checks", 0) == 0
 
 
 def test_a_numbered_file_is_a_split_part_only_beside_a_modes_output_name(db: Path) -> None:

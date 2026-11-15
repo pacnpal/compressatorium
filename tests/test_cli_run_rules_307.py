@@ -1584,6 +1584,36 @@ def test_a_check_that_finds_damage_exits_1(env, monkeypatch, capsys):
     assert [f["kind"] for f in findings.list_findings()] == ["not_intact"]
 
 
+def test_a_check_failure_alert_is_sent_before_exit(env, monkeypatch, capsys):
+    """Codex 4578034606: the check run's alert goes out through the queued
+    notify(); run-rules waits for queued sends before it exits, even when the
+    destinations are slow to load."""
+    from services import notifications
+
+    sent: list[str] = []
+
+    async def slow_load():
+        await asyncio.sleep(0.5)
+        return [{"id": "hook", "kind": "webhook", "url": "http://hook.invalid/h"}]
+
+    def webhook(url, event):
+        sent.append(event.kind)
+
+    monkeypatch.setattr(notifications, "_load", slow_load)
+    monkeypatch.setitem(notifications.TRANSPORTS, "webhook", webhook)
+    _iso(env)
+
+    async def verify(path, cancel_event):
+        return {"valid": False, "message": "Disc is damaged"}
+
+    _check_rule_on(env, monkeypatch, verify)
+
+    code, lines, _err = _cli(capsys, "run-rules", "--json")
+
+    assert code == 1, lines
+    assert "check_failed" in sent
+
+
 def test_a_check_that_cannot_run_exits_1(env, monkeypatch, capsys):
     """No verdict (the verifier timed out, say) is a failure, as in `verify`."""
     _iso(env)
