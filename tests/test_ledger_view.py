@@ -148,7 +148,7 @@ async def test_export_route_streams_the_csv_body():
     assert len(body.strip().splitlines()) == 4
 
 
-@pytest.mark.parametrize("prefix", ["=", "+", "-", "@", "\t", "\r"])
+@pytest.mark.parametrize("prefix", ["=", "+", "-", "@", "\t", "\r", "\n"])
 @pytest.mark.asyncio
 async def test_csv_cells_with_formula_prefixes_are_neutralised(prefix):
     import csv
@@ -255,6 +255,58 @@ async def test_export_reads_one_snapshot_while_a_prune_commits(monkeypatch):
     ids = [line.split(",")[0] for line in "".join(chunks).strip().splitlines()[1:]]
     assert sorted(ids) == [f"old{i}" for i in range(5)]
     assert await ledger.recent(10) == []
+
+
+def _track_snapshot_close(monkeypatch):
+    closed = []
+    real_open = ledger._open_snapshot
+
+    def tracking_open():
+        session = real_open()
+        real_close = session.close
+        session.close = lambda: (closed.append(True), real_close())[1]
+        return session
+
+    monkeypatch.setattr(ledger, "_open_snapshot", tracking_open)
+    return closed
+
+
+@pytest.mark.asyncio
+async def test_closing_the_stream_after_one_chunk_releases_the_snapshot(monkeypatch):
+    monkeypatch.setattr(ledger, "_CSV_PAGE", 2)
+    base = datetime(2026, 8, 1, tzinfo=timezone.utc)
+    for i in range(5):
+        await ledger.record(_done(f"j{i}", base + timedelta(days=i)))
+    closed = _track_snapshot_close(monkeypatch)
+    gen = ledger.export_csv(ledger.LedgerFilter())
+    await gen.__anext__()
+    assert closed == []
+    await gen.aclose()
+    assert closed == [True]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_send_closes_the_export_stream(monkeypatch):
+    from routes import ledger as routes
+
+    monkeypatch.setattr(ledger, "_CSV_PAGE", 2)
+    base = datetime(2026, 8, 1, tzinfo=timezone.utc)
+    for i in range(5):
+        await ledger.record(_done(f"j{i}", base + timedelta(days=i)))
+    closed = _track_snapshot_close(monkeypatch)
+    resp = await routes.ledger_export(q="", status="", tool="", platform="")
+
+    async def receive():
+        await asyncio.sleep(3600)
+
+    async def send(message):
+        if message["type"] == "http.response.body":
+            raise OSError("client went away")
+
+    scope = {"type": "http", "method": "GET", "path": "/", "headers": []}
+    with pytest.raises(OSError):
+        await resp(scope, receive, send)
+    assert closed == [True]
 
 
 @pytest.mark.asyncio
