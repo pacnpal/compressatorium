@@ -20,6 +20,10 @@ class FindingsStore {
   platforms = $state([]);
   // The folder the mapping dialog is open on: `{ path, name }`, or null.
   mappingTarget = $state(null);
+  // Set when a mapping was saved while its Library was mid-walk: the
+  // backend's note that the Findings refresh after that walk. Check now
+  // clears it.
+  pending = $state(null);
 
   async load() {
     this.loading = true;
@@ -59,6 +63,7 @@ class FindingsStore {
     this.checking = true;
     try {
       const result = await api.checkFindings();
+      this.pending = null;
       await this.load();
       return result;
     } finally {
@@ -86,6 +91,9 @@ class FindingsStore {
   /** Set (or with `platform` null, clear) a folder's Platform, then refresh the list. */
   async setMapping(path, platform) {
     const saved = await api.setPlatformMapping(path, platform);
+    if (saved?.walk?.status === 'listing_in_progress') {
+      this.pending = saved.walk.message ?? 'A listing is running; Findings refresh after it.';
+    }
     await this.load();
     return saved;
   }

@@ -55,6 +55,10 @@
         slug
           ? `${target.name} is now ${saved?.platform_name ?? slug}`
           : `${target.name} no longer has a Platform set`,
+        // A walk was running: the Findings follow once it finishes.
+        saved?.walk?.status && saved.walk.status !== 'ok'
+          ? { description: saved.walk.message ?? 'Findings refresh after the next listing.' }
+          : undefined,
       );
       findings.closeMapping();
     } catch (e) {

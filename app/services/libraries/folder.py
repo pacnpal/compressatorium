@@ -125,6 +125,9 @@ class Scan:
     taken_at: float = 0.0
     # The Library's generation when the walk started (`FolderLibrary.invalidate`).
     generation: int = 0
+    # True when the generation moved during the walk (a mapping was set): its
+    # Findings were not written and a fresh walk was asked for.
+    stale: bool = False
 
     def by_platform(self) -> dict[str, list[Entry]]:
         out: dict[str, list[Entry]] = {}
@@ -196,6 +199,8 @@ class FolderLibrary:
         # record Findings. (#303's Library generation token will take this
         # job when it lands.)
         self._removed = False
+        # The follow-up walk `_schedule_rewalk` started, if any (tests join it).
+        self._rewalk_thread: threading.Thread | None = None
         # Serialises a settings change (database row, then this object), so
         # two concurrent edits leave both saying the same thing. Never the walk
         # lock: a settings edit must not wait for a walk.
@@ -288,6 +293,9 @@ class FolderLibrary:
 
     def _walk(self) -> Scan:
         """Walk the root once, group the files into Images and detect each Platform."""
+        # What this walk's detections are valid for: a mapping set while it
+        # runs bumps the generation, and its Findings are then not written.
+        generation = self._generation
         files, unreadable, unreadable_files, unwalked = self._files()
         stats = dict(files)
         members_cache: dict[str, tuple[int, int, list[str]]] = {}
@@ -305,7 +313,7 @@ class FolderLibrary:
 
         scan = Scan(
             unreadable=unreadable, unreadable_files=unreadable_files,
-            unwalked=unwalked, taken_at=time.monotonic(),
+            unwalked=unwalked, taken_at=time.monotonic(), generation=generation,
         )
         for path in image_sets.group_images([p for p, _ in files], members=members):
             st = stats[path]
@@ -357,12 +365,28 @@ class FolderLibrary:
         return out
 
     def _record_findings(self, scan: Scan) -> None:
-        """Hand the Findings store what this walk saw. A failure costs the Findings only."""
+        """Hand the Findings store what this walk saw. A failure costs the Findings only.
+
+        Written only while nothing the walk relied on has changed: asked under
+        the store's write lock, a removed Library writes nothing, and a walk
+        that a mapping change overtook writes nothing and marks itself stale
+        so :meth:`scan` asks for a fresh walk.
+        """
+        observed = self._findings(scan)
+
+        def current() -> bool:
+            if not self.is_current():
+                return False
+            if self._generation != scan.generation:
+                scan.stale = True
+                return False
+            return True
+
         try:
             findings.reconcile(
-                self.id, self._findings(scan),
+                self.id, observed,
                 keep_under=[self._key(path) for path in scan.unwalked],
-                current=self.is_current,
+                current=current,
             )
         except Exception:
             # The walk is still good for Rules; the Findings view is behind
@@ -389,13 +413,34 @@ class FolderLibrary:
                 and self._scan.generation == generation
                 and time.monotonic() - self._scan.taken_at < SCAN_TTL_SECONDS
             )
+            walked = None
             if refresh or not fresh:
-                scan = self._walk()
-                scan.generation = generation
-                self._scan = scan
-            return self._scan
+                walked = self._scan = self._walk()
+            scan = self._scan
         finally:
             self._lock.release()
+        if walked is not None and walked.stale:
+            # A mapping changed under this walk: its Findings were dropped and
+            # the next walk sees the new mapping. Started after the lock is
+            # released, so it is not refused as "still running".
+            self._schedule_rewalk()
+        return scan
+
+    def _schedule_rewalk(self) -> None:
+        """Walk again on a daemon thread, as #303's walks run: never a pool worker."""
+        def rewalk() -> None:
+            try:
+                self.scan(refresh=True)
+            except (LibraryUnreadable, OSError) as exc:
+                # Another walk took over (it sees the new mapping), or the root
+                # blipped: the next listing or sweep walks again.
+                logger.info("folder_library: follow-up walk of %s: %s", self.root, exc)
+
+        thread = threading.Thread(
+            target=rewalk, name=f"folder-rewalk-{self.record_id}", daemon=True,
+        )
+        self._rewalk_thread = thread
+        thread.start()
 
     def summary(self, *, refresh: bool = False) -> dict[str, Any]:
         """Detected Platforms with Image counts, and the Images left out."""

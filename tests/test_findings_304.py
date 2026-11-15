@@ -708,3 +708,79 @@ def test_reconcile_writes_nothing_once_the_producer_is_gone(db: Path) -> None:
 
     assert _open() == []
 
+
+# ----------------------------------------------------------------------
+# a mapping set while a walk is running (I3)
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_walk_that_saw_a_mapping_change_discards_its_findings(
+    tree: Path, monkeypatch,
+) -> None:
+    from services import libraries
+    from services.libraries.folder import FolderLibrary
+
+    _blank(tree / "misc" / "Loose.iso")
+    await _register(tree)
+    library = libraries.folder_libraries()[0]
+    real = FolderLibrary._findings
+    changed = {"done": False}
+
+    def mapping_lands_mid_walk(self, scan):
+        # The PUT arrives after this walk detected Loose.iso as Unsorted.
+        if not changed["done"]:
+            changed["done"] = True
+            _map(tree / "misc", "psp")
+        return real(self, scan)
+
+    scheduled = []
+    monkeypatch.setattr(FolderLibrary, "_findings", mapping_lands_mid_walk)
+    monkeypatch.setattr(FolderLibrary, "_schedule_rewalk", lambda self: scheduled.append(self))
+
+    library.summary(refresh=True)
+
+    # Nothing written from the stale walk, and a fresh walk is asked for.
+    assert _open() == []
+    assert scheduled == [library]
+
+    library.summary(refresh=True)
+    assert "misc/Loose.iso" not in _kinds()
+    assert "ps2/Misfiled.iso" in _kinds()
+
+
+@pytest.mark.asyncio
+async def test_a_scheduled_rewalk_runs_on_its_own_thread(tree: Path) -> None:
+    from services import libraries
+
+    _blank(tree / "misc" / "Loose.iso")
+    await _register(tree)
+    library = libraries.folder_libraries()[0]
+
+    library._schedule_rewalk()
+    library._rewalk_thread.join(timeout=30)
+
+    assert _kinds()["misc/Loose.iso"] == "unsorted"
+
+
+@pytest.mark.asyncio
+async def test_a_mapping_put_during_a_walk_says_findings_follow(tree: Path) -> None:
+    from routes import findings as routes
+    from services import libraries
+
+    (tree / "misc").mkdir()
+    await _register(tree)
+    library = libraries.folder_libraries()[0]
+
+    library._lock.acquire()  # a sweep or listing is mid-walk
+    try:
+        saved = await routes.set_platform_mapping(
+            routes.MappingRequest(path=str(tree / "misc"), platform="psp"),
+        )
+    finally:
+        library._lock.release()
+
+    assert saved["platform"] == "psp"
+    assert saved["walk"]["status"] == "listing_in_progress"
+    assert saved["walk"]["message"] == "A listing is running; Findings refresh after it."
+

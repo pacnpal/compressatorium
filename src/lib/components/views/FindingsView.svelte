@@ -90,6 +90,15 @@
     </div>
   </header>
 
+  {#if findings.pending}
+    <div class="notice pending" role="status">
+      <span>{findings.pending}</span>
+      <Button variant="ghost" size="sm" onclick={check} loading={findings.checking}>
+        Check now
+      </Button>
+    </div>
+  {/if}
+
   {#if findings.error}
     <div class="notice error" role="alert">Could not list the Findings: {findings.error}</div>
   {/if}
@@ -182,6 +191,18 @@
     border: 1px solid var(--danger, #d33);
     border-radius: var(--radius-sm);
     color: var(--danger, #d33);
+  }
+  .notice.pending {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2, 8px);
+    padding: 8px 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--surface-2);
+    color: var(--text-2);
   }
   .table {
     display: flex;

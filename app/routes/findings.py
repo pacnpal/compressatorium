@@ -45,8 +45,12 @@ async def _walk(library) -> dict:
             run_detached(lambda: library.summary(refresh=True)), _WALK_SECONDS,
         )
     except ListingInProgress:
-        # The walk already running records the Findings when it finishes.
-        return {"id": library.id, "status": "listing_in_progress"}
+        # The walk already running finishes first. If a mapping changed under
+        # it, it drops its Findings and walks again (FolderLibrary.scan).
+        return {
+            "id": library.id, "status": "listing_in_progress",
+            "message": "A listing is running; Findings refresh after it.",
+        }
     except LibraryUnreadable as exc:
         return {"id": library.id, "status": exc.code, "error": str(exc)}
     except (asyncio.TimeoutError, OSError):
@@ -115,8 +119,10 @@ async def set_platform_mapping(payload: MappingRequest) -> dict:
     except platform_mappings.MappingError as exc:
         raise HTTPException(status_code=exc.status, detail=str(exc)) from None
     except asyncio.TimeoutError:
+        # The save runs on a detached thread and may still land: say so.
         raise HTTPException(
-            status_code=504, detail="The folder did not answer in time",
+            status_code=504,
+            detail="The folder did not answer in time; the Platform may still be saved",
         ) from None
     library = libraries.get(saved["library_id"])
     if library is not None:

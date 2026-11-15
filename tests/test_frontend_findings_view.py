@@ -148,6 +148,36 @@ process.stdout.write(JSON.stringify({ saved, calls: __log.map((c) => c[0]), firs
     assert data["saved"]["platform"] == "psp", data
 
 
+def test_a_mapping_saved_during_a_walk_leaves_findings_pending(tmp_path):
+    data = _run(tmp_path, """
+__answers.setPlatformMapping = {
+  library_id: 'folder:1', folder: 'misc', platform: 'psp',
+  walk: { id: 'folder:1', status: 'listing_in_progress',
+          message: 'A listing is running; Findings refresh after it.' },
+};
+__answers.listFindings = { findings: [], dismissed: 0 };
+await findings.setMapping('/v/roms/misc', 'psp');
+const pending = findings.pending;
+await findings.load();
+process.stdout.write(JSON.stringify({ pending, after: findings.pending }));
+""")
+    assert data["pending"] == "A listing is running; Findings refresh after it.", data
+    # Pending holds until the walk is known to have finished (a Check now or
+    # a later load that the user asks for clears it).
+    assert data["after"] == data["pending"], data
+
+
+def test_check_now_clears_the_pending_note(tmp_path):
+    data = _run(tmp_path, """
+__answers.checkFindings = { libraries: [{ id: 'folder:1', status: 'ok' }] };
+__answers.listFindings = { findings: [], dismissed: 0 };
+findings.pending = 'A listing is running; Findings refresh after it.';
+await findings.check();
+process.stdout.write(JSON.stringify({ pending: findings.pending }));
+""")
+    assert data["pending"] is None, data
+
+
 def test_check_now_walks_then_reloads(tmp_path):
     data = _run(tmp_path, """
 __answers.checkFindings = { libraries: [{ id: 'folder:1', status: 'ok' }] };
@@ -201,6 +231,8 @@ def test_each_finding_links_to_the_actions_that_fix_it():
     # A dismissed row (shown with "Show dismissed") can be shown again.
     assert "findings.undismiss(" in view
     assert "Show again" in view
+    # A mapping saved while a walk runs says the Findings are pending.
+    assert "findings.pending" in view
     for column in ("Library", "Image", "Kind", "First seen", "Last seen"):
         assert column in view, column
 
