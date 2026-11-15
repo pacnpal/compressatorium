@@ -104,6 +104,35 @@ def open_lock_handle(path: str):
         raise
 
 
+# The path a lock file records (``_record_path``), one encoding for every lock
+# kind: ``hex:`` and the hex of the path's filesystem bytes, then a newline.
+# Lossless for any pathname, a newline or a non-UTF-8 byte included (codex
+# 4578027196). A first line without the prefix is the older plain record
+# (``os.fsencode(path)``, newline-terminated), still read during an upgrade.
+_RECORD_PREFIX = b"hex:"
+# PATH_MAX (4096) bytes as hex, the prefix and the newline, with room to spare.
+_RECORD_LINE_MAX = 2 * 4096 + 64
+
+
+def _encode_recorded_path(path: str) -> bytes:
+    return _RECORD_PREFIX + os.fsencode(path).hex().encode("ascii") + b"\n"
+
+
+def _decode_recorded_path(first_line: bytes) -> str | None:
+    """The path a lock file's first line records; None when it is empty,
+    still being written, or unreadable."""
+    if not first_line.endswith(b"\n"):
+        return None  # empty, or being written right now
+    body = first_line[:-1]
+    if body.startswith(_RECORD_PREFIX):
+        try:
+            raw = bytes.fromhex(body[len(_RECORD_PREFIX):].decode("ascii"))
+        except ValueError:
+            return None
+        return os.fsdecode(raw) or None
+    return os.fsdecode(body) or None
+
+
 class LockManager:
     """Manages file locks to prevent concurrent conversions of the same file."""
 
@@ -305,8 +334,7 @@ class LockManager:
         """
         try:
             if os.fstat(handle.fileno()).st_size == 0:
-                # Filesystem bytes, so ``_recorded_path`` round-trips it.
-                handle.write(os.fsencode(locked_path) + b"\n")
+                handle.write(_encode_recorded_path(locked_path))
                 handle.flush()
         except OSError:
             logger.debug("Could not record the path of a lock", exc_info=True)
@@ -315,12 +343,10 @@ class LockManager:
     def _recorded_path(lock_file: str) -> str | None:
         try:
             with open(lock_file, "rb") as handle:
-                first = handle.readline(8192)
+                first = handle.readline(_RECORD_LINE_MAX)
         except OSError:
             return None
-        if not first.endswith(b"\n"):
-            return None  # empty, or being written right now
-        return os.fsdecode(first[:-1]) or None
+        return _decode_recorded_path(first)
 
     def dir_lock_would_conflict(self, dir_path: str) -> bool:
         """Whether :meth:`acquire_dir_lock` for ``dir_path`` would currently
