@@ -3142,7 +3142,12 @@ pins every key to RomM's list. A test also fails when a tool declares a slug
 the table does not cover, so a new Platform brings its folder names with it.
 `platform_name(slug)` gives the display name from `_NAMES` (a test fails when a
 slug has none). `detect_uncached` is the same decision without the shared LRU,
-for a caller (the folder Library) that keeps its own per-file cache. A header
+for a caller (the folder Library) that keeps its own per-file cache. Such a
+caller reads the folder Platform mappings once (`mapping_snapshot()`) and
+passes that one snapshot as `mapped=` to both `detection_key` and
+`detect_uncached`: two reads could see a mapping change in between and cache
+one answer under the other's key. `detect_platform` does the same for the
+shared LRU (one read for the key and the decision). A header
 that disagrees with the deciding folder, or two headers that disagree (kept
 in `Detection.headers`), is a `conflict` with no Platform. Nothing at all is `unsorted`. Results are
 cached per path in a bounded LRU and dropped when the file's size or mtime
@@ -3560,6 +3565,18 @@ when `platform` is None. The rows are kept in memory as an index of absolute
 folder paths, rebuilt on first use after any change; `mapped_folders()`
 returns it, and detection's `_place` walks the Image's parents against it and
 the Platform folder names together. Removing a Library deletes its rows.
+
+"No mappings set" and "the mappings could not be read" are different states.
+An empty table answers `{}`. A database read that fails raises
+`platform_mappings.MappingsUnavailable` and caches nothing, so the next call
+reads again. Missing evidence never decides a Platform:
+`detect_platform` answers Unsorted ("the folder Platform mappings could not
+be read") and caches nothing, and a folder Library's walk stops with
+`MappingsUnreadable` (code `mappings_unavailable`), so its Rules listing
+returns nothing and no Finding is written until the mappings read again.
+Otherwise a header could pass as the Platform of a folder whose mapping says
+something else, with no conflict. Only a process with no database at all (a
+CLI dry run on a fresh data dir) reads "no table" as "none set".
 
 Detection reads the mapping as evidence inside `_decide`, never as an override
 applied afterwards, so a mapping that disagrees with a header is a conflict in

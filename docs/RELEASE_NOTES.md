@@ -303,6 +303,14 @@
 
 ### Fixed
 
+- **Folder Platforms are never guessed past a read error** (#338). If the
+  saved folder Platforms can't be read, folder Libraries list nothing and
+  their Rules wait until they can, instead of taking a disc's header as its
+  Platform when its folder may say otherwise. Images checked meanwhile show
+  as Unsorted, saying why. The **Set Platform** dialog shows when it couldn't
+  read the folder's current Platform, with **Retry**, instead of acting as
+  if none were set, and it never shows a Platform left over from an earlier
+  opening. **Open folder** clicked twice goes to the folder clicked last.
 - **chdman Create Raw works** (#326). The job now passes `--unitsize 512`;
   chdman refuses a raw image without a unit size, so every Create Raw job used
   to fail.
