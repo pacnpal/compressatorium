@@ -3029,9 +3029,13 @@ Precedence is fixed and never guesses:
    overlapping root considered, so a folder locked above an inner Volume (with
    `/mnt` and `/games -> /mnt/MyGame/PS3_GAME`, a lock on `/mnt/MyGame`) is
    still found. Containment has a three-way form,
-   `utils.path_utils.volume_containment(path)`: True inside, False confirmed
-   outside, None when a fresh root probe the answer depended on failed or went
-   over its bound. `is_within_configured_volumes` is that answer with None
+   `utils.path_utils.volume_containment(path)`: True inside, False only on
+   positive evidence of outside (a `..` segment, a path under no configured or
+   cached root spelling while every root's spelling is known, or freshly
+   resolved roots that don't hold it), None whenever the gate gave up on an
+   error instead (a root probe that failed or went over its bound, an OSError
+   resolving the path, a root missing from the resolved-spelling cache; each
+   is noted through `_note_unknown`). `is_within_configured_volumes` is that answer with None
    counted as outside; a caller that must not mistake a stalled mount for
    "outside" (the `.m3u` Referrer, §3.3.15) uses the three-way form.
 

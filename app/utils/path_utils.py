@@ -214,6 +214,22 @@ def match_extension(name: str, extensions: Iterable[str]) -> Optional[str]:
     return best
 
 
+# Per thread: how many times the containment gate (`_confined_real_path` and
+# its helpers) gave up because of an error rather than a verdict: a failed
+# or timed-out root probe, an OSError resolving the path, a root missing from
+# the resolved-spelling cache. `volume_containment` turns a refusal that
+# happened alongside one of these into "couldn't tell" instead of "outside".
+_unknown_failures = threading.local()
+
+
+def _note_unknown() -> None:
+    _unknown_failures.count = getattr(_unknown_failures, "count", 0) + 1
+
+
+def _unknown_count() -> int:
+    return getattr(_unknown_failures, "count", 0)
+
+
 def _resolve_path(raw_path: str, *, strict: bool = False) -> Optional[Path]:
     """Resolve a path that ``_confined_real_path`` already confined.
 
@@ -232,7 +248,11 @@ def _resolve_path(raw_path: str, *, strict: bool = False) -> Optional[Path]:
     try:
         path_obj = Path(raw_path).expanduser()
         resolved = path_obj.resolve(strict=strict)
-    except (OSError, RuntimeError):
+    except RuntimeError:
+        return None                  # a symlink loop (before 3.13): a verdict
+    except OSError as exc:
+        if exc.errno != errno.ELOOP and not (strict and exc.errno == errno.ENOENT):
+            _note_unknown()          # EIO, a stalled mount, ...: couldn't tell
         return None
 
     # Additional ELOOP probe for Python 3.13+ where ``resolve()`` no longer
@@ -491,16 +511,11 @@ def _fresh_root(configured: str) -> Path | None:
     return Path(box["real"])
 
 
-# Counts, per thread, the fresh root probes that failed or timed out, so
-# `volume_containment` can tell "outside every Volume" from "couldn't tell".
-_probe_failures = threading.local()
-
-
 def _fresh_root_noted(configured: str) -> Path | None:
-    """``_fresh_root``, counting a failed probe for ``volume_containment``."""
+    """``_fresh_root``, noting a failed or timed-out probe as unknown."""
     root = _fresh_root(configured)
     if root is None:
-        _probe_failures.count = getattr(_probe_failures, "count", 0) + 1
+        _note_unknown()
     return root
 
 
@@ -552,6 +567,11 @@ def _confined_real_path(raw_path: str, *, strict: bool = False) -> Path | None:
             return _real_inside_volumes(root, roots=[volume], strict=strict)
         if candidate.startswith(root.rstrip(os.sep) + os.sep):
             return _real_inside_volumes(candidate, roots=[volume], strict=strict)
+    # Under no configured or cached spelling. That is a verdict only if every
+    # root's resolved spelling is known: a root whose probe failed or timed
+    # out has none, so a path spelled through its target can't be matched.
+    if any(_configured_root(volume) not in resolved_roots for volume in volumes):
+        _note_unknown()
     return None
 
 
@@ -621,10 +641,10 @@ def volume_containment(path: str, *, treat_archives: bool = True) -> bool | None
     deciding which playlists to leave alone) uses this.
     """
     base_path = strip_archive_path(path) if treat_archives else path
-    before = getattr(_probe_failures, "count", 0)
+    before = _unknown_count()
     if _confined_real_path(base_path) is not None:
         return True
-    return None if getattr(_probe_failures, "count", 0) != before else False
+    return None if _unknown_count() != before else False
 
 
 def is_within_configured_volumes(path: str, *, treat_archives: bool = True) -> bool:
