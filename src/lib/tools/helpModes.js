@@ -98,7 +98,7 @@ export const MODE_BLURBS = {
     + 'start it: the game moves to the root of the file and its dosbox.conf, taken '
     + 'from EXODOS_DOS_DIR with the mount paths rewritten, goes beside it. Writes '
     + 'Game.dosz beside the source and never modifies or deletes the original. '
-    + 'Offered only on zips that hold one game folder with a template.',
+    + 'A zip that is not one game folder with a template is skipped, with the reason.',
   // PS3
   folder_to_iso:
     'Pack a decrypted PS3 folder into an .iso RPCS3 mounts. An optional toggle '

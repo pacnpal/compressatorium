@@ -2399,7 +2399,12 @@ tool: it registers with an empty binary path and reports no pids.
   `member_segments` and `enforce_archive_limits`, every member sits in one game
   folder (a loose root file refuses it), and `<tree>/<game>/dosbox.conf`
   resolves (realpath) inside the tree. The answer is cached per (path, size,
-  mtime). `_NOT_CONVERTIBLE_REASON["exodos"]` names the plan-time reason.
+  mtime). `_NOT_CONVERTIBLE_REASON["exodos"]` names the plan-time reason. The
+  frontend descriptor is *not* `contentRefined`: a `.zip` is an archive row,
+  and the listing never annotates archive rows with `convertible_by`, so the
+  content gate would refuse every zip. Any `.zip` can be ticked in this mode;
+  `plan_job` skips the ones `converts_path` refuses, with the reason. A
+  registry test pins that no content-refined tool takes an archive input.
 - **The product.** DOSBox Pure mounts the loaded file as C: and, with the
   `dosbox_pure_conf=inside` core option, loads `C:\DOSBOX.CONF`. So the members
   are re-rooted (`<game>/x` becomes `x`) and the template is added as

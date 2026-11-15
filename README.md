@@ -1614,8 +1614,9 @@ copied into RomM alone does not start.
   product differs from the source by design, and the source is your eXoDOS install.
 - **Verify** tests every member's CRC, checks the member names, and checks that
   `dosbox.conf` sits at the root.
-- **Offered only on eXoDOS game zips.** A `.zip` is offered when it holds one game
-  folder and that game's template is in `EXODOS_DOS_DIR`. Member names are checked
+- **Only eXoDOS game zips are queued.** Any `.zip` can be ticked in this mode; one
+  is queued when it holds one game folder and that game's template is in
+  `EXODOS_DOS_DIR`, and skipped with the reason otherwise. Member names are checked
   with the same rules as archive extraction (no absolute paths, no `..`), the
   archive size limits apply, and the template must resolve inside `EXODOS_DOS_DIR`.
 - **Not from archives**: the repack needs the zip itself and the `!dos` folder.

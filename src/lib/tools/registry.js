@@ -105,8 +105,8 @@ const XISO_COMPRESS_EXTS = ['.iso'];
 const XISO_VERIFY_EXTS = ['.xiso.iso'];
 const XISO_SOURCE_EXTS = [...XISO_COMPRESS_EXTS, ...XISO_VERIFY_EXTS];
 // eXoDOS repack: an eXoDOS game zip in, a DOSBox Pure zip (.dosz) out. `.zip`
-// is also romz's archive extension, so the backend reads each zip's directory
-// before claiming it (contentRefined below).
+// is also romz's archive extension; the backend reads each zip's directory in
+// plan_job and skips one that is not an eXoDOS game, with the reason.
 const EXODOS_INPUT_EXTS = ['.zip'];
 const EXODOS_VERIFY_EXTS = ['.dosz'];
 
@@ -719,9 +719,11 @@ export const TOOLS = [
     verifyPrefix: '',
     sourceExts: EXODOS_INPUT_EXTS,
     verifyExts: EXODOS_VERIFY_EXTS,
-    // Offered only on zips the backend matched: one game folder whose
-    // dosbox.conf template is in EXODOS_DOS_DIR. A plain .zip stays romz's.
-    contentRefined: true,
+    // Not contentRefined, unlike xiso: a .zip is an archive row, and the
+    // listing never puts a convertible_by claim on archive rows, so the
+    // content gate would refuse every zip. The extension gate lets any .zip be
+    // ticked, and plan_job's converts_path skips a zip that is not one game
+    // folder with a template in EXODOS_DOS_DIR, with the reason.
     modeGroups: ['exodos'],
     groups: { exodos: 'eXoDOS → RomM' },
     defaultMode: 'exodos_repack',

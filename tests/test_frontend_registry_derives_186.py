@@ -101,6 +101,8 @@ def _dump(tmp_path: Path) -> dict:
         " ].map(([n, e, t]) => [`${t}:${n}`,"
         "   registry.displayExtension({ name: n, extension: e, type: t })])),"
         " content_refined: registry.all().filter((t) => t.contentRefined).map((t) => t.id),"
+        " content_refined_inputs: registry.all().filter((t) => t.contentRefined)"
+        "   .flatMap((t) => t.modes.flatMap((m) => m.inputExtensions ?? [])),"
         " content_claims: Object.fromEntries(["
         "   ['xbox', ['chdman', 'xiso', 'dolphin']], ['psp', ['chdman', 'cso']],"
         "   ['empty', []], ['missing', undefined]"
@@ -296,10 +298,23 @@ def test_content_claims_read_only_the_backend_probe(tmp_path):
     dump = _dump(tmp_path)
     claims = dump["content_claims"]
 
-    # Registry order: every tool whose extension claim means nothing until the
-    # backend's probe agreed (Xbox discs among .iso, eXoDOS games among .zip).
-    assert dump["content_refined"] == ["xiso", "exodos"]
+    assert dump["content_refined"] == ["xiso"]
     assert claims["xbox"] == ["xiso"]
     assert claims["psp"] == []
     assert claims["empty"] == []
     assert claims["missing"] is None
+
+
+def test_no_content_refined_tool_takes_an_archive_as_input(tmp_path):
+    """An archive row never carries a ``convertible_by`` claim.
+
+    The listing leaves ``convertible_by`` empty on every ``.zip``/``.7z``/
+    ``.rar`` row (only members are annotated), so a ``contentRefined`` tool
+    whose source is an archive would find no claim on any row and the
+    selection gate would refuse every one. Such a tool (the eXoDOS repack,
+    whose source is a ``.zip``) relies on the extension gate and ``plan_job``'s
+    ``converts_path`` instead.
+    """
+    inputs = set(_dump(tmp_path)["content_refined_inputs"])
+
+    assert not inputs & {".zip", ".7z", ".rar"}
