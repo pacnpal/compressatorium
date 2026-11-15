@@ -298,7 +298,8 @@ def test_a_deep_link_change_reselects_while_the_view_stays_mounted():
     """Codex 4576629013: #/rules/folder:1 -> #/rules/folder:2 (or Back) reselects."""
     src = _RULES_VIEW.read_text(encoding="utf-8")
     effect = re.search(
-        r"\$effect\(\(\) => \{\s*if \(embedded\) return;\s*const target = ui\.rulesTarget;(.*?)\n  \}\);",
+        r"\$effect\(\(\) => \{\s*if \(embedded\) return;\s*"
+        r"const target = ui\.rulesTarget;(.*?)\n  \}\);",
         src, re.DOTALL,
     )
     assert effect, "the selection does not follow ui.rulesTarget"

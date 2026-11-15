@@ -108,8 +108,9 @@ _LISTING_SECONDS = 600
 _sweep_lock = asyncio.Lock()
 
 # job id -> (library, platform_id, image key, the queuing Rule's output
-# identity) for the conversions this process queued. Read by `note_job_finished` so a completion updates its one record
-# instead of scanning every remembered Image of every Platform. In memory on
+# identity) for the conversions this process queued. Read by
+# `note_job_finished` so a completion updates its one record instead of
+# scanning every remembered Image of every Platform. In memory on
 # purpose: the job queue it indexes is in memory too, so an entry has nothing
 # to outlive.
 _job_owners: dict[str, tuple[Library, str, str, tuple | None]] = {}
