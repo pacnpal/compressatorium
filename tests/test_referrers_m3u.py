@@ -65,9 +65,11 @@ def _volume(tmp_path: Path, monkeypatch):
         return None
 
     for tool in convert_routes.registry.all():
-        monkeypatch.setattr(tool, "convert", fake_convert)
-        monkeypatch.setattr(tool, "post_convert", noop_post_convert)
-        monkeypatch.setattr(tool, "verify", fake_verify, raising=False)
+        # On the instance's own dict, so the undo deletes the override rather
+        # than pinning the class's bound method on the instance.
+        monkeypatch.setitem(vars(tool), "convert", fake_convert)
+        monkeypatch.setitem(vars(tool), "post_convert", noop_post_convert)
+        monkeypatch.setitem(vars(tool), "verify", fake_verify)
     monkeypatch.setattr(job_manager_module.verification_store, "mark_verified", noop)
     monkeypatch.setattr(job_manager_module.verification_store, "clear", noop)
     monkeypatch.setattr(job_manager_module.chd_metadata_store, "clear", noop)

@@ -3068,10 +3068,21 @@ never half of one.
   the same `_choose_entry` and reader, so code that creates a playlist
   (#299) encodes entries exactly as the Referrer reads them, or gets `None`
   for a path that can't be one entry.
-- *Concurrency.* Each playlist (by resolved path) has a `threading.Lock`.
-  `apply` holds it while it re-reads the playlist, re-runs the rewrite on what
-  is there now and writes, so two jobs updating one playlist both land, and an
-  edit made after planning is kept.
+- *Concurrency.* Each playlist (by resolved path) has a `threading.Lock`
+  for threads in one process, and `apply` also holds the cross-process
+  Referrer lock, `lock_manager.referrer_lock(path)`: the same lock dir and
+  real-path keying (`os.fsencode(realpath)`) as every other lock, but its own
+  kind of lock file (`referrer-`, not `filelock-`), so it never meets an
+  output, input or folder lock on any path, and its holder waits on nothing
+  else. Both are held while `apply` re-reads the playlist, re-runs the rewrite
+  on what is there now and writes, so two jobs updating one playlist both
+  land, in one process or two (a CLI run beside the server, §3.3.17; codex
+  4577804154), and an edit made after planning is kept. The wait for the
+  Referrer lock is bounded (`PLAYLIST_LOCK_WAIT_SECONDS`, 30 s) and, inside
+  the hook, ends at once when the job stops waiting (`check_write` is asked
+  before every attempt). Still held then, the Referrer fails with "is being
+  updated by another job" and the Source is kept, with that reason in
+  `job.warning`.
 - *Writing.* `plan` refuses a symlinked playlist before reading it (it may
   lead out of the Volumes), which keeps the Source; `apply` refuses a
   read-only or symlinked one. It writes `<name>.m3u.bak` once, only if no
@@ -3447,7 +3458,9 @@ updated, a failed second check, a Cancel during the hook) completes the job
 with that reason in both `job.message` and `job.warning`, so the CLI line
 says why the Source stayed and exits 0; the job row shows it once
 (`jobDetailLines` in `src/lib/util/jobDetail.js`). A Cancel seen at the last
-look just before the unlinks ends the job CANCELLED instead.
+look just before the unlinks ends the job CANCELLED instead. Two processes
+rewriting one playlist take turns on the cross-process Referrer lock (§3.3.15,
+*Concurrency*), so neither edit is lost.
 
 **Root.** `scripts/compressatorium` started as root execs `/entrypoint.sh
 compressatorium ...`: the entrypoint's PUID/PGID remap and `gosu converter`

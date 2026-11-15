@@ -18,6 +18,17 @@ from config import settings
 
 logger = get_logger("lock_manager")
 
+# Lock file kinds. Every lock on an Image path (output, input, folder) is a
+# ``filelock-`` file; a Referrer's lock on a file it rewrites (a playlist) is a
+# ``referrer-`` file, so the two can never be the same lock, even on one path.
+IMAGE_LOCK = "filelock"
+REFERRER_LOCK = "referrer"
+_LOCK_KINDS = (IMAGE_LOCK, REFERRER_LOCK)
+
+
+class LockWaitTimeout(TimeoutError):
+    """A bounded wait for a lock ran out while someone else still held it."""
+
 
 def still_linked(handle, path: str) -> bool:
     """Whether the file ``handle`` holds is still the one at ``path``.
@@ -48,6 +59,22 @@ def unlink_held(handle, path: str) -> bool:
     except FileNotFoundError:
         return False
     return True
+
+
+def open_lock_handle(path: str):
+    """Open (creating) a lock file for ``flock``, as ``open(path, "ab")`` does.
+
+    The handle is held past the call (for as long as its lock is), so it is
+    made from an ``os.open`` descriptor rather than a ``with`` block. Binary
+    append: a flock-only handle, or one that records a path with ``write``.
+    Shared by every lock file here and in ``concurrency_manager``.
+    """
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o666)
+    try:
+        return os.fdopen(fd, "ab")
+    except BaseException:
+        os.close(fd)
+        raise
 
 
 class LockManager:
@@ -314,7 +341,7 @@ class LockManager:
         except OSError:
             return None
 
-    def _lock_file_path(self, normalized_path: str) -> str:
+    def _lock_file_path(self, normalized_path: str, kind: str = IMAGE_LOCK) -> str:
         # Use a stable hash to avoid path length issues and keep locks in /tmp.
         # Hashed as filesystem bytes (#306): a native name a sheet reads
         # (``Caf\xe9.bin``, carried as a surrogate escape) is a path like any
@@ -322,7 +349,7 @@ class LockManager:
         digest = hashlib.sha256(os.fsencode(normalized_path)).hexdigest()
         base = os.path.basename(normalized_path) or "chd"
         safe_base = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in base)
-        filename = f"filelock-{safe_base}-{digest}.lock"
+        filename = f"{kind}-{safe_base}-{digest}.lock"
         return os.path.join(self._lock_dir, filename)
 
     def _cleanup_stale_locks(self, *, log_level: str = "info") -> int:
@@ -340,7 +367,8 @@ class LockManager:
             try:
                 lock_files = [
                     name for name in os.listdir(self._lock_dir)
-                    if name.startswith("filelock-") and name.endswith(".lock")
+                    if name.startswith(tuple(f"{kind}-" for kind in _LOCK_KINDS))
+                    and name.endswith(".lock")
                 ]
             except OSError:
                 return removed_count
@@ -760,8 +788,7 @@ class LockManager:
         """
         for _attempt in range(attempts):
             try:
-                # Binary mode: flock-only handle, no text is read or written.
-                handle = open(lock_file_path, "ab")  # noqa: SIM115 - held past this call
+                handle = open_lock_handle(lock_file_path)
             except OSError:
                 logger.error("Failed to open input lock %s", lock_file_path, exc_info=True)
                 return None
@@ -792,6 +819,60 @@ class LockManager:
             lock_handle.close()
         except Exception:
             logger.error("Error releasing lock for %s", label, exc_info=True)
+
+    # Referrer locks (codex 4577804154). A Referrer rewriting a file other
+    # processes may rewrite too (one ``.m3u`` naming discs that a CLI run and
+    # the server convert at once) holds this exclusive lock on the file's real
+    # path for its whole read, rewrite and replace. Its own kind of lock file
+    # (``referrer-``), so it never meets an output, input or folder lock: a
+    # holder waits on nothing else while it holds one, and nothing that holds
+    # an Image lock is refused by it. Both rules above hold here too.
+
+    @contextlib.contextmanager
+    def referrer_lock(self, path: str, *, wait: float, keep_waiting=None, poll: float = 0.05):
+        """Hold the cross-process Referrer lock on ``path`` within the block.
+
+        Polls without blocking for up to ``wait`` seconds while another
+        process (or another handle here) holds it; ``keep_waiting``, when
+        given, is called before every attempt and may raise to stop waiting.
+        Raises :class:`LockWaitTimeout` when the wait runs out.
+        """
+        key = self._resolve(path)
+        lock_file_path = self._lock_file_path(key, REFERRER_LOCK)
+        handle = self._take_referrer_lock(lock_file_path, wait, keep_waiting, poll)
+        try:
+            yield
+        finally:
+            self._unlink_then_close(handle, lock_file_path, key)
+
+    def _take_referrer_lock(self, lock_file_path: str, wait: float, keep_waiting, poll: float):
+        if self.is_read_only:
+            raise LockWaitTimeout(f"read-only: not locking {lock_file_path}")
+        self._ensure_ready()
+        os.makedirs(os.path.dirname(lock_file_path), exist_ok=True)
+        deadline = time.monotonic() + wait
+        while True:
+            if keep_waiting is not None:
+                keep_waiting()
+            handle = open_lock_handle(lock_file_path)
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                handle.close()
+            except OSError:
+                handle.close()
+                raise
+            else:
+                if self._still_linked(handle, lock_file_path):
+                    return handle
+                # Unlinked by its last holder under us: lock the file there now.
+                with contextlib.suppress(OSError):
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                handle.close()
+                continue
+            if time.monotonic() >= deadline:
+                raise LockWaitTimeout(f"still held after {wait:g} s: {lock_file_path}")
+            time.sleep(poll)
 
     def stats(self) -> dict:
         with self._lock_mutex:

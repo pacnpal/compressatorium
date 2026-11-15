@@ -1,3 +1,4 @@
+import logging
 import os
 import posixpath
 from pathlib import Path
@@ -14,6 +15,8 @@ from utils.sheet_text import (
     sheet_tracks,
 )
 
+
+logger = logging.getLogger("compressatorium.delete_plan")
 
 # The one confined track resolver lives in utils.sheet_text; this name stays
 # for the callers that import it from here.
@@ -213,7 +216,9 @@ def _archive_verdict(source_path: str) -> tuple[str, List[str]] | None:
 
     try:
         members = read_archive_members(archive)
-    except Exception:  # noqa: BLE001 - unknown contents: keep the archive
+    except Exception:
+        # Unknown contents: keep the archive.
+        logger.debug("Could not list %s", archive, exc_info=True)
         return ("unreadable", [os.path.basename(archive)])
     # Fail closed on a name or kind the extraction validator refuses, before
     # anything is created from any name (codex 4577029535).
@@ -235,7 +240,9 @@ def _archive_verdict(source_path: str) -> tuple[str, List[str]] | None:
         owned = _image_members(archive, member, names)
     except _AmbiguousSheet as exc:
         return ("ambiguous", exc.members)
-    except Exception:  # noqa: BLE001 - an unreadable sheet: keep the archive
+    except Exception:
+        # An unreadable sheet: keep the archive.
+        logger.debug("Could not read the sheet %s in %s", member, archive, exc_info=True)
         return ("unreadable", [os.path.basename(archive)])
     owned_dirs = set()
     for name in owned:

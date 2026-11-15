@@ -288,7 +288,9 @@ class RomzService:
             cls._single_rom_shape(archive_path)
         except NotSingleRomArchive:
             return False
-        except Exception:  # noqa: BLE001 - unreadable: the check runs and fails it
+        except Exception:
+            # Unreadable: claimed, so the check runs and fails it.
+            logger.debug("Could not read %s as a ROM archive", archive_path, exc_info=True)
             return True
         return True
 
