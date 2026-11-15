@@ -26,14 +26,6 @@ def _read_sheet(sheet_path: Path) -> list[str]:
     return readings
 
 
-def _parse_cue_tracks(cue_path: Path) -> list[str]:
-    return cue_tracks(_read_sheet(cue_path)[0])
-
-
-def _parse_gdi_tracks(gdi_path: Path) -> list[str]:
-    return _gdi_tracks_from_text(_read_sheet(gdi_path)[0])
-
-
 def _gdi_tracks_from_text(text: str) -> list[str]:
     return [track.name for track in gdi_tracks(text)]
 
@@ -186,14 +178,20 @@ def build_delete_plan(source_path: str) -> Dict[str, object]:
                 "warnings": warnings,
             }
         ext = source.suffix.lower()
-        track_refs: List[str] = []
-        if ext == ".cue":
-            track_refs = _parse_cue_tracks(source)
-        elif ext == ".gdi":
-            track_refs = _parse_gdi_tracks(source)
-        if ext in {".cue", ".gdi"} and not track_refs:
+        parse = {".cue": cue_tracks, ".gdi": _gdi_tracks_from_text}.get(ext)
+        readings = [parse(text) for text in _read_sheet(source)] if parse else [[]]
+        track_refs: List[str] = readings[0]
+        if parse and not track_refs:
             errors.append("No track references found")
 
+        # Every spelling is checked (chdman opens one of them; the raw-byte one
+        # for a sheet that is not UTF-8); the paths listed are the first's.
+        for spelling in readings[1:]:
+            for ref in spelling:
+                try:
+                    _resolve_track_path(base_dir, ref)
+                except ValueError as exc:
+                    unsafe_paths.append(str(exc))
         for ref in track_refs:
             try:
                 track_path = _resolve_track_path(base_dir, ref)
@@ -201,6 +199,7 @@ def build_delete_plan(source_path: str) -> Dict[str, object]:
                 unsafe_paths.append(str(exc))
                 continue
             _add_path(track_path)
+        unsafe_paths[:] = list(dict.fromkeys(unsafe_paths))
 
         # Sources that are really a *set* of files report the rest of the set
         # through the registry (jwud: a split Wii U dump's game_part2.wud …

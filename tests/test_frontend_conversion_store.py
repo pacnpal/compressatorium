@@ -424,7 +424,7 @@ process.stdout.write(JSON.stringify({
   inFlight,
   after: store.autoInFlight,
   planned: calls.autoPlan,
-  queued: calls.auto.map((args) => args[0]),
+  queued: calls.auto.map((args) => args[0].map((item) => item.file_path)),
 }));
 """
 
@@ -499,7 +499,7 @@ const again = await store.runAuto({ paths: ['/v/b.iso'], confirm: () => Promise.
 process.stdout.write(JSON.stringify({
   during, result, afterAbort, confirmCalls,
   planAfter: store.autoPlan,
-  queued: calls.auto.map((args) => args[0]),
+  queued: calls.auto.map((args) => args[0].map((item) => item.file_path)),
   againQueued: again !== null,
   errors: toasts.filter(([kind]) => kind === 'error'),
 }));
@@ -541,4 +541,194 @@ def test_an_aborted_auto_run_resolves_a_pending_confirm_as_cancelled(tmp_path):
 
     assert data == {
         "opened": True, "result": None, "after": False, "planAfter": None, "queued": 0,
+    }, data
+
+
+# --- The target is captured before the first await (CodeRabbit 4576895563/5) --
+# The user can change the mode, its options or the output folder while the
+# RomM snapshot or the Auto plan request is pending. What is queued must be
+# what was planned: everything target-dependent is read once, up front.
+
+_SUBMIT_CAPTURES_TARGET = """
+registry.specFor = () => ({
+  supportsCompression: true, supportsDeleteOnVerify: true,
+  supportsSplit: true, supportsRoundTrip: true,
+});
+const store = new ConversionStore();
+store.mode = 'createcd';
+store.outputDir = '/out/old';
+store.deleteOnVerify = true;
+store.split = false;
+store.containerOnly = false;
+let release;
+planAnswer = (paths) => new Promise((resolve) => {
+  release = () => resolve({
+    recorded: 1, pending: 1,
+    recorded_paths: { [paths[0]]: '/out/old/a.chd' },
+    recorded_ids: { [paths[0]]: 7 },
+  });
+});
+const batches = [];
+jobs.createBatch = async (paths, mode, opts) => {
+  batches.push({ paths, mode, ...opts });
+  return [{ id: 'j1', file_path: paths[0], output_path: '/out/old/a.chd' }];
+};
+const run = store.submit(['/v/a.iso'], { rommRepin: true, rommPlatformId: 3 });
+await new Promise((resolve) => setTimeout(resolve, 0));   // the snapshot is pending
+// The user switches target, options and folder meanwhile.
+store.mode = 'createdvd';
+store.outputDir = '/out/new';
+store.deleteOnVerify = false;
+store.split = true;
+store.containerOnly = true;
+release();
+await run;
+process.stdout.write(JSON.stringify({
+  planned: calls.plan.map((args) => [args[1], args[2]]),
+  batch: batches[0],
+}));
+"""
+
+
+def test_submit_queues_the_target_it_planned(tmp_path):
+    data = _run(tmp_path, _SUBMIT_CAPTURES_TARGET)
+
+    assert data["planned"] == [["createcd", "/out/old"]], data
+    batch = data["batch"]
+    assert batch["mode"] == "createcd", data
+    assert batch["outputDir"] == "/out/old", data
+    assert batch["deleteOnVerify"] is True, data
+    assert batch["split"] is False, data
+    assert batch["containerOnly"] is False, data
+
+
+_RUN_AUTO_CAPTURES_OUTPUT_DIR = """
+const store = new ConversionStore();
+store.outputDir = '/out/old';
+let releasePlan;
+const planDirs = [];
+api.getAutoPlan = (paths, outputDir) => {
+  planDirs.push(outputDir);
+  return new Promise((resolve) => {
+    releasePlan = () => resolve(paths.map((p) => ({ file_path: p, mode: 'createdvd' })));
+  });
+};
+planAnswer = (paths) => ({
+  recorded: 1, pending: 1,
+  recorded_paths: { [paths[0]]: '/out/old/a.chd' }, recorded_ids: { [paths[0]]: 9 },
+});
+autoAnswer = (paths) => ({
+  plan: [], jobs: [{ id: 'j1', file_path: paths[0], output_path: '/out/old/a.chd' }],
+});
+const run = store.runAuto({
+  paths: ['/v/a.iso'], rommPlatformId: 3, confirm: () => Promise.resolve(true),
+});
+await new Promise((resolve) => setTimeout(resolve, 0));   // the plan is loading
+store.outputDir = '/out/new';                             // edited meanwhile
+releasePlan();
+await run;
+process.stdout.write(JSON.stringify({
+  planDirs,
+  repinDirs: calls.plan.map((args) => args[2]),
+  queueDirs: calls.auto.map((args) => args[1]),
+}));
+"""
+
+
+def test_run_auto_uses_the_output_folder_it_previewed(tmp_path):
+    data = _run(tmp_path, _RUN_AUTO_CAPTURES_OUTPUT_DIR)
+
+    assert data == {
+        "planDirs": ["/out/old"], "repinDirs": ["/out/old"], "queueDirs": ["/out/old"],
+    }, data
+
+
+# --- The server enforces the confirmed plan (Codex 4576967499) ----------------
+# Only the confirmed plan's actionable rows are sent, each with the target the
+# user saw; an Image the preview skipped is never sent. When the server's
+# replan differs it answers 409 with the new plan, and the flow shows that plan
+# and asks again.
+
+_RUN_AUTO_SENDS_CONFIRMED_ITEMS = """
+const store = new ConversionStore();
+autoPlanAnswer = () => [
+  { file_path: '/v/a.iso', mode: 'createdvd' },
+  { file_path: '/v/x.iso', mode: null, how: 'unsorted', skip_reason: 'Unsorted' },
+];
+await store.runAuto({ paths: ['/v/a.iso', '/v/x.iso'], confirm: () => Promise.resolve(true) });
+process.stdout.write(JSON.stringify({ sent: calls.auto.map((args) => args[0]) }));
+"""
+
+
+def test_run_auto_sends_only_the_confirmed_actionable_items(tmp_path):
+    data = _run(tmp_path, _RUN_AUTO_SENDS_CONFIRMED_ITEMS)
+
+    assert data["sent"] == [[{"file_path": "/v/a.iso", "mode": "createdvd"}]], data
+
+
+_RUN_AUTO_REASKS_ON_A_CHANGED_PLAN = """
+const store = new ConversionStore();
+autoPlanAnswer = () => [{ file_path: '/v/a.iso', mode: 'createdvd' }];
+const newPlan = [{ file_path: '/v/a.iso', mode: 'dolphin_rvz' }];
+let attempts = 0;
+autoAnswer = (items) => {
+  attempts += 1;
+  if (attempts === 1) {
+    const err = new Error('The plan changed since you confirmed it.');
+    err.status = 409;
+    err.detail = { message: err.message, plan: newPlan };
+    throw err;
+  }
+  return { plan: newPlan, jobs: [{ id: 'j1', file_path: items[0].file_path }] };
+};
+const shown = [];
+const confirm = () => { shown.push(store.autoPlan); return Promise.resolve(true); };
+const result = await store.runAuto({ paths: ['/v/a.iso'], confirm });
+process.stdout.write(JSON.stringify({
+  shown,
+  sent: calls.auto.map((args) => args[0]),
+  queued: result !== null,
+  inFlight: store.autoInFlight,
+}));
+"""
+
+
+def test_a_changed_plan_reopens_confirmation_with_the_new_plan(tmp_path):
+    data = _run(tmp_path, _RUN_AUTO_REASKS_ON_A_CHANGED_PLAN)
+
+    assert data["shown"] == [
+        [{"file_path": "/v/a.iso", "mode": "createdvd"}],
+        [{"file_path": "/v/a.iso", "mode": "dolphin_rvz"}],    # the new plan, asked again
+    ], data
+    assert data["sent"] == [
+        [{"file_path": "/v/a.iso", "mode": "createdvd"}],
+        [{"file_path": "/v/a.iso", "mode": "dolphin_rvz"}],
+    ], data
+    assert data["queued"] is True, data
+    assert data["inFlight"] is False, data
+
+
+_RUN_AUTO_DECLINES_THE_CHANGED_PLAN = """
+const store = new ConversionStore();
+autoPlanAnswer = () => [{ file_path: '/v/a.iso', mode: 'createdvd' }];
+autoAnswer = () => {
+  const err = new Error('The plan changed since you confirmed it.');
+  err.status = 409;
+  err.detail = { message: err.message, plan: [{ file_path: '/v/a.iso', mode: null }] };
+  throw err;
+};
+let asked = 0;
+const confirm = () => { asked += 1; return Promise.resolve(asked === 1); };
+const result = await store.runAuto({ paths: ['/v/a.iso'], confirm });
+process.stdout.write(JSON.stringify({
+  asked, result, sent: calls.auto.length, inFlight: store.autoInFlight, plan: store.autoPlan,
+}));
+"""
+
+
+def test_declining_the_changed_plan_queues_nothing(tmp_path):
+    data = _run(tmp_path, _RUN_AUTO_DECLINES_THE_CHANGED_PLAN)
+
+    assert data == {
+        "asked": 2, "result": None, "sent": 1, "inFlight": False, "plan": None,
     }, data

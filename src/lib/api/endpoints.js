@@ -269,10 +269,12 @@ export const api = {
     );
   },
 
-  createAutoJobs(filePaths, outputDir = null, duplicateAction = 'skip') {
+  // `items`: the confirmed plan's actionable rows, `{ file_path, mode }`. The
+  // server replans them and answers 409 with the new plan when one changed.
+  createAutoJobs(items, outputDir = null, duplicateAction = 'skip') {
     return jsonPost(
       `${API_BASE}/jobs/auto`,
-      { file_paths: filePaths, output_dir: outputDir, duplicate_action: duplicateAction },
+      { items, output_dir: outputDir, duplicate_action: duplicateAction },
       {},
       'Failed to create Auto jobs',
     );

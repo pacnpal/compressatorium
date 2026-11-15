@@ -12,7 +12,7 @@ import pytest
 from services import platform_detect
 from services.platform_detect import plan_auto
 
-from app.models import AutoJobCreateRequest, AutoPlanRequest
+from app.models import AutoJobCreateRequest, AutoJobItem, AutoPlanRequest
 from app.routes import convert as convert_routes
 
 from .test_disc_id import _make_iso
@@ -38,6 +38,15 @@ def _volume(tmp_path, monkeypatch):
 
 def _by_path(plan):
     return {Path(entry.file_path).name: entry for entry in plan}
+
+
+async def _confirmed(paths: list[str], **kwargs) -> AutoJobCreateRequest:
+    """What the client sends after previewing ``paths``: the actionable rows."""
+    plan = await convert_routes.auto_plan(AutoPlanRequest(file_paths=paths, **kwargs))
+    return AutoJobCreateRequest(
+        items=[AutoJobItem(file_path=row.file_path, mode=row.mode) for row in plan if row.mode],
+        **kwargs,
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -280,17 +289,22 @@ def _mixed_selection(tmp_path: Path) -> list[str]:
 @pytest.mark.asyncio
 async def test_auto_batch_sends_each_image_to_its_platform_target(route_env):
     paths = _mixed_selection(route_env["tmp_path"])
+    preview = await convert_routes.auto_plan(AutoPlanRequest(file_paths=paths))
+    skipped = {Path(p.file_path).name: p.skip_reason for p in preview if p.skip_reason}
+    assert set(skipped) == {"clash.iso", "mystery.iso"}
 
-    result = await convert_routes.create_auto_jobs(AutoJobCreateRequest(file_paths=paths))
+    request = await _confirmed(paths)
+    result = await convert_routes.create_auto_jobs(request)
 
+    # The skipped Images were never sent, so never queued.
+    assert {Path(i.file_path).name for i in request.items} == {"ps1.iso", "ps2.iso", "gc.iso"}
     queued = sorted(route_env["queued"], key=lambda q: q["mode"])
     assert queued == [
         {"mode": "createcd", "files": ["ps1.iso"], "compression": "zlib,lzma"},
         {"mode": "createdvd", "files": ["ps2.iso"], "compression": "zlib,lzma"},
         {"mode": "dolphin_rvz", "files": ["gc.iso"], "compression": "zstd:19"},
     ]
-    skipped = {Path(p.file_path).name: p.skip_reason for p in result.plan if p.skip_reason}
-    assert set(skipped) == {"clash.iso", "mystery.iso"}
+    assert not any(p.skip_reason for p in result.plan)
 
 
 @pytest.mark.asyncio
@@ -347,14 +361,16 @@ def test_output_collisions_follow_the_output_directory(tmp_path):
 async def test_auto_route_queues_one_job_for_two_images_with_one_output(route_env):
     tmp = route_env["tmp_path"]
     paths = [_gamecube(tmp / "pile" / "game.iso"), _gamecube(tmp / "pile" / "game.nkit.iso")]
+    preview = {Path(p.file_path).name: p for p in await convert_routes.auto_plan(
+        AutoPlanRequest(file_paths=paths),
+    )}
+    assert preview["game.nkit.iso"].skip_reason
 
-    result = await convert_routes.create_auto_jobs(AutoJobCreateRequest(file_paths=paths))
+    await convert_routes.create_auto_jobs(await _confirmed(paths))
 
     assert route_env["queued"] == [
         {"mode": "dolphin_rvz", "files": ["game.iso"], "compression": "zstd:19"},
     ]
-    rows = {Path(p.file_path).name: p for p in result.plan}
-    assert rows["game.nkit.iso"].skip_reason
 
 
 @pytest.mark.asyncio
@@ -372,7 +388,7 @@ async def test_auto_route_queues_nothing_when_a_later_group_fails_planning(
     monkeypatch.setattr(convert_routes, "plan_job", plan_job)
 
     with pytest.raises(convert_routes.HTTPException) as exc:
-        await convert_routes.create_auto_jobs(AutoJobCreateRequest(file_paths=paths))
+        await convert_routes.create_auto_jobs(await _confirmed(paths))
 
     assert exc.value.status_code == 400
     assert route_env["queued"] == []
@@ -401,7 +417,7 @@ async def test_auto_route_cancels_what_it_queued_when_a_later_group_fails(
     monkeypatch.setattr(convert_routes.job_manager, "cancel_job", fake_cancel)
 
     with pytest.raises(convert_routes.HTTPException) as exc:
-        await convert_routes.create_auto_jobs(AutoJobCreateRequest(file_paths=paths))
+        await convert_routes.create_auto_jobs(await _confirmed(paths))
 
     assert exc.value.status_code == 409
     assert queued_ids, "the failing group must not be the first one queued"
@@ -435,7 +451,7 @@ async def test_auto_route_names_a_job_that_finished_before_the_withdrawal(
     monkeypatch.setattr(convert_routes.job_manager, "cancel_job", fake_cancel)
 
     with pytest.raises(convert_routes.HTTPException) as exc:
-        await convert_routes.create_auto_jobs(AutoJobCreateRequest(file_paths=paths))
+        await convert_routes.create_auto_jobs(await _confirmed(paths))
 
     assert exc.value.status_code == 409
     detail = exc.value.detail
@@ -470,9 +486,40 @@ async def test_auto_route_withdraws_on_any_failure_not_only_http_errors(
     monkeypatch.setattr(convert_routes.job_manager, "cancel_job", fake_cancel)
 
     with pytest.raises(RuntimeError):
-        await convert_routes.create_auto_jobs(AutoJobCreateRequest(file_paths=paths))
+        await convert_routes.create_auto_jobs(await _confirmed(paths))
 
     assert cancelled
+
+
+@pytest.mark.asyncio
+async def test_auto_route_withdraws_earlier_groups_when_cancelled(route_env, monkeypatch):
+    # A client disconnect cancels the request mid-loop: the groups already
+    # queued are withdrawn, then the cancellation propagates.
+    import asyncio
+
+    paths = _mixed_selection(route_env["tmp_path"])
+    queued_ids: list[str] = []
+    cancelled: list[str] = []
+
+    async def fake_atomic(job_specs, mode, **_kwargs):
+        if mode.value == "dolphin_rvz":
+            raise asyncio.CancelledError
+        job_id = f"job-{mode.value}"
+        queued_ids.append(job_id)
+        return [type("Job", (), {"id": job_id, "filename": "x"})()]
+
+    async def fake_cancel(job_id):
+        cancelled.append(job_id)
+        return True
+
+    monkeypatch.setattr(convert_routes.job_manager, "create_jobs_atomic", fake_atomic)
+    monkeypatch.setattr(convert_routes.job_manager, "cancel_job", fake_cancel)
+
+    with pytest.raises(asyncio.CancelledError):
+        await convert_routes.create_auto_jobs(await _confirmed(paths))
+
+    assert queued_ids, "the cancelled group must not be the first one queued"
+    assert sorted(cancelled) == sorted(queued_ids)
 
 
 def test_a_target_whose_tool_is_not_ready_is_skipped(tmp_path):
@@ -498,12 +545,14 @@ async def test_auto_route_skips_targets_whose_tool_is_not_ready(route_env, monke
 
     monkeypatch.setattr(convert_routes.registry, "ready_tool_ids", ready_tool_ids)
     paths = _mixed_selection(route_env["tmp_path"])
+    preview = {Path(p.file_path).name: p for p in await convert_routes.auto_plan(
+        AutoPlanRequest(file_paths=paths),
+    )}
+    assert preview["gc.iso"].skip_reason.startswith("Dolphin isn't ready: ")
 
-    result = await convert_routes.create_auto_jobs(AutoJobCreateRequest(file_paths=paths))
+    await convert_routes.create_auto_jobs(await _confirmed(paths))
 
     assert all(q["mode"] != "dolphin_rvz" for q in route_env["queued"]), route_env["queued"]
-    rows = {Path(p.file_path).name: p for p in result.plan}
-    assert rows["gc.iso"].skip_reason.startswith("Dolphin isn't ready: ")
 
 
 @pytest.mark.asyncio
@@ -511,7 +560,9 @@ async def test_auto_rejects_paths_outside_the_volumes(route_env, tmp_path_factor
     outside = _ps2(tmp_path_factory.mktemp("elsewhere") / "ps2.iso")
 
     with pytest.raises(convert_routes.HTTPException) as exc:
-        await convert_routes.create_auto_jobs(AutoJobCreateRequest(file_paths=[outside]))
+        await convert_routes.create_auto_jobs(AutoJobCreateRequest(
+            items=[AutoJobItem(file_path=outside, mode="createdvd")],
+        ))
 
     assert exc.value.status_code == 403
 
@@ -527,6 +578,42 @@ def test_a_ps3_disc_folder_goes_to_folder_to_iso(tmp_path):
 
     assert (entry.detection.platform, entry.detection.how) == ("ps3", "header")
     assert entry.mode == "folder_to_iso"
+
+
+def test_a_ps3_folder_named_like_an_iso_is_not_already_an_iso(tmp_path):
+    # The "already the target format" check reads a file's name; a folder's
+    # name says nothing about what it holds (CodeRabbit 4576895545).
+    from .ps3_helpers import make_ps3_folder
+
+    folder = make_ps3_folder(tmp_path / "downloads" / "Game.iso")
+
+    [entry] = plan_auto([str(folder)])
+
+    assert entry.mode == "folder_to_iso"
+    assert entry.skip_reason is None
+
+
+def test_an_iso_file_under_folder_to_iso_is_still_already_an_iso(tmp_path, monkeypatch):
+    from services.tools import registry
+
+    iso = _write(tmp_path / "Game.iso", b"\0" * 2048)
+    monkeypatch.setattr(platform_detect, "default_mode", lambda *_a: "folder_to_iso")
+
+    assert platform_detect.auto_route(iso, "ps3", registry) == (None, "Already ISO")
+
+
+def test_a_custom_probe_set_does_not_reuse_the_shared_cache(tmp_path):
+    # Same file, two probe sets: the second must not get the first's answer
+    # (CodeRabbit 4576895544).
+    from services.tools import registry
+
+    iso = _gamecube(tmp_path / "neutral" / "game.iso")
+    chdman_only = [registry.get("chdman")]
+    dolphin_only = [registry.get("dolphin")]
+
+    assert platform_detect.detect_platform(iso, tools=chdman_only).platform is None
+    assert platform_detect.detect_platform(iso, tools=dolphin_only).platform == "ngc"
+    assert platform_detect.detect_platform(iso).platform == "ngc"
 
 
 def test_a_plain_folder_is_not_a_ps3_image(tmp_path):

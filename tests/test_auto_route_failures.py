@@ -7,7 +7,6 @@ from pathlib import Path
 import pytest
 
 from app.models import (
-    AutoJobCreateRequest,
     ConversionMode,
     DuplicateAction,
     JobCreateRequest,
@@ -17,6 +16,7 @@ from app.routes import convert as convert_routes
 
 from .test_archive_conversion_e2e import _e2e_env  # noqa: F401
 from .test_auto_convert import (  # noqa: F401
+    _confirmed,
     _fresh_cache,
     _mixed_selection,
     _route_env,
@@ -45,7 +45,7 @@ async def test_an_ordinary_failure_still_returns_the_kept_jobs(route_env, monkey
     monkeypatch.setattr(convert_routes.job_manager, "cancel_job", fake_cancel)
 
     with pytest.raises(convert_routes.HTTPException) as exc:
-        await convert_routes.create_auto_jobs(AutoJobCreateRequest(file_paths=paths))
+        await convert_routes.create_auto_jobs(await _confirmed(paths))
 
     assert exc.value.status_code == 500
     assert {job["id"] for job in exc.value.detail["jobs"]} == {"job-createdvd"}
@@ -56,10 +56,11 @@ async def test_an_ordinary_failure_still_returns_the_kept_jobs(route_env, monkey
 async def test_an_image_skipped_while_preparing_says_why_in_the_plan(route_env):
     tmp = route_env["tmp_path"]
     paths = _mixed_selection(tmp)
-    # The output appears after planning: preparation skips it (duplicate: skip).
+    request = await _confirmed(paths)
+    # The output appears after the preview: preparation skips it (duplicate: skip).
     (tmp / "pile" / "ps2.chd").write_bytes(b"\0")
 
-    result = await convert_routes.create_auto_jobs(AutoJobCreateRequest(file_paths=paths))
+    result = await convert_routes.create_auto_jobs(request)
 
     rows = {Path(p.file_path).name: p for p in result.plan}
     assert rows["ps2.iso"].mode is None

@@ -1689,9 +1689,11 @@ async def test_a_walk_builds_each_folders_listing_marker_once(db: Path, monkeypa
 async def test_a_backslash_track_path_is_one_detected_image(db: Path) -> None:
     """Codex 4576790199: grouping and detection read ``tracks\\game.bin`` alike.
 
-    No folder above the sheet names a Platform, so only the header can: the
-    Saturn track under ``tracks/`` must be found by detection (the probe) and
-    owned by the sheet (grouping), giving one Saturn Image and nothing else.
+    As chdman does on POSIX (#294's 2b246fe), the backslash is part of the
+    name: the sheet names the file ``tracks\\game.bin`` beside it. No folder
+    above the sheet names a Platform, so only the header can: that Saturn
+    track must be found by detection (the probe) and owned by the sheet
+    (grouping), giving one Saturn Image and nothing else.
     """
     from services import libraries
 
@@ -1703,7 +1705,7 @@ async def test_a_backslash_track_path_is_one_detected_image(db: Path) -> None:
     (game / "game.cue").write_text(
         'FILE "tracks\\game.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n',
     )
-    _sector0(game / "tracks" / "game.bin", b"SEGA SEGASATURN ", raw=True)
+    _sector0(game / "tracks\\game.bin", b"SEGA SEGASATURN ", raw=True)
     lib = await _register(root)
     library = libraries.get(lib["id"])
 
@@ -1711,6 +1713,156 @@ async def test_a_backslash_track_path_is_one_detected_image(db: Path) -> None:
     assert [e.key for e in scan.entries] == ["Game/game.cue"]
     assert scan.entries[0].detection.platform == "saturn"
     assert [i.key for i in library.images("saturn")] == ["Game/game.cue"]
+
+
+async def _fail_melee_while_probing(tree: Path, monkeypatch, during) -> dict:
+    """Queue Melee.iso under RVZ, then fail it; *during* runs inside the hold's
+    fingerprint probe, before the hold is written. Returns the ngc state."""
+    from models import JobStatus
+    from routes import libraries as routes
+    from services.image_sets import image_fingerprint
+    from services.rules import sweep as rules_sweep
+
+    jobs: dict[str, str] = {}
+    real_batch = job_manager.create_batch_jobs
+
+    async def batch(paths, mode, **kwargs):
+        made = await real_batch(paths, mode, **kwargs)
+        jobs.update({Path(j.file_path).name: j.id for j in made})
+        return made
+
+    monkeypatch.setattr(job_manager, "create_batch_jobs", batch)
+    (tree / "gc" / "Locked.iso").unlink()
+    lib = await _register(tree)
+    await routes.put_library_rules(lib["id"], {"rules": {
+        "ngc": {"mode": "dolphin_rvz", "enabled": True},
+    }})
+    await routes.run_library(lib["id"])
+
+    real_probe = rules_sweep._probe
+
+    async def probe(fn, *args, **kwargs):
+        if fn is image_fingerprint:
+            await during(lib)
+        return await real_probe(fn, *args, **kwargs)
+
+    monkeypatch.setattr(rules_sweep, "_probe", probe)
+    await rules_sweep.note_job_finished(SimpleNamespace(
+        id=jobs["Melee.iso"], status=JobStatus.FAILED,
+        file_path=str((tree / "gc" / "Melee.iso").resolve()),
+    ))
+    return (await routes.get_library_rules(lib["id"]))["state"].get("ngc") or {}
+
+
+@pytest.mark.asyncio
+async def test_a_rule_retargeted_during_the_hold_probe_gets_no_hold(
+    tree: Path, ready, queue, monkeypatch,
+) -> None:
+    """CodeRabbit 4576895547: the Rule identity is checked again under the lock.
+
+    The RVZ job fails; while its hold's fingerprint is being read the Rule is
+    retargeted to WIA. The RVZ failure must not be held under the WIA Rule.
+    """
+    from routes import libraries as routes
+
+    async def retarget(lib):
+        await routes.put_library_rules(lib["id"], {"rules": {
+            "ngc": {"mode": "dolphin_wia", "enabled": True},
+        }})
+
+    state = await _fail_melee_while_probing(tree, monkeypatch, retarget)
+    assert not state.get("failed"), state
+
+
+@pytest.mark.asyncio
+async def test_a_source_repaired_before_the_hold_probe_gets_no_hold(
+    tree: Path, ready, queue, monkeypatch,
+) -> None:
+    """CodeRabbit 4576895550: the hold is bound to the Source the job had.
+
+    The job fails; the operator replaces the Source before the hold's
+    fingerprint is read. The repaired file never failed, so it is not held.
+    """
+    melee = tree / "gc" / "Melee.iso"
+
+    async def repair(_lib):
+        melee.write_bytes(melee.read_bytes() + b"\0" * 4096)
+
+    state = await _fail_melee_while_probing(tree, monkeypatch, repair)
+    assert not state.get("failed"), state
+
+
+@pytest.mark.asyncio
+async def test_an_unchanged_source_is_still_held(tree: Path, ready, queue, monkeypatch) -> None:
+    """The control: nothing changes during the probe, so the failure is held."""
+    async def nothing(_lib):
+        return None
+
+    state = await _fail_melee_while_probing(tree, monkeypatch, nothing)
+    assert list(state.get("failed") or {}) == ["gc/Melee.iso"], state
+
+
+def test_the_detection_key_names_its_probe_set(db: Path) -> None:
+    """CodeRabbit 4576895544: ``detection_key`` itself carries the probe set.
+
+    Both caches key on it (the shared one and a folder Library's), so a
+    Detection made by one set of tools is never reused for another.
+    """
+    from services.tools import registry
+
+    iso = db / "neutral" / "game.iso"
+    iso.parent.mkdir(parents=True)
+    _gamecube(iso)
+    st = os.stat(iso)
+    chdman = [registry.get("chdman")]
+    dolphin = [registry.get("dolphin")]
+
+    assert platform_detect.detection_key(str(iso), st, tools=chdman) == (
+        platform_detect.detection_key(str(iso), st, tools=list(chdman))
+    )
+    assert platform_detect.detection_key(str(iso), st, tools=chdman) != (
+        platform_detect.detection_key(str(iso), st, tools=dolphin)
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_slow_walk_is_reused_from_when_it_finished(db: Path, monkeypatch) -> None:
+    """CodeRabbit 4576895543: the reuse window starts when the walk is ready.
+
+    Detection here takes 40 s of (fake) clock, longer than the 30 s window;
+    the next listing right after must reuse the walk, not repeat it.
+    """
+    from types import SimpleNamespace
+
+    from services import libraries
+    from services.libraries import folder as folder_mod
+
+    (db / "roms" / "ps2").mkdir(parents=True)
+    _ps2(db / "roms" / "ps2" / "Game.iso")
+    lib = await _register(db / "roms")
+    library = libraries.get(lib["id"])
+
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(folder_mod, "time", SimpleNamespace(monotonic=lambda: clock["now"]))
+    real_detect = folder_mod.platform_detect.detect_uncached
+
+    def slow_detect(path, **kwargs):
+        clock["now"] += 40.0
+        return real_detect(path, **kwargs)
+
+    monkeypatch.setattr(folder_mod.platform_detect, "detect_uncached", slow_detect)
+    walks: list[int] = []
+    real_files = library._files
+
+    def counting_files():
+        walks.append(1)
+        return real_files()
+
+    monkeypatch.setattr(library, "_files", counting_files)
+
+    library.scan(refresh=True)
+    library.scan()
+    assert len(walks) == 1
 
 
 @pytest.mark.asyncio
@@ -1739,6 +1891,99 @@ async def test_a_romm_root_overlapping_a_folder_library_is_refused(
     assert exc.value.status_code == 409
     assert "GameCube" in exc.value.detail
     assert not romm_settings.effective().get("library_root")
+
+
+@pytest.mark.asyncio
+async def test_a_hung_romm_root_check_answers_503_and_holds_no_lock(
+    db: Path, monkeypatch,
+) -> None:
+    """CodeRabbit 4576895541: the RomM root check is bounded, and runs first.
+
+    The check runs before the settle lock and the sweep pause are taken. Past
+    its bound the save is refused with 503, nothing is saved, and every lock
+    is free again.
+    """
+    import threading
+
+    from routes import romm as romm_routes
+    from services import libraries
+    from services.romm import settings as romm_settings
+
+    (db / "romm").mkdir()
+    release = threading.Event()
+    seen: dict[str, bool] = {}
+
+    def hung_check(path):
+        seen["settle_locked"] = romm_routes._settle_lock.locked()
+        release.wait(10)
+
+    monkeypatch.setattr(libraries, "check_romm_root", hung_check)
+    monkeypatch.setattr(libraries, "ROOT_CHECK_SECONDS", 0.2)
+    try:
+        with pytest.raises(HTTPException) as exc:
+            await romm_routes.put_romm_settings(romm_routes.RommSettingsPatch(
+                url="http://romm:8080", library_root=str(db / "romm"),
+            ))
+        assert exc.value.status_code == 503
+        assert seen == {"settle_locked": False}
+        assert not romm_routes._settle_lock.locked()
+        assert not libraries._register_lock.locked()
+        assert not romm_settings.effective().get("library_root")
+    finally:
+        release.set()
+
+
+@pytest.mark.asyncio
+async def test_registration_workers_are_capped_until_they_finish(
+    db: Path, monkeypatch,
+) -> None:
+    """CodeRabbit 4576895542: admission control for registration workers.
+
+    Two registrations stuck on a dead mount time out but keep their slots
+    until their workers actually return; a third is refused with 503 at once,
+    without starting a worker. Once the mount answers, registering works.
+    """
+    import asyncio
+    import threading
+
+    from routes import libraries as routes
+    from services import libraries
+
+    release = threading.Event()
+    entered: list[str] = []
+    real_check = libraries.ensure_path_within_volumes
+
+    def hung_check(path, **kwargs):
+        entered.append(path)
+        release.wait(10)
+        return real_check(path, **kwargs)
+
+    monkeypatch.setattr(libraries, "ensure_path_within_volumes", hung_check)
+    monkeypatch.setattr(routes, "_REGISTER_SECONDS", 0.2)
+    monkeypatch.setattr(libraries, "_worker_slots", threading.BoundedSemaphore(2))
+    folders = []
+    for name in ("a", "b", "c", "d"):
+        (db / name).mkdir()
+        folders.append(db / name)
+    try:
+        for folder in folders[:2]:
+            with pytest.raises(HTTPException) as timed_out:
+                await _register(folder)
+            assert timed_out.value.status_code == 504
+        with pytest.raises(HTTPException) as full:
+            await _register(folders[2])
+        assert full.value.status_code == 503
+        assert len(entered) == 2  # the third never started a worker
+    finally:
+        release.set()
+    for _ in range(100):  # the two workers finish and give their slots back
+        if libraries._worker_slots.acquire(blocking=False):
+            libraries._worker_slots.release()
+            if len(libraries.folder_libraries()) == 2:
+                break
+        await asyncio.sleep(0.05)
+    created = await _register(folders[3])
+    assert created["root"] == str(folders[3].resolve())
 
 
 @pytest.mark.asyncio

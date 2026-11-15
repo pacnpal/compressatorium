@@ -112,12 +112,13 @@ _LISTING_SECONDS = 600
 _sweep_lock = asyncio.Lock()
 
 # job id -> (library, platform_id, image key, the queuing Rule's output
-# identity) for the conversions this process queued. Read by
-# `note_job_finished` so a completion updates its one record instead of
-# scanning every remembered Image of every Platform. In memory on
-# purpose: the job queue it indexes is in memory too, so an entry has nothing
-# to outlive.
-_job_owners: dict[str, tuple[Library, str, str, tuple | None]] = {}
+# identity, the Source's image_fingerprint when queued) for the conversions
+# this process queued. Read by `note_job_finished` so a completion updates its
+# one record instead of scanning every remembered Image of every Platform. The
+# fingerprint (None unless the Library holds failures) binds a failure hold to
+# the Source version the job converted. In memory on purpose: the job queue it
+# indexes is in memory too, so an entry has nothing to outlive.
+_job_owners: dict[str, tuple[Library, str, str, tuple | None, str | None]] = {}
 
 # library id -> its generation, bumped when the Library is removed. A job-finish
 # callback captures it before its first await and writes state only if it is
@@ -701,7 +702,7 @@ async def note_job_finished(job) -> None:
     owner = _job_owners.pop(job_id, None)
     if owner is None:
         return
-    library, platform_id, rom_id, identity = owner
+    library, platform_id, rom_id, identity, queued_fingerprint = owner
     done = status == JobStatus.COMPLETED
     # Captured before any await; see `_generations`.
     generation = _generations.get(library.id, 0)
@@ -711,6 +712,7 @@ async def note_job_finished(job) -> None:
     ):
         await _note_failure(
             library, platform_id, rom_id, job, failed=not done, generation=generation,
+            identity=identity, queued_fingerprint=queued_fingerprint,
         )
     if CONVERTED_HISTORY not in library.capabilities:
         # No converted history to write the verdict into (skip-only Rules).
@@ -764,14 +766,21 @@ async def _prune_holds(
 
 async def _note_failure(
     library: Library, platform_id: str, image_key: str, job, *, failed: bool,
-    generation: int,
+    generation: int, identity: tuple | None = None,
+    queued_fingerprint: str | None = None,
 ) -> None:
     """Hold a failed Image until its file changes, or release a converted one.
 
     Only for a Library with :data:`FAILED_HOLD`. The hold is the Source's
-    fingerprint (size and mtime) when the job failed; the sweep compares it
-    with the file's now. A cancelled job is neither: it says nothing about
-    the Image.
+    fingerprint (size and mtime of its files); the sweep compares it with the
+    files' now. A cancelled job is neither: it says nothing about the Image.
+
+    The hold is bound to the Source the job converted: *queued_fingerprint*,
+    read when the job was queued. A Source that no longer matches it (repaired
+    after the failure, before this read) never failed, so nothing is held.
+    And it is bound to the Rule that queued the job: *identity* is checked
+    again under the write lock, since the Rule can be retargeted while the
+    fingerprint is being read.
     """
     fingerprint = None
     if failed:
@@ -781,9 +790,14 @@ async def _note_failure(
         fingerprint = await _probe(image_fingerprint, source, default="")
         if not fingerprint:
             return
+        if queued_fingerprint is not None and fingerprint != queued_fingerprint:
+            return
     async with _sweep_lock:
         if _generations.get(library.id, 0) != generation:
             # The Library was removed while the fingerprint was being read.
+            return
+        if not await _same_rule(library, platform_id, identity):
+            # Retargeted while the fingerprint was being read.
             return
         state = await get_state(library)
         entry = dict(state.get(platform_id) or {})
@@ -815,6 +829,7 @@ async def _same_rule(library: Library, platform_id: str, identity: tuple | None)
 
 def _own_jobs(
     library: Library, platform_id: str, entries: dict, identity: tuple | None = None,
+    *, fingerprints: dict[str, str | None] | None = None,
 ) -> None:
     """Register `note_job_finished`'s owner map for these queued conversions.
 
@@ -833,11 +848,18 @@ def _own_jobs(
     for rom_id, record in entries.items():
         if record.get("job_id"):
             job_id = str(record["job_id"])
-            # A re-registration without an identity (`_mark_converted`) keeps
-            # the one recorded when the job was queued.
-            if identity is None and job_id in _job_owners:
-                identity = _job_owners[job_id][3]
-            _job_owners[job_id] = (library, str(platform_id), str(rom_id), identity)
+            # A re-registration without an identity or fingerprint
+            # (`_mark_converted`) keeps the ones recorded when the job was queued.
+            previous = _job_owners.get(job_id)
+            own_identity = identity
+            if own_identity is None and previous is not None:
+                own_identity = previous[3]
+            fingerprint = (fingerprints or {}).get(str(rom_id))
+            if fingerprint is None and previous is not None:
+                fingerprint = previous[4]
+            _job_owners[job_id] = (
+                library, str(platform_id), str(rom_id), own_identity, fingerprint,
+            )
 
 
 def _converted_entries(produced: list[tuple]) -> dict:
@@ -875,7 +897,7 @@ async def _mark_converted(library: Library, platform_id: str, entries: dict) -> 
 
 def _inspect_candidate(
     image: Image, rule: dict, tool, spec, remembered: dict | None,
-    failed: dict | None = None,
+    failed: dict | None = None, *, fingerprint_source: bool = False,
 ) -> dict:
     """Every disk-touching question about one candidate, answered in one hop.
 
@@ -895,10 +917,13 @@ def _inspect_candidate(
     ``skip`` is None when the ROM should be queued, otherwise the reason.
     ``resolved`` is still filled in whenever it could be, because the caller
     checks it against the in-flight set before acting on ``skip``.
+    ``fingerprint`` is the Source's ``image_fingerprint`` when it was read (a
+    held Image, or *fingerprint_source* for a Library that holds failures):
+    the version a queued job converts, which a failure hold is bound to.
     """
     miss = {
         "skip": "unresolvable", "resolved": None, "destination": None,
-        "path": None, "pre": None,
+        "path": None, "pre": None, "fingerprint": None,
     }
     if not _passes_filters(image, rule):
         return {**miss, "skip": "filtered"}
@@ -947,7 +972,8 @@ def _inspect_candidate(
     # Its last conversion failed, and the Image is the same one: queueing it
     # again would fail the same way. A changed size or mtime of any of its
     # files (a sheet's tracks too) releases it.
-    if failed and failed.get("fingerprint") == image_fingerprint(path):
+    fingerprint = image_fingerprint(path) if failed or fingerprint_source else None
+    if failed and failed.get("fingerprint") == fingerprint:
         return {**miss, "skip": "held_failed", "path": path}
     destination, decision = resolve_destination(
         tool, path, rule["mode"], rule["output_dir"], rule["duplicate_action"],
@@ -971,6 +997,7 @@ def _inspect_candidate(
         # What occupies the destination right now, so a later sweep can tell
         # "the conversion ran" from "the job never happened".
         "pre": path_fingerprint(destination) if destination else "",
+        "fingerprint": fingerprint,
     }
 
 
@@ -1261,6 +1288,8 @@ async def _sweep_locked(
         destinations: dict[str, str] = {}
         resolved_by_path: dict[str, str] = {}
         pre_by_path: dict[str, str] = {}
+        # The Source version each queued job converts (FAILED_HOLD only).
+        fingerprint_by_path: dict[str, str | None] = {}
         considered = 0
 
         for image in sorted(images, key=_image_sort_key(rule)):
@@ -1281,8 +1310,11 @@ async def _sweep_locked(
                 # all queue behind it until a restart.
                 decision = await asyncio.wait_for(
                     run_detached(
-                        _inspect_candidate, image, rule, tool, spec,
-                        converted.get(str(image.key)), held.get(str(image.key)),
+                        functools.partial(
+                            _inspect_candidate, image, rule, tool, spec,
+                            converted.get(str(image.key)), held.get(str(image.key)),
+                            fingerprint_source=holds_failures,
+                        ),
                     ),
                     _CANDIDATE_PROBE_SECONDS,
                 )
@@ -1339,6 +1371,7 @@ async def _sweep_locked(
             destinations[path] = decision["destination"]
             resolved_by_path[path] = decision["resolved"]
             pre_by_path[path] = decision["pre"]
+            fingerprint_by_path[path] = decision.get("fingerprint")
 
         result["considered"] += considered
         summary = {
@@ -1449,7 +1482,13 @@ async def _sweep_locked(
                      pre_by_path[path], job_by_path.get(path))
                     for path in batch
                 ])
-                _own_jobs(library, platform_id, converted, _output_identity(rule))
+                _own_jobs(
+                    library, platform_id, converted, _output_identity(rule),
+                    fingerprints={
+                        str(image_by_path[path].key): fingerprint_by_path.get(path)
+                        for path in batch
+                    },
+                )
                 notifications.sweep_jobs_queued(jobs)  # sync, before any await
 
                 # Only now, with the jobs actually queued: the steps only this

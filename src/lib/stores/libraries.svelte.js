@@ -121,6 +121,11 @@ class LibrariesStore {
   // One source per folder Library, kept while the app runs so unsaved edits
   // survive switching Libraries in the picker.
   #sources = new Map();
+  // Libraries removed while the app runs. A response that set off before the
+  // removal (a Platform listing, a list load, a settings save) can answer
+  // after it; it must not put the Library back. Safe to keep for good: a
+  // folder Library's id is never reused (the table is AUTOINCREMENT).
+  #removed = new Set();
 
   get selected() {
     return this.list.find((lib) => lib.id === this.selectedId) ?? null;
@@ -148,7 +153,7 @@ class LibrariesStore {
     this.error = null;
     try {
       const data = await api.listLibraries();
-      this.list = Array.isArray(data) ? data : [];
+      this.list = (Array.isArray(data) ? data : []).filter((lib) => !this.#removed.has(lib.id));
       this.#refreshSources(this.list);
       if (!this.list.some((lib) => lib.id === this.selectedId)) {
         this.selectedId = ROMM_LIBRARY_ID;
@@ -163,7 +168,7 @@ class LibrariesStore {
 
   /** Replace one Library's row with what the backend just returned. */
   adopt(library) {
-    if (!library?.id) return;
+    if (!library?.id || this.#removed.has(library.id)) return;
     const at = this.list.findIndex((lib) => lib.id === library.id);
     this.list = at === -1
       ? [...this.list, library]
@@ -199,6 +204,7 @@ class LibrariesStore {
 
   async remove(id) {
     await api.removeLibrary(id);
+    this.#removed.add(id);
     this.#sources.delete(id);
     this.list = this.list.filter((lib) => lib.id !== id);
     if (this.selectedId === id) this.selectedId = ROMM_LIBRARY_ID;

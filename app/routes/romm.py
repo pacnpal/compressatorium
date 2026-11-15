@@ -1538,6 +1538,22 @@ async def put_romm_settings(patch: RommSettingsPatch) -> dict:
     layer's dependency runs the other way (``romm_auto`` reads settings), and
     a route is where cross-service consequences belong.
     """
+    submitted = patch.model_dump(exclude_unset=True)
+    # RomM's root must not overlap a folder Library, or two Rule sets act on
+    # the same Images. Checked and saved under the registration lock
+    # (`libraries.romm_root_claim`), so a folder registration cannot race it,
+    # and refused before anything is persisted. Taken first, before the settle
+    # lock and the sweep pause: the check is bounded (503 past it), and a root
+    # on a mount that stopped answering then holds neither of them.
+    try:
+        async with libraries.romm_root_claim(submitted.get("library_root")):
+            return await _save_settings(submitted)
+    except libraries.LibraryPathError as exc:
+        raise HTTPException(status_code=exc.status, detail=str(exc)) from None
+
+
+async def _save_settings(submitted: dict) -> dict:
+    """The body of :func:`put_romm_settings`, under the registration lock."""
     # The save itself is inside the pause, not just the cleanup after it. A
     # sweep resolves each ROM's local path lazily from the *current* library
     # root, so swapping that root mid-sweep makes it queue whatever unrelated
@@ -1547,7 +1563,6 @@ async def put_romm_settings(patch: RommSettingsPatch) -> dict:
     # already read the old configuration and is about to ask *some* RomM to
     # match a digest, so the identity must not change underneath it.
     async with _settle_lock, romm_auto.paused():
-        submitted = patch.model_dump(exclude_unset=True)
         before = romm_settings.effective()
         # Decided, and acted on, BEFORE the new identity is persisted. The
         # other order looked natural and was not recoverable: the save lands,
@@ -1589,15 +1604,7 @@ async def put_romm_settings(patch: RommSettingsPatch) -> dict:
         # row, so neither half can commit alone: whichever is interrupted, the
         # marker survives and `_run_identity_cleanup` replays the other. Both
         # halves of the cleanup are idempotent, so replaying costs nothing.
-        # RomM's root must not overlap a folder Library, or two Rule sets act
-        # on the same Images. Checked and saved under the registration lock
-        # (`libraries.romm_root_claim`), so a folder registration cannot race
-        # it; refused before anything is persisted.
-        try:
-            async with libraries.romm_root_claim(submitted.get("library_root")):
-                values = await romm_settings.save(submitted, cleanup_pending=changed)
-        except libraries.LibraryPathError as exc:
-            raise HTTPException(status_code=exc.status, detail=str(exc)) from None
+        values = await romm_settings.save(submitted, cleanup_pending=changed)
         cleared = await _run_identity_cleanup() if owed else 0
         if cleared:
             logger.info(

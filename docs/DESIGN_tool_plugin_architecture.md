@@ -2419,7 +2419,15 @@ take `_register_lock`: `register` in its worker thread, held across RomM's
 root resolve and the database write, and the RomM save through
 `romm_root_claim`, which polls for the lock without parking a thread, so a
 cancelled request never leaves it held, and keeps it until the settings are
-saved. A unique-root `IntegrityError` is a 409 too. The catalogue's `_lock` guards the
+saved. The route takes the claim before the settle lock and the sweep pause,
+and the root check inside it is bounded (`ROOT_CHECK_SECONDS`, #294's
+`VOLUME_PROBE_TIMEOUT_SECONDS`): a root on a mount that stopped answering is
+refused with 503 and every lock is released. Registration and root-check
+workers go through `libraries.run_admitted`: a disposable thread under a
+bound, and at most `MAX_PENDING_WORKERS` outstanding. A slot is held until
+the worker returns, even after its request timed out, so retries against a
+dead mount cannot pile up threads; when every slot is taken the request is
+refused with 503 at once. A unique-root `IntegrityError` is a 409 too. The catalogue's `_lock` guards the
 in-memory cache only: the event loop takes it on every `get()`, so it is never
 held across disk or database access or a Library's walk lock. `update()` writes
 the row and changes the cached Library in place (`apply_settings`), as one
@@ -2616,6 +2624,19 @@ as cap + 1 bytes and never parsed partially), `sheet_tracks` returns None and
 the probe says nothing, so a planted sheet cannot make the probe read a file
 outside the Volumes.
 
+Sheets are read exactly the way chdman 0.285 reads them
+(`src/lib/util/cdrom.cpp` at mame0285), because chdman opens the tracks
+itself and any difference lets a name pass `resolve_track` while chdman opens
+another. `fgets(buf, 511)` reads at most 510 bytes per line (`CHD_READ_BYTES`),
+so a sheet with a longer line (a `REM` padded to hide a `FILE`) or a NUL byte
+is unreadable. `chd_tokens` is chdman's `tokenize`: C-locale whitespace,
+`"` and `'` each toggle a quoted run and are dropped, no comment syntax (a GDI
+`#name` is a name). A CUE track is the token after an exact `FILE`; a GDI
+track is a line's fifth token. `resolve_track` checks the name verbatim (no
+trimming, `\` a filename character on POSIX), and every spelling of every
+track is checked, including the raw-byte one (`os.fsdecode`) chdman opens for
+a sheet that is not UTF-8: one refused spelling refuses the sheet.
+
 Special files are never opened. Opening a FIFO with no writer blocks forever,
 which would strand the threadpool worker an Auto request runs detection on.
 `path_utils.is_special_file` (`lstat`, a symlink judged by its target) is
@@ -2748,7 +2769,14 @@ queued (`job_manager.cancel_job`) and returns the error. A job that had already
 finished cannot be withdrawn: its output stays, it is logged, and the error
 returns it, for an HTTP error from the queue and for an unexpected exception
 alike (the latter logged with its traceback and returned as a 500; a
-cancellation still propagates). Nothing in either Auto endpoint, or in the
+cancellation still propagates). `/jobs/auto` queues only the plan the user
+confirmed: the client sends the confirmed plan's actionable rows as
+`items: [{file_path, mode}]` (an Image the preview skipped is never sent), the
+route replans those paths, and if any target differs (another tool, or now
+skipped) it answers 409 with `detail = {"message", "plan"}` before queueing
+anything. `conversion.runAuto` then shows the new plan and asks again.
+Queueing an Image the user never saw would also skip its RomM metadata
+snapshot. Nothing in either Auto endpoint, or in the
 batch preparation they share, touches a Volume on the event loop: the per-path
 Volume checks run together with planning (`_checked_auto_plan`) or on their
 own (`_check_within_volumes`) through `_off_loop_bounded`, a `run_detached`

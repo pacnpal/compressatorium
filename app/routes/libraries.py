@@ -77,10 +77,11 @@ async def register_library(payload: RegisterLibraryRequest) -> dict:
     """Register a folder inside a Volume as a Library."""
     try:
         # A detached daemon thread under a bound, as walks run: a dead mount
-        # strands that one thread, never a shared worker.
-        library = await asyncio.wait_for(
-            run_detached(libraries.register, payload.path, payload.name),
-            _REGISTER_SECONDS,
+        # strands that one thread, never a shared worker. Admission-controlled
+        # (`libraries.run_admitted`): with every worker slot still held by an
+        # earlier stuck registration, this answers 503 and starts nothing.
+        library = await libraries.run_admitted(
+            libraries.register, payload.path, payload.name, timeout=_REGISTER_SECONDS,
         )
     except libraries.LibraryPathError as exc:
         raise HTTPException(status_code=exc.status, detail=str(exc)) from None

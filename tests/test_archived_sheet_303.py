@@ -131,6 +131,90 @@ def test_an_empty_root_list_trusts_nothing(env) -> None:
     assert source_companions_are_safe(str(volume / "Good.cue"), "createcd", within=[]) is False
 
 
+# Sheets chdman 0.285 reads differently from a naive parser (#294's 2b246fe),
+# each naming x.bin outside the Volume. Pinned here on #303's own gate.
+_CHDMAN_PAYLOADS = {
+    # fgets(buf, 511): the FILE past byte 510 is read as a line of its own.
+    "rem-padded": ("Game.cue", "REM " + "x" * (510 - 4) + 'FILE "../../x.bin" BINARY\n'),
+    # chdman strips single quotes as it does double ones.
+    "single-quoted": ("Game.cue", "FILE '../../x.bin' BINARY\n"),
+    # No comments in chdman's tokenizer: the fifth token is the track name.
+    "gdi-hash-link": ("Game.gdi", "1\n1 0 4 2048 #link/x.bin 0\n"),
+}
+
+
+def _payload_sheet(volume: Path, tmp_path: Path, key: str) -> Path:
+    folder = volume / "set"
+    folder.mkdir(exist_ok=True)
+    outside = tmp_path / "outside"
+    outside.mkdir(exist_ok=True)
+    (tmp_path / "x.bin").write_bytes(b"secret")  # ../../x.bin from the sheet
+    (outside / "x.bin").write_bytes(b"secret")
+    if not (folder / "#link").exists():
+        (folder / "#link").symlink_to(outside, target_is_directory=True)
+    name, text = _CHDMAN_PAYLOADS[key]
+    sheet = folder / name
+    sheet.write_text(text)
+    return sheet
+
+
+@pytest.fixture(name="opened")
+def _opened(monkeypatch):
+    """Every path the code under test opens, by name."""
+    import builtins
+    import io
+
+    seen: list[str] = []
+    real_open = builtins.open
+
+    def recording_open(file, *args, **kwargs):
+        seen.append(os.fspath(file) if isinstance(file, (str, os.PathLike)) else repr(file))
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", recording_open)
+    monkeypatch.setattr(io, "open", recording_open)
+    return seen
+
+
+@pytest.mark.parametrize("key", sorted(_CHDMAN_PAYLOADS))
+def test_chdman_payloads_are_refused_by_the_gate_and_never_opened(
+    env, tmp_path: Path, opened: list[str], key: str,
+) -> None:
+    from utils.delete_plan import sheet_reference_problems
+    from utils.path_utils import source_companions_are_safe
+
+    sheet = _payload_sheet(env["volume"], tmp_path, key)
+    opened.clear()
+
+    assert sheet_reference_problems(str(sheet)) != []
+    assert source_companions_are_safe(str(sheet), "createcd") is False
+    assert not [p for p in opened if p.endswith("x.bin")], opened
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("key", sorted(_CHDMAN_PAYLOADS))
+async def test_chdman_payloads_never_reach_the_converter(
+    env, tmp_path: Path, opened: list[str], key: str,
+) -> None:
+    """The job path: the sheet is refused before any tool runs on it."""
+    from fastapi import HTTPException
+
+    sheet = _payload_sheet(env["volume"], tmp_path, key)
+    opened.clear()
+    try:
+        job = await convert_routes.create_job(JobCreateRequest(
+            file_path=str(sheet), mode=ConversionMode.CREATECD,
+            duplicate_action=DuplicateAction.SKIP, delete_on_verify=False,
+        ))
+    except HTTPException as exc:
+        assert exc.status_code in (400, 403), exc.detail
+    else:
+        await convert_routes.job_manager._process_job(job.id)
+        assert job.status.value == JobStatus.FAILED.value
+    assert env["calls"] == []
+    assert not [p for p in opened if p.endswith("x.bin")], opened
+
+
 @pytest.mark.asyncio
 async def test_the_worker_hands_one_root_list_to_the_gate_and_post_convert(
     env, monkeypatch,

@@ -27,8 +27,10 @@ from typing import Any
 
 from fastapi.concurrency import run_in_threadpool
 from services import db as _db
+from services.job_manager import VOLUME_PROBE_TIMEOUT_SECONDS
 from services.libraries.folder import ID_PREFIX, FolderLibrary
 from services.rules.library import Library, duplicate_actions
+from services.subprocess_runner import ProbeCapacityExceeded, run_detached
 from sqlalchemy.exc import IntegrityError
 from utils.path_utils import ensure_path_within_volumes
 
@@ -59,6 +61,16 @@ MAX_PER_SWEEP_LIMIT = 1000
 # How long a registration waits for another one to finish before answering
 # "still running". Short: the other may be stuck on a dead RomM mount.
 REGISTER_WAIT_SECONDS = 5.0
+# How long saving RomM's settings waits for the check of its library root
+# against the folder Libraries before answering 503: the same bound #294 gives
+# the convert routes' Volume checks.
+ROOT_CHECK_SECONDS = VOLUME_PROBE_TIMEOUT_SECONDS
+# Registration and root-check workers outstanding at once (`run_admitted`). A
+# slot is held until the worker returns, so a dead mount costs at most this
+# many threads however often the request is retried. Room for a few honest
+# registrations at once; they finish in milliseconds on a healthy mount.
+MAX_PENDING_WORKERS = 4
+_worker_slots = threading.BoundedSemaphore(MAX_PENDING_WORKERS)
 
 
 class LibraryPathError(ValueError):
@@ -198,6 +210,47 @@ def check_romm_root(path: str) -> None:
         )
 
 
+async def run_admitted(func, *args, timeout: float, **kwargs):
+    """Run a registration or root-check worker, bounded and admission-controlled.
+
+    The work resolves and stats a folder that may sit on a mount that stopped
+    answering, where it blocks for good. It runs on a disposable thread
+    (``run_detached``) under *timeout* (``asyncio.TimeoutError`` past it), and
+    at most ``MAX_PENDING_WORKERS`` such workers are outstanding at once: a
+    slot is held until the worker actually returns, even after its request
+    timed out, so retries against a dead mount cannot pile up threads. With
+    every slot taken the call is refused at once (``LibraryPathError`` 503)
+    and starts nothing.
+    """
+    if not _worker_slots.acquire(blocking=False):
+        raise LibraryPathError(
+            503, "Earlier Library checks are still waiting on a folder that isn't "
+            "responding. Try again later.",
+        )
+    # Whoever takes `claim` first owns the slot's release: the worker when it
+    # starts (released when it returns), or this awaiter when the worker never
+    # started (refused by the probe ceiling, or cancelled before it ran).
+    claim = threading.Lock()
+
+    def worker():
+        if not claim.acquire(blocking=False):
+            return None  # abandoned before it started; the awaiter released
+        try:
+            return func(*args, **kwargs)
+        finally:
+            _worker_slots.release()
+
+    try:
+        return await asyncio.wait_for(run_detached(worker), timeout)
+    except ProbeCapacityExceeded:
+        raise LibraryPathError(
+            503, "Too many filesystem checks are blocked. Try again later.",
+        ) from None
+    finally:
+        if claim.acquire(blocking=False):
+            _worker_slots.release()
+
+
 @asynccontextmanager
 async def romm_root_claim(path: str | None):
     """Hold the registration lock while RomM's library root is checked and saved.
@@ -207,6 +260,11 @@ async def romm_root_claim(path: str | None):
     clearing it) overlaps nothing but still takes the lock. Waits at most
     ``REGISTER_WAIT_SECONDS``, polling rather than parking a thread, so a
     cancelled request never leaves the lock taken.
+
+    The check itself is bounded (``ROOT_CHECK_SECONDS``, through
+    :func:`run_admitted`): a root on a mount that stopped answering is refused
+    with 503 and the lock released, rather than holding it for good. Callers
+    take this before any lock of their own, so a hung check holds nothing else.
     """
     deadline = time.monotonic() + REGISTER_WAIT_SECONDS
     while not _register_lock.acquire(blocking=False):
@@ -217,8 +275,14 @@ async def romm_root_claim(path: str | None):
         await asyncio.sleep(0.05)
     try:
         if path:
-            _loaded()
-            await run_in_threadpool(check_romm_root, path)
+            await run_in_threadpool(_loaded)
+            try:
+                await run_admitted(check_romm_root, path, timeout=ROOT_CHECK_SECONDS)
+            except asyncio.TimeoutError:
+                raise LibraryPathError(
+                    503, "RomM's library folder isn't responding, so nothing was "
+                    "saved. Try again later.",
+                ) from None
         yield
     finally:
         _register_lock.release()

@@ -454,10 +454,13 @@ def detection_key(
 
     The file's size and mtime (*st*, the caller's stat of it), those of
     every other file its header probe reads (``ToolPlugin.header_reads``: a
-    sheet's tracks), and the user's mapping that applies to it. None when one
-    of those files cannot be stat'ed. The shared cache here and a folder
-    Library's own cache both key on it, so a changed track or a changed
-    mapping re-detects the Image in either.
+    sheet's tracks), the probe set itself (the same file asked of other tools
+    can answer differently; the tool objects are compared by identity and kept
+    alive by the key, so an id is never reused), and the folder evidence that
+    decides it (the user's mapping or a Platform folder name, by source and
+    path). None when one of the files cannot be stat'ed. The shared cache here
+    and a folder Library's own cache both key on it, so a changed track, probe
+    set or mapping re-detects the Image in either.
     """
     tool_list = list(tools) if tools is not None else _default_tools()
     disk_path, member = _split_member(path)
@@ -466,12 +469,12 @@ def detection_key(
         return None
     # The deciding folder evidence by path and source: where a mapping sits
     # relative to a Platform-named folder changes the answer, so a name alone
-    # would not do.
-    # With no mapping anywhere the folder evidence is the path's own, already
-    # what the key is for: skip the walk (a resolve) on every stat-only rewalk.
+    # would not do. With no mapping anywhere the folder evidence is the path's
+    # own, already what the key is for: skip the walk (a resolve) on every
+    # stat-only rewalk.
     mapped = _mapped_folders()
     found = _place(disk_path, _folder_names(tool_list), mapped) if mapped else None
-    return (st.st_size, st.st_mtime_ns, deps, found[:3] if found else None)
+    return (st.st_size, st.st_mtime_ns, deps, tuple(tool_list), found[:3] if found else None)
 
 
 def _header_dependencies(path: str, tools: Iterable) -> tuple | None:
@@ -784,13 +787,21 @@ def auto_route(path: str, platform: str, tools_registry) -> tuple[str | None, st
     ``default_mode`` picks the target. The Image is then left alone when the
     target writes the format it is already in (an RVZ under ``dolphin_rvz``):
     the mode's ``output_ext`` matching the input name says so, for any tool.
+    Only a file's name (or an archive member's) says that; a folder's name
+    says nothing about what it holds, so a PS3 folder named ``Game.iso`` is
+    still built into an ISO. Blocking (a stat); call it off the event loop.
     """
     mode = default_mode(path, platform, tools_registry)
     if mode is None:
         return None, _no_target_reason(path, platform, tools_registry)
     output_ext = tools_registry.spec(mode).output_ext
+    member = "::" in path
     name = path.split("::", 1)[-1]
-    if output_ext and match_extension(name, {output_ext}) is not None:
+    if (
+        output_ext
+        and match_extension(name, {output_ext}) is not None
+        and (member or not os.path.isdir(path))
+    ):
         return None, f"Already {output_ext.lstrip('.').upper()}"
     return mode, None
 
