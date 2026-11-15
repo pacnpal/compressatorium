@@ -174,12 +174,12 @@ class LockManager:
         stop = self._resolve(stop_at) if stop_at else None
         while True:
             lock_file = self._lock_file_path(current)
-            if os.path.exists(lock_file):
-                held = True if self.is_read_only else self._remove_if_stale(lock_file) is False
-                if held:
-                    return current
+            if os.path.exists(lock_file) and (
+                self.is_read_only or self._remove_if_stale(lock_file) is False
+            ):
+                return current
             parent = os.path.dirname(current)
-            if current == stop or parent == current:
+            if current in (stop, parent):
                 return None
             current = parent
 
