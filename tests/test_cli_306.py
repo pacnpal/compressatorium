@@ -2311,3 +2311,92 @@ def test_a_legacy_record_with_no_mode_and_no_platform_is_skipped(volume, dolphin
     assert "Platform" in lines[0]["reason"]
     assert dolphin["runs"] == [] or all("verify" not in str(r) for r in dolphin["runs"])
     assert _stored(iso) is not None
+
+
+# --------------------------------------------------------------------------- #
+# A split PS3 ISO is one logical Image (codex 4577442578)
+# --------------------------------------------------------------------------- #
+
+
+def _split_build(volume, monkeypatch, *, damaged=False):
+    """Run a real folder_to_iso job with split=True and verify_after; the
+    fake converter writes only the numbered parts, as a >4 GB -s build does."""
+    import asyncio
+    from datetime import datetime, timezone
+
+    import cli
+    from models import ConversionJob, ConversionMode, InputKind, JobStatus
+    from services import job_manager as job_manager_module
+    from services.job_manager import job_manager
+    from tests.ps3_helpers import make_ps3_folder
+
+    cli._open_db(False)
+    folder = make_ps3_folder(volume / "games" / "GAME")
+    iso = volume / "games" / "GAME.iso"
+    makeps3iso = registry.get("makeps3iso")
+    checked = []
+
+    async def fake_convert(*_args, **_kwargs):
+        for idx in range(2):
+            (volume / "games" / f"GAME.iso.{idx}").write_bytes(b"\0" * 4096)
+        yield {"progress": 100, "message": "done"}
+
+    async def reading_verify(path, *args, **kwargs):
+        checked.append(path)
+        if open(path, "rb").read(7) == b"damaged":
+            return {"valid": False, "message": "No PS3 PARAM.SFO"}
+        return {"valid": True, "message": "File is Intact"}
+
+    monkeypatch.setattr(job_manager_module.registry.for_mode("folder_to_iso"),
+                        "convert", fake_convert)
+    monkeypatch.setattr(makeps3iso, "verify", reading_verify)
+    job = ConversionJob(
+        id=f"ps3split{int(damaged)}", file_path=str(folder), filename=folder.name,
+        mode=ConversionMode.FOLDER_TO_ISO, status=JobStatus.QUEUED,
+        created_at=datetime.now(timezone.utc), output_path=str(iso),
+        input_kind=InputKind.DIRECTORY, verify_after=True, split=True,
+    )
+    job_manager.jobs[job.id] = job
+    try:
+        asyncio.run(job_manager._process_job(job.id))
+    finally:
+        job_manager.jobs.pop(job.id, None)
+    assert job.status == JobStatus.COMPLETED, (job.error_message, job.message)
+    assert not iso.exists() and (volume / "games" / "GAME.iso.0").exists()
+    checked.clear()
+    return iso, checked
+
+
+def test_a_split_iso_is_verified_once_as_one_image(volume, dolphin, capsys, monkeypatch):
+    iso, checked = _split_build(volume, monkeypatch)
+
+    code, lines = _cli(capsys, "verify", str(volume), "--json")
+
+    assert code == 0, lines
+    named = [x for x in lines if "GAME.iso" in Path(x["path"]).name]
+    assert len(named) == 1, lines
+    assert named[0]["path"] == str(iso)
+    assert (named[0]["tool"], named[0]["status"]) == ("makeps3iso", "intact")
+    assert [Path(p).name for p in checked] == ["GAME.iso.0"]
+
+
+def test_a_damaged_split_part_fails(volume, dolphin, capsys, monkeypatch):
+    iso, _checked = _split_build(volume, monkeypatch, damaged=True)
+    (volume / "games" / "GAME.iso.0").write_bytes(b"damaged" + b"\0" * 100)
+
+    code, lines = _cli(capsys, "verify", str(volume), "--json")
+
+    named = [x for x in lines if "GAME.iso" in Path(x["path"]).name]
+    assert [(x["tool"], x["status"]) for x in named] == [("makeps3iso", "failed")], lines
+    assert code == 1
+
+
+def test_naming_a_split_part_checks_its_logical_image(volume, dolphin, capsys, monkeypatch):
+    iso, checked = _split_build(volume, monkeypatch)
+
+    code, lines = _cli(capsys, "verify", str(volume / "games" / "GAME.iso.0"), "--json")
+
+    assert code == 0, lines
+    assert len(lines) == 1, lines
+    assert lines[0]["path"] == str(iso)
+    assert (lines[0]["tool"], lines[0]["status"]) == ("makeps3iso", "intact")

@@ -2769,6 +2769,18 @@ tool-wide walk. A folder that can't be read is skipped as the web search skips
 it, and with `scan_tree(unreadable=[...])` the CLI reports it as a skipped line
 ("This folder can't be read: ..."), exit code unaffected.
 
+**A split output is one logical Image.** A split makeps3iso build writes
+`Game.iso.0`, `.1`, ... and no `Game.iso`, but its check is recorded under
+`Game.iso`. A verify treats the parts as that one Image, registry-driven, with
+the split-part lookup the delete and overwrite paths use: `cli._split_owner`
+maps a numbered part to its output when a mode's `companion_outputs` for the
+name without its last suffix lists it. The walk lists such parts
+(`scan_tree(also_include=...)`), a named part maps the same way, and
+`_to_logical` folds them into one item; a stored record whose own path is gone
+is kept when its recorded mode's `verify_target` finds the file
+(`_stored_logical`). The check reads that target (the first part) and the
+line and record stay on `Game.iso`.
+
 **Discovered inputs stay inside the Volumes.** A folder walk follows file
 symlinks, so every discovered file, folder and archive (for a member) goes
 through the shared containment check the web's verify guard uses

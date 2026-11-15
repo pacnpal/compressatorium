@@ -80,6 +80,10 @@ class Item:
     # --delete-source was asked for and this Source is kept: the run reports it.
     kept_source: bool = False
     reason: str | None = None
+    # A logical output whose bytes live in other files (a split PS3 ISO's
+    # numbered parts): the mode that writes it, so its tool's verify_target
+    # names the file to read. The line and the record use ``path``.
+    logical_mode: str | None = None
 
     def convert_line(self) -> dict:
         return {
@@ -268,13 +272,19 @@ def _discover(
                 path, recurse, archives,
                 purpose="verify" if for_verify else "convert",
                 also_reads=reads, unreadable=unreadable,
+                # A verify also lists a split output's numbered parts, which
+                # become their one logical Image (``_to_logical``).
+                also_include=_is_split_part if for_verify else None,
             )
             for folder, why in unreadable:
                 item = add(folder, False)
                 item.status = "skipped"
                 item.reason = f"This folder can't be read: {why}"
             for entry in files:
-                if for_verify and not entry.get("verifiable_by"):
+                if (
+                    for_verify and not entry.get("verifiable_by")
+                    and not _is_split_part(entry["path"])
+                ):
                     continue
                 add(entry["path"], False)
             if not for_verify:  # a check reads files, never archive members
@@ -969,6 +979,67 @@ def _tool_serves(tool, platform: str, registry) -> bool:
     return not any(platform in _tool_slugs(t) for t in registry.all())
 
 
+def _split_owner(path: str) -> tuple[str, str] | None:
+    """``(logical output, mode)`` when ``path`` is a numbered part of a split
+    output (``Game.iso.0``), else None.
+
+    Registry-driven: the candidate is the name without its last suffix, and it
+    counts only when a mode's own ``companion_outputs`` for that output (the
+    split-part lookup makeps3iso's delete and overwrite paths use) lists
+    ``path``. A suffix that isn't a number is never one.
+    """
+    from services.tools import registry
+
+    base, suffix = os.path.splitext(path)
+    if not suffix[1:].isdigit():
+        return None
+    real = os.path.realpath(path)
+    for spec in registry.mode_specs():
+        try:
+            parts = registry.for_mode(spec.mode).companion_outputs(base, spec.mode)
+        except Exception:  # noqa: BLE001 - a tool that can't answer owns nothing
+            continue
+        if real in {os.path.realpath(part) for part in parts}:
+            return base, spec.mode
+    return None
+
+
+def _is_split_part(path: str) -> bool:
+    return _split_owner(path) is not None
+
+
+def _to_logical(items: list[Item]) -> list[Item]:
+    """Numbered parts become their one logical Image (#306), deduped."""
+    out: list[Item] = []
+    index: dict[str, Item] = {}
+    for item in items:
+        owner = None if item.status or "::" in item.path else _split_owner(item.path)
+        if owner is not None:
+            item = Item(path=owner[0], explicit=item.explicit, logical_mode=owner[1])
+        key = os.path.realpath(item.path)
+        if key in index:
+            index[key].explicit = index[key].explicit or item.explicit
+            continue
+        index[key] = item
+        out.append(item)
+    return out
+
+
+def _stored_logical(stored: str, record: dict) -> str | None:
+    """The mode of a stored output whose own path is gone but whose producing
+    tool still finds it (a split ISO's parts, through ``verify_target``)."""
+    from services.tools import registry
+
+    mode = (record.get("produced_meta") or {}).get("mode")
+    if not mode:
+        return None
+    try:
+        target = registry.for_mode(mode).verify_target(stored, mode)
+    except Exception:  # noqa: BLE001 - an unknown mode finds nothing
+        return None
+    return mode if target and target != stored and os.path.isfile(target) else None
+
+
 def _with_stored_checks(items: list[Item], paths: list[str], records: list[dict]) -> list[Item]:
     """Add files under ``paths`` that have a stored check but no claimant now.
 
@@ -986,10 +1057,19 @@ def _with_stored_checks(items: list[Item], paths: list[str], records: list[dict]
             stored = record.get("chd_path") or ""
             if not stored.startswith(real + os.sep):
                 continue
-            if os.path.realpath(stored) in seen or not os.path.isfile(stored):
+            if os.path.realpath(stored) in seen:
                 continue
+            logical_mode = None
+            if not os.path.isfile(stored):
+                # Gone as a file: still an Image when its producing tool finds
+                # it elsewhere (a split ISO's numbered parts).
+                logical_mode = _stored_logical(stored, record)
+                if logical_mode is None:
+                    continue
             seen.add(os.path.realpath(stored))
-            items.append(Item(path=folder.rstrip(os.sep) + stored[len(real):]))
+            items.append(Item(
+                path=folder.rstrip(os.sep) + stored[len(real):], logical_mode=logical_mode,
+            ))
     return items
 
 
@@ -1034,8 +1114,15 @@ def _let_go_of(held: list[str]) -> None:
         lock_manager.release_input_lock(each)
 
 
-async def _verify_one(path: str, tool, has_db: bool, since, dry_run: bool) -> dict:
-    """Check one Image. The line carries ``_stop`` when the run must end."""
+async def _verify_one(
+    path: str, tool, has_db: bool, since, dry_run: bool, *, target: str | None = None,
+) -> dict:
+    """Check one Image. The line carries ``_stop`` when the run must end.
+
+    ``target`` is the file the check reads when it isn't ``path`` (a split
+    output's first part); the line and the record stay on ``path``.
+    """
+    read = target or path
     from fastapi.concurrency import run_in_threadpool
     from services.lock_manager import lock_manager
     from services.verification_store import verification_store
@@ -1049,33 +1136,37 @@ async def _verify_one(path: str, tool, has_db: bool, since, dry_run: bool) -> di
             return line
     if dry_run:
         # Read-only: look, take nothing.
-        if lock_manager.is_locked(path):
+        if lock_manager.is_locked(read):
             line["status"], line["reason"] = "skipped", "Busy: another job is writing it"
         else:
             line["status"] = "planned"
         return line
-    held = await run_in_threadpool(_hold_for_check, path)
+    held = await run_in_threadpool(_hold_for_check, read)
     if held is None:
         # A writer has it: no verdict either way, and what was stored stays.
         line["status"], line["reason"] = "skipped", "Busy: another job is writing it"
         return line
     try:
-        return await _check_held(path, tool, line, verification_store)
+        return await _check_held(path, tool, line, verification_store, read=read)
     finally:
         # Every exit, a cancel or a stop included.
         _let_go_of(held)
 
 
-async def _check_held(path: str, tool, line: dict, verification_store) -> dict:
-    """The check and its record, run while ``_verify_one`` holds the file."""
+async def _check_held(
+    path: str, tool, line: dict, verification_store, *, read: str | None = None,
+) -> dict:
+    """The check and its record, run while ``_verify_one`` holds the file.
+    ``read`` is the file checked; ``path`` the one recorded."""
     from services.subprocess_runner import collect_abandonment, stops_verify_batch
 
-    bound = await tool.verify_timeout(path)
+    read = read or path
+    bound = await tool.verify_timeout(read)
     # The sink sees what the check wrote off on the way, including a detached
     # read left behind when this deadline cancels it; no result says so.
     with collect_abandonment() as abandoned:
         try:
-            result = await asyncio.wait_for(tool.verify(path), timeout=bound or None)
+            result = await asyncio.wait_for(tool.verify(read), timeout=bound or None)
         except asyncio.TimeoutError:
             result = {"error": f"Verification timed out after {bound}s"}
         except Exception as exc:  # noqa: BLE001 - one bad file must not stop the rest
@@ -1116,6 +1207,8 @@ async def verify(args, printer: Printer, state: RunState) -> int:
 
     has_db = _open_db(args.dry_run)
     items = await run_in_threadpool(lambda: _discover(paths, for_verify=True))
+    # A split output's numbered parts are one logical Image, named or found.
+    items = await run_in_threadpool(_to_logical, items)
     from services.verification_store import verification_store
 
     if has_db:
@@ -1134,7 +1227,17 @@ async def verify(args, printer: Printer, state: RunState) -> int:
                           "reason": item.reason})
             continue
         record = await verification_store.get_record(item.path) if has_db else None
-        tool, unsupported = await run_in_threadpool(_verify_tool, item.path, record)
+        target = None
+        if item.logical_mode:
+            tool = registry.for_mode(item.logical_mode)
+            unsupported = None
+            target = await run_in_threadpool(
+                tool.verify_target, item.path, item.logical_mode,
+            )
+            if not registry.mode_supports_verify(item.logical_mode) or not target:
+                tool, unsupported = None, "Its producing mode can't check it here"
+        else:
+            tool, unsupported = await run_in_threadpool(_verify_tool, item.path, record)
         if tool is None:
             if unsupported or item.explicit:
                 printer.line({"path": item.path, "status": "skipped", "tool": None,
@@ -1152,7 +1255,9 @@ async def verify(args, printer: Printer, state: RunState) -> int:
             })
             failed = failed or item.explicit
             continue
-        line = await _verify_one(item.path, tool, has_db, since, args.dry_run)
+        line = await _verify_one(
+            item.path, tool, has_db, since, args.dry_run, target=target,
+        )
         stop = line.pop("_stop", False)
         failed = failed or line["status"] == "failed"
         printer.line(line)
