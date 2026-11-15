@@ -271,6 +271,12 @@ _SETTLE_POLL_SECONDS = 0.05
 # no bound). A job still running at this cap is reported as kept, so a short
 # cap loses nothing and a stuck job cannot hang the request.
 ROLLBACK_WAIT_CAP_SECONDS = 30.0
+# The longest a route waits for its per-path Volume checks (and Auto's
+# planning) to come back from a disposable thread before it answers 503. A
+# Volume that stops answering would otherwise hold the request, or, checked on
+# the event loop, every request. The abandoned thread may linger until the
+# mount answers; it holds no shared pool worker (`run_detached`).
+VOLUME_PROBE_TIMEOUT_SECONDS = 30.0
 
 
 class DestinationUnresolvableError(RuntimeError):
