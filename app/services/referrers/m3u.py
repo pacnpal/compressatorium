@@ -7,7 +7,7 @@ the discs and the Batocera / ES-DE layout with ``Game.m3u`` in the system
 folder and the discs in a (hidden) subfolder.
 
 One reader (``_read_line``) reads every line the way a C byte reader does:
-first-line BOM dropped, ASCII whitespace trimmed (Unicode spaces are part of
+first-line BOM dropped, C-locale spaces trimmed (Unicode spaces are part of
 the name), ``#`` lines skipped, a RetroArch ``path|label`` split at the first
 ``|``, quotes around the path dropped, and a slash-free entry with
 backslashes read as backslash-separated.
@@ -135,9 +135,10 @@ def _new_entry(posix_entry: str, target: _Target) -> list[str]:
     return [literal] if "/" not in step else [os.path.normpath(literal), literal]
 
 
-# C byte readers (RetroArch and the rest) trim only these; Unicode spaces
-# (NBSP, U+3000, U+2028, ...) stay part of the name.
-_WS = " \t\r\n"
+# C byte readers trim only the C-locale spaces (libretro's ISSPACE, used by
+# RetroArch's string_trim_whitespace); Unicode spaces (NBSP, U+3000, U+2028,
+# ...) stay part of the name.
+_WS = " \t\r\n\v\f"
 
 
 @dataclass(frozen=True)
@@ -161,8 +162,8 @@ def _parse_line(text: str) -> _Line | None:
     entry = text[start:end]
     if not entry or entry.startswith("#"):
         return None
-    head, bar, _ = entry.partition("|")
-    core = head.rstrip(_WS) if bar else head
+    head, label_sep, _ = entry.partition("|")
+    core = head.rstrip(_WS) if label_sep else head
     quote = ""
     if len(core) >= 2 and core[0] == core[-1] and core[0] in "\"'":
         quote, core = core[0], core[1:-1]
@@ -315,7 +316,10 @@ def _wide_text_check(playlist: str, data: bytes, renames: _Renames) -> bool:
             texts = [data.decode(encoding)]
         except UnicodeDecodeError:
             texts = [data.decode(encoding, errors="replace")]
-    if len(texts) != 1 or encoding is None or "�" in texts[0]:
+    if not data.startswith((b"\xff\xfe", b"\xfe\xff")):
+        # Without a BOM the UTF-16 guess may be wrong (an 8-bit file with a
+        # zero-filled tail fills one parity with NULs), and a NUL-stripped
+        # 8-bit reading is what a byte reader sees. Always check those too.
         stripped = data.replace(b"\x00", b"")
         texts += [
             stripped.decode("utf-8", errors="replace"),
@@ -353,6 +357,16 @@ def _legacy_text_check(playlist: str, data: bytes, renames: _Renames) -> None:
             )
 
 
+def _raw_names_a_source(entry: str, playlist_dir: str, renames: _Renames) -> bool:
+    """Whether the whole trimmed *entry*, read literally (label and quotes
+    kept), reaches or names a replaced file."""
+    posix = entry.replace("\\", "/") if "\\" in entry and "/" not in entry else entry
+    key = _file_key(os.path.join(playlist_dir, posix))
+    if key is not None and key in renames.by_key:
+        return True
+    return key is None and _named_file(entry) in renames.names
+
+
 def _rewrite(
     playlist: str, data: bytes, playlist_dir: str, renames: _Renames, *, strict: bool,
 ) -> tuple[bytes, list[tuple[str, str]]]:
@@ -376,10 +390,19 @@ def _rewrite(
         key = _file_key(os.path.join(playlist_dir, parsed.posix))
         target = renames.by_key.get(key) if key else None
         if target is None:
+            named = None
             if key is None and _named_file(parsed.path) in renames.names:
+                named = _named_file(parsed.path)
+            elif parsed.path != parsed.entry and _raw_names_a_source(
+                parsed.entry, playlist_dir, renames,
+            ):
+                # A plain line reader (no label split, no unquoting) would
+                # reach a replaced file through this line; the label/quote
+                # reading doesn't. Don't guess: keep the Source.
+                named = _named_file(parsed.entry)
+            if named is not None:
                 raise ReferrerError(
-                    playlist,
-                    f"line {number} names {_named_file(parsed.path)} but doesn't point at it",
+                    playlist, f"line {number} names {named} but doesn't point at it",
                 )
             out.append(prefix + line)
             continue

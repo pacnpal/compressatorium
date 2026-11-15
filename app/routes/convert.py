@@ -871,10 +871,16 @@ async def _add_referrer_changes(
             await _planned_output_path(mode, file_path, output_dir), duplicate_action,
         )
     except SkipFile as skip:
-        # The job would skip this file the same way (no free numbered name, or
-        # the folder is locked): block the item with the reason, not a 500.
-        detail = _SKIP_HTTP.get(skip.reason, (409, skip.reason.value))[1]
-        item.setdefault("errors", []).append(detail)
+        # RENAME couldn't settle on an output name (no free numbered name, or
+        # the output folder is busy right now). Record it as an error on this
+        # item instead of a 500. Any item error sets the plan-wide `blocked`,
+        # so this disables Confirm for the whole batch, and the message says so.
+        logger.debug("delete-plan: no RENAME output for %s: %s", file_path, skip.reason)
+        item.setdefault("errors", []).append(
+            "Can't settle the output name a rename would use (no free numbered "
+            "name, or the output folder is busy). This blocks the whole delete "
+            "plan: retry, or leave this file out of the selection.",
+        )
         return
     image_path = strip_archive_path(file_path) if "::" in file_path else file_path
     try:
