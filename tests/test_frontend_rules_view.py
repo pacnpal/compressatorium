@@ -294,6 +294,19 @@ def test_the_rules_screenshot_finds_its_row_by_platform_id():
     assert "b.textContent.includes('ps2')" not in shots
 
 
+def test_a_deep_link_change_reselects_while_the_view_stays_mounted():
+    """Codex 4576629013: #/rules/folder:1 -> #/rules/folder:2 (or Back) reselects."""
+    src = _RULES_VIEW.read_text(encoding="utf-8")
+    effect = re.search(
+        r"\$effect\(\(\) => \{\s*if \(embedded\) return;\s*const target = ui\.rulesTarget;(.*?)\n  \}\);",
+        src, re.DOTALL,
+    )
+    assert effect, "the selection does not follow ui.rulesTarget"
+    assert "libraries.select(target)" in effect.group(1)
+    # Not only once on mount.
+    assert "else if (ui.rulesTarget) libraries.select(ui.rulesTarget);" not in src
+
+
 def test_both_libraries_share_one_rules_source():
     """The Rule bookkeeping exists once (fix round 1, I1)."""
     folder = _STORE.read_text(encoding="utf-8")
