@@ -30,6 +30,33 @@ class LockWaitTimeout(TimeoutError):
     """A bounded wait for a lock ran out while someone else still held it."""
 
 
+class LockFailed(RuntimeError):
+    """A lock could not be taken for a reason other than someone holding it:
+    the lock file can't be made or locked (ENAMETOOLONG, EACCES, EROFS,
+    ENOSPC, ENOLCK ...). Not contention, so the caller fails the job with the
+    reason instead of waiting for a turn that never comes (codex 4577893015).
+    """
+
+    def __init__(self, path: str, exc: BaseException):
+        reason = getattr(exc, "strerror", None) or str(exc) or type(exc).__name__
+        super().__init__(f"Could not lock {path}: {reason}")
+
+
+# The readable part of a lock file name, in UTF-8 bytes. The full-key hash
+# keeps names unique; this keeps every name (kind, base, 64-hex digest,
+# ".lock") far under the 255-byte NAME_MAX of common filesystems.
+_LOCK_NAME_BASE_BYTES = 64
+
+
+def _lock_name_base(path: str) -> str:
+    """The sanitised basename of ``path``, cut to ``_LOCK_NAME_BASE_BYTES``
+    bytes on a character boundary."""
+    base = os.path.basename(path) or "chd"
+    safe = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in base)
+    cut = safe.encode("utf-8", "replace")[:_LOCK_NAME_BASE_BYTES]
+    return cut.decode("utf-8", "ignore") or "chd"
+
+
 def still_linked(handle, path: str) -> bool:
     """Whether the file ``handle`` holds is still the one at ``path``.
 
@@ -346,10 +373,10 @@ class LockManager:
         # Hashed as filesystem bytes (#306): a native name a sheet reads
         # (``Caf\xe9.bin``, carried as a surrogate escape) is a path like any
         # other, and every key derivation here goes through this one place.
+        # Only the readable part is cut (``_lock_name_base``); the identity is
+        # the hash of the whole key, unchanged.
         digest = hashlib.sha256(os.fsencode(normalized_path)).hexdigest()
-        base = os.path.basename(normalized_path) or "chd"
-        safe_base = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in base)
-        filename = f"{kind}-{safe_base}-{digest}.lock"
+        filename = f"{kind}-{_lock_name_base(normalized_path)}-{digest}.lock"
         return os.path.join(self._lock_dir, filename)
 
     def _cleanup_stale_locks(self, *, log_level: str = "info") -> int:
@@ -531,12 +558,17 @@ class LockManager:
     def _take_lock(self, output_path: str, *, allow_existing: bool) -> bool:
         """Every identity of ``_output_keys``, or none of them."""
         taken: list[str] = []
-        for key in self._output_keys(output_path):
-            if not self._take_key(key, allow_existing=allow_existing):
-                for held in taken:
-                    self._release_key(held)
-                return False
-            taken.append(key)
+        try:
+            for key in self._output_keys(output_path):
+                if not self._take_key(key, allow_existing=allow_existing):
+                    for held in taken:
+                        self._release_key(held)
+                    return False
+                taken.append(key)
+        except LockFailed:
+            for held in taken:
+                self._release_key(held)
+            raise
         with self._lock_mutex:
             self._lock_keys[os.path.normpath(output_path)] = taken
         return True
@@ -560,9 +592,7 @@ class LockManager:
 
             # Try to create a lock file
             lock_file_path = self._lock_file_path(normalized_path)
-            lock_dir = os.path.dirname(lock_file_path)
-            if lock_dir:
-                os.makedirs(lock_dir, exist_ok=True)
+            self._make_lock_dir(lock_file_path, normalized_path)
             for _attempt in range(3):
                 outcome = self._try_file_lock(
                     normalized_path, lock_file_path, allow_existing,
@@ -582,19 +612,13 @@ class LockManager:
             with contextlib.ExitStack() as stack:
                 # Open lock file in append mode (binary) to avoid truncating existing content.
                 # Binary mode: flock-only handle, no text is read or written.
-                lock_handle = stack.enter_context(
-                    open(lock_file_path, "ab")
-                )
+                lock_handle = stack.enter_context(open_lock_handle(lock_file_path))
 
                 # Try to acquire an exclusive lock (non-blocking)
                 try:
                     fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
                 except BlockingIOError:
                     # Lock is held by another process
-                    return False
-                except OSError:
-                    # Other error (permission denied, etc.)
-                    logger.error("Failed to acquire lock for %s", normalized_path, exc_info=True)
                     return False
 
                 if not self._still_linked(lock_handle, lock_file_path):
@@ -633,7 +657,7 @@ class LockManager:
                 stack.pop_all()
                 return True
 
-        except Exception:
+        except Exception as exc:
             # Ensure file handle is closed on any error
             if lock_handle is not None:
                 if self._lock_handles.get(normalized_path) is lock_handle:
@@ -648,7 +672,9 @@ class LockManager:
                         exc_info=True,
                     )
             logger.error("Failed to acquire lock for %s", normalized_path, exc_info=True)
-            return False
+            # Not contention (that returned False above): an error, so the job
+            # fails with the reason rather than being requeued forever.
+            raise LockFailed(normalized_path, exc) from exc
 
     def release_lock(self, output_path: str):
         """Release the lock for an output file path: every identity it was
@@ -708,23 +734,15 @@ class LockManager:
                 return False
 
             lock_file_path = self._lock_file_path(normalized)
-            lock_dir = os.path.dirname(lock_file_path)
-            if lock_dir:
-                os.makedirs(lock_dir, exist_ok=True)
+            self._make_lock_dir(lock_file_path, normalized)
             lock_handle = None
             try:
                 with contextlib.ExitStack() as stack:
-                    # Binary mode: flock-only handle, no text is read or written.
-                    lock_handle = stack.enter_context(open(lock_file_path, "ab"))
+                    lock_handle = stack.enter_context(open_lock_handle(lock_file_path))
                     try:
                         fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
                     except BlockingIOError:
                         # Held by another process packing the same folder.
-                        return False
-                    except OSError:
-                        logger.error(
-                            "Failed to acquire dir lock for %s", normalized, exc_info=True,
-                        )
                         return False
                     if not self._still_linked(lock_handle, lock_file_path):
                         # Unlinked by its last holder under us: a lock no one
@@ -736,7 +754,7 @@ class LockManager:
                     # Keep the handle open for the job lifecycle.
                     stack.pop_all()
                     return True
-            except Exception:
+            except Exception as exc:
                 if lock_handle is not None:
                     self._dir_lock_handles.pop(normalized, None)
                     self._dir_locks.discard(normalized)
@@ -745,7 +763,7 @@ class LockManager:
                 logger.error(
                     "Failed to acquire dir lock for %s", normalized, exc_info=True,
                 )
-                return False
+                raise LockFailed(normalized, exc) from exc
 
     def release_dir_lock(self, dir_path: str):
         """Release a directory subtree lock acquired via :meth:`acquire_dir_lock`."""
@@ -778,8 +796,8 @@ class LockManager:
         normalized = os.path.normpath(path)
         key = self._resolve(path)  # the identity: the real path
         lock_file_path = self._lock_file_path(key)
-        os.makedirs(os.path.dirname(lock_file_path), exist_ok=True)
-        handle = self._shared_lock(lock_file_path)
+        self._make_lock_dir(lock_file_path, key)
+        handle = self._shared_lock(lock_file_path, key)
         if handle is None:
             return False
         self._record_path(handle, key)
@@ -816,8 +834,10 @@ class LockManager:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
             handle.close()
 
-    def _shared_lock(self, lock_file_path: str, attempts: int = 50):
-        """An open handle holding a shared flock on ``lock_file_path``, or None.
+    def _shared_lock(self, lock_file_path: str, key: str, attempts: int = 50):
+        """An open handle holding a shared flock on ``lock_file_path``, or None
+        when a writer holds it. Raises :class:`LockFailed` when the lock file
+        can't be made or locked at all.
 
         The stale-lock probe holds a lock file exclusively for a moment, so a
         refusal is retried briefly before it counts as a writer holding it.
@@ -825,19 +845,19 @@ class LockManager:
         for _attempt in range(attempts):
             try:
                 handle = open_lock_handle(lock_file_path)
-            except OSError:
+            except OSError as exc:
                 logger.error("Failed to open input lock %s", lock_file_path, exc_info=True)
-                return None
+                raise LockFailed(key, exc) from exc
             try:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)
             except BlockingIOError:
                 handle.close()
                 time.sleep(0.01)
                 continue
-            except OSError:
+            except OSError as exc:
                 handle.close()
                 logger.error("Failed to take input lock %s", lock_file_path, exc_info=True)
-                return None
+                raise LockFailed(key, exc) from exc
             if self._still_linked(handle, lock_file_path):
                 return handle
             # Unlinked by its last holder under us: open the file there now.
@@ -875,29 +895,34 @@ class LockManager:
         """
         key = self._resolve(path)
         lock_file_path = self._lock_file_path(key, REFERRER_LOCK)
-        handle = self._take_referrer_lock(lock_file_path, wait, keep_waiting, poll)
+        handle = self._take_referrer_lock(lock_file_path, key, wait, keep_waiting, poll)
         try:
             yield
         finally:
             self._unlink_then_close(handle, lock_file_path, key)
 
-    def _take_referrer_lock(self, lock_file_path: str, wait: float, keep_waiting, poll: float):
+    def _take_referrer_lock(
+        self, lock_file_path: str, key: str, wait: float, keep_waiting, poll: float,
+    ):
         if self.is_read_only:
             raise LockWaitTimeout(f"read-only: not locking {lock_file_path}")
         self._ensure_ready()
-        os.makedirs(os.path.dirname(lock_file_path), exist_ok=True)
+        self._make_lock_dir(lock_file_path, key)
         deadline = time.monotonic() + wait
         while True:
             if keep_waiting is not None:
                 keep_waiting()
-            handle = open_lock_handle(lock_file_path)
+            try:
+                handle = open_lock_handle(lock_file_path)
+            except OSError as exc:
+                raise LockFailed(key, exc) from exc
             try:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
                 handle.close()
-            except OSError:
+            except OSError as exc:
                 handle.close()
-                raise
+                raise LockFailed(key, exc) from exc
             else:
                 if self._still_linked(handle, lock_file_path):
                     return handle
@@ -909,6 +934,14 @@ class LockManager:
             if time.monotonic() >= deadline:
                 raise LockWaitTimeout(f"still held after {wait:g} s: {lock_file_path}")
             time.sleep(poll)
+
+    @staticmethod
+    def _make_lock_dir(lock_file_path: str, key: str) -> None:
+        """The lock file's folder, or :class:`LockFailed` naming ``key``."""
+        try:
+            os.makedirs(os.path.dirname(lock_file_path), exist_ok=True)
+        except OSError as exc:
+            raise LockFailed(key, exc) from exc
 
     def stats(self) -> dict:
         with self._lock_mutex:
