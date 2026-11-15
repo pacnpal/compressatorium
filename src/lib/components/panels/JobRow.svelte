@@ -3,6 +3,7 @@
   import { EXTERNAL_MODE_LABELS } from '$lib/stores/jobConstants.js';
   import { registry } from '$lib/tools/registry.js';
   import { formatSize } from '$lib/api/format.js';
+  import { jobDetailLines } from '$lib/util/jobDetail.js';
   import Badge from '$lib/components/ui/Badge.svelte';
   import ProgressBar from '$lib/components/ui/ProgressBar.svelte';
   import IconButton from '$lib/components/ui/IconButton.svelte';
@@ -109,16 +110,18 @@
 
   {#if isActive}
     <ProgressBar value={percent} size="sm" tone="accent" />
-    {#if job?.message}
-      <div class="message">{job.message}</div>
-    {/if}
-  {:else if status === 'failed' && job?.error_message}
-    <div class="error-message">{job.error_message}</div>
-  {:else if status === 'completed' && job?.output_path}
-    <div class="message muted" title={job.output_path}>→ {job.output_path}</div>
-  {:else if status === 'completed' && !spec && job?.message}
-    <div class="message muted">{job.message}</div>
   {/if}
+  {#each jobDetailLines(job) as line (line.kind)}
+    {#if line.kind === 'error'}
+      <div class="error-message">{line.text}</div>
+    {:else if line.kind === 'warning'}
+      <div class="warning-message">{line.text}</div>
+    {:else if line.kind === 'output'}
+      <div class="message muted" title={job.output_path}>{line.text}</div>
+    {:else}
+      <div class="message">{line.text}</div>
+    {/if}
+  {/each}
 </li>
 
 <style>
@@ -183,6 +186,13 @@
     white-space: nowrap;
   }
   .message.muted { color: var(--text-3); font-family: var(--font-mono); }
+  .warning-message {
+    color: var(--warning);
+    font-size: var(--text-xs);
+    background: var(--warning-muted);
+    border-radius: var(--radius-sm);
+    padding: var(--space-1) var(--space-2);
+  }
   .error-message {
     color: var(--error);
     font-size: var(--text-xs);

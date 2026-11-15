@@ -3238,6 +3238,21 @@ most twice `MAX_CONCURRENT_JOBS` of its jobs queued (never more than
 `MAX_QUEUE_DEPTH`), so a cron run does not put a whole library ahead of the web
 UI.
 
+**What a `--to` walk lists.** A folder walk lists what the web search lists
+(`scan_tree`, tool-wide inputs). With `--to`, `cli._discover` also lists every
+file whose name ends with an extension the target's modes accept
+(`platform_detect.target_reads_extensions`: a mode id's
+`mode_reads_extensions`, or for a format the union over the Auto-eligible
+modes), so a mode that reads what its tool leaves out of its inputs (chdman's
+extract modes and `.chd`) finds its files. `format_candidates` then decides
+per file. `--auto` keeps the tool-wide walk.
+
+**Stopping during planning.** The CLI's planning runs blocking filesystem work
+on `run_in_threadpool`, which can't be cancelled: SIGINT, SIGTERM or SIGHUP
+during `--auto` planning (header reads) over a Volume that has stopped
+answering waits for that read to return before the run ends. Jobs already
+queued are cancelled as usual; the wait is only for the planning thread.
+
 **One output, one job.** `cli._prepare` keeps every output path the run will
 write, across groups and re-planned batches, and skips a later Image that
 writes one already taken ("Same output as X"). The planner's own collapse
@@ -3279,9 +3294,23 @@ belongs to the converted Image. `utils.delete_plan.archive_members_beyond_image`
 lists the rest: the owned set is the member itself, the tracks its sheet names
 (the sheet is extracted to a temp dir and each reference resolved with
 `resolve_track`, confined there, in every spelling the sheet reads as), and its
-`source_companions` split parts (by name, against the archive's names laid out
-as empty files). A directory entry counts only when nothing owned lives under
-it. Everything else, of any type and junk included, is an extra; there is no
+`source_companions` split parts. Before anything is created from any member
+name, every name must pass the shared extraction validator
+(`ArchiveService._validate_member`: absolute, `..`, a drive letter, a
+backslash, a NUL), no member may be a symlink, and no name may be listed
+twice (two entries are two files; only one can be the Image); otherwise the
+archive is kept and the summary names those members. Names are compared as
+they are, never collapsed. A sheet's tracks are matched per track across its
+spellings: two spellings of one track matching two different members make
+the sheet ambiguous (chdman opens one of them), and the archive is kept, the
+rule #294 applies on disk. Only then is the sheet extracted
+(which validates its destination again), and only then, for the registry's
+on-disk split-part lookup, are the validated names laid out as empty files in
+a fresh temp root under the app's temp dir (`ArchiveService._create_temp_dir`,
+`CHD_TEMP_DIR`, as extraction uses; a read-only system temp must not refuse
+every archive delete), each through `_prepare_destination`, which checks by real
+path that it stays inside that root. A directory entry counts only when
+nothing owned lives under it. Everything else, of any type and junk included, is an extra; there is no
 list of harmless sidecars. An archive or sheet that can't be read counts as an
 extra (the archive's own name). The error and the CLI line name the first three
 (`describe_extras`).
@@ -3345,7 +3374,12 @@ each delete path (below), which also asks `folder_locked_above`.
   wrapper's `gosu converter` drop ensure.
 
 A job that cannot take its input locks (another job holds the path for
-writing) is deferred and re-queued, like a folder-lock block. At the
+writing) is deferred and re-queued, like a folder-lock block. The locks are
+taken on a worker thread that a cancelled job does not wait for, so each
+acquisition is recorded only while the job's attempt is still live
+(`_begin_input_attempt`, checked under `_input_mutex`); once
+`_release_inputs` has ended the attempt (a cancel, the job's cleanup), a lock
+the thread takes afterwards is released at once. At the
 delete-on-verify step the job trades its shared read locks for exclusive ones
 on every delete path (`JobManager._hold_delete_paths_waiting`, through
 `acquire_lock(path, allow_existing=True)`) and holds them until the unlinks
@@ -3357,7 +3391,8 @@ process packs, is waited for, polling without blocking, up to
 `DELETE_READER_WAIT_SECONDS` (60 s). Still held then, the Source is kept and the
 job ends COMPLETED with `job.warning` set to "Source kept: it was being read by
 another job": the conversion succeeded, so it never fails for this. The CLI
-reports it as a kept Source (exit 1).
+prints the warning on that line and exits 0 (transient, as #307's run rules
+treat it); a safety refusal, such as an archive with extra members, exits 1.
 
 **Root.** `scripts/compressatorium` started as root execs `/entrypoint.sh
 compressatorium ...`: the entrypoint's PUID/PGID remap and `gosu converter`

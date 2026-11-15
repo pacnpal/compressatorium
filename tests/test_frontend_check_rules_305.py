@@ -150,6 +150,9 @@ def test_a_not_intact_finding_has_a_label_and_no_set_platform() -> None:
 def test_a_check_job_shows_its_name_and_result() -> None:
     src = _JOB_ROW.read_text(encoding="utf-8")
     assert "EXTERNAL_MODE_LABELS" in src
+    # #306's detail lines: a completed job with no output shows its message.
+    detail = (_SRC / "lib" / "util" / "jobDetail.js").read_text(encoding="utf-8")
+    assert "if (!lines.length && job?.message)" in detail
 
 
 def test_shots_capture_the_check_rule_form() -> None:
