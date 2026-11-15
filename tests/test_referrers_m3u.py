@@ -299,9 +299,14 @@ async def test_a_track_outside_the_volumes_is_blocked_and_never_scanned(
     ))
 
     [item] = plan["items"]
+    # Blocked as unsafe. Which guard says so first (the sheet's track resolver
+    # or the delete plan's Volume confinement) doesn't matter.
     assert plan["blocked"] is True
-    assert any("outside configured volumes" in u for u in item["unsafe_paths"])
-    assert str(outside / "Game.bin") not in item["delete_paths"]
+    assert item["unsafe_paths"]
+    assert all(
+        os.path.realpath(p) != os.path.realpath(outside / "Game.bin")
+        for p in item["delete_paths"]
+    )
     assert all("Secret.m3u" not in c["target"] for c in item["referrer_changes"])
 
 

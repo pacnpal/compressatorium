@@ -226,6 +226,28 @@ export const api = {
     );
   },
 
+  // Auto: the backend works out each Image's Platform and default target.
+  // `signal` aborts the request (the convert panel unmounting mid-plan).
+  getAutoPlan(filePaths, outputDir = null, { signal } = {}) {
+    return jsonPost(
+      `${API_BASE}/jobs/auto-plan`,
+      { file_paths: filePaths, output_dir: outputDir },
+      signal ? { signal } : {},
+      'Failed to plan Auto conversion',
+    );
+  },
+
+  // `items`: the confirmed plan's actionable rows, `{ file_path, mode }`. The
+  // server replans them and answers 409 with the new plan when one changed.
+  createAutoJobs(items, outputDir = null, duplicateAction = 'skip') {
+    return jsonPost(
+      `${API_BASE}/jobs/auto`,
+      { items, output_dir: outputDir, duplicate_action: duplicateAction },
+      {},
+      'Failed to create Auto jobs',
+    );
+  },
+
   checkDuplicates(filePaths, outputDir = null, mode = 'createcd') {
     return jsonPost(
       `${API_BASE}/jobs/check-duplicates`,

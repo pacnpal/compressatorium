@@ -44,14 +44,22 @@ export async function fetchJson(url, opts = {}, fallbackMessage = 'Request faile
   const res = await fetch(url, opts);
   if (!res.ok) {
     let detail = fallbackMessage;
+    let structured = null;
     try {
       const body = await res.json();
       if (body && typeof body.detail === 'string') detail = body.detail;
+      // A structured detail ({ message, ...data }) keeps its data for the
+      // caller: Auto returns the jobs it could not withdraw this way.
+      else if (body?.detail && typeof body.detail.message === 'string') {
+        detail = body.detail.message;
+        structured = body.detail;
+      }
     } catch (_e) {
       // body wasn't JSON; keep fallbackMessage
     }
     const err = new Error(detail);
     err.status = res.status;
+    if (structured) err.detail = structured;
     throw err;
   }
   if (res.status === 204 || res.status === 205) return {};

@@ -14,6 +14,34 @@ import {
 } from './jobConstants.js';
 
 const MAX_OPTIMISTIC_PLACEHOLDERS = 100;
+// How many eviction tombstones the jobs store keeps (newest win).
+const EVICTED_TOMBSTONES = 2000;
+
+/**
+ * Whether an HTTP snapshot of a job we already hold is newer than our copy,
+ * so it should replace it. Shared by refresh() and adopt().
+ *
+ * - Terminal is final on the backend: an active snapshot for an already
+ *   terminal local job is stale. Keep ours.
+ * - A terminal snapshot for a job we hold as active heals a missed SSE
+ *   terminal event (network blip, tab backgrounded). Take it.
+ * - Both active: take a queued -> processing transition or a progress bump
+ *   on the same status. A job picked up as `queued` from a poll never gets a
+ *   PROCESSING frame if our stream wasn't open when it moved, so without
+ *   this the row would sit at queued forever.
+ * - Otherwise (both terminal, or no useful progression) the SSE-derived
+ *   state is at least as fresh. Keep ours.
+ */
+function snapshotIsNewer(existing, incoming) {
+  const existingTerminal = TERMINAL_STATUSES.has(existing.status);
+  const incomingTerminal = TERMINAL_STATUSES.has(incoming.status);
+  if (existingTerminal) return false;
+  if (incomingTerminal) return true;
+  const queuedToProcessing = existing.status === 'queued' && incoming.status === 'processing';
+  const progressBump = existing.status === incoming.status
+    && (incoming.progress ?? 0) > (existing.progress ?? 0);
+  return queuedToProcessing || progressBump;
+}
 
 class JobsStore {
   jobs = $state([]);
@@ -54,6 +82,12 @@ class JobsStore {
 
   // index for O(1) lookup; not a $state because it's derived from this.jobs
   _byId = new SvelteMap();
+  // Eviction tombstones: ids the backend pruned from history after they
+  // finished, newest last, at most EVICTED_TOMBSTONES of them. An HTTP
+  // response built before the prune (Auto's adopt) must not bring such a job
+  // back as an unknown queued row. A plain id->true map, like refresh().
+  _evictedIds = Object.create(null);
+  _evictedOrder = [];
   _unsubscribe = null;
   _pollTimer = null;
 
@@ -277,6 +311,19 @@ class JobsStore {
    * evicted would inflate every badge — by one per completion for as long as
    * a batch runs past the cap, until refresh()'s deletion reconcile caught up.
    */
+  /** Record eviction tombstones, keeping the newest EVICTED_TOMBSTONES. */
+  _rememberEvicted(ids) {
+    for (const id of ids) {
+      if (id == null || this._evictedIds[id]) continue;
+      this._evictedIds[id] = true;
+      this._evictedOrder.push(id);
+    }
+    const excess = this._evictedOrder.length - EVICTED_TOMBSTONES;
+    if (excess > 0) {
+      for (const id of this._evictedOrder.splice(0, excess)) delete this._evictedIds[id];
+    }
+  }
+
   _applyHistoryOverflow(payload) {
     if (!payload || typeof payload !== 'object') return;
     // A new backend process restarts the sequence at 0, so the cursor from
@@ -301,6 +348,7 @@ class JobsStore {
       // `prefer-svelte-reactivity` rule flags raw Set usage even for locals.
       const gone = Object.create(null);
       for (const id of evictedIds) gone[id] = true;
+      this._rememberEvicted(evictedIds);
       this.jobs = this.jobs.filter((j) => {
         if (gone[j.id]) {
           this._byId.delete(j.id);
@@ -340,6 +388,11 @@ class JobsStore {
     const cursor = this.historySeq;
     const cursorGeneration = this.historyGeneration;
     let listSynced = false;
+    // The jobs known before the request. Only these can be inferred evicted
+    // when the snapshot lacks them: one SSE created (and maybe finished) while
+    // the request was in flight is simply newer than the snapshot.
+    const knownBefore = Object.create(null);
+    for (const job of this.jobs) knownBefore[job.id] = true;
     try {
       const data = await api.getJobs();
       if (!Array.isArray(data)) return;
@@ -360,38 +413,7 @@ class JobsStore {
           this._byId.set(job.id, job);
           continue;
         }
-        const existingTerminal = TERMINAL_STATUSES.has(existing.status);
-        const incomingTerminal = TERMINAL_STATUSES.has(job.status);
-        if (existingTerminal && !incomingTerminal) {
-          // Terminal is final on the backend; an active snapshot for
-          // an already-terminal local job is stale. Keep ours.
-          continue;
-        }
-        if (!existingTerminal && incomingTerminal) {
-          // Heal: SSE must have missed the terminal event (network
-          // blip, tab backgrounded, etc.). The snapshot is the
-          // source of truth for terminal jobs.
-          this._applyJob(job);
-          continue;
-        }
-        // Both active. Apply queued → processing transitions (and any
-        // progress bump on a processing job) when the SSE missed
-        // them. We only landed here for the OTHER-client polling
-        // case: a job we picked up as `queued` from a poll never
-        // gets a PROCESSING SSE frame from the backend if our SSE
-        // stream wasn't open when it transitioned, so the row would
-        // sit stuck at queued forever. The terminal+heal branch
-        // already covers terminal-while-active; this covers the
-        // queued-while-running progression.
-        const queuedToProcessing = existing.status === 'queued' && job.status === 'processing';
-        const progressBump = existing.status === job.status
-          && (job.progress ?? 0) > (existing.progress ?? 0);
-        if (queuedToProcessing || progressBump) {
-          this._applyJob(job);
-        }
-        // Both terminal or both active with no useful progression:
-        // leave SSE-derived state alone; live updates are at least
-        // as fresh as the snapshot.
+        if (snapshotIsNewer(existing, job)) this._applyJob(job);
       }
       // Reconcile deletions. When another tab clears completed history
       // (or the backend prunes old terminal jobs on its own), /api/jobs
@@ -401,13 +423,18 @@ class JobsStore {
       // absent from the snapshot. Active jobs are left alone: SSE owns
       // them, and they may simply not be in the snapshot yet if they
       // were just queued between the snapshot generation and arrival.
+      // Likewise any job SSE brought in after the request was sent.
+      const pruned = [];
       this.jobs = this.jobs.filter((j) => {
-        if (TERMINAL_STATUSES.has(j.status) && !remoteIds[j.id]) {
+        if (knownBefore[j.id] && TERMINAL_STATUSES.has(j.status) && !remoteIds[j.id]) {
           this._byId.delete(j.id);
+          pruned.push(j.id);
           return false;
         }
         return true;
       });
+      // Finished and gone from the backend: tombstone them like an eviction.
+      this._rememberEvicted(pruned);
     } catch (e) {
       console.error('Job snapshot hydration failed:', e);
     } finally {
@@ -508,6 +535,20 @@ class JobsStore {
       // this also drops placeholders for paths the backend skipped (e.g.
       // duplicates with duplicate_action: 'skip') so they don't linger.
       for (const fp of filePaths) this._removeOptimistic(fp, mode);
+    }
+  }
+
+  /** Add jobs another endpoint created (Auto) to the live list. */
+  adopt(created) {
+    if (!Array.isArray(created)) return;
+    for (const job of created) {
+      // An HTTP response can be older than the SSE events that beat it here
+      // (the job already finished): the same freshness rule as refresh().
+      const existing = this._byId.get(job?.id);
+      // Unknown because the backend already pruned it from history (it
+      // finished and was evicted before this response arrived): never back.
+      if (!existing && this._evictedIds[job?.id]) continue;
+      if (!existing || snapshotIsNewer(existing, job)) this._applyJob(job);
     }
   }
 

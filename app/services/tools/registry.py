@@ -310,6 +310,17 @@ class ToolRegistry:
         spec = self.spec(mode)
         return spec.platform_slugs or self.for_mode(mode).platform_slugs
 
+    def mode_reads_extensions(self, mode: str) -> frozenset[str]:
+        """What this mode's command can actually read.
+
+        Its declared ``reads_extensions`` when it narrows the inputs, else its
+        ``input_extensions``. Auto checks this so it never sends a file to a
+        command that cannot read it; manual selection keeps using
+        ``input_extensions``.
+        """
+        spec = self.spec(mode)
+        return spec.reads_extensions or spec.input_extensions
+
     def mode_allows_platform(self, mode: str, slug: str | None) -> bool:
         """Whether *mode* is applicable to *slug*, on the same terms as
         :meth:`narrow_to_platform`: conservative, so an unknown slug or a mode
