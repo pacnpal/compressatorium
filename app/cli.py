@@ -748,6 +748,11 @@ def _finish(item: Item, job) -> None:
     item.output = job.output_path or item.output
     item.check = job.check_passed
     item.source_deleted = bool(job.deleted_paths)
+    if getattr(job, "warning", None):
+        # Completed, but did less than asked: a Source kept because another
+        # job was reading it. Reported like any kept Source (exit 1).
+        item.reason = job.warning
+        item.kept_source = item.kept_source or item.delete_source
     if job.error_message:
         item.reason = job.error_message
 

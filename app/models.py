@@ -186,6 +186,10 @@ class ConversionJob(BaseModel):
     # no check ran.
     check_passed: str | None = None
     deleted_paths: list[str] = []
+    # A finished job that did less than asked without failing, such as a
+    # delete-source run that kept its Source because another job was reading
+    # it (#306). None when there is nothing to say.
+    warning: str | None = None
 
 
 class JobCreateRequest(BaseModel):

@@ -50,6 +50,14 @@ from utils.path_utils import (
 
 logger = get_logger("job_manager")
 
+# Delete-on-verify and readers (#306): a Source another job (in any process)
+# is reading when the delete step comes is waited for, polling without
+# blocking, up to this bound. Still held then, it is kept and the job still
+# completes: the conversion succeeded.
+DELETE_READER_WAIT_SECONDS = 60.0
+DELETE_READER_POLL_SECONDS = 0.5
+SOURCE_KEPT_FOR_READERS = "Source kept: it was being read by another job"
+
 # The glossary names (CONTEXT.md) for each stored check, used in job messages so
 # "verified" never stands in for which check an output passed.
 _CHECK_LABELS = {"intact": "Intact", "round_tripped": "Round-tripped"}
@@ -1428,14 +1436,38 @@ class JobManager:
         for path in self._input_locks.pop(job_id, []):
             lock_manager.release_input_lock(path)
 
-    def _hold_for_delete(self, job_id: str, paths: Iterable[str]) -> None:
-        """Lock every delete path exclusively, or raise and hold none."""
+    def _try_hold_for_delete(self, job_id: str, paths: Iterable[str]) -> bool:
+        """Lock every delete path exclusively, or hold none and say so."""
         held = self._delete_holds.setdefault(job_id, [])
         for path in paths:
             if not lock_manager.acquire_lock(path, allow_existing=True):
                 self._release_delete_holds(job_id)
-                raise RuntimeError("Delete path is locked by an active conversion")
+                return False
             held.append(path)
+        return True
+
+    async def _hold_delete_paths_waiting(
+        self, job_id: str, cancel_event: asyncio.Event | None = None,
+    ) -> bool:
+        """Trade this job's shared read locks for exclusive locks on every path
+        of its delete plan, held until the unlinks finish (#306).
+
+        A path another job reads (a shared lock in any process), or one under a
+        folder another process packs, can't be held; this polls, without
+        blocking, up to ``DELETE_READER_WAIT_SECONDS`` for it to be let go.
+        False when it is still held then (or the job is cancelled meanwhile):
+        the caller keeps the Source and the job still completes.
+        """
+        snapshot = self._delete_plans.get(job_id) or {}
+        paths = list(snapshot.get("paths") or [])
+        self._release_inputs(job_id)
+        deadline = time.monotonic() + DELETE_READER_WAIT_SECONDS
+        while True:
+            if await run_in_threadpool(self._try_hold_for_delete, job_id, paths):
+                return True
+            if time.monotonic() >= deadline or (cancel_event and cancel_event.is_set()):
+                return False
+            await asyncio.sleep(DELETE_READER_POLL_SECONDS)
 
     def _release_delete_holds(self, job_id: str) -> None:
         for path in self._delete_holds.pop(job_id, []):
@@ -3440,6 +3472,21 @@ class JobManager:
                                 "message": job.message,
                             },
                         )
+                    elif not await self._hold_delete_paths_waiting(job_id, cancel_event):
+                        # Another job is still reading the Source (or a folder
+                        # above it): the output is done and checked, so the job
+                        # completes, keeping the Source.
+                        job.warning = SOURCE_KEPT_FOR_READERS
+                        job.message = f"Output is {check_label}. {SOURCE_KEPT_FOR_READERS}."
+                        await self._notify_subscribers(
+                            job_id,
+                            {
+                                "type": "progress",
+                                "job_id": job_id,
+                                "progress": job.progress,
+                                "message": job.message,
+                            },
+                        )
                     else:
                         delete_label = (
                             "source archive"
@@ -3503,13 +3550,10 @@ class JobManager:
                         else:
                             delete_order = expected_paths
 
-                        # Trade this job's shared read locks for exclusive
-                        # ones on every delete path, held until the unlinks
-                        # finish (#306): a reader in any process, or a folder
-                        # lock above, refuses the delete, and no job can start
-                        # reading a path between this check and its unlink.
-                        self._release_inputs(job_id)
-                        await run_in_threadpool(self._hold_for_delete, job_id, expected_paths)
+                        # Every delete path is held exclusively from here until
+                        # the unlinks finish (``_hold_delete_paths_waiting``,
+                        # above): no job can start reading one between these
+                        # checks and its unlink (#306).
                         for path in expected_paths:
                             within_volumes = await run_in_threadpool(
                                 is_within_configured_volumes,

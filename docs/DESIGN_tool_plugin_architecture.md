@@ -2834,12 +2834,17 @@ each delete path (below), which also asks `folder_locked_above`.
 A job that cannot take its input locks (another job holds the path for
 writing) is deferred and re-queued, like a folder-lock block. At the
 delete-on-verify step the job trades its shared read locks for exclusive ones
-on every delete path (`JobManager._hold_for_delete`, through `acquire_lock(path,
-allow_existing=True)`) and holds them until the unlinks finish
-(`_release_delete_holds`, also run in the job's `finally`). Any reader in any
-process, or a folder lock above, refuses the delete; and no job can start
-reading a path between the check and its unlink, since a new reader's shared
-lock is refused while the exclusive one is held.
+on every delete path (`JobManager._hold_delete_paths_waiting`, through
+`acquire_lock(path, allow_existing=True)`) and holds them until the unlinks
+finish (`_release_delete_holds`, also run in the job's `finally`); no job can
+start reading a path between the checks and its unlink, since a new reader's
+shared lock is refused while the exclusive one is held. A path another job is
+still reading (a shared lock in any process), or one under a folder another
+process packs, is waited for, polling without blocking, up to
+`DELETE_READER_WAIT_SECONDS` (60 s). Still held then, the Source is kept and the
+job ends COMPLETED with `job.warning` set to "Source kept: it was being read by
+another job": the conversion succeeded, so it never fails for this. The CLI
+reports it as a kept Source (exit 1).
 
 **Root.** `scripts/compressatorium` started as root execs `/entrypoint.sh
 compressatorium ...`: the entrypoint's PUID/PGID remap and `gosu converter`

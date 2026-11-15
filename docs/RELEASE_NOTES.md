@@ -96,7 +96,10 @@
   Source and the Source's companions until it ends, so the web answers 409
   while a CLI run converts that file. Two jobs reading one file don't block each
   other. Renaming or deleting a folder is refused the same way while a job in
-  any process reads or writes something inside it.
+  any process reads or writes something inside it. A delete-source job whose
+  Source another job is still reading waits up to a minute for it; if it's
+  still being read, the Source is kept and the job completes with "Source
+  kept: it was being read by another job" instead of failing.
   - A CLI container and the web UI that share `/config` must mount each Volume
     at the same path; locks name container paths.
 - **Delete-source keeps an archive unless everything in it is the converted
