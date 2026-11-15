@@ -2846,6 +2846,16 @@ list of harmless sidecars. An archive or sheet that can't be read counts as an
 extra (the archive's own name). The error and the CLI line name the first three
 (`describe_extras`).
 
+**Companion outputs are locked like the output.** `JobManager._take_output_locks`
+takes the cross-process exclusive output lock on the primary output and on
+every companion output the mode declares (`companion_outputs`: extractcd's
+`Game.bin` beside its `Game.cue`), all or none, before the job starts, and
+`_release_output_locks` lets them all go on every path (the job's `finally`,
+a deferral, a failure before the run). So the web guard's exact-path probe
+refuses a rename or delete of the companion mid-write, and no other job can
+take it to write. Directory modes' split parts are found on disk later and
+keep their prefix guard.
+
 **Input locks.** Every file-input job, whichever entry point queued it, holds a
 *shared* flock on each file it reads (`JobManager._hold_inputs`: the Source, or
 the archive for a member, plus `_track_candidate_paths`' cue/gdi tracks and

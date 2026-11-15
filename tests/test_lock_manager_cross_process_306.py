@@ -708,3 +708,78 @@ def test_a_cue_naming_a_native_track_converts(tmp_path, monkeypatch, db_path, re
     finally:
         job_manager.jobs.pop(job.id, None)
         reset_db_engine()
+
+
+# --------------------------------------------------------------------------- #
+# A job's companion outputs are locked across processes (codex 4577208360)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_a_companion_output_is_held_against_other_processes(
+    guarded_volume, monkeypatch, db_path, reset_db_engine,
+):
+    """During extractcd the BIN beside the CUE is being written: another
+    process can't take it for writing, and the web refuses to rename or
+    delete it, exactly as for the primary output."""
+    from datetime import datetime, timezone
+
+    from fastapi import HTTPException
+    from models import ConversionJob, ConversionMode, JobStatus
+    from services import db as _db
+    from services import job_manager as job_manager_module
+    from services.job_manager import job_manager
+
+    g = guarded_volume
+    _db.init_engine(db_path)
+    disc = g.folder.parent
+    chd = disc / "Game.chd"
+    chd.write_bytes(b"MComprHD" + b"\0" * 120)
+    cue = disc / "Game.cue"
+    bin_path = disc / "Game.bin"
+    probe = _manager(g.cli._lock_dir)
+    for attr in ("chd_volumes", "data_mount_root"):
+        monkeypatch.setattr(
+            job_manager_module.source_companions_are_safe.__globals__["settings"],
+            attr, str(disc.parent),
+        )
+    seen = {}
+
+    async def fake_convert(*_args, **_kwargs):
+        bin_path.write_bytes(b"\0" * 2352)
+        seen["overwrite"] = probe.acquire_lock(str(bin_path), allow_existing=True)
+        seen["probe"] = probe.check_file_status(str(bin_path))[1]
+        for action, call in (
+            ("delete", lambda: g.routes.delete_file(
+                g.request("delete-file"), path=str(bin_path), recursive=False)),
+            ("rename", lambda: g.routes.rename_file(
+                g.request("rename-file"), path=str(bin_path), new_name="Other.bin")),
+        ):
+            try:
+                await call()
+                seen[action] = "allowed"
+            except HTTPException as exc:
+                seen[action] = exc.status_code
+        cue.write_text('FILE "Game.bin" BINARY\n  TRACK 01 MODE1/2352\n')
+        yield {"progress": 100, "message": "done"}
+
+    monkeypatch.setattr(
+        job_manager_module.registry.for_mode("extractcd"), "convert", fake_convert,
+    )
+    job = ConversionJob(
+        id="companionlock", file_path=str(chd), filename=chd.name,
+        mode=ConversionMode.EXTRACTCD, status=JobStatus.QUEUED,
+        created_at=datetime.now(timezone.utc), output_path=str(cue),
+    )
+    job_manager.jobs[job.id] = job
+    try:
+        await job_manager._process_job(job.id)
+    finally:
+        job_manager.jobs.pop(job.id, None)
+        reset_db_engine()
+
+    assert seen == {"overwrite": False, "probe": True, "delete": 409, "rename": 409}, seen
+    assert bin_path.exists()
+    # Released once the job ended.
+    assert probe.acquire_lock(str(bin_path), allow_existing=True)
+    probe.release_lock(str(bin_path))
