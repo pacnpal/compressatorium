@@ -29,9 +29,9 @@ def _sha1(data: bytes) -> str:
     return hashlib.sha1(data).hexdigest()
 
 
-def _image(size: int = 5 * 2048 + 700) -> bytes:
+def _image(size: int = 6 * 2048) -> bytes:
     """An ISO-ish image: a run of one byte (exercises an LZ4 match), then
-    varied bytes, with a short last block."""
+    varied bytes. Sector-aligned, as maxcso requires."""
     body = bytes((i * 7 + i // 300) % 251 for i in range(size - 40))
     return b"\x00" * 40 + body
 
@@ -48,14 +48,24 @@ def _cso():
 @pytest.mark.asyncio
 @pytest.mark.parametrize("kind", [
     "cso1", "cso1_shift_plain", "cso2_deflate", "cso2_lz4", "zso", "zso_shift", "dax",
-    "dax_nc",
+    "dax_nc", "cso1_16k_short_last", "zso_16k_short_last",
 ])
 async def test_maxcso_container_digest_is_the_sha1_of_the_image_it_decodes_to(
     tmp_path, kind,
 ):
     image = _image()
     out = tmp_path / "Game.cso"
-    if kind == "cso1":
+    if kind.endswith("_16k_short_last"):
+        # A larger block, and an image that is not a block multiple, so the
+        # last block is short (maxcso pads it on disk).
+        image = _image(10 * 2048)
+        if kind.startswith("zso"):
+            out = tmp_path / "Game.zso"
+        write_ciso(
+            out, image, block=16384,
+            magic=b"ZISO" if kind.startswith("zso") else b"CISO",
+        )
+    elif kind == "cso1":
         write_ciso(out, image)
     elif kind == "cso1_shift_plain":
         write_ciso(out, image, shift=2, plain_blocks={1, 5})
@@ -117,6 +127,38 @@ async def test_a_truncated_cso_is_unavailable(tmp_path):
 async def test_a_file_that_is_no_container_is_unavailable(tmp_path):
     out = tmp_path / "Game.cso"
     out.write_bytes(b"NOPE" + b"\0" * 60)
+    with pytest.raises(ContentDigestUnavailable):
+        await _cso().content_digest(str(out))
+
+
+def test_lz4_decodes_a_long_literal_run_and_a_far_non_overlapping_match():
+    from utils.cso_decode import lz4_block_decompress
+
+    literals = bytes((i * 31) % 253 for i in range(300))
+    # 300 literals (15 + 255 + 30), then a match of 20 at offset 260 (two
+    # offset bytes, non-overlapping), then 5 trailing literals.
+    block = bytes([0xFF, 255, 30]) + literals + (260).to_bytes(2, "little")
+    block += bytes([1]) + bytes([0x50]) + b"tail!"
+    # token 0xFF: literal 15+255+30, match 15+1 (+4 = 20); then 5 literals.
+    expected = literals + literals[40:60] + b"tail!"
+    assert lz4_block_decompress(block, len(expected)) == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("field", "value"), [
+    ("block", 1024),          # below a sector
+    ("block", 3 * 2048),      # not a power of two
+    ("block", 0x80000),       # above maxcso's MAX_BLOCK_SIZE
+    ("total", 6 * 2048 + 1),  # not sector-aligned
+    ("shift", 40),            # an index shift past 31
+])
+async def test_cso_headers_maxcso_would_refuse_are_unavailable(tmp_path, field, value):
+    out = tmp_path / "Game.cso"
+    write_ciso(out, _image())
+    data = bytearray(out.read_bytes())
+    offset, fmt = {"block": (16, "<I"), "total": (8, "<Q"), "shift": (21, "<B")}[field]
+    struct.pack_into(fmt, data, offset, value)
+    out.write_bytes(bytes(data))
     with pytest.raises(ContentDigestUnavailable):
         await _cso().content_digest(str(out))
 

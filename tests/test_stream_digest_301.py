@@ -67,6 +67,18 @@ async def test_cancel_stops_the_decoder_thread():
 
 
 @pytest.mark.asyncio
+async def test_a_producer_that_ends_on_its_stop_flag_gives_no_digest():
+    """A producer returns, rather than raises, when it sees the stop flag. The
+    prefix it hashed until then must never come back as the image's digest."""
+    def produce(stop):
+        yield b"first half"
+        stop.set()  # stands in for a cancel landing between two chunks
+
+    with pytest.raises(ReadCancelled):
+        await hash_stream(produce)
+
+
+@pytest.mark.asyncio
 async def test_an_outer_deadline_also_stops_the_decoder_thread():
     finished = threading.Event()
 

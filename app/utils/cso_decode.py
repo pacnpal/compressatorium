@@ -31,19 +31,28 @@ produce the Source's bytes from a container that does not hold them.
 """
 from __future__ import annotations
 
+import os
 import struct
 import threading
 import zlib
+from array import array
 from collections.abc import Iterator
 
 _HIGH = 0x80000000
 _LOW = 0x7FFFFFFF
 DAX_FRAME_SIZE = 0x2000
+# The header bounds maxcso's reader enforces (src/input.cpp, src/cso.h): a
+# block of one 2 KiB sector up to 256 KiB, and a sector-aligned image size. The
+# block size is also required to be a power of two, which maxcso assumes when
+# it derives the block shift.
+SECTOR_SIZE = 0x800
+MAX_BLOCK_SIZE = 0x40000
+_MAX_SHIFT = 31
 # Bounds the index a header can make this read: a PSP UMD or PS2 DVD is under
-# 9 GiB, so 64 GiB at the smallest real block size is generous and still caps
-# the table at a few hundred MiB rather than whatever a corrupt header claims.
+# 9 GiB, so 64 GiB is generous. At 2 KiB blocks that is 32 Mi index entries,
+# 128 MiB as an array('I'); the table must also fit in the file.
 _MAX_IMAGE = 64 << 30
-_BATCH = 256  # blocks per read, so a 2 KiB-block image is not read 2 KiB at a time
+_SPAN = 4 << 20  # bytes of blocks per read, so 2 KiB blocks are not read one by one
 
 
 def lz4_block_decompress(src: bytes, size: int) -> bytes:
@@ -98,7 +107,10 @@ def lz4_block_decompress(src: bytes, size: int) -> bytes:
 
 
 def _inflate(data: bytes, size: int, wbits: int) -> bytes:
-    out = zlib.decompressobj(wbits).decompress(data, size)
+    try:
+        out = zlib.decompressobj(wbits).decompress(data, size)
+    except zlib.error as e:
+        raise ValueError(f"deflate block is corrupt: {e}") from e
     if len(out) < size:
         raise ValueError("deflate block decodes short")
     return out
@@ -131,20 +143,37 @@ def _iter_ciso(fh, stop) -> Iterator[bytes]:
         raise ValueError("container header is truncated")
     magic, _hsize, total, block, version, shift = struct.unpack("<4sIQIBB", head[:22])
     zso = magic == b"ZISO"
-    if version > 2 or not 0 < block <= (1 << 24) or not 0 < total <= _MAX_IMAGE:
-        raise ValueError("container header is not valid")
+    if (
+        version > 2
+        or not SECTOR_SIZE <= block <= MAX_BLOCK_SIZE
+        or block & (block - 1)
+        or not 0 < total <= _MAX_IMAGE
+        or total % SECTOR_SIZE
+        or shift > _MAX_SHIFT
+    ):
+        raise ValueError("container header is not one maxcso reads")
     v2 = version == 2 and not zso
     nblocks = (total + block - 1) // block
-    raw = _read_exact(fh, 24, (nblocks + 1) * 4)
-    index = struct.unpack(f"<{nblocks + 1}I", raw)
-    for first in range(0, nblocks, _BATCH):
+    file_size = os.fstat(fh.fileno()).st_size
+    if 24 + (nblocks + 1) * 4 > file_size:
+        raise ValueError("container is truncated")
+    index = array("I")
+    index.frombytes(_read_exact(fh, 24, (nblocks + 1) * 4))
+    if array("I").itemsize != 4:  # pragma: no cover - every supported platform
+        raise ValueError("unsupported platform")
+    if struct.pack("<I", 1) != struct.pack("=I", 1):  # pragma: no cover - big endian
+        index.byteswap()
+    batch = max(1, _SPAN // block)
+    for first in range(0, nblocks, batch):
         if stop is not None and stop.is_set():
             return
-        last = min(first + _BATCH, nblocks)
+        last = min(first + batch, nblocks)
         lo = (index[first] & _LOW) << shift
         hi = (index[last] & _LOW) << shift
         if hi < lo:
             raise ValueError("block index is not increasing")
+        if hi > file_size:
+            raise ValueError("container is truncated")
         span = _read_exact(fh, lo, hi - lo)
         out = bytearray()
         for i in range(first, last):

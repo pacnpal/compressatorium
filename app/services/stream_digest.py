@@ -69,6 +69,10 @@ async def hash_stream(
             if stop.is_set():
                 raise ReadCancelled("Read cancelled")
             hasher.update(chunk)
+        # A producer ends early, without raising, once it sees the flag; what
+        # it yielded until then is a prefix, never the image's digest.
+        if stop.is_set():
+            raise ReadCancelled("Read cancelled")
         return hasher.hexdigest()
 
     try:
