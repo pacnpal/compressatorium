@@ -684,6 +684,44 @@ def test_the_platform_picker_lists_known_platforms() -> None:
     assert len({p["slug"] for p in listed}) == len(listed)
 
 
+@pytest.mark.asyncio
+async def test_every_platform_the_picker_offers_can_be_mapped(db: Path) -> None:
+    """Codex 4578608816: the picker offers exactly what a mapping accepts.
+
+    Picking DOS failed with 422 because the picker listed every display name
+    while the mapping accepts only aliased or tool-declared Platforms. Every
+    offered slug now maps, and DOS is offered only while something declares it.
+    """
+    from routes import findings as routes
+    from services.tools import registry
+
+    folder = db / "roms" / "anything"
+    folder.mkdir(parents=True)
+    await _register(db / "roms")
+
+    offered = [p["slug"] for p in routes.list_platforms()]
+    for slug in offered:
+        assert _map(folder, slug)["platform"] == slug
+    declared = "dos" in platform_detect._ALIASES or any(
+        "dos" in tool.platform_slugs for tool in registry.all()
+    )
+    assert ("dos" in offered) == declared
+
+
+def test_a_tool_declared_platform_is_offered_with_its_name(monkeypatch) -> None:
+    """DOS appears in the picker, named, once a tool declares it."""
+    from routes import findings as routes
+    from services.tools import registry
+
+    tool = registry.get("chdman")
+    monkeypatch.setattr(tool, "platform_slugs", (*tool.platform_slugs, "dos"))
+
+    listed = routes.list_platforms()
+
+    assert {"slug": "dos", "name": "DOS"} in listed
+    assert platform_detect.known_slug("dos") == "dos"
+
+
 # ----------------------------------------------------------------------
 # a walk that outlives its Library (I2)
 # ----------------------------------------------------------------------

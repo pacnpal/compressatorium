@@ -168,10 +168,21 @@ def platform_name(slug: str | None) -> str | None:
     return _NAMES.get(slug, slug)
 
 
+def known_slugs() -> set[str]:
+    """Every Platform slug the app accepts: aliased, or declared by a registered tool.
+
+    The one vocabulary: :func:`known_slug` checks a submitted id against it and
+    :func:`platforms` offers it, so the picker can never list a Platform a
+    mapping would refuse. ``_NAMES`` is a display-name lookup only; a name
+    with no Platform behind it (DOS before a tool declares it) is not offered.
+    """
+    return set(_ALIASES) | set(_folder_names(_default_tools()).values())
+
+
 def platforms() -> list[dict[str, str]]:
-    """Every Platform with a display name, sorted by name (the mapping picker)."""
+    """Every known Platform with its display name, sorted by name (the mapping picker)."""
     return sorted(
-        ({"slug": slug, "name": name} for slug, name in _NAMES.items()),
+        ({"slug": slug, "name": platform_name(slug)} for slug in known_slugs()),
         key=lambda p: p["name"].lower(),
     )
 
@@ -179,16 +190,14 @@ def platforms() -> list[dict[str, str]]:
 def known_slug(name: str | None) -> str | None:
     """The Platform slug *name* stands for, or None when no Platform has it.
 
-    A slug is known when it is in the alias table or a registered tool declares
-    it. Used to check a Platform id a client submits (a folder Library's Rule
-    keys) rather than storing whatever string arrives.
+    Known means in :func:`known_slugs`. Used to check a Platform id a client
+    submits (a folder Library's Rule keys, a folder mapping) rather than
+    storing whatever string arrives.
     """
     slug = canonical_slug(name)
     if slug is None:
         return None
-    if slug in _ALIASES:
-        return slug
-    return slug if slug in set(_folder_names(_default_tools()).values()) else None
+    return slug if slug in known_slugs() else None
 
 
 @dataclass(frozen=True)
