@@ -2798,6 +2798,13 @@ refresh after it."; the running walk drops its stale Findings and walks again.
 `POST /api/findings/{id}/undismiss` shows a dismissed Finding again. Check now
 walks the Libraries side by side.
 
+Dismiss and undismiss send the row's `fingerprint` with its id
+(`{"fingerprint": ...}`), and the store refuses with 409 when the row's cause
+is another one now. With `findings` on SQLite AUTOINCREMENT, a cleared
+Finding's id is never handed to another, so a row left on a screen after a
+walk changed or cleared it can never act on a different Finding. In the UI,
+each mutation drops every listing that started before it and lists again.
+
 ### 3.4 `registry.py`
 
 ```python

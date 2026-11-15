@@ -31,6 +31,19 @@ _WALK_SECONDS = 300
 _MAPPING_SECONDS = 60
 
 
+class FindingRef(BaseModel):
+    """The cause fingerprint of the Finding as the user was shown it.
+
+    With the id it names one Finding and one cause, so a row left on a screen
+    after a walk changed or cleared it never acts on something else (409).
+    """
+
+    fingerprint: str
+
+
+_CHANGED = "This Finding changed since it was listed; list the Findings again"
+
+
 class MappingRequest(BaseModel):
     """A folder's absolute path, and its Platform slug (None clears the mapping)."""
 
@@ -84,19 +97,31 @@ def _library_is_current(library_id: str) -> bool:
 
 
 @router.post("/findings/{finding_id}/dismiss")
-async def dismiss_finding(finding_id: int) -> dict:
+async def dismiss_finding(finding_id: int, payload: FindingRef) -> dict:
     """Hide a Finding until its cause changes. The Image is left as it is."""
-    if not await run_in_threadpool(
-        lambda: findings.dismiss(finding_id, current=_library_is_current),
-    ):
+    try:
+        done = await run_in_threadpool(
+            lambda: findings.dismiss(
+                finding_id, fingerprint=payload.fingerprint, current=_library_is_current,
+            ),
+        )
+    except findings.FindingChanged:
+        raise HTTPException(status_code=409, detail=_CHANGED) from None
+    if not done:
         raise HTTPException(status_code=404, detail="Finding not found")
     return {"dismissed": finding_id}
 
 
 @router.post("/findings/{finding_id}/undismiss")
-async def undismiss_finding(finding_id: int) -> dict:
+async def undismiss_finding(finding_id: int, payload: FindingRef) -> dict:
     """Show a dismissed Finding again."""
-    if not await run_in_threadpool(findings.undismiss, finding_id):
+    try:
+        done = await run_in_threadpool(
+            lambda: findings.undismiss(finding_id, fingerprint=payload.fingerprint),
+        )
+    except findings.FindingChanged:
+        raise HTTPException(status_code=409, detail=_CHANGED) from None
+    if not done:
         raise HTTPException(status_code=404, detail="Finding not found")
     return {"undismissed": finding_id}
 

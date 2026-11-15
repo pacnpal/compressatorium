@@ -44,22 +44,38 @@ class FindingsStore {
     return this.list;
   }
 
+  #fingerprint(id) {
+    return this.list.find((f) => f.id === id)?.fingerprint ?? null;
+  }
+
+  /**
+   * A mutation succeeded: drop every listing that started before it (its
+   * snapshot predates the change), then list again.
+   */
+  #superseded() {
+    this.#request += 1;
+  }
+
   /** Hide one Finding until its cause changes. */
   async dismiss(id) {
-    await api.dismissFinding(id);
+    await api.dismissFinding(id, this.#fingerprint(id));
+    this.#superseded();
     if (this.showDismissed) {
       this.list = this.list.map((f) => (f.id === id ? { ...f, dismissed: true } : f));
     } else {
       this.list = this.list.filter((f) => f.id !== id);
     }
     this.dismissed += 1;
+    await this.load();
   }
 
   /** Show a dismissed Finding again. */
   async undismiss(id) {
-    await api.undismissFinding(id);
+    await api.undismissFinding(id, this.#fingerprint(id));
+    this.#superseded();
     this.list = this.list.map((f) => (f.id === id ? { ...f, dismissed: false } : f));
     this.dismissed = Math.max(0, this.dismissed - 1);
+    await this.load();
   }
 
   /** Walk every folder Library now, then list what it found. */

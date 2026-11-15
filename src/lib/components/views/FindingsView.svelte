@@ -78,6 +78,8 @@
       await findings.undismiss(row.id);
     } catch (e) {
       toast.error(e?.message ?? 'Could not show the Finding again');
+      // A 409 means the row changed since it was listed: show what it is now.
+      findings.load();
     }
   }
 
@@ -87,6 +89,7 @@
       toast.success(`Dismissed until its cause changes: ${row.image_key}`);
     } catch (e) {
       toast.error(e?.message ?? 'Could not dismiss the Finding');
+      findings.load();
     }
   }
 

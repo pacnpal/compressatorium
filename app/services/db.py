@@ -368,6 +368,9 @@ class FindingRecord(Base):
     last_seen = Column(String, nullable=False)
     __table_args__ = (
         Index("ux_findings_library_image_kind", "library_id", "image_key", "kind", unique=True),
+        # AUTOINCREMENT: a cleared Finding's id is never handed to another, so
+        # a row still on someone's screen can never act on a different Image.
+        {"sqlite_autoincrement": True},
     )
 
 

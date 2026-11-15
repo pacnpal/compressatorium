@@ -603,13 +603,13 @@ async def test_dismissing_through_the_route_hides_the_finding(tree: Path) -> Non
     await routes.check_findings()
     first = (await routes.list_findings())["findings"][0]
 
-    await routes.dismiss_finding(first["id"])
+    await routes.dismiss_finding(first["id"], routes.FindingRef(fingerprint=first["fingerprint"]))
 
     listed = await routes.list_findings()
     assert first["id"] not in [r["id"] for r in listed["findings"]]
     assert listed["dismissed"] == 1
     with pytest.raises(HTTPException) as err:
-        await routes.dismiss_finding(99999)
+        await routes.dismiss_finding(99999, routes.FindingRef(fingerprint="x"))
     assert err.value.status_code == 404
 
 
@@ -621,15 +621,15 @@ async def test_showing_a_dismissed_finding_again_through_the_route(tree: Path) -
     await _register(tree)
     await routes.check_findings()
     first = (await routes.list_findings())["findings"][0]
-    await routes.dismiss_finding(first["id"])
+    await routes.dismiss_finding(first["id"], routes.FindingRef(fingerprint=first["fingerprint"]))
 
-    await routes.undismiss_finding(first["id"])
+    await routes.undismiss_finding(first["id"], routes.FindingRef(fingerprint=first["fingerprint"]))
 
     listed = await routes.list_findings()
     assert first["id"] in [r["id"] for r in listed["findings"]]
     assert listed["dismissed"] == 0
     with pytest.raises(HTTPException) as err:
-        await routes.undismiss_finding(99999)
+        await routes.undismiss_finding(99999, routes.FindingRef(fingerprint="x"))
     assert err.value.status_code == 404
 
 
@@ -1113,14 +1113,73 @@ async def test_dismissing_a_finding_of_a_removed_library_leaves_no_orphan(
 
     await _register(tree)
     libraries.folder_libraries()[0].summary(refresh=True)
-    finding_id = _open()[0]["id"]
+    row = _open()[0]
     library = libraries.folder_libraries()[0]
     await rules_sweep.forget_library(library)  # the first step of libraries.remove
 
     with pytest.raises(HTTPException) as err:
-        await routes.dismiss_finding(finding_id)
+        await routes.dismiss_finding(row["id"], routes.FindingRef(fingerprint=row["fingerprint"]))
 
     assert err.value.status_code == 404
     with _db.SessionLocal() as session:
         assert session.query(_db.FindingDismissalRecord).count() == 0
+
+
+# ----------------------------------------------------------------------
+# PR #322 review: a stale row never acts on a different Finding
+# ----------------------------------------------------------------------
+
+
+def test_a_cleared_findings_id_is_never_given_to_another(db: Path) -> None:
+    from services import findings
+
+    findings.reconcile("folder:1", [_conflict("ps2/a.iso")])
+    stale = _open()[0]
+    findings.reconcile("folder:1", [])
+    findings.reconcile("folder:1", [_conflict("ps2/b.iso")])
+    fresh = _open()[0]
+
+    assert fresh["id"] != stale["id"]
+    # The stale row's id names no Finding now: nothing is dismissed.
+    assert findings.dismiss(stale["id"], fingerprint=stale["fingerprint"]) is False
+    assert [r["dismissed"] for r in _open(include_dismissed=True)] == [False]
+
+
+def test_a_dismiss_for_a_cause_the_user_did_not_see_is_refused(db: Path) -> None:
+    from services import findings
+
+    findings.reconcile("folder:1", [_conflict("ps2/a.iso", header="ngc")])
+    shown = _open()[0]
+    findings.reconcile("folder:1", [_conflict("ps2/a.iso", header="wii")])  # changed meanwhile
+
+    with pytest.raises(findings.FindingChanged):
+        findings.dismiss(shown["id"], fingerprint=shown["fingerprint"])
+    with pytest.raises(findings.FindingChanged):
+        findings.undismiss(shown["id"], fingerprint=shown["fingerprint"])
+    assert [r["dismissed"] for r in _open(include_dismissed=True)] == [False]
+
+
+@pytest.mark.asyncio
+async def test_the_routes_refuse_a_finding_that_changed_with_409(tree: Path) -> None:
+    from fastapi import HTTPException
+    from routes import findings as routes
+
+    await _register(tree)
+    await routes.check_findings()
+    row = (await routes.list_findings())["findings"][0]
+
+    for call in (routes.dismiss_finding, routes.undismiss_finding):
+        with pytest.raises(HTTPException) as err:
+            await call(row["id"], routes.FindingRef(fingerprint="not-the-cause"))
+        assert err.value.status_code == 409
+
+
+def test_the_findings_table_uses_sqlite_autoincrement(db: Path) -> None:
+    from services import db as _db
+
+    with _db.engine.connect() as conn:
+        sql = conn.exec_driver_sql(
+            "SELECT sql FROM sqlite_master WHERE name = 'findings'",
+        ).scalar()
+    assert "AUTOINCREMENT" in sql
 
