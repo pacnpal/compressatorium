@@ -110,9 +110,14 @@ def _fold(name: str) -> str:
     return unicodedata.normalize("NFC", name).casefold()
 
 
+def _strip_label(entry: str) -> str:
+    """The path part of a RetroArch ``path|label`` entry, as readers split it."""
+    return entry.split("|", 1)[0].strip()
+
+
 def _named_file(entry: str) -> str:
     """The file name an entry means, however it is written: no label, quotes or folders."""
-    name = entry.split("|", 1)[0].strip().strip("\"'").strip()
+    name = _strip_label(entry).strip("\"'").strip()
     return _fold(re.split(r"[\\/]", name)[-1])
 
 
@@ -185,7 +190,10 @@ def _choose_entry(
             if any(unicodedata.category(ch) == "Cc" for ch in written):
                 continue
             parsed = _read_line(render(written), first)
-            if parsed is not None and _points_at(playlist_dir, parsed[1], target):
+            # As a reader takes it: label split off ("path|label"), then resolved.
+            if parsed is not None and _points_at(
+                playlist_dir, _strip_label(parsed[1]), target,
+            ):
                 return written
     return None
 
@@ -331,7 +339,7 @@ def _check_read_back(
     one, at its position, reaching the output. Anything else keeps the Source."""
     old, new = entries(before), entries(after)
     ok = len(old) == len(new) and all(
-        _points_at(playlist_dir, new[i], rewritten[i]) if i in rewritten
+        _points_at(playlist_dir, _strip_label(new[i]), rewritten[i]) if i in rewritten
         else new[i] == old[i]
         for i in range(len(new))
     )

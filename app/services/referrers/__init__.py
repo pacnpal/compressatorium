@@ -12,8 +12,8 @@ import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
-from fastapi.concurrency import run_in_threadpool
 from logging_setup import get_logger
+from services.subprocess_runner import ReadCancelled, run_detached_within_stall_bound
 
 from .base import Referrer, ReferrerChange, ReferrerError, atomic_write_bytes
 from .m3u import M3uReferrer
@@ -131,15 +131,34 @@ def _update_sync(image_path: str, renames: Mapping[str, str]) -> ReferrerOutcome
 
 
 async def update_before_source_removal(
-    image_path: str, renames: Mapping[str, str],
+    image_path: str, renames: Mapping[str, str], *, cancel_event=None,
 ) -> ReferrerOutcome:
     """Run every Referrer for an Image whose Source is about to be removed.
 
     *renames* maps each Source file that will be deleted to the output that
     replaces it. Stops at the first failure: the caller must then keep the
     Source. Never raises.
+
+    Bounded and cancellable like the job's other reads of a mount that may
+    stop answering: the work runs on a detached thread under the conversion's
+    no-progress bound, and *cancel_event* returns at once. On a timeout or a
+    cancel the thread is abandoned and the outcome keeps the Source. Whatever
+    the thread finishes later can only point a playlist at the output, which
+    stays.
     """
-    return await run_in_threadpool(_update_sync, image_path, dict(renames))
+    try:
+        return await run_detached_within_stall_bound(
+            _update_sync, image_path, dict(renames),
+            what="Updating playlists", cancel_event=cancel_event,
+        )
+    except ReadCancelled:
+        reason = "cancelled"
+    except Exception as exc:  # noqa: BLE001 - a timeout or anything else keeps the Source
+        reason = str(exc) or type(exc).__name__
+    logger.warning("Referrer hook for %s did not finish: %s", image_path, reason)
+    outcome = ReferrerOutcome()
+    outcome.failed, outcome.reason = "playlists", reason
+    return outcome
 
 
 __all__ = [

@@ -2426,12 +2426,19 @@ The package exposes the registry and two entry points:
   and `deleted_paths` stays empty. `JobRow.svelte` shows that message on a
   completed delete-on-verify job that deleted nothing. Changes already applied
   before the failure stay: they point at the output, which exists.
+  The hook runs on a detached thread (`run_detached_within_stall_bound`, the
+  conversion's no-progress bound) and takes the job's `cancel_event`, so a
+  playlist on a mount that stopped answering can't hold the job slot and its
+  locks: on a timeout or a Cancel the thread is abandoned and the outcome keeps
+  the Source with the reason.
   Because the hook awaits a worker thread, the job re-asks two things after
   it and before `os.remove`: a Cancel pressed meanwhile keeps the Source
   ("Delete skipped (cancelled)"), and `JobManager._check_delete_paths` (lock,
   Volume, other job, symlink, type, not-the-output, snapshot size / mtime /
   inode / device) runs a second time; it ran once before the hook. A failure
-  the second time keeps the Source with `converted, source kept: <reason>`.
+  the second time keeps the Source with `converted, source kept: <reason>`,
+  and since that check awaits as well, cancel is asked once more after it,
+  immediately before the removal loop.
 
 `atomic_write_bytes(path, data)` (in `base.py`) is the shared writer for file
 Referrers and anything else that writes a playlist: a temp file in the same
@@ -2490,7 +2497,9 @@ never half of one.
   backslash entry) in forward slashes. A form holding a control character (CR,
   LF, NUL, VT, any Unicode `Cc`) is skipped. Each remaining form is rendered
   into its full line (BOM prefix, leading and trailing whitespace) and read
-  back with `_read_line`; the first whose entry, read from the playlist's
+  back with `_read_line`, and a RetroArch label is split off the way readers
+  do (`_strip_label`, shared with `_named_file`, so a `|` in the path can't be
+  written; the Source is kept). The first whose entry, read from the playlist's
   folder, reaches the output (same `(st_dev, st_ino)`, or the same resolved
   path while the delete confirmation plans before the output exists) is used.
   So `./` protects a leading `#`, whitespace, a U+FEFF that a reader would
@@ -2513,7 +2522,9 @@ never half of one.
   lead out of the Volumes), which keeps the Source; `apply` refuses a
   read-only or symlinked one. It writes `<name>.m3u.bak` once, only if no
   backup exists, with the playlist's own mode and group
-  (`atomic_write_bytes(..., like=playlist)`), then the new playlist.
+  (`atomic_write_bytes(..., like=playlist)`; if the playlist vanished
+  meanwhile the write fails rather than fall back to 0644, and the Source is
+  kept), then the new playlist.
 
 To add a Referrer: subclass `Referrer` in `services/referrers/`, give it a new
 `id`, and `registry.register(...)` it in `services/referrers/__init__.py`.

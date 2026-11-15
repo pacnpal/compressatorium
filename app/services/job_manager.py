@@ -3365,17 +3365,18 @@ class JobManager:
                         referrer_outcome = await referrers.update_before_source_removal(
                             source_for_delete,
                             {path: job.output_path for path in delete_order},
+                            cancel_event=cancel_event,
                         )
                         job.referrers_updated = referrer_outcome.records
                         # The hook awaited a worker thread: re-ask cancel and
                         # every per-path identity check before removing.
                         kept_reason = None
-                        if not referrer_outcome.ok:
-                            kept_reason = referrer_outcome.kept_message
-                        elif cancel_event.is_set():
+                        if cancel_event.is_set():
                             kept_reason = (
                                 f"Output is {check_label}. Delete skipped (cancelled)."
                             )
+                        elif not referrer_outcome.ok:
+                            kept_reason = referrer_outcome.kept_message
                         else:
                             try:
                                 await self._check_delete_paths(
@@ -3383,6 +3384,11 @@ class JobManager:
                                 )
                             except RuntimeError as exc:
                                 kept_reason = f"converted, source kept: {exc}"
+                            # That check awaited too; a Cancel there still wins.
+                            if kept_reason is None and cancel_event.is_set():
+                                kept_reason = (
+                                    f"Output is {check_label}. Delete skipped (cancelled)."
+                                )
                         if kept_reason:
                             job.message = kept_reason
                             await self._notify_subscribers(

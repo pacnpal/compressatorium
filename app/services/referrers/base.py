@@ -113,6 +113,10 @@ def atomic_write_bytes(path: str, data: bytes, *, like: str | None = None) -> No
         try:
             original = os.stat(like or path)
         except FileNotFoundError:
+            if like is not None:
+                # The file whose mode and group this copy must take is gone:
+                # don't fall back to 0644 for something meant to be private.
+                raise
             original = None
         if original is not None:
             _keep_owner(tmp, original)

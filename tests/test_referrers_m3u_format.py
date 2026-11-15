@@ -417,15 +417,16 @@ AWKWARD_NAMES = [
     " CHD", "CHD ", "#CHD", ";CHD", "\tCHD", "CHD\t", "a#b", "Pokémon",
     unicodedata.normalize("NFD", "Pokémon"), "CHD\nextra", "CHD\rextra",
     "CHD\x0bextra", "CHD\x1fextra", " ", "#",
-    "﻿CHD", "a\\b", "\\CHD", "CHD\\",
+    "﻿CHD", "a\\b", "\\CHD", "CHD\\", "CHD|converted", "|CHD",
 ]
 
 
 def _reader_entries(data: bytes) -> list[str]:
     """What an emulator reads from a playlist, written out independently of
     the code under test: a leading UTF-8 BOM dropped, lines split, each
-    trimmed, blank and # lines skipped, and an entry with backslashes but no
-    slash read as backslash-separated."""
+    trimmed, blank and # lines skipped, a RetroArch ``path|label`` reduced to
+    its path, and an entry with backslashes but no slash read as
+    backslash-separated."""
     text = data.decode("utf-8")
     text = text.removeprefix("﻿")
     entries = []
@@ -433,6 +434,7 @@ def _reader_entries(data: bytes) -> list[str]:
         entry = line.strip()
         if not entry or entry.startswith("#"):
             continue
+        entry = entry.split("|", 1)[0].strip()
         if "\\" in entry and "/" not in entry:
             entry = entry.replace("\\", "/")
         entries.append(entry)
@@ -512,6 +514,23 @@ async def test_a_non_utf8_playlist_naming_other_files_does_not_block(tmp_path):
 
     assert outcome.ok
     assert playlist.read_bytes() == data
+
+
+@pytest.mark.asyncio
+async def test_an_output_path_with_a_label_delimiter_keeps_the_source(tmp_path):
+    """Readers split "path|label", and no spelling escapes the "|"."""
+    _disc(tmp_path, "Game.cue")
+    (tmp_path / "CHD|converted").mkdir()
+    out = _disc(tmp_path / "CHD|converted", "Game.chd")
+    playlist = tmp_path / "Game.m3u"
+    playlist.write_text("Game.cue\n")
+
+    outcome = await referrers.update_before_source_removal(
+        str(tmp_path / "Game.cue"), {str(tmp_path / "Game.cue"): str(out)},
+    )
+
+    assert not outcome.ok
+    assert playlist.read_text() == "Game.cue\n"
 
 
 @pytest.mark.asyncio
@@ -604,6 +623,16 @@ async def test_the_backup_keeps_the_playlists_mode(tmp_path):
 
     assert outcome.ok
     assert stat.S_IMODE((tmp_path / "Game.m3u.bak").stat().st_mode) == 0o600
+
+
+def test_a_backup_whose_model_vanished_is_not_written(tmp_path):
+    """If the playlist the backup copies its mode from is gone, the write
+    fails (and the Source is kept) instead of falling back to 0644."""
+    backup = tmp_path / "Game.m3u.bak"
+
+    with pytest.raises(FileNotFoundError):
+        atomic_write_bytes(str(backup), b"A.cue\n", like=str(tmp_path / "Game.m3u"))
+    assert list(tmp_path.iterdir()) == []
 
 
 @pytest.mark.asyncio

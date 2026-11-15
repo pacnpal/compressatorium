@@ -275,8 +275,8 @@ def _wrap_hook(monkeypatch, after):
     """Run the real Referrer hook, then *after* (the race being simulated)."""
     real = hook_module.update_before_source_removal
 
-    async def wrapped(image_path, renames):
-        outcome = await real(image_path, renames)
+    async def wrapped(image_path, renames, **kw):
+        outcome = await real(image_path, renames, **kw)
         after()
         return outcome
 
@@ -312,6 +312,67 @@ async def test_a_cancel_during_the_hook_keeps_the_source(volume, monkeypatch):
     # The playlist already points at the output, which is still there.
     assert b"Game (Disc 1).chd" in (volume / "Game.m3u").read_bytes()
     assert (volume / "Game (Disc 1).chd").is_file()
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_during_the_second_path_check_keeps_the_source(volume, monkeypatch):
+    """The re-check after the hook awaits too; a Cancel there still wins."""
+    manager_cls = type(convert_routes.job_manager)
+    real_check = manager_cls._check_delete_paths
+    calls = []
+
+    async def check_then_cancel(self, *args, **kwargs):
+        await real_check(self, *args, **kwargs)
+        calls.append(1)
+        if len(calls) == 2:
+            for event in list(self._cancel_events.values()):
+                event.set()
+
+    monkeypatch.setattr(manager_cls, "_check_delete_paths", check_then_cancel)
+
+    job = await _convert_disc_1(volume)
+
+    assert len(calls) == 2
+    assert "Delete skipped (cancelled)" in job.message
+    assert (volume / "Game (Disc 1).cue").is_file()
+    assert job.deleted_paths == []
+
+
+@pytest.mark.asyncio
+async def test_cancel_frees_the_slot_while_a_playlist_read_hangs(volume, monkeypatch):
+    """A playlist on a mount that stopped answering: Cancel returns the job
+    at once, keeps the Source, and doesn't wait for the read."""
+    import asyncio
+    import threading
+
+    from services.referrers import m3u as m3u_module
+
+    entered, release = threading.Event(), threading.Event()
+    real_read = m3u_module._read
+
+    def stuck_read(path):
+        entered.set()
+        release.wait(30)
+        return real_read(path)
+
+    monkeypatch.setattr(m3u_module, "_read", stuck_read)
+    job = await convert_routes.create_job(JobCreateRequest(
+        file_path=str(volume / "Game (Disc 1).cue"),
+        mode=ConversionMode.CREATECD,
+        duplicate_action=DuplicateAction.SKIP,
+        delete_on_verify=True,
+    ))
+    task = asyncio.create_task(convert_routes.job_manager._process_job(job.id))
+    try:
+        assert await asyncio.to_thread(entered.wait, 10)
+        await convert_routes.job_manager.cancel_job(job.id)
+        await asyncio.wait_for(task, timeout=5)
+    finally:
+        release.set()
+
+    assert (volume / "Game (Disc 1).cue").is_file()
+    assert job.deleted_paths == []
+    assert (volume / "Game.m3u").read_bytes() == M3U
 
 
 _SRC = Path(__file__).resolve().parents[1] / "src" / "lib"
