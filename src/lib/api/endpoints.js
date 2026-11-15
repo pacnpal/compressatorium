@@ -64,6 +64,38 @@ export const api = {
   // ─── Version ──────────────────────────────────────────────────────────
   getVersion: () => fetchJson(`${API_BASE}/version`, undefined, 'Failed to fetch version'),
 
+  // ─── Notifications (webhook / Apprise destinations) ─────────────────────
+  // The server never returns a saved URL; edits that omit `url` keep it.
+  getNotifications: () =>
+    fetchJson(`${API_BASE}/notifications`, undefined, 'Failed to load notifications'),
+  addNotificationDestination: (body) =>
+    jsonPost(`${API_BASE}/notifications/destinations`, body, {}, 'Failed to add destination'),
+  editNotificationDestination: (id, body) =>
+    fetchJson(
+      `${API_BASE}/notifications/destinations/${encodeURIComponent(id)}`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+      'Failed to save destination',
+    ),
+  deleteNotificationDestination: (id) =>
+    fetchJson(
+      `${API_BASE}/notifications/destinations/${encodeURIComponent(id)}`,
+      { method: 'DELETE' },
+      'Failed to remove destination',
+    ),
+  testNotificationDestination: (id) =>
+    jsonPost(
+      `${API_BASE}/notifications/destinations/${encodeURIComponent(id)}/test`,
+      {},
+      {},
+      'Test failed',
+    ),
+  testNotificationDraft: (body) =>
+    jsonPost(`${API_BASE}/notifications/test`, body, {}, 'Test failed'),
+
   // ─── Ledger (permanent record of finished jobs) ────────────────────────
   getLedgerRecent: (limit = 5) =>
     fetchJson(buildApiUrl('/ledger/recent', { limit }), undefined, 'Failed to fetch ledger'),
@@ -165,6 +197,26 @@ export const api = {
       buildApiUrl('/files/delete', params),
       { method: 'DELETE', headers },
       'Failed to delete',
+    );
+  },
+
+  /** Preview the .m3u the selected discs would make. Writes nothing. */
+  playlistPreview(paths, title) {
+    return jsonPost(
+      `${API_BASE}/files/playlist/preview`,
+      title == null ? { paths } : { paths, title },
+      {},
+      'Failed to preview the playlist',
+    );
+  },
+
+  /** Write the previewed playlist. A taken name is a 409 with `err.detail.suggested_name`. */
+  createPlaylist(paths, fileName) {
+    return jsonPost(
+      `${API_BASE}/files/playlist`,
+      { paths, file_name: fileName },
+      {},
+      'Failed to create the playlist',
     );
   },
 

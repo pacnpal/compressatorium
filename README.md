@@ -459,6 +459,50 @@ curl -X PUT http://localhost:8080/api/ledger/settings \
 `GET /api/ledger/recent?limit=N` and `GET /api/ledger/savings` return the rows and
 the totals as JSON.
 
+### Notifications
+
+Open **Settings** and add a webhook URL or an [Apprise](https://github.com/caronc/apprise)
+URL (Discord, Telegram, ntfy, email and many more) to hear about finished work.
+Nothing leaves the server until you add a destination. You get:
+
+- one message when a sweep finishes, with its counts and the space it saved;
+  anything that failed inside the sweep is listed in that message, not sent
+  separately;
+- one message when a job you started by hand fails.
+
+There are three destination types. A **generic webhook** gets a JSON `POST`:
+
+```json
+{"event": "sweep_finished", "title": "Sweep finished: 3 converted, 1.2 GB saved",
+ "message": "Queued 3. Space saved: 1.2 GB.",
+ "data": {"queued": 3, "completed": 3, "failed": 0, "cancelled": 0, "saved_bytes": 1288490188,
+          "failures": [], "errors": []}}
+```
+
+A **Discord webhook** takes any https URL that speaks Discord's webhook format
+(discord.com, or a compatible service) with no Apprise needed. It posts one embed
+(green for a clean sweep, red for a failure, grey otherwise) with a few key/value
+fields, a UTC timestamp, and `allowed_mentions: {"parse": []}` so nothing in a
+filename can ping @everyone or a role. Long text is truncated to Discord's limits:
+
+```json
+{"username": "Compressatorium", "content": "Job failed: Game.iso",
+ "embeds": [{"title": "Job failed: Game.iso", "description": "createdvd: no disc",
+             "color": 15158332, "fields": [{"name": "Mode", "value": "createdvd", "inline": true}],
+             "timestamp": "2026-11-15T14:00:00+00:00"}],
+ "allowed_mentions": {"parse": []}}
+```
+
+A 200 or 204 is success; a 429 is reported with its Retry-After and is not retried.
+The URL is https-only for a Discord webhook. An **Apprise URL** covers everything
+else Apprise supports. Use
+**Test** to send a sample message and see the error if it fails. Saved URLs are
+never sent back to the browser, since they often hold a token, and sends have a
+10 second timeout and run in the background, so a slow or broken destination
+never delays or fails a job. Messages to one destination are sent in order, so a burst all arrives. A webhook URL that redirects is treated as an error (Test shows "HTTP 30x"; save the final URL), and webhook delivery does not use `HTTP_PROXY` / `HTTPS_PROXY`. Webhooks need nothing extra. Apprise ships in the
+Docker image; without it, Apprise URLs are refused with a message and webhooks
+still work. The same destinations are available at `/api/notifications`.
+
 The **Ledger** view in the sidebar lists every row, newest first, 25 to a page.
 Search matches the Source or output path, and you can filter by status, tool and
 Platform. **Export CSV** downloads every row matching the current search and
@@ -525,6 +569,16 @@ it, say), the source is kept, the output stays beside it,
 and the job ends as `converted, source kept: couldn't update <playlist>
 (<reason>)`. The Ledger row records each playlist updated, or the one that
 kept the source and why.
+
+**Create an `.m3u` from selected discs.** Tick the discs of one game in the file
+list (two or more disc images in the same folder, such as `.cue`, `.gdi`, `.iso`,
+`.chd`, `.rvz` or `.cso`) and press **Create .m3u**. Ticked `.bin` tracks of a
+`.cue` are left out; two formats of one disc are refused. A preview shows the playlist name and its
+entries before anything is written. The name drops the `(Disc N)` / `CD N` part
+(`Final Quest (Disc 1).cue` gives `Final Quest.m3u`) and can be edited. Entries
+go in disc order, by the number in the name and otherwise by name, as file names
+beside the playlist. An existing playlist is never overwritten: if the name is
+taken, the preview offers the next free one (`Final Quest (2).m3u`).
 
 ### File info
 
@@ -953,6 +1007,12 @@ A three-pane layout: navigation and tool picker on the left, the volume and file
 |-------|------|
 | ![Auto plan, light](docs/screenshots/workspace-auto-plan-light.png) | ![Auto plan, dark](docs/screenshots/workspace-auto-plan-dark.png) |
 
+**Create .m3u from selected discs.** Select the discs of one game and the dialog previews the playlist name and the entries in disc order before it writes anything.
+
+| Light | Dark |
+|-------|------|
+| ![Create .m3u preview, light](docs/screenshots/playlist-light.png) | ![Create .m3u preview, dark](docs/screenshots/playlist-dark.png) |
+
 **Dolphin (GameCube / Wii).** Compress discs to RVZ, WIA, or GCZ, with a codec and compression-level picker.
 
 | Light | Dark |
@@ -1027,6 +1087,14 @@ Import or sync No-Intro / Redump / MAMERedump datasets and match converted files
 | Light | Dark |
 |-------|------|
 | ![DAT Library, light](docs/screenshots/dat-light.png) | ![DAT Library, dark](docs/screenshots/dat-dark.png) |
+
+#### Settings
+
+Notification destinations for finished sweeps and failed jobs.
+
+| Light | Dark |
+|-------|------|
+| ![Settings, light](docs/screenshots/settings-light.png) | ![Settings, dark](docs/screenshots/settings-dark.png) |
 
 #### Help
 
@@ -1994,6 +2062,8 @@ The Web UI communicates with a REST API that can also be used directly. Interact
 | GET | `/api/files/search` | Recursively search for convertible files |
 | GET | `/api/files/archive` | List contents of an archive file |
 | POST | `/api/files/rename` | Rename a file or directory |
+| POST | `/api/files/playlist/preview` | Preview the `.m3u` that selected discs would make (name, folder, ordered entries). Writes nothing |
+| POST | `/api/files/playlist` | Write the previewed `.m3u` beside the discs. Never overwrites: a taken name is a 409 with `detail.suggested_name` |
 | DELETE | `/api/files/delete` | Delete a single file or empty directory |
 | POST | `/api/files/delete-batch` | Delete multiple files at once |
 

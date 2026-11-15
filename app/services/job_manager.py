@@ -472,6 +472,7 @@ class JobManager:
         split: bool = False,
         delete_snapshot: Optional[Dict[str, object]] = None,
         reservation: Optional[_Reservation] = None,
+        owner: Optional[str] = None,
     ) -> ConversionJob:
         """Queue a job while holding _create_lock (no backpressure check here)."""
         job_id = str(uuid.uuid4())[:8]
@@ -510,6 +511,7 @@ class JobManager:
             split=split,
             input_kind=input_kind,
         )
+        job._sweep_owner = owner
 
         self.jobs[job_id] = job
         # Every key this job claims -- its destination and the sidecars the
@@ -594,6 +596,7 @@ class JobManager:
         split: bool = False,
         verify_after: bool = False,
         container_only: bool = False,
+        owner: Optional[str] = None,
     ) -> List[ConversionJob]:
         """Create multiple jobs atomically under a single backpressure check."""
         if not job_specs:
@@ -635,6 +638,7 @@ class JobManager:
                         split=split,
                         delete_snapshot=spec.get("delete_snapshot"),
                         reservation=reservation,
+                        owner=owner,
                     )
                 )
         return jobs
@@ -653,6 +657,7 @@ class JobManager:
         output_paths: Optional[Dict[str, str]] = None,
         allow_overwrite: bool = False,
         container_only: bool = False,
+        owner: Optional[str] = None,
     ) -> List[ConversionJob]:
         """Create multiple conversion jobs.
 
@@ -683,6 +688,7 @@ class JobManager:
             split=split,
             verify_after=verify_after,
             container_only=container_only,
+            owner=owner,
         )
 
     @staticmethod
