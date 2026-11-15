@@ -61,6 +61,9 @@ class ConversionMode(str, Enum):
     XISO_REWRITE = "xiso_rewrite"
     METADATA_SCAN = "metadata_scan"
     DAT_MATCH = "dat_match"
+    # A check Rule's run (#305): Verify over the Images it picked. An external
+    # job like the two above, never a conversion.
+    CHECK = "check"
 
 
 class DuplicateAction(str, Enum):

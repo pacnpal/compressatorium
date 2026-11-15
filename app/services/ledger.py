@@ -129,7 +129,15 @@ async def retention_days() -> int | None:
 
 
 async def record(job: ConversionJob) -> None:
-    """Terminal listener: write *job*'s row. Never raises."""
+    """Terminal listener: write *job*'s row. Never raises.
+
+    Only conversions: an external job (a metadata scan, a DAT match, a check
+    Rule's run) converts nothing, so it is no Ledger row.
+    """
+    from services.job_manager import is_external_mode
+
+    if is_external_mode(job.mode):
+        return
     try:
         await run_in_threadpool(_insert_sync, row_from_job(job), await retention_days())
     except Exception:

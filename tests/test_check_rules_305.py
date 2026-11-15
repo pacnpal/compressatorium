@@ -157,3 +157,90 @@ async def test_a_preview_picks_the_stalest_images_within_the_budget(tree: Path, 
     assert result["checks"] == 2
     # A check queues no conversion.
     assert result["queued"] == 0
+
+
+# ----------------------------------------------------------------------
+# a run: Verify, last check times, Findings, the notification
+# ----------------------------------------------------------------------
+
+
+@pytest.fixture(name="verifier")
+def _verifier(monkeypatch):
+    """chdman's Verify stubbed: ``verdicts[name]`` is the result for that file.
+
+    The binary is the only thing stubbed; the run goes through the tool's own
+    ``verify`` call. A file with no verdict passes.
+    """
+    verdicts: dict[str, dict] = {}
+    calls: list[str] = []
+    tool = registry.get("chdman")
+
+    async def verify(path, *, cancel_event=None):
+        name = Path(path).name
+        calls.append(name)
+        return verdicts.get(name, {"valid": True, "message": "Intact"})
+
+    async def bound(path, *, cancel_event=None):
+        return 0
+
+    monkeypatch.setattr(tool, "verify", verify)
+    monkeypatch.setattr(tool, "verify_timeout", bound)
+    return verdicts, calls
+
+
+@pytest.fixture(name="sent")
+def _sent(monkeypatch):
+    """Every notification raised, by kind. Nothing leaves the process."""
+    from services import notifications
+
+    events: list = []
+    monkeypatch.setattr(notifications, "notify", events.append)
+    return events
+
+
+def _not_intact() -> list[dict]:
+    from services import findings
+
+    return [f for f in findings.list_findings(include_dismissed=True) if f["kind"] == "not_intact"]
+
+
+async def _run(library_id: str) -> dict:
+    from routes import libraries as routes
+    from services.rules import check
+
+    result = await routes.run_library(library_id)
+    await check.drain()
+    return result
+
+
+@pytest.mark.asyncio
+async def test_a_run_checks_the_picked_images_and_one_failure_makes_one_finding(
+    tree: Path, ready, verifier, sent,
+) -> None:
+    from services import image_checks
+
+    verdicts, calls = verifier
+    verdicts["Bolt.chd"] = {"valid": False, "message": "CHD hunk 12 CRC mismatch"}
+    lib = await _folder_library(tree, {"enabled": True, "check_budget_gb": 6})
+    _seed(lib, {"ps2/Aria.chd": 2, "ps2/Bolt.chd": 10, "ps2/Dune.chd": 1})
+    before = image_checks.last_checked(lib)
+
+    await _run(lib)
+
+    # The stalest two, through the tool's own Verify.
+    assert calls == ["Cove.chd", "Bolt.chd"]
+    after = image_checks.last_checked(lib)
+    # A pass and a fail both move the last check time; the rest stay.
+    assert after["ps2/Cove.chd"] > before["ps2/Bolt.chd"]
+    assert after["ps2/Bolt.chd"] > before["ps2/Bolt.chd"]
+    assert after["ps2/Aria.chd"] == before["ps2/Aria.chd"]
+    assert after["ps2/Dune.chd"] == before["ps2/Dune.chd"]
+    # One failure, one Finding.
+    (finding,) = _not_intact()
+    assert finding["image_key"] == "ps2/Bolt.chd"
+    assert finding["library_id"] == lib
+    assert "CRC mismatch" in finding["reason"]
+    # One "check failed" notification for the sweep, naming the Image.
+    (event,) = [e for e in sent if e.kind == "check_failed"]
+    assert "Bolt.chd" in event.body
+    assert [f["image"] for f in event.data["failed"]] == ["ps2/Bolt.chd"]

@@ -85,7 +85,13 @@ def _source_bytes(path: str) -> Optional[int]:
 _EXTERNAL_JOB_MODES = frozenset({
     ConversionMode.METADATA_SCAN,
     ConversionMode.DAT_MATCH,
+    ConversionMode.CHECK,
 })
+
+
+def is_external_mode(mode) -> bool:
+    """Whether *mode* names an externally-managed job, never a conversion."""
+    return mode in _EXTERNAL_JOB_MODES
 
 
 def _is_conversion_job(job) -> bool:
