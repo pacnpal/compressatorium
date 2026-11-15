@@ -266,7 +266,10 @@ async def test_passing_a_later_check_clears_the_finding(tree: Path, ready, verif
 @pytest.mark.parametrize("verdict", [
     {"valid": False, "inconclusive": True, "message": "chdman is not installed"},
     {"valid": False, "cancelled": True, "message": "Cancelled"},
-    RuntimeError("the verifier crashed"),
+    # Raised by the check: only #306's allowlist (the check could not run)
+    # is no verdict.
+    OSError("the file could not be opened"),
+    TimeoutError(),
 ])
 @pytest.mark.asyncio
 async def test_an_inconclusive_check_changes_nothing(
@@ -291,6 +294,25 @@ async def test_an_inconclusive_check_changes_nothing(
     assert "ps2/Cove.chd" not in image_checks.last_checked(lib)
     assert _not_intact() == []
     assert [e for e in sent if e.kind == "check_failed"] == []
+
+
+@pytest.mark.asyncio
+async def test_a_check_that_rejects_the_file_by_raising_is_a_verdict(
+    tree: Path, ready, verifier, sent, monkeypatch,
+) -> None:
+    """Outside #306's allowlist, an exception is the tool rejecting the data."""
+    async def rejects(path, *, cancel_event=None):
+        raise ValueError("bad CHD header")
+
+    monkeypatch.setattr(registry.get("chdman"), "verify", rejects)
+    lib = await _folder_library(tree, {"enabled": True, "check_budget_gb": 3})
+    _seed(lib, {"ps2/Aria.chd": 2, "ps2/Bolt.chd": 3, "ps2/Dune.chd": 1})
+
+    await _run(lib)
+
+    (finding,) = _not_intact()
+    assert finding["image_key"] == "ps2/Cove.chd"
+    assert "bad CHD header" in finding["reason"]
 
 
 @pytest.mark.asyncio
@@ -440,3 +462,56 @@ async def test_check_rules_work_on_a_romm_library(db: Path, ready, verifier, sen
     assert (finding["library_id"], finding["image_key"]) == ("romm", "2")
     (event,) = [e for e in sent if e.kind == "check_failed"]
     assert "Bolt.chd" in event.body
+
+
+# ----------------------------------------------------------------------
+# #306's verdict rules
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_verifier_killed_by_a_signal_leaves_no_finding_and_no_check_time(
+    tree: Path, ready, sent, monkeypatch,
+) -> None:
+    """The real chdman Verify path, its binary replaced by one that is killed."""
+    from services import image_checks
+
+    killed = tree.parent / "bin" / "chdman"
+    killed.parent.mkdir()
+    killed.write_text("#!/bin/sh\nkill -KILL $$\n")
+    killed.chmod(0o755)
+    monkeypatch.setattr(registry.get("chdman")._service, "chdman_path", str(killed))
+    lib = await _folder_library(tree, {"enabled": True, "check_budget_gb": 3})
+    _seed(lib, {"ps2/Aria.chd": 2, "ps2/Bolt.chd": 3, "ps2/Dune.chd": 1})
+
+    await _run(lib)
+
+    assert "ps2/Cove.chd" not in image_checks.last_checked(lib)
+    assert _not_intact() == []
+    assert [e for e in sent if e.kind == "check_failed"] == []
+
+
+@pytest.mark.asyncio
+async def test_an_archive_too_damaged_to_read_is_checked_and_not_intact(
+    db: Path, ready, sent,
+) -> None:
+    """romz claims a ``.zip`` it cannot open (``claims_check``), so it fails the check.
+
+    ``verifies_path`` alone would drop it as uncheckable, and the damage would
+    never show up.
+    """
+    roms = db / "roms"
+    broken = roms / "gba" / "Broken.zip"
+    broken.parent.mkdir(parents=True)
+    broken.write_bytes(b"PK\x03\x04" + b"\x00" * 60)
+    from routes import libraries as routes
+
+    created = await routes.register_library(routes.RegisterLibraryRequest(path=str(roms)))
+    await routes.put_library_rules(
+        created["id"], {"rules": {"gba": {"enabled": True, "check_budget_gb": 1}}},
+    )
+
+    await _run(created["id"])
+
+    (finding,) = _not_intact()
+    assert finding["image_key"] == "gba/Broken.zip"

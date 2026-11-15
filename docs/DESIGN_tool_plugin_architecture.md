@@ -2919,10 +2919,11 @@ result gains `checks` only when a check Rule ran, so a conversion sweep keeps
 its shape. A preview stops there.
 
 **Which tool.** `ToolRegistry.check_tool(path, slug)` is the first tool from
-`tools_verifying_path(path)` left after `narrow_to_platform(slug)`. A PS2 `.iso`
-is not given to dolphin-tool for sharing GameCube's extension; with nothing
-left the Image is uncheckable. No per-tool branching: a new tool's
-`verify_extensions`, `verifies_path` and `platform_slugs` are all a check needs.
+`tools_checking_path(path)` (#306's `claims_check`, so an archive too damaged
+to open is still claimed and fails) left after `narrow_to_platform(slug)`. A
+PS2 `.iso` is not given to dolphin-tool for sharing GameCube's extension; with
+nothing left the Image is uncheckable. No per-tool branching: a new tool's
+`verify_extensions`, `claims_check` and `platform_slugs` are all a check needs.
 
 **Run.** A real sweep passes everything every check Rule picked to
 `check.start` once, after its loop, so a sweep is one run, one external job
@@ -2936,10 +2937,13 @@ action. `check.outcome(result)` reads it:
 |---|---|---|
 | `valid` | Intact | `image_checks` row (`intact`), `verification_store.mark_verified`, `findings.resolve(not_intact)` |
 | not `valid` | not Intact | `image_checks` row (`not_intact`), `verification_store.clear`, `findings.observe(not_intact)` |
-| `inconclusive` or `abandoned` flag, a timeout, an exception from the tool | inconclusive | nothing |
+| `inconclusive` or `abandoned` flag (#306: a verifier killed by a signal via `verify_exit_event`; an allowlisted exception or a timeout via `verify_exception_event`) | inconclusive | nothing |
+| any other exception from the check (`verify_exception_event` reads it as the tool rejecting the data) | not Intact | as not `valid` |
 | `cancelled` | the run stops | nothing for that Image |
 
-An `abandoned` result also stops the run, as a batch Verify does. Cancel on the
+When `stops_verify_batch` says so (an `abandoned` result, or a read the
+check's `collect_abandonment` sink saw written off), the run stops, as a batch
+Verify does. Cancel on the
 job sets its cancel event, which the running verify honours. Every write is
 guarded by the Library's generation (`sweep.library_generation`), so a Library
 removed mid-run gets no rows, and `libraries.remove` drops its `image_checks`
@@ -2962,9 +2966,6 @@ the sweep's own `sweep_finished` message does not count it.
 **Ledger.** `ledger.record` skips external jobs (`job_manager.is_external_mode`):
 a metadata scan, a DAT match or a check run converts nothing.
 
-**Not yet.** #306's `claims_check` and `verify_exception_event` are not on this
-branch. Once they land, `check_tool` should read `tools_checking_path`, and the
-`inconclusive` flag those helpers set is already what `outcome` reads.
 
 ### 3.3.17 The headless CLI (`app/cli.py`, #306)
 

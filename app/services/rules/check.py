@@ -16,8 +16,9 @@ Verify action makes, on the same ``verify`` workload lane, bounded by the same
 * passed: the Image is Intact. Its last check time moves, its Verify record
   is written and a "not Intact" Finding it had is cleared;
 * failed: its last check time moves and it gets a "not Intact" Finding;
-* inconclusive (the check could not run, timed out or was cancelled): nothing
-  is written, so it stays as stale as it was and gets no Finding.
+* inconclusive (the check could not run, timed out, its verifier was killed by
+  a signal, or it was cancelled; #306's verdict rules decide): nothing is
+  written, so it stays as stale as it was and gets no Finding.
 
 A run with failures sends one ``check_failed`` notification listing them.
 Nothing here moves, renames or deletes an Image.
@@ -38,6 +39,11 @@ from services import findings, image_checks, notifications
 from services.image_sets import image_fingerprint
 from services.job_manager import job_manager
 from services.rules.library import Image, Library
+from services.subprocess_runner import (
+    collect_abandonment,
+    stops_verify_batch,
+    verify_exception_event,
+)
 from services.tools import registry
 from services.verification_store import verification_store
 from services.workload_limiter import workload_limiter
@@ -144,9 +150,10 @@ def outcome(result: dict) -> str:
     """What a Verify result says about the Image.
 
     ``cancelled`` proved nothing (the tool contract, issue #266). A result
-    flagged ``inconclusive`` (the check could not run) or ``abandoned`` (the
-    verifier outlived SIGKILL, so the storage is stuck) is no verdict either.
-    Otherwise ``valid`` decides.
+    #306 flags ``inconclusive`` (the check could not run: a verifier killed by
+    a signal through ``verify_exit_event``, an allowlisted exception through
+    ``verify_exception_event``, a timeout or stall) or ``abandoned`` (the
+    verifier outlived SIGKILL) is no verdict either. Otherwise ``valid`` decides.
     """
     if result.get("cancelled"):
         return CANCELLED
@@ -155,30 +162,33 @@ def outcome(result: dict) -> str:
     return INTACT if result.get("valid") else NOT_INTACT
 
 
-async def _verify(check: Check, cancel_event: asyncio.Event | None) -> tuple[str, str, dict]:
-    """Run the tool's Verify on one Image: ``(outcome, message, result)``.
+async def _verify(
+    check: Check, cancel_event: asyncio.Event | None,
+) -> tuple[str, str, bool]:
+    """Run the tool's Verify on one Image: ``(outcome, message, stop)``.
 
-    The same call, lane and bound as the Verify action. A timeout or an
-    exception escaping the tool is a check that could not finish: inconclusive.
+    The same call, lane and bound as the Verify action. An exception the check
+    raises (its bound expiring included) becomes a result through #306's
+    ``verify_exception_event``, whose allowlist decides whether it is a verdict
+    on the file. ``stop`` is #306's ``stops_verify_batch``: something is still
+    reading the storage, so the run must not open the next file.
     """
     tool = registry.get(check.tool_id)
     token = await workload_limiter.acquire("verify")
     async with token:
-        try:
-            bound = await tool.verify_timeout(check.path, cancel_event=cancel_event)
-            result = await asyncio.wait_for(
-                tool.verify(check.path, cancel_event=cancel_event), timeout=bound or None,
-            )
-        except asyncio.TimeoutError:
-            return INCONCLUSIVE, "The check did not finish in time", {}
-        except Exception as exc:
-            logger.warning(
-                "romm_auto: checking %s raised %s", check.path, type(exc).__name__,
-                exc_info=True,
-            )
-            return INCONCLUSIVE, f"The check could not run ({type(exc).__name__})", {}
+        with collect_abandonment() as abandoned:
+            try:
+                bound = await tool.verify_timeout(check.path, cancel_event=cancel_event)
+                result = await asyncio.wait_for(
+                    tool.verify(check.path, cancel_event=cancel_event), timeout=bound or None,
+                )
+            except Exception as exc:  # noqa: BLE001 - #306's allowlist sorts it
+                result = verify_exception_event(exc, prefix="The check raised")
     result = result if isinstance(result, dict) else {}
-    return outcome(result), str(result.get("message") or ""), result
+    return (
+        outcome(result), str(result.get("message") or ""),
+        stops_verify_batch(result, abandoned),
+    )
 
 
 def start(library: Library, picked: list[Check], *, generation: int) -> Any:
@@ -242,7 +252,7 @@ async def _run(library: Library, picked: list[Check], job_id: str, generation: i
                 message=f"Checking {index + 1} of {len(picked)}: {check.name}",
             )
             try:
-                verdict, message, result = await _verify(check, cancel_event)
+                verdict, message, stop = await _verify(check, cancel_event)
             finally:
                 _in_flight.discard((library.id, check.key))
             if verdict == CANCELLED:
@@ -257,7 +267,7 @@ async def _run(library: Library, picked: list[Check], job_id: str, generation: i
                 await verification_store.clear(check.path)
                 failed.append((check, message))
             await run_in_threadpool(_apply, library.id, check, verdict, message, current)
-            if result.get("abandoned"):
+            if stop:
                 # Something is still reading this storage; opening the next
                 # file would strand one more reader.
                 break
