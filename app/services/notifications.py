@@ -153,8 +153,11 @@ def _send_webhook(url: str, event: Event) -> None:
             "Host": parts.netloc.rsplit("@", 1)[-1],
         })
         response = conn.getresponse()
-        response.read(1024)
+        # Only the status matters, so the body is never read: after a
+        # `Connection: close` response http.client detaches the socket from
+        # `conn`, where the deadline's abort could not interrupt a slow body.
         status = response.status
+        response.close()
     except (OSError, http.client.HTTPException) as exc:
         if expired.is_set():
             raise NotificationError("The webhook did not finish in time") from None
