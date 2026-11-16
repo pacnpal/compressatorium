@@ -53,6 +53,39 @@ def check_output_conflicts(mode: str, output_path: str) -> tuple[bool, bool]:
     return exists, locked
 
 
+def _rename_parts(base_path: str, mode: str | None) -> tuple[Path, str, str]:
+    """``(folder, stem, suffix)`` the rename policy numbers ``<stem>_<N><suffix>``
+    from. A compound product extension (xiso's ``.xiso.iso``) must survive
+    intact: ``Game.xiso_1.iso`` would no longer match the tool's verify claim,
+    so the renamed output could never be verified. The stem before it is
+    numbered instead."""
+    path = Path(base_path)
+    stem, suffix, parent = path.stem, path.suffix, path.parent
+    output_ext = registry.spec(mode).output_ext if mode else None
+    if output_ext and output_ext.count(".") > 1 and path.name.lower().endswith(
+        output_ext.lower(),
+    ):
+        stem = path.name[: -len(output_ext)]
+        suffix = path.name[-len(output_ext):]
+    return parent, stem, suffix
+
+
+def is_renamed_from(candidate: str, base_path: str, mode: str | None = None) -> bool:
+    """Whether *candidate* is a name the rename policy gives *base_path*: the
+    numbered sibling ``<stem>_<N><suffix>`` in the same folder, N from 1 to
+    ``MAX_RENAME_ATTEMPTS``, the same derivation ``get_unique_output_path``
+    probes with. *base_path* itself is not one."""
+    parent, stem, suffix = _rename_parts(base_path, mode)
+    other = Path(candidate)
+    if other.parent != parent:
+        return False
+    name, prefix = other.name, f"{stem}_"
+    if not (name.startswith(prefix) and name.endswith(suffix)):
+        return False
+    number = name[len(prefix): len(name) - len(suffix)] if suffix else name[len(prefix):]
+    return number.isdigit() and 1 <= int(number) <= MAX_RENAME_ATTEMPTS
+
+
 def get_unique_output_path(base_path: str, mode: str | None = None) -> str:
     """Unique output path, appending ``_N`` until the file — and, when ``mode``
     is supplied, that mode's companion outputs — are all free.
@@ -81,17 +114,7 @@ def get_unique_output_path(base_path: str, mode: str | None = None) -> str:
     if lock_manager.is_within_locked_dir(base_path):
         raise OutputPathLocked(base_path)
 
-    path = Path(base_path)
-    stem, suffix, parent = path.stem, path.suffix, path.parent
-    # A compound product extension (xiso's ``.xiso.iso``) must survive intact:
-    # ``Game.xiso_1.iso`` would no longer match the tool's verify claim, so the
-    # renamed output could never be verified. Number the stem before it instead.
-    output_ext = registry.spec(mode).output_ext if mode else None
-    if output_ext and output_ext.count(".") > 1 and path.name.lower().endswith(
-        output_ext.lower(),
-    ):
-        stem = path.name[: -len(output_ext)]
-        suffix = path.name[-len(output_ext):]
+    parent, stem, suffix = _rename_parts(base_path, mode)
     for counter in range(1, MAX_RENAME_ATTEMPTS + 1):
         candidate = str(parent / f"{stem}_{counter}{suffix}")
         if not _taken(candidate):

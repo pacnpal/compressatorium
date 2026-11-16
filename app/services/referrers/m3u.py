@@ -399,9 +399,109 @@ def _raw_names_a_source(entry: str, playlist_dir: str, renames: _Renames) -> boo
     return identity is None and _named_file(entry) in renames.names
 
 
+# A BOM is the only safe way to know a playlist is UTF-16 (#334).
+_UTF16_BOMS = ((b"\xff\xfe", "utf-16-le"), (b"\xfe\xff", "utf-16-be"))
+
+
+def _rewrite_utf16(
+    playlist: str, data: bytes, bom: bytes, codec: str, playlist_dir: str,
+    renames: _Renames, *, strict: bool,
+) -> tuple[bytes, list[tuple[str, str]]] | None:
+    """Rewrite a UTF-16 playlist with a BOM the way a UTF-8 one is rewritten.
+
+    The text after the BOM is decoded strictly, run through the same rewrite
+    and read-back as a UTF-8 playlist, and encoded back with the same BOM and
+    byte order; its line endings are part of the text, so they come back too.
+    None when the text doesn't decode strictly (the caller's fail-safe for
+    undecodable playlists then applies).
+
+    One rule guards the readers that don't honour the BOM (a line reader can
+    see an 8-bit line appended to the file): the bytes that would be left on
+    disk, rewritten or not, are read back every way the checker knows (the
+    UTF-16 text, and the NUL-stripped bytes as UTF-8 and as cp1252). Each
+    reading goes through ``_text_reaches_replaced``, the same per-line check
+    ``_rewrite`` uses (parsed path, literal line, quoted form, label split).
+    If any reading still reaches a replaced file, the Source is kept.
+    """
+    try:
+        text = data[len(bom):].decode(codec)
+    except UnicodeDecodeError:
+        return None
+    # The UTF-8 stand-in gets a BOM of its own, so `_rewrite` strips exactly
+    # that one: a first filename that itself starts with U+FEFF stays part of
+    # the name for matching and read-back.
+    updated, edits = _rewrite(
+        playlist, _BOM + text.encode("utf-8"), playlist_dir, renames, strict=strict,
+    )
+    result = data
+    if edits:
+        try:
+            result = bom + updated[len(_BOM):].decode(*_ENC).encode(codec)
+        except UnicodeEncodeError as exc:
+            raise ReferrerError(playlist, "the new entry can't be written in UTF-16") from exc
+    stripped = result.replace(b"\x00", b"")
+    for reading in (result[len(bom):].decode(codec),
+                    stripped.decode("utf-8", errors="replace"),
+                    stripped.decode("cp1252", errors="replace")):
+        stale = _text_reaches_replaced(reading, playlist_dir, renames)
+        if stale is not None:
+            raise ReferrerError(
+                playlist, f"would still name {stale} when read another way",
+            )
+    return result, edits
+
+
+def _entry_reaches_replaced(
+    parsed: _Line, playlist_dir: str, renames: _Renames,
+) -> tuple[_Target | None, str | None]:
+    """Whether one entry line reaches a replaced file, by any reading a
+    player could use. The one checker: ``_rewrite`` uses it for every line,
+    and the UTF-16 path for every reading of its result.
+
+    Returns ``(target, name)``. ``target`` is set when the line's path (label
+    split, quotes dropped) resolves to a replaced file: that line can be
+    rewritten. ``name`` alone means another reading names or reaches one and
+    the line can't be rewritten safely: the path doesn't resolve but names a
+    replaced file, or the literal line (a plain line reader: no label split,
+    no unquoting) or the label-split path with its quotes kept (RetroArch)
+    reaches or names one. ``(None, None)``: no reading does."""
+    identity = file_identity(os.path.join(playlist_dir, parsed.posix))
+    target = renames.target_for(identity)
+    if target is not None:
+        return target, _named_file(parsed.path)
+    if identity is None and _named_file(parsed.path) in renames.names:
+        return None, _named_file(parsed.path)
+    if parsed.path != parsed.entry:
+        label_split = parsed.entry.partition("|")[0].rstrip(_WS)
+        for literal in dict.fromkeys((parsed.entry, label_split)):
+            if literal and _raw_names_a_source(literal, playlist_dir, renames):
+                return None, _named_file(literal)
+    return None, None
+
+
+def _text_reaches_replaced(text: str, playlist_dir: str, renames: _Renames) -> str | None:
+    """The first replaced file decoded playlist *text* still reaches, by any
+    reading of any entry line (``_entry_reaches_replaced``), or None."""
+    for line in re.split(r"\r\n|\r|\n", text):
+        parsed = _parse_line(line)
+        if parsed is None:
+            continue
+        target, name = _entry_reaches_replaced(parsed, playlist_dir, renames)
+        if target is not None or name is not None:
+            return name or "a replaced file"
+    return None
+
+
 def _rewrite(
     playlist: str, data: bytes, playlist_dir: str, renames: _Renames, *, strict: bool,
 ) -> tuple[bytes, list[tuple[str, str]]]:
+    for bom, codec in _UTF16_BOMS:
+        if data.startswith(bom):
+            done = _rewrite_utf16(
+                playlist, data, bom, codec, playlist_dir, renames, strict=strict,
+            )
+            if done is not None:
+                return done
     if _wide_text_check(playlist, data, renames):
         return data, []
     _legacy_text_check(playlist, data, renames)
@@ -419,22 +519,10 @@ def _rewrite(
             out.append(prefix + line)
             continue
         position += 1
-        identity = file_identity(os.path.join(playlist_dir, parsed.posix))
-        target = renames.target_for(identity)
+        target, named = _entry_reaches_replaced(parsed, playlist_dir, renames)
         if target is None:
-            named = None
-            if identity is None and _named_file(parsed.path) in renames.names:
-                named = _named_file(parsed.path)
-            elif parsed.path != parsed.entry:
-                # Other readers read this line differently: a plain line
-                # reader takes it whole; RetroArch splits the label but keeps
-                # quotes. If either reaches or names a replaced file, the
-                # label/quote reading doesn't, so don't guess: keep the Source.
-                label_split = parsed.entry.partition("|")[0].rstrip(_WS)
-                for literal in dict.fromkeys((parsed.entry, label_split)):
-                    if literal and _raw_names_a_source(literal, playlist_dir, renames):
-                        named = _named_file(literal)
-                        break
+            # Another reading names or reaches a replaced file but this one
+            # can't be rewritten: don't guess, keep the Source.
             if named is not None:
                 raise ReferrerError(
                     playlist, f"line {number} names {named} but doesn't point at it",

@@ -8,13 +8,18 @@ branch on a Referrer's identity: they ask for every Referrer's planned change
 
 from __future__ import annotations
 
+import asyncio
 import os
 import threading
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from logging_setup import get_logger
-from services.subprocess_runner import ReadCancelled, run_detached_within_stall_bound
+from services.subprocess_runner import (
+    ReadCancelled,
+    run_detached,
+    run_detached_within_stall_bound,
+)
 from utils.path_utils import file_identity
 
 from .base import (
@@ -166,6 +171,7 @@ def _plan_and_apply(image_path: str, renames: Mapping[str, str]) -> ReferrerOutc
 
 async def update_before_source_removal(
     image_path: str, renames: Mapping[str, str], *, cancel_event=None,
+    bound: float | None = None,
 ) -> ReferrerOutcome:
     """Run every Referrer for an Image whose Source is about to be removed.
 
@@ -183,6 +189,15 @@ async def update_before_source_removal(
     """
     abandoned = threading.Event()
     try:
+        if bound is not None:
+            # A caller with its own, tighter bound (a retried delete, #329).
+            return await asyncio.wait_for(
+                run_detached(
+                    _update_sync, image_path, dict(renames), abandoned,
+                    cancel_event=cancel_event,
+                ),
+                bound,
+            )
         return await run_detached_within_stall_bound(
             _update_sync, image_path, dict(renames), abandoned,
             what="Updating playlists", cancel_event=cancel_event,
