@@ -29,6 +29,7 @@ Two declarations (#383), checked when the Referrer is registered:
 
 from __future__ import annotations
 
+import contextvars
 import os
 import threading
 from abc import ABC, abstractmethod
@@ -147,25 +148,41 @@ class WriteGuard:
                 )
 
 
-_guard = threading.local()
+# The guard ``check_write`` consults. A context variable, not thread-local
+# state, so one mechanism covers both kinds of apply (codex 4588646144): the
+# hook's worker thread sets it for its plain applies, and each async apply's
+# task runs in a context that holds it (``guarded_context``).
+_guard: contextvars.ContextVar[WriteGuard | None] = contextvars.ContextVar(
+    "referrer_write_guard", default=None,
+)
 
 
 @contextmanager
 def write_guard(guard: WriteGuard):
-    """Make *guard* the one ``check_write`` consults on this thread."""
-    previous = getattr(_guard, "current", None)
-    _guard.current = guard
+    """Make *guard* the one ``check_write`` consults in this context."""
+    token = _guard.set(guard)
     try:
         yield guard
     finally:
-        _guard.current = previous
+        _guard.reset(token)
+
+
+def guarded_context(guard: WriteGuard) -> contextvars.Context:
+    """A copy of the current context in which ``check_write`` consults
+    *guard*: an async apply's task runs in it."""
+    context = contextvars.copy_context()
+    context.run(_guard.set, guard)
+    return context
 
 
 def check_write(target: str) -> None:
     """Raise ReferrerError unless writing *target* is still allowed. Call it
     under the target's lock, right before each write. A no-op outside the hook
-    (planning, or a caller that writes a new playlist)."""
-    guard = getattr(_guard, "current", None)
+    (planning, or a caller that writes a new playlist).
+
+    It stats each output, so an async apply on a slow mount calls it off the
+    loop with its context (``asyncio.to_thread`` copies it)."""
+    guard = _guard.get()
     if guard is not None:
         guard.check(target)
 

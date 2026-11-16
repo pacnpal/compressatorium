@@ -93,6 +93,7 @@ def reset_for_tests() -> None:
 
     with _lock:
         _cache = None
+        _canonical_roots.clear()
     platform_mappings.reset_for_tests()
 
 
@@ -214,23 +215,53 @@ def get(library_id: str) -> Library | None:
 def library_for(path: str) -> Library | None:
     """The Library whose root holds *path*, or None when no Library does (#383).
 
-    *path* is resolved; each root is compared as stored, which is already
-    resolved (registration and RomM's settings save resolve it), so no other
-    Library's mount is touched. Roots never overlap, so at most one matches.
-    With no database open only RomM is asked (:func:`without_a_database`).
+    Canonical against canonical: *path* is resolved, and so is each root, once
+    (:func:`_canonical_root`, cached), so a root reached through a symlink (a
+    symlinked ``ROMM_LIBRARY_ROOT``) still holds its Images (codex
+    4588646131). Roots never overlap, so at most one matches. With no
+    database open only RomM is asked (:func:`without_a_database`).
 
-    Blocking (resolves *path*, reads the folder Libraries on first use);
-    callers run it off the event loop, bounded. A failed read raises: the
-    Referrer hook then can't tell which opt-in Referrers apply, and the
-    caller keeps the Source.
+    Blocking (resolves *path*, a root the first time, reads the folder
+    Libraries on first use); callers run it off the event loop, bounded. A
+    failed read raises: the Referrer hook then can't tell which opt-in
+    Referrers apply, and the caller keeps the Source.
     """
     target = _resolved(path)
     candidates = without_a_database() if _db.SessionLocal is None else all_libraries()
     for library in candidates:
         root = library.root
-        if root and target.is_relative_to(Path(root)):
+        if root and target.is_relative_to(_canonical_root(root)):
             return library
     return None
+
+
+# Each Library root as stored -> its canonical path, for `library_for`, so a
+# lookup doesn't resolve every Library's mount. A folder root never changes
+# once registered; RomM's may (and so may where its symlink points), so the
+# cache is dropped whenever RomM's settings are saved.
+_canonical_roots: dict[str, Path] = {}
+_canonical_generation: int | None = None
+
+
+def _canonical_root(root: str) -> Path:
+    """*root* resolved, cached until RomM's settings are next saved. Blocking
+    the first time; a root that can't be resolved raises and isn't cached."""
+    global _canonical_generation
+    from services.romm import settings as romm_settings
+
+    generation = romm_settings.save_generation()
+    with _lock:
+        if _canonical_generation != generation:
+            _canonical_roots.clear()
+            _canonical_generation = generation
+        cached = _canonical_roots.get(root)
+    if cached is not None:
+        return cached
+    canonical = Path(root).resolve()
+    with _lock:
+        if _canonical_generation == generation:
+            _canonical_roots[root] = canonical
+    return canonical
 
 
 def _record_id(library_id: str) -> int | None:

@@ -3580,9 +3580,12 @@ to the output that replaces it (a `.cue` and its `.bin` tracks all map to the
 
 **The Library, opt-in and phases (#383).** Both entry points take the Image's
 Library: `libraries.library_for(path)` resolves the path and returns the
-Library whose stored (already resolved) root holds it, or None. It never
-resolves another Library's root, so a dead RomM mount isn't touched to place a
-file in a folder Library; with no database open only RomM is asked. Callers
+Library whose root holds it, or None, comparing canonical against canonical.
+Each root is resolved once (`_canonical_root`) and cached, so a symlinked
+`ROMM_LIBRARY_ROOT` still holds its Images and a lookup doesn't resolve every
+Library's mount; the cache is dropped whenever RomM's settings are saved
+(`romm.settings.save_generation()`), since its root, or where its symlink
+points, may have moved. With no database open only RomM is asked. Callers
 run it off the loop, bounded: the job through `JobManager._image_library` (a
 delete-step probe, so a lookup that times out or fails refuses the delete and
 removes nothing), the delete-plan route through `off_loop_bounded` (a failure
@@ -3606,9 +3609,16 @@ detached thread as before. Its async applies wait in `ReferrerOutcome.pending`
 and run after the thread returns, on the event loop, one at a time
 (`_await_bounded`): each is raced against the job's `cancel_event` and
 bounded by the hook's bound (`bound`, else `conversion_stall_bound()`). Past
-the bound or on a Cancel the apply is cancelled at its next `await` (never
-abandoned on a thread) and fails with "did not answer within Ns" or
-"cancelled", which keeps the Source. A network Referrer therefore never holds
+the bound or on a Cancel the apply's task is cancelled, then awaited for up to
+`CANCEL_GRACE_SECONDS` (5 s) so its cleanup can finish; it fails with "did not
+answer within Ns" or "cancelled", which keeps the Source. One still running
+after the grace is treated like an abandoned mutation
+(`run_detached_mutation`): its record is `abandoned`, the task goes to
+`ReferrerOutcome.lingering` (kept referenced until it ends, and its end, an
+exception included, logged), and the job hands it its delete holds and
+travelling locks through `ReferrerOutcome.outlive(release)`, which lets them
+go from the last lingering task's done callback, never earlier. A network
+Referrer therefore never holds
 the loop: its blocking work goes in `plan` or a plain `apply` (the thread), and
 its network calls in an async `apply` (the loop).
 
@@ -3653,10 +3663,17 @@ The package exposes the registry and two entry points:
   locks: on a timeout or a Cancel the thread is abandoned and the outcome keeps
   the Source with the reason, recording one `failed` entry per Referrer of that
   phase (target the Image; the outcome's target is the phase's
-  `Phase.target`, "playlists" for the file phase) so the Ledger row says why. An abandoned thread can't write late:
+  `Phase.target`, "playlists" for the file phase) so the Ledger row says why.
+  An abandoned thread can't write late:
   `_update_sync` runs under a `base.WriteGuard` holding an `abandoned` event
-  (set by the hook on a timeout or Cancel) and each output's identity
-  (`st_dev`, `st_ino`, size, `mtime_ns`) captured when the hook started.
+  (set by the hook on a timeout or Cancel, on any failed outcome, and when the
+  hook's own awaiter is cancelled mid-phase, before the cancel propagates) and
+  each output's identity (`st_dev`, `st_ino`, size, `mtime_ns`) captured when
+  the phase started. The guard lives in a `contextvars.ContextVar`
+  (`base.write_guard`), not thread-local state, so it reaches both kinds of
+  apply: the worker thread sets it for its plain applies, and each async
+  apply's task runs in `base.guarded_context(guard)`, so a `check_write` after
+  an `await` refuses an output replaced meanwhile, as the thread's does.
   `apply` passes `base.check_write` as the `guard` of `atomic_write_bytes`,
   which runs it under the playlist's lock after the temp file is written and
   synced, immediately before `os.replace` publishes it (backup and playlist).

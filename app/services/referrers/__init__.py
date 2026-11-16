@@ -16,7 +16,7 @@ import asyncio
 import inspect
 import os
 import threading
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 
 from logging_setup import get_logger
@@ -35,6 +35,7 @@ from .base import (
     ReferrerError,
     WriteGuard,
     atomic_write_bytes,
+    guarded_context,
     write_guard,
     write_new_bytes,
 )
@@ -122,10 +123,14 @@ class ReferrerOutcome:
     """What the hook did.
 
     ``records`` has one entry per Referrer target, in order:
-    ``{"referrer", "target", "status": "updated" | "failed" | "skipped"}``,
-    plus ``"reason"`` for failed and skipped ones. It is what the Ledger's
-    ``referrers_updated`` column stores. ``failed``/``reason`` name the first
-    failure, which is why the Source was kept.
+    ``{"referrer", "target", "status": "updated" | "failed" | "skipped" |
+    "abandoned"}``, plus ``"reason"`` for all but updated ones. It is what the
+    Ledger's ``referrers_updated`` column stores. ``failed``/``reason`` name
+    the first failure, which is why the Source was kept.
+
+    ``lingering`` holds the async applies that were cancelled and were still
+    cleaning up when the hook gave up on them ("abandoned"). The caller hands
+    them its holds with :meth:`outlive` instead of letting go itself.
     """
 
     records: list[dict] = field(default_factory=list)
@@ -135,6 +140,27 @@ class ReferrerOutcome:
     pending: list[tuple[Referrer, ReferrerChange]] = field(
         default_factory=list, repr=False, compare=False,
     )
+    # The phase's write guard, carried into its async applies' tasks.
+    guard: WriteGuard | None = field(default=None, repr=False, compare=False)
+    lingering: list[asyncio.Task] = field(default_factory=list, repr=False, compare=False)
+
+    def outlive(self, release: Callable[[], object]) -> None:
+        """Call *release* once every lingering apply has ended: at once when
+        none is lingering, else from the last one's done callback (on the
+        loop, so *release* must not block). Like ``run_detached_mutation``'s
+        hand-off: whoever runs last lets go."""
+        remaining = set(self.lingering)
+        if not remaining:
+            release()
+            return
+
+        def ended(task: asyncio.Task) -> None:
+            remaining.discard(task)
+            if not remaining:
+                release()
+
+        for task in self.lingering:
+            task.add_done_callback(ended)
 
     @property
     def ok(self) -> bool:
@@ -187,7 +213,9 @@ def _update_sync(
     if referrers is None:
         referrers = registry.active(None)
     with write_guard(guard):
-        return _plan_and_apply(image_path, renames, referrers)
+        outcome = _plan_and_apply(image_path, renames, referrers)
+    outcome.guard = guard
+    return outcome
 
 
 def _is_async(referrer: Referrer) -> bool:
@@ -248,40 +276,100 @@ def _limit(bound: float | None) -> float | None:
     return limit if limit > 0 else None
 
 
+# How long a cancelled async apply gets to finish its cleanup before the hook
+# stops waiting and hands it the caller's holds (codex 4588646155).
+CANCEL_GRACE_SECONDS = 5.0
+
+
+class _Abandoned(ReferrerError):
+    """An async apply was cancelled and was still cleaning up after the grace."""
+
+    def __init__(self, target: str, reason: str, task: asyncio.Task) -> None:
+        super().__init__(target, reason)
+        self.task = task
+
+
+# Applies nobody awaits any more, kept referenced until they end: the loop
+# holds only weak references to tasks, and one collected mid-cleanup would
+# never run its `finally` nor release the holds handed to it.
+_unawaited: set[asyncio.Task] = set()
+
+
+def _let_it_end(task: asyncio.Task, referrer_id: str, target: str) -> None:
+    """Keep *task* alive until it ends, and log how it ended."""
+    _unawaited.add(task)
+    task.add_done_callback(_unawaited.discard)
+    task.add_done_callback(_log_its_end(referrer_id, target))
+
+
+def _log_its_end(referrer_id: str, target: str) -> Callable[[asyncio.Task], None]:
+    """A done callback that logs how an apply nobody awaits any more ended."""
+
+    def ended(task: asyncio.Task) -> None:
+        if task.cancelled() or task.exception() is None:
+            return
+        logger.warning(
+            "Referrer %s: the abandoned update of %s ended with an error",
+            referrer_id, target, exc_info=task.exception(),
+        )
+
+    return ended
+
+
 async def _await_bounded(
-    referrer: Referrer, change: ReferrerChange, *,
+    referrer: Referrer, change: ReferrerChange, *, guard: WriteGuard | None,
     cancel_event: asyncio.Event | None, bound: float | None,
 ) -> None:
     """Await an async apply on the loop, bounded and raced against Cancel.
 
-    Past the bound or on a Cancel the apply is cancelled (not abandoned: it
-    stops at its next ``await``) and ReferrerError names the target.
+    The apply's task runs in a context holding *guard*, so its ``check_write``
+    refuses as the thread's does. Past the bound or on a Cancel the apply is
+    cancelled and given ``CANCEL_GRACE_SECONDS`` to finish its cleanup; then
+    ReferrerError names the target. Still running after that, it raises
+    :class:`_Abandoned` carrying the task, whose end is logged whenever it
+    comes. A cancel of this awaiter cancels the apply and propagates.
     """
     if cancel_event is not None and cancel_event.is_set():
         raise ReferrerError(change.target, "cancelled")
     limit = _limit(bound)
-    task = asyncio.ensure_future(referrer.apply(change))
-    waiters = {task}
-    if cancel_event is not None:
-        waiters.add(asyncio.ensure_future(cancel_event.wait()))
+    task = asyncio.get_running_loop().create_task(
+        referrer.apply(change),
+        context=guarded_context(guard) if guard is not None else None,
+    )
+    stop = asyncio.ensure_future(cancel_event.wait()) if cancel_event is not None else None
     try:
         done, _ = await asyncio.wait(
-            waiters, timeout=limit, return_when=asyncio.FIRST_COMPLETED,
+            {task} if stop is None else {task, stop},
+            timeout=limit, return_when=asyncio.FIRST_COMPLETED,
         )
+        if task in done:
+            task.result()
+            return
+        reason = (
+            "cancelled" if cancel_event is not None and cancel_event.is_set()
+            else f"did not answer within {limit:g}s"
+        )
+        task.cancel()
+        finished, _ = await asyncio.wait({task}, timeout=CANCEL_GRACE_SECONDS)
+    except asyncio.CancelledError:
+        task.cancel()
+        _let_it_end(task, referrer.id, change.target)
+        raise
     finally:
-        for waiter in waiters:
-            waiter.cancel()
-    if task in done:
-        task.result()
-        return
-    if cancel_event is not None and cancel_event.is_set():
-        raise ReferrerError(change.target, "cancelled")
-    raise ReferrerError(change.target, f"did not answer within {limit:g}s")
+        if stop is not None:
+            stop.cancel()
+    if task not in finished:
+        _let_it_end(task, referrer.id, change.target)
+        raise _Abandoned(
+            change.target, f"{reason}; still cleaning up, so it was abandoned", task,
+        )
+    _log_its_end(referrer.id, change.target)(task)
+    raise ReferrerError(change.target, reason)
 
 
 async def _apply_pending(
     outcome: ReferrerOutcome, pending: list[tuple[Referrer, ReferrerChange]], *,
-    cancel_event: asyncio.Event | None, bound: float | None,
+    guard: WriteGuard | None, cancel_event: asyncio.Event | None, bound: float | None,
 ) -> None:
     """Apply a phase's async changes in order; the first failure stops it."""
     for referrer, change in pending:
@@ -289,7 +377,15 @@ async def _apply_pending(
             outcome._record(referrer.id, change.target, "skipped", _SKIPPED)
             continue
         try:
-            await _await_bounded(referrer, change, cancel_event=cancel_event, bound=bound)
+            await _await_bounded(
+                referrer, change, guard=guard, cancel_event=cancel_event, bound=bound,
+            )
+        except _Abandoned as exc:
+            logger.warning("Referrer %s: %s", referrer.id, exc)
+            outcome._record(referrer.id, exc.target, "abandoned", exc.reason)
+            outcome.failed, outcome.reason = exc.target, exc.reason
+            outcome.lingering.append(exc.task)
+            continue
         except Exception as exc:
             # Any failure keeps the Source, so the catch is deliberately broad.
             logger.warning(
@@ -351,7 +447,31 @@ async def update_before_source_removal(
         outcome._fail("library", exc, image_path)
         return outcome
     abandoned = threading.Event()
-    renames = dict(renames)
+    try:
+        await _run_phases(
+            outcome, phases, image_path, dict(renames), abandoned,
+            cancel_event=cancel_event, bound=bound,
+        )
+    except BaseException:
+        # This awaiter was cancelled (or worse) mid-phase: the detached worker,
+        # or an async apply's cleanup, may still run, and must write nothing
+        # more once the caller lets go of its locks (CodeRabbit 4588773569).
+        abandoned.set()
+        raise
+    if not outcome.ok:
+        # Whatever still runs (an abandoned thread, an apply cleaning up)
+        # writes nothing more.
+        abandoned.set()
+    return outcome
+
+
+async def _run_phases(
+    outcome: ReferrerOutcome, phases: list[list[Referrer]], image_path: str,
+    renames: dict[str, str], abandoned: threading.Event, *,
+    cancel_event, bound: float | None,
+) -> None:
+    """The hook's phase loop, filling *outcome*. Raises only on a cancel of
+    the awaiter, after setting *abandoned*."""
     for referrers in phases:
         if not outcome.ok:
             # A later phase never runs after an earlier one failed.
@@ -366,6 +486,10 @@ async def update_before_source_removal(
         except ReadCancelled:
             reason = "cancelled"
             logger.warning("Referrer hook for %s did not finish: cancelled", image_path)
+        except asyncio.CancelledError:
+            # The awaiter is cancelled; the detached worker keeps running.
+            abandoned.set()
+            raise
         except Exception as exc:
             # A timeout or anything else keeps the Source, so the catch is broad.
             reason = str(exc) or type(exc).__name__
@@ -376,7 +500,8 @@ async def update_before_source_removal(
             outcome.records.extend(stage.records)
             outcome.failed, outcome.reason = stage.failed, stage.reason
             await _apply_pending(
-                outcome, stage.pending, cancel_event=cancel_event, bound=bound,
+                outcome, stage.pending, guard=stage.guard,
+                cancel_event=cancel_event, bound=bound,
             )
             continue
         abandoned.set()
@@ -385,7 +510,6 @@ async def update_before_source_removal(
         for referrer in referrers:
             outcome._record(referrer.id, image_path, "failed", reason)
         outcome.failed, outcome.reason = referrers[0].phase.target, reason
-    return outcome
 
 
 async def plan_changes_bounded(

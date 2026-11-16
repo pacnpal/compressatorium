@@ -3381,6 +3381,18 @@ class JobManager:
             cancel_event=cancel_event,
             bound=probe_seconds,
         )
+        if referrer_outcome.lingering:
+            # An async apply was cancelled and is still cleaning up (codex
+            # 4588646155): like a mutation's worker, it owns the delete holds
+            # and the travelling locks from here, let go when it ends. The
+            # outcome failed, so the Source is kept below.
+            held = [
+                *self._delete_holds.pop(owner_id, []),
+                *(travelling_locks.take() if travelling_locks is not None else []),
+            ]
+            referrer_outcome.outlive(
+                lambda: self._spawn_background(self._let_go_in_background(held)),
+            )
         outcome = _SourceDelete(referrer_records=referrer_outcome.records)
         # The hook awaited a worker thread: re-ask cancel and every per-path
         # identity check before removing.

@@ -438,3 +438,194 @@ async def test_a_job_that_cant_tell_the_image_library_keeps_the_source(
     assert (volume / "Game (Disc 1).chd").is_file()
     assert job.deleted_paths == []
     assert "Library" in (job.error_message or job.message or "")
+
+
+# ---- review fixes (#395) ----------------------------------------------------
+
+
+def test_a_symlinked_romm_root_still_maps_its_images_to_romm(tmp_path, db, monkeypatch):
+    """codex 4588646131: the Image path is resolved, so the root must be too."""
+    from services import libraries
+    from services.romm import client as romm_client_module
+    from services.romm.library import romm_library
+
+    real = tmp_path / "romm-real"
+    real.mkdir()
+    link = tmp_path / "romm-link"
+    link.symlink_to(real)
+    monkeypatch.setattr(
+        type(romm_client_module.romm_client), "library_root",
+        property(lambda _self: str(link)),
+    )
+
+    assert libraries.library_for(str(link / "ps2" / "Ico.iso")) is romm_library
+    assert libraries.library_for(str(real / "ps2" / "Ico.iso")) is romm_library
+
+
+@pytest.mark.asyncio
+async def test_the_canonical_romm_root_is_kept_until_romm_settings_are_saved(
+    tmp_path, db, monkeypatch,
+):
+    from services import libraries
+    from services.romm import client as romm_client_module
+    from services.romm import settings as romm_settings
+    from services.romm.library import romm_library
+
+    first, second = tmp_path / "first", tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    link = tmp_path / "romm-link"
+    link.symlink_to(first)
+    monkeypatch.setattr(
+        type(romm_client_module.romm_client), "library_root",
+        property(lambda _self: str(link)),
+    )
+    assert libraries.library_for(str(first / "Game.iso")) is romm_library
+    link.unlink()
+    link.symlink_to(second)
+
+    # Not resolved again on every lookup...
+    assert libraries.library_for(str(first / "Game.iso")) is romm_library
+    # ...but a save of RomM's settings refreshes it.
+    await romm_settings.save({})
+    assert libraries.library_for(str(first / "Game.iso")) is None
+    assert libraries.library_for(str(second / "Game.iso")) is romm_library
+
+
+class _CheckingAsyncFake(_AsyncFake):
+    """Awaits, then checks the write guard before writing, as a real one would."""
+
+    async def apply(self, change: ReferrerChange) -> None:
+        from services.referrers.base import check_write
+
+        self._log.append(("apply", self.id))
+        await self.gate.wait()
+        check_write(change.target)
+        self._log.append(("wrote", self.id))
+
+
+@pytest.mark.asyncio
+async def test_an_async_apply_keeps_the_write_guard(tmp_path, fakes):
+    """codex 4588646144: an output replaced during the await is refused."""
+    log: list = []
+    network = _CheckingAsyncFake("network", log, phase=Phase.NETWORK, gate=asyncio.Event())
+    fakes.register(network)
+    image, renames = _renames(tmp_path)
+    output = Path(next(iter(renames.values())))
+
+    hook = asyncio.create_task(referrers.update_before_source_removal(image, renames))
+    while ("apply", "network") not in log:
+        await asyncio.sleep(0.01)
+    output.unlink()
+    output.write_bytes(b"another disc altogether")
+    network.gate.set()
+    outcome = await asyncio.wait_for(hook, 5)
+
+    assert not outcome.ok
+    assert "changed after its check" in outcome.reason
+    assert ("wrote", "network") not in log
+
+
+class _SlowCleanupFake(_AsyncFake):
+    """Never answers; its cleanup takes a while, then fails."""
+
+    def __init__(self, *a, cleanup: asyncio.Event, **kw) -> None:
+        super().__init__(*a, **kw)
+        self.cleanup = cleanup
+
+    async def apply(self, change: ReferrerChange) -> None:
+        self._log.append(("apply", self.id))
+        try:
+            await asyncio.Event().wait()
+        finally:
+            await self.cleanup.wait()
+            raise RuntimeError("cleanup broke")
+
+
+@pytest.mark.asyncio
+async def test_an_apply_still_cleaning_up_holds_the_caller_locks_until_it_ends(
+    tmp_path, fakes, monkeypatch, caplog,
+):
+    """codex 4588646155: a cancelled apply is waited for briefly; one still
+    running is abandoned, keeps the Source, and owns the holds until it ends."""
+    monkeypatch.setattr(referrers, "CANCEL_GRACE_SECONDS", 0.05)
+    log: list = []
+    cleanup = asyncio.Event()
+    fakes.register(_SlowCleanupFake("network", log, phase=Phase.NETWORK, cleanup=cleanup))
+    image, renames = _renames(tmp_path)
+    released = asyncio.Event()
+
+    outcome = await referrers.update_before_source_removal(image, renames, bound=0.1)
+    outcome.outlive(released.set)
+
+    assert not outcome.ok
+    assert [r["status"] for r in outcome.records] == ["abandoned"]
+    await asyncio.sleep(0.1)
+    assert not released.is_set()
+    cleanup.set()
+    await asyncio.wait_for(released.wait(), 5)
+    await asyncio.sleep(0)
+    assert "cleanup broke" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_job_keeps_its_holds_while_an_abandoned_apply_cleans_up(
+    volume, fakes, monkeypatch,
+):
+    from services.lock_manager import lock_manager
+
+    monkeypatch.setattr(referrers, "CANCEL_GRACE_SECONDS", 0.05)
+    monkeypatch.setattr(referrers, "conversion_stall_bound", lambda: 0.1)
+    log: list = []
+    cleanup = asyncio.Event()
+    fakes.register(_SlowCleanupFake("network", log, phase=Phase.NETWORK, cleanup=cleanup))
+    source = volume / "Game (Disc 1).cue"
+
+    job = await convert_routes.create_job(JobCreateRequest(
+        file_path=str(source), mode=ConversionMode.CREATECD,
+        duplicate_action=DuplicateAction.SKIP, delete_on_verify=True,
+        container_only=CONTAINER_ONLY,
+    ))
+    await convert_routes.job_manager._process_job(job.id)
+
+    assert source.is_file()
+    assert job.deleted_paths == []
+    assert lock_manager.is_locked(str(source))
+    cleanup.set()
+    for _ in range(200):
+        if not lock_manager.is_locked(str(source)):
+            break
+        await asyncio.sleep(0.02)
+    assert not lock_manager.is_locked(str(source))
+
+
+@pytest.mark.asyncio
+async def test_cancelling_the_hook_mid_phase_stops_the_worker_writing(tmp_path, fakes):
+    """CodeRabbit 4588773569: a cancelled awaiter must abandon the thread."""
+    from services.referrers.base import check_write
+
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+    wrote: list = []
+
+    class Stuck(_Fake):
+        def apply(self, change):
+            entered.set()
+            release.wait(10)
+            try:
+                check_write(change.target)
+                wrote.append(change.target)
+            finally:
+                finished.set()
+
+    fakes.register(Stuck("file", []))
+    image, renames = _renames(tmp_path)
+
+    hook = asyncio.create_task(referrers.update_before_source_removal(image, renames))
+    assert await asyncio.to_thread(entered.wait, 5)
+    hook.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await hook
+    release.set()
+    assert await asyncio.to_thread(finished.wait, 5)
+
+    assert wrote == []
