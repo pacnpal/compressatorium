@@ -12,6 +12,7 @@ and a large tree that keeps moving is never cut off.
 from __future__ import annotations
 
 import asyncio
+import io
 import logging
 import os
 import threading
@@ -416,6 +417,108 @@ async def test_an_archive_member_check_that_blocks_ends_at_the_bound(
         assert await _answer_of(call) == 503
     finally:
         release.set()
+
+
+class _PacedFile:
+    """An archive on a slow but healthy mount: bytes arrive at a steady
+    pace (each small read well inside the bound, a whole member table past
+    it). With ``gate``, the first read blocks with no bytes instead."""
+
+    PER_KIB = 0.02  # seconds per KiB read
+
+    def __init__(self, real, gate=None):
+        self._real, self._gate = real, gate
+
+    def _pace(self, count):
+        if self._gate is not None:
+            self._gate.wait(60)
+        time.sleep(count / 1024 * self.PER_KIB)
+
+    def read(self, size=-1):
+        data = self._real.read(size)
+        self._pace(len(data))
+        return data
+
+    def readinto(self, buffer):
+        count = self._real.readinto(buffer)
+        self._pace(count or 0)
+        return count
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        self._real.close()
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+def _paced_archives(monkeypatch, gate=None):
+    """``io.open`` hands out paced files for ``Pack.zip``; returns the real
+    file's reads that went through the wrapper's bounded chunks."""
+    from utils import path_utils
+
+    real_open = io.open
+    monkeypatch.setattr(path_utils, "READ_CHUNK", 4096, raising=False)
+
+    def paced_open(file, *args, **kwargs):
+        handle = real_open(file, *args, **kwargs)
+        if isinstance(file, (str, os.PathLike)) and os.fspath(file).endswith("Pack.zip"):
+            return _PacedFile(handle, gate)
+        return handle
+
+    monkeypatch.setattr(io, "open", paced_open)
+
+
+MEMBERS = 800       # about 46 KiB of member table: ~0.9 s at the pace above
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", ["list", "search"])
+async def test_an_archive_whose_member_table_streams_slowly_is_not_cut_off(
+    tmp_path, files_env, monkeypatch, route,
+):
+    from services import archive_members
+
+    archive_members.clear_cache()
+    archive = _big_archive(tmp_path / "Packs", count=MEMBERS)
+    _paced_archives(monkeypatch)
+    if route == "list":
+        call = files_env.list_files(
+            path=str(archive.parent), show_archives=True, summarize_archives=True,
+        )
+    else:
+        call = files_env.search_files(
+            path=str(archive.parent), recursive=True, include_archives=True,
+        )
+
+    assert await _answer_of(call) == 200
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", ["list", "search"])
+async def test_an_archive_read_that_blocks_with_no_bytes_ends_at_the_bound(
+    tmp_path, files_env, monkeypatch, route,
+):
+    from services import archive_members
+
+    archive_members.clear_cache()
+    archive = _big_archive(tmp_path / "Packs", count=2)
+    gate = threading.Event()
+    _paced_archives(monkeypatch, gate)
+    if route == "list":
+        call = files_env.list_files(
+            path=str(archive.parent), show_archives=True, summarize_archives=True,
+        )
+    else:
+        call = files_env.search_files(
+            path=str(archive.parent), recursive=True, include_archives=True,
+        )
+    try:
+        assert await _answer_of(call) == 503
+    finally:
+        gate.set()
 
 
 # --- the shared helper ---------------------------------------------------------

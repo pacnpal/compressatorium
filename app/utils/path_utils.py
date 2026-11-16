@@ -4,6 +4,7 @@ import ctypes
 import errno
 import functools
 import hashlib
+import io
 import os
 import secrets
 import stat
@@ -857,6 +858,61 @@ def is_safe_directory_tree(path: str) -> bool:
             # something the traversal already guarantees.
 
     return not walk_errors
+
+
+# The most one read through ``open_reporting_reads`` asks the file for, so
+# one call never blocks for a whole member table and each chunk that
+# arrives is reported (#361).
+READ_CHUNK = 64 * 1024
+
+
+class _ReportingReader(io.RawIOBase):
+    """A read-only raw file that calls ``progress()`` each time bytes arrive."""
+
+    def __init__(self, raw: io.RawIOBase, progress: Callable[..., None]) -> None:
+        super().__init__()
+        self._raw = raw
+        self._progress = progress
+
+    def readable(self) -> bool:
+        return True
+
+    def seekable(self) -> bool:
+        return True
+
+    def readinto(self, buffer) -> int:
+        count = self._raw.readinto(memoryview(buffer)[:READ_CHUNK])
+        if count:
+            self._progress()
+        return count or 0
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET) -> int:
+        position = self._raw.seek(offset, whence)
+        self._progress()
+        return position
+
+    def tell(self) -> int:
+        return self._raw.tell()
+
+    def close(self) -> None:
+        if not self.closed:
+            self._raw.close()
+        super().close()
+
+
+def open_reporting_reads(path: str, progress: Callable[..., None]) -> io.BufferedReader:
+    """*path* opened for reading, calling ``progress()`` whenever bytes arrive.
+
+    A read-only binary file (``zipfile``, ``py7zr`` and ``rarfile`` all take
+    one) that asks the OS for at most :data:`READ_CHUNK` bytes per read and
+    reports every read that returns data, and every seek. Under a
+    stall-bounded caller (``run_detached_within_stall_bound(
+    report_progress=True)``), a large archive's member table streaming in
+    from a slow but healthy mount keeps the clock moving, while a read that
+    returns nothing ends at the bound (#361). The caller closes it. Blocking.
+    """
+    raw = io.open(path, "rb", buffering=0)
+    return io.BufferedReader(_ReportingReader(raw, progress), buffer_size=READ_CHUNK)
 
 
 def list_folder(path: str, progress: Callable[..., None] | None = None) -> list[str]:

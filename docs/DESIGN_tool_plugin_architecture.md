@@ -636,10 +636,24 @@ sees an entry, so a huge folder on a slow but healthy mount would pass the
 bound while still reading. `utils.path_utils.list_folder(path, progress)` is
 the one-folder form (`os.scandir`, one report per entry, sorted afterwards so
 order is unchanged), and `folder_has_entries(path)` answers "is it empty" by
-reading at most one entry. The same goes for per-item work inside a listing:
-each archive member a listing or search checks (`_summarize_archive(path,
-progress)`, `scan_tree`'s member loop) is one report, so one large archive
-does not look like a stall. Progress callers:
+reading at most one entry. Reading a file under the clock reports bytes as
+they arrive, not loop iterations: `utils.path_utils.open_reporting_reads(path,
+progress)` is a read-only binary file (a `BufferedReader` over a raw reader)
+that asks the OS for at most `READ_CHUNK` (64 KiB) per read and reports every
+read that returns data, and every seek. `zipfile`, `py7zr` and `rarfile` take
+it as their file, so an archive's member table streaming in from a slow but
+healthy mount keeps the clock moving, and a read that returns nothing ends at
+the bound. `services.archive_members.read_archive_members(path, progress)`
+opens the archive through it when given a callback (a cached answer reads
+nothing), and `ArchiveService.list_archive_contents(..., progress=...)`,
+`_summarize_archive(path, progress)` and `scan_tree` pass the listing's
+callback down. No archive is listed through a subprocess, so there are no
+output lines to report. Callers without a callback (romz's gate, the
+`/archive-summary` batch, the CLI) are unchanged. Separate from the bytes,
+each archive member a listing or search checks is one report, because those
+checks stat sibling outputs after the read. `scan_tree` lists an archive
+before its Verify gate reads it, so that gate is served from the warmed
+member cache. Progress callers:
 - The metadata scan's file listing (`routes/info.py`, `_WALK_STALL_SECONDS`).
   A stall ends the scan as failed, with a warning naming the folder, and frees
   `_is_scanning` and the `metadata_scan` lane, so a later scan can start.

@@ -265,7 +265,7 @@ def _summarize_archive(
     """
     tick = progress or (lambda *_args: None)
     archive_result = archive_service.list_archive_contents(
-        item_path, include_meta=True,
+        item_path, include_meta=True, progress=progress,
     )
     contents = archive_result["entries"]
     archive_dir = os.path.dirname(item_path)
@@ -712,6 +712,20 @@ def scan_tree(
                                 },
                             )
                         elif include_archive_scan and is_archive:
+                            # List archive contents first, reporting each
+                            # chunk as it arrives (#361): it also warms the
+                            # shared member cache the Verify gate below reads.
+                            # Search surfaces
+                            # convertible hits, so gate to the convert-gate
+                            # subset (not the wider browse listing): that
+                            # both drops list-only members (a romz ROM is
+                            # browse-only) and keeps them from consuming the
+                            # per-archive entry cap ahead of a genuine
+                            # convertible member.
+                            archive_result = archive_service.list_archive_contents(
+                                item_path, include_meta=True,
+                                convertible_only=True, progress=progress,
+                            )
                             # Emit the archive container itself so modes that
                             # take an archive directly (e.g. romz_extract on
                             # .7z/.zip) can select it from recursive search;
@@ -737,17 +751,6 @@ def scan_tree(
                                     # every archive container.
                                     "verifiable_by": claims(item_path),
                                 },
-                            )
-                            # List archive contents. Search surfaces
-                            # convertible hits, so gate to the convert-gate
-                            # subset (not the wider browse listing): that
-                            # both drops list-only members (a romz ROM is
-                            # browse-only) and keeps them from consuming the
-                            # per-archive entry cap ahead of a genuine
-                            # convertible member.
-                            archive_result = archive_service.list_archive_contents(
-                                item_path, include_meta=True,
-                                convertible_only=True,
                             )
                             archive_contents = archive_result["entries"]
                             if archive_result["truncated"]:
