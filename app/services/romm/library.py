@@ -21,6 +21,7 @@ from services.romm import repin as romm_repin
 from services.romm import settings as romm_settings
 from services.rules.library import (
     CONVERTED_HISTORY,
+    ES_FRONTEND_REFERRER,
     RECOGNIZED_FILTER,
     Image,
     LibraryDefaults,
@@ -185,6 +186,14 @@ class RommLibrary(LibraryDefaults):
             "still owed; the previous instance's history is still live",
         )
         return "identity_cleanup_pending"
+
+    def referrer_enabled(self, referrer_id: str) -> bool:
+        """The gamelist.xml Referrer is on when RomM's settings say the library
+        is used by an EmulationStation frontend (#386); every other opt-in one
+        is off. Reads the settings in memory."""
+        return referrer_id == ES_FRONTEND_REFERRER and bool(
+            romm_settings.effective().get("es_frontend"),
+        )
 
     def summary_fields(self) -> dict[str, Any]:
         return {"repins_recorded": 0}

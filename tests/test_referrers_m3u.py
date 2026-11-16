@@ -119,9 +119,10 @@ async def test_playlist_follows_the_converted_disc(volume):
     # One-time backup of the playlist as it was.
     assert (volume / "Game.m3u.bak").read_bytes() == M3U
     # The Ledger row names the Referrer that was updated.
-    assert ledger.row_from_job(job)["referrers_updated"] == [
-        {"referrer": "m3u", "target": str(volume / "Game.m3u"), "status": "updated"},
-    ]
+    assert ledger.row_from_job(job)["referrers_updated"] == [{
+        "referrer": "m3u", "target": str(volume / "Game.m3u"), "status": "updated",
+        "entries": 1,
+    }]
 
 
 @pytest.mark.asyncio
@@ -217,6 +218,7 @@ async def test_delete_confirmation_lists_the_playlist_change(volume):
     assert plan["items"][0]["referrer_changes"] == [{
         "referrer": "m3u",
         "target": str(volume / "Game.m3u"),
+        "entries": 1,
         "edits": [{"old": "Game (Disc 1).cue", "new": "Game (Disc 1).chd"}],
     }]
     # Planning writes nothing.

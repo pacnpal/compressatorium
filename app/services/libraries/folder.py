@@ -71,6 +71,7 @@ from services import findings, image_sets, platform_detect
 from services.platform_detect import CONFLICT, Detection
 from services.platform_mappings import MappingsUnavailable
 from services.rules.library import (
+    ES_FRONTEND_REFERRER,
     FAILED_HOLD,
     RECOGNIZED_FILTER,
     Image,
@@ -212,6 +213,7 @@ class FolderLibrary(LibraryDefaults):
     def __init__(
         self, *, record_id: int, root: str, name: str,
         schedule_enabled: bool = False, max_per_sweep: int = 25,
+        es_frontend: bool = False,
     ) -> None:
         self.record_id = record_id
         self.id = f"{ID_PREFIX}{record_id}"
@@ -219,6 +221,9 @@ class FolderLibrary(LibraryDefaults):
         self.name = name
         self._schedule_enabled = schedule_enabled
         self._max_per_sweep = max_per_sweep
+        # Used by an EmulationStation frontend (#386): turns the gamelist.xml
+        # Referrer on for this Library's Images.
+        self._es_frontend = bool(es_frontend)
         # Held for a whole walk. Only ever acquired without blocking (`scan`).
         self._lock = threading.Lock()
         self._scan: Scan | None = None
@@ -254,7 +259,7 @@ class FolderLibrary(LibraryDefaults):
 
     def apply_settings(
         self, *, name: str | None = None, schedule_enabled: bool | None = None,
-        max_per_sweep: int | None = None,
+        max_per_sweep: int | None = None, es_frontend: bool | None = None,
     ) -> None:
         """Change this Library's settings in place. Never waits for a walk."""
         if name is not None:
@@ -263,6 +268,13 @@ class FolderLibrary(LibraryDefaults):
             self._schedule_enabled = bool(schedule_enabled)
         if max_per_sweep is not None:
             self._max_per_sweep = int(max_per_sweep)
+        if es_frontend is not None:
+            self._es_frontend = bool(es_frontend)
+
+    def referrer_enabled(self, referrer_id: str) -> bool:
+        """The gamelist.xml Referrer is on when the Library is used by an
+        EmulationStation frontend (#386); every other opt-in one is off."""
+        return referrer_id == ES_FRONTEND_REFERRER and self._es_frontend
 
     def is_current(self) -> bool:
         """Still a registered Library (#303's token). Asked under the Findings store's lock."""

@@ -4,7 +4,7 @@ The duplicate finder's content key per file, tied to its size and mtime, and
 each Library's last find-duplicates run (#388).
 
 Revision ID: 0017
-Revises: 0015 (re-pointed to #399's 0016 once it lands on latest)
+Revises: 0016
 Create Date: 2026-11-16 00:00:00
 """
 
@@ -16,7 +16,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = '0017'
-down_revision: str | Sequence[str] | None = '0015'
+down_revision: str | Sequence[str] | None = '0016'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

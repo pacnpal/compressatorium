@@ -50,6 +50,8 @@ class UpdateLibraryRequest(BaseModel):
     name: str | None = None
     schedule_enabled: bool | None = None
     max_per_sweep: int | None = Field(default=None, ge=1)
+    # Used by an EmulationStation frontend: conversions update gamelist.xml (#386).
+    es_frontend: bool | None = None
 
 
 class SweepRequest(BaseModel):
@@ -98,7 +100,8 @@ async def register_library(payload: RegisterLibraryRequest) -> dict:
 
 @router.patch("/libraries/{library_id}")
 async def update_library(library_id: str, payload: UpdateLibraryRequest) -> dict:
-    """Rename a folder Library, or change its schedule switch or sweep limit.
+    """Rename a folder Library, or change its schedule switch, sweep limit or
+    "used by an EmulationStation frontend" switch.
 
     RomM's equivalents live in its own settings (``/api/romm/settings``).
     """
@@ -109,6 +112,7 @@ async def update_library(library_id: str, payload: UpdateLibraryRequest) -> dict
             library_id, name=payload.name,
             schedule_enabled=payload.schedule_enabled,
             max_per_sweep=payload.max_per_sweep,
+            es_frontend=payload.es_frontend,
         ),
     )
     if library is None:

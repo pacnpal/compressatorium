@@ -1850,8 +1850,8 @@ def test_the_folder_libraries_migration_stacks_on_the_ledger_totals_one(tmp_path
     engine = _db.make_engine(str(tmp_path / "chain.db"))
     cfg = _db._alembic_config(engine)
     script = ScriptDirectory.from_config(cfg)
-    # #304's 0013 stacks on this 0012, #305's 0014 on that and #337's 0015 on
-    # that, then #388's 0017: one head, 0017.
+    # #304's 0013 stacks on this 0012, #305's 0014 on that, #337's 0015 on
+    # that, #386's 0016 on that and #388's 0017 on that: one head, 0017.
     assert script.get_heads() == ["0017"]
     assert script.get_revision("0012").down_revision == "0011"
     assert script.get_revision("0011").down_revision == "0010"

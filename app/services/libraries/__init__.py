@@ -30,7 +30,7 @@ from logging_setup import get_logger
 from services import db as _db
 from services.job_manager import VOLUME_PROBE_TIMEOUT_SECONDS
 from services.libraries.folder import ID_PREFIX, FolderLibrary
-from services.rules.library import Library, duplicate_actions
+from services.rules.library import ES_FRONTEND_REFERRER, Library, duplicate_actions
 from services.subprocess_runner import ProbeCapacityExceeded, run_detached
 from sqlalchemy.exc import IntegrityError
 from utils.path_utils import ensure_path_within_volumes
@@ -108,6 +108,7 @@ def _from_row(row: _db.FolderLibraryRecord) -> FolderLibrary:
         record_id=row.id, root=row.root, name=row.name,
         schedule_enabled=bool(row.schedule_enabled),
         max_per_sweep=int(row.max_per_sweep),
+        es_frontend=bool(row.es_frontend),
     )
 
 
@@ -470,6 +471,7 @@ def register(path: str, name: str | None = None) -> FolderLibrary:
 def update(
     library_id: str, *, name: str | None = None,
     schedule_enabled: bool | None = None, max_per_sweep: int | None = None,
+    es_frontend: bool | None = None,
 ) -> FolderLibrary | None:
     """Change a folder Library's name or settings. None when there is no such Library.
 
@@ -498,9 +500,12 @@ def update(
                 row.schedule_enabled = bool(schedule_enabled)
             if max_per_sweep is not None:
                 row.max_per_sweep = max_per_sweep
+            if es_frontend is not None:
+                row.es_frontend = bool(es_frontend)
             session.commit()
         library.apply_settings(
             name=label, schedule_enabled=schedule_enabled, max_per_sweep=max_per_sweep,
+            es_frontend=es_frontend,
         )
     return library
 
@@ -546,4 +551,6 @@ def describe(library: Library) -> dict[str, Any]:
         "duplicate_actions": list(duplicate_actions(library)),
         "schedule_enabled": library.schedule_enabled(),
         "max_per_sweep": library.max_per_sweep(),
+        # Used by an EmulationStation frontend: conversions update gamelist.xml (#386).
+        "es_frontend": library.referrer_enabled(ES_FRONTEND_REFERRER) is True,
     }

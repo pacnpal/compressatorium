@@ -40,69 +40,36 @@ both land, in one process or two (a CLI run beside the server).
 
 from __future__ import annotations
 
-import functools
 import os
 import re
-import threading
 import unicodedata
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
-from services.lock_manager import LockWaitTimeout, lock_manager
-from utils.path_utils import (
-    FileIdentity,
-    file_identity,
-    lock_boundary_root,
-    same_identity,
-    volume_containment,
-)
+from utils.path_utils import file_identity
 
-from .base import (
-    Phase,
-    Referrer,
-    ReferrerChange,
-    ReferrerError,
-    atomic_write_bytes,
-    check_write,
+from .base import Phase, Referrer, ReferrerChange, ReferrerError
+from .files import (
+    Renames,
+    Target,
+    dirs_for,
+    fold,
+    may_read,
+    named_file,
+    points_at,
+    rewrite_in_place,
+    search_dirs,
+    target_lock,
 )
+from .files import read_target as _read
 
 PLAYLIST_EXT = ".m3u"
 # How long ``apply`` waits for another process to finish rewriting the same
 # playlist. Inside the hook the wait also ends as soon as the job stops waiting
 # (``check_write``), so it never outlasts the hook's own deadline.
 PLAYLIST_LOCK_WAIT_SECONDS = 30.0
-BACKUP_SUFFIX = ".bak"
 _BOM = b"\xef\xbb\xbf"
 _ENC = ("utf-8", "surrogateescape")
-
-# One lock per resolved playlist path, held across read-rewrite-write.
-# ponytail: entries are never removed; one small lock per playlist ever touched.
-_locks: dict[str, threading.Lock] = {}
-_locks_guard = threading.Lock()
-
-
-def _playlist_lock(path: str) -> threading.Lock:
-    key = os.path.realpath(path)
-    with _locks_guard:
-        return _locks.setdefault(key, threading.Lock())
-
-
-@dataclass(frozen=True)
-class _Target:
-    old_dir: str  # resolved folder of the replaced file
-    new: str      # resolved output path
-
-
-@dataclass(frozen=True)
-class _Renames:
-    # Each replaced file's identity and where it goes. Matched with
-    # `same_identity`, which tolerates the unstable inodes of FUSE/SMB mounts.
-    replaced: tuple[tuple[FileIdentity, _Target], ...]
-    names: frozenset[str]  # casefolded file names of the replaced files
-
-    def target_for(self, identity: FileIdentity | None) -> _Target | None:
-        """The rename for the file *identity* is, if it is a replaced file."""
-        return next((t for old, t in self.replaced if same_identity(identity, old)), None)
 
 
 def _playlists(directory: str) -> list[str]:
@@ -116,44 +83,7 @@ def _playlists(directory: str) -> list[str]:
         return []
 
 
-def _search_dirs(path: str) -> list[str]:
-    """*path*'s resolved folder and each folder above it up to its Volume root.
-
-    Raises ReferrerError when the Volume boundary can't be determined (the
-    fresh root probe failed or went over its bound): the folders above could
-    hold a playlist naming the Source, so it must be kept.
-    """
-    start = os.path.dirname(os.path.realpath(path))
-    boundary = lock_boundary_root(start)
-    if boundary is None:
-        raise ReferrerError(
-            start, "can't confirm its Volume boundary, so the playlists above it weren't checked",
-        )
-    root = str(boundary)
-    dirs = [start]
-    if not (start == root or start.startswith(root.rstrip(os.sep) + os.sep)):
-        return dirs
-    current = start
-    while current != root:
-        parent = os.path.dirname(current)
-        if parent == current:
-            break
-        current = parent
-        dirs.append(current)
-    return dirs
-
-
-def _fold(name: str) -> str:
-    """Compare file names as a person would: same Unicode form, any case."""
-    return unicodedata.normalize("NFC", name).casefold()
-
-
-def _named_file(path: str) -> str:
-    """The file name a (label- and quote-free) entry path names, for comparing."""
-    return _fold(re.split(r"[\\/]", path)[-1])
-
-
-def _new_entry(posix_entry: str, target: _Target) -> list[str]:
+def _new_entry(posix_entry: str, target: Target) -> list[str]:
     """Candidate new entries, preferred first: the entry's own folder part plus
     the step from the replaced file's folder to the output. When the output is
     in another folder the tidy (normalised) form comes first, then the literal
@@ -248,7 +178,7 @@ def _variants(candidate: str, backslashed: bool) -> list[str]:
 
 
 def _choose_entry(
-    candidates: list[str], backslashed: bool, playlist_dir: str, target: _Target,
+    candidates: list[str], backslashed: bool, playlist_dir: str, target: Target,
     render: Callable[[str], bytes], first: bool, strict: bool,
 ) -> str | None:
     """The first way of writing a candidate that a reader reads back, from its
@@ -259,7 +189,7 @@ def _choose_entry(
             if any(unicodedata.category(ch) == "Cc" for ch in written):
                 continue
             parsed = _read_line(render(written), first)
-            if parsed is not None and _points_at(
+            if parsed is not None and points_at(
                 playlist_dir, parsed.posix, target, strict=strict,
             ):
                 return written
@@ -271,7 +201,7 @@ def entry_for(playlist_dir: str, path: str, *, first_line: bool) -> str | None:
     to *path*, or None if it can't be written as one line. For code that
     writes new playlists, so they encode entries exactly as the Referrer does."""
     real_dir = os.path.realpath(playlist_dir)
-    target = _Target(real_dir, os.path.realpath(path))
+    target = Target(real_dir, os.path.realpath(path))
     step = os.path.relpath(target.new, real_dir)
     return _choose_entry(
         [step], False, real_dir, target, lambda e: e.encode(*_ENC), first_line,
@@ -288,23 +218,6 @@ def playlist_bytes(lines: list[str]) -> bytes:
     if entries(data) != lines:
         raise ValueError("an entry would not read back as written")
     return data
-
-
-def _points_at(playlist_dir: str, entry: str, target: _Target, *, strict: bool) -> bool:
-    """Whether *entry*, read from *playlist_dir*, reaches the output.
-
-    *strict* (applying a change) requires the output to exist, so a late,
-    abandoned apply can't point a playlist at an output removed meanwhile.
-    Otherwise (the delete confirmation, planning before the output exists) the
-    resolved paths are compared.
-    """
-    path = os.path.join(playlist_dir, entry)
-    output = file_identity(target.new)
-    if output is not None:
-        return same_identity(file_identity(path), output)
-    if strict:
-        return False
-    return os.path.realpath(path) == target.new
 
 
 def _utf16_encoding(data: bytes) -> str | None:
@@ -325,7 +238,7 @@ def _utf16_encoding(data: bytes) -> str | None:
     return None
 
 
-def _wide_text_check(playlist: str, data: bytes, renames: _Renames) -> bool:
+def _wide_text_check(playlist: str, data: bytes, renames: Renames) -> bool:
     """For a playlist that isn't plain 8-bit text (UTF-16, or any NUL byte):
     it is never rewritten. Raise if any reading of it could name a replaced
     file, so the Source is kept; return True (leave it alone) otherwise.
@@ -360,7 +273,7 @@ def _wide_text_check(playlist: str, data: bytes, renames: _Renames) -> bool:
         ("UTF-16", data.decode("utf-16-be", errors="replace")),
     ]
     for kind, text in readings:
-        folded = _fold(text)
+        folded = fold(text)
         mention = next((n for n in sorted(renames.names) if n and n in folded), None)
         if mention:
             raise ReferrerError(
@@ -369,7 +282,7 @@ def _wide_text_check(playlist: str, data: bytes, renames: _Renames) -> bool:
     return True
 
 
-def _legacy_text_check(playlist: str, data: bytes, renames: _Renames) -> None:
+def _legacy_text_check(playlist: str, data: bytes, renames: Renames) -> None:
     """A playlist that isn't valid UTF-8 (Windows-1252, Latin-1) can't be
     matched reliably by name. Read it as cp1252 only to look for a replaced
     file's name; if any entry could name one, keep the Source rather than
@@ -383,21 +296,21 @@ def _legacy_text_check(playlist: str, data: bytes, renames: _Renames) -> None:
     text = data.removeprefix(_BOM).decode("cp1252", errors="replace")
     for line in text.splitlines():
         parsed = _parse_line(line)
-        if parsed is not None and _named_file(parsed.path) in renames.names:
+        if parsed is not None and named_file(parsed.path) in renames.names:
             raise ReferrerError(
                 playlist,
-                f"playlist isn't UTF-8 and may name this disc ({_named_file(parsed.path)})",
+                f"playlist isn't UTF-8 and may name this disc ({named_file(parsed.path)})",
             )
 
 
-def _raw_names_a_source(entry: str, playlist_dir: str, renames: _Renames) -> bool:
+def _raw_names_a_source(entry: str, playlist_dir: str, renames: Renames) -> bool:
     """Whether the whole trimmed *entry*, read literally (label and quotes
     kept), reaches or names a replaced file."""
     posix = entry.replace("\\", "/") if "\\" in entry and "/" not in entry else entry
     identity = file_identity(os.path.join(playlist_dir, posix))
     if identity is not None and renames.target_for(identity) is not None:
         return True
-    return identity is None and _named_file(entry) in renames.names
+    return identity is None and named_file(entry) in renames.names
 
 
 # A BOM is the only safe way to know a playlist is UTF-16 (#334).
@@ -406,7 +319,7 @@ _UTF16_BOMS = ((b"\xff\xfe", "utf-16-le"), (b"\xfe\xff", "utf-16-be"))
 
 def _rewrite_utf16(
     playlist: str, data: bytes, bom: bytes, codec: str, playlist_dir: str,
-    renames: _Renames, *, strict: bool,
+    renames: Renames, *, strict: bool,
 ) -> tuple[bytes, list[tuple[str, str]]] | None:
     """Rewrite a UTF-16 playlist with a BOM the way a UTF-8 one is rewritten.
 
@@ -453,8 +366,8 @@ def _rewrite_utf16(
 
 
 def _entry_reaches_replaced(
-    parsed: _Line, playlist_dir: str, renames: _Renames,
-) -> tuple[_Target | None, str | None]:
+    parsed: _Line, playlist_dir: str, renames: Renames,
+) -> tuple[Target | None, str | None]:
     """Whether one entry line reaches a replaced file, by any reading a
     player could use. The one checker: ``_rewrite`` uses it for every line,
     and the UTF-16 path for every reading of its result.
@@ -469,18 +382,18 @@ def _entry_reaches_replaced(
     identity = file_identity(os.path.join(playlist_dir, parsed.posix))
     target = renames.target_for(identity)
     if target is not None:
-        return target, _named_file(parsed.path)
-    if identity is None and _named_file(parsed.path) in renames.names:
-        return None, _named_file(parsed.path)
+        return target, named_file(parsed.path)
+    if identity is None and named_file(parsed.path) in renames.names:
+        return None, named_file(parsed.path)
     if parsed.path != parsed.entry:
         label_split = parsed.entry.partition("|")[0].rstrip(_WS)
         for literal in dict.fromkeys((parsed.entry, label_split)):
             if literal and _raw_names_a_source(literal, playlist_dir, renames):
-                return None, _named_file(literal)
+                return None, named_file(literal)
     return None, None
 
 
-def _text_reaches_replaced(text: str, playlist_dir: str, renames: _Renames) -> str | None:
+def _text_reaches_replaced(text: str, playlist_dir: str, renames: Renames) -> str | None:
     """The first replaced file decoded playlist *text* still reaches, by any
     reading of any entry line (``_entry_reaches_replaced``), or None."""
     for line in re.split(r"\r\n|\r|\n", text):
@@ -494,7 +407,7 @@ def _text_reaches_replaced(text: str, playlist_dir: str, renames: _Renames) -> s
 
 
 def _rewrite(
-    playlist: str, data: bytes, playlist_dir: str, renames: _Renames, *, strict: bool,
+    playlist: str, data: bytes, playlist_dir: str, renames: Renames, *, strict: bool,
 ) -> tuple[bytes, list[tuple[str, str]]]:
     for bom, codec in _UTF16_BOMS:
         if data.startswith(bom):
@@ -508,7 +421,7 @@ def _rewrite(
     _legacy_text_check(playlist, data, renames)
     out: list[bytes] = []
     edits: list[tuple[str, str]] = []
-    rewritten: dict[int, _Target] = {}  # entry position -> where it must point
+    rewritten: dict[int, Target] = {}  # entry position -> where it must point
     position = -1
     for number, line in enumerate(data.splitlines(keepends=True), start=1):
         first = number == 1
@@ -550,27 +463,19 @@ def _rewrite(
 
 def _check_read_back(
     playlist: str, playlist_dir: str, before: bytes, after: bytes,
-    rewritten: dict[int, _Target], strict: bool,
+    rewritten: dict[int, Target], strict: bool,
 ) -> None:
     """Parse the bytes about to be written the way _rewrite reads them: the
     same number of entries, every untouched one unchanged, and every rewritten
     one, at its position, reaching the output. Anything else keeps the Source."""
     old, new = entries(before), entries(after)
     ok = len(old) == len(new) and all(
-        _points_at(playlist_dir, new[i], rewritten[i], strict=strict) if i in rewritten
+        points_at(playlist_dir, new[i], rewritten[i], strict=strict) if i in rewritten
         else new[i] == old[i]
         for i in range(len(new))
     )
     if not ok:
         raise ReferrerError(playlist, "the rewritten playlist wouldn't read back to the output")
-
-
-def _read(path: str) -> bytes:
-    try:
-        with open(path, "rb") as f:
-            return f.read()
-    except OSError as exc:
-        raise ReferrerError(path, f"can't read: {exc.strerror}") from exc
 
 
 class M3uReferrer(Referrer):
@@ -580,48 +485,21 @@ class M3uReferrer(Referrer):
     phase = Phase.FILE
 
     def detect(self, image_path: str) -> bool:
-        return any(_playlists(d) for d in _search_dirs(image_path))
+        return any(_playlists(d) for d in search_dirs(image_path))
 
     def plan(self, renames: Mapping[str, str]) -> list[ReferrerChange]:
-        replaced: list[tuple[FileIdentity, _Target]] = []
-        dirs: list[str] = []
-        for old, new in renames.items():
-            identity = file_identity(old)
-            if identity is not None:
-                replaced.append((identity, _Target(
-                    os.path.realpath(os.path.dirname(old)), os.path.realpath(new),
-                )))
-            for d in _search_dirs(old):
-                if d not in dirs:
-                    dirs.append(d)
         # Names as written and as a reader trims them, so a leading ASCII
         # space doesn't hide a mention.
-        targets = _Renames(tuple(replaced), frozenset(
-            _fold(name)
-            for old in renames
-            for name in (os.path.basename(old), os.path.basename(old).strip(_WS))
-            if name
-        ))
+        targets = Renames.of(renames, lambda name: (name, name.strip(_WS)))
         changes = []
-        for directory in dirs:
+        for directory in dirs_for(renames):
             for playlist in _playlists(directory):
-                # Never read through a link (it may lead out of the Volumes);
-                # fail closed so the Source is kept.
-                if os.path.islink(playlist):
-                    raise ReferrerError(playlist, "is a symlink")
                 # The walk's upper limit may come from a cached root spelling
-                # (right for lock probing). Which playlists we read and write
-                # is decided against the Volumes as they are now: one that is
-                # confirmed outside them is left alone; one we can't tell about
-                # (a root probe failed) keeps the Source.
-                inside = volume_containment(playlist, treat_archives=False)
-                if inside is None:
-                    raise ReferrerError(
-                        playlist, "can't confirm it is inside the configured Volumes",
-                    )
-                if not inside:
+                # (right for lock probing); `may_read` decides against the
+                # Volumes as they are now.
+                if not may_read(playlist):
                     continue
-                with _playlist_lock(playlist):
+                with target_lock(playlist):
                     _, edits = _rewrite(
                         playlist, _read(playlist), directory, targets, strict=False,
                     )
@@ -635,45 +513,12 @@ class M3uReferrer(Referrer):
     def apply(self, change: ReferrerChange) -> None:
         path = change.target
         directory, targets = change.payload
-        if os.path.islink(path):
-            raise ReferrerError(path, "is a symlink")
-        # Checked again right before writing, against the Volumes as they are
-        # now: a playlist that has left them since planning is not written.
-        # (It was planned because it named the Source, so the Source is kept.)
-        # Outside and "couldn't tell" both refuse.
-        if volume_containment(path, treat_archives=False) is not True:
-            raise ReferrerError(path, "isn't confirmed inside the configured Volumes")
-        if not os.access(path, os.W_OK):
-            raise ReferrerError(path, "is read-only")
-        # Threads here take the in-process lock; other processes (a CLI run
-        # beside the server, #306) the cross-process Referrer lock, held over
-        # the whole read, rewrite and replace so no update is lost.
-        with _playlist_lock(path):
-            try:
-                with lock_manager.referrer_lock(
-                    path, wait=PLAYLIST_LOCK_WAIT_SECONDS,
-                    keep_waiting=lambda: check_write(path),
-                ):
-                    self._apply_locked(path, directory, targets)
-            except LockWaitTimeout as exc:
-                raise ReferrerError(path, "is being updated by another job") from exc
 
-    @staticmethod
-    def _apply_locked(path: str, directory: str, targets: _Renames) -> None:
-        """Read, rewrite and replace, under both playlist locks."""
-        original = _read(path)
-        # strict: the output must exist now, however late this runs.
-        updated, edits = _rewrite(path, original, directory, targets, strict=True)
-        if not edits:
-            return
-        try:
-            backup = path + BACKUP_SUFFIX
-            # The guard runs right before each file is published, after
-            # its temp copy is synced: a write that stalled while the job
-            # gave up (or the output changed) never lands.
-            publish_ok = functools.partial(check_write, path)
-            if not os.path.lexists(backup):
-                atomic_write_bytes(backup, original, like=path, guard=publish_ok)
-            atomic_write_bytes(path, updated, guard=publish_ok)
-        except OSError as exc:
-            raise ReferrerError(path, exc.strerror or str(exc)) from exc
+        def rewrite(original: bytes) -> bytes | None:
+            # strict: the output must exist now, however late this runs.
+            updated, edits = _rewrite(path, original, directory, targets, strict=True)
+            return updated if edits else None
+
+        # `_read` is looked up here, on every apply, so a patched reader
+        # (the cross-process test's slow read) is the one used.
+        rewrite_in_place(path, rewrite, read=_read, wait=PLAYLIST_LOCK_WAIT_SECONDS)

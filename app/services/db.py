@@ -328,6 +328,9 @@ class FolderLibraryRecord(Base):
     # The most one sweep of this Library may queue, over all its Platforms.
     max_per_sweep = Column(Integer, nullable=False, default=25)
     created_at = Column(String, nullable=False)
+    # Used by an EmulationStation frontend (#386): conversions rewrite the
+    # matching <path> in the Platform folder's gamelist.xml. Off by default.
+    es_frontend = Column(Boolean, nullable=False, default=False, server_default=text("0"))
 
 
 class PlatformMappingRecord(Base):

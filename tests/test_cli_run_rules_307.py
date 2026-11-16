@@ -41,6 +41,11 @@ class _Shelf:
     async def before_pass(self, *, dry_run: bool) -> None:
         self.calls.append(("before_pass", dry_run))
 
+    def referrer_enabled(self, referrer_id: str) -> bool:
+        # The Library protocol's answer (#383): no opt-in Referrer, such as
+        # gamelist.xml (#386), is on for this Library.
+        return False
+
     def configured(self):
         if self.broken:
             raise RuntimeError("database is locked")

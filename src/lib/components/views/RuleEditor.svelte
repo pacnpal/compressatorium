@@ -61,6 +61,17 @@
     return n === 1 ? '1 rule' : `${n} rules`;
   }
   const autoOn = $derived(source.scheduleEnabled);
+  const esOn = $derived(source.esFrontend);
+
+  /** The Library's "used by an EmulationStation frontend" switch (#386). */
+  async function toggleEsFrontend(enabled) {
+    try {
+      await source.setEsFrontend(enabled);
+      toast.success(enabled ? 'Conversions now update gamelist.xml' : 'gamelist.xml is left alone');
+    } catch (e) {
+      toast.error(e?.message ?? 'Failed to save');
+    }
+  }
 
   // SvelteSet: mutation must be reactive so an expanded row re-renders.
   const expanded = new SvelteSet();
@@ -474,6 +485,26 @@
         Preview
       </Button>
       <Button onclick={runNow} loading={source.sweeping} icon={playIcon}>Run now</Button>
+    </div>
+  </section>
+
+  <section class="master frontend">
+    <div class="master-text">
+      <h2>EmulationStation frontend</h2>
+      <p>
+        For ES-DE, Batocera, Knulli or muOS. When a conversion replaces a file, the
+        matching entry in the Platform folder's <code>gamelist.xml</code> is pointed at
+        the new file before the old one is deleted, so its artwork, favourite and play
+        count stay. A one-time <code>gamelist.xml.bak</code> is kept. Close ES-DE first:
+        it rewrites its gamelist when it exits, which would undo the change.
+      </p>
+    </div>
+    <div class="master-actions">
+      <Checkbox
+        checked={esOn}
+        label="Used by an EmulationStation frontend"
+        onchange={(v) => toggleEsFrontend(v)}
+      />
     </div>
   </section>
 

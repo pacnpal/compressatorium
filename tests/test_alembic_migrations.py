@@ -177,7 +177,7 @@ def test_0014_stacks_on_0013_and_walks_up_from_an_empty_database(fresh_db_path: 
     engine = _db.make_engine(fresh_db_path)
     cfg = _db._alembic_config(engine)
     script = ScriptDirectory.from_config(cfg)
-    # #388's 0017 sits on top; see test_0017_adds_the_content_keys.
+    # #386's 0016 sits on 0015 and #388's 0017 on that; see their own tests below.
     assert script.get_heads() == ["0017"]
     assert script.get_revision("0014").down_revision == "0013"
     assert script.get_revision("0013").down_revision == "0012"
@@ -231,17 +231,42 @@ def test_0015_adds_the_re_pin_plan_generation(fresh_db_path: str):
     assert _current_rev(engine) == "0015"
 
 
+def test_0016_adds_the_es_frontend_switch_off_by_default(fresh_db_path: str):
+    """#386's 0016, on 0015: a folder Library's "used by an EmulationStation
+    frontend" switch. A Library registered before it reads as off."""
+    from alembic import command
+    from alembic.script import ScriptDirectory
+
+    engine = _db.make_engine(fresh_db_path)
+    cfg = _db._alembic_config(engine)
+    assert ScriptDirectory.from_config(cfg).get_revision("0016").down_revision == "0015"
+
+    command.upgrade(cfg, "0015")
+    with engine.begin() as conn:
+        conn.exec_driver_sql(
+            "INSERT INTO folder_libraries (root, name, schedule_enabled, max_per_sweep, "
+            "created_at) VALUES ('/roms', 'Roms', 0, 25, '2026-11-16T00:00:00Z')",
+        )
+    command.upgrade(cfg, "0016")
+
+    columns = {c["name"]: c for c in inspect(engine).get_columns("folder_libraries")}
+    assert columns["es_frontend"]["nullable"] is False
+    with engine.connect() as conn:
+        assert conn.exec_driver_sql("SELECT es_frontend FROM folder_libraries").scalar() == 0
+    assert _current_rev(engine) == "0016"
+
+
 def test_0017_adds_the_content_keys(fresh_db_path: str):
-    """#388's 0017, on latest's head: the duplicate finder's content keys and each
+    """#388's 0017, on #386's 0016: the duplicate finder's content keys and each
     Library's last find-duplicates run."""
     from alembic import command
     from alembic.script import ScriptDirectory
 
     engine = _db.make_engine(fresh_db_path)
     cfg = _db._alembic_config(engine)
-    assert ScriptDirectory.from_config(cfg).get_revision("0017").down_revision == "0015"
+    assert ScriptDirectory.from_config(cfg).get_revision("0017").down_revision == "0016"
 
-    command.upgrade(cfg, "0015")
+    command.upgrade(cfg, "0016")
     assert not {"content_keys", "duplicate_runs"} & set(inspect(engine).get_table_names())
     command.upgrade(cfg, "0017")
     assert {"content_keys", "duplicate_runs"} <= set(inspect(engine).get_table_names())

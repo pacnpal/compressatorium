@@ -1612,6 +1612,7 @@ class RommSettingsPatch(BaseModel):
     repin_abandon_days: int | None = None
     verify_after_convert: bool | None = None
     delete_source_after_verify: bool | None = None
+    es_frontend: bool | None = None
 
 
 @router.get("/romm/settings")
