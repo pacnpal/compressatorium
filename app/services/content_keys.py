@@ -41,6 +41,7 @@ from services.subprocess_runner import (
     ProgressAbandoned,
     ReadCancelled,
     Stalled,
+    StorageAbandoned,
     run_detached_within_stall_bound,
     until_cancelled,
 )
@@ -220,6 +221,10 @@ async def build(path: str, *, cancel_event: asyncio.Event | None = None) -> str 
     # A cancel (`ReadCancelled`) is none of these, so it propagates as is.
     except (EmbeddedHashUnavailable, OSError, RuntimeError, asyncio.TimeoutError) as exc:
         _raise_if_cancelled(cancel_event)
+        if isinstance(exc, StorageAbandoned):
+            # A child outlived SIGKILL: not this file's key, the storage's
+            # state. The run decides (it stops), never treated as one file.
+            raise
         raise KeyUnavailable(f"{tool.id} could not hash {name}: {exc}") from exc
     # A tool that ends early on a cancel answers with nothing: no verdict.
     _raise_if_cancelled(cancel_event)

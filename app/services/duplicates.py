@@ -55,6 +55,8 @@ from services.subprocess_runner import (
     ProgressAbandoned,
     ReadCancelled,
     Stalled,
+    StorageAbandoned,
+    collect_abandonment,
     run_detached,
     run_detached_within_stall_bound,
 )
@@ -148,6 +150,11 @@ class _Stopped(Exception):
     """The run was cancelled, or its Library removed: nothing more is written."""
 
 
+class _Abandoned(Exception):
+    """A tool left a child running on storage that stopped answering: the run
+    stops, with nothing written."""
+
+
 async def _run(library: Library, job_id: str, generation: int) -> None:
     from services.rules.sweep import library_generation
 
@@ -162,6 +169,8 @@ async def _run(library: Library, job_id: str, generation: int) -> None:
         await job_manager.finish_external_job(
             job_id, success=False, error_message=f"The Library could not be listed: {exc}",
         )
+    except _Abandoned as exc:
+        await job_manager.finish_external_job(job_id, success=False, error_message=str(exc))
     except Exception:
         logger.warning("duplicates: the run for %s failed", library.id, exc_info=True)
         await job_manager.finish_external_job(
@@ -230,15 +239,30 @@ async def _find(library: Library, job_id: str, current: Callable[[], bool]) -> d
                 f"Reading {index + 1} of {len(missing)}: {os.path.basename(candidate.path)}"
             ),
         )
-        try:
-            key = await content_keys.build(candidate.path, cancel_event=cancel_event)
-            after = await content_keys.read_identity(candidate.path, cancel_event=cancel_event)
-        except ReadCancelled:
-            raise _Stopped("Cancelled: no Findings were written") from None
-        except KeyUnavailable as exc:
-            logger.info("duplicates: %s", exc)
-            unseen.add(candidate.path)
-            continue
+        # A child a tool could not kill (it outlived SIGKILL) means the storage
+        # is not answering: going on would strand one more per file. The run
+        # stops there, as the metadata scan does (#268, Codex 4590926165).
+        # Any other failure costs this file only.
+        with collect_abandonment() as abandoned:
+            try:
+                key = await content_keys.build(candidate.path, cancel_event=cancel_event)
+                after = await content_keys.read_identity(
+                    candidate.path, cancel_event=cancel_event,
+                )
+            except ReadCancelled:
+                raise _Stopped("Cancelled: no Findings were written") from None
+            except StorageAbandoned as exc:
+                abandoned.append(str(exc))
+            except KeyUnavailable as exc:
+                logger.info("duplicates: %s", exc)
+                unseen.add(candidate.path)
+                continue
+        if abandoned:
+            raise _Abandoned(
+                f"Reading {os.path.basename(candidate.path)} left a process stuck on "
+                f"unresponsive storage ({', '.join(abandoned)}); it is still running. "
+                "No Findings were written",
+            )
         if after != candidate.identity:
             # Changed while it was read: the key may describe neither version.
             unseen.add(candidate.path)

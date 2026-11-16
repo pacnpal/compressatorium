@@ -26,7 +26,7 @@ from services.disc_id import (
 from services.disk import InsufficientDiskSpace, headroom_scratch_dir
 from services.file_hasher import compute_files_sha1_sync
 from services.lock_manager import lock_manager
-from services.subprocess_runner import ReadCancelled, run_detached
+from services.subprocess_runner import ReadCancelled, StorageAbandoned, run_detached
 from utils.disc_sheet import read_disc_sheet
 from utils.sheet_text import sheet_track_list
 
@@ -440,9 +440,12 @@ class ChdmanTool(BaseTool):
                 metadata, stored = await chd_metadata_store.read_and_cache(
                     path, lambda: self._service.info(path, cancel_event=cancel_event),
                 )
-            except Exception as e:  # chdman failed, timed out, or left a child behind
-                if isinstance(e, ReadCancelled):
-                    raise  # a cancel is no failure of the file: the caller ends
+            except Exception as e:  # chdman failed or timed out
+                if isinstance(e, (ReadCancelled, StorageAbandoned)):
+                    # A cancel, or a child that outlived SIGKILL (the storage
+                    # is not answering): no failure of this file, and the
+                    # caller decides whether to go on.
+                    raise
                 raise EmbeddedHashUnavailable(f"chdman info failed: {e}") from e
             if stored is None:
                 raise EmbeddedHashUnavailable(f"{Path(path).name} changed while it was read")

@@ -994,6 +994,95 @@ async def test_a_romm_identity_change_forgets_its_duplicate_groups_and_run(
 
 
 # ----------------------------------------------------------------------
+# what a tool left behind, and a lane the caller gave up on
+# ----------------------------------------------------------------------
+
+
+def _two_uncached_chds(roms: Path) -> None:
+    roms.mkdir(parents=True, exist_ok=True)
+    for name in ("A.chd", "B.chd"):
+        (roms / name).write_bytes(b"MComprHD" + os.urandom(64))
+
+
+@pytest.mark.asyncio
+async def test_a_chdman_child_left_running_stops_the_run(
+    db: Path, client: httpx.AsyncClient, monkeypatch,
+) -> None:
+    """Codex 4590926165: a ``chdman info`` whose child outlived SIGKILL means
+    the storage is not answering. The run stops there instead of stranding
+    one more child per CHD."""
+    from services.chdman import chdman_service
+    from services.subprocess_runner import StorageAbandoned
+
+    roms = db / "roms"
+    _two_uncached_chds(roms)
+    calls: list[str] = []
+
+    async def info(path, *, cancel_event=None):
+        calls.append(os.path.basename(path))
+        raise StorageAbandoned("chdman info left pid 4242 stuck on unresponsive storage")
+
+    monkeypatch.setattr(chdman_service, "info", info)
+    library = await _register(client, roms)
+    job = await _finished(client, await _start(client, library))
+
+    assert job["status"] == "failed", job
+    assert "still running" in (job.get("error_message") or "")
+    assert calls == ["A.chd"]
+
+
+@pytest.mark.asyncio
+async def test_an_ordinary_chdman_error_costs_that_file_only(
+    db: Path, client: httpx.AsyncClient, monkeypatch,
+) -> None:
+    from services.chdman import chdman_service
+
+    roms = db / "roms"
+    _two_uncached_chds(roms)
+    calls: list[str] = []
+
+    async def info(path, *, cancel_event=None):
+        calls.append(os.path.basename(path))
+        raise RuntimeError("chdman info failed with code 1")
+
+    monkeypatch.setattr(chdman_service, "info", info)
+    library = await _register(client, roms)
+    job = await _finished(client, await _start(client, library))
+
+    assert job["status"] == "completed", job
+    assert calls == ["A.chd", "B.chd"]
+    assert (await _last_run(client, library))["unreadable"] == 2
+
+
+@pytest.mark.asyncio
+async def test_a_lane_slot_that_arrives_as_its_caller_is_cancelled_is_given_back() -> None:
+    """Codex 4590926157: the caller is cancelled after the lane wait got its
+    slot but before the slot was handed over. The slot goes back to the lane."""
+    from services.workload_limiter import WorkloadLimiter
+
+    limiter = WorkloadLimiter(verify_limit=1, metadata_scan_limit=1, match_limit=1)
+    held = await limiter.acquire("match")
+    cancel = asyncio.Event()
+    waiting = asyncio.ensure_future(limiter.acquire("match", cancel_event=cancel))
+    for _ in range(5):
+        await asyncio.sleep(0)
+    semaphore = limiter._semaphores["match"]
+    assert semaphore._waiters
+
+    held.release()        # the slot goes to the waiting acquire...
+    waiting.cancel()      # ...and its caller is cancelled before it resumes
+    with pytest.raises(asyncio.CancelledError):
+        await waiting
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+    assert semaphore._value == 1, "a lane slot leaked"
+    assert limiter.in_use("match") == 0
+    again = await asyncio.wait_for(limiter.acquire("match"), 1)
+    again.release()
+
+
+# ----------------------------------------------------------------------
 # the tool contract
 # ----------------------------------------------------------------------
 
