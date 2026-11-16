@@ -17,7 +17,8 @@
    * no target format, a nightly byte budget, a window and weekdays. See
    * `$lib/rules/checkRule.js`.
    */
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
+  import { followSaved } from '$lib/util/followSaved.js';
   import { SvelteSet } from 'svelte/reactivity';
   import { toast } from 'svelte-sonner';
   import { DAY_LABELS, ORDER_LABELS } from '$lib/stores/romm.svelte.js';
@@ -70,6 +71,34 @@
       toast.success(enabled ? 'Conversions now update gamelist.xml' : 'gamelist.xml is left alone');
     } catch (e) {
       toast.error(e?.message ?? 'Failed to save');
+    }
+  }
+
+  // The Library's ES-DE gamelists folder (#387): edited here, saved on Save.
+  // Follows the saved value whenever it changes (a save, another tab).
+  // `followSaved` adopts a new saved folder only while the field holds no
+  // edit: another setting's save, or the answer to an earlier save, never
+  // throws away what the operator typed since.
+  let gamelistsDraft = $state('');
+  let gamelistsSeen = null; // the saved folder the field last adopted
+  let gamelistsSaving = $state(false);
+  $effect(() => {
+    const saved = source.gamelistsFolder ?? '';
+    untrack(() => {
+      const prior = gamelistsSeen === null ? null : { draft: gamelistsDraft, seen: gamelistsSeen };
+      ({ draft: gamelistsDraft, seen: gamelistsSeen } = followSaved(prior, saved));
+    });
+  });
+
+  async function saveGamelistsFolder() {
+    gamelistsSaving = true;
+    try {
+      await source.setGamelistsFolder(gamelistsDraft.trim());
+      toast.success(gamelistsDraft.trim() ? 'Gamelists folder saved' : 'Gamelists folder cleared');
+    } catch (e) {
+      toast.error(e?.message ?? 'Failed to save');
+    } finally {
+      gamelistsSaving = false;
     }
   }
 
@@ -498,6 +527,31 @@
         count stay. A one-time <code>gamelist.xml.bak</code> is kept. Close ES-DE first:
         it rewrites its gamelist when it exits, which would undo the change.
       </p>
+      <label class="field gamelists">
+        <span>ES-DE gamelists folder (optional)</span>
+        <span class="gamelists-row">
+          <input
+            type="text"
+            placeholder="/roms/ES-DE/gamelists"
+            bind:value={gamelistsDraft}
+            onkeydown={(e) => e.key === 'Enter' && saveGamelistsFolder()}
+          />
+          <Button
+            variant="secondary"
+            onclick={saveGamelistsFolder}
+            loading={gamelistsSaving}
+            disabled={gamelistsDraft.trim() === (source.gamelistsFolder ?? '')}
+          >
+            Save
+          </Button>
+        </span>
+        <span class="hint">
+          Where ES-DE keeps its own gamelists (<code>ES-DE/gamelists</code>, one folder per
+          system, such as <code>ps2</code>). It must be inside a Volume. When set,
+          <code>&lt;folder&gt;/&lt;system&gt;/gamelist.xml</code> is updated too. Leave it
+          empty for gamelists kept in the Platform folders.
+        </span>
+      </label>
     </div>
     <div class="master-actions">
       <Checkbox
@@ -1292,6 +1346,9 @@
     min-width: 0;
   }
   .pair { display: flex; align-items: center; gap: var(--space-2); }
+  .field.gamelists { margin-top: var(--space-3); max-width: 60ch; }
+  .gamelists-row { display: flex; gap: var(--space-2); align-items: center; }
+  .gamelists-row input { flex: 1; }
   .hint, .muted { color: var(--text-2); font-size: var(--text-sm); }
 
   /* Codec chips for the multi-codec style (chdman). Mirrors CompressionPicker's

@@ -11,6 +11,7 @@ batch is queued, and the re-pin backlog reported when the sweep ends.
 
 from __future__ import annotations
 
+import os
 from types import MappingProxyType
 from typing import Any
 
@@ -22,6 +23,7 @@ from services.romm import settings as romm_settings
 from services.rules.library import (
     CONVERTED_HISTORY,
     ES_FRONTEND_REFERRER,
+    GAMELISTS_FOLDER,
     HIDDEN_STAGING,
     RECOGNIZED_FILTER,
     Image,
@@ -29,6 +31,7 @@ from services.rules.library import (
     LibraryUnreadable,
     Platform,
     QueuedImage,
+    folder_holding,
 )
 from services.rules.store import RULES_KEY, STATE_KEY
 
@@ -195,6 +198,26 @@ class RommLibrary(LibraryDefaults):
         return referrer_id == ES_FRONTEND_REFERRER and bool(
             romm_settings.effective().get("es_frontend"),
         )
+
+    def platform_folder(self, path: str) -> str | None:
+        """The Platform folder holding *path* in either RomM layout (#387):
+        ``<root>/roms/<platform>/...`` when the root holds a ``roms`` folder
+        (the same directory-level test ``RommClient.local_path`` makes), else
+        ``<root>/<platform>/...`` (``<root>/<platform>/roms/...`` included).
+        Spelled as listed; None when no Platform folder holds it."""
+        root = self.root
+        if not root:
+            return None
+        roms = os.path.join(root, "roms")
+        return folder_holding(roms if os.path.isdir(roms) else root, path)
+
+    def referrer_options(self, referrer_id: str) -> dict:
+        """The gamelist Referrer's ES-DE gamelists folder from RomM's settings,
+        when one is set (#387). In memory."""
+        folder = romm_settings.effective().get(GAMELISTS_FOLDER)
+        if referrer_id == ES_FRONTEND_REFERRER and folder:
+            return {GAMELISTS_FOLDER: folder}
+        return {}
 
     def summary_fields(self) -> dict[str, Any]:
         return {"repins_recorded": 0}

@@ -16,6 +16,7 @@ network or a mount. The engine calls them off the event loop.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable, Hashable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -44,6 +45,41 @@ HIDDEN_STAGING = "hidden_staging"
 # The opt-in Referrer a Library's "used by an EmulationStation frontend"
 # setting turns on (#386): ``referrer_enabled`` answers True for it then.
 ES_FRONTEND_REFERRER = "gamelist"
+# Its option naming the ES-DE gamelists folder (#387), in referrer_options.
+GAMELISTS_FOLDER = "gamelists_folder"
+
+
+class AmbiguousFolder(Exception):
+    """More than one folder holds a file, so which one it belongs to can't be told."""
+
+    def __init__(self, path: str, folders: list[str]) -> None:
+        names = ", ".join(sorted(os.path.basename(f) for f in folders))
+        super().__init__(f"more than one Platform folder holds {path} ({names})")
+        self.folders = folders
+
+
+def folder_holding(parent: str, path: str) -> str | None:
+    """The folder directly in *parent* that holds the file at *path*, spelled
+    as *parent* lists it, or None when none does (#387).
+
+    Which folder holds it is decided on resolved paths, so a symlinked folder
+    (``ps2 -> actual/PlayStation2``) holds what its target holds; its name is
+    the one listed. When several do (an alias, ``alias -> ps2``, or folders
+    nested through symlinks), the answer would depend on the listing's order,
+    so it raises :class:`AmbiguousFolder` instead (Codex PRRT_kwDOQ9nULM64Ki7x).
+    Blocking; raises OSError when *parent* can't be listed.
+    """
+    real = os.path.realpath(path)
+    holding = []
+    with os.scandir(parent) as listing:
+        for entry in listing:
+            if entry.is_dir() and real.startswith(
+                os.path.realpath(entry.path).rstrip(os.sep) + os.sep,
+            ):
+                holding.append(entry.path)
+    if len(holding) > 1:
+        raise AmbiguousFolder(path, holding)
+    return holding[0] if holding else None
 
 
 def duplicate_actions(library: Library) -> tuple[str, ...]:
@@ -288,6 +324,24 @@ class Library(Protocol):
         and keeps the Source.
         """
 
+    def referrer_options(self, referrer_id: str) -> Mapping[str, Any]:
+        """This Library's settings for the Referrer *referrer_id* (#387).
+
+        Read by a Referrer's ``for_library`` once the Referrer is on: for the
+        gamelist Referrer, ``{"gamelists_folder": path}`` when an ES-DE
+        gamelists folder is set. In memory, never blocks.
+        """
+
+    def platform_folder(self, path: str) -> str | None:
+        """The Platform folder holding the file at *path*, or None (#387).
+
+        Spelled as listed under the Library (a symlinked folder keeps its own
+        name), so its name is the Platform's name a frontend knows. None when
+        no Platform folder holds *path* (it sits directly in the root, or
+        outside it); raises :class:`AmbiguousFolder` when more than one does.
+        Blocking (lists a folder, resolves paths): off the loop.
+        """
+
     def summary_fields(self) -> Mapping[str, Any]:
         """Extra keys every per-Platform summary starts with (and the result too)."""
 
@@ -316,6 +370,16 @@ class LibraryDefaults:
     def referrer_enabled(self, referrer_id: str) -> bool:
         """No opt-in Referrer is on until a Library's settings say so (#383)."""
         return False
+
+    def referrer_options(self, referrer_id: str) -> Mapping[str, Any]:
+        """No Referrer settings (#387)."""
+        return {}
+
+    def platform_folder(self, path: str) -> str | None:
+        """The folder directly under the root that holds *path* (#387), as a
+        folder Library's Platform folders are laid out."""
+        root = getattr(self, "root", None)
+        return folder_holding(root, path) if root else None
 
     def all_images(self) -> ImageListing:
         """Every Platform's Images, one Platform after another (#388).

@@ -1684,6 +1684,8 @@ class RommSettingsPatch(BaseModel):
     # Keep the ROM id when converting (#390). Turning it on checks the token.
     swap_keep_rom_id: bool | None = None
     es_frontend: bool | None = None
+    # ES-DE gamelists folder (#387): inside a Volume; "" clears it.
+    gamelists_folder: str | None = None
 
 
 @router.get("/romm/settings")
@@ -1721,6 +1723,14 @@ async def put_romm_settings(patch: RommSettingsPatch) -> dict:
     # lock and the sweep pause: the check is bounded (503 past it), and a root
     # on a mount that stopped answering then holds neither of them.
     try:
+        folder = submitted.get("gamelists_folder")
+        if folder is not None:
+            # The ES-DE gamelists folder must be inside a Volume (#387):
+            # checked bounded, and stored resolved. Blank (spaces included,
+            # CodeRabbit PRRT_kwDOQ9nULM64Kuig) is stored as "", which clears it.
+            submitted["gamelists_folder"] = await libraries.admitted(
+                libraries.check_gamelists_folder, folder, what="The gamelists folder",
+            ) if folder.strip() else ""
         async with libraries.romm_root_claim(submitted.get("library_root")):
             return await _save_settings(submitted)
     except libraries.LibraryPathError as exc:

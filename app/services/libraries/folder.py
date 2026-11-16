@@ -73,6 +73,7 @@ from services.platform_mappings import MappingsUnavailable
 from services.rules.library import (
     ES_FRONTEND_REFERRER,
     FAILED_HOLD,
+    GAMELISTS_FOLDER,
     RECOGNIZED_FILTER,
     Image,
     ImageListing,
@@ -214,7 +215,7 @@ class FolderLibrary(LibraryDefaults):
     def __init__(
         self, *, record_id: int, root: str, name: str,
         schedule_enabled: bool = False, max_per_sweep: int = 25,
-        es_frontend: bool = False,
+        es_frontend: bool = False, gamelists_folder: str | None = None,
     ) -> None:
         self.record_id = record_id
         self.id = f"{ID_PREFIX}{record_id}"
@@ -225,6 +226,8 @@ class FolderLibrary(LibraryDefaults):
         # Used by an EmulationStation frontend (#386): turns the gamelist.xml
         # Referrer on for this Library's Images.
         self._es_frontend = bool(es_frontend)
+        # Its ES-DE gamelists folder (#387), or None.
+        self._gamelists_folder = gamelists_folder or None
         # Held for a whole walk. Only ever acquired without blocking (`scan`).
         self._lock = threading.Lock()
         self._scan: Scan | None = None
@@ -261,8 +264,10 @@ class FolderLibrary(LibraryDefaults):
     def apply_settings(
         self, *, name: str | None = None, schedule_enabled: bool | None = None,
         max_per_sweep: int | None = None, es_frontend: bool | None = None,
+        gamelists_folder: str | None = None,
     ) -> None:
-        """Change this Library's settings in place. Never waits for a walk."""
+        """Change this Library's settings in place. Never waits for a walk.
+        A *gamelists_folder* of ``""`` clears it."""
         if name is not None:
             self.name = name
         if schedule_enabled is not None:
@@ -271,11 +276,19 @@ class FolderLibrary(LibraryDefaults):
             self._max_per_sweep = int(max_per_sweep)
         if es_frontend is not None:
             self._es_frontend = bool(es_frontend)
+        if gamelists_folder is not None:
+            self._gamelists_folder = gamelists_folder or None
 
     def referrer_enabled(self, referrer_id: str) -> bool:
         """The gamelist.xml Referrer is on when the Library is used by an
         EmulationStation frontend (#386); every other opt-in one is off."""
         return referrer_id == ES_FRONTEND_REFERRER and self._es_frontend
+
+    def referrer_options(self, referrer_id: str) -> dict:
+        """The gamelist Referrer's ES-DE gamelists folder, when one is set (#387)."""
+        if referrer_id == ES_FRONTEND_REFERRER and self._gamelists_folder:
+            return {GAMELISTS_FOLDER: self._gamelists_folder}
+        return {}
 
     def is_current(self) -> bool:
         """Still a registered Library (#303's token). Asked under the Findings store's lock."""

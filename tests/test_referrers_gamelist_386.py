@@ -51,6 +51,10 @@ class _Library:
     def referrer_enabled(self, referrer_id: str) -> bool:
         return self._on and referrer_id == "gamelist"
 
+    def referrer_options(self, referrer_id: str) -> dict:
+        # No ES-DE gamelists folder (#387): the Platform folder layout.
+        return {}
+
 
 ON = _Library()
 
@@ -340,6 +344,12 @@ def test_planning_writes_nothing_and_counts_the_entries(vol):
         b"<gameList><game><path>/elsewhere/roms/psx/Game.iso</path></game></gameList>",
         "doesn't point at it",
     ),
+    # Codex PRRT_kwDOQ9nULM64JsQt: not a gamelist at all, so it can't say the
+    # Source isn't listed.
+    (b"", "isn't a gamelist"),
+    (b'<?xml version="1.0"?>\n', "isn't a gamelist"),
+    (b"./Game.iso\n", "isn't a gamelist"),
+    (b"<gameList></gameList>\nstray ./Game.iso\n", "isn't a gamelist"),
 ])
 async def test_a_gamelist_that_cant_be_updated_keeps_the_source(vol, data, why):
     psx = vol / "psx"
