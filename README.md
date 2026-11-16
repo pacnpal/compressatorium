@@ -770,6 +770,7 @@ them on in Automation once you've switched RomM's converter off.
 |-------|------|
 | ![RomM's converter banner, light](docs/screenshots/romm-converter-light.png) | ![RomM's converter banner, dark](docs/screenshots/romm-converter-dark.png) |
 | ![RomM converter flags on Rules, light](docs/screenshots/romm-converter-rules-light.png) | ![RomM converter flags on Rules, dark](docs/screenshots/romm-converter-rules-dark.png) |
+| ![Keep the ROM id switch, light](docs/screenshots/romm-swap-light.png) | ![Keep the ROM id switch, dark](docs/screenshots/romm-swap-dark.png) |
 
 ### Folder Libraries and the Rules view
 

@@ -65,6 +65,9 @@ from services.romm import (
 from services.romm import (
     settings as romm_settings,
 )
+from services.romm import (
+    swap as romm_swap,
+)
 from services.romm.library import romm_library
 from services.rules import editor as rules_editor
 from services.rules import sweep as rules_sweep
@@ -271,6 +274,13 @@ async def romm_status() -> dict:
         # reachable. The banner, the Rule flags and the can't-convert marks all
         # read this one block. See `services.romm.converter`.
         "converter": None,
+        # The swap switch (#390): its state, and the scopes the token lacks when
+        # it is on. Asked only when on and connected, so off costs no probe.
+        "swap": {
+            "keep_rom_id": bool(romm_settings.effective().get("swap_keep_rom_id")),
+            "missing": [],
+            "error": None,
+        },
     }
     if library_root:
         # A dead NFS/SMB mount blocks in uninterruptible I/O, so this stat goes
@@ -313,8 +323,67 @@ async def romm_status() -> dict:
             result["error"] = _safe_error(exc)
         else:
             result["converter"] = await _converter_status(heartbeat)
+            if result["swap"]["keep_rom_id"]:
+                await _swap_status(result["swap"])
     result["pending_repins"] = await run_in_threadpool(romm_repin.count_pending)
     return result
+
+
+async def _swap_status(swap: dict) -> None:
+    """Fill the status's ``swap`` block with any permission problem, in place."""
+    try:
+        missing = await _probe_token(romm_client)
+    except HTTPException as exc:
+        swap["error"] = str(exc.detail)
+        return
+    swap["missing"] = missing
+    if missing:
+        swap["error"] = romm_swap.problem(missing)
+
+
+async def _probe_token(client: RommClient) -> list[str]:
+    """The swap's scopes the token lacks: probed off the loop, under a bound.
+
+    Raises ``HTTPException`` when RomM cannot say (not reachable, token
+    rejected, no answer in time): a guess either way would be wrong, and the
+    switch must not turn on from one.
+    """
+    try:
+        return await asyncio.wait_for(
+            run_in_threadpool(romm_swap.check, client), romm_swap.CHECK_SECONDS,
+        )
+    except RommError as exc:
+        raise _romm_call(exc, context="checking the token's permissions") from None
+    except asyncio.TimeoutError:
+        raise HTTPException(
+            status_code=504, detail="RomM did not answer the permission check in time.",
+        ) from None
+
+
+async def _require_swap_permissions(submitted: dict) -> None:
+    """Refuse to turn the switch on when the token lacks a scope it needs.
+
+    The check uses the URL and token this same request would save, so a token
+    typed beside the switch is the one that is judged. Nothing is persisted
+    here: a refusal leaves the switch exactly as it was.
+    """
+    url = (submitted.get("url") or "").strip() or romm_settings.effective().get("url") or ""
+    if submitted.get("clear_token"):
+        token = None
+    elif isinstance(submitted.get("token"), str) and submitted["token"].strip():
+        token = submitted["token"].strip()
+    else:
+        token = romm_settings.token()
+    if not url:
+        raise HTTPException(
+            status_code=503,
+            detail="RomM is not configured. Set ROMM_URL (and ROMM_TOKEN).",
+        )
+    if not token:
+        raise HTTPException(status_code=422, detail=romm_swap.NO_TOKEN)
+    missing = await _probe_token(RommClient(base_url=url, token=token))
+    if missing:
+        raise HTTPException(status_code=422, detail=romm_swap.refusal(missing))
 
 
 async def _converter_status(heartbeat: dict) -> dict | None:
@@ -1612,6 +1681,8 @@ class RommSettingsPatch(BaseModel):
     repin_abandon_days: int | None = None
     verify_after_convert: bool | None = None
     delete_source_after_verify: bool | None = None
+    # Keep the ROM id when converting (#390). Turning it on checks the token.
+    swap_keep_rom_id: bool | None = None
 
 
 @router.get("/romm/settings")
@@ -1638,6 +1709,10 @@ async def put_romm_settings(patch: RommSettingsPatch) -> dict:
     a route is where cross-service consequences belong.
     """
     submitted = patch.model_dump(exclude_unset=True)
+    # Before anything is persisted, and before any lock: the probes are bounded
+    # but slow, and a refusal must change nothing.
+    if submitted.get("swap_keep_rom_id") is True:
+        await _require_swap_permissions(submitted)
     # RomM's root must not overlap a folder Library, or two Rule sets act on
     # the same Images. Checked and saved under the registration lock
     # (`libraries.romm_root_claim`), so a folder registration cannot race it,
