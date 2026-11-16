@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from services import db as _db
 from services.subprocess_runner import bounded_path_check
+from utils.path_utils import path_presence
 
 logger = get_logger("chd_metadata_store")
 
@@ -218,6 +219,20 @@ class CHDMetadataStore:
         if row is None or not row.disc_id_checked:
             return False
         return row.disc_id_checked_mtime == current_mtime
+
+    def cached_media_type_blocking(self, chd_path: str) -> tuple[bool, Optional[str]]:
+        """``(cached, media_type)``: whether the row still describes the file
+        (its mtime unchanged), and the media type it records. For a caller
+        already off the event loop (the badge lookup, #373). Blocking."""
+        normalized = self._normalize_path(chd_path)
+        try:
+            current_mtime = os.path.getmtime(normalized)
+        except OSError:
+            return False, None
+        row = self._get_sync(chd_path)
+        if row is None or row.mtime is None or row.mtime != current_mtime:
+            return False, None
+        return True, row.media_type
 
     async def is_stale(self, chd_path: str) -> bool:
         normalized = self._normalize_path(chd_path)
@@ -495,7 +510,9 @@ class CHDMetadataStore:
     def _prune_missing_sync(self) -> int:
         with self._session() as session:
             paths = session.scalars(select(_db.CHDMetadata.chd_path)).all()
-            missing = [p for p in paths if not os.path.exists(p)]
+            # Only a confirmed absence: a file on a Volume that stalls or
+            # errors keeps its row (#373).
+            missing = [p for p in paths if path_presence(p) is False]
             if not missing:
                 return 0
             # Chunk to stay under SQLite's bind-parameter limit (default 999).

@@ -916,6 +916,25 @@ def open_reporting_reads(path: str, progress: Callable[..., None]) -> io.Buffere
     return io.BufferedReader(_ReportingReader(raw, progress), buffer_size=READ_CHUNK)
 
 
+def path_presence(path: str) -> bool | None:
+    """Whether *path* exists: True, False only when the filesystem says it
+    is not there (``ENOENT``, or ``ENOTDIR`` for a parent that is a file),
+    and None when it can't tell (``EIO``, ``ETIMEDOUT``, ``EACCES``, ...).
+
+    ``os.path.exists`` answers False for every error, so a record pruned on
+    its answer is lost while a Volume hiccups. Anything that drops stored
+    records because their file is gone asks this, and keeps a None (#373).
+    Follows symlinks, as ``os.path.exists`` does. Blocking.
+    """
+    try:
+        os.stat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+    except (OSError, ValueError):
+        return None
+    return True
+
+
 def list_folder(path: str, progress: Callable[..., None] | None = None) -> list[str]:
     """The names in folder *path*, sorted, like ``sorted(os.listdir(path))``.
 
