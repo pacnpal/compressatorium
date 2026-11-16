@@ -25,6 +25,23 @@ export const ORDER_LABELS = {
   newest: 'Newest added',
 };
 
+/**
+ * The status's `converter` block (#385): RomM's own converter, or null when
+ * this RomM has none. Absent on an older server, which reads as "none".
+ */
+function readConverter(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  return {
+    enabled: raw.enabled === true,
+    platformFormats: raw.platform_formats ?? {},
+    libraryTargets: raw.library_targets && typeof raw.library_targets === 'object'
+      ? raw.library_targets
+      : null,
+    modes: raw.modes ?? {},
+    error: raw.error ?? null,
+  };
+}
+
 // The RomM Library's Rules come from RulesSource, shared with folder Libraries;
 // what is here is RomM's own: connection, settings, platforms, re-pin.
 class RommStore extends RulesSource {
@@ -120,6 +137,69 @@ class RommStore extends RulesSource {
     return typeof ratio === 'number' ? ratio : null;
   }
 
+  // ─── beside RomM's converter (#385) ──────────────────────────────────
+
+  /**
+   * RomM's own converter when it is switched on, else null.
+   *
+   * The banner, the Rule flags and the can't-convert marks all read this, and
+   * all of it comes from the one converter read the status refresh makes. Off,
+   * or a RomM from before the converter: nothing is shown.
+   */
+  get activeConverter() {
+    const converter = this.status?.converter;
+    return converter?.enabled ? converter : null;
+  }
+
+  /**
+   * What RomM's converter does to *platform*, for the Rule editor.
+   *
+   * `{ kind: 'converts', target, modes, agrees }` when RomM converts it:
+   * `target` is RomM's format, `modes` this app's modes for the same format,
+   * and `agrees` whether *rule* writes it (null with no Rule). `{ kind:
+   * 'cannot' }` when RomM cannot convert this Platform at all. null when there
+   * is nothing to say. Warnings only: nothing here stops a Rule.
+   */
+  converterNoteFor(platform, rule) {
+    const converter = this.activeConverter;
+    const slug = String(platform?.slug ?? '').trim().toLowerCase();
+    if (!converter || !slug) return null;
+    const target = converter.platformFormats[slug];
+    if (target) {
+      const modes = converter.modes[slug] ?? [];
+      return {
+        kind: 'converts',
+        target,
+        modes,
+        agrees: rule?.mode ? modes.includes(rule.mode) : null,
+      };
+    }
+    if (converter.libraryTargets && !(slug in converter.libraryTargets)) {
+      return { kind: 'cannot' };
+    }
+    return null;
+  }
+
+  /**
+   * Import RomM's converter targets as Rules, for Platforms that have none.
+   *
+   * The backend plans it (RomM's targets mapped onto this app's modes); the
+   * new Rules are added to the ones the editor holds and saved through the
+   * Rules API like any edit. A Platform that has a Rule here, saved or not,
+   * keeps it. Imported Rules start off, as every new Rule does.
+   *
+   * @returns {Promise<{created: number, skipped: Array<object>}>}
+   */
+  async importConverterTargets() {
+    const plan = await api.getRommConverterImportPlan();
+    await this.loadRules();
+    const created = this.addRules(Object.fromEntries(
+      Object.entries(plan?.rules ?? {}).map(([platformId, entry]) => [platformId, entry?.mode]),
+    ));
+    if (created > 0) await this.saveRules();
+    return { created, skipped: plan?.skipped ?? [] };
+  }
+
   get selectedPlatform() {
     return this.platforms.find((p) => p.id === this.selectedPlatformId) ?? null;
   }
@@ -190,6 +270,7 @@ class RommStore extends RulesSource {
           ? data.automatable_modes
           : null,
         pendingRepins: data?.pending_repins ?? 0,
+        converter: readConverter(data?.converter),
         error: data?.error ?? null,
       };
     } catch (e) {

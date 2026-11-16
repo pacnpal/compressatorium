@@ -331,3 +331,30 @@ def test_the_repin_promise_is_qualified_for_split_builds():
         "the warning promises metadata restoration unconditionally; a split "
         "build's numbered parts cannot be hash-matched at all"
     )
+
+
+_IMPORT_TARGETS = """
+const said = [];
+toast.success = (m) => said.push(['success', m]);
+toast.info = (m) => said.push(['info', m]);
+romm.importConverterTargets = async () => ({
+  created: 2,
+  skipped: [{ platform_id: '9', name: 'Xbox 360', slug: 'xbox360', target: 'zar' }],
+});
+await handleImport();
+romm.importConverterTargets = async () => ({ created: 0, skipped: [] });
+await handleImport();
+process.stdout.write(JSON.stringify({ said, importing }));
+"""
+
+
+def test_importing_romms_targets_says_how_many_rules_it_made(tmp_path):
+    """The banner's import names the count, and the Platforms it had to skip (#385)."""
+    data = _run(tmp_path, _SETTINGS, _IMPORT_TARGETS)
+
+    (tone, first), (tone2, second) = data["said"]
+    assert tone == "success", data
+    assert "Imported 2 Rules" in first, first
+    assert "Xbox 360 (ZAR)" in first, first
+    assert tone2 == "info" and "No Rules to import" in second, second
+    assert data["importing"] is False, data
