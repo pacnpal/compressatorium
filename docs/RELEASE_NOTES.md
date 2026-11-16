@@ -4,6 +4,12 @@
 
 ### Fixed
 
+- **No false "concurrency invariant violated" error beside a check run**
+  (#377). A conversion that started while a check run, a metadata scan or a
+  DAT match was going logged `ERROR Processing concurrency invariant violated`,
+  because the check counted those jobs as conversions. It now counts only
+  conversions, the same jobs the queue lets take a slot, so the error appears
+  only when more conversions run than the limit allows.
 - **A file on storage that stopped answering is "couldn't be checked", not
   failed** (#374). When opening a file to verify it never answered (a share
   gone silent), or a verifier could not be stopped, or a web verify ran past

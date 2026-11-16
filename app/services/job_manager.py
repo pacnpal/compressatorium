@@ -295,7 +295,11 @@ def _is_conversion_job(job) -> bool:
     """A real conversion job, not external bookkeeping (metadata scan / DAT match).
 
     The single definition of "counts toward the conversion queue", used by every
-    backpressure / queue-depth / stuck-detection surface so they can't drift.
+    backpressure / queue-depth / stuck-detection surface so they can't drift. It
+    is also what takes one of the ``max_concurrent`` slots: the dispatcher admits
+    only these, and the concurrency invariant counts only these (#377). An
+    external job (a check run, a scan, a DAT match) is PROCESSING from
+    ``create_external_job`` on, and never holds a slot.
     """
     return job.mode not in _EXTERNAL_JOB_MODES
 
@@ -2896,6 +2900,12 @@ class JobManager:
                     self._cancelled.discard(job_id)
                     await self._cleanup_temp_dir(job)
                     continue
+                # Only a conversion takes a slot; an external job is driven by
+                # its caller and never belongs in the queue (#377).
+                if not _is_conversion_job(job):
+                    logger.error("Job %s (%s) is not a conversion; not dispatching it",
+                                 job_id, job.mode)
+                    continue
                 await self._semaphore.acquire()
                 try:
                     if self.max_concurrent == 1:
@@ -4432,8 +4442,11 @@ class JobManager:
             # longer than debug_progress_timeout -- routine on a deep queue -- would
             # otherwise be reported stalled the instant it started running.
             self._last_progress_at[job_id] = time.monotonic()
+            # The jobs holding a conversion slot, by the dispatcher's own rule:
+            # a check run or scan beside this job is PROCESSING but holds none.
             processing_now = sum(
-                1 for candidate in self.jobs.values() if candidate.status == JobStatus.PROCESSING
+                1 for candidate in self.jobs.values()
+                if candidate.status == JobStatus.PROCESSING and _is_conversion_job(candidate)
             )
             if processing_now > self.max_concurrent:
                 logger.error(
