@@ -104,7 +104,7 @@ def test_the_cli_leaves_a_stored_check_when_it_cannot_read_the_file(
     cli.main(["verify", str(product), "--json"])
     lines = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.strip()]
 
-    assert [line["status"] for line in lines] == ["failed"]
+    assert [line["status"] for line in lines] == ["uncheckable"]  # no verdict (#370)
     assert "Permission denied" in lines[0]["reason"]
     assert _stored_check(product) == "intact"
 

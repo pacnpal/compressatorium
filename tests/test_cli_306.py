@@ -591,8 +591,9 @@ def test_a_check_that_errors_keeps_the_stored_result(volume, dolphin, capsys, mo
 
     code, lines = _cli(capsys, "verify", str(volume), "--json")
 
-    assert code == 1
-    assert lines[0]["status"] == "failed"
+    # No verdict: uncheckable, exit 4, the stored check kept (#370).
+    assert code == 4
+    assert lines[0]["status"] == "uncheckable"
     assert "No such file" in lines[0]["reason"]
     assert asyncio.run(verification_store.get_record(str(rvz))) is not None
 
@@ -617,8 +618,9 @@ def test_a_stalled_check_keeps_the_stored_result(volume, dolphin, capsys, monkey
 
     code, lines = _cli(capsys, "verify", str(volume), "--json")
 
-    assert code == 1
-    assert lines[0]["status"] == "failed"
+    # No verdict: uncheckable, exit 4, the stored check kept (#370).
+    assert code == 4
+    assert lines[0]["status"] == "uncheckable"
     assert "stalled" in lines[0]["reason"]
     assert asyncio.run(verification_store.get_record(str(rvz))) is not None
 
@@ -1165,8 +1167,9 @@ def test_a_z3ds_verifier_killed_by_a_signal_keeps_the_stored_pass(
 
     code, lines = _cli(capsys, "verify", str(game), "--json")
 
-    assert code == 1
-    assert lines[0]["status"] == "failed"
+    # No verdict: uncheckable, exit 4, the stored check kept (#370).
+    assert code == 4
+    assert lines[0]["status"] == "uncheckable"
     assert "signal" in lines[0]["reason"]
     assert asyncio.run(verification_store.get_record(str(game))) is not None
 

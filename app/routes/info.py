@@ -92,7 +92,7 @@ from services.z3ds_compress import (
     Z3DS_DECOMPRESS_EXTENSIONS,
     z3ds_compress_service,
 )
-from services.verification_store import record_check, verification_store
+from services.verification_store import cannot_check, record_check, verification_store
 from sse_starlette.sse import EventSourceResponse
 from utils.path_utils import is_within_configured_volumes, match_extension, walk_tree
 
@@ -1999,7 +1999,7 @@ def _sse_batch_from_verify_stream(
                 if recorded["verdict"]:
                     verified_count += 1
                     status = "verified"
-                elif final_result.get("uncheckable") or final_result.get("inconclusive"):
+                elif cannot_check(final_result):
                     # Refused here, or it could not be checked (a file the
                     # verifier could not open, #359): no verdict, so it is not
                     # counted failed.
