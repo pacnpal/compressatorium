@@ -6549,3 +6549,12 @@ at a time. Nothing here changes the wire API until Phase 9 (optional).
 
 Net: a smaller, flatter codebase where the cost of the *next* tool drops from
 ~20 files to ~5.
+
+## Ignored entries (`utils/junk.py`)
+
+`is_junk_entry(name)` is the one predicate for names no listing or walk should
+see: OS and NAS metadata, plus RomM's `.romm_tmp_*` converter staging (prefix
+match only). The file browser listing and search, `walk_tree` (DAT scan), the
+folder Library walk (which feeds sweeps, check Rules and the Platform walk) and
+the Switch key search all route through it. Add a new ignored name there, not in
+a caller.
