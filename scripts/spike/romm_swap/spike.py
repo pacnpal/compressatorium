@@ -20,16 +20,24 @@ import hashlib
 import http.client
 import json
 import os
+import re
 import secrets
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+REPO_ROOT = HERE.parents[2]
 PROJECT = "romm-swap-spike"
+# The file a run writes into its work folder. Only a folder holding a valid
+# one is ever deleted: the fixed tag, then a random id, nothing else.
+WORK_MARKER = ".romm-swap-spike"
+WORK_MARKER_TAG = "romm-swap-spike work folder"
+_WORK_MARKER_RE = re.compile(re.escape(WORK_MARKER_TAG) + r"\n[0-9a-f]{32}\n")
 FIXTURE_IMAGE = "compressatorium-romm-spike-fixtures:latest"
 ADMIN_USER = "spikeadmin"
 # The scopes the swap needs (see the permissions experiment): read the ROM,
@@ -223,12 +231,13 @@ class Spike:
     # ---- setup ----------------------------------------------------------
 
     def setup(self):
-        if self.work.exists():
-            # Only a directory an earlier run made (or an empty one) is wiped.
-            if any(self.work.iterdir()) and not (self.work / ".env").exists():
-                raise SystemExit(f"{self.work} is not empty and not a spike work dir")
+        # Only a folder an earlier run marked (or an empty one) is wiped.
+        state = work_dir_state(self.work)
+        if state == "marked":
             self.teardown(quiet=True)
+        if state != "missing":
             shutil.rmtree(self.work)
+        mark_work_dir(self.work)
         for sub in ("evidence", "fixtures", "stage", "assets", "config", "app-config"):
             (self.work / sub).mkdir(parents=True)
         (self.work / "config" / "config.yml").write_text("", encoding="utf-8")
@@ -296,7 +305,7 @@ class Spike:
             self.tokens[name] = body["raw_token"]
 
     def teardown(self, quiet=False):
-        if not (self.work / ".env").exists():
+        if not has_work_marker(self.work) or not (self.work / ".env").exists():
             return
         res = self.compose("down", "-v", "--remove-orphans", check=False)
         if not quiet:
@@ -738,16 +747,125 @@ def summarize(r):
     print(f"converter env on: {c['env_on']}")
 
 
+class WorkDirRefused(SystemExit):
+    """The --work folder isn't one the spike may wipe."""
+
+
+def has_work_marker(path):
+    """Whether `path` holds a valid spike marker: a regular file (not a link)
+    with the fixed tag and a random id, and nothing else."""
+    marker = Path(path) / WORK_MARKER
+    if marker.is_symlink() or not marker.is_file():
+        return False
+    with open(marker, encoding="utf-8", errors="replace") as f:
+        text = f.read(256)
+    return _WORK_MARKER_RE.fullmatch(text) is not None
+
+
+def work_dir_state(path):
+    """'missing', 'empty' or 'marked' for a --work folder the spike may use.
+    Refuses (WorkDirRefused) anything else: a link, a file, a non-empty folder
+    without a valid marker, and the filesystem root, the home folder, this
+    repository or any folder holding one of them, marker or not."""
+    path = Path(path).absolute()
+    if path.is_symlink():
+        raise WorkDirRefused(f"refusing --work {path}: it is a symbolic link")
+    resolved = path.resolve()
+    for protected in {Path("/").resolve(), Path.home().resolve(), REPO_ROOT.resolve()}:
+        if resolved == protected or resolved in protected.parents:
+            raise WorkDirRefused(f"refusing --work {path}: it is or holds {protected}")
+    if not path.exists():
+        return "missing"
+    if not path.is_dir():
+        raise WorkDirRefused(f"refusing --work {path}: it is not a folder")
+    if not any(path.iterdir()):
+        return "empty"
+    if not has_work_marker(path):
+        raise WorkDirRefused(
+            f"refusing --work {path}: it is not empty and has no {WORK_MARKER} marker "
+            "from an earlier spike run; pick an empty or new folder")
+    return "marked"
+
+
+def mark_work_dir(path):
+    """Create the work folder (if needed) and write its marker."""
+    path = Path(path)
+    path.mkdir(parents=True, exist_ok=True)
+    (path / WORK_MARKER).write_text(f"{WORK_MARKER_TAG}\n{secrets.token_hex(16)}\n",
+                                    encoding="utf-8")
+
+
+def self_check():
+    """Check the --work guard without Docker. Returns a list of failures."""
+    failures = []
+
+    def expect_refused(label, path):
+        try:
+            work_dir_state(path)
+        except WorkDirRefused:
+            return
+        failures.append(f"{label}: not refused")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        unrelated = tmp / "project"
+        unrelated.mkdir()
+        (unrelated / ".env").write_text("SECRET=1\n", encoding="utf-8")
+        (unrelated / "main.py").write_text("print('mine')\n", encoding="utf-8")
+        expect_refused("unrelated folder with .env", unrelated)
+        if not (unrelated / "main.py").exists():
+            failures.append("unrelated folder lost a file")
+
+        marked = tmp / "spike"
+        mark_work_dir(marked)
+        (marked / "leftover.txt").write_text("old run\n", encoding="utf-8")
+        if work_dir_state(marked) != "marked":
+            failures.append("marked folder not accepted")
+
+        forged = tmp / "forged"
+        forged.mkdir()
+        (forged / "data").write_text("x\n", encoding="utf-8")
+        (forged / WORK_MARKER).write_text("something else\n", encoding="utf-8")
+        expect_refused("marker with other contents", forged)
+
+        linked = tmp / "linked"
+        linked.mkdir()
+        (linked / "data").write_text("x\n", encoding="utf-8")
+        (linked / WORK_MARKER).symlink_to(marked / WORK_MARKER)
+        expect_refused("marker that is a symbolic link", linked)
+
+        link_dir = tmp / "link-to-spike"
+        link_dir.symlink_to(marked, target_is_directory=True)
+        expect_refused("work folder that is a symbolic link", link_dir)
+
+        if work_dir_state(tmp / "new") != "missing":
+            failures.append("missing folder not accepted")
+
+    for protected in (Path("/"), Path.home(), REPO_ROOT):
+        expect_refused(f"protected folder {protected}", protected)
+    return failures
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--work", type=Path, required=True,
-                        help="scratch directory; wiped and recreated")
+    parser.add_argument("--work", type=Path,
+                        help="scratch folder: new, empty, or marked by an earlier run; "
+                             "wiped and recreated")
     parser.add_argument("--port", type=int, default=18980)
     parser.add_argument("--app-image", default="compressatorium:smoke-latest",
                         help="Compressatorium image whose CLI converts the fixtures")
     parser.add_argument("--keep", action="store_true", help="leave the stack running")
+    parser.add_argument("--self-check", action="store_true",
+                        help="check the --work guard (no Docker needed) and exit")
     args = parser.parse_args()
-    spike = Spike(args.work.resolve(), args.port, args.app_image)
+    if args.self_check:
+        failures = self_check()
+        print("\n".join(failures) or "work folder guard: ok")
+        return 1 if failures else 0
+    if args.work is None:
+        parser.error("--work is required")
+    work_dir_state(args.work)
+    spike = Spike(args.work.absolute(), args.port, args.app_image)
     try:
         spike.run()
     finally:

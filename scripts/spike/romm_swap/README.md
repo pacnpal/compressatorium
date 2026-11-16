@@ -22,8 +22,15 @@ or title-id code, or before changing the swap.
 python3 scripts/spike/romm_swap/spike.py --work /tmp/romm-swap-spike
 ```
 
-`--work` is wiped and recreated; a non-empty folder an earlier run didn't make
-is refused. Everything the run creates lives there or in the compose
+`--work` must be a new or empty folder, or one an earlier run made. Each run
+writes a `.romm-swap-spike` marker into it (a fixed tag and a random id), and
+the folder is wiped and recreated only when that marker is a regular file with
+exactly those contents. Any other non-empty folder is refused, even one with a
+`.env`, and so are the filesystem root, your home folder, this repository and
+any folder holding one of them, marker or not.
+`python3 scripts/spike/romm_swap/spike.py --self-check` checks this guard
+without Docker (`tests/test_romm_swap_spike_workdir.py` runs it too).
+Everything the run creates lives there or in the compose
 project's named volumes (project `romm-swap-spike`, RomM on
 `127.0.0.1:18980`, `--port` to change it). The stack is torn down with
 `docker compose down -v` at the end; `--keep` leaves it up so you can look
