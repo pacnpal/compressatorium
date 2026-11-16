@@ -32,7 +32,7 @@ from services.job_manager import job_manager
 from services.lock_manager import lock_manager
 from services.mutation_guard import locked_for_mutation
 from services.tools import registry
-from routes.volume_guard import off_loop_bounded
+from routes.volume_guard import off_loop_bounded, off_loop_until_stalled
 from services.verification_store import verification_store
 from utils.junk import is_junk_entry
 from utils.path_utils import (
@@ -419,11 +419,14 @@ async def list_files(
 
     def scan_directory(
         target_path: str, show_archives_flag: bool, summarize_archives_flag: bool,
+        *, progress: Callable[..., None],
     ):
         entries = []
         try:
             # This outer try-except catches errors from os.listdir() itself
+            progress(target_path)
             for item in sorted(os.listdir(target_path)):
+                progress()
                 if is_junk_entry(item):
                     continue
                 item_path = os.path.join(target_path, item)
@@ -505,8 +508,10 @@ async def list_files(
             raise HTTPException(status_code=404, detail="Directory not found") from None
         return _fold_split_iso_entries(entries)
 
-    entries = await run_in_threadpool(
-        scan_directory, path, show_archives, summarize_archives,
+    # On a detached thread under a stall bound (#361): a frozen folder answers
+    # 503 instead of holding the request and a shared pool worker forever.
+    entries = await off_loop_until_stalled(
+        scan_directory, path, show_archives, summarize_archives, what="Listing a folder",
     )
 
     return DirectoryListing(volume=volume_name, path=path, entries=entries)
@@ -563,6 +568,7 @@ def scan_tree(
     also_reads: frozenset[str] | None = None,
     also_include: Callable[[str], bool] | None = None,
     unreadable: list[tuple[str, str]] | None = None,
+    progress: Callable[..., None] | None = None,
 ) -> tuple[list[dict], list[dict], list[str]]:
     """Every convertible thing under ``root_path``: the recursive search walk.
 
@@ -583,7 +589,11 @@ def scan_tree(
     verify: a numbered part of a split output). A folder
     that can't be read is skipped as always; with ``unreadable`` given, it is
     appended there as ``(path, reason)`` so a caller can report it.
+    ``progress``, when given, is told each folder before it is listed and
+    each entry after it is read, for a stall-bounded walk
+    (``off_loop_until_stalled``, #361).
     """
+    tick = progress or (lambda *_args: None)
     if purpose not in ("convert", "verify"):
         raise ValueError(f"unknown scan purpose {purpose!r}")
     include_verifiable = purpose == "verify"
@@ -603,7 +613,9 @@ def scan_tree(
         try:
             # Sorted for deterministic search order, matching scan_directory's
             # sorted walk above; raw readdir order varies by FS (issue #183).
+            tick(dir_path)
             for item in sorted(os.listdir(dir_path)):
+                tick()
                 if is_junk_entry(item):
                     continue
                 item_path = os.path.join(dir_path, item)
@@ -776,8 +788,10 @@ async def search_files(
     # Off the event loop and bounded (#327).
     await off_loop_bounded(_resolve_in_volumes, path, folder=True)
 
-    files, archives, archives_truncated = await run_in_threadpool(
-        scan_tree, path, recursive, include_archives,
+    # On a detached thread under a stall bound (#361): a frozen folder answers
+    # 503; a large tree that keeps moving is never cut off.
+    files, archives, archives_truncated = await off_loop_until_stalled(
+        scan_tree, path, recursive, include_archives, what="Searching a folder",
     )
 
     return {
@@ -962,7 +976,8 @@ async def delete_file(
 
     try:
         if is_dir:
-            contents = await run_in_threadpool(os.listdir, path)
+            # Bounded (#361): a frozen folder answers 503, not a hung request.
+            contents = await off_loop_bounded(os.listdir, path)
             if contents and not recursive:
                 # Non-empty without explicit opt-in: the UI re-requests with
                 # recursive=true after a second confirmation.
@@ -1034,9 +1049,12 @@ async def delete_files_batch(request: Request, payload: BulkDeleteRequest) -> di
                         "success": False,
                         "error": "Cannot delete a configured volume root",
                     }
-                # Only delete empty directories for safety
-                # os.listdir can be blocking
-                contents = await run_in_threadpool(os.listdir, path)
+                # Only delete empty directories for safety. Bounded (#361): a
+                # frozen folder fails this path, not the whole batch.
+                try:
+                    contents = await off_loop_bounded(os.listdir, path)
+                except HTTPException as exc:
+                    return {"path": path, "success": False, "error": exc.detail}
                 if contents:
                     return {
                         "path": path,

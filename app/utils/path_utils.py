@@ -10,7 +10,7 @@ import stat
 import sys
 import threading
 import time
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from pathlib import Path
 from typing import NamedTuple, Optional
 
@@ -857,6 +857,50 @@ def is_safe_directory_tree(path: str) -> bool:
             # something the traversal already guarantees.
 
     return not walk_errors
+
+
+def walk_tree(
+    top: str, progress: Callable[..., None],
+) -> Iterator[tuple[str, list[str], list[str]]]:
+    """``os.walk(top)`` that reports its progress, for a stall-bounded walk.
+
+    Yields ``(folder, dirs, files)`` top-down like ``os.walk``: a symlink to a
+    folder is listed in ``dirs`` but never walked into, and a folder that
+    cannot be read is skipped. ``progress(folder)`` is called before each
+    listing and ``progress()`` after every entry read, so
+    ``subprocess_runner.run_detached_until_stalled`` gives up only on a
+    listing that stopped answering (a frozen mount), never on a large tree
+    that keeps moving, and its message names the folder (#361). Blocking.
+    """
+    stack = [top]
+    while stack:
+        current = stack.pop()
+        progress(current)
+        dirs: list[str] = []
+        files: list[str] = []
+        walk_into: list[str] = []
+        try:
+            with os.scandir(current) as entries:
+                for entry in entries:
+                    progress()
+                    try:
+                        is_dir = entry.is_dir()
+                    except OSError:
+                        is_dir = False
+                    if not is_dir:
+                        files.append(entry.name)
+                        continue
+                    dirs.append(entry.name)
+                    try:
+                        is_link = entry.is_symlink()
+                    except OSError:
+                        is_link = True
+                    if not is_link:
+                        walk_into.append(entry.path)
+        except OSError:
+            continue
+        yield current, dirs, files
+        stack.extend(reversed(walk_into))
 
 
 def is_configured_volume_root(path: str, *, treat_archives: bool = True) -> bool:

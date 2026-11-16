@@ -54,13 +54,19 @@ from services.tools.base import ToolPlugin
 from services.subprocess_runner import (
     BATCH_STOPPED_MESSAGE,
     ReadCancelled,
+    Stalled,
     StorageAbandoned,
     bounded_path_check,
     collect_abandonment,
+    run_detached_until_stalled,
     stops_verify_batch,
 )
 from services.workload_limiter import WorkloadToken, workload_limiter
-from services.job_manager import ExternalJobCancelled, job_manager
+from services.job_manager import (
+    VOLUME_PROBE_TIMEOUT_SECONDS,
+    ExternalJobCancelled,
+    job_manager,
+)
 from services.maxcso import (
     MAXCSO_COMPRESS_EXTENSIONS,
     MAXCSO_DECOMPRESS_EXTENSIONS,
@@ -88,7 +94,7 @@ from services.z3ds_compress import (
 )
 from services.verification_store import record_check, verification_store
 from sse_starlette.sse import EventSourceResponse
-from utils.path_utils import is_within_configured_volumes, match_extension
+from utils.path_utils import is_within_configured_volumes, match_extension, walk_tree
 
 DOLPHIN_INFO_EXTENSIONS = DOLPHIN_CONVERTIBLE_EXTENSIONS
 
@@ -98,6 +104,11 @@ router = APIRouter()
 # Lock for scanning to prevent concurrent scans
 _scan_lock = asyncio.Lock()
 _is_scanning = False
+
+# How long the scan's file listing may go without reading one entry before
+# the folder it is in counts as stopped answering (#361). Reset on every
+# entry, so a large Library that keeps moving is never cut off.
+_WALK_STALL_SECONDS = VOLUME_PROBE_TIMEOUT_SECONDS
 
 
 def _verification_backpressure_detail() -> str:
@@ -389,16 +400,23 @@ async def scan_metadata_task(
     # archive under the configured volumes.
     scan_extensions = frozenset(registry.scannable_extensions()) - ARCHIVE_EXTENSIONS
 
-    def collect_scannable_paths():
-        """Collect all scannable output paths from volumes (runs in thread pool)."""
+    def collect_scannable_paths(*, progress):
+        """Collect all scannable output paths from volumes.
+
+        On a detached thread under a stall bound (#361): ``progress`` is
+        reported for every folder, entry and file, so a frozen mount ends the
+        walk at the bound and a large Library is never cut off.
+        """
         paths = []
         seen: set[str] = set()
         for volume in volumes:
+            progress(volume)
             if not os.path.exists(volume):
                 logger.warning("Volume not found, skipping: %s", volume)
                 continue
-            for root, _, files in os.walk(volume):
+            for root, _, files in walk_tree(volume, progress):
                 for file in files:
+                    progress()
                     # Cheap pre-filter on the (possibly symlink) name's suffix,
                     # compared as a real suffix not a string ending so a ".ciso"
                     # isn't admitted just because it ends with ".iso".
@@ -438,9 +456,29 @@ async def scan_metadata_task(
     scan_success: bool | None = False
     scan_error: str | None = None
     try:
-        # Run blocking filesystem traversal in thread pool
-        loop = asyncio.get_running_loop()
-        all_paths = await loop.run_in_executor(None, collect_scannable_paths)
+        # The walk runs on a detached thread, never a shared pool worker, and
+        # is given up on when it stops moving (a frozen mount) or on Cancel
+        # (#361), so neither holds `_is_scanning` or the scan lane.
+        try:
+            all_paths = await run_detached_until_stalled(
+                collect_scannable_paths,
+                stall=_WALK_STALL_SECONDS,
+                what="Listing the files to scan",
+                cancel_event=job_manager.get_cancel_event(scan_job_id),
+            )
+        except ReadCancelled:
+            raise ExternalJobCancelled() from None
+        except Stalled as exc:
+            where = exc.where or "a Volume"
+            logger.warning(
+                "Metadata scan: the folder %s stopped answering while its files "
+                "were listed (no answer in %gs); the scan stopped there",
+                where, exc.seconds,
+            )
+            raise RuntimeError(
+                f"The folder {where} stopped answering while the scan listed its "
+                f"files (no answer in {exc.seconds:g}s). Scan again once it answers."
+            ) from None
         total_files = len(all_paths)
         # The chdman-specific phases (info cache + disc ID) stay CHD-only; the
         # rest of the discovered outputs participate in DAT matching (Phase 3).

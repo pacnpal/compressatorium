@@ -1134,6 +1134,111 @@ async def run_detached_within_stall_bound(
         ) from exc
 
 
+class Stalled(RuntimeError):
+    """A detached call made no progress for its stall bound.
+
+    ``where`` is the last place it reported (the folder a walk was listing),
+    so the message can name what stopped answering.
+    """
+
+    def __init__(self, what: str, where: str | None, seconds: float) -> None:
+        self.what, self.where, self.seconds = what, where, seconds
+        at = f" at {where}" if where else ""
+        super().__init__(f"{what} stopped responding{at} (no progress in {seconds:g}s)")
+
+
+class ProgressAbandoned(RuntimeError):
+    """Raised inside a detached call by :class:`Progress` once its awaiter has
+    given up (a cancel, the stall bound): the call stops at its next step
+    instead of walking on for a result nobody reads."""
+
+
+class Progress:
+    """What a call run by :func:`run_detached_until_stalled` reports as it moves.
+
+    Call it after every step (each entry a walk reads): ``progress()`` notes
+    the time, ``progress(where)`` also notes where it is. Thread-safe. Raises
+    :class:`ProgressAbandoned` once the awaiter has given up.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._at = time.monotonic()
+        self._where: str | None = None
+        self._abandoned = False
+
+    def __call__(self, where: str | None = None) -> None:
+        with self._lock:
+            if self._abandoned:
+                raise ProgressAbandoned("the caller stopped waiting")
+            self._at = time.monotonic()
+            if where is not None:
+                self._where = where
+
+    def snapshot(self) -> tuple[float, str | None]:
+        with self._lock:
+            return self._at, self._where
+
+    def abandon(self) -> None:
+        with self._lock:
+            self._abandoned = True
+
+
+async def run_detached_until_stalled(
+    func: Callable,
+    *args: object,
+    stall: float,
+    what: str,
+    cancel_event: asyncio.Event | None = None,
+    **kwargs: object,
+) -> object:
+    """:func:`run_detached` bounded by *no progress*, not by its total time.
+
+    For a walk over a tree that may be large and healthy, or frozen: ``func``
+    is called as ``func(*args, progress=<Progress>, **kwargs)`` and reports
+    every step it takes. It is given up on only when ``stall`` seconds pass
+    with no report, so a big Library that keeps moving is never cut off, and a
+    listing blocked on a frozen mount ends at the bound. Then the thread is
+    abandoned (as ``run_detached`` does for a cancel; counted the same way)
+    and :class:`Stalled` names the last place reported. ``cancel_event`` is
+    raced as in ``run_detached`` (:class:`ReadCancelled` at once). Either way
+    the call is told to stop at its next step. ``stall <= 0`` means no bound.
+    """
+    progress = Progress()
+    finished = _Finished()
+    task = asyncio.ensure_future(
+        run_detached(
+            finished.wrap(func, args, {**kwargs, "progress": progress}),
+            cancel_event=cancel_event,
+        ),
+    )
+    try:
+        while True:
+            if stall <= 0:
+                return await task
+            at, where = progress.snapshot()
+            remaining = at + stall - time.monotonic()
+            if remaining > 0:
+                done, _pending = await asyncio.wait({task}, timeout=remaining)
+                if task in done:
+                    return task.result()
+                continue
+            settled, error, result = finished.snapshot()
+            if error is not None:
+                raise error  # it failed just as the bound ran out
+            if settled:
+                return result
+            raise Stalled(what, where, stall)
+    finally:
+        # Tell the call to stop at its next step, whatever ended the wait (a
+        # finished call never reads the flag again).
+        progress.abandon()
+        if not task.done():
+            task.cancel()  # run_detached notes the thread as abandoned
+            with contextlib.suppress(asyncio.CancelledError, ReadCancelled):
+                await task
+
+
 async def verify_preflight(
     path: str,
     extensions: frozenset[str] | set[str],

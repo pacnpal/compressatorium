@@ -614,6 +614,34 @@ reworded: a `TimeoutError` that fails at once (`ProbeCapacityExceeded`, an OS
 directory tables, a rename); a whole-file pass belongs under a size-scaled
 bound instead.
 
+**A walk over a tree is bounded by no progress, not by its total time (#361).**
+A Library can be large and healthy, or sit on a frozen mount, and a fixed bound
+either cuts off the first or waits too long on the second.
+`run_detached_until_stalled(func, *args, stall=..., what=..., cancel_event=...)`
+calls `func(*args, progress=<Progress>, **kwargs)` on a detached thread. The
+call reports every step: `progress()` after each entry, `progress(where)`
+before each folder. The wait ends only when `stall` seconds pass with no
+report, and then it raises `Stalled`, whose `where` names the last folder
+reported. A cancel raises `ReadCancelled` at once, as in `run_detached`.
+Either way the thread is abandoned, counted like any other, and the next
+`progress()` call inside it raises `ProgressAbandoned`, so a walk that is
+still moving stops instead of finishing for nobody. `stall <= 0` means no
+bound. `utils.path_utils.walk_tree(top, progress)` is the walk to use with
+it: `os.walk(top)` semantics (top-down, a symlinked folder listed but never
+walked into, unreadable folders skipped) built on `os.scandir`, reporting each
+folder and each entry. Callers:
+- The metadata scan's file listing (`routes/info.py`, `_WALK_STALL_SECONDS`).
+  A stall ends the scan as failed, with a warning naming the folder, and frees
+  `_is_scanning` and the `metadata_scan` lane, so a later scan can start.
+  Cancel ends it as cancelled.
+- Routes go through `routes.volume_guard.off_loop_until_stalled(func, *args,
+  what=...)`, which answers 503 on `Stalled` or a full probe ceiling with
+  `WALK_STALL_SECONDS` as the bound. The folder listing (`GET /files`) and the
+  recursive search (`GET /files/search`, `scan_tree(progress=...)`) use it.
+  The delete routes' one-folder emptiness check uses `off_loop_bounded`.
+- Folder Library walks (the Library platforms view, Findings, a Rule sweep)
+  already run on a detached thread under a fixed bound, so they are unchanged.
+
 If interrupting a step decides what gets cleaned up, base the cleanup on the
 step's *completed* outcome, recorded by the worker thread itself. xiso's final
 rename shares a small lock-guarded state with its worker:
