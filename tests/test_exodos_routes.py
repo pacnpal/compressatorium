@@ -75,3 +75,44 @@ async def test_web_verify_fails_a_corrupt_product_and_records_nothing(volume):
     assert result["valid"] is False
     assert "GAME.EXE" in result["message"]
     assert _recorded(volume["store"]) == []
+
+
+
+# --- a check that could not read the file is no verdict (#354, codex 4582164683)
+
+
+@pytest.mark.asyncio
+async def test_web_verify_that_cannot_read_the_file_records_nothing(volume, monkeypatch):
+    """An I/O error after the preflight (EACCES, EIO, a mount gone) reached
+    no verdict: the stored check is neither refreshed nor marked failed."""
+    from services.exodos import ExodosService
+
+    path = _product(volume["root"] / "Abaron (1995).dosz")
+
+    def unreadable(self, path, *args, **kwargs):
+        raise PermissionError(13, "Permission denied", path)
+
+    monkeypatch.setattr(ExodosService, "_check_product", unreadable)
+
+    result = await info_routes.verify_exodos(path=path)
+
+    assert result["valid"] is False
+    assert result.get("inconclusive") is True
+    assert _recorded(volume["store"]) == []
+    volume["store"].mark_failed.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_web_verify_of_a_corrupt_product_marks_it_failed(volume):
+    """A real format error is still a verdict on the file."""
+    path = volume["root"] / "Broken.dosz"
+    _product(path, compression=zipfile.ZIP_STORED)
+    raw = bytearray(path.read_bytes())
+    raw[raw.index(b"g" * 100) + 10] ^= 0xFF
+    path.write_bytes(bytes(raw))
+
+    result = await info_routes.verify_exodos(path=str(path))
+
+    assert result["valid"] is False
+    assert not result.get("inconclusive")
+    volume["store"].mark_failed.assert_awaited_once_with(str(path))

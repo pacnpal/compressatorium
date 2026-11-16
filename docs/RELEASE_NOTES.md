@@ -9,7 +9,9 @@
   a reader, or Verify in the file browser), the output now loses its Intact or
   Round-tripped badge, `/api/verified` stops listing it, and the delete
   confirmation warns again, as after a failed check Rule. The Source is still
-  kept. A check that times out or can't run leaves the badge as it was.
+  kept. A check that times out, can't run, or can't read the file (a
+  permission or disk error, a share that went away) leaves the badge as it
+  was; for an eXoDOS `.dosz` such an error used to count as a failed check.
 - **Dolphin WIA and GCZ conversions work** (#349). Every WIA and GCZ job failed
   with "Block size must be set for GCZ/RVZ/WIA", because only RVZ was given a
   block size. Each now gets Dolphin's own default: 2 MiB for WIA, 128 KiB for

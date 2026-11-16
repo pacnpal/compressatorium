@@ -3660,6 +3660,11 @@ class JobManager:
             return None
         if outcome.timed_out or outcome.cancelled:
             return KeptDeleteRetry(KEPT_KEPT, outcome.message or "the Round-trip did not finish")
+        if check_verdict(outcome.as_verify_result()) is False:
+            # The content differs: a real verdict on the output, recorded like
+            # a failed container check, so it no longer shows as Round-tripped
+            # (#351, CodeRabbit on job_manager.py:3663). The Source stays.
+            await verification_store.mark_failed(output_path)
         return KeptDeleteRetry(
             KEPT_STALE, f"the output no longer passes its Round-trip ({outcome.message})",
         )
@@ -4087,6 +4092,16 @@ class JobManager:
             raise VerifyUnanswered(
                 f"Verification could not be stopped: {verify_result.get('message')}"
             )
+        verdict = check_verdict(verify_result)
+        if verdict is None and not verify_result.get("uncheckable"):
+            # The verifier reached no verdict (its own bound ran out, the file
+            # could not be read): the same as the outer bound running out
+            # (CodeRabbit 4582189529). A job fails on it as before; a retried
+            # delete counts an attempt and tries again, never "stale". An
+            # uncheckable file stays a failed check: retrying cannot help.
+            raise VerifyUnanswered(
+                f"Verification reached no verdict: {verify_result.get('message')}"
+            )
         if not verify_result.get("valid"):
             # A real verdict that the output is bad is recorded the way every
             # re-check records one (`mark_failed`, `check_verdict`), so no
@@ -4094,7 +4109,7 @@ class JobManager:
             # it as checked, for every caller of this check (#351). No verdict
             # (a timeout, a Cancel, an abandoned or uncheckable verify) records
             # nothing.
-            if check_verdict(verify_result) is False:
+            if verdict is False:
                 await verification_store.mark_failed(output_path)
             raise RuntimeError(f"Verification failed: {verify_result.get('message')}")
         return verify_path
