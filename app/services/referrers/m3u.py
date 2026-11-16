@@ -519,6 +519,6 @@ class M3uReferrer(Referrer):
             updated, edits = _rewrite(path, original, directory, targets, strict=True)
             return updated if edits else None
 
-        rewrite_in_place(
-            path, rewrite, read=lambda p: _read(p), wait=PLAYLIST_LOCK_WAIT_SECONDS,
-        )
+        # `_read` is looked up here, on every apply, so a patched reader
+        # (the cross-process test's slow read) is the one used.
+        rewrite_in_place(path, rewrite, read=_read, wait=PLAYLIST_LOCK_WAIT_SECONDS)
