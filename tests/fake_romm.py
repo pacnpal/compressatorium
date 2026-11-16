@@ -22,6 +22,7 @@ key is served.
 from __future__ import annotations
 
 import json
+import os
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -76,6 +77,24 @@ class FakeRomm:
     def paths(self) -> list[str]:
         """The paths requested so far, in order, without query strings."""
         return [path.split("?", 1)[0] for _method, path in self.requests]
+
+    @staticmethod
+    def scan_platform(folder: str | os.PathLike) -> list[str]:
+        """What a RomM 5.4.1 library scan of one Platform folder would index.
+
+        The rule the swap spike observed (#382, ``docs/ROMM_INTEGRATION_ROADMAP.md``,
+        "3.0 spike findings"): every file is a ROM, dot-prefixed files included
+        (``.Probe PS2.chd.stage`` became a ROM row), and so is every folder (a
+        multi-file ROM) except a dot-prefixed one, which RomM skips. Excluded
+        extensions such as ``.tmp`` come from the user's ``config.yml``, so
+        none are excluded here: the worst case. Sorted names.
+        """
+        indexed = []
+        for entry in os.scandir(folder):
+            if entry.is_dir(follow_symlinks=False) and entry.name.startswith("."):
+                continue
+            indexed.append(entry.name)
+        return sorted(indexed)
 
     def heartbeat(self) -> dict[str, Any]:
         body: dict[str, Any] = {"SYSTEM": {"VERSION": self.version, "SHOW_SETUP_WIZARD": False}}

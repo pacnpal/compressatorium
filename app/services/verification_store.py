@@ -252,6 +252,11 @@ class VerificationStore:
     async def move(self, old_path: str, new_path: str) -> None:
         await run_in_threadpool(self._move_sync, old_path, new_path)
 
+    def move_blocking(self, old_path: str, new_path: str) -> None:
+        """:meth:`move`, blocking, for a caller that bounds it on its own
+        detached thread (placing a staged output, #398)."""
+        self._move_sync(old_path, new_path)
+
     # ------------------------------------------------------------------
 
     def _is_verified_sync(self, chd_path: str) -> bool:

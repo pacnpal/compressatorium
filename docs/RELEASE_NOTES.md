@@ -14,6 +14,18 @@
 
 ### Fixed
 
+- **A RomM scan during a conversion no longer makes a duplicate game** (#398).
+  RomM indexes every file in a Platform folder, even hidden ones, so a scan
+  that ran while a conversion was writing could add the half-written output
+  (or the tool's temp file) as a second game, which became a "missing" ghost
+  later. For Images in RomM's library, the conversion now writes into a
+  hidden `.compressatorium-stage` folder beside the Source, which RomM skips,
+  and moves the output into place only once its checks pass (or once it
+  finishes, when no check was asked for). An output that fails a check is
+  removed instead of being left beside the Source. A crash leaves the work
+  hidden, and the next start removes it, the same way it already removes a
+  half-written repack. Folder Libraries and folders outside any Library
+  convert exactly as before.
 - **RomM's `.romm_tmp_*` staging files are ignored everywhere** (#384). RomM's
   own converter stages work in names starting `.romm_tmp_`. They no longer show
   in the file browser or search, and the folder Library walk (so sweeps, check

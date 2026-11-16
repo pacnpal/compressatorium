@@ -10,6 +10,11 @@ from __future__ import annotations
 
 from pathlib import PurePosixPath
 
+# The hidden folder a conversion stages its output in beside the Source until
+# its checks pass (``services.staging``, #398). Never a library entry: RomM
+# skips dot-prefixed folders, and every listing and walk here hides it.
+STAGE_DIR_NAME = ".compressatorium-stage"
+
 # Exact names (lowercased).
 _JUNK_EXACT = frozenset({
     # macOS
@@ -25,6 +30,8 @@ _JUNK_EXACT = frozenset({
     "@eadir", "@tmp", "#recycle", "@recycle", ".@__thumb", "#snapshot",
     # Linux / *nix
     "lost+found", ".directory", ".trash",
+    # This app's own staging folder (#398)
+    STAGE_DIR_NAME,
 })
 # Prefix patterns for families with variable suffixes.
 # ``.romm_tmp_`` is RomM's own converter staging (``.romm_tmp_convert_<...>``):
