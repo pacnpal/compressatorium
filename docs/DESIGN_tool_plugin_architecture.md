@@ -758,18 +758,25 @@ Three rules follow for any code that runs a verifier:
 - **`post_convert` is best-effort about the disc ID, not about storage.** Its
   contract is that a disc-ID failure never fails the job, because a missing
   disc ID is cosmetic; it is logged as a warning naming the output, never
-  silently. An abandoned chdman child is not that: it says the output's storage
-  stopped answering, and every step after the hook reads that storage --
-  `_compute_output_size` is an unbounded `run_in_threadpool`, and
-  delete-on-verify spawns a verifier. So `JobManager` lets
-  `DiscIdStorageAbandoned` through to the handler that fails the job. Since
-  #352 chdman's hook spawns no chdman child at all (it records the Source's
-  disc ID in `chd_metadata_store`), but the rule stays for any hook that does.
+  silently. Storage that stopped answering is not that: every step after the
+  hook reads that storage (sizing the output, verify, delete). So the hook
+  raises `DiscIdStorageAbandoned` for it and `JobManager` lets that through to
+  the handler that fails the job, rather than spending each later bound on
+  storage known to be gone. Since #352 chdman's hook spawns no chdman child (it
+  records the Source's disc ID in `chd_metadata_store`); it raises when its
+  bounded read of the Source or its bounded stat of the output does not answer,
+  and only warns for an ordinary read error (`OSError`, `ValueError`) or a
+  database error (`SQLAlchemyError`, `RuntimeError`, `OSError`).
+- **The finish path is bounded (#352).** After the hook, `_process_job` sizes
+  the output (`_output_size_bounded`) and fingerprints it and the Source
+  (`_build_produced_meta`) through `run_detached_within_stall_bound`, the
+  conversion's no-progress bound. An output Volume that stops answering fails
+  the job with an error naming the file instead of holding its queue slot.
 - **Every disc-ID read is bounded (#352).** The disc ID is kept in
   `chd_metadata_store`, never in the CHD, and the reads that fill it are file
   reads on Volumes that may answer a cached `stat` and then block every read:
   - `disc_id.extract_from_chd` (the library scan's Phase 2 and `/api/info`)
-    reads the CHD's sectors and any companion file through `_bounded_disc_read`:
+    reads the CHD's sectors and any companion file through `bounded_disc_read`:
     `run_detached_bounded`, `_DISC_READ_TIMEOUT_SECONDS`, raced against the
     caller's `cancel_event` (Phase 2 passes the scan job's). Past the bound the
     thread is written off into the open `collect_abandonment` sink, a warning
@@ -780,13 +787,13 @@ Three rules follow for any code that runs a verifier:
     scan as cancelled, not failed. The scan's `_is_scanning` flag and
     `metadata_scan` lane are released either way.
   - `ChdmanTool.post_convert` reads the Source's disc ID (and checks the output
-    exists) in one call through `run_detached_within_stall_bound`, the
-    conversion's no-progress bound; past it, a warning names the file and the
-    job goes on.
+    exists) in one call through the same `bounded_disc_read`; past the bound,
+    `DiscIdStorageAbandoned` names the Source and the job fails (above).
   - `chd_metadata_store.is_disc_id_checked` / `mark_disc_id_checked` resolve
     and stat the file through `bounded_path_check`. A stat that does not answer
-    is "not checked" (the scan's own bounded read then decides) and is not
-    marked.
+    is "not checked" for the scan (its own bounded read then decides) and is
+    not marked; after a conversion, `post_convert` turns it into
+    `DiscIdStorageAbandoned` naming the output.
 - **One volume's failure stops the whole pass, deliberately.** A scan or batch is
   one user-initiated walk, and the loops do not resolve which configured volume
   each path belongs to, so the first abandonment ends all of it — including

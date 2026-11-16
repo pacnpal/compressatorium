@@ -178,10 +178,11 @@ async def test_cancel_during_a_stuck_disc_id_read_stops_the_scan(
 
 
 @pytest.mark.asyncio
-async def test_a_source_that_never_answers_does_not_hold_the_conversion(
-    tmp_path, monkeypatch, caplog,
+async def test_a_source_that_never_answers_ends_the_hook_with_storage_abandoned(
+    tmp_path, disc_id, monkeypatch, caplog,
 ):
-    from services import subprocess_runner
+    """The job manager fails the job on this, rather than hanging on the
+    storage in its next step (Codex 4582518760)."""
     from services.tools import registry
 
     chdman = registry.get("chdman")
@@ -193,15 +194,16 @@ async def test_a_source_that_never_answers_does_not_hold_the_conversion(
         return None
 
     monkeypatch.setattr(plugin_mod, "extract_from_source", blocked)
-    monkeypatch.setattr(subprocess_runner.settings, "progress_timeout", 1)
-    monkeypatch.setattr(subprocess_runner, "_MIN_STALL_TIMEOUT", 1)
+    monkeypatch.setattr(disc_id, "_DISC_READ_TIMEOUT_SECONDS", 0.3)
     src = tmp_path / "Game.iso"
     src.write_bytes(b"x")
     out = tmp_path / "Game.chd"
     out.write_bytes(b"MComprHD")
 
     try:
-        with caplog.at_level(logging.WARNING):
+        with caplog.at_level(logging.WARNING), pytest.raises(
+            disc_id.DiscIdStorageAbandoned, match="Game.iso",
+        ):
             await asyncio.wait_for(
                 chdman.post_convert(str(src), str(out), "createdvd"), BOUND,
             )
@@ -209,7 +211,7 @@ async def test_a_source_that_never_answers_does_not_hold_the_conversion(
         release.set()
 
     assert any(
-        "Game.chd" in r.getMessage()
+        "Game.iso" in r.getMessage()
         for r in caplog.records if r.levelno >= logging.WARNING
     )
 

@@ -139,7 +139,7 @@ def test_a_source_read_error_is_a_warning_not_a_failed_job(
 ):
     """Best effort, but never silent: the job goes on and the log says why."""
     def _boom(path, **_kwargs):
-        raise RuntimeError("source unreadable")
+        raise OSError("source unreadable")
 
     monkeypatch.setattr(chdman_mod, "extract_from_source", _boom)
 

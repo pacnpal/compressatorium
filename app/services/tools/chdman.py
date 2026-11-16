@@ -12,18 +12,21 @@ import re
 from collections.abc import AsyncGenerator, Sequence
 from pathlib import Path
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from logging_setup import get_logger
 from models import CHDInfo, OutputStatus
 from services.chdman import CHDMAN_CONVERTIBLE_EXTENSIONS, chdman_service
-from services.disc_id import disc_platform, extract_from_source
+from services.disc_id import (
+    DiscIdStorageAbandoned,
+    bounded_disc_read,
+    disc_platform,
+    extract_from_source,
+)
 from services.disk import InsufficientDiskSpace, headroom_scratch_dir
 from services.file_hasher import compute_files_sha1_sync
 from services.lock_manager import lock_manager
-from services.subprocess_runner import (
-    ReadCancelled,
-    run_detached,
-    run_detached_within_stall_bound,
-)
+from services.subprocess_runner import ReadCancelled, run_detached
 from utils.disc_sheet import read_disc_sheet
 from utils.sheet_text import sheet_track_list
 
@@ -306,10 +309,13 @@ class ChdmanTool(BaseTool):
         CHD this app makes (#352). No chdman process runs here.
 
         Only ``createcd`` / ``createdvd`` carry a disc serial, so every other
-        chdman mode is a no-op. Best effort: a failure never fails the job, and
-        it is logged as a warning naming the output, so a missing disc ID is
-        never silent. Without a record, the scan and ``/api/info`` still read
-        the ID from the CHD's own sectors later.
+        chdman mode is a no-op. Best effort about the disc ID, not about
+        storage: a read or database failure never fails the job and is logged
+        as a warning naming the file (without a record, the scan and
+        ``/api/info`` read the ID from the CHD's own sectors later). Storage
+        that stops answering is different: every step after this hook reads
+        the same files, so ``DiscIdStorageAbandoned`` propagates and the job
+        manager fails the job instead of hanging it (#268).
 
         ``within``: the trusted root an archive-extracted source sits under
         (the worker's extraction dir); None means the configured Volumes. A
@@ -321,16 +327,16 @@ class ChdmanTool(BaseTool):
         if Path(output_path).suffix.lower() != ".chd":
             return
         try:
-            # One detached read, bounded by the conversion's no-progress
-            # timeout like every other pre-/post-subprocess read (#352): a
-            # Source or output Volume that stops answering ends this, not the
+            # One detached read through the shared disc-ID seam (#352): a
+            # Source or output Volume that stops answering raises
+            # DiscIdStorageAbandoned (not caught here) instead of holding the
             # job and the queue slot behind it.
-            outcome, disc_info = await run_detached_within_stall_bound(
+            outcome, disc_info = await bounded_disc_read(
                 _read_source_disc_id, input_path, output_path, within,
-                what="Reading the disc ID from the Source",
+                path=input_path, cancel_event=None,
             )
-        except Exception:
-            # Best effort, but never silent: the job goes on without it.
+        except (OSError, ValueError):
+            # An ordinary read failure: best effort, but never silent.
             logger.warning(
                 "Disc ID not read from %s for %s", input_path, Path(output_path).name,
                 exc_info=True,
@@ -541,21 +547,33 @@ async def _record_disc_id(output_path: str, game_id: str, title: str | None) -> 
     """Store a converted CHD's disc ID in the app's database, or say why not.
 
     Marks the output as checked too, so the library scan's disc-ID phase skips
-    it. A failure is a warning naming the output and the serial, never a failed
-    job: the scan reads the ID from the CHD later.
+    it. A database failure is a warning naming the output and the serial, never
+    a failed job: the scan reads the ID from the CHD later. The output's own
+    stat not answering (``mark_disc_id_checked``'s bounded probe) is not that:
+    the output's storage has stopped answering, so ``DiscIdStorageAbandoned``
+    is raised for the job to fail on.
     """
     from services.chd_metadata_store import chd_metadata_store
 
+    name = Path(output_path).name
     try:
         await chd_metadata_store.update_disc_id_info(output_path, game_id, title)
         await chd_metadata_store.mark_disc_id_checked(output_path)
-    except Exception:
+    except asyncio.TimeoutError as exc:
+        # Before the OSError arm: asyncio.TimeoutError is the built-in
+        # TimeoutError, an OSError.
+        logger.error("Recording the disc ID of %s: its storage did not answer", name)
+        raise DiscIdStorageAbandoned(
+            f"recording the disc ID of {name}: the output's storage did not "
+            "answer, so the job stops before reading it again"
+        ) from exc
+    except (SQLAlchemyError, RuntimeError, OSError):
         logger.warning(
             "Disc ID %r not recorded for %s; the library scan will read it from "
-            "the CHD", game_id, Path(output_path).name, exc_info=True,
+            "the CHD", game_id, name, exc_info=True,
         )
         return
-    logger.info("Recorded disc ID %r for %s", game_id, Path(output_path).name)
+    logger.info("Recorded disc ID %r for %s", game_id, name)
 
 
 def _logical_bytes(info: dict) -> int:

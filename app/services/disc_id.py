@@ -97,7 +97,7 @@ def _abort_if_abandoned(abandoned: list, action: str, chd_path: str) -> None:
 
 _DUMPMETA_TIMEOUT_SECONDS = 15
 # The bound on one blocking disc-ID read of a CHD or its companion file
-# (``_bounded_disc_read``). The reads are small (a few hunks, a header), so a
+# (``bounded_disc_read``). The reads are small (a few hunks, a header), so a
 # Volume that takes this long is not answering.
 _DISC_READ_TIMEOUT_SECONDS = 30.0
 
@@ -1256,7 +1256,7 @@ async def extract_from_chd(
     ``platform``. Returns None if no ID could be found.
 
     Every file read is bounded and raced against *cancel_event*
-    (``_bounded_disc_read``): storage that does not answer raises
+    (``bounded_disc_read``): storage that does not answer raises
     ``DiscIdStorageAbandoned`` and a cancel raises ``ReadCancelled``, so the
     caller never hangs on it and never caches an outcome for a file it did not
     read.
@@ -1264,7 +1264,7 @@ async def extract_from_chd(
     # --- Strategy 1: read disc sectors directly (like PCSX2 / AetherSX2) ----
     # For DVD CHDs (unit_bytes=2048) this reads SYSTEM.CNF / PARAM.SFO from
     # the CHD's own ISO 9660 filesystem without any extraction pass.
-    disc_result = await _bounded_disc_read(
+    disc_result = await bounded_disc_read(
         _extract_from_chd_sectors, chd_path, path=chd_path, cancel_event=cancel_event,
     )
     if disc_result and disc_result.get("game_id"):
@@ -1295,7 +1295,7 @@ async def extract_from_chd(
         logger.debug("disc_id: Strategy 2 (GDRO) tag not found in %s", chd_path)
 
     # --- Strategy 3: companion source file -----------------------------------
-    res = await _bounded_disc_read(
+    res = await bounded_disc_read(
         _companion_disc_id, chd_path, path=chd_path, cancel_event=cancel_event,
     )
     if res:
@@ -1322,11 +1322,13 @@ def _companion_disc_id(chd_path: str) -> Optional[dict]:
     return None
 
 
-async def _bounded_disc_read(
+async def bounded_disc_read(
     func, *args, path: str, cancel_event: asyncio.Event | None,
 ):
     """Run a blocking disc-ID read of *path* off the loop, bounded and cancellable.
 
+    The one seam for disc-ID reads: ``extract_from_chd`` (library scan,
+    ``/api/info``) and ``ChdmanTool.post_convert`` both read through it.
     Through ``run_detached_bounded``: a disposable thread, at most
     ``_DISC_READ_TIMEOUT_SECONDS``, raced against *cancel_event*. A Volume that
     answers a cached ``stat`` and then blocks every read holds neither the loop,
