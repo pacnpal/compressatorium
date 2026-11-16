@@ -34,6 +34,7 @@ import os
 import re
 from collections.abc import Callable, Iterable
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -43,6 +44,14 @@ from models import ConversionMode, JobStatus
 from services import findings, image_checks, notifications, subprocess_runner
 from services.image_sets import image_fingerprint
 from services.job_manager import (
+    KEPT_DELETED,
+    KEPT_KEPT,
+    KEPT_STALE,
+    KEPT_STARTED,
+    KEPT_STOPPED,
+    KEPT_UNKNOWN,
+    SOURCE_KEPT_FOR_READERS,
+    KeptDeleteRetry,
     OutputClaimedError,
     QueueBackpressureError,
     job_manager,
@@ -51,6 +60,7 @@ from services.output_conflicts import (
     QUEUE,
     SKIP_EXISTING,
     SKIP_LOCKED,
+    is_renamed_from,
     resolve_destination,
 )
 from services.rules import check as checks
@@ -69,6 +79,7 @@ from services.rules.rules import (
     CHECK,
     CONVERT,
     RULE_KINDS,
+    OUTPUT_IDENTITY_FIELDS,
     _output_identity,
     _validation_paused,
     effective_check_level,
@@ -93,6 +104,18 @@ logger = get_logger("romm_auto")
 # unresponsive. Generous for a healthy mount (these are a resolve and two
 # stats) and short enough that a dead one costs a sweep rather than a restart.
 _CANDIDATE_PROBE_SECONDS = 30
+
+# Sources a Rule's delete step kept because another job was reading them
+# (#329), by Platform in the Rule state: ``{image key: {"source", "output",
+# "job_id", "kept_at", "attempts", ...}}``. Each later sweep retries the
+# delete step for them (``job_manager.retry_kept_delete``); one a reader holds
+# again is retried up to KEPT_DELETE_MAX_ATTEMPTS times, then dropped with a
+# ``source_kept`` Finding. At most KEPT_DELETES_PER_SWEEP are tried a sweep.
+KEPT_SOURCES = "kept_sources"
+KEPT_DELETE_MAX_ATTEMPTS = 10
+KEPT_DELETES_PER_SWEEP = 25
+# How long recording a delete a cancel stopped may take: the cancel waits on it.
+_CANCEL_RECORD_SECONDS = 10
 # How long the save-time output-directory validation may take. Generous: it
 # resolves each candidate and stats every configured volume, and a healthy
 # local mount answers instantly. See `normalize_rules_bounded`.
@@ -175,6 +198,10 @@ _active_check_runs: set[tuple[str, str]] = set()
 # by `_mark_converted`; see there. Bounded by the same thing that bounds
 # `_job_owners`: one entry per queued conversion, removed when it is applied.
 _late_verdicts: dict[str, bool] = {}
+# What each owned job's delete was decided under, stamped when it was queued:
+# ``(_delete_decision_identity, decision generation)``. A job that ends after
+# either moved records no pending delete (#329).
+_job_decision: dict[str, tuple[dict, int]] = {}
 
 
 async def get_rules(library: Library, kind: str = CONVERT) -> dict[str, dict]:
@@ -360,7 +387,38 @@ async def set_rules(library: Library, raw: Any, *, strict: bool = False) -> dict
         # to notice, because a retry compares the new rule with itself and
         # computes no stale platform at all. Recoverable beats silent.
         if stale:
+            # Its pending deletes too: they were decided under the former output.
             await forget_converted_locked(library, stale)
+        # A change to anything else the delete is decided on (deleting at all,
+        # the check level) invalidates the pending deletes, not the history.
+        redecided = [
+            pid for pid in previous if pid not in stale
+            and _delete_decision_identity(previous[pid], library)
+            != _delete_decision_identity(rules.get(pid), library)
+        ]
+        if redecided:
+            state = await get_state(library)
+            await _invalidate_decisions(library, state, redecided)
+            await store.write(store.STATE_KEY, library, state)
+        # Any change at all moves the Platform's Rule revision on: a pending
+        # delete being tried right now is re-planned, never deleted, under a
+        # Rule it was not planned for (codex 4580441297). Only a Platform with
+        # pending deletes can have one being tried, so no other state moves.
+        revised = sorted(
+            pid for pid in {*previous, *rules} if previous.get(pid) != rules.get(pid)
+        )
+        if revised:
+            state = await get_state(library)
+            pending = [
+                pid for pid in revised
+                if isinstance(state.get(pid), dict) and state[pid].get(KEPT_SOURCES)
+            ]
+            for pid in pending:
+                entry = dict(state[pid])
+                entry[RULE_REVISION] = _rule_revision(entry) + 1
+                state[pid] = entry
+            if pending:
+                await store.write(store.STATE_KEY, library, state)
         await store.write(store.RULES_KEY, library, rules)
         return rules
 
@@ -380,11 +438,23 @@ async def forget_converted(
 
 async def forget_converted_locked(
     library: Library, platform_ids: list[str] | None = None,
+    *, owner: str | None = None,
 ) -> int:
-    """:func:`forget_converted` for a caller already inside :func:`paused`."""
+    """:func:`forget_converted` for a caller already inside :func:`paused`.
+
+    The one point that invalidates what a Rule decided for its Images: the
+    converted history, the failed holds, and the Sources kept for a reader
+    that are waiting to be deleted (#329). Every invalidation goes through
+    here (or :func:`_invalidate_decisions`, which this calls): Forget history,
+    a Rule's retarget or delete change (``set_rules``), RomM's identity
+    cleanup, a Library's removal (``forget_library``). *owner* is where a
+    started delete's Finding goes when the Library will not hold it
+    (``findings.NO_LIBRARY``: RomM's identity cleanup drops its own).
+    """
     state = await get_state(library)
     targets = (
-        [str(p) for p in platform_ids] if platform_ids is not None else list(state)
+        [str(p) for p in platform_ids] if platform_ids is not None
+        else sorted({*state, *(await get_rules(library))})
     )
     cleared = 0
     for pid in targets:
@@ -400,7 +470,9 @@ async def forget_converted_locked(
             entry.pop("failed", None)
             state[pid] = entry
             cleared += 1
-    if cleared:
+    # Every decision made for these Platforms is invalid now, pending deletes
+    # and jobs still running alike (the generation moves on).
+    if await _invalidate_decisions(library, state, targets, owner=owner) or cleared:
         await store.write(store.STATE_KEY, library, state)
     return cleared
 
@@ -424,15 +496,36 @@ async def forget_library(library: Library) -> None:
     written back either.
     """
     async with _sweep_lock:
+        # A started delete is reported before its entry goes, under no
+        # Library: this one's Findings are dropped with it.
+        state = await get_state(library)
+        await _invalidate_decisions(library, state, list(state), owner=findings.NO_LIBRARY)
         _generations[library.id] = _generations.get(library.id, 0) + 1
         for job_id, owner in list(_job_owners.items()):
             if owner[0].id == library.id:
                 _job_owners.pop(job_id, None)
+                _job_decision.pop(job_id, None)
+                await _orphan_job(library, owner[2], job_manager.jobs.get(job_id))
         for key in [k for k in _unreadable if k[0] == library.id]:
             _unreadable.pop(key, None)
         for kind in RULE_KINDS:
             await store.write(store.rules_key(kind), library, {})
             await store.write(store.state_key(kind), library, {})
+
+
+async def _orphan_job(library: Library, image_key: str, job) -> None:
+    """A job of a Library being removed has no sweep owner any more (codex
+    4580441301): it reports its own partial delete from now on, under no
+    Library, and one it already handed over is reported here, since its
+    owner will not take it."""
+    if job is None:
+        return
+    job._sweep_owner = None
+    unfinished = getattr(job, "_unfinished_delete", None)
+    if unfinished:
+        await _report_unfinished(
+            library, image_key, job, list(unfinished), owner=findings.NO_LIBRARY,
+        )
 
 
 async def get_state(library: Library, kind: str = CONVERT) -> dict[str, dict]:
@@ -743,12 +836,26 @@ async def note_job_finished(job) -> None:
     # `_mark_converted` indexes every one of those. So a miss means the job is
     # not ours, and there is nothing to write.
     owner = _job_owners.pop(job_id, None)
+    decision = _job_decision.pop(job_id, None)
     if owner is None:
         return
     library, platform_id, rom_id, identity, queued_fingerprint = owner
     done = status == JobStatus.COMPLETED
     # Captured before any await; see `_generations`.
     generation = _generations.get(library.id, 0)
+    unfinished = getattr(job, "_unfinished_delete", None)
+    if unfinished:
+        # Its delete stopped part way: finish it like a kept Source, from the
+        # files still to remove (codex 4580227623).
+        await _remember_kept_source(
+            library, platform_id, rom_id, job, generation, decision,
+            unfinished=list(unfinished),
+        )
+    elif (
+        done and getattr(job, "delete_on_verify", False)
+        and getattr(job, "warning", None) == SOURCE_KEPT_FOR_READERS
+    ):
+        await _remember_kept_source(library, platform_id, rom_id, job, generation, decision)
     if (
         FAILED_HOLD in library.capabilities and status != JobStatus.CANCELLED
         and await _same_rule(library, platform_id, identity)
@@ -789,6 +896,630 @@ async def note_job_finished(job) -> None:
         record["done"] = done
         state[platform_id]["converted"][rom_id] = record
         await store.write(store.STATE_KEY, library, state)
+
+
+async def _remember_kept_source(
+    library: Library, platform_id: str, image_key: str, job, generation: int,
+    decision: tuple[dict, int] | None, *, unfinished: list[str] | None = None,
+) -> None:
+    """Note a Source the delete step kept for a reader, for a later sweep to
+    retry (#329). Any Library: it needs no converted history.
+
+    *decision* is what the job's delete was decided under, stamped when it was
+    queued: the delete decision identity and the decision generation. Recorded
+    only while both still hold, checked under ``_sweep_lock``: a job that ends
+    after its Rule, its Library or its history changed (a retarget, a new
+    check level, Forget history, RomM's identity cleanup) records nothing
+    (codex 4579636593, 4579636594).
+
+    *unfinished* is a delete that stopped part way: the files still to
+    remove. Recorded as ``state: deleting`` to be finished; when it cannot be
+    recorded it is reported (a ``source_kept`` Finding), never dropped.
+    """
+    if decision is None:
+        if unfinished:
+            await _report_unfinished(library, image_key, job, unfinished)
+        return  # not decided by a Rule this process queued: never retried
+    identity, queued_generation = decision
+    pending = {
+        "source": getattr(job, "file_path", None),
+        "output": getattr(job, "output_path", None),
+        "job_id": getattr(job, "id", None),
+        "kept_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "attempts": 0,
+        "decision": identity,
+        "decision_generation": queued_generation,
+    }
+    if unfinished:
+        pending.update({"state": KEPT_DELETING, "planned": list(unfinished)})
+    if not pending["source"] or not pending["output"]:
+        return
+    recorded = False
+    async with _sweep_lock:
+        if _generations.get(library.id, 0) != generation:
+            # Removed meanwhile: nothing goes back into its state, and a
+            # started delete is reported under no Library (codex 4580441301).
+            if unfinished:
+                await _report_unfinished(
+                    library, image_key, job, unfinished, owner=findings.NO_LIBRARY,
+                )
+            return
+        state = await get_state(library)
+        entry = dict(state.get(platform_id) or {})
+        rule = (await get_rules(library)).get(platform_id)
+        if (
+            # Invalidated, or the Rule or the Library changed meanwhile.
+            _decision_generation(entry) == queued_generation
+            and _delete_decision_identity(rule, library) == identity
+        ):
+            kept = dict(entry.get(KEPT_SOURCES) or {})
+            kept[str(image_key)] = pending
+            entry[KEPT_SOURCES] = kept
+            state[platform_id] = entry
+            await store.write(store.STATE_KEY, library, state)
+            recorded = True
+    if unfinished and not recorded:
+        await _report_unfinished(library, image_key, job, unfinished)
+
+
+async def _report_unfinished(
+    library: Library, image_key: str, job, unfinished: list[str],
+    *, owner: str | None = None,
+) -> None:
+    """A part-deleted Source no pending delete can finish: say so (under
+    *owner* ``findings.NO_LIBRARY`` once its Library is gone)."""
+    await _report_started_delete(
+        library, image_key,
+        {"source": getattr(job, "file_path", None), "output": getattr(job, "output_path", None)},
+        "its delete can no longer be finished", unfinished, owner=owner,
+    )
+
+
+# Every Rule field that decides whether a delete is allowed (#329): what the
+# job produces (``OUTPUT_IDENTITY_FIELDS``), whether it deletes at all, and
+# the check it must pass first. ``_delete_decision_identity`` adds the
+# effective check level and the Library.
+DELETE_DECISION_FIELDS = (*OUTPUT_IDENTITY_FIELDS, "delete_on_verify", "check_level")
+DECISION_GENERATION = "decision_generation"
+# A Platform's Rule revision, in its Rule state entry: moved on by every
+# `set_rules` change to that Platform's Rule, whatever the field (codex
+# 4580441297). A pending delete tried off `_sweep_lock` deletes only while it
+# is the one the try was planned under, so no field (a selection filter
+# included) can change under a delete unnoticed.
+RULE_REVISION = "rule_revision"
+
+
+def _rule_revision(entry: dict | None) -> int:
+    """A Platform's Rule revision, from its Rule state entry."""
+    try:
+        return int((entry or {}).get(RULE_REVISION) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _delete_decision_identity(rule: dict | None, library: Library) -> dict:
+    """Every input to a Rule's delete decision, for a pending delete (#329).
+
+    The Rule's ``DELETE_DECISION_FIELDS``, the check its job passes before
+    deleting as the registry answers it now (``effective_check_level``), and
+    the Library (``_library_identity``). A kept Source is deleted only while
+    this is unchanged.
+    """
+    rule = rule or {}
+    return {
+        "rule": {field: rule.get(field) for field in DELETE_DECISION_FIELDS},
+        "check": effective_check_level(rule) if rule else None,
+        "library": _library_identity(library),
+    }
+
+
+def _decision_generation(entry: dict | None) -> int:
+    """A Platform's decision generation, from its Rule state entry."""
+    try:
+        return int((entry or {}).get(DECISION_GENERATION) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+async def _invalidate_decisions(
+    library: Library, state: dict, platform_ids, *, owner: str | None = None,
+) -> bool:
+    """Move each Platform's decision generation on and drop its pending
+    deletes, in *state* (written by the caller). True when anything changed.
+
+    A pending delete that has not started is dropped as it is: the Source is
+    whole. One whose unlinks began (``deleting``) is reported first, with the
+    files it left (codex 4580328581), under *owner* when the Library itself
+    will not hold the Finding (its removal, RomM's identity cleanup).
+    """
+    for pid in platform_ids:
+        entry = dict(state.get(str(pid)) or {})
+        for image_key, pending in dict(entry.get(KEPT_SOURCES) or {}).items():
+            if isinstance(pending, dict) and pending.get("state") == KEPT_DELETING:
+                await _report_started_delete(
+                    library, image_key, pending,
+                    "the Rule or Library its delete was decided under changed",
+                    [str(path) for path in pending.get("planned") or []],
+                    owner=owner,
+                )
+        entry[DECISION_GENERATION] = _decision_generation(entry) + 1
+        entry.pop(KEPT_SOURCES, None)
+        state[str(pid)] = entry
+    return bool(platform_ids)
+
+
+# What the sweep's own plan says of a pending delete's Source (`_current_plan`).
+PLAN_SAME = "same"  # selected, and converted by this Rule to the same output
+PLAN_OTHER = "other"  # not selected, or planned differently: never delete it
+PLAN_UNANSWERED = "unanswered"  # could not be read now: an attempt
+
+
+def _planned_delete(image: Image, rule: dict, tool, spec, source: str, output: str) -> str:
+    """The sweep's own plan for *image* under *rule*, set against a pending
+    delete of *source* to *output*. Blocking.
+
+    ``_inspect_candidate`` is the function the sweep decides with: name, size
+    and match filters, containment, the mode's input check, the Source's
+    companions, and the destination the Rule maps it to. The output exists by
+    now, so the destination is asked as ``overwrite`` would (where this Rule
+    writes it, not whether to write it again); the duplicate policy itself is
+    a decision-identity input. Under the ``rename`` policy the output may be
+    the numbered sibling the rename gave that destination (``Game_1.rvz``,
+    ``is_renamed_from``, codex 4580078019); ``overwrite`` and ``skip`` take
+    the destination exactly. Either way the retry then requires the check
+    record of that very output to name this Source.
+    """
+    plan = _inspect_candidate(
+        image, {**rule, "duplicate_action": "overwrite"}, tool, spec, None,
+    )
+    if plan["skip"] == SKIP_LOCKED:
+        return PLAN_UNANSWERED  # the output is busy right now: ask again later
+    if plan["skip"] is not None or not plan["destination"] or not plan["path"]:
+        return PLAN_OTHER
+    planned = os.path.realpath(plan["destination"])
+    recorded = os.path.realpath(output)
+    same_output = recorded == planned or (
+        rule["duplicate_action"] == "rename"
+        and is_renamed_from(recorded, planned, rule["mode"])
+    )
+    same = same_output and os.path.realpath(plan["path"]) == os.path.realpath(source)
+    return PLAN_SAME if same else PLAN_OTHER
+
+
+async def _current_plan(
+    library: Library, platform_id: str, rule: dict, image_key: str, pending: dict,
+    listings: dict, stopping: Callable[[], bool],
+) -> str:
+    """Whether the sweep, planning now, would still convert this kept Source
+    to the same output with its delete on: ``PLAN_SAME``, ``PLAN_OTHER`` or
+    ``PLAN_UNANSWERED``. Lists the Platform's Images once (*listings*) and asks
+    the sweep's own ``_inspect_candidate``, both bounded and off the loop."""
+    try:
+        spec = registry.spec(rule["mode"])
+        tool = registry.for_mode(rule["mode"])
+    except KeyError:
+        return PLAN_OTHER
+    if platform_id not in listings:
+        listings[platform_id] = await _list_images(
+            library, platform_id, {"errors": [], "stopped_reason": None}, stopping,
+        )
+    images = listings[platform_id]
+    if images is None:
+        return PLAN_UNANSWERED
+    image = next((i for i in images if str(i.key) == image_key), None)
+    if image is None or not registry.mode_allows_platform(rule["mode"], image.platform):
+        return PLAN_OTHER
+    return await _probe(
+        _planned_delete, image, rule, tool, spec,
+        str(pending.get("source") or ""), str(pending.get("output") or ""),
+        default=PLAN_UNANSWERED,
+    )
+
+
+KEPT_DELETING = "deleting"  # a pending delete's state once its unlinks began
+
+
+async def _report_kept_source(
+    library: Library, image_key: str, pending: dict, reason: str, path: str,
+) -> None:
+    """File the ``source_kept`` Finding for a pending delete that never
+    started, given up on (its Source is whole)."""
+    await _file_kept_finding(library, findings.Observed(
+        kind=findings.SOURCE_KEPT, image_key=str(image_key), path=path, reason=reason,
+        cause={"source": pending.get("source"), "output": pending.get("output")},
+    ))
+
+
+async def _report_started_delete(
+    library: Library, image_key: str, pending: dict, why: str, left: list[str],
+    *, owner: str | None = None,
+) -> None:
+    """The one Finding for a started delete that will not be finished: the
+    output no longer stands, a Rule or Library change invalidated it, or it
+    ran out of tries (``findings.started_delete``, which names the files
+    left). *owner* ``findings.NO_LIBRARY`` files it under no Library, keyed by
+    the Source's path: a Library's Image key means nothing without it."""
+    source = pending.get("source")
+    if owner == findings.NO_LIBRARY:
+        image_key = str(source or image_key)
+    await _file_kept_finding(library, findings.started_delete(
+        image_key, source=source, output=pending.get("output"), why=why, left=left,
+    ), owner=owner)
+
+
+async def _file_kept_finding(
+    library: Library, item: findings.Observed, *, owner: str | None = None,
+) -> None:
+    """Write *item* under *library*, bound to its generation (codex
+    4580078026), or under *owner* ``findings.NO_LIBRARY``, bound to none."""
+    if owner == findings.NO_LIBRARY:
+        await _probe(findings.observe, owner, item, default=None)
+        return
+    generation = _generations.get(library.id, 0)
+    await _probe(
+        functools.partial(
+            findings.observe,
+            current=lambda: _generations.get(library.id, 0) == generation,
+        ),
+        library.id, item, default=None,
+    )
+
+
+async def _kept_outcome(
+    library: Library, image_key: str, pending: dict, outcome: KeptDeleteRetry,
+    result: dict,
+) -> dict | None:
+    """What one pending delete becomes after *outcome*: the entry to keep, or
+    None when it goes (deleted, given up on, or no longer standing).
+
+    A started delete (``deleting``, or an outcome saying it started) that
+    will not be finished is reported with the files it left
+    (``_report_started_delete``); a whole Source given up on at the attempt
+    cap gets the ``source_kept`` Finding as well.
+    """
+    deleting = pending.get("state") == KEPT_DELETING
+    planned = [str(path) for path in pending.get("planned") or []]
+    if outcome.status == KEPT_DELETED:
+        result["kept_sources_deleted"] = result.get("kept_sources_deleted", 0) + 1
+        return None
+    if outcome.status in (KEPT_UNKNOWN, KEPT_STARTED):
+        # The delete started: the unlinks outlived the wait (the worker
+        # removes the rest of the plan), one failed after another succeeded,
+        # or a cancel stopped it. Not an attempt; the next sweep finishes it
+        # from the recorded plan, not a new one (codex 4580176201, 4580227623).
+        return {
+            **pending, "state": KEPT_DELETING,
+            "planned": list(outcome.planned) or planned, "last_reason": outcome.reason,
+        }
+    if outcome.status == KEPT_STALE:
+        if deleting:
+            # The output no longer stands: the files left stay, and say so.
+            await _report_started_delete(
+                library, image_key, pending, str(outcome.reason),
+                list(outcome.planned) or planned,
+            )
+        else:
+            logger.info(
+                "rules: not retrying the delete of %s: %s",
+                pending.get("source"), outcome.reason,
+            )
+        return None
+    attempts = int(pending.get("attempts") or 0) + 1
+    if attempts < KEPT_DELETE_MAX_ATTEMPTS:
+        return {**pending, "attempts": attempts, "last_reason": outcome.reason}
+    if deleting:
+        await _report_started_delete(
+            library, image_key, pending,
+            f"still in use after {attempts} tries to finish deleting it ({outcome.reason})",
+            list(outcome.planned) or planned,
+        )
+        return None
+    result["kept_sources_given_up"] = result.get("kept_sources_given_up", 0) + 1
+    await _report_kept_source(
+        library, image_key, pending,
+        f"Source kept: still in use after {attempts} tries to delete it "
+        f"({outcome.reason})",
+        str(pending.get("source") or ""),
+    )
+    return None
+
+
+def _rule_paused(rule: dict, wanted: set[str] | None) -> bool:
+    """The `enabled` gate (see `_sweep_locked`): an operator's pause holds
+    unless the Platform is named, and a validation pause holds always."""
+    return not rule["enabled"] and (wanted is None or _validation_paused(rule))
+
+
+def _library_identity(library: Library) -> list:
+    """What a Library is, for a pending delete (#329): its id and root, and
+    whatever else names it (``decision_identity``: RomM's instance URL). A
+    Source kept under one of these is deleted only while it is the same."""
+    extra = getattr(library, "decision_identity", None)
+    root = getattr(library, "root", None)
+    return [library.id, str(root) if root else None, *(extra() if callable(extra) else ())]
+
+
+def _inside_library(source: str, root: str | None) -> bool:
+    """Whether *source* is inside *root* as both resolve now. Blocking."""
+    if not root or not source:
+        return False
+    real_root = os.path.realpath(root)
+    real_source = os.path.realpath(source.split("::", 1)[0])
+    try:
+        return os.path.commonpath([real_root, real_source]) == real_root
+    except ValueError:
+        return False
+
+
+@dataclass(frozen=True)
+class _KeptAttempt:
+    """One pending delete a sweep tries, planned under ``_sweep_lock`` and run
+    after it (:func:`_run_kept_deletes`)."""
+
+    platform_id: str
+    image_key: str
+    pending: dict
+    required_check: str | None
+    generation: int
+    revision: int
+
+    def key(self, library: Library) -> tuple[str, str, str]:
+        return (library.id, self.platform_id, self.image_key)
+
+
+# The pending deletes a sweep is running now, off `_sweep_lock` (its check of
+# the output is long): another sweep leaves each alone until it is done.
+_kept_running: set[tuple[str, str, str]] = set()
+
+
+async def _plan_kept_deletes(
+    library: Library, rules: dict, wanted: set[str] | None,
+    stopping: Callable[[], bool], result: dict,
+) -> list[_KeptAttempt]:
+    """Decide which Sources a reader kept are tried this sweep (#329). Called
+    under ``_sweep_lock``; :func:`_run_kept_deletes` tries them after it.
+
+    Only for a Platform whose conversion Rule still deletes its Sources: a
+    Rule turned off or changed to keep them drops the entry. What no longer
+    stands (the decision, the Library, the sweep's own plan) is dropped here,
+    with the Source kept; an unanswered volume is an attempt. A delete that
+    already started (``deleting``) is always tried, to finish it.
+    """
+    state = await get_state(library)
+    budget = KEPT_DELETES_PER_SWEEP
+    changed = False
+    attempts: list[_KeptAttempt] = []
+    generation = _generations.get(library.id, 0)
+    for platform_id in sorted(state):
+        entry = state[platform_id]
+        kept = entry.get(KEPT_SOURCES) if isinstance(entry, dict) else None
+        if not kept or (wanted is not None and platform_id not in wanted):
+            continue
+        rule = rules.get(platform_id)
+        if rule and _rule_paused(rule, wanted):
+            # The same pause the Platform pass honours: its entries wait,
+            # neither retried nor dropped (codex 4579529040).
+            continue
+        remaining = dict(kept)
+        listings: dict = {}  # this Platform's Images, listed once if needed
+        for image_key in sorted(kept):
+            if stopping() or budget <= 0:
+                break
+            if (library.id, platform_id, image_key) in _kept_running:
+                continue  # another sweep is trying it right now
+            pending = kept[image_key]
+            required = effective_check_level(rule) if rule else None
+            if isinstance(pending, dict) and pending.get("state") == KEPT_DELETING:
+                # A delete already under way: finish it, never plan it again.
+                budget -= 1
+                attempts.append(_KeptAttempt(
+                    platform_id, image_key, pending, required, generation,
+                    _rule_revision(entry),
+                ))
+                continue
+            if (
+                not rule or not rule.get("delete_on_verify")
+                or not isinstance(pending, dict)
+                or pending.get("decision") != _delete_decision_identity(rule, library)
+                or pending.get(DECISION_GENERATION) != _decision_generation(entry)
+            ):
+                # The Rule is gone or keeps its Sources now, or anything the
+                # delete was decided on changed (the Rule, the check, the
+                # Library), or it was invalidated: that decision no longer
+                # stands.
+                remaining.pop(image_key)
+                continue
+            # And the Source is still inside the Library as it is now, checked
+            # fresh (bounded; an unanswered volume is an attempt, not a verdict).
+            inside = await _probe(
+                _inside_library, str(pending.get("source") or ""),
+                getattr(library, "root", None), default=None,
+            )
+            if inside is False:
+                remaining.pop(image_key)
+                continue
+            # The authority: the sweep's own selection and plan for this one
+            # Source under the current Rule and Library. Deleted only while
+            # that plan is still this conversion to this output (codex
+            # 4580012814); the identity above is the fast pre-check.
+            plan = await _current_plan(
+                library, platform_id, rule, str(image_key), pending, listings, stopping,
+            )
+            if plan == PLAN_OTHER:
+                remaining.pop(image_key)
+                continue
+            budget -= 1
+            if inside is None or plan == PLAN_UNANSWERED:
+                reason = (
+                    "the Library's volume did not answer" if inside is None
+                    else "the current plan for this Source could not be read"
+                )
+                kept_entry = await _kept_outcome(
+                    library, image_key, pending, KeptDeleteRetry(KEPT_KEPT, reason), result,
+                )
+                if kept_entry is None:
+                    remaining.pop(image_key)
+                else:
+                    remaining[image_key] = kept_entry
+                continue
+            attempts.append(_KeptAttempt(
+                platform_id, image_key, pending, required, generation,
+                _rule_revision(entry),
+            ))
+        if remaining != kept:
+            entry = dict(entry)
+            if remaining:
+                entry[KEPT_SOURCES] = remaining
+            else:
+                entry.pop(KEPT_SOURCES, None)
+            state[platform_id] = entry
+            changed = True
+    if changed:
+        await store.write(store.STATE_KEY, library, state)
+    # A Source deleted by hand after the sweep gave up: its Finding goes.
+    await _probe(
+        functools.partial(
+            findings.clear_gone,
+            current=lambda: _generations.get(library.id, 0) == generation,
+        ),
+        library.id, findings.SOURCE_KEPT, default=0,
+    )
+    for attempt in attempts:
+        _kept_running.add(attempt.key(library))
+    return attempts
+
+
+async def _still_pending(library: Library, attempt: _KeptAttempt) -> bool:
+    """Whether *attempt*'s entry is still the one the sweep planned: the same
+    Library generation, the same Rule revision, and the very same entry. A
+    Rule edit of any field, Forget history, RomM's identity cleanup or the
+    Library's removal while it was checked changed it (an invalidation also
+    reported a started delete); the next sweep plans it again. Under
+    ``_sweep_lock``: the authority right before the unlinks."""
+    if _generations.get(library.id, 0) != attempt.generation:
+        return False
+    entry = (await get_state(library)).get(attempt.platform_id)
+    if _rule_revision(entry) != attempt.revision:
+        return False
+    kept = entry.get(KEPT_SOURCES) if isinstance(entry, dict) else None
+    return isinstance(kept, dict) and kept.get(attempt.image_key) == attempt.pending
+
+
+async def _settle_kept(
+    library: Library, attempt: _KeptAttempt, outcome: KeptDeleteRetry, result: dict,
+) -> None:
+    """Write what *attempt*'s entry becomes after *outcome*. Under ``_sweep_lock``."""
+    kept_entry = await _kept_outcome(
+        library, attempt.image_key, attempt.pending, outcome, result,
+    )
+    state = await get_state(library)
+    entry = dict(state.get(attempt.platform_id) or {})
+    kept = dict(entry.get(KEPT_SOURCES) or {})
+    if kept_entry is None:
+        kept.pop(attempt.image_key, None)
+    else:
+        kept[attempt.image_key] = kept_entry
+    if kept:
+        entry[KEPT_SOURCES] = kept
+    else:
+        entry.pop(KEPT_SOURCES, None)
+    state[attempt.platform_id] = entry
+    await store.write(store.STATE_KEY, library, state)
+
+
+async def _run_kept_deletes(
+    library: Library, attempts: list[_KeptAttempt], result: dict,
+    stopping: Callable[[], bool] = lambda: False,
+) -> None:
+    """Try each planned pending delete, after the sweep let go of
+    ``_sweep_lock`` (codex 4580346573).
+
+    Each is prepared under its own file locks, held throughout
+    (``job_manager.kept_delete``): the record, the Source, and the output's
+    check run again, which can take as long as a verify. Only then is
+    ``_sweep_lock`` taken, to confirm the entry still stands, delete, and
+    record the outcome, so a long check never holds up other sweeps, Rule
+    edits or job completions.
+
+    A stop (*stopping*: ``run-rules`` on SIGTERM, codex 4580441303) is asked
+    before each try, before its output check, and before its unlinks: once it
+    is true nothing new starts and no unlink begins, and nothing is recorded
+    for what was not tried. Unlinks already handed to their worker carry on,
+    recorded as in flight.
+    """
+    for attempt in attempts:
+        try:
+            if not stopping():
+                await _run_kept_delete(library, attempt, result, stopping)
+        finally:
+            _kept_running.discard(attempt.key(library))
+    if attempts and stopping():
+        result["stopped_reason"] = result.get("stopped_reason") or "stopped"
+
+
+async def _run_kept_delete(
+    library: Library, attempt: _KeptAttempt, result: dict,
+    stopping: Callable[[], bool] = lambda: False,
+) -> None:
+    """One :func:`_run_kept_deletes` attempt."""
+    pending = attempt.pending
+    deleting = pending.get("state") == KEPT_DELETING
+    try:
+        async with job_manager.kept_delete(
+            source_path=str(pending.get("source") or ""),
+            output_path=str(pending.get("output") or ""),
+            required_check=attempt.required_check,
+            planned=(
+                [str(path) for path in pending.get("planned") or []] if deleting else None
+            ),
+            stopping=stopping,
+        ) as run:
+            if run.refused is None:
+                async with _sweep_lock:
+                    if stopping() or not await _still_pending(library, attempt):
+                        return
+                    try:
+                        outcome = await run.delete()
+                    except asyncio.CancelledError:
+                        # Stopped once the unlinks began (CodeRabbit
+                        # 4580360089): what started is recorded, bounded,
+                        # then the cancel goes on.
+                        if run.started is not None:
+                            await _record_cancelled_delete(library, attempt, run.started, result)
+                        raise
+                    if outcome.status != KEPT_STOPPED:
+                        await _settle_kept(library, attempt, outcome, result)
+                return
+            outcome = run.refused
+            if outcome.status == KEPT_STOPPED:
+                return  # not tried: nothing to record
+    except Exception as exc:
+        # One entry's failure (an unlink refused, an I/O error) is that
+        # entry's attempt, never the sweep's (codex 4579529048).
+        logger.warning(
+            "rules: retrying the delete of %s failed", pending.get("source"), exc_info=True,
+        )
+        outcome = KeptDeleteRetry(KEPT_KEPT, str(exc) or type(exc).__name__)
+    async with _sweep_lock:
+        if await _still_pending(library, attempt):
+            await _settle_kept(library, attempt, outcome, result)
+
+
+async def _record_cancelled_delete(
+    library: Library, attempt: _KeptAttempt, started: KeptDeleteRetry, result: dict,
+) -> None:
+    """Record a delete a cancel stopped after it began, as ``deleting``,
+    bounded: the cancel is already on its way, and never waits on the
+    unlink worker."""
+    try:
+        await asyncio.wait_for(
+            _settle_kept(library, attempt, started, result), _CANCEL_RECORD_SECONDS,
+        )
+    except (asyncio.TimeoutError, OSError):
+        logger.warning(
+            "rules: recording the cancelled delete of %s did not finish",
+            attempt.pending.get("source"), exc_info=True,
+        )
 
 
 async def _prune_holds(
@@ -873,6 +1604,7 @@ async def _same_rule(library: Library, platform_id: str, identity: tuple | None)
 def _own_jobs(
     library: Library, platform_id: str, entries: dict, identity: tuple | None = None,
     *, fingerprints: dict[str, str | None] | None = None,
+    decision: tuple[dict, int] | None = None,
 ) -> None:
     """Register `note_job_finished`'s owner map for these queued conversions.
 
@@ -903,6 +1635,8 @@ def _own_jobs(
             _job_owners[job_id] = (
                 library, str(platform_id), str(rom_id), own_identity, fingerprint,
             )
+            if decision is not None:
+                _job_decision.setdefault(job_id, decision)
 
 
 def _converted_entries(produced: list[tuple]) -> dict:
@@ -1084,19 +1818,24 @@ async def sweep(
     sweep in every respect but the queueing, so it takes the lock too rather
     than reporting candidates a concurrent run is already claiming.
     """
-    async with _sweep_lock:
-        blocked = library.sweep_blocked()
-        if blocked:
-            return {
-                "queued": 0, "considered": 0, "platforms": [],
-                "errors": [{"platform_id": None, "error": blocked}],
-                **await library.sweep_extras(),
-            }
-        # Closed even if the sweep raises after queueing jobs: the default is the
-        # failure, replaced by the real result on success. A cancel (shutdown)
-        # is not a failure to report.
-        notified: dict = {"errors": [{"platform_id": None, "error": "sweep_failed"}]}
-        try:
+    # The pending deletes this sweep plans under the lock and tries after it
+    # (`_run_kept_deletes`): their output checks run without it.
+    kept_attempts: list[_KeptAttempt] = []
+    # Closed even if the sweep raises after queueing jobs: the default is the
+    # failure, replaced by the real result on success. A cancel (shutdown)
+    # is not a failure to report.
+    notified: dict | None = {"errors": [{"platform_id": None, "error": "sweep_failed"}]}
+    result: dict | None = None
+    try:
+        async with _sweep_lock:
+            blocked = library.sweep_blocked()
+            if blocked:
+                notified = None
+                return {
+                    "queued": 0, "considered": 0, "platforms": [],
+                    "errors": [{"platform_id": None, "error": blocked}],
+                    **await library.sweep_extras(),
+                }
             result = notified = await _sweep_locked(
                 library,
                 platform_ids=platform_ids,
@@ -1104,11 +1843,20 @@ async def sweep(
                 dry_run=dry_run,
                 overall_limit=overall_limit,
                 should_stop=should_stop,
+                kept_attempts=kept_attempts,
             )
-        except asyncio.CancelledError:
+        await _run_kept_deletes(
+            library, kept_attempts, result,
+            lambda: should_stop is not None and should_stop(),
+        )
+    except asyncio.CancelledError:
+        if result is None:
             notified = {"errors": []}
-            raise
-        finally:
+        raise
+    finally:
+        for attempt in kept_attempts:
+            _kept_running.discard(attempt.key(library))
+        if notified is not None:
             notifications.sweep_finished(notified, dry_run=dry_run, library_id=library.id)
     # The sweep is finished: every sweep that ran returns through here, after
     # the lock is released. `result["dry_run"]` tells a preview from a run.
@@ -1123,8 +1871,11 @@ async def _sweep_locked(
     dry_run: bool,
     overall_limit: int | None,
     should_stop: Callable[[], bool] | None = None,
+    kept_attempts: list | None = None,
 ) -> dict:
-    """The sweep body. Always called with ``_sweep_lock`` held."""
+    """The sweep body. Always called with ``_sweep_lock`` held. The pending
+    deletes it plans go in *kept_attempts*, for the caller to try once the
+    lock is released."""
     def stopping() -> bool:
         return should_stop is not None and should_stop()
 
@@ -1208,6 +1959,14 @@ async def _sweep_locked(
     check_runs: list = []
     if not dry_run:
         await _clear_vanished(library)
+        planned_deletes = await _plan_kept_deletes(
+            library, rules[CONVERT], wanted, stopping, result,
+        )
+        if kept_attempts is not None:
+            kept_attempts.extend(planned_deletes)
+        else:
+            for attempt in planned_deletes:
+                _kept_running.discard(attempt.key(library))
 
     for kind, platform_id in ordered:
         if stopping():
@@ -1238,7 +1997,7 @@ async def _sweep_locked(
         # window becomes no window -- so running it would do more than the
         # saved rule says, unattended, possibly with delete-on-verify. Those
         # stay paused until the operator fixes what is wrong.
-        if not rule["enabled"] and (wanted is None or _validation_paused(rule)):
+        if _rule_paused(rule, wanted):
             if wanted is not None:
                 result["errors"].append(
                     {"platform_id": platform_ref, "error": "rule_invalid"},
@@ -1577,6 +2336,10 @@ async def _sweep_locked(
                         str(image_by_path[path].key): fingerprint_by_path.get(path)
                         for path in batch
                     },
+                    decision=(
+                        _delete_decision_identity(rule, library),
+                        _decision_generation(states[kind].get(platform_id)),
+                    ),
                 )
                 notifications.sweep_jobs_queued(jobs)  # sync, before any await
 
@@ -1763,6 +2526,7 @@ def forget_checks_locked(library: Library) -> None:
     """
     _generations[library.id] = _generations.get(library.id, 0) + 1
     findings.forget_kind(library.id, findings.NOT_INTACT)
+    findings.forget_kind(library.id, findings.SOURCE_KEPT)
     image_checks.forget_library(library.id)
 
 
