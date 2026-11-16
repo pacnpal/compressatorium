@@ -306,6 +306,32 @@ class ToolRegistry:
         spec = self.spec(mode)
         return spec.platform_slugs or self.for_mode(mode).platform_slugs
 
+    def mode_output_extensions(self, mode: str) -> frozenset[str]:
+        """The extensions this mode writes, lowercased.
+
+        Its declared ``output_ext`` when it has one. A mode whose output is
+        mapped from its input (Z3DS's ``.cia`` -> ``.zcia``, NSZ's ``.xci`` ->
+        ``.xcz``) has none, so its tool is asked where it would write each
+        input it accepts, the same question :meth:`mode_is_automatable` asks.
+        Pure path arithmetic: nothing is read from disk.
+        """
+        spec = self.spec(mode)
+        if spec.output_ext:
+            return frozenset({spec.output_ext.lower()})
+        tool = self.for_mode(mode)
+        stem = "/output-extension-probe/Game"
+        out: set[str] = set()
+        for ext in spec.input_extensions:
+            try:
+                produced = os.path.basename(tool.output_path(mode, f"{stem}{ext}"))
+            except (KeyError, ValueError, OSError):
+                continue
+            tail = produced.removeprefix("Game")
+            dot = tail.find(".")
+            if dot >= 0:
+                out.add(tail[dot:].lower())
+        return frozenset(out)
+
     def mode_reads_extensions(self, mode: str) -> frozenset[str]:
         """What this mode's command can actually read.
 

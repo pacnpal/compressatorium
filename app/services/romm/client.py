@@ -313,6 +313,47 @@ class RommClient:
         result = self._request("GET", "/api/heartbeat", authenticated=False)
         return result if isinstance(result, dict) else {}
 
+    def converter_config(self, heartbeat: dict | None = None) -> dict | None:
+        """RomM's own converter: whether it is on, and its per-Platform targets.
+
+        ``None`` for a RomM without one, whose heartbeat has no ``CONVERTO``.
+        On/off is the heartbeat's ``CONVERTO.ENABLED`` (``ROM_CONVERTO_ENABLED``
+        is set and the rom-converto binary answers). The targets come from
+        ``GET /api/config``: ``CONVERTO.platform_formats`` maps a RomM Platform
+        slug to the format RomM's "Convert library" task stores it in, and
+        ``CONVERTO_LIBRARY_TARGETS`` lists every format each slug can take.
+
+        *heartbeat* is one the caller already holds, so it is not fetched
+        twice. The targets are read only when the converter is on: switched
+        off, it converts nothing and nothing is warned about. Raises
+        :class:`RommError` when ``/api/config`` cannot be read.
+        """
+        beat = self.heartbeat() if heartbeat is None else heartbeat
+        block = beat.get("CONVERTO") if isinstance(beat, dict) else None
+        if not isinstance(block, dict):
+            return None
+        if block.get("ENABLED") is not True:
+            return {"enabled": False, "platform_formats": {}, "library_targets": None}
+        config = self._request("GET", "/api/config")
+        config = config if isinstance(config, dict) else {}
+        converto = config.get("CONVERTO")
+        raw_formats = converto.get("platform_formats") if isinstance(converto, dict) else None
+        formats = {
+            str(slug).strip().lower(): str(target).strip().lower()
+            for slug, target in (raw_formats or {}).items()
+            if isinstance(slug, str) and isinstance(target, str) and slug.strip()
+            and target.strip()
+        } if isinstance(raw_formats, dict) else {}
+        raw_targets = config.get("CONVERTO_LIBRARY_TARGETS")
+        targets = {
+            str(slug).strip().lower(): sorted(
+                str(t).strip().lower() for t in values if isinstance(t, str)
+            )
+            for slug, values in raw_targets.items()
+            if isinstance(slug, str) and isinstance(values, list)
+        } if isinstance(raw_targets, dict) else None
+        return {"enabled": True, "platform_formats": formats, "library_targets": targets}
+
     def platforms(self) -> list[dict]:
         """Return RomM's platforms. Flat array, not paginated."""
         result = self._request("GET", "/api/platforms")

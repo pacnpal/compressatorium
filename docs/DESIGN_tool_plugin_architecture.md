@@ -3559,9 +3559,12 @@ and the job pipeline never branches on which ones exist.
 class Referrer(ABC):                          # services/referrers/base.py
     id: str                                   # stable; lands in the Ledger
     label: str
+    opt_in: bool                              # False: always on; True: per Library (#383)
+    phase: Phase                              # Phase.FILE or Phase.NETWORK (#383)
     def detect(self, image_path) -> bool      # could it point at this Image?
     def plan(self, renames) -> list[ReferrerChange]   # writes nothing
     def apply(self, change) -> None           # atomic, one-time backup; raises ReferrerError
+                                              # (may be `async def`, see below)
 
 @dataclass(frozen=True)
 class ReferrerChange:
@@ -3575,10 +3578,55 @@ class ReferrerChange:
 to the output that replaces it (a `.cue` and its `.bin` tracks all map to the
 `.chd`; an archive maps to the output extracted from it).
 
+**The Library, opt-in and phases (#383).** Both entry points take the Image's
+Library: `libraries.library_for(path)` resolves the path and returns the
+Library whose root holds it, or None, comparing canonical against canonical.
+Each root is resolved once (`_canonical_root`) and cached, so a symlinked
+`ROMM_LIBRARY_ROOT` still holds its Images and a lookup doesn't resolve every
+Library's mount; the cache is dropped whenever RomM's settings are saved
+(`romm.settings.save_generation()`), since its root, or where its symlink
+points, may have moved. With no database open only RomM is asked. Callers
+run it off the loop, bounded: the job through `JobManager._image_library` (a
+delete-step probe, so a lookup that times out or fails refuses the delete and
+removes nothing), the delete-plan route through `off_loop_bounded` (a failure
+becomes the item's "the source will be kept" warning).
+`registry.active(library)` picks the Referrers that run: every one with
+`opt_in = False`, and each `opt_in = True` one whose Library says
+`referrer_enabled(referrer_id)`. That method is on the `Library` contract
+(`rules/library.py`); `LibraryDefaults` answers False, so no opt-in Referrer
+runs until a Library's settings turn it on, and an Image in no Library gets
+the always-on ones only. It reads settings already in memory; if it raises,
+the hook fails with the Library as its target and keeps the Source (fail
+closed). `register` refuses a Referrer that doesn't declare `phase` (a
+`Phase`) and `opt_in` (a bool). `active` sorts by `phase`, keeping
+registration order within a phase. `Phase.FILE` (`.m3u`, later
+`gamelist.xml`) runs before `Phase.NETWORK` (the RomM swap): the hook runs one
+phase at a time, and a later phase runs only when every Referrer of the
+earlier ones succeeded. Its Referrers are not even planned; each gets a
+`skipped` record. `apply` may be `async def` (detected with
+`inspect.iscoroutinefunction`). A phase's plans and plain applies run on the
+detached thread as before. Its async applies wait in `ReferrerOutcome.pending`
+and run after the thread returns, on the event loop, one at a time
+(`_await_bounded`): each is raced against the job's `cancel_event` and
+bounded by the hook's bound (`bound`, else `conversion_stall_bound()`). Past
+the bound or on a Cancel the apply's task is cancelled, then awaited for up to
+`CANCEL_GRACE_SECONDS` (5 s) so its cleanup can finish; it fails with "did not
+answer within Ns" or "cancelled", which keeps the Source. One still running
+after the grace is treated like an abandoned mutation
+(`run_detached_mutation`): its record is `abandoned`, the task goes to
+`ReferrerOutcome.lingering` (kept referenced until it ends, and its end, an
+exception included, logged), and the job hands it its delete holds and
+travelling locks through `ReferrerOutcome.outlive(release)`, which lets them
+go from the last lingering task's done callback, never earlier. A network
+Referrer therefore never holds
+the loop: its blocking work goes in `plan` or a plain `apply` (the thread), and
+its network calls in an async `apply` (the loop).
+
 The package exposes the registry and two entry points:
 
-- `plan_changes(image_path, renames)` runs `detect` + `plan` on every
-  registered Referrer. Both entry points ask `detect` about the Image *and*
+- `plan_changes(image_path, renames, library)` runs `detect` + `plan` on every
+  Referrer `registry.active(library)` returns, in phase order. Both entry
+  points ask `detect` about the Image *and*
   every path in `renames`, so a companion that is deleted too (a cue's track
   in a subfolder) gates planning as well. `POST /api/jobs/delete-plan` calls it
   per item and returns `referrer_changes: [{referrer, target, edits: [{old,
@@ -3593,11 +3641,12 @@ The package exposes the registry and two entry points:
   no-progress bound as the hook, so a playlist on a mount that stopped
   answering can't hang the confirmation. A plan that can't be made (or times
   out) becomes a warning on the item ("the source will be kept").
-- `update_before_source_removal(image_path, renames)` is the **one hook** in
-  `_process_job`. It runs after `_delete_check` (§3.3.12) has passed and after
-  the delete plan's safety checks, immediately before the `os.remove` loop. Off the event
-  loop it plans every Referrer first, then applies each change; the first
-  failure stops it, and it never raises. It returns a `ReferrerOutcome` whose
+- `update_before_source_removal(image_path, renames, library=...)` is the
+  **one hook** in `_process_job`. It runs after `_delete_check` (§3.3.12) has
+  passed and after the delete plan's safety checks, immediately before the
+  `os.remove` loop. Phase by phase, off the event loop, it plans every active
+  Referrer of the phase first, then applies each change; the first failure
+  stops it, and it never raises. It returns a `ReferrerOutcome` whose
   `records` hold one entry per target, `{referrer, target, status}` with
   `status` `updated`, `failed` or `skipped` (not attempted after a failure) and
   a `reason` for the last two. The records are copied to
@@ -3612,11 +3661,19 @@ The package exposes the registry and two entry points:
   conversion's no-progress bound) and takes the job's `cancel_event`, so a
   playlist on a mount that stopped answering can't hold the job slot and its
   locks: on a timeout or a Cancel the thread is abandoned and the outcome keeps
-  the Source with the reason, recording one `failed` entry per Referrer (target
-  the Image) so the Ledger row says why. An abandoned thread can't write late:
+  the Source with the reason, recording one `failed` entry per Referrer of that
+  phase (target the Image; the outcome's target is the phase's
+  `Phase.target`, "playlists" for the file phase) so the Ledger row says why.
+  An abandoned thread can't write late:
   `_update_sync` runs under a `base.WriteGuard` holding an `abandoned` event
-  (set by the hook on a timeout or Cancel) and each output's identity
-  (`st_dev`, `st_ino`, size, `mtime_ns`) captured when the hook started.
+  (set by the hook on a timeout or Cancel, on any failed outcome, and when the
+  hook's own awaiter is cancelled mid-phase, before the cancel propagates) and
+  each output's identity (`st_dev`, `st_ino`, size, `mtime_ns`) captured when
+  the phase started. The guard lives in a `contextvars.ContextVar`
+  (`base.write_guard`), not thread-local state, so it reaches both kinds of
+  apply: the worker thread sets it for its plain applies, and each async
+  apply's task runs in `base.guarded_context(guard)`, so a `check_write` after
+  an `await` refuses an output replaced meanwhile, as the thread's does.
   `apply` passes `base.check_write` as the `guard` of `atomic_write_bytes`,
   which runs it under the playlist's lock after the temp file is written and
   synced, immediately before `os.replace` publishes it (backup and playlist).
@@ -3662,7 +3719,8 @@ names beside the playlist. The preview computes a free name (`<Title> (2).m3u`);
 the create call writes exactly the previewed name and answers 409 with the next
 free one if it was taken since, never picking a different name on its own.
 
-**The `.m3u` Referrer** (`m3u.py`) is always on.
+**The `.m3u` Referrer** (`m3u.py`) is always on (`opt_in = False`), in
+`Phase.FILE`, with a plain (thread) `apply`.
 
 - *Where it looks.* The replaced file's resolved folder and each folder above
   it up to and including its Volume root (`utils.path_utils.lock_boundary_root`,
@@ -3803,8 +3861,10 @@ free one if it was taken since, never picking a different name on its own.
   kept), then the new playlist.
 
 To add a Referrer: subclass `Referrer` in `services/referrers/`, give it a new
-`id`, and `registry.register(...)` it in `services/referrers/__init__.py`.
-Nothing in the job pipeline, the delete-plan route or the modal changes. The
+`id`, declare `opt_in` and `phase`, and `registry.register(...)` it in
+`services/referrers/__init__.py`. An opt-in one also needs the Library's
+setting that `referrer_enabled` reads. Nothing in the job pipeline, the
+delete-plan route or the modal changes. The
 existing RomM re-pin (3.3.9) is not a Referrer yet.
 
 ### 3.3.16 Folder Platform mappings and the Findings store (`services/platform_mappings.py`, `services/findings.py`)
@@ -5567,6 +5627,34 @@ manual only, because a Rule over RomM's `dos` folder would write a second copy
 of every game beside it, and the Rule's verify step would hide the conf warning
 nobody is there to read.
 
+#### What a mode writes (`registry.mode_output_extensions`)
+
+`mode_output_extensions(mode)` is the set of extensions a mode writes,
+lowercased. A mode with a declared `output_ext` answers that. A mode whose
+output is mapped from its input (Z3DS's `.cia` to `.zcia`, NSZ's `.xci` to
+`.xcz`) declares none, so the registry asks its tool's `output_path` for each
+input extension the mode accepts, the same question `mode_is_automatable` asks.
+It is path arithmetic only and reads nothing from disk.
+
+Its first caller is RomM's converter (#385, `services/romm/converter.py`).
+RomM names its library targets (`chd`, `rvz`, `z3ds`, ...) and the module maps
+each onto the extensions rom-converto writes for it. A mode matches a RomM
+target on a Platform when it is in `modes_for_platform(slug)`, is automatable,
+is not an extract mode (the Rule editor offers none), and writes one of those
+extensions. The first match in registry order is what "Import RomM's targets as
+Rules" picks. A new tool that writes one of RomM's formats is matched with no
+change there.
+
+RomM's converter config comes from two endpoints, both read by
+`RommClient.converter_config`. `GET /api/heartbeat` carries
+`CONVERTO.ENABLED` (absent on a RomM from before the converter).
+`GET /api/config` carries `CONVERTO.platform_formats` (RomM Platform slug to
+target) and `CONVERTO_LIBRARY_TARGETS` (every target each slug can take). The
+config is read only when the converter is on, during the RomM status refresh,
+and the status's `converter` block is the one source for the banner, the Rule
+flags and the can't-convert marks. None of it changes what a Rule or a sweep
+does.
+
 #### Asking a tool whether it can run (`registry.tool_is_ready`)
 
 `ToolPlugin.is_ready()` is a coroutine, which makes it look bounded and does
@@ -6489,3 +6577,12 @@ at a time. Nothing here changes the wire API until Phase 9 (optional).
 
 Net: a smaller, flatter codebase where the cost of the *next* tool drops from
 ~20 files to ~5.
+
+## Ignored entries (`utils/junk.py`)
+
+`is_junk_entry(name)` is the one predicate for names no listing or walk should
+see: OS and NAS metadata, plus RomM's `.romm_tmp_*` converter staging (prefix
+match only). The file browser listing and search, `walk_tree` (DAT scan), the
+folder Library walk (which feeds sweeps, check Rules and the Platform walk) and
+the Switch key search all route through it. Add a new ignored name there, not in
+a caller.

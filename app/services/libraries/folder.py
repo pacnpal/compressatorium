@@ -80,6 +80,7 @@ from services.rules.library import (
     QueuedImage,
 )
 from services.tools import registry
+from utils.junk import is_junk_entry
 from utils.path_utils import (
     is_within_configured_volumes,
     match_extension,
@@ -324,8 +325,10 @@ class FolderLibrary(LibraryDefaults):
                     unwalked.append(os.fspath(exc.filename))
 
         for current, dirs, names in os.walk(root, followlinks=False, onerror=on_error):
-            dirs.sort()
-            for name in sorted(names):
+            # Junk (OS metadata, RomM's `.romm_tmp_*` staging) is neither
+            # walked into nor listed: the same predicate the file browser uses.
+            dirs[:] = sorted(d for d in dirs if not is_junk_entry(d))
+            for name in sorted(n for n in names if not is_junk_entry(n)):
                 path = os.path.join(current, name)
                 # A split output's numbered parts (`Game.iso.0`, `.1`) carry no
                 # Image extension; they are listed, and `image_members` folds

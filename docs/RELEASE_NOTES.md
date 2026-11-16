@@ -2,8 +2,23 @@
 
 ## Unreleased
 
+### Changed
+
+- **Groundwork for gamelist.xml and RomM updates** (#383). Before a Source is
+  deleted, the step that updates `.m3u` playlists now also knows which Library
+  the Image is in, so later updates (a frontend's `gamelist.xml`, RomM's own
+  record) can be switched on per Library. Playlists update exactly as before.
+  One edge case: if the app can't tell which Library holds the Source (the
+  Library list can't be read, or the folder doesn't answer in time), the
+  Source is kept and the job says why, instead of being deleted.
+
 ### Fixed
 
+- **RomM's `.romm_tmp_*` staging files are ignored everywhere** (#384). RomM's
+  own converter stages work in names starting `.romm_tmp_`. They no longer show
+  in the file browser or search, and the folder Library walk (so sweeps, check
+  Rules and the Platform walk) and the DAT scan skip them. Only the prefix
+  counts: a folder named `backup_romm_tmp_x` still shows.
 - **Cancelling a fast conversion says cancelled, not failed.** When a tool's
   output ended before the app had acted on a pending Cancel, the app stopped
   the tool itself and then reported the job as failed with "return code -15"
@@ -159,6 +174,19 @@
     error) is not remembered, so fixing it is seen on the next listing.
 
 ### Added
+
+- **Beside RomM's own converter** (#385). Newer RomM releases can convert
+  their library themselves (`ROM_CONVERTO_ENABLED`), and they delete the
+  sources without reading the output back. When RomM reports its converter
+  on, the RomM Settings tab now says so in a banner and advises switching it
+  off. The Automation tab flags each Rule whose Platform RomM also converts,
+  with RomM's target and the Rule's side by side, and marks the Platforms RomM
+  can't convert. The banner's **Import RomM's targets as Rules** button creates
+  a Rule for each Platform RomM converts that has no Rule yet, mapping RomM's
+  format onto a mode here; a format nothing here writes (Xbox 360 `zar`) is
+  skipped and named, and the new Rules start off. Nothing is blocked: these
+  are warnings. A RomM without the converter, or with it off, shows none of
+  it. The README explains why we advise turning RomM's converter off.
 
 - **A Source kept because another job was reading it is deleted later**
   (#329). When a Rule's delete step finds the Source still in use, the job
