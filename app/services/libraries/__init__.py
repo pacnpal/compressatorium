@@ -147,9 +147,16 @@ def note_job_finished(job) -> None:
     Library drops what it listed from before (``Library.note_paths_changed``).
     On the event loop, so it reads only the Libraries already in memory: a
     catalogue never loaded holds no walk to drop. Never raises.
+
+    An externally-managed job (a check Rule's run, a metadata scan, a DAT
+    match) writes no Library file, so it drops no walk: a check job's own end
+    must not leave its Rule's run looking stale (#360).
     """
+    from services.job_manager import is_external_mode
     from services.romm.library import romm_library
 
+    if is_external_mode(getattr(job, "mode", None)):
+        return
     paths = [getattr(job, "output_path", None), getattr(job, "file_path", None)]
     paths = [p for p in paths if p]
     if not paths:
