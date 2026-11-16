@@ -593,10 +593,12 @@ ES-DE keeps its gamelists in a folder of its own by default
 (`ES-DE/gamelists`), one subfolder per system named like the system's ROM
 folder: the games in `ROMs/ps2` are listed in `gamelists/ps2/gamelist.xml`.
 For that layout, set **ES-DE gamelists folder** under the switch (it must be
-inside a Volume, so mount it into the container). Each folder the Image sits
-in is then looked up there by its own name, and the gamelist's entries are
-read relative to that ROM folder, exactly as ES-DE reads them. Gamelists in
-the Platform folders are still updated too, and every rule above holds.
+inside a Volume, so mount it into the container). The Library's folder is
+taken as ES-DE's ROM directory: an Image's system is the folder directly
+under it (`ROMs/ps2/Multi Disc/Game.cue` is `ps2`), and only that system's
+gamelist is updated, its entries read relative to `ROMs/ps2`, exactly as
+ES-DE reads them. Gamelists in the Platform folders are still updated too,
+and every rule above holds.
 
 **Create an `.m3u` from selected discs.** Tick the discs of one game in the file
 list (two or more disc images in the same folder, such as `.cue`, `.gdi`, `.iso`,

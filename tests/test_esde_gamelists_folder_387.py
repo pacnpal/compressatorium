@@ -41,7 +41,10 @@ class _Library:
     id = "folder:test"
     name = "Test"
 
-    def __init__(self, gamelists: Path | None) -> None:
+    def __init__(self, gamelists: Path | None, root: Path) -> None:
+        # The Library root is ES-DE's ROM directory: each folder directly
+        # under it is a system (#387).
+        self.root = str(root)
         self._options = {"gamelists_folder": str(gamelists)} if gamelists else {}
 
     def referrer_enabled(self, referrer_id: str) -> bool:
@@ -49,6 +52,11 @@ class _Library:
 
     def referrer_options(self, referrer_id: str) -> dict:
         return dict(self._options) if referrer_id == "gamelist" else {}
+
+
+def _esde(vol: Path, gamelists: Path | None) -> _Library:
+    """A Library whose ROM directory is ``vol/ROMs``, with *gamelists*."""
+    return _Library(gamelists, vol / "ROMs")
 
 
 GAMELIST = (
@@ -100,7 +108,7 @@ async def test_the_systems_gamelist_in_the_esde_folder_follows_the_image(vol):
     gamelist = _file(vol / "ES-DE" / "gamelists" / "ps2" / "gamelist.xml", GAMELIST)
 
     outcome = await _replace(
-        source, vol / "ROMs" / "ps2" / "Game.chd", _Library(vol / "ES-DE" / "gamelists"),
+        source, vol / "ROMs" / "ps2" / "Game.chd", _esde(vol, vol / "ES-DE" / "gamelists"),
     )
 
     assert outcome.ok, outcome.reason
@@ -121,7 +129,7 @@ async def test_a_nested_image_resolves_against_the_system_rom_folder(vol):
 
     outcome = await _replace(
         source, vol / "ROMs" / "psx" / "Multi Disc" / "Game (Disc 1).chd",
-        _Library(vol / "gamelists"),
+        _esde(vol, vol / "gamelists"),
     )
 
     assert outcome.ok, outcome.reason
@@ -134,7 +142,8 @@ async def test_without_the_folder_the_esde_gamelist_is_left_and_the_platform_fol
     esde = _file(vol / "gamelists" / "ps2" / "gamelist.xml", GAMELIST)
     beside = _file(vol / "ROMs" / "ps2" / "gamelist.xml", GAMELIST)
 
-    outcome = await _replace(source, vol / "ROMs" / "ps2" / "Game.chd", _Library(None))
+    outcome = await _replace(
+        source, vol / "ROMs" / "ps2" / "Game.chd", _esde(vol, None))
 
     assert outcome.ok, outcome.reason
     assert esde.read_bytes() == GAMELIST
@@ -143,12 +152,11 @@ async def test_without_the_folder_the_esde_gamelist_is_left_and_the_platform_fol
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("decoy", [False, True])
-async def test_a_nested_folder_named_like_its_system_keeps_the_source(vol, decoy):
-    """Codex PRRT_kwDOQ9nULM64Jpv8: in ROMs/ps2/ps2/Game.iso both ps2 folders
-    could be the system's ROM folder, so gamelists/ps2 has two possible bases.
-    Fail closed. With *decoy*, the wrong base resolves the entry to another
-    file that exists, which before made the plan find nothing to change and
-    let the Source go with a stale entry left behind."""
+async def test_a_subfolder_named_like_its_system_resolves_against_the_system(vol, decoy):
+    """Codex PRRT_kwDOQ9nULM64Jpv8 / JsQa: in ROMs/ps2/ps2/Game.iso the system
+    is ps2, the folder directly under the ROM directory, so gamelists/ps2's
+    ./ps2/Game.iso is read from ROMs/ps2. With *decoy*, ROMs/ps2/ps2/ps2/Game.iso
+    (where a nearer base would have pointed it) exists and stays untouched."""
     source = _file(vol / "ROMs" / "ps2" / "ps2" / "Game.iso")
     if decoy:
         _file(vol / "ROMs" / "ps2" / "ps2" / "ps2" / "Game.iso", b"another disc")
@@ -156,18 +164,51 @@ async def test_a_nested_folder_named_like_its_system_keeps_the_source(vol, decoy
     gamelist = _file(vol / "gamelists" / "ps2" / "gamelist.xml", data)
 
     outcome = await _replace(
-        source, vol / "ROMs" / "ps2" / "ps2" / "Game.chd", _Library(vol / "gamelists"),
+        source, vol / "ROMs" / "ps2" / "ps2" / "Game.chd",
+        _esde(vol, vol / "gamelists"),
     )
-    with pytest.raises(referrers.ReferrerError, match="more than one ROM folder"):
-        referrers.plan_changes(
-            str(source), {str(source): str(vol / "ROMs" / "ps2" / "ps2" / "Game.chd")},
-            _Library(vol / "gamelists"),
-        )
 
-    assert not outcome.ok
-    assert outcome.failed == str(gamelist)
-    assert "more than one ROM folder" in outcome.reason
-    assert gamelist.read_bytes() == data and source.is_file()
+    assert outcome.ok, outcome.reason
+    assert gamelist.read_bytes() == data.replace(b"Game.iso", b"Game.chd")
+
+
+@pytest.mark.asyncio
+async def test_a_subfolder_named_like_another_system_leaves_that_gamelist_alone(vol):
+    """Codex PRRT_kwDOQ9nULM64JsQa: ROMs/ps2/psx/Game.iso belongs to ps2. The
+    psx system's gamelist, which also lists a ./Game.iso, is not touched."""
+    source = _file(vol / "ROMs" / "ps2" / "psx" / "Game.iso")
+    psx_data = b"<gameList><game><path>./Game.iso</path></game></gameList>"
+    psx = _file(vol / "gamelists" / "psx" / "gamelist.xml", psx_data)
+    ps2_data = b"<gameList><game><path>./psx/Game.iso</path></game></gameList>"
+    ps2 = _file(vol / "gamelists" / "ps2" / "gamelist.xml", ps2_data)
+
+    outcome = await _replace(
+        source, vol / "ROMs" / "ps2" / "psx" / "Game.chd",
+        _esde(vol, vol / "gamelists"),
+    )
+
+    assert outcome.ok, outcome.reason
+    assert psx.read_bytes() == psx_data
+    assert not (psx.parent / "gamelist.xml.bak").exists()
+    assert ps2.read_bytes() == ps2_data.replace(b"Game.iso", b"Game.chd")
+
+
+@pytest.mark.asyncio
+async def test_a_symlinked_system_folder_keeps_its_es_de_name(vol):
+    """Codex PRRT_kwDOQ9nULM64JsQn: ROMs/ps2 -> actual/PlayStation2. ES-DE
+    knows the system as ps2, so gamelists/ps2 is the one updated, even though
+    the resolved path names PlayStation2."""
+    real = vol / "actual" / "PlayStation2"
+    source = _file(real / "Game.iso")
+    (vol / "ROMs").mkdir()
+    (vol / "ROMs" / "ps2").symlink_to(real, target_is_directory=True)
+    data = b"<gameList><game><path>./Game.iso</path></game></gameList>"
+    gamelist = _file(vol / "gamelists" / "ps2" / "gamelist.xml", data)
+
+    outcome = await _replace(source, real / "Game.chd", _esde(vol, vol / "gamelists"))
+
+    assert outcome.ok, outcome.reason
+    assert gamelist.read_bytes() == data.replace(b"Game.iso", b"Game.chd")
 
 
 @pytest.mark.asyncio
@@ -175,7 +216,8 @@ async def test_a_gamelist_for_another_system_is_left_alone(vol):
     source = _file(vol / "ROMs" / "ps2" / "Game.iso")
     other = _file(vol / "gamelists" / "gc" / "gamelist.xml", GAMELIST)
 
-    outcome = await _replace(source, vol / "ROMs" / "ps2" / "Game.chd", _Library(vol / "gamelists"))
+    outcome = await _replace(
+        source, vol / "ROMs" / "ps2" / "Game.chd", _esde(vol, vol / "gamelists"))
 
     assert outcome.ok
     assert outcome.records == []
@@ -192,7 +234,8 @@ async def test_an_esde_gamelist_that_cant_be_updated_keeps_the_source(vol, data,
     source = _file(vol / "ROMs" / "ps2" / "Game.iso")
     gamelist = _file(vol / "gamelists" / "ps2" / "gamelist.xml", data)
 
-    outcome = await _replace(source, vol / "ROMs" / "ps2" / "Game.chd", _Library(vol / "gamelists"))
+    outcome = await _replace(
+        source, vol / "ROMs" / "ps2" / "Game.chd", _esde(vol, vol / "gamelists"))
 
     assert not outcome.ok
     assert outcome.failed == str(gamelist) and why in outcome.reason
@@ -206,7 +249,8 @@ async def test_a_gamelists_folder_outside_the_volumes_keeps_the_source(vol, tmp_
     gamelist = _file(outside / "ps2" / "gamelist.xml", GAMELIST)
     source = _file(vol / "ROMs" / "ps2" / "Game.iso")
 
-    outcome = await _replace(source, vol / "ROMs" / "ps2" / "Game.chd", _Library(outside))
+    outcome = await _replace(
+        source, vol / "ROMs" / "ps2" / "Game.chd", _esde(vol, outside))
 
     assert not outcome.ok
     assert "gamelists folder" in outcome.reason
@@ -215,11 +259,12 @@ async def test_a_gamelists_folder_outside_the_volumes_keeps_the_source(vol, tmp_
 
 def test_the_registry_binds_the_referrer_to_the_librarys_folder(vol):
     [bound] = [
-        r for r in referrers.registry.active(_Library(vol / "gamelists"))
+        r for r in referrers.registry.active(_esde(vol, vol / "gamelists"))
         if r.id == "gamelist"
     ]
     assert isinstance(bound, GamelistReferrer)
     assert bound.gamelists_folder == str(vol / "gamelists")
+    assert bound.rom_directory == str(vol / "ROMs")
     # The registered one is untouched: another Library gets its own binding.
     [plain] = [r for r in referrers.registry.all() if r.id == "gamelist"]
     assert plain.gamelists_folder is None

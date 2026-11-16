@@ -3914,19 +3914,26 @@ Knulli, muOS) key each game's artwork, favourite flag and play count on its
   (`ROMM_GAMELISTS_FOLDER`). The registry binds each active Referrer to the
   Image's Library through `Referrer.for_library(library)` (default: the
   Referrer itself; a failure keeps the Source); the gamelist Referrer returns
-  a copy carrying the folder. Each folder the walk visits is then also looked
-  up as `<gamelists folder>/<that folder's name>/gamelist.xml`, with the
-  folder as the entries' base, so `ROMs/ps2/Game.iso` reaches
-  `gamelists/ps2/gamelist.xml` and its `./Game.iso`. The subfolder is the ROM
-  folder's own name, not a mapping of the Platform slug: ES-DE's system names
-  are its ROM folder names, and the slug table's canonical ids differ from
-  them (`ngc` for ES-DE's `gc`). Each gamelist is settled before it is
-  read (`_settled`): every folder that reaches it is collected, and a gamelist
-  two different folders reach (an ES-DE system folder with a subfolder of the
-  same name, `ROMs/ps2/ps2`, both reaching `gamelists/ps2`) has no single
-  base, so planning refuses ("more than one ROM folder could be its
-  system's") and the Source is kept. Resolving against the wrong one could
-  find nothing to change and let the Source go with a stale entry. The
+  a copy carrying the folder and the Library root, which is ES-DE's ROM
+  directory. *The system-folder rule* (`_systems`): ES-DE's systems are the
+  folders directly under the ROM directory, so a replaced file's system is
+  the one folder directly under the root that holds it, whatever lies deeper:
+  `ROMs/ps2/psx/Game.iso` is `ps2`, and the `psx` system's gamelist is never
+  read. Only `<gamelists folder>/<system>/gamelist.xml` is read, with
+  `<root>/<system>` as the entries' base, so `ROMs/ps2/Game.iso` reaches
+  `gamelists/ps2/gamelist.xml` and its `./Game.iso`, and
+  `ROMs/ps2/ps2/Game.iso` its `./ps2/Game.iso`. The system's name is the
+  folder's name as listed under the root (`os.scandir`), never a resolved
+  one, so a symlinked `ROMs/ps2 -> actual/PlayStation2` is still `ps2`; which
+  system folder holds a file is decided on resolved paths, like identity. A
+  root that can't be listed, or a Library with no root, keeps the Source.
+  The subfolder is the ROM folder's own name, not a mapping of the Platform
+  slug: ES-DE's system names are its ROM folder names, and the slug table's
+  canonical ids differ from them (`ngc` for ES-DE's `gc`). Each gamelist is
+  settled before it is read (`_settled`): every way to reach it is collected,
+  and one reached with two different bases (a gamelists folder that overlaps
+  the ROM folders) has no single base, so planning refuses ("more than one
+  ROM folder could be its system's") and the Source is kept. The
   Platform folder lookup still runs beside it. The folder must be confirmed
   inside the Volumes when planning (`volume_containment`, "couldn't tell"
   refused), or the Source is kept. Saving it is two steps.
@@ -3945,8 +3952,11 @@ Knulli, muOS) key each game's artwork, favourite flag and play count on its
   writes `<alternativeEmulator>` beside `<gameList>`, two top-level elements
   that strict XML refuses and pugixml reads as a fragment, so an
   ASCII-compatible file is parsed wrapped in one more element after its
-  declaration, its byte indexes shifted back. A file that doesn't parse fails
-  with "can't be parsed (...)". An entry is read the way
+  BOM and declaration, its byte indexes shifted back. A file that doesn't
+  parse fails with "can't be parsed (...)". The wrapper would let an empty,
+  declaration-only or text-only file parse as a list with no entries, so a
+  file with no top-level `<gameList>`, or with text between its top-level
+  elements, fails with "isn't a gamelist" and keeps the Source. An entry is read the way
   ES-DE reads it: backslashes are separators, `./` is the base, anything else
   is taken as written (joined to the base when relative).
 - *What it rewrites.* Only an entry that resolves to a replaced file

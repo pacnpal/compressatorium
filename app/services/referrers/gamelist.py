@@ -42,9 +42,12 @@ of its own, one subfolder per system named after the system's ROM folder
 (``ROMs/ps2`` -> ``gamelists/ps2/gamelist.xml``), its entries relative to that
 ROM folder. When the Image's Library names that folder
 (``library.referrer_options("gamelist")["gamelists_folder"]``, bound through
-``for_library``), each folder the walk visits is also looked up there by its
-own name, with the folder as the entries' base. The folder must be confirmed
-inside the Volumes when planning, or the Source is kept.
+``for_library``, with the Library root as ES-DE's ROM directory), the system
+of a replaced file is the folder directly under the root that holds it, named
+as listed under the root (a symlinked system folder keeps its name), and only
+``<gamelists>/<system>/gamelist.xml`` is read, its entries resolved against
+``<root>/<system>``. The folder must be confirmed inside the Volumes when
+planning, or the Source is kept.
 
 Writes go through ``files.rewrite_in_place``: re-read under the in-process
 and cross-process locks, one ``gamelist.xml.bak`` kept, atomic replace.
@@ -90,9 +93,11 @@ _PATH_DEPTH = 2
 # ASCII-compatible file is parsed wrapped in one more element after its
 # declaration, so a fragment reads like ES-DE reads it; byte indexes are
 # shifted back by the wrapper's length.
-_PROLOG = re.compile(rb"^(?:\xef\xbb\xbf)?<\?xml[^>]*\?>")
+# The BOM and the declaration, either optional: the wrapper goes after both.
+_PROLOG = re.compile(rb"^(?:\xef\xbb\xbf)?(?:<\?xml[^>]*\?>)?")
 _WRAP_OPEN, _WRAP_CLOSE = b"<gamelist-file>", b"</gamelist-file>"
 _PATH_TAG = "path"
+_GAMELIST_TAG = "gameList"
 _DECLARED = re.compile(rb"""^<\?xml[^>]*?\bencoding\s*=\s*["']([A-Za-z0-9._-]+)["']""")
 # Bytes an ASCII-compatible encoding writes the same as ASCII, so a span can
 # be found by its markup bytes.
@@ -116,6 +121,11 @@ class _Paths:
     def __init__(self, depth: int) -> None:
         self.parser: DefusedXMLParser | None = None
         self._path_depth = depth
+        # The document's top-level elements, and whether any text sits
+        # between them (only possible inside the fragment wrapper).
+        self._top_depth = depth - _PATH_DEPTH
+        self.tops: list[str] = []
+        self.stray_text = False
         self.found: list[tuple[str, int, int, bool]] = []  # text, start, end, plain
         self._depth = 0
         self._open: tuple[int, list[str]] | None = None  # start index, text parts
@@ -125,6 +135,8 @@ class _Paths:
         return self.parser.parser.CurrentByteIndex
 
     def start(self, tag, _attrib) -> None:
+        if self._depth == self._top_depth:
+            self.tops.append(tag)
         if self._open is not None:
             self._plain = False  # a child element inside <path>
         elif tag == _PATH_TAG and self._depth == self._path_depth:
@@ -132,6 +144,8 @@ class _Paths:
         self._depth += 1
 
     def data(self, text: str) -> None:
+        if self._depth == self._top_depth and text.strip():
+            self.stray_text = True
         if self._open is not None:
             self._open[1].append(text)
 
@@ -206,6 +220,14 @@ def _entries(gamelist: str, data: bytes) -> list[_Entry]:
         found = parser.close()
     except (ParseError, DefusedXmlException, ValueError, LookupError) as exc:
         raise ReferrerError(gamelist, f"can't be parsed ({exc})") from exc
+    # The wrapper makes an empty, declaration-only or text-only file parse:
+    # none of them is a gamelist, so none can say the Source isn't listed
+    # (Codex PRRT_kwDOQ9nULM64JsQt). ES-DE's <alternativeEmulator> beside
+    # <gameList> is still fine.
+    if _GAMELIST_TAG not in target.tops:
+        raise ReferrerError(gamelist, f"isn't a gamelist (no <{_GAMELIST_TAG}> element)")
+    if target.stray_text:
+        raise ReferrerError(gamelist, "isn't a gamelist (text outside its elements)")
     return [
         _Entry(
             text,
@@ -335,44 +357,73 @@ class GamelistReferrer(Referrer):
     opt_in = True
     phase = Phase.FILE
 
-    def __init__(self, gamelists_folder: str | None = None) -> None:
-        # The Library's ES-DE gamelists folder (#387), or None. Set only on a
-        # copy bound by `for_library`; the registered Referrer has none.
+    def __init__(
+        self, gamelists_folder: str | None = None, rom_directory: str | None = None,
+    ) -> None:
+        # The Library's ES-DE gamelists folder (#387), or None, and its ROM
+        # directory (the Library root). Set only on a copy bound by
+        # `for_library`; the registered Referrer has neither.
         self.gamelists_folder = gamelists_folder or None
+        self.rom_directory = rom_directory or None
 
     def for_library(self, library) -> GamelistReferrer:
-        """A copy bound to *library*'s ES-DE gamelists folder, if it has one."""
+        """A copy bound to *library*'s ES-DE gamelists folder and root, if it
+        has a folder."""
         if library is None:
             return self
         folder = library.referrer_options(self.id).get(GAMELISTS_FOLDER)
-        return GamelistReferrer(folder) if folder else self
-
-    def _located(self, directory: str) -> list[tuple[str, str]]:
-        """``(gamelist, base)`` pairs for the folder *directory*: the gamelist
-        in it (the Platform folder layout), and, with an ES-DE gamelists
-        folder, ``<gamelists folder>/<directory's name>/gamelist.xml``. ES-DE
-        names each system's gamelist folder after the system's ROM folder and
-        reads its entries relative to that ROM folder, so both resolve
-        against *directory*."""
-        found = [(g, directory) for g in _gamelists(directory)]
-        name = os.path.basename(directory)
-        if self.gamelists_folder and name:
-            found += [
-                (g, directory)
-                for g in _gamelists(os.path.join(self.gamelists_folder, name))
-            ]
-        return found
+        return GamelistReferrer(folder, library.root) if folder else self
 
     def _check_folder(self) -> None:
         """Fail closed when the gamelists folder isn't confirmed inside the
-        Volumes (they changed after it was set, or a probe failed)."""
-        if self.gamelists_folder and volume_containment(
-            self.gamelists_folder, treat_archives=False,
-        ) is not True:
+        Volumes (they changed after it was set, or a probe failed), or the
+        Library has no root to find ES-DE's systems under."""
+        if not self.gamelists_folder:
+            return
+        if volume_containment(self.gamelists_folder, treat_archives=False) is not True:
             raise ReferrerError(
                 self.gamelists_folder,
                 "the gamelists folder isn't confirmed inside the configured Volumes",
             )
+        if not self.rom_directory:
+            raise ReferrerError(
+                self.gamelists_folder,
+                "the Library has no root folder, so ES-DE's system can't be told",
+            )
+
+    def _systems(self, renames: Mapping[str, str]) -> list[tuple[str, str]]:
+        """``(gamelist, base)`` for each ES-DE system holding a replaced file.
+
+        ES-DE's systems are the folders directly under its ROM directory (the
+        Library root): ``ROMs/ps2/psx/Game.iso`` belongs to ``ps2`` alone, so
+        only ``<gamelists>/ps2/gamelist.xml`` is read, its entries resolved
+        against ``ROMs/ps2`` (Codex PRRT_kwDOQ9nULM64JsQa). The system's name is
+        the folder's name as listed under the root, never a resolved one, so
+        a symlinked ``ROMs/ps2 -> actual/PlayStation2`` is still ``ps2``
+        (Codex PRRT_kwDOQ9nULM64JsQn); which system holds a file is decided on
+        resolved paths, as identity is. A file reached through two system
+        folders is looked up in both, each against its own folder.
+        """
+        root = self.rom_directory
+        try:
+            with os.scandir(root) as listing:
+                systems = [
+                    (entry.name, entry.path, os.path.realpath(entry.path))
+                    for entry in listing if entry.is_dir()
+                ]
+        except OSError as exc:
+            raise ReferrerError(
+                root, f"can't list the ROM directory for ES-DE's systems ({exc.strerror})",
+            ) from exc
+        found: list[tuple[str, str]] = []
+        for old in renames:
+            real = os.path.realpath(old)
+            for name, base, real_base in systems:
+                if real.startswith(real_base.rstrip(os.sep) + os.sep):
+                    for gamelist in _gamelists(os.path.join(self.gamelists_folder, name)):
+                        if (gamelist, base) not in found:
+                            found.append((gamelist, base))
+        return found
 
     def detect(self, image_path: str) -> bool:
         # With an ES-DE folder, planning looks there (and checks the folder).
@@ -401,19 +452,26 @@ class GamelistReferrer(Referrer):
     def _settled(self, renames: Mapping[str, str]) -> list[tuple[str, str]]:
         """Every gamelist the walk reaches, each once, with its one base.
 
-        A gamelist is settled before it is read: every folder that reaches it
-        is collected first. Two different bases for one gamelist (an ES-DE
-        system folder with a subfolder of the same name, ``ROMs/ps2/ps2``,
-        both reaching ``gamelists/ps2``) can't be told apart: entries would
-        resolve against the wrong one, so planning refuses and the Source is
-        kept (Codex PRRT_kwDOQ9nULM64Jpv8).
+        A gamelist is settled before it is read: every way to reach it is
+        collected first. With ES-DE's systems taken from the ROM directory
+        (``_systems``) a gamelist has one base, except when the gamelists
+        folder overlaps the ROM folders (a Platform folder's own gamelist that
+        is also some system's ES-DE gamelist). Two different bases can't be
+        told apart: entries would resolve against the wrong one, so planning
+        refuses and the Source is kept (Codex PRRT_kwDOQ9nULM64Jpv8).
         """
+        located = [
+            (gamelist, directory)
+            for directory in dirs_for(renames)
+            for gamelist in _gamelists(directory)
+        ]
+        if self.gamelists_folder:
+            located += self._systems(renames)
         bases: dict[str, tuple[str, list[str]]] = {}  # realpath -> (gamelist, bases)
-        for directory in dirs_for(renames):
-            for gamelist, base in self._located(directory):
-                _, found = bases.setdefault(os.path.realpath(gamelist), (gamelist, []))
-                if base not in found:
-                    found.append(base)
+        for gamelist, base in located:
+            _, found = bases.setdefault(os.path.realpath(gamelist), (gamelist, []))
+            if base not in found:
+                found.append(base)
         settled = []
         for gamelist, found in bases.values():
             if len(found) > 1:
