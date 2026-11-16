@@ -3218,6 +3218,25 @@ class JobManager:
                 "The Source's volume did not answer; refusing to delete"
             ) from None
 
+    @classmethod
+    async def _image_library(cls, path: str, probe_seconds: Optional[float]):
+        """The Library holding *path*, for the Referrer hook (#383); None when
+        none does. A delete-step probe: when it can't tell (a timeout, the
+        Library list unreadable) it raises RuntimeError, so nothing is removed."""
+        # Imported here: services.libraries imports this module.
+        from services import libraries
+
+        try:
+            return await cls._bounded_delete_probe(
+                libraries.library_for, path, seconds=probe_seconds,
+            )
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(
+                f"Couldn't tell which Library holds the Source ({exc}); refusing to delete"
+            ) from exc
+
     def _delete_path_problem(
         self, job_id: str, paths: list[str], fingerprints: dict, output_real: str,
         own_holds: Set[str], jobs: List[ConversionJob],
@@ -3352,10 +3371,13 @@ class JobManager:
         )
 
         # Referrers (.m3u, ...) move to the output before the Source goes; if
-        # any can't, the Source stays (#295).
+        # any can't, the Source stays (#295). The Image's Library decides
+        # which opt-in Referrers run (#383).
+        library = await self._image_library(source_for_delete, probe_seconds)
         referrer_outcome = await referrers.update_before_source_removal(
             source_for_delete,
             {path: output_path for path in delete_order},
+            library=library,
             cancel_event=cancel_event,
             bound=probe_seconds,
         )

@@ -5,7 +5,8 @@ playlist, later a frontend ``gamelist.xml`` or RomM's ROM. When a conversion
 replaces a Source, every Referrer that points at it is moved to the output
 before the Source is removed.
 
-Three operations, all synchronous (the job hook runs them off the event loop):
+Three operations. ``detect`` and ``plan`` are synchronous and run off the
+event loop, on the hook's detached thread:
 
 - ``detect(image_path)``: cheap check whether this Referrer could point at the
   Image at all (for ``.m3u``: is there a playlist beside it).
@@ -13,7 +14,17 @@ Three operations, all synchronous (the job hook runs them off the event loop):
   needs, one ``ReferrerChange`` per file or record. Planning writes nothing,
   so the delete confirmation can show the result.
 - ``apply(change)``: write one planned change atomically, keeping a one-time
-  backup. Raises ``ReferrerError`` when it can't.
+  backup. Raises ``ReferrerError`` when it can't. A plain ``def`` runs on the
+  detached thread; an ``async def`` (a network Referrer) is awaited on the
+  event loop under the hook's bound and its Cancel, so it must never block.
+
+Two declarations (#383), checked when the Referrer is registered:
+
+- ``opt_in``: False for a Referrer that is always on (``.m3u``); True for one
+  that runs only where the Image's Library turns it on
+  (``Library.referrer_enabled``).
+- ``phase``: a :class:`Phase`. File Referrers run first; a later phase runs
+  only when every Referrer of the earlier phases succeeded.
 """
 
 from __future__ import annotations
@@ -24,6 +35,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
+from enum import IntEnum
 from typing import Any
 
 from utils.path_utils import (
@@ -63,11 +75,35 @@ class ReferrerChange:
         }
 
 
+class Phase(IntEnum):
+    """When a Referrer runs. Lower runs first.
+
+    A phase runs only when every Referrer of the phases before it succeeded,
+    so a file Referrer that fails leaves another app's record untouched.
+    """
+
+    # Local files that point at the Image (.m3u, gamelist.xml).
+    FILE = 10
+    # Another app's record, reached over the network (RomM).
+    NETWORK = 20
+
+    @property
+    def target(self) -> str:
+        """What the phase updates, named when it times out or is cancelled."""
+        return "playlists" if self is Phase.FILE else "linked records"
+
+
 class Referrer(ABC):
-    """A registry-driven Referrer plugin. ``id`` is stable; it lands in the Ledger."""
+    """A registry-driven Referrer plugin. ``id`` is stable; it lands in the Ledger.
+
+    Every Referrer declares ``opt_in`` and ``phase`` (see the module docstring);
+    the registry refuses one that doesn't.
+    """
 
     id: str
     label: str
+    opt_in: bool
+    phase: Phase
 
     @abstractmethod
     def detect(self, image_path: str) -> bool:
@@ -79,7 +115,11 @@ class Referrer(ABC):
 
     @abstractmethod
     def apply(self, change: ReferrerChange) -> None:
-        """Write *change* atomically with a one-time backup, or raise ReferrerError."""
+        """Write *change* atomically with a one-time backup, or raise ReferrerError.
+
+        May be ``async def``: the hook then awaits it on the event loop,
+        bounded and cancellable, instead of calling it on its thread.
+        """
 
 
 @dataclass

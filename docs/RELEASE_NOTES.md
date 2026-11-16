@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Changed
+
+- **Groundwork for gamelist.xml and RomM updates** (#383). Before a Source is
+  deleted, the step that updates `.m3u` playlists now also knows which Library
+  the Image is in, so later updates (a frontend's `gamelist.xml`, RomM's own
+  record) can be switched on per Library. Playlists update exactly as before.
+  One edge case: if the app can't tell which Library holds the Source (the
+  Library list can't be read, or the folder doesn't answer in time), the
+  Source is kept and the job says why, instead of being deleted.
+
 ### Fixed
 
 - **Cancelling a fast conversion says cancelled, not failed.** When a tool's

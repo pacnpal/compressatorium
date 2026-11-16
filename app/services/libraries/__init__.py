@@ -44,6 +44,7 @@ __all__ = [
     "describe",
     "folder_libraries",
     "get",
+    "library_for",
     "register",
     "remove",
     "run_forever",
@@ -206,6 +207,28 @@ async def run_forever() -> None:
 def get(library_id: str) -> Library | None:
     for library in all_libraries():
         if library.id == library_id:
+            return library
+    return None
+
+
+def library_for(path: str) -> Library | None:
+    """The Library whose root holds *path*, or None when no Library does (#383).
+
+    *path* is resolved; each root is compared as stored, which is already
+    resolved (registration and RomM's settings save resolve it), so no other
+    Library's mount is touched. Roots never overlap, so at most one matches.
+    With no database open only RomM is asked (:func:`without_a_database`).
+
+    Blocking (resolves *path*, reads the folder Libraries on first use);
+    callers run it off the event loop, bounded. A failed read raises: the
+    Referrer hook then can't tell which opt-in Referrers apply, and the
+    caller keeps the Source.
+    """
+    target = _resolved(path)
+    candidates = without_a_database() if _db.SessionLocal is None else all_libraries()
+    for library in candidates:
+        root = library.root
+        if root and target.is_relative_to(Path(root)):
             return library
     return None
 
