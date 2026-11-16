@@ -4,6 +4,14 @@
 
 ### Fixed
 
+- **A later volume of a multi-volume RAR lists as a plain file** (#369).
+  `Pack.part2.rar` showed as an archive of its own with 0 items, and every
+  listing or search of its folder logged an error ("Need to start from first
+  volume"). It now lists as a plain file, the search leaves it out, and
+  nothing is logged; `Pack.part1.rar` lists the whole set. A single-volume
+  RAR that is only named like a later part (`x.part2.rar`) still lists its
+  members.
+
 - **A Rule offers a compression level only when its codec takes one** (#363).
   A Dolphin WIA Rule on "Tool default (none)" or "No compression" showed a
   level box ("1–22. Blank uses 19.") and saved what was typed there. It now

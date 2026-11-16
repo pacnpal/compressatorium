@@ -26,6 +26,8 @@ The returned list is shared across callers and cached; treat it as read-only.
 from __future__ import annotations
 
 import contextlib
+import os
+import re
 import stat
 import zipfile
 from collections.abc import Callable, Iterator
@@ -104,14 +106,76 @@ def read_archive_members(
     )
 
 
+# ``<stem>.partN.rar``: RAR's own naming for the volumes of a set (#369).
+_RAR_PART = re.compile(
+    r"(?P<stem>.+)(?P<part>\.part)(?P<number>\d+)(?P<ext>\.rar)", re.IGNORECASE,
+)
+# Whether a ``.partN.rar`` (N > 1) is a later volume, per (path, mtime, size).
+_later_volume_cache: MtimeCache[bool] = MtimeCache()
+
+
+def later_volume_of(
+    archive_path: str, progress: Callable[..., None] | None = None,
+) -> str | None:
+    """The first volume's path when *archive_path* is a later volume of a
+    multi-volume RAR set, else ``None`` (#369).
+
+    The one place that decides it. By name first: ``<stem>.partN.rar`` with
+    N > 1 (``.r00``-style volumes are not archive extensions the app lists,
+    so they are plain files already). Then confirmed by rarfile itself, which
+    refuses a volume whose flags say it is not the first
+    (``NeedFirstVolume``): a single-volume RAR that is merely named
+    ``x.part2.rar`` is not hidden. A later volume is listed as a plain file,
+    never summarized or searched as an archive, and never logs an error.
+    ``progress`` is reported per header rarfile parses. Cached per
+    ``(path, mtime, size)``. Blocking.
+    """
+    match = _RAR_PART.fullmatch(os.path.basename(archive_path))
+    if match is None or int(match["number"]) <= 1:
+        return None
+    is_later = _later_volume_cache.get_or_compute(
+        archive_path, lambda: _needs_first_volume(archive_path, progress),
+    )
+    if not is_later:
+        return None
+    first = (
+        f"{match['stem']}{match['part']}{'1'.zfill(len(match['number']))}{match['ext']}"
+    )
+    return os.path.join(os.path.dirname(archive_path), first)
+
+
+def _needs_first_volume(
+    archive_path: str, progress: Callable[..., None] | None,
+) -> bool:
+    """Whether rarfile refuses *archive_path* as not the first volume of its set.
+
+    Anything else (it opens, it is broken, rarfile is not installed) is
+    False: the file is then listed as an archive and the listing reports
+    whatever is wrong with it.
+    """
+    try:
+        import rarfile as rar  # optional backend, as at the top of this module
+    except ImportError:
+        return False
+    on_header = (lambda _header: progress()) if progress is not None else None
+    try:
+        with rar.RarFile(archive_path, "r", info_callback=on_header):
+            return False
+    except rar.NeedFirstVolume:
+        return True
+    except (rar.Error, OSError):
+        return False
+
+
 def invalidate(archive_path: str) -> None:
     """Drop the cached member list for ``archive_path`` (used by tests)."""
     _cache.invalidate(archive_path)
 
 
 def clear_cache() -> None:
-    """Drop every cached member list (used by tests)."""
+    """Drop every cached member list and volume answer (used by tests)."""
     _cache.clear()
+    _later_volume_cache.clear()
 
 
 def read_member_crcs(archive_path: str) -> list[tuple[str, int | None, int | None, bool]]:
