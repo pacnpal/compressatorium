@@ -3031,14 +3031,20 @@ class JobManager:
     async def _open_stage(self, job: ConversionJob) -> staging.StagedOutput | None:
         """A staging slot beside the job's output, or None when the job
         writes in place (:meth:`_needs_stage`). A slot that can't be made
-        fails the job: never fall back to writing where a scanner looks."""
+        fails the job: never fall back to writing where a scanner looks.
+
+        Staging runs before the tool's runner, which would make a missing
+        output folder (a conversion into a new subfolder), so the slot's
+        opening makes it, inside the Volume, in the same bounded call. A
+        slot that arrives after the bound gave up is closed (``undo``); none
+        is opened when no detached worker is free."""
         if not await self._needs_stage(job):
             return None
         folder = os.path.dirname(job.output_path)
         try:
             return await run_detached_undoable(
-                staging.open_slot, folder, timeout=_CANONICAL_PROBE_SECONDS,
-                undo=lambda slot: slot.close(),
+                staging.open_slot, folder, make_folder=True,
+                timeout=_CANONICAL_PROBE_SECONDS, undo=lambda slot: slot.close(),
             )
         except (OSError, DeadlineExpired, ProbeCapacityExceeded) as exc:
             raise RuntimeError(
@@ -3090,28 +3096,49 @@ class JobManager:
         self, job: ConversionJob, slot: staging.StagedOutput | None,
     ) -> None:
         """Close the job's slot: discard what was never placed, and its store
-        records, then the slot. Bounded; what doesn't finish goes on in the
-        background, and a crash is left to the startup sweep. Never raises."""
+        records, then the slot. Never raises.
+
+        Like ``_let_go_in_background``: the worker starts before the first
+        await (``start_detached``), so a cancel can't stop it from starting;
+        with no detached slot free it gets a thread of its own, so the slot's
+        descriptors and lock are never left open until restart. The wait is
+        bounded; what doesn't finish goes on in the background."""
         if slot is None:
             return
 
         def discard() -> None:
-            if not slot.placed:
-                staged = slot.path_for(os.path.basename(job.output_path))
-                for name in self._place_names(job, staged):
-                    for store in (verification_store, chd_metadata_store):
-                        try:
-                            store.clear_blocking(slot.path_for(name))
-                        except Exception:
-                            logger.debug("No record to clear for %s", name, exc_info=True)
-            slot.close()
+            try:
+                if not slot.placed:
+                    self._clear_staged_records(job, slot)
+            finally:
+                slot.close()
 
         try:
-            await run_detached_bounded(discard, timeout=_CANONICAL_PROBE_SECONDS)
+            worker = start_detached(discard)
+        except ProbeCapacityExceeded:
+            threading.Thread(target=discard, daemon=True).start()
+            return
+        try:
+            await asyncio.wait_for(asyncio.shield(worker), _CANONICAL_PROBE_SECONDS)
         except Exception:
             logger.warning(
                 "Removing the staging slot %s did not finish", slot.path, exc_info=True,
             )
+
+    def _clear_staged_records(self, job: ConversionJob, slot: staging.StagedOutput) -> None:
+        """Drop the store records of a staged output that was never placed (a
+        failed check marks it). Blocking; never raises."""
+        try:
+            names = self._place_names(job, slot.path_for(os.path.basename(job.output_path)))
+        except Exception:
+            logger.debug("Could not list the staged output of %s", job.output_path, exc_info=True)
+            return
+        for name in names:
+            for store in (verification_store, chd_metadata_store):
+                try:
+                    store.clear_blocking(slot.path_for(name))
+                except Exception:
+                    logger.debug("No record to clear for %s", name, exc_info=True)
 
     @staticmethod
     def _norm_fps(

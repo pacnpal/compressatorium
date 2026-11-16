@@ -5656,19 +5656,25 @@ output lands in a Library declaring the `HIDDEN_STAGING` capability
 writes into a hidden slot and places the output only once its checks pass.
 The RomM swap (#391) stages through the same helper.
 
-- **The helper.** `staging.open_slot(folder)` makes
+- **The helper.** `staging.open_slot(folder, *, make_folder=False)` makes
   `<folder>/.compressatorium-stage/slot-XXXXXXXX/` and returns a
   `StagedOutput`. The folder must be inside a configured Volume
-  (`volume_containment(real) is True`); it is opened with `open_dir_beneath`,
+  (`volume_containment(real) is True`), and with `make_folder` a missing one
+  is made only after that check; it is opened with `open_dir_beneath`,
   the stage folder and the slot `O_NOFOLLOW | O_DIRECTORY` beneath it (a link
   in place of the stage folder is refused), and every later step works
   through those descriptors. `path_for(name)` is where a tool writes: the
   output's own name inside the slot, so a `.cue` naming its `.bin` is still
-  right once moved. `place(names)` renames the named entries (files or
-  folders) into the folder with `renameat` (`os.rename` with `src_dir_fd` /
-  `dst_dir_fd`, the same filesystem), never over an existing entry
-  (`FileExistsError` before anything moves), all or none (a failed rename
-  moves the earlier ones back), and returns the `(staged, final)` pairs.
+  right once moved. `place(names)` moves the named entries (files or
+  folders) into the folder with `utils.path_utils.place_without_clobbering`
+  given both folder descriptors (`src_dir_fd` / `dst_dir_fd`): a `linkat`
+  then removing the staged name, or for a folder (or a filesystem without
+  hard links) `renameat2(RENAME_NOREPLACE)` / `renameatx_np(RENAME_EXCL)`.
+  Each move is atomic and no-replace, so an entry another process creates at
+  the destination at any moment raises `FileExistsError` and is never
+  touched; the existence check before the moves is only a fast path. All or
+  none: when one move fails, the ones already made go back into the slot the
+  same no-replace way. Returns the `(staged, final)` pairs.
   `close()` removes what is left in the slot (an unplaced output, a tool's
   scratch) with the descriptor-based `shutil.rmtree(dir_fd=...)`, then the
   slot's lock file, its journal record, and the stage folder once no other
@@ -5691,8 +5697,12 @@ The RomM swap (#391) stages through the same helper.
   `libraries.library_for(output_path)` (detached, bounded): a Library with
   `HIDDEN_STAGING` gets a slot, one without it (or no Library) writes in place
   exactly as before, and "can't tell" stages, since hiding the work is always
-  safe. A slot that can't be made fails the job; it never falls back to
-  writing in sight. `job.output_path` stays the final path; a local
+  safe. The slot opens with `make_folder=True` in the same bounded call,
+  since staging runs before the tool's runner would make a missing output
+  folder (a conversion into a new subfolder). A slot that can't be made
+  fails the job; it never falls back to writing in sight. A slot that
+  arrives after the bound gave up is closed (`run_detached_undoable`'s
+  `undo`). `job.output_path` stays the final path; a local
   `write_path` (the slot's copy of that name) goes to `run_convert`,
   `post_convert`, the output size, the Intact check and the Round-trip. Once
   both pass, `_place_staged` moves the output and its `companion_outputs`
@@ -5704,7 +5714,10 @@ The RomM swap (#391) stages through the same helper.
   places once the conversion ends. An output that fails a check is never
   placed: `_close_stage`, in the job's `finally`, clears its records and
   discards it with the slot, so a failed or cancelled job leaves nothing
-  visible.
+  visible. That close always runs: like `_let_go_in_background`, its worker
+  starts before the first await (`start_detached`), and with no detached
+  slot free it gets a thread of its own, so the slot's descriptors and lock
+  are never left open until a restart.
 - **Hidden everywhere here too.** `STAGE_DIR_NAME` lives in `utils/junk.py`
   and is an ignored entry (`is_junk_entry`), so listings, search and every
   walk skip it.

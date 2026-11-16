@@ -14,6 +14,7 @@ Platform folder by RomM 5.4.1's rule.
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import subprocess
 import sys
@@ -444,3 +445,113 @@ def test_opening_a_slot_sweeps_stale_slots_beside_it(tmp_path, monkeypatch):
         )
     finally:
         slot.close()
+
+
+# ---- review findings on 50ec2701 --------------------------------------------
+
+
+def test_placing_never_replaces_a_file_that_appears_after_the_check(tmp_path, monkeypatch):
+    """A file another process makes between the existence check and the move
+    is never replaced: the placing itself is an atomic no-replace move, and a
+    companion already placed goes back into the slot."""
+    vol = tmp_path / "vol"
+    folder = vol / "ps2"
+    folder.mkdir(parents=True)
+    _volume_settings(vol, tmp_path / "config", monkeypatch)
+
+    slot = staging.open_slot(str(folder))
+    try:
+        Path(slot.path_for("Game.bin")).write_bytes(b"bin")
+        Path(slot.path_for("Game.cue")).write_text("cue")
+        # The check sees nothing; the file lands right after it.
+        monkeypatch.setattr(staging.StagedOutput, "_exists_in_folder", lambda _s, _n: False)
+        (folder / "Game.cue").write_bytes(b"someone else's")
+
+        with pytest.raises(FileExistsError):
+            slot.place(["Game.bin", "Game.cue"])
+
+        assert (folder / "Game.cue").read_bytes() == b"someone else's"
+        assert not (folder / "Game.bin").exists()
+        assert Path(slot.path_for("Game.bin")).read_bytes() == b"bin"
+        assert not slot.placed
+    finally:
+        slot.close()
+
+
+def test_a_folder_output_is_placed_by_a_no_replace_rename(tmp_path, monkeypatch):
+    """A folder can't be hard-linked: it takes the kernel's no-replace rename
+    relative to the open folders, and an existing one is refused."""
+    from utils import path_utils
+
+    if path_utils._noreplace_renameat_call() is None:
+        pytest.skip("no atomic no-replace rename on this platform")
+    vol = tmp_path / "vol"
+    folder = vol / "xbox"
+    folder.mkdir(parents=True)
+    _volume_settings(vol, tmp_path / "config", monkeypatch)
+
+    slot = staging.open_slot(str(folder))
+    try:
+        Path(slot.path_for("Game")).mkdir()
+        Path(slot.path_for("Game"), "default.xbe").write_bytes(b"xbe")
+        assert slot.place(["Game"]) == [(slot.path_for("Game"), str(folder / "Game"))]
+    finally:
+        slot.close()
+    assert (folder / "Game" / "default.xbe").read_bytes() == b"xbe"
+
+    slot = staging.open_slot(str(folder))
+    try:
+        Path(slot.path_for("Game")).mkdir()
+        monkeypatch.setattr(staging.StagedOutput, "_exists_in_folder", lambda _s, _n: False)
+        with pytest.raises(FileExistsError):
+            slot.place(["Game"])
+    finally:
+        slot.close()
+    assert os.listdir(folder / "Game") == ["default.xbe"]
+
+
+@pytest.mark.asyncio
+async def test_a_slot_is_still_closed_when_no_detached_worker_is_free(tmp_path, monkeypatch):
+    """Every probe slot taken: the cleanup still runs (on a thread of its
+    own), so the slot's descriptors and lock don't stay open until restart."""
+    from types import SimpleNamespace
+
+    from services import subprocess_runner
+
+    vol = tmp_path / "vol"
+    folder = vol / "ps2"
+    folder.mkdir(parents=True)
+    _volume_settings(vol, tmp_path / "config", monkeypatch)
+    slot = staging.open_slot(str(folder))
+    Path(slot.path_for("Game.chd")).write_bytes(b"never placed")
+    job = SimpleNamespace(output_path=str(folder / "Game.chd"), mode=ConversionMode.CREATEDVD)
+
+    def no_capacity(_func):
+        raise subprocess_runner.ProbeCapacityExceeded("64 probes already blocked")
+
+    monkeypatch.setattr(subprocess_runner, "_probe_in_daemon_thread", no_capacity)
+
+    await convert_routes.job_manager._close_stage(job, slot)
+
+    deadline = time.monotonic() + 5
+    while (folder / STAGE_DIR_NAME).exists() and time.monotonic() < deadline:
+        await asyncio.sleep(0.02)
+    assert not (folder / STAGE_DIR_NAME).exists()
+    assert partial_writes.recorded_paths() == []
+
+
+@pytest.mark.asyncio
+async def test_a_conversion_into_a_new_subfolder_of_romm_is_staged_there(vol, monkeypatch):
+    """The output folder doesn't exist yet: it is made (inside the Volume)
+    before the slot, as the tool's runner would have made it."""
+    platform = vol / "romm" / "ps2"
+    target = platform / "converted"
+    tools = _Tools(target)
+    tools.install(monkeypatch)
+
+    job = await _convert(platform / "Game.iso", output_dir=str(target))
+
+    assert job.status == JobStatus.COMPLETED, job.error_message
+    assert (target / "Game.chd").read_bytes() == b"CHD"
+    assert Path(tools.written_to[0]).parent.parent == target / STAGE_DIR_NAME
+    assert not (target / STAGE_DIR_NAME).exists()

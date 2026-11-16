@@ -48,7 +48,9 @@ _NO_HARDLINK_ERRNOS = frozenset({
 })
 
 
-def place_without_clobbering(src: str, dst: str) -> None:
+def place_without_clobbering(
+    src: str, dst: str, *, src_dir_fd: int | None = None, dst_dir_fd: int | None = None,
+) -> None:
     """Move ``src`` to ``dst``, never replacing anything already at ``dst``.
 
     ``os.replace`` silently overwrites, and a move can block on a stuck mount
@@ -65,15 +67,33 @@ def place_without_clobbering(src: str, dst: str) -> None:
        back to a check-then-rename that could overwrite another file.
 
     Both paths must be on one filesystem, as for ``os.replace``.
+
+    With ``src_dir_fd`` and ``dst_dir_fd`` (both or neither), ``src`` and
+    ``dst`` are names relative to those open folders (``linkat``,
+    ``renameat2`` / ``renameatx_np``), so a folder swapped for a link after
+    the caller opened it can't redirect the move, and a link at ``src`` is
+    moved as the link, never followed. A folder entry (no hard links to
+    folders) takes the no-replace rename. Placing a staged output (#398).
     """
+    at = src_dir_fd is not None or dst_dir_fd is not None
+    if at and (src_dir_fd is None or dst_dir_fd is None):
+        raise ValueError("Pass both src_dir_fd and dst_dir_fd, or neither")
     try:
-        os.link(src, dst)
+        if at:
+            os.link(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd,
+                    follow_symlinks=False)
+        else:
+            os.link(src, dst)
     except FileExistsError:
         raise
     except OSError as exc:
         if exc.errno not in _NO_HARDLINK_ERRNOS:
             raise
-        if _rename_noreplace(src, dst):
+        if at:
+            renamed = _rename_noreplace_at(src_dir_fd, src, dst_dir_fd, dst)
+        else:
+            renamed = _rename_noreplace(src, dst)
+        if renamed:
             return
         raise OSError(
             errno.ENOTSUP,
@@ -88,7 +108,7 @@ def place_without_clobbering(src: str, dst: str) -> None:
     # dst, and a caller told otherwise would leave it orphaned there. A stray
     # source sits in the caller's work dir, which the caller sweeps anyway.
     try:
-        os.unlink(src)
+        os.unlink(src, dir_fd=src_dir_fd)
     except OSError:
         pass
 
@@ -129,6 +149,29 @@ def _noreplace_rename_call():
     return None
 
 
+@functools.lru_cache(maxsize=1)
+def _noreplace_renameat_call():
+    """The platform's no-replace rename relative to two open folders, as
+    ``f(src_fd, src_bytes, dst_fd, dst_bytes) -> int``, or ``None``."""
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+    except OSError:
+        return None
+    if sys.platform.startswith("linux"):
+        fn = getattr(libc, "renameat2", None)
+        flag = _RENAME_NOREPLACE
+    elif sys.platform == "darwin":
+        fn = getattr(libc, "renameatx_np", None)
+        flag = _RENAME_EXCL
+    else:
+        return None
+    if fn is None:
+        return None
+    fn.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+    fn.restype = ctypes.c_int
+    return lambda sfd, a, dfd, b: fn(sfd, a, dfd, b, flag)
+
+
 def _rename_noreplace(src: str, dst: str) -> bool:
     """Atomically rename ``src`` to ``dst`` unless ``dst`` exists.
 
@@ -139,7 +182,22 @@ def _rename_noreplace(src: str, dst: str) -> bool:
     call = _noreplace_rename_call()
     if call is None:
         return False
-    if call(os.fsencode(src), os.fsencode(dst)) == 0:
+    return _renamed(call(os.fsencode(src), os.fsencode(dst)), src, dst)
+
+
+def _rename_noreplace_at(src_dir_fd: int, src: str, dst_dir_fd: int, dst: str) -> bool:
+    """:func:`_rename_noreplace` for names relative to two open folders."""
+    call = _noreplace_renameat_call()
+    if call is None:
+        return False
+    return _renamed(
+        call(src_dir_fd, os.fsencode(src), dst_dir_fd, os.fsencode(dst)), src, dst,
+    )
+
+
+def _renamed(result: int, src: str, dst: str) -> bool:
+    """A no-replace rename's return value as :func:`_rename_noreplace`'s."""
+    if result == 0:
         return True
     err = ctypes.get_errno()
     if err in _NO_NOREPLACE_ERRNOS:

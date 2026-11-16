@@ -46,7 +46,12 @@ from collections.abc import Iterable
 from logging_setup import get_logger
 from services import partial_writes
 from utils.junk import STAGE_DIR_NAME
-from utils.path_utils import open_dir_beneath, short_temp_name, volume_containment
+from utils.path_utils import (
+    open_dir_beneath,
+    place_without_clobbering,
+    short_temp_name,
+    volume_containment,
+)
 
 logger = get_logger("staging")
 
@@ -107,6 +112,8 @@ class StagedOutput:
                 raise FileNotFoundError(
                     errno.ENOENT, "Nothing staged to place", self.path,
                 )
+            # A fast path only: the move below is what refuses an existing
+            # entry, atomically, however late another one appears.
             for name in present:
                 if self._exists_in_folder(name):
                     raise FileExistsError(
@@ -116,19 +123,15 @@ class StagedOutput:
             moved: list[str] = []
             try:
                 for name in present:
-                    os.rename(name, name, src_dir_fd=self._slot_fd, dst_dir_fd=self._folder_fd)
+                    place_without_clobbering(
+                        name, name, src_dir_fd=self._slot_fd, dst_dir_fd=self._folder_fd,
+                    )
                     moved.append(name)
-            except OSError:
-                for name in reversed(moved):
-                    try:
-                        os.rename(
-                            name, name, src_dir_fd=self._folder_fd, dst_dir_fd=self._slot_fd,
-                        )
-                    except OSError:
-                        logger.exception(
-                            "A staged output was placed but could not be moved back: %s",
-                            os.path.join(self.folder, name),
-                        )
+            except OSError as exc:
+                if exc.errno == errno.EEXIST:
+                    exc.filename = os.path.join(self.folder, name)
+                for done in reversed(moved):
+                    self._move_back(done)
                 raise
             self.placed = True
             return [
@@ -166,6 +169,19 @@ class StagedOutput:
                 partial_writes.remove_stage_folder_if_empty(self._folder_fd)
             os.close(self._folder_fd)
 
+    def _move_back(self, name: str) -> None:
+        """Undo one placing: the entry goes back into the slot, never over
+        anything. Logged when it can't."""
+        try:
+            place_without_clobbering(
+                name, name, src_dir_fd=self._folder_fd, dst_dir_fd=self._slot_fd,
+            )
+        except OSError:
+            logger.exception(
+                "A staged output was placed but could not be moved back: %s",
+                os.path.join(self.folder, name),
+            )
+
     def _in_slot(self, name: str) -> bool:
         try:
             os.stat(name, dir_fd=self._slot_fd, follow_symlinks=False)
@@ -188,14 +204,18 @@ def _unlink_quietly(name: str, dir_fd: int) -> None:
         pass
 
 
-def _open_folder(folder: str) -> tuple[str, int]:
+def _open_folder(folder: str, *, make: bool) -> tuple[str, int]:
     """The output folder's real path and a descriptor of it, only inside a
-    configured Volume and with no link followed. Raises ``OSError``."""
+    configured Volume and with no link followed; made first when *make* and
+    missing (only once it is known to be inside a Volume). Raises
+    ``OSError``."""
     real = os.path.realpath(folder)
     if volume_containment(real, treat_archives=False) is not True:
         raise PermissionError(
             errno.EACCES, "Not inside a configured Volume (or can't tell)", folder,
         )
+    if make:
+        os.makedirs(real, exist_ok=True)
     try:
         return real, open_dir_beneath(real)
     except ValueError as exc:
@@ -238,12 +258,14 @@ def _claim(folder: str, folder_fd: int, stage_fd: int) -> StagedOutput | None:
         raise
 
 
-def open_slot(folder: str) -> StagedOutput:
+def open_slot(folder: str, *, make_folder: bool = False) -> StagedOutput:
     """A fresh staging slot beside *folder*'s files: the hidden stage folder
     is made if need be, swept of stale slots, then the slot is made, locked
-    and journaled. Raises ``OSError`` (``PermissionError`` outside the
-    Volumes) and leaves nothing behind when it does."""
-    real, folder_fd = _open_folder(folder)
+    and journaled. With *make_folder*, a missing *folder* is made first, as a
+    tool's runner would make its output folder (a conversion into a new
+    subfolder). Raises ``OSError`` (``PermissionError`` outside the Volumes)
+    and leaves no slot behind when it does."""
+    real, folder_fd = _open_folder(folder, make=make_folder)
     try:
         for _ in range(_CLAIM_ATTEMPTS):
             stage_fd = partial_writes.open_stage_folder(folder_fd, create=True)
