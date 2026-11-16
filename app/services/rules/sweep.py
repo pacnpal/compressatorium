@@ -2040,6 +2040,7 @@ async def _sweep_locked(
             )
             continue
 
+        listed_at = _walk_generation(library)
         images = await _list_images(library, platform_id, result, stopping)
         if images is None:
             if _sweep_ends(result):
@@ -2428,7 +2429,13 @@ async def _sweep_locked(
         # at what *would* happen would postpone the run that should. Nor does a
         # run that failed to queue anything: advancing the clock there would
         # make the platform sit out a full interval over a transient error.
-        if not dry_run and not summary.get("queue_failed") and not unresponsive:
+        stale = not _listing_current(library, listed_at)
+        if stale:
+            summary["stale_listing"] = True
+        if (
+            not dry_run and not summary.get("queue_failed") and not unresponsive
+            and not stale
+        ):
             await _record_run(library, platform_id, summary)
 
     if stopping():
@@ -2517,6 +2524,30 @@ def forget_checks_locked(library: Library) -> None:
     image_checks.forget_library(library.id)
 
 
+def _walk_generation(library: Library) -> int:
+    """*library*'s ``walk_generation()``; 0 for one without the optional hook.
+
+    ``LibraryDefaults`` gives every Library class the hook. One that does not
+    inherit it is read as listing live every time, whose listing never goes
+    out of date.
+    """
+    hook = getattr(library, "walk_generation", None)
+    return hook() if hook is not None else 0
+
+
+def _listing_current(library: Library, seen: int) -> bool:
+    """Whether *library*'s walk is still the one listed when it read *seen* (#353).
+
+    A run is recorded (its schedule clock moves) only when this holds: a job
+    that changed the Library's files after the listing (a conversion that
+    added an Image) leaves the run looking at Images that are out of date,
+    and recording it would make the new ones wait a full interval. Such a
+    run is left due, and the next tick lists again. The same rule for every
+    Rule; ``Library.walk_generation`` is where a Library says it moved.
+    """
+    return _walk_generation(library) == seen
+
+
 async def _list_images(
     library: Library, platform_id: str, result: dict,
     stopping: Callable[[], bool] = lambda: False,
@@ -2599,6 +2630,7 @@ async def _sweep_check(
     schedule reads, so the nightly run still comes when it is due.
     """
     platform_ref = library.platform_value(platform_id)
+    listed_at = _walk_generation(library)
     images = await _list_images(library, platform_id, result, stopping)
     if images is None:
         return _sweep_ends(result)
@@ -2692,6 +2724,11 @@ async def _sweep_check(
     }
     if unresponsive:
         summary["library_unresponsive"] = True
+    # A listing a finished job made out of date: what was picked is still
+    # checked, but the run does not count, so the Rule stays due (#353).
+    stale = not _listing_current(library, listed_at)
+    if stale:
+        summary["stale_listing"] = True
     result["platforms"].append(summary)
     if not dry_run:
         picked.extend(chosen)
@@ -2700,7 +2737,7 @@ async def _sweep_check(
         # elsewhere for now (another check run, a conversion queued or running,
         # a writer's lock) the night's run (4578116078, 4578154650): once they
         # are free, the Rule must still be due.
-        if not unresponsive and not (
+        if not unresponsive and not stale and not (
             not chosen and (not_ready or held_elsewhere)
         ):
             check_runs.append(

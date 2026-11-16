@@ -4,6 +4,14 @@
 
 ### Fixed
 
+- **A check right after conversions checks the new Images** (#353). A
+  scheduled check Rule that ran within about 30 seconds of a conversion used
+  the folder listing from before it, checked nothing new, and still counted
+  its nightly run, so a freshly converted Image waited a full day for its
+  first check. A finished conversion now refreshes its folder Library's
+  listing, and a Rule run whose listing went out of date before it finished
+  doesn't count: the next tick runs it again. A run that finds nothing to
+  check on an up-to-date listing still counts.
 - **The disc ID of a new CHD is recorded instead of being lost** (#352).
   After Create CD or Create DVD the app used to write the disc's serial and
   title into the CHD as `GAME`/`NAME` metadata with `chdman addmeta`. chdman

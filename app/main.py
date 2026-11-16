@@ -352,6 +352,11 @@ async def _serve(app: FastAPI):
     # A failed manual job and a finished sweep each send one message, if any
     # destination is configured (#293).
     notifications.attach(job_manager)
+    # A finished job drops each Library's out-of-date walk, so the next sweep
+    # or check lists the Images it added or replaced (#353).
+    from services import libraries as libraries_service
+
+    libraries_service.attach(job_manager)
 
     # The unattended-conversion scheduler always runs; it checks the master
     # switch each tick, so toggling auto-convert in the app takes effect
