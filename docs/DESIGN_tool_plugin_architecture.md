@@ -3900,14 +3900,45 @@ Knulli, muOS) key each game's artwork, favourite flag and play count on its
   note to close ES-DE first, since ES-DE rewrites its gamelist on exit.
 - *Where it looks.* A `gamelist.xml` directly in each folder of
   `files.dirs_for(renames)`: the Platform folder, with the Image beside it or
-  in a subfolder. Each entry resolves against its gamelist's folder (the
-  change's payload carries that base, so an ES-DE gamelists folder, #387, can
-  give another).
+  in a subfolder. Each entry resolves against its gamelist's folder; the
+  change's payload carries that base.
+- *ES-DE's gamelists folder* (#387). ES-DE keeps its gamelists in a folder of
+  its own, one subfolder per system named after the system's ROM folder (its
+  `es_systems.xml` puts each system at `%ROMPATH%/<name>` and its gamelist at
+  `gamelists/<name>/gamelist.xml`), with entries relative to that ROM folder.
+  A Library can name the folder: `referrer_options("gamelist")` (the
+  `Library` contract; `LibraryDefaults` returns `{}`) gives
+  `{"gamelists_folder": path}` (`rules.library.GAMELISTS_FOLDER`) from a
+  folder Library's `gamelists_folder` column (migration 0017, null for
+  existing rows) or RomM's `gamelists_folder` setting
+  (`ROMM_GAMELISTS_FOLDER`). The registry binds each active Referrer to the
+  Image's Library through `Referrer.for_library(library)` (default: the
+  Referrer itself; a failure keeps the Source); the gamelist Referrer returns
+  a copy carrying the folder. Each folder the walk visits is then also looked
+  up as `<gamelists folder>/<that folder's name>/gamelist.xml`, with the
+  folder as the entries' base, so `ROMs/ps2/Game.iso` reaches
+  `gamelists/ps2/gamelist.xml` and its `./Game.iso`. The subfolder is the ROM
+  folder's own name, not a mapping of the Platform slug: ES-DE's system names
+  are its ROM folder names, and the slug table's canonical ids differ from
+  them (`ngc` for ES-DE's `gc`). Two folders reaching one gamelist are read
+  once, the nearest winning. The Platform folder lookup still runs beside it.
+  The folder must be confirmed inside the Volumes when planning
+  (`volume_containment`, "couldn't tell" refused), or the Source is kept.
+  Saving it (`libraries.check_gamelists_folder`, through `PATCH
+  /api/libraries/{id}` and `PUT /api/romm/settings`, bounded by
+  `libraries.admitted`) refuses a relative path (400), one outside every
+  Volume (403), "couldn't tell" (503) and a missing folder (404), and stores
+  it resolved; `""` clears it. The Rules editor edits it under the switch
+  (`source.gamelistsFolder` / `source.setGamelistsFolder`).
 - *What it reads.* `defusedxml`'s `DefusedXMLParser` (no entity declarations,
   no external references) with a target that records each `<path>` that is a
-  child of a child of the root (`<game>` and `<folder>` entries), its text,
-  and expat's `CurrentByteIndex` at its start and end tags. A file that
-  doesn't parse fails with "can't be parsed (...)". An entry is read the way
+  child of a child of a top-level element (`<game>` and `<folder>` entries),
+  its text, and expat's `CurrentByteIndex` at its start and end tags. ES-DE
+  writes `<alternativeEmulator>` beside `<gameList>`, two top-level elements
+  that strict XML refuses and pugixml reads as a fragment, so an
+  ASCII-compatible file is parsed wrapped in one more element after its
+  declaration, its byte indexes shifted back. A file that doesn't parse fails
+  with "can't be parsed (...)". An entry is read the way
   ES-DE reads it: backslashes are separators, `./` is the base, anything else
   is taken as written (joined to the base when relative).
 - *What it rewrites.* Only an entry that resolves to a replaced file
@@ -3929,7 +3960,8 @@ Knulli, muOS) key each game's artwork, favourite flag and play count on its
 To add a Referrer: subclass `Referrer` in `services/referrers/`, give it a new
 `id`, declare `opt_in` and `phase`, and `registry.register(...)` it in
 `services/referrers/__init__.py`. A file Referrer builds on `files.py`. An opt-in one also needs the Library's
-setting that `referrer_enabled` reads. Nothing in the job pipeline, the
+setting that `referrer_enabled` reads, and one with settings of its own reads
+them from `referrer_options` in `for_library`. Nothing in the job pipeline, the
 delete-plan route or the modal changes. The
 existing RomM re-pin (3.3.9) is not a Referrer yet.
 

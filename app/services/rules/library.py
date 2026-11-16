@@ -38,6 +38,8 @@ FAILED_HOLD = "failed_hold"
 # The opt-in Referrer a Library's "used by an EmulationStation frontend"
 # setting turns on (#386): ``referrer_enabled`` answers True for it then.
 ES_FRONTEND_REFERRER = "gamelist"
+# Its option naming the ES-DE gamelists folder (#387), in referrer_options.
+GAMELISTS_FOLDER = "gamelists_folder"
 
 
 def duplicate_actions(library: Library) -> tuple[str, ...]:
@@ -258,6 +260,14 @@ class Library(Protocol):
         and keeps the Source.
         """
 
+    def referrer_options(self, referrer_id: str) -> Mapping[str, Any]:
+        """This Library's settings for the Referrer *referrer_id* (#387).
+
+        Read by a Referrer's ``for_library`` once the Referrer is on: for the
+        gamelist Referrer, ``{"gamelists_folder": path}`` when an ES-DE
+        gamelists folder is set. In memory, never blocks.
+        """
+
     def summary_fields(self) -> Mapping[str, Any]:
         """Extra keys every per-Platform summary starts with (and the result too)."""
 
@@ -286,6 +296,10 @@ class LibraryDefaults:
     def referrer_enabled(self, referrer_id: str) -> bool:
         """No opt-in Referrer is on until a Library's settings say so (#383)."""
         return False
+
+    def referrer_options(self, referrer_id: str) -> Mapping[str, Any]:
+        """No Referrer settings (#387)."""
+        return {}
 
     def walk_generation(self) -> int:
         """Moves when what :meth:`images` lists is out of date (#353).

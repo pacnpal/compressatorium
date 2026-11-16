@@ -73,6 +73,23 @@
     }
   }
 
+  // The Library's ES-DE gamelists folder (#387): edited here, saved on Save.
+  // Follows the saved value whenever it changes (a save, another tab).
+  let gamelistsDraft = $derived(source.gamelistsFolder ?? '');
+  let gamelistsSaving = $state(false);
+
+  async function saveGamelistsFolder() {
+    gamelistsSaving = true;
+    try {
+      await source.setGamelistsFolder(gamelistsDraft.trim());
+      toast.success(gamelistsDraft.trim() ? 'Gamelists folder saved' : 'Gamelists folder cleared');
+    } catch (e) {
+      toast.error(e?.message ?? 'Failed to save');
+    } finally {
+      gamelistsSaving = false;
+    }
+  }
+
   // SvelteSet: mutation must be reactive so an expanded row re-renders.
   const expanded = new SvelteSet();
   // The store owns this: the tab unmounts whenever the operator switches to
@@ -498,6 +515,31 @@
         count stay. A one-time <code>gamelist.xml.bak</code> is kept. Close ES-DE first:
         it rewrites its gamelist when it exits, which would undo the change.
       </p>
+      <label class="field gamelists">
+        <span>ES-DE gamelists folder (optional)</span>
+        <span class="gamelists-row">
+          <input
+            type="text"
+            placeholder="/roms/ES-DE/gamelists"
+            bind:value={gamelistsDraft}
+            onkeydown={(e) => e.key === 'Enter' && saveGamelistsFolder()}
+          />
+          <Button
+            variant="secondary"
+            onclick={saveGamelistsFolder}
+            loading={gamelistsSaving}
+            disabled={gamelistsDraft.trim() === (source.gamelistsFolder ?? '')}
+          >
+            Save
+          </Button>
+        </span>
+        <span class="hint">
+          Where ES-DE keeps its own gamelists (<code>ES-DE/gamelists</code>, one folder per
+          system, such as <code>ps2</code>). It must be inside a Volume. When set,
+          <code>&lt;folder&gt;/&lt;system&gt;/gamelist.xml</code> is updated too. Leave it
+          empty for gamelists kept in the Platform folders.
+        </span>
+      </label>
     </div>
     <div class="master-actions">
       <Checkbox
@@ -1292,6 +1334,9 @@
     min-width: 0;
   }
   .pair { display: flex; align-items: center; gap: var(--space-2); }
+  .field.gamelists { margin-top: var(--space-3); max-width: 60ch; }
+  .gamelists-row { display: flex; gap: var(--space-2); align-items: center; }
+  .gamelists-row input { flex: 1; }
   .hint, .muted { color: var(--text-2); font-size: var(--text-sm); }
 
   /* Codec chips for the multi-codec style (chdman). Mirrors CompressionPicker's

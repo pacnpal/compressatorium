@@ -589,6 +589,15 @@ entry count. A gamelist that can't be parsed or written keeps the source, as
 a playlist does. **Close ES-DE before converting**: it rewrites its gamelist
 when it exits, which would put the old paths back.
 
+ES-DE keeps its gamelists in a folder of its own by default
+(`ES-DE/gamelists`), one subfolder per system named like the system's ROM
+folder: the games in `ROMs/ps2` are listed in `gamelists/ps2/gamelist.xml`.
+For that layout, set **ES-DE gamelists folder** under the switch (it must be
+inside a Volume, so mount it into the container). Each folder the Image sits
+in is then looked up there by its own name, and the gamelist's entries are
+read relative to that ROM folder, exactly as ES-DE reads them. Gamelists in
+the Platform folders are still updated too, and every rule above holds.
+
 **Create an `.m3u` from selected discs.** Tick the discs of one game in the file
 list (two or more disc images in the same folder, such as `.cue`, `.gdi`, `.iso`,
 `.chd`, `.rvz` or `.cso`) and press **Create .m3u**. Ticked `.bin` tracks of a
@@ -1197,6 +1206,14 @@ The same folder Library marked as used by an EmulationStation frontend, so conve
 | Light | Dark |
 |-------|------|
 | ![EmulationStation frontend switch, light](docs/screenshots/rules-es-frontend-light.png) | ![EmulationStation frontend switch, dark](docs/screenshots/rules-es-frontend-dark.png) |
+
+#### ES-DE gamelists folder
+
+The ES-DE gamelists folder field under the switch, with a folder typed in and ready to save.
+
+| Light | Dark |
+|-------|------|
+| ![ES-DE gamelists folder, light](docs/screenshots/rules-esde-gamelists-light.png) | ![ES-DE gamelists folder, dark](docs/screenshots/rules-esde-gamelists-dark.png) |
 
 #### Check Rule
 

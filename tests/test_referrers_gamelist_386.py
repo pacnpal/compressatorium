@@ -51,6 +51,10 @@ class _Library:
     def referrer_enabled(self, referrer_id: str) -> bool:
         return self._on and referrer_id == "gamelist"
 
+    def referrer_options(self, referrer_id: str) -> dict:
+        # No ES-DE gamelists folder (#387): the Platform folder layout.
+        return {}
+
 
 ON = _Library()
 

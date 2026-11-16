@@ -18,6 +18,7 @@ and never touches a file.
 from __future__ import annotations
 
 import asyncio
+import os
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -30,16 +31,22 @@ from logging_setup import get_logger
 from services import db as _db
 from services.job_manager import VOLUME_PROBE_TIMEOUT_SECONDS
 from services.libraries.folder import ID_PREFIX, FolderLibrary
-from services.rules.library import ES_FRONTEND_REFERRER, Library, duplicate_actions
+from services.rules.library import (
+    ES_FRONTEND_REFERRER,
+    GAMELISTS_FOLDER,
+    Library,
+    duplicate_actions,
+)
 from services.subprocess_runner import ProbeCapacityExceeded, run_detached
 from sqlalchemy.exc import IntegrityError
-from utils.path_utils import ensure_path_within_volumes
+from utils.path_utils import ensure_path_within_volumes, volume_containment
 
 logger = get_logger("libraries")
 
 __all__ = [
     "FolderLibrary",
     "LibraryPathError",
+    "check_gamelists_folder",
     "all_libraries",
     "describe",
     "folder_libraries",
@@ -109,6 +116,7 @@ def _from_row(row: _db.FolderLibraryRecord) -> FolderLibrary:
         schedule_enabled=bool(row.schedule_enabled),
         max_per_sweep=int(row.max_per_sweep),
         es_frontend=bool(row.es_frontend),
+        gamelists_folder=row.gamelists_folder,
     )
 
 
@@ -468,15 +476,56 @@ def register(path: str, name: str | None = None) -> FolderLibrary:
     return library
 
 
+def check_gamelists_folder(path: str) -> str:
+    """*path* as an ES-DE gamelists folder (#387): resolved, or LibraryPathError.
+
+    It must be an absolute folder confirmed inside a configured Volume. "Couldn't
+    tell" (a Volume root probe failed) is refused too (503), never taken as
+    inside. Blocking (resolves and stats); never on the event loop.
+    """
+    path = path.strip()
+    if not os.path.isabs(path):
+        raise LibraryPathError(400, "The gamelists folder must be an absolute path")
+    inside = volume_containment(path, treat_archives=False)
+    if inside is None:
+        raise LibraryPathError(
+            503, "Couldn't confirm the gamelists folder is inside a Volume (a Volume "
+            "isn't answering). Nothing was saved; try again later.",
+        )
+    if not inside:
+        raise LibraryPathError(403, "The gamelists folder must be inside a configured Volume")
+    resolved = Path(path).resolve()
+    if not resolved.is_dir():
+        raise LibraryPathError(404, "Gamelists folder not found")
+    return str(resolved)
+
+
+async def admitted(func, *args, what: str, **kwargs):
+    """Run a blocking Library settings worker that resolves a folder (#387),
+    bounded and admission-controlled (:func:`run_admitted`, ``ROOT_CHECK_SECONDS``).
+    A worker past the bound is refused with :class:`LibraryPathError` 503
+    naming *what* isn't answering."""
+    try:
+        return await run_admitted(func, *args, timeout=ROOT_CHECK_SECONDS, **kwargs)
+    except asyncio.TimeoutError:
+        raise LibraryPathError(
+            503, f"{what} isn't responding, so nothing was saved. Try again later.",
+        ) from None
+
+
 def update(
     library_id: str, *, name: str | None = None,
     schedule_enabled: bool | None = None, max_per_sweep: int | None = None,
-    es_frontend: bool | None = None,
+    es_frontend: bool | None = None, gamelists_folder: str | None = None,
 ) -> FolderLibrary | None:
     """Change a folder Library's name or settings. None when there is no such Library.
 
     Writes the row, then changes the cached Library in place: a walk of it may
     be running (or stuck on a dead mount), and none of these settings needs it.
+
+    *gamelists_folder* (#387) is checked first (:func:`check_gamelists_folder`,
+    blocking: it resolves the folder) and stored resolved; ``""`` clears it.
+    Raises :class:`LibraryPathError` when it is refused, changing nothing.
     """
     record_id = _record_id(library_id)
     if record_id is None:
@@ -484,6 +533,9 @@ def update(
     library = _loaded().get(record_id)
     if library is None:
         return None
+    folder = None
+    if gamelists_folder is not None:
+        folder = check_gamelists_folder(gamelists_folder) if gamelists_folder.strip() else ""
     if max_per_sweep is not None:
         max_per_sweep = max(1, min(int(max_per_sweep), MAX_PER_SWEEP_LIMIT))
     label = name.strip() if name is not None and name.strip() else None
@@ -502,10 +554,12 @@ def update(
                 row.max_per_sweep = max_per_sweep
             if es_frontend is not None:
                 row.es_frontend = bool(es_frontend)
+            if folder is not None:
+                row.gamelists_folder = folder or None
             session.commit()
         library.apply_settings(
             name=label, schedule_enabled=schedule_enabled, max_per_sweep=max_per_sweep,
-            es_frontend=es_frontend,
+            es_frontend=es_frontend, gamelists_folder=folder,
         )
     return library
 
@@ -552,4 +606,8 @@ def describe(library: Library) -> dict[str, Any]:
         "max_per_sweep": library.max_per_sweep(),
         # Used by an EmulationStation frontend: conversions update gamelist.xml (#386).
         "es_frontend": library.referrer_enabled(ES_FRONTEND_REFERRER) is True,
+        # Its ES-DE gamelists folder, or None (#387).
+        "gamelists_folder": (
+            library.referrer_options(ES_FRONTEND_REFERRER).get(GAMELISTS_FOLDER) or None
+        ),
     }

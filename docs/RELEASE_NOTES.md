@@ -175,6 +175,18 @@
 
 ### Added
 
+- **ES-DE's own gamelists folder** (#387). ES-DE keeps its gamelists in a
+  folder of its own by default (`ES-DE/gamelists/ps2/gamelist.xml` for the
+  games in `ROMs/ps2`), not beside the ROMs. A Library marked as used by an
+  EmulationStation frontend can now name that folder under the switch (in the
+  Rules editor, the Library API or RomM's settings). It must be inside a
+  Volume; a folder outside every Volume is refused, and so is one the app
+  can't confirm while a Volume isn't answering. With it set, a conversion
+  also updates the system's gamelist there, with the same rules as the
+  Platform folder's: only the path text changes, one backup, an atomic write,
+  and the Source kept if it can't be updated. Gamelists in which ES-DE writes
+  its `<alternativeEmulator>` beside `<gameList>` are now read too; before,
+  they kept the Source as "can't be parsed".
 - **ES-DE, Batocera, Knulli and muOS keep their gamelist entries** (#386). A
   Library (a folder Library or RomM) has a new switch at the top of its
   Rules: **Used by an EmulationStation frontend**, off by default. When it's

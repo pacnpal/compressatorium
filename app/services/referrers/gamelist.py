@@ -37,6 +37,15 @@ replaced file in an entry that doesn't resolve to it, or whose matching entry
 can't be edited in place (CDATA, a comment inside it, a child element, a
 UTF-16 file) raises ``ReferrerError`` naming the file: the Source is kept.
 
+**ES-DE's gamelists folder** (#387). ES-DE keeps its gamelists in a folder
+of its own, one subfolder per system named after the system's ROM folder
+(``ROMs/ps2`` -> ``gamelists/ps2/gamelist.xml``), its entries relative to that
+ROM folder. When the Image's Library names that folder
+(``library.referrer_options("gamelist")["gamelists_folder"]``, bound through
+``for_library``), each folder the walk visits is also looked up there by its
+own name, with the folder as the entries' base. The folder must be confirmed
+inside the Volumes when planning, or the Source is kept.
+
 Writes go through ``files.rewrite_in_place``: re-read under the in-process
 and cross-process locks, one ``gamelist.xml.bak`` kept, atomic replace.
 """
@@ -52,7 +61,8 @@ from dataclasses import dataclass
 
 from defusedxml.common import DefusedXmlException
 from defusedxml.ElementTree import DefusedXMLParser, ParseError
-from utils.path_utils import file_identity
+from services.rules.library import GAMELISTS_FOLDER
+from utils.path_utils import file_identity, volume_containment
 
 from .base import Phase, Referrer, ReferrerChange, ReferrerError
 from .files import (
@@ -75,6 +85,13 @@ GAMELIST_LOCK_WAIT_SECONDS = 30.0
 
 # <gameList> (depth 0) > <game> or <folder> (depth 1) > <path> (depth 2).
 _PATH_DEPTH = 2
+# ES-DE writes <alternativeEmulator> beside <gameList>, two top-level elements
+# that strict XML refuses (pugixml reads them as a fragment). An
+# ASCII-compatible file is parsed wrapped in one more element after its
+# declaration, so a fragment reads like ES-DE reads it; byte indexes are
+# shifted back by the wrapper's length.
+_PROLOG = re.compile(rb"^(?:\xef\xbb\xbf)?<\?xml[^>]*\?>")
+_WRAP_OPEN, _WRAP_CLOSE = b"<gamelist-file>", b"</gamelist-file>"
 _PATH_TAG = "path"
 _DECLARED = re.compile(rb"""^<\?xml[^>]*?\bencoding\s*=\s*["']([A-Za-z0-9._-]+)["']""")
 # Bytes an ASCII-compatible encoding writes the same as ASCII, so a span can
@@ -96,8 +113,9 @@ class _Entry:
 class _Paths:
     """Parser target that records each ``<path>`` and where its text sits."""
 
-    def __init__(self) -> None:
+    def __init__(self, depth: int) -> None:
         self.parser: DefusedXMLParser | None = None
+        self._path_depth = depth
         self.found: list[tuple[str, int, int, bool]] = []  # text, start, end, plain
         self._depth = 0
         self._open: tuple[int, list[str]] | None = None  # start index, text parts
@@ -109,7 +127,7 @@ class _Paths:
     def start(self, tag, _attrib) -> None:
         if self._open is not None:
             self._plain = False  # a child element inside <path>
-        elif tag == _PATH_TAG and self._depth == _PATH_DEPTH:
+        elif tag == _PATH_TAG and self._depth == self._path_depth:
             self._open, self._plain = (self._index(), []), True
         self._depth += 1
 
@@ -119,7 +137,7 @@ class _Paths:
 
     def end(self, tag) -> None:
         self._depth -= 1
-        if self._open is not None and tag == _PATH_TAG and self._depth == _PATH_DEPTH:
+        if self._open is not None and tag == _PATH_TAG and self._depth == self._path_depth:
             start, parts = self._open
             self.found.append(("".join(parts), start, self._index(), self._plain))
             self._open = None
@@ -173,17 +191,26 @@ def _text_span(data: bytes, start: int, end: int) -> tuple[int, int] | None:
 
 def _entries(gamelist: str, data: bytes) -> list[_Entry]:
     """Every ``<path>`` in *data*, in order. ReferrerError when it can't be parsed."""
-    target = _Paths()
+    editable = _codec(data) is not None
+    feed, shift, depth = data, 0, _PATH_DEPTH
+    if editable:
+        prolog = _PROLOG.match(data)
+        split = prolog.end() if prolog else 0
+        feed = data[:split] + _WRAP_OPEN + data[split:] + _WRAP_CLOSE
+        shift, depth = len(_WRAP_OPEN), _PATH_DEPTH + 1
+    target = _Paths(depth)
     parser = DefusedXMLParser(target=target)
     target.parser = parser
     try:
-        parser.feed(data)
+        parser.feed(feed)
         found = parser.close()
     except (ParseError, DefusedXmlException, ValueError, LookupError) as exc:
         raise ReferrerError(gamelist, f"can't be parsed ({exc})") from exc
-    editable = _codec(data) is not None
     return [
-        _Entry(text, _text_span(data, start, end) if editable and plain else None)
+        _Entry(
+            text,
+            _text_span(data, start - shift, end - shift) if editable and plain else None,
+        )
         for text, start, end, plain in found
     ]
 
@@ -308,24 +335,73 @@ class GamelistReferrer(Referrer):
     opt_in = True
     phase = Phase.FILE
 
+    def __init__(self, gamelists_folder: str | None = None) -> None:
+        # The Library's ES-DE gamelists folder (#387), or None. Set only on a
+        # copy bound by `for_library`; the registered Referrer has none.
+        self.gamelists_folder = gamelists_folder or None
+
+    def for_library(self, library) -> GamelistReferrer:
+        """A copy bound to *library*'s ES-DE gamelists folder, if it has one."""
+        if library is None:
+            return self
+        folder = library.referrer_options(self.id).get(GAMELISTS_FOLDER)
+        return GamelistReferrer(folder) if folder else self
+
+    def _located(self, directory: str) -> list[tuple[str, str]]:
+        """``(gamelist, base)`` pairs for the folder *directory*: the gamelist
+        in it (the Platform folder layout), and, with an ES-DE gamelists
+        folder, ``<gamelists folder>/<directory's name>/gamelist.xml``. ES-DE
+        names each system's gamelist folder after the system's ROM folder and
+        reads its entries relative to that ROM folder, so both resolve
+        against *directory*."""
+        found = [(g, directory) for g in _gamelists(directory)]
+        name = os.path.basename(directory)
+        if self.gamelists_folder and name:
+            found += [
+                (g, directory)
+                for g in _gamelists(os.path.join(self.gamelists_folder, name))
+            ]
+        return found
+
+    def _check_folder(self) -> None:
+        """Fail closed when the gamelists folder isn't confirmed inside the
+        Volumes (they changed after it was set, or a probe failed)."""
+        if self.gamelists_folder and volume_containment(
+            self.gamelists_folder, treat_archives=False,
+        ) is not True:
+            raise ReferrerError(
+                self.gamelists_folder,
+                "the gamelists folder isn't confirmed inside the configured Volumes",
+            )
+
     def detect(self, image_path: str) -> bool:
-        return any(_gamelists(d) for d in search_dirs(image_path))
+        # With an ES-DE folder, planning looks there (and checks the folder).
+        return bool(self.gamelists_folder) or any(
+            _gamelists(d) for d in search_dirs(image_path)
+        )
 
     def plan(self, renames: Mapping[str, str]) -> list[ReferrerChange]:
+        self._check_folder()
         targets = Renames.of(renames)
         changes = []
+        seen: set[str] = set()
         for directory in dirs_for(renames):
-            for gamelist in _gamelists(directory):
+            for gamelist, base in self._located(directory):
+                # The nearest folder wins when two reach one gamelist.
+                key = os.path.realpath(gamelist)
+                if key in seen:
+                    continue
+                seen.add(key)
                 if not may_read(gamelist):
                     continue
                 with target_lock(gamelist):
                     _, edits = _rewrite(
-                        gamelist, read_target(gamelist), directory, targets, strict=False,
+                        gamelist, read_target(gamelist), base, targets, strict=False,
                     )
                 if edits:
                     changes.append(ReferrerChange(
                         referrer=self.id, target=gamelist, edits=tuple(edits),
-                        payload=(directory, targets),
+                        payload=(base, targets),
                     ))
         return changes
 

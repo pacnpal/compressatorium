@@ -22,6 +22,7 @@ from services.romm import settings as romm_settings
 from services.rules.library import (
     CONVERTED_HISTORY,
     ES_FRONTEND_REFERRER,
+    GAMELISTS_FOLDER,
     RECOGNIZED_FILTER,
     Image,
     LibraryDefaults,
@@ -194,6 +195,14 @@ class RommLibrary(LibraryDefaults):
         return referrer_id == ES_FRONTEND_REFERRER and bool(
             romm_settings.effective().get("es_frontend"),
         )
+
+    def referrer_options(self, referrer_id: str) -> dict:
+        """The gamelist Referrer's ES-DE gamelists folder from RomM's settings,
+        when one is set (#387). In memory."""
+        folder = romm_settings.effective().get(GAMELISTS_FOLDER)
+        if referrer_id == ES_FRONTEND_REFERRER and folder:
+            return {GAMELISTS_FOLDER: folder}
+        return {}
 
     def summary_fields(self) -> dict[str, Any]:
         return {"repins_recorded": 0}
