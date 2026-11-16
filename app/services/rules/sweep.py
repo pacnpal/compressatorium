@@ -536,15 +536,31 @@ async def get_state(library: Library, kind: str = CONVERT) -> dict[str, dict]:
 
 async def _record_run(
     library: Library, platform_id: str, summary: dict, kind: str = CONVERT,
-    *, manual: bool = False, at: datetime | None = None,
-) -> None:
+    *, manual: bool = False, at: datetime | None = None, listed_at: int,
+) -> bool:
     """Stamp the schedule clock, merging into whatever else the entry holds.
 
     The per-platform entry is shared with ``converted_ids``: replacing it
     wholesale would forget, on every single run, which sources the rule had
     already converted -- and that set is the only thing stopping an
     ``overwrite`` rule from reconverting the library forever.
+
+    *listed_at* is the Library's walk generation when the run listed its
+    Images. A run is recorded only if that listing is still current now, at
+    the moment it would be recorded: for a check Rule that is when its check
+    job ends, so conversions that land while it checks leave it due too
+    (#353, #360). Otherwise nothing is written, *summary* gets
+    ``stale_listing`` and this returns False; the next tick lists again. Every
+    path that records a run comes through here.
     """
+    if not _listing_current(library, listed_at):
+        summary["stale_listing"] = True
+        logger.info(
+            "romm_auto: %s's %s run for platform %s saw a listing a finished job "
+            "made out of date; not recorded, so the next tick runs it again",
+            library.id, kind, platform_id,
+        )
+        return False
     state = await get_state(library, kind)
     entry = dict(state.get(str(platform_id)) or {})
     # A manual run of a check Rule (Run now) stamps its own field: `_is_due`
@@ -562,6 +578,7 @@ async def _record_run(
         entry["last_checks"] = summary.get("checks", 0)
     state[str(platform_id)] = entry
     await store.write(store.state_key(kind), library, state)
+    return True
 
 
 # ----------------------------------------------------------------------
@@ -2429,14 +2446,9 @@ async def _sweep_locked(
         # at what *would* happen would postpone the run that should. Nor does a
         # run that failed to queue anything: advancing the clock there would
         # make the platform sit out a full interval over a transient error.
-        stale = not _listing_current(library, listed_at)
-        if stale:
-            summary["stale_listing"] = True
-        if (
-            not dry_run and not summary.get("queue_failed") and not unresponsive
-            and not stale
-        ):
-            await _record_run(library, platform_id, summary)
+        # Nor does one whose listing went out of date (`_record_run`).
+        if not dry_run and not summary.get("queue_failed") and not unresponsive:
+            await _record_run(library, platform_id, summary, listed_at=listed_at)
 
     if stopping():
         # A stop starts nothing new: what the check Rules picked is dropped and
@@ -2450,16 +2462,21 @@ async def _sweep_locked(
             # own run (4577171597). The reservation covers the time between.
             # With *attempted*, only a Rule whose picked Images the run all
             # reached is recorded: one it never got to (a stop on an abandoned
-            # verifier, a cancel) stays due (4578054443).
-            for platform_id, summary, manual, at, keys in check_runs:
+            # verifier, a cancel) stays due (4578054443). Each carries the walk
+            # generation its pick listed at, compared now, as it is recorded:
+            # conversions that finished while the job checked leave it due (#360).
+            for platform_id, summary, manual, at, keys, listed_at in check_runs:
                 if attempted is not None and not keys <= attempted:
                     continue
-                await _record_run(library, platform_id, summary, CHECK, manual=manual, at=at)
+                await _record_run(
+                    library, platform_id, summary, CHECK,
+                    manual=manual, at=at, listed_at=listed_at,
+                )
 
         # The scheduled runs this job carries hold their windows until it ends.
         reserved = {
             (library.id, str(platform_id))
-            for platform_id, _summary, manual, _at, _keys in check_runs if not manual
+            for platform_id, _summary, manual, _at, _keys, _listed in check_runs if not manual
         }
 
         async def check_run_ended(attempted: frozenset[str]) -> None:
@@ -2724,11 +2741,6 @@ async def _sweep_check(
     }
     if unresponsive:
         summary["library_unresponsive"] = True
-    # A listing a finished job made out of date: what was picked is still
-    # checked, but the run does not count, so the Rule stays due (#353).
-    stale = not _listing_current(library, listed_at)
-    if stale:
-        summary["stale_listing"] = True
     result["platforms"].append(summary)
     if not dry_run:
         picked.extend(chosen)
@@ -2736,13 +2748,15 @@ async def _sweep_check(
         # Nor is a pick that came up empty only because its Images are held
         # elsewhere for now (another check run, a conversion queued or running,
         # a writer's lock) the night's run (4578116078, 4578154650): once they
-        # are free, the Rule must still be due.
-        if not unresponsive and not stale and not (
-            not chosen and (not_ready or held_elsewhere)
-        ):
-            check_runs.append(
-                (platform_id, summary, manual, now, frozenset(c.key for c in chosen)),
-            )
+        # are free, the Rule must still be due. *listed_at* goes with the run:
+        # a listing a finished job made out of date, before the pick ended or
+        # while the job checks, leaves it unrecorded (`_record_run`, #353,
+        # #360), though what was picked is still checked.
+        if not unresponsive and not (not chosen and (not_ready or held_elsewhere)):
+            check_runs.append((
+                platform_id, summary, manual, now,
+                frozenset(c.key for c in chosen), listed_at,
+            ))
     return False
 
 
