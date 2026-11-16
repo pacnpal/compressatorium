@@ -4,6 +4,13 @@
 
 ### Fixed
 
+- **A Rule offers a compression level only when its codec takes one** (#363).
+  A Dolphin WIA Rule on "Tool default (none)" or "No compression" showed a
+  level box ("1–22. Blank uses 19.") and saved what was typed there. It now
+  shows no level box. A Rule saved that way runs without the level, and a job
+  asking for a level on `none` is refused with a message that says so. The
+  level box's range and "Blank uses" hint always match the codec that will
+  run, including the mode's default when the codec is left blank.
 - **A check right after conversions checks the new Images** (#353). A
   scheduled check Rule that ran within about 30 seconds of a conversion used
   the folder listing from before it, checked nothing new, and still counted

@@ -127,6 +127,21 @@ class ModeSpec:
         """``(min, max, default)`` level for *codec*, or None when it takes none."""
         return _level_range(self.codec_levels, codec)
 
+    def takes_no_level(self, codec: str | None) -> bool:
+        """Whether the codec a job runs with takes no level (#363).
+
+        That codec is *codec*, or the mode's ``default_compression`` when blank.
+        Only a mode with per-codec levels (``codec_levels``) can say no: there,
+        a codec it lists no range for (Dolphin's ``none``) takes none. A mode
+        without them (nsz) answers False, and the tool's own range applies.
+        """
+        return _takes_no_level(self, codec)
+
+
+def _takes_no_level(spec: ModeSpec | ChainSpec, codec: str | None) -> bool:
+    effective = codec or spec.default_compression
+    return bool(spec.codec_levels and effective) and spec.level_range(effective) is None
+
 
 def _level_range(
     codec_levels: tuple[tuple[str, int, int, int], ...], codec: str,
@@ -210,3 +225,7 @@ class ChainSpec:
     def level_range(self, codec: str) -> tuple[int, int, int] | None:
         """Structural parity with :meth:`ModeSpec.level_range`."""
         return _level_range(self.codec_levels, codec)
+
+    def takes_no_level(self, codec: str | None) -> bool:
+        """Structural parity with :meth:`ModeSpec.takes_no_level`."""
+        return _takes_no_level(self, codec)

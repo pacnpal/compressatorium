@@ -533,10 +533,15 @@ def normalize_rule(
         spec.supports_compression or spec.supports_compression_level
     ) and raw.get("compression"):
         out["compression"] = str(raw["compression"])
+    # A level only for a codec that takes one (#363): the Rule's own codec, or
+    # the mode's default when blank (WIA on "Tool default" runs none, which
+    # takes no level). Dropped, as this sanitizer drops any stale value, and
+    # by the same rule the job route refuses with.
     if (
         spec is not None
         and spec.supports_compression_level
         and raw.get("compression_level") is not None
+        and not spec.takes_no_level(out["compression"])
     ):
         out["compression_level"] = _clamp("compression_level", raw["compression_level"], 0)
     # A check Rule writes nothing, so its output folder is never read.

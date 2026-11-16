@@ -886,16 +886,23 @@ export const registry = {
   },
 
   /**
-   * The level range `{min, max, default}` for `codec` in `mode`: the codec's
-   * own (Dolphin's lzma2 takes 1-9, zstd 1-22), else the tool's, else the
-   * shared default range.
+   * The level range `{min, max, default}` of the codec a job in `mode` runs
+   * with: `codec`, or the mode's default when blank (#363). Null when there is
+   * no level to set: the mode takes none, or it ranges levels per codec
+   * (Dolphin: lzma2 1-9, zstd 1-22) and that codec has none (`none`, which is
+   * WIA's default). A mode with one range for every codec (nsz) gets the
+   * tool's, else the shared default. Mirrors the backend's
+   * `ModeSpec.takes_no_level`; every level control shows only on non-null.
    */
   levelRangeFor: (mode, codec) => {
     const entry = byMode.get(mode);
-    const codecs = entry?.spec?.compressionCodecs ?? entry?.tool?.compressionCodecs ?? [];
-    return codecs.find((c) => c.value === codec)?.levelRange
-      ?? entry?.tool?.compressionLevelRange
-      ?? DEFAULT_COMPRESSION_LEVEL_RANGE;
+    if (!entry?.spec?.supportsCompressionLevel) return null;
+    const codecs = entry.spec.compressionCodecs ?? entry.tool?.compressionCodecs ?? [];
+    if (!codecs.some((c) => c.levelRange)) {
+      return entry.tool?.compressionLevelRange ?? DEFAULT_COMPRESSION_LEVEL_RANGE;
+    }
+    const effective = codec || (entry.spec.defaultCompression ?? entry.tool?.defaultCompression)?.[0];
+    return codecs.find((c) => c.value === effective)?.levelRange ?? null;
   },
 
   /** Pick the tool whose verify_extensions match a given file path, or null.

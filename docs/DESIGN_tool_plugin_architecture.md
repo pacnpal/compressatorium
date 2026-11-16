@@ -5592,6 +5592,23 @@ read `compressionLevel` and `ConversionStore.levelRange`, so they never
 disagree. `fitLevel` and `clampLevel` live in `src/lib/tools/levels.js`, with no
 imports, and the Rule editor uses the same two for its codec and level fields.
 
+A level exists only for a codec that takes one (#363). The codec a job runs
+with is its own, or the mode's `default_compression` when blank, and on a mode
+with per-codec levels a codec with no range takes none (Dolphin's `none`, which
+is WIA's default). **`ModeSpec.takes_no_level(codec)`** answers that on the
+backend, and `registry.levelRangeFor(mode, codec)` answers it on the frontend
+by returning null. Every consumer reads one of the two:
+
+- the job routes refuse such a level with 400, through `compression_problem`,
+  as they refuse an out-of-range one, and the plugin refuses it the same way
+  before its tool runs;
+- `compression_for` drops it from a job queued before (`"none:15"` runs as
+  `"none"`) and logs it;
+- `normalize_rule` drops it from what a Rule stores and runs, since the
+  sanitizer is lenient with every stale value;
+- the convert panel and the Rule editor show no level control when the range
+  is null, and take the bounds and the "Blank uses" hint from that codec.
+
 #### Block size (`ModeSpec.block_size`, `block_size_rule`)
 
 dolphin-tool refuses GCZ, RVZ and WIA without `-b` ("Block size must be set for
