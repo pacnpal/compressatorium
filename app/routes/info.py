@@ -31,7 +31,6 @@ from services.chd_metadata_store import chd_metadata_store
 from services.chdman import chdman_service
 from services.disc_id import (
     DiscIdStorageAbandoned,
-    ensure_disc_id_embedded as disc_id_ensure_embedded,
     extract_from_chd as disc_id_extract_from_chd,
 )
 from services.dolphin_tool import (
@@ -349,15 +348,15 @@ async def scan_metadata_task(
     """Background task to scan all volumes for library metadata.
 
     Discovery is registry-driven (every registered tool's output / verify
-    extensions). Phase 1 refreshes the chdman info cache and Phase 2 embeds
-    disc-ID tags, both CHD-only by design; Phase 3 primes the DAT-match cache
-    for every discovered output (all formats).
+    extensions). Phase 1 refreshes the chdman info cache and Phase 2 reads
+    disc IDs into the metadata store, both CHD-only by design; Phase 3 primes
+    the DAT-match cache for every discovered output (all formats).
     """
     global _is_scanning
     # Note: _is_scanning is already set to True by the trigger endpoint
     scan_start = time.monotonic()
     count = 0
-    embed_count = 0
+    discs_found = 0
     hasheous_errors = 0
     scan_token = lane_token
     if scan_token is None:
@@ -542,30 +541,30 @@ async def scan_metadata_task(
             phase1_total,
         )
 
-        # Phase 2: Retroactively embed GAME / NAME tags in any CHD that lacks
-        # them.  Covers CHDs created before conversion-time tagging was added.
-        # Skip CHDs where disc ID has already been checked and the file has not
-        # changed since, avoids spawning a chdman subprocess on every scan.
-        # CHD-only by design (disc-ID embedding is a CHDMAN feature).
+        # Phase 2: read the disc ID of every CHD not checked yet (its sectors,
+        # the Dreamcast GDRO tag or a companion file) and store it in the
+        # metadata store, the cache /api/info reads. Nothing is written into
+        # the CHD: chdman opens a compressed CHD read-only, so addmeta cannot
+        # tag one (#352). Skip CHDs already checked whose file has not changed.
         # Progress band: 45 % → 65 %.
         phase2_total = len(chd_all_paths)
         already_checked = 0
         newly_checked = 0
         logger.info(
-            "Phase 2: Checking GAME/NAME disc ID tags for %d CHD file(s)...",
+            "Phase 2: Reading disc IDs for %d CHD file(s)...",
             phase2_total,
         )
         await job_manager.update_external_job(
             scan_job_id,
             progress=45,
-            message=f"Phase 2: Checking disc ID tags for {phase2_total} CHD file(s)\u2026",
+            message=f"Phase 2: Reading disc IDs for {phase2_total} CHD file(s)\u2026",
         )
         for idx2, path in enumerate(chd_all_paths, start=1):
             if job_manager.is_cancelled(scan_job_id):
                 raise ExternalJobCancelled()
-            # Sink outside the handler: this one only logs at *debug*, so an
-            # abandoned chdman child would otherwise leave no trace at all
-            # while the scan walked the rest of the library (issue #268).
+            # Sink outside the handler: the handler only logs a warning per
+            # file, so an abandoned chdman child would otherwise not stop the
+            # scan walking the rest of the library on that storage (#268).
             with collect_abandonment() as abandoned:
                 try:
                     if await chd_metadata_store.is_disc_id_checked(path):
@@ -582,7 +581,7 @@ async def scan_metadata_task(
                             )
                         continue
                     logger.info("Phase 2: Scanning disc ID for %s", os.path.basename(path))
-                    result = await disc_id_ensure_embedded(path, settings.chdman_path)
+                    result = await disc_id_extract_from_chd(path, settings.chdman_path)
                     if result and result.get("game_id"):
                         await chd_metadata_store.update_disc_id_info(
                             path, result["game_id"], result.get("title"), persist=False
@@ -590,7 +589,7 @@ async def scan_metadata_task(
                     await chd_metadata_store.mark_disc_id_checked(path)
                     newly_checked += 1
                     if result:
-                        embed_count += 1
+                        discs_found += 1
                         logger.info(
                             "Phase 2: Disc ID found for %s (game_id=%r)",
                             os.path.basename(path),
@@ -601,8 +600,10 @@ async def scan_metadata_task(
                             "Phase 2: No disc ID found for %s, file marked as checked",
                             os.path.basename(path),
                         )
-                except Exception as e:
-                    logger.debug("Phase 2: disc_id ensure skipped for %s: %s", path, e)
+                except Exception:
+                    logger.warning(
+                        "Phase 2: could not read the disc ID of %s", path, exc_info=True,
+                    )
             if abandoned:
                 raise RuntimeError(
                     f"Phase 2: reading {os.path.basename(path)} left a process "
@@ -620,7 +621,7 @@ async def scan_metadata_task(
             "Phase 2 complete: %d already checked, %d newly checked, %d disc ID(s) found",
             already_checked,
             newly_checked,
-            embed_count,
+            discs_found,
         )
 
         # Phase 3: Prime the DAT-match cache for every discovered output
@@ -659,12 +660,12 @@ async def scan_metadata_task(
         logger.info(
             "Metadata scan complete: %d metadata refreshed, %d disc ID(s) found, elapsed %.1fs",
             count,
-            embed_count,
+            discs_found,
             elapsed,
         )
         if scan_success is None:
             final_msg = (
-                f"Cancelled \u2014 {count} refreshed, {embed_count} disc ID(s) found "
+                f"Cancelled \u2014 {count} refreshed, {discs_found} disc ID(s) found "
                 f"({elapsed:.1f}s)"
             )
             await job_manager.finish_external_job_cancelled(
@@ -673,7 +674,7 @@ async def scan_metadata_task(
             )
         else:
             if scan_success:
-                parts = [f"{count} refreshed", f"{embed_count} disc ID(s) found"]
+                parts = [f"{count} refreshed", f"{discs_found} disc ID(s) found"]
                 if hasheous_errors:
                     # The scan itself succeeded -- metadata was collected -- so
                     # this is not a failure. But saying so without saying the

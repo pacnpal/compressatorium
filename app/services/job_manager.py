@@ -4643,10 +4643,9 @@ class JobManager:
                 job.progress = 100
 
                 # Run the tool's post-convert hook before sizing the output.
-                # chdman uses it to embed disc-ID GAME/NAME tags into a freshly
-                # created CD/DVD CHD; the default is a no-op, so this is safe to
-                # call for every mode. Running it first means the output_size
-                # computed below reflects the tagged file. The source
+                # chdman uses it to record a freshly created CD/DVD CHD's disc
+                # ID (read from the Source) in the metadata store; the default
+                # is a no-op, so this is safe to call for every mode. The source
                 # (input_path) is still present here, even when delete-on-verify
                 # is requested (deletion happens after verify).
                 try:

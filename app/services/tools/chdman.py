@@ -18,14 +18,7 @@ from fastapi.concurrency import run_in_threadpool
 from logging_setup import get_logger
 from models import CHDInfo, OutputStatus
 from services.chdman import CHDMAN_CONVERTIBLE_EXTENSIONS, chdman_service
-from services.disc_id import (
-    DiscIdStorageAbandoned,
-    clear_embedded_disc_id,
-    disc_platform,
-    embed_in_chd,
-    extract_from_source,
-    read_embedded_game_id,
-)
+from services.disc_id import disc_platform, extract_from_source
 from services.disk import InsufficientDiskSpace, headroom_scratch_dir
 from services.file_hasher import compute_files_sha1_sync
 from services.lock_manager import lock_manager
@@ -46,7 +39,7 @@ logger = get_logger()
 # Only CD/DVD images carry a readable disc serial: they hold an ISO 9660
 # filesystem with SYSTEM.CNF (PS1/PS2) or PSP_GAME/PARAM.SFO (PSP), or a
 # Dreamcast IP.BIN. createraw/createhd (hard-disk images) and createld
-# (laserdisc) have no such structure, so disc-ID tagging is scoped to these two.
+# (laserdisc) have no such structure, so disc-ID recording is scoped to these two.
 _DISC_ID_MODES = frozenset({"createcd", "createdvd"})
 
 # chdman's media commands are not interchangeable: `createcd` writes a CD
@@ -298,31 +291,29 @@ class ChdmanTool(BaseTool):
         self, input_path: str, output_path: str, mode: str,
         *, within: Sequence[str] | None = None,
     ) -> None:
-        """Embed disc-ID GAME/NAME tags into a freshly created CD/DVD CHD.
+        """Record the Source's disc ID for a freshly created CD/DVD CHD.
 
-        This is the single home for conversion-time disc-ID tagging: a direct
-        ``createcd`` / ``createdvd`` job reaches it via
-        ``job_manager._process_job`` and a ``cso_to_chd`` chain reaches it via
-        ``ChainTool``'s final step, so both paths tag identically.
+        The single home for conversion-time disc IDs: a direct ``createcd`` /
+        ``createdvd`` job reaches it via ``job_manager._process_job`` and a
+        ``cso_to_chd`` chain via ``ChainTool``'s final step.
+
+        The serial (and title, when the Source has one) read from the Source is
+        stored for the output in ``chd_metadata_store``, the cache ``/api/info``
+        and the library scan read, and the output is marked as checked so the
+        scan does not read it again. Nothing is written into the CHD: chdman
+        opens a compressed CHD read-only, so ``chdman addmeta`` fails on every
+        CHD this app makes (#352). No chdman process runs here.
 
         Only ``createcd`` / ``createdvd`` carry a disc serial, so every other
-        chdman mode is a no-op. Best-effort, with one exception: a *tagging*
-        failure never fails the job, but a chdman child that outlived SIGKILL
-        does (``DiscIdStorageAbandoned``). That is not a fact about the tag, it
-        is the output's storage no longer answering -- and every step after this
-        hook reads that storage, so continuing buys a hung job instead of an
-        untagged one (issue #268).
-        Idempotent: if the CHD already carries a GAME tag equal to the source's
-        serial the embed is skipped, so re-invoking the hook never appends a
-        duplicate tag.
-
-        ``GAME`` = normalized serial (emulator DB lookup key);
-        ``NAME`` = human-readable title when available, serial otherwise.
+        chdman mode is a no-op. Best effort: a failure never fails the job, and
+        it is logged as a warning naming the output, so a missing disc ID is
+        never silent. Without a record, the scan and ``/api/info`` still read
+        the ID from the CHD's own sectors later.
 
         ``within``: the trusted root an archive-extracted source sits under
         (the worker's extraction dir); None means the configured Volumes. A
         track sheet whose tracks are refused there, or that is unreadable,
-        stops tagging with a warning naming the sheet.
+        records nothing, with a warning naming the sheet.
         """
         if mode not in _DISC_ID_MODES:
             return
@@ -334,50 +325,25 @@ class ChdmanTool(BaseTool):
             disc_info = await run_in_threadpool(
                 partial(extract_from_source, input_path, within=within),
             )
-            if not (disc_info and disc_info.get("game_id")):
-                if Path(input_path).suffix.lower() in _SHEET_EXTS and (
-                    await run_in_threadpool(
-                        partial(sheet_track_list, input_path, within=within),
-                    )
-                ) is None:
-                    logger.warning(
-                        "Disc ID not tagged for %s: its track sheet is unreadable "
-                        "or names a track outside the trusted roots", input_path,
-                    )
-                return
-            game_id = disc_info["game_id"]
-            existing = await read_embedded_game_id(output_path, self.binary_path)
-            if existing == game_id:
-                return
-            if existing is not None:
-                # chdman addmeta appends rather than replaces, so a CHD that
-                # already carries a *different* serial must have the stale
-                # GAME/NAME stripped first — otherwise the old tag persists and
-                # the embed never converges. A freshly created CHD has no tag,
-                # so this is skipped in the normal path.
-                await clear_embedded_disc_id(output_path, self.binary_path)
-            title = disc_info.get("title") or game_id
-            embedded = await embed_in_chd(output_path, game_id, title, self.binary_path)
-            if embedded:
-                logger.info(
-                    "Embedded disc ID %r in %s", game_id, Path(output_path).name,
+        except Exception:
+            # Best effort, but never silent: the job goes on without it.
+            logger.warning(
+                "Disc ID not read from %s for %s", input_path, Path(output_path).name,
+                exc_info=True,
+            )
+            return
+        if not (disc_info and disc_info.get("game_id")):
+            if Path(input_path).suffix.lower() in _SHEET_EXTS and (
+                await run_in_threadpool(
+                    partial(sheet_track_list, input_path, within=within),
                 )
-            else:
-                logger.debug(
-                    "Failed to embed disc ID %r in %s",
-                    game_id, Path(output_path).name,
+            ) is None:
+                logger.warning(
+                    "Disc ID not recorded for %s: its track sheet is unreadable "
+                    "or names a track outside the trusted roots", input_path,
                 )
-        except DiscIdStorageAbandoned as exc:
-            # The one failure that is *not* best-effort. A chdman child is still
-            # running against this output, and everything the caller does next
-            # touches the same storage -- `_compute_output_size` is an unbounded
-            # `run_in_threadpool`, and delete-on-verify starts a verifier -- so
-            # swallowing this trades a skipped tag for a hung job, which is
-            # #263's original failure. Propagate and let the job fail (#268).
-            logger.error("Disc ID embed abandoned for %s: %s", output_path, exc)
-            raise
-        except Exception as exc:  # best effort; tagging never fails the job
-            logger.debug("Disc ID embed skipped for %s: %s", output_path, exc)
+            return
+        await _record_disc_id(output_path, disc_info["game_id"], disc_info.get("title"))
 
     async def verify(
         self, path: str, *, cancel_event: asyncio.Event | None = None,
@@ -548,6 +514,27 @@ class ChdmanTool(BaseTool):
 
     def active_pids(self) -> list[int]:
         return self._service.active_pids()
+
+
+async def _record_disc_id(output_path: str, game_id: str, title: str | None) -> None:
+    """Store a converted CHD's disc ID in the app's database, or say why not.
+
+    Marks the output as checked too, so the library scan's disc-ID phase skips
+    it. A failure is a warning naming the output and the serial, never a failed
+    job: the scan reads the ID from the CHD later.
+    """
+    from services.chd_metadata_store import chd_metadata_store
+
+    try:
+        await chd_metadata_store.update_disc_id_info(output_path, game_id, title)
+        await chd_metadata_store.mark_disc_id_checked(output_path)
+    except Exception:
+        logger.warning(
+            "Disc ID %r not recorded for %s; the library scan will read it from "
+            "the CHD", game_id, Path(output_path).name, exc_info=True,
+        )
+        return
+    logger.info("Recorded disc ID %r for %s", game_id, Path(output_path).name)
 
 
 def _logical_bytes(info: dict) -> int:

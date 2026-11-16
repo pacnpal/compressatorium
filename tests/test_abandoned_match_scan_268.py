@@ -162,9 +162,10 @@ async def test_disc_id_helpers_use_chdmans_runner(tmp_path, monkeypatch):
     """Phase 2's children were the last hand-rolled spawns, and the worst.
 
     ``_dumpmeta_raw`` killed its child and then waited for it with no limit,
-    which could hang a library scan outright. All three now share
+    which could hang a library scan outright. It now shares
     ``chdman_service.runner`` -- deliberately that instance, so one PID set
-    still describes every chdman child.
+    still describes every chdman child. (It is the only chdman metadata call
+    left: nothing writes a tag into a CHD since #352.)
     """
     from services import disc_id
     from services.chdman import chdman_service
@@ -183,16 +184,14 @@ async def test_disc_id_helpers_use_chdmans_runner(tmp_path, monkeypatch):
     chd = tmp_path / "game.chd"
     chd.write_bytes(b"x")
 
-    await disc_id._addmeta_text(str(chd), "GAME", "SLUS-123", "chdman")
-    await disc_id._delmeta(str(chd), "GAME", "chdman")
-    await disc_id._dumpmeta_raw(str(chd), "GAME", "chdman")
+    await disc_id._dumpmeta_raw(str(chd), "GDRO", "chdman")
 
-    assert calls == ["addmeta", "delmeta", "dumpmeta"]
+    assert calls == ["dumpmeta"]
     # Priority as command wrappers, never run_capture's preexec_fn: forking a
     # Python callable from this multithreaded parent can deadlock the child
     # before exec, and create_subprocess_exec then never returns to apply the
-    # bound at all. The spawns these replaced used no preexec_fn either.
-    assert wrapper_only == [True, True, True]
+    # bound at all. The spawn this replaced used no preexec_fn either.
+    assert wrapper_only == [True]
 
 
 # ---------------------------------------------------------------------------
@@ -346,7 +345,7 @@ async def test_scan_phase1_aborts_the_scan(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_scan_phase2_aborts_the_scan(tmp_path, monkeypatch):
-    """Phase 2's handler only logs at debug, so this would leave no trace at all."""
+    """Phase 2's handler only logs per file, so the scan would walk on."""
     for name in ("a.chd", "b.chd", "c.chd"):
         (tmp_path / name).write_text("x")
     monkeypatch.setattr(info_routes.settings, "chd_volumes", str(tmp_path))
@@ -371,7 +370,7 @@ async def test_scan_phase2_aborts_the_scan(tmp_path, monkeypatch):
     monkeypatch.setattr(
         info_routes.chd_metadata_store, "mark_disc_id_checked", AsyncMock(),
     )
-    monkeypatch.setattr(info_routes, "disc_id_ensure_embedded", fake_ensure)
+    monkeypatch.setattr(info_routes, "disc_id_extract_from_chd", fake_ensure)
 
     finished = {}
 
@@ -479,19 +478,19 @@ async def test_disc_hashes_does_not_spawn_after_an_abandoned_size_probe(monkeypa
 
 
 @pytest.mark.asyncio
-async def test_reading_a_tag_that_was_abandoned_is_not_reported_as_untagged(
+async def test_an_abandoned_metadata_read_is_not_reported_as_no_disc_id(
     tmp_path, monkeypatch,
 ):
-    """The conflation that let post_convert write to a CHD still being read.
+    """A stuck ``dumpmeta`` is a fact about the storage, not "no disc ID".
 
-    ``read_embedded_game_id`` returning None means "no GAME tag", and
-    ``post_convert`` answers that by firing ``addmeta`` at the file. An abandoned
-    read must therefore not come back as None.
+    ``extract_from_chd`` reduces each strategy's outcome to "found" or "try the
+    next one", so an abandoned read coming back as None would send the caller
+    on to the next read of the same storage. The helper raises instead.
     """
     from services import disc_id
     from services.chdman import chdman_service
 
-    # Patched *below* the guard, so the real _dumpmeta_text -> _dumpmeta_raw ->
+    # Patched *below* the guard, so the real _dumpmeta_bin -> _dumpmeta_raw ->
     # run_capture chain runs and the helper itself is what raises.
     async def fake_capture(cmd, **kwargs):
         _note("pid 99")
@@ -501,82 +500,9 @@ async def test_reading_a_tag_that_was_abandoned_is_not_reported_as_untagged(
     chd = tmp_path / "game.chd"
     chd.write_bytes(b"x")
 
-    # Every consumer of these helpers reduces the outcome to None/False and then
-    # reads or writes the same CHD again, so the guard lives in the helpers --
-    # not in the handful of callers someone remembered to patch.
-    with pytest.raises(disc_id.DiscIdStorageAbandoned):
-        await disc_id.read_embedded_game_id(str(chd), "chdman")
-
-    with pytest.raises(disc_id.DiscIdStorageAbandoned):
-        await disc_id.ensure_disc_id_embedded(str(chd), "chdman")
-
-    # The mutation chain: delmeta GAME then NAME, after which post_convert would
-    # embed regardless of either result.
-    with pytest.raises(disc_id.DiscIdStorageAbandoned):
-        await disc_id.clear_embedded_disc_id(str(chd), "chdman")
-
-    # And the /api/info path, which fell through to an unbounded sector read.
+    # The /api/info and library-scan path.
     with pytest.raises(disc_id.DiscIdStorageAbandoned):
         await disc_id.extract_from_chd(str(chd), "chdman")
-
-    # Writes are guarded too, so a retag cannot start against a held CHD.
-    with pytest.raises(disc_id.DiscIdStorageAbandoned):
-        await disc_id.embed_in_chd(str(chd), "SLUS-1", "T", "chdman")
-
-
-@pytest.mark.asyncio
-async def test_post_convert_skips_the_write_and_fails_the_job(tmp_path, monkeypatch):
-    """Tagging is best-effort; a dead output volume is not.
-
-    The first harm was `addmeta` landing on a CHD an abandoned reader still holds.
-    The second was swallowing it: everything `_process_job` does after this hook
-    reads the same storage -- the output-size probe is an unbounded
-    `run_in_threadpool`, and delete-on-verify spawns a verifier -- so a skipped
-    tag would be traded for a hung job, which is #263's original failure.
-    """
-    from services.chdman import chdman_service
-    from services.tools import registry
-
-    chd = tmp_path / "game.chd"
-    chd.write_bytes(b"x")
-    chdman = registry.get("chdman")
-    # The plugin the registry holds lives in `services.tools.chdman`, which is a
-    # different module object than `app.services.tools.chdman`; patching the
-    # latter would make every assertion below pass vacuously.
-    plugin_mod = sys.modules[type(chdman).__module__]
-
-    async def fake_capture(cmd, **kwargs):
-        _note("pid 7")
-        return None, b"", b""
-
-    monkeypatch.setattr(chdman_service.runner, "run_capture", fake_capture)
-    wrote = []
-    monkeypatch.setattr(
-        plugin_mod, "embed_in_chd",
-        AsyncMock(side_effect=lambda *a, **k: wrote.append(a)),
-    )
-    monkeypatch.setattr(
-        plugin_mod, "extract_from_source", lambda _p, **_k: {"game_id": "SLUS-123"},
-    )
-
-    # The project logger does not propagate to caplog, so watch it directly.
-    errors: list[str] = []
-    monkeypatch.setattr(
-        plugin_mod.logger, "error",
-        lambda msg, *args, **kw: errors.append(str(msg) % args if args else str(msg)),
-    )
-
-    from services.disc_id import DiscIdStorageAbandoned
-
-    # Propagates, so the job manager's handler fails the job before any more
-    # output I/O -- rather than being logged away as an ordinary skipped tag.
-    with pytest.raises(DiscIdStorageAbandoned):
-        await chdman.post_convert(str(chd), str(chd), "createcd")
-
-    assert not wrote, "must not write to a CHD an abandoned reader still holds"
-    assert errors and "still running" in errors[0], (
-        "the skip must be visible, not debug-only"
-    )
 
 
 @pytest.mark.asyncio

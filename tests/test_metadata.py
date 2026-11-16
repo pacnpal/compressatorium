@@ -71,7 +71,7 @@ def scan_env(tmp_path, monkeypatch):
     monkeypatch.setattr(
         info_routes.chd_metadata_store, "mark_disc_id_checked", fake_mark_disc_id_checked
     )
-    monkeypatch.setattr(info_routes, "disc_id_ensure_embedded", fake_ensure_embedded)
+    monkeypatch.setattr(info_routes, "disc_id_extract_from_chd", fake_ensure_embedded)
 
     return {
         # Discovery realpath-normalizes paths, so the values the scan passes
@@ -251,7 +251,7 @@ async def test_scan_metadata_cancellation_during_phase2(tmp_path, monkeypatch):
         if len(ensure_calls) == 1 and scan_job_ids:
             await job_manager.cancel_job(scan_job_ids[0])
         return None
-    monkeypatch.setattr(info_routes, "disc_id_ensure_embedded", fake_ensure_embedded)
+    monkeypatch.setattr(info_routes, "disc_id_extract_from_chd", fake_ensure_embedded)
 
     await info_routes.scan_metadata_task(force=False)
 
@@ -815,23 +815,22 @@ async def test_update_disc_id_info_persist_false_does_not_flush(
 
 @pytest.mark.asyncio
 async def test_scan_phase2_caches_game_id_when_disc_id_found(scan_env, monkeypatch):
-    """Phase 2 calls update_disc_id_info(persist=False) when ensure_disc_id_embedded returns a
+    """Phase 2 calls update_disc_id_info(persist=False) when extract_from_chd returns a
     game_id.
 
-    Regression test: Phase 2 previously embedded the GAME/NAME tags into the CHD file
-    but never populated the metadata cache, so subsequent /api/info requests returned
-    no game_id even though the tag was physically in the file.
+    The metadata cache is the only place the disc ID is kept: nothing is written
+    into the CHD (#352), so /api/info reads it from there.
     """
     async def fake_false(_):
         return False
     monkeypatch.setattr(info_routes.chd_metadata_store, "is_stale", fake_false)
 
-    # Stub ensure_disc_id_embedded to return a found game_id
+    # Stub extract_from_chd to return a found game_id
     async def fake_ensure_with_result(path, chdman_path):
         scan_env["ensure_calls"].append(path)
         return {"game_id": "SLUS-20312", "title": "God of War"}
 
-    monkeypatch.setattr(info_routes, "disc_id_ensure_embedded", fake_ensure_with_result)
+    monkeypatch.setattr(info_routes, "disc_id_extract_from_chd", fake_ensure_with_result)
 
     # Track update_disc_id_info calls (game_id, title, persist)
     update_calls: list[tuple] = []
@@ -845,7 +844,7 @@ async def test_scan_phase2_caches_game_id_when_disc_id_found(scan_env, monkeypat
 
     await info_routes.scan_metadata_task(force=False)
 
-    # ensure_disc_id_embedded was called
+    # extract_from_chd was called
     assert scan_env["ensure_calls"] == [scan_env["chd_path"]]
     # update_disc_id_info was called with the returned game_id/title and persist=False
     assert len(update_calls) == 1

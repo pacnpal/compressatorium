@@ -1258,7 +1258,7 @@ On small screens the file list switches to a card layout. Controls use 44 to 48p
 
 **CHD Metadata Cache**
 - Background metadata scan with CD/DVD badges
-- **Retroactive game ID tagging.** The scan writes `GAME` and `NAME` tags into existing CHDs that lack them. Later scans skip files that are already tagged
+- **Game IDs for existing CHDs.** The scan reads the game ID of every CHD it has not checked yet and stores it in the metadata cache. Later scans skip files already checked. Nothing is written into the CHD: chdman cannot add metadata to a compressed CHD
 - "Scan Metadata" and "Force Rescan" actions to refresh cached metadata
 - Cache stored in `/config/chd_metadata.json`
 
@@ -1508,8 +1508,8 @@ archive, not just that member, with a warning in the delete plan, the same as an
 archive-sourced conversion. Note this changes container, so it's a one-way trip: extracting the `.chd` later
 (chdman `extractdvd`) gives back the `.iso`, not the original `.cso`/`.zso`/`.dax`.
 The disc image is preserved, but the compressed source is not reproducible once
-deleted. Disc-ID `GAME`/`NAME` tags are embedded into the CHD just like a direct
-Create DVD. The chain uses chdman's default compression (there is no codec picker
+deleted. The disc ID is recorded for the CHD just like a direct Create DVD. The
+chain uses chdman's default compression (there is no codec picker
 for it yet).
 
 ### Supported File Formats
