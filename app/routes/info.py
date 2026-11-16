@@ -1585,6 +1585,46 @@ async def _record_terminal(path: str, terminal: dict | None) -> bool | None:
         return None
 
 
+async def _publish_terminal(
+    path: str, queue: asyncio.Queue, terminal: dict, writes: list,
+) -> bool | None:
+    """Persist, then publish, a verify stream's terminal result (#351).
+
+    The verdict is written (:func:`_record_terminal`) before the event reaches
+    the queue, so a reader that sees it can rely on the record (codex
+    4582270883): it may stop reading and cancel the producer at once. The
+    write runs as its own task under ``asyncio.shield``: a cancel (a client
+    that went away) stops this wait, never the write, and the lane is let go
+    only once the write has finished (:func:`_release_after_writes`, via
+    *writes*). Returns the verdict recorded (``check_verdict``).
+    """
+    write = asyncio.ensure_future(_record_terminal(path, terminal))
+    writes.append(write)
+    verdict = await asyncio.shield(write)
+    await _offer_verify_update(queue, terminal)
+    return verdict
+
+
+def _release_after_writes(writes: list, release: Callable[[], object]) -> None:
+    """Let go of the verify lane once every terminal write has finished: now,
+    or when the last one does (a producer cancelled mid-write leaves its
+    shielded write running). Holding the lane until then means no newer check
+    of the same file can be overwritten by this one's verdict."""
+    pending = [write for write in writes if not write.done()]
+    if not pending:
+        release()
+        return
+    left = {"count": len(pending)}
+
+    def one_done(_write) -> None:
+        left["count"] -= 1
+        if left["count"] == 0:
+            release()
+
+    for write in pending:
+        write.add_done_callback(one_done)
+
+
 def _sse_from_verify_stream(
     tool: ToolPlugin, cfg: _VerifyRouteConfig, path: str,
 ) -> EventSourceResponse:
@@ -1609,8 +1649,10 @@ def _sse_from_verify_stream(
         done = asyncio.Event()
         start = time.monotonic()
         bound = 0
-        # The terminal result, once the producer has one; recorded by it.
-        terminal: dict | None = None
+        # The terminal writes the producer started (`_publish_terminal`), and
+        # whether it ran at all: once it has, it owns the lane's release.
+        writes: list = []
+        producer_ran = False
 
         async def run_verify():
             """Produce the verify events, under the bound, whoever is reading.
@@ -1623,14 +1665,16 @@ def _sse_from_verify_stream(
             delivery backpressure, and no terminal result can arrive after the
             timeout has been reported, because the same task decides both.
             """
-            nonlocal terminal
+            nonlocal producer_ran
+            producer_ran = True
 
             async def _pump() -> None:
-                nonlocal terminal
                 async for update in cfg.service().verify_stream(path):
                     if update.get("type") in ("complete", "error"):
-                        terminal = update
-                    await _offer_verify_update(queue, update)
+                        # Persisted before it is published (codex 4582270883).
+                        await _publish_terminal(path, queue, update, writes)
+                    else:
+                        await _offer_verify_update(queue, update)
 
             try:
                 if bound > 0:
@@ -1638,34 +1682,27 @@ def _sse_from_verify_stream(
                 else:
                     await _pump()
             except asyncio.TimeoutError:
-                terminal = {
+                await _publish_terminal(path, queue, {
                     "type": "error",
                     **_verify_timed_out(bound),
                     **_abandonment(abandoned),
-                }
-                await _offer_verify_update(queue, terminal)
+                }, writes)
             except Exception as exc:
                 # The stream itself failed: no verdict on the file (`error`).
-                terminal = {
+                await _publish_terminal(path, queue, {
                     "type": "error", "valid": False, "message": str(exc),
                     "error": str(exc),
-                }
-                await _offer_verify_update(queue, terminal)
+                }, writes)
             finally:
-                try:
-                    # Recorded here, once, while this verification still holds
-                    # the lane (CodeRabbit 4582189521): a reader that stalls
-                    # can never write this verdict over a newer one.
-                    await _record_terminal(path, terminal)
-                finally:
-                    done.set()
+                done.set()
                 # The lane covers verification, and verification is over: the
                 # consumer below may still be parked at its `yield` on a peer
                 # that stopped reading, and holding the one-slot lane until it
                 # resumes would refuse every later verification for good.
-                # Releasing twice is a no-op, so the generator's own finally
-                # stays as the backstop for the paths that never start this.
-                verify_token.release()
+                # The generator's own finally stays the backstop for the paths
+                # that never start this. Not before the terminal write is done
+                # (CodeRabbit 4582189521, codex 4582270883).
+                _release_after_writes(writes, verify_token.release)
 
         # Everything after the token is acquired runs inside the try, including
         # resolving the bound: that await is a filesystem probe, and a client
@@ -1707,7 +1744,10 @@ def _sse_from_verify_stream(
                 verify_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await verify_task
-            verify_token.release()
+            if not producer_ran:
+                # A producer that ran releases the lane itself, once its
+                # terminal write is done; one that never ran cannot.
+                verify_token.release()
 
     return EventSourceResponse(event_generator())
 
@@ -1785,11 +1825,13 @@ def _sse_batch_from_verify_stream(
                 # What the producer recorded for this file (`check_verdict`):
                 # None until it records, and for no verdict.
                 recorded: dict = {"verdict": None}
+                writes: list = []
 
                 bound = await tool.verify_timeout(path)
 
                 async def run_verify(
                     path=path, bound=bound, queue=queue, done=done, recorded=recorded,
+                    writes=writes,
                 ) -> None:
                     """Same producer-side bound as the single-file stream.
 
@@ -1801,17 +1843,23 @@ def _sse_batch_from_verify_stream(
                     the timeout because one task produces both.
                     """
                     nonlocal final_result
-                    terminal: dict | None = None
+
+                    async def publish(terminal: dict) -> None:
+                        nonlocal final_result
+                        # Set before anything awaits, so a consumer that breaks
+                        # on the terminal event reads this file's result; the
+                        # verdict is persisted before the event is published.
+                        final_result = terminal
+                        recorded["verdict"] = await _publish_terminal(
+                            path, queue, terminal, writes,
+                        )
 
                     async def _pump() -> None:
-                        nonlocal final_result, terminal
                         async for update in cfg.service().verify_stream(path):
-                            # Record the terminal result before enqueueing so a
-                            # consumer that breaks on the "complete"/"error"
-                            # event can't cancel this task mid-update.
                             if update.get("type") in ("complete", "error"):
-                                final_result = terminal = update
-                            await _offer_verify_update(queue, update)
+                                await publish(update)
+                            else:
+                                await _offer_verify_update(queue, update)
 
                     try:
                         if bound > 0:
@@ -1819,37 +1867,30 @@ def _sse_batch_from_verify_stream(
                         else:
                             await _pump()
                     except asyncio.TimeoutError:
-                        final_result = terminal = {
+                        await publish({
+                            "type": "error",
                             **_verify_timed_out(bound),
                             **_abandonment(abandoned),
-                        }
-                        await _offer_verify_update(
-                            queue, {"type": "error", **final_result},
-                        )
+                        })
                     except Exception as exc:
-                        final_result = terminal = {
+                        await publish({
                             "type": "error",
                             "valid": False,
                             "message": str(exc),
                             "error": str(exc),  # the stream failed: no verdict
-                        }
-                        await _offer_verify_update(queue, final_result)
+                        })
                     finally:
-                        try:
-                            # Recorded here, once, while this file still holds
-                            # the lane (CodeRabbit 4582189521).
-                            recorded["verdict"] = await _record_terminal(path, terminal)
-                        finally:
-                            done.set()
+                        done.set()
                         # Released here, not in the consumer's `finally`: this
                         # file's verification is over, and the consumer may be
                         # parked mid-file at a `yield` on a peer that stopped
                         # reading -- which is exactly the case where holding
                         # the one-slot lane refuses every later verification
-                        # for good. Same rule as the single-file route.
-                        if lane["token"] is not None:
-                            lane["token"].release()
-                            lane["token"] = None
+                        # for good. Same rule as the single-file route: not
+                        # before the terminal write is done.
+                        token, lane["token"] = lane["token"], None
+                        if token is not None:
+                            _release_after_writes(writes, token.release)
 
                 if lane["token"] is None:
                     lane["token"] = await workload_limiter.acquire("verify")

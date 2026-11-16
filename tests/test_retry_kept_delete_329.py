@@ -2485,6 +2485,7 @@ def test_a_stalled_stream_reader_cannot_overwrite_a_newer_check(
         return events()
 
     monkeypatch.setattr(service, "verify_stream", verify_stream)
+    _fresh_lane(monkeypatch)
     output = str(kept["output"])
     cfg = info_routes._VERIFY_CONFIG["dolphin"]
 
@@ -2511,3 +2512,251 @@ def test_a_stalled_stream_reader_cannot_overwrite_a_newer_check(
     assert newer["valid"] is True
     assert [event["event"] for event in rest][-1] == "verify_complete"
     assert _checked_outputs(kept["output"]) == ([output], [output])
+
+
+
+# --------------------------------------------------------------------------- #
+# Persist before publish (codex 4582270883): a reader that stops at the
+# terminal event never cuts the record short
+# --------------------------------------------------------------------------- #
+
+
+def _fresh_lane(monkeypatch):
+    from routes import info as info_routes
+    from services.workload_limiter import WorkloadLimiter
+
+    monkeypatch.setattr(
+        info_routes, "workload_limiter",
+        WorkloadLimiter(verify_limit=1, metadata_scan_limit=1),
+    )
+
+
+def _stream_once(monkeypatch, *, valid, stall=0.0, stopped=None):
+    """dolphin's verify stream: a progress event, then (after *stall*) the
+    terminal result. *stopped* collects whether the verifier was stopped.
+    The verify lane is a fresh one, bound to this test's event loop."""
+    _fresh_lane(monkeypatch)
+    service = registry.get("dolphin")._service
+
+    def verify_stream(path, *, cancel_event=None):
+        async def events():
+            try:
+                yield {"type": "progress", "progress": 10, "message": "Checking"}
+                if stall:
+                    await asyncio.sleep(stall)
+                yield {
+                    "type": "complete", "valid": valid,
+                    "message": "Disc image is Intact" if valid else "Disc is damaged",
+                }
+            finally:
+                if stopped is not None:
+                    stopped.append(True)
+
+        return events()
+
+    monkeypatch.setattr(service, "verify_stream", verify_stream)
+
+
+def _slow_record(monkeypatch):
+    """The store write takes a while (Codex's 30 ms repro)."""
+    from routes import info as info_routes
+
+    real = info_routes.record_check
+
+    async def slow(store, path, result):
+        await asyncio.sleep(0.03)
+        return await real(store, path, result)
+
+    monkeypatch.setattr(info_routes, "record_check", slow)
+
+
+def test_a_slow_record_lands_before_the_reader_sees_the_verdict(
+    env, dolphin, capsys, kept, monkeypatch,
+):
+    from routes import info as info_routes
+
+    _stream_once(monkeypatch, valid=False)
+    _slow_record(monkeypatch)
+    output = str(kept["output"])
+    cfg = info_routes._VERIFY_CONFIG["dolphin"]
+
+    async def read_all():
+        stream = info_routes._sse_from_verify_stream(
+            registry.get("dolphin"), cfg, output,
+        ).body_iterator
+        return [event async for event in stream]
+
+    events = asyncio.run(read_all())
+
+    assert events[-1]["event"] == "verify_complete"
+    assert _checked_outputs(kept["output"]) == ([], [])
+
+
+@pytest.mark.parametrize("valid", [True, False])
+def test_the_batch_status_matches_the_verdict_with_a_slow_record(
+    env, dolphin, capsys, kept, monkeypatch, valid,
+):
+    import json
+
+    from routes import info as info_routes
+
+    _stream_once(monkeypatch, valid=valid)
+    _slow_record(monkeypatch)
+    output = str(kept["output"])
+    cfg = info_routes._VERIFY_CONFIG["dolphin"]
+
+    async def read_all():
+        token = await info_routes.workload_limiter.acquire("verify")
+        stream = info_routes._sse_batch_from_verify_stream(
+            registry.get("dolphin"), cfg, [output], token,
+        ).body_iterator
+        return [event async for event in stream]
+
+    events = asyncio.run(read_all())
+
+    statuses = [
+        json.loads(event["data"]).get("status") for event in events
+        if event["event"] == "verify_batch_file_complete"
+    ]
+    assert statuses[-1] == ("verified" if valid else "failed")
+    expected = ([output], [output]) if valid else ([], [])
+    assert _checked_outputs(kept["output"]) == expected
+
+
+def test_a_disconnect_before_the_verdict_stops_the_verifier_and_records_nothing(
+    env, dolphin, capsys, kept, monkeypatch,
+):
+    from routes import info as info_routes
+
+    stopped: list = []
+    _stream_once(monkeypatch, valid=False, stall=10, stopped=stopped)
+    output = str(kept["output"])
+    cfg = info_routes._VERIFY_CONFIG["dolphin"]
+
+    async def disconnect():
+        stream = info_routes._sse_from_verify_stream(
+            registry.get("dolphin"), cfg, output,
+        ).body_iterator
+        first = await stream.__anext__()
+        await stream.aclose()  # the client went away mid-verify
+        token = await info_routes.workload_limiter.try_acquire("verify")
+        if token is not None:
+            token.release()
+        return first, token is not None
+
+    first, lane_free = asyncio.run(disconnect())
+
+    assert first["event"] == "verify_progress"
+    assert stopped == [True]
+    assert lane_free
+    assert _checked_outputs(kept["output"]) == ([output], [output])
+
+
+
+def _paused_store_write(monkeypatch):
+    """The store's failed-check write blocks in its worker thread until
+    ``go`` is set; ``entered`` says it began."""
+    import threading
+
+    from services.verification_store import VerificationStore
+
+    entered, go = threading.Event(), threading.Event()
+    real = VerificationStore._mark_failed_sync
+
+    def paused(self, path):
+        entered.set()
+        go.wait(10)
+        return real(self, path)
+
+    monkeypatch.setattr(VerificationStore, "_mark_failed_sync", paused)
+    return entered, go
+
+
+async def _lane_free() -> bool:
+    from routes import info as info_routes
+
+    token = await info_routes.workload_limiter.try_acquire("verify")
+    if token is not None:
+        token.release()
+    return token is not None
+
+
+async def _until(event) -> None:
+    for _ in range(500):
+        if event.is_set():
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError("never happened")
+
+
+def test_the_reader_gets_the_verdict_only_once_the_store_write_is_done(
+    env, dolphin, capsys, kept, monkeypatch,
+):
+    """CodeRabbit 4582189521: the store write itself (its worker thread) is
+    paused. Until it finishes, the reader gets no terminal event and the lane
+    stays held, so no newer check can start and be overwritten."""
+    from routes import info as info_routes
+
+    _stream_once(monkeypatch, valid=False)
+    entered, go = _paused_store_write(monkeypatch)
+    output = str(kept["output"])
+    cfg = info_routes._VERIFY_CONFIG["dolphin"]
+
+    async def run():
+        stream = info_routes._sse_from_verify_stream(
+            registry.get("dolphin"), cfg, output,
+        ).body_iterator
+        reading = asyncio.ensure_future(_drain(stream))
+        await _until(entered)
+        await asyncio.sleep(0.1)
+        # The reader has not got the verdict, and the lane is still held.
+        waiting = not reading.done()
+        held = not await _lane_free()
+        go.set()
+        events = await reading
+        return waiting, held, events, await _lane_free()
+
+    waiting, held, events, free_after = asyncio.run(run())
+
+    assert waiting and held
+    assert events[-1]["event"] == "verify_complete"
+    assert free_after
+    assert _checked_outputs(kept["output"]) == ([], [])
+
+
+async def _drain(stream) -> list:
+    return [event async for event in stream]
+
+
+def test_a_disconnect_during_the_store_write_keeps_the_lane_until_it_lands(
+    env, dolphin, capsys, kept, monkeypatch,
+):
+    """The reader goes away while the verdict is being written: the write is
+    not cut short, and the lane is let go only once it has landed."""
+    from routes import info as info_routes
+
+    _stream_once(monkeypatch, valid=False)
+    entered, go = _paused_store_write(monkeypatch)
+    output = str(kept["output"])
+    cfg = info_routes._VERIFY_CONFIG["dolphin"]
+
+    async def run():
+        stream = info_routes._sse_from_verify_stream(
+            registry.get("dolphin"), cfg, output,
+        ).body_iterator
+        first = await stream.__anext__()
+        await _until(entered)
+        await stream.aclose()  # the client went away mid-write
+        held = not await _lane_free()
+        go.set()
+        for _ in range(500):
+            if await _lane_free():
+                return first, held, True
+            await asyncio.sleep(0.01)
+        return first, held, False
+
+    first, held, freed = asyncio.run(run())
+
+    assert first["event"] == "verify_progress"
+    assert held and freed
+    assert _checked_outputs(kept["output"]) == ([], [])

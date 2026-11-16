@@ -4291,11 +4291,16 @@ The preparation:
   `_container_check`, a result with no verdict (but `uncheckable`) raises
   `VerifyUnanswered`, like the outer bound: a job fails as before, and a
   retried delete counts an attempt instead of dropping the entry
-  (CodeRabbit 4582189529). The verify event streams record their terminal
-  result once, in the producer (`routes/info.py::_record_terminal`), before
-  it marks itself done and lets go of the verify lane: a client that stops
-  reading can never write an old verdict over a newer check's, and the batch
-  counts what the producer recorded (CodeRabbit 4582189521).
+  (CodeRabbit 4582189529). The verify event streams persist before they
+  publish (`routes/info.py::_publish_terminal`, one helper for both streams):
+  the producer writes the terminal verdict, then queues the terminal event,
+  so a reader that sees it, and may stop reading and cancel the producer at
+  once, can rely on the record (codex 4582270883). The write is its own task
+  under `asyncio.shield`, so a cancel stops the waiting, never the write, and
+  the verify lane is let go only once the write has finished
+  (`_release_after_writes`): no newer check of the same file can start and
+  be overwritten (CodeRabbit 4582189521). The batch counts the verdict the
+  producer recorded.
 - Then `_delete_source_set` runs, as for the job. A Referrer or path check
   that keeps the Source, or a removal the filesystem refuses part way, is
   `kept`: try again.
