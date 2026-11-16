@@ -59,11 +59,12 @@ def chain_env(monkeypatch, tmp_path):
     def install(cso_progress=(0, 100), chd_progress=(0, 100), cso_cancel=False):
         def make(tool_id, progress, cancel_raises):
             def _convert(input_path, output_path, mode, *,
-                         compression=None, cancel_event=None):
+                         compression=None, split=False, cancel_event=None):
                 async def _gen():
                     calls.append({
                         "tool": tool_id, "mode": mode, "in": input_path,
                         "out": output_path, "compression": compression,
+                        "split": split,
                     })
                     if cancel_raises and cancel_event is not None \
                             and cancel_event.is_set():
@@ -251,11 +252,11 @@ def nkit_chain_env(monkeypatch, tmp_path):
 
     def make(tool_id):
         def _convert(input_path, output_path, mode, *,
-                     compression=None, cancel_event=None):
+                     compression=None, split=False, cancel_event=None):
             async def _gen():
                 calls.append({
                     "tool": tool_id, "mode": mode, "in": input_path,
-                    "out": output_path, "compression": compression,
+                    "out": output_path, "compression": compression, "split": split,
                 })
                 yield {"progress": 100, "message": f"{mode}:100"}
                 Path(output_path).write_bytes(b"0" * 32)
@@ -393,7 +394,7 @@ def test_chain_preserves_a_steps_warning_in_the_terminal_message(
     calls, _work = nkit_chain_env
 
     def _warning_convert(input_path, output_path, mode, *,
-                         compression=None, cancel_event=None):
+                         compression=None, split=False, cancel_event=None):
         async def _gen():
             yield {
                 "progress": 100,

@@ -833,7 +833,7 @@ export const api = {
   // the source file, which goes stale once that file is converted.
   planRommRepin: (
     paths, mode, outputDir = null, duplicateAction = 'skip', platformId = null,
-    outputPaths = null,
+    outputPaths = null, generation = null,
   ) =>
     jsonPost(
       `${API_BASE}/romm/repin/plan`,
@@ -846,6 +846,9 @@ export const api = {
         // {source: destination} when the queue has already decided. Planning
         // predicts the destination; the batch can land elsewhere.
         output_paths: outputPaths,
+        // The generation the run's first request was given, so every request
+        // of one run is as old as the run (the server orders snapshots by it).
+        generation,
       },
       {},
       'Failed to record RomM metadata',

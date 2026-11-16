@@ -876,3 +876,146 @@ def test_an_abort_while_the_snapshot_stalls_frees_start_and_the_late_rows_retire
     }, data
     assert [42] in data["retired"], data                       # the late rows, retired
     assert all(77 not in ids for ids in data["retired"]), data # the new run's row kept
+
+
+# --- #337: a RomM snapshot's order is the run's, not its requests' -----------
+# A run plans one request per target mode. The server orders snapshots by the
+# generation a plan was given when it started, and refuses to let an older one
+# supersede a newer run's row. So every request of a run carries the
+# generation its first request was given: a later group sent after another run
+# began is still as old as its own run. And an aborted run's planner sends no
+# further groups at all, whatever its pending request does when it returns.
+
+_RUN_CARRIES_ITS_GENERATION = """
+planAnswer = (paths, mode) => ({
+  recorded: 1, pending: 1,
+  recorded_paths: { [paths[0]]: paths[0] + '.out' },
+  recorded_ids: { [paths[0]]: mode === 'createdvd' ? 1 : 2 },
+  generation: mode === 'createdvd' ? 5 : 99,
+});
+const plan = [
+  { file_path: '/v/ps2/a.iso', mode: 'createdvd' },
+  { file_path: '/v/gc/b.iso', mode: 'dolphin_rvz' },
+];
+autoAnswer = () => ({ plan, jobs: [] });
+const store = new ConversionStore();
+await store.submitAuto(['/v/ps2/a.iso', '/v/gc/b.iso'], {
+  plan, rommRepin: true, rommPlatformId: 7,
+});
+process.stdout.write(JSON.stringify({
+  generations: calls.plan.map((args) => [args[1], args[6] ?? null]),
+}));
+"""
+
+
+def test_every_snapshot_request_of_a_run_carries_the_run_s_generation(tmp_path):
+    data = _run(tmp_path, _RUN_CARRIES_ITS_GENERATION)
+
+    assert data["generations"] == [["createdvd", None], ["dolphin_rvz", 5]], data
+
+
+_ABORTED_PLANNER_SENDS_NO_MORE_GROUPS = """
+let releaseFirst;
+planAnswer = (paths, mode) => {
+  const answer = {
+    recorded: 1, pending: 1,
+    recorded_paths: { [paths[0]]: paths[0] + '.out' },
+    recorded_ids: { [paths[0]]: mode === 'createdvd' ? 1 : 2 },
+    generation: 5,
+  };
+  if (mode !== 'createdvd') return answer;
+  return new Promise((resolve) => { releaseFirst = () => resolve(answer); });
+};
+const plan = [
+  { file_path: '/v/ps2/a.iso', mode: 'createdvd' },
+  { file_path: '/v/gc/b.iso', mode: 'dolphin_rvz' },
+];
+const controller = new AbortController();
+const store = new ConversionStore();
+const run = store.submitAuto(['/v/ps2/a.iso', '/v/gc/b.iso'], {
+  plan, rommRepin: true, rommPlatformId: 7, signal: controller.signal,
+}).catch((e) => ({ aborted: Boolean(e?.aborted) }));
+for (let i = 0; i < 5 && !releaseFirst; i += 1) {
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
+controller.abort();                       // the panel closes mid-snapshot
+const result = await run;
+releaseFirst();                           // the first group's request returns late
+for (let i = 0; i < 5; i += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+process.stdout.write(JSON.stringify({
+  result,
+  modes: calls.plan.map((args) => args[1]),
+  queued: calls.auto.length,
+  retired: calls.cancel,
+}));
+"""
+
+
+def test_an_aborted_run_s_planner_sends_no_further_snapshot_requests(tmp_path):
+    data = _run(tmp_path, _ABORTED_PLANNER_SENDS_NO_MORE_GROUPS)
+
+    assert data["result"] == {"aborted": True}, data
+    # Only the request already in flight: no second group after the abort.
+    assert data["modes"] == ["createdvd"], data
+    assert data["queued"] == 0, data
+    # What the late request did record is still retired.
+    assert data["retired"] == [[1]], data
+
+
+def test_a_codec_picked_for_rvz_never_reaches_wia(tmp_path):
+    """#345, codex 4581559119: the codec selection is kept per tool, so zstd
+    picked for RVZ is still selected when the mode turns to WIA, which
+    dolphin-tool refuses with zstd. The store sends the mode's own default
+    instead; RVZ still gets what was picked."""
+    data = _run(tmp_path, """
+const CODECS = {
+  dolphin_rvz: ['none', 'zstd', 'bzip2', 'lzma', 'lzma2'],
+  dolphin_wia: ['none', 'bzip2', 'lzma', 'lzma2'],
+};
+const DEFAULTS = { dolphin_rvz: ['zstd'], dolphin_wia: ['none'] };
+registry.specFor = () => ({ supportsCompression: true, supportsCompressionLevel: true });
+registry.codecsForMode = (m) => (CODECS[m] ?? []).map((value) => ({ value }));
+registry.defaultCompressionForMode = (m) => DEFAULTS[m];
+registry.levelRangeFor = (_m, codec) => (
+  codec === 'zstd' ? { min: 1, max: 22, default: 19 } : { min: 1, max: 9, default: 5 }
+);
+const store = new ConversionStore();
+store.compressionSelection = ['zstd'];
+store.compressionLevel = '19';
+store.mode = 'dolphin_rvz';
+const rvz = store.compressionValue;
+store.mode = 'dolphin_wia';
+const wia = store.compressionValue;
+store.compressionSelection = ['lzma2'];
+const chosen = store.compressionValue;
+process.stdout.write(JSON.stringify({ rvz, wia, chosen }));
+""")
+    assert data == {"rvz": "zstd:19", "wia": "none", "chosen": "lzma2:5"}
+
+
+def test_switching_codec_resets_a_level_the_new_codec_refuses(tmp_path):
+    """dolphin-tool takes zstd at 1-22 but lzma2 only at 1-9: switching from
+    zstd at 19 to lzma2 lands on lzma2's own default, never 19. A level the new
+    codec takes is kept."""
+    data = _run(tmp_path, """
+const RANGES = {
+  zstd: { min: 1, max: 22, default: 19 },
+  lzma2: { min: 1, max: 9, default: 5 },
+  bzip2: { min: 1, max: 9, default: 5 },
+};
+registry.specFor = () => ({ supportsCompression: true, supportsCompressionLevel: true });
+registry.codecsForMode = () => ['none', 'zstd', 'lzma2', 'bzip2'].map((value) => ({ value }));
+registry.defaultCompressionForMode = () => ['zstd'];
+registry.levelRangeFor = (_mode, codec) => RANGES[codec];
+const store = new ConversionStore();
+store.mode = 'dolphin_rvz';
+store.setSingleCodec('zstd');
+store.setCompressionLevel('19');
+store.setSingleCodec('lzma2');
+const reset = { level: store.compressionLevel, sent: store.compressionValue };
+store.setCompressionLevel('7');
+store.setSingleCodec('bzip2');
+const kept = store.compressionLevel;
+process.stdout.write(JSON.stringify({ reset, kept }));
+""")
+    assert data == {"reset": {"level": "5", "sent": "lzma2:5"}, "kept": "7"}

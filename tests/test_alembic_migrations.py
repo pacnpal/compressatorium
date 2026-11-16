@@ -177,7 +177,8 @@ def test_0014_stacks_on_0013_and_walks_up_from_an_empty_database(fresh_db_path: 
     engine = _db.make_engine(fresh_db_path)
     cfg = _db._alembic_config(engine)
     script = ScriptDirectory.from_config(cfg)
-    assert script.get_heads() == ["0014"]
+    # #337's 0015 sits on top; see test_0015_adds_the_re_pin_plan_generation.
+    assert script.get_heads() == ["0015"]
     assert script.get_revision("0014").down_revision == "0013"
     assert script.get_revision("0013").down_revision == "0012"
     assert script.get_revision("0012").down_revision == "0011"
@@ -205,6 +206,29 @@ def test_0014_stacks_on_0013_and_walks_up_from_an_empty_database(fresh_db_path: 
     command.upgrade(cfg, "0014")
     assert "image_checks" in tables()
     assert _current_rev(engine) == "0014"
+
+
+def test_0015_adds_the_re_pin_plan_generation(fresh_db_path: str):
+    """#337's 0015, on 0014: the re-pin row records its plan's generation.
+
+    Nullable and left null on existing rows, which read as the oldest
+    generation, so a new plan may still supersede them.
+    """
+    from alembic import command
+    from alembic.script import ScriptDirectory
+
+    engine = _db.make_engine(fresh_db_path)
+    cfg = _db._alembic_config(engine)
+    assert ScriptDirectory.from_config(cfg).get_revision("0015").down_revision == "0014"
+
+    def columns() -> dict[str, dict]:
+        return {c["name"]: c for c in inspect(engine).get_columns("romm_repin")}
+
+    command.upgrade(cfg, "0014")
+    assert "plan_generation" not in columns()
+    command.upgrade(cfg, "0015")
+    assert columns()["plan_generation"]["nullable"] is True
+    assert _current_rev(engine) == "0015"
 
 
 # ---------------------------------------------------------------------------

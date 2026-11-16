@@ -252,3 +252,57 @@ def test_disc_extensions_mirror_the_frontend(tmp_path):
                 f"backend={sorted(tool.disc_extensions)}"
             )
     assert not problems, "disc_extensions drift:\n" + "\n".join(problems)
+
+
+def _frontend_mode_compression(tmp_path: Path) -> dict[str, dict]:
+    """Each mode's codecs and default as the pickers see them: the mode's own
+    (``compressionCodecs`` / ``defaultCompression``) or else its tool's."""
+    dump = (
+        "\nconst __rows = TOOLS.flatMap((t) => t.modes.map((m) => ({"
+        " mode: m.mode,"
+        " codecs: (m.compressionCodecs ?? t.compressionCodecs ?? [])"
+        ".map((c) => c.value).sort(),"
+        " default_compression: (m.defaultCompression ?? t.defaultCompression ?? [])[0]"
+        " ?? null,"
+        " levels: Object.fromEntries((m.compressionCodecs ?? t.compressionCodecs ?? [])"
+        ".filter((c) => c.levelRange)"
+        ".map((c) => [c.value, [c.levelRange.min, c.levelRange.max, c.levelRange.default]])),"
+        "})));\n"
+        "process.stdout.write(JSON.stringify(__rows));\n"
+    )
+    rows = _eval_registry(tmp_path, dump, "registry_mode_codecs_eval.mjs")
+    return {row["mode"]: row for row in rows}
+
+
+def test_each_modes_codecs_and_default_mirror_the_backend(tmp_path):
+    """A mode that names its own codecs or default (`ModeSpec.codecs`,
+    `ModeSpec.default_compression`: dolphin-tool refuses zstd in a WIA
+    container) is offered exactly those in the pickers, and seeded with that
+    default, so the UI never sends a codec the backend refuses (#345)."""
+    frontend = _frontend_mode_compression(tmp_path)
+    problems = []
+    for spec in registry.mode_specs():
+        fe = frontend.get(spec.mode)
+        if fe is None:
+            continue
+        if spec.codecs and fe["codecs"] != sorted(spec.codecs):
+            problems.append(
+                f"  {spec.mode}: registry.js offers {fe['codecs']}, the mode takes "
+                f"{sorted(spec.codecs)}"
+            )
+        if spec.default_compression and fe["default_compression"] != spec.default_compression:
+            problems.append(
+                f"  {spec.mode}: registry.js seeds {fe['default_compression']!r}, the "
+                f"mode's default is {spec.default_compression!r}"
+            )
+        # Each codec's level range and default level (lzma2 takes 1-9, zstd 1-22).
+        backend_levels = {
+            codec: list(spec.level_range(codec)) for codec in spec.codecs
+            if spec.level_range(codec)
+        }
+        if spec.codecs and fe["levels"] != backend_levels:
+            problems.append(
+                f"  {spec.mode}: registry.js level ranges {fe['levels']}, the mode's "
+                f"are {backend_levels}"
+            )
+    assert not problems, "\n".join(problems)

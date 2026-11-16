@@ -207,6 +207,9 @@ class ConversionJob(BaseModel):
     # exists. A private attribute: not a field, so it is in neither the API schema
     # nor any serialized form.
     _sweep_owner: str | None = PrivateAttr(default=None)
+    # The planned Source files still to remove when the delete step stopped
+    # part way (#329): the Rule's sweep finishes them, else a Finding says so.
+    _unfinished_delete: list[str] | None = PrivateAttr(default=None)
 
 
 class JobCreateRequest(BaseModel):

@@ -17,6 +17,8 @@ from pathlib import Path
 import pytest
 from services.tools import registry
 
+from .dolphin_helpers import dolphin_option
+
 
 @pytest.fixture(name="volume")
 def _volume(tmp_path, monkeypatch, reset_db_engine):
@@ -2647,3 +2649,59 @@ def test_verify_reports_a_lock_that_cannot_be_made(volume, dolphin, capsys, monk
     assert code == 1
     assert lines[0]["status"] == "failed"
     assert os.strerror(errno.EACCES) in lines[0]["reason"]
+
+
+# --------------------------------------------------------------------------- #
+# RVZ and WIA get the tool's default codec when none is chosen (#345)
+# --------------------------------------------------------------------------- #
+
+
+def _dolphin_commands(monkeypatch) -> list[list[str]]:
+    """The dolphin-tool command each conversion builds, captured at its runner."""
+    service = registry.get("dolphin")._service
+    commands: list[list[str]] = []
+
+    async def capture(cmd, *, input_path, output_path, **kwargs):
+        commands.append(list(cmd))
+        Path(output_path).write_bytes(b"converted output")
+        yield {"progress": 100, "message": "Conversion complete"}
+
+    monkeypatch.setattr(service._runner, "run", capture)
+    return commands
+
+
+def _codec(cmd: list[str]) -> str | None:
+    """dolphin-tool's codec, read after its binary (a priority prefix such
+    as `ionice -c 2` may come first)."""
+    return dolphin_option(cmd, "-c")
+
+
+@pytest.mark.parametrize("target", ["rvz", "wia"])
+@pytest.mark.parametrize("compression", [None, "default"])
+def test_rvz_and_wia_take_the_tools_default_codec(
+    volume, dolphin, capsys, monkeypatch, target, compression,
+):
+    """With nothing saved, `--to rvz` (and `--compression default`) used to
+    send no `-c`, and dolphin-tool refuses RVZ and WIA without one (#345)."""
+    commands = _dolphin_commands(monkeypatch)
+    _iso(volume)
+    extra = ["--compression", compression] if compression else []
+
+    code, lines = _cli(capsys, "convert", str(volume), "--to", target, *extra, "--json")
+
+    assert code == 0, lines
+    (cmd,) = commands
+    assert _codec(cmd) == registry.spec(f"dolphin_{target}").default_compression
+
+
+def test_an_explicit_codec_still_wins(volume, dolphin, capsys, monkeypatch):
+    commands = _dolphin_commands(monkeypatch)
+    _iso(volume)
+
+    code, lines = _cli(
+        capsys, "convert", str(volume), "--to", "rvz", "--compression", "lzma2:9", "--json",
+    )
+
+    assert code == 0, lines
+    (cmd,) = commands
+    assert (_codec(cmd), dolphin_option(cmd, "-l")) == ("lzma2", "9")

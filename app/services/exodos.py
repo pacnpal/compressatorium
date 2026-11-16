@@ -23,12 +23,13 @@ Behaviour modelled on derkommutator/eXo2romm (Unlicense); no code is shared.
 from __future__ import annotations
 
 import asyncio
-import functools
+import errno
 import os
 import re
 import threading
 import zipfile
 import zlib
+from collections import OrderedDict
 from collections.abc import AsyncGenerator, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -202,7 +203,38 @@ def rewrite_conf(data: bytes, top: str, profile: CollectionProfile = EXODOS) -> 
 
 
 class NotRepackable(ValueError):
-    """The file is not an eXoDOS game zip this tool can repack, and why."""
+    """The file is not an eXoDOS game zip this tool can repack, and why.
+
+    ``top`` names the game folder when the zip got as far as having one (its
+    template is the problem), so a cached miss can watch that folder.
+    """
+
+    def __init__(self, message: str, *, top: str | None = None) -> None:
+        super().__init__(message)
+        self.top = top
+
+
+class ProbeUnavailable(NotRepackable):
+    """The zip or its template could not be read just now (a permission or
+    I/O error, an unreadable folder, a timeout), which says nothing about the
+    game: the probe never caches it and asks again next time. Still a
+    :class:`NotRepackable`, so a job fails and keeps its Source. Only a
+    verdict (not an eXoDOS layout, no template) is ever cached."""
+
+
+class ZipUnreadable(ProbeUnavailable):
+    """The game zip could not be read just now."""
+
+
+class TemplateUnreadable(ProbeUnavailable):
+    """The template could not be read just now."""
+
+
+# What a template read can fail with that is a fact about the tree, not a
+# passing condition: a link where a file or folder should be (``ELOOP``,
+# ``EMLINK`` on some systems), a file where a folder should be, or not a
+# regular file (``read_beneath``'s ``EINVAL``).
+_STRUCTURAL_ERRNOS = frozenset({errno.ELOOP, errno.EMLINK, errno.ENOTDIR, errno.EINVAL})
 
 
 @dataclass(frozen=True)
@@ -259,18 +291,26 @@ class ExodosService:
         return self._inspect(path, root)
 
     def _inspect(self, path: str, root: str) -> RepackPlan:
-        try:
-            with zipfile.ZipFile(path) as zf:
-                infos = zf.infolist()
-        except (OSError, zipfile.BadZipFile) as exc:
-            raise NotRepackable(f"Cannot read zip: {exc}") from exc
-        top = self._game_folder(infos)
+        infos, top = self._read_zip(path)
         return RepackPlan(
             top=top,
             template=self._template(root, top),
             total_size=sum(info.file_size for info in infos),
             root=root,
         )
+
+    def _read_zip(self, path: str) -> tuple[list[zipfile.ZipInfo], str]:
+        """The zip's members and its one game folder, or NotRepackable.
+        A zip that is not a zip is a verdict; any OSError reading it is
+        :class:`ZipUnreadable`, which the probe never caches."""
+        try:
+            with zipfile.ZipFile(path) as zf:
+                infos = zf.infolist()
+        except zipfile.BadZipFile as exc:
+            raise NotRepackable(f"Cannot read zip: {exc}") from exc
+        except OSError as exc:
+            raise ZipUnreadable(f"Cannot read zip: {exc}") from exc
+        return infos, self._game_folder(infos)
 
     @staticmethod
     def _game_folder(infos: list[zipfile.ZipInfo]) -> str:
@@ -305,7 +345,14 @@ class ExodosService:
         return os.path.join(root, top, self.profile.conf_name)
 
     def is_repackable(self, path: str) -> bool:
-        """Whether ``path`` can be repacked. Cached per (path, size, mtime)."""
+        """Whether ``path`` can be repacked.
+
+        Cached, a yes and a no alike, per (path, size, mtime) of the zip, and
+        valid only while the template tree is unchanged: the root's and the
+        game folder's mtimes, and the template file's own mtime, size and
+        inode. Adding, removing, renaming or fixing a template in place
+        changes one of them, and the zip is asked again (#331).
+        """
         if Path(path).suffix.lower() not in INPUT_EXTENSIONS:
             return False
         root = self.dos_dir()
@@ -325,7 +372,9 @@ class ExodosService:
         nothing is opened by path afterwards. Someone who can write the Volume
         therefore cannot swap the template for a link between the check in
         ``inspect`` and this read (PR #324's security review). Any refusal is
-        ``NotRepackable``, which fails the job and keeps the Source.
+        ``NotRepackable``, which fails the job and keeps the Source; one that
+        may pass (a permission or I/O error, an unreadable folder, a timeout)
+        is :class:`TemplateUnreadable`, which the probe cache never keeps.
         """
         relative = f"{top}/{self.profile.conf_name}"
         try:
@@ -333,14 +382,22 @@ class ExodosService:
         except FileNotFoundError as exc:
             raise NotRepackable(
                 f"The game has no template: {relative} is not in EXODOS_DOS_DIR",
+                top=top,
             ) from exc
         except OSError as exc:
+            if exc.errno not in _STRUCTURAL_ERRNOS:
+                raise TemplateUnreadable(
+                    f"The template for {top} could not be read: {exc}", top=top,
+                ) from exc
             raise NotRepackable(
                 f"The template for {top} is a link, not a plain file, or lies "
                 f"outside EXODOS_DOS_DIR: {exc}",
+                top=top,
             ) from exc
         except ValueError as exc:
-            raise NotRepackable(f"The template for {top} was refused: {exc}") from exc
+            raise NotRepackable(
+                f"The template for {top} was refused: {exc}", top=top,
+            ) from exc
 
     # --- convert -----------------------------------------------------------
 
@@ -621,27 +678,64 @@ class ExodosService:
         return self.get_output_path(input_path, output_dir, treat_as_stem=treat_as_stem)
 
 
+_PROBE_CACHE: OrderedDict[tuple, tuple[bool, str | None, tuple]] = OrderedDict()
+_PROBE_CACHE_SIZE = 4096
+_PROBE_LOCK = threading.Lock()
+
+
+def _tree_stamp(root: str, top: str | None, conf_name: str) -> tuple:
+    """What a cached answer depends on: the tree root's mtime and, when the zip
+    named a game folder, that folder's mtime and the template file's own
+    (mtime, size, inode). A template created, removed, renamed or rewritten in
+    place changes one of them. ``None`` for anything that is not there."""
+    paths = [root]
+    if top:
+        folder = os.path.join(root, top)
+        paths += [folder, os.path.join(folder, conf_name)]
+    stamps: list[tuple[int, int, int] | None] = []
+    for path in paths:
+        try:
+            info = os.lstat(path)
+        except OSError:
+            stamps.append(None)
+            continue
+        stamps.append((info.st_mtime_ns, info.st_size, info.st_ino))
+    return tuple(stamps)
+
+
 def _probe(
     profile: CollectionProfile, path: str, size: int, mtime_ns: int, root: str,
 ) -> bool:
-    """Whether the zip can be repacked. Only a yes is cached.
-
-    A no can turn into a yes without the zip changing (its template appears
-    in the tree mid-way through an eXoDOS update), so it is asked again.
-    """
+    """Whether the zip can be repacked, from the cache while it is still true."""
+    key = (profile, path, size, mtime_ns, root)
+    with _PROBE_LOCK:
+        cached = _PROBE_CACHE.get(key)
+    if cached is not None:
+        answer, top, stamp = cached
+        if _tree_stamp(root, top, profile.conf_name) == stamp:
+            return answer
+    service = ExodosService(profile)
+    top = None
+    # The stamp is taken before the template is read and checked again after:
+    # a tree that moved while it was read keeps the answer out of the cache.
+    before = _tree_stamp(root, None, profile.conf_name)
     try:
-        return _probe_yes(profile, path, size, mtime_ns, root)
+        _infos, top = service._read_zip(path)
+        before = _tree_stamp(root, top, profile.conf_name)
+        service._read_template(root, top)
+        answer = True
+    except ProbeUnavailable:
+        return False  # not a verdict: asked again next time, never cached
     except NotRepackable:
-        return False
-
-
-@functools.lru_cache(maxsize=4096)
-def _probe_yes(
-    profile: CollectionProfile, path: str, size: int, mtime_ns: int, root: str,
-) -> bool:
-    # lru_cache does not cache a raised exception, so only a yes is kept.
-    ExodosService(profile)._inspect(path, root)
-    return True
+        answer = False
+    if _tree_stamp(root, top, profile.conf_name) != before:
+        return answer
+    with _PROBE_LOCK:
+        _PROBE_CACHE[key] = (answer, top, before)
+        _PROBE_CACHE.move_to_end(key)
+        while len(_PROBE_CACHE) > _PROBE_CACHE_SIZE:
+            _PROBE_CACHE.popitem(last=False)
+    return answer
 
 
 exodos_service = ExodosService()

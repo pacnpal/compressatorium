@@ -2,8 +2,41 @@
 
 ## Unreleased
 
+### Fixed
+
+- **eXoDOS repack: leftovers and repeat lookups** (#331).
+  - A repack killed hard (SIGKILL, power loss) no longer leaves its hidden
+    `.partial-*.tmp` file behind for good. It is removed at the next start,
+    or before the next repack into that folder, once nothing holds it. A
+    running repack holds a lock on a small `.lock` file beside it, never on
+    the archive, so the check before placing it works on SMB shares and the
+    cleanup works on NFS. A Volume that is unmounted at startup keeps its
+    leftovers on the list until it is back, and a leftover with a name near
+    the 255-byte limit is cleaned up too.
+  - The temp file's name is now short and fixed-length, so a game whose name
+    is near the 255-byte file name limit can be repacked.
+  - A zip that is not an eXoDOS game is no longer reopened on every listing:
+    the answer is remembered until the zip or the template tree changes. A
+    zip or template that could not be read for a moment (a permission or disk
+    error) is not remembered, so fixing it is seen on the next listing.
+
 ### Added
 
+- **A Source kept because another job was reading it is deleted later**
+  (#329). When a Rule's delete step finds the Source still in use, the job
+  keeps it and says so; now the next sweep (the app's or `compressatorium
+  run-rules`) tries the delete again, under the same locks and checks, after
+  making sure the output is still the checked one and the Source is unchanged.
+  A Source still in use after 10 sweeps stays, with a **Source kept** Finding.
+  A job you started by hand whose delete stops part way shows the Source as a
+  **Source kept** Finding under **Started by hand**; it clears itself once the
+  files left are gone. A half-finished delete is never forgotten silently:
+  turning the Rule's delete off, Forget history, a RomM instance change or
+  removing the Library reports it the same way. Before a retried delete
+  removes anything, the output's check runs again (the container check, plus
+  the Round-trip where the Rule asks for it): an output changed since its
+  check keeps the Source, even one rewritten in place to the same size and
+  date.
 - **UTF-16 `.m3u` playlists follow a converted disc** (#334). A playlist saved
   as UTF-16 with a BOM (Windows Notepad's "Unicode") that names the Source is
   now rewritten like a UTF-8 one, keeping its encoding, BOM and line endings.
@@ -336,6 +369,30 @@
   Library's Platform, so the savings breakdown no longer files a PS2 ISO under
   "unsorted". "Unsorted" is left for Sources detection can't place. Rows
   written before this keep what they had.
+- **RVZ and WIA work before you save a compression** (#345). On a fresh install,
+  an Auto convert of a GameCube or Wii image, a single RVZ or WIA job, and
+  `compressatorium convert --to rvz` (or `--compression default`) failed with
+  "Compression method must be set for WIA or RVZ". They now use the same
+  defaults as Dolphin's own convert dialog: zstd for RVZ, and no compression
+  for WIA, which can't use zstd. A codec you choose still wins, and the
+  compression picker no longer offers zstd for WIA. The level now follows the
+  codec: bzip2, lzma and lzma2 take 1 to 9 (zstd 1 to 22), switching codec
+  resets a level the new one can't use, and a level out of range is refused
+  with a clear message instead of failing in dolphin-tool. NKit to RVZ gets
+  the same zstd default for its RVZ step.
+- **RomM metadata is kept when two runs aim at one file, and Clear completed
+  keeps jobs that finish while it runs** (#337). A slow or aborted RomM
+  snapshot no longer overwrites the metadata a newer run saved for the same
+  output, so that conversion is re-identified in RomM without a manual
+  re-match. **Clear completed** removes only the jobs the server cleared: a
+  job that finishes while the request is in flight stays in the list.
+- **A Volume that stops answering no longer freezes the app** (#327).
+  Starting a single conversion, opening the delete confirmation, checking for
+  existing outputs, and listing, searching or opening an archive in the file
+  browser used to check the path against your Volumes in a way that held up
+  every other request while a mount was slow or hung. Each now waits at most
+  30 seconds and then answers "A Volume isn't responding. Try again later.",
+  and the rest of the app keeps working meanwhile, as Auto convert already did.
 - **A conversion Rule waits for a running check** (#330). With a check Rule and
   a conversion Rule on the same Platform, the conversion Rule no longer queues
   an Image a running check has picked; it is converted on a sweep after the
