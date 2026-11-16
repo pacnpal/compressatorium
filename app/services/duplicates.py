@@ -49,7 +49,7 @@ from services import db as _db
 from services.content_keys import Identity, KeyUnavailable
 from services.job_manager import job_manager
 from services.lock_manager import lock_manager
-from services.rules.library import ImageListing, Library, LibraryUnreadable
+from services.rules.library import Image, ImageListing, Library, LibraryUnreadable
 from services.subprocess_runner import (
     ProgressAbandoned,
     ReadCancelled,
@@ -174,7 +174,9 @@ def _stop_if_cancelled(job_id: str, current: Callable[[], bool]) -> None:
 async def _find(library: Library, job_id: str, current: Callable[[], bool]) -> dict:
     cancel_event = job_manager.get_cancel_event(job_id)
     listing = await _list(library, cancel_event, job_id, current)
-    listed = [(str(image.key), image.path) for image in listing.images if image.path]
+    # Never `image.path` here: a Library may resolve it lazily on its mount
+    # (RomM's `local_path`), so it is read in `_inspect`, detached and bounded.
+    listed = list(listing.images)
     _stop_if_cancelled(job_id, current)
     await job_manager.update_external_job(
         job_id, progress=0, message=f"Looking at {len(listed)} Images",
@@ -327,13 +329,16 @@ async def _list(
 
 
 def _inspect(
-    listed: list[tuple[str, str]], active: list[str], *, progress: Callable[..., None],
+    listed: list[Image], active: list[str], *, progress: Callable[..., None],
 ) -> tuple[list[Candidate], list[str], list[str]]:
     """The Images the run may group, the ones in use, and the ones it could
-    not stat. Blocking.
+    not stat. Blocking: run detached under the stall bound.
 
-    A file outside the Volumes, gone, or not a regular file is left out; one a
-    job is using or writing (a lock on it, or an active job's path) is in use.
+    Each Image's path is read here, never on the loop: a Library may resolve
+    it lazily on its mount (RomM's ``local_path``), and a mount that stops
+    answering then ends this step at the bound, or on a cancel. A file
+    outside the Volumes, gone, or not a regular file is left out; one a job
+    is using or writing (a lock on it, or an active job's path) is in use.
     """
     in_use = set()
     for path in active:
@@ -342,7 +347,12 @@ def _inspect(
     out: list[Candidate] = []
     busy: list[str] = []
     unstatted: list[str] = []
-    for image_key, path in listed:
+    for image in listed:
+        progress(str(image.key))
+        path = image.path
+        if not path:
+            continue
+        image_key = str(image.key)
         progress(path)
         if not is_within_configured_volumes(path) or not os.path.isfile(path):
             continue
@@ -495,8 +505,8 @@ def list_runs() -> list[dict[str, Any]]:
 
 
 def forget_library(library_id: str) -> None:
-    """Drop a removed Library's last run. Blocking. Its Findings go with
-    ``findings.forget_library``."""
+    """Drop a Library's last run. Blocking. Called through
+    :func:`services.library_records.forget`, never on its own."""
     with _write_lock, _session() as session:
         session.query(_db.DuplicateRunRecord).filter_by(library_id=library_id).delete()
         session.commit()

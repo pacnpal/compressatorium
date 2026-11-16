@@ -163,6 +163,21 @@ class CHDMetadataStore:
     # Queries
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _describes(row: Optional[_db.CHDMetadata], st: os.stat_result) -> bool:
+        """Whether *row* still describes the file *st* is a stat of (#388).
+
+        The one identity check every freshness question in this store asks
+        (``is_stale``, ``get_fresh_metadata``, ``cached_media_type_blocking``),
+        so they cannot disagree: the file's size and integer ``st_mtime_ns``,
+        the identity ``content_keys`` uses. A row without them (written before
+        0017 recorded them) does not, so the scan and the info route read it
+        again.
+        """
+        if row is None or row.size is None or row.mtime_ns is None:
+            return False
+        return (st.st_size, st.st_mtime_ns) == (row.size, row.mtime_ns)
+
     def _get_sync(self, chd_path: str) -> Optional[_db.CHDMetadata]:
         normalized = self._normalize_path(chd_path)
         with self._session() as session:
@@ -226,25 +241,24 @@ class CHDMetadataStore:
         already off the event loop (the badge lookup, #373). Blocking."""
         normalized = self._normalize_path(chd_path)
         try:
-            current_mtime = os.path.getmtime(normalized)
+            st = os.stat(normalized)
         except OSError:
             return False, None
         row = self._get_sync(chd_path)
-        if row is None or row.mtime is None or row.mtime != current_mtime:
+        if not self._describes(row, st):
             return False, None
         return True, row.media_type
 
     async def is_stale(self, chd_path: str) -> bool:
+        """Whether the cached row no longer describes the file (:meth:`_describes`)."""
         normalized = self._normalize_path(chd_path)
         try:
-            current_mtime = await run_in_threadpool(os.path.getmtime, normalized)
+            st = await run_in_threadpool(os.stat, normalized)
         except OSError:
             # File missing / unreadable → treat as stale.
             return True
         row = await run_in_threadpool(self._get_sync, chd_path)
-        if row is None or row.mtime is None:
-            return True
-        return current_mtime != row.mtime
+        return not self._describes(row, st)
 
     async def get_fresh_metadata(self, chd_path: str) -> Optional[dict]:
         """Return cached ``metadata_json`` only if it still describes the file.
@@ -273,7 +287,7 @@ class CHDMetadataStore:
             normalized = self._normalize_path(chd_path)
             with self._session() as session:
                 row = session.get(_db.CHDMetadata, normalized)
-            if row is None or row.size is None or row.mtime_ns is None:
+            if row is None:
                 return None
             # Stat AFTER the row read so a rewrite that lands while we read the
             # row moves the file's identity away from the (now older) row's.
@@ -281,9 +295,7 @@ class CHDMetadataStore:
                 st = os.stat(normalized)
             except OSError:
                 return None
-            if (st.st_size, st.st_mtime_ns) != (row.size, row.mtime_ns):
-                return None
-            return row.metadata_json
+            return row.metadata_json if self._describes(row, st) else None
 
         return await run_in_threadpool(_read)
 

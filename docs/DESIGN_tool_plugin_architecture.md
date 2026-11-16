@@ -5561,8 +5561,11 @@ does not), and that an ISO, its RVZ and its DVD CHD group together.
 file's identity, its size and integer `st_mtime_ns` (`chd_metadata.size` and
 `mtime_ns`, added by 0017), the same identity `content_keys` uses, so a
 replacement that kept the float mtime never hands back the old hashes, for
-every caller. A row written before the identity was recorded is stale: its
-hashes are read again (a scan or `chdman info`).
+every caller. One check (`CHDMetadataStore._describes`) answers it for
+`get_fresh_metadata`, `is_stale` and `cached_media_type_blocking`, so they
+cannot disagree. A row written before the identity was recorded is stale
+everywhere: the metadata scan and the info route read it again, after which
+`embedded_hashes` supplies its SHA1s as before.
 
 **Stored per file, tied to its identity.** `content_keys` (migration 0017) holds
 `path`, `size`, `mtime_ns`, `key` (None for a format with no key) and
@@ -5606,10 +5609,17 @@ conversion and never a slot) and runs it as a task; one per Library at a time
    by container, unreadable, busy), which `/api/findings` returns as
    `duplicate_runs`.
 
+Every Image's path is read in the detached, stall-bounded inspection step,
+never on the loop: RomM resolves `Image.path` lazily on its mount, so a mount
+that stops answering ends that step at the bound, or on Cancel.
+
 A cancel, or the Library's removal (`library_generation` moved), ends the run
 with no Findings written. `findings.clear_gone(library, DUPLICATE)` settles a
 group once fewer than two copies are left; the folder walk calls it with
-`NOT_INTACT`'s. Removing a Library drops its `duplicate_runs` row.
+`NOT_INTACT`'s. A Library's records (every Finding with its dismissals, its `duplicate_runs`
+row, its check times) are forgotten by one call, `library_records.forget`,
+which both a folder Library's removal and RomM's identity change
+(`rules_sweep.forget_checks_locked`) make, so a new record kind is added once.
 
 Routes: `POST /api/libraries/{id}/find-duplicates` → `{job_id}`.
 

@@ -577,6 +577,54 @@ async def test_a_chd_row_from_before_the_identity_was_kept_is_stale(db: Path) ->
 
 
 @pytest.mark.asyncio
+async def test_an_upgraded_chd_row_is_stale_until_the_scan_refreshes_it(
+    db: Path, monkeypatch,
+) -> None:
+    """Codex 4590361153: a row from before 0017 has no size or mtime_ns. Every
+    freshness question in the store reads it as stale, so the metadata scan
+    refreshes it and ``embedded_hashes`` supplies its SHA1s again."""
+    from routes import info as info_routes
+    from services import db as _db
+
+    chd = db / "Game.chd"
+    await _seed_chd(chd, data_sha1="1" * 40, sha1="0" * 40)
+    with _db.SessionLocal() as session:
+        row = session.get(_db.CHDMetadata, os.path.realpath(chd))
+        row.size = row.mtime_ns = None
+        session.commit()
+    tool = registry.get("chdman")
+    assert await chd_metadata_store.is_stale(str(chd))
+    assert await tool.embedded_hashes(str(chd)) == []
+
+    calls: list[str] = []
+
+    async def info(path):
+        calls.append(path)
+        return {
+            "sha1": "0" * 40, "data_sha1": "1" * 40,
+            "raw_data": "Metadata: Tag='DVD '  Index=0\n", "metadata_lines": ["Tag='DVD '"],
+        }
+
+    async def checked(_path):
+        return True
+
+    async def no_match(_job_id, paths, *, force):
+        return len(paths), 0
+
+    monkeypatch.setattr(info_routes.chdman_service, "info", info)
+    monkeypatch.setattr(chd_metadata_store, "is_disc_id_checked", checked)
+    monkeypatch.setattr(info_routes, "_scan_phase_dat_match", no_match)
+    monkeypatch.setattr(info_routes.settings, "data_mount_root", str(db))
+    await asyncio.wait_for(info_routes.scan_metadata_task(force=False), 30)
+
+    assert [os.path.basename(p) for p in calls] == ["Game.chd"]
+    assert not await chd_metadata_store.is_stale(str(chd))
+    assert await tool.embedded_hashes(str(chd)) == [
+        ("0" * 40, "chd_sha1"), ("1" * 40, "chd_data_sha1"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_a_copy_in_use_keeps_its_group_as_it_was(
     db: Path, client: httpx.AsyncClient,
 ) -> None:
@@ -603,6 +651,111 @@ async def test_a_copy_in_use_keeps_its_group_as_it_was(
     run = await _last_run(client, library)
     assert run["busy"] == 1
     assert run["held"] == 1
+
+
+# ----------------------------------------------------------------------
+# RomM as the Library
+# ----------------------------------------------------------------------
+
+
+def _romm_images_resolving(monkeypatch, release: threading.Event, paths: list[Path]) -> None:
+    """RomM's listing, with each Image's path resolved lazily by a call that
+    blocks until *release* (a mount that stopped answering)."""
+    from services.romm.library import romm_library
+    from services.rules.library import Image, ImageListing
+
+    def resolver(path: Path):
+        def resolve() -> str:
+            release.wait(5)
+            return str(path)
+        return resolve
+
+    def all_images() -> ImageListing:
+        return ImageListing(images=[
+            Image(key=index + 1, name=path.name, resolve_path=resolver(path))
+            for index, path in enumerate(paths)
+        ])
+
+    monkeypatch.setattr(romm_library, "all_images", all_images)
+
+
+@pytest.mark.asyncio
+async def test_a_romm_path_that_blocks_never_holds_the_loop(
+    db: Path, client: httpx.AsyncClient, monkeypatch,
+) -> None:
+    """Codex 4590339545: a RomM Image's path is resolved lazily, on the mount.
+    The run resolves it off the loop and bounded, so the app keeps answering
+    and Cancel ends the run."""
+    roms = db / "romm"
+    _disc(roms / "Game.iso", b"game")
+    _copy(roms / "Game.iso", roms / "Copy.iso")
+    release = threading.Event()
+    _romm_images_resolving(monkeypatch, release, [roms / "Game.iso", roms / "Copy.iso"])
+    try:
+        job_id = await _start(client, "romm")
+        # The loop answers throughout: a short sleep and a request take no
+        # longer than they should while the resolver is stuck.
+        started = time.monotonic()
+        await asyncio.sleep(0.3)
+        job = (await client.get(f"/api/jobs/{job_id}")).json()
+        assert time.monotonic() - started < 2, "the event loop was held"
+        assert job["status"] == "processing"
+        assert (await client.delete(f"/api/jobs/{job_id}")).json() == {"status": "cancelled"}
+        assert (await _finished(client, job_id, seconds=3))["status"] == "cancelled"
+    finally:
+        release.set()
+    assert await _duplicates(client) == []
+
+
+@pytest.mark.asyncio
+async def test_a_romm_path_that_blocks_ends_the_run_at_the_bound(
+    db: Path, client: httpx.AsyncClient, monkeypatch,
+) -> None:
+    from services import content_keys
+
+    roms = db / "romm"
+    _disc(roms / "Game.iso", b"game")
+    release = threading.Event()
+    _romm_images_resolving(monkeypatch, release, [roms / "Game.iso"])
+    monkeypatch.setattr(content_keys, "STALL_SECONDS", 0.3)
+    try:
+        job = await _finished(client, await _start(client, "romm"), seconds=3)
+    finally:
+        release.set()
+    assert job["status"] == "failed", job
+    assert "did not answer" in (job.get("error_message") or "")
+
+
+@pytest.mark.asyncio
+async def test_a_romm_identity_change_forgets_its_duplicate_groups_and_run(
+    db: Path, client: httpx.AsyncClient, monkeypatch,
+) -> None:
+    """Codex 4590339559: pointing RomM at another instance or library drops
+    the old one's duplicate Findings, their dismissals and its last run, by
+    the same call a folder Library's removal uses."""
+    from routes import romm as romm_routes
+    from services import findings
+
+    roms = db / "romm"
+    _disc(roms / "Game.iso", b"game")
+    _copy(roms / "Game.iso", roms / "Copy.iso")
+    release = threading.Event()
+    release.set()
+    _romm_images_resolving(monkeypatch, release, [roms / "Game.iso", roms / "Copy.iso"])
+    await _find(client, "romm")
+    group = (await _duplicates(client))[0]
+    assert group["library_id"] == "romm"
+    await client.post(
+        f"/api/findings/{group['id']}/dismiss", json={"fingerprint": group["fingerprint"]},
+    )
+    assert (await _last_run(client, "romm"))["groups"] == 1
+
+    await romm_routes._run_identity_cleanup()
+
+    listed = (await client.get("/api/findings?include_dismissed=true")).json()
+    assert [r for r in listed["findings"] if r["library_id"] == "romm"] == []
+    assert [r for r in listed["duplicate_runs"] if r["library_id"] == "romm"] == []
+    assert findings.count_dismissed() == 0
 
 
 # ----------------------------------------------------------------------
