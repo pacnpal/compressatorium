@@ -2178,9 +2178,18 @@ ended. The job carries what the row needs and the in-memory history would lose:
   `"round_tripped"` once the Round-trip check passed too (§3.3.12).
 - `ConversionJob.deleted_paths` -- each path the delete-on-verify step removed;
   `source_deleted` is derived from it.
+- `ConversionJob.platform` -- the Platform the row is filed under (#346). A
+  Rule's job takes its Library's Platform for the Image (the sweep sets it as
+  the batch is queued); any other job (file browser, Auto, the CLI) asks the
+  shared `platform_detect.detect_platform` (§3.3.14, with its cache) when it
+  starts, before anything can delete the Source, on a detached thread with the
+  Source sizing's bound (`JobManager._detect_platform_bounded`). None when
+  detection can't place it or does not answer in time.
 
-`tool` comes from `registry.for_mode`; `platform` is filled only when the mode
-serves exactly one Platform slug until detection lands (#294). `referrers_updated`
+`tool` comes from `registry.for_mode`; `platform` is the job's own, else the
+mode's when it serves exactly one Platform slug, else empty, which the savings
+breakdown shows as "unsorted". Rows written before #346 keep what they had (no
+backfill: their Sources may be gone). `referrers_updated`
 comes from `ConversionJob.referrers_updated` (see 3.3.15). `library_id` and
 `image_key` are written empty for later tickets to fill.
 Savings count only completed rows whose Source was deleted, and can be

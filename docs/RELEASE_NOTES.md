@@ -363,6 +363,12 @@
 
 ### Fixed
 
+- **Ledger savings group hand-started jobs by Platform** (#346). A job started
+  from the file browser, Auto or the CLI now records the Platform its Source
+  was detected as (the same detection Auto uses), and a Rule's job records its
+  Library's Platform, so the savings breakdown no longer files a PS2 ISO under
+  "unsorted". "Unsorted" is left for Sources detection can't place. Rows
+  written before this keep what they had.
 - **RVZ and WIA work before you save a compression** (#345). On a fresh install,
   an Auto convert of a GameCube or Wii image, a single RVZ or WIA job, and
   `compressatorium convert --to rvz` (or `--compression default`) failed with

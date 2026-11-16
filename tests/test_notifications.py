@@ -813,3 +813,27 @@ def test_apprise_transport_without_the_package_says_so(monkeypatch):
     monkeypatch.setattr(builtins, "__import__", deny)
     with pytest.raises(notifications.NotificationError, match="Apprise is not installed"):
         notifications._send_apprise("discord://a/b", _event())
+
+
+def test_drain_ignores_a_send_left_on_an_earlier_loop():
+    """A send still pending when an earlier loop closed (an earlier CLI run
+    or test, each its own asyncio.run) can never finish on this loop; drain
+    waits only for this loop's sends instead of raising (#346)."""
+    import asyncio
+
+    from services import notifications
+
+    async def never() -> None:
+        await asyncio.Event().wait()
+
+    old_loop = asyncio.new_event_loop()
+    stranded = old_loop.create_task(never())
+    notifications._tasks.add(stranded)
+    old_loop.run_until_complete(asyncio.sleep(0))
+    try:
+        asyncio.run(notifications.drain(timeout=5))
+    finally:
+        notifications._tasks.discard(stranded)
+        stranded.cancel()
+        old_loop.run_until_complete(asyncio.sleep(0))
+        old_loop.close()
