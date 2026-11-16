@@ -363,6 +363,12 @@
 
 ### Fixed
 
+- **RomM metadata is kept when two runs aim at one file, and Clear completed
+  keeps jobs that finish while it runs** (#337). A slow or aborted RomM
+  snapshot no longer overwrites the metadata a newer run saved for the same
+  output, so that conversion is re-identified in RomM without a manual
+  re-match. **Clear completed** removes only the jobs the server cleared: a
+  job that finishes while the request is in flight stays in the list.
 - **A Volume that stops answering no longer freezes the app** (#327).
   Starting a single conversion, opening the delete confirmation, checking for
   existing outputs, and listing, searching or opening an archive in the file

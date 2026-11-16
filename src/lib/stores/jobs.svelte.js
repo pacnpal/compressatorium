@@ -262,8 +262,19 @@ class JobsStore {
   }
 
   // ─── Mutations ────────────────────────────────────────────────────────
+  /**
+   * Whether `id` names a job the backend has deleted (cleared or evicted)
+   * that we no longer hold. The one ordering rule for every way a job
+   * arrives — an SSE frame, a REST snapshot, an Auto response: any copy of a
+   * deleted job was built before its deletion, so it is stale however late
+   * it lands, and must not bring the row back. Job ids are never reused.
+   */
+  _isDeleted(id) {
+    return !this._byId.has(id) && Boolean(this._evictedIds[id]);
+  }
+
   _applyJob(job) {
-    if (!job?.id) return;
+    if (!job?.id || this._isDeleted(job.id)) return;
     const existing = this._byId.get(job.id);
     if (existing) {
       // Replace the slot via index assignment rather than Object.assign on
@@ -403,7 +414,8 @@ class JobsStore {
       // both the rule and any reactivity overhead.
       const remoteIds = Object.create(null);
       for (const job of data) {
-        if (!job?.id) continue;
+        // A snapshot read before a clear or eviction can still list the job.
+        if (!job?.id || this._isDeleted(job.id)) continue;
         remoteIds[job.id] = true;
         const existing = this._byId.get(job.id);
         if (!existing) {
@@ -544,10 +556,10 @@ class JobsStore {
     for (const job of created) {
       // An HTTP response can be older than the SSE events that beat it here
       // (the job already finished): the same freshness rule as refresh().
+      // Unknown because the backend already deleted it (it finished and was
+      // evicted or cleared before this response arrived): `_applyJob` keeps
+      // it out, by the same rule as every other path.
       const existing = this._byId.get(job?.id);
-      // Unknown because the backend already pruned it from history (it
-      // finished and was evicted before this response arrived): never back.
-      if (!existing && this._evictedIds[job?.id]) continue;
       if (!existing || snapshotIsNewer(existing, job)) this._applyJob(job);
     }
   }
@@ -610,12 +622,18 @@ class JobsStore {
         evicted: {},
         max_job_history: this.historyLimit,
       });
-      // The backend no longer has the finished jobs either: tombstone them
-      // like evictions, so a late Auto response cannot adopt one back.
-      this._rememberEvicted(
-        this.jobs.filter((j) => TERMINAL_STATUSES.has(j.status)).map((j) => j.id),
-      );
-      this.jobs = this.jobs.filter((j) => !TERMINAL_STATUSES.has(j.status));
+      // Remove and tombstone exactly the jobs the backend says it deleted, not
+      // the ones terminal here. Local status is a later moment than the one
+      // the backend cleared at: a job that finished over SSE while this
+      // request was in flight was still running there, so it was kept, and
+      // dropping it would hide a live row. A deleted job our stream had not
+      // finished yet goes too. The tombstones then keep every late copy out
+      // (see `_isDeleted`). No `deleted` list proves nothing was deleted.
+      const deleted = Array.isArray(res?.deleted) ? res.deleted : [];
+      const gone = Object.create(null);
+      for (const id of deleted) gone[id] = true;
+      this._rememberEvicted(deleted);
+      this.jobs = this.jobs.filter((j) => !gone[j.id]);
       this._byId.clear();
       for (const job of this.jobs) this._byId.set(job.id, job);
       return res;

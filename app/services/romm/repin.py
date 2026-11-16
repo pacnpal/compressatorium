@@ -20,12 +20,15 @@ opt out of the guarantee the manual path makes.
 from __future__ import annotations
 
 import os
+import threading
+from collections.abc import Callable
 
 from logging_setup import get_logger
 from services import db as _db
+from services.job_manager import job_manager
 from services.romm import DAT_SAFE_OUTPUT_EXTS, METADATA_ID_FIELDS, romm_client
 from services.tools import registry
-from sqlalchemy import and_, or_
+from sqlalchemy import and_, func, or_
 from sqlalchemy.exc import IntegrityError
 from utils.path_utils import path_fingerprint
 
@@ -138,9 +141,72 @@ def _supersede_pending(session, output_path: str) -> int:
     )
 
 
+# The newest plan generation handed out, seeded from the table on first use so
+# a restart never issues a generation older than a row already written.
+_generation_lock = threading.Lock()
+_generation: dict[str, int] = {}
+
+
+def plan_generation(claimed: int | None = None) -> int:
+    """The generation a re-pin plan records under.
+
+    Taken once, when the plan *starts*, and stamped on every row it writes.
+    :func:`record` never supersedes a pending row with a higher generation, so
+    the order that counts is the order plans began in, not the order their
+    writes happened to land. That is what keeps a slow or abandoned plan from
+    overwriting the snapshot of a run that started after it.
+
+    *claimed* is a generation an earlier request of the same run was given: a
+    run planning several target modes sends one request per mode, and all of
+    them belong to the moment the run began. A claim can only be as new as the
+    newest generation issued, so a client cannot jump ahead of a run that
+    really did start later. ``None`` (or a non-positive claim) issues a new one.
+    """
+    with _generation_lock:
+        if "last" not in _generation:
+            with _session() as session:
+                _generation["last"] = int(
+                    session.query(func.max(_db.RommRepin.plan_generation)).scalar()
+                    or 0,
+                )
+        if claimed is not None and claimed > 0:
+            return min(int(claimed), _generation["last"])
+        _generation["last"] += 1
+        return _generation["last"]
+
+
+def _refusal(
+    session, output_path: str, generation: int,
+    owned_by_live_job: Callable[[str, str | None], bool] | None,
+) -> str | None:
+    """Why this record must not supersede the destination's pending row, if so.
+
+    The pending row stays when a newer plan wrote it, or when a live job is
+    converting that row's own source into this destination. Either way the
+    row is the one the conversion that will actually run depends on.
+    """
+    current = (
+        session.query(_db.RommRepin)
+        .filter(
+            _db.RommRepin.output_path == output_path,
+            _db.RommRepin.state == "pending",
+        )
+        .first()
+    )
+    if current is None:
+        return None
+    if (current.plan_generation or 0) > generation:
+        return "a newer plan owns it"
+    if owned_by_live_job is not None and owned_by_live_job(
+        current.output_path, current.source_path,
+    ):
+        return "a queued job owns it"
+    return None
+
+
 def _insert_pending(
     session, rom: dict, output_path: str, ids: dict, mode: str | None,
-    pre_fingerprint: str | None, source_path: str | None,
+    pre_fingerprint: str | None, source_path: str | None, generation: int,
 ):
     """Add the new pending row and hand it back, so its id can be returned."""
     row = _db.RommRepin(
@@ -161,6 +227,7 @@ def _insert_pending(
         platform_slug=rom.get("platform_slug") or (
             None if rom.get("platform_id") is not None else ""
         ),
+        plan_generation=generation,
         state="pending",
         created_at=utcnow_iso(),
     )
@@ -171,12 +238,27 @@ def _insert_pending(
 def record(
     rom: dict, output_path: str, ids: dict, mode: str | None = None,
     pre_fingerprint: str | None = None, source_path: str | None = None,
+    *,
+    generation: int | None = None,
+    owned_by_live_job: Callable[[str, str | None], bool] | None = None,
 ) -> int:
     """Insert a pending row unless one already covers this output.
 
     Returns the new row's id -- the handle :func:`cancel` needs. Truthy for
     every real row (ids start at 1), so a caller that only asks "did this
-    record?" reads the same as it did when this returned a bool.
+    record?" reads the same as it did when this returned a bool. ``0`` means
+    the record was refused (see *generation* below) and nothing was written.
+
+    *generation* is the plan's :func:`plan_generation`, taken when the plan
+    started; omitted, a new one is issued now, which is right for a caller
+    that records the moment its own job is queued (the automation path). The
+    destination's pending row is superseded only when it is no newer than
+    this plan **and** *owned_by_live_job* (given the row's output and source)
+    does not report a queued or running job converting that row's source.
+    Either answer means the row belongs to the conversion that will actually
+    run, and replacing it is how a late or abandoned plan used to strip that
+    conversion of its metadata: the planner's own cleanup then retired the
+    replacement too.
 
     The dedupe on ``output_path`` is what makes re-submitting the same batch
     harmless -- the second submit updates the existing row instead of stacking
@@ -205,28 +287,38 @@ def record(
     A partial unique index (``ux_romm_repin_pending_output``) is the actual
     guarantee that only one pending row exists, so a manual submit racing an
     automation sweep cannot stack two. Losing that race is not an error: retry
-    once, superseding whichever row won.
+    once, superseding whichever row won -- after asking the same ownership
+    question of it, since the winner may be exactly the row this must not
+    replace.
     """
+    if generation is None:
+        generation = plan_generation(None)
     with _session() as session:
-        _supersede_pending(session, output_path)
-        row = _insert_pending(
-            session, rom, output_path, ids, mode, pre_fingerprint, source_path,
-        )
-        try:
-            session.commit()
-        except IntegrityError:
-            session.rollback()
+        for attempt in (1, 2):
+            refused = _refusal(session, output_path, generation, owned_by_live_job)
+            if refused:
+                logger.info(
+                    "romm_repin: not recording %s; %s", output_path, refused,
+                )
+                session.rollback()
+                return 0
             _supersede_pending(session, output_path)
-            # `source_path` rides along here too: a row that loses the
+            # `source_path` rides along on the retry too: a row that loses the
             # unique-index race and is re-inserted without it could not prove
             # which conversion it belongs to, and would be retired as unproven
             # the moment its planner tidied up.
             row = _insert_pending(
                 session, rom, output_path, ids, mode, pre_fingerprint,
-                source_path,
+                source_path, generation,
             )
-            session.commit()
-        return int(row.id)
+            try:
+                session.commit()
+                return int(row.id)
+            except IntegrityError:
+                session.rollback()
+                if attempt == 2:
+                    raise
+        return 0
 
 
 def produced_companions(output_path: str, mode: str | None) -> list[str]:
@@ -265,6 +357,41 @@ def _canonical(path: str | None) -> str | None:
     if not path:
         return None
     return os.path.normpath(os.path.abspath(os.path.expanduser(path)))
+
+
+def owned_by_job(
+    output_path: str, source_path: str | None,
+    *, spell: Callable[[str], str | None] = _canonical,
+) -> bool:
+    """Is a queued or running job converting *source_path* into *output_path*?
+
+    The question a row's *ownership* turns on: "is anything writing here" is
+    not enough, because two clients can plan different sources onto one
+    destination, and keeping the wrong one's row stamps one game's identity on
+    another's output.
+
+    *spell* turns each path into the form compared. The default is
+    :func:`_canonical`, pure string work, so :func:`record` can ask this inside
+    its transaction without touching a volume. A caller that can afford the
+    filesystem (bounded, off the loop) passes a resolving one instead, which
+    also sees through symlinked ancestors; a path it cannot spell is skipped.
+
+    A row with no ``source_path`` cannot answer, and answers **no**: it was
+    written before the column existed, so keeping it would restore exactly the
+    behaviour this replaced.
+    """
+    if not source_path:
+        return False
+    target, wanted = spell(output_path), spell(source_path)
+    if target is None or wanted is None:
+        return False
+    for _job_id, paths in job_manager.get_active_job_candidates():
+        spelled = {spell(candidate) for candidate in paths}
+        # `get_active_job_candidates` reports a job's input *and* output paths
+        # together, so one job carrying both is the job this row describes.
+        if target in spelled and wanted in spelled:
+            return True
+    return False
 
 
 def outputs_for(row_ids: list[int]) -> dict[int, tuple[str, str | None]]:

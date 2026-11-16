@@ -1988,6 +1988,43 @@ Restoring the claim to `pending` then violates
 ages out — so `release()` retires a superseded claim instead, and returns
 whether the row went back to `pending`.
 
+**Who may supersede a pending row (ownership and generation, #337).**
+`record()` supersedes the destination's pending row only when the caller owns
+the right to. Two rules, both checked inside `record()`'s own transaction, and
+on the unique-index retry too:
+
+- **Generation.** `plan_generation()` is a process-wide counter, seeded from
+  the table's `max(plan_generation)` so a restart never issues an older one.
+  `/romm/repin/plan` takes one **before its first await** and stamps it on
+  every row it writes (`romm_repin.plan_generation`). A row with a higher
+  generation is never superseded, so the order that counts is the order plans
+  *started*, not the order their writes landed: a plan stalled in its probes,
+  or abandoned by an aborted Auto run, loses to a run that began after it
+  however late its write arrives. A run plans one request per target mode;
+  the response's `generation` goes back on the run's later requests (the
+  request's `generation` field), so the whole run is as old as its first
+  request. A claimed generation is capped at the newest one issued. NULL (rows
+  written before the column existed) reads as the oldest. Callers that record
+  the moment their own job is queued (the automation path) and the
+  re-record of a redirected output omit it and get a fresh one.
+- **Live job.** With `owned_by_live_job` given, a row a queued or running job
+  is converting (its own source into this destination) is never superseded
+  either, whatever its age. The plan route passes `owned_by_job`, pure string
+  work, so nothing stats under `_settle_lock`; the resolving form
+  (`_destination_job_matches_source`, the same function with
+  `spell=_resolved`) is what `/romm/repin/cancel` uses through `_probe`.
+
+A refused record returns `0` and writes nothing. The plan route also asks
+`_destination_has_pending_job` again, bounded, inside `_settle_lock` right
+before each write: its first check ran before the probes, and the queue does
+not take that lock, so the recheck narrows the window and `record()` closes
+it. Without these, the late write superseded the newer run's row, that run's
+submit or the abandoned run's `retireLateSnapshot()` retired the replacement,
+and the queued conversion finished with no metadata. The store side
+(`ConversionStore.#planRepin`) keeps to the same order: it carries the run's
+generation on every group and sends no further group once the run's signal
+aborts.
+
 `retire_all_pending()` (the identity swap) covers `settling` as well as
 `pending` for the same reason `claim` re-issues a stale one: a claim whose
 holder died mid-write comes back after `_CLAIM_STALE_SECONDS`, and a row left
