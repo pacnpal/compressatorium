@@ -28,6 +28,17 @@
   the file and the error, and its badge stays. In a batch verify it counts as
   "can't be checked", not failed. A file that opens and fails its check is
   still marked failed.
+
+- **A metadata scan on a frozen Volume mount ends, and Cancel stops it**
+  (#361). Listing the files to scan ran with no bound, so a mount that froze
+  held the scan for good: Cancel did nothing and every later scan was refused
+  as already running. The listing now gives up once it reads nothing for 30
+  seconds. The scan then ends with a message naming the folder that stopped
+  answering, and the next scan can start. A large Library that keeps moving is
+  never cut off. Cancel ends the scan at once. The file browser's folder
+  listing and its search work the same way: a frozen folder answers "A Volume
+  isn't responding" instead of hanging.
+
 - **A check right after conversions checks the new Images** (#353). A
   scheduled check Rule that ran within about 30 seconds of a conversion used
   the folder listing from before it, checked nothing new, and still counted

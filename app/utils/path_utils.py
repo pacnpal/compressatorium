@@ -4,13 +4,14 @@ import ctypes
 import errno
 import functools
 import hashlib
+import io
 import os
 import secrets
 import stat
 import sys
 import threading
 import time
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from pathlib import Path
 from typing import NamedTuple, Optional
 
@@ -857,6 +858,134 @@ def is_safe_directory_tree(path: str) -> bool:
             # something the traversal already guarantees.
 
     return not walk_errors
+
+
+# The most one read through ``open_reporting_reads`` asks the file for, so
+# one call never blocks for a whole member table and each chunk that
+# arrives is reported (#361).
+READ_CHUNK = 64 * 1024
+
+
+class _ReportingReader(io.RawIOBase):
+    """A read-only raw file that calls ``progress()`` each time bytes arrive."""
+
+    def __init__(self, raw: io.RawIOBase, progress: Callable[..., None]) -> None:
+        super().__init__()
+        self._raw = raw
+        self._progress = progress
+
+    def readable(self) -> bool:
+        return True
+
+    def seekable(self) -> bool:
+        return True
+
+    def readinto(self, buffer) -> int:
+        count = self._raw.readinto(memoryview(buffer)[:READ_CHUNK])
+        if count:
+            self._progress()
+        return count or 0
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET) -> int:
+        position = self._raw.seek(offset, whence)
+        self._progress()
+        return position
+
+    def tell(self) -> int:
+        return self._raw.tell()
+
+    def close(self) -> None:
+        if not self.closed:
+            self._raw.close()
+        super().close()
+
+
+def open_reporting_reads(path: str, progress: Callable[..., None]) -> io.BufferedReader:
+    """*path* opened for reading, calling ``progress()`` whenever bytes arrive.
+
+    A read-only binary file (``zipfile`` and ``py7zr`` take one; a ``.rar``
+    opens by path so ``rarfile`` can find its next volume) that asks the OS
+    for at most :data:`READ_CHUNK` bytes per read and reports every read
+    that returns data, and every seek. Under a
+    stall-bounded caller (``run_detached_within_stall_bound(
+    report_progress=True)``), a large archive's member table streaming in
+    from a slow but healthy mount keeps the clock moving, while a read that
+    returns nothing ends at the bound (#361). The caller closes it. Blocking.
+    """
+    raw = io.open(path, "rb", buffering=0)
+    return io.BufferedReader(_ReportingReader(raw, progress), buffer_size=READ_CHUNK)
+
+
+def list_folder(path: str, progress: Callable[..., None] | None = None) -> list[str]:
+    """The names in folder *path*, sorted, like ``sorted(os.listdir(path))``.
+
+    Read one entry at a time with ``os.scandir``, calling ``progress()`` after
+    each, so a stall-bounded caller (``run_detached_within_stall_bound(
+    report_progress=True)``) sees a huge folder on a slow but healthy mount
+    keep moving, while ``os.listdir`` would read it all before the first
+    report (#361). Sorted afterwards, so order is unchanged. Raises what
+    ``os.scandir`` raises. Blocking.
+    """
+    tick = progress or (lambda *_args: None)
+    names: list[str] = []
+    with os.scandir(path) as entries:
+        for entry in entries:
+            tick()
+            names.append(entry.name)
+    names.sort()
+    return names
+
+
+def folder_has_entries(path: str) -> bool:
+    """Whether folder *path* holds anything, reading at most one entry (so a
+    huge folder answers as fast as an empty one). Raises what ``os.scandir``
+    raises. Blocking."""
+    with os.scandir(path) as entries:
+        return next(entries, None) is not None
+
+
+def walk_tree(
+    top: str, progress: Callable[..., None],
+) -> Iterator[tuple[str, list[str], list[str]]]:
+    """``os.walk(top)`` that reports its progress, for a stall-bounded walk.
+
+    Yields ``(folder, dirs, files)`` top-down like ``os.walk``: a symlink to a
+    folder is listed in ``dirs`` but never walked into, and a folder that
+    cannot be read is skipped. ``progress(folder)`` is called before each
+    listing and ``progress()`` after every entry read, so
+    ``subprocess_runner.run_detached_within_stall_bound`` gives up only on a
+    listing that stopped answering (a frozen mount), never on a large tree
+    that keeps moving, and its message names the folder (#361). Blocking.
+    """
+    stack = [top]
+    while stack:
+        current = stack.pop()
+        progress(current)
+        dirs: list[str] = []
+        files: list[str] = []
+        walk_into: list[str] = []
+        try:
+            with os.scandir(current) as entries:
+                for entry in entries:
+                    progress()
+                    try:
+                        is_dir = entry.is_dir()
+                    except OSError:
+                        is_dir = False
+                    if not is_dir:
+                        files.append(entry.name)
+                        continue
+                    dirs.append(entry.name)
+                    try:
+                        is_link = entry.is_symlink()
+                    except OSError:
+                        is_link = True
+                    if not is_link:
+                        walk_into.append(entry.path)
+        except OSError:
+            continue
+        yield current, dirs, files
+        stack.extend(reversed(walk_into))
 
 
 def is_configured_volume_root(path: str, *, treat_archives: bool = True) -> bool:

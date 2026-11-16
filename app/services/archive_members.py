@@ -25,13 +25,16 @@ The returned list is shared across callers and cached; treat it as read-only.
 """
 from __future__ import annotations
 
+import contextlib
 import stat
 import zipfile
+from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import NamedTuple
+from typing import IO, NamedTuple
 
 from logging_setup import get_logger
 from utils.mtime_cache import MtimeCache
+from utils.path_utils import open_reporting_reads
 
 try:
     import py7zr
@@ -75,8 +78,14 @@ _cache: MtimeCache[list[ArchiveMember]] = MtimeCache()
 MAX_CACHED_MEMBERS = 10_000
 
 
-def read_archive_members(archive_path: str) -> list[ArchiveMember]:
+def read_archive_members(
+    archive_path: str, progress: Callable[..., None] | None = None,
+) -> list[ArchiveMember]:
     """Return every member of ``archive_path``, cached per ``(path, mtime, size)``.
+
+    ``progress``, when given, is called whenever bytes of the archive arrive
+    (``utils.path_utils.open_reporting_reads``), for a stall-bounded listing
+    (#361); a cached answer reads nothing.
 
     Raises ``ValueError`` for unsupported extensions and ``RuntimeError`` when the
     optional backend for a supported extension is missing, so callers can decide
@@ -86,7 +95,11 @@ def read_archive_members(archive_path: str) -> list[ArchiveMember]:
     """
     return _cache.get_or_compute(
         archive_path,
-        lambda: _read_uncached(archive_path),
+        # Without a callback, the read is exactly what it always was.
+        lambda: (
+            _read_uncached(archive_path) if progress is None
+            else _read_uncached(archive_path, progress)
+        ),
         should_cache=lambda members: len(members) <= MAX_CACHED_MEMBERS,
     )
 
@@ -147,29 +160,46 @@ def _zip_name(info: zipfile.ZipInfo) -> str:
         return info.filename
 
 
-def _read_uncached(archive_path: str) -> list[ArchiveMember]:
+@contextlib.contextmanager
+def _source(
+    archive_path: str, progress: Callable[..., None] | None,
+) -> Iterator[str | IO[bytes]]:
+    """What a backend opens: the path itself, or with ``progress`` a reader
+    that reports every chunk of the archive as it arrives (#361)."""
+    if progress is None:
+        yield archive_path
+        return
+    with open_reporting_reads(archive_path, progress) as handle:
+        yield handle
+
+
+def _read_uncached(
+    archive_path: str, progress: Callable[..., None] | None = None,
+) -> list[ArchiveMember]:
     ext = Path(archive_path).suffix.lower()
     if ext == ".zip":
-        return _read_zip(archive_path)
+        return _read_zip(archive_path, progress)
     if ext == ".7z":
         if not HAS_7Z:
             from services.subprocess_runner import ToolUnavailable
 
             raise ToolUnavailable("py7zr is required to read .7z archives")
-        return _read_7z(archive_path)
+        return _read_7z(archive_path, progress)
     if ext == ".rar":
         if not HAS_RAR:
             from services.subprocess_runner import ToolUnavailable
 
             raise ToolUnavailable("rarfile is required to read .rar archives")
-        return _read_rar(archive_path)
+        return _read_rar(archive_path, progress)
     raise ValueError(f"Unsupported archive extension: {ext}")
 
 
-def _read_zip(archive_path: str) -> list[ArchiveMember]:
+def _read_zip(
+    archive_path: str, progress: Callable[..., None] | None = None,
+) -> list[ArchiveMember]:
     """Read every ZIP member, flagging symlinks via the Unix `external_attr`."""
     members: list[ArchiveMember] = []
-    with zipfile.ZipFile(archive_path, "r") as zf:
+    with _source(archive_path, progress) as source, zipfile.ZipFile(source, "r") as zf:
         for info in zf.infolist():
             is_symlink = stat.S_ISLNK(info.external_attr >> 16)
             members.append(
@@ -181,10 +211,15 @@ def _read_zip(archive_path: str) -> list[ArchiveMember]:
     return members
 
 
-def _read_7z(archive_path: str) -> list[ArchiveMember]:
+def _read_7z(
+    archive_path: str, progress: Callable[..., None] | None = None,
+) -> list[ArchiveMember]:
     """Read every 7z member; ``uncompressed`` is ``None`` when the archive omits it."""
     members: list[ArchiveMember] = []
-    with py7zr.SevenZipFile(archive_path, "r") as zf:  # type: ignore[name-defined]
+    with (
+        _source(archive_path, progress) as source,
+        py7zr.SevenZipFile(source, "r") as zf,  # type: ignore[name-defined]
+    ):
         # py7zr knows encryption per archive, not per entry.
         encrypted = bool(zf.needs_password())
         for entry in zf.list():
@@ -201,10 +236,31 @@ def _read_7z(archive_path: str) -> list[ArchiveMember]:
     return members
 
 
-def _read_rar(archive_path: str) -> list[ArchiveMember]:
-    """Read every RAR member, flagging symlinks when the rarfile backend reports them."""
+class IncompleteArchive(RuntimeError):
+    """The backend stopped part way through the archive (a later volume
+    missing or unreadable, a broken header): its member list is not the
+    whole archive, so it is never returned or cached."""
+
+
+def _read_rar(
+    archive_path: str, progress: Callable[..., None] | None = None,
+) -> list[ArchiveMember]:
+    """Read every RAR member, flagging symlinks when the rarfile backend reports them.
+
+    Always opened by path: rarfile finds a multi-volume archive's next volume
+    from the file name and gives up silently on a file object, which would
+    list only the first volume (Codex 4584380491). Progress comes from its
+    supported ``info_callback``, one report per header parsed, across every
+    volume. rarfile's default ``errors="stop"`` ends a parse quietly at a
+    missing or broken volume; that is :class:`IncompleteArchive` here.
+    """
     members: list[ArchiveMember] = []
-    with rarfile.RarFile(archive_path, "r") as rf:  # type: ignore[name-defined]
+    on_header = (lambda _header: progress()) if progress is not None else None
+    with rarfile.RarFile(  # type: ignore[name-defined]
+        archive_path, "r", info_callback=on_header,
+    ) as rf:
+        if rf.strerror():
+            raise IncompleteArchive(f"{archive_path}: {rf.strerror()}")
         for info in rf.infolist():
             # rarfile exposes is_symlink() on recent versions; default to False
             # so an older backend simply doesn't flag symlinks (ArchiveService
