@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 from services import referrers
 from services.referrers import base as base_module
+from services.referrers import files as files_module
 from services.referrers import m3u as m3u_module
 from services.referrers.base import atomic_write_bytes
 from services.referrers.m3u import M3uReferrer
@@ -151,7 +152,7 @@ async def test_an_unknown_playlist_containment_keeps_the_source(tmp_path, monkey
     _disc(tmp_path, "Game.chd")
     playlist = tmp_path / "Game.m3u"
     playlist.write_bytes(b"Game.cue\n")
-    real_fresh_root, real_search_dirs = path_utils._fresh_root, m3u_module._search_dirs
+    real_fresh_root, real_search_dirs = path_utils._fresh_root, files_module.search_dirs
     probe_down = []
 
     def search_dirs_then_probe_fails(path):
@@ -165,7 +166,7 @@ async def test_an_unknown_playlist_containment_keeps_the_source(tmp_path, monkey
     def fresh_root(configured):
         return None if probe_down else real_fresh_root(configured)
 
-    monkeypatch.setattr(m3u_module, "_search_dirs", search_dirs_then_probe_fails)
+    monkeypatch.setattr(files_module, "search_dirs", search_dirs_then_probe_fails)
     monkeypatch.setattr(path_utils, "_fresh_root", fresh_root)
 
     outcome = await _replace(tmp_path, "Game.cue", "Game.chd")
@@ -409,13 +410,13 @@ async def test_two_discs_updating_one_playlist_at_once_keep_both_edits(
     _disc(tmp_path, "D2.cue")
     playlist = tmp_path / "Game.m3u"
     playlist.write_text("D1.cue\nD2.cue\n")
-    real_write = m3u_module.atomic_write_bytes
+    real_write = files_module.atomic_write_bytes
 
     def slow_write(path, data, **kw):
         time.sleep(0.2)
         real_write(path, data, **kw)
 
-    monkeypatch.setattr(m3u_module, "atomic_write_bytes", slow_write)
+    monkeypatch.setattr(files_module, "atomic_write_bytes", slow_write)
 
     first, second = await asyncio.gather(
         _replace(tmp_path, "D1.cue", "D1.chd"),

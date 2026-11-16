@@ -62,6 +62,15 @@ export class FolderRulesSource extends RulesSource {
     await libraries.saveSettings(this.id, { schedule_enabled: enabled });
   }
 
+  /** Used by an EmulationStation frontend: conversions update gamelist.xml (#386). */
+  get esFrontend() {
+    return this.library?.es_frontend === true;
+  }
+
+  async setEsFrontend(enabled) {
+    await libraries.saveSettings(this.id, { es_frontend: enabled });
+  }
+
   /**
    * Take the Library's latest settings (name, schedule switch, ...) in place.
    * Only the Library row changes; the Rules and any unsaved edit to them live

@@ -74,6 +74,9 @@ _FIELDS: dict[str, tuple[str, Any, str]] = {
     # Delete the source once the new output verifies. Off by default: it is
     # destructive, and the RomM library is the user's collection.
     "delete_source_after_verify": ("ROMM_DELETE_SOURCE_AFTER_VERIFY", False, "bool"),
+    # The library is used by an EmulationStation frontend (#386): a conversion
+    # rewrites the matching <path> in the Platform folder's gamelist.xml.
+    "es_frontend": ("ROMM_ES_FRONTEND", False, "bool"),
 }
 
 _INT_BOUNDS = {

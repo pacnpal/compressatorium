@@ -175,6 +175,23 @@
 
 ### Added
 
+- **ES-DE, Batocera, Knulli and muOS keep their gamelist entries** (#386). A
+  Library (a folder Library or RomM) has a new switch at the top of its
+  Rules: **Used by an EmulationStation frontend**, off by default. When it's
+  on and a conversion deletes its Source, the matching `<path>` in the
+  Platform folder's `gamelist.xml` is pointed at the new file first
+  (`./Game.iso` becomes `./Game.chd`; `./Multi Disc/Game.cue` keeps its
+  folder), so the game's artwork, description, favourite flag and play count
+  stay. Only the path text of entries for replaced files changes: the XML
+  declaration, encoding, comments, element order and every other element are
+  left byte for byte, and the first change keeps `gamelist.xml.bak`. The
+  delete confirmation says "updates gamelist.xml, 1 entry", and the Ledger
+  row records the file and the entry count. A gamelist that can't be parsed
+  or written, or that names the Source in a path that doesn't lead to it,
+  keeps the Source and the output, and the job says which file and why.
+  Close ES-DE before converting: it rewrites its gamelist when it exits.
+  The delete confirmation now also counts the entries each playlist change
+  moves.
 - **Beside RomM's own converter** (#385). Newer RomM releases can convert
   their library themselves (`ROM_CONVERTO_ENABLED`), and they delete the
   sources without reading the output back. When RomM reports its converter
