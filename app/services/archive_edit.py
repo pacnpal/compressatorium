@@ -10,8 +10,9 @@ eXoDOS repack today, the Patch bench later). The Source is only ever read.
   the compressed bytes may differ from the Source's.
 * **Nothing that looks finished appears early.** The archive is written under
   a hidden temporary name in the destination directory
-  (``.<name>.partial-*.tmp``, which library scanners such as RomM's skip by
-  default), fsynced, optionally checked by the caller, given the Source's
+  (``.partial-XXXXXXXX.tmp``, which library scanners such as RomM's skip by
+  default; ``services/partial_writes.py`` sweeps the ones a hard kill
+  leaves), fsynced, optionally checked by the caller, given the Source's
   permission bits (``mkstemp`` makes it ``0600``), and only
   then moved into place with :func:`utils.path_utils.place_without_clobbering`,
   an atomic no-replace move. A crash, a cancel or an error leaves no product,
@@ -21,12 +22,15 @@ from __future__ import annotations
 
 import os
 import stat
-import tempfile
 import zipfile
 from collections.abc import Callable, Mapping
 
+from logging_setup import get_logger
+from services import partial_writes
 from services.subprocess_runner import ConversionCancelled
 from utils.path_utils import place_without_clobbering
+
+logger = get_logger("archive_edit")
 
 _CHUNK = 1024 * 1024
 # The zip epoch: the default stamp for added members, so a product does not
@@ -161,11 +165,19 @@ def rewrite_zip(
     if os.path.lexists(dst):
         raise FileExistsError(dst)
     directory = os.path.dirname(os.path.abspath(dst))
+    # What an earlier, hard-killed rewrite into this folder left behind (#331).
+    partial_writes.sweep_folder(directory)
     # Hidden and ending in ``.tmp``: library scanners (RomM's skips ``tmp`` by
     # default) must not list it as a game while it is written or after a crash.
-    fd, tmp = tempfile.mkstemp(
-        prefix=f".{os.path.basename(dst)}.partial-", suffix=".tmp", dir=directory,
-    )
+    # Short and fixed-length, never built from the target's name, so a target
+    # near the 255-byte name limit can still be written. Its sidecar lock is
+    # held until the temp file is placed or removed, so a sweep (this process
+    # or another) never takes a live write for a leftover, and the temp file
+    # itself stays unlocked for the check; it is journaled, so a restart after
+    # a hard kill finds it without walking the Volumes. All or nothing.
+    claim = partial_writes.claim_temp(directory)
+    fd, tmp = claim.fd, claim.path
+    temp_gone = False
     try:
         with zipfile.ZipFile(src) as source:
             plan = _plan(source.infolist(), rename, add)
@@ -200,15 +212,42 @@ def rewrite_zip(
             raise ConversionCancelled("Conversion cancelled")
         os.chmod(tmp, _product_mode(src))
         place_without_clobbering(tmp, dst)
+        # Placing ignores a failed unlink of the temp name once the output is
+        # linked: the output is published, so this is success either way, but
+        # the journal entry stays until the temp name is seen gone.
+        temp_gone = _remove_temp(tmp)
         _fsync_dir(directory)
     except BaseException:
         if fd >= 0:
             os.close(fd)
-        try:
-            os.unlink(tmp)
-        except FileNotFoundError:
-            pass
+        temp_gone = temp_gone or _remove_temp(tmp)
         raise
+    finally:
+        # The journal entry goes only once the temp name is known to be gone;
+        # one that could not be removed is left for the next sweep.
+        claim.release(temp_gone=temp_gone)
+
+
+def _remove_temp(tmp: str) -> bool:
+    """Make sure the temp name is gone: True only from an observed absence
+    (no-follow ``lstat``) or a successful unlink, never assumed. A failure is
+    logged, never raised (over the error that caused a cleanup, or after an
+    output that is already published)."""
+    try:
+        os.lstat(tmp)
+    except FileNotFoundError:
+        return True
+    except OSError as exc:
+        logger.warning("Could not check the temp file %s: %s", tmp, exc)
+        return False
+    try:
+        os.unlink(tmp)
+    except FileNotFoundError:
+        return True
+    except OSError as exc:
+        logger.warning("Could not remove the temp file %s: %s", tmp, exc)
+        return False
+    return True
 
 
 __all__ = ["rewrite_zip"]

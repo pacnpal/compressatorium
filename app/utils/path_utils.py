@@ -3,7 +3,9 @@ from __future__ import annotations
 import ctypes
 import errno
 import functools
+import hashlib
 import os
+import secrets
 import stat
 import sys
 import threading
@@ -922,6 +924,37 @@ def _beneath_parts(relative: str) -> list[str]:
     return parts
 
 
+def open_dir_beneath(root: str, relative: str = "") -> int:
+    """Open the directory ``root/relative`` without following any symlink.
+
+    Every component, of ``root`` from ``/`` down and then of ``relative``, is
+    opened ``O_NOFOLLOW | O_DIRECTORY`` relative to the descriptor above it,
+    so a symlink anywhere fails the open (``OSError``, usually ``ELOOP``).
+    Returns the directory's descriptor; the caller closes it. A caller that
+    checked a path and then works inside it (``*at`` calls with ``dir_fd``)
+    is bound to the directory it opened, whatever the path names later.
+
+    ``root`` must be absolute and already symlink-free (``os.path.realpath``);
+    ``relative`` (empty for ``root`` itself) uses ``/`` and may not hold
+    ``..``, ``.`` or empty parts (``ValueError``). Blocking: run it off the
+    event loop.
+    """
+    if not os.path.isabs(root):
+        raise ValueError(f"The root must be absolute: {root!r}")
+    root_parts = [part for part in root.split(os.sep) if part]
+    parts = _beneath_parts(relative) if relative else []
+    fd = os.open("/", _BENEATH_DIR_FLAGS)
+    try:
+        for part in (*root_parts, *parts):
+            child = os.open(part, _BENEATH_DIR_FLAGS, dir_fd=fd)
+            os.close(fd)
+            fd = child
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
 def read_beneath(root: str, relative: str, *, max_bytes: int) -> bytes:
     """Read the regular file ``root/relative`` without following any symlink.
 
@@ -935,21 +968,15 @@ def read_beneath(root: str, relative: str, *, max_bytes: int) -> bytes:
     ``RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS`` would do the same in one call, but
     Python exposes neither it nor those flags, and this walk works on macOS too.
 
-    ``root`` must be absolute and already symlink-free (``os.path.realpath``);
-    ``relative`` uses ``/`` and may not hold ``..``, ``.`` or empty parts
-    (``ValueError``). A file over ``max_bytes`` is refused with ``ValueError``.
+    The directories are opened by :func:`open_dir_beneath`. ``root`` must be
+    absolute and already symlink-free (``os.path.realpath``); ``relative``
+    uses ``/`` and may not hold ``..``, ``.`` or empty parts (``ValueError``).
+    A file over ``max_bytes`` is refused with ``ValueError``.
     Blocking: run it off the event loop.
     """
-    if not os.path.isabs(root):
-        raise ValueError(f"The root must be absolute: {root!r}")
-    root_parts = [part for part in root.split(os.sep) if part]
     parts = _beneath_parts(relative)
-    fd = os.open("/", _BENEATH_DIR_FLAGS)
+    fd = open_dir_beneath(root, "/".join(parts[:-1]))
     try:
-        for part in (*root_parts, *parts[:-1]):
-            child = os.open(part, _BENEATH_DIR_FLAGS, dir_fd=fd)
-            os.close(fd)
-            fd = child
         child = os.open(parts[-1], _BENEATH_FLAGS, dir_fd=fd)
         os.close(fd)
         fd = child
@@ -968,6 +995,47 @@ def read_beneath(root: str, relative: str, *, max_bytes: int) -> bytes:
         return b"".join(chunks)
     finally:
         os.close(fd)
+
+
+# The characters ``tempfile.mkstemp`` draws its eight random ones from.
+_TEMP_NAME_CHARS = "abcdefghijklmnopqrstuvwxyz0123456789_"
+_TEMP_NAME_ATTEMPTS = 100
+
+
+def short_temp_name(prefix: str = ".tmp-", suffix: str = "") -> str:
+    """A short, fixed-length temp file name: ``prefix``, eight random
+    characters from ``mkstemp``'s alphabet, ``suffix``. Never built from a
+    target's name, so a target near the 255-byte name limit can still be
+    written beside it. For a writer that must set something up under the name
+    before the file exists (``services.partial_writes``)."""
+    return prefix + "".join(secrets.choice(_TEMP_NAME_CHARS) for _ in range(8)) + suffix
+
+
+def short_temp_file(directory: str, *, prefix: str = ".tmp-", suffix: str = "") -> tuple[int, str]:
+    """A new hidden temp file in *directory*: ``(fd, path)``, as ``mkstemp``.
+
+    Named by :func:`short_temp_name`, created ``O_EXCL`` with mode ``0600``
+    (retrying another name if one is taken), and never through a symlink.
+    Shared by every writer that places a finished file next to its target
+    (the Referrers' atomic writes).
+    """
+    flags = os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    for _ in range(_TEMP_NAME_ATTEMPTS):
+        path = os.path.join(directory, short_temp_name(prefix, suffix))
+        try:
+            return os.open(path, flags, 0o600), path
+        except FileExistsError:
+            continue
+    raise FileExistsError(errno.EEXIST, "No free temp file name", directory)
+
+
+def companion_name(name: str, *, prefix: str, suffix: str = "") -> str:
+    """A fixed-length name derived from *name*: ``prefix``, 16 hex characters
+    of its SHA-256, ``suffix``. For a file that goes with another one (a temp
+    file's lock file, ``services.partial_writes``): the same *name* always
+    gives the same companion, and its length never grows with *name*, so a
+    file near the 255-byte name limit still has one."""
+    return prefix + hashlib.sha256(os.fsencode(name)).hexdigest()[:16] + suffix
 
 
 def safe_join(base_dir: str, *parts: str) -> Path:
