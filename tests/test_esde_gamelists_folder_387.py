@@ -142,6 +142,35 @@ async def test_without_the_folder_the_esde_gamelist_is_left_and_the_platform_fol
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("decoy", [False, True])
+async def test_a_nested_folder_named_like_its_system_keeps_the_source(vol, decoy):
+    """Codex PRRT_kwDOQ9nULM64Jpv8: in ROMs/ps2/ps2/Game.iso both ps2 folders
+    could be the system's ROM folder, so gamelists/ps2 has two possible bases.
+    Fail closed. With *decoy*, the wrong base resolves the entry to another
+    file that exists, which before made the plan find nothing to change and
+    let the Source go with a stale entry left behind."""
+    source = _file(vol / "ROMs" / "ps2" / "ps2" / "Game.iso")
+    if decoy:
+        _file(vol / "ROMs" / "ps2" / "ps2" / "ps2" / "Game.iso", b"another disc")
+    data = b"<gameList><game><path>./ps2/Game.iso</path></game></gameList>"
+    gamelist = _file(vol / "gamelists" / "ps2" / "gamelist.xml", data)
+
+    outcome = await _replace(
+        source, vol / "ROMs" / "ps2" / "ps2" / "Game.chd", _Library(vol / "gamelists"),
+    )
+    with pytest.raises(referrers.ReferrerError, match="more than one ROM folder"):
+        referrers.plan_changes(
+            str(source), {str(source): str(vol / "ROMs" / "ps2" / "ps2" / "Game.chd")},
+            _Library(vol / "gamelists"),
+        )
+
+    assert not outcome.ok
+    assert outcome.failed == str(gamelist)
+    assert "more than one ROM folder" in outcome.reason
+    assert gamelist.read_bytes() == data and source.is_file()
+
+
+@pytest.mark.asyncio
 async def test_a_gamelist_for_another_system_is_left_alone(vol):
     source = _file(vol / "ROMs" / "ps2" / "Game.iso")
     other = _file(vol / "gamelists" / "gc" / "gamelist.xml", GAMELIST)
@@ -226,7 +255,9 @@ def test_a_folder_library_saves_its_gamelists_folder(vol, db):
     library = libraries.register(str(vol / "roms"))
     assert libraries.describe(library)["gamelists_folder"] is None
 
-    libraries.update(library.id, gamelists_folder=str(vol / "gamelists"))
+    # The caller checks the folder first (bounded in the routes), then saves.
+    checked = libraries.check_gamelists_folder(str(vol / "gamelists"))
+    libraries.update(library.id, gamelists_folder=checked)
     libraries.reset_for_tests()
     again = libraries.get(library.id)
 
@@ -246,7 +277,7 @@ def test_a_gamelists_folder_outside_every_volume_is_refused(vol, db, tmp_path_fa
     outside = tmp_path_factory.mktemp("outside")
 
     with pytest.raises(libraries.LibraryPathError) as refused:
-        libraries.update(library.id, gamelists_folder=str(outside))
+        libraries.check_gamelists_folder(str(outside))
     assert refused.value.status == 403
     assert libraries.describe(libraries.get(library.id))["gamelists_folder"] is None
 
@@ -261,8 +292,9 @@ def test_a_gamelists_folder_that_cant_be_confirmed_is_refused(vol, db, monkeypat
     monkeypatch.setattr(libraries, "volume_containment", lambda *_a, **_k: None)
 
     with pytest.raises(libraries.LibraryPathError) as refused:
-        libraries.update(library.id, gamelists_folder=str(vol / "gamelists"))
+        libraries.check_gamelists_folder(str(vol / "gamelists"))
     assert refused.value.status == 503
+    assert libraries.describe(libraries.get(library.id))["gamelists_folder"] is None
 
 
 @pytest.mark.asyncio
@@ -290,6 +322,56 @@ async def test_the_library_api_sets_and_refuses_the_folder(vol, db, tmp_path_fac
             ),
         )
     assert refused.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_a_folder_check_past_its_bound_saves_nothing_later(vol, db, monkeypatch):
+    """Codex PRRT_kwDOQ9nULM64Jpv1: the route answers 503 "nothing was saved"
+    when the folder check outlasts its bound. The abandoned check, recovering
+    later, must not save the folder then, nor overwrite a save made since."""
+    import asyncio
+    import threading
+
+    from fastapi import HTTPException
+    from routes import libraries as library_routes
+    from services import libraries
+
+    (vol / "roms").mkdir()
+    (vol / "gamelists").mkdir()
+    created = await library_routes.register_library(
+        library_routes.RegisterLibraryRequest(path=str(vol / "roms")),
+    )
+    release, finished = threading.Event(), threading.Event()
+    real_check = libraries.check_gamelists_folder
+
+    def stalled_check(path):
+        release.wait(10)
+        try:
+            return real_check(path)
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(libraries, "ROOT_CHECK_SECONDS", 0.2)
+    monkeypatch.setattr(libraries, "check_gamelists_folder", stalled_check)
+
+    with pytest.raises(HTTPException) as refused:
+        await library_routes.update_library(
+            created["id"],
+            library_routes.UpdateLibraryRequest(gamelists_folder=str(vol / "gamelists")),
+        )
+    assert refused.value.status_code == 503
+    # A later save, after the 503: the switch turned on.
+    await library_routes.update_library(
+        created["id"], library_routes.UpdateLibraryRequest(es_frontend=True),
+    )
+    release.set()
+    assert await asyncio.to_thread(finished.wait, 5)
+    await asyncio.sleep(0.2)  # let the abandoned worker run to its end
+
+    libraries.reset_for_tests()  # read back what the database holds
+    stored = libraries.describe(libraries.get(created["id"]))
+    assert stored["gamelists_folder"] is None
+    assert stored["es_frontend"] is True
 
 
 @pytest.mark.asyncio

@@ -523,9 +523,11 @@ def update(
     Writes the row, then changes the cached Library in place: a walk of it may
     be running (or stuck on a dead mount), and none of these settings needs it.
 
-    *gamelists_folder* (#387) is checked first (:func:`check_gamelists_folder`,
-    blocking: it resolves the folder) and stored resolved; ``""`` clears it.
-    Raises :class:`LibraryPathError` when it is refused, changing nothing.
+    *gamelists_folder* (#387) is stored as given; ``""`` clears it. It must
+    already have passed :func:`check_gamelists_folder`, which the caller runs
+    first, bounded (:func:`admitted`): this only persists, so a check that
+    outlasts its bound and is abandoned never saves anything later (Codex
+    PRRT_kwDOQ9nULM64Jpv1).
     """
     record_id = _record_id(library_id)
     if record_id is None:
@@ -533,9 +535,7 @@ def update(
     library = _loaded().get(record_id)
     if library is None:
         return None
-    folder = None
-    if gamelists_folder is not None:
-        folder = check_gamelists_folder(gamelists_folder) if gamelists_folder.strip() else ""
+    folder = None if gamelists_folder is None else gamelists_folder.strip()
     if max_per_sweep is not None:
         max_per_sweep = max(1, min(int(max_per_sweep), MAX_PER_SWEEP_LIMIT))
     label = name.strip() if name is not None and name.strip() else None

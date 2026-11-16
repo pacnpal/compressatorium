@@ -384,26 +384,46 @@ class GamelistReferrer(Referrer):
         self._check_folder()
         targets = Renames.of(renames)
         changes = []
-        seen: set[str] = set()
+        for gamelist, base in self._settled(renames):
+            if not may_read(gamelist):
+                continue
+            with target_lock(gamelist):
+                _, edits = _rewrite(
+                    gamelist, read_target(gamelist), base, targets, strict=False,
+                )
+            if edits:
+                changes.append(ReferrerChange(
+                    referrer=self.id, target=gamelist, edits=tuple(edits),
+                    payload=(base, targets),
+                ))
+        return changes
+
+    def _settled(self, renames: Mapping[str, str]) -> list[tuple[str, str]]:
+        """Every gamelist the walk reaches, each once, with its one base.
+
+        A gamelist is settled before it is read: every folder that reaches it
+        is collected first. Two different bases for one gamelist (an ES-DE
+        system folder with a subfolder of the same name, ``ROMs/ps2/ps2``,
+        both reaching ``gamelists/ps2``) can't be told apart: entries would
+        resolve against the wrong one, so planning refuses and the Source is
+        kept (Codex PRRT_kwDOQ9nULM64Jpv8).
+        """
+        bases: dict[str, tuple[str, list[str]]] = {}  # realpath -> (gamelist, bases)
         for directory in dirs_for(renames):
             for gamelist, base in self._located(directory):
-                # The nearest folder wins when two reach one gamelist.
-                key = os.path.realpath(gamelist)
-                if key in seen:
-                    continue
-                seen.add(key)
-                if not may_read(gamelist):
-                    continue
-                with target_lock(gamelist):
-                    _, edits = _rewrite(
-                        gamelist, read_target(gamelist), base, targets, strict=False,
-                    )
-                if edits:
-                    changes.append(ReferrerChange(
-                        referrer=self.id, target=gamelist, edits=tuple(edits),
-                        payload=(base, targets),
-                    ))
-        return changes
+                _, found = bases.setdefault(os.path.realpath(gamelist), (gamelist, []))
+                if base not in found:
+                    found.append(base)
+        settled = []
+        for gamelist, found in bases.values():
+            if len(found) > 1:
+                raise ReferrerError(
+                    gamelist,
+                    "more than one ROM folder could be its system's ("
+                    + ", ".join(found) + "), so its entries can't be resolved",
+                )
+            settled.append((gamelist, found[0]))
+        return settled
 
     def apply(self, change: ReferrerChange) -> None:
         path = change.target

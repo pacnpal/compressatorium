@@ -3920,15 +3920,23 @@ Knulli, muOS) key each game's artwork, favourite flag and play count on its
   `gamelists/ps2/gamelist.xml` and its `./Game.iso`. The subfolder is the ROM
   folder's own name, not a mapping of the Platform slug: ES-DE's system names
   are its ROM folder names, and the slug table's canonical ids differ from
-  them (`ngc` for ES-DE's `gc`). Two folders reaching one gamelist are read
-  once, the nearest winning. The Platform folder lookup still runs beside it.
-  The folder must be confirmed inside the Volumes when planning
-  (`volume_containment`, "couldn't tell" refused), or the Source is kept.
-  Saving it (`libraries.check_gamelists_folder`, through `PATCH
-  /api/libraries/{id}` and `PUT /api/romm/settings`, bounded by
-  `libraries.admitted`) refuses a relative path (400), one outside every
-  Volume (403), "couldn't tell" (503) and a missing folder (404), and stores
-  it resolved; `""` clears it. The Rules editor edits it under the switch
+  them (`ngc` for ES-DE's `gc`). Each gamelist is settled before it is
+  read (`_settled`): every folder that reaches it is collected, and a gamelist
+  two different folders reach (an ES-DE system folder with a subfolder of the
+  same name, `ROMs/ps2/ps2`, both reaching `gamelists/ps2`) has no single
+  base, so planning refuses ("more than one ROM folder could be its
+  system's") and the Source is kept. Resolving against the wrong one could
+  find nothing to change and let the Source go with a stale entry. The
+  Platform folder lookup still runs beside it. The folder must be confirmed
+  inside the Volumes when planning (`volume_containment`, "couldn't tell"
+  refused), or the Source is kept. Saving it is two steps.
+  `libraries.check_gamelists_folder` is read-only and runs bounded
+  (`libraries.admitted`, which abandons its worker past `ROOT_CHECK_SECONDS`
+  with a 503): it refuses a relative path (400), one outside every Volume
+  (403), "couldn't tell" (503) and a missing folder (404), and returns it
+  resolved. Only then do `PATCH /api/libraries/{id}` (`libraries.update`,
+  which only persists) and `PUT /api/romm/settings` save it, so a check
+  abandoned at the bound never saves anything later; `""` clears it. The Rules editor edits it under the switch
   (`source.gamelistsFolder` / `source.setGamelistsFolder`).
 - *What it reads.* `defusedxml`'s `DefusedXMLParser` (no entity declarations,
   no external references) with a target that records each `<path>` that is a

@@ -111,24 +111,28 @@ async def update_library(library_id: str, payload: UpdateLibraryRequest) -> dict
     if _library(library_id).kind != "folder":
         raise HTTPException(status_code=400, detail="Change RomM in its own settings")
 
-    def save():
-        return libraries.update(
+    folder = payload.gamelists_folder
+    try:
+        if folder and folder.strip():
+            # Only the read-only check runs under the abandonment bound: it
+            # resolves a folder that may sit on a mount that stopped
+            # answering. Nothing is saved unless it passes in time, so a check
+            # abandoned at the bound never saves later (Codex
+            # PRRT_kwDOQ9nULM64Jpv1), as RomM's settings route does.
+            folder = await libraries.admitted(
+                libraries.check_gamelists_folder, folder, what="The gamelists folder",
+            )
+    except libraries.LibraryPathError as exc:
+        raise HTTPException(status_code=exc.status, detail=str(exc)) from None
+    library = await run_in_threadpool(
+        lambda: libraries.update(
             library_id, name=payload.name,
             schedule_enabled=payload.schedule_enabled,
             max_per_sweep=payload.max_per_sweep,
             es_frontend=payload.es_frontend,
-            gamelists_folder=payload.gamelists_folder,
-        )
-
-    try:
-        if payload.gamelists_folder and payload.gamelists_folder.strip():
-            # Resolves a folder that may sit on a mount that stopped
-            # answering: bounded, like a registration (#387).
-            library = await libraries.admitted(save, what="The gamelists folder")
-        else:
-            library = await run_in_threadpool(save)
-    except libraries.LibraryPathError as exc:
-        raise HTTPException(status_code=exc.status, detail=str(exc)) from None
+            gamelists_folder=folder,
+        ),
+    )
     if library is None:
         raise HTTPException(status_code=404, detail="Library not found")
     return await run_in_threadpool(libraries.describe, library)
