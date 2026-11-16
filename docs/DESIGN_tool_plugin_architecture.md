@@ -5627,6 +5627,34 @@ manual only, because a Rule over RomM's `dos` folder would write a second copy
 of every game beside it, and the Rule's verify step would hide the conf warning
 nobody is there to read.
 
+#### What a mode writes (`registry.mode_output_extensions`)
+
+`mode_output_extensions(mode)` is the set of extensions a mode writes,
+lowercased. A mode with a declared `output_ext` answers that. A mode whose
+output is mapped from its input (Z3DS's `.cia` to `.zcia`, NSZ's `.xci` to
+`.xcz`) declares none, so the registry asks its tool's `output_path` for each
+input extension the mode accepts, the same question `mode_is_automatable` asks.
+It is path arithmetic only and reads nothing from disk.
+
+Its first caller is RomM's converter (#385, `services/romm/converter.py`).
+RomM names its library targets (`chd`, `rvz`, `z3ds`, ...) and the module maps
+each onto the extensions rom-converto writes for it. A mode matches a RomM
+target on a Platform when it is in `modes_for_platform(slug)`, is automatable,
+is not an extract mode (the Rule editor offers none), and writes one of those
+extensions. The first match in registry order is what "Import RomM's targets as
+Rules" picks. A new tool that writes one of RomM's formats is matched with no
+change there.
+
+RomM's converter config comes from two endpoints, both read by
+`RommClient.converter_config`. `GET /api/heartbeat` carries
+`CONVERTO.ENABLED` (absent on a RomM from before the converter).
+`GET /api/config` carries `CONVERTO.platform_formats` (RomM Platform slug to
+target) and `CONVERTO_LIBRARY_TARGETS` (every target each slug can take). The
+config is read only when the converter is on, during the RomM status refresh,
+and the status's `converter` block is the one source for the banner, the Rule
+flags and the can't-convert marks. None of it changes what a Rule or a sweep
+does.
+
 #### Asking a tool whether it can run (`registry.tool_is_ready`)
 
 `ToolPlugin.is_ready()` is a coroutine, which makes it look bounded and does
