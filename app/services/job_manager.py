@@ -4163,24 +4163,24 @@ class JobManager:
         Ledger (#346), or None when it can't place it.
 
         The detection Auto uses (``platform_detect.detect_platform``, with its
-        cache), on a detached thread with the same bound as the Source sizing:
-        optional bookkeeping, so a timeout leaves it unknown and a Cancel
+        cache), through the shared bounded probe (``run_detached_bounded``)
+        under the same bound as the Source sizing: optional bookkeeping, so a
+        timeout or an unreadable Source leaves it unknown, and a Cancel
         returns now as a cancellation.
         """
         from services.platform_detect import detect_platform
 
         try:
-            detection = await asyncio.wait_for(
-                run_detached(detect_platform, job.file_path, cancel_event=cancel_event),
-                timeout=_CANONICAL_PROBE_SECONDS,
+            detection = await run_detached_bounded(
+                detect_platform, job.file_path,
+                timeout=_CANONICAL_PROBE_SECONDS, cancel_event=cancel_event,
             )
         except ReadCancelled:
             raise ConversionCancelled("Conversion cancelled") from None
-        except asyncio.TimeoutError:
+        except (DeadlineExpired, ProbeCapacityExceeded, OSError):
             logger.warning(
-                "Detecting the Platform of job %s did not finish in %.0fs; "
-                "the Ledger row will have none",
-                job.id, _CANONICAL_PROBE_SECONDS,
+                "Detecting the Platform of job %s did not finish; "
+                "the Ledger row will have none", job.id, exc_info=True,
             )
             return None
         return detection.platform
