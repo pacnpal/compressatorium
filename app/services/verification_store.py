@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from logging_setup import get_logger
 import os
+from collections.abc import Callable
 from datetime import datetime, timezone
 
 from fastapi.concurrency import run_in_threadpool
@@ -332,18 +333,37 @@ class VerificationStore:
                 for r in rows
             ]
 
-    def _prune_missing_sync(self) -> int:
-        # The registry's presence rule, not a bare exists(): a split output's
-        # check is stored under its logical name (`Game.iso`), which is never
-        # on disk while its parts are (#305). Imported here, as the registry
-        # pulls in every tool.
+    def all_records_blocking(self) -> list[dict[str, str | None]]:
+        """:meth:`all_records`, for a caller already off the event loop."""
+        return self._all_records_sync()
+
+    def _prune_missing_sync(self, progress: Callable[..., None] | None = None) -> int:
+        """Drop the records whose output is confirmed gone; how many.
+
+        The registry's presence rule, not a bare exists(): a split output's
+        check is stored under its logical name (`Game.iso`), which is never
+        on disk while its parts are (#305). And only a confirmed absence
+        (``registry.output_missing``): a file whose check can't answer, on a
+        Volume that stalls or errors, keeps its record (#373). ``progress``
+        is told each record, for a stall-bounded caller; the paths are read
+        and the rows deleted in separate sessions, so no session is held open
+        while a Volume is asked. Blocking.
+        """
+        # Imported here, as the registry pulls in every tool.
         from services.tools import registry
 
+        tick = progress or (lambda *_args: None)
         with self._session() as session:
-            paths = session.scalars(select(_db.Verification.chd_path)).all()
-            missing = [p for p in paths if not registry.output_exists(p)]
-            if not missing:
-                return 0
+            paths = list(session.scalars(select(_db.Verification.chd_path)).all())
+        missing = []
+        for path in paths:
+            tick(path)
+            if registry.output_missing(path):
+                missing.append(path)
+        tick()  # a caller that gave up stops here, before deleting anything
+        if not missing:
+            return 0
+        with self._session() as session:
             # Chunk to stay under SQLite's bind-parameter limit (default 999).
             chunk_size = 900
             for i in range(0, len(missing), chunk_size):
@@ -352,10 +372,11 @@ class VerificationStore:
                     delete(_db.Verification).where(_db.Verification.chd_path.in_(batch))
                 )
             session.commit()
-            return len(missing)
+        return len(missing)
 
-    async def prune_missing(self) -> int:
-        return await run_in_threadpool(self._prune_missing_sync)
+    def prune_missing_blocking(self, progress: Callable[..., None] | None = None) -> int:
+        """:meth:`_prune_missing_sync`, for a stall-bounded caller (#373)."""
+        return self._prune_missing_sync(progress)
 
 
 verification_store = VerificationStore()

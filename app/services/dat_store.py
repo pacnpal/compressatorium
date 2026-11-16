@@ -12,6 +12,7 @@ from logging_setup import get_logger
 import os
 import threading
 import uuid
+from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any
 
@@ -23,6 +24,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from services import db as _db
 from services.dat_parser import parse_dat
+from utils.path_utils import path_presence
 
 logger = get_logger("dat_store")
 
@@ -810,27 +812,37 @@ class DATStore:
         with self._session() as session:
             return list(session.scalars(select(_db.DATMatch.path)).all())
 
-    def _prune_missing_sync(self) -> int:
+    def _prune_missing_sync(self, progress: Callable[..., None] | None = None) -> int:
+        """Drop the match entries whose file is confirmed gone; how many.
+
+        Only a confirmed absence (``path_presence(...) is False``): a file on
+        a Volume that stalls or errors keeps its entry (#373). ``progress`` is
+        told each entry, for a stall-bounded caller; no session is held open
+        while a Volume is asked. Blocking.
+        """
+        tick = progress or (lambda *_args: None)
         with self._session() as session:
-            paths = session.scalars(select(_db.DATMatch.path)).all()
-            missing = [p for p in paths if not os.path.exists(p)]
-            if not missing:
-                return 0
+            paths = list(session.scalars(select(_db.DATMatch.path)).all())
+        missing = []
+        for path in paths:
+            tick(path)
+            if path_presence(path) is False:
+                missing.append(path)
+        tick()  # a caller that gave up stops here, before deleting anything
+        if not missing:
+            return 0
+        with self._session() as session:
             # Chunk to stay under SQLite's bind-parameter limit (default 999).
             chunk_size = 900
             for i in range(0, len(missing), chunk_size):
                 chunk = missing[i:i + chunk_size]
                 session.execute(delete(_db.DATMatch).where(_db.DATMatch.path.in_(chunk)))
             session.commit()
-            return len(missing)
+        return len(missing)
 
-    async def prune_missing(self) -> int:
-        return await run_in_threadpool(self._prune_missing_sync)
+    def prune_missing_blocking(self, progress: Callable[..., None] | None = None) -> int:
+        """:meth:`_prune_missing_sync`, for a stall-bounded caller (#373)."""
+        return self._prune_missing_sync(progress)
 
-
-# ---------------------------------------------------------------------------
-# Module-level singleton.  Lazy, only resolves ``db.SessionLocal`` on first
-# method call, so import order is irrelevant.
-# ---------------------------------------------------------------------------
 
 dat_store = DATStore()
