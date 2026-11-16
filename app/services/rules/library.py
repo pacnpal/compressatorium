@@ -16,7 +16,7 @@ network or a mount. The engine calls them off the event loop.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Hashable, Mapping
+from collections.abc import Callable, Hashable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -269,3 +269,21 @@ class LibraryDefaults:
 
     async def before_pass(self, *, dry_run: bool) -> None:
         """No upkeep before ``run-rules`` sweeps this Library."""
+
+    def walk_generation(self) -> int:
+        """Moves when what :meth:`images` lists is out of date (#353).
+
+        The sweep reads it before listing and again before it records a run:
+        a run whose listing went out of date in between (a conversion added an
+        Image) is not recorded, so its Rule stays due. A Library that lists
+        live every time never moves it.
+        """
+        return 0
+
+    def note_paths_changed(self, paths: Iterable[str]) -> None:
+        """A finished job changed *paths*; drop anything listed from before. Never waits.
+
+        Called on the event loop for every finished job
+        (``libraries.note_job_finished``), so it touches no disk. A Library
+        that lists live every time has nothing to drop.
+        """

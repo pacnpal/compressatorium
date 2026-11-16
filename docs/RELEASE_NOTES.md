@@ -4,6 +4,14 @@
 
 ### Fixed
 
+- **A check right after conversions checks the new Images** (#353). A
+  scheduled check Rule that ran within about 30 seconds of a conversion used
+  the folder listing from before it, checked nothing new, and still counted
+  its nightly run, so a freshly converted Image waited a full day for its
+  first check. A finished conversion now refreshes its folder Library's
+  listing, and a Rule run whose listing went out of date before it finished
+  doesn't count: the next tick runs it again. A run that finds nothing to
+  check on an up-to-date listing still counts.
 - **eXoDOS repack: leftovers and repeat lookups** (#331).
   - A repack killed hard (SIGKILL, power loss) no longer leaves its hidden
     `.partial-*.tmp` file behind for good. It is removed at the next start,

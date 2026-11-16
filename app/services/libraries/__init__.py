@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi.concurrency import run_in_threadpool
+from logging_setup import get_logger
 from services import db as _db
 from services.job_manager import VOLUME_PROBE_TIMEOUT_SECONDS
 from services.libraries.folder import ID_PREFIX, FolderLibrary
@@ -33,6 +34,8 @@ from services.rules.library import Library, duplicate_actions
 from services.subprocess_runner import ProbeCapacityExceeded, run_detached
 from sqlalchemy.exc import IntegrityError
 from utils.path_utils import ensure_path_within_volumes
+
+logger = get_logger("libraries")
 
 __all__ = [
     "FolderLibrary",
@@ -133,6 +136,45 @@ def all_libraries() -> list[Library]:
     from services.romm.library import romm_library
 
     return [romm_library, *folder_libraries()]
+
+
+def note_job_finished(job) -> None:
+    """Tell every Library which paths a finished job changed (#353).
+
+    A conversion that adds or replaces an Image (its output, a Source it
+    deleted) leaves a Library's kept walk out of date: a check or conversion
+    sweep within ``SCAN_TTL_SECONDS`` would list the Images as they were. Each
+    Library drops what it listed from before (``Library.note_paths_changed``).
+    On the event loop, so it reads only the Libraries already in memory: a
+    catalogue never loaded holds no walk to drop. Never raises.
+    """
+    from services.romm.library import romm_library
+
+    paths = [getattr(job, "output_path", None), getattr(job, "file_path", None)]
+    paths = [p for p in paths if p]
+    if not paths:
+        return
+    with _lock:
+        folders = list(_cache.values()) if _cache is not None else []
+    for library in (romm_library, *folders):
+        try:
+            library.note_paths_changed(paths)
+        except Exception:
+            # A listener must never fail a conversion; the walk then ages out.
+            logger.warning(
+                "libraries: %s could not drop its walk after job %s",
+                library.id, getattr(job, "id", None), exc_info=True,
+            )
+
+
+def attach(job_manager) -> None:
+    """Register :func:`note_job_finished` on *job_manager*. Idempotent.
+
+    The server's lifespan and the CLI's job runner both call this, so the two
+    cannot drift.
+    """
+    if note_job_finished not in job_manager._terminal_listeners:
+        job_manager.add_terminal_listener(note_job_finished)
 
 
 def without_a_database() -> list[Library]:

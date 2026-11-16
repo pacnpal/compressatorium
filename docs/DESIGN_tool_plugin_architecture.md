@@ -2280,6 +2280,19 @@ API and the Rules view; the engine never reads those three), and:
   `settle_forever`). A dry run must write nothing. `LibraryDefaults` gives the
   no-op, and every Library class inherits it (`FolderLibrary`, `RommLibrary`,
   which overrides it), so `run-rules` calls it on any Library without a check.
+- `walk_generation()` and `note_paths_changed(paths)` (#353), with
+  `LibraryDefaults` giving `0` and a no-op for a Library that lists live.
+  `services.libraries.note_job_finished`, attached to the job manager by the
+  server's lifespan and the CLI's job runner (`libraries.attach`, like
+  `notifications.attach`), hands every Library the paths a finished job
+  changed (its output and its Source), on the event loop and from memory
+  only. A folder Library whose root holds one bumps a files counter, so the
+  next listing walks again instead of serving the kept walk. The sweep reads
+  `walk_generation()` before it lists a Platform and again before it records
+  that Platform's run (`_listing_current`): a run whose listing went out of
+  date in between is not recorded (`stale_listing` in its summary), so its
+  Rule stays due and the next tick lists the new Images. The same rule for
+  conversion and check Rules.
 
 Capabilities (`RECOGNIZED_FILTER`, `CONVERTED_HISTORY`, `FAILED_HOLD`) say
 what a Library supports. Nothing in `rules/` asks what kind of Library it has.
@@ -2453,7 +2466,12 @@ built once per folder per walk and shared by its files, so the check per file
 is constant-time however large the folder. The cache is as large as the
 Library and a repeat walk reads no headers (tested at 10,000 files). The walk is kept for `SCAN_TTL_SECONDS`
 (30 s): a sweep over several Platforms, and the listing before it, share one
-walk; the platforms endpoint asks for a fresh one. An Image with a Platform
+walk; the platforms endpoint asks for a fresh one. A finished job that changed
+a file under the root ends the kept walk early (`note_paths_changed`, #353),
+through a counter of its own: unlike a mapping change (`invalidate`), it never
+marks a walk in progress as overtaken, so a busy night of conversions makes
+the next listing walk again without ever refusing one as
+`listing_in_progress`. An Image with a Platform
 belongs to it; a Conflicted or Unsorted one belongs to none, so no Rule sees it.
 A file the process cannot read, or a folder it cannot list, is counted as
 `unreadable` and skipped. A Platform id is the canonical slug
@@ -4764,7 +4782,11 @@ both kinds and a check spends another budget. A check Rule's Run now stamps
 sweep found the Rule due at, so a pick that runs past midnight counts for the
 window that selected it), and `_is_due` reads only
 `last_run_at`, so the nightly run still comes in its window; a Platform whose tool is not ready and that picked nothing is not
-stamped at all. Before the loop a real sweep calls `_clear_vanished` (bounded,
+stamped at all. Nor is a run whose listing a finished job made out of date
+before it was recorded (#353, `_listing_current`): a conversion that lands
+just before or during the nightly run would otherwise wait a full day for its
+first check. A run that looked at a current walk and found nothing to check is
+a real run and is stamped. Before the loop a real sweep calls `_clear_vanished` (bounded,
 detached): `findings.clear_gone(library, NOT_INTACT)` drops a not-Intact
 Finding whose file is missing while its folder lists other entries. A share
 that is not mounted is a missing folder or an empty mount point and clears

@@ -63,6 +63,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
+from collections.abc import Iterable
 from typing import Any
 
 from logging_setup import get_logger
@@ -141,6 +142,10 @@ class Scan:
     # True when the generation moved during the walk (a mapping was set): its
     # Findings were not written and a fresh walk was asked for.
     stale: bool = False
+    # How many finished jobs had changed files under the root when the walk
+    # started (`FolderLibrary.note_paths_changed`, #353). A later one makes
+    # this walk out of date for listings, not for its Findings.
+    files_generation: int = 0
 
     def by_platform(self) -> dict[str, list[Entry]]:
         out: dict[str, list[Entry]] = {}
@@ -219,6 +224,11 @@ class FolderLibrary(LibraryDefaults):
         # Bumped when something the last walk relied on changed (a mapping),
         # so the next listing walks again instead of serving it.
         self._generation = 0
+        # Bumped by every finished job that changed a file under the root
+        # (#353). Kept apart from `_generation`, which also decides whether a
+        # walk's Findings were overtaken: a busy night of conversions must
+        # make the next listing walk again, not refuse listings as stale.
+        self._files_generation = 0
         # The Rule engine's generation for this Library when this object was
         # built (#303). Removing the Library moves it, so a walk of this
         # object that finishes, or even starts, after the removal records no
@@ -262,6 +272,25 @@ class FolderLibrary(LibraryDefaults):
     def invalidate(self) -> None:
         """The last walk is out of date; the next listing walks again. Never waits."""
         self._generation += 1
+
+    def walk_generation(self) -> int:
+        """Moves with every :meth:`invalidate` (a mapping) and every job that changed files."""
+        return self._generation + self._files_generation
+
+    def note_paths_changed(self, paths: Iterable[str]) -> None:
+        """Drop the walk when a finished job changed a path under this root (#353).
+
+        Lexical, against the root as registered (resolved), so it touches no
+        disk on the event loop; dropping a walk too often only costs a walk.
+        """
+        root = self.root.rstrip(os.sep)
+        for path in paths:
+            if not path:
+                continue
+            disk_path = os.path.normpath(path.split("::", 1)[0])
+            if disk_path == root or disk_path.startswith(root + os.sep):
+                self._files_generation += 1
+                return
 
     # ---- the walk ----
 
@@ -328,6 +357,7 @@ class FolderLibrary(LibraryDefaults):
         # What this walk's detections are valid for: a mapping set while it
         # runs bumps the generation, and its Findings are then not written.
         walk_generation = self._generation
+        files_generation = self._files_generation
         files, unreadable, unreadable_files, unwalked = self._files()
         stats = dict(files)
         known = {os.path.normpath(p): st for p, st in files}
@@ -360,6 +390,7 @@ class FolderLibrary(LibraryDefaults):
         scan = Scan(
             unreadable=unreadable, unreadable_files=unreadable_files,
             unwalked=unwalked, generation=walk_generation,
+            files_generation=files_generation,
         )
         root = self.root
         # The folder context the folder-name fallback reads beyond the file's
@@ -512,6 +543,7 @@ class FolderLibrary(LibraryDefaults):
             fresh = (
                 self._scan is not None
                 and self._scan.generation == generation
+                and self._scan.files_generation == self._files_generation
                 and time.monotonic() - self._scan.taken_at < SCAN_TTL_SECONDS
             )
             walked = None
