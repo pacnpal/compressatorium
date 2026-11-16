@@ -76,6 +76,10 @@
         <p class="dd-note">Suggested: {open.row.keeper_reason}.</p>
       {/if}
 
+      {#if open.deleting}
+        <!-- The copy to keep is read in full under its lock first (#389). -->
+        <p class="dd-note"><Spinner /> Checking the copy to keep (reading it in full), then deleting…</p>
+      {/if}
       {#if open.error}
         <div class="dd-block" role="alert">
           <TriangleAlert size={14} aria-hidden="true" />

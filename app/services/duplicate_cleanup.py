@@ -352,6 +352,7 @@ async def plan(finding_id: int, fingerprint: str, keep: str) -> dict:
             blocked = True
     return {
         "finding_id": finding_id, "fingerprint": fingerprint, "keep": keep,
+        "key": str((row.get("cause") or {}).get("key") or ""),
         "keeper_identity": found["keeper_identity"],
         "items": found["items"], "blocked": blocked, "total_delete_count": total,
     }
@@ -396,6 +397,7 @@ async def delete(
         raise CleanupRefused(409, "The delete plan changed since it was shown; review it again")
     outcomes = await job_manager.delete_duplicate_copies(
         keeper=keep, keeper_identity=tuple(shown["keeper_identity"]),
+        keeper_key=shown["key"],
         copies=[
             (item["source_path"], list(item["delete_paths"]), tuple(item["identity"]))
             for item in shown["items"]

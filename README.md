@@ -952,7 +952,8 @@ Finding duplicates deletes nothing by itself. To clean a group up:
   on the way can't be listed, it isn't deleted either.
 - When you confirm, every copy and the copy kept are checked again against
   what the Finding showed: one that is gone, changed or unreadable stops the
-  delete. Each copy then goes through the same delete step, locks and checks
+  delete. The copy kept is then read in full (a CHD through `chdman verify`)
+  and must still hold the same disc, or nothing is deleted. Each copy then goes through the same delete step, locks and checks
   as a conversion's delete-on-verify; a copy a job is using is kept, and the
   rest still go.
 - Afterwards the group lists what is left, or goes away once one copy is.

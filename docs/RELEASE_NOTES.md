@@ -12,7 +12,8 @@
   header. **Delete others…** shows
   every file that would go, and nothing is deleted until you confirm. Each copy
   is checked again first and goes through the same delete step and locks as a
-  conversion's delete-on-verify, so a copy that changed, or one a job is using,
+  conversion's delete-on-verify, and the copy kept is read in full first and
+  must still hold the same disc, so a copy that changed, or one a job is using,
   is kept. Delete is only offered when the copies hold provably identical
   content, and a `.cue`'s track file is never deleted on its own, even when
   the sheet sits in a folder above it, nor is a file when a folder or sheet on

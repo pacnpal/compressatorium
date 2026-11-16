@@ -49,6 +49,7 @@ from services.subprocess_runner import (
     MutationNotStarted,
     ProbeCapacityExceeded,
     ReadCancelled,
+    StorageAbandoned,
     run_detached,
     run_detached_bounded,
     run_detached_mutation,
@@ -4083,8 +4084,64 @@ class JobManager:
             return "changed since the Finding was recorded"
         return None
 
+    @staticmethod
+    def _full_fingerprint(path: str) -> Optional[Tuple[int, int, int, int]]:
+        """``(size, mtime_ns, inode, device)`` of *path*, None when unreadable. Blocking."""
+        try:
+            st = os.stat(path)
+        except OSError:
+            return None
+        return (st.st_size, st.st_mtime_ns, st.st_ino, st.st_dev)
+
+    async def _keeper_problem(
+        self, keeper: str, keeper_identity: Tuple[int, int], keeper_key: str,
+    ) -> Optional[str]:
+        """Why *keeper* may not be kept now, or None. Called under its lock (#389).
+
+        Its size and mtime must still be the Finding's, and then its content
+        key is computed again from the bytes it holds now
+        (``content_keys.recompute``: the whole file, or its tool's full pass),
+        never the stored key, and must be the group's: size and mtime say
+        nothing about bytes written back with them. Its full fingerprint
+        (size, mtime, inode, device) must be the same after that read as
+        before it. Any read that fails, stalls or is cancelled refuses.
+        """
+        from services import content_keys
+
+        try:
+            problem = await run_detached_bounded(
+                self._identity_problem, keeper, keeper_identity,
+                timeout=KEPT_DELETE_PROBE_SECONDS,
+            )
+            before = None if problem else await run_detached_bounded(
+                self._full_fingerprint, keeper, timeout=KEPT_DELETE_PROBE_SECONDS,
+            )
+        except (DeadlineExpired, ReadCancelled):
+            return "the copy to keep did not answer"
+        if problem:
+            return f"the copy to keep {problem}"
+        try:
+            key = await content_keys.recompute(keeper)
+        except content_keys.KeyUnavailable as exc:
+            return f"the copy to keep could not be read in full ({exc})"
+        except (ReadCancelled, StorageAbandoned) as exc:
+            return f"the copy to keep could not be read in full ({exc})"
+        if key is None:
+            return "the copy to keep has no content hash that can be read in full"
+        if key != keeper_key:
+            return "the copy to keep no longer holds this disc (its bytes changed)"
+        try:
+            after = await run_detached_bounded(
+                self._full_fingerprint, keeper, timeout=KEPT_DELETE_PROBE_SECONDS,
+            )
+        except (DeadlineExpired, ReadCancelled):
+            return "the copy to keep did not answer"
+        if before is None or after != before:
+            return "the copy to keep changed while it was read"
+        return None
+
     async def delete_duplicate_copies(
-        self, *, keeper: str, keeper_identity: Tuple[int, int],
+        self, *, keeper: str, keeper_identity: Tuple[int, int], keeper_key: str,
         copies: List[Tuple[str, List[str], Tuple[int, int]]],
     ) -> List[Tuple[str, "KeptDeleteRetry"]]:
         """Delete the duplicate copies of a group, keeping *keeper* (#389).
@@ -4092,7 +4149,8 @@ class JobManager:
         Each copy is ``(path, the delete paths the user confirmed, the
         identity the Finding showed)``. The keeper's lock is taken first and
         held throughout, so nothing writes it while its copies go, and it must
-        still be the file the Finding showed. Then each copy goes through the
+        still be the file the Finding showed, holding *keeper_key* by its
+        bytes read now (:meth:`_keeper_problem`). Then each copy goes through the
         job's own delete step (:meth:`_delete_source_set`), as a retried delete
         does: its delete paths taken exclusively without waiting, its snapshot
         taken again under them and compared, the per-path checks, the Referrer
@@ -4105,15 +4163,9 @@ class JobManager:
         try:
             refused = await self._take_output(keeper, travelling)
             if refused is None:
-                try:
-                    problem = await run_detached_bounded(
-                        self._identity_problem, keeper, keeper_identity,
-                        timeout=KEPT_DELETE_PROBE_SECONDS,
-                    )
-                except (DeadlineExpired, ReadCancelled):
-                    problem = "did not answer"
+                problem = await self._keeper_problem(keeper, keeper_identity, keeper_key)
                 if problem:
-                    refused = KeptDeleteRetry(KEPT_STALE, f"the copy to keep {problem}")
+                    refused = KeptDeleteRetry(KEPT_STALE, problem)
             if refused is not None:
                 return [(path, refused) for path, _paths, _identity in copies]
             for path, expected, identity in copies:

@@ -457,6 +457,19 @@ class ToolPlugin(Protocol):
         The caller bounds the call with ``verify_timeout(path)``.
         """
 
+    async def content_sha1(
+        self, path: str, *, cancel_event: asyncio.Event | None = None,
+    ) -> str | None:
+        """The raw image SHA1 of what ``path`` holds now, from a full pass (#389).
+
+        Never a cache and never a header alone: the tool reads the whole
+        payload (dolphin-tool's verify rebuilds the disc; chdman's verify
+        recomputes the data SHA1 and the header must agree). ``None`` when this
+        tool has no full-content hash for the file, which then cannot be the
+        copy a duplicate delete keeps. Raises :class:`EmbeddedHashUnavailable`
+        when the pass did not give one. The caller bounds the call.
+        """
+
     async def content_digest(
         self,
         path: str,
@@ -859,6 +872,15 @@ class BaseTool:
                 f"no single raw image hash for {Path(path).name} ({len(found)} found)",
             )
         return found.pop()
+
+    async def content_sha1(
+        self, path: str, *, cancel_event: asyncio.Event | None = None,
+    ) -> str | None:
+        # Default: a tool whose raw hash rebuilds the image computes it afresh
+        # on every call (no cache), so that is a full pass; any other has none.
+        if not self.raw_image_hash_rebuilds_content:
+            return None
+        return await self.raw_image_sha1(path, cancel_event=cancel_event)
 
     async def source_problem(
         self,

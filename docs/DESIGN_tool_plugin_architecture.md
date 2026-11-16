@@ -5842,7 +5842,20 @@ delete-plan route's item shape (`delete_paths`, `missing_paths`,
 confirmation header and `{fingerprint, keep, delete_paths}`): the plan is made
 again, must not be blocked, and must list exactly the confirmed paths (409
 otherwise). Then `JobManager.delete_duplicate_copies` takes the keeper's lock
-(`_take_output`), checks the keeper's identity under it, and for each copy runs
+(`_take_output`) and, under it and before any copy goes, proves the keeper by
+its bytes (`_keeper_problem`, Codex 4593004806): its size and mtime must still
+be the Finding's, then `content_keys.recompute` computes its key again from
+what it holds now, never the stored row and never a header alone, and it must
+be the group's key; its full fingerprint (size, mtime, inode, device) must be
+the same after that read as before. An `.iso`/`.bin` is hashed whole under the
+stall bound; any other format goes through the tool contract's
+`content_sha1`, a full pass bounded by `verify_timeout` and raced against the
+cancel (`BaseTool`'s default: a tool whose raw hash rebuilds the image, so
+Dolphin rebuilds the disc; `ChdmanTool`: `chdman verify` must pass, which
+recomputes the data SHA1 from every hunk, then the header read fresh). A format
+with no full-content key cannot be kept. A read that fails, stalls, is
+cancelled or gives another key refuses every copy and deletes nothing. Then
+for each copy it runs
 the retried-delete pattern: `build_delete_snapshot` (the copy's own file must
 still have the Finding's identity), its delete paths taken exclusively without
 waiting (`_take_exclusively`: a copy a job holds is `reader`, kept), the

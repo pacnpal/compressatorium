@@ -245,6 +245,50 @@ async def build(path: str, *, cancel_event: asyncio.Event | None = None) -> str 
     return raw_key(sha1) if sha1 else None
 
 
+async def recompute(path: str, *, cancel_event: asyncio.Event | None = None) -> str | None:
+    """*path*'s content key from the bytes it holds now: never the stored row,
+    never a header alone (#389). ``None`` when its format has no full-content
+    key (a CD CHD, a CSO). Raises :class:`KeyUnavailable` when it could not be
+    read in full in time, and lets ``ReadCancelled`` and ``StorageAbandoned``
+    through.
+
+    An ``.iso``/``.bin`` is hashed whole, under the stall bound, as
+    :func:`build` reads it. Any other file goes through its tool's
+    ``content_sha1`` (a full pass: a rebuild or a verify), bounded by the
+    tool's ``verify_timeout`` and raced against *cancel_event*.
+    """
+    name = os.path.basename(path)
+    if is_raw_image(path):
+        try:
+            sha1 = await run_detached_within_stall_bound(
+                _sha1_of, path, what=f"hashing {name}", cancel_event=cancel_event,
+                stall=STALL_SECONDS, report_progress=True,
+            )
+        except (OSError, Stalled, ProgressAbandoned) as exc:
+            raise KeyUnavailable(f"could not read {name}: {exc}") from exc
+        return raw_key(sha1)
+    tool = registry.tool_for_verify(path)
+    if tool is None:
+        return None
+    try:
+        bound = await until_cancelled(
+            tool.verify_timeout(path, cancel_event=cancel_event), cancel_event,
+        )
+        sha1 = await until_cancelled(
+            asyncio.wait_for(
+                tool.content_sha1(path, cancel_event=cancel_event), timeout=bound or None,
+            ),
+            cancel_event,
+        )
+    except (EmbeddedHashUnavailable, OSError, RuntimeError, asyncio.TimeoutError) as exc:
+        _raise_if_cancelled(cancel_event)
+        if isinstance(exc, StorageAbandoned):
+            raise
+        raise KeyUnavailable(f"{tool.id} could not read {name} in full: {exc}") from exc
+    _raise_if_cancelled(cancel_event)
+    return raw_key(sha1) if sha1 else None
+
+
 def _raise_if_cancelled(cancel_event: asyncio.Event | None) -> None:
     if cancel_event is not None and cancel_event.is_set():
         raise ReadCancelled("Read cancelled")

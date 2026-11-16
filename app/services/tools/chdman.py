@@ -453,6 +453,34 @@ class ChdmanTool(BaseTool):
             return None
         return await super().raw_image_sha1(path, cancel_event=cancel_event)
 
+    async def content_sha1(
+        self, path: str, *, cancel_event: asyncio.Event | None = None,
+    ) -> str | None:
+        # A full pass for a DVD or hard-disk CHD (#389): `chdman verify`
+        # decodes every hunk and recomputes the data SHA1, passing only when
+        # it equals the header's; that header value, read fresh (no cache), is
+        # then the image's SHA1. A CD CHD has no raw image hash at all.
+        if Path(path).suffix.lower() != ".chd":
+            return None
+        result = await self.verify(path, cancel_event=cancel_event)
+        if not result.get("valid"):
+            raise EmbeddedHashUnavailable(
+                f"{Path(path).name} did not pass chdman verify "
+                f"({result.get('message') or 'no verdict'})",
+            )
+        try:
+            info = await self._service.info(path, cancel_event=cancel_event)
+        except Exception as e:  # chdman failed or timed out
+            if isinstance(e, (ReadCancelled, StorageAbandoned)):
+                raise  # a cancel or a stuck child: the caller decides
+            raise EmbeddedHashUnavailable(f"chdman info failed: {e}") from e
+        if not _holds_image(info):
+            return None
+        data_sha1 = (info.get("data_sha1") or "").strip().lower()
+        if not _SHA1_RE.fullmatch(data_sha1):
+            raise EmbeddedHashUnavailable("chdman info gave no data SHA1")
+        return data_sha1
+
     async def content_digest(
         self,
         path: str,

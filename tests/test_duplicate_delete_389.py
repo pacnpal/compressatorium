@@ -529,8 +529,12 @@ async def test_a_copy_that_failed_its_check_is_never_a_keeper(
 
 @pytest.mark.asyncio
 async def test_a_header_keyed_copy_that_passed_its_check_may_be_kept(
-    db: Path, client: httpx.AsyncClient,
+    db: Path, client: httpx.AsyncClient, monkeypatch,
 ) -> None:
+    """Kept only after a full pass under its lock: chdman's verify decodes it
+    and the header it then reads must be the group's key (Codex 4593004806)."""
+    from services.chdman import chdman_service
+    from services.tools import registry
     from services.verification_store import verification_store
 
     roms = db / "roms"
@@ -542,13 +546,55 @@ async def test_a_header_keyed_copy_that_passed_its_check_may_be_kept(
     group = await _group(client)
     chd = str(roms / "Game.chd")
     assert group["keeper"] == chd and "Intact" in group["keeper_reason"]
+    passes: list[str] = []
+
+    async def verify(path, *, cancel_event=None):
+        passes.append(os.path.basename(path))
+        return {"valid": True, "message": "ok"}
+
+    async def info(path, *, cancel_event=None):
+        return {"sha1": "0" * 40, "data_sha1": sha1,
+                "raw_data": "Metadata: Tag='DVD '  Index=0\n"}
+
+    monkeypatch.setattr(registry.get("chdman"), "verify", verify)
+    monkeypatch.setattr(chdman_service, "info", info)
 
     plan = (await _plan(client, group, chd)).json()
     assert plan["blocked"] is False
     done = await _delete(client, group, chd, _paths(plan))
     assert done.status_code == 200, done.text
+    assert passes == ["Game.chd"]
     assert not (roms / "Game.iso").exists()
     assert (roms / "Game.chd").exists()
+
+
+@pytest.mark.asyncio
+async def test_a_kept_chd_that_fails_its_full_pass_deletes_nothing(
+    db: Path, client: httpx.AsyncClient, monkeypatch,
+) -> None:
+    from services.tools import registry
+    from services.verification_store import verification_store
+
+    roms = db / "roms"
+    sha1 = d388._disc(roms / "Game.iso", b"game")
+    await d388._seed_chd(roms / "Game.chd", data_sha1=sha1, sha1="0" * 40)
+    await verification_store.mark_verified(str(roms / "Game.chd"))
+    library = await d388._register(client, roms)
+    await d388._find(client, library)
+    group = await _group(client)
+    chd = str(roms / "Game.chd")
+
+    async def verify(path, *, cancel_event=None):
+        return {"valid": False, "message": "hunk 12 is damaged"}
+
+    monkeypatch.setattr(registry.get("chdman"), "verify", verify)
+    plan = (await _plan(client, group, chd)).json()
+    done = await _delete(client, group, chd, _paths(plan))
+
+    assert done.status_code == 200, done.text
+    assert all(r["status"] != "deleted" for r in done.json()["results"])
+    assert any("could not be read in full" in (r["reason"] or "") for r in done.json()["results"])
+    assert (roms / "Game.iso").exists()
 
 
 # ----------------------------------------------------------------------
@@ -624,3 +670,70 @@ async def test_a_sheet_further_up_naming_other_files_does_not_block(
     response = await _plan(client, group, str(roms / "Game.iso"))
     assert response.status_code == 200, response.text
     assert response.json()["blocked"] is False, response.json()
+
+
+# ----------------------------------------------------------------------
+# the keeper is read in full before anything goes (Codex 4593004806)
+# ----------------------------------------------------------------------
+
+
+async def _iso_pair(client, roms: Path) -> tuple[dict, str, dict]:
+    d388._disc(roms / "Game.iso", b"game")
+    d388._copy(roms / "Game.iso", roms / "Copy.iso")
+    library = await d388._register(client, roms)
+    await d388._find(client, library)
+    group = await _group(client)
+    keep = str(roms / "Game.iso")
+    return group, keep, (await _plan(client, group, keep)).json()
+
+
+@pytest.mark.asyncio
+async def test_a_keeper_swapped_with_the_same_size_and_mtime_deletes_nothing(
+    db: Path, client: httpx.AsyncClient,
+) -> None:
+    """Size and mtime say nothing about bytes written back with them: the
+    keeper's key is computed again from what it holds now."""
+    roms = db / "roms"
+    group, keep, plan = await _iso_pair(client, roms)
+    keeper = roms / "Game.iso"
+    st = keeper.stat()
+    keeper.write_bytes(os.urandom(st.st_size))
+    os.utime(keeper, ns=(st.st_atime_ns, st.st_mtime_ns))
+
+    done = await _delete(client, group, keep, _paths(plan))
+
+    assert (roms / "Copy.iso").exists()
+    reasons = [r["reason"] or "" for r in done.json()["results"]] if done.status_code == 200 else [
+        done.json()["detail"],
+    ]
+    assert any("no longer holds this disc" in r for r in reasons), done.text
+    assert all(r["status"] != "deleted" for r in done.json().get("results", []))
+
+
+@pytest.mark.asyncio
+async def test_a_keeper_that_cannot_be_read_in_time_deletes_nothing(
+    db: Path, client: httpx.AsyncClient, monkeypatch,
+) -> None:
+    from services import content_keys
+
+    roms = db / "roms"
+    group, keep, plan = await _iso_pair(client, roms)
+    release = threading.Event()
+    real = content_keys._sha1_of
+
+    def stalls(path, *, progress):
+        if path == keep:
+            release.wait(30)   # a read that never moves
+        return real(path, progress=progress)
+
+    monkeypatch.setattr(content_keys, "_sha1_of", stalls)
+    monkeypatch.setattr(content_keys, "STALL_SECONDS", 0.3)
+    try:
+        done = await _delete(client, group, keep, _paths(plan))
+    finally:
+        release.set()
+
+    assert done.status_code == 200, done.text
+    assert all(r["status"] != "deleted" for r in done.json()["results"])
+    assert any("could not be read in full" in (r["reason"] or "") for r in done.json()["results"])
+    assert (roms / "Copy.iso").exists()
