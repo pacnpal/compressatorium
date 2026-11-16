@@ -1999,7 +1999,10 @@ def _sse_batch_from_verify_stream(
                 if recorded["verdict"]:
                     verified_count += 1
                     status = "verified"
-                elif final_result.get("uncheckable"):
+                elif final_result.get("uncheckable") or final_result.get("inconclusive"):
+                    # Refused here, or it could not be checked (a file the
+                    # verifier could not open, #359): no verdict, so it is not
+                    # counted failed.
                     uncheckable_count += 1
                     status = "uncheckable"
                 else:
