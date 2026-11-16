@@ -636,7 +636,10 @@ sees an entry, so a huge folder on a slow but healthy mount would pass the
 bound while still reading. `utils.path_utils.list_folder(path, progress)` is
 the one-folder form (`os.scandir`, one report per entry, sorted afterwards so
 order is unchanged), and `folder_has_entries(path)` answers "is it empty" by
-reading at most one entry. Progress callers:
+reading at most one entry. The same goes for per-item work inside a listing:
+each archive member a listing or search checks (`_summarize_archive(path,
+progress)`, `scan_tree`'s member loop) is one report, so one large archive
+does not look like a stall. Progress callers:
 - The metadata scan's file listing (`routes/info.py`, `_WALK_STALL_SECONDS`).
   A stall ends the scan as failed, with a warning naming the folder, and frees
   `_is_scanning` and the `metadata_scan` lane, so a later scan can start.

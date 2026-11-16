@@ -16,6 +16,7 @@ import logging
 import os
 import threading
 import time
+import zipfile
 
 import pytest
 from fastapi import BackgroundTasks, HTTPException
@@ -346,6 +347,71 @@ async def test_a_listing_that_blocks_before_its_first_entry_ends_at_the_bound(
         )
     else:
         call = files_env.search_files(path=str(tmp_path), recursive=True, include_archives=True)
+    try:
+        assert await _answer_of(call) == 503
+    finally:
+        release.set()
+
+
+def _big_archive(folder, count=ENTRIES):
+    folder.mkdir(exist_ok=True)
+    archive = folder / "Pack.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        for index in range(count):
+            zf.writestr(f"Game {index:02d}.iso", b"x")
+    return archive
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", ["list", "search"])
+async def test_an_archive_whose_member_checks_keep_moving_is_not_cut_off(
+    tmp_path, files_env, monkeypatch, route,
+):
+    """Each member's check is quick, all of them together pass the bound."""
+    archive = _big_archive(tmp_path / "Packs")
+    real = files_env._detect_archive_member_outputs
+    checked: list[str] = []
+
+    def slow(entry, archive_dir):
+        time.sleep(DELAY)
+        checked.append(entry["name"])
+        return real(entry, archive_dir)
+
+    monkeypatch.setattr(files_env, "_detect_archive_member_outputs", slow)
+    if route == "list":
+        call = files_env.list_files(
+            path=str(archive.parent), show_archives=True, summarize_archives=True,
+        )
+    else:
+        call = files_env.search_files(
+            path=str(archive.parent), recursive=True, include_archives=True,
+        )
+
+    assert await _answer_of(call) == 200
+    assert len(checked) == ENTRIES
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", ["list", "search"])
+async def test_an_archive_member_check_that_blocks_ends_at_the_bound(
+    tmp_path, files_env, monkeypatch, route,
+):
+    archive = _big_archive(tmp_path / "Packs", count=2)
+    release = threading.Event()
+
+    def blocked(_entry, _archive_dir):
+        release.wait(60)
+        return None, [], [], {}
+
+    monkeypatch.setattr(files_env, "_detect_archive_member_outputs", blocked)
+    if route == "list":
+        call = files_env.list_files(
+            path=str(archive.parent), show_archives=True, summarize_archives=True,
+        )
+    else:
+        call = files_env.search_files(
+            path=str(archive.parent), recursive=True, include_archives=True,
+        )
     try:
         assert await _answer_of(call) == 503
     finally:

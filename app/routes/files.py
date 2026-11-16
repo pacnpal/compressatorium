@@ -248,7 +248,9 @@ def verifiable_tools(path: str) -> list[str]:
     return [t.id for t in registry.tools_verifying_path(path)]
 
 
-def _summarize_archive(item_path: str) -> dict:
+def _summarize_archive(
+    item_path: str, progress: Callable[..., None] | None = None,
+) -> dict:
     """Per-archive summary fields for the file listing / archive-summary batch.
 
     Reads the archive once (via the shared mtime-cached member reader) and
@@ -258,7 +260,10 @@ def _summarize_archive(item_path: str) -> dict:
     Shared by the inline ``summarize_archives=True`` path and the lazy
     ``/archive-summary`` batch the browser hydrates with, so both report
     identical badges. Blocking I/O — call it off the event loop.
+    ``progress``, when given, is told each member as it is checked, so a
+    stall-bounded listing keeps moving through a large archive (#361).
     """
+    tick = progress or (lambda *_args: None)
     archive_result = archive_service.list_archive_contents(
         item_path, include_meta=True,
     )
@@ -266,6 +271,7 @@ def _summarize_archive(item_path: str) -> dict:
     archive_dir = os.path.dirname(item_path)
     archive_has_output = 0
     for entry in contents:
+        tick()
         _, _, _, member_by_tool = _detect_archive_member_outputs(entry, archive_dir)
         # A member counts as "converted" once any tool already has a sibling
         # output for it, not just CHDMAN.
@@ -480,7 +486,7 @@ async def list_files(
                         verifiable_by: list[str] = []
                         if is_archive:
                             if summarize_archives_flag:
-                                summary = _summarize_archive(item_path)
+                                summary = _summarize_archive(item_path, progress)
                                 archive_items = summary["archive_items"]
                                 archive_has_output = summary["archive_has_output"]
                                 archive_truncated = summary["archive_truncated"]
@@ -748,6 +754,7 @@ def scan_tree(
                                 archives_truncated.add(item_path)
                             archive_dir = os.path.dirname(item_path)
                             for entry in archive_contents:
+                                tick()  # one report per member (#361)
                                 (
                                     output_stem,
                                     member_convertible_by,
