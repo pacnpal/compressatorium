@@ -16,7 +16,7 @@ from services.subprocess_runner import (
     ProbeCapacityExceeded,
     Stalled,
     run_detached_bounded,
-    run_detached_until_stalled,
+    run_detached_within_stall_bound,
 )
 
 VOLUME_UNRESPONSIVE_DETAIL = "A Volume isn't responding. Try again later."
@@ -29,7 +29,8 @@ WALK_STALL_SECONDS = VOLUME_PROBE_TIMEOUT_SECONDS
 async def off_loop_until_stalled(func, *args, what: str, **kwargs):
     """Run a blocking listing or walk off the event loop; 503 once it stops moving.
 
-    Through ``run_detached_until_stalled`` (#361): *func* is called with a
+    Through ``run_detached_within_stall_bound(report_progress=True)`` (#361):
+    *func* is called with a
     ``progress`` keyword it reports every entry to (``utils.path_utils.
     walk_tree`` does it for a walk), on a disposable thread. A listing that
     reads nothing for ``WALK_STALL_SECONDS`` (a frozen mount), or the
@@ -38,8 +39,9 @@ async def off_loop_until_stalled(func, *args, what: str, **kwargs):
     is never cut off. Anything *func* raises reaches the caller as itself.
     """
     try:
-        return await run_detached_until_stalled(
-            func, *args, stall=WALK_STALL_SECONDS, what=what, **kwargs,
+        return await run_detached_within_stall_bound(
+            func, *args, what=what, stall=WALK_STALL_SECONDS, report_progress=True,
+            **kwargs,
         )
     except (Stalled, ProbeCapacityExceeded):
         raise HTTPException(status_code=503, detail=VOLUME_UNRESPONSIVE_DETAIL) from None

@@ -248,7 +248,7 @@ async def test_searching_under_a_frozen_folder_answers_503(tmp_path, files_env, 
 
 @pytest.mark.asyncio
 async def test_the_stall_bound_resets_on_progress_and_names_where_it_stopped():
-    from services.subprocess_runner import Stalled, run_detached_until_stalled
+    from services.subprocess_runner import Stalled, run_detached_within_stall_bound
 
     stop = threading.Event()
 
@@ -262,7 +262,10 @@ async def test_the_stall_bound_resets_on_progress_and_names_where_it_stopped():
     try:
         with pytest.raises(Stalled) as caught:
             await asyncio.wait_for(
-                run_detached_until_stalled(walk, stall=STALL, what="Listing"), BOUND,
+                run_detached_within_stall_bound(
+                    walk, what="Listing", stall=STALL, report_progress=True,
+                ),
+                BOUND,
             )
     finally:
         stop.set()

@@ -603,33 +603,34 @@ job has no outer deadline. So a blocking step before the child starts (xiso's
 header probe, its filesystem walk, its workspace setup) or after it exits (the
 final rename into place) would hold the job, and the single-slot queue behind
 it, for as long as a dead mount takes.
-`run_detached_within_stall_bound(func, *args, what=..., cancel_event=...)` is
-`run_detached` under the same no-progress limit the subprocess phase gets
-(`CHD_PROGRESS_TIMEOUT`, floored the same way, `0` disables). On expiry it
-raises a `RuntimeError` naming `what`. A cancel still raises `ReadCancelled`,
-which the conversion must translate to `ConversionCancelled`, or the job is
-recorded as failed rather than cancelled. Only the bound's own expiry is
-reworded: a `TimeoutError` that fails at once (`ProbeCapacityExceeded`, an OS
-`ETIMEDOUT`) keeps its own type and message. Use it for small steps (headers,
-directory tables, a rename); a whole-file pass belongs under a size-scaled
-bound instead.
+`run_detached_within_stall_bound(func, *args, what=..., cancel_event=...,
+stall=..., report_progress=...)` is the one stall-bounded detached seam: it
+runs `func` on a detached thread and gives up only after a stretch with no
+progress. The bound is `stall` seconds or, by default, the limit the
+subprocess phase gets (`CHD_PROGRESS_TIMEOUT`, floored the same way); `0`
+disables it. On expiry it raises `Stalled`, a `RuntimeError` naming `what`
+and, for a walk, the last folder reported. A cancel still raises
+`ReadCancelled`, which a conversion must translate to `ConversionCancelled`,
+or the job is recorded as failed rather than cancelled. Only the bound's own
+expiry is reworded: a `TimeoutError` that fails at once
+(`ProbeCapacityExceeded`, an OS `ETIMEDOUT`) keeps its own type and message,
+and a call that finished just as the bound ran out is answered.
 
-**A walk over a tree is bounded by no progress, not by its total time (#361).**
-A Library can be large and healthy, or sit on a frozen mount, and a fixed bound
-either cuts off the first or waits too long on the second.
-`run_detached_until_stalled(func, *args, stall=..., what=..., cancel_event=...)`
-calls `func(*args, progress=<Progress>, **kwargs)` on a detached thread. The
-call reports every step: `progress()` after each entry, `progress(where)`
-before each folder. The wait ends only when `stall` seconds pass with no
-report, and then it raises `Stalled`, whose `where` names the last folder
-reported. A cancel raises `ReadCancelled` at once, as in `run_detached`.
-Either way the thread is abandoned, counted like any other, and the next
-`progress()` call inside it raises `ProgressAbandoned`, so a walk that is
-still moving stops instead of finishing for nobody. `stall <= 0` means no
-bound. `utils.path_utils.walk_tree(top, progress)` is the walk to use with
-it: `os.walk(top)` semantics (top-down, a symlinked folder listed but never
+Without `report_progress` (a conversion's small steps: headers, directory
+tables, a rename), `func` reports nothing, so the bound is simply how long it
+may take; a whole-file pass belongs under a size-scaled bound instead. With
+`report_progress=True` (a walk over a tree that may be large and healthy, or
+frozen, #361), `func` is called with a `progress=<Progress>` keyword and
+reports every step: `progress()` after each entry, `progress(where)` before
+each folder. Each report restarts the clock, so a big Library that keeps
+moving is never cut off and a listing blocked on a frozen mount ends at the
+bound. Whatever ends the wait, the thread is abandoned (counted like any
+other), and the next `progress()` call inside it raises `ProgressAbandoned`,
+so a walk that is still moving stops instead of finishing for nobody.
+`utils.path_utils.walk_tree(top, progress)` is the walk to use with it:
+`os.walk(top)` semantics (top-down, a symlinked folder listed but never
 walked into, unreadable folders skipped) built on `os.scandir`, reporting each
-folder and each entry. Callers:
+folder and each entry. Progress callers:
 - The metadata scan's file listing (`routes/info.py`, `_WALK_STALL_SECONDS`).
   A stall ends the scan as failed, with a warning naming the folder, and frees
   `_is_scanning` and the `metadata_scan` lane, so a later scan can start.

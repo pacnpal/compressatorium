@@ -868,7 +868,7 @@ def walk_tree(
     folder is listed in ``dirs`` but never walked into, and a folder that
     cannot be read is skipped. ``progress(folder)`` is called before each
     listing and ``progress()`` after every entry read, so
-    ``subprocess_runner.run_detached_until_stalled`` gives up only on a
+    ``subprocess_runner.run_detached_within_stall_bound`` gives up only on a
     listing that stopped answering (a frozen mount), never on a large tree
     that keeps moving, and its message names the folder (#361). Blocking.
     """

@@ -58,7 +58,7 @@ from services.subprocess_runner import (
     StorageAbandoned,
     bounded_path_check,
     collect_abandonment,
-    run_detached_until_stalled,
+    run_detached_within_stall_bound,
     stops_verify_batch,
 )
 from services.workload_limiter import WorkloadToken, workload_limiter
@@ -460,9 +460,10 @@ async def scan_metadata_task(
         # is given up on when it stops moving (a frozen mount) or on Cancel
         # (#361), so neither holds `_is_scanning` or the scan lane.
         try:
-            all_paths = await run_detached_until_stalled(
+            all_paths = await run_detached_within_stall_bound(
                 collect_scannable_paths,
                 stall=_WALK_STALL_SECONDS,
+                report_progress=True,
                 what="Listing the files to scan",
                 cancel_event=job_manager.get_cancel_event(scan_job_id),
             )
