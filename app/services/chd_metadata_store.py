@@ -419,8 +419,8 @@ class CHDMetadataStore:
         The file is stat'ed before the read and again before the write; the
         metadata is stored with that first identity, and only when the file is
         still the same one. Returns ``(info, record)``; *record* is None when
-        the file changed during the read (nothing stored, the info is still
-        returned for the caller to show).
+        the file changed during the read, or could not be stat'ed before it
+        (nothing stored, the info is still returned for the caller to show).
         """
         normalized = self._normalize_path(chd_path)
         try:
@@ -428,8 +428,10 @@ class CHDMetadataStore:
         except OSError:
             before = None
         info = await read()
-        # A file that could not be stat'ed before the read is cached as it
-        # always was; its row then carries no identity, which reads as stale.
+        if before is None:
+            # Nothing ties this metadata to a file: a later stat could name a
+            # file swapped in after the read. Returned, never cached.
+            return info, None
         record = await self.set_metadata(chd_path, info, persist=False, before=before)
         return info, record
 

@@ -717,6 +717,35 @@ async def test_a_chd_swapped_while_chdman_info_reads_it_stores_nothing(db: Path)
 
 
 @pytest.mark.asyncio
+async def test_a_chd_whose_first_stat_fails_is_not_cached(db: Path, monkeypatch) -> None:
+    """CodeRabbit 4590832883: with no identity from before the read, nothing
+    ties the metadata to the file, so it is returned but never cached, even
+    when a later stat succeeds."""
+    chd = db / "Game.chd"
+    chd.write_bytes(b"MComprHD" + os.urandom(64))
+    real_stat = os.stat
+    calls = {"n": 0}
+
+    def flaky(path, *args, **kwargs):
+        if os.fspath(path) == os.path.realpath(chd):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise OSError(5, "I/O error")
+        return real_stat(path, *args, **kwargs)
+
+    async def read():
+        return {"sha1": "0" * 40, "data_sha1": "3" * 40, "raw_data": ""}
+
+    monkeypatch.setattr(os, "stat", flaky)
+    info, record = await chd_metadata_store.read_and_cache(str(chd), read)
+    monkeypatch.setattr(os, "stat", real_stat)
+
+    assert info["data_sha1"] == "3" * 40
+    assert record is None
+    assert await chd_metadata_store.get_metadata(str(chd)) is None
+
+
+@pytest.mark.asyncio
 async def test_a_run_started_while_its_library_is_removed_is_refused(
     db: Path, client: httpx.AsyncClient, monkeypatch,
 ) -> None:
