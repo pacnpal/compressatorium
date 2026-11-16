@@ -42,6 +42,19 @@ function readConverter(raw) {
   };
 }
 
+/**
+ * The status's `swap` block (#390): whether "keep the ROM id when converting"
+ * is on, and, when it is, which of its token scopes RomM says are missing.
+ * Absent on an older server, which reads as off.
+ */
+function readSwap(raw) {
+  return {
+    keepRomId: raw?.keep_rom_id === true,
+    missing: Array.isArray(raw?.missing) ? raw.missing : [],
+    error: raw?.error ?? null,
+  };
+}
+
 // The RomM Library's Rules come from RulesSource, shared with folder Libraries;
 // what is here is RomM's own: connection, settings, platforms, re-pin.
 class RommStore extends RulesSource {
@@ -280,6 +293,7 @@ class RommStore extends RulesSource {
           : null,
         pendingRepins: data?.pending_repins ?? 0,
         converter: readConverter(data?.converter),
+        swap: readSwap(data?.swap),
         error: data?.error ?? null,
       };
     } catch (e) {

@@ -215,7 +215,7 @@ def test_a_connection_save_still_clears_the_credential_buffers(tmp_path):
     assert cleared["clear_after"] is False, cleared
 
 
-def test_both_save_buttons_wait_for_the_settings_to_load(tmp_path):
+def test_every_save_button_waits_for_the_settings_to_load(tmp_path):
     """Empty buffers submitted as a connection read as a move to nowhere.
 
     Until the saved settings arrive the edit buffers are `''`. Saving then
@@ -225,7 +225,7 @@ def test_both_save_buttons_wait_for_the_settings_to_load(tmp_path):
     src = _SETTINGS.read_text(encoding="utf-8")
     buttons = re.findall(r"<Button\b[^>]*?onclick=\{(handleSave\w*)\}(.*?)/>", src, re.DOTALL)
     found = {name for name, _ in buttons}
-    assert found == {"handleSave", "handleSaveMetadata"}, found
+    assert found == {"handleSave", "handleSaveMetadata", "handleSaveSwap"}, found
     for name, attrs in buttons:
         assert "disabled={!loaded}" in attrs, (
             f"{name}'s button can fire before the settings have loaded"

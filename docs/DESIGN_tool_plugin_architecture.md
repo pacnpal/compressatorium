@@ -5893,6 +5893,37 @@ and the status's `converter` block is the one source for the banner, the Rule
 flags and the can't-convert marks. None of it changes what a Rule or a sweep
 does.
 
+#### The swap switch and its token check (#390)
+
+`swap_keep_rom_id` is a RomM setting (`services/romm/settings.py`, env
+`ROMM_SWAP_KEEP_ROM_ID`, off by default), stored with the rest of the RomM
+settings and returned by `GET /api/romm/settings`. Nothing reads it yet except
+the status block: the swap itself (#391) will.
+
+The swap needs `roms.read` (the read-back), `roms.write` (renaming the record)
+and `tasks.run` (the rescan). RomM has no endpoint that lists a token's scopes,
+so `RommClient.token_permissions()` asks with the three probes found in the
+spike (#382, RomM 5.4.1): `PUT /api/roms/2147483647` is 404 with `roms.write`
+and 403 without it, `GET /api/tasks/status` is 200 with `tasks.run` and 403
+without, and `GET /api/roms?limit=1` is 200 with `roms.read`. A 403 is a missing
+scope; any other status is not an answer about scopes and raises `RommError`,
+so a 401 or a 5xx is never read as "missing". Each probe goes through
+`RommClient._request` with its own 10 second `timeout` (the new optional
+parameter, which `_urlopen` takes too), and the route runs the three in the
+threadpool under `swap.CHECK_SECONDS`, so a RomM that stops answering holds
+neither the loop nor the request. `services/romm/swap.py` owns the wording:
+the scope list, the admin-token hint, and the refusal.
+
+`PUT /api/romm/settings` with `swap_keep_rom_id: true` runs the check first,
+against the URL and token the same request would save, before any lock and
+before anything is persisted. Missing scopes answer 422 naming each one; no
+token is a 422; RomM not configured, unreachable, or rejecting the token is
+503, 502, or 504 and the switch stays off. Turning it off, or saving anything
+else, asks RomM nothing. `GET /api/romm/status` carries
+`swap: {keep_rom_id, missing, error}`; it probes only when the switch is on and
+RomM is connected, so a token that has lost a scope shows up there.
+`tests/fake_romm.py` answers the probes from a configurable `scopes` set.
+
 #### Asking a tool whether it can run (`registry.tool_is_ready`)
 
 `ToolPlugin.is_ready()` is a coroutine, which makes it look bounded and does

@@ -14,6 +14,13 @@ source at ``eb10d95``:
   stored in (``LIBRARY_TARGETS_BY_PLATFORM`` in
   ``backend/adapters/services/rom_converto.py``).
 * ``GET /api/platforms``: a flat list of platforms.
+* The token-permission probes (#390). RomM has no endpoint that lists a token's
+  scopes, so the app asks harmless questions whose answer depends on them (RomM
+  5.4.1, spike #382): ``PUT /api/roms/2147483647`` is 404 with ``roms.write``
+  and 403 without it, ``GET /api/tasks/status`` is 200 with ``tasks.run`` and
+  403 without it, and ``GET /api/roms`` is 200 with ``roms.read``. ``scopes`` is
+  the set the fake's token holds; ``probe_status`` makes every probe fail with
+  that status instead (a RomM that is down, or rejects the token).
 
 ``converter=False`` is a RomM from before the converter: neither ``CONVERTO``
 key is served.
@@ -44,6 +51,10 @@ LIBRARY_TARGETS: dict[str, list[str]] = {
 }
 
 
+# What a token for the swap holds (an admin user's).
+DEFAULT_SCOPES = frozenset({"roms.read", "roms.write", "tasks.run"})
+
+
 class FakeRomm:
     """One fake RomM instance. Start with :meth:`start`, stop with :meth:`stop`."""
 
@@ -56,6 +67,8 @@ class FakeRomm:
         platform_formats: dict[str, str] | None = None,
         platforms: list[dict] | None = None,
         config_status: int = 200,
+        scopes: set[str] | None = None,
+        probe_status: int | None = None,
     ) -> None:
         self.version = version
         self.converter = converter
@@ -64,6 +77,9 @@ class FakeRomm:
         self.platforms = list(platforms or [])
         # Anything but 200 makes /api/config fail with that status.
         self.config_status = config_status
+        # The scopes the fake's token holds, as RomM spells them.
+        self.scopes = set(DEFAULT_SCOPES if scopes is None else scopes)
+        self.probe_status = probe_status
         self.requests: list[tuple[str, str]] = []
         self._server: ThreadingHTTPServer | None = None
 
@@ -102,8 +118,23 @@ class FakeRomm:
             }
         return body
 
-    def _answer(self, path: str) -> tuple[int, Any]:
+    def _gated(self, scope: str, ok: int) -> tuple[int, Any]:
+        """*ok* when the token holds *scope*, else RomM's 403."""
+        if self.probe_status is not None:
+            return self.probe_status, {"detail": "probe failed"}
+        if scope in self.scopes:
+            return ok, {}
+        return 403, {"detail": f"Insufficient scope: {scope}"}
+
+    def _answer(self, method: str, path: str) -> tuple[int, Any]:
         route = path.split("?", 1)[0]
+        if method == "PUT" and route == "/api/roms/2147483647":
+            # The ROM does not exist, so a token allowed to write gets a 404.
+            return self._gated("roms.write", 404)
+        if method == "GET" and route == "/api/tasks/status":
+            return self._gated("tasks.run", 200)
+        if method == "GET" and route == "/api/roms":
+            return self._gated("roms.read", 200)
         if route == "/api/heartbeat":
             return 200, self.heartbeat()
         if route == "/api/config":
@@ -119,8 +150,16 @@ class FakeRomm:
 
         class _Handler(BaseHTTPRequestHandler):
             def do_GET(self) -> None:
-                fake.requests.append(("GET", self.path))
-                status, body = fake._answer(self.path)
+                self._serve("GET")
+
+            def do_PUT(self) -> None:
+                # Drain the body so the connection stays well formed.
+                self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                self._serve("PUT")
+
+            def _serve(self, method: str) -> None:
+                fake.requests.append((method, self.path))
+                status, body = fake._answer(method, self.path)
                 raw = json.dumps(body).encode()
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json")
