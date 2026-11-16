@@ -4265,6 +4265,42 @@ The preparation:
   delete re-runs the container check only: the Round-trip cannot compare
   against a part-deleted Source. The stat filter runs once more right before
   the unlinks.
+- **A re-check that finds an output bad records it** (#351). Every re-check
+  records its result by one rule (`verification_store.check_verdict` /
+  `record_check`): a pass refreshes the record (`refresh_check`), a real
+  verdict that the file is bad marks it failed (`mark_failed`, the call a
+  check Rule makes), and no verdict (`error`, `cancelled`, `abandoned`,
+  `inconclusive`, `timed_out`, `uncheckable`) leaves the record as it was. The
+  CLI's `verify`, the verify routes (the single check, its event stream and
+  the batch, whose own timeouts and failed streams say `timed_out` or
+  `error`), and `JobManager._container_check` (a job's check and every
+  retried delete's re-check) all apply it, so no badge, `/api/verified`
+  lookup or delete warning keeps showing a once-checked output as checked
+  after a re-check found it bad. What counts as a verdict is decided where a
+  tool's verify turns an exception into its result, by one helper,
+  `subprocess_runner.verify_exception_event`: "could not read the file" (any
+  `OSError` but a broken pipe or reset, a missing tool, a timeout) is
+  `inconclusive`, and a header or format error is a verdict. Every verify
+  path that catches an exception goes through it, so a transient EACCES or
+  EIO never marks a checked output failed (codex 4582164683: eXoDOS had built
+  a plain `valid: False` from an `OSError`). A Round-trip outcome is read by
+  the same rule (`RoundTripOutcome.as_verify_result`): only digests that were
+  both read and differ (`mismatch`) are a verdict, so a retried delete whose
+  Round-trip finds other content marks the output failed and keeps the
+  Source, and one whose sides could not be read records nothing. In
+  `_container_check`, a result with no verdict (but `uncheckable`) raises
+  `VerifyUnanswered`, like the outer bound: a job fails as before, and a
+  retried delete counts an attempt instead of dropping the entry
+  (CodeRabbit 4582189529). The verify event streams persist before they
+  publish (`routes/info.py::_publish_terminal`, one helper for both streams):
+  the producer writes the terminal verdict, then queues the terminal event,
+  so a reader that sees it, and may stop reading and cancel the producer at
+  once, can rely on the record (codex 4582270883). The write is its own task
+  under `asyncio.shield`, so a cancel stops the waiting, never the write, and
+  the verify lane is let go only once the write has finished
+  (`_release_after_writes`): no newer check of the same file can start and
+  be overwritten (CodeRabbit 4582189521). The batch counts the verdict the
+  producer recorded.
 - Then `_delete_source_set` runs, as for the job. A Referrer or path check
   that keeps the Source, or a removal the filesystem refuses part way, is
   `kept`: try again.

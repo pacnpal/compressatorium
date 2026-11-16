@@ -51,6 +51,25 @@ class RoundTripOutcome:
     # job keeps the Source either way; a retried delete (#329) counts it as
     # an attempt rather than a failed check.
     timed_out: bool = False
+    # Both digests were read and they differ: a verdict that the output does
+    # not hold the Source's content. Every other failure (a side that could
+    # not be read, a Source the tool refused, digests of kinds that cannot be
+    # compared) is no verdict on the output.
+    mismatch: bool = False
+
+    def as_verify_result(self) -> dict:
+        """This outcome in a ``verify`` result's shape, so the one rule that
+        reads verdicts (``verification_store.check_verdict``) decides what it
+        means for the output's record (#351): a pass, a mismatch (a verdict),
+        or none (``inconclusive``)."""
+        if self.passed:
+            return {"valid": True, "message": "Round-tripped"}
+        result = {"valid": False, "message": self.message}
+        if self.cancelled:
+            result["cancelled"] = True
+        elif not self.mismatch:
+            result["inconclusive"] = True
+        return result
 
 
 class _DigestTimedOut(ContentDigestUnavailable):
@@ -177,8 +196,11 @@ async def round_trip(
     if reason:
         # The tool knows why its digests can differ (#301); say that rather
         # than a bare "content differs", which reads like damage.
-        return RoundTripOutcome(passed=False, message=f"Round-trip failed: {reason}.")
+        return RoundTripOutcome(
+            passed=False, message=f"Round-trip failed: {reason}.", mismatch=True,
+        )
     return RoundTripOutcome(
+        mismatch=True,
         passed=False,
         message=(
             "Round-trip failed: the output's content differs from the Source. "
