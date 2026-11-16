@@ -222,7 +222,10 @@ def annotate(rows: list[dict]) -> None:
             keeper_problem(keeper["path"], records.get(keeper["path"]), keeper)
             if keeper else row["keeper_reason"]
         )
-        row["not_deletable"] = not_deletable(row, held.get(row["library_id"]))
+        row["not_deletable"] = (
+            not_deletable(row, held.get(row["library_id"]))
+            if row["keeper"] else row["keeper_reason"] or "no copy can be kept"
+        )
         row["deletable"] = row["not_deletable"] is None
 
 
@@ -395,18 +398,21 @@ async def delete(
     planned = sorted(p for item in shown["items"] for p in item.get("delete_paths") or [])
     if planned != sorted(confirmed):
         raise CleanupRefused(409, "The delete plan changed since it was shown; review it again")
-    outcomes = await job_manager.delete_duplicate_copies(
+    outcomes, keeper_changed = await job_manager.delete_duplicate_copies(
         keeper=keep, keeper_identity=tuple(shown["keeper_identity"]),
-        keeper_key=shown["key"],
+        keeper_key=shown["key"], copy_problem=_sheet_problem,
         copies=[
             (item["source_path"], list(item["delete_paths"]), tuple(item["identity"]))
             for item in shown["items"]
         ],
     )
     gone = {path for path, outcome in outcomes if outcome.status == KEPT_DELETED}
-    await run_in_threadpool(_settle, finding_id, gone)
+    await run_in_threadpool(_settle, finding_id, gone, fingerprint)
     return {
         "keep": keep,
+        # Set when the copy kept no longer looked like the file that was
+        # hashed once the last delete was done: the user should check it.
+        "keeper_changed": keeper_changed,
         "results": [
             {"path": path, "status": outcome.status, "reason": outcome.reason,
              "deleted": list(outcome.deleted)}
@@ -415,8 +421,13 @@ async def delete(
     }
 
 
-def _settle(finding_id: int, gone: set[str]) -> None:
-    """The Finding after a delete: what is left of the group, or nothing."""
+def _settle(finding_id: int, gone: set[str], fingerprint: str) -> None:
+    """The Finding after a delete: what is left of the group, or nothing.
+
+    Only the Finding the delete was confirmed on (*fingerprint*): a run that
+    wrote a newer cause meanwhile is left as it is, checked under the store's
+    write lock.
+    """
     from services import duplicates
 
     row = findings.get_finding(finding_id)
@@ -432,10 +443,15 @@ def _settle(finding_id: int, gone: set[str]) -> None:
 
     cause = row.get("cause") or {}
     left = [c for c in cause.get(findings.COPIES) or [] if c["path"] not in gone]
+    if row["fingerprint"] != fingerprint:
+        return
     if len(left) < 2:
-        findings.resolve(row["library_id"], row["image_key"], findings.DUPLICATE, current=current)
+        findings.resolve(
+            row["library_id"], row["image_key"], findings.DUPLICATE, current=current,
+            fingerprint=fingerprint,
+        )
         return
     findings.observe(
         row["library_id"], duplicates.finding_from_copies(str(cause.get("key")), left),
-        current=current,
+        current=current, fingerprint=fingerprint,
     )

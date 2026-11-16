@@ -182,9 +182,15 @@ class VerificationStore:
         normalized = self._normalize(chd_path)
         with self._session() as session:
             row = session.get(_db.Verification, normalized)
-            if row is not None:
+            if row is None:
+                # A first check that fails is recorded too (#389): "failed"
+                # must not read as "never checked" (a duplicate group's keeper).
+                session.add(_db.Verification(
+                    chd_path=normalized, verified_at=_utcnow_iso(), check_passed=FAILED,
+                ))
+            else:
                 row.check_passed = FAILED
-                session.commit()
+            session.commit()
 
     async def mark_failed(self, chd_path: str) -> None:
         """Record that ``chd_path`` failed a check (#305).
@@ -194,7 +200,8 @@ class VerificationStore:
         are kept, as :meth:`refresh_check` keeps them: a check that fails
         never erases what made the file, so the next check still goes to the
         tool that made it, and a later pass (:meth:`refresh_check`) restores
-        the record. A file with no record stays without one.
+        the record. A file with no record gets a failed one, with no
+        provenance, so a first failure is never read as "never checked".
         """
         await run_in_threadpool(self._mark_failed_sync, chd_path)
 

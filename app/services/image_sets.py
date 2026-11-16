@@ -101,6 +101,10 @@ def owning_sheet(
 
     tick = progress or (lambda *_args: None)
     real = os.path.realpath(path)
+    try:
+        own = os.stat(real)
+    except OSError as exc:
+        raise SheetOwnerUnknown(f"{path} could not be read ({exc.strerror or exc})") from exc
     boundary = os.path.normpath(os.path.realpath(stop_at))
     folder = os.path.normpath(os.path.dirname(real))
     if folder != boundary and not folder.startswith(boundary.rstrip(os.sep) + os.sep):
@@ -127,7 +131,7 @@ def owning_sheet(
                 raise SheetOwnerUnknown(
                     f"{name} names a track it may not use, so its tracks are unknown",
                 )
-            if real in {os.path.realpath(track) for track in tracks}:
+            if any(_is_track(own, real, str(track)) for track in tracks):
                 return sheet
         if folder == boundary:
             return None
@@ -135,6 +139,22 @@ def owning_sheet(
         if parent == folder:
             return None
         folder = parent
+
+
+def _is_track(own: os.stat_result, real: str, track: str) -> bool:
+    """Whether *track* (a sheet's spelling) is the file *own* is a stat of.
+
+    By file identity (device and inode), so a case-insensitive share's
+    ``track.bin`` is ``Track.bin``. A track that does not exist is compared by
+    its case-folded real path. Any other stat failure leaves it unknown.
+    """
+    try:
+        st = os.stat(track)
+    except FileNotFoundError:
+        return os.path.normcase(os.path.realpath(track)) == os.path.normcase(real)
+    except OSError as exc:
+        raise SheetOwnerUnknown(f"{track} could not be read ({exc.strerror or exc})") from exc
+    return (st.st_dev, st.st_ino) == (own.st_dev, own.st_ino)
 
 
 def _same_file(a: str, b: str) -> bool:

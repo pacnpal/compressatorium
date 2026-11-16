@@ -92,3 +92,61 @@ def test_the_view_offers_the_delete_only_where_the_backend_does() -> None:
     endpoints = _ENDPOINTS.read_text(encoding="utf-8")
     assert "/delete-plan`" in endpoints
     assert "'X-CHD-Action-Confirm': CONFIRM.DELETE_FILE" in endpoints
+
+
+
+def test_the_keeper_cannot_change_while_its_delete_runs(tmp_path):
+    """CodeRabbit 4593240111: picking another keeper during the delete would
+    drop the running delete's state; it is ignored, and the selector is off."""
+    data = _run(tmp_path, f"""
+api.duplicateDeletePlan = __call('duplicateDeletePlan');
+let finish;
+api.deleteDuplicates = () => new Promise((resolve) => {{ finish = resolve; }});
+__answers.listFindings = {{ findings: [], dismissed: 0 }};
+__answers.duplicateDeletePlan = {{ items: [{{ source_path: '/v/Copy.iso',
+  delete_paths: ['/v/Copy.iso'] }}], blocked: false, total_delete_count: 1 }};
+await findings.openCleanup({_ROW});
+const running = findings.confirmCleanup();
+await findings.openCleanup({_ROW}, '/v/Copy.iso');
+const during = {{ keep: findings.cleanup.keep, deleting: findings.cleanup.deleting }};
+finish({{ results: [] }});
+await running;
+process.stdout.write(JSON.stringify({{
+  during, plans: __log.filter((c) => c[0] === 'duplicateDeletePlan').length,
+}}));
+""")
+    assert data["during"] == {"keep": "/v/Game.iso", "deleting": True}, data
+    assert data["plans"] == 1, data
+    assert "disabled={!!open.deleting}" in _MODAL.read_text(encoding="utf-8")
+
+
+def test_a_delete_answer_for_a_closed_dialog_writes_nothing(tmp_path):
+    """CodeRabbit 4593240130: the dialog was closed and another one opened
+    while the delete ran; its answer must not close or mark the new one."""
+    other = _ROW.replace("id: 7", "id: 8").replace("'f7'", "'f8'")
+    data = _run(tmp_path, f"""
+api.duplicateDeletePlan = __call('duplicateDeletePlan');
+let fail;
+api.deleteDuplicates = () => new Promise((_resolve, reject) => {{ fail = reject; }});
+__answers.listFindings = {{ findings: [], dismissed: 0 }};
+__answers.duplicateDeletePlan = {{ items: [{{ source_path: '/v/Copy.iso',
+  delete_paths: ['/v/Copy.iso'] }}], blocked: false, total_delete_count: 1 }};
+await findings.openCleanup({_ROW});
+const running = findings.confirmCleanup().catch(() => null);
+findings.closeCleanup();
+await findings.openCleanup({other});
+fail(new Error('refused'));
+await running;
+process.stdout.write(JSON.stringify({{
+  id: findings.cleanup?.row?.id, error: findings.cleanup?.error ?? null,
+  deleting: findings.cleanup?.deleting,
+}}));
+""")
+    assert data == {"id": 8, "error": None, "deleting": False}, data
+
+
+def test_cleanup_is_offered_only_with_a_keeper() -> None:
+    """CodeRabbit 4593240120: a group whose every copy failed its check has no
+    keeper, so no Delete others button."""
+    view = _VIEW.read_text(encoding="utf-8")
+    assert "row.kind === 'duplicate' && row.deletable && row.keeper" in view

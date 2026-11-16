@@ -5859,17 +5859,51 @@ cancel (`BaseTool`'s default: a tool whose raw hash rebuilds the image, so
 Dolphin rebuilds the disc; `ChdmanTool`: `chdman verify` must pass, which
 recomputes the data SHA1 from every hunk, then the header read fresh). A format
 with no full-content key cannot be kept. A read that fails, stalls, is
-cancelled or gives another key refuses every copy and deletes nothing. Then
-for each copy it runs
+cancelled or gives another key refuses every copy and deletes nothing.
+
+The keeper is opened (`_open_keeper`) and held open from that read to the end
+of the batch; an image's hash is read through that descriptor
+(`content_keys.recompute(fd=...)`). Before each copy, and once after the last
+delete, `_keeper_still_held` checks that the batch still holds the keeper's
+lock (`HeldLocks.holds`: a lingering Referrer operation may have taken it,
+CodeRabbit 4593240091) and that the path still names the held file, with the
+same device, inode, size and mtime (`_keeper_moved`, Codex 4593214751). Any
+change stops the batch and what is left stays; a change seen only after the
+last delete is reported (`keeper_changed`). This catches a rename swap. An
+in-place rewrite by a writer with write access to the keeper cannot be caught
+by any ordering here, since the same writer could corrupt it right after the
+cleanup: that is inherent to keeping one copy. The copies being deleted are
+not read in full (a decision, CodeRabbit 4593240082): a copy swapped for other
+bytes with its size and mtime put back can only be swapped by something that
+can already write, and so delete, it; each keeps its full fingerprint check
+(size, mtime, inode, device) under its holds.
+
+Then for each copy it runs
 the retried-delete pattern: `build_delete_snapshot` (the copy's own file must
 still have the Finding's identity), its delete paths taken exclusively without
 waiting (`_take_exclusively`: a copy a job holds is `reader`, kept), the
-snapshot again under the holds, then the shared delete step
-(`_delete_source_set`: per-path checks, the Referrer hook pointing playlists at
-the keeper, the unlinks as one mutation, the copy's check and metadata records
-cleared). Each copy's outcome is a `KeptDeleteRetry`. Afterwards
-`duplicate_cleanup._settle` rewrites the Finding with the copies left
-(`duplicates.finding_from_copies`), or resolves it once fewer than two are.
+snapshot again under the holds, the sheet check again under them
+(`copy_problem`, `duplicate_cleanup._sheet_problem`: a sheet that names the
+copy since the plan keeps it, CodeRabbit 4593240099), then the shared delete
+step (`_delete_source_set`: per-path checks, the Referrer hook pointing
+playlists at the keeper, the unlinks as one mutation, the copy's check and
+metadata records cleared). Each copy's outcome is a `KeptDeleteRetry`.
+Afterwards `duplicate_cleanup._settle` rewrites the Finding with the copies
+left (`duplicates.finding_from_copies`), or resolves it once fewer than two
+are, and only when the stored Finding still has the fingerprint the delete was
+confirmed on (`findings.observe` / `resolve` with `fingerprint=`, checked under
+the store's write lock, CodeRabbit 4593240053): a run that wrote a newer cause
+meanwhile wins.
+
+`owning_sheet` compares a sheet's tracks with the copy by file identity (device
+and inode), so a case-insensitive share's `track.bin` is `Track.bin`; a track
+that does not exist is compared by its case-folded real path, and any other
+stat failure leaves the owner unknown (CodeRabbit 4593240059).
+
+A first check that fails is recorded (`verification_store.mark_failed` adds a
+failed row when there is none), so a raw ISO that failed is never read as
+"never checked" and never kept. A group whose every copy failed has no keeper
+and offers no delete.
 
 ### 3.4 `registry.py`
 

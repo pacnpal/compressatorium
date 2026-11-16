@@ -245,7 +245,21 @@ async def build(path: str, *, cancel_event: asyncio.Event | None = None) -> str 
     return raw_key(sha1) if sha1 else None
 
 
-async def recompute(path: str, *, cancel_event: asyncio.Event | None = None) -> str | None:
+def _sha1_of_fd(fd: int, *, progress: Callable[..., None]) -> str:
+    """The SHA1 of the file *fd* is open on, from its start, reporting every
+    read. Blocking: run stall-bounded. *fd* stays open (a duplicate is read)."""
+    hasher = new_hasher("sha1")
+    with open(os.dup(fd), "rb", buffering=0) as fh:
+        fh.seek(0)
+        while chunk := fh.read(READ_CHUNK):
+            progress()
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+
+async def recompute(
+    path: str, *, cancel_event: asyncio.Event | None = None, fd: int | None = None,
+) -> str | None:
     """*path*'s content key from the bytes it holds now: never the stored row,
     never a header alone (#389). ``None`` when its format has no full-content
     key (a CD CHD, a CSO). Raises :class:`KeyUnavailable` when it could not be
@@ -253,17 +267,24 @@ async def recompute(path: str, *, cancel_event: asyncio.Event | None = None) -> 
     through.
 
     An ``.iso``/``.bin`` is hashed whole, under the stall bound, as
-    :func:`build` reads it. Any other file goes through its tool's
+    :func:`build` reads it; through *fd* when given (the caller holds the file
+    open, so what is hashed is the file it then checks the path against). Any other file goes through its tool's
     ``content_sha1`` (a full pass: a rebuild or a verify), bounded by the
     tool's ``verify_timeout`` and raced against *cancel_event*.
     """
     name = os.path.basename(path)
     if is_raw_image(path):
         try:
-            sha1 = await run_detached_within_stall_bound(
-                _sha1_of, path, what=f"hashing {name}", cancel_event=cancel_event,
-                stall=STALL_SECONDS, report_progress=True,
-            )
+            if fd is None:
+                sha1 = await run_detached_within_stall_bound(
+                    _sha1_of, path, what=f"hashing {name}", cancel_event=cancel_event,
+                    stall=STALL_SECONDS, report_progress=True,
+                )
+            else:
+                sha1 = await run_detached_within_stall_bound(
+                    _sha1_of_fd, fd, what=f"hashing {name}", cancel_event=cancel_event,
+                    stall=STALL_SECONDS, report_progress=True,
+                )
         except (OSError, Stalled, ProgressAbandoned) as exc:
             raise KeyUnavailable(f"could not read {name}: {exc}") from exc
         return raw_key(sha1)

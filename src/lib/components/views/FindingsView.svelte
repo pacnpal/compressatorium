@@ -288,7 +288,7 @@
                 Set Platform
               </Button>
             {/if}
-            {#if row.kind === 'duplicate' && row.deletable}
+            {#if row.kind === 'duplicate' && row.deletable && row.keeper}
               <Button
                 variant="ghost" size="sm" icon={deleteIcon}
                 ariaLabel={`Delete the other copies of ${findingName(row)}`}

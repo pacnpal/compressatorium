@@ -131,6 +131,8 @@ class FindingsStore {
   /** Open the delete dialog on a duplicate group, keeping *keep*. */
   async openCleanup(row, keep = row?.keeper) {
     if (!row || !keep) return;
+    // The keeper is fixed while its delete runs: a new plan would drop it.
+    if (this.cleanup?.deleting) return;
     const request = ++this.#planRequest;
     this.cleanup = { row, keep, plan: null, error: null, deleting: false };
     try {
@@ -155,16 +157,21 @@ class FindingsStore {
   async confirmCleanup() {
     const open = this.cleanup;
     const plan = open?.plan;
-    if (!plan || plan.blocked) return null;
+    if (!plan || plan.blocked || open.deleting) return null;
     const paths = plan.items.flatMap((item) => item.delete_paths ?? []);
+    // This dialog's generation: a close, or another dialog opened meanwhile,
+    // moves it, and the answer then writes nothing to the dialog now open.
+    const request = this.#planRequest;
     this.cleanup = { ...open, deleting: true };
     try {
       const result = await api.deleteDuplicates(open.row.id, open.row.fingerprint, open.keep, paths);
       this.#superseded();
-      this.cleanup = null;
+      if (request === this.#planRequest) this.cleanup = null;
       return result;
     } catch (e) {
-      if (this.cleanup) this.cleanup = { ...this.cleanup, deleting: false, error: e?.message ?? 'Could not delete the copies' };
+      if (request === this.#planRequest && this.cleanup) {
+        this.cleanup = { ...this.cleanup, deleting: false, error: e?.message ?? 'Could not delete the copies' };
+      }
       throw e;
     } finally {
       await this.load();

@@ -66,7 +66,10 @@
     {#if open}
       <label class="dd-keep">
         <span>Keep</span>
-        <select value={open.keep} onchange={pickKeeper} aria-label="The copy to keep">
+        <select
+          value={open.keep} onchange={pickKeeper} aria-label="The copy to keep"
+          disabled={!!open.deleting}
+        >
           {#each copies as copy (copy.path)}
             <option value={copy.path}>{copy.path}</option>
           {/each}

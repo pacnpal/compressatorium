@@ -719,14 +719,13 @@ async def test_a_keeper_that_cannot_be_read_in_time_deletes_nothing(
     roms = db / "roms"
     group, keep, plan = await _iso_pair(client, roms)
     release = threading.Event()
-    real = content_keys._sha1_of
+    real = content_keys._sha1_of_fd
 
-    def stalls(path, *, progress):
-        if path == keep:
-            release.wait(30)   # a read that never moves
-        return real(path, progress=progress)
+    def stalls(fd, *, progress):
+        release.wait(30)   # the keeper's read, through its held descriptor, never moves
+        return real(fd, progress=progress)
 
-    monkeypatch.setattr(content_keys, "_sha1_of", stalls)
+    monkeypatch.setattr(content_keys, "_sha1_of_fd", stalls)
     monkeypatch.setattr(content_keys, "STALL_SECONDS", 0.3)
     try:
         done = await _delete(client, group, keep, _paths(plan))
@@ -776,3 +775,216 @@ async def test_a_sheet_with_a_refused_reference_further_up_blocks_the_track(
 
     await _blocked_for(client, group, str(roms / "Game.iso"), "Disc.cue")
     assert (roms / "tracks" / "Track.bin").exists()
+
+
+
+# ----------------------------------------------------------------------
+# review round 5: the batch under the keeper, a sheet that appears late,
+# identity compares, conditional settles, a first failed check
+# ----------------------------------------------------------------------
+
+
+async def _three_isos(client, roms: Path) -> tuple[dict, str, dict]:
+    d388._disc(roms / "Game.iso", b"game")
+    d388._copy(roms / "Game.iso", roms / "Copy1.iso")
+    d388._copy(roms / "Game.iso", roms / "Copy2.iso")
+    library = await d388._register(client, roms)
+    await d388._find(client, library)
+    group = await _group(client)
+    keep = str(roms / "Game.iso")
+    return group, keep, (await _plan(client, group, keep)).json()
+
+
+def _statuses(done) -> dict[str, tuple[str, str]]:
+    return {
+        os.path.basename(r["path"]): (r["status"], r["reason"] or "")
+        for r in done.json()["results"]
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_keeper_renamed_away_mid_batch_stops_the_batch(
+    db: Path, client: httpx.AsyncClient, monkeypatch,
+) -> None:
+    """Codex 4593214751: the keeper is held open from its hash to the end of
+    the batch, and before each delete its path must still name that file."""
+    from services.job_manager import job_manager
+
+    roms = db / "roms"
+    group, keep, plan = await _three_isos(client, roms)
+    real = job_manager._delete_copy
+    calls = {"n": 0}
+
+    async def swap_after_first(path, keeper, *args, **kwargs):
+        outcome = await real(path, keeper, *args, **kwargs)
+        calls["n"] += 1
+        if calls["n"] == 1:
+            # Another file renamed into the keeper's place, same size and mtime.
+            st = os.stat(keeper)
+            other = roms / "other.tmp"
+            other.write_bytes(os.urandom(st.st_size))
+            os.utime(other, ns=(st.st_atime_ns, st.st_mtime_ns))
+            os.replace(other, keeper)
+        return outcome
+
+    monkeypatch.setattr(job_manager, "_delete_copy", swap_after_first)
+    done = await _delete(client, group, keep, _paths(plan))
+
+    assert done.status_code == 200, done.text
+    statuses = _statuses(done)
+    assert statuses["Copy1.iso"][0] == "deleted"
+    assert statuses["Copy2.iso"][0] != "deleted"
+    assert "copy to keep" in statuses["Copy2.iso"][1]
+    assert (roms / "Copy2.iso").exists()
+
+
+@pytest.mark.asyncio
+async def test_a_keeper_lock_lost_mid_batch_stops_the_batch(
+    db: Path, client: httpx.AsyncClient, monkeypatch,
+) -> None:
+    """CodeRabbit 4593240091: a Referrer operation that takes the keeper's lock
+    with it leaves the batch without it: nothing more is deleted."""
+    from services import job_manager as jm
+
+    roms = db / "roms"
+    group, keep, plan = await _three_isos(client, roms)
+    real = jm.job_manager._delete_source_set
+
+    async def takes_the_locks(owner_id, **kwargs):
+        outcome = await real(owner_id, **kwargs)
+        travelling = kwargs.get("travelling_locks")
+        if travelling is not None:
+            jm._let_go(travelling.take())   # as a lingering Referrer would
+        return outcome
+
+    monkeypatch.setattr(jm.job_manager, "_delete_source_set", takes_the_locks)
+    done = await _delete(client, group, keep, _paths(plan))
+
+    statuses = _statuses(done)
+    assert statuses["Copy1.iso"][0] == "deleted"
+    assert statuses["Copy2.iso"][0] != "deleted"
+    assert "lock" in statuses["Copy2.iso"][1]
+    assert (roms / "Copy2.iso").exists()
+
+
+@pytest.mark.asyncio
+async def test_a_sheet_that_names_a_copy_after_the_plan_keeps_it(
+    db: Path, client: httpx.AsyncClient, monkeypatch,
+) -> None:
+    """CodeRabbit 4593240099: the sheet check runs again under the copy's
+    locks, right before it is deleted."""
+    from services.job_manager import job_manager
+
+    roms = db / "roms"
+    d388._disc(roms / "Game.iso", b"game")
+    d388._copy(roms / "Game.iso", roms / "Copy.iso")
+    library = await d388._register(client, roms)
+    await d388._find(client, library)
+    group = await _group(client)
+    keep = str(roms / "Game.iso")
+    plan = (await _plan(client, group, keep)).json()
+    real = job_manager._copy_snapshot_bounded
+
+    async def sheet_lands(path, identity):
+        # A sheet naming the copy appears once the delete has re-planned.
+        _cue(roms / "Disc.cue", "Copy.iso")
+        return await real(path, identity)
+
+    monkeypatch.setattr(job_manager, "_copy_snapshot_bounded", sheet_lands)
+    done = await _delete(client, group, keep, _paths(plan))
+
+    assert done.status_code == 200, done.text
+    status, reason = _statuses(done)["Copy.iso"]
+    assert status != "deleted" and "Disc.cue" in reason
+    assert (roms / "Copy.iso").exists()
+
+
+def _case_insensitive(folder: Path) -> bool:
+    probe = folder / "CaseProbe"
+    probe.write_text("x")
+    try:
+        return (folder / "caseprobe").exists()
+    finally:
+        probe.unlink()
+
+
+@pytest.mark.asyncio
+async def test_a_sheet_naming_the_track_in_another_case_owns_it(
+    db: Path, client: httpx.AsyncClient, monkeypatch,
+) -> None:
+    """CodeRabbit 4593240059: on a case-insensitive share the sheet's spelling
+    and the file's differ; they are compared by file identity."""
+    roms = db / "romm"
+    roms.mkdir(parents=True, exist_ok=True)
+    if not _case_insensitive(roms):
+        pytest.skip("needs a case-insensitive filesystem")
+    group = await _track_group(client, monkeypatch, roms)
+    _cue(roms / "Disc.cue", "disc (track 1).BIN")
+
+    await _blocked_for(client, group, str(roms / "Game.iso"), "is a track of Disc.cue")
+
+
+@pytest.mark.asyncio
+async def test_settling_never_overwrites_a_newer_finding(
+    db: Path, client: httpx.AsyncClient,
+) -> None:
+    """CodeRabbit 4593240053: the post-delete update applies only to the
+    Finding the delete read; a run that changed it meanwhile wins."""
+    from fastapi.concurrency import run_in_threadpool
+    from services import duplicate_cleanup
+
+    roms = db / "roms"
+    group, _keep, _shown = await _three_isos(client, roms)
+
+    await run_in_threadpool(
+        duplicate_cleanup._settle, group["id"], {str(roms / "Copy1.iso")}, "stale-fingerprint",
+    )
+    await run_in_threadpool(
+        duplicate_cleanup._settle, group["id"],
+        {str(roms / "Copy1.iso"), str(roms / "Copy2.iso")}, "stale-fingerprint",
+    )
+
+    after = await _group(client)
+    assert after["fingerprint"] == group["fingerprint"]
+
+
+@pytest.mark.asyncio
+async def test_a_first_failed_check_is_recorded_and_bars_the_keeper(
+    db: Path, client: httpx.AsyncClient,
+) -> None:
+    """CodeRabbit review 5929914808: a copy with no record whose first check
+    fails is recorded as failed, so it is never kept."""
+    from services.verification_store import verification_store
+
+    roms = db / "roms"
+    d388._disc(roms / "Game.iso", b"game")
+    d388._copy(roms / "Game.iso", roms / "Copy.iso")
+    await verification_store.mark_failed(str(roms / "Copy.iso"))
+    library = await d388._register(client, roms)
+    await d388._find(client, library)
+    group = await _group(client)
+
+    assert group["keeper"] == str(roms / "Game.iso")
+    response = await _plan(client, group, str(roms / "Copy.iso"))
+    assert response.status_code == 409
+    assert "failed its check" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_no_cleanup_is_offered_when_every_copy_failed(
+    db: Path, client: httpx.AsyncClient,
+) -> None:
+    from services.verification_store import verification_store
+
+    roms = db / "roms"
+    d388._disc(roms / "Game.iso", b"game")
+    d388._copy(roms / "Game.iso", roms / "Copy.iso")
+    for name in ("Game.iso", "Copy.iso"):
+        await verification_store.mark_failed(str(roms / name))
+    library = await d388._register(client, roms)
+    await d388._find(client, library)
+    group = await _group(client)
+
+    assert group["keeper"] is None
+    assert group["deletable"] is False
+    assert "failed" in group["not_deletable"]
