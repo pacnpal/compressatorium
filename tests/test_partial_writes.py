@@ -287,6 +287,70 @@ def test_an_orphaned_sidecar_is_swept_too(volume):
     assert not sidecar.exists()
 
 
+def test_a_cleanup_that_cannot_remove_the_temp_file_keeps_its_record(
+    volume, tmp_path, monkeypatch
+):
+    """Only a temp file known to be gone loses its journal entry."""
+    src = _zip(tmp_path / "in.zip")
+    real_unlink = os.unlink
+
+    def stuck(path, *args, **kwargs):
+        if str(path).endswith(partial_writes.TEMP_SUFFIX):
+            raise PermissionError(errno.EACCES, "Permission denied", path)
+        return real_unlink(path, *args, **kwargs)
+
+    def bad_product(_path):
+        raise RuntimeError("bad product")
+
+    monkeypatch.setattr(os, "unlink", stuck)
+
+    with pytest.raises(RuntimeError, match="bad product"):
+        rewrite_zip(src, str(volume / "dos" / "out.dosz"), check=bad_product)
+
+    temps = [n for n in os.listdir(volume / "dos") if partial_writes.is_leftover_name(n)]
+    assert len(temps) == 1
+    assert partial_writes.recorded_paths() == [str(volume / "dos" / temps[0])]
+
+
+@pytest.mark.parametrize("sweep", ["folder", "recorded"])
+def test_a_folder_link_swapped_after_the_check_never_reaches_outside(
+    volume, tmp_path, monkeypatch, sweep
+):
+    """The sweep works in the directory that passed containment, not in
+    whatever its path names a moment later."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    victim = _leftover(outside, ".partial-abcd1234.tmp")
+    _leftover(volume / "dos", ".partial-abcd1234.tmp")
+    link = volume / "link"
+    link.symlink_to(volume / "dos")
+    if sweep == "recorded":
+        partial_writes.record(str(link / ".partial-abcd1234.tmp"))
+    swapped = []
+    for name in ("volume_containment", "is_within_configured_volumes"):
+        real = getattr(partial_writes, name, None)
+        if real is None:
+            continue
+
+        def checked(path, *args, _real=real, **kwargs):
+            answer = _real(path, *args, **kwargs)
+            if not swapped:
+                link.unlink()
+                link.symlink_to(outside)
+                swapped.append(path)
+            return answer
+
+        monkeypatch.setattr(partial_writes, name, checked)
+
+    if sweep == "folder":
+        partial_writes.sweep_folder(str(link))
+    else:
+        partial_writes.sweep_recorded()
+
+    assert swapped
+    assert victim.exists()
+
+
 def test_a_lock_failure_leaks_no_descriptor_and_leaves_nothing_behind(
     volume, tmp_path, monkeypatch
 ):

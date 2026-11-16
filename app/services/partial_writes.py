@@ -24,8 +24,10 @@ A process killed hard (SIGKILL, power loss) leaves that file: hidden, ending in
   path still names that inode; then it removes the sidecar too. A sidecar left
   without its temp file is swept the same way.
 * **Fail closed.** The folder must be inside a configured Volume
-  (``is_within_configured_volumes``, which answers "outside" when it can't
-  tell). Anything uncertain is kept.
+  (``volume_containment(...) is True``; "can't tell" counts as outside), and
+  the sweep then works through one descriptor of that folder, opened along
+  its real path with no symlink followed, so a folder link repointed after
+  the check cannot move it. Anything uncertain is kept.
 * **Two times to sweep.** :func:`sweep_folder` runs before every rewrite into
   that folder. :func:`sweep_recorded` runs at startup, from a small journal in
   the data directory (one file per temp file in flight, written when the temp
@@ -49,7 +51,7 @@ from pathlib import Path
 from logging_setup import get_logger
 from utils.path_utils import (
     companion_name,
-    is_within_configured_volumes,
+    open_dir_beneath,
     short_temp_name,
     volume_containment,
 )
@@ -172,7 +174,7 @@ def _unlink_quietly(path: str) -> None:
 class TempClaim:
     """A temp file a writer owns: ``fd`` (open for writing) and ``path``, its
     held sidecar lock, and its journal marker. :meth:`release` once the temp
-    file is placed or removed; the caller owns ``fd``."""
+    file is placed or removed, or a removal failed; the caller owns ``fd``."""
 
     fd: int
     path: str
@@ -180,12 +182,16 @@ class TempClaim:
     lock_path: str
     marker: str | None
 
-    def release(self) -> None:
+    def release(self, *, temp_gone: bool = True) -> None:
+        """Drop the lock, and the journal marker only when ``temp_gone``: a
+        temp file whose removal failed stays journaled for the startup sweep.
+        """
         # The sidecar goes while its lock is still held, so no sweep can take
         # a lock on a sidecar that is about to vanish; then the marker.
         _unlink_quietly(self.lock_path)
         os.close(self.lock_fd)
-        forget(self.marker)
+        if temp_gone:
+            forget(self.marker)
 
 
 def claim_temp(directory: str) -> TempClaim:
@@ -223,20 +229,40 @@ def claim_temp(directory: str) -> TempClaim:
 
 
 # --- the sweep -------------------------------------------------------------
+#
+# Every operation on a candidate runs relative to one directory descriptor,
+# opened right after the folder passed containment, by a walk that refuses
+# every symlink (``open_dir_beneath``). Repointing a folder symlink after the
+# check therefore cannot move the sweep anywhere else.
 
 
-def _same_file(path: str, info: os.stat_result) -> bool:
+def _open_folder(directory: str) -> int | None:
+    """The folder, opened once and bound: its real path must be inside a
+    configured Volume (``volume_containment(...) is True``), and it is opened
+    along that real path with no symlink followed. None when it is outside,
+    containment can't tell, or the walk fails (an unmounted Volume, a
+    component swapped for a link)."""
     try:
-        current = os.lstat(path)
+        real = os.path.realpath(directory)
+        if volume_containment(real, treat_archives=False) is not True:
+            return None
+        return open_dir_beneath(real)
+    except (OSError, ValueError):
+        return None
+
+
+def _same_file(dir_fd: int, name: str, info: os.stat_result) -> bool:
+    try:
+        current = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
     except OSError:
         return False
     return (current.st_dev, current.st_ino) == (info.st_dev, info.st_ino)
 
 
-def _open_sidecar(lock_path: str) -> int | None:
+def _open_sidecar(dir_fd: int, lock_name: str) -> int | None:
     """The sidecar, opened for a lock (created if a pre-#331 leftover has none)."""
     try:
-        fd = os.open(lock_path, _LOCK_FLAGS, 0o600)
+        fd = os.open(lock_name, _LOCK_FLAGS, 0o600, dir_fd=dir_fd)
     except OSError:
         return None
     try:
@@ -248,14 +274,22 @@ def _open_sidecar(lock_path: str) -> int | None:
     return None
 
 
-def _sweep_one(path: str, min_age: float) -> bool | None:
-    """Remove one leftover and its sidecar. True removed, False kept on purpose
-    (its writer holds the lock, or it is too young), None not ours or couldn't
-    tell."""
-    if not is_leftover_name(os.path.basename(path)):
+def _unlink_at(dir_fd: int, name: str) -> None:
+    try:
+        os.unlink(name, dir_fd=dir_fd)
+    except OSError:
+        pass
+
+
+def _sweep_one(dir_fd: int, name: str, min_age: float, *, where: str) -> bool | None:
+    """Remove one leftover and its sidecar from the folder ``dir_fd``. True
+    removed, False kept on purpose (its writer holds the lock, or it is too
+    young), None not ours or couldn't tell. ``where`` names the folder in
+    the log."""
+    if not is_leftover_name(name):
         return None
     try:
-        fd = os.open(path, _READ_FLAGS)
+        fd = os.open(name, _READ_FLAGS, dir_fd=dir_fd)
     except OSError:
         return None  # gone, a symlink (ELOOP), or unreadable
     try:
@@ -264,8 +298,8 @@ def _sweep_one(path: str, min_age: float) -> bool | None:
             return None
         if time.time() - info.st_mtime < min_age:
             return False
-        lock_path = sidecar_path(path)
-        lock_fd = _open_sidecar(lock_path)
+        lock_name = sidecar_name(name)
+        lock_fd = _open_sidecar(dir_fd, lock_name)
         if lock_fd is None:
             return None
         try:
@@ -277,11 +311,16 @@ def _sweep_one(path: str, min_age: float) -> bool | None:
             os.close(lock_fd)
             return None
         try:
-            if not _same_file(path, info) or not _same_file(lock_path, os.fstat(lock_fd)):
+            if not _same_file(dir_fd, name, info) or not _same_file(
+                dir_fd, lock_name, os.fstat(lock_fd)
+            ):
                 return None  # a name now points at something else
-            os.unlink(path)
-            logger.info("Removed a temp file left by an interrupted repack: %s", path)
-            _unlink_quietly(lock_path)
+            os.unlink(name, dir_fd=dir_fd)
+            logger.info(
+                "Removed a temp file left by an interrupted repack: %s",
+                os.path.join(where, name),
+            )
+            _unlink_at(dir_fd, lock_name)
             return True
         finally:
             os.close(lock_fd)
@@ -291,28 +330,40 @@ def _sweep_one(path: str, min_age: float) -> bool | None:
         os.close(fd)
 
 
-def _sweep_orphan_sidecar(lock_path: str, min_age: float, temp: str | None = None) -> bool:
+def _sweep_orphan_sidecar(
+    dir_fd: int, lock_name: str, min_age: float, temp_name: str | None = None
+) -> bool:
     """Remove a lock file whose temp file is gone, once nobody holds it.
-    *temp*, when known, must not exist; the folder sweep passes None for a
-    lock file no leftover in the folder maps to."""
-    if temp is not None and os.path.lexists(temp):
+    ``temp_name``, when known, must not exist; the folder sweep passes None
+    for a lock file no leftover in the folder maps to."""
+
+    def temp_exists() -> bool:
+        if temp_name is None:
+            return False
+        try:
+            os.stat(temp_name, dir_fd=dir_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return False
+        except OSError:
+            return True  # can't tell: keep the lock file
+        return True
+
+    if temp_exists():
         return False
     try:
-        info = os.lstat(lock_path)
+        info = os.stat(lock_name, dir_fd=dir_fd, follow_symlinks=False)
     except OSError:
         return False
     if not stat.S_ISREG(info.st_mode) or time.time() - info.st_mtime < min_age:
         return False
-    fd = _open_sidecar(lock_path)
+    fd = _open_sidecar(dir_fd, lock_name)
     if fd is None:
         return False
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        if (temp is not None and os.path.lexists(temp)) or not _same_file(
-            lock_path, os.fstat(fd)
-        ):
+        if temp_exists() or not _same_file(dir_fd, lock_name, os.fstat(fd)):
             return False
-        os.unlink(lock_path)
+        os.unlink(lock_name, dir_fd=dir_fd)
         return True
     except OSError:
         return False
@@ -322,34 +373,63 @@ def _sweep_orphan_sidecar(lock_path: str, min_age: float, temp: str | None = Non
 
 def sweep_folder(directory: str, *, min_age: float = MIN_AGE_SECONDS) -> int:
     """Remove the unlocked leftovers in one folder (not below it). Never raises."""
-    try:
-        if not is_within_configured_volumes(directory, treat_archives=False):
-            return 0
-        with os.scandir(directory) as entries:
-            names = [
-                entry.name for entry in entries
-                if (is_leftover_name(entry.name) or is_sidecar_name(entry.name))
-                and entry.is_file(follow_symlinks=False)
-            ]
-    except OSError:
+    dir_fd = _open_folder(directory)
+    if dir_fd is None:
         return 0
-    leftovers = [name for name in names if is_leftover_name(name)]
-    in_use = {sidecar_name(name) for name in leftovers}
-    removed = sum(_sweep_one(os.path.join(directory, name), min_age) is True for name in leftovers)
-    for name in names:
-        if is_sidecar_name(name) and name not in in_use:
-            _sweep_orphan_sidecar(os.path.join(directory, name), min_age)
-    return removed
-
-
-def _same_folder(folder: str, recorded: tuple[int, int] | None) -> bool:
-    """Whether *folder* is, on disk now, the folder the record was made in."""
-    if recorded is None:
-        return False
     try:
-        return _folder_id(folder) == recorded
+        try:
+            with os.scandir(dir_fd) as entries:
+                names = [
+                    entry.name for entry in entries
+                    if (is_leftover_name(entry.name) or is_sidecar_name(entry.name))
+                    and entry.is_file(follow_symlinks=False)
+                ]
+        except OSError:
+            return 0
+        leftovers = [name for name in names if is_leftover_name(name)]
+        in_use = {sidecar_name(name) for name in leftovers}
+        removed = sum(
+            _sweep_one(dir_fd, name, min_age, where=directory) is True for name in leftovers
+        )
+        for name in names:
+            if is_sidecar_name(name) and name not in in_use:
+                _sweep_orphan_sidecar(dir_fd, name, min_age)
+        return removed
+    finally:
+        os.close(dir_fd)
+
+
+def _sweep_marker(marker: Path, min_age: float) -> str | None:
+    """Sweep one journaled temp file: "removed" (this sweep removed it),
+    "gone" (proven gone already), or None (keep the marker)."""
+    try:
+        path, folder_id = _read_marker(marker)
     except OSError:
-        return False
+        return None
+    folder, name = os.path.split(path)
+    dir_fd = _open_folder(folder)
+    if dir_fd is None:
+        return None  # outside, can't tell, or the Volume is away: keep it
+    try:
+        try:
+            os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            # Missing proves nothing unless this is the very folder the temp
+            # file was made in: an empty mount point has another identity.
+            try:
+                info = os.fstat(dir_fd)
+            except OSError:
+                return None
+            if folder_id != (info.st_dev, info.st_ino):
+                return None
+            if is_leftover_name(name):
+                _sweep_orphan_sidecar(dir_fd, sidecar_name(name), min_age, temp_name=name)
+            return "gone"
+        except OSError:
+            return None
+        return "removed" if _sweep_one(dir_fd, name, min_age, where=folder) is True else None
+    finally:
+        os.close(dir_fd)
 
 
 def sweep_recorded(*, min_age: float = MIN_AGE_SECONDS) -> int:
@@ -367,27 +447,9 @@ def sweep_recorded(*, min_age: float = MIN_AGE_SECONDS) -> int:
     except OSError:
         return 0
     for marker in markers:
-        try:
-            path, folder_id = _read_marker(marker)
-        except OSError:
-            continue
-        folder = os.path.dirname(path)
-        if volume_containment(folder, treat_archives=False) is not True:
-            continue  # outside, or couldn't tell: keep it
-        try:
-            os.lstat(path)
-        except FileNotFoundError:
-            if not _same_folder(folder, folder_id):
-                continue  # the Volume is away: missing proves nothing
-            # Placed or removed long ago: the record is all that is left.
-            if is_leftover_name(os.path.basename(path)):
-                _sweep_orphan_sidecar(sidecar_path(path), min_age, temp=path)
-            forget(str(marker))
-            continue
-        except OSError:
-            continue
-        if _sweep_one(path, min_age) is True:
-            removed += 1
+        outcome = _sweep_marker(marker, min_age)
+        if outcome is not None:
+            removed += outcome == "removed"
             forget(str(marker))
     return removed
 

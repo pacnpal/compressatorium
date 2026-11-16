@@ -924,6 +924,37 @@ def _beneath_parts(relative: str) -> list[str]:
     return parts
 
 
+def open_dir_beneath(root: str, relative: str = "") -> int:
+    """Open the directory ``root/relative`` without following any symlink.
+
+    Every component, of ``root`` from ``/`` down and then of ``relative``, is
+    opened ``O_NOFOLLOW | O_DIRECTORY`` relative to the descriptor above it,
+    so a symlink anywhere fails the open (``OSError``, usually ``ELOOP``).
+    Returns the directory's descriptor; the caller closes it. A caller that
+    checked a path and then works inside it (``*at`` calls with ``dir_fd``)
+    is bound to the directory it opened, whatever the path names later.
+
+    ``root`` must be absolute and already symlink-free (``os.path.realpath``);
+    ``relative`` (empty for ``root`` itself) uses ``/`` and may not hold
+    ``..``, ``.`` or empty parts (``ValueError``). Blocking: run it off the
+    event loop.
+    """
+    if not os.path.isabs(root):
+        raise ValueError(f"The root must be absolute: {root!r}")
+    root_parts = [part for part in root.split(os.sep) if part]
+    parts = _beneath_parts(relative) if relative else []
+    fd = os.open("/", _BENEATH_DIR_FLAGS)
+    try:
+        for part in (*root_parts, *parts):
+            child = os.open(part, _BENEATH_DIR_FLAGS, dir_fd=fd)
+            os.close(fd)
+            fd = child
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
 def read_beneath(root: str, relative: str, *, max_bytes: int) -> bytes:
     """Read the regular file ``root/relative`` without following any symlink.
 
@@ -937,21 +968,15 @@ def read_beneath(root: str, relative: str, *, max_bytes: int) -> bytes:
     ``RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS`` would do the same in one call, but
     Python exposes neither it nor those flags, and this walk works on macOS too.
 
-    ``root`` must be absolute and already symlink-free (``os.path.realpath``);
-    ``relative`` uses ``/`` and may not hold ``..``, ``.`` or empty parts
-    (``ValueError``). A file over ``max_bytes`` is refused with ``ValueError``.
+    The directories are opened by :func:`open_dir_beneath`. ``root`` must be
+    absolute and already symlink-free (``os.path.realpath``); ``relative``
+    uses ``/`` and may not hold ``..``, ``.`` or empty parts (``ValueError``).
+    A file over ``max_bytes`` is refused with ``ValueError``.
     Blocking: run it off the event loop.
     """
-    if not os.path.isabs(root):
-        raise ValueError(f"The root must be absolute: {root!r}")
-    root_parts = [part for part in root.split(os.sep) if part]
     parts = _beneath_parts(relative)
-    fd = os.open("/", _BENEATH_DIR_FLAGS)
+    fd = open_dir_beneath(root, "/".join(parts[:-1]))
     try:
-        for part in (*root_parts, *parts[:-1]):
-            child = os.open(part, _BENEATH_DIR_FLAGS, dir_fd=fd)
-            os.close(fd)
-            fd = child
         child = os.open(parts[-1], _BENEATH_FLAGS, dir_fd=fd)
         os.close(fd)
         fd = child

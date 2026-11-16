@@ -25,9 +25,12 @@ import stat
 import zipfile
 from collections.abc import Callable, Mapping
 
+from logging_setup import get_logger
 from services import partial_writes
 from services.subprocess_runner import ConversionCancelled
 from utils.path_utils import place_without_clobbering
+
+logger = get_logger("archive_edit")
 
 _CHUNK = 1024 * 1024
 # The zip epoch: the default stamp for added members, so a product does not
@@ -174,6 +177,7 @@ def rewrite_zip(
     # a hard kill finds it without walking the Volumes. All or nothing.
     claim = partial_writes.claim_temp(directory)
     fd, tmp = claim.fd, claim.path
+    temp_gone = False
     try:
         with zipfile.ZipFile(src) as source:
             plan = _plan(source.infolist(), rename, add)
@@ -208,17 +212,30 @@ def rewrite_zip(
             raise ConversionCancelled("Conversion cancelled")
         os.chmod(tmp, _product_mode(src))
         place_without_clobbering(tmp, dst)
+        temp_gone = True
         _fsync_dir(directory)
     except BaseException:
         if fd >= 0:
             os.close(fd)
-        try:
-            os.unlink(tmp)
-        except FileNotFoundError:
-            pass
+        temp_gone = temp_gone or _remove_temp(tmp)
         raise
     finally:
-        claim.release()
+        # The journal entry goes only once the temp file is known to be gone;
+        # one that could not be removed is left for the startup sweep.
+        claim.release(temp_gone=temp_gone)
+
+
+def _remove_temp(tmp: str) -> bool:
+    """Remove a failed rewrite's temp file; whether it is gone. A failure is
+    logged, never raised over the error that caused the cleanup."""
+    try:
+        os.unlink(tmp)
+    except FileNotFoundError:
+        return True
+    except OSError as exc:
+        logger.warning("Could not remove the temp file %s: %s", tmp, exc)
+        return False
+    return True
 
 
 __all__ = ["rewrite_zip"]

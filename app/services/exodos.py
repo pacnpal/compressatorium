@@ -23,6 +23,7 @@ Behaviour modelled on derkommutator/eXo2romm (Unlicense); no code is shared.
 from __future__ import annotations
 
 import asyncio
+import errno
 import os
 import re
 import threading
@@ -213,6 +214,19 @@ class NotRepackable(ValueError):
         self.top = top
 
 
+class TemplateUnreadable(NotRepackable):
+    """The template could not be read just now (a permission or I/O error),
+    which says nothing about the game: never cached, asked again next time.
+    Still a :class:`NotRepackable`, so a job fails and keeps its Source."""
+
+
+# What a template read can fail with that is a fact about the tree, not a
+# passing condition: a link where a file or folder should be (``ELOOP``,
+# ``EMLINK`` on some systems), a file where a folder should be, or not a
+# regular file (``read_beneath``'s ``EINVAL``).
+_STRUCTURAL_ERRNOS = frozenset({errno.ELOOP, errno.EMLINK, errno.ENOTDIR, errno.EINVAL})
+
+
 @dataclass(frozen=True)
 class RepackPlan:
     top: str          # the game folder every member sits in, "Abaron"
@@ -267,18 +281,22 @@ class ExodosService:
         return self._inspect(path, root)
 
     def _inspect(self, path: str, root: str) -> RepackPlan:
-        try:
-            with zipfile.ZipFile(path) as zf:
-                infos = zf.infolist()
-        except (OSError, zipfile.BadZipFile) as exc:
-            raise NotRepackable(f"Cannot read zip: {exc}") from exc
-        top = self._game_folder(infos)
+        infos, top = self._read_zip(path)
         return RepackPlan(
             top=top,
             template=self._template(root, top),
             total_size=sum(info.file_size for info in infos),
             root=root,
         )
+
+    def _read_zip(self, path: str) -> tuple[list[zipfile.ZipInfo], str]:
+        """The zip's members and its one game folder, or NotRepackable."""
+        try:
+            with zipfile.ZipFile(path) as zf:
+                infos = zf.infolist()
+        except (OSError, zipfile.BadZipFile) as exc:
+            raise NotRepackable(f"Cannot read zip: {exc}") from exc
+        return infos, self._game_folder(infos)
 
     @staticmethod
     def _game_folder(infos: list[zipfile.ZipInfo]) -> str:
@@ -340,7 +358,9 @@ class ExodosService:
         nothing is opened by path afterwards. Someone who can write the Volume
         therefore cannot swap the template for a link between the check in
         ``inspect`` and this read (PR #324's security review). Any refusal is
-        ``NotRepackable``, which fails the job and keeps the Source.
+        ``NotRepackable``, which fails the job and keeps the Source; one that
+        may pass (a permission or I/O error) is :class:`TemplateUnreadable`,
+        which the probe cache never keeps.
         """
         relative = f"{top}/{self.profile.conf_name}"
         try:
@@ -351,6 +371,10 @@ class ExodosService:
                 top=top,
             ) from exc
         except OSError as exc:
+            if exc.errno not in _STRUCTURAL_ERRNOS:
+                raise TemplateUnreadable(
+                    f"The template for {top} could not be read: {exc}", top=top,
+                ) from exc
             raise NotRepackable(
                 f"The template for {top} is a link, not a plain file, or lies "
                 f"outside EXODOS_DOS_DIR: {exc}",
@@ -676,14 +700,24 @@ def _probe(
         answer, top, stamp = cached
         if _tree_stamp(root, top, profile.conf_name) == stamp:
             return answer
+    service = ExodosService(profile)
+    top = None
+    # The stamp is taken before the template is read and checked again after:
+    # a tree that moved while it was read keeps the answer out of the cache.
+    before = _tree_stamp(root, None, profile.conf_name)
     try:
-        plan = ExodosService(profile)._inspect(path, root)
-        answer, top = True, plan.top
-    except NotRepackable as exc:
-        answer, top = False, exc.top
-    stamp = _tree_stamp(root, top, profile.conf_name)
+        _infos, top = service._read_zip(path)
+        before = _tree_stamp(root, top, profile.conf_name)
+        service._read_template(root, top)
+        answer = True
+    except TemplateUnreadable:
+        return False  # a passing failure: asked again next time, never cached
+    except NotRepackable:
+        answer = False
+    if _tree_stamp(root, top, profile.conf_name) != before:
+        return answer
     with _PROBE_LOCK:
-        _PROBE_CACHE[key] = (answer, top, stamp)
+        _PROBE_CACHE[key] = (answer, top, before)
         _PROBE_CACHE.move_to_end(key)
         while len(_PROBE_CACHE) > _PROBE_CACHE_SIZE:
             _PROBE_CACHE.popitem(last=False)

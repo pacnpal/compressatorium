@@ -5,6 +5,7 @@ Synthetic fixtures only: a tiny eXoDOS-shaped tree under a temp Volume.
 from __future__ import annotations
 
 import asyncio
+import errno
 import os
 import threading
 import time
@@ -755,14 +756,15 @@ def test_a_stalled_pre_rewrite_read_fails_the_job_and_keeps_the_source(
 
 
 def _count_inspections(monkeypatch):
+    """Count the zip reads a probe makes (its first step)."""
     calls = []
-    real = ExodosService._inspect
+    real = ExodosService._read_zip
 
-    def counted(self, path, root):
+    def counted(self, path):
         calls.append(path)
-        return real(self, path, root)
+        return real(self, path)
 
-    monkeypatch.setattr(ExodosService, "_inspect", counted)
+    monkeypatch.setattr(ExodosService, "_read_zip", counted)
     return calls
 
 
@@ -812,4 +814,46 @@ def test_a_template_fixed_in_place_ends_a_cached_miss(tree):
     os.utime(template.parent, ns=folder_times)
     assert os.stat(template.parent).st_mtime_ns == folder_times[1]
 
+    assert service.is_repackable(path) is True
+
+
+def test_a_template_read_that_fails_for_a_moment_is_not_remembered(tree, monkeypatch):
+    """A permission or I/O error is not an answer: fixing it changes no stamp,
+    so it must not be cached as a miss."""
+    service = ExodosService()
+    path = _game_zip(tree)
+    real = exodos_module.read_beneath
+    calls = []
+
+    def flaky(*args, **kwargs):
+        calls.append(None)
+        if len(calls) == 1:
+            raise PermissionError(errno.EACCES, "Permission denied")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(exodos_module, "read_beneath", flaky)
+
+    assert service.is_repackable(path) is False
+    assert service.is_repackable(path) is True
+
+
+def test_a_template_made_while_the_probe_runs_is_not_cached_as_missing(tree, monkeypatch):
+    """The template appears after the read found none but before the answer
+    is stored: the miss must not be cached under the tree's new stamp."""
+    service = ExodosService()
+    template = tree["dos"] / "Abaron" / "dosbox.conf"
+    template.unlink()
+    path = _game_zip(tree)
+    real = ExodosService._read_template
+
+    def racing(self, root, top):
+        try:
+            return real(self, root, top)
+        finally:
+            if not template.exists():
+                template.write_bytes(TEMPLATE)
+
+    monkeypatch.setattr(ExodosService, "_read_template", racing)
+
+    assert service.is_repackable(path) is False
     assert service.is_repackable(path) is True

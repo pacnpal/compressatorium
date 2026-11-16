@@ -16,7 +16,9 @@
   - The temp file's name is now short and fixed-length, so a game whose name
     is near the 255-byte file name limit can be repacked.
   - A zip that is not an eXoDOS game is no longer reopened on every listing:
-    the answer is remembered until the zip or the template tree changes.
+    the answer is remembered until the zip or the template tree changes. A
+    template that could not be read for a moment (a permission or disk error)
+    is not remembered, so fixing it is seen on the next listing.
 
 ### Added
 

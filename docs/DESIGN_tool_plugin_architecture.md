@@ -4950,42 +4950,51 @@ way to produce an edited copy of a zip. The first user is the eXoDOS repack
   pipeline's authorized-overwrite sweep clears it first.
 - **What a hard kill leaves is swept (#331, `services/partial_writes.py`).**
   The writer (`claim_temp`) first creates the temp file's sidecar lock file
-  and takes an exclusive
-  `flock` on it, opened read-write without truncating (NFS refuses an
-  exclusive `flock` through a read-only open), and only then creates the temp
-  file, so the temp file never exists without a held lock. The temp archive
-  itself is never locked: where locks are mandatory (SMB), a lock on it would
-  stop the product check from reading it. The temp file is also journaled
-  (one small file per temp file under `<data dir>/partial-writes/`). The claim
-  is all or nothing: if `flock` fails (`ENOLCK`), every descriptor is closed
-  and every file it made is removed. When the temp file is placed or removed,
-  the sidecar is unlinked while its lock is still held, then the lock and the
-  journal entry go. The sidecar's name has one rule, shared by the writer and
-  the sweep (`sidecar_name`): `.partial-<16 hex>.lock`, the first 16 hex
+  and takes an exclusive `flock` on it, opened read-write without truncating
+  (NFS refuses an exclusive `flock` through a read-only open), and only then
+  creates the temp file, so the temp file never exists without a held lock.
+  The temp archive itself is never locked: where locks are mandatory (SMB), a
+  lock on it would stop the product check from reading it. The temp file is
+  also journaled (one small file per temp file under
+  `<data dir>/partial-writes/`, with the device and inode of its folder). The
+  claim is all or nothing: if `flock` fails (`ENOLCK`), every descriptor is
+  closed and every file it made is removed. When the temp file is placed or
+  removed, the sidecar is unlinked while its lock is still held, then the lock
+  goes, and the journal entry goes only if the temp file is known to be gone
+  (`TempClaim.release(temp_gone=...)`): a failed rewrite whose cleanup could
+  not remove it logs that, re-raises the original error, and leaves the entry
+  for the startup sweep. The sidecar's name has one rule, shared by the writer
+  and the sweep (`sidecar_name`): `.partial-<16 hex>.lock`, the first 16 hex
   characters of the SHA-256 of the temp file's name
   (`utils.path_utils.companion_name`), so it is fixed-length and a 254-byte
-  legacy temp name still has one. A sweep removes a leftover only when its name is exactly
-  that pattern (or the `.<target>.partial-XXXXXXXX.tmp` spelling used before
-  #331); its folder is inside a configured Volume
-  (`is_within_configured_volumes`, so "can't tell" keeps it); it opens with
+  legacy temp name still has one.
+- **The sweep is bound to the folder it checked.** A sweep resolves the
+  folder's real path, requires `volume_containment(real) is True` ("can't
+  tell" keeps everything), and opens it once with
+  `utils.path_utils.open_dir_beneath`, the walk from `/` that opens every
+  component `O_NOFOLLOW | O_DIRECTORY` (the same walk `read_beneath` uses).
+  Every later step runs on that descriptor (`os.scandir(fd)`, `open`, `stat`
+  and `unlink` with `dir_fd`), the sidecar's included, so a folder symlink
+  repointed after the check cannot move the sweep outside the Volumes. It
+  removes a leftover only when its name is exactly that pattern (or the
+  `.<target>.partial-XXXXXXXX.tmp` spelling used before #331); it opens with
   `O_NOFOLLOW` as a regular file and is over a minute old; the sweep can take
-  the sidecar's lock (through the same read-write open); and the path still
-  names the inode it opened. The sidecar goes with it, and a sidecar no
+  the sidecar's lock (through the same read-write open); and both names still
+  name the inodes it opened. The sidecar goes with it, and a sidecar no
   leftover maps to is swept the same way. A journal entry is dropped only on
-  proof that its file is gone: the sweep removed it, or its folder is inside
-  a Volume (`volume_containment(...) is True`), has the device and inode
-  recorded when the temp file was made, and no longer holds the file. A
-  Volume that is unmounted, or an empty mount point in its place, makes a
-  file look missing, so "missing" alone keeps the entry for the next start. `rewrite_zip` sweeps its
-  destination folder before every write; at startup
-  `main.startup_volume_work` sweeps the journaled files once the Volume roots
-  are resolved, so a crash is cleaned up without walking the Volumes. The
-  sweep is synchronous and runs only on threads that are already off the
-  event loop: the rewrite's detached worker, and the startup thread that
-  resolves the Volume roots. It needs no `run_detached_mutation` hand-off even
-  when that worker is abandoned by the stall bound: its unlink is guarded by
-  the sidecar lock and inode check the same thread holds while it unlinks,
-  not by locks a caller could release.
+  proof that its file is gone: the sweep removed it, or the opened folder has
+  the device and inode recorded when the temp file was made and no longer
+  holds the file. A Volume that is unmounted, or an empty mount point in its
+  place, makes a file look missing, so "missing" alone keeps the entry for the
+  next start. `rewrite_zip` sweeps its destination folder before every write;
+  at startup `main.startup_volume_work` sweeps the journaled files once the
+  Volume roots are resolved, so a crash is cleaned up without walking the
+  Volumes. The sweep is synchronous and runs only on threads that are already
+  off the event loop: the rewrite's detached worker, and the startup thread
+  that resolves the Volume roots. It needs no `run_detached_mutation` hand-off
+  even when that worker is abandoned by the stall bound: its unlink is guarded
+  by the folder descriptor, sidecar lock and inode checks the same thread
+  holds while it unlinks, not by locks a caller could release.
 - **Gating.** `EXODOS_DOS_DIR` is the only source of the template tree. It must
   be a directory inside a configured Volume; otherwise `is_ready` is false (run
   through `run_detached`, since it stats a possibly dead mount) and the tool is
@@ -4999,8 +5008,14 @@ way to produce an edited copy of a zip. The first user is the eXoDOS repack
   file, one descriptor). The answer, a yes or a no, is cached per (path,
   size, mtime) of the zip and kept only while the template tree is unchanged
   (#331): the root's and the game folder's mtimes, and the template file's
-  own mtime, size and inode. Adding, removing or fixing a template in place is
-  seen at once, while an unrelated zip is not reopened on every pass, and
+  own mtime, size and inode. That stamp is taken before the template is read
+  and checked again after; if the tree moved in between, the answer is not
+  cached. Only a fact about the zip or the tree is cached: a template read
+  that fails with a permission or I/O error raises `TemplateUnreadable` (a
+  `NotRepackable`, so a job still fails and keeps its Source) and is asked
+  again on the next probe, since fixing it changes no stamp. Adding, removing
+  or fixing a template in place is seen at once, while an unrelated zip is not
+  reopened on every pass, and
   `convert` reads the template again the same way rather than trusting the
   earlier check, so a template swapped for a link in between is refused and
   the job fails with the Source untouched. `_NOT_CONVERTIBLE_REASON["exodos"]` names the plan-time reason. The
