@@ -25,8 +25,9 @@ as a conversion (``ConversionMode.FIND_DUPLICATES`` is an external mode). It:
 A cancelled run, or one whose Library was removed meanwhile, writes no
 Findings. Cancel is checked once more under the Findings store's write lock,
 just before the write: that is the run's commit point. A cancel that arrives
-after it is too late to undo the write, so the run reports what it did. Keys it already read stay stored: they describe their files. Nothing
-here moves, renames or deletes a file.
+after it is too late to undo the write, so the run reports what it did. Keys
+it already read stay stored: they describe their files. Nothing here moves,
+renames or deletes a file.
 """
 
 from __future__ import annotations

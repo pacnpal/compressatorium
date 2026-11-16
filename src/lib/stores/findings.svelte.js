@@ -38,6 +38,23 @@ class FindingsStore {
   pending = $state(null);
   // Only the latest listing request may write the list (rapid toggles).
   #request = 0;
+  // The finished find-duplicates runs (#388) already accounted for, by job id;
+  // null until the view first reports them.
+  #runsSeen = null;
+
+  /**
+   * The view's finished find-duplicates runs. Lists again when one is new
+   * since the last report (a run just ended), not on the first report (the
+   * view lists on open anyway) or when one is cleared from the jobs list.
+   * Returns whether it listed.
+   */
+  noteFinishedRuns(ids) {
+    const before = this.#runsSeen;
+    this.#runsSeen = new Set(ids);
+    if (before === null || !ids.some((id) => !before.has(id))) return false;
+    this.load();
+    return true;
+  }
 
   async load() {
     const request = ++this.#request;

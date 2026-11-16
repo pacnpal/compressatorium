@@ -36,6 +36,29 @@ process.stdout.write(JSON.stringify({ first, after: findings.duplicateRuns }));
     assert data["after"] == [], data
 
 
+def test_a_finished_duplicate_run_lists_the_findings_again(tmp_path):
+    """CodeRabbit review 5925361964: the open Findings view lists again when a
+    find-duplicates run ends, not only when it is reopened."""
+    data = _run(tmp_path, """
+__answers.listFindings = { findings: [], dismissed: 0 };
+const loads = () => __log.filter((c) => c[0] === 'listFindings').length;
+const first = findings.noteFinishedRuns(['a']);        // what was there on open
+const same = findings.noteFinishedRuns(['a']);
+const fresh = findings.noteFinishedRuns(['a', 'b']);   // a run just ended
+await Promise.resolve();
+const cleared = findings.noteFinishedRuns(['b']);      // a job cleared from the list
+process.stdout.write(JSON.stringify({ first, same, fresh, cleared, loads: loads() }));
+""")
+    assert data == {
+        "first": False, "same": False, "fresh": True, "cleared": False, "loads": 1,
+    }, data
+    view = _VIEW.read_text(encoding="utf-8")
+    # Fed from the jobs store, the same signal the Dashboard and file list use.
+    assert "j.mode === 'find_duplicates'" in view
+    assert "TERMINAL_STATUSES.has(j.status)" in view
+    assert "findings.noteFinishedRuns(" in view
+
+
 def test_the_findings_view_shows_each_copy_and_what_was_not_checked() -> None:
     view = _VIEW.read_text(encoding="utf-8")
     assert "duplicate: 'Duplicate'" in view

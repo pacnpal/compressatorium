@@ -19,6 +19,8 @@
   import { findings } from '$lib/stores/findings.svelte.js';
   import { fileBrowser } from '$lib/stores/fileBrowser.svelte.js';
   import { libraries } from '$lib/stores/libraries.svelte.js';
+  import { jobs } from '$lib/stores/jobs.svelte.js';
+  import { TERMINAL_STATUSES } from '$lib/stores/jobConstants.js';
   import Button from '$lib/components/ui/Button.svelte';
   import Badge from '$lib/components/ui/Badge.svelte';
   import Checkbox from '$lib/components/ui/Checkbox.svelte';
@@ -65,6 +67,21 @@
   $effect(() => {
     void findings.showDismissed;
     untrack(() => findings.load());
+  });
+
+  // Lists again when a find-duplicates run (#388) ends while the view is open,
+  // from the jobs store as the Dashboard and the file list follow finished jobs.
+  // Keyed on the finished runs' ids, so a status changing in place counts.
+  const finishedRuns = $derived(
+    jobs.jobs
+      .filter((j) => j.mode === 'find_duplicates' && TERMINAL_STATUSES.has(j.status))
+      .map((j) => j.id)
+      .join(','),
+  );
+
+  $effect(() => {
+    const ids = finishedRuns ? finishedRuns.split(',') : [];
+    untrack(() => findings.noteFinishedRuns(ids));
   });
 
   // Whether any folder Library exists, for the empty state.
