@@ -402,6 +402,10 @@ class SubprocessRunner:
         stream, not chunk boundaries -- issue #183),
         stall timeout via compute_progress_stall_timeout, cancel-watcher
         (terminate->kill via the bounded `reap()` ladder), ConversionCancelled,
+        (the watcher always gets its turn before the post-EOF reap when a cancel
+        is pending, so a child whose stdout ended before the watcher ran is
+        still reported cancelled, not "return code -15"; a child that had
+        already exited stays complete),
         non-zero exit -> RuntimeError(tail),
         final 100%. `parse_progress(line) -> int|None` is the only per-tool knob
         in the common path. `cwd` sets the working directory (romz runs `7z a`
