@@ -5613,6 +5613,12 @@ Every Image's path is read in the detached, stall-bounded inspection step,
 never on the loop: RomM resolves `Image.path` lazily on its mount, so a mount
 that stops answering ends that step at the bound, or on Cancel.
 
+Each file's key is read under `collect_abandonment()`, and what it collected is
+checked once, right after the read and before anything branches on its result
+(a key, `KeyUnavailable`, `StorageAbandoned`): a child that outlived teardown,
+or a detached read the stall bound gave up on, stops the run with nothing
+written, as the metadata scan stops. An ordinary failure costs that file only.
+
 The active jobs' paths come from `job_manager.active_job_candidates()`: the
 jobs are snapshot on the loop (in memory) and their filesystem-dependent
 candidate paths (a sheet's tracks) resolved in one detached, stall-bounded

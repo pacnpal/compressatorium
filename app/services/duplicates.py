@@ -243,6 +243,7 @@ async def _find(library: Library, job_id: str, current: Callable[[], bool]) -> d
         # is not answering: going on would strand one more per file. The run
         # stops there, as the metadata scan does (#268, Codex 4590926165).
         # Any other failure costs this file only.
+        key = after = unavailable = None
         with collect_abandonment() as abandoned:
             try:
                 key = await content_keys.build(candidate.path, cancel_event=cancel_event)
@@ -254,15 +255,20 @@ async def _find(library: Library, job_id: str, current: Callable[[], bool]) -> d
             except StorageAbandoned as exc:
                 abandoned.append(str(exc))
             except KeyUnavailable as exc:
-                logger.info("duplicates: %s", exc)
-                unseen.add(candidate.path)
-                continue
+                unavailable = exc
+        # Checked once, right after the read and before anything branches on
+        # what it returned (a key, an unavailable key, an exception): a tool
+        # that left a child behind may still have answered (Codex 4591089580).
         if abandoned:
             raise _Abandoned(
                 f"Reading {os.path.basename(candidate.path)} left a process stuck on "
                 f"unresponsive storage ({', '.join(abandoned)}); it is still running. "
                 "No Findings were written",
             )
+        if unavailable is not None:
+            logger.info("duplicates: %s", unavailable)
+            unseen.add(candidate.path)
+            continue
         if after != candidate.identity:
             # Changed while it was read: the key may describe neither version.
             unseen.add(candidate.path)

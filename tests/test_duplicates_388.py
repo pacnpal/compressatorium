@@ -343,9 +343,13 @@ async def test_a_run_can_be_cancelled_and_writes_no_findings(
 
 
 @pytest.mark.asyncio
-async def test_a_file_whose_read_stalls_costs_that_file_only(
+async def test_a_read_that_stalls_ends_at_the_bound_and_stops_the_run(
     db: Path, client: httpx.AsyncClient, monkeypatch,
 ) -> None:
+    """A read that stops moving ends at the stall bound, and its thread is
+    left behind on the mount: like a child that outlived teardown, that stops
+    the run there (Codex 4591089580), so a dead mount strands one thread, not
+    one per file. Nothing is written."""
     from services import content_keys
 
     roms = db / "roms"
@@ -364,14 +368,13 @@ async def test_a_file_whose_read_stalls_costs_that_file_only(
     monkeypatch.setattr(content_keys, "STALL_SECONDS", 0.3)
     library = await _register(client, roms)
     try:
-        await _find(client, library)
+        job = await _finished(client, await _start(client, library), seconds=5)
     finally:
         release.set()
 
-    assert _names((await _duplicates(client))[0]) == ["Copy.iso", "Game.iso"]
-    run = await _last_run(client, library)
-    assert run["unreadable"] == 1
-    assert run["computed"] == 2
+    assert job["status"] == "failed", job
+    assert "Stuck.iso" in job["error_message"] and "still running" in job["error_message"]
+    assert await _duplicates(client) == []
 
 
 @pytest.mark.asyncio
@@ -1051,6 +1054,63 @@ async def test_an_ordinary_chdman_error_costs_that_file_only(
 
     assert job["status"] == "completed", job
     assert calls == ["A.chd", "B.chd"]
+    assert (await _last_run(client, library))["unreadable"] == 2
+
+
+def _two_rvzs(roms: Path) -> None:
+    roms.mkdir(parents=True, exist_ok=True)
+    for name in ("A.rvz", "B.rvz"):
+        (roms / name).write_bytes(b"RVZ\x01" + os.urandom(128))
+
+
+@pytest.mark.asyncio
+async def test_a_verifier_left_running_stops_the_run_whatever_the_read_returned(
+    db: Path, client: httpx.AsyncClient, monkeypatch,
+) -> None:
+    """Codex 4591089580: a dolphin-tool verifier that outlives teardown records
+    itself and returns no hash, which is an unavailable key. The abandonment is
+    checked before anything branches on the read, so the run stops there."""
+    from services.subprocess_runner import _note_abandoned
+
+    roms = db / "roms"
+    _two_rvzs(roms)
+    tool = registry.get("dolphin")
+    calls: list[str] = []
+
+    async def disc_hashes(path, *, cancel_event=None):
+        calls.append(os.path.basename(path))
+        _note_abandoned("dolphin-tool pid 4242")
+        return []
+
+    monkeypatch.setattr(tool._service, "disc_hashes", disc_hashes)
+    library = await _register(client, roms)
+    job = await _finished(client, await _start(client, library))
+
+    assert job["status"] == "failed", job
+    assert "still running" in (job.get("error_message") or "")
+    assert calls == ["A.rvz"]
+    assert await _duplicates(client) == []
+
+
+@pytest.mark.asyncio
+async def test_an_unavailable_dolphin_hash_costs_that_file_only(
+    db: Path, client: httpx.AsyncClient, monkeypatch,
+) -> None:
+    roms = db / "roms"
+    _two_rvzs(roms)
+    tool = registry.get("dolphin")
+    calls: list[str] = []
+
+    async def disc_hashes(path, *, cancel_event=None):
+        calls.append(os.path.basename(path))
+        return []
+
+    monkeypatch.setattr(tool._service, "disc_hashes", disc_hashes)
+    library = await _register(client, roms)
+    job = await _finished(client, await _start(client, library))
+
+    assert job["status"] == "completed", job
+    assert calls == ["A.rvz", "B.rvz"]
     assert (await _last_run(client, library))["unreadable"] == 2
 
 

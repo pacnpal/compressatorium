@@ -903,8 +903,10 @@ one disc.
   key yet. The Findings view says how many of each format the last run could
   not check.
 - The run is one job in the Jobs panel, with its progress, and Cancel stops it
-  (a cancelled run changes no Finding). A file that stops answering on a slow
-  Volume costs that file only. It is not a conversion and takes no conversion
+  (a cancelled run changes no Finding). A file that can't be read costs that
+  file only. A file that stops answering on a slow Volume ends at a time bound,
+  and the run then stops, leaving nothing written, rather than leave a stuck
+  read behind for every file after it. It is not a conversion and takes no conversion
   slot.
 - A file a job is writing or reading, and RomM's `.romm_tmp_*` staging files,
   are never grouped.
