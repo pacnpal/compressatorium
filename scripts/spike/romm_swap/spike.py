@@ -771,7 +771,7 @@ def work_dir_state(path):
     if path.is_symlink():
         raise WorkDirRefused(f"refusing --work {path}: it is a symbolic link")
     resolved = path.resolve()
-    for protected in {Path("/").resolve(), Path.home().resolve(), REPO_ROOT.resolve()}:
+    for protected in (Path("/").resolve(), Path.home().resolve(), REPO_ROOT.resolve()):
         if resolved == protected or resolved in protected.parents:
             raise WorkDirRefused(f"refusing --work {path}: it is or holds {protected}")
     if not path.exists():
