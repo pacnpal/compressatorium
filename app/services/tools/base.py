@@ -29,9 +29,10 @@ logger = get_logger("tools.base")
 def compression_problem(spec: ModeSpec, compression: str | None) -> str | None:
     """Why *spec*'s mode refuses *compression*, or None when it takes it.
 
-    A codec outside ``spec.codecs`` (when the mode names its codecs), or a
-    level outside that codec's range (``spec.level_range``). The routes answer
-    400 with it, and the plugin refuses with it before its tool runs.
+    A codec outside ``spec.codecs`` (when the mode names its codecs), a level
+    for a codec that takes none (``spec.takes_no_level``, #363), or a level
+    outside that codec's range (``spec.level_range``). The routes answer 400
+    with it, and the plugin refuses with it before its tool runs.
     """
     for part in (compression or "").split(","):
         codec, _, level = part.partition(":")
@@ -39,6 +40,11 @@ def compression_problem(spec: ModeSpec, compression: str | None) -> str | None:
             return (
                 f"{spec.label} can't use {codec} compression; it takes "
                 f"{', '.join(sorted(spec.codecs))}"
+            )
+        if level and spec.takes_no_level(codec):
+            return (
+                f"{spec.label} {codec or spec.default_compression} compression "
+                "takes no level"
             )
         levels = spec.level_range(codec) if codec else None
         if levels and level:
@@ -651,6 +657,15 @@ class BaseTool:
         # reads as the tool's own layout and is kept.
         spec = self.spec(mode)
         codec, _, level = (compression or "").partition(":")
+        if level and spec.takes_no_level(codec):
+            # A level for a codec that takes none (WIA's default, none): the
+            # routes refuse it, so this is a job queued before they did. It
+            # runs as the codec alone, which is what dolphin-tool would do.
+            logger.warning(
+                "%s: %s takes no compression level; ignoring %s",
+                mode, codec or spec.default_compression, level,
+            )
+            return codec or spec.default_compression
         if codec and not level and spec.level_range(codec):
             # A chosen codec with no level gets that codec's own default level
             # (dolphin-tool needs one, and its range depends on the codec).

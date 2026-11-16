@@ -11,7 +11,7 @@
   // (optionally) a level range; this file does not need editing.
 
   import { conversion } from '$lib/stores/conversion.svelte.js';
-  import { DEFAULT_COMPRESSION_LEVEL_RANGE, registry } from '$lib/tools/registry.js';
+  import { registry } from '$lib/tools/registry.js';
   import { toast } from 'svelte-sonner';
   import Check from '@lucide/svelte/icons/check';
   import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
@@ -25,8 +25,9 @@
   // The slider and the number box read this one value and range; the store
   // reconciles it on every mode or codec change, so they never disagree.
   const level = $derived(conversion.compressionLevel);
-  // The selected codec's own range (Dolphin's lzma2 takes 1-9, zstd 1-22).
-  const levelRange = $derived(conversion.levelRange ?? DEFAULT_COMPRESSION_LEVEL_RANGE);
+  // The selected codec's own range (Dolphin's lzma2 takes 1-9, zstd 1-22);
+  // null for a codec that takes no level (none), which hides the control.
+  const levelRange = $derived(conversion.levelRange);
   const supports = $derived(
     !!(spec?.supportsCompression || spec?.supportsCompressionLevel),
   );
@@ -102,7 +103,7 @@
         </select>
       </label>
 
-      {#if spec?.supportsCompressionLevel && singleCodec && singleCodec !== 'none'}
+      {#if levelRange}
         <label class="level">
           <span class="sublabel">Level (compression effort)</span>
           <div class="level-row">

@@ -163,15 +163,14 @@ class ConversionStore {
 
   /**
    * The level range `{min, max, default}` of the codec this mode sends, or
-   * null when the mode takes no level or the codec is 'none'. The picker's
-   * slider and number box both read it, with `compressionLevel`.
+   * null when there is no level to set (the mode takes none, or the codec
+   * takes none: Dolphin's 'none'). `registry.levelRangeFor` decides, as it
+   * does for the Rule editor. The picker's slider and number box both read
+   * it, with `compressionLevel`, and show only when it is non-null.
    */
   get levelRange() {
     if (!this.supportsCompressionLevel) return null;
-    const codec = this.singleCodec;
-    if (!codec || codec === 'none') return null;
-    return registry.levelRangeFor(this.mode, codec)
-      ?? this.currentTool?.compressionLevelRange ?? DEFAULT_COMPRESSION_LEVEL_RANGE;
+    return registry.levelRangeFor(this.mode, this.singleCodec);
   }
 
   get supportsCompression() {

@@ -24,7 +24,7 @@
   import { ruleNotices } from '$lib/stores/ruleNotices.svelte.js';
   import { CHECK_LEVEL, CHECK_LEVEL_LABELS } from '$lib/util/checkLevels.js';
   import { checkSummary, newCheckRule } from '$lib/rules/checkRule.js';
-  import { registry, DEFAULT_COMPRESSION_LEVEL_RANGE } from '$lib/tools/registry.js';
+  import { registry } from '$lib/tools/registry.js';
   import { clampLevel, fitLevel } from '$lib/tools/levels.js';
   import Button from '$lib/components/ui/Button.svelte';
   import Checkbox from '$lib/components/ui/Checkbox.svelte';
@@ -216,26 +216,25 @@
     return toolFor(mode)?.compressionStyle ?? 'none';
   }
 
-  /** The level range for `codec` in `mode` (Dolphin's lzma2 takes 1-9, zstd 1-22). */
-  function levelRangeFor(mode, codec) {
-    return registry.levelRangeFor(mode, codec)
-      ?? toolFor(mode)?.compressionLevelRange ?? DEFAULT_COMPRESSION_LEVEL_RANGE;
-  }
-
-  /** The codec a single-codec Rule runs with: its own, or the mode's default. */
-  function ruleCodec(rule) {
-    return rule.compression || registry.defaultCompressionForMode(rule.mode)?.[0] || null;
+  /**
+   * The level range of the codec a Rule runs with (its own, or the mode's
+   * default when blank), or null when that codec takes no level (WIA's none)
+   * and the editor shows no level box. Dolphin's lzma2 takes 1-9, zstd 1-22.
+   * The same `registry.levelRangeFor` the convert panel reads (#363).
+   */
+  function ruleLevelRange(rule, codec = rule.compression) {
+    return registry.levelRangeFor(rule.mode, codec);
   }
 
   /**
    * Set a single-codec Rule's codec. A level the new codec does not take
-   * (19, from zstd, on lzma2) is cleared, so the Rule runs at that codec's own
-   * default level rather than one dolphin-tool refuses.
+   * (19, from zstd, on lzma2; any level on none) is cleared, so the Rule runs
+   * at that codec's own default level rather than one dolphin-tool refuses.
    */
   function setRuleCodec(platformId, rule, codec) {
-    const range = levelRangeFor(rule.mode, codec || ruleCodec({ ...rule, compression: null }));
+    const range = ruleLevelRange(rule, codec);
     const level = rule.compression_level;
-    const fits = level == null || fitLevel(range, level) === level;
+    const fits = level == null || (range && fitLevel(range, level) === level);
     update(platformId, fits ? { compression: codec } : { compression: codec, compression_level: null });
   }
 
@@ -245,8 +244,8 @@
    * runs the codec's default. A mode change already clears codec and level.
    */
   function setRuleLevel(platformId, rule, value) {
-    const range = levelRangeFor(rule.mode, ruleCodec(rule));
-    update(platformId, { compression_level: clampLevel(range, value) });
+    const range = ruleLevelRange(rule);
+    update(platformId, { compression_level: range ? clampLevel(range, value) : null });
   }
 
   /** The codecs a rule currently has selected, as a list. */
@@ -627,7 +626,7 @@
               {#if rule.mode}
                 {@const codecs = codecsFor(rule.mode)}
                 {@const style = codecStyleFor(rule.mode)}
-                {@const range = levelRangeFor(rule.mode, ruleCodec(rule))}
+                {@const range = ruleLevelRange(rule)}
                 {@const chosen = selectedCodecs(rule)}
 
                 <div class="grid">
@@ -673,7 +672,7 @@
                     {/if}
                   {/if}
 
-                  {#if spec?.supportsCompressionLevel}
+                  {#if range}
                     <label class="field">
                       <span>Compression level</span>
                       <input

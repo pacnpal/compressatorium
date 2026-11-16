@@ -4,6 +4,13 @@
 
 ### Fixed
 
+- **A Rule offers a compression level only when its codec takes one** (#363).
+  A Dolphin WIA Rule on "Tool default (none)" or "No compression" showed a
+  level box ("1–22. Blank uses 19.") and saved what was typed there. It now
+  shows no level box. A Rule saved that way runs without the level, and a job
+  asking for a level on `none` is refused with a message that says so. The
+  level box's range and "Blank uses" hint always match the codec that will
+  run, including the mode's default when the codec is left blank.
 - **The library scan reads the disc ID of every CHD again** (#362). The reader
   for a CHD's own sectors could not open any CHD chdman makes (it read the
   header at the wrong offsets and could not decode a compressed one), so a
