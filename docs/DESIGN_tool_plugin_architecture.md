@@ -5644,6 +5644,84 @@ which both a folder Library's removal and RomM's identity change
 
 Routes: `POST /api/libraries/{id}/find-duplicates` → `{job_id}`.
 
+### 3.3.21 Staging output out of a scanner's sight (`services/staging.py`, #398)
+
+RomM 5.4.1 indexes every file in a Platform folder, dot-prefixed ones
+included, but skips dot-prefixed folders (the swap spike, #382; see the
+findings under Phase 3 of `docs/ROMM_INTEGRATION_ROADMAP.md`). A scan that
+lands while a conversion's temp file or unchecked output sits beside the
+Source makes a duplicate ROM, and a ghost once the Source goes. So a job whose
+output lands in a Library declaring the `HIDDEN_STAGING` capability
+(`services/rules/library.py`; RomM declares it, folder Libraries do not)
+writes into a hidden slot and places the output only once its checks pass.
+The RomM swap (#391) stages through the same helper.
+
+- **The helper.** `staging.open_slot(folder, *, make_folder=False)` makes
+  `<folder>/.compressatorium-stage/slot-XXXXXXXX/` and returns a
+  `StagedOutput`. The folder must be inside a configured Volume
+  (`volume_containment(real) is True`), and with `make_folder` a missing one
+  is made only after that check; it is opened with `open_dir_beneath`,
+  the stage folder and the slot `O_NOFOLLOW | O_DIRECTORY` beneath it (a link
+  in place of the stage folder is refused), and every later step works
+  through those descriptors. `path_for(name)` is where a tool writes: the
+  output's own name inside the slot, so a `.cue` naming its `.bin` is still
+  right once moved. `place(names)` moves the named entries (files or
+  folders) into the folder with `utils.path_utils.place_without_clobbering`
+  given both folder descriptors (`src_dir_fd` / `dst_dir_fd`): a `linkat`
+  then removing the staged name, or for a folder (or a filesystem without
+  hard links) `renameat2(RENAME_NOREPLACE)` / `renameatx_np(RENAME_EXCL)`.
+  Each move is atomic and no-replace, so an entry another process creates at
+  the destination at any moment raises `FileExistsError` and is never
+  touched; the existence check before the moves is only a fast path. All or
+  none: when one move fails, the ones already made go back into the slot the
+  same no-replace way. Returns the `(staged, final)` pairs.
+  `close()` removes what is left in the slot (an unplaced output, a tool's
+  scratch) with the descriptor-based `shutil.rmtree(dir_fd=...)`, then the
+  slot's lock file, its journal record, and the stage folder once no other
+  slot is in it. `place` and `close` share a mutex, so a close waits for a
+  placing still running on another thread. Everything is blocking.
+- **Crash cleanup is the `.partial` sweep's (#331).** The slot's lock file,
+  `slot-XXXXXXXX.lock` beside it in the stage folder, is created and
+  `flock`ed before the slot exists and held until it is gone, and the slot is
+  journaled in `<data dir>/partial-writes/` like a temp file.
+  `partial_writes.sweep_recorded` (the startup sweep) removes a journaled
+  slot only when it can take that lock, the slot is a real folder (never a
+  link) older than `MIN_AGE_SECONDS`, and both names still name what was
+  checked; then the stage folder if empty. A stage folder that is gone drops
+  the record only on the same device as the one recorded (an empty mount
+  point is another). `open_slot` sweeps its stage folder first
+  (`partial_writes.sweep_stage`), so a slot whose record was lost goes the
+  next time a job stages there. The name rules (`is_slot_name`,
+  `slot_lock_name`) live in `partial_writes`, shared by writer and sweep.
+- **In the job pipeline (`JobManager._process_job`).** `_open_stage` asks
+  `libraries.library_for(output_path)` (detached, bounded): a Library with
+  `HIDDEN_STAGING` gets a slot, one without it (or no Library) writes in place
+  exactly as before, and "can't tell" stages, since hiding the work is always
+  safe. The slot opens with `make_folder=True` in the same bounded call,
+  since staging runs before the tool's runner would make a missing output
+  folder (a conversion into a new subfolder). A slot that can't be made
+  fails the job; it never falls back to writing in sight. A slot that
+  arrives after the bound gave up is closed (`run_detached_undoable`'s
+  `undo`). `job.output_path` stays the final path; a local
+  `write_path` (the slot's copy of that name) goes to `run_convert`,
+  `post_convert`, the output size, the Intact check and the Round-trip. Once
+  both pass, `_place_staged` moves the output and its `companion_outputs`
+  into place under `run_detached_mutation` (the output locks travel with a
+  rename the bound gives up on), and carries their store records (a CHD's
+  disc ID, `chd_metadata_store.move_blocking`, `verification_store.move_blocking`)
+  to the final paths. Then the verified record, the reuse snapshot and the
+  Source delete run as before on the placed output. A job with no check
+  places once the conversion ends. An output that fails a check is never
+  placed: `_close_stage`, in the job's `finally`, clears its records and
+  discards it with the slot, so a failed or cancelled job leaves nothing
+  visible. That close always runs: like `_let_go_in_background`, its worker
+  starts before the first await (`start_detached`), and with no detached
+  slot free it gets a thread of its own, so the slot's descriptors and lock
+  are never left open until a restart.
+- **Hidden everywhere here too.** `STAGE_DIR_NAME` lives in `utils/junk.py`
+  and is an ignored entry (`is_junk_entry`), so listings, search and every
+  walk skip it.
+
 ### 3.4 `registry.py`
 
 ```python
@@ -6805,7 +6883,8 @@ Net: a smaller, flatter codebase where the cost of the *next* tool drops from
 
 `is_junk_entry(name)` is the one predicate for names no listing or walk should
 see: OS and NAS metadata, plus RomM's `.romm_tmp_*` converter staging (prefix
-match only). The file browser listing and search, `walk_tree` (DAT scan), the
+match only) and this app's own `.compressatorium-stage` folder
+(`STAGE_DIR_NAME`, section 3.3.21). The file browser listing and search, `walk_tree` (DAT scan), the
 folder Library walk (which feeds sweeps, check Rules and the Platform walk) and
 the Switch key search all route through it. Add a new ignored name there, not in
 a caller.
