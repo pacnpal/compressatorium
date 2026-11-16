@@ -337,6 +337,15 @@ def _lists_entries(folder: str) -> bool:
         return False
 
 
+def stored_of(library_id: str, kind: str) -> list[dict[str, Any]]:
+    """*library_id*'s stored Findings of *kind*: ``{"image_key", "cause"}``. Blocking."""
+    with _session() as session:
+        rows = session.query(_db.FindingRecord).filter_by(
+            library_id=library_id, kind=kind,
+        ).all()
+        return [{"image_key": row.image_key, "cause": dict(row.cause or {})} for row in rows]
+
+
 def forget_kind(library_id: str, kind: str) -> None:
     """Drop *library_id*'s Findings of *kind* and their dismissals. Blocking.
 

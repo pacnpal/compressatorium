@@ -15,12 +15,16 @@ as a conversion (``ConversionMode.FIND_DUPLICATES`` is an external mode). It:
 4. groups the Images by key, checks each grouped file is still the one it
    read and is not being written, and records each group of two or more as
    one ``duplicate`` Finding, reconciled against the Library's earlier groups
-   so a group that went away is cleared;
+   so a group that went away is cleared. A stored group with a copy the run
+   could not see (in a folder the listing could not open, a file it could not
+   read) is kept exactly as it was: not seen is not gone;
 5. stores what it saw (how many it keyed and read, the formats it could not
    check) for the Findings view.
 
 A cancelled run, or one whose Library was removed meanwhile, writes no
-Findings. Keys it already read stay stored: they describe their files. Nothing
+Findings. Cancel is checked once more under the Findings store's write lock,
+just before the write: that is the run's commit point. A cancel that arrives
+after it is too late to undo the write, so the run reports what it did. Keys it already read stay stored: they describe their files. Nothing
 here moves, renames or deletes a file.
 """
 
@@ -43,7 +47,7 @@ from services import db as _db
 from services.content_keys import Identity, KeyUnavailable
 from services.job_manager import job_manager
 from services.lock_manager import lock_manager
-from services.rules.library import Library, LibraryUnreadable
+from services.rules.library import ImageListing, Library, LibraryUnreadable
 from services.subprocess_runner import (
     ProgressAbandoned,
     ReadCancelled,
@@ -167,7 +171,8 @@ def _stop_if_cancelled(job_id: str, current: Callable[[], bool]) -> None:
 
 async def _find(library: Library, job_id: str, current: Callable[[], bool]) -> dict:
     cancel_event = job_manager.get_cancel_event(job_id)
-    listed = await _list(library, cancel_event, job_id, current)
+    listing = await _list(library, cancel_event, job_id, current)
+    listed = [(str(image.key), image.path) for image in listing.images if image.path]
     _stop_if_cancelled(job_id, current)
     await job_manager.update_external_job(
         job_id, progress=0, message=f"Looking at {len(listed)} Images",
@@ -176,7 +181,7 @@ async def _find(library: Library, job_id: str, current: Callable[[], bool]) -> d
     # output being written is never grouped. Read on the loop (no disk).
     active = [path for _id, paths in job_manager.get_active_job_candidates() for path in paths]
     try:
-        candidates, busy = await run_detached_within_stall_bound(
+        candidates, busy, unstatted = await run_detached_within_stall_bound(
             _inspect, listed, active, what=f"looking at {library.name}",
             cancel_event=cancel_event, stall=content_keys.STALL_SECONDS,
             report_progress=True,
@@ -189,7 +194,11 @@ async def _find(library: Library, job_id: str, current: Callable[[], bool]) -> d
         content_keys.stored, {c.path: c.identity for c in candidates},
     )
     missing = [c for c in candidates if c.path not in keys]
-    computed = unreadable = 0
+    computed = 0
+    # Files this run could not read: the walk's, a stat that failed, a key
+    # that could not be read. With the folders the walk could not list, what
+    # the run did not see.
+    unseen = {*listing.unreadable, *unstatted}
     for index, candidate in enumerate(missing):
         _stop_if_cancelled(job_id, current)
         await job_manager.update_external_job(
@@ -205,11 +214,11 @@ async def _find(library: Library, job_id: str, current: Callable[[], bool]) -> d
             raise _Stopped("Cancelled: no Findings were written") from None
         except KeyUnavailable as exc:
             logger.info("duplicates: %s", exc)
-            unreadable += 1
+            unseen.add(candidate.path)
             continue
         if after != candidate.identity:
             # Changed while it was read: the key may describe neither version.
-            unreadable += 1
+            unseen.add(candidate.path)
             continue
         await run_in_threadpool(
             content_keys.store, candidate.path, candidate.identity, key, candidate.container,
@@ -236,14 +245,29 @@ async def _find(library: Library, job_id: str, current: Callable[[], bool]) -> d
         key: kept for key, members in groups.items()
         if len(kept := [c for c in members if c.path not in changed]) >= 2
     }
-    observed = [finding_for(key, members) for key, members in sorted(groups.items())]
+    # A stored group with a copy the run did not see stays exactly as it was.
+    held = await run_in_threadpool(_held, library.id, unseen, listing.unlisted)
+    observed = [
+        finding_for(key, members) for key, members in sorted(groups.items())
+        if key not in held
+    ]
+    # The commit point, asked under the store's write lock: a cancel or a
+    # removed Library that comes while the write waits writes nothing.
+    gate = {"open": False}
+
+    def may_write() -> bool:
+        gate["open"] = current() and not job_manager.is_cancelled(job_id)
+        return gate["open"]
+
     counts = await run_in_threadpool(
         lambda: findings.reconcile(
-            library.id, observed, kinds=(findings.DUPLICATE,), current=current,
+            library.id, observed, kinds=(findings.DUPLICATE,),
+            keep_under=sorted(held), current=may_write,
         ),
     )
-    if not current():
-        raise _Stopped("The Library was removed: no Findings were written")
+    if not gate["open"]:
+        _stop_if_cancelled(job_id, current)
+        raise _Stopped("Cancelled: no Findings were written")
     no_key = Counter(
         keys[c.path].container for c in candidates
         if c.path in keys and keys[c.path].key is None
@@ -255,7 +279,9 @@ async def _find(library: Library, job_id: str, current: Callable[[], bool]) -> d
         "groups": len(groups),
         "copies": sum(len(members) for members in groups.values()),
         "not_checked": dict(sorted(no_key.items())),
-        "unreadable": unreadable,
+        "unreadable": len(unseen),
+        "unlisted": len(listing.unlisted),
+        "held": len(held),
         "busy": busy,
         "findings": counts,
     }
@@ -266,16 +292,15 @@ async def _find(library: Library, job_id: str, current: Callable[[], bool]) -> d
 async def _list(
     library: Library, cancel_event: asyncio.Event | None, job_id: str,
     current: Callable[[], bool],
-) -> list[tuple[str, str]]:
-    """``(image key, path)`` for every Image of *library*, off the loop and bounded.
+) -> ImageListing:
+    """Every Image of *library* and what the listing could not see, off the
+    loop and bounded.
 
     A walk of the Library that is already running is waited for, then the
     listing is taken again, all within ``_LIST_SECONDS``.
     """
-    def work() -> list[tuple[str, str]]:
-        return [
-            (str(image.key), image.path) for image in library.all_images() if image.path
-        ]
+    def work() -> ImageListing:
+        return library.all_images()
 
     loop = asyncio.get_running_loop()
     deadline = loop.time() + _LIST_SECONDS
@@ -298,8 +323,9 @@ async def _list(
 
 def _inspect(
     listed: list[tuple[str, str]], active: list[str], *, progress: Callable[..., None],
-) -> tuple[list[Candidate], int]:
-    """The Images the run may group, and how many are in use. Blocking.
+) -> tuple[list[Candidate], int, list[str]]:
+    """The Images the run may group, how many are in use, and the ones it
+    could not stat. Blocking.
 
     A file outside the Volumes, gone, or not a regular file is left out; one a
     job is using or writing (a lock on it, or an active job's path) is in use.
@@ -310,6 +336,7 @@ def _inspect(
         in_use.add(os.path.realpath(path))
     out: list[Candidate] = []
     busy = 0
+    unstatted: list[str] = []
     for image_key, path in listed:
         progress(path)
         if not is_within_configured_volumes(path) or not os.path.isfile(path):
@@ -320,12 +347,34 @@ def _inspect(
         try:
             identity = content_keys.identity_of(path)
         except OSError:
+            unstatted.append(path)
             continue
         out.append(Candidate(
             image_key=image_key, path=path, identity=identity,
             container=content_keys.container_of(path),
         ))
-    return out, busy
+    return out, busy, unstatted
+
+
+def _held(library_id: str, unseen: set[str], unlisted: Iterable[str]) -> set[str]:
+    """The stored groups with a copy the run did not see: a file in *unseen*, or
+    under a folder in *unlisted*. Blocking."""
+    files = {os.path.normpath(path) for path in unseen}
+    folders = tuple(os.path.normpath(folder) for folder in unlisted)
+
+    def not_seen(path: str) -> bool:
+        path = os.path.normpath(path)
+        return path in files or any(
+            path == folder or path.startswith(folder + os.sep) for folder in folders
+        )
+
+    return {
+        row["image_key"] for row in findings.stored_of(library_id, findings.DUPLICATE)
+        if any(
+            not_seen(str((copy or {}).get("path") or ""))
+            for copy in row["cause"].get(findings.COPIES) or ()
+        )
+    }
 
 
 def _changed(candidates: list[Candidate], *, progress: Callable[..., None]) -> set[str]:
@@ -393,6 +442,10 @@ def describe(summary: dict) -> str:
         text += f", {not_checked} not checked"
     if summary.get("unreadable"):
         text += f", {summary['unreadable']} could not be read"
+    if summary.get("unlisted"):
+        text += f", {summary['unlisted']} folders could not be listed"
+    if summary.get("held"):
+        text += f", {summary['held']} groups kept as they were"
     if summary.get("busy"):
         text += f", {summary['busy']} in use"
     return text

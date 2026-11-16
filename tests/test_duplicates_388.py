@@ -427,6 +427,123 @@ async def test_removing_the_library_drops_its_groups_and_last_run(
     assert listed["duplicate_runs"] == []
 
 
+@pytest.mark.asyncio
+async def test_a_cancel_while_the_findings_write_waits_writes_nothing(
+    db: Path, client: httpx.AsyncClient, monkeypatch,
+) -> None:
+    """Codex 4589796851: a Cancel that lands while the run waits to write its
+    Findings ends the run as cancelled, with the Findings as they were."""
+    from services import findings
+
+    roms = db / "roms"
+    _disc(roms / "Game.iso", b"game")
+    _copy(roms / "Game.iso", roms / "Copy.iso")
+    library = await _register(client, roms)
+    await _find(client, library)
+    before = await _duplicates(client)
+    assert _names(before[0]) == ["Copy.iso", "Game.iso"]
+
+    _copy(roms / "Game.iso", roms / "Third.iso")
+    waiting = threading.Event()
+    go_on = threading.Event()
+    real = findings.reconcile
+
+    def reconcile(*args, **kwargs):
+        # The run's own write, not the folder walk's (which reconciles its
+        # kinds): held where it would wait for the store's write lock.
+        if findings.DUPLICATE in tuple(kwargs.get("kinds") or ()):
+            waiting.set()
+            go_on.wait(30)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(findings, "reconcile", reconcile)
+    job_id = await _start(client, library)
+    try:
+        for _ in range(500):
+            if waiting.is_set():
+                break
+            await asyncio.sleep(0.01)
+        assert waiting.is_set()
+        assert (await client.delete(f"/api/jobs/{job_id}")).json() == {"status": "cancelled"}
+    finally:
+        go_on.set()
+
+    job = await _finished(client, job_id)
+    assert job["status"] == "cancelled", job
+    after = await _duplicates(client)
+    assert [row["fingerprint"] for row in after] == [row["fingerprint"] for row in before]
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(folder_library_303._IS_ROOT, reason="root reads every folder")
+async def test_a_folder_the_walk_cannot_list_keeps_its_groups(
+    db: Path, client: httpx.AsyncClient,
+) -> None:
+    """Codex 4589796861: not listed is not gone. A group with a copy in a
+    folder the walk could not list, or a file it could not read, is kept as it
+    was, and the run says what it could not see."""
+    roms = db / "roms"
+    _disc(roms / "Game.iso", b"game")
+    _copy(roms / "Game.iso", roms / "sub" / "Copy.iso")
+    _disc(roms / "Other.iso", b"other")
+    _copy(roms / "Other.iso", roms / "Other (copy).iso")
+    library = await _register(client, roms)
+    await _find(client, library)
+    before = {row["image_key"]: row for row in await _duplicates(client)}
+    assert len(before) == 2
+
+    (roms / "sub").chmod(0)
+    (roms / "Other (copy).iso").chmod(0)
+    try:
+        await _find(client, library)
+        after = {row["image_key"]: row for row in await _duplicates(client)}
+        run = await _last_run(client, library)
+    finally:
+        (roms / "sub").chmod(0o755)
+        (roms / "Other (copy).iso").chmod(0o644)
+
+    assert {k: r["fingerprint"] for k, r in after.items()} == {
+        k: r["fingerprint"] for k, r in before.items()
+    }
+    assert run["unlisted"] == 1
+    assert run["unreadable"] == 1
+    assert run["held"] == 2
+
+
+@pytest.mark.asyncio
+async def test_a_chd_replaced_with_the_same_mtime_gets_no_stale_key(
+    db: Path, client: httpx.AsyncClient, monkeypatch,
+) -> None:
+    """Codex 4589796866: the CHD metadata cache checks the file's size as well
+    as its mtime before its hashes are used."""
+    roms = db / "roms"
+    sha1 = _disc(roms / "Game.iso", b"game")
+    chd = roms / "Game.chd"
+    await _seed_chd(chd, data_sha1=sha1, sha1="0" * 40)
+    library = await _register(client, roms)
+    await _find(client, library)
+    assert _names((await _duplicates(client))[0]) == ["Game.chd", "Game.iso"]
+
+    # Another disc in its place: a different size, the same mtime.
+    stamp = chd.stat().st_mtime_ns
+    chd.write_bytes(b"MComprHD" + os.urandom(200))
+    os.utime(chd, ns=(stamp, stamp))
+    assert await chd_metadata_store.get_fresh_metadata(str(chd)) is None
+
+    other = "9" * 40
+
+    async def info(path):
+        return {
+            "sha1": "8" * 40, "data_sha1": other,
+            "raw_data": f"Data SHA1: {other}\nMetadata: Tag='DVD '  Index=0\n",
+            "metadata_lines": ["Tag='DVD '"],
+        }
+
+    monkeypatch.setattr(registry.get("chdman")._service, "info", info)
+    await _find(client, library)
+    assert await _duplicates(client) == []
+
+
 # ----------------------------------------------------------------------
 # the tool contract
 # ----------------------------------------------------------------------

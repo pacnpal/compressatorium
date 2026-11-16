@@ -42,6 +42,8 @@ def test_the_findings_view_shows_each_copy_and_what_was_not_checked() -> None:
     assert "row.cause?.copies" in view
     assert "copy.container" in view and "bytes(copy.size)" in view
     assert "findings.duplicateRuns" in view and "notChecked(run)" in view
+    # What the run could not see, and the groups it kept as they were.
+    assert "run.unlisted" in view and "run.held" in view
     # A duplicate is about the file, not its Platform, and it is read-only.
     assert "row.kind !== 'duplicate'" in view
     assert "deletePlan" not in view and "deleteFile" not in view

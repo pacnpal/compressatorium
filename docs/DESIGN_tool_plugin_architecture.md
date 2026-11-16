@@ -5557,6 +5557,13 @@ overall SHA1, is never a raw label: it folds in the metadata hashes.
 that a `createdvd` CHD's data SHA1 equals its ISO's SHA1 (and its overall SHA1
 does not), and that an ISO, its RVZ and its DVD CHD group together.
 
+**CHD metadata freshness.** `chd_metadata_store.get_fresh_metadata` checks the
+file's size as well as its mtime (`chd_metadata.size`, added by 0017), so a
+replacement of another size that kept the mtime never hands back the old
+hashes, for every caller. A row written before the size was recorded is judged
+on its mtime, as before, unless the caller passes `require_size=True`, as
+`ChdmanTool.raw_image_sha1` does: it then reads `chdman info` again.
+
 **Stored per file, tied to its identity.** `content_keys` (migration 0017) holds
 `path`, `size`, `mtime_ns`, `key` (None for a format with no key) and
 `container`. `content_keys.stored(...)` returns only rows whose size and mtime
@@ -5568,11 +5575,14 @@ for this: its rows carry no size or mtime to tie a SHA1 to the file.
 conversion and never a slot) and runs it as a task; one per Library at a time
 (409 otherwise). It:
 
-1. lists the Library with `Library.all_images()`, a new Library contract method:
-   `LibraryDefaults` walks every Platform's `images()`, and `FolderLibrary`
-   returns every entry of a fresh walk, Unsorted and Conflicted included. The
-   walk already skips junk (`utils/junk.is_junk_entry`, RomM's `.romm_tmp_*`).
-   A walk already running is waited for, within `_LIST_SECONDS`;
+1. lists the Library with `Library.all_images()`, a new Library contract method
+   returning an `ImageListing`: the Images, plus what the listing could not see
+   (`unlisted` folders, `unreadable` files). `LibraryDefaults` walks every
+   Platform's `images()` and reports nothing unseen; `FolderLibrary` returns
+   every entry of a fresh walk, Unsorted and Conflicted included, with the
+   walk's own `Scan.unwalked` and `Scan.unreadable_files`. The walk already
+   skips junk (`utils/junk.is_junk_entry`, RomM's `.romm_tmp_*`). A walk
+   already running is waited for, within `_LIST_SECONDS`;
 2. leaves out a file outside the Volumes, gone, locked (`lock_manager.is_locked`)
    or on an active job's candidate paths: an output being written is never
    grouped (counted as `busy`);
@@ -5581,7 +5591,14 @@ conversion and never a slot) and runs it as a task; one per Library at a time
    a tool's hash is bounded by its `verify_timeout`; stats by the stall bound.
    A file whose identity changed while it was read is not stored;
 4. groups by key (two or more), re-checks each grouped file's identity and lock,
-   and reconciles `duplicate` Findings for the Library (`findings.DUPLICATE`, one
+   and reconciles `duplicate` Findings for the Library. A stored group with a
+   copy the run did not see (under an `unlisted` folder, an `unreadable` file,
+   a stat or key read that failed) is held: left out of the observed groups and
+   passed as `keep_under`, so it stays exactly as it was. The write's `current`
+   predicate, asked under the store's write lock, is the commit point: it is
+   false once the job is cancelled or the Library removed, and a rejected write
+   ends the run as cancelled with nothing written. A cancel after it is too late
+   to undo the write, so the run reports what it did (`findings.DUPLICATE`, one
    per group, `image_key` = the content key, `cause` = `{"key", "copies": [{"image_key",
    "path", "container", "size"}]}`);
 5. stores the summary (`duplicate_runs`: keyed, read now, groups, `not_checked`

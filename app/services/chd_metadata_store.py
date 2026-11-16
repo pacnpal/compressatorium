@@ -246,12 +246,20 @@ class CHDMetadataStore:
             return True
         return current_mtime != row.mtime
 
-    async def get_fresh_metadata(self, chd_path: str) -> Optional[dict]:
+    async def get_fresh_metadata(
+        self, chd_path: str, *, require_size: bool = False,
+    ) -> Optional[dict]:
         """Return cached ``metadata_json`` only if it still describes the file.
 
         Reads the row, then re-stats the file — both inside one threadpool
         call, no ``await`` between — and returns the hashes only when the
-        file's current mtime still equals the row's captured mtime. The writer
+        file's current size and mtime still equal the row's captured ones
+        (#388, Codex 4589796861: a replacement of another size that kept the
+        mtime is a different file). A row written before the size was recorded
+        is judged on its mtime alone, as it always was, unless *require_size*:
+        then it is not fresh (the duplicate finder reads ``chdman info`` again
+        rather than key a file on a size it never saw). The store keeps no
+        inode. The writer
         (``_set_metadata_sync``) always stats then stores ``(metadata, mtime)``
         together, so the row's mtime lags the file; reading the row *first* and
         comparing against a *later* stat means a concurrent rewrite (new file,
@@ -272,10 +280,14 @@ class CHDMetadataStore:
             # Stat AFTER the row read so a rewrite that lands while we read the
             # row moves the file's mtime away from the (now older) row mtime.
             try:
-                current_mtime = os.path.getmtime(normalized)
+                st = os.stat(normalized)
             except OSError:
                 return None
-            if current_mtime != row.mtime:
+            if st.st_mtime != row.mtime:
+                return None
+            if row.size is None:
+                return None if require_size else row.metadata_json
+            if st.st_size != row.size:
                 return None
             return row.metadata_json
 
@@ -317,10 +329,13 @@ class CHDMetadataStore:
 
     def _set_metadata_sync(self, chd_path: str, info: dict) -> dict:
         normalized = self._normalize_path(chd_path)
+        # One stat for both: the identity the hashes are tied to.
         try:
-            mtime = os.path.getmtime(normalized)
+            st = os.stat(normalized)
+            mtime: float | None = st.st_mtime
+            size: int | None = st.st_size
         except OSError:
-            mtime = None
+            mtime = size = None
 
         media_type = self.extract_media_type(info)
         now = _utcnow_iso()
@@ -331,6 +346,7 @@ class CHDMetadataStore:
                 metadata_json=info,
                 media_type=media_type,
                 mtime=mtime,
+                size=size,
                 cached_at=now,
                 disc_id_checked=False,
             )
@@ -348,6 +364,7 @@ class CHDMetadataStore:
                     "metadata": stmt.excluded["metadata"],
                     "media_type": stmt.excluded.media_type,
                     "mtime": stmt.excluded.mtime,
+                    "size": stmt.excluded.size,
                     "cached_at": stmt.excluded.cached_at,
                 },
             )
@@ -451,9 +468,11 @@ class CHDMetadataStore:
         old_normalized = self._normalize_path(old_path)
         new_normalized = self._normalize_path(new_path)
         try:
-            new_mtime: float | None = os.path.getmtime(new_normalized)
+            new_st = os.stat(new_normalized)
+            new_mtime: float | None = new_st.st_mtime
+            new_size: int | None = new_st.st_size
         except OSError:
-            new_mtime = None
+            new_mtime = new_size = None
 
         with self._session() as session:
             old = session.get(_db.CHDMetadata, old_normalized)
@@ -466,6 +485,7 @@ class CHDMetadataStore:
                 "metadata_json": old.metadata_json,
                 "media_type": old.media_type,
                 "mtime": new_mtime,
+                "size": new_size,
                 "cached_at": old.cached_at,
                 "disc_id_checked": old.disc_id_checked,
                 "disc_id_checked_mtime": old.disc_id_checked_mtime,

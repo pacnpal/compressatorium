@@ -274,6 +274,10 @@ def test_0017_adds_the_content_keys(fresh_db_path: str):
     # A key is tied to the file's size and mtime; a format with no key stores None.
     assert {"path", "size", "mtime_ns", "key", "container"} <= set(columns)
     assert columns["key"]["nullable"] is True
+    # The CHD metadata cache records the file's size beside its mtime (Codex
+    # 4589796866); rows written before it read None.
+    chd = {c["name"]: c for c in inspect(engine).get_columns("chd_metadata")}
+    assert chd["size"]["nullable"] is True
     assert _current_rev(engine) == "0017"
 
 

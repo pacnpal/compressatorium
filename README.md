@@ -908,6 +908,9 @@ one disc.
   slot.
 - A file a job is writing or reading, and RomM's `.romm_tmp_*` staging files,
   are never grouped.
+- A folder the run cannot list, or a file it cannot read, is not taken as
+  gone: a group with a copy there is kept as it was, and Findings says how
+  many folders and files it could not see.
 - Each group is a **Duplicate** Finding listing every copy's path, container
   and size. It goes away once only one copy is left (at the next listing or
   run).

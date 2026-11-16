@@ -11,7 +11,8 @@
   and a second run reads only new or changed files. Each group shows in
   Findings with every copy's path, container and size. CD CHDs, CSO, ZSO, DAX,
   NSZ, WUX and Z3DS files aren't checked yet, and Findings says how many of
-  each were left out. Nothing is deleted.
+  each were left out. A folder or file it can't read leaves its groups as they
+  were. Nothing is deleted.
 
 ### Changed
 

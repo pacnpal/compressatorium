@@ -172,6 +172,8 @@
           Not checked, no content key for these formats yet: {notChecked(run)}.
         {/if}
         {#if run.unreadable}{run.unreadable} could not be read.{/if}
+        {#if run.unlisted}{run.unlisted} folder{run.unlisted === 1 ? '' : 's'} could not be listed.{/if}
+        {#if run.held}{run.held} group{run.held === 1 ? '' : 's'} with a copy it could not see kept as before.{/if}
         {#if run.busy}{run.busy} in use by a job, left out.{/if}
       </span>
     </div>

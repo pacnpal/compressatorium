@@ -431,7 +431,10 @@ class ChdmanTool(BaseTool):
             return None
         from services.chd_metadata_store import chd_metadata_store
 
-        metadata = await chd_metadata_store.get_fresh_metadata(path)
+        # A row must match the file's size as well as its mtime (and one
+        # written before the size was recorded is read again): a key stored
+        # against the new identity must never come from the file it replaced.
+        metadata = await chd_metadata_store.get_fresh_metadata(path, require_size=True)
         if not metadata:
             try:
                 metadata = await self._service.info(path)
