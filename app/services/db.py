@@ -371,6 +371,9 @@ class FolderLibraryRecord(Base):
     # Used by an EmulationStation frontend (#386): conversions rewrite the
     # matching <path> in the Platform folder's gamelist.xml. Off by default.
     es_frontend = Column(Boolean, nullable=False, default=False, server_default=text("0"))
+    # Its ES-DE gamelists folder (#387): resolved, inside a Volume; None keeps
+    # the Platform folder lookup.
+    gamelists_folder = Column(String, nullable=True)
 
 
 class PlatformMappingRecord(Base):

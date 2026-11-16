@@ -68,14 +68,28 @@ class ReferrerRegistry:
         Every always-on Referrer, and each opt-in one whose Library's settings
         turn it on (``library.referrer_enabled``). An Image in no Library
         (*library* None) gets the always-on ones only. Registration order is
-        kept within a phase. Raises ReferrerError (target: the Library) when
-        the settings can't be read, so the caller keeps the Source.
+        kept within a phase. Each is bound to *library*
+        (``Referrer.for_library``, #387). Raises ReferrerError (target: the
+        Library) when the settings can't be read, so the caller keeps the Source.
         """
         return [
-            referrer
+            self._bound(referrer, library)
             for referrer in sorted(self._referrers.values(), key=lambda r: r.phase)
             if not referrer.opt_in or self._enabled(referrer, library)
         ]
+
+    @staticmethod
+    def _bound(referrer: Referrer, library) -> Referrer:
+        try:
+            return referrer.for_library(library)
+        except ReferrerError:
+            raise
+        except Exception as exc:
+            # Not knowing its settings must keep the Source: broad on purpose.
+            raise ReferrerError(
+                getattr(library, "name", None) or getattr(library, "id", "Library"),
+                f"couldn't read the settings of {referrer.label} ({exc})",
+            ) from exc
 
     @staticmethod
     def _enabled(referrer: Referrer, library) -> bool:

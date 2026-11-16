@@ -21,6 +21,11 @@ event loop, on the hook's detached thread:
   and its Cancel, so it must never block. By default it runs ``apply`` on a
   worker thread.
 
+A Referrer that reads its Library's settings (the gamelist Referrer's ES-DE
+gamelists folder, #387) overrides ``for_library(library)``, which the
+registry calls with the Image's Library and which returns the Referrer to
+use for it (by default the Referrer itself).
+
 Two declarations (#383), checked when the Referrer is registered:
 
 - ``opt_in``: False for a Referrer that is always on (``.m3u``); True for one
@@ -168,6 +173,17 @@ class Referrer(ABC):
     @abstractmethod
     def plan(self, renames: Mapping[str, str]) -> list[ReferrerChange]:
         """The changes *renames* (``{old_path: new_path}``) needs. Writes nothing."""
+
+    def for_library(self, library) -> Referrer:
+        """This Referrer as it runs for an Image in *library* (#387).
+
+        The registry calls it for each active Referrer with the Image's
+        Library (None when it is in none). A Referrer whose behaviour depends
+        on its Library's settings (``library.referrer_options``) returns a
+        copy bound to them; the registered one is never changed. Reads
+        settings in memory only. Raising keeps the Source.
+        """
+        return self
 
     @abstractmethod
     def apply(self, change: ReferrerChange) -> Applied | None:

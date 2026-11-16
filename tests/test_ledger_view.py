@@ -374,7 +374,8 @@ def test_migrations_have_a_single_head():
     # 0013 (mappings and Findings) on that, #305's 0014 (check times) on
     # that, #337's 0015 (re-pin plan generation) on that, #386's 0016
     # (the EmulationStation frontend switch) on that, #388's 0017 (content
-    # keys) on that, and #391's 0019 (the RomM swap journal) on that.
+    # keys) on that, #387's 0018 (the ES-DE gamelists folder) on that, and
+    # #391's 0019 (the RomM swap journal) on that.
     assert heads == ["0019"]
 
 

@@ -3,11 +3,8 @@
 The RomM swap journal (#391): one row per swap that keeps a ROM's id by
 renaming its file in RomM, written before each step runs.
 
-Numbered 0019 because #402 takes 0018. It sits on 0017 until #402 merges, and
-is re-pointed to 0018 then.
-
 Revision ID: 0019
-Revises: 0017
+Revises: 0018
 Create Date: 2026-11-16 00:00:00
 """
 
@@ -19,7 +16,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = '0019'
-down_revision: str | Sequence[str] | None = '0017'
+down_revision: str | Sequence[str] | None = '0018'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

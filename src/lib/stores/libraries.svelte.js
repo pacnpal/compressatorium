@@ -71,6 +71,16 @@ export class FolderRulesSource extends RulesSource {
     await libraries.saveSettings(this.id, { es_frontend: enabled });
   }
 
+  /** Its ES-DE gamelists folder, or null (#387). */
+  get gamelistsFolder() {
+    return this.library?.gamelists_folder ?? null;
+  }
+
+  /** Save it ('' clears); the backend refuses one outside every Volume. */
+  async setGamelistsFolder(path) {
+    await libraries.saveSettings(this.id, { gamelists_folder: path });
+  }
+
   /**
    * Take the Library's latest settings (name, schedule switch, ...) in place.
    * Only the Library row changes; the Rules and any unsaved edit to them live
