@@ -27,8 +27,9 @@ is refused. Everything the run creates lives there or in the compose
 project's named volumes (project `romm-swap-spike`, RomM on
 `127.0.0.1:18980`, `--port` to change it). The stack is torn down with
 `docker compose down -v` at the end; `--keep` leaves it up so you can look
-around (log in as `spikeadmin` / `spike-pass-382`), and a later run tears it
-down first.
+around, and a later run tears it down first. Every password, the auth secret
+and the API tokens are generated per run; the admin login is in
+`WORK/.env` (`SPIKE_ADMIN_USER`, `SPIKE_ADMIN_PASSWORD`).
 
 It takes about two minutes. Nothing touches any library but the scratch one.
 
@@ -70,4 +71,5 @@ It takes about two minutes. Nothing touches any library but the scratch one.
   body) and response (status, body). Token-creation responses carry the raw
   throwaway tokens, so don't paste this file anywhere public.
 - `WORK/evidence/results.json`: each experiment's database rows and files
-  before and after, read straight from MariaDB.
+  before and after, read from MariaDB with parameterized queries (`db_query.py`, run
+  inside the RomM container).

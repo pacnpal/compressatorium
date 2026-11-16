@@ -12,15 +12,16 @@ title id is the first four bytes of the game id, so those differ too.
 Writes OUT_DIR/<platform>/<name>.iso for every entry in FIXTURES.
 """
 import base64
+import hashlib
+import itertools
 import os
-import random
 import shutil
 import struct
 import subprocess
 import sys
+import tempfile
 
-STAGE = "/tmp/stage"
-rng = random.Random(382)
+_blocks = itertools.count()
 
 # (platform folder, file stem, serial or game id). The stems name the
 # experiment each Image is used for; see spike.py.
@@ -51,24 +52,30 @@ def mkdir(p):
 
 
 def filler(n):
-    """Deterministic, compressible bytes (base64 text)."""
-    return base64.b64encode(rng.randbytes((n * 3) // 4 + 4))[:n]
+    """Deterministic, compressible bytes: base64 text of a BLAKE2 stream, so
+    every run builds the same Images and no two files share content."""
+    raw = bytearray()
+    while len(raw) < (n * 3) // 4 + 4:
+        raw += hashlib.blake2b(f"spike-382-{next(_blocks)}".encode()).digest()
+    return base64.b64encode(bytes(raw))[:n]
 
 
 def iso(out, files, volid, sysid=None):
-    """files: {relpath: bytes}, built with xorriso -as mkisofs."""
-    if os.path.exists(STAGE):
-        shutil.rmtree(STAGE)
-    for rel, data in files.items():
-        p = os.path.join(STAGE, rel)
-        mkdir(os.path.dirname(p))
-        with open(p, "wb") as f:
-            f.write(data)
-    mkdir(os.path.dirname(out))
-    cmd = ["xorriso", "-as", "mkisofs", "-quiet", "-iso-level", "2", "-V", volid, "-o", out]
-    if sysid:
-        cmd += ["-sysid", sysid]
-    subprocess.run(cmd + [STAGE], check=True)
+    """files: {relpath: bytes}, built with xorriso -as mkisofs from a fresh
+    private temp folder."""
+    stage = tempfile.mkdtemp(prefix="spike-iso-")
+    try:
+        for rel, data in files.items():
+            p = os.path.join(stage, rel)
+            mkdir(os.path.dirname(p))
+            with open(p, "wb") as f:
+                f.write(data)
+        mkdir(os.path.dirname(out))
+        sysid_args = ["-sysid", sysid] if sysid else []
+        subprocess.run(["/usr/bin/xorriso", "-as", "mkisofs", "-quiet", "-iso-level", "2",
+                        "-V", volid, *sysid_args, "-o", out, stage], check=True)
+    finally:
+        shutil.rmtree(stage, ignore_errors=True)
 
 
 def ps2_dvd(path, serial):

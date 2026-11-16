@@ -17,6 +17,7 @@ import argparse
 import base64
 import datetime as dt
 import hashlib
+import http.client
 import json
 import os
 import secrets
@@ -24,15 +25,13 @@ import shutil
 import subprocess
 import sys
 import time
-import urllib.error
-import urllib.request
 import uuid
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 PROJECT = "romm-swap-spike"
 FIXTURE_IMAGE = "compressatorium-romm-spike-fixtures:latest"
-ADMIN = ("spikeadmin", "spike-pass-382")
+ADMIN_USER = "spikeadmin"
 # The scopes the swap needs (see the permissions experiment): read the ROM,
 # rename it, queue and follow the rehash.
 SWAP_SCOPES = ["roms.read", "roms.write", "tasks.run"]
@@ -72,7 +71,8 @@ class Spike:
         self.work = work
         self.port = port
         self.app_image = app_image
-        self.base = f"http://127.0.0.1:{port}"
+        # The admin's password is made per run and kept in WORK/.env.
+        self.admin = (ADMIN_USER, secrets.token_urlsafe(18))
         self.evidence = work / "evidence"
         self.library = work / "library" / "roms"
         self.calls = None
@@ -82,43 +82,40 @@ class Spike:
 
     # ---- plumbing -------------------------------------------------------
 
-    def compose(self, *args, env=None, check=True):
-        cmd = ["docker", "compose", "-p", PROJECT, "-f", str(HERE / "docker-compose.yml"),
-               "--env-file", str(self.work / ".env"), *args]
-        return subprocess.run(cmd, check=check, capture_output=True, text=True,
-                              env={**os.environ, **(env or {})})
+    def compose(self, *args, check=True, stdin=None):
+        return docker("compose", "-p", PROJECT, "-f", str(HERE / "docker-compose.yml"),
+                      "--env-file", str(self.work / ".env"), *args, check=check, stdin=stdin)
 
-    def sql(self, query):
-        """Rows of a query against RomM's database, as dicts of strings."""
-        out = self.compose(
-            "exec", "-T", "romm-db", "sh", "-c",
-            'mariadb -uroot -p"$MARIADB_ROOT_PASSWORD" romm -B -e "$0"', query,
-        ).stdout
-        lines = out.rstrip("\n").split("\n") if out.strip() else []
-        if not lines:
-            return []
-        head = lines[0].split("\t")
-        return [dict(zip(head, line.split("\t"))) for line in lines[1:]]
+    def sql(self, query, *params):
+        """Rows of a parameterized query (`?` placeholders) against RomM's
+        database, as dicts of strings. db_query.py runs it inside the RomM
+        container with RomM's own connector."""
+        request = json.dumps({"query": query, "params": list(params)})
+        out = self.compose("exec", "-T", "romm", "/src/.venv/bin/python", "-", request,
+                           stdin=(HERE / "db_query.py").read_text(encoding="utf-8")).stdout
+        return json.loads(out)
 
     def log_call(self, entry):
-        with open(self.calls, "a") as f:
+        with open(self.calls, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry) + "\n")
 
-    def http(self, method, path, token=None, json_body=None, form=None, files=None,
-             basic=None, label=""):
-        """One request, logged with its response. Returns (status, parsed body)."""
-        headers = {}
+    def http(self, method, path, who=None, json_body=None, form=None, files=None,
+             basic=None, label="", headers=None):
+        """One request to the local RomM, logged with its response. `who` names
+        the API token to send. Returns (status, parsed body)."""
+        headers = dict(headers or {})
         data = None
         logged_body = None
-        if token:
-            headers["Authorization"] = f"Bearer {self.tokens[token]}"
+        if who:
+            headers["Authorization"] = f"Bearer {self.tokens[who]}"
         if basic:
             raw = base64.b64encode(f"{basic[0]}:{basic[1]}".encode()).decode()
             headers["Authorization"] = f"Basic {raw}"
         if json_body is not None:
             data = json.dumps(json_body).encode()
             headers["Content-Type"] = "application/json"
-            logged_body = json_body
+            logged_body = {k: "(redacted)" if k == "password" else v
+                           for k, v in json_body.items()}
         elif form is not None or files is not None:
             boundary = uuid.uuid4().hex
             parts = []
@@ -134,25 +131,19 @@ class Spike:
             logged_body = {"form": form or {},
                            "files": {k: f"{v[0]} ({len(v[1])} bytes)"
                                      for k, v in (files or {}).items()}}
-        req = urllib.request.Request(self.base + path, data=data, method=method,
-                                     headers=headers)
-        try:
-            with urllib.request.urlopen(req, timeout=120) as resp:
-                status, raw = resp.status, resp.read()
-        except urllib.error.HTTPError as exc:
-            status, raw = exc.code, exc.read()
+        status, raw, _ = local_request(self.port, method, path, data, headers)
         try:
             body = json.loads(raw) if raw else None
         except ValueError:
             body = raw.decode(errors="replace")
         self.log_call({"label": label, "method": method, "path": path,
-                       "auth": token or ("basic" if basic else None),
+                       "auth": who or ("basic" if basic else None),
                        "request": logged_body, "status": status, "response": body})
         return status, body
 
-    def wait_task(self, task_id, token):
+    def wait_task(self, task_id, who):
         for _ in range(240):
-            status, body = self.http("GET", f"/api/tasks/{task_id}", token=token,
+            status, body = self.http("GET", f"/api/tasks/{task_id}", who=who,
                                      label="poll task")
             if status == 200 and body.get("status") in ("finished", "failed", "stopped",
                                                           "canceled"):
@@ -160,23 +151,22 @@ class Spike:
             time.sleep(1)
         raise RuntimeError(f"task {task_id} did not finish")
 
-    def scan(self, payload, token="full", label="scan"):
-        status, body = self.http("POST", "/api/tasks/scan", token=token, json_body=payload,
+    def scan(self, payload, who="full", label="scan"):
+        status, body = self.http("POST", "/api/tasks/scan", who=who, json_body=payload,
                                  label=label)
         if status != 202:
             raise RuntimeError(f"scan refused: {status} {body}")
-        final = self.wait_task(body["task_id"], token)
+        final = self.wait_task(body["task_id"], who)
         return {"request": payload, "queued": body, "final": final}
 
     def convert(self, mount, paths, fmt, extra=()):
         """Convert with Compressatorium's own CLI, `mount` at /data/games."""
         app_config = self.work / "app-config"
         app_config.mkdir(exist_ok=True)
-        cmd = ["docker", "run", "--rm", "-e", "COMPRESSATORIUM_MOUNT_ROOT=/data",
-               "-v", f"{mount}:/data/games", "-v", f"{app_config}:/config",
-               "--entrypoint", "compressatorium", self.app_image,
-               "convert", "--to", fmt, "--json", *extra, *paths]
-        out = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        out = docker("run", "--rm", "-e", "COMPRESSATORIUM_MOUNT_ROOT=/data",
+                     "-v", f"{mount}:/data/games", "-v", f"{app_config}:/config",
+                     "--entrypoint", "compressatorium", self.app_image,
+                     "convert", "--to", fmt, "--json", *extra, *paths, check=False)
         rows = [json.loads(line) for line in out.stdout.splitlines() if line.startswith("{")]
         if out.returncode != 0 or not rows or any(r["status"] != "completed" for r in rows):
             raise RuntimeError(f"conversion failed: {out.stdout}\n{out.stderr[-2000:]}")
@@ -187,27 +177,28 @@ class Spike:
     def rom_row(self, rom_id):
         rows = self.sql(
             "SELECT id, name, fs_name, fs_path, fs_size_bytes, crc_hash, md5_hash, sha1_hash, "
-            f"title_id, missing_from_fs, updated_at FROM roms WHERE id = {int(rom_id)}")
+            "title_id, missing_from_fs, updated_at FROM roms WHERE id = ?", int(rom_id))
         return rows[0] if rows else None
 
     def file_rows(self, rom_id):
         return self.sql(
             "SELECT id, file_name, file_size_bytes, last_modified, sha1_hash, chd_sha1_hash, "
-            f"title_id, missing_from_fs FROM rom_files WHERE rom_id = {int(rom_id)}")
+            "title_id, missing_from_fs FROM rom_files WHERE rom_id = ?", int(rom_id))
 
     def user_data(self, rom_id):
         rid = int(rom_id)
         return {
-            "saves": self.sql(f"SELECT id, file_name, file_path FROM saves WHERE rom_id = {rid}"),
-            "states": self.sql(f"SELECT id, file_name, file_path FROM states WHERE rom_id = {rid}"),
-            "notes": self.sql(f"SELECT id, title FROM rom_notes WHERE rom_id = {rid}"),
+            "saves": self.sql("SELECT id, file_name, file_path FROM saves WHERE rom_id = ?", rid),
+            "states": self.sql("SELECT id, file_name, file_path FROM states WHERE rom_id = ?",
+                               rid),
+            "notes": self.sql("SELECT id, title FROM rom_notes WHERE rom_id = ?", rid),
             "collections": self.sql(
                 "SELECT c.id, c.name, c.is_favorite FROM collections_roms cr JOIN collections c "
-                f"ON c.id = cr.collection_id WHERE cr.rom_id = {rid}"),
+                "ON c.id = cr.collection_id WHERE cr.rom_id = ?", rid),
             "rom_user": self.sql(
-                f"SELECT rating, status, backlogged FROM rom_user WHERE rom_id = {rid}"),
+                "SELECT rating, status, backlogged FROM rom_user WHERE rom_id = ?", rid),
             "play_sessions": self.sql(
-                f"SELECT id, duration_ms FROM play_sessions WHERE rom_id = {rid}"),
+                "SELECT id, duration_ms FROM play_sessions WHERE rom_id = ?", rid),
         }
 
     def snapshot(self, rom_id):
@@ -216,14 +207,14 @@ class Spike:
 
     def roms_named(self, stem):
         """Every ROM row whose file name starts with `stem` (old and new)."""
-        safe = stem.replace("'", "")
         return self.sql(
             "SELECT id, fs_name, fs_size_bytes, sha1_hash, title_id, missing_from_fs "
-            f"FROM roms WHERE fs_name LIKE '{safe}%' ORDER BY id")
+            "FROM roms WHERE fs_name LIKE ? ORDER BY id", stem + "%")
 
     @staticmethod
     def sha1(path):
-        h = hashlib.sha1()
+        # A checksum to compare with the one RomM stores, not a security use.
+        h = hashlib.new("sha1", usedforsecurity=False)
         with open(path, "rb") as f:
             for chunk in iter(lambda: f.read(1 << 20), b""):
                 h.update(chunk)
@@ -240,23 +231,23 @@ class Spike:
             shutil.rmtree(self.work)
         for sub in ("evidence", "fixtures", "stage", "assets", "config", "app-config"):
             (self.work / sub).mkdir(parents=True)
-        (self.work / "config" / "config.yml").write_text("")
+        (self.work / "config" / "config.yml").write_text("", encoding="utf-8")
+        # Every secret is made here, per run, and lives only in WORK/.env.
         (self.work / ".env").write_text(
             f"SPIKE_WORK={self.work}\nSPIKE_PORT={self.port}\n"
-            f"SPIKE_DB_PASSWORD={secrets.token_hex(12)}\n"
-            f"SPIKE_DB_ROOT_PASSWORD={secrets.token_hex(12)}\n"
-            f"SPIKE_AUTH_SECRET={secrets.token_hex(32)}\nROM_CONVERTO_ENABLED=false\n")
+            f"SPIKE_DB_PASSWORD={secrets.token_urlsafe(18)}\n"
+            f"SPIKE_DB_ROOT_PASSWORD={secrets.token_urlsafe(18)}\n"
+            f"SPIKE_AUTH_SECRET={secrets.token_hex(32)}\n"
+            f"SPIKE_ADMIN_USER={self.admin[0]}\nSPIKE_ADMIN_PASSWORD={self.admin[1]}\n"
+            "ROM_CONVERTO_ENABLED=false\n", encoding="utf-8")
         self.calls = self.evidence / "calls.jsonl"
 
         print("building fixtures ...")
-        subprocess.run(["docker", "build", "-q", "-t", FIXTURE_IMAGE, "-f",
-                        str(HERE / "Dockerfile.fixtures"), str(HERE)],
-                       check=True, capture_output=True)
-        subprocess.run(["docker", "run", "--rm", "-v",
-                        f"{HERE / 'build_fixtures.py'}:/build_fixtures.py:ro",
-                        "-v", f"{self.work / 'fixtures'}:/out", FIXTURE_IMAGE,
-                        "python3", "/build_fixtures.py", "/out"],
-                       check=True, capture_output=True)
+        docker("build", "-q", "-t", FIXTURE_IMAGE, "-f", str(HERE / "Dockerfile.fixtures"),
+               str(HERE))
+        docker("run", "--rm", "-v", f"{HERE / 'build_fixtures.py'}:/build_fixtures.py:ro",
+               "-v", f"{self.work / 'fixtures'}:/out", FIXTURE_IMAGE,
+               "python3", "/build_fixtures.py", "/out")
         shutil.copytree(self.work / "fixtures", self.library)
 
         print("starting RomM ...")
@@ -267,10 +258,9 @@ class Spike:
     def wait_heartbeat(self):
         for _ in range(120):
             try:
-                with urllib.request.urlopen(self.base + "/api/heartbeat", timeout=5) as r:
-                    if r.status == 200:
-                        return
-            except (urllib.error.URLError, ConnectionError, OSError):
+                if local_request(self.port, "GET", "/api/heartbeat", timeout=5)[0] == 200:
+                    return
+            except (http.client.HTTPException, OSError):
                 pass
             time.sleep(2)
         raise RuntimeError("RomM did not come up")
@@ -278,19 +268,15 @@ class Spike:
     def bootstrap_auth(self):
         # The first admin is created without auth, behind RomM's CSRF check:
         # the heartbeat sets the cookie, the header echoes it.
-        jar = urllib.request.HTTPCookieProcessor()
-        opener = urllib.request.build_opener(jar)
-        opener.open(self.base + "/api/heartbeat").read()
-        csrf = next(c.value for c in jar.cookiejar if c.name == "romm_csrftoken")
-        req = urllib.request.Request(
-            self.base + "/api/users", method="POST",
-            data=json.dumps({"username": ADMIN[0], "email": "spike@example.invalid",
-                             "password": ADMIN[1], "role": "admin"}).encode(),
-            headers={"Content-Type": "application/json", "X-CSRFToken": csrf})
-        with opener.open(req) as resp:
-            self.log_call({"label": "create first admin", "method": "POST",
-                           "path": "/api/users", "status": resp.status,
-                           "response": json.loads(resp.read())})
+        _, _, cookies = local_request(self.port, "GET", "/api/heartbeat")
+        csrf = cookies["romm_csrftoken"]
+        status, body = self.http(
+            "POST", "/api/users", label="create first admin",
+            json_body={"username": self.admin[0], "email": "spike@example.invalid",
+                       "password": self.admin[1], "role": "admin"},
+            headers={"X-CSRFToken": csrf, "Cookie": f"romm_csrftoken={csrf}"})
+        if status != 201:
+            raise RuntimeError(f"could not create the admin: {status} {body}")
         scopes_of = {
             "full": None,
             "swap": SWAP_SCOPES,
@@ -299,13 +285,14 @@ class Spike:
             "no_roms_read": ["roms.write", "tasks.run"],
             "read_only": ["roms.read", "platforms.read"],
         }
-        _, me = self.http("GET", "/api/users/me", basic=ADMIN, label="admin scopes")
+        _, me = self.http("GET", "/api/users/me", basic=self.admin, label="admin scopes")
         for name, scopes in scopes_of.items():
             status, body = self.http(
-                "POST", "/api/client-tokens", basic=ADMIN,
+                "POST", "/api/client-tokens", basic=self.admin,
                 json_body={"name": f"spike-{name}", "scopes": scopes or me["oauth_scopes"]},
                 label=f"create token {name}")
-            assert status == 201, body
+            if status != 201:
+                raise RuntimeError(f"could not create token {name}: {status} {body}")
             self.tokens[name] = body["raw_token"]
 
     def teardown(self, quiet=False):
@@ -334,33 +321,33 @@ class Spike:
                 raise RuntimeError(f"seeding failed: {status} {body}")
             return body
 
-        coll = ok(self.http("POST", "/api/collections", token="full",
+        coll = ok(self.http("POST", "/api/collections", who="full",
                             form={"name": "Spike collection"}, label="create collection"),
                   200, 201)
-        fav = ok(self.http("POST", "/api/collections?is_favorite=true", token="full",
+        fav = ok(self.http("POST", "/api/collections?is_favorite=true", who="full",
                            form={"name": "Favourites"}, label="create favourites"), 200, 201)
         ids = [self.ids[stem] for stem in WITH_USER_DATA]
-        ok(self.http("POST", f"/api/collections/{coll['id']}/roms", token="full",
+        ok(self.http("POST", f"/api/collections/{coll['id']}/roms", who="full",
                      json_body={"rom_ids": ids}, label="add to collection"), 200)
-        ok(self.http("POST", f"/api/collections/{fav['id']}/roms", token="full",
+        ok(self.http("POST", f"/api/collections/{fav['id']}/roms", who="full",
                      json_body={"rom_ids": ids}, label="add to favourites"), 200)
         now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
         for stem in WITH_USER_DATA:
             rid = self.ids[stem]
-            ok(self.http("POST", f"/api/saves?rom_id={rid}&emulator=pcsx2", token="full",
+            ok(self.http("POST", f"/api/saves?rom_id={rid}&emulator=pcsx2", who="full",
                          files={"saveFile": (f"{stem}.sav", b"SAVE" + stem.encode())},
                          label=f"save for {stem}"), 200, 201)
-            ok(self.http("POST", f"/api/states?rom_id={rid}&emulator=pcsx2", token="full",
+            ok(self.http("POST", f"/api/states?rom_id={rid}&emulator=pcsx2", who="full",
                          files={"stateFile": (f"{stem}.state", b"STATE" + stem.encode())},
                          label=f"state for {stem}"), 200, 201)
-            ok(self.http("POST", f"/api/roms/{rid}/notes", token="full",
+            ok(self.http("POST", f"/api/roms/{rid}/notes", who="full",
                          json_body={"title": f"note on {stem}", "content": "kept?"},
                          label=f"note for {stem}"), 200, 201)
-            ok(self.http("PUT", f"/api/roms/{rid}/props", token="full",
+            ok(self.http("PUT", f"/api/roms/{rid}/props", who="full",
                          json_body={"rating": 7, "backlogged": True, "status": "incomplete"},
                          label=f"props for {stem}"), 200)
             start = now - dt.timedelta(hours=1)
-            ok(self.http("POST", "/api/play-sessions", token="full",
+            ok(self.http("POST", "/api/play-sessions", who="full",
                          json_body={"sessions": [{"rom_id": rid,
                                                   "start_time": start.isoformat(),
                                                   "end_time": now.isoformat(),
@@ -394,9 +381,9 @@ class Spike:
         count_before = self.sql("SELECT count(*) AS n FROM roms")[0]["n"]
         scan = self.scan({"type": "quick"}, label="quick scan with staged outputs")
         count_after = self.sql("SELECT count(*) AS n FROM roms")[0]["n"]
-        names = [f"{stem}.{fmt}" for stem, _, fmt, _ in SWAPS] + probes
-        quoted = ", ".join("'" + n.replace("'", "") + "'" for n in names)
-        rows = self.sql(f"SELECT id, fs_name, fs_path FROM roms WHERE fs_name IN ({quoted})")
+        names = {f"{stem}.{fmt}" for stem, _, fmt, _ in SWAPS} | set(probes)
+        rows = [r for r in self.sql("SELECT id, fs_name, fs_path FROM roms")
+                if r["fs_name"] in names]
         for name in probes:
             (self.library / "ps2" / name).unlink()
         self.results["staging"] = {
@@ -412,7 +399,7 @@ class Spike:
         final_name = f"{stem}.{fmt}"
         iso_sha1 = self.sha1(folder / f"{stem}.iso")
         before = self.snapshot(rid)
-        status, body = self.http("PUT", f"/api/roms/{rid}", token="swap",
+        status, body = self.http("PUT", f"/api/roms/{rid}", who="swap",
                                  form={"fs_name": final_name}, label=f"rename {stem}")
         after_put = self.snapshot(rid)
         disk_after_put = {
@@ -423,12 +410,12 @@ class Spike:
         }
         os.replace(staged, folder / final_name)
         if rescan == "hashes":
-            scan = self.scan({"type": "hashes", "roms_ids": [rid], "apis": []}, token="swap",
+            scan = self.scan({"type": "hashes", "roms_ids": [rid], "apis": []}, who="swap",
                              label=f"hashes scan {stem}")
         else:
-            scan = self.scan({"type": "quick"}, token="swap", label=f"quick scan {stem}")
+            scan = self.scan({"type": "quick"}, who="swap", label=f"quick scan {stem}")
         after = self.snapshot(rid)
-        _, api_rom = self.http("GET", f"/api/roms/{rid}", token="swap",
+        _, api_rom = self.http("GET", f"/api/roms/{rid}", who="swap",
                                label=f"read back {stem}")
         self.results.setdefault("swaps", []).append({
             "stem": stem, "format": fmt, "rescan": rescan, "rom_id": rid,
@@ -464,7 +451,7 @@ class Spike:
         new_sha1 = self.sha1(path)
         quick = self.scan({"type": "quick"}, label="quick scan after stealth swap")
         after_quick = self.snapshot(rid)
-        hashes = self.scan({"type": "hashes", "roms_ids": [rid], "apis": []}, token="swap",
+        hashes = self.scan({"type": "hashes", "roms_ids": [rid], "apis": []}, who="swap",
                            label="hashes scan after stealth swap")
         after_hashes = self.snapshot(rid)
         self.results["stealth"] = {
@@ -526,7 +513,7 @@ class Spike:
         shutil.copyfile(self.work / "fixtures" / "ps2" / "Orphan PS2.iso",
                         folder / "Refuse PS2.chd")
         before = self.snapshot(rid)
-        status, body = self.http("PUT", f"/api/roms/{rid}", token="swap",
+        status, body = self.http("PUT", f"/api/roms/{rid}", who="swap",
                                  form={"fs_name": "Refuse PS2.chd"},
                                  label="rename onto an existing file")
         after = self.snapshot(rid)
@@ -535,14 +522,14 @@ class Spike:
                     "iso_still_there": (folder / "Refuse PS2.iso").exists()}
         orid = self.ids["Orphan PS2"]
         (folder / "Orphan PS2.iso").unlink()
-        o_status, o_body = self.http("PUT", f"/api/roms/{orid}", token="swap",
+        o_status, o_body = self.http("PUT", f"/api/roms/{orid}", who="swap",
                                      form={"fs_name": "Orphan PS2.chd"},
                                      label="rename a record whose file is gone")
         same_status, same_body = self.http(
-            "PUT", f"/api/roms/{self.ids['Swap PS2']}", token="swap",
+            "PUT", f"/api/roms/{self.ids['Swap PS2']}", who="swap",
             form={"fs_name": "Swap PS2.chd"}, label="rename to the name it already has")
         bad_status, bad_body = self.http(
-            "PUT", f"/api/roms/{self.ids['Stealth PS2']}", token="swap",
+            "PUT", f"/api/roms/{self.ids['Stealth PS2']}", who="swap",
             form={"fs_name": "../escape.iso"}, label="rename with a path in it")
         bad_after = self.rom_row(self.ids["Stealth PS2"])
         self.results["refusals"] = {
@@ -578,15 +565,15 @@ class Spike:
         for token in ("swap", "no_roms_write", "no_tasks_run", "no_roms_read", "read_only"):
             row = {}
             for label, method, path, body, form in probes:
-                status, resp = self.http(method, path, token=token, json_body=body, form=form,
+                status, resp = self.http(method, path, who=token, json_body=body, form=form,
                                          label=f"perm {token} {label}")
                 row[label] = status
                 if status == 202 and isinstance(resp, dict):
                     self.wait_task(resp["task_id"], "full")
             matrix[token] = row
         # An editor can hold roms.write but not tasks.run.
-        editor = ("spikeeditor", "spike-pass-382e")
-        self.http("POST", "/api/users", basic=ADMIN,
+        editor = ("spikeeditor", secrets.token_urlsafe(18))
+        self.http("POST", "/api/users", basic=self.admin,
                   json_body={"username": editor[0], "email": "editor@example.invalid",
                              "password": editor[1], "role": "editor"},
                   label="create editor user")
@@ -600,7 +587,7 @@ class Spike:
         editor_put = None
         if status == 201:
             self.tokens["editor"] = body["raw_token"]
-            editor_put = self.http("PUT", f"/api/roms/{rid}", token="editor",
+            editor_put = self.http("PUT", f"/api/roms/{rid}", who="editor",
                                    form={"fs_name": name}, label="editor token renames")[0]
         self.results["permissions"] = {
             "matrix": matrix,
@@ -612,33 +599,35 @@ class Spike:
         out = {}
         _, hb = self.http("GET", "/api/heartbeat", label="heartbeat, converter off")
         _, cfg = self.http("GET", "/api/config", label="config, converter off")
-        _, tasks = self.http("GET", "/api/tasks", token="full", label="tasks, converter off")
+        _, tasks = self.http("GET", "/api/tasks", who="full", label="tasks, converter off")
         out["off"] = {"heartbeat_CONVERTO": hb.get("CONVERTO"),
                       "config_CONVERTO": cfg.get("CONVERTO"),
                       "config_CONVERTO_LIBRARY_TARGETS": cfg.get("CONVERTO_LIBRARY_TARGETS"),
                       "convert_library_task": find_task(tasks, "convert_library")}
         status, body = self.http(
-            "PUT", "/api/config/converto_settings", token="full",
+            "PUT", "/api/config/converto_settings", who="full",
             json_body={"download_conversion_enabled": False, "cache_max_size_gb": 20,
                        "platform_formats": {"ps2": "chd", "ngc": "rvz"}},
             label="set converter targets")
         _, cfg2 = self.http("GET", "/api/config", label="config after setting targets")
         out["set_targets"] = {"status": status, "body": body,
                               "config_CONVERTO": cfg2.get("CONVERTO"),
-                              "config_yml": (self.work / "config" / "config.yml").read_text()}
+                              "config_yml": (self.work / "config" / "config.yml").read_text(
+                                  encoding="utf-8")}
         status, body = self.http(
-            "PUT", "/api/config/converto_settings", token="swap",
+            "PUT", "/api/config/converto_settings", who="swap",
             json_body={"download_conversion_enabled": False, "cache_max_size_gb": 20,
                        "platform_formats": {}},
             label="set converter targets with the swap token")
         out["set_targets_with_swap_token"] = status
-        env = (self.work / ".env").read_text().replace("ROM_CONVERTO_ENABLED=false",
-                                                       "ROM_CONVERTO_ENABLED=true")
-        (self.work / ".env").write_text(env)
+        env_file = self.work / ".env"
+        env = env_file.read_text(encoding="utf-8").replace("ROM_CONVERTO_ENABLED=false",
+                                                           "ROM_CONVERTO_ENABLED=true")
+        env_file.write_text(env, encoding="utf-8")
         self.compose("up", "-d", "--force-recreate", "romm")
         self.wait_heartbeat()
         _, hb = self.http("GET", "/api/heartbeat", label="heartbeat, converter env on")
-        _, tasks = self.http("GET", "/api/tasks", token="full", label="tasks, converter env on")
+        _, tasks = self.http("GET", "/api/tasks", who="full", label="tasks, converter env on")
         binary = self.compose("exec", "-T", "romm", "sh", "-c",
                               "command -v rom-converto || echo absent", check=False).stdout
         out["env_on"] = {"heartbeat_CONVERTO": hb.get("CONVERTO"),
@@ -649,9 +638,7 @@ class Spike:
     def run(self):
         self.setup()
         _, hb = self.http("GET", "/api/heartbeat", label="version")
-        app = subprocess.run(["docker", "image", "inspect", self.app_image, "--format",
-                              "{{.Id}}"], check=True, capture_output=True,
-                             text=True).stdout.strip()
+        app = docker("image", "inspect", self.app_image, "--format", "{{.Id}}").stdout.strip()
         self.results["versions"] = {"romm": hb["SYSTEM"]["VERSION"],
                                     "title_id_extraction": hb["FILESYSTEM"].get(
                                         "TITLE_ID_EXTRACTION_ENABLED"),
@@ -669,8 +656,30 @@ class Spike:
         self.refusals()
         self.permissions()
         self.converter_config()
-        (self.evidence / "results.json").write_text(json.dumps(self.results, indent=2))
+        (self.evidence / "results.json").write_text(json.dumps(self.results, indent=2),
+                                                    encoding="utf-8")
         summarize(self.results)
+
+
+def docker(*args, check=True, stdin=None):
+    """Run the Docker CLI with an argument list, never a shell."""
+    return subprocess.run(["/usr/bin/env", "docker", *args], check=check, capture_output=True,
+                          text=True, input=stdin)
+
+
+def local_request(port, method, path, data=None, headers=None, timeout=120):
+    """One HTTP request to RomM on 127.0.0.1. Returns (status, body bytes, cookies)."""
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
+    try:
+        conn.request(method, path, body=data, headers=headers or {})
+        resp = conn.getresponse()
+        cookies = {}
+        for header in resp.headers.get_all("Set-Cookie") or []:
+            name, _, rest = header.partition("=")
+            cookies[name.strip()] = rest.split(";", 1)[0]
+        return resp.status, resp.read(), cookies
+    finally:
+        conn.close()
 
 
 def find_task(grouped, name):
