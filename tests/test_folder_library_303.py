@@ -392,6 +392,29 @@ async def test_a_sweep_queues_only_images_with_a_platform(
 
 
 @pytest.mark.asyncio
+async def test_a_sweep_and_the_walk_skip_romm_staging(
+    tree: Path, ready, queue,
+) -> None:
+    """RomM's `.romm_tmp_*` staging is never walked or queued; a look-alike name is (#384)."""
+    from routes import libraries as routes
+
+    _gamecube(tree / "gc" / ".romm_tmp_convert_a.iso")
+    _gamecube(tree / "gc" / ".romm_tmp_convert_dir" / "Staged.iso")
+    _gamecube(tree / "gc" / "backup_romm_tmp_x" / "Kept.iso")
+    _gamecube(tree / "gc" / "romm_tmp_Also.iso")
+
+    lib = await _library_with_rules(tree)
+    result = await routes.run_library(lib["id"])
+
+    names = sorted(Path(p).name for p in queue)
+    expected = ["Ico.iso", "Kept.iso", "Melee.iso", "Sunshine.iso", "romm_tmp_Also.iso"]
+    if _IS_ROOT:
+        expected = sorted([*expected, "Locked.iso"])
+    assert names == expected, result
+    assert not any(".romm_tmp_" in p for p in queue)
+
+
+@pytest.mark.asyncio
 async def test_running_a_sweep_twice_queues_nothing_new(
     tree: Path, ready, queue, monkeypatch,
 ) -> None:

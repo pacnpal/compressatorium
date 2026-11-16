@@ -4,6 +4,11 @@
 
 ### Fixed
 
+- **RomM's `.romm_tmp_*` staging files are ignored everywhere** (#384). RomM's
+  own converter stages work in names starting `.romm_tmp_`. They no longer show
+  in the file browser or search, and the folder Library walk (so sweeps, check
+  Rules and the Platform walk) and the DAT scan skip them. Only the prefix
+  counts: a folder named `backup_romm_tmp_x` still shows.
 - **Cancelling a fast conversion says cancelled, not failed.** When a tool's
   output ended before the app had acted on a pending Cancel, the app stopped
   the tool itself and then reported the job as failed with "return code -15"

@@ -1,7 +1,7 @@
 """Known OS / NAS / filesystem junk names: the single source of truth.
 
-Shared by the file browser (to hide clutter from listings), the Switch key
-search (to skip these dirs when walking volumes), and archive readers (to hide
+Shared by the file browser (to hide clutter from listings), every tree walk
+(``walk_tree``, the folder Library walk, the Switch key search), and archive readers (to hide
 sidecars tucked inside zips/7z). Matched case-insensitively against a single
 path component (file or directory name) via ``is_junk_entry``; whole archive
 member paths go through ``is_junk_path``.
@@ -27,7 +27,10 @@ _JUNK_EXACT = frozenset({
     "lost+found", ".directory", ".trash",
 })
 # Prefix patterns for families with variable suffixes.
-_JUNK_PREFIXES = ("._", ".trash-", ".nfs", ".fuse_hidden", ".smbdelete")
+# ``.romm_tmp_`` is RomM's own converter staging (``.romm_tmp_convert_<...>``):
+# half-written work that is never a library entry. Only the prefix counts, so
+# ``romm_tmp_x`` or ``x.romm_tmp_y`` stay visible.
+_JUNK_PREFIXES = ("._", ".trash-", ".nfs", ".fuse_hidden", ".smbdelete", ".romm_tmp_")
 
 
 def is_junk_entry(name: str) -> bool:
