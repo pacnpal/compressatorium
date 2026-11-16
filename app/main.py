@@ -195,6 +195,27 @@ def _watch_stop_signals():
             signal.signal(sig, handler)
 
 
+def startup_volume_work() -> None:
+    """Resolve the Volume roots, then sweep the temp files a hard-killed
+    repack left behind (``services.partial_writes``, #331).
+
+    One daemon thread, in this order: the sweep only removes a file it can
+    place inside a Volume, and an unresolved root reads as "can't tell",
+    which keeps the file. A mount that stops answering holds this thread, not
+    startup.
+    """
+    from services import partial_writes
+
+    refresh_volume_roots()
+    try:
+        removed = partial_writes.sweep_recorded()
+    except Exception:
+        get_logger().exception("Sweeping leftover repack temp files failed")
+        return
+    if removed:
+        get_logger().info("Removed %d temp file(s) left by interrupted repacks", removed)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Wait for the Rule scheduler lock, then start the app (``_serve``).
@@ -271,8 +292,9 @@ async def _serve(app: FastAPI):
     )
     # Resolve the configured Volume roots once, off the startup path: the
     # containment gate reads these cached spellings for aliases and symlinks
-    # across Volumes, each root bounded on its own (utils.path_utils).
-    threading.Thread(target=refresh_volume_roots, daemon=True).start()
+    # across Volumes, each root bounded on its own (utils.path_utils). The
+    # same thread then sweeps what a hard-killed repack left (#331).
+    threading.Thread(target=startup_volume_work, daemon=True).start()
     # Surface the Switch (nsz) key-discovery decision so operators can see
     # whether the tool is enabled and, if not, where keys were looked for.
     nsz_service.log_startup_status()

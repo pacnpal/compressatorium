@@ -13,7 +13,7 @@ import threading
 import time
 import uuid
 from collections import OrderedDict, deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import (
@@ -27,6 +27,7 @@ from typing import (
     Optional,
     Set,
     Tuple,
+    Union,
 )
 
 from config import settings
@@ -41,7 +42,18 @@ from services.lock_manager import LockFailed, lock_manager
 from services.mutation_guard import locked_for_mutation
 from services import referrers
 from services.round_trip import round_trip, round_trip_applies
-from services.subprocess_runner import ReadCancelled, run_detached
+from services.subprocess_runner import (
+    DeadlineExpired,
+    MutationInFlight,
+    MutationNotStarted,
+    ProbeCapacityExceeded,
+    ReadCancelled,
+    run_detached,
+    run_detached_bounded,
+    run_detached_mutation,
+    run_detached_undoable,
+    start_detached,
+)
 from services.tools import ModeKind, registry
 from services.verification_store import verification_store
 from utils.delete_plan import build_delete_plan, build_delete_snapshot
@@ -65,6 +77,148 @@ SOURCE_KEPT_FOR_READERS = "Source kept: it was being read by another job"
 # The glossary names (CONTEXT.md) for each stored check, used in job messages so
 # "verified" never stands in for which check an output passed.
 _CHECK_LABELS = {"intact": "Intact", "round_tripped": "Round-tripped"}
+
+# What a retried delete of a kept Source found (``retry_kept_delete``, #329).
+KEPT_DELETED = "deleted"  # the Source is gone
+KEPT_READER = "reader"  # someone still holds it: try again on a later sweep
+KEPT_KEPT = "kept"  # the delete step kept it (a Referrer, a path check): try again
+KEPT_STALE = "stale"  # what the delete stood on no longer holds: never retry
+# An unlink was still running when the retry stopped waiting: the Source may or
+# may not be gone. Not an attempt; the next sweep's own checks settle it.
+KEPT_UNKNOWN = "unknown"
+# Some planned files are removed, not all (an unlink failed after another
+# succeeded): the delete has started, and is finished on the next sweep.
+KEPT_STARTED = "started"
+# The caller stopped (``run-rules`` on SIGTERM) before anything was decided or
+# removed: not an attempt, and nothing to record (codex 4580441303).
+KEPT_STOPPED = "stopped"
+# How long a retry waits for the Source's volume to answer its stat checks.
+KEPT_DELETE_PROBE_SECONDS = 30.0
+KEPT_DELETE_UNANSWERED = "the Source's volume did not answer"
+
+
+class KeptDeleteRun:
+    """A retried delete, prepared under its locks (``JobManager.kept_delete``).
+
+    ``refused`` is the outcome when the delete no longer holds; otherwise
+    ``delete()`` removes the Source, once. ``started`` is set when a cancel
+    stops the delete after it began: what the caller records as started.
+    """
+
+    def __init__(self) -> None:
+        self.refused: Optional["KeptDeleteRetry"] = None
+        self.started: Optional["KeptDeleteRetry"] = None
+        self._delete: Optional[Callable] = None
+
+    def set_delete(self, delete: Callable) -> None:
+        self._delete = delete
+
+    async def delete(self) -> "KeptDeleteRetry":
+        if self._delete is None:
+            raise RuntimeError("this retried delete was refused or already ran")
+        delete, self._delete = self._delete, None
+        return await delete()
+
+
+class VerifyUnanswered(RuntimeError):
+    """An output's check reached no verdict: its bound ran out, or the storage
+    stopped answering. A job fails on it like any failed verify; a retried
+    delete (#329) counts it as an attempt."""
+
+
+@dataclass(frozen=True)
+class KeptDeleteRetry:
+    """The outcome of one :meth:`JobManager.retry_kept_delete`."""
+
+    status: str
+    reason: Optional[str] = None
+    deleted: Tuple[str, ...] = ()
+    # The files the delete planned to remove, in order, once it started: an
+    # `unknown` outcome's entry finishes them on the next sweep.
+    planned: Tuple[str, ...] = ()
+
+
+@dataclass
+class _SourceDelete:
+    """What the shared delete step did (:meth:`JobManager._delete_source_set`)."""
+
+    kept_reason: Optional[str] = None
+    cancelled: bool = False  # a cancel seen at the last look, before any unlink
+    referrer_records: List[dict] = field(default_factory=list)
+
+
+def _check_satisfies(check_passed: Optional[str], required: Optional[str]) -> bool:
+    """Whether a recorded check meets a required check level: Round-tripped
+    meets either level, Intact only ``container_only``."""
+    if required == "round_trip":
+        return check_passed == "round_tripped"
+    return check_passed in _CHECK_LABELS
+
+
+class HeldLocks:
+    """Exclusive locks one owner holds, and who lets go of them (#329).
+
+    The owner releases them (:meth:`release`) unless an irreversible mutation
+    it stopped waiting for took them first (:meth:`take`, through
+    ``JobManager._hand_off_locks``): then that mutation's worker releases them
+    once it has finished, and the owner's :meth:`release` is a no-op. The one
+    answer to "who owns these locks now", for a job's output locks and a
+    retried delete's alike. Thread-safe.
+    """
+
+    def __init__(self, paths: Iterable[str] = ()) -> None:
+        self._paths: List[str] = list(paths)
+        self._mutex = threading.Lock()
+
+    def add(self, path: str) -> None:
+        with self._mutex:
+            self._paths.append(path)
+
+    def take(self) -> List[str]:
+        """Every lock still held here, now no longer the owner's to release."""
+        with self._mutex:
+            paths, self._paths = self._paths, []
+        return paths
+
+    def release(self) -> None:
+        """Let go of whatever the owner still holds. Blocking (lock file I/O)."""
+        _let_go(self.take())
+
+
+def unfinished_delete(
+    planned: Iterable[str], removed: Iterable[str], *, in_flight: bool = False,
+) -> Optional[List[str]]:
+    """The one decision about a delete step that stopped (#329): once any
+    planned file was removed the delete has started, and every outcome but
+    "all removed" leaves the files still to remove (the ``deleting``
+    lifecycle). None when it never started or finished.
+
+    *in_flight*: the unlinks were handed off while running (a timeout or a
+    cancel, ``run_detached_mutation``), so their outcome is unknown whatever
+    *removed* says yet; the first unlink may be the one still running
+    (CodeRabbit 4580360083). That is a started delete, and every planned file
+    not seen removed is left to settle: a finish, or ``clear_gone``, checks
+    what actually remains, so one that went through just clears."""
+    removed = set(removed)
+    if not removed and not in_flight:
+        return None
+    rest = [path for path in planned if path not in removed]
+    return rest or None
+
+
+def _remove_in_order(paths: Iterable[str], removed: List[str]) -> None:
+    """Remove every file of *paths* in order, appending each to *removed* as
+    it goes. Blocking: one mutation (``run_detached_mutation``) for a whole
+    Source set, so a started delete is never left half done."""
+    for path in paths:
+        os.remove(path)
+        removed.append(path)
+
+
+def _let_go(paths: Optional[Iterable[str]]) -> None:
+    """Release the exclusive locks :meth:`JobManager._take_exclusively` took."""
+    for path in paths or ():
+        lock_manager.release_lock(path)
 
 
 def _source_bytes(path: str) -> Optional[int]:
@@ -411,7 +565,9 @@ class JobManager:
         self._terminal_mutex = threading.Lock()
         # The companion outputs (extractcd's .bin beside its .cue) each running
         # job holds the same cross-process exclusive lock on as its output.
-        self._companion_locks: Dict[str, List[str]] = {}
+        # Each running job's output locks (the output and its companions),
+        # released by `_release_output_locks` unless an unlink took them.
+        self._output_locks: Dict[str, HeldLocks] = {}
         # Jobs currently inside the verify phase, mapped to the monotonic clock
         # reading when that phase began. Verification emits no progress and can
         # legitimately run for many minutes, so the stalled-job warning reports
@@ -1420,14 +1576,15 @@ class JobManager:
             except LockFailed:
                 let_go()
                 raise
-        self._companion_locks[job.id] = held
+        self._output_locks[job.id] = HeldLocks([job.output_path, *held])
         return True
 
     def _release_output_locks(self, job: ConversionJob) -> None:
-        for path in self._companion_locks.pop(job.id, []):
-            lock_manager.release_lock(path)
-        if job.output_path:
-            lock_manager.release_lock(job.output_path)
+        """Let go of the job's output locks, unless an unlink still running
+        took them with it (``HeldLocks``): its worker lets go of them then."""
+        held = self._output_locks.pop(job.id, None)
+        if held is not None:
+            held.release()
 
     async def _fail_before_start(
         self, job_id: str, job: ConversionJob, message: str, *, dir_lock_held: bool,
@@ -1617,13 +1774,27 @@ class JobManager:
 
     def _try_hold_for_delete(self, job_id: str, paths: Iterable[str]) -> bool:
         """Lock every delete path exclusively, or hold none and say so."""
-        held = self._delete_holds.setdefault(job_id, [])
-        for path in paths:
-            if not lock_manager.acquire_lock(path, allow_existing=True):
-                self._release_delete_holds(job_id)
-                return False
-            held.append(path)
+        taken = self._take_exclusively(paths)
+        if taken is None:
+            return False
+        self._delete_holds.setdefault(job_id, []).extend(taken)
         return True
+
+    @staticmethod
+    def _take_exclusively(paths: Iterable[str]) -> Optional[List[str]]:
+        """Every path's exclusive lock, or none: the paths taken, or None when
+        one is held elsewhere. Blocking. On an error, lets go of what it took."""
+        taken: List[str] = []
+        try:
+            for path in paths:
+                if not lock_manager.acquire_lock(path, allow_existing=True):
+                    _let_go(taken)
+                    return None
+                taken.append(path)
+        except BaseException:
+            _let_go(taken)
+            raise
+        return taken
 
     async def _hold_delete_paths_waiting(
         self, job_id: str, cancel_event: asyncio.Event | None = None,
@@ -1723,12 +1894,16 @@ class JobManager:
                         continue
         return None
 
-    def _is_path_in_use_by_other_job(self, job_id: str, path: str) -> bool:
+    def _is_path_in_use_by_other_job(
+        self, job_id: str, path: str, jobs: Optional[Iterable[ConversionJob]] = None,
+    ) -> bool:
+        """Whether an active job other than *job_id* uses *path*. *jobs* is a
+        snapshot of ``self.jobs`` for a caller off the event loop."""
         target = self._normalize_path(path)
         if target is None:
             return False
 
-        for job in self.jobs.values():
+        for job in (self.jobs.values() if jobs is None else jobs):
             if job.id == job_id:
                 continue
             if not _is_active_conversion(job):
@@ -2840,13 +3015,38 @@ class JobManager:
         output_fp = self._output_fingerprint(job.output_path)
         if not output_fp:
             return None
+        companions = self._companion_fingerprints(job.output_path, job.mode.value)
+        if companions is None:
+            return None
         return {
             "mode": job.mode.value,
             "compression": job.compression,
             "split": bool(job.split),
             "source": source_fp,
             "output": output_fp,
+            # Every companion output (extractcd's .bin) as it was checked: a
+            # retried delete re-checks them too (CodeRabbit 4580102953).
+            "companions": companions,
         }
+
+    @classmethod
+    def _companion_fingerprints(
+        cls, output_path: str, mode: str,
+    ) -> Optional[Dict[str, Dict[str, int]]]:
+        """``{path: fingerprint}`` of the mode's companion outputs beside
+        *output_path* (the registry's ``companion_outputs``), or None when one
+        cannot be fingerprinted or the mode is unknown. Blocking."""
+        try:
+            paths = registry.for_mode(mode).companion_outputs(output_path, mode)
+        except (KeyError, OSError):
+            return None
+        out: Dict[str, Dict[str, int]] = {}
+        for path in paths:
+            fingerprint = cls._output_fingerprint(path)
+            if fingerprint is None:
+                return None
+            out[path] = fingerprint
+        return out
 
     @staticmethod
     def _verifier_identity(job: ConversionJob) -> Dict[str, object]:
@@ -2939,6 +3139,7 @@ class JobManager:
 
     async def _check_delete_paths(
         self, job_id: str, paths: list[str], fingerprints: dict, output_real: str,
+        probe_seconds: Optional[float] = None,
     ) -> None:
         """Raise RuntimeError unless every path is still safe to delete.
 
@@ -2951,43 +3152,69 @@ class JobManager:
         no other job or process can lock that path. Any other locked path is
         refused, and so is a numbered split part whose logical owner another
         job writes (``mutation_guard``, codex 4577940381).
+
+        Every probe runs on a detached thread under ``_CANONICAL_PROBE_SECONDS``
+        (CodeRabbit 4579539704): a volume that stops answering refuses the
+        delete instead of stalling the event loop.
         """
         own_holds = set(self._delete_holds.get(job_id, ()))
-        for path in paths:
-            if path not in own_holds and await run_in_threadpool(
-                locked_for_mutation, path, ignore=own_holds,
-            ):
-                raise RuntimeError("Delete path is locked by an active conversion")
-            within_volumes = await run_in_threadpool(
-                is_within_configured_volumes, path, treat_archives=False,
+        jobs = list(self.jobs.values())
+        problem = await self._bounded_delete_probe(
+            self._delete_path_problem, job_id, paths, fingerprints, output_real,
+            own_holds, jobs, seconds=probe_seconds,
+        )
+        if problem:
+            raise RuntimeError(problem)
+
+    @staticmethod
+    async def _bounded_delete_probe(
+        func: Callable, *args: object, seconds: Optional[float] = None,
+    ) -> object:
+        """A delete-step probe on a detached thread, bounded (``seconds``, else
+        ``_CANONICAL_PROBE_SECONDS``); a timeout raises RuntimeError, so the
+        delete is refused and nothing more is removed."""
+        try:
+            return await run_detached_bounded(
+                func, *args,
+                timeout=_CANONICAL_PROBE_SECONDS if seconds is None else seconds,
             )
-            if not within_volumes:
-                raise RuntimeError(
-                    "Delete path outside configured volumes; refusing to delete"
-                )
-            if self._is_path_in_use_by_other_job(job_id, path):
-                raise RuntimeError("Delete path is still in use by another job")
+        except DeadlineExpired:
+            raise RuntimeError(
+                "The Source's volume did not answer; refusing to delete"
+            ) from None
+
+    def _delete_path_problem(
+        self, job_id: str, paths: list[str], fingerprints: dict, output_real: str,
+        own_holds: Set[str], jobs: List[ConversionJob],
+    ) -> Optional[str]:
+        """Why the first unsafe path of *paths* can't be deleted, or None.
+        Blocking: :meth:`_check_delete_paths` runs it off the event loop."""
+        for path in paths:
+            if path not in own_holds and locked_for_mutation(path, ignore=own_holds):
+                return "Delete path is locked by an active conversion"
+            if not is_within_configured_volumes(path, treat_archives=False):
+                return "Delete path outside configured volumes; refusing to delete"
+            if self._is_path_in_use_by_other_job(job_id, path, jobs):
+                return "Delete path is still in use by another job"
             if os.path.islink(path):
-                raise RuntimeError("Delete path is a symlink; refusing to delete")
+                return "Delete path is a symlink; refusing to delete"
             try:
                 st = os.stat(path, follow_symlinks=False)
-            except FileNotFoundError as exc:
-                raise RuntimeError(
-                    "Delete path no longer exists; refusing to delete"
-                ) from exc
+            except FileNotFoundError:
+                return "Delete path no longer exists; refusing to delete"
             if not os.path.isfile(path):
-                raise RuntimeError("Delete path is not a file; refusing to delete")
+                return "Delete path is not a file; refusing to delete"
             if os.path.realpath(path) == output_real:
-                raise RuntimeError("Delete path matches output path; refusing to delete")
+                return "Delete path matches output path; refusing to delete"
             fp = fingerprints.get(path)
             if not fp:
-                raise RuntimeError("Delete fingerprint missing; refusing to delete")
+                return "Delete fingerprint missing; refusing to delete"
             mtime_ns = int(getattr(st, "st_mtime_ns", int(st.st_mtime * 1_000_000_000)))
             if (
                 int(fp.get("size", -1)) != int(st.st_size)
                 or int(fp.get("mtime_ns", -1)) != mtime_ns
             ):
-                raise RuntimeError("Delete path fingerprint mismatch; refusing to delete")
+                return "Delete path fingerprint mismatch; refusing to delete"
             snapshot_inode = int(fp.get("inode", 0) or 0)
             snapshot_device = int(fp.get("device", 0) or 0)
             current_inode = int(getattr(st, "st_ino", 0) or 0)
@@ -2999,7 +3226,747 @@ class JobManager:
                 snapshot_device > 0 and current_device > 0
                 and snapshot_device != current_device
             ):
-                raise RuntimeError("Delete path fingerprint mismatch; refusing to delete")
+                return "Delete path fingerprint mismatch; refusing to delete"
+        return None
+
+    @staticmethod
+    def _delete_order(
+        file_path: str, output_path: str, expected_paths: List[str],
+    ) -> Tuple[str, str, List[str]]:
+        """``(output realpath, the Source to name to Referrers, removal
+        order)``: the Source's own file last. Blocking (it resolves paths)."""
+        output_real = os.path.realpath(output_path)
+        source_for_delete = (
+            strip_archive_path(file_path) if "::" in file_path else file_path
+        )
+        source_real = os.path.realpath(source_for_delete)
+        delete_order = [p for p in expected_paths if os.path.realpath(p) != source_real]
+        if source_real in set(expected_paths):
+            delete_order.append(source_real)
+        else:
+            delete_order = list(expected_paths)
+        return output_real, source_for_delete, delete_order
+
+    async def _delete_source_set(
+        self,
+        owner_id: str,
+        *,
+        file_path: str,
+        output_path: str,
+        expected_paths: List[str],
+        fingerprints: dict,
+        check_label: str,
+        cancel_event: asyncio.Event,
+        cancelled: Callable[[], bool],
+        deleted: List[str],
+        probe_seconds: Optional[float] = None,
+        travelling_locks: Optional["HeldLocks"] = None,
+        planned: Optional[List[str]] = None,
+        handed_off: Optional[List[bool]] = None,
+    ) -> _SourceDelete:
+        """The delete step, shared by a job and a retried delete (#329).
+
+        *handed_off* gets ``True`` appended when the unlinks were handed to
+        their worker while still running: the outcome is then unknown, and
+        ``unfinished_delete(..., in_flight=True)`` takes the delete as started.
+
+        Called holding every path of *expected_paths* exclusively
+        (``_delete_holds[owner_id]``); lets go of them before it returns. The
+        plan is built again and must name the same paths; each path is checked
+        (:meth:`_check_delete_paths`) before the Referrer hook and again after
+        it; then the paths are removed, each appended to *deleted* as it goes.
+        Raises RuntimeError when the plan, or a path before the hook, is no
+        longer safe: nothing is removed. A cancel during the hook, or a
+        Referrer or path check that fails after it, keeps the Source with a
+        reason; a cancel at the last look, before any unlink, is reported as
+        ``cancelled``.
+
+        *probe_seconds* bounds every stage that touches the filesystem: the
+        plan, the path resolution and checks, the Referrer hook, each unlink
+        and the store clears. A retry passes ``KEPT_DELETE_PROBE_SECONDS``;
+        a job leaves it None (the probes take ``_CANONICAL_PROBE_SECONDS``, the
+        hook the conversion's stall bound, the unlinks no bound, as before).
+
+        Each unlink is a mutation, never abandoned with its locks
+        (``run_detached_mutation``, codex 4579725632): when the caller stops
+        waiting while one still runs (the bound, a cancel), the delete holds,
+        and the caller's *travelling_locks* (its output locks), pass to
+        its worker, which releases them once the unlink has finished, and
+        :class:`MutationInFlight` (or the cancel) propagates.
+        """
+        expected_set = set(expected_paths)
+        current_plan = await self._bounded_delete_probe(
+            build_delete_plan, file_path, seconds=probe_seconds,
+        )
+        if (
+            current_plan.get("errors")
+            or current_plan.get("unsafe_paths")
+            or current_plan.get("missing_paths")
+        ):
+            raise RuntimeError("Delete plan no longer safe; refusing to delete")
+        if set(current_plan.get("delete_paths", [])) != expected_set:
+            raise RuntimeError("Delete plan changed; refusing to delete")
+
+        output_real, source_for_delete, delete_order = await self._bounded_delete_probe(
+            self._delete_order, file_path, output_path, list(expected_paths),
+            seconds=probe_seconds,
+        )
+
+        await self._check_delete_paths(
+            owner_id, expected_paths, fingerprints, output_real, probe_seconds,
+        )
+
+        # Referrers (.m3u, ...) move to the output before the Source goes; if
+        # any can't, the Source stays (#295).
+        referrer_outcome = await referrers.update_before_source_removal(
+            source_for_delete,
+            {path: output_path for path in delete_order},
+            cancel_event=cancel_event,
+            bound=probe_seconds,
+        )
+        outcome = _SourceDelete(referrer_records=referrer_outcome.records)
+        # The hook awaited a worker thread: re-ask cancel and every per-path
+        # identity check before removing.
+        skipped = f"Output is {check_label}. Delete skipped (cancelled)."
+        if cancel_event.is_set():
+            outcome.kept_reason = skipped
+        elif not referrer_outcome.ok:
+            outcome.kept_reason = referrer_outcome.kept_message
+        else:
+            try:
+                await self._check_delete_paths(
+                    owner_id, expected_paths, fingerprints, output_real, probe_seconds,
+                )
+            except RuntimeError as exc:
+                outcome.kept_reason = f"converted, source kept: {exc}"
+            # That check awaited too; a Cancel there still wins.
+            if outcome.kept_reason is None and cancel_event.is_set():
+                outcome.kept_reason = skipped
+        if outcome.kept_reason:
+            await self._release_delete_holds_in_background(owner_id, probe_seconds)
+            return outcome
+        if cancel_event.is_set() or cancelled():
+            await self._release_delete_holds_in_background(owner_id, probe_seconds)
+            outcome.cancelled = True
+            return outcome
+        if planned is not None:
+            planned[:] = delete_order
+        # The whole set is one mutation (codex 4580176201): a caller that stops
+        # waiting hands the rest of the plan to the worker with the locks, and
+        # the worker removes every planned file before it lets them go.
+        await run_detached_mutation(
+            _remove_in_order, delete_order, deleted, timeout=probe_seconds,
+            hand_off=lambda: self._hand_off_locks(
+                owner_id, travelling_locks, handed_off=handed_off,
+            ),
+        )
+        await self._release_delete_holds_in_background(owner_id, probe_seconds)
+        await self._clear_source_records(file_path, probe_seconds)
+        return outcome
+
+    async def _clear_source_records(
+        self, file_path: str, probe_seconds: Optional[float],
+    ) -> None:
+        """Drop the check and metadata records of a Source just deleted."""
+        ext = os.path.splitext(file_path)[1].lower()
+        clears = []
+        if ext in registry.verify_extensions():
+            clears.append((verification_store.clear, verification_store.clear_blocking))
+        if ext == ".chd":
+            clears.append((chd_metadata_store.clear, chd_metadata_store.clear_blocking))
+        for clear, clear_blocking in clears:
+            if probe_seconds is None:
+                await clear(file_path)
+                continue
+            try:
+                await self._bounded_delete_probe(
+                    clear_blocking, file_path, seconds=probe_seconds,
+                )
+            except RuntimeError:
+                # The Source is gone; a stale record of it is all this leaves.
+                logger.warning(
+                    "Clearing the records of deleted %s did not finish", file_path,
+                    exc_info=True,
+                )
+
+    @staticmethod
+    async def _let_go_in_background(
+        paths: Iterable[str], seconds: Optional[float] = None,
+    ) -> None:
+        """Release exclusive locks on a detached worker; wait for it at most
+        *seconds* (``KEPT_DELETE_PROBE_SECONDS`` by default), then move on.
+
+        Letting go of a lock is lock-file I/O (``_unlink_then_close``), which a
+        lock directory that stops answering can stall: never on the event
+        loop, never on the shared threadpool, never unbounded under
+        ``_sweep_lock`` (codex 4579986280). The worker owns the release once
+        started and finishes on its own, closing every handle, whether or not
+        the caller still waits. The one path a job and a retry both let go by.
+
+        The worker starts before this first awaits (``start_detached``,
+        CodeRabbit outside-diff on job_manager.py:3362): the caller has
+        already taken *paths* out of its own ownership, so a cancel landing
+        before a lazily started worker ran would leave them held for good.
+        A cancel now only stops the waiting.
+        """
+        paths = list(paths)
+        if not paths:
+            return
+        bound = KEPT_DELETE_PROBE_SECONDS if seconds is None else seconds
+        try:
+            worker = start_detached(_let_go, paths)
+        except ProbeCapacityExceeded:
+            # No detached slot: a thread of its own, still never the pool.
+            threading.Thread(target=_let_go, args=(paths,), daemon=True).start()
+            return
+        try:
+            await asyncio.wait_for(asyncio.shield(worker), bound)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Letting go of %d lock(s) did not finish in %gs; it goes on in "
+                "the background", len(paths), bound,
+            )
+
+    async def _release_delete_holds_in_background(
+        self, owner_id: str, seconds: Optional[float] = None,
+    ) -> None:
+        await self._let_go_in_background(self._delete_holds.pop(owner_id, []), seconds)
+
+    def _hand_off_locks(
+        self, owner_id: str, travelling: Optional[HeldLocks],
+        *, handed_off: Optional[List[bool]] = None,
+    ) -> Callable[[], None]:
+        """Take *owner_id*'s delete holds and the *travelling* locks from their
+        owner, for a mutation's worker to release (``run_detached_mutation``).
+        Called only for a mutation still running; *handed_off* records that."""
+        if handed_off is not None:
+            handed_off.append(True)
+        paths = [
+            *self._delete_holds.pop(owner_id, []),
+            *(travelling.take() if travelling is not None else []),
+        ]
+        return lambda: _let_go(paths)
+
+    def _kept_delete_snapshot(
+        self, source_path: str, output_path: str, meta: dict, recorded_source: str,
+    ) -> Union[Dict[str, object], str]:
+        """What a retried delete of *source_path* stands on, established now:
+        its delete snapshot, or why it no longer holds. Blocking.
+
+        Fails closed on each: the Source is inside the configured Volumes, the
+        output is the very file its check recorded (``produced_meta``: size,
+        mtime, inode, device), and the Source set is byte-for-byte the one
+        that output was made and checked from. The record names the Source
+        by its real path, so the two are compared resolved: a Library reached
+        through a symlink is still the same Source (codex 4579683123).
+        """
+        if os.path.realpath(source_path) != recorded_source:
+            return "the output's check record names another Source"
+        if not is_within_configured_volumes(source_path, treat_archives=False):
+            return "the Source is not inside the configured volumes"
+        if self._output_fingerprint(output_path) != meta.get("output"):
+            return "the output is gone or changed since its check"
+        # And every companion output, as the check recorded it: one gone,
+        # changed or new means the output is not the checked one.
+        if self._companion_fingerprints(
+            output_path, str(meta.get("mode") or ""),
+        ) != (meta.get("companions") or {}):
+            return "a companion output is gone or changed since its check"
+        try:
+            snapshot = build_delete_snapshot(source_path)
+        except (OSError, ValueError) as exc:
+            return f"the Source can no longer be planned for deletion: {exc}"
+        if not snapshot.get("paths") or self._norm_fps(
+            snapshot.get("fingerprints"),
+        ) != meta.get("source"):
+            return "the Source changed since its output was checked"
+        return snapshot
+
+    async def _kept_delete_snapshot_bounded(
+        self, source_path: str, output_path: str, meta: dict, recorded_source: str,
+    ) -> Union[Dict[str, object], str]:
+        """:meth:`_kept_delete_snapshot` on a detached thread, bounded: a
+        volume that stops answering is a reason to try again later."""
+        try:
+            return await run_detached_bounded(
+                self._kept_delete_snapshot, source_path, output_path, meta,
+                recorded_source, timeout=KEPT_DELETE_PROBE_SECONDS,
+            )
+        except (DeadlineExpired, ReadCancelled):
+            return KEPT_DELETE_UNANSWERED
+
+    @contextlib.asynccontextmanager
+    async def kept_delete(
+        self, *, source_path: str, output_path: str,
+        required_check: Optional[str] = None, planned: Optional[List[str]] = None,
+        stopping: Callable[[], bool] = lambda: False,
+    ):
+        """Prepare a retried delete (#329) and yield a :class:`KeptDeleteRun`.
+
+        Under the output's, its companions' and the delete paths' locks, held
+        until the block ends, this re-establishes everything the delete stands
+        on and re-runs the output's check (:meth:`_recheck_output`, codex
+        4580346573). ``run.refused`` is the outcome when it no longer holds;
+        otherwise ``await run.delete()`` removes the Source. The two are split
+        so a caller can run the long check without its own lock and take that
+        lock only to delete (the sweep's ``_sweep_lock``). *planned* finishes a
+        delete that already started (:meth:`finish_kept_delete`) instead.
+        *stopping* is asked before the output's check and before the unlinks:
+        once true, the outcome is ``stopped`` and nothing is removed.
+        """
+        run = KeptDeleteRun()
+        owner_id = f"kept-delete:{uuid.uuid4().hex}"
+        # The locks this holds. They travel with an unlink that outlives the
+        # wait, so they are released only from here.
+        travelling = HeldLocks()
+        try:
+            if planned is None:
+                run.refused = await self._prepare_retry(
+                    run, owner_id, travelling, source_path, output_path, required_check,
+                    stopping,
+                )
+            else:
+                run.refused = await self._prepare_finish(
+                    run, owner_id, travelling, source_path, output_path, planned,
+                    required_check, stopping,
+                )
+            yield run
+        finally:
+            # Off the loop: lock files are I/O (codex 4579852997).
+            holds = self._delete_holds.pop(owner_id, [])
+            await self._let_go_in_background([*holds, *travelling.take()])
+
+    async def retry_kept_delete(
+        self, *, source_path: str, output_path: str, required_check: Optional[str] = None,
+    ) -> KeptDeleteRetry:
+        """Retry only the delete step for a Source a reader kept (#329).
+
+        A job whose delete step found another job still reading its Source
+        completed and kept it (``SOURCE_KEPT_FOR_READERS``); its output is
+        already checked and recorded. This takes the same locks the job held
+        (the output's, then every delete path's, exclusively, without
+        waiting), re-establishes under them everything the delete stood on
+        (:meth:`_kept_delete_snapshot`, plus a passing check record that names
+        this Source), re-runs the output's check, then runs the shared delete
+        step (:meth:`_delete_source_set`, with its ``mutation_guard`` and
+        Referrer hook). Never raises for a refusal: the outcome says whether to
+        try again (``reader``, ``kept``) or never (``stale``).
+
+        *required_check* is the check the Rule asks for now (its
+        ``effective_check_level``): ``round_trip`` takes a Round-tripped
+        record, ``container_only`` an Intact or a Round-tripped one. A record
+        that falls short is ``stale`` (codex 4579636593).
+        """
+        async with self.kept_delete(
+            source_path=source_path, output_path=output_path,
+            required_check=required_check,
+        ) as run:
+            return run.refused or await run.delete()
+
+    async def _kept_record(
+        self, output_path: str, required_check: Optional[str],
+    ) -> Union[KeptDeleteRetry, Tuple[str, dict, dict]]:
+        """The output's passing check record, as a retried delete needs it:
+        ``(check, meta, record)``, or the outcome that refuses it."""
+        try:
+            record = await run_detached_bounded(
+                verification_store.get_record_blocking, output_path,
+                timeout=KEPT_DELETE_PROBE_SECONDS,
+            )
+        except DeadlineExpired:
+            return KeptDeleteRetry(KEPT_KEPT, KEPT_DELETE_UNANSWERED)
+        except OSError as exc:
+            return KeptDeleteRetry(KEPT_KEPT, str(exc))
+        check = (record or {}).get("check_passed")
+        meta = (record or {}).get("produced_meta")
+        if (
+            not record
+            or check not in _CHECK_LABELS
+            or not _check_satisfies(check, required_check)
+            or not record.get("source_path")
+            or not isinstance(meta, dict)
+            or not meta.get("source")
+            or not meta.get("output")
+        ):
+            return KeptDeleteRetry(KEPT_STALE, "the output's check record no longer matches")
+        return check, meta, record
+
+    async def _take_output(self, output_path: str, travelling: HeldLocks) -> Optional[KeptDeleteRetry]:
+        """Take the output's lock for a retried delete, bounded: taking it
+        stats the path, and a lock taken after this gave up is let go (codex
+        4579529051). None once it is held (in *travelling*)."""
+        try:
+            output_held = await run_detached_undoable(
+                lock_manager.acquire_lock, output_path, allow_existing=True,
+                timeout=KEPT_DELETE_PROBE_SECONDS,
+                undo=lambda held: _let_go([output_path] if held else []),
+            )
+        except DeadlineExpired:
+            return KeptDeleteRetry(KEPT_KEPT, KEPT_DELETE_UNANSWERED)
+        except (LockFailed, OSError) as exc:
+            return KeptDeleteRetry(KEPT_KEPT, str(exc))
+        if not output_held:
+            return KeptDeleteRetry(KEPT_READER, "the output is in use by another job")
+        travelling.add(output_path)
+        return None
+
+    async def _recheck_output(
+        self, source_path: Optional[str], output_path: str, meta: dict,
+        required_check: Optional[str],
+    ) -> Optional[KeptDeleteRetry]:
+        """Re-run the output's check before a retried delete removes anything
+        (codex 4580346573). None when it passes.
+
+        The record's stat fingerprint only filters: an in-place rewrite of
+        the same length with its mtime put back keeps all of it, and the
+        app's locks bind no writer outside it. So the authority is the check
+        itself, the job's own: the tool's container check
+        (:meth:`_container_check`, under the tool's verify bound), plus the
+        Round-trip (``round_trip``) when *required_check* asks for it and the
+        whole Source is there to compare (*source_path*). A failed check is
+        ``stale``; one that reached no verdict is a ``kept`` attempt.
+        """
+        mode = str(meta.get("mode") or "")
+        try:
+            tool = registry.for_mode(mode)
+        except KeyError:
+            return KeptDeleteRetry(KEPT_STALE, f"the output's mode {mode!r} is not known")
+        cancel = asyncio.Event()
+        try:
+            verify_path = await self._container_check(tool, output_path, mode, cancel)
+        except VerifyUnanswered as exc:
+            return KeptDeleteRetry(KEPT_KEPT, str(exc))
+        except ConversionCancelled as exc:
+            return KeptDeleteRetry(KEPT_KEPT, str(exc))
+        except (RuntimeError, OSError) as exc:
+            return KeptDeleteRetry(
+                KEPT_STALE, f"the output no longer passes its check ({exc})",
+            )
+        if required_check != "round_trip" or source_path is None:
+            return None
+        outcome = await round_trip(tool, source_path, verify_path, cancel_event=cancel)
+        if outcome.passed:
+            return None
+        if outcome.timed_out or outcome.cancelled:
+            return KeptDeleteRetry(KEPT_KEPT, outcome.message or "the Round-trip did not finish")
+        return KeptDeleteRetry(
+            KEPT_STALE, f"the output no longer passes its Round-trip ({outcome.message})",
+        )
+
+    async def _prepare_retry(
+        self, run: "KeptDeleteRun", owner_id: str, travelling: HeldLocks,
+        source_path: str, output_path: str, required_check: Optional[str],
+        stopping: Callable[[], bool],
+    ) -> Optional[KeptDeleteRetry]:
+        """:meth:`kept_delete` for a Source that is whole. Sets ``run``'s delete."""
+        if "::" in source_path:
+            return KeptDeleteRetry(
+                KEPT_STALE, "an archive member's Source cannot be proven unchanged",
+            )
+        refused = await self._take_output(output_path, travelling)
+        if refused is not None:
+            return refused
+        found = await self._kept_record(output_path, required_check)
+        if isinstance(found, KeptDeleteRetry):
+            return found
+        check, meta, record = found
+        # The companion outputs too, as the job held them (#329,
+        # CodeRabbit 4580102953): nobody may change one while this runs.
+        companions = list(meta.get("companions") or {})
+        if companions:
+            try:
+                taken_companions = await run_detached_undoable(
+                    self._take_exclusively, companions,
+                    timeout=KEPT_DELETE_PROBE_SECONDS, undo=_let_go,
+                )
+            except DeadlineExpired:
+                return KeptDeleteRetry(KEPT_KEPT, KEPT_DELETE_UNANSWERED)
+            except (LockFailed, OSError) as exc:
+                return KeptDeleteRetry(KEPT_KEPT, str(exc))
+            if taken_companions is None:
+                return KeptDeleteRetry(KEPT_READER, "a companion output is in use")
+            for path in taken_companions:
+                travelling.add(path)
+        snapshot = await self._kept_delete_snapshot_bounded(
+            source_path, output_path, meta, record["source_path"],
+        )
+        if snapshot == KEPT_DELETE_UNANSWERED:
+            return KeptDeleteRetry(KEPT_KEPT, snapshot)
+        if isinstance(snapshot, str):
+            return KeptDeleteRetry(KEPT_STALE, snapshot)
+        paths = list(snapshot["paths"])
+        try:
+            taken = await run_detached_undoable(
+                self._take_exclusively, paths,
+                timeout=KEPT_DELETE_PROBE_SECONDS, undo=_let_go,
+            )
+        except DeadlineExpired:
+            return KeptDeleteRetry(KEPT_KEPT, KEPT_DELETE_UNANSWERED)
+        except (LockFailed, OSError) as exc:
+            return KeptDeleteRetry(KEPT_KEPT, str(exc))
+        if taken is None:
+            return KeptDeleteRetry(KEPT_READER, SOURCE_KEPT_FOR_READERS)
+        self._delete_holds[owner_id] = list(taken)
+        # Once more under the holds: nothing in the app can change the set now.
+        again = await self._kept_delete_snapshot_bounded(
+            source_path, output_path, meta, record["source_path"],
+        )
+        if isinstance(again, str):
+            status = KEPT_KEPT if again == KEPT_DELETE_UNANSWERED else KEPT_STALE
+            return KeptDeleteRetry(status, again)
+        if stopping():
+            return KeptDeleteRetry(KEPT_STOPPED, "stopped before the output's check")
+        refused = await self._recheck_output(source_path, output_path, meta, required_check)
+        if refused is not None:
+            return refused
+
+        async def delete() -> KeptDeleteRetry:
+            # The cheap filter once more, right before the unlinks: the check
+            # took a while, and the stat fingerprint still catches a change.
+            last = await self._kept_delete_snapshot_bounded(
+                source_path, output_path, meta, record["source_path"],
+            )
+            if isinstance(last, str):
+                status = KEPT_KEPT if last == KEPT_DELETE_UNANSWERED else KEPT_STALE
+                return KeptDeleteRetry(status, last)
+            deleted: List[str] = []
+            planned: List[str] = []
+            handed_off: List[bool] = []
+            try:
+                removal = await self._delete_source_set(
+                    owner_id,
+                    file_path=source_path,
+                    output_path=output_path,
+                    expected_paths=paths,
+                    fingerprints=snapshot.get("fingerprints") or {},
+                    check_label=_CHECK_LABELS[check],
+                    cancel_event=asyncio.Event(),
+                    # A stop seen at the last look keeps the Source whole.
+                    cancelled=stopping,
+                    deleted=deleted,
+                    probe_seconds=KEPT_DELETE_PROBE_SECONDS,
+                    travelling_locks=travelling,
+                    planned=planned,
+                    handed_off=handed_off,
+                )
+            except MutationInFlight as exc:
+                # Its locks went with it, and the rest of the plan; the worker
+                # removes every planned file, then lets them go.
+                rest = unfinished_delete(planned, deleted, in_flight=True)
+                return KeptDeleteRetry(
+                    KEPT_UNKNOWN, str(exc), tuple(deleted), tuple(rest or planned),
+                )
+            except asyncio.CancelledError:
+                # Cancelled mid-plan (CodeRabbit 4580360089, 4580360083): what
+                # started, or is still running on the worker, is recorded by
+                # the caller from `run.started`; then this goes on.
+                rest = unfinished_delete(planned, deleted, in_flight=bool(handed_off))
+                if rest:
+                    run.started = KeptDeleteRetry(
+                        KEPT_UNKNOWN, "the delete was cancelled", tuple(deleted), tuple(rest),
+                    )
+                raise
+            except (RuntimeError, OSError) as exc:
+                logger.warning(
+                    "Retrying the delete of %s kept it", source_path, exc_info=True,
+                )
+                rest = unfinished_delete(planned, deleted)
+                if rest:
+                    # Started, then refused part way (codex 4580227623): the
+                    # rest is finished on the next sweep, never dropped.
+                    return KeptDeleteRetry(KEPT_STARTED, str(exc), tuple(deleted), tuple(rest))
+                # A refusal before any file went: an attempt (codex 4579529048).
+                return KeptDeleteRetry(KEPT_KEPT, str(exc), tuple(deleted))
+            if removal.cancelled:
+                return KeptDeleteRetry(KEPT_STOPPED, "stopped before the unlinks")
+            if removal.kept_reason:
+                return KeptDeleteRetry(KEPT_KEPT, removal.kept_reason)
+            return KeptDeleteRetry(KEPT_DELETED, None, tuple(deleted))
+
+        run.set_delete(delete)
+        return None
+
+    def _finish_problem(
+        self, source_path: str, output_path: str, meta: dict, recorded_source: str,
+        remaining: List[str], owner_id: str, jobs: List[ConversionJob],
+    ) -> Optional[str]:
+        """Why a part-deleted Source's remaining files must stay, or None.
+        Blocking; run under the locks (:meth:`finish_kept_delete`)."""
+        if os.path.realpath(source_path) != recorded_source:
+            return "the output's check record names another Source"
+        if self._output_fingerprint(output_path) != meta.get("output"):
+            return "the output is gone or changed since its check"
+        if self._companion_fingerprints(
+            output_path, str(meta.get("mode") or ""),
+        ) != (meta.get("companions") or {}):
+            return "a companion output is gone or changed since its check"
+        # Each remaining file is one the delete planned and the check
+        # fingerprinted, unchanged, and still safe to remove.
+        by_real = {
+            os.path.realpath(path): fp for path, fp in (meta.get("source") or {}).items()
+        }
+        fingerprints = {}
+        for path in remaining:
+            fp = by_real.get(os.path.realpath(path))
+            if fp is None:
+                return "a remaining file is not one the check fingerprinted"
+            fingerprints[path] = fp
+        return self._delete_path_problem(
+            owner_id, remaining, fingerprints, os.path.realpath(output_path),
+            set(remaining), jobs,
+        )
+
+    async def _report_unfinished_delete(
+        self, job: ConversionJob, rest: List[str], exc: BaseException,
+    ) -> None:
+        """A job's delete step stopped part way (#329). A Rule's job hands the
+        rest to its sweep (``job._unfinished_delete``, finished like a kept
+        Source); a hand-started job has no pending store or Library, so a
+        ``source_kept`` Finding in the ``findings.NO_LIBRARY`` bucket names the
+        part-deleted Source at once. Its cause lists the files left, so the
+        Findings view clears it once they are gone."""
+        job._unfinished_delete = list(rest)
+        if job._sweep_owner is not None:
+            return
+        from services import findings
+
+        try:
+            await run_detached_bounded(
+                findings.observe, findings.NO_LIBRARY, findings.started_delete(
+                    job.file_path, source=job.file_path, output=job.output_path,
+                    why=f"its delete failed ({exc})", left=list(rest),
+                ),
+                timeout=KEPT_DELETE_PROBE_SECONDS,
+            )
+        except (DeadlineExpired, OSError):
+            logger.warning(
+                "Could not record the part-deleted Source of %s", job.file_path,
+                exc_info=True,
+            )
+
+    async def finish_kept_delete(
+        self, *, source_path: str, output_path: str, planned: List[str],
+        required_check: Optional[str] = None,
+    ) -> KeptDeleteRetry:
+        """Finish a retried delete that outlived its wait (codex 4580176201).
+
+        The Source is part deleted by design, so it is not planned again.
+        Under the output's, its companions' and the remaining files' locks,
+        this re-checks that the output and its companions are still exactly
+        the checked ones, re-runs the output's check, and that every remaining
+        file is one the check fingerprinted, unchanged; then removes them in
+        order, as one mutation. ``deleted`` when nothing of the plan is left;
+        ``stale`` when the output no longer stands (the remaining files stay,
+        and the caller reports the part-deleted Source); ``reader``, ``kept``
+        or ``unknown`` as for :meth:`retry_kept_delete`.
+        """
+        async with self.kept_delete(
+            source_path=source_path, output_path=output_path,
+            required_check=required_check, planned=planned,
+        ) as run:
+            return run.refused or await run.delete()
+
+    async def _prepare_finish(
+        self, run: "KeptDeleteRun", owner_id: str, travelling: HeldLocks,
+        source_path: str, output_path: str, planned: List[str],
+        required_check: Optional[str], stopping: Callable[[], bool],
+    ) -> Optional[KeptDeleteRetry]:
+        """:meth:`kept_delete` for a Source whose delete started. The
+        Round-trip cannot run against a part-deleted Source, so the output's
+        container check is re-run, and every remaining file must still be the
+        one the check fingerprinted."""
+        refused = await self._take_output(output_path, travelling)
+        if refused is not None:
+            return refused
+        found = await self._kept_record(output_path, required_check)
+        if isinstance(found, KeptDeleteRetry):
+            return found
+        _check, meta, record = found
+        try:
+            remaining = await run_detached_bounded(
+                lambda: [path for path in planned if os.path.lexists(path)],
+                timeout=KEPT_DELETE_PROBE_SECONDS,
+            )
+            taken = await run_detached_undoable(
+                self._take_exclusively,
+                [*(meta.get("companions") or {}), *remaining],
+                timeout=KEPT_DELETE_PROBE_SECONDS, undo=_let_go,
+            )
+        except DeadlineExpired:
+            return KeptDeleteRetry(KEPT_KEPT, KEPT_DELETE_UNANSWERED)
+        except (LockFailed, OSError) as exc:
+            return KeptDeleteRetry(KEPT_KEPT, str(exc))
+        if taken is None:
+            return KeptDeleteRetry(KEPT_READER, SOURCE_KEPT_FOR_READERS)
+        for path in taken:
+            travelling.add(path)
+
+        async def problem() -> Optional[KeptDeleteRetry]:
+            try:
+                found_problem = await run_detached_bounded(
+                    self._finish_problem, source_path, output_path, meta,
+                    record["source_path"], remaining, owner_id,
+                    list(self.jobs.values()),  # a snapshot, taken on the loop
+                    timeout=KEPT_DELETE_PROBE_SECONDS,
+                )
+            except DeadlineExpired:
+                return KeptDeleteRetry(KEPT_KEPT, KEPT_DELETE_UNANSWERED)
+            if found_problem:
+                return KeptDeleteRetry(KEPT_STALE, found_problem, (), tuple(remaining))
+            return None
+
+        refused = await problem()
+        if refused is not None:
+            return refused
+        if stopping():
+            return KeptDeleteRetry(KEPT_STOPPED, "stopped before the output's check")
+        refused = await self._recheck_output(None, output_path, meta, required_check)
+        if refused is not None:
+            if refused.status == KEPT_STALE:
+                # The files left stay, and are named in the caller's Finding.
+                return KeptDeleteRetry(KEPT_STALE, refused.reason, (), tuple(remaining))
+            return refused
+
+        async def delete() -> KeptDeleteRetry:
+            # The cheap filter once more, right before the unlinks.
+            refused_now = await problem()
+            if refused_now is not None:
+                return refused_now
+            if stopping():
+                return KeptDeleteRetry(KEPT_STOPPED, "stopped before the unlinks")
+            removed: List[str] = []
+            try:
+                await run_detached_mutation(
+                    _remove_in_order, remaining, removed,
+                    timeout=KEPT_DELETE_PROBE_SECONDS,
+                    hand_off=lambda: self._hand_off_locks(owner_id, travelling),
+                )
+            except MutationInFlight as exc:
+                rest = unfinished_delete(remaining, removed, in_flight=True)
+                return KeptDeleteRetry(
+                    KEPT_UNKNOWN, str(exc), tuple(removed), tuple(rest or remaining),
+                )
+            except asyncio.CancelledError:
+                # Cancelled mid-plan (CodeRabbit 4580360089): the delete has
+                # started either way, so what is left (or still running on
+                # the worker) stays for the next sweep; the caller records
+                # that, then this goes on.
+                rest = unfinished_delete(remaining, removed, in_flight=True)
+                run.started = KeptDeleteRetry(
+                    KEPT_UNKNOWN, "the delete was cancelled", tuple(removed),
+                    tuple(rest or remaining),
+                )
+                raise
+            except (MutationNotStarted, OSError) as exc:
+                rest = unfinished_delete(remaining, removed)
+                if rest:
+                    return KeptDeleteRetry(KEPT_STARTED, str(exc), tuple(removed), tuple(rest))
+                return KeptDeleteRetry(KEPT_KEPT, str(exc), tuple(removed))
+            await self._clear_source_records(source_path, KEPT_DELETE_PROBE_SECONDS)
+            return KeptDeleteRetry(KEPT_DELETED, None, tuple(removed))
+
+        run.set_delete(delete)
+        return None
 
     async def _delete_check(
         self, job, tool, source_path: str, output_path: str, cancel_event,
@@ -3055,7 +4022,64 @@ class JobManager:
             return "round_tripped", None
         return "intact", outcome.message
 
-    async def _verify_target_bounded(self, tool, job, cancel_event) -> str | None:
+    async def _container_check(
+        self, tool, output_path: str, mode: str, cancel_event: asyncio.Event,
+        *, verifying_id: str | None = None,
+    ) -> str:
+        """The output's container check: the tool's ``verify`` of what it says
+        to verify (``verify_target``), under the tool's own verify bound
+        (``verify_timeout``). Returns the path it verified.
+
+        The one check for every caller: a job after its conversion, and a
+        retried delete before it removes anything (#329, codex 4580346573).
+        Raises :class:`VerifyUnanswered` when nothing was judged (the bound
+        ran out, the storage stopped answering), ``ConversionCancelled`` on a
+        Cancel, and ``RuntimeError`` when the output fails its check.
+        *verifying_id* is the job reported as verifying (not stalled) meanwhile.
+        """
+        verify_path = await self._verify_target_bounded(
+            tool, output_path, mode, cancel_event,
+        )
+        if not verify_path:
+            raise RuntimeError("Verification could not find the converted output")
+        verify_bound = await tool.verify_timeout(verify_path, cancel_event=cancel_event)
+        if verifying_id is not None:
+            self._verifying[verifying_id] = time.monotonic()
+        try:
+            verify_result = await asyncio.wait_for(
+                tool.verify(verify_path, cancel_event=cancel_event),
+                timeout=verify_bound or None,
+            )
+        except asyncio.TimeoutError:
+            raise VerifyUnanswered(f"Verification timed out after {verify_bound}s") from None
+        finally:
+            if verifying_id is not None:
+                self._verifying.pop(verifying_id, None)
+        if verify_result.get("cancelled"):
+            # The verifier stopped because Cancel was pressed, so it reached
+            # no verdict. Reporting that as a failed verification would be
+            # wrong twice over: it is not a bad file, and the source must not
+            # be deleted on it.
+            raise ConversionCancelled("Conversion cancelled")
+        if verify_result.get("abandoned"):
+            # The verifier outlived SIGKILL and is still holding the storage.
+            # Distinguished from an ordinary failure so the log and the error
+            # name the real problem -- the file was never judged, the mount
+            # stopped answering -- rather than reading as "this output is bad".
+            logger.error(
+                "Verification could not be stopped and is still holding %s; "
+                "the volume is likely not responding", output_path,
+            )
+            raise VerifyUnanswered(
+                f"Verification could not be stopped: {verify_result.get('message')}"
+            )
+        if not verify_result.get("valid"):
+            raise RuntimeError(f"Verification failed: {verify_result.get('message')}")
+        return verify_path
+
+    async def _verify_target_bounded(
+        self, tool, output_path: str, mode: str, cancel_event,
+    ) -> str | None:
         """What to verify, resolved without letting a dead mount keep the job.
 
         Ask the tool rather than assuming the planned path holds the artifact:
@@ -3081,8 +4105,7 @@ class JobManager:
         try:
             return await asyncio.wait_for(
                 run_detached(
-                    tool.verify_target, job.output_path, job.mode.value,
-                    cancel_event=cancel_event,
+                    tool.verify_target, output_path, mode, cancel_event=cancel_event,
                 ),
                 timeout=_CANONICAL_PROBE_SECONDS,
             )
@@ -3091,7 +4114,7 @@ class JobManager:
             # nothing was judged, and the source must not be deleted on it.
             raise ConversionCancelled("Conversion cancelled") from None
         except asyncio.TimeoutError:
-            raise RuntimeError(
+            raise VerifyUnanswered(
                 "Verification could not determine what to check "
                 f"in {_CANONICAL_PROBE_SECONDS:.0f}s "
                 "(the storage holding the output stopped responding)"
@@ -3671,54 +4694,12 @@ class JobManager:
                     # `<iso>.0`/`.1`/… and no bare `.iso`, so verifying
                     # `output_path` read a file that was never created and
                     # failed a conversion that had in fact succeeded.
-                    verify_path = await self._verify_target_bounded(
-                        tool, job, cancel_event,
+                    # The shared check (`_container_check`), the one a retried
+                    # delete re-runs before it removes anything.
+                    verify_path = await self._container_check(
+                        tool, job.output_path, job.mode.value, cancel_event,
+                        verifying_id=job_id,
                     )
-                    if not verify_path:
-                        raise RuntimeError(
-                            "Verification could not find the converted output"
-                        )
-                    verify_bound = await tool.verify_timeout(
-                        verify_path, cancel_event=cancel_event,
-                    )
-                    self._verifying[job_id] = time.monotonic()
-                    try:
-                        verify_result = await asyncio.wait_for(
-                            tool.verify(verify_path, cancel_event=cancel_event),
-                            timeout=verify_bound or None,
-                        )
-                    except asyncio.TimeoutError:
-                        raise RuntimeError(
-                            f"Verification timed out after {verify_bound}s"
-                        ) from None
-                    finally:
-                        self._verifying.pop(job_id, None)
-                    if verify_result.get("cancelled"):
-                        # The verifier stopped because Cancel was pressed, so it
-                        # reached no verdict. Reporting that as a failed
-                        # verification would be wrong twice over: it is not a bad
-                        # file, and the source must not be deleted on it.
-                        raise ConversionCancelled("Conversion cancelled")
-                    if verify_result.get("abandoned"):
-                        # The verifier outlived SIGKILL and is still holding the
-                        # storage. Distinguished from an ordinary failure so the
-                        # log and the job's error name the real problem -- the
-                        # file was never judged, the mount stopped answering --
-                        # rather than reading as "this output is bad".
-                        logger.error(
-                            "Job %s: verification could not be stopped and is "
-                            "still holding %s; the volume is likely not "
-                            "responding",
-                            job_id, job.output_path,
-                        )
-                        raise RuntimeError(
-                            f"Verification could not be stopped: "
-                            f"{verify_result.get('message')}"
-                        )
-                    if not verify_result.get("valid"):
-                        raise RuntimeError(
-                            f"Verification failed: {verify_result.get('message')}"
-                        )
 
                     verified = True
                     # The delete decision (#298): which check the output
@@ -3841,89 +4822,72 @@ class JobManager:
                                 "Delete plan snapshot missing; refusing to delete"
                             )
 
-                        expected_paths = list(snapshot.get("paths", []))
-                        expected_set = set(expected_paths)
-                        fingerprints = snapshot.get("fingerprints") or {}
-
-                        current_plan = await run_in_threadpool(
-                            build_delete_plan, job.file_path
-                        )
-                        if (
-                            current_plan.get("errors")
-                            or current_plan.get("unsafe_paths")
-                            or current_plan.get("missing_paths")
-                        ):
-                            raise RuntimeError(
-                                "Delete plan no longer safe; refusing to delete"
-                            )
-                        current_set = set(current_plan.get("delete_paths", []))
-                        if current_set != expected_set:
-                            raise RuntimeError(
-                                "Delete plan changed; refusing to delete"
-                            )
-
-                        output_real = os.path.realpath(job.output_path)
-                        source_for_delete = (
-                            strip_archive_path(job.file_path)
-                            if "::" in job.file_path
-                            else job.file_path
-                        )
-                        source_real = os.path.realpath(source_for_delete)
-                        delete_order = [
-                            p
-                            for p in expected_paths
-                            if os.path.realpath(p) != source_real
-                        ]
-                        if source_real in expected_set:
-                            delete_order.append(source_real)
-                        else:
-                            delete_order = expected_paths
-
                         # Every delete path is held exclusively from here until
                         # the unlinks finish (``_hold_delete_paths_waiting``,
-                        # above): no job can start reading one between these
+                        # above): no job can start reading one between the
                         # checks and its unlink (#306).
-                        await self._check_delete_paths(
-                            job_id, expected_paths, fingerprints, output_real,
-                        )
-
-                        # Referrers (.m3u, ...) move to the output before the
-                        # Source goes; if any can't, the Source stays (#295).
-                        referrer_outcome = await referrers.update_before_source_removal(
-                            source_for_delete,
-                            {path: job.output_path for path in delete_order},
-                            cancel_event=cancel_event,
-                        )
-                        job.referrers_updated = referrer_outcome.records
-                        # The hook awaited a worker thread: re-ask cancel and
-                        # every per-path identity check before removing.
-                        kept_reason = None
-                        if cancel_event.is_set():
-                            kept_reason = (
-                                f"Output is {check_label}. Delete skipped (cancelled)."
+                        job_planned: List[str] = []
+                        job_handed_off: List[bool] = []
+                        try:
+                            removal = await self._delete_source_set(
+                                job_id,
+                                file_path=job.file_path,
+                                output_path=job.output_path,
+                                expected_paths=list(snapshot.get("paths", [])),
+                                fingerprints=snapshot.get("fingerprints") or {},
+                                check_label=check_label,
+                                cancel_event=cancel_event,
+                                cancelled=lambda: job_id in self._cancelled,
+                                deleted=job.deleted_paths,
+                                # The output locks travel with an unlink this
+                                # job stops waiting for (a cancel), like a
+                                # retry's.
+                                travelling_locks=self._output_locks.get(job_id),
+                                planned=job_planned,
+                                handed_off=job_handed_off,
                             )
-                        elif not referrer_outcome.ok:
-                            kept_reason = referrer_outcome.kept_message
-                        else:
-                            try:
-                                await self._check_delete_paths(
-                                    job_id, expected_paths, fingerprints, output_real,
+                        except asyncio.CancelledError:
+                            # The task itself was cancelled once the unlinks
+                            # began, or while the first still ran (CodeRabbit
+                            # 4580360083): what started, or is still running
+                            # on the worker, is recorded (bounded, never
+                            # waiting on the unlink worker), the job ends
+                            # CANCELLED and is announced (the `finally`
+                            # below), then the cancel goes on.
+                            rest = unfinished_delete(
+                                job_planned, job.deleted_paths,
+                                in_flight=bool(job_handed_off),
+                            )
+                            if rest:
+                                await self._report_unfinished_delete(
+                                    job, rest, "the job was cancelled",
                                 )
-                            except RuntimeError as exc:
-                                kept_reason = f"converted, source kept: {exc}"
-                            # That check awaited too; a Cancel there still wins.
-                            if kept_reason is None and cancel_event.is_set():
-                                kept_reason = (
-                                    f"Output is {check_label}. Delete skipped (cancelled)."
-                                )
-                        if kept_reason:
-                            # The Source stays and the job completes: let go
-                            # of the delete holds, and say why where every
-                            # reader of a finished job looks (the CLI's
-                            # report, the job row): job.warning.
-                            self._release_delete_holds(job_id)
-                            job.message = kept_reason
-                            job.warning = kept_reason
+                            raise
+                        except (RuntimeError, OSError) as exc:
+                            rest = unfinished_delete(
+                                job_planned, job.deleted_paths,
+                                in_flight=bool(job_handed_off),
+                            )
+                            if rest is None:
+                                raise
+                            # Started, then refused part way: never silent.
+                            await self._report_unfinished_delete(job, rest, exc)
+                            raise RuntimeError(
+                                f"Source part deleted: {len(job.deleted_paths)} of "
+                                f"{len(job_planned)} files removed, {len(rest)} remain "
+                                f"({exc})",
+                            ) from exc
+                        job.referrers_updated = removal.referrer_records
+                        if removal.cancelled:
+                            # One last look before anything is unlinked
+                            # (#306): a cancel here ends CANCELLED.
+                            raise ConversionCancelled("Conversion cancelled")
+                        if removal.kept_reason:
+                            # The Source stays and the job completes: say why
+                            # where every reader of a finished job looks (the
+                            # CLI's report, the job row): job.warning.
+                            job.message = removal.kept_reason
+                            job.warning = removal.kept_reason
                             await self._notify_subscribers(
                                 job_id,
                                 {
@@ -3934,23 +4898,7 @@ class JobManager:
                                 },
                             )
                         else:
-                            if cancel_event.is_set() or job_id in self._cancelled:
-                                # One last look before anything is unlinked
-                                # (#306): a cancel here ends CANCELLED.
-                                self._release_delete_holds(job_id)
-                                raise ConversionCancelled("Conversion cancelled")
-                            for path in delete_order:
-                                await run_in_threadpool(os.remove, path)
-                                job.deleted_paths.append(path)
-                            self._release_delete_holds(job_id)
-
                             source_deleted = True
-
-                            ext = os.path.splitext(job.file_path)[1].lower()
-                            if ext in registry.verify_extensions():
-                                await verification_store.clear(job.file_path)
-                            if ext == ".chd":
-                                await chd_metadata_store.clear(job.file_path)
 
                 job.status = JobStatus.COMPLETED
                 job.completed_at = datetime.now(timezone.utc)
@@ -3975,6 +4923,19 @@ class JobManager:
                 job_id,
                 {"type": "cancelled", "job_id": job_id, "status": job.status.value},
             )
+        except asyncio.CancelledError:
+            # The runner's task was cancelled (a shutdown), not the job's Cancel
+            # button: the job still ends CANCELLED, so the terminal listeners
+            # (`finally`) hear it and nothing is left PROCESSING
+            # (CodeRabbit 4580360083). Then the cancel goes on.
+            self._cancelled.discard(job_id)
+            job.status = JobStatus.CANCELLED
+            job.completed_at = datetime.now(timezone.utc)
+            await self._notify_subscribers(  # queue puts only: never suspends
+                job_id,
+                {"type": "cancelled", "job_id": job_id, "status": job.status.value},
+            )
+            raise
         except Exception as e:
             self._cancelled.discard(job_id)
             job.status = JobStatus.FAILED
@@ -3991,32 +4952,48 @@ class JobManager:
             # listener that must record how the job ended has to hear about it
             # while the job object still says so.
             self._notify_terminal(job)
-            # Only release lock if we acquired it
-            if lock_acquired:
-                self._release_output_locks(job)
-            # Release the directory subtree lock held by a folder->iso job.
-            if dir_lock_acquired:
-                lock_manager.release_dir_lock(job.file_path)
-            self._release_inputs(job_id)
-            self._release_delete_holds(job_id)
-
-            concurrency_manager.release(job_id)
-
-            self._delete_plans.pop(job_id, None)
-            self._output_keys.pop(job_id, None)
-            if job_id in self._cancel_events:
-                del self._cancel_events[job_id]
-            self._last_progress_at.pop(job_id, None)
-            self._last_progress_log_at.pop(job_id, None)
-            self._last_stall_log_at.pop(job_id, None)
-            self._last_output_size.pop(job_id, None)
-            self._last_output_size_at.pop(job_id, None)
-
-            # Clean up temp directory if this was an archive extraction
-            await self._cleanup_temp_dir(job)
-            await self._prune_jobs(exclude_id=job_id)
+            # Only release lock if we acquired it. The output locks (unless an
+            # unlink took them) and the delete holds, in the background like
+            # a retry's: lock-file I/O never on the loop.
+            # Each release in its own `finally` (codex 4580441305): a cancel
+            # while one awaits (the output locks' bounded wait) must not skip
+            # the input and folder locks, or the concurrency slot, after it.
+            # The cancel goes on once all of them ran.
+            held_outputs = self._output_locks.pop(job.id, None) if lock_acquired else None
+            try:
+                await self._let_go_in_background([
+                    *(held_outputs.take() if held_outputs is not None else []),
+                    *self._delete_holds.pop(job_id, []),
+                ])
+            finally:
+                try:
+                    # Release the directory subtree lock held by a folder->iso job.
+                    if dir_lock_acquired:
+                        lock_manager.release_dir_lock(job.file_path)
+                finally:
+                    try:
+                        self._release_inputs(job_id)
+                    finally:
+                        concurrency_manager.release(job_id)
+                        self._forget_job_runtime(job_id)
+                try:
+                    # Clean up temp directory if this was an archive extraction
+                    await self._cleanup_temp_dir(job)
+                finally:
+                    await self._prune_jobs(exclude_id=job_id)
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug("Job %s finished status=%s", job_id, job.status.value)
+
+    def _forget_job_runtime(self, job_id: str) -> None:
+        """Drop a finished job's in-memory runtime bookkeeping. Never raises."""
+        self._delete_plans.pop(job_id, None)
+        self._output_keys.pop(job_id, None)
+        self._cancel_events.pop(job_id, None)
+        self._last_progress_at.pop(job_id, None)
+        self._last_progress_log_at.pop(job_id, None)
+        self._last_stall_log_at.pop(job_id, None)
+        self._last_output_size.pop(job_id, None)
+        self._last_output_size_at.pop(job_id, None)
 
 
 job_manager = JobManager(

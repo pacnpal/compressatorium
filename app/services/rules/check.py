@@ -82,13 +82,22 @@ class Check:
         return self.record_path or self.path
 
 
-# (library id, image key) of every Image picked and not yet checked, so a Run
-# now during a running check does not pick the same Image twice.
-_in_flight: set[tuple[str, str]] = set()
+# (library id, image key) of every Image picked and not yet checked -> its
+# files (the Image and its members), so a Run now during a running check does
+# not pick the same Image twice, and a conversion Rule does not queue a Source
+# a running check holds (#330, through `in_flight_paths`).
+_in_flight: dict[tuple[str, str], tuple[str, ...]] = {}
 
 
 def in_flight(library_id: str, image_key: str) -> bool:
     return (library_id, str(image_key)) in _in_flight
+
+
+def in_flight_paths() -> list[str]:
+    """Every file of every Image a running check picked and has not finished,
+    as picked (unresolved). The sweep resolves them with the queued and
+    converting Sources, so a conversion skips them the same way (#330)."""
+    return [path for files in list(_in_flight.values()) for path in files]
 
 
 async def order_stamps(library_id: str) -> dict[str, str]:
@@ -380,7 +389,7 @@ def start(
         message="Waiting to check",
     )
     for check in picked:
-        _in_flight.add((library.id, check.key))
+        _in_flight[(library.id, check.key)] = (check.path, *check.members)
     task = asyncio.get_running_loop().create_task(
         _run(library, picked, job.id, generation, on_finished),
     )
@@ -530,7 +539,7 @@ async def _run_checks(
                     check, cancel_event, persist,
                 )
             finally:
-                _in_flight.discard((library.id, check.key))
+                _in_flight.pop((library.id, check.key), None)
             if verdict == SKIPPED:
                 attempted.add(check.key)
                 counts[SKIPPED] += 1
@@ -561,7 +570,7 @@ async def _run_checks(
         return
     finally:
         for check in picked:
-            _in_flight.discard((library.id, check.key))
+            _in_flight.pop((library.id, check.key), None)
         if failed and current():
             notifications.notify(check_failed_event(library, failed))
     summary = (

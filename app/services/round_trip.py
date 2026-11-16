@@ -47,6 +47,14 @@ class RoundTripOutcome:
     passed: bool
     cancelled: bool = False
     message: str = ""
+    # A side did not finish within its verify bound: nothing was judged. The
+    # job keeps the Source either way; a retried delete (#329) counts it as
+    # an attempt rather than a failed check.
+    timed_out: bool = False
+
+
+class _DigestTimedOut(ContentDigestUnavailable):
+    """A digest that did not finish within its verify bound."""
 
 
 async def _digest(
@@ -65,7 +73,7 @@ async def _digest(
     except ContentDigestUnavailable:
         raise
     except asyncio.TimeoutError:
-        raise ContentDigestUnavailable(
+        raise _DigestTimedOut(
             f"hashing {os.path.basename(path)} did not finish in time",
         ) from None
     except Exception as e:  # any failure means "not proven"
@@ -87,18 +95,20 @@ async def _source_problem(
     within: Sequence[str] | None = None,
 ) -> str | None:
     """The tool's own check of the Source, under the same bound as a digest,
-    with the same trusted root(s) the Source's digest gets."""
+    with the same trusted root(s) the Source's digest gets. Returns the
+    problem, and whether it is that the check did not finish in time."""
     try:
         bound = await tool.verify_timeout(path, cancel_event=cancel_event)
-        return await asyncio.wait_for(
+        problem = await asyncio.wait_for(
             tool.source_problem(path, cancel_event=cancel_event, within=within),
             timeout=bound or None,
         )
+        return problem, False
     except asyncio.TimeoutError:
-        return f"checking {os.path.basename(path)} did not finish in time"
+        return f"checking {os.path.basename(path)} did not finish in time", True
     except Exception as e:  # any failure means "not proven"
         logger.warning("Round-trip could not check the Source %s", path, exc_info=True)
-        return f"could not check {os.path.basename(path)}: {e}"
+        return f"could not check {os.path.basename(path)}: {e}", False
 
 
 async def round_trip(
@@ -127,12 +137,15 @@ async def round_trip(
     def _is_cancelled() -> bool:
         return cancel_event is not None and cancel_event.is_set()
 
-    problem = await _source_problem(tool, source_path, cancel_event, within)
+    problem, timed_out = await _source_problem(tool, source_path, cancel_event, within)
     if _is_cancelled():
         return cancelled
     if problem:
         logger.warning("Round-trip refused the Source %s: %s", source_path, problem)
-        return RoundTripOutcome(passed=False, message=f"Round-trip failed: {problem}. Source kept.")
+        return RoundTripOutcome(
+            passed=False, message=f"Round-trip failed: {problem}. Source kept.",
+            timed_out=timed_out,
+        )
     try:
         source = await _digest(tool, source_path, cancel_event, within)
         if _is_cancelled():
@@ -144,6 +157,7 @@ async def round_trip(
         logger.warning("Round-trip could not run for %s: %s", output_path, e)
         return RoundTripOutcome(
             passed=False, message=f"Round-trip could not run: {e}. Source kept.",
+            timed_out=isinstance(e, _DigestTimedOut),
         )
     if _is_cancelled():
         return cancelled

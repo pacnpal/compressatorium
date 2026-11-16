@@ -34,7 +34,7 @@ from routes.files import (
     detect_file_outputs,
     verifiable_tools,
 )
-from services import libraries
+from services import findings, libraries
 from services.file_hasher import compute_file_sha1_sync
 from services.job_manager import job_manager
 from services.lock_manager import lock_manager
@@ -532,6 +532,12 @@ class RepinPlanRequest(BaseModel):
     # The policy the batch will apply, so the row is recorded against the path
     # the conversion actually writes rather than the one it would have.
     duplicate_action: str = "skip"
+    # The plan generation an earlier request of the same run was given (the
+    # response's `generation`). A run plans one request per target mode, and
+    # every one of them is as old as the run: a later request must not count
+    # as newer than a run that started in between. Omitted, a new one is
+    # issued. See `romm_repin.plan_generation`.
+    generation: int | None = None
 
 
 @router.post("/romm/repin/plan")
@@ -555,13 +561,29 @@ async def romm_repin_plan(payload: RepinPlanRequest) -> dict:
             status_code=400, detail=f"Unknown mode: {payload.mode}",
         ) from exc
 
+    # This plan's age, fixed before anything else is awaited. Every row it
+    # writes carries it, and `record()` will not supersede a row a newer plan
+    # wrote: a request stalled in the probes below (or abandoned by its
+    # client) can resume after a newer run has recorded the same destination,
+    # and its write must lose to that run however late it lands. Returned on
+    # every answer, so the run's later requests can carry it.
+    plan_generation = await run_in_threadpool(
+        romm_repin.plan_generation, payload.generation,
+    )
+
     if not romm_settings.effective().get("repin_enabled"):
         # Re-pinning is switched off, so the automation path records nothing;
         # the manual path must not quietly disagree with it.
-        return {"recorded": 0, "skipped": len(payload.paths), "reason": "disabled"}
+        return {
+            "recorded": 0, "skipped": len(payload.paths), "reason": "disabled",
+            "generation": plan_generation,
+        }
 
     if not romm_repin.mode_needs_repin(spec.output_ext):
-        return {"recorded": 0, "skipped": len(payload.paths), "reason": "dat_safe"}
+        return {
+            "recorded": 0, "skipped": len(payload.paths), "reason": "dat_safe",
+            "generation": plan_generation,
+        }
 
     # Which RomM this plan is about. Re-checked before the rows are written:
     # this route holds neither `_settle_lock` nor the sweep pause, so an
@@ -807,9 +829,33 @@ async def romm_repin_plan(payload: RepinPlanRequest) -> dict:
                        "planned; submit it again to save the metadata",
             )
         for path, rom, destination, ids, pre in ready:
+            # Who owns the destination is asked again here, right before the
+            # write. The check in the resolve loop ran before the probes, and
+            # a conversion queued since then holds the row this would
+            # supersede -- this submit will be refused, and its cleanup would
+            # retire the replacement, leaving that conversion no metadata.
+            # Bounded, like every other stat here; an unanswered probe reads
+            # as "a job holds it" and skips the row.
+            if not payload.output_paths and await _probe(
+                _destination_has_pending_job, destination, default=True,
+            ):
+                skipped += 1
+                continue
+            # Queueing does not take this lock, so the check above narrows the
+            # window rather than closing it. `record()` closes it: it refuses
+            # to supersede a row a newer plan wrote or a live job owns, asked
+            # in the same transaction as the write. Its job check is pure
+            # string work (no volume is touched under the lock); the resolving
+            # probe just above already covered symlinked spellings.
+            #
+            # Not for a re-record (`output_paths`): the job at that
+            # destination is this caller's own, so it owns no other row there.
             row_id = await run_in_threadpool(
                 romm_repin.record, rom, destination, ids, payload.mode, pre,
-                path,
+                path, generation=plan_generation,
+                owned_by_live_job=(
+                    None if payload.output_paths else romm_repin.owned_by_job
+                ),
             )
             if row_id:
                 recorded += 1
@@ -822,6 +868,7 @@ async def romm_repin_plan(payload: RepinPlanRequest) -> dict:
         "skipped": skipped,
         "recorded_paths": recorded_paths,
         "recorded_ids": recorded_ids,
+        "generation": plan_generation,
         # The authoritative backlog, for the badge. Recording is not addition:
         # `record()` supersedes the pending row for a destination rather than
         # stacking one, so a re-submitted or retried batch records rows without
@@ -946,28 +993,20 @@ def _destination_job_matches_source(
     written before the column existed, so keeping it would restore exactly the
     behaviour this replaced. Retiring it costs a manual re-match; keeping it
     can cost a game its identity.
+
+    :func:`romm_repin.owned_by_job` with every path resolved, so a library
+    reached through a symlinked ancestor still matches. That stats, so callers
+    go through :func:`_probe`.
     """
-    if not source_path:
-        return False
+    return romm_repin.owned_by_job(output_path, source_path, spell=_resolved)
+
+
+def _resolved(path: str) -> str | None:
+    """*path* with symlinks resolved, or None when it cannot be resolved."""
     try:
-        target = str(Path(output_path).expanduser().resolve(strict=False))
-        wanted = str(Path(source_path).expanduser().resolve(strict=False))
+        return str(Path(path).expanduser().resolve(strict=False))
     except (OSError, RuntimeError):
-        return False
-    for _job_id, paths in job_manager.get_active_job_candidates():
-        resolved = set()
-        for candidate in paths:
-            try:
-                resolved.add(
-                    str(Path(candidate).expanduser().resolve(strict=False)),
-                )
-            except (OSError, RuntimeError):
-                continue
-        # `get_active_job_candidates` reports a job's input *and* output paths
-        # together, so one job carrying both is the job this row describes.
-        if target in resolved and wanted in resolved:
-            return True
-    return False
+        return None
 
 
 async def _settle_one_repin(
@@ -1645,7 +1684,9 @@ async def _run_identity_cleanup() -> int:
 
     The caller must hold `_settle_lock` and the sweep pause.
     """
-    cleared = await romm_auto.forget_converted_locked()
+    # A started delete is reported under no Library: RomM's own Source-kept
+    # Findings are dropped just below, their ROM ids naming other games now.
+    cleared = await romm_auto.forget_converted_locked(owner=findings.NO_LIBRARY)
     # The new instance reuses ROM ids, so the check times and "not Intact"
     # Findings keyed by them (#305) describe other files now.
     await run_in_threadpool(rules_sweep.forget_checks_locked, romm_library)

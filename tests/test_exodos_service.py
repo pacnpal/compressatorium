@@ -5,6 +5,7 @@ Synthetic fixtures only: a tiny eXoDOS-shaped tree under a temp Volume.
 from __future__ import annotations
 
 import asyncio
+import errno
 import os
 import threading
 import time
@@ -749,3 +750,130 @@ def test_a_stalled_pre_rewrite_read_fails_the_job_and_keeps_the_source(
     assert time.monotonic() - started < 5
     assert Path(source).read_bytes() == before
     assert sorted(os.listdir(tree["games"])) == ["!dos", "Abaron (1995).zip"]
+
+
+# --- non-eXoDOS misses are cached too (#331) ---------------------------------
+
+
+def _count_inspections(monkeypatch):
+    """Count the zip reads a probe makes (its first step)."""
+    calls = []
+    real = ExodosService._read_zip
+
+    def counted(self, path):
+        calls.append(path)
+        return real(self, path)
+
+    monkeypatch.setattr(ExodosService, "_read_zip", counted)
+    return calls
+
+
+def test_a_miss_is_cached(tree, monkeypatch):
+    calls = _count_inspections(monkeypatch)
+    service = ExodosService()
+    path = _game_zip(tree, ["README.TXT"], name="NotAGame.zip")
+
+    assert service.is_repackable(path) is False
+    assert service.is_repackable(path) is False
+
+    assert calls == [path]
+
+
+def test_a_template_added_to_an_existing_game_folder_ends_a_cached_miss(tree, monkeypatch):
+    calls = _count_inspections(monkeypatch)
+    service = ExodosService()
+    (tree["dos"] / "Zork").mkdir()
+    path = _game_zip(tree, ["Zork/ZORK.EXE"], name="Zork.zip")
+    assert service.is_repackable(path) is False
+
+    conf = tree["dos"] / "Zork" / "dosbox.conf"
+    conf.write_bytes(b"[autoexec]\r\n")
+    folder = tree["dos"] / "Zork"
+    later = os.stat(folder).st_mtime + 5
+    os.utime(folder, (later, later))
+
+    assert service.is_repackable(path) is True
+    assert len(calls) == 2
+
+
+def test_a_template_fixed_in_place_ends_a_cached_miss(tree):
+    """An oversized template is a miss; trimming the same file (no folder
+    change) must be seen."""
+    service = ExodosService()
+    template = tree["dos"] / "Abaron" / "dosbox.conf"
+    template.write_bytes(b"[autoexec]\r\n" + b"x" * (exodos_module._MAX_TEMPLATE_BYTES + 1))
+    folder = os.stat(template.parent)
+    folder_times = (folder.st_atime_ns, folder.st_mtime_ns)
+    path = _game_zip(tree)
+    assert service.is_repackable(path) is False
+
+    with open(template, "r+b") as handle:  # in place: same inode, same folder
+        handle.truncate(len(TEMPLATE))
+        handle.seek(0)
+        handle.write(TEMPLATE)
+    os.utime(template.parent, ns=folder_times)
+    assert os.stat(template.parent).st_mtime_ns == folder_times[1]
+
+    assert service.is_repackable(path) is True
+
+
+def test_a_template_read_that_fails_for_a_moment_is_not_remembered(tree, monkeypatch):
+    """A permission or I/O error is not an answer: fixing it changes no stamp,
+    so it must not be cached as a miss."""
+    service = ExodosService()
+    path = _game_zip(tree)
+    real = exodos_module.read_beneath
+    calls = []
+
+    def flaky(*args, **kwargs):
+        calls.append(None)
+        if len(calls) == 1:
+            raise PermissionError(errno.EACCES, "Permission denied")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(exodos_module, "read_beneath", flaky)
+
+    assert service.is_repackable(path) is False
+    assert service.is_repackable(path) is True
+
+
+def test_a_template_made_while_the_probe_runs_is_not_cached_as_missing(tree, monkeypatch):
+    """The template appears after the read found none but before the answer
+    is stored: the miss must not be cached under the tree's new stamp."""
+    service = ExodosService()
+    template = tree["dos"] / "Abaron" / "dosbox.conf"
+    template.unlink()
+    path = _game_zip(tree)
+    real = ExodosService._read_template
+
+    def racing(self, root, top):
+        try:
+            return real(self, root, top)
+        finally:
+            if not template.exists():
+                template.write_bytes(TEMPLATE)
+
+    monkeypatch.setattr(ExodosService, "_read_template", racing)
+
+    assert service.is_repackable(path) is False
+    assert service.is_repackable(path) is True
+
+
+def test_a_zip_that_cannot_be_read_for_a_moment_is_not_remembered(tree, monkeypatch):
+    """EACCES on the game zip is not a verdict: restoring access changes
+    neither its size nor its mtime, so the miss must not be cached."""
+    service = ExodosService()
+    path = _game_zip(tree)
+    real = zipfile.ZipFile
+    calls = []
+
+    def flaky(*args, **kwargs):
+        calls.append(None)
+        if len(calls) == 1:
+            raise PermissionError(errno.EACCES, "Permission denied", path)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(zipfile, "ZipFile", flaky)
+
+    assert service.is_repackable(path) is False
+    assert service.is_repackable(path) is True
