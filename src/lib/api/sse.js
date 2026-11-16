@@ -165,6 +165,7 @@ export function verifyEventSource(url, onProgress, { failureFallback = 'Verifica
     es.addEventListener('verify_error', (ev) => {
       let message = failureFallback;
       let uncheckable = false;
+      let inconclusive = false;
       if (ev.data) {
         try {
           const data = JSON.parse(ev.data);
@@ -172,14 +173,18 @@ export function verifyEventSource(url, onProgress, { failureFallback = 'Verifica
             message = data.message;
           }
           uncheckable = Boolean(data?.uncheckable);
+          inconclusive = Boolean(data?.inconclusive);
         } catch (_e) {
           // keep fallback
         }
       }
       cleanup();
-      // "Can't be checked here" (an archive safety rule refused it) is no
-      // verdict: an answer, not an error.
+      // No verdict is an answer, not an error: "can't be checked here" (an
+      // archive safety rule refused it) and "couldn't be checked" (the file
+      // could not be opened, #359). Both resolve with their flags, so the
+      // caller warns; a real failure still rejects.
       if (uncheckable) resolve({ valid: false, uncheckable: true, message });
+      else if (inconclusive) resolve({ valid: false, inconclusive: true, message });
       else reject(new Error(message));
     });
 
