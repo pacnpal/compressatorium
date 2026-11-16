@@ -22,8 +22,6 @@ from unittest.mock import patch
 import pytest
 
 from app.services.disc_id import (
-    TAG_GAME,
-    TAG_NAME,
     _BinSectorStream,
     _CHDReader,
     _CHDSectorStream,
@@ -38,12 +36,8 @@ from app.services.disc_id import (
     _parse_ipbin,
     _parse_param_sfo,
     _parse_system_cnf,
-    clear_embedded_disc_id,
-    embed_in_chd,
-    ensure_disc_id_embedded,
     extract_from_chd,
     extract_from_source,
-    read_embedded_game_id,
 )
 
 
@@ -925,41 +919,7 @@ def test_dumpmeta_raw_times_out(tmp_path, monkeypatch):
         fake_create_subprocess_exec,
     )
 
-    assert asyncio.run(_dumpmeta_raw(str(chd), TAG_GAME, "chdman")) is None
-
-
-@pytest.mark.asyncio
-async def test_extract_from_chd_game_tag(tmp_path):
-    """GAME tag found via dumpmeta → returned as game_id."""
-    chd = tmp_path / "game.chd"
-    chd.write_bytes(b"fake")
-
-    async def fake_dumpmeta_text(chd_path, tag, chdman_path):
-        if tag == TAG_GAME:
-            return "SLUS_20312"
-        return None
-
-    with patch("app.services.disc_id._dumpmeta_text", side_effect=fake_dumpmeta_text):
-        result = await extract_from_chd(str(chd), "chdman")
-
-    assert result is not None
-    assert result["game_id"] == "SLUS_20312"
-
-
-@pytest.mark.asyncio
-async def test_extract_from_chd_game_and_name_tags(tmp_path):
-    """GAME + NAME tags → game_id and title both returned."""
-    chd = tmp_path / "game.chd"
-    chd.write_bytes(b"fake")
-
-    async def fake_dumpmeta_text(chd_path, tag, chdman_path):
-        return {"GAME": "ULES00135", "NAME": "Patapon"}.get(tag)
-
-    with patch("app.services.disc_id._dumpmeta_text", side_effect=fake_dumpmeta_text):
-        result = await extract_from_chd(str(chd), "chdman")
-
-    assert result["game_id"] == "ULES00135"
-    assert result["title"] == "Patapon"
+    assert asyncio.run(_dumpmeta_raw(str(chd), "GDRO", "chdman")) is None
 
 
 @pytest.mark.asyncio
@@ -969,16 +929,12 @@ async def test_extract_from_chd_gdro_fallback(tmp_path):
     chd.write_bytes(b"fake")
     ipbin = _make_ipbin("MK-51034  ", "DEAD OR ALIVE")
 
-    async def fake_dumpmeta_text(chd_path, tag, chdman_path):
-        return None  # no GAME tag
-
     async def fake_dumpmeta_bin(chd_path, tag, chdman_path):
         if tag == "GDRO":
             return ipbin
         return None
 
     with (
-        patch("app.services.disc_id._dumpmeta_text", side_effect=fake_dumpmeta_text),
         patch("app.services.disc_id._dumpmeta_bin", side_effect=fake_dumpmeta_bin),
     ):
         result = await extract_from_chd(str(chd), "chdman")
@@ -999,14 +955,10 @@ async def test_extract_from_chd_companion_iso_fallback(tmp_path):
     iso = tmp_path / "game.iso"
     iso.write_bytes(iso_bytes)
 
-    async def fake_dumpmeta_text(chd_path, tag, chdman_path):
-        return None
-
     async def fake_dumpmeta_bin(chd_path, tag, chdman_path):
         return None
 
     with (
-        patch("app.services.disc_id._dumpmeta_text", side_effect=fake_dumpmeta_text),
         patch("app.services.disc_id._dumpmeta_bin", side_effect=fake_dumpmeta_bin),
     ):
         result = await extract_from_chd(str(chd), "chdman")
@@ -1021,14 +973,10 @@ async def test_extract_from_chd_none_when_nothing(tmp_path):
     chd = tmp_path / "game.chd"
     chd.write_bytes(b"fake")
 
-    async def fake_dumpmeta_text(chd_path, tag, chdman_path):
-        return None
-
     async def fake_dumpmeta_bin(chd_path, tag, chdman_path):
         return None
 
     with (
-        patch("app.services.disc_id._dumpmeta_text", side_effect=fake_dumpmeta_text),
         patch("app.services.disc_id._dumpmeta_bin", side_effect=fake_dumpmeta_bin),
     ):
         result = await extract_from_chd(str(chd), "chdman")
@@ -1036,382 +984,37 @@ async def test_extract_from_chd_none_when_nothing(tmp_path):
     assert result is None
 
 
-# ---------------------------------------------------------------------------
-# embed_in_chd
-# ---------------------------------------------------------------------------
-
 @pytest.mark.asyncio
-async def test_embed_in_chd_success(tmp_path):
-    calls: list[tuple[str, str]] = []
-
-    async def fake_addmeta(chd_path, tag, value, chdman_path):
-        calls.append((tag, value))
-        return True
-
-    with patch("app.services.disc_id._addmeta_text", side_effect=fake_addmeta):
-        ok = await embed_in_chd("/fake/game.chd", "SLUS_20312", "God of War", "chdman")
-
-    assert ok is True
-    assert any(t == TAG_GAME and v == "SLUS_20312" for t, v in calls)
-    assert any(t == TAG_NAME and v == "God of War" for t, v in calls)
-
-
-@pytest.mark.asyncio
-async def test_embed_in_chd_no_title(tmp_path):
-    calls: list[tuple[str, str]] = []
-
-    async def fake_addmeta(chd_path, tag, value, chdman_path):
-        calls.append((tag, value))
-        return True
-
-    with patch("app.services.disc_id._addmeta_text", side_effect=fake_addmeta):
-        ok = await embed_in_chd("/fake/game.chd", "MK-51034", None, "chdman")
-
-    assert ok is True
-    tags_written = [t for t, _ in calls]
-    assert TAG_GAME in tags_written
-    assert TAG_NAME not in tags_written
-
-
-@pytest.mark.asyncio
-async def test_embed_in_chd_addmeta_failure():
-    async def fake_addmeta(chd_path, tag, value, chdman_path):
-        return False  # simulate chdman failure
-
-    with patch("app.services.disc_id._addmeta_text", side_effect=fake_addmeta):
-        ok = await embed_in_chd("/fake/game.chd", "SLUS_20312", None, "chdman")
-
-    assert ok is False
-
-
-# ---------------------------------------------------------------------------
-# read_embedded_game_id
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_read_embedded_game_id_returns_trimmed_serial():
-    async def fake_dump(chd_path, tag, chdman_path):
-        assert tag == TAG_GAME
-        return "  SLUS-20312\n"
-
-    with patch("app.services.disc_id._dumpmeta_text", side_effect=fake_dump):
-        result = await read_embedded_game_id("/fake/game.chd", "chdman")
-
-    assert result == "SLUS-20312"
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("raw", [None, "", "   \n"])
-async def test_read_embedded_game_id_none_when_absent_or_blank(raw):
-    async def fake_dump(chd_path, tag, chdman_path):
-        return raw
-
-    with patch("app.services.disc_id._dumpmeta_text", side_effect=fake_dump):
-        assert await read_embedded_game_id("/fake/game.chd", "chdman") is None
-
-
-# ---------------------------------------------------------------------------
-# clear_embedded_disc_id
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_clear_embedded_disc_id_deletes_game_and_name():
-    deleted: list[str] = []
-
-    async def fake_delmeta(chd_path, tag, chdman_path):
-        deleted.append(tag)
-        return True
-
-    with patch("app.services.disc_id._delmeta", side_effect=fake_delmeta):
-        await clear_embedded_disc_id("/fake/game.chd", "chdman")
-
-    # Both GAME and NAME are stripped so a later addmeta converges on a single
-    # current pair instead of appending to a stale one (chdman addmeta appends).
-    assert deleted == [TAG_GAME, TAG_NAME]
-
-
-# ---------------------------------------------------------------------------
-# ensure_disc_id_embedded (retroactive tagging for existing CHDs)
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_ensure_disc_id_embedded_already_tagged(tmp_path):
-    """GAME tag already present → returns existing info, no addmeta call."""
-    chd = tmp_path / "game.chd"
-    chd.write_bytes(b"fake")
-    addmeta_calls: list[str] = []
-
-    async def fake_dumpmeta_text(chd_path, tag, chdman_path):
-        return {"GAME": "SLUS_20312", "NAME": "God of War"}.get(tag)
-
-    async def fake_addmeta(chd_path, tag, value, chdman_path):
-        addmeta_calls.append(tag)
-        return True
-
-    with (
-        patch("app.services.disc_id._dumpmeta_text", side_effect=fake_dumpmeta_text),
-        patch("app.services.disc_id._addmeta_text", side_effect=fake_addmeta),
-    ):
-        result = await ensure_disc_id_embedded(str(chd), "chdman")
-
-    assert result is not None
-    assert result["game_id"] == "SLUS_20312"
-    assert result["title"] == "God of War"
-    # No addmeta calls, tag already existed
-    assert addmeta_calls == []
-
-
-@pytest.mark.asyncio
-async def test_ensure_disc_id_embedded_gdro_fallback(tmp_path):
-    """No GAME tag, but GDRO present → embeds serial as both GAME and NAME."""
-    chd = tmp_path / "game.chd"
-    chd.write_bytes(b"fake")
-    ipbin = _make_ipbin("MK-51034  ", "DEAD OR ALIVE")
-    addmeta_calls: list[tuple[str, str]] = []
-
-    async def fake_dumpmeta_text(chd_path, tag, chdman_path):
-        return None  # no GAME tag yet
-
-    async def fake_dumpmeta_bin(chd_path, tag, chdman_path):
-        return ipbin if tag == "GDRO" else None
-
-    async def fake_addmeta(chd_path, tag, value, chdman_path):
-        addmeta_calls.append((tag, value))
-        return True
-
-    with (
-        patch("app.services.disc_id._dumpmeta_text", side_effect=fake_dumpmeta_text),
-        patch("app.services.disc_id._dumpmeta_bin", side_effect=fake_dumpmeta_bin),
-        patch("app.services.disc_id._addmeta_text", side_effect=fake_addmeta),
-    ):
-        result = await ensure_disc_id_embedded(str(chd), "chdman")
-
-    assert result is not None
-    assert result["game_id"] == "MK-51034"
-    # Human-readable title from IP.BIN is used as the NAME tag when available
-    assert any(t == TAG_GAME and "MK-51034" in v for t, v in addmeta_calls)
-    assert any(t == TAG_NAME and "DEAD OR ALIVE" in v for t, v in addmeta_calls)
-
-
-@pytest.mark.asyncio
-async def test_ensure_disc_id_embedded_gdro_embed_failure(tmp_path):
-    """embed_in_chd failure (addmeta error) → disc ID still returned for caching, not None."""
-    chd = tmp_path / "game.chd"
-    chd.write_bytes(b"fake")
-    ipbin = _make_ipbin("MK-51034  ", "DEAD OR ALIVE")
-
-    async def fake_dumpmeta_text(chd_path, tag, chdman_path):
-        return None
-
-    async def fake_dumpmeta_bin(chd_path, tag, chdman_path):
-        return ipbin if tag == "GDRO" else None
-
-    async def fake_addmeta(chd_path, tag, value, chdman_path):
-        return False  # simulate chdman failure
-
-    with (
-        patch("app.services.disc_id._dumpmeta_text", side_effect=fake_dumpmeta_text),
-        patch("app.services.disc_id._dumpmeta_bin", side_effect=fake_dumpmeta_bin),
-        patch("app.services.disc_id._addmeta_text", side_effect=fake_addmeta),
-    ):
-        result = await ensure_disc_id_embedded(str(chd), "chdman")
-
-    # Even though embedding failed, the extracted disc ID is returned so it
-    # can be cached in the metadata store and displayed in the UI.
-    assert result is not None
-    assert result["game_id"] == "MK-51034"
-
-
-@pytest.mark.asyncio
-async def test_ensure_disc_id_embedded_companion_iso(tmp_path):
-    """No GAME tag, no GDRO, companion ISO present → embeds normalized serial as GAME and NAME."""
-    # Use the canonical PS2 format with the dot (SLUS_XXX.YY)
-    cnf = b"BOOT2 = cdrom0:\\SLUS_209.99;1\n"
-    iso_bytes = _make_iso({"SYSTEM.CNF": cnf})
-    chd = tmp_path / "game.chd"
-    chd.write_bytes(b"fake")
-    (tmp_path / "game.iso").write_bytes(iso_bytes)
-    addmeta_calls: list[tuple[str, str]] = []
-
-    async def fake_dumpmeta_text(chd_path, tag, chdman_path):
-        return None
-
-    async def fake_dumpmeta_bin(chd_path, tag, chdman_path):
-        return None
-
-    async def fake_addmeta(chd_path, tag, value, chdman_path):
-        addmeta_calls.append((tag, value))
-        return True
-
-    with (
-        patch("app.services.disc_id._dumpmeta_text", side_effect=fake_dumpmeta_text),
-        patch("app.services.disc_id._dumpmeta_bin", side_effect=fake_dumpmeta_bin),
-        patch("app.services.disc_id._addmeta_text", side_effect=fake_addmeta),
-    ):
-        result = await ensure_disc_id_embedded(str(chd), "chdman")
-
-    assert result is not None
-    assert result["game_id"] == "SLUS-20999"
-    assert any(t == TAG_GAME and v == "SLUS-20999" for t, v in addmeta_calls)
-    # Serial used as the NAME (title) tag for emulator lookup
-    assert any(t == TAG_NAME and v == "SLUS-20999" for t, v in addmeta_calls)
-
-
-@pytest.mark.asyncio
-async def test_ensure_disc_id_embedded_companion_embed_failure(tmp_path):
-    """embed_in_chd failure for companion file → disc ID still returned for caching."""
-    cnf = b"BOOT2 = cdrom0:\\SLUS_209.99;1\n"
-    iso_bytes = _make_iso({"SYSTEM.CNF": cnf})
-    chd = tmp_path / "game.chd"
-    chd.write_bytes(b"fake")
-    (tmp_path / "game.iso").write_bytes(iso_bytes)
-
-    async def fake_dumpmeta_text(chd_path, tag, chdman_path):
-        return None
-
-    async def fake_dumpmeta_bin(chd_path, tag, chdman_path):
-        return None
-
-    async def fake_addmeta(chd_path, tag, value, chdman_path):
-        return False  # simulate chdman failure
-
-    with (
-        patch("app.services.disc_id._dumpmeta_text", side_effect=fake_dumpmeta_text),
-        patch("app.services.disc_id._dumpmeta_bin", side_effect=fake_dumpmeta_bin),
-        patch("app.services.disc_id._addmeta_text", side_effect=fake_addmeta),
-    ):
-        result = await ensure_disc_id_embedded(str(chd), "chdman")
-
-    # Embedding failed but the extracted serial is still returned so callers
-    # can cache it in the metadata store and show it in the UI.
-    assert result is not None
-    assert result["game_id"] == "SLUS-20999"
-
-
-@pytest.mark.asyncio
-async def test_ensure_disc_id_embedded_nothing_found(tmp_path):
-    """No GAME tag, no GDRO, no companion file → returns None, no addmeta."""
-    chd = tmp_path / "game.chd"
-    chd.write_bytes(b"fake")
-    addmeta_calls: list[str] = []
-
-    async def fake_dumpmeta_text(chd_path, tag, chdman_path):
-        return None
-
-    async def fake_dumpmeta_bin(chd_path, tag, chdman_path):
-        return None
-
-    async def fake_addmeta(chd_path, tag, value, chdman_path):
-        addmeta_calls.append(tag)
-        return True
-
-    with (
-        patch("app.services.disc_id._dumpmeta_text", side_effect=fake_dumpmeta_text),
-        patch("app.services.disc_id._dumpmeta_bin", side_effect=fake_dumpmeta_bin),
-        patch("app.services.disc_id._addmeta_text", side_effect=fake_addmeta),
-    ):
-        result = await ensure_disc_id_embedded(str(chd), "chdman")
-
-    assert result is None
-    assert addmeta_calls == []
-
-
-@pytest.mark.asyncio
-async def test_ensure_disc_id_embedded_from_chd_sectors(tmp_path):
-    """No GAME tag → CHD sector reading finds SYSTEM.CNF → embeds normalized serial."""
+async def test_extract_from_chd_reads_the_serial_from_chd_sectors(tmp_path):
+    """No GDRO, no companion: SYSTEM.CNF read from the CHD's own sectors."""
     cnf = b"BOOT2 = cdrom0:\\SLUS_203.12;1\n"
-    iso = _make_iso({"SYSTEM.CNF": cnf})
     chd = tmp_path / "game.chd"
-    chd.write_bytes(_make_chd_v5(iso))
-    addmeta_calls: list[tuple[str, str]] = []
-
-    async def fake_dumpmeta_text(chd_path, tag, chdman_path):
-        return None  # no pre-existing GAME tag
+    chd.write_bytes(_make_chd_v5(_make_iso({"SYSTEM.CNF": cnf})))
 
     async def fake_dumpmeta_bin(chd_path, tag, chdman_path):
         return None
 
-    async def fake_addmeta(chd_path, tag, value, chdman_path):
-        addmeta_calls.append((tag, value))
-        return True
+    with patch("app.services.disc_id._dumpmeta_bin", side_effect=fake_dumpmeta_bin):
+        result = await extract_from_chd(str(chd), "chdman")
 
-    with (
-        patch("app.services.disc_id._dumpmeta_text", side_effect=fake_dumpmeta_text),
-        patch("app.services.disc_id._dumpmeta_bin", side_effect=fake_dumpmeta_bin),
-        patch("app.services.disc_id._addmeta_text", side_effect=fake_addmeta),
-    ):
-        result = await ensure_disc_id_embedded(str(chd), "chdman")
-
-    assert result is not None
-    assert result["game_id"] == "SLUS-20312"
-    assert any(t == TAG_GAME and v == "SLUS-20312" for t, v in addmeta_calls)
-    assert any(t == TAG_NAME and v == "SLUS-20312" for t, v in addmeta_calls)
-
-
-@pytest.mark.asyncio
-async def test_ensure_disc_id_embedded_sector_embed_failure(tmp_path):
-    """Sector extraction finds disc ID but embed_in_chd fails → disc ID still returned.
-
-    This covers the case where the CHD is on a read-only filesystem or chdman
-    addmeta is unavailable.  The extracted game_id must still be returned so
-    Phase 2 can cache it in the metadata store for display in the UI.
-    """
-    cnf = b"BOOT2 = cdrom0:\\SLUS_203.12;1\n"
-    iso = _make_iso({"SYSTEM.CNF": cnf})
-    chd = tmp_path / "game.chd"
-    chd.write_bytes(_make_chd_v5(iso))
-
-    async def fake_dumpmeta_text(chd_path, tag, chdman_path):
-        return None  # no pre-existing GAME tag
-
-    async def fake_dumpmeta_bin(chd_path, tag, chdman_path):
-        return None
-
-    async def fake_addmeta(chd_path, tag, value, chdman_path):
-        return False  # simulate chdman / filesystem failure
-
-    with (
-        patch("app.services.disc_id._dumpmeta_text", side_effect=fake_dumpmeta_text),
-        patch("app.services.disc_id._dumpmeta_bin", side_effect=fake_dumpmeta_bin),
-        patch("app.services.disc_id._addmeta_text", side_effect=fake_addmeta),
-    ):
-        result = await ensure_disc_id_embedded(str(chd), "chdman")
-
-    # The game_id is still returned even though embedding failed, so it can
-    # be cached in the metadata store and shown in the CHD inspector.
     assert result is not None
     assert result["game_id"] == "SLUS-20312"
 
 
 @pytest.mark.asyncio
-async def test_ensure_disc_id_embedded_psp_companion(tmp_path):
-    """PSP companion ISO → serial used as GAME and NAME (title) for emulator lookup."""
+async def test_extract_from_chd_psp_companion_keeps_its_title(tmp_path):
+    """A PSP companion ISO gives the serial and the PARAM.SFO title."""
     sfo = _make_param_sfo({"DISC_ID": "ULES00135", "TITLE": "Patapon"})
-    iso_bytes = _make_iso({"PSP_GAME/PARAM.SFO": sfo})
     chd = tmp_path / "patapon.chd"
     chd.write_bytes(b"fake")
-    (tmp_path / "patapon.iso").write_bytes(iso_bytes)
-    addmeta_calls: list[tuple[str, str]] = []
-
-    async def fake_dumpmeta_text(chd_path, tag, chdman_path):
-        return None
+    (tmp_path / "patapon.iso").write_bytes(_make_iso({"PSP_GAME/PARAM.SFO": sfo}))
 
     async def fake_dumpmeta_bin(chd_path, tag, chdman_path):
         return None
 
-    async def fake_addmeta(chd_path, tag, value, chdman_path):
-        addmeta_calls.append((tag, value))
-        return True
-
-    with (
-        patch("app.services.disc_id._dumpmeta_text", side_effect=fake_dumpmeta_text),
-        patch("app.services.disc_id._dumpmeta_bin", side_effect=fake_dumpmeta_bin),
-        patch("app.services.disc_id._addmeta_text", side_effect=fake_addmeta),
-    ):
-        result = await ensure_disc_id_embedded(str(chd), "chdman")
+    with patch("app.services.disc_id._dumpmeta_bin", side_effect=fake_dumpmeta_bin):
+        result = await extract_from_chd(str(chd), "chdman")
 
     assert result is not None
     assert result["game_id"] == "ULES00135"
-    assert any(t == TAG_GAME and v == "ULES00135" for t, v in addmeta_calls)
-    # Human-readable title "Patapon" from PARAM.SFO is used as the NAME tag
-    assert any(t == TAG_NAME and v == "Patapon" for t, v in addmeta_calls)
+    assert result["title"] == "Patapon"

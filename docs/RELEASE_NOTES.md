@@ -4,6 +4,18 @@
 
 ### Fixed
 
+- **The disc ID of a new CHD is recorded instead of being lost** (#352).
+  After Create CD or Create DVD the app used to write the disc's serial and
+  title into the CHD as `GAME`/`NAME` metadata with `chdman addmeta`. chdman
+  refuses that on every compressed CHD ("File not writeable"), which is every
+  CHD the app makes, so the tag was never stored and each conversion logged a
+  warning. Now the serial and title read from the Source are kept in the app's
+  metadata cache for the CHD, where the info panel and the library scan read
+  them. The library scan reads a disc ID from the CHD itself (its sectors, the
+  Dreamcast IP.BIN tag or a companion file) and no longer tries to tag it.
+  When a disc ID cannot be read or stored, a warning names the file. A disc-ID
+  read on a share that stops answering gives up after 30 seconds, and Cancel
+  stops it at once, so it can't hold the metadata scan.
 - **An output found bad on a re-check stops showing as checked** (#351). When
   a later check finds an output bad (the retried delete of a Source kept for
   a reader, or Verify in the file browser), the output now loses its Intact or

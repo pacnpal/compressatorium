@@ -6,33 +6,31 @@ Supports extracting game serial numbers and titles from:
     (the same mechanism as libchdr used by PCSX2 / AetherSX2 / NetherSX2)
   - ISO 9660 source files (.iso) used for PS2, PSP, and PS1
   - Dreamcast GDI images (.gdi + track files)
-  - CHD files via chdman dumpmeta (reads embedded GAME/NAME tags or GDRO IP.BIN)
+  - CHD files via chdman dumpmeta (the standard Dreamcast GDRO IP.BIN tag)
 
 Serial normalization matches PCSX2's ExecutablePathToSerial:
   SYSTEM.CNF "BOOT2 = cdrom0:\\SLUS_203.12;1"  →  "SLUS-20312"
 Emulator frontends and game database scrapers key on this normalized form.
 
 Extraction strategy for CHDs (in priority order):
-  1. Read our embedded GAME / NAME tags written by addmeta at conversion time.
-  2. Read disc sectors directly from the CHD (via a minimal CHD v5 reader):
+  1. Read disc sectors directly from the CHD (via a minimal CHD v5 reader):
        DVD CHDs (unit_bytes=2048): plain 2048-byte ISO sectors.
        CD CHDs (unit_bytes=2352/2448): Mode 1 and Mode 2 Form 1 framing are
        both probed automatically, so PS1 BIN/CUE-sourced CHDs are supported.
-  3. For CD CHDs: parse the Dreamcast GDRO (IP.BIN) metadata standard tag.
-  4. Look for a companion source file (.iso / .gdi / .cue / .bin) next to the CHD.
-  5. Return None if nothing is found.
+  2. For CD CHDs: parse the Dreamcast GDRO (IP.BIN) metadata standard tag.
+  3. Look for a companion source file (.iso / .gdi / .cue / .bin) next to the CHD.
+  4. Return None if nothing is found.
 
 Source-file extraction:
   - PS2 / PS1 .iso: ISO 9660 → root/SYSTEM.CNF → BOOT2= / BOOT= line.
   - PSP .iso:       ISO 9660 → /PSP_GAME/PARAM.SFO → DISC_ID + TITLE keys.
   - Dreamcast .gdi: reads Track01.bin IP.BIN header (product number + title).
 
-Retroactive tagging (ensure_disc_id_embedded):
-  Existing CHDs that were created before conversion-time tagging was added can
-  be back-filled with GAME / NAME tags by calling ensure_disc_id_embedded().
-  It checks for an existing GAME tag first (fast, no modification) and only
-  runs disc-sector / GDRO / companion-file extraction + chdman addmeta when
-  the tag is absent.  This is called automatically during every metadata scan.
+Nothing here writes to a CHD (#352). chdman opens a compressed CHD read-only
+(MAME ``chd.cpp``: ``m_allow_writes = !compressed()``), so ``chdman addmeta``
+fails on every CHD this app makes. The disc ID a conversion reads from its
+Source is recorded in the app's database (``chd_metadata_store``) instead, and
+the library scan stores what ``extract_from_chd`` finds the same way.
 """
 
 from __future__ import annotations
@@ -50,20 +48,17 @@ from pathlib import Path
 from typing import Optional
 
 from services.subprocess_runner import (
+    DeadlineExpired,
+    ProbeCapacityExceeded,
     StorageAbandoned,
     abandonment_checkpoint,
     ioprio_prefix,
     nice_prefix,
+    run_detached_bounded,
 )
 from utils.sheet_text import cue_tracks, gdi_tracks, sheet_readings, sheet_tracks
 
 logger = get_logger("disc_id")
-
-# ---------------------------------------------------------------------------
-# CHD addmeta / dumpmeta tag names used by this application
-# ---------------------------------------------------------------------------
-TAG_GAME = "GAME"  # game / disc serial number (text)
-TAG_NAME = "NAME"  # game / disc title         (text)
 
 # Resource limits for CHD metadata/disc-ID probing. CHD files live in user
 # volumes, so treat header/map fields and chdman output as untrusted input.
@@ -101,6 +96,10 @@ def _abort_if_abandoned(abandoned: list, action: str, chd_path: str) -> None:
 
 
 _DUMPMETA_TIMEOUT_SECONDS = 15
+# The bound on one blocking disc-ID read of a CHD or its companion file
+# (``bounded_disc_read``). The reads are small (a few hunks, a header), so a
+# Volume that takes this long is not answering.
+_DISC_READ_TIMEOUT_SECONDS = 30.0
 
 
 def _chdman_runner():
@@ -1232,406 +1231,131 @@ def _extract_gdi(path: str, within=None) -> Optional[dict]:
 # Public async extractor: CHD files
 # ===========================================================================
 
-async def extract_from_chd(chd_path: str, chdman_path: str = "chdman") -> Optional[dict]:
+async def extract_from_chd(
+    chd_path: str,
+    chdman_path: str = "chdman",
+    *,
+    cancel_event: asyncio.Event | None = None,
+) -> Optional[dict]:
     """
     Extract game ID / title from an existing CHD file.
 
     Strategy (in order):
-      1. Read our custom GAME / NAME tags (written by addmeta at conversion).
-      2. Read disc sectors directly from the CHD via _CHDReader:
+      1. Read disc sectors directly from the CHD via _CHDReader:
          walks the ISO 9660 filesystem to find SYSTEM.CNF (PS2/PS1) or
          PSP_GAME/PARAM.SFO (PSP).  Handles both DVD CHDs (2048-byte sectors)
          and CD CHDs (2352/2448-byte sectors with Mode 1 or Mode 2 Form 1
          framing), the same approach used by libchdr-based emulators.
-      3. Read the Dreamcast GDRO IP.BIN tag (standard CD CHD tag).
-      4. Look for a companion source file (.iso / .gdi / .bin / .cue) beside
+      2. Read the Dreamcast GDRO IP.BIN tag (standard CD CHD tag).
+      3. Look for a companion source file (.iso / .gdi / .bin / .cue) beside
          the CHD and extract from that.
 
-    Returns a dict containing at least ``game_id`` when successful. The dict
-    may also include ``title`` and/or ``platform`` depending on the extraction
-    strategy, ``platform`` is only present when the result comes from disc
-    sector / GDRO / source-file extraction (Strategies 2–4), not from the
-    embedded GAME tag (Strategy 1). Returns None if no ID could be found.
-    """
-    # --- Strategy 1: our embedded GAME tag -----------------------------------
-    result = await _dumpmeta_text(chd_path, TAG_GAME, chdman_path)
-    if result:
-        game_id = result.strip()
-        if game_id:
-            name_result = await _dumpmeta_text(chd_path, TAG_NAME, chdman_path)
-            title = (name_result or "").strip() or None
-            logger.debug(
-                "disc_id: Strategy 1 (GAME tag) found game_id=%r title=%r in %s",
-                game_id,
-                title,
-                chd_path,
-            )
-            out: dict = {"game_id": game_id}
-            if title:
-                out["title"] = title
-            return out
-    logger.debug("disc_id: Strategy 1 (GAME tag) not present in %s", chd_path)
+    There is no app-written GAME/NAME tag to read first: chdman cannot write
+    one into a compressed CHD (#352). Returns a dict containing at least
+    ``game_id`` when successful; it may also include ``title`` and/or
+    ``platform``. Returns None if no ID could be found.
 
-    # --- Strategy 2: read disc sectors directly (like PCSX2 / AetherSX2) ----
+    Every file read is bounded and raced against *cancel_event*
+    (``bounded_disc_read``): storage that does not answer raises
+    ``DiscIdStorageAbandoned`` and a cancel raises ``ReadCancelled``, so the
+    caller never hangs on it and never caches an outcome for a file it did not
+    read.
+    """
+    # --- Strategy 1: read disc sectors directly (like PCSX2 / AetherSX2) ----
     # For DVD CHDs (unit_bytes=2048) this reads SYSTEM.CNF / PARAM.SFO from
     # the CHD's own ISO 9660 filesystem without any extraction pass.
-    _loop = asyncio.get_running_loop()
-    disc_result = await _loop.run_in_executor(None, _extract_from_chd_sectors, chd_path)
+    disc_result = await bounded_disc_read(
+        _extract_from_chd_sectors, chd_path, path=chd_path, cancel_event=cancel_event,
+    )
     if disc_result and disc_result.get("game_id"):
         logger.debug(
-            "disc_id: Strategy 2 (CHD sectors) found game_id=%r in %s",
+            "disc_id: Strategy 1 (CHD sectors) found game_id=%r in %s",
             disc_result["game_id"],
             chd_path,
         )
         return disc_result
-    logger.debug("disc_id: Strategy 2 (CHD sectors) found no game_id in %s", chd_path)
+    logger.debug("disc_id: Strategy 1 (CHD sectors) found no game_id in %s", chd_path)
 
-    # --- Strategy 3: Dreamcast GDRO (IP.BIN) ---------------------------------
+    # --- Strategy 2: Dreamcast GDRO (IP.BIN) ---------------------------------
     gdro = await _dumpmeta_bin(chd_path, "GDRO", chdman_path)
     if gdro:
         parsed = _parse_ipbin(gdro)
         if parsed.get("game_id"):
             logger.debug(
-                "disc_id: Strategy 3 (GDRO/IP.BIN) found game_id=%r in %s",
+                "disc_id: Strategy 2 (GDRO/IP.BIN) found game_id=%r in %s",
                 parsed["game_id"],
                 chd_path,
             )
             return parsed
         logger.debug(
-            "disc_id: Strategy 3 (GDRO/IP.BIN) tag present but no valid game_id in %s",
+            "disc_id: Strategy 2 (GDRO/IP.BIN) tag present but no valid game_id in %s",
             chd_path,
         )
     else:
-        logger.debug("disc_id: Strategy 3 (GDRO) tag not found in %s", chd_path)
+        logger.debug("disc_id: Strategy 2 (GDRO) tag not found in %s", chd_path)
 
-    # --- Strategy 4: companion source file -----------------------------------
-    chd_p = Path(chd_path)
-    for ext in (".iso", ".gdi", ".cue", ".bin"):
-        candidate = chd_p.with_suffix(ext)
-        if candidate.exists():
-            res = await _loop.run_in_executor(None, extract_from_source, str(candidate))
-            if res and res.get("game_id"):
-                logger.debug(
-                    "disc_id: Strategy 4 (companion %s) found game_id=%r in %s",
-                    candidate.name,
-                    res["game_id"],
-                    chd_path,
-                )
-                return res
-    logger.debug("disc_id: Strategy 4 (companion file) found no game_id for %s", chd_path)
+    # --- Strategy 3: companion source file -----------------------------------
+    res = await bounded_disc_read(
+        _companion_disc_id, chd_path, path=chd_path, cancel_event=cancel_event,
+    )
+    if res:
+        return res
+    logger.debug("disc_id: Strategy 3 (companion file) found no game_id for %s", chd_path)
 
     logger.debug("disc_id: all strategies exhausted, no game_id found for %s", chd_path)
     return None
 
 
-async def embed_in_chd(
-    chd_path: str,
-    game_id: str,
-    title: Optional[str] = None,
-    chdman_path: str = "chdman",
-) -> bool:
-    """
-    Embed *game_id* (and optionally *title*) into a CHD file using
-    ``chdman addmeta``.  Returns True on success, False on failure.
-
-    Tags written:
-      GAME, the normalized disc serial (e.g. "SLUS-20312", "ULES-00135",
-             "MK-51034") in the form emulator frontends use for DB lookup
-      NAME, the human-readable game title (optional)
-    """
-    logger.debug(
-        "disc_id: embed_in_chd game_id=%r title=%r in %s",
-        game_id,
-        title,
-        chd_path,
-    )
-    ok = await _addmeta_text(chd_path, TAG_GAME, game_id, chdman_path)
-    if not ok:
-        return False
-    if title:
-        # NAME tag is best-effort; don't fail the whole operation if it errors
-        await _addmeta_text(chd_path, TAG_NAME, title, chdman_path)
-    return True
-
-
-async def read_embedded_game_id(
-    chd_path: str,
-    chdman_path: str = "chdman",
-) -> Optional[str]:
-    """Return the GAME serial already embedded in *chd_path*, or ``None``.
-
-    Reads only our own embedded GAME tag (no disc-sector / GDRO / companion-file
-    fallback, unlike :func:`extract_from_chd`), so callers can cheaply check
-    whether a CHD is *already* tagged before writing. This is what keeps the
-    conversion-time embed idempotent: re-running it on an already-tagged CHD
-    can be skipped instead of appending a duplicate GAME tag.
-    """
-    # `_dumpmeta_text` raises DiscIdStorageAbandoned rather than returning the
-    # None that would read as "untagged" here -- which is what callers answer by
-    # *writing* a tag (issue #268).
-    raw = await _dumpmeta_text(chd_path, TAG_GAME, chdman_path)
-    if raw and raw.strip():
-        return raw.strip()
-    return None
-
-
-async def clear_embedded_disc_id(
-    chd_path: str,
-    chdman_path: str = "chdman",
-) -> None:
-    """Strip embedded GAME/NAME tags so a later :func:`embed_in_chd` converges.
-
-    ``chdman addmeta`` *appends* a new metadata item rather than replacing an
-    existing one, so re-tagging a CHD that already carries a *different* serial
-    would leave the stale GAME/NAME behind (and accumulate duplicates on repeat).
-    Callers that detect a serial mismatch call this first to delete the old pair
-    before writing the new one. Best-effort: a freshly created CHD has nothing
-    to delete (``delmeta`` simply reports the tag absent).
-    """
-    await _delmeta(chd_path, TAG_GAME, chdman_path)
-    await _delmeta(chd_path, TAG_NAME, chdman_path)
-
-
-async def ensure_disc_id_embedded(
-    chd_path: str,
-    chdman_path: str = "chdman",
-) -> Optional[dict]:
-    """
-    Ensure a CHD file has GAME / NAME metadata tags embedded, back-filling
-    existing CHDs that were created before conversion-time tagging was added.
-
-    Algorithm (standards-compliant, all tags follow the 4-char MAME CHD
-    metadata format and are written via ``chdman addmeta``):
-
-      1. Fast-path: read the GAME tag.  If it is already present, return the
-         existing info without touching the file.
-      2. Read disc sectors directly from the CHD via _CHDReader: walks the
-         ISO 9660 filesystem to find SYSTEM.CNF / PARAM.SFO, then embeds
-         GAME / NAME.  Handles both DVD CHDs (2048-byte sectors) and CD CHDs
-         (2352/2448-byte sectors with Mode 1 or Mode 2 Form 1 framing).
-         The serial is normalized to the canonical emulator form (SLUS-20312).
-      3. Try the standard Dreamcast GDRO (IP.BIN) tag that chdman embeds for
-         GDI-sourced CHDs.  Parse product number + title from the IP.BIN
-         binary, then embed GAME / NAME via addmeta.
-      4. Scan for a companion source file (.iso / .gdi / .cue / .bin) next to
-         the CHD, extract the disc serial, then embed GAME / NAME.
-      5. Return None if no identity information can be found.
-
-    The GAME tag always stores the normalized game serial. The NAME (title) tag
-    stores a human-readable game title when one is available (e.g., from PSP
-    PARAM.SFO or Dreamcast IP.BIN), falling back to the serial when no title
-    can be extracted. Emulator frontends and database scrapers key on the serial
-    for game lookup, so this fallback ensures maximum compatibility while
-    preserving real titles when possible.
-
-    Returns a dict with at least ``game_id`` when disc identity information was
-    found, regardless of whether the GAME/NAME tags were successfully embedded
-    into the CHD file.  When embedding fails (e.g. the file is read-only or
-    ``chdman`` is unavailable), the disc ID is still returned so callers can
-    cache it for display; a ``WARNING`` is logged in that case.
-    Returns None only when no disc ID could be found at all.
-    """
-    # --- Fast path: GAME tag already present ---------------------------------
-    # `_dumpmeta_text` raises rather than reporting "no tag", so the strategies
-    # below -- which write a tag, or fall through to a whole-disc sector read on
-    # the default executor with no bound of its own -- are never reached against
-    # storage that has stopped answering (issue #268).
-    existing = await _dumpmeta_text(chd_path, TAG_GAME, chdman_path)
-    if existing and existing.strip():
-        game_id = existing.strip()
-        name_raw = await _dumpmeta_text(chd_path, TAG_NAME, chdman_path)
-        title = (name_raw or "").strip() or None
-        logger.debug(
-            "disc_id: GAME tag already present game_id=%r title=%r in %s",
-            game_id,
-            title,
-            chd_path,
-        )
-        out: dict = {"game_id": game_id}
-        if title:
-            out["title"] = title
-        return out
-
-    # --- Strategy 2: read disc sectors directly (like PCSX2 / AetherSX2) ----
-    _loop = asyncio.get_running_loop()
-    disc_result = await _loop.run_in_executor(None, _extract_from_chd_sectors, chd_path)
-    if disc_result and disc_result.get("game_id"):
-        logger.info(
-            "disc_id: embedding game_id=%r from CHD sectors in %s",
-            disc_result["game_id"],
-            chd_path,
-        )
-        ok = await embed_in_chd(
-            chd_path,
-            disc_result["game_id"],
-            disc_result.get("title") or disc_result["game_id"],
-            chdman_path,
-        )
-        if not ok:
-            logger.warning(
-                "disc_id: failed to embed GAME/NAME tags in %s"
-                ", disc ID will be cached for display only",
-                chd_path,
-            )
-        return disc_result
-    logger.debug(
-        "disc_id: ensure Strategy 2 (CHD sectors) found no game_id in %s", chd_path
-    )
-
-    # --- Strategy 3: standard Dreamcast GDRO tag -----------------------------
-    gdro = await _dumpmeta_bin(chd_path, "GDRO", chdman_path)
-    if gdro:
-        parsed = _parse_ipbin(gdro)
-        if parsed.get("game_id"):
-            logger.info(
-                "disc_id: embedding game_id=%r from GDRO in %s",
-                parsed["game_id"],
-                chd_path,
-            )
-            ok = await embed_in_chd(
-                chd_path,
-                parsed["game_id"],
-                parsed.get("title") or parsed["game_id"],
-                chdman_path,
-            )
-            if not ok:
-                logger.warning(
-                    "disc_id: failed to embed GAME/NAME tags in %s"
-                    ", disc ID will be cached for display only",
-                    chd_path,
-                )
-            return parsed
-        logger.debug(
-            "disc_id: ensure Strategy 3 (GDRO) tag present but no valid game_id in %s",
-            chd_path,
-        )
-    else:
-        logger.debug(
-            "disc_id: ensure Strategy 3 (GDRO) tag not found in %s", chd_path
-        )
-
-    # --- Strategy 4: companion source file -----------------------------------
+def _companion_disc_id(chd_path: str) -> Optional[dict]:
+    """The disc ID of a Source file left beside the CHD (blocking)."""
     chd_p = Path(chd_path)
     for ext in (".iso", ".gdi", ".cue", ".bin"):
         candidate = chd_p.with_suffix(ext)
         if candidate.exists():
-            res = await _loop.run_in_executor(None, extract_from_source, str(candidate))
+            res = extract_from_source(str(candidate))
             if res and res.get("game_id"):
-                logger.info(
-                    "disc_id: embedding game_id=%r from companion %s in %s",
-                    res["game_id"],
-                    candidate.name,
-                    chd_path,
+                logger.debug(
+                    "disc_id: Strategy 3 (companion %s) found game_id=%r in %s",
+                    candidate.name, res["game_id"], chd_path,
                 )
-                ok = await embed_in_chd(
-                    chd_path,
-                    res["game_id"],
-                    res.get("title") or res["game_id"],
-                    chdman_path,
-                )
-                if not ok:
-                    logger.warning(
-                        "disc_id: failed to embed GAME/NAME tags in %s"
-                        ", disc ID will be cached for display only",
-                        chd_path,
-                    )
                 return res
-
-    logger.debug(
-        "disc_id: ensure_disc_id_embedded exhausted all strategies, no game_id found for %s",
-        chd_path,
-    )
     return None
+
+
+async def bounded_disc_read(
+    func, *args, path: str, cancel_event: asyncio.Event | None,
+):
+    """Run a blocking disc-ID read of *path* off the loop, bounded and cancellable.
+
+    The one seam for disc-ID reads: ``extract_from_chd`` (library scan,
+    ``/api/info``) and ``ChdmanTool.post_convert`` both read through it.
+    Through ``run_detached_bounded``: a disposable thread, at most
+    ``_DISC_READ_TIMEOUT_SECONDS``, raced against *cancel_event*. A Volume that
+    answers a cached ``stat`` and then blocks every read holds neither the loop,
+    a shared pool worker, the scan nor its lane. Past the bound (or with the
+    probe ceiling full) the thread is written off as abandoned storage: a
+    warning names the file and ``DiscIdStorageAbandoned`` is raised, so no
+    caller caches "nothing found" for a file it never read, and a scan stops its
+    pass (#268). A cancel raises ``ReadCancelled``.
+    """
+    try:
+        return await run_detached_bounded(
+            func, *args, timeout=_DISC_READ_TIMEOUT_SECONDS, cancel_event=cancel_event,
+        )
+    except (DeadlineExpired, ProbeCapacityExceeded) as exc:
+        logger.warning(
+            "disc_id: reading %s did not answer in %gs; its disc ID is skipped",
+            path, _DISC_READ_TIMEOUT_SECONDS,
+        )
+        raise DiscIdStorageAbandoned(
+            f"reading {os.path.basename(path)} did not answer in "
+            f"{_DISC_READ_TIMEOUT_SECONDS:g}s; the storage is not responding"
+        ) from exc
 
 
 # ===========================================================================
 # Private chdman subprocess helpers
 # ===========================================================================
-
-async def _addmeta_text(
-    chd_path: str, tag: str, value: str, chdman_path: str
-) -> bool:
-    """Write a text metadata tag to *chd_path* using chdman addmeta."""
-    try:
-        logger.debug(
-            "disc_id: addmeta tag=%s value=%r in %s",
-            tag,
-            value,
-            chd_path,
-        )
-        # Bounded like dumpmeta below; addmeta writes one small tag, so the
-        # same 15s ceiling is generous. It previously had no bound at all.
-        with abandonment_checkpoint() as abandoned:
-            returncode, _, stderr = await _chdman_runner().run_capture(
-                _chdman_cmd(chdman_path, "addmeta", "-i", chd_path, "-t", tag, "-vt", value),
-                timeout=_DUMPMETA_TIMEOUT_SECONDS,
-                nice_via_wrapper=True,
-            )
-        # Before the result is reduced to False/None below, which would read as
-        # "tag absent" / "nothing to delete" and invite the next read or write.
-        _abort_if_abandoned(abandoned, "chdman addmeta", chd_path)
-        if returncode != 0:
-            logger.warning(
-                "disc_id: addmeta tag=%s failed (rc=%s): %s",
-                tag,
-                returncode,
-                stderr.decode(errors="replace").strip(),
-            )
-            return False
-        logger.debug("disc_id: addmeta tag=%s written successfully in %s", tag, chd_path)
-        return True
-    except DiscIdStorageAbandoned:
-        raise
-    except Exception as e:
-        logger.warning("disc_id: addmeta tag=%s error: %s", tag, e)
-        return False
-
-
-async def _delmeta(chd_path: str, tag: str, chdman_path: str) -> bool:
-    """Delete a metadata tag from *chd_path* via chdman delmeta (best-effort).
-
-    Returns True on success. A missing tag (nothing to delete) reports a non-zero
-    exit, which is treated as a benign no-op by callers, the point is only to
-    guarantee the tag is absent before a fresh addmeta writes the current value.
-    """
-    try:
-        with abandonment_checkpoint() as abandoned:
-            returncode, _, stderr = await _chdman_runner().run_capture(
-                _chdman_cmd(chdman_path, "delmeta", "-i", chd_path, "-t", tag),
-                timeout=_DUMPMETA_TIMEOUT_SECONDS,
-                nice_via_wrapper=True,
-            )
-        # Before the result is reduced to False/None below, which would read as
-        # "tag absent" / "nothing to delete" and invite the next read or write.
-        _abort_if_abandoned(abandoned, "chdman delmeta", chd_path)
-        if returncode != 0:
-            if logger.isEnabledFor(logging.DEBUG):
-                logger.debug(
-                    "disc_id: delmeta tag=%s not present or failed (rc=%s) in %s: %s",
-                    tag,
-                    returncode,
-                    chd_path,
-                    stderr.decode(errors="replace").strip(),
-                )
-            return False
-        logger.debug("disc_id: delmeta tag=%s removed from %s", tag, chd_path)
-        return True
-    except DiscIdStorageAbandoned:
-        raise
-    except Exception as e:
-        logger.warning("disc_id: delmeta tag=%s error: %s", tag, e)
-        return False
-
-
-async def _dumpmeta_text(
-    chd_path: str, tag: str, chdman_path: str
-) -> Optional[str]:
-    """Read a text metadata tag from *chd_path* via chdman dumpmeta."""
-    raw = await _dumpmeta_raw(chd_path, tag, chdman_path, suffix=".txt")
-    if raw is None:
-        return None
-    return raw.decode("utf-8", errors="replace")
-
 
 async def _dumpmeta_bin(
     chd_path: str, tag: str, chdman_path: str

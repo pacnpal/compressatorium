@@ -1,9 +1,9 @@
-"""Disc-ID tagging of an archived set extracted outside the Volumes (``within``).
+"""The disc ID of an archived set extracted outside the Volumes (``within``).
 
 The job worker extracts an archived .cue/.gdi set into a temp dir it creates,
 which is not a Volume. It passes that root to ``post_convert`` as ``within``,
 the same value its job gate uses, so the extracted tracks are trusted there and
-nowhere else. A track that is refused or unreadable stops tagging with a
+nowhere else. A track that is refused or unreadable records no disc ID, with a
 warning naming the sheet, never silently.
 """
 from __future__ import annotations
@@ -47,17 +47,14 @@ def _env(tmp_path, monkeypatch):
     temp.mkdir(parents=True)
     monkeypatch.setattr(settings, "chd_volumes", str(volume))
 
+    # What post_convert records for the output (#352: the app's database,
+    # not a tag in the CHD).
     embedded: list[tuple] = []
 
-    async def _read_existing(_path, _chdman):
-        return None
-
-    async def _embed(path, game_id, title, _chdman):
+    async def _record(path, game_id, title):
         embedded.append((path, game_id, title))
-        return True
 
-    monkeypatch.setattr(chdman_mod, "read_embedded_game_id", _read_existing)
-    monkeypatch.setattr(chdman_mod, "embed_in_chd", _embed)
+    monkeypatch.setattr(chdman_mod, "_record_disc_id", _record)
     out = volume / "Game.chd"
     out.write_bytes(b"MComprHD")
     return {"volume": volume, "temp": temp, "out": out, "embedded": embedded}

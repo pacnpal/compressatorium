@@ -7,6 +7,8 @@ previous JSON implementation; internals now dispatch to SQLAlchemy.
 
 from __future__ import annotations
 
+import asyncio
+
 from logging_setup import get_logger
 import os
 import re
@@ -19,6 +21,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from services import db as _db
+from services.subprocess_runner import bounded_path_check
 
 logger = get_logger("chd_metadata_store")
 
@@ -184,11 +187,32 @@ class CHDMetadataStore:
             return None, None
         return row.game_id, row.title
 
-    async def is_disc_id_checked(self, chd_path: str) -> bool:
-        normalized = self._normalize_path(chd_path)
+    @classmethod
+    def _path_and_mtime_sync(cls, chd_path: str) -> tuple[str, float | None]:
+        normalized = cls._normalize_path(chd_path)
         try:
-            current_mtime = await run_in_threadpool(os.path.getmtime, normalized)
+            return normalized, os.path.getmtime(normalized)
         except OSError:
+            return normalized, None
+
+    async def _path_and_mtime(self, chd_path: str) -> tuple[str, float | None]:
+        """The normalized path and its mtime (None when unreadable), bounded.
+
+        Through ``bounded_path_check`` (#352): the scan's disc-ID step and
+        ``post_convert`` ask this of files on a Volume that may have stopped
+        answering, so the stat holds neither the loop nor a shared pool worker.
+        Raises ``asyncio.TimeoutError`` when the Volume does not answer.
+        """
+        return await bounded_path_check(self._path_and_mtime_sync, chd_path)
+
+    async def is_disc_id_checked(self, chd_path: str) -> bool:
+        try:
+            _normalized, current_mtime = await self._path_and_mtime(chd_path)
+        except asyncio.TimeoutError:
+            # Not answering: "not checked", so the caller's own bounded read
+            # decides what the storage is doing.
+            return False
+        if current_mtime is None:
             return False
         row = await run_in_threadpool(self._get_sync, chd_path)
         if row is None or not row.disc_id_checked:
@@ -342,12 +366,9 @@ class CHDMetadataStore:
         _ = persist
         return await run_in_threadpool(self._set_metadata_sync, chd_path, info)
 
-    def _mark_disc_id_checked_sync(self, chd_path: str) -> None:
-        normalized = self._normalize_path(chd_path)
-        try:
-            current_mtime: float | None = os.path.getmtime(normalized)
-        except OSError:
-            current_mtime = None
+    def _mark_disc_id_checked_sync(
+        self, normalized: str, current_mtime: float | None,
+    ) -> None:
         with self._session() as session:
             existing = session.get(_db.CHDMetadata, normalized)
             if existing is None:
@@ -362,7 +383,13 @@ class CHDMetadataStore:
             session.commit()
 
     async def mark_disc_id_checked(self, chd_path: str) -> None:
-        await run_in_threadpool(self._mark_disc_id_checked_sync, chd_path)
+        """Mark *chd_path* as disc-ID checked at its current mtime.
+
+        The stat is bounded (``_path_and_mtime``): a Volume that does not
+        answer raises ``asyncio.TimeoutError`` and nothing is marked.
+        """
+        normalized, current_mtime = await self._path_and_mtime(chd_path)
+        await run_in_threadpool(self._mark_disc_id_checked_sync, normalized, current_mtime)
 
     def _update_disc_id_info_sync(
         self, chd_path: str, game_id: Optional[str], title: Optional[str],
