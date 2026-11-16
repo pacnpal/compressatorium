@@ -544,6 +544,67 @@ async def test_a_chd_replaced_with_the_same_mtime_gets_no_stale_key(
     assert await _duplicates(client) == []
 
 
+@pytest.mark.asyncio
+async def test_a_chd_rewritten_within_the_same_second_is_not_fresh(db: Path) -> None:
+    """CodeRabbit 4589859837: the cache's identity is size plus the integer
+    ``st_mtime_ns``, as ``content_keys`` uses, not the float mtime: a same-size
+    rewrite one nanosecond later is another file."""
+    chd = db / "Game.chd"
+    await _seed_chd(chd, data_sha1="1" * 40, sha1="0" * 40)
+    stamp = chd.stat().st_mtime_ns
+    assert await chd_metadata_store.get_fresh_metadata(str(chd)) is not None
+
+    chd.write_bytes(os.urandom(chd.stat().st_size))
+    os.utime(chd, ns=(stamp + 1, stamp + 1))
+    if chd.stat().st_mtime_ns != stamp + 1:
+        pytest.skip("this filesystem does not keep nanosecond mtimes")
+
+    assert await chd_metadata_store.get_fresh_metadata(str(chd)) is None
+
+
+@pytest.mark.asyncio
+async def test_a_chd_row_from_before_the_identity_was_kept_is_stale(db: Path) -> None:
+    from services import db as _db
+
+    chd = db / "Game.chd"
+    await _seed_chd(chd, data_sha1="1" * 40, sha1="0" * 40)
+    with _db.SessionLocal() as session:
+        row = session.get(_db.CHDMetadata, os.path.realpath(chd))
+        row.size = row.mtime_ns = None
+        session.commit()
+
+    assert await chd_metadata_store.get_fresh_metadata(str(chd)) is None
+
+
+@pytest.mark.asyncio
+async def test_a_copy_in_use_keeps_its_group_as_it_was(
+    db: Path, client: httpx.AsyncClient,
+) -> None:
+    """CodeRabbit 4589859830: a copy left out as in use (or changed while the
+    run looked) is not seen, not gone: its stored group stays and is held."""
+    from services.lock_manager import lock_manager
+
+    roms = db / "roms"
+    _disc(roms / "Game.iso", b"game")
+    _copy(roms / "Game.iso", roms / "Copy.iso")
+    library = await _register(client, roms)
+    await _find(client, library)
+    before = await _duplicates(client)
+    assert len(before) == 1
+
+    assert lock_manager.acquire_lock(str(roms / "Copy.iso"), allow_existing=True)
+    try:
+        await _find(client, library)
+    finally:
+        lock_manager.release_lock(str(roms / "Copy.iso"))
+
+    after = await _duplicates(client)
+    assert [r["fingerprint"] for r in after] == [r["fingerprint"] for r in before]
+    run = await _last_run(client, library)
+    assert run["busy"] == 1
+    assert run["held"] == 1
+
+
 # ----------------------------------------------------------------------
 # the tool contract
 # ----------------------------------------------------------------------

@@ -1,9 +1,9 @@
 """add_content_keys
 
 The duplicate finder's content key per file, tied to its size and mtime, and
-each Library's last find-duplicates run (#388), and the file size beside the
-mtime in the CHD metadata cache, so a replacement of another size that kept
-the mtime is not read as the same CHD.
+each Library's last find-duplicates run (#388), and the file's identity (size
+and integer ``st_mtime_ns``) in the CHD metadata cache, so a replacement that
+kept the float mtime is not read as the same CHD.
 
 Revision ID: 0017
 Revises: 0016
@@ -27,10 +27,11 @@ def upgrade() -> None:
     # Tolerate a pre-created table (create_all-then-stamp path), as 0012 does.
     inspector = sa.inspect(op.get_bind())
     existing = set(inspector.get_table_names())
-    if 'chd_metadata' in existing and 'size' not in {
-        c['name'] for c in inspector.get_columns('chd_metadata')
-    }:
-        op.add_column('chd_metadata', sa.Column('size', sa.BigInteger(), nullable=True))
+    if 'chd_metadata' in existing:
+        have = {c['name'] for c in inspector.get_columns('chd_metadata')}
+        for column in ('size', 'mtime_ns'):
+            if column not in have:
+                op.add_column('chd_metadata', sa.Column(column, sa.BigInteger(), nullable=True))
     if 'content_keys' not in existing:
         op.create_table(
             'content_keys',

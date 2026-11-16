@@ -5558,11 +5558,11 @@ that a `createdvd` CHD's data SHA1 equals its ISO's SHA1 (and its overall SHA1
 does not), and that an ISO, its RVZ and its DVD CHD group together.
 
 **CHD metadata freshness.** `chd_metadata_store.get_fresh_metadata` checks the
-file's size as well as its mtime (`chd_metadata.size`, added by 0017), so a
-replacement of another size that kept the mtime never hands back the old
-hashes, for every caller. A row written before the size was recorded is judged
-on its mtime, as before, unless the caller passes `require_size=True`, as
-`ChdmanTool.raw_image_sha1` does: it then reads `chdman info` again.
+file's identity, its size and integer `st_mtime_ns` (`chd_metadata.size` and
+`mtime_ns`, added by 0017), the same identity `content_keys` uses, so a
+replacement that kept the float mtime never hands back the old hashes, for
+every caller. A row written before the identity was recorded is stale: its
+hashes are read again (a scan or `chdman info`).
 
 **Stored per file, tied to its identity.** `content_keys` (migration 0017) holds
 `path`, `size`, `mtime_ns`, `key` (None for a format with no key) and
@@ -5593,7 +5593,8 @@ conversion and never a slot) and runs it as a task; one per Library at a time
 4. groups by key (two or more), re-checks each grouped file's identity and lock,
    and reconciles `duplicate` Findings for the Library. A stored group with a
    copy the run did not see (under an `unlisted` folder, an `unreadable` file,
-   a stat or key read that failed) is held: left out of the observed groups and
+   a stat or key read that failed, a file in use or changed while it looked)
+   is held: left out of the observed groups and
    passed as `keep_under`, so it stays exactly as it was. The write's `current`
    predicate, asked under the store's write lock, is the commit point: it is
    false once the job is cancelled or the Library removed, and a rejected write

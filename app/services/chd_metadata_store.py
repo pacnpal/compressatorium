@@ -246,25 +246,23 @@ class CHDMetadataStore:
             return True
         return current_mtime != row.mtime
 
-    async def get_fresh_metadata(
-        self, chd_path: str, *, require_size: bool = False,
-    ) -> Optional[dict]:
+    async def get_fresh_metadata(self, chd_path: str) -> Optional[dict]:
         """Return cached ``metadata_json`` only if it still describes the file.
 
         Reads the row, then re-stats the file — both inside one threadpool
         call, no ``await`` between — and returns the hashes only when the
-        file's current size and mtime still equal the row's captured ones
-        (#388, Codex 4589796861: a replacement of another size that kept the
-        mtime is a different file). A row written before the size was recorded
-        is judged on its mtime alone, as it always was, unless *require_size*:
-        then it is not fresh (the duplicate finder reads ``chdman info`` again
-        rather than key a file on a size it never saw). The store keeps no
-        inode. The writer
-        (``_set_metadata_sync``) always stats then stores ``(metadata, mtime)``
-        together, so the row's mtime lags the file; reading the row *first* and
-        comparing against a *later* stat means a concurrent rewrite (new file,
-        row not yet re-scanned) shows ``mtime != row.mtime`` and we refuse the
-        stale hashes. Stat-then-read instead would re-use an old mtime that can
+        file's identity still equals the row's: its size and its integer
+        ``st_mtime_ns``, the identity ``content_keys`` uses (#388). A
+        replacement of another size that kept the mtime, or a same-size
+        rewrite within the same second, is a different file; the float
+        ``mtime`` cannot tell the latter apart. A row written before the
+        identity was recorded is stale, so its hashes are read again. The store
+        keeps no inode. The writer
+        (``_set_metadata_sync``) always stats then stores ``(metadata, identity)``
+        together, so the row's identity lags the file; reading the row *first*
+        and comparing against a *later* stat means a concurrent rewrite (new
+        file, row not yet re-scanned) shows a different identity and we refuse
+        the stale hashes. Stat-then-read instead would re-use an old mtime that can
         still match the old row for an already-replaced file. ``get_metadata()``
         + ``is_stale()`` instead read the row twice and stat separately across
         awaits, a TOCTOU where the hashes can reflect one mtime and the verdict
@@ -275,19 +273,15 @@ class CHDMetadataStore:
             normalized = self._normalize_path(chd_path)
             with self._session() as session:
                 row = session.get(_db.CHDMetadata, normalized)
-            if row is None or row.mtime is None:
+            if row is None or row.size is None or row.mtime_ns is None:
                 return None
             # Stat AFTER the row read so a rewrite that lands while we read the
-            # row moves the file's mtime away from the (now older) row mtime.
+            # row moves the file's identity away from the (now older) row's.
             try:
                 st = os.stat(normalized)
             except OSError:
                 return None
-            if st.st_mtime != row.mtime:
-                return None
-            if row.size is None:
-                return None if require_size else row.metadata_json
-            if st.st_size != row.size:
+            if (st.st_size, st.st_mtime_ns) != (row.size, row.mtime_ns):
                 return None
             return row.metadata_json
 
@@ -334,8 +328,9 @@ class CHDMetadataStore:
             st = os.stat(normalized)
             mtime: float | None = st.st_mtime
             size: int | None = st.st_size
+            mtime_ns: int | None = st.st_mtime_ns
         except OSError:
-            mtime = size = None
+            mtime = size = mtime_ns = None
 
         media_type = self.extract_media_type(info)
         now = _utcnow_iso()
@@ -347,6 +342,7 @@ class CHDMetadataStore:
                 media_type=media_type,
                 mtime=mtime,
                 size=size,
+                mtime_ns=mtime_ns,
                 cached_at=now,
                 disc_id_checked=False,
             )
@@ -365,6 +361,7 @@ class CHDMetadataStore:
                     "media_type": stmt.excluded.media_type,
                     "mtime": stmt.excluded.mtime,
                     "size": stmt.excluded.size,
+                    "mtime_ns": stmt.excluded.mtime_ns,
                     "cached_at": stmt.excluded.cached_at,
                 },
             )
@@ -471,8 +468,9 @@ class CHDMetadataStore:
             new_st = os.stat(new_normalized)
             new_mtime: float | None = new_st.st_mtime
             new_size: int | None = new_st.st_size
+            new_mtime_ns: int | None = new_st.st_mtime_ns
         except OSError:
-            new_mtime = new_size = None
+            new_mtime = new_size = new_mtime_ns = None
 
         with self._session() as session:
             old = session.get(_db.CHDMetadata, old_normalized)
@@ -486,6 +484,7 @@ class CHDMetadataStore:
                 "media_type": old.media_type,
                 "mtime": new_mtime,
                 "size": new_size,
+                "mtime_ns": new_mtime_ns,
                 "cached_at": old.cached_at,
                 "disc_id_checked": old.disc_id_checked,
                 "disc_id_checked_mtime": old.disc_id_checked_mtime,

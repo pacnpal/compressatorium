@@ -244,10 +244,12 @@ class CHDMetadata(Base):
     metadata_json = Column("metadata", JSON, nullable=True)
     media_type = Column(String, nullable=True)
     mtime = Column(Float, nullable=True)
-    # The file's size when the metadata was read (#388): with ``mtime``, what
-    # ``get_fresh_metadata`` checks before the hashes are used. None on a row
-    # written before it was recorded.
+    # The file's identity when the metadata was read (#388): its size and
+    # integer ``st_mtime_ns``, what ``get_fresh_metadata`` checks before the
+    # hashes are used (the identity ``content_keys`` uses). None on a row
+    # written before they were recorded, which is then stale.
     size = Column(BigInteger, nullable=True)
+    mtime_ns = Column(BigInteger, nullable=True)
     cached_at = Column(String, nullable=True)
     disc_id_checked = Column(Boolean, nullable=False, default=False)
     disc_id_checked_mtime = Column(Float, nullable=True)

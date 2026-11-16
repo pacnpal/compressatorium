@@ -17,7 +17,8 @@ as a conversion (``ConversionMode.FIND_DUPLICATES`` is an external mode). It:
    one ``duplicate`` Finding, reconciled against the Library's earlier groups
    so a group that went away is cleared. A stored group with a copy the run
    could not see (in a folder the listing could not open, a file it could not
-   read) is kept exactly as it was: not seen is not gone;
+   read, a file in use or changed while it looked) is kept exactly as it was:
+   not seen is not gone;
 5. stores what it saw (how many it keyed and read, the formats it could not
    check) for the Findings view.
 
@@ -181,7 +182,7 @@ async def _find(library: Library, job_id: str, current: Callable[[], bool]) -> d
     # output being written is never grouped. Read on the loop (no disk).
     active = [path for _id, paths in job_manager.get_active_job_candidates() for path in paths]
     try:
-        candidates, busy, unstatted = await run_detached_within_stall_bound(
+        candidates, in_use, unstatted = await run_detached_within_stall_bound(
             _inspect, listed, active, what=f"looking at {library.name}",
             cancel_event=cancel_event, stall=content_keys.STALL_SECONDS,
             report_progress=True,
@@ -240,13 +241,16 @@ async def _find(library: Library, job_id: str, current: Callable[[], bool]) -> d
         raise _Stopped("Cancelled: no Findings were written") from None
     except (OSError, Stalled, ProgressAbandoned) as exc:
         raise LibraryUnreadable(f"the Library's files did not answer: {exc}") from exc
-    busy += len(changed)
+    in_use = [*in_use, *changed]
     groups = {
         key: kept for key, members in groups.items()
         if len(kept := [c for c in members if c.path not in changed]) >= 2
     }
-    # A stored group with a copy the run did not see stays exactly as it was.
-    held = await run_in_threadpool(_held, library.id, unseen, listing.unlisted)
+    # A stored group with a copy the run did not see stays exactly as it was:
+    # one it could not read or list, and one in use or changed while it looked.
+    held = await run_in_threadpool(
+        _held, library.id, {*unseen, *in_use}, listing.unlisted,
+    )
     observed = [
         finding_for(key, members) for key, members in sorted(groups.items())
         if key not in held
@@ -282,7 +286,7 @@ async def _find(library: Library, job_id: str, current: Callable[[], bool]) -> d
         "unreadable": len(unseen),
         "unlisted": len(listing.unlisted),
         "held": len(held),
-        "busy": busy,
+        "busy": len(in_use),
         "findings": counts,
     }
     await run_in_threadpool(_save_run, library.id, summary, current)
@@ -323,9 +327,9 @@ async def _list(
 
 def _inspect(
     listed: list[tuple[str, str]], active: list[str], *, progress: Callable[..., None],
-) -> tuple[list[Candidate], int, list[str]]:
-    """The Images the run may group, how many are in use, and the ones it
-    could not stat. Blocking.
+) -> tuple[list[Candidate], list[str], list[str]]:
+    """The Images the run may group, the ones in use, and the ones it could
+    not stat. Blocking.
 
     A file outside the Volumes, gone, or not a regular file is left out; one a
     job is using or writing (a lock on it, or an active job's path) is in use.
@@ -335,14 +339,14 @@ def _inspect(
         progress()
         in_use.add(os.path.realpath(path))
     out: list[Candidate] = []
-    busy = 0
+    busy: list[str] = []
     unstatted: list[str] = []
     for image_key, path in listed:
         progress(path)
         if not is_within_configured_volumes(path) or not os.path.isfile(path):
             continue
         if os.path.realpath(path) in in_use or lock_manager.is_locked(path):
-            busy += 1
+            busy.append(path)
             continue
         try:
             identity = content_keys.identity_of(path)
