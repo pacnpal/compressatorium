@@ -22,12 +22,11 @@
   const codecs = $derived(registry.codecsForMode(spec?.mode));
   const style = $derived(tool?.compressionStyle ?? 'none');
   const selection = $derived(conversion.compressionSelection);
+  // The slider and the number box read this one value and range; the store
+  // reconciles it on every mode or codec change, so they never disagree.
   const level = $derived(conversion.compressionLevel);
   // The selected codec's own range (Dolphin's lzma2 takes 1-9, zstd 1-22).
-  const levelRange = $derived(
-    registry.levelRangeFor(spec?.mode, conversion.singleCodec)
-      ?? tool?.compressionLevelRange ?? DEFAULT_COMPRESSION_LEVEL_RANGE,
-  );
+  const levelRange = $derived(conversion.levelRange ?? DEFAULT_COMPRESSION_LEVEL_RANGE);
   const supports = $derived(
     !!(spec?.supportsCompression || spec?.supportsCompressionLevel),
   );

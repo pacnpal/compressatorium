@@ -5502,6 +5502,35 @@ offer or send a codec or level the mode refuses: the level control follows the
 selected codec, and switching codec resets a level the new codec does not take
 to its default. `test_frontend_parity_186` fails on drift.
 
+The convert panel keeps one level. `ConversionStore.#reconcileLevel` runs after
+every mode, codec or saved-preference change, in that order: the codec is
+`singleCodec` (the mode's default when the mode refuses the selected one), and
+the level is kept when that codec takes it, else it becomes the codec's default
+(`fitLevel`). A typed level is pulled into the range (`clampLevel`; a blank box
+mid-edit is kept and sent as the default). The slider and the number box both
+read `compressionLevel` and `ConversionStore.levelRange`, so they never
+disagree. `fitLevel` and `clampLevel` live in `src/lib/tools/levels.js`, with no
+imports, and the Rule editor uses the same two for its codec and level fields.
+
+#### Block size (`ModeSpec.block_size`, `block_size_rule`)
+
+dolphin-tool refuses GCZ, RVZ and WIA without `-b` ("Block size must be set for
+GCZ/RVZ/WIA", `DolphinTool/ConvertCommand.cpp`). **`ModeSpec.block_size`** is
+the block size a mode writes (None: the mode takes none), and
+**`ModeSpec.block_size_rule`** is the rule one must meet, as
+`(minimum, multiple_from)`: at least `minimum`, a power of two below
+`multiple_from` (everywhere when it is None), and a multiple of `multiple_from`
+from there up. `base.block_size_problem(spec, size)` checks it. The Dolphin
+plugin fills both from `CONTAINER_BLOCK_SIZES`, which encodes
+`DiscIO/DiscUtils.cpp` `IsDiscImageBlockSizeValid` (GCZ a power of two; WIA at
+least 2 MiB and a multiple of it; RVZ at least 32 KiB, a power of two below
+2 MiB, a multiple of 2 MiB above) and Dolphin's convert-dialog defaults (128 KiB
+for GCZ and RVZ, 2 MiB for WIA). `DolphinTool.convert` passes the mode's block
+size to the service, which adds `-b`, so every job, chain step and CLI run
+(all through `run_convert`) gets it. No API, CLI or UI field takes a block size
+today, so there is no explicit value to refuse; a future one would be checked
+with `block_size_problem`.
+
 **`ToolPlugin.default_compression: str | None`** names the codec to use in both
 cases, so the resolution stays a per-tool declaration instead of an if-ladder on
 tool identity at the call site. **`ToolPlugin.compression_for(mode,

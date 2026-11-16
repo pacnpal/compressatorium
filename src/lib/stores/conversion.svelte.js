@@ -5,6 +5,7 @@
 import { toast } from 'svelte-sonner';
 import { api } from '$lib/api/endpoints.js';
 import { registry, DEFAULT_COMPRESSION_LEVEL_RANGE } from '$lib/tools/registry.js';
+import { clampLevel, fitLevel } from '$lib/tools/levels.js';
 import {
   STORAGE_KEYS, readBool, readString, writeBool, writeString,
 } from '$lib/util/localStorage.js';
@@ -158,6 +159,19 @@ class ConversionStore {
       return registry.defaultCompressionForMode(this.mode)?.[0] ?? 'none';
     }
     return codec;
+  }
+
+  /**
+   * The level range `{min, max, default}` of the codec this mode sends, or
+   * null when the mode takes no level or the codec is 'none'. The picker's
+   * slider and number box both read it, with `compressionLevel`.
+   */
+  get levelRange() {
+    if (!this.supportsCompressionLevel) return null;
+    const codec = this.singleCodec;
+    if (!codec || codec === 'none') return null;
+    return registry.levelRangeFor(this.mode, codec)
+      ?? this.currentTool?.compressionLevelRange ?? DEFAULT_COMPRESSION_LEVEL_RANGE;
   }
 
   get supportsCompression() {
@@ -323,13 +337,7 @@ class ConversionStore {
       // [min, max] so out-of-range edits also stay safe.
       // The codec's own range (lzma2 takes 1-9, zstd 1-22). A level it does
       // not take is sent as the codec's default, never as itself.
-      const range = registry.levelRangeFor(this.mode, codec)
-        ?? this.currentTool?.compressionLevelRange ?? DEFAULT_COMPRESSION_LEVEL_RANGE;
-      const parsed = Number.parseInt(this.compressionLevel, 10);
-      const safeLevel = Number.isFinite(parsed) && parsed >= range.min && parsed <= range.max
-        ? parsed
-        : (range.default ?? range.min);
-      return `${codec}:${safeLevel}`;
+      return `${codec}:${fitLevel(this.levelRange, this.compressionLevel)}`;
     }
     if (selection.length === 0) return null;
     return selection.join(',');
@@ -371,6 +379,13 @@ class ConversionStore {
 
   /** Apply a saved compression string for `toolId`, else the tool default. */
   #applyCompressionPref(toolId) {
+    this.#seedCompressionPref(toolId);
+    // A saved level the codec no longer takes (lzma2:19, from before the
+    // per-codec ranges) is brought into range like any other change.
+    this.#reconcileLevel();
+  }
+
+  #seedCompressionPref(toolId) {
     const value = this.#compressionPrefs[toolId];
     const tool = registry.forTool(toolId);
     const isLevel = (tool?.compressionStyle ?? 'none') === 'single-with-level';
@@ -540,6 +555,21 @@ class ConversionStore {
     if (!this.supportsRoundTrip) this.containerOnly = false;
     // Likewise clear the split flag when leaving a mode that offers it.
     if (!this.supportsSplit) this.split = false;
+    this.#reconcileLevel();
+  }
+
+  /**
+   * The one reconcile step for a codec+level mode, run after every mode,
+   * codec or saved-preference change, in order: the mode is set; the codec
+   * is `singleCodec`, which falls back to the mode's default when the mode
+   * refuses the selected one (zstd on WIA); the level is kept when that codec
+   * takes it, else it becomes the codec's default (`fitLevel`). The slider
+   * and the number box both read `compressionLevel`, so they always agree and
+   * the form never holds a level the backend refuses.
+   */
+  #reconcileLevel() {
+    const range = this.levelRange;
+    if (range) this.compressionLevel = String(fitLevel(range, this.compressionLevel));
   }
 
   setCompression(list) {
@@ -548,7 +578,11 @@ class ConversionStore {
   }
 
   setCompressionLevel(level) {
-    this.compressionLevel = String(level);
+    // A typed level is pulled into the codec's range (19 on lzma2 is 9); a
+    // blank box mid-edit is kept as typed and sent as the default.
+    const range = this.levelRange;
+    const clamped = range ? clampLevel(range, level) : null;
+    this.compressionLevel = String(clamped ?? level);
     this.#persistCompression();
   }
 
@@ -595,11 +629,7 @@ class ConversionStore {
     this.compressionSelection = codec ? [codec] : [];
     // A level the new codec does not take (zstd 19, then lzma2 at 1-9) is
     // reset to that codec's own default level.
-    const range = codec ? registry.levelRangeFor(this.mode, codec) : null;
-    const level = Number.parseInt(this.compressionLevel, 10);
-    if (range && !(level >= range.min && level <= range.max)) {
-      this.compressionLevel = String(range.default ?? range.min);
-    }
+    this.#reconcileLevel();
     this.#persistCompression();
   }
 
