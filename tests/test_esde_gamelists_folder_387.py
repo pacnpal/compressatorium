@@ -17,6 +17,7 @@ import pytest
 from services import db as _db
 from services import referrers
 from services.referrers.gamelist import GamelistReferrer
+from services.rules.library import LibraryDefaults
 
 from app.models import (
     ConversionMode,
@@ -35,8 +36,9 @@ from .test_referrers_m3u import _volume as _m3u_volume
 _FIXTURES = (_m3u_volume,)
 
 
-class _Library:
-    """The parts of a Library the hook asks: is the Referrer on, and its options."""
+class _Library(LibraryDefaults):
+    """A folder-like Library: the Referrer on, its options, and the contract's
+    own Platform folder rule (the first folder under the root)."""
 
     id = "folder:test"
     name = "Test"
@@ -264,10 +266,84 @@ def test_the_registry_binds_the_referrer_to_the_librarys_folder(vol):
     ]
     assert isinstance(bound, GamelistReferrer)
     assert bound.gamelists_folder == str(vol / "gamelists")
-    assert bound.rom_directory == str(vol / "ROMs")
     # The registered one is untouched: another Library gets its own binding.
     [plain] = [r for r in referrers.registry.all() if r.id == "gamelist"]
     assert plain.gamelists_folder is None
+
+
+# ---- the Platform folder comes from the Library ---------------------------
+
+
+@pytest.mark.asyncio
+async def test_an_image_in_no_platform_folder_keeps_the_source(vol):
+    """Fail closed: with the ES-DE folder on, an Image whose Platform folder
+    can't be told (directly in the ROM directory) is never "nothing to do"."""
+    source = _file(vol / "ROMs" / "Game.iso")
+    data = b"<gameList><game><path>./Game.iso</path></game></gameList>"
+    gamelist = _file(vol / "gamelists" / "ROMs" / "gamelist.xml", data)
+
+    outcome = await _replace(source, vol / "ROMs" / "Game.chd", _esde(vol, vol / "gamelists"))
+
+    assert not outcome.ok
+    assert "Platform folder" in outcome.reason
+    assert gamelist.read_bytes() == data and source.is_file()
+
+
+@pytest.fixture(name="romm_root")
+def _romm_root(vol, monkeypatch):
+    """RomM's library root at vol/romm, with its gamelist settings on."""
+    from services.romm import client as romm_client_module
+    from services.romm import settings as romm_settings
+
+    root = vol / "romm"
+    root.mkdir()
+    monkeypatch.setattr(
+        type(romm_client_module.romm_client), "library_root",
+        property(lambda _self: str(root)),
+    )
+    effective = romm_settings.effective()
+    monkeypatch.setattr(romm_settings, "effective", lambda: {
+        **effective, "es_frontend": True, "gamelists_folder": str(vol / "gamelists"),
+    })
+    return root
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("layout, image, entry", [
+    # RomM's standard layout: <root>/roms/<platform>/...
+    ("roms/ps2", "roms/ps2/Game.iso", b"./Game.iso"),
+    # The other: <root>/<platform>/roms/...
+    ("ps2/roms", "ps2/roms/Game.iso", b"./roms/Game.iso"),
+])
+async def test_a_romm_library_in_either_layout_updates_its_platforms_gamelist(
+    vol, romm_root, layout, image, entry,
+):
+    from services.romm.library import romm_library
+
+    source = _file(romm_root / image)
+    data = b"<gameList><game><path>" + entry + b"</path></game></gameList>"
+    gamelist = _file(vol / "gamelists" / "ps2" / "gamelist.xml", data)
+
+    outcome = await _replace(source, source.with_suffix(".chd"), romm_library)
+
+    assert outcome.ok, outcome.reason
+    assert gamelist.read_bytes() == data.replace(b"Game.iso", b"Game.chd")
+
+
+@pytest.mark.asyncio
+async def test_a_romm_image_in_no_platform_folder_keeps_the_source(vol, romm_root):
+    from services.romm.library import romm_library
+
+    (romm_root / "roms" / "ps2").mkdir(parents=True)
+    source = _file(romm_root / "roms" / "Game.iso")
+    data = b"<gameList><game><path>./Game.iso</path></game></gameList>"
+    gamelist = _file(vol / "gamelists" / "roms" / "gamelist.xml", data)
+
+    outcome = await _replace(source, source.with_suffix(".chd"), romm_library)
+
+    assert not outcome.ok
+    assert "Platform folder" in outcome.reason
+    assert gamelist.read_bytes() == data and source.is_file()
 
 
 # ---- the setting ------------------------------------------------------------

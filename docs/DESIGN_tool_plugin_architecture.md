@@ -3914,19 +3914,28 @@ Knulli, muOS) key each game's artwork, favourite flag and play count on its
   (`ROMM_GAMELISTS_FOLDER`). The registry binds each active Referrer to the
   Image's Library through `Referrer.for_library(library)` (default: the
   Referrer itself; a failure keeps the Source); the gamelist Referrer returns
-  a copy carrying the folder and the Library root, which is ES-DE's ROM
-  directory. *The system-folder rule* (`_systems`): ES-DE's systems are the
-  folders directly under the ROM directory, so a replaced file's system is
-  the one folder directly under the root that holds it, whatever lies deeper:
-  `ROMs/ps2/psx/Game.iso` is `ps2`, and the `psx` system's gamelist is never
-  read. Only `<gamelists folder>/<system>/gamelist.xml` is read, with
-  `<root>/<system>` as the entries' base, so `ROMs/ps2/Game.iso` reaches
-  `gamelists/ps2/gamelist.xml` and its `./Game.iso`, and
-  `ROMs/ps2/ps2/Game.iso` its `./ps2/Game.iso`. The system's name is the
-  folder's name as listed under the root (`os.scandir`), never a resolved
-  one, so a symlinked `ROMs/ps2 -> actual/PlayStation2` is still `ps2`; which
-  system folder holds a file is decided on resolved paths, like identity. A
-  root that can't be listed, or a Library with no root, keeps the Source.
+  a copy carrying the folder and the Library. *The system-folder rule*
+  (`_systems`): a replaced file's ES-DE system is its Platform folder, which
+  the Library gives for its own layout through `Library.platform_folder(path)`
+  (on the contract; blocking, called on the hook's thread). `LibraryDefaults`
+  (folder Libraries) answers the folder directly under the root;
+  `RommLibrary` answers the folder directly under `<root>/roms` when the root
+  holds one (RomM's standard layout, the same directory-level test
+  `RommClient.local_path` makes), else directly under the root (which covers
+  `<root>/<platform>/roms/...`). Both go through
+  `rules.library.folder_holding(parent, path)`: the folder listed in
+  `parent` (`os.scandir`) whose resolved path holds the resolved file, the
+  deepest when several do, returned as listed. So `ROMs/ps2/psx/Game.iso` is
+  `ps2` and the `psx` system's gamelist is never read. Only
+  `<gamelists folder>/<system>/gamelist.xml` is read, with the Platform
+  folder as the entries' base: `ROMs/ps2/Game.iso` reaches
+  `gamelists/ps2/gamelist.xml` and its `./Game.iso`, `ROMs/ps2/ps2/Game.iso`
+  its `./ps2/Game.iso`, RomM's `ps2/roms/Game.iso` its `./roms/Game.iso`. The
+  system's name is the Platform folder's name as listed, never a resolved
+  one, so a symlinked `ROMs/ps2 -> actual/PlayStation2` is still `ps2`. Fail
+  closed: a file no Platform folder holds (it sits directly in the root), or
+  whose folder can't be listed, raises `ReferrerError` and keeps the Source;
+  it is never "no gamelist, nothing to do".
   The subfolder is the ROM folder's own name, not a mapping of the Platform
   slug: ES-DE's system names are its ROM folder names, and the slug table's
   canonical ids differ from them (`ngc` for ES-DE's `gc`). Each gamelist is

@@ -16,6 +16,7 @@ network or a mount. The engine calls them off the event loop.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable, Hashable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -46,6 +47,30 @@ HIDDEN_STAGING = "hidden_staging"
 ES_FRONTEND_REFERRER = "gamelist"
 # Its option naming the ES-DE gamelists folder (#387), in referrer_options.
 GAMELISTS_FOLDER = "gamelists_folder"
+
+
+def folder_holding(parent: str, path: str) -> str | None:
+    """The folder directly in *parent* that holds the file at *path*, spelled
+    as *parent* lists it, or None when none does (#387).
+
+    Which folder holds it is decided on resolved paths, so a symlinked folder
+    (``ps2 -> actual/PlayStation2``) holds what its target holds; its name is
+    the one listed. When several do (folders nested through symlinks), the
+    one that resolves deepest is the nearest. Blocking; raises OSError when
+    *parent* can't be listed.
+    """
+    real = os.path.realpath(path)
+    best: tuple[int, str] | None = None
+    with os.scandir(parent) as listing:
+        for entry in listing:
+            if not entry.is_dir():
+                continue
+            target = os.path.realpath(entry.path)
+            if real.startswith(target.rstrip(os.sep) + os.sep):
+                depth = target.count(os.sep)
+                if best is None or depth > best[0]:
+                    best = (depth, entry.path)
+    return best[1] if best else None
 
 
 def duplicate_actions(library: Library) -> tuple[str, ...]:
@@ -298,6 +323,15 @@ class Library(Protocol):
         gamelists folder is set. In memory, never blocks.
         """
 
+    def platform_folder(self, path: str) -> str | None:
+        """The Platform folder holding the file at *path*, or None (#387).
+
+        Spelled as listed under the Library (a symlinked folder keeps its own
+        name), so its name is the Platform's name a frontend knows. None when
+        no Platform folder holds *path* (it sits directly in the root, or
+        outside it). Blocking (lists a folder, resolves paths): off the loop.
+        """
+
     def summary_fields(self) -> Mapping[str, Any]:
         """Extra keys every per-Platform summary starts with (and the result too)."""
 
@@ -330,6 +364,12 @@ class LibraryDefaults:
     def referrer_options(self, referrer_id: str) -> Mapping[str, Any]:
         """No Referrer settings (#387)."""
         return {}
+
+    def platform_folder(self, path: str) -> str | None:
+        """The folder directly under the root that holds *path* (#387), as a
+        folder Library's Platform folders are laid out."""
+        root = getattr(self, "root", None)
+        return folder_holding(root, path) if root else None
 
     def all_images(self) -> ImageListing:
         """Every Platform's Images, one Platform after another (#388).

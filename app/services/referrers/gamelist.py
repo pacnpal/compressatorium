@@ -42,11 +42,12 @@ of its own, one subfolder per system named after the system's ROM folder
 (``ROMs/ps2`` -> ``gamelists/ps2/gamelist.xml``), its entries relative to that
 ROM folder. When the Image's Library names that folder
 (``library.referrer_options("gamelist")["gamelists_folder"]``, bound through
-``for_library``, with the Library root as ES-DE's ROM directory), the system
-of a replaced file is the folder directly under the root that holds it, named
-as listed under the root (a symlinked system folder keeps its name), and only
+``for_library``), the system of a replaced file is its Platform folder, which
+the Library gives for its own layout (``Library.platform_folder``), named as
+listed (a symlinked Platform folder keeps its name). Only
 ``<gamelists>/<system>/gamelist.xml`` is read, its entries resolved against
-``<root>/<system>``. The folder must be confirmed inside the Volumes when
+that Platform folder; a file whose Platform folder can't be told keeps the
+Source. The folder must be confirmed inside the Volumes when
 planning, or the Source is kept.
 
 Writes go through ``files.rewrite_in_place``: re-read under the in-process
@@ -357,72 +358,68 @@ class GamelistReferrer(Referrer):
     opt_in = True
     phase = Phase.FILE
 
-    def __init__(
-        self, gamelists_folder: str | None = None, rom_directory: str | None = None,
-    ) -> None:
-        # The Library's ES-DE gamelists folder (#387), or None, and its ROM
-        # directory (the Library root). Set only on a copy bound by
-        # `for_library`; the registered Referrer has neither.
+    def __init__(self, gamelists_folder: str | None = None, library=None) -> None:
+        # The Library's ES-DE gamelists folder (#387), or None, and the
+        # Library itself, which says where each file's Platform folder is.
+        # Set only on a copy bound by `for_library`; the registered Referrer
+        # has neither.
         self.gamelists_folder = gamelists_folder or None
-        self.rom_directory = rom_directory or None
+        self.library = library
 
     def for_library(self, library) -> GamelistReferrer:
-        """A copy bound to *library*'s ES-DE gamelists folder and root, if it
-        has a folder."""
+        """A copy bound to *library* and its ES-DE gamelists folder, if it has one."""
         if library is None:
             return self
         folder = library.referrer_options(self.id).get(GAMELISTS_FOLDER)
-        return GamelistReferrer(folder, library.root) if folder else self
+        return GamelistReferrer(folder, library) if folder else self
 
     def _check_folder(self) -> None:
         """Fail closed when the gamelists folder isn't confirmed inside the
-        Volumes (they changed after it was set, or a probe failed), or the
-        Library has no root to find ES-DE's systems under."""
-        if not self.gamelists_folder:
-            return
-        if volume_containment(self.gamelists_folder, treat_archives=False) is not True:
+        Volumes (they changed after it was set, or a probe failed)."""
+        if self.gamelists_folder and volume_containment(
+            self.gamelists_folder, treat_archives=False,
+        ) is not True:
             raise ReferrerError(
                 self.gamelists_folder,
                 "the gamelists folder isn't confirmed inside the configured Volumes",
             )
-        if not self.rom_directory:
+
+    def _platform_folder(self, path: str) -> str:
+        """The Platform folder holding *path*, from the Library
+        (``Library.platform_folder``). Fail closed: one that can't be told
+        keeps the Source, never "no gamelist, nothing to do"."""
+        try:
+            folder = self.library.platform_folder(path)
+        except OSError as exc:
             raise ReferrerError(
-                self.gamelists_folder,
-                "the Library has no root folder, so ES-DE's system can't be told",
+                path, f"can't tell its Platform folder ({exc.strerror or exc})",
+            ) from exc
+        if not folder:
+            raise ReferrerError(
+                path, "no Platform folder holds it, so its ES-DE gamelist can't be told",
             )
+        return folder
 
     def _systems(self, renames: Mapping[str, str]) -> list[tuple[str, str]]:
         """``(gamelist, base)`` for each ES-DE system holding a replaced file.
 
-        ES-DE's systems are the folders directly under its ROM directory (the
-        Library root): ``ROMs/ps2/psx/Game.iso`` belongs to ``ps2`` alone, so
-        only ``<gamelists>/ps2/gamelist.xml`` is read, its entries resolved
-        against ``ROMs/ps2`` (Codex PRRT_kwDOQ9nULM64JsQa). The system's name is
-        the folder's name as listed under the root, never a resolved one, so
-        a symlinked ``ROMs/ps2 -> actual/PlayStation2`` is still ``ps2``
-        (Codex PRRT_kwDOQ9nULM64JsQn); which system holds a file is decided on
-        resolved paths, as identity is. A file reached through two system
-        folders is looked up in both, each against its own folder.
+        ES-DE's system for a file is its Platform folder, which the Library
+        knows for its own layout (``Library.platform_folder``): the folder
+        directly under a folder Library's root, ``<root>/roms/<platform>`` or
+        ``<root>/<platform>`` for RomM. So ``ROMs/ps2/psx/Game.iso`` belongs to
+        ``ps2`` alone: only ``<gamelists>/ps2/gamelist.xml`` is read, its
+        entries resolved against ``ROMs/ps2`` (Codex PRRT_kwDOQ9nULM64JsQa).
+        The system's name is the Platform folder's name as listed, never a
+        resolved one, so a symlinked ``ROMs/ps2 -> actual/PlayStation2`` is
+        still ``ps2`` (Codex PRRT_kwDOQ9nULM64JsQn).
         """
-        root = self.rom_directory
-        try:
-            with os.scandir(root) as listing:
-                systems = [
-                    (entry.name, entry.path, os.path.realpath(entry.path))
-                    for entry in listing if entry.is_dir()
-                ]
-        except OSError as exc:
-            raise ReferrerError(
-                root, f"can't list the ROM directory for ES-DE's systems ({exc.strerror})",
-            ) from exc
         found: list[tuple[str, str]] = []
         for old in renames:
-            real = os.path.realpath(old)
-            for name, base, real_base in systems:
-                if real.startswith(real_base.rstrip(os.sep) + os.sep):
-                    for gamelist in _gamelists(os.path.join(self.gamelists_folder, name)):
-                        if (gamelist, base) not in found:
-                            found.append((gamelist, base))
+            base = self._platform_folder(old)
+            name = os.path.basename(base.rstrip(os.sep))
+            for gamelist in _gamelists(os.path.join(self.gamelists_folder, name)):
+                if (gamelist, base) not in found:
+                    found.append((gamelist, base))
         return found
 
     def detect(self, image_path: str) -> bool:
