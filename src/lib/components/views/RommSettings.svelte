@@ -32,6 +32,10 @@
   let repinEnabled = $state(true);
   let repinOnLoad = $state(true);
   let repinAbandonDays = $state(7);
+  let swapKeepRomId = $state(false);
+  // Why the last attempt to turn the switch on was refused, kept on screen
+  // (a toast is gone before anyone has read two permission names).
+  let swapRefusal = $state('');
   let loaded = $state(false);
 
   $effect(() => {
@@ -41,6 +45,7 @@
       repinEnabled = s.repin_enabled !== false;
       repinOnLoad = s.repin_on_load !== false;
       repinAbandonDays = s.repin_abandon_days ?? 7;
+      swapKeepRomId = s.swap_keep_rom_id === true;
       loaded = true;
     }
   });
@@ -101,6 +106,21 @@
   const handleSave = () => save(patch(), 'RomM settings saved');
   const handleSaveMetadata = () =>
     save(metadataPatch(), 'Metadata settings saved');
+
+  // "Keep the ROM id when converting" (#390). Turning it on makes the backend
+  // check the token; a refusal names the missing permissions.
+  const swap = $derived(romm.status?.swap);
+  async function handleSaveSwap() {
+    swapRefusal = '';
+    try {
+      await romm.saveSettings({ swap_keep_rom_id: swapKeepRomId });
+      toast.success(swapKeepRomId ? 'Keeping ROM ids is on' : 'Keeping ROM ids is off');
+      await romm.loadStatus();
+    } catch (e) {
+      swapKeepRomId = s?.swap_keep_rom_id === true;
+      swapRefusal = e?.message ?? 'Failed to save settings';
+    }
+  }
 
   // RomM's own converter (#385), when it is switched on. A warning and an
   // offer, never a block: nothing here stops either converter.
@@ -332,6 +352,45 @@
     <div class="actions">
       <Button
         onclick={handleSaveMetadata}
+        loading={romm.settingsSaving}
+        disabled={!loaded}
+        icon={saveIcon}
+      >
+        Save
+      </Button>
+    </div>
+  </section>
+
+  <section class="card">
+    <header>
+      <h2>Keep the ROM id</h2>
+      <p>
+        When a conversion replaces a file, rename RomM's record to the new file
+        instead of letting RomM add a new game, so the saves, states, notes and
+        collections on it stay put. Off by default. This switch only stores the
+        choice and checks the token; the swap that uses it comes separately.
+      </p>
+    </header>
+    <Checkbox
+      bind:checked={swapKeepRomId}
+      label="Keep the ROM id when converting"
+    />
+    <span class="hint">
+      Needs a token with <code>roms.read</code>, <code>roms.write</code> and
+      <code>tasks.run</code>. RomM only gives <code>roms.write</code> and
+      <code>tasks.run</code> to a token created by an <strong>admin user</strong>
+      (or a user in a group that can write ROMs and run tasks), so create the
+      token under <strong>Administration → Client API Tokens</strong> as one.
+      Turning this on checks the token with RomM first.
+    </span>
+    {#if swapRefusal}
+      <p class="error" role="alert">{swapRefusal}</p>
+    {:else if swap?.keepRomId && swap.error}
+      <p class="error" role="alert">{swap.error}</p>
+    {/if}
+    <div class="actions">
+      <Button
+        onclick={handleSaveSwap}
         loading={romm.settingsSaving}
         disabled={!loaded}
         icon={saveIcon}

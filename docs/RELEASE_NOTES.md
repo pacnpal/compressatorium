@@ -4,6 +4,19 @@
 
 ### Added
 
+- **A "Keep the ROM id" switch for RomM** (#390). A new card on the RomM
+  Settings tab holds a switch, off by default, that says a conversion should
+  keep RomM's ROM id (and the saves, notes and collections on it) rather than
+  let RomM add a new game. The conversion that uses it comes separately; for
+  now the switch is only stored. It needs a token that can read and write ROMs
+  and run tasks (`roms.read`, `roms.write`, `tasks.run`), and RomM only gives
+  the last two to a token created by an admin user, so the card says so. RomM
+  can't list a token's permissions, so turning the switch on asks it three
+  harmless questions first. If the token lacks one, the switch stays off and
+  the message names each missing permission. If RomM can't be asked (down, or
+  it rejects the token) the switch also stays off. With the switch on, the
+  RomM status shows any permission the token has since lost.
+
 - **Find duplicates in a Library** (#388). A **Find duplicates** button in the
   Rules view looks for the same disc stored twice in a folder Library, even in
   different containers: an ISO, the RVZ made from it and a DVD CHD are grouped
