@@ -512,12 +512,25 @@ def update(
 
 async def remove(library_id: str) -> bool:
     """Forget a folder Library, its Rules and its run state. Touches no files."""
-    from services.rules import sweep as rules_sweep
+    from services import library_records
 
     record_id = _record_id(library_id)
     library = _loaded().get(record_id) if record_id is not None else None
     if library is None:
         return False
+    # Marked before the generation moves: a find-duplicates run that starts
+    # from here on is refused, so nothing is written after its records go.
+    library_records.begin_removal(library_id)
+    try:
+        await _remove(library, library_id, record_id)
+    finally:
+        library_records.end_removal(library_id)
+    return True
+
+
+async def _remove(library: FolderLibrary, library_id: str, record_id: int) -> None:
+    from services.rules import sweep as rules_sweep
+
     await rules_sweep.forget_library(library)
 
     def _delete() -> None:
@@ -535,7 +548,6 @@ async def remove(library_id: str) -> bool:
                 _cache.pop(record_id, None)
 
     await run_in_threadpool(_delete)
-    return True
 
 
 def describe(library: Library) -> dict[str, Any]:

@@ -532,7 +532,7 @@ async def test_a_chd_replaced_with_the_same_mtime_gets_no_stale_key(
 
     other = "9" * 40
 
-    async def info(path):
+    async def info(path, *, cancel_event=None):
         return {
             "sha1": "8" * 40, "data_sha1": other,
             "raw_data": f"Data SHA1: {other}\nMetadata: Tag='DVD '  Index=0\n",
@@ -598,7 +598,7 @@ async def test_an_upgraded_chd_row_is_stale_until_the_scan_refreshes_it(
 
     calls: list[str] = []
 
-    async def info(path):
+    async def info(path, *, cancel_event=None):
         calls.append(path)
         return {
             "sha1": "0" * 40, "data_sha1": "1" * 40,
@@ -651,6 +651,112 @@ async def test_a_copy_in_use_keeps_its_group_as_it_was(
     run = await _last_run(client, library)
     assert run["busy"] == 1
     assert run["held"] == 1
+
+
+@pytest.mark.asyncio
+async def test_a_copy_whose_stat_fails_keeps_its_group(
+    db: Path, client: httpx.AsyncClient, monkeypatch,
+) -> None:
+    """CodeRabbit 4590616916: only a file confirmed missing drops a copy. One
+    whose stat fails some other way (a stale handle, an I/O error) is unseen,
+    and its group is kept as it was."""
+    import errno
+
+    roms = db / "roms"
+    _disc(roms / "Game.iso", b"game")
+    _copy(roms / "Game.iso", roms / "Copy.iso")
+    library = await _register(client, roms)
+    await _find(client, library)
+    before = await _duplicates(client)
+
+    real_stat = os.stat
+    broken = str(roms / "Copy.iso")
+
+    def stat(path, *args, **kwargs):
+        if os.fspath(path) == broken and threading.current_thread().daemon:
+            raise OSError(errno.EIO, "I/O error", broken)
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "stat", stat)
+    await _find(client, library)
+    monkeypatch.setattr(os, "stat", real_stat)
+
+    after = await _duplicates(client)
+    assert [r["fingerprint"] for r in after] == [r["fingerprint"] for r in before]
+    run = await _last_run(client, library)
+    assert run["held"] == 1
+    assert run["unreadable"] == 1
+
+
+@pytest.mark.asyncio
+async def test_a_chd_swapped_while_chdman_info_reads_it_stores_nothing(db: Path) -> None:
+    """CodeRabbit 4590616908: the metadata is stored with the identity taken
+    before ``chdman info`` read the file, and only if the file is still that
+    one afterwards: a swap during the read stores nothing."""
+    chd = db / "Game.chd"
+    chd.write_bytes(b"MComprHD" + os.urandom(64))
+
+    async def read():
+        info = {"sha1": "0" * 40, "data_sha1": "1" * 40,
+                "raw_data": "Metadata: Tag='DVD '  Index=0\n"}
+        chd.write_bytes(b"MComprHD" + os.urandom(300))   # another disc lands
+        return info
+
+    info, record = await chd_metadata_store.read_and_cache(str(chd), read)
+
+    assert info["data_sha1"] == "1" * 40
+    assert record is None
+    assert await chd_metadata_store.get_fresh_metadata(str(chd)) is None
+
+    async def steady():
+        return {"sha1": "0" * 40, "data_sha1": "2" * 40, "raw_data": ""}
+
+    _info, record = await chd_metadata_store.read_and_cache(str(chd), steady)
+    assert record is not None
+    assert (await chd_metadata_store.get_fresh_metadata(str(chd)))["data_sha1"] == "2" * 40
+
+
+@pytest.mark.asyncio
+async def test_a_run_started_while_its_library_is_removed_is_refused(
+    db: Path, client: httpx.AsyncClient, monkeypatch,
+) -> None:
+    """CodeRabbit 4590616934: once a Library's removal has begun, a
+    find-duplicates run of it is refused, so nothing is written after its
+    records are forgotten."""
+    from services import library_records
+
+    roms = db / "roms"
+    _disc(roms / "Game.iso", b"game")
+    _copy(roms / "Game.iso", roms / "Copy.iso")
+    library = await _register(client, roms)
+    paused = threading.Event()
+    go_on = threading.Event()
+    real_forget = library_records.forget
+
+    def forget(library_id):
+        paused.set()
+        go_on.wait(10)
+        real_forget(library_id)
+
+    monkeypatch.setattr(library_records, "forget", forget)
+    removal = asyncio.ensure_future(client.delete(f"/api/libraries/{library}"))
+    try:
+        for _ in range(500):
+            if paused.is_set():
+                break
+            await asyncio.sleep(0.01)
+        assert paused.is_set()
+        started = await client.post(f"/api/libraries/{library}/find-duplicates")
+    finally:
+        go_on.set()
+    assert (await removal).status_code == 200
+    assert started.status_code == 409, started.text
+    from services import duplicates
+
+    await duplicates.drain()
+    listed = (await client.get("/api/findings")).json()
+    assert [r for r in listed["findings"] if r["library_id"] == library] == []
+    assert listed["duplicate_runs"] == []
 
 
 # ----------------------------------------------------------------------
@@ -724,6 +830,106 @@ async def test_a_romm_path_that_blocks_ends_the_run_at_the_bound(
         release.set()
     assert job["status"] == "failed", job
     assert "did not answer" in (job.get("error_message") or "")
+
+
+@pytest.mark.asyncio
+async def test_a_job_whose_paths_are_on_a_stuck_mount_never_holds_the_loop(
+    db: Path, client: httpx.AsyncClient, monkeypatch,
+) -> None:
+    """Codex 4590506676: an active job's candidate paths (a sheet's tracks)
+    are read off the loop and bounded, in the job manager, so a mount that
+    stops answering never freezes the app when a run starts."""
+    from services import content_keys
+    from services.job_manager import job_manager
+
+    roms = db / "roms"
+    _disc(roms / "Game.iso", b"game")
+    library = await _register(client, roms)
+    release = threading.Event()
+
+    def stuck(_file_path):
+        release.wait(5)
+        return []
+
+    monkeypatch.setattr(job_manager, "_track_candidate_paths", stuck)
+    monkeypatch.setattr(content_keys, "STALL_SECONDS", 0.5)
+    try:
+        job_id = await _start(client, library)
+        started = time.monotonic()
+        await asyncio.sleep(0.2)
+        assert (await client.get(f"/api/jobs/{job_id}")).status_code == 200
+        assert time.monotonic() - started < 2, "the event loop was held"
+        job = await _finished(client, job_id, seconds=4)
+    finally:
+        release.set()
+    assert job["status"] == "failed", job
+
+
+@pytest.mark.asyncio
+async def test_cancel_ends_a_run_stuck_in_chdman_info(
+    db: Path, client: httpx.AsyncClient, monkeypatch,
+) -> None:
+    """Codex 4590506687: the run's cancel reaches ``chdman info``'s child, so
+    Cancel does not wait out the info timeout."""
+    from services.chdman import chdman_service
+
+    roms = db / "roms"
+    (roms / "Game.chd").parent.mkdir(parents=True, exist_ok=True)
+    (roms / "Game.chd").write_bytes(b"MComprHD" + os.urandom(64))
+    seen: list[object] = []
+
+    async def run_capture(cmd, *, timeout=None, cancel_event=None, **_kwargs):
+        seen.append(cancel_event)
+        if cancel_event is None:
+            await asyncio.sleep(timeout or 60)   # what chdman info's bound waits out
+            return None, b"", b""
+        await cancel_event.wait()
+        return None, b"", b""
+
+    monkeypatch.setattr(chdman_service._runner, "run_capture", run_capture)
+    library = await _register(client, roms)
+    job_id = await _start(client, library)
+    for _ in range(300):
+        if seen:
+            break
+        await asyncio.sleep(0.01)
+    assert seen, "chdman info never started"
+    assert (await client.delete(f"/api/jobs/{job_id}")).json() == {"status": "cancelled"}
+    assert (await _finished(client, job_id, seconds=2))["status"] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_cancel_ends_a_run_waiting_for_the_match_lane(
+    db: Path, client: httpx.AsyncClient, monkeypatch,
+) -> None:
+    """Codex 4590523785: a Dolphin hash waits for the ``match`` lane. Cancel
+    ends the run at once and leaves no wait behind on the lane."""
+    from services.workload_limiter import workload_limiter
+
+    roms = db / "roms"
+    (roms / "Game.rvz").parent.mkdir(parents=True, exist_ok=True)
+    (roms / "Game.rvz").write_bytes(b"RVZ\x01" + os.urandom(128))
+    _dolphin_answers(monkeypatch, {"Game.rvz": "a" * 40})
+    held = [
+        await workload_limiter.acquire("match")
+        for _ in range(workload_limiter.limit("match"))
+    ]
+    semaphore = workload_limiter._semaphores["match"]
+    try:
+        library = await _register(client, roms)
+        job_id = await _start(client, library)
+        for _ in range(300):
+            if semaphore._waiters:
+                break
+            await asyncio.sleep(0.01)
+        assert semaphore._waiters, "the hash never waited for the lane"
+        assert (await client.delete(f"/api/jobs/{job_id}")).json() == {"status": "cancelled"}
+        assert (await _finished(client, job_id, seconds=2))["status"] == "cancelled"
+        assert not semaphore._waiters
+    finally:
+        for token in held:
+            token.release()
+    assert workload_limiter.in_use("match") == 0
 
 
 @pytest.mark.asyncio

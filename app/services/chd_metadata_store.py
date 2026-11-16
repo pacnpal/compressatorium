@@ -12,6 +12,7 @@ import asyncio
 from logging_setup import get_logger
 import os
 import re
+from collections.abc import Awaitable, Callable
 from typing import Dict, List, Optional
 
 from fastapi.concurrency import run_in_threadpool
@@ -333,7 +334,9 @@ class CHDMetadataStore:
     # Writes
     # ------------------------------------------------------------------
 
-    def _set_metadata_sync(self, chd_path: str, info: dict) -> dict:
+    def _set_metadata_sync(
+        self, chd_path: str, info: dict, before: os.stat_result | None = None,
+    ) -> dict | None:
         normalized = self._normalize_path(chd_path)
         # One stat for both: the identity the hashes are tied to.
         try:
@@ -342,7 +345,17 @@ class CHDMetadataStore:
             size: int | None = st.st_size
             mtime_ns: int | None = st.st_mtime_ns
         except OSError:
+            st = None
             mtime = size = mtime_ns = None
+        if before is not None:
+            # The identity taken before *info* was read is the one stored, and
+            # only if the file is still that one: a swap during the read would
+            # otherwise tie one disc's hashes to another file (#388).
+            if st is None or (st.st_size, st.st_mtime_ns) != (
+                before.st_size, before.st_mtime_ns,
+            ):
+                return None
+            mtime, size, mtime_ns = before.st_mtime, before.st_size, before.st_mtime_ns
 
         media_type = self.extract_media_type(info)
         now = _utcnow_iso()
@@ -397,15 +410,43 @@ class CHDMetadataStore:
                 "title": row.title,
             }
 
-    async def set_metadata(self, chd_path: str, info: dict, persist: bool = True) -> dict:
+    async def read_and_cache(
+        self, chd_path: str, read: Callable[[], Awaitable[dict]],
+    ) -> tuple[dict, dict | None]:
+        """Read a CHD's metadata with *read* (``chdman info``) and cache it,
+        bound to the file it was read from (#388).
+
+        The file is stat'ed before the read and again before the write; the
+        metadata is stored with that first identity, and only when the file is
+        still the same one. Returns ``(info, record)``; *record* is None when
+        the file changed during the read (nothing stored, the info is still
+        returned for the caller to show).
+        """
+        normalized = self._normalize_path(chd_path)
+        try:
+            before = await run_in_threadpool(os.stat, normalized)
+        except OSError:
+            before = None
+        info = await read()
+        # A file that could not be stat'ed before the read is cached as it
+        # always was; its row then carries no identity, which reads as stale.
+        record = await self.set_metadata(chd_path, info, persist=False, before=before)
+        return info, record
+
+    async def set_metadata(
+        self, chd_path: str, info: dict, persist: bool = True,
+        *, before: os.stat_result | None = None,
+    ) -> dict | None:
         """Cache metadata for a CHD file.
 
         ``persist`` is kept for interface parity; SQLite always commits
         per call so the flag is effectively a no-op (the old JSON code
-        used it to batch writes).
+        used it to batch writes). *before* is the file's stat taken before
+        *info* was read (:meth:`read_and_cache`): the row gets that identity,
+        and nothing is stored (None) if the file is no longer that one.
         """
         _ = persist
-        return await run_in_threadpool(self._set_metadata_sync, chd_path, info)
+        return await run_in_threadpool(self._set_metadata_sync, chd_path, info, before)
 
     def _mark_disc_id_checked_sync(
         self, normalized: str, current_mtime: float | None,

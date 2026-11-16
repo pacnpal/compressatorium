@@ -437,10 +437,15 @@ class ChdmanTool(BaseTool):
         metadata = await chd_metadata_store.get_fresh_metadata(path)
         if not metadata:
             try:
-                metadata = await self._service.info(path)
+                metadata, stored = await chd_metadata_store.read_and_cache(
+                    path, lambda: self._service.info(path, cancel_event=cancel_event),
+                )
             except Exception as e:  # chdman failed, timed out, or left a child behind
+                if isinstance(e, ReadCancelled):
+                    raise  # a cancel is no failure of the file: the caller ends
                 raise EmbeddedHashUnavailable(f"chdman info failed: {e}") from e
-            await chd_metadata_store.set_metadata(path, metadata)
+            if stored is None:
+                raise EmbeddedHashUnavailable(f"{Path(path).name} changed while it was read")
         if not _holds_image(metadata):
             return None
         return await super().raw_image_sha1(path, cancel_event=cancel_event)
@@ -497,7 +502,7 @@ class ChdmanTool(BaseTool):
         not computed in place). Never the overall SHA1: it folds in metadata.
         """
         try:
-            info = await self._service.info(path)
+            info = await self._service.info(path, cancel_event=cancel_event)
         except Exception as e:  # chdman failed, timed out, or left a child behind
             raise ContentDigestUnavailable(f"chdman info failed: {e}") from e
         holds_image = _holds_image(info)

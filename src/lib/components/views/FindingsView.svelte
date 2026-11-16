@@ -16,7 +16,7 @@
    */
   import { untrack } from 'svelte';
   import { toast } from 'svelte-sonner';
-  import { findings } from '$lib/stores/findings.svelte.js';
+  import { findings, findingName } from '$lib/stores/findings.svelte.js';
   import { fileBrowser } from '$lib/stores/fileBrowser.svelte.js';
   import { libraries } from '$lib/stores/libraries.svelte.js';
   import { jobs } from '$lib/stores/jobs.svelte.js';
@@ -138,7 +138,7 @@
   async function dismiss(row) {
     try {
       await findings.dismiss(row.id);
-      toast.success(`Dismissed until its cause changes: ${row.image_key}`);
+      toast.success(`Dismissed until its cause changes: ${findingName(row)}`);
     } catch (e) {
       toast.error(e?.message ?? 'Could not dismiss the Finding');
       findings.load();
@@ -243,7 +243,7 @@
           <span role="cell" class="actions">
             <Button
               variant="ghost" size="sm" icon={openIcon}
-              ariaLabel={`Open the folder of ${row.image_key}`}
+              ariaLabel={`Open the folder of ${findingName(row)}`}
               onclick={() => fileBrowser.openFolder(row.folder)}
             >
               Open folder
@@ -254,7 +254,7 @@
             {#if row.kind !== 'not_intact' && row.kind !== 'source_kept' && row.kind !== 'duplicate'}
               <Button
                 variant="ghost" size="sm" icon={mapIcon}
-                ariaLabel={`Set the Platform of the folder holding ${row.image_key}`}
+                ariaLabel={`Set the Platform of the folder holding ${findingName(row)}`}
                 onclick={() => findings.openMapping(row.folder)}
               >
                 Set Platform
@@ -263,7 +263,7 @@
             {#if row.dismissed}
               <Button
                 variant="ghost" size="sm" icon={showIcon}
-                ariaLabel={`Show ${row.image_key} again`}
+                ariaLabel={`Show ${findingName(row)} again`}
                 onclick={() => undismiss(row)}
               >
                 Show again
@@ -271,7 +271,7 @@
             {:else}
               <Button
                 variant="ghost" size="sm" icon={dismissIcon}
-                ariaLabel={`Dismiss ${row.image_key}`}
+                ariaLabel={`Dismiss ${findingName(row)}`}
                 onclick={() => dismiss(row)}
               >
                 Dismiss

@@ -42,11 +42,11 @@ def scan_env(tmp_path, monkeypatch):
     disc_id_checked_paths: set[str] = set()
     marked_paths: list[str] = []
 
-    async def fake_info(path):
+    async def fake_info(path, *, cancel_event=None):
         calls.append(path)
         return {"raw_data": "Tag: CD-ROM"}
 
-    async def fake_set_metadata(path, info, persist=False):
+    async def fake_set_metadata(path, info, persist=False, *, before=None):
         return {"media_type": "cd"}
 
     async def fake_flush_async():
@@ -171,7 +171,7 @@ async def test_scan_metadata_cancellation_flips_to_cancelled(tmp_path, monkeypat
         return job
     monkeypatch.setattr(info_routes.job_manager, "create_external_job", capture_create)
 
-    async def fake_info(path):
+    async def fake_info(path, *, cancel_event=None):
         processed_paths.append(path)
         # After the first file's metadata is extracted, request cancel.
         # The next iteration's top-of-loop check trips ExternalJobCancelled.
@@ -179,7 +179,7 @@ async def test_scan_metadata_cancellation_flips_to_cancelled(tmp_path, monkeypat
             await job_manager.cancel_job(scan_job_ids[0])
         return {"raw_data": "Tag: CD-ROM"}
 
-    async def fake_set_metadata(path, info, persist=False):
+    async def fake_set_metadata(path, info, persist=False, *, before=None):
         return {"media_type": "cd"}
 
     async def fake_flush_async():
@@ -278,11 +278,11 @@ async def test_scan_discovers_non_chd_and_keeps_phases_chd_only(tmp_path, monkey
 
     info_calls: list[str] = []
 
-    async def fake_info(path):
+    async def fake_info(path, *, cancel_event=None):
         info_calls.append(path)
         return {"raw_data": "Tag: CD-ROM"}
 
-    async def fake_set_metadata(path, info, persist=False):
+    async def fake_set_metadata(path, info, persist=False, *, before=None):
         return {"media_type": "cd"}
 
     async def fake_flush_async():

@@ -312,7 +312,7 @@ async def test_scan_phase1_aborts_the_scan(tmp_path, monkeypatch):
 
     calls = []
 
-    async def fake_info(path):
+    async def fake_info(path, *, cancel_event=None):
         calls.append(path)
         _note()
         return {"raw_data": ""}

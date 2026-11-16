@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import stat
 import threading
 from collections import Counter
 from collections.abc import Callable, Iterable
@@ -73,6 +74,10 @@ _tasks: set[asyncio.Task] = set()
 _write_lock = threading.Lock()
 
 
+class LibraryRemoving(Exception):
+    """The Library's removal has begun: no run of it may start."""
+
+
 class AlreadyRunning(Exception):
     """This Library's find-duplicates run is still running."""
 
@@ -104,16 +109,24 @@ def start(library: Library) -> Any:
 
     Raises :class:`AlreadyRunning` while its previous run is still running.
     """
+    from services import library_records
     from services.rules.sweep import library_generation
 
     if library.id in _running:
         raise AlreadyRunning(_running[library.id])
+    # Captured under the lock a removal marks the Library with, and refused
+    # once that has begun or this Library object is out of date (#388).
+    is_current = getattr(library, "is_current", None)
+    generation = library_records.capture_unless_removing(
+        library.id, lambda: library_generation(library.id),
+    )
+    if generation is None or (is_current is not None and not is_current()):
+        raise LibraryRemoving(f"{library.name} is being removed")
     job = job_manager.create_external_job(
         f"Find duplicates in {library.name}", ConversionMode.FIND_DUPLICATES,
         message="Listing the Library",
     )
     _running[library.id] = job.id
-    generation = library_generation(library.id)
     task = asyncio.get_running_loop().create_task(_run(library, job.id, generation))
     _tasks.add(task)
     task.add_done_callback(_tasks.discard)
@@ -182,9 +195,15 @@ async def _find(library: Library, job_id: str, current: Callable[[], bool]) -> d
         job_id, progress=0, message=f"Looking at {len(listed)} Images",
     )
     # What a job is reading or writing right now, as the queue knows it: an
-    # output being written is never grouped. Read on the loop (no disk).
-    active = [path for _id, paths in job_manager.get_active_job_candidates() for path in paths]
+    # output being written is never grouped. The jobs are snapshot on the loop
+    # and their paths (a sheet's tracks) resolved off it, bounded.
     try:
+        active = [
+            path for _id, paths in await job_manager.active_job_candidates(
+                cancel_event=cancel_event, stall=content_keys.STALL_SECONDS,
+            )
+            for path in paths
+        ]
         candidates, in_use, unstatted = await run_detached_within_stall_bound(
             _inspect, listed, active, what=f"looking at {library.name}",
             cancel_event=cancel_event, stall=content_keys.STALL_SECONDS,
@@ -354,16 +373,23 @@ def _inspect(
             continue
         image_key = str(image.key)
         progress(path)
-        if not is_within_configured_volumes(path) or not os.path.isfile(path):
+        if not is_within_configured_volumes(path):
+            continue
+        # Only a file confirmed missing drops a copy. Any other stat failure (a
+        # stale handle, an I/O error) is not seen, which keeps its group.
+        try:
+            st = os.stat(path)
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+        except OSError:
+            unstatted.append(path)
+            continue
+        if not stat.S_ISREG(st.st_mode):
             continue
         if os.path.realpath(path) in in_use or lock_manager.is_locked(path):
             busy.append(path)
             continue
-        try:
-            identity = content_keys.identity_of(path)
-        except OSError:
-            unstatted.append(path)
-            continue
+        identity = Identity(size=int(st.st_size), mtime_ns=int(st.st_mtime_ns))
         out.append(Candidate(
             image_key=image_key, path=path, identity=identity,
             container=content_keys.container_of(path),

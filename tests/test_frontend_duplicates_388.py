@@ -59,6 +59,31 @@ process.stdout.write(JSON.stringify({ first, same, fresh, cleared, loads: loads(
     assert "findings.noteFinishedRuns(" in view
 
 
+def test_a_duplicate_group_is_named_by_its_first_copy(tmp_path):
+    """CodeRabbit review 5926373207: labels and toasts name a group by a file
+    and a count, never by its ``raw:<sha1>`` key."""
+    data = _run(tmp_path, """
+const group = (n) => ({
+  kind: 'duplicate', image_key: 'raw:' + 'a'.repeat(40),
+  cause: { copies: Array.from({ length: n }, (_, i) => ({
+    path: i ? `/v/b/Copy ${i}.rvz` : '/v/a/Game.iso' })) },
+});
+process.stdout.write(JSON.stringify({
+  three: findingName(group(3)),
+  two: findingName(group(2)),
+  other: findingName({ kind: 'unsorted', image_key: 'ps2/Ico.iso' }),
+}));
+""")
+    assert data == {
+        "three": "Game.iso and 2 other copies",
+        "two": "Game.iso and 1 other copy",
+        "other": "ps2/Ico.iso",
+    }, data
+    view = _VIEW.read_text(encoding="utf-8")
+    assert "${row.image_key}" not in view
+    assert "findingName(row)" in view
+
+
 def test_the_findings_view_shows_each_copy_and_what_was_not_checked() -> None:
     view = _VIEW.read_text(encoding="utf-8")
     assert "duplicate: 'Duplicate'" in view

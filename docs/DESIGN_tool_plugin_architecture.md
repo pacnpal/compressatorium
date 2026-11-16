@@ -5613,6 +5613,21 @@ Every Image's path is read in the detached, stall-bounded inspection step,
 never on the loop: RomM resolves `Image.path` lazily on its mount, so a mount
 that stops answering ends that step at the bound, or on Cancel.
 
+The active jobs' paths come from `job_manager.active_job_candidates()`: the
+jobs are snapshot on the loop (in memory) and their filesystem-dependent
+candidate paths (a sheet's tracks) resolved in one detached, stall-bounded
+step. `get_active_job_candidates()` is the blocking form, for callers already
+off the loop (the sweep's and RomM's bounded probes, the delete route's
+threadpool step).
+
+Cancel reaches every wait. Each tool call the key builder makes
+(`verify_timeout`, `raw_image_sha1`) is raced against the run's cancel event
+through `subprocess_runner.until_cancelled`, which cancels the pending call and
+gives it `CANCEL_SETTLE_SECONDS` to unwind. `workload_limiter.acquire(lane,
+cancel_event=...)` ends a lane wait on a cancel and leaves nothing queued, and
+`ChdmanService.info(..., cancel_event=...)` forwards it to `run_capture` so the
+child stops.
+
 A cancel, or the Library's removal (`library_generation` moved), ends the run
 with no Findings written. `findings.clear_gone(library, DUPLICATE)` settles a
 group once fewer than two copies are left; the folder walk calls it with

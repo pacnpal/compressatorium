@@ -301,7 +301,7 @@ class DolphinTool(BaseTool):
         # bounds how many full-disc reconstructions run at once, even across a
         # metadata scan and concurrent /dat/match requests.
         try:
-            async with await workload_limiter.acquire("match"):
+            async with await workload_limiter.acquire("match", cancel_event=cancel_event):
                 hashes = await self._service.disc_hashes(
                     path, cancel_event=cancel_event,
                 )

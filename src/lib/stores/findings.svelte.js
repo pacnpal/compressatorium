@@ -9,6 +9,20 @@
 
 import { api } from '$lib/api/endpoints.js';
 
+/**
+ * What labels and toasts call a Finding. A duplicate group (#388) is named
+ * by its first copy's file name and how many others there are ("Game.iso
+ * and 2 other copies"), never by its `raw:<sha1>` key; any other Finding by
+ * its Image key.
+ */
+export function findingName(row) {
+  if (row?.kind !== 'duplicate') return row?.image_key ?? '';
+  const copies = row.cause?.copies ?? [];
+  const first = copies[0]?.path?.split(/[/\\]/).filter(Boolean).pop() ?? 'A duplicate group';
+  const others = Math.max(0, copies.length - 1);
+  return `${first} and ${others} other ${others === 1 ? 'copy' : 'copies'}`;
+}
+
 class FindingsStore {
   list = $state([]);
   // How many Findings a dismiss is hiding right now.

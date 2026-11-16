@@ -535,10 +535,16 @@ async def scan_metadata_task(
             # stuck process per remaining file (issue #268).
             with collect_abandonment() as abandoned:
                 try:
-                    info = await chdman_service.info(path)
-                    record = await chd_metadata_store.set_metadata(
-                        path, info, persist=False,
+                    cancel = job_manager.get_cancel_event(scan_job_id)
+                    info, record = await chd_metadata_store.read_and_cache(
+                        path,
+                        lambda path=path, cancel=cancel: chdman_service.info(
+                            path, cancel_event=cancel,
+                        ),
                     )
+                    # Changed while it was read: nothing cached, the next
+                    # scan reads it again.
+                    record = record or {}
                     count += 1
                     logger.info(
                         "Phase 1 [%d/%d]: Metadata cached for %s",
@@ -857,8 +863,12 @@ async def get_chd_info(path: str = Query(..., description="Path to CHD file")):
             media_type = cached_media_type  # pylint: disable=possibly-used-before-assignment
         else:
             # Run chdman info and cache the result (non-blocking persist)
-            info = await chdman_service.info(path)
-            record = await chd_metadata_store.set_metadata(path, info, persist=False)
+            info, record = await chd_metadata_store.read_and_cache(
+                path, lambda: chdman_service.info(path),
+            )
+            if record is None:
+                # Changed while it was read: shown, not cached.
+                record = {"media_type": chd_metadata_store.extract_media_type(info)}
 
             # Schedule async flush in background with error handling
             async def safe_flush():

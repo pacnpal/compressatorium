@@ -184,6 +184,14 @@ async def find_duplicates(library_id: str) -> dict:
     library = _library(library_id)
     try:
         job = duplicates.start(library)
+    except duplicates.LibraryRemoving:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "library_being_removed",
+                "message": "This Library is being removed",
+            },
+        ) from None
     except duplicates.AlreadyRunning as exc:
         raise HTTPException(
             status_code=409,

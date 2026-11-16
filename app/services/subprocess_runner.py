@@ -38,7 +38,7 @@ import os
 import shutil
 import threading
 import time
-from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
 
 from config import settings
 from logging_setup import get_logger
@@ -654,6 +654,49 @@ class ReadCancelled(Exception):
     pipeline) so a verify can translate it into its own terminal
     ``{"cancelled": True}`` event rather than letting it read as a failure.
     """
+
+
+# How long a cancelled awaitable gets to unwind (stop its child, leave a lane
+# queue) before :func:`until_cancelled` stops waiting for it.
+CANCEL_SETTLE_SECONDS = 5.0
+
+
+async def until_cancelled(
+    awaitable: Awaitable,
+    cancel_event: asyncio.Event | None,
+    *,
+    settle: float = CANCEL_SETTLE_SECONDS,
+    discard: Callable[[object], None] | None = None,
+) -> object:
+    """Await *awaitable*, or raise :class:`ReadCancelled` as soon as
+    *cancel_event* fires (#388).
+
+    For a call that does not watch the event all the way down (a lane wait, a
+    tool's hash under its own bound): the caller's Cancel ends the wait now,
+    not when the call's own timeout runs out. On a cancel the pending task is
+    cancelled and awaited for at most *settle* seconds, so whatever it holds
+    (a lane, a child) is let go before this returns. A result that arrived
+    anyway as the cancel won is handed to *discard* (a lane token to give
+    back). With no event, this is a plain await.
+    """
+    task = asyncio.ensure_future(awaitable)
+    if cancel_event is None:
+        return await task
+    waiter = asyncio.ensure_future(cancel_event.wait())
+    try:
+        await asyncio.wait({task, waiter}, return_when=asyncio.FIRST_COMPLETED)
+        if task.done():
+            return task.result()
+        task.cancel()
+        await asyncio.wait({task}, timeout=max(0.0, settle))
+        if task.done() and not task.cancelled() and task.exception() is None:
+            if discard is not None:
+                discard(task.result())
+        raise ReadCancelled("Cancelled while waiting")
+    finally:
+        waiter.cancel()
+        if not task.done():
+            task.cancel()
 
 
 async def bounded_path_check(func: Callable, *args: object, **kwargs: object) -> object:

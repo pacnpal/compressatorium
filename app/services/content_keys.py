@@ -42,6 +42,7 @@ from services.subprocess_runner import (
     ReadCancelled,
     Stalled,
     run_detached_within_stall_bound,
+    until_cancelled,
 )
 from services.tools import registry
 from services.tools.base import EmbeddedHashUnavailable
@@ -204,9 +205,17 @@ async def build(path: str, *, cancel_event: asyncio.Event | None = None) -> str 
     if tool is None:
         return None
     try:
-        bound = await tool.verify_timeout(path, cancel_event=cancel_event)
-        sha1 = await asyncio.wait_for(
-            tool.raw_image_sha1(path, cancel_event=cancel_event), timeout=bound or None,
+        # Each tool call raced against the run's Cancel (`until_cancelled`): a
+        # tool that waits for a lane, or a child under its own long bound,
+        # ends when the run is cancelled, not when its timeout runs out.
+        bound = await until_cancelled(
+            tool.verify_timeout(path, cancel_event=cancel_event), cancel_event,
+        )
+        sha1 = await until_cancelled(
+            asyncio.wait_for(
+                tool.raw_image_sha1(path, cancel_event=cancel_event), timeout=bound or None,
+            ),
+            cancel_event,
         )
     # A cancel (`ReadCancelled`) is none of these, so it propagates as is.
     except (EmbeddedHashUnavailable, OSError, RuntimeError, asyncio.TimeoutError) as exc:
