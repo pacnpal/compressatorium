@@ -635,8 +635,6 @@ def test_entrypoint_and_wrapper_diagnostics_go_to_stderr():
         for number, line in enumerate(body.splitlines(), 1):
             code = line.split("#", 1)[0]
             if re.search(r"(^|[;&|]\s*|\s)(echo|printf)\s", code) and ">&2" not in code:
-                if re.search(r'echo "\$mount_opts" \|', code):
-                    continue  # piped into grep, not printed
                 raise AssertionError(f"{name}:{number} prints to stdout: {line.strip()}")
 
 
