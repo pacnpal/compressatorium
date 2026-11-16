@@ -16,20 +16,14 @@ from __future__ import annotations
 import io
 import asyncio
 import struct
-import zlib
 from unittest.mock import patch
 
 import pytest
 
 from app.services.disc_id import (
     _BinSectorStream,
-    _CHDReader,
-    _CHDSectorStream,
-    _MAX_CHD_HUNK_BYTES,
-    _RAW_SECTOR_HEADER_SIZE_MODE2,
     _dumpmeta_raw,
     _extract_cue,
-    _extract_from_chd_sectors,
     _extract_gdi,
     _extract_iso,
     _normalize_ps_serial,
@@ -39,6 +33,9 @@ from app.services.disc_id import (
     extract_from_chd,
     extract_from_source,
 )
+
+from ._chd_fakes import make_chd_v5 as _make_chd_v5
+from ._chd_fakes import mode2_frames, serve_extractraw
 
 
 @pytest.fixture(autouse=True)
@@ -595,298 +592,112 @@ def test_bin_sector_stream_sector1_read():
 
 
 # ---------------------------------------------------------------------------
-# _CHDReader / _CHDSectorStream / _extract_from_chd_sectors
+# _extract_from_chd_sectors: a CHD's sectors, read through chdman (#362)
 # ---------------------------------------------------------------------------
 
-def _make_chd_v5(iso_bytes: bytes, unit_bytes: int = 2048) -> bytes:
-    """
-    Build a minimal CHD v5 binary with uncompressed (COMP_NONE = type 4) hunks
-    wrapping the given ISO/disc data.  Used to test _CHDReader without needing
-    a real CHD file.
-    """
-    hunk_bytes = unit_bytes  # one sector per hunk for simplicity
-    # Pad to a multiple of hunk_bytes
-    pad = (-len(iso_bytes)) % hunk_bytes
-    padded = iso_bytes + b"\x00" * pad
-    num_hunks = len(padded) // hunk_bytes
+@pytest.fixture(name="fake_extractraw")
+def _fake_extractraw(monkeypatch):
+    """chdman's runner answers ``extractraw`` from a ``_make_chd_v5`` file."""
+    from services.chdman import chdman_service
 
-    map_offset = 124
-    data_offset = map_offset + num_hunks * 12  # 12 bytes per map entry
+    commands: list[list[str]] = []
 
-    header = bytearray(124)
-    header[:8] = b"MComprHD"
-    struct.pack_into(">I", header, 8,  124)               # header_len
-    struct.pack_into(">I", header, 12, 5)                 # version
-    struct.pack_into(">Q", header, 16, len(padded))       # logical_bytes
-    struct.pack_into(">Q", header, 24, map_offset)        # map_offset
-    struct.pack_into(">Q", header, 32, 0)                 # meta_offset
-    struct.pack_into(">I", header, 40, hunk_bytes)        # hunk_bytes
-    struct.pack_into(">I", header, 44, unit_bytes)        # unit_bytes
-    # SHA1 fields + codec fields remain zero (COMP_NONE does not use codecs)
+    async def fake(cmd, **kwargs):
+        commands.append(list(cmd))
+        answer = serve_extractraw(cmd)
+        return answer if answer is not None else (1, b"", b"not served")
 
-    hunk_map = bytearray()
-    for i in range(num_hunks):
-        entry = bytearray(12)
-        entry[0] = 4  # COMP_NONE (uncompressed)
-        # file offset (6 bytes, big-endian, at bytes 4-9)
-        foff = data_offset + i * hunk_bytes
-        foff_be = foff.to_bytes(8, "big")
-        entry[4:10] = foff_be[2:]  # 6 LSBs of the 8-byte value
-        hunk_map.extend(entry)
-
-    return bytes(header) + bytes(hunk_map) + padded
+    monkeypatch.setattr(chdman_service.runner, "run_capture", fake)
+    return commands
 
 
-def test_chd_reader_opens_valid_chd(tmp_path):
+async def _sectors(path):
+    from services.disc_id import _extract_from_chd_sectors as extract
+
+    return await extract(str(path), "chdman")
+
+
+@pytest.mark.asyncio
+async def test_extract_from_chd_sectors_ps2(tmp_path, fake_extractraw):
     iso = _make_iso({"SYSTEM.CNF": b"BOOT2 = cdrom0:\\SLUS_203.12;1\n"})
-    chd_bytes = _make_chd_v5(iso)
-    chd_path = tmp_path / "game.chd"
-    chd_path.write_bytes(chd_bytes)
-
-    with _CHDReader(str(chd_path)) as reader:
-        assert reader.open() is True
-        assert reader.unit_bytes == 2048
-
-
-def test_chd_reader_rejects_non_chd(tmp_path):
-    p = tmp_path / "fake.chd"
-    p.write_bytes(b"not a chd file" + b"\x00" * 200)
-    with _CHDReader(str(p)) as reader:
-        assert reader.open() is False
-
-
-def test_chd_reader_read_sector(tmp_path):
-    """_CHDReader.read_sector(16) should return the PVD sector bytes."""
-    iso = _make_iso({"SYSTEM.CNF": b"BOOT2 = cdrom0:\\SLUS_203.12;1\n"})
-    chd_bytes = _make_chd_v5(iso)
-    chd_path = tmp_path / "game.chd"
-    chd_path.write_bytes(chd_bytes)
-
-    pvd_magic = b"\x01CD001\x01"
-    with _CHDReader(str(chd_path)) as reader:
-        assert reader.open()
-        sector = reader.read_sector(16)
-        assert sector is not None
-        assert sector[:7] == pvd_magic
-
-
-def test_chd_sector_stream_read(tmp_path):
-    """_CHDSectorStream must present the same bytes as reading the raw ISO."""
-    iso = _make_iso({"SYSTEM.CNF": b"BOOT2 = cdrom0:\\SLUS_203.12;1\n"})
-    chd_bytes = _make_chd_v5(iso)
-    chd_path = tmp_path / "game.chd"
-    chd_path.write_bytes(chd_bytes)
-
-    with _CHDReader(str(chd_path)) as reader:
-        assert reader.open()
-        stream = _CHDSectorStream(reader, data_offset=0)
-        stream.seek(16 * 2048)
-        pvd = stream.read(2048)
-
-    assert pvd[:7] == b"\x01CD001\x01"
-
-
-def test_extract_from_chd_sectors_ps2(tmp_path):
-    """DVD CHD with PS2 SYSTEM.CNF → normalized serial returned."""
-    cnf = b"BOOT2 = cdrom0:\\SLUS_203.12;1\n"
-    iso = _make_iso({"SYSTEM.CNF": cnf})
     chd_path = tmp_path / "game.chd"
     chd_path.write_bytes(_make_chd_v5(iso))
 
-    result = _extract_from_chd_sectors(str(chd_path))
+    result = await _sectors(chd_path)
+
     assert result is not None
     assert result["game_id"] == "SLUS-20312"
-    assert result["platform"] == "ps2"
+    assert all("extractraw" in cmd for cmd in fake_extractraw)
 
 
-def test_extract_from_chd_sectors_psp(tmp_path):
-    """DVD CHD with PSP PARAM.SFO → game_id extracted."""
-    sfo = _make_param_sfo({"DISC_ID": "ULES-00135", "TITLE": "Patapon"})
-    iso = _make_iso({"PSP_GAME/PARAM.SFO": sfo})
+@pytest.mark.asyncio
+async def test_extract_from_chd_sectors_psp(tmp_path, fake_extractraw):
+    sfo = _make_param_sfo({"DISC_ID": "ULES00135", "TITLE": "Patapon"})
     chd_path = tmp_path / "game.chd"
-    chd_path.write_bytes(_make_chd_v5(iso))
+    chd_path.write_bytes(_make_chd_v5(_make_iso({"PSP_GAME/PARAM.SFO": sfo})))
 
-    result = _extract_from_chd_sectors(str(chd_path))
+    result = await _sectors(chd_path)
+
     assert result is not None
-    assert result["game_id"] == "ULES-00135"
+    assert result["game_id"] == "ULES00135"
     assert result["title"] == "Patapon"
 
 
-def test_extract_from_chd_sectors_ps1_cd_mode1(tmp_path):
-    """CD CHD with PS1 SYSTEM.CNF in Mode 1 (2352-byte) sectors → serial extracted."""
-    cnf = b"BOOT = cdrom:\\SLPS_123.45;1\n"
-    iso = _make_iso({"SYSTEM.CNF": cnf})
-    mode1_bin = _make_mode1_bin(iso)  # wraps ISO in 2352-byte Mode 1 sectors
-    chd_path = tmp_path / "ps1_game.chd"
-    chd_path.write_bytes(_make_chd_v5(mode1_bin, unit_bytes=2352))
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("unit_bytes", "header"), [
+    (2352, 16), (2352, 24), (2448, 16), (2448, 24),
+], ids=["2352-mode1", "2352-mode2", "2448-mode1", "2448-mode2"])
+async def test_extract_from_chd_sectors_ps1_cd(
+    tmp_path, fake_extractraw, unit_bytes, header,
+):
+    cooked = _make_iso({"SYSTEM.CNF": b"BOOT = cdrom:\\SCUS_941.63;1\n"})
+    chd_path = tmp_path / "game.chd"
+    chd_path.write_bytes(
+        _make_chd_v5(mode2_frames(cooked, unit_bytes, header), unit_bytes=unit_bytes),
+    )
 
-    result = _extract_from_chd_sectors(str(chd_path))
+    result = await _sectors(chd_path)
+
     assert result is not None
-    assert result["game_id"] == "SLPS-12345"
-    assert result["platform"] == "ps1"
+    assert result["game_id"] == "SCUS-94163"
 
 
-def _make_mode2_bin(iso_bytes: bytes) -> bytes:
-    """
-    Wrap a flat ISO 9660 image (2048-byte sectors) in Mode 2 Form 1 2352-byte
-    sectors (24-byte header + 2048-byte payload + 280-byte ECC pad).
+@pytest.mark.asyncio
+async def test_extract_from_chd_sectors_cd_no_recognizable_content(
+    tmp_path, fake_extractraw,
+):
+    chd_path = tmp_path / "game.chd"
+    chd_path.write_bytes(_make_chd_v5(b"\xab" * (2352 * 40), unit_bytes=2352))
 
-    This is the most common format for PS1 discs burned from BIN/CUE images.
-    """
-    SECTOR = 2352
-    HEADER = _RAW_SECTOR_HEADER_SIZE_MODE2  # 24 bytes (Mode 2 Form 1)
-    DATA = 2048
-    TAIL = SECTOR - HEADER - DATA  # 280
-    num = (len(iso_bytes) + DATA - 1) // DATA
-    buf = bytearray()
-    for i in range(num):
-        buf += b"\x00" * HEADER
-        chunk = iso_bytes[i * DATA : (i + 1) * DATA]
-        buf += chunk.ljust(DATA, b"\x00")
-        buf += b"\x00" * TAIL
-    return bytes(buf)
+    assert await _sectors(chd_path) is None
 
 
-def test_extract_from_chd_sectors_ps1_cd_mode2(tmp_path):
-    """CD CHD with PS1 SYSTEM.CNF in Mode 2 Form 1 (2352-byte) sectors → serial extracted."""
-    cnf = b"BOOT = cdrom:\\SLPS_678.90;1\n"
-    iso = _make_iso({"SYSTEM.CNF": cnf})
-    mode2_bin = _make_mode2_bin(iso)  # wraps ISO in 2352-byte Mode 2 Form 1 sectors
-    chd_path = tmp_path / "ps1_mode2.chd"
-    chd_path.write_bytes(_make_chd_v5(mode2_bin, unit_bytes=2352))
+@pytest.mark.asyncio
+async def test_extract_from_chd_sectors_fake_chd_returns_none(tmp_path, fake_extractraw):
+    p = tmp_path / "fake.chd"
+    p.write_bytes(b"not a chd" * 20)
 
-    result = _extract_from_chd_sectors(str(chd_path))
-    assert result is not None
-    assert result["game_id"] == "SLPS-67890"
-    assert result["platform"] == "ps1"
+    assert await _sectors(p) is None
+    assert fake_extractraw == []      # not a CHD: chdman is never asked
 
 
-def test_extract_from_chd_sectors_cd_no_recognizable_content(tmp_path):
-    """CD CHD whose sectors contain no ISO 9660 filesystem → returns None."""
-    # 2352-byte sectors filled with garbage (no PVD magic at any offset)
-    garbage = b"\xAB\xCD" * (2352 * 32 // 2)
-    chd_path = tmp_path / "unknown_cd.chd"
-    chd_path.write_bytes(_make_chd_v5(garbage, unit_bytes=2352))
+@pytest.mark.asyncio
+async def test_a_failed_chdman_read_is_no_disc_id(tmp_path, monkeypatch, caplog):
+    import logging
 
-    result = _extract_from_chd_sectors(str(chd_path))
-    assert result is None
+    from services.chdman import chdman_service
 
+    async def damaged(cmd, **kwargs):
+        return 1, b"", b"Error reading CHD file: Decompression error"
 
-def test_extract_from_chd_sectors_fake_chd_returns_none(tmp_path):
-    """Non-CHD file → open() fails → returns None gracefully."""
-    p = tmp_path / "game.chd"
-    p.write_bytes(b"fake")
-    assert _extract_from_chd_sectors(str(p)) is None
+    monkeypatch.setattr(chdman_service.runner, "run_capture", damaged)
+    chd_path = tmp_path / "game.chd"
+    chd_path.write_bytes(_make_chd_v5(_make_iso({"SYSTEM.CNF": b"x"})))
 
-
-def _make_chd_v5_mini(iso_bytes: bytes) -> bytes:
-    """
-    Build a minimal CHD v5 binary where all hunks use COMP_MINI (type 7).
-    The 8-byte fill value is stored directly in map entry bytes 4-11.
-    Only useful for all-zero ISO data (fill = b'\\x00' * 8).
-    """
-    unit_bytes = 2048
-    hunk_bytes = unit_bytes
-    pad = (-len(iso_bytes)) % hunk_bytes
-    padded = iso_bytes + b"\x00" * pad
-    num_hunks = len(padded) // hunk_bytes
-
-    map_offset = 124
-
-    header = bytearray(124)
-    header[:8] = b"MComprHD"
-    struct.pack_into(">I", header, 8,  124)
-    struct.pack_into(">I", header, 12, 5)
-    struct.pack_into(">Q", header, 16, len(padded))
-    struct.pack_into(">Q", header, 24, map_offset)
-    struct.pack_into(">Q", header, 32, 0)
-    struct.pack_into(">I", header, 40, hunk_bytes)
-    struct.pack_into(">I", header, 44, unit_bytes)
-
-    hunk_map = bytearray()
-    for _ in range(num_hunks):
-        entry = bytearray(12)
-        entry[0] = 7          # CTYPE_MINI
-        # bytes 1-3: compressed length = 0 (unused for MINI)
-        # bytes 4-11: the 8-byte fill value stored inline (all zeros here)
-        hunk_map.extend(entry)
-
-    # No data section, MINI hunks store their fill value in the map entry itself
-    return bytes(header) + bytes(hunk_map)
-
-
-def test_chd_reader_ctype_mini_fill(tmp_path):
-    """CTYPE_MINI hunks: fill value is read directly from map entry bytes 4-11."""
-    # Build a CHD where every hunk is MINI-compressed with an all-zero fill.
-    # The CHD sector-read should return all-zero sectors (not garbage from a bad seek).
-    iso = bytearray(2048 * 20)  # 20 sectors of zeros
-    chd_path = tmp_path / "mini.chd"
-    chd_path.write_bytes(_make_chd_v5_mini(bytes(iso)))
-
-    with _CHDReader(str(chd_path)) as reader:
-        assert reader.open() is True
-        sector = reader.read_sector(0)
-        assert sector is not None
-        assert sector == b"\x00" * 2048, "MINI hunk must return the fill value, not file bytes"
-
-
-def test_chd_reader_rejects_oversized_hunk(tmp_path):
-    """Reject crafted CHDs before MINI hunks can allocate attacker-sized buffers."""
-    chd = bytearray(124 + 12)
-    chd[:8] = b"MComprHD"
-    struct.pack_into(">I", chd, 8, 124)
-    struct.pack_into(">I", chd, 12, 5)
-    struct.pack_into(">Q", chd, 24, 124)
-    struct.pack_into(">I", chd, 40, _MAX_CHD_HUNK_BYTES + 1)
-    struct.pack_into(">I", chd, 44, 2048)
-    chd[124] = 7  # CTYPE_MINI
-
-    chd_path = tmp_path / "oversized-mini.chd"
-    chd_path.write_bytes(chd)
-
-    with _CHDReader(str(chd_path)) as reader:
-        assert reader.open() is False
-
-
-def test_chd_reader_rejects_hunk_smaller_than_unit(tmp_path):
-    """Reject invalid hunk/unit geometry instead of dividing by zero in read_sector."""
-    chd = bytearray(124)
-    chd[:8] = b"MComprHD"
-    struct.pack_into(">I", chd, 8, 124)
-    struct.pack_into(">I", chd, 12, 5)
-    struct.pack_into(">Q", chd, 24, 124)
-    struct.pack_into(">I", chd, 40, 1)
-    struct.pack_into(">I", chd, 44, 2048)
-
-    chd_path = tmp_path / "bad-geometry.chd"
-    chd_path.write_bytes(chd)
-
-    with _CHDReader(str(chd_path)) as reader:
-        assert reader.open() is False
-
-
-def test_chd_reader_rejects_zlib_output_larger_than_hunk(tmp_path):
-    """Bound zlib decompression output to hunk_bytes."""
-    payload = zlib.compress(b"A" * 4096)
-    chd = bytearray(124 + 12 + len(payload))
-    chd[:8] = b"MComprHD"
-    struct.pack_into(">I", chd, 8, 124)
-    struct.pack_into(">I", chd, 12, 5)
-    struct.pack_into(">Q", chd, 24, 124)
-    struct.pack_into(">I", chd, 40, 2048)
-    struct.pack_into(">I", chd, 44, 2048)
-    struct.pack_into(">I", chd, 108, _CHDReader._CODEC_ZLIB)
-    chd[124] = 0  # CTYPE_CODEC0
-    chd[125:128] = len(payload).to_bytes(4, "big")[1:]
-    chd[128:134] = (136).to_bytes(8, "big")[2:]
-    chd[136:] = payload
-
-    chd_path = tmp_path / "zlib-overrun.chd"
-    chd_path.write_bytes(chd)
-
-    with _CHDReader(str(chd_path)) as reader:
-        assert reader.open() is True
-        assert reader.read_sector(0) is None
+    with caplog.at_level(logging.WARNING):
+        assert await _sectors(chd_path) is None
+    assert any("game.chd" in r.getMessage() for r in caplog.records
+               if r.levelno >= logging.WARNING)
 
 
 def test_dumpmeta_raw_times_out(tmp_path, monkeypatch):
@@ -985,7 +796,7 @@ async def test_extract_from_chd_none_when_nothing(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_extract_from_chd_reads_the_serial_from_chd_sectors(tmp_path):
+async def test_extract_from_chd_reads_the_serial_from_chd_sectors(tmp_path, fake_extractraw):
     """No GDRO, no companion: SYSTEM.CNF read from the CHD's own sectors."""
     cnf = b"BOOT2 = cdrom0:\\SLUS_203.12;1\n"
     chd = tmp_path / "game.chd"

@@ -4,6 +4,14 @@
 
 ### Fixed
 
+- **The library scan reads the disc ID of every CHD again** (#362). The reader
+  for a CHD's own sectors could not open any CHD chdman makes (it read the
+  header at the wrong offsets and could not decode a compressed one), so a
+  scan recorded no disc ID for PS1, PS2 and PSP CHDs unless the source image
+  was still beside them. Now the few sectors it needs are read through
+  chdman itself, so the info panel shows the serial (for example `SLUS-20312`)
+  for CHDs made by the bundled chdman. A read that does not answer still gives
+  up after 30 seconds, and Cancel stops it.
 - **A check right after conversions checks the new Images** (#353). A
   scheduled check Rule that ran within about 30 seconds of a conversion used
   the folder listing from before it, checked nothing new, and still counted
