@@ -15,9 +15,11 @@ import asyncio
 import io
 import logging
 import os
+import struct
 import threading
 import time
 import zipfile
+import zlib
 
 import pytest
 from fastapi import BackgroundTasks, HTTPException
@@ -519,6 +521,100 @@ async def test_an_archive_read_that_blocks_with_no_bytes_ends_at_the_bound(
         assert await _answer_of(call) == 503
     finally:
         gate.set()
+
+
+def _rar3_block(kind, flags, body=b""):
+    """One RAR 2.9 block: CRC16 (low half of CRC32), type, flags, size, body."""
+    head = struct.pack("<BHH", kind, flags, 7 + len(body)) + body
+    return struct.pack("<H", zlib.crc32(head) & 0xFFFF) + head
+
+
+def _rar3_volume(name, data, *, first, more):
+    """One volume of a stored (method 0x30) multi-volume RAR 2.9 archive."""
+    main_flags = 0x0001 | 0x0010 | (0x0100 if first else 0)   # VOLUME|NEWNUMBERING|FIRST
+    encoded = name.encode()
+    file_body = struct.pack(
+        "<LLBLLBBHL", len(data), len(data), 3, zlib.crc32(data), 0, 29, 0x30,
+        len(encoded), 0o100644 << 16,
+    ) + encoded
+    return (
+        b"Rar!\x1a\x07\x00"
+        + _rar3_block(0x73, main_flags, b"\x00" * 6)
+        + _rar3_block(0x74, 0x8000, file_body) + data
+        + _rar3_block(0x7B, 0x0001 if more else 0)                 # NEXT_VOLUME
+    )
+
+
+def _two_volume_rar(folder):
+    """``Pack.part1.rar`` holds ``Disc 1.iso``, ``Pack.part2.rar`` ``Disc 2.iso``."""
+    folder.mkdir(exist_ok=True)
+    first = folder / "Pack.part1.rar"
+    first.write_bytes(_rar3_volume("Disc 1.iso", b"one", first=True, more=True))
+    (folder / "Pack.part2.rar").write_bytes(
+        _rar3_volume("Disc 2.iso", b"two", first=False, more=False),
+    )
+    return first
+
+
+@pytest.fixture(name="rar_members")
+def _rar_members():
+    from services import archive_members
+
+    if not archive_members.HAS_RAR:
+        pytest.skip("rarfile is not installed")
+    archive_members.clear_cache()
+    yield archive_members
+    archive_members.clear_cache()
+
+
+@pytest.mark.parametrize("with_progress", [False, True])
+def test_a_multi_volume_rar_lists_every_volume(tmp_path, rar_members, with_progress):
+    first = _two_volume_rar(tmp_path / "Packs")
+    ticks: list[None] = []
+    progress = (lambda *_a: ticks.append(None)) if with_progress else None
+
+    members = rar_members.read_archive_members(str(first), progress)
+
+    assert sorted(m.name for m in members) == ["Disc 1.iso", "Disc 2.iso"]
+    assert bool(ticks) is with_progress
+
+
+def test_a_rar_whose_next_volume_is_missing_is_never_cached(tmp_path, rar_members):
+    first = _two_volume_rar(tmp_path / "Packs")
+    second = first.with_name("Pack.part2.rar")
+    kept = second.read_bytes()
+    second.unlink()
+
+    with pytest.raises(Exception, match="volume"):
+        rar_members.read_archive_members(str(first), lambda *_a: None)
+
+    second.write_bytes(kept)  # the first volume is unchanged: same cache key
+    members = rar_members.read_archive_members(str(first))
+    assert sorted(m.name for m in members) == ["Disc 1.iso", "Disc 2.iso"]
+
+
+@pytest.mark.asyncio
+async def test_a_multi_volume_rar_is_listed_whole_by_the_browser(
+    tmp_path, files_env, rar_members,
+):
+    first = _two_volume_rar(tmp_path / "Packs")
+    listing = await asyncio.wait_for(
+        files_env.list_files(path=str(first.parent), show_archives=True,
+                             summarize_archives=True),
+        BOUND,
+    )
+    by_name = {entry.name: entry for entry in listing.entries}
+    assert by_name["Pack.part1.rar"].archive_items == 2
+
+    found = await asyncio.wait_for(
+        files_env.search_files(path=str(first.parent), recursive=True,
+                               include_archives=True),
+        BOUND,
+    )
+    members = sorted(
+        row["name"] for row in found["archives"] if row["archive_path"] == str(first)
+    )
+    assert members == ["Disc 1.iso", "Disc 2.iso"]
 
 
 # --- the shared helper ---------------------------------------------------------

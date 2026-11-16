@@ -236,15 +236,31 @@ def _read_7z(
     return members
 
 
+class IncompleteArchive(RuntimeError):
+    """The backend stopped part way through the archive (a later volume
+    missing or unreadable, a broken header): its member list is not the
+    whole archive, so it is never returned or cached."""
+
+
 def _read_rar(
     archive_path: str, progress: Callable[..., None] | None = None,
 ) -> list[ArchiveMember]:
-    """Read every RAR member, flagging symlinks when the rarfile backend reports them."""
+    """Read every RAR member, flagging symlinks when the rarfile backend reports them.
+
+    Always opened by path: rarfile finds a multi-volume archive's next volume
+    from the file name and gives up silently on a file object, which would
+    list only the first volume (Codex 4584380491). Progress comes from its
+    supported ``info_callback``, one report per header parsed, across every
+    volume. rarfile's default ``errors="stop"`` ends a parse quietly at a
+    missing or broken volume; that is :class:`IncompleteArchive` here.
+    """
     members: list[ArchiveMember] = []
-    with (
-        _source(archive_path, progress) as source,
-        rarfile.RarFile(source, "r") as rf,  # type: ignore[name-defined]
-    ):
+    on_header = (lambda _header: progress()) if progress is not None else None
+    with rarfile.RarFile(  # type: ignore[name-defined]
+        archive_path, "r", info_callback=on_header,
+    ) as rf:
+        if rf.strerror():
+            raise IncompleteArchive(f"{archive_path}: {rf.strerror()}")
         for info in rf.infolist():
             # rarfile exposes is_symlink() on recent versions; default to False
             # so an older backend simply doesn't flag symlinks (ArchiveService

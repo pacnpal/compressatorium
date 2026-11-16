@@ -903,9 +903,10 @@ class _ReportingReader(io.RawIOBase):
 def open_reporting_reads(path: str, progress: Callable[..., None]) -> io.BufferedReader:
     """*path* opened for reading, calling ``progress()`` whenever bytes arrive.
 
-    A read-only binary file (``zipfile``, ``py7zr`` and ``rarfile`` all take
-    one) that asks the OS for at most :data:`READ_CHUNK` bytes per read and
-    reports every read that returns data, and every seek. Under a
+    A read-only binary file (``zipfile`` and ``py7zr`` take one; a ``.rar``
+    opens by path so ``rarfile`` can find its next volume) that asks the OS
+    for at most :data:`READ_CHUNK` bytes per read and reports every read
+    that returns data, and every seek. Under a
     stall-bounded caller (``run_detached_within_stall_bound(
     report_progress=True)``), a large archive's member table streaming in
     from a slow but healthy mount keeps the clock moving, while a read that

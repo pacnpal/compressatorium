@@ -640,12 +640,24 @@ reading at most one entry. Reading a file under the clock reports bytes as
 they arrive, not loop iterations: `utils.path_utils.open_reporting_reads(path,
 progress)` is a read-only binary file (a `BufferedReader` over a raw reader)
 that asks the OS for at most `READ_CHUNK` (64 KiB) per read and reports every
-read that returns data, and every seek. `zipfile`, `py7zr` and `rarfile` take
-it as their file, so an archive's member table streaming in from a slow but
+read that returns data, and every seek. `zipfile` and `py7zr` take it as
+their file, so a `.zip`/`.7z` member table streaming in from a slow but
 healthy mount keeps the clock moving, and a read that returns nothing ends at
-the bound. `services.archive_members.read_archive_members(path, progress)`
-opens the archive through it when given a callback (a cached answer reads
-nothing), and `ArchiveService.list_archive_contents(..., progress=...)`,
+the bound. A file object never changes what they read: `zipfile` refuses a
+multi-disk zip either way, and `py7zr` reads split `.7z.001` volumes only
+through an explicit `multivolumefile` object (and `.001` is not a listed
+archive extension). `.rar` is different and always opens by path: `rarfile`
+finds a multi-volume archive's next volume from the file name and silently
+stops after the first volume when given a file object. Its progress comes
+from its supported `info_callback`, one report per header parsed, across
+every volume. Known limit: a single huge header block on a slow mount reports
+nothing while it is read; a complete member list matters more. `rarfile`'s
+default `errors="stop"` ends a parse quietly at a missing or broken volume, so
+`_read_rar` checks `strerror()` and raises `IncompleteArchive`, and a list
+that stopped early is never returned or cached.
+`services.archive_members.read_archive_members(path, progress)` opens the
+archive through it when given a callback (a cached answer reads nothing),
+and `ArchiveService.list_archive_contents(..., progress=...)`,
 `_summarize_archive(path, progress)` and `scan_tree` pass the listing's
 callback down. No archive is listed through a subprocess, so there are no
 output lines to report. Callers without a callback (romz's gate, the
