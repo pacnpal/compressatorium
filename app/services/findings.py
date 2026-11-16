@@ -41,6 +41,22 @@ KINDS = (PLATFORM_CONFLICT, UNSORTED)
 # a night, never the whole Library, so these are written one Image at a time
 # (`observe`, `resolve`) and never by `reconcile`.
 NOT_INTACT = "not_intact"
+# A Rule's delete step kept the Source for a reader, and every later sweep
+# found one again until it gave up (#329). Written one Image at a time, like
+# NOT_INTACT, and cleared once the Source is gone.
+SOURCE_KEPT = "source_kept"
+
+# The owner of a Finding that belongs to no Library: a hand-started job's
+# part-deleted Source. No Library can have the empty id, so this owner never
+# meets one. No Library's removal or RomM cleanup drops its rows, nothing asks
+# whether its Library is current (there is none to be removed), and no sweep
+# settles them: the Findings view does, as it loads (`clear_gone`). Dismissed
+# like any other.
+NO_LIBRARY = ""
+NO_LIBRARY_NAME = "Started by hand"
+# A Finding's ``cause`` key listing the files a started delete left behind.
+# When it is there, the Finding is settled once every one of them is gone.
+REMAINING = "remaining"
 
 # Serialises a producer's write against forgetting its Library, so a walk that
 # outlives its Library cannot write after that Library's rows are dropped.
@@ -66,6 +82,24 @@ class Observed:
     def fingerprint(self) -> str:
         raw = json.dumps({"kind": self.kind, **self.cause}, sort_keys=True, default=str)
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
+
+
+def started_delete(
+    image_key: str, *, source: str | None, output: str | None, why: str,
+    left: list[str],
+) -> Observed:
+    """The ``source_kept`` Finding for a started delete that will not be
+    finished (#329): the Source is part deleted and *left* names the files
+    still there, so it settles once they are gone (:func:`clear_gone`). One
+    shape for every producer: a sweep giving up, a decision invalidated, a
+    hand-started job. The Source is its path (where Open folder goes); the
+    files left are all in ``cause[REMAINING]``."""
+    left = [str(path) for path in left] or [str(source or "")]
+    return Observed(
+        kind=SOURCE_KEPT, image_key=str(image_key), path=str(source or left[0]),
+        reason=f"Source part deleted and kept: {why}; {len(left)} of its files remain",
+        cause={"source": source, "output": output, REMAINING: left},
+    )
 
 
 class FindingChanged(Exception):
@@ -228,30 +262,50 @@ def clear_gone(
     missing while its folder lists other entries. A share that is not mounted
     is a missing folder or an empty mount point, and clears nothing; neither
     does an Image deleted from a folder it was alone in (dismiss that one).
+    A Finding whose cause lists the files a delete left (:data:`REMAINING`)
+    is cleared once every one of those is gone, by the same evidence (its
+    Source's first file may be the one already removed).
     Dismissals are kept, as :func:`resolve` keeps them. Returns how many were
     cleared.
+
+    The files are looked at outside the write lock, so the delete is a
+    compare-and-delete (CodeRabbit 4580360075): only a row still carrying the
+    id and cause fingerprint that was looked at goes. One a producer updated
+    meanwhile (a new cause, another list of files left) stays.
     """
     with _session() as session:
         rows = session.query(_db.FindingRecord).filter_by(
             library_id=library_id, kind=kind,
         ).all()
-        candidates = [(row.image_key, row.path) for row in rows]
+        candidates = [
+            (row.id, row.fingerprint, row.path,
+             list((row.cause or {}).get(REMAINING) or ()))
+            for row in rows
+        ]
     gone = [
-        key for key, path in candidates
-        if not os.path.lexists(path) and _lists_entries(os.path.dirname(path))
+        (row_id, fingerprint) for row_id, fingerprint, path, remaining in candidates
+        if all(_is_gone(p) for p in remaining or [path])
     ]
     if not gone:
         return 0
     with _write_lock, _session() as session:
         if current is not None and not current():
             return 0
-        cleared = session.query(_db.FindingRecord).filter(
-            _db.FindingRecord.library_id == library_id,
-            _db.FindingRecord.kind == kind,
-            _db.FindingRecord.image_key.in_(gone),
-        ).delete(synchronize_session=False)
+        cleared = 0
+        for row_id, fingerprint in gone:
+            cleared += session.query(_db.FindingRecord).filter(
+                _db.FindingRecord.id == row_id,
+                _db.FindingRecord.library_id == library_id,
+                _db.FindingRecord.kind == kind,
+                _db.FindingRecord.fingerprint == fingerprint,
+            ).delete(synchronize_session=False)
         session.commit()
     return cleared
+
+
+def _is_gone(path: str) -> bool:
+    """*path* is missing while its folder lists other entries."""
+    return not os.path.lexists(path) and _lists_entries(os.path.dirname(path))
 
 
 def _lists_entries(folder: str) -> bool:
@@ -339,7 +393,8 @@ def dismiss(
     Idempotent (a double click is one dismissal), and under the write lock
     that `reconcile` and `forget_library` take. *current* is asked there with
     the Finding's Library id: False (the Library is being removed) writes
-    nothing, so no dismissal is left behind for a removed Library.
+    nothing, so no dismissal is left behind for a removed Library. A
+    :data:`NO_LIBRARY` Finding has no Library to be removed, so it is not asked.
 
     *fingerprint* is the cause the user was shown: when the row's cause is
     another one now, :class:`FindingChanged` is raised and nothing is written.
@@ -348,7 +403,10 @@ def dismiss(
         row = session.get(_db.FindingRecord, finding_id)
         if row is None:
             return False
-        if current is not None and not current(row.library_id):
+        if (
+            current is not None and row.library_id != NO_LIBRARY
+            and not current(row.library_id)
+        ):
             return False
         _check_shown(row, fingerprint)
         exists = _dismissals(session, row.library_id, row.image_key, row.kind).filter_by(

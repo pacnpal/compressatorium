@@ -1094,7 +1094,7 @@ async def test_resolving_what_to_verify_cannot_hang_the_queue(monkeypatch) -> No
     job = SimpleNamespace(output_path="/vol/game.iso", mode=ConversionMode.CREATECD)
 
     with pytest.raises(RuntimeError) as raised:
-        await manager._verify_target_bounded(tool, job, None)
+        await manager._verify_target_bounded(tool, job.output_path, job.mode.value, None)
     assert "stopped responding" in str(raised.value), raised.value
 
 
@@ -1122,7 +1122,9 @@ async def test_cancelling_during_that_probe_returns_now(monkeypatch) -> None:
     cancel.set()
     with pytest.raises(jm.ConversionCancelled):
         await asyncio.wait_for(
-            manager._verify_target_bounded(tool, job, cancel), timeout=10,
+            manager._verify_target_bounded(
+                tool, job.output_path, job.mode.value, cancel,
+            ), timeout=10,
         )
 
 

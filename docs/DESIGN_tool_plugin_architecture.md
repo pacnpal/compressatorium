@@ -3487,7 +3487,25 @@ free one if it was taken since, never picking a different name on its own.
   its quotes kept (RetroArch's `rm3u.c`). If either reaches or names a
   replaced file (a Source literally named `A|B.cue` or `"Game.cue"`) the
   Source is kept.
-- *UTF-16 and NUL bytes.* Such a playlist is never rewritten. It is UTF-16
+- *UTF-16 with a BOM* (#334). `FF FE` or `FE FF` names the byte order. The
+  text after it is decoded strictly, rewritten and read back exactly like a
+  UTF-8 playlist (`_rewrite_utf16` transcodes to UTF-8, runs `_rewrite`, and
+  encodes the result back), then written with the same BOM and byte order.
+  Line endings are part of the text, so they survive too. The UTF-8 stand-in
+  gets a BOM of its own, so `_rewrite` strips exactly that one and a first
+  filename that itself starts with U+FEFF keeps it. One rule covers readers
+  that ignore the BOM (an 8-bit line appended to the file): the bytes that
+  would be left on disk, rewritten or not, are read back as the UTF-16 text
+  and as the NUL-stripped bytes in UTF-8 and cp1252. Every reading goes
+  through `_text_reaches_replaced`, which runs each entry line through
+  `_entry_reaches_replaced`: the one check that `_rewrite` also uses for its
+  own lines. It asks whether a line reaches a replaced file by any reading a
+  player could use: the parsed path, the literal line, the label-split path
+  with quotes kept, and an unresolved name. If any reading still reaches a
+  replaced file, or a new entry can't be encoded in UTF-16, the Source is
+  kept. Text that doesn't decode strictly falls to the rule below.
+- *UTF-16 without a BOM, and NUL bytes.* Such a playlist is never rewritten:
+  without a BOM the encoding can't be known safely. It is UTF-16
   only with a BOM, or when NULs fill most of the odd (little-endian) or even
   (big-endian) byte positions, and then it is decoded strictly (or with
   replacements if that fails). The NUL-stripped UTF-8 and cp1252 readings are
@@ -4037,6 +4055,29 @@ each delete path (below), which also asks `folder_locked_above`.
   over NFS) counts as not held, here and in `check_file_status`. That holds
   while every process runs as the same uid, which the entrypoint's and the
   wrapper's `gosu converter` drop ensure.
+- **No filesystem I/O under `_lock_mutex`** (codex 4579852997). The mutex
+  guards only in-memory state: an acquirer claims the identity in `_locks`
+  (or `_dir_locks`) under it, then resolves paths, stats the target and
+  opens and flocks the lock file without it, and takes it again only to
+  record the handle or roll the claim back (the overlap checks compare the
+  stored, already resolved keys as they are); a release takes the identity out
+  of memory under it and unlinks and closes the lock file after. A path
+  resolve or stat that stalls on a dead mount therefore never holds the
+  mutex against another caller, the event loop included.
+- **A release lets go of the flock first, then the memory record**
+  (`_release_key`, `release_dir_lock`): the handle is taken out under the
+  mutex, the lock file is unlinked and unlocked outside it, and only then is
+  the identity dropped from `_locks` / `_dir_locks`, so another job here sees
+  the path free only once the flock is actually gone.
+- **Letting go never stalls a caller** (codex 4579986280). A job's cleanup and
+  a retried delete release their exclusive locks through one helper,
+  `JobManager._let_go_in_background`: the release runs on a detached worker
+  (never the shared threadpool), the caller waits for it at most
+  `KEPT_DELETE_PROBE_SECONDS` and moves on, and the worker finishes on its
+  own, closing every handle it took. The worker is started before the first
+  await (`subprocess_runner.start_detached`, CodeRabbit on job_manager.py:3362),
+  since the caller already gave up ownership of the paths: a cancel can only
+  stop the waiting, never the release.
 - Taking a lock is different: only contention (`BlockingIOError` from the
   non-blocking `flock`, or an existing output) answers "busy" and requeues.
   Any other `OSError` making or locking the lock file (`ENAMETOOLONG`,
@@ -4088,6 +4129,302 @@ says why the Source stayed and exits 0; the job row shows it once
 look just before the unlinks ends the job CANCELLED instead. Two processes
 rewriting one playlist take turns on the cross-process Referrer lock (§3.3.15,
 *Concurrency*), so neither edit is lost.
+
+**A Source kept for a reader is retried (#329).** The delete step itself
+(plan again, `_check_delete_paths` with its `mutation_guard`, the Referrer
+hook, the check again, the unlinks, the store clears) is one method,
+`JobManager._delete_source_set`, shared by a job and a retry. When a Rule's
+job keeps its Source for a reader, the sweep's terminal listener
+(`note_job_finished`) records it in that Platform's Rule state, the same
+`rules.state` row (`services/rules/store.py`) that holds the converted
+history and the failed holds: `kept_sources[image key] = {source, output,
+job_id, kept_at, attempts, decision, decision_generation}`.
+
+`decision` is the delete decision identity (`_delete_decision_identity(rule,
+library)`): every input to whether the delete is allowed. The Rule's
+`DELETE_DECISION_FIELDS` (`OUTPUT_IDENTITY_FIELDS`: mode, output_dir,
+compression, compression_level, split, duplicate_action; plus
+delete_on_verify and check_level), the effective check level as the registry
+answers it now (`effective_check_level`), and the Library
+(`_library_identity`: its id and root, plus `decision_identity()` where a
+Library has one, RomM's instance URL). `decision_generation` is a counter per
+(Library, Platform) in `rules.state`, moved on by every invalidation
+(`_invalidate_decisions`, which also drops the Platform's pending deletes).
+Both are stamped on the job when it is queued (`_job_decision`), and a job
+that ends after either moved records nothing, checked under `_sweep_lock`. Every later sweep, the web app's and
+`compressatorium run-rules`'s alike (never a preview), plans the retries
+under `_sweep_lock` (`_plan_kept_deletes`, before the Platform pass: the
+checks below that need no file locks, at most `KEPT_DELETES_PER_SWEEP`) and
+tries them once it has let go of the lock (`_run_kept_deletes`, codex
+4580346573). Each try prepares the delete under its own file locks
+(`JobManager.kept_delete`, the context `retry_kept_delete` and
+`finish_kept_delete` also run through), which re-runs the output's check and
+can take as long as a verify; only then does it take `_sweep_lock`, confirm
+the entry is still the one planned (`_still_pending`: same Library
+generation, same Rule revision, same entry), delete (`run.delete()`), and
+record the outcome (`_settle_kept`). A long check never holds up another
+sweep, a Rule edit or a job completion, and anything that changed the entry
+meanwhile (and reported a started delete) wins. An entry being tried is
+skipped by a concurrent sweep (`_kept_running`).
+
+- **Any Rule change re-plans** (codex 4580441297). `set_rules` moves a
+  Platform's `rule_revision` (in its Rule state entry) on for any change to
+  its Rule, whatever the field: a selection filter, the schedule, the
+  priority (only where the Platform has pending deletes, the only place a
+  try can be under way, so no other state moves). The try records the revision it was planned under, and under
+  `_sweep_lock`, right before the unlinks, a different one means it does not
+  delete: the entry stays, and the next sweep plans it again under the Rule
+  as it is. That comparison is the authority, so no field can be missed; the
+  delete decision identity stays the cross-sweep pre-check.
+- **A stop deletes nothing new** (codex 4580441303). The sweep's
+  `should_stop` (`run-rules` on SIGTERM) reaches the tries: asked before
+  each one, before its output check (`kept_delete(stopping=...)`), and at the
+  last look before its unlinks (`_delete_source_set`'s `cancelled`). Once
+  true, nothing new starts, no unlink begins, and the outcome is
+  `KEPT_STOPPED`: not an attempt, nothing recorded. Unlinks already handed to
+  their worker carry on and are recorded as in flight.
+
+The preparation:
+
+- It takes the output's lock and every delete path's, exclusively and without
+  waiting, as the job did. One still held is `reader`: try again next sweep.
+  Taking a lock stats the path, so each acquisition runs through
+  `subprocess_runner.run_detached_undoable` under `KEPT_DELETE_PROBE_SECONDS`:
+  a volume that does not answer is `kept`, and a lock the abandoned call takes
+  afterwards is let go.
+- Under those locks it establishes again, failing closed on each
+  (`_kept_delete_snapshot`, bounded on a detached thread): the output has a
+  passing check record naming this Source, with a full `produced_meta`; the
+  output on disk is the very file that record fingerprinted (size, mtime,
+  inode, device); the Source is inside the Volumes
+  (`is_within_configured_volumes`); and a fresh delete snapshot of the Source
+  equals the `produced_meta` Source fingerprints. Any of these not holding is
+  `stale`: the entry is dropped and the Source kept for good. The companion
+  outputs count as the output (CodeRabbit 4580102953): `produced_meta`
+  records each one's fingerprint (`companions`), the retry takes their locks
+  with the output's, and a companion gone, changed or new is `stale`. So is an
+  archive member's Source, which has no `produced_meta`.
+- **The output's check runs again** (`_recheck_output`, codex 4580346573).
+  The stat fingerprint is only a cheap filter: an in-place rewrite of the
+  same length with its mtime put back keeps size, mtime, inode and device,
+  and the app's locks bind no writer outside it. So, under the locks, the
+  job's own check runs again: the tool's container check
+  (`JobManager._container_check`, the one method the job verifies with, under
+  the tool's `verify_timeout`, not `KEPT_DELETE_PROBE_SECONDS`), plus the
+  Round-trip (`round_trip`, the job's function) when the Rule's effective
+  level is `round_trip`. A failed check is `stale` (dropped, nothing deleted,
+  a Finding when the delete had started); one that reached no verdict
+  (`VerifyUnanswered`, or a Round-trip whose digest timed out,
+  `RoundTripOutcome.timed_out`) is a `kept` attempt. Finishing a started
+  delete re-runs the container check only: the Round-trip cannot compare
+  against a part-deleted Source. The stat filter runs once more right before
+  the unlinks.
+- Then `_delete_source_set` runs, as for the job. A Referrer or path check
+  that keeps the Source, or a removal the filesystem refuses part way, is
+  `kept`: try again.
+- **A cancel once the unlinks began is recorded** (CodeRabbit 4580360083,
+  4580360089). `asyncio.CancelledError` is not an `Exception`, so the delete
+  step catches it on its own: a retry's `run.delete()` leaves `run.started`
+  (the plan, as `unknown`), which the sweep records as a `deleting` entry,
+  bounded by `_CANCEL_RECORD_SECONDS`; a job records `_unfinished_delete` (a
+  Rule's job) or the started-delete Finding (a hand-started one), ends
+  CANCELLED and is announced (`_notify_terminal`). Then the cancel goes on;
+  nothing waits on the unlink worker, which owns the rest of the plan.
+  **A handed-off delete counts as started** (CodeRabbit 4580360083): when
+  `run_detached_mutation` hands the unlinks to their worker while they still
+  run (a timeout or a cancel; `_hand_off_locks` marks `handed_off`), their
+  outcome is unknown even with nothing seen removed yet, since the first
+  unlink may be the one running. `unfinished_delete(planned, removed,
+  in_flight=True)` then returns every planned file not seen removed, for the
+  job, the retry and the finish alike, recorded as `deleting` or as the
+  started-delete Finding; the next finish, or `clear_gone`, settles it
+  against what actually remains, so a delete that went through just clears.
+- **A job whose Library was removed reports its own partial delete** (codex
+  4580441301). `forget_library` drops the Library's jobs from `_job_owners`
+  and clears their `_sweep_owner` (`_orphan_job`), so `job._sweep_owner` only
+  ever names a live owner: a job that stops part way afterwards files the
+  started-delete Finding under `NO_LIBRARY` itself. A plan the job had
+  already handed over is reported there by `_orphan_job`, and one whose
+  `note_job_finished` finds the Library removed under `_sweep_lock` by
+  `_remember_kept_source`.
+- **A job's cleanup releases everything, cancel or not** (codex 4580441305).
+  In `_process_job`'s `finally`, each release runs in its own enclosing
+  `finally` (the output locks' bounded wait, then the folder lock, the input
+  locks, the concurrency slot and the runtime bookkeeping,
+  `_forget_job_runtime`, then the temp folder and the prune), so a cancel
+  during one await skips none of the others; it goes on once they ran.
+
+It may only proceed while the decision that kept the Source still stands:
+
+- A paused Rule waits: the same `_rule_paused` gate as the Platform pass (an
+  operator's pause holds unless the Platform is named, a validation pause
+  always), and its entries are neither retried nor dropped.
+- An entry whose `decision` differs from the one recomputed from the current
+  Rule and Library, or whose generation is not the current one, is dropped
+  without deleting. So is one whose Rule is gone or keeps its Sources.
+- **The authority is the sweep's own plan** (codex 4580012814). The decision
+  identity and the generation are fast pre-checks; before deleting, the retry
+  asks the function the sweep decides with, `_inspect_candidate`, for this one
+  Source under the current Rule and Library (`_current_plan` →
+  `_planned_delete`: the Platform's Images listed once, the mode's Platform
+  check, then the name, size and match filters, containment, the input
+  check, the companions and the destination, bounded on a detached thread).
+  Only a plan that still converts this Source to the same output deletes;
+  any other answer drops the entry without deleting, and an unanswered or
+  busy one is an attempt. The output exists by then, so the destination is
+  asked as `overwrite` would; the duplicate policy is an identity input.
+  Under `rename` the recorded output may be the numbered sibling the rename
+  gave that destination (`output_conflicts.is_renamed_from`, the same
+  derivation `get_unique_output_path` probes with); `overwrite` and `skip`
+  take it exactly (codex 4580078019).
+- Apart from that, the record's check must meet the Rule's current effective
+  check level (`retry_kept_delete(required_check=...)`, `_check_satisfies`):
+  Round-tripped meets either level, Intact only the container check. So does a
+  Source no longer inside the Library's root as it resolves now (checked
+  fresh, bounded; an unanswered volume is an attempt).
+- Invalidations move the generation on: `forget_converted_locked` for every
+  Platform it targets, and `set_rules` for a Platform whose decision identity
+  changed (a retarget through `forget_converted_locked`, any other decision
+  field directly). So every caller of `forget_converted_locked` drops pending
+  deletes and outruns in-flight completions: Forget
+  history (`forget_converted`, the Rules and Libraries routes, RomM's), a
+  Rule's retarget (`set_rules`), and RomM's identity cleanup
+  (`routes/romm.py::_run_identity_cleanup`). `forget_checks_locked`, which
+  that cleanup also calls, drops the `source_kept` Findings, keyed by Image
+  like the "not Intact" ones. A Library's removal (`forget_library`) runs the
+  same `_invalidate_decisions` before it wipes the state.
+- `_invalidate_decisions` drops a pending delete that has not started
+  silently (the Source is whole), but reports one in `state: deleting` first
+  (codex 4580328581), through `_report_started_delete`, the same helper and
+  Finding (`findings.started_delete`, naming the files left in
+  `findings.REMAINING`) as a `finish_kept_delete` whose output no longer
+  stands. Where the Library will not hold that Finding (its removal, or
+  RomM's identity cleanup, which drops RomM's own) it goes under
+  `findings.NO_LIBRARY`, keyed by the Source's path (`owner=`).
+- One entry's exception is that entry's `kept` attempt, logged with its
+  traceback; the sweep goes on to the other entries and Platforms.
+
+`reader` and `kept` count an attempt; at `KEPT_DELETE_MAX_ATTEMPTS`
+(10) the entry is dropped and a `source_kept` Finding (`findings.SOURCE_KEPT`)
+names the Source, cleared once the Source is gone (`findings.clear_gone`).
+Both writes run detached and bounded, and carry a `current` predicate on the
+Library's generation, checked under the Findings write lock, so a write that
+outlives the sweep's wait writes nothing once the Library was forgotten or
+its RomM identity changed (codex 4580078026).
+The sweep's result counts `kept_sources_deleted` and `kept_sources_given_up`
+when either happened.
+
+Every path probe of the shared delete step (`build_delete_plan`, the path
+resolution, `_check_delete_paths`' per-path checks) runs on a detached thread
+under `_CANONICAL_PROBE_SECONDS` (`_bounded_delete_probe`), for the job and the
+retry alike: a volume that stops answering refuses the delete instead of
+stalling the event loop.
+
+A retry holds file locks while it prepares, and `_sweep_lock` while it
+deletes, so every stage that touches the filesystem (but the output's check,
+under its own verify bound) is bounded by `KEPT_DELETE_PROBE_SECONDS` on a
+detached thread, and a timeout is a counted `kept` attempt (codex 4579683118):
+
+- the Library containment check (`_inside_library`, through `_probe`);
+- the output lock and the delete-path holds (`run_detached_undoable`);
+- the check record lookup (`verification_store.get_record_blocking`);
+- the Source snapshot and identity checks (`_kept_delete_snapshot`);
+- in `_delete_source_set` (its `probe_seconds`): the plan, the path
+  resolution, the path checks, the Referrer hook
+  (`update_before_source_removal(bound=...)`), and the store clears
+  (`clear_blocking`), where a timeout after the unlinks only leaves a stale
+  record of a Source that is gone.
+- **A started delete is one unit** (codex 4580176201). The whole set of
+  planned unlinks (`_remove_in_order`) is one mutation, for the job and the
+  retry alike: a caller that stops waiting hands the rest of the plan and its
+  locks to the worker, which removes every planned file before it lets go.
+  An `unknown` retry moves its entry to `state: deleting` with the planned
+  list; the next sweep does not plan it again (a part-deleted Source is
+  expected) but calls `JobManager.finish_kept_delete`: under the output's,
+  companions' and remaining files' locks it re-checks that the output and its
+  companions are still the checked ones and that each remaining file is one
+  the check fingerprinted, unchanged, then removes them. If the output no
+  longer stands, the remaining files stay, the entry is dropped and a
+  `source_kept` Finding names the part-deleted Source; it is never dropped
+  silently.
+- **Once a file is removed, the delete has started** (codex 4580227623). One
+  decision, `job_manager.unfinished_delete(planned, removed)`, applies to
+  every outcome: once any planned file is gone, anything but "all removed"
+  (an error, a timeout, a cancel) leaves the files still to remove, and the
+  entry goes to `deleting` (`KEPT_STARTED`, or `KEPT_UNKNOWN` for a timeout);
+  only a failure before the first removal is a plain `kept` attempt. A Rule's
+  job that stops part way hands the rest to its sweep
+  (`job._unfinished_delete`, recorded as a `deleting` entry, or a Finding if
+  its decision no longer stands); a hand-started job, which has no pending
+  store or Library, files the `source_kept` Finding at once and fails saying
+  how much of the Source is gone. That Finding's owner is the explicit
+  `findings.NO_LIBRARY` (the empty id, which no Library can have): the
+  Findings view lists it as "Started by hand", Dismiss does not ask a Library
+  that is not there whether it is current, and no Library's removal or RomM
+  identity cleanup touches it. Every reporter of a started delete builds the
+  one Finding, `findings.started_delete`: the Source as its path (where Open
+  folder goes) and every file left in `cause[findings.REMAINING]` (CodeRabbit
+  4580360093). With no sweep to settle a hand-started one, the Findings view
+  runs `clear_gone` for it as it loads (bounded by `_SETTLE_SECONDS`,
+  detached, at most one in flight: `_settle_running`, so loads during a stuck
+  one start none and a dead mount costs one probe slot, CodeRabbit
+  4580360066). It clears once every file left is gone (the same "gone needs a
+  folder that lists entries" evidence as `NOT_INTACT`; with `REMAINING` the
+  path alone is not enough, since the Source's first file may be the one
+  removed). A Library's started-delete Findings carry `REMAINING` too and
+  settle the same way in its sweep. `clear_gone` looks at the files outside
+  the write lock, so its delete is a compare-and-delete on the row id and
+  cause fingerprint it looked at (CodeRabbit 4580360075): a Finding a producer
+  updated meanwhile stays.
+- Each unlink is a mutation, not a probe, so it is never abandoned with its
+  locks (below). One that outlives `KEPT_DELETE_PROBE_SECONDS` makes the
+  retry's outcome `unknown`: the Source may or may not be gone. That is not
+  an attempt, and the entry stays; the next sweep's own checks settle it (a
+  Source that is gone is dropped as `stale`, one still there is retried).
+
+The record names the Source by its real path, so `_kept_delete_snapshot`
+compares it with the Source resolved now: a Library reached through a symlink
+is still the same Source (codex 4579683123).
+
+`run_detached_undoable(func, *args, timeout, undo)` (`subprocess_runner`) is
+the shared form of a bounded call that takes something (a lock): when its
+caller gives up, whatever the abandoned call returns later is handed to
+`undo`, so nothing it took stays held.
+
+A bounded helper tells its deadline from the call's own `TimeoutError` (a
+network filesystem's `ETIMEDOUT`; `asyncio.TimeoutError` is the built-in
+`TimeoutError`) by who finished, not by type (codex 4579904147): the call
+records that it settled, and how, before it returns or raises (`_Finished`).
+A call that settled with its own error has that error re-raised as itself,
+also when it failed just as the wait ran out (CodeRabbit 4580102968; a
+caller's cancel still propagates as the cancel); an
+answer that came just as the wait ran out is returned; only a wait that ran
+out while the call still ran is the deadline: `DeadlineExpired` from
+`run_detached_bounded` (the read-only probe form) and `run_detached_undoable`,
+`MutationInFlight` from `run_detached_mutation`, "stopped responding" from
+`run_detached_within_stall_bound`.
+
+Read-only probes may be abandoned; irreversible mutations may not
+(codex 4579725632). `run_detached_mutation(func, *args, timeout, hand_off)`
+runs a mutation (an unlink) on a detached thread. When its caller stops
+waiting while it still runs (the timeout, None for no bound, or a cancel),
+`hand_off()` takes the locks it runs under from the caller and the worker
+releases them only after the mutation has returned or raised, so nothing that
+waits on them (a new job's input lock) is granted while it can still take
+effect. The timeout raises `MutationInFlight`. "Who owns these locks now" is
+one object, `HeldLocks`: a job's output locks (the output and its companions,
+`_output_locks`) and a retry's output lock are each one, passed to
+`_delete_source_set` as `travelling_locks`; a hand-off `take()`s them, and the
+owner's own `release()` (`_release_output_locks`, the retry's cleanup, run off
+the loop) is then a no-op (CodeRabbit 4579839955). Only a worker that started can
+own the locks: when none could be launched (`ProbeCapacityExceeded`) or the
+caller gave up before it began, nothing is handed off, the mutation never
+runs, the caller keeps and releases its locks, and `MutationNotStarted` (a
+counted `kept` attempt for a retry, never `unknown`) says so (codex
+4579801887). `run_detached_undoable` needs no such case: a call that never
+started took nothing, so there is nothing to undo. `_delete_source_set` runs every
+unlink through it for the job and the retry alike (`_hand_off_locks`: the
+delete holds, plus a retry's output lock).
 
 **Root.** `scripts/compressatorium` started as root execs `/entrypoint.sh
 compressatorium ...`: the entrypoint's PUID/PGID remap and `gosu converter`
@@ -4400,7 +4737,11 @@ bounded thread, as a conversion candidate's do. It returns a skip reason
 (`unresolvable`, `missing`, `uncheckable`) or a `Check`: the Image key, path,
 size, the checking tool and the Image's file fingerprint. An Image already
 being checked (`check.in_flight`) or converted (the active-path set) is
-skipped. Readiness is the verifier's (`registry.tool_is_ready(tool,
+skipped. The other way round too (#330): every file of an Image a running
+check picked (`check.in_flight_paths`) joins the sweep's active-path set
+(`sweep._active_source_paths`) beside the queued and converting Sources, so a
+conversion Rule on the same Platform skips it as active, records no failure
+hold, and queues it on a sweep after the check is done. Readiness is the verifier's (`registry.tool_is_ready(tool,
 purpose="verify")`), not conversion's: jwud checks WUX in pure Python without
 JWUDTool, and z3ds needs zstd to check. A tool that is not ready skips its
 Images and reports

@@ -13,9 +13,11 @@ from __future__ import annotations
 
 import asyncio
 import os
+import threading
 
 from fastapi import APIRouter, HTTPException
 from fastapi.concurrency import run_in_threadpool
+from logging_setup import get_logger
 from pydantic import BaseModel
 from services import findings, libraries, platform_detect, platform_mappings
 from services.libraries.folder import ListingInProgress
@@ -23,12 +25,18 @@ from services.rules.library import LibraryUnreadable
 from services.subprocess_runner import run_detached
 
 router = APIRouter()
+logger = get_logger()
 
 # How long one Library's walk may take before the request stops waiting. The
 # walk itself runs on (and may strand) a detached thread, as #303's do.
 _WALK_SECONDS = 300
 # How long a mapping change may take. It resolves the folder on its mount.
 _MAPPING_SECONDS = 60
+# How long the Findings view waits to settle the hand-started Findings (it
+# stats the files each one names) before it lists them as they are.
+_SETTLE_SECONDS = 5
+# Held by the settle that is running (`_settle_blocking`), across threads.
+_settle_running = threading.Lock()
 
 
 class FindingRef(BaseModel):
@@ -71,14 +79,47 @@ async def _walk(library) -> dict:
     return {"id": library.id, "name": library.name, "status": "ok"}
 
 
+def _settle_blocking() -> int:
+    """One settle of the hand-started Findings, unless one is running."""
+    if not _settle_running.acquire(blocking=False):
+        return 0
+    try:
+        return findings.clear_gone(findings.NO_LIBRARY, findings.SOURCE_KEPT)
+    finally:
+        _settle_running.release()
+
+
+async def _settle_started_by_hand() -> None:
+    """Clear the hand-started Findings whose files are gone (#329). Never raises.
+
+    They have no Library, so no sweep settles them; the view does, as it
+    loads. Bounded and detached: a volume that does not answer leaves them
+    listed as they are, and the next load tries again. At most one settle is
+    in flight (CodeRabbit 4580360066): while one runs, even one stuck on a
+    dead mount, a load starts none and lists the Findings as they are, so
+    stuck settles never take more than one detached probe slot.
+    """
+    if _settle_running.locked():
+        return
+    try:
+        await asyncio.wait_for(run_detached(_settle_blocking), _SETTLE_SECONDS)
+    except (asyncio.TimeoutError, OSError):
+        logger.warning(
+            "Findings: checking the hand-started Findings did not finish; "
+            "the next load tries again",
+        )
+
+
 @router.get("/findings")
 async def list_findings(include_dismissed: bool = False) -> dict:
     """Open Findings with their Library's name, by Library and Image."""
+    await _settle_started_by_hand()
     rows = await run_in_threadpool(
         lambda: findings.list_findings(include_dismissed=include_dismissed),
     )
     dismissed = await run_in_threadpool(findings.count_dismissed)
     names = {lib.id: lib.name for lib in await run_in_threadpool(libraries.all_libraries)}
+    names[findings.NO_LIBRARY] = findings.NO_LIBRARY_NAME
     for row in rows:
         row["library_name"] = names.get(row["library_id"], row["library_id"])
         # The folder holding the Image: where "open the folder" goes, and the
