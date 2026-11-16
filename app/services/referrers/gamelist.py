@@ -37,6 +37,19 @@ replaced file in an entry that doesn't resolve to it, or whose matching entry
 can't be edited in place (CDATA, a comment inside it, a child element, a
 UTF-16 file) raises ``ReferrerError`` naming the file: the Source is kept.
 
+**ES-DE's gamelists folder** (#387). ES-DE keeps its gamelists in a folder
+of its own, one subfolder per system named after the system's ROM folder
+(``ROMs/ps2`` -> ``gamelists/ps2/gamelist.xml``), its entries relative to that
+ROM folder. When the Image's Library names that folder
+(``library.referrer_options("gamelist")["gamelists_folder"]``, bound through
+``for_library``), the system of a replaced file is its Platform folder, which
+the Library gives for its own layout (``Library.platform_folder``), named as
+listed (a symlinked Platform folder keeps its name). Only
+``<gamelists>/<system>/gamelist.xml`` is read, its entries resolved against
+that Platform folder; a file whose Platform folder can't be told keeps the
+Source. The folder must be confirmed inside the Volumes when
+planning, or the Source is kept.
+
 Writes go through ``files.rewrite_in_place``: re-read under the in-process
 and cross-process locks, one ``gamelist.xml.bak`` kept, atomic replace.
 """
@@ -52,7 +65,8 @@ from dataclasses import dataclass
 
 from defusedxml.common import DefusedXmlException
 from defusedxml.ElementTree import DefusedXMLParser, ParseError
-from utils.path_utils import file_identity
+from services.rules.library import GAMELISTS_FOLDER, AmbiguousFolder
+from utils.path_utils import file_identity, volume_containment
 
 from .base import Phase, Referrer, ReferrerChange, ReferrerError
 from .files import (
@@ -75,7 +89,16 @@ GAMELIST_LOCK_WAIT_SECONDS = 30.0
 
 # <gameList> (depth 0) > <game> or <folder> (depth 1) > <path> (depth 2).
 _PATH_DEPTH = 2
+# ES-DE writes <alternativeEmulator> beside <gameList>, two top-level elements
+# that strict XML refuses (pugixml reads them as a fragment). An
+# ASCII-compatible file is parsed wrapped in one more element after its
+# declaration, so a fragment reads like ES-DE reads it; byte indexes are
+# shifted back by the wrapper's length.
+# The BOM and the declaration, either optional: the wrapper goes after both.
+_PROLOG = re.compile(rb"^(?:\xef\xbb\xbf)?(?:<\?xml[^>]*\?>)?")
+_WRAP_OPEN, _WRAP_CLOSE = b"<gamelist-file>", b"</gamelist-file>"
 _PATH_TAG = "path"
+_GAMELIST_TAG = "gameList"
 _DECLARED = re.compile(rb"""^<\?xml[^>]*?\bencoding\s*=\s*["']([A-Za-z0-9._-]+)["']""")
 # Bytes an ASCII-compatible encoding writes the same as ASCII, so a span can
 # be found by its markup bytes.
@@ -96,8 +119,14 @@ class _Entry:
 class _Paths:
     """Parser target that records each ``<path>`` and where its text sits."""
 
-    def __init__(self) -> None:
+    def __init__(self, depth: int) -> None:
         self.parser: DefusedXMLParser | None = None
+        self._path_depth = depth
+        # The document's top-level elements, and whether any text sits
+        # between them (only possible inside the fragment wrapper).
+        self._top_depth = depth - _PATH_DEPTH
+        self.tops: list[str] = []
+        self.stray_text = False
         self.found: list[tuple[str, int, int, bool]] = []  # text, start, end, plain
         self._depth = 0
         self._open: tuple[int, list[str]] | None = None  # start index, text parts
@@ -107,19 +136,23 @@ class _Paths:
         return self.parser.parser.CurrentByteIndex
 
     def start(self, tag, _attrib) -> None:
+        if self._depth == self._top_depth:
+            self.tops.append(tag)
         if self._open is not None:
             self._plain = False  # a child element inside <path>
-        elif tag == _PATH_TAG and self._depth == _PATH_DEPTH:
+        elif tag == _PATH_TAG and self._depth == self._path_depth:
             self._open, self._plain = (self._index(), []), True
         self._depth += 1
 
     def data(self, text: str) -> None:
+        if self._depth == self._top_depth and text.strip():
+            self.stray_text = True
         if self._open is not None:
             self._open[1].append(text)
 
     def end(self, tag) -> None:
         self._depth -= 1
-        if self._open is not None and tag == _PATH_TAG and self._depth == _PATH_DEPTH:
+        if self._open is not None and tag == _PATH_TAG and self._depth == self._path_depth:
             start, parts = self._open
             self.found.append(("".join(parts), start, self._index(), self._plain))
             self._open = None
@@ -173,17 +206,34 @@ def _text_span(data: bytes, start: int, end: int) -> tuple[int, int] | None:
 
 def _entries(gamelist: str, data: bytes) -> list[_Entry]:
     """Every ``<path>`` in *data*, in order. ReferrerError when it can't be parsed."""
-    target = _Paths()
+    editable = _codec(data) is not None
+    feed, shift, depth = data, 0, _PATH_DEPTH
+    if editable:
+        prolog = _PROLOG.match(data)
+        split = prolog.end() if prolog else 0
+        feed = data[:split] + _WRAP_OPEN + data[split:] + _WRAP_CLOSE
+        shift, depth = len(_WRAP_OPEN), _PATH_DEPTH + 1
+    target = _Paths(depth)
     parser = DefusedXMLParser(target=target)
     target.parser = parser
     try:
-        parser.feed(data)
+        parser.feed(feed)
         found = parser.close()
     except (ParseError, DefusedXmlException, ValueError, LookupError) as exc:
         raise ReferrerError(gamelist, f"can't be parsed ({exc})") from exc
-    editable = _codec(data) is not None
+    # The wrapper makes an empty, declaration-only or text-only file parse:
+    # none of them is a gamelist, so none can say the Source isn't listed
+    # (Codex PRRT_kwDOQ9nULM64JsQt). ES-DE's <alternativeEmulator> beside
+    # <gameList> is still fine.
+    if _GAMELIST_TAG not in target.tops:
+        raise ReferrerError(gamelist, f"isn't a gamelist (no <{_GAMELIST_TAG}> element)")
+    if target.stray_text:
+        raise ReferrerError(gamelist, "isn't a gamelist (text outside its elements)")
     return [
-        _Entry(text, _text_span(data, start, end) if editable and plain else None)
+        _Entry(
+            text,
+            _text_span(data, start - shift, end - shift) if editable and plain else None,
+        )
         for text, start, end, plain in found
     ]
 
@@ -308,26 +358,133 @@ class GamelistReferrer(Referrer):
     opt_in = True
     phase = Phase.FILE
 
+    def __init__(self, gamelists_folder: str | None = None, library=None) -> None:
+        # The Library's ES-DE gamelists folder (#387), or None, and the
+        # Library itself, which says where each file's Platform folder is.
+        # Set only on a copy bound by `for_library`; the registered Referrer
+        # has neither.
+        self.gamelists_folder = gamelists_folder or None
+        self.library = library
+
+    def for_library(self, library) -> GamelistReferrer:
+        """A copy bound to *library* and its ES-DE gamelists folder, if it has one."""
+        if library is None:
+            return self
+        folder = library.referrer_options(self.id).get(GAMELISTS_FOLDER)
+        return GamelistReferrer(folder, library) if folder else self
+
+    def _check_folder(self) -> None:
+        """Fail closed when the gamelists folder isn't confirmed inside the
+        Volumes (they changed after it was set, or a probe failed), or isn't
+        a folder now (unmounted, renamed): finding no gamelist there must not
+        read as "nothing to update" (CodeRabbit PRRT_kwDOQ9nULM64KujE)."""
+        folder = self.gamelists_folder
+        if not folder:
+            return
+        if volume_containment(folder, treat_archives=False) is not True:
+            raise ReferrerError(
+                folder, "the gamelists folder isn't confirmed inside the configured Volumes",
+            )
+        if not os.path.isdir(folder):
+            raise ReferrerError(folder, "the gamelists folder isn't there")
+
+    def _platform_folder(self, path: str) -> str:
+        """The Platform folder holding *path*, from the Library
+        (``Library.platform_folder``). Fail closed: one that can't be told
+        keeps the Source, never "no gamelist, nothing to do"."""
+        try:
+            folder = self.library.platform_folder(path)
+        except AmbiguousFolder as exc:
+            raise ReferrerError(path, str(exc)) from exc
+        except OSError as exc:
+            raise ReferrerError(
+                path, f"can't tell its Platform folder ({exc.strerror or exc})",
+            ) from exc
+        if not folder:
+            raise ReferrerError(
+                path, "no Platform folder holds it, so its ES-DE gamelist can't be told",
+            )
+        return folder
+
+    def _systems(self, renames: Mapping[str, str]) -> list[tuple[str, str]]:
+        """``(gamelist, base)`` for each ES-DE system holding a replaced file.
+
+        ES-DE's system for a file is its Platform folder, which the Library
+        knows for its own layout (``Library.platform_folder``): the folder
+        directly under a folder Library's root, ``<root>/roms/<platform>`` or
+        ``<root>/<platform>`` for RomM. So ``ROMs/ps2/psx/Game.iso`` belongs to
+        ``ps2`` alone: only ``<gamelists>/ps2/gamelist.xml`` is read, its
+        entries resolved against ``ROMs/ps2`` (Codex PRRT_kwDOQ9nULM64JsQa).
+        The system's name is the Platform folder's name as listed, never a
+        resolved one, so a symlinked ``ROMs/ps2 -> actual/PlayStation2`` is
+        still ``ps2`` (Codex PRRT_kwDOQ9nULM64JsQn).
+        """
+        found: list[tuple[str, str]] = []
+        for old in renames:
+            base = self._platform_folder(old)
+            name = os.path.basename(base.rstrip(os.sep))
+            for gamelist in _gamelists(os.path.join(self.gamelists_folder, name)):
+                if (gamelist, base) not in found:
+                    found.append((gamelist, base))
+        return found
+
     def detect(self, image_path: str) -> bool:
-        return any(_gamelists(d) for d in search_dirs(image_path))
+        # With an ES-DE folder, planning looks there (and checks the folder).
+        return bool(self.gamelists_folder) or any(
+            _gamelists(d) for d in search_dirs(image_path)
+        )
 
     def plan(self, renames: Mapping[str, str]) -> list[ReferrerChange]:
+        self._check_folder()
         targets = Renames.of(renames)
         changes = []
-        for directory in dirs_for(renames):
-            for gamelist in _gamelists(directory):
-                if not may_read(gamelist):
-                    continue
-                with target_lock(gamelist):
-                    _, edits = _rewrite(
-                        gamelist, read_target(gamelist), directory, targets, strict=False,
-                    )
-                if edits:
-                    changes.append(ReferrerChange(
-                        referrer=self.id, target=gamelist, edits=tuple(edits),
-                        payload=(directory, targets),
-                    ))
+        for gamelist, base in self._settled(renames):
+            if not may_read(gamelist):
+                continue
+            with target_lock(gamelist):
+                _, edits = _rewrite(
+                    gamelist, read_target(gamelist), base, targets, strict=False,
+                )
+            if edits:
+                changes.append(ReferrerChange(
+                    referrer=self.id, target=gamelist, edits=tuple(edits),
+                    payload=(base, targets),
+                ))
         return changes
+
+    def _settled(self, renames: Mapping[str, str]) -> list[tuple[str, str]]:
+        """Every gamelist the walk reaches, each once, with its one base.
+
+        A gamelist is settled before it is read: every way to reach it is
+        collected first. With ES-DE's systems taken from the ROM directory
+        (``_systems``) a gamelist has one base, except when the gamelists
+        folder overlaps the ROM folders (a Platform folder's own gamelist that
+        is also some system's ES-DE gamelist). Two different bases can't be
+        told apart: entries would resolve against the wrong one, so planning
+        refuses and the Source is kept (Codex PRRT_kwDOQ9nULM64Jpv8).
+        """
+        located = [
+            (gamelist, directory)
+            for directory in dirs_for(renames)
+            for gamelist in _gamelists(directory)
+        ]
+        if self.gamelists_folder:
+            located += self._systems(renames)
+        bases: dict[str, tuple[str, list[str]]] = {}  # realpath -> (gamelist, bases)
+        for gamelist, base in located:
+            _, found = bases.setdefault(os.path.realpath(gamelist), (gamelist, []))
+            if base not in found:
+                found.append(base)
+        settled = []
+        for gamelist, found in bases.values():
+            if len(found) > 1:
+                raise ReferrerError(
+                    gamelist,
+                    "more than one ROM folder could be its system's ("
+                    + ", ".join(found) + "), so its entries can't be resolved",
+                )
+            settled.append((gamelist, found[0]))
+        return settled
 
     def apply(self, change: ReferrerChange) -> None:
         path = change.target
