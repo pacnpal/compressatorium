@@ -53,6 +53,7 @@ from services.tools import registry
 from services.tools.base import ToolPlugin
 from services.subprocess_runner import (
     BATCH_STOPPED_MESSAGE,
+    ReadCancelled,
     StorageAbandoned,
     bounded_path_check,
     collect_abandonment,
@@ -581,7 +582,12 @@ async def scan_metadata_task(
                             )
                         continue
                     logger.info("Phase 2: Scanning disc ID for %s", os.path.basename(path))
-                    result = await disc_id_extract_from_chd(path, settings.chdman_path)
+                    # Bounded and raced against Cancel (#352): a Volume that
+                    # answers stat but blocks reads ends this read, not the scan.
+                    result = await disc_id_extract_from_chd(
+                        path, settings.chdman_path,
+                        cancel_event=job_manager.get_cancel_event(scan_job_id),
+                    )
                     if result and result.get("game_id"):
                         await chd_metadata_store.update_disc_id_info(
                             path, result["game_id"], result.get("title"), persist=False
@@ -600,10 +606,16 @@ async def scan_metadata_task(
                             "Phase 2: No disc ID found for %s, file marked as checked",
                             os.path.basename(path),
                         )
+                except ReadCancelled:
+                    pass  # Cancel pressed mid-read: handled just below
                 except Exception:
                     logger.warning(
                         "Phase 2: could not read the disc ID of %s", path, exc_info=True,
                     )
+            # Cancel first: a read Cancel cut short also leaves its thread
+            # behind, and that must end the scan as cancelled, not failed.
+            if job_manager.is_cancelled(scan_job_id):
+                raise ExternalJobCancelled()
             if abandoned:
                 raise RuntimeError(
                     f"Phase 2: reading {os.path.basename(path)} left a process "

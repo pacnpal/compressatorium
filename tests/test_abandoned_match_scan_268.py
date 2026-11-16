@@ -359,7 +359,7 @@ async def test_scan_phase2_aborts_the_scan(tmp_path, monkeypatch):
 
     calls = []
 
-    async def fake_ensure(path, chdman_path):
+    async def fake_ensure(path, chdman_path, **_kwargs):
         calls.append(path)
         _note()
 

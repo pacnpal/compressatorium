@@ -13,7 +13,9 @@
   metadata cache for the CHD, where the info panel and the library scan read
   them. The library scan reads a disc ID from the CHD itself (its sectors, the
   Dreamcast IP.BIN tag or a companion file) and no longer tries to tag it.
-  When a disc ID cannot be read or stored, a warning names the file.
+  When a disc ID cannot be read or stored, a warning names the file. A disc-ID
+  read on a share that stops answering gives up after 30 seconds, and Cancel
+  stops it at once, so it can't hold the metadata scan.
 - **An output found bad on a re-check stops showing as checked** (#351). When
   a later check finds an output bad (the retried delete of a Source kept for
   a reader, or Verify in the file browser), the output now loses its Intact or

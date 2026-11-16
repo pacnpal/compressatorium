@@ -52,7 +52,7 @@ def scan_env(tmp_path, monkeypatch):
     async def fake_flush_async():
         return None
 
-    async def fake_ensure_embedded(path, chdman_path):
+    async def fake_ensure_embedded(path, chdman_path, **_kwargs):
         ensure_calls.append(path)
         return None
 
@@ -244,7 +244,7 @@ async def test_scan_metadata_cancellation_during_phase2(tmp_path, monkeypatch):
         return job
     monkeypatch.setattr(info_routes.job_manager, "create_external_job", capture_create)
 
-    async def fake_ensure_embedded(path, chdman_path):
+    async def fake_ensure_embedded(path, chdman_path, **_kwargs):
         ensure_calls.append(path)
         # Cancel after the first disc-id scan; next iteration's top-of-loop
         # check raises ExternalJobCancelled.
@@ -826,7 +826,7 @@ async def test_scan_phase2_caches_game_id_when_disc_id_found(scan_env, monkeypat
     monkeypatch.setattr(info_routes.chd_metadata_store, "is_stale", fake_false)
 
     # Stub extract_from_chd to return a found game_id
-    async def fake_ensure_with_result(path, chdman_path):
+    async def fake_ensure_with_result(path, chdman_path, **_kwargs):
         scan_env["ensure_calls"].append(path)
         return {"game_id": "SLUS-20312", "title": "God of War"}
 

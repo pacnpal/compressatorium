@@ -48,10 +48,13 @@ from pathlib import Path
 from typing import Optional
 
 from services.subprocess_runner import (
+    DeadlineExpired,
+    ProbeCapacityExceeded,
     StorageAbandoned,
     abandonment_checkpoint,
     ioprio_prefix,
     nice_prefix,
+    run_detached_bounded,
 )
 from utils.sheet_text import cue_tracks, gdi_tracks, sheet_readings, sheet_tracks
 
@@ -93,6 +96,10 @@ def _abort_if_abandoned(abandoned: list, action: str, chd_path: str) -> None:
 
 
 _DUMPMETA_TIMEOUT_SECONDS = 15
+# The bound on one blocking disc-ID read of a CHD or its companion file
+# (``_bounded_disc_read``). The reads are small (a few hunks, a header), so a
+# Volume that takes this long is not answering.
+_DISC_READ_TIMEOUT_SECONDS = 30.0
 
 
 def _chdman_runner():
@@ -1224,7 +1231,12 @@ def _extract_gdi(path: str, within=None) -> Optional[dict]:
 # Public async extractor: CHD files
 # ===========================================================================
 
-async def extract_from_chd(chd_path: str, chdman_path: str = "chdman") -> Optional[dict]:
+async def extract_from_chd(
+    chd_path: str,
+    chdman_path: str = "chdman",
+    *,
+    cancel_event: asyncio.Event | None = None,
+) -> Optional[dict]:
     """
     Extract game ID / title from an existing CHD file.
 
@@ -1242,12 +1254,19 @@ async def extract_from_chd(chd_path: str, chdman_path: str = "chdman") -> Option
     one into a compressed CHD (#352). Returns a dict containing at least
     ``game_id`` when successful; it may also include ``title`` and/or
     ``platform``. Returns None if no ID could be found.
+
+    Every file read is bounded and raced against *cancel_event*
+    (``_bounded_disc_read``): storage that does not answer raises
+    ``DiscIdStorageAbandoned`` and a cancel raises ``ReadCancelled``, so the
+    caller never hangs on it and never caches an outcome for a file it did not
+    read.
     """
     # --- Strategy 1: read disc sectors directly (like PCSX2 / AetherSX2) ----
     # For DVD CHDs (unit_bytes=2048) this reads SYSTEM.CNF / PARAM.SFO from
     # the CHD's own ISO 9660 filesystem without any extraction pass.
-    _loop = asyncio.get_running_loop()
-    disc_result = await _loop.run_in_executor(None, _extract_from_chd_sectors, chd_path)
+    disc_result = await _bounded_disc_read(
+        _extract_from_chd_sectors, chd_path, path=chd_path, cancel_event=cancel_event,
+    )
     if disc_result and disc_result.get("game_id"):
         logger.debug(
             "disc_id: Strategy 1 (CHD sectors) found game_id=%r in %s",
@@ -1276,23 +1295,60 @@ async def extract_from_chd(chd_path: str, chdman_path: str = "chdman") -> Option
         logger.debug("disc_id: Strategy 2 (GDRO) tag not found in %s", chd_path)
 
     # --- Strategy 3: companion source file -----------------------------------
-    chd_p = Path(chd_path)
-    for ext in (".iso", ".gdi", ".cue", ".bin"):
-        candidate = chd_p.with_suffix(ext)
-        if candidate.exists():
-            res = await _loop.run_in_executor(None, extract_from_source, str(candidate))
-            if res and res.get("game_id"):
-                logger.debug(
-                    "disc_id: Strategy 3 (companion %s) found game_id=%r in %s",
-                    candidate.name,
-                    res["game_id"],
-                    chd_path,
-                )
-                return res
+    res = await _bounded_disc_read(
+        _companion_disc_id, chd_path, path=chd_path, cancel_event=cancel_event,
+    )
+    if res:
+        return res
     logger.debug("disc_id: Strategy 3 (companion file) found no game_id for %s", chd_path)
 
     logger.debug("disc_id: all strategies exhausted, no game_id found for %s", chd_path)
     return None
+
+
+def _companion_disc_id(chd_path: str) -> Optional[dict]:
+    """The disc ID of a Source file left beside the CHD (blocking)."""
+    chd_p = Path(chd_path)
+    for ext in (".iso", ".gdi", ".cue", ".bin"):
+        candidate = chd_p.with_suffix(ext)
+        if candidate.exists():
+            res = extract_from_source(str(candidate))
+            if res and res.get("game_id"):
+                logger.debug(
+                    "disc_id: Strategy 3 (companion %s) found game_id=%r in %s",
+                    candidate.name, res["game_id"], chd_path,
+                )
+                return res
+    return None
+
+
+async def _bounded_disc_read(
+    func, *args, path: str, cancel_event: asyncio.Event | None,
+):
+    """Run a blocking disc-ID read of *path* off the loop, bounded and cancellable.
+
+    Through ``run_detached_bounded``: a disposable thread, at most
+    ``_DISC_READ_TIMEOUT_SECONDS``, raced against *cancel_event*. A Volume that
+    answers a cached ``stat`` and then blocks every read holds neither the loop,
+    a shared pool worker, the scan nor its lane. Past the bound (or with the
+    probe ceiling full) the thread is written off as abandoned storage: a
+    warning names the file and ``DiscIdStorageAbandoned`` is raised, so no
+    caller caches "nothing found" for a file it never read, and a scan stops its
+    pass (#268). A cancel raises ``ReadCancelled``.
+    """
+    try:
+        return await run_detached_bounded(
+            func, *args, timeout=_DISC_READ_TIMEOUT_SECONDS, cancel_event=cancel_event,
+        )
+    except (DeadlineExpired, ProbeCapacityExceeded) as exc:
+        logger.warning(
+            "disc_id: reading %s did not answer in %gs; its disc ID is skipped",
+            path, _DISC_READ_TIMEOUT_SECONDS,
+        )
+        raise DiscIdStorageAbandoned(
+            f"reading {os.path.basename(path)} did not answer in "
+            f"{_DISC_READ_TIMEOUT_SECONDS:g}s; the storage is not responding"
+        ) from exc
 
 
 # ===========================================================================

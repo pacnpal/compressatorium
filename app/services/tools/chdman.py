@@ -10,10 +10,7 @@ import asyncio
 import os
 import re
 from collections.abc import AsyncGenerator, Sequence
-from functools import partial
 from pathlib import Path
-
-from fastapi.concurrency import run_in_threadpool
 
 from logging_setup import get_logger
 from models import CHDInfo, OutputStatus
@@ -22,7 +19,11 @@ from services.disc_id import disc_platform, extract_from_source
 from services.disk import InsufficientDiskSpace, headroom_scratch_dir
 from services.file_hasher import compute_files_sha1_sync
 from services.lock_manager import lock_manager
-from services.subprocess_runner import ReadCancelled, run_detached
+from services.subprocess_runner import (
+    ReadCancelled,
+    run_detached,
+    run_detached_within_stall_bound,
+)
 from utils.disc_sheet import read_disc_sheet
 from utils.sheet_text import sheet_track_list
 
@@ -319,11 +320,14 @@ class ChdmanTool(BaseTool):
             return
         if Path(output_path).suffix.lower() != ".chd":
             return
-        if not await run_in_threadpool(os.path.exists, output_path):
-            return
         try:
-            disc_info = await run_in_threadpool(
-                partial(extract_from_source, input_path, within=within),
+            # One detached read, bounded by the conversion's no-progress
+            # timeout like every other pre-/post-subprocess read (#352): a
+            # Source or output Volume that stops answering ends this, not the
+            # job and the queue slot behind it.
+            outcome, disc_info = await run_detached_within_stall_bound(
+                _read_source_disc_id, input_path, output_path, within,
+                what="Reading the disc ID from the Source",
             )
         except Exception:
             # Best effort, but never silent: the job goes on without it.
@@ -332,16 +336,12 @@ class ChdmanTool(BaseTool):
                 exc_info=True,
             )
             return
-        if not (disc_info and disc_info.get("game_id")):
-            if Path(input_path).suffix.lower() in _SHEET_EXTS and (
-                await run_in_threadpool(
-                    partial(sheet_track_list, input_path, within=within),
-                )
-            ) is None:
-                logger.warning(
-                    "Disc ID not recorded for %s: its track sheet is unreadable "
-                    "or names a track outside the trusted roots", input_path,
-                )
+        if outcome == "sheet refused":
+            logger.warning(
+                "Disc ID not recorded for %s: its track sheet is unreadable "
+                "or names a track outside the trusted roots", input_path,
+            )
+        if outcome != "found":
             return
         await _record_disc_id(output_path, disc_info["game_id"], disc_info.get("title"))
 
@@ -514,6 +514,27 @@ class ChdmanTool(BaseTool):
 
     def active_pids(self) -> list[int]:
         return self._service.active_pids()
+
+
+def _read_source_disc_id(
+    input_path: str, output_path: str, within: Sequence[str] | None,
+) -> tuple[str, dict | None]:
+    """``post_convert``'s blocking reads, in one place to bound them together.
+
+    Returns ``(outcome, disc_info)``: ``"no output"`` when the CHD is not
+    there, ``"found"`` with the Source's disc ID, ``"sheet refused"`` when a
+    track sheet could not be read under ``within``, otherwise ``"none"``.
+    """
+    if not os.path.exists(output_path):
+        return "no output", None
+    disc_info = extract_from_source(input_path, within=within)
+    if disc_info and disc_info.get("game_id"):
+        return "found", disc_info
+    if Path(input_path).suffix.lower() in _SHEET_EXTS and (
+        sheet_track_list(input_path, within=within) is None
+    ):
+        return "sheet refused", None
+    return "none", None
 
 
 async def _record_disc_id(output_path: str, game_id: str, title: str | None) -> None:

@@ -765,6 +765,28 @@ Three rules follow for any code that runs a verifier:
   `DiscIdStorageAbandoned` through to the handler that fails the job. Since
   #352 chdman's hook spawns no chdman child at all (it records the Source's
   disc ID in `chd_metadata_store`), but the rule stays for any hook that does.
+- **Every disc-ID read is bounded (#352).** The disc ID is kept in
+  `chd_metadata_store`, never in the CHD, and the reads that fill it are file
+  reads on Volumes that may answer a cached `stat` and then block every read:
+  - `disc_id.extract_from_chd` (the library scan's Phase 2 and `/api/info`)
+    reads the CHD's sectors and any companion file through `_bounded_disc_read`:
+    `run_detached_bounded`, `_DISC_READ_TIMEOUT_SECONDS`, raced against the
+    caller's `cancel_event` (Phase 2 passes the scan job's). Past the bound the
+    thread is written off into the open `collect_abandonment` sink, a warning
+    names the file and `DiscIdStorageAbandoned` is raised, so `/api/info`
+    caches nothing and answers 503, and Phase 2 stops its pass at that file
+    (the same rule as a chdman child that outlived SIGKILL). Phase 2 checks for
+    Cancel before the sink, so a Cancel that cut a stuck read short ends the
+    scan as cancelled, not failed. The scan's `_is_scanning` flag and
+    `metadata_scan` lane are released either way.
+  - `ChdmanTool.post_convert` reads the Source's disc ID (and checks the output
+    exists) in one call through `run_detached_within_stall_bound`, the
+    conversion's no-progress bound; past it, a warning names the file and the
+    job goes on.
+  - `chd_metadata_store.is_disc_id_checked` / `mark_disc_id_checked` resolve
+    and stat the file through `bounded_path_check`. A stat that does not answer
+    is "not checked" (the scan's own bounded read then decides) and is not
+    marked.
 - **One volume's failure stops the whole pass, deliberately.** A scan or batch is
   one user-initiated walk, and the loops do not resolve which configured volume
   each path belongs to, so the first abandonment ends all of it — including
