@@ -573,6 +573,22 @@ and the job ends as `converted, source kept: couldn't update <playlist>
 (<reason>)`. The Ledger row records each playlist updated, or the one that
 kept the source and why.
 
+**EmulationStation gamelists follow the conversion too, if you say so.** ES-DE,
+Batocera, Knulli and muOS keep each game's artwork, description, favourite flag
+and play count in the Platform folder's `gamelist.xml`, keyed on the game's
+`<path>`. Tick **Used by an EmulationStation frontend** at the top of a
+Library's Rules (RomM's included) and, before a source in that Library is
+deleted, the matching `<path>` is pointed at the new file: `./Game.iso` becomes
+`./Game.chd`, and `./Multi Disc/Game.cue` keeps its folder. It's off by
+default, and the app never edits a gamelist in a Library without it. Only the
+path text of entries for replaced files changes; the XML declaration,
+encoding, comments, element order and every other element stay byte for byte,
+and the first rewrite keeps `gamelist.xml.bak`. The delete confirmation says
+"updates gamelist.xml, 1 entry" and the Ledger row records the file and the
+entry count. A gamelist that can't be parsed or written keeps the source, as
+a playlist does. **Close ES-DE before converting**: it rewrites its gamelist
+when it exits, which would put the old paths back.
+
 **Create an `.m3u` from selected discs.** Tick the discs of one game in the file
 list (two or more disc images in the same folder, such as `.cue`, `.gdi`, `.iso`,
 `.chd`, `.rvz` or `.cso`) and press **Create .m3u**. Ticked `.bin` tracks of a
@@ -1174,6 +1190,14 @@ A folder registered as a Library, with the Platforms found in it, its Unsorted a
 | Light | Dark |
 |-------|------|
 | ![Rules view on a folder Library, light](docs/screenshots/rules-folder-light.png) | ![Rules view on a folder Library, dark](docs/screenshots/rules-folder-dark.png) |
+
+#### EmulationStation frontend switch
+
+The same folder Library marked as used by an EmulationStation frontend, so conversions update its `gamelist.xml`. The note says to close ES-DE first.
+
+| Light | Dark |
+|-------|------|
+| ![EmulationStation frontend switch, light](docs/screenshots/rules-es-frontend-light.png) | ![EmulationStation frontend switch, dark](docs/screenshots/rules-es-frontend-dark.png) |
 
 #### Check Rule
 

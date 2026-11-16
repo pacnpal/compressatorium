@@ -177,8 +177,8 @@ def test_0014_stacks_on_0013_and_walks_up_from_an_empty_database(fresh_db_path: 
     engine = _db.make_engine(fresh_db_path)
     cfg = _db._alembic_config(engine)
     script = ScriptDirectory.from_config(cfg)
-    # #337's 0015 sits on top; see test_0015_adds_the_re_pin_plan_generation.
-    assert script.get_heads() == ["0015"]
+    # #337's 0015 and #386's 0016 sit on top; see their own tests below.
+    assert script.get_heads() == ["0016"]
     assert script.get_revision("0014").down_revision == "0013"
     assert script.get_revision("0013").down_revision == "0012"
     assert script.get_revision("0012").down_revision == "0011"
@@ -229,6 +229,31 @@ def test_0015_adds_the_re_pin_plan_generation(fresh_db_path: str):
     command.upgrade(cfg, "0015")
     assert columns()["plan_generation"]["nullable"] is True
     assert _current_rev(engine) == "0015"
+
+
+def test_0016_adds_the_es_frontend_switch_off_by_default(fresh_db_path: str):
+    """#386's 0016, on 0015: a folder Library's "used by an EmulationStation
+    frontend" switch. A Library registered before it reads as off."""
+    from alembic import command
+    from alembic.script import ScriptDirectory
+
+    engine = _db.make_engine(fresh_db_path)
+    cfg = _db._alembic_config(engine)
+    assert ScriptDirectory.from_config(cfg).get_revision("0016").down_revision == "0015"
+
+    command.upgrade(cfg, "0015")
+    with engine.begin() as conn:
+        conn.exec_driver_sql(
+            "INSERT INTO folder_libraries (root, name, schedule_enabled, max_per_sweep, "
+            "created_at) VALUES ('/roms', 'Roms', 0, 25, '2026-11-16T00:00:00Z')",
+        )
+    command.upgrade(cfg, "0016")
+
+    columns = {c["name"]: c for c in inspect(engine).get_columns("folder_libraries")}
+    assert columns["es_frontend"]["nullable"] is False
+    with engine.connect() as conn:
+        assert conn.exec_driver_sql("SELECT es_frontend FROM folder_libraries").scalar() == 0
+    assert _current_rev(engine) == "0016"
 
 
 # ---------------------------------------------------------------------------

@@ -79,6 +79,9 @@ _FIELDS: dict[str, tuple[str, Any, str]] = {
     # add a new one (#381). Off by default: it needs a token holding roms.write
     # and tasks.run, which turning it on checks. The swap itself is #391.
     "swap_keep_rom_id": ("ROMM_SWAP_KEEP_ROM_ID", False, "bool"),
+    # The library is used by an EmulationStation frontend (#386): a conversion
+    # rewrites the matching <path> in the Platform folder's gamelist.xml.
+    "es_frontend": ("ROMM_ES_FRONTEND", False, "bool"),
 }
 
 _INT_BOUNDS = {

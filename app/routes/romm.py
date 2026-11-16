@@ -1683,6 +1683,7 @@ class RommSettingsPatch(BaseModel):
     delete_source_after_verify: bool | None = None
     # Keep the ROM id when converting (#390). Turning it on checks the token.
     swap_keep_rom_id: bool | None = None
+    es_frontend: bool | None = None
 
 
 @router.get("/romm/settings")

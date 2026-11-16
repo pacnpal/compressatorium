@@ -1,7 +1,7 @@
 """The Referrer contract (#295).
 
 A Referrer is anything that points at an Image by its path: an ``.m3u``
-playlist, later a frontend ``gamelist.xml`` or RomM's ROM. When a conversion
+playlist, a frontend's ``gamelist.xml`` (#386), later RomM's ROM. When a conversion
 replaces a Source, every Referrer that points at it is moved to the output
 before the Source is removed.
 
@@ -72,6 +72,8 @@ class ReferrerChange:
         return {
             "referrer": self.referrer,
             "target": self.target,
+            # How many entries change, for "gamelist.xml, 3 entries" (#386).
+            "entries": len(self.edits),
             "edits": [{"old": old, "new": new} for old, new in self.edits],
         }
 
@@ -91,7 +93,7 @@ class Phase(IntEnum):
     @property
     def target(self) -> str:
         """What the phase updates, named when it times out or is cancelled."""
-        return "playlists" if self is Phase.FILE else "linked records"
+        return "playlists and gamelists" if self is Phase.FILE else "linked records"
 
 
 class Referrer(ABC):
