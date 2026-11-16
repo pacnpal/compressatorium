@@ -15,11 +15,19 @@ import asyncio
 import os
 import threading
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from logging_setup import get_logger
 from pydantic import BaseModel
-from services import duplicates, findings, libraries, platform_detect, platform_mappings
+from routes.files import CONFIRM_DELETE_FILE, _require_action_confirmation
+from services import (
+    duplicate_cleanup,
+    duplicates,
+    findings,
+    libraries,
+    platform_detect,
+    platform_mappings,
+)
 from services.libraries.folder import ListingInProgress
 from services.rules.library import LibraryUnreadable
 from services.subprocess_runner import run_detached
@@ -132,6 +140,9 @@ async def list_findings(include_dismissed: bool = False) -> dict:
         for run in await run_in_threadpool(duplicates.list_runs)
         if run["library_id"] in names
     ]
+    # Each duplicate group's suggested keeper and whether a delete is offered
+    # (#389), from the database only.
+    await run_in_threadpool(duplicate_cleanup.annotate, rows)
     return {"findings": rows, "dismissed": dismissed, "duplicate_runs": runs}
 
 
@@ -172,6 +183,52 @@ async def undismiss_finding(finding_id: int, payload: FindingRef) -> dict:
     if not done:
         raise HTTPException(status_code=404, detail="Finding not found")
     return {"undismissed": finding_id}
+
+
+class DuplicateKeep(BaseModel):
+    """A duplicate group as the user was shown it, and the copy to keep (#389)."""
+
+    fingerprint: str
+    keep: str
+
+
+class DuplicateDelete(DuplicateKeep):
+    """The confirmed delete: every path the plan listed, exactly."""
+
+    delete_paths: list[str]
+
+
+@router.post("/findings/{finding_id}/delete-plan")
+async def duplicate_delete_plan(finding_id: int, payload: DuplicateKeep) -> dict:
+    """What deleting every copy of a duplicate group but *keep* would remove.
+
+    Read-only: the confirmation list. Each copy's delete plan (a sheet's
+    tracks, a split set's parts) and the playlists that would be pointed at
+    the copy kept. ``blocked`` when any copy is not the file the Finding
+    showed, is a sheet's track, or would take the keeper with it.
+    """
+    try:
+        return await duplicate_cleanup.plan(finding_id, payload.fingerprint, payload.keep)
+    except duplicate_cleanup.CleanupRefused as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.message) from None
+
+
+@router.post("/findings/{finding_id}/delete")
+async def duplicate_delete(finding_id: int, payload: DuplicateDelete, request: Request) -> dict:
+    """Delete every copy but *keep*, after the user confirmed the plan (#389).
+
+    Needs the delete confirmation header and the very paths the plan listed;
+    the plan is made again and every copy checked again first. Each copy then
+    goes through the job's own delete step, under its locks. The Finding
+    lists what is left, or clears.
+    """
+    _require_action_confirmation(request, CONFIRM_DELETE_FILE, "delete action")
+    try:
+        return await duplicate_cleanup.delete(
+            finding_id, payload.fingerprint, payload.keep, payload.delete_paths,
+        )
+    except duplicate_cleanup.CleanupRefused as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.message) from None
 
 
 @router.post("/findings/check")

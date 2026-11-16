@@ -3896,6 +3896,157 @@ class JobManager:
         run.set_delete(delete)
         return None
 
+    # ------------------------------------------------------------------
+    # Deleting duplicate copies (#389)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _copy_snapshot(path: str, identity: Tuple[int, int]) -> Union[Dict[str, object], str]:
+        """*path*'s delete snapshot, or why it may not be deleted. Blocking.
+
+        The shared delete plan and its fingerprints (``build_delete_snapshot``),
+        and the copy's own file must still be the one the Finding showed: its
+        size and mtime (*identity*). Anything else is a reason to refuse.
+        """
+        try:
+            snapshot = build_delete_snapshot(path)
+        except (OSError, ValueError) as exc:
+            return f"it can no longer be planned for deletion: {exc}"
+        own = (snapshot.get("fingerprints") or {}).get(os.path.realpath(path)) or {}
+        if (own.get("size"), own.get("mtime_ns")) != tuple(identity):
+            return "it changed since the Finding was recorded"
+        return snapshot
+
+    async def _copy_snapshot_bounded(
+        self, path: str, identity: Tuple[int, int],
+    ) -> Union[Dict[str, object], str]:
+        try:
+            return await run_detached_bounded(
+                self._copy_snapshot, path, identity, timeout=KEPT_DELETE_PROBE_SECONDS,
+            )
+        except (DeadlineExpired, ReadCancelled):
+            return KEPT_DELETE_UNANSWERED
+
+    @staticmethod
+    def _identity_problem(path: str, identity: Tuple[int, int]) -> Optional[str]:
+        """Why *path* is not the file of *identity* (size, mtime) now. Blocking."""
+        try:
+            st = os.stat(path)
+        except FileNotFoundError:
+            return "is gone"
+        except OSError as exc:
+            return f"could not be read ({exc})"
+        if (st.st_size, st.st_mtime_ns) != tuple(identity):
+            return "changed since the Finding was recorded"
+        return None
+
+    async def delete_duplicate_copies(
+        self, *, keeper: str, keeper_identity: Tuple[int, int],
+        copies: List[Tuple[str, List[str], Tuple[int, int]]],
+    ) -> List[Tuple[str, "KeptDeleteRetry"]]:
+        """Delete the duplicate copies of a group, keeping *keeper* (#389).
+
+        Each copy is ``(path, the delete paths the user confirmed, the
+        identity the Finding showed)``. The keeper's lock is taken first and
+        held throughout, so nothing writes it while its copies go, and it must
+        still be the file the Finding showed. Then each copy goes through the
+        job's own delete step (:meth:`_delete_source_set`), as a retried delete
+        does: its delete paths taken exclusively without waiting, its snapshot
+        taken again under them and compared, the per-path checks, the Referrer
+        hook (a playlist naming the copy is pointed at the keeper), then the
+        unlinks as one mutation. Returns each copy's outcome
+        (:class:`KeptDeleteRetry`); a refusal deletes nothing of that copy.
+        """
+        travelling = HeldLocks()
+        results: List[Tuple[str, KeptDeleteRetry]] = []
+        try:
+            refused = await self._take_output(keeper, travelling)
+            if refused is None:
+                try:
+                    problem = await run_detached_bounded(
+                        self._identity_problem, keeper, keeper_identity,
+                        timeout=KEPT_DELETE_PROBE_SECONDS,
+                    )
+                except (DeadlineExpired, ReadCancelled):
+                    problem = "did not answer"
+                if problem:
+                    refused = KeptDeleteRetry(KEPT_STALE, f"the copy to keep {problem}")
+            if refused is not None:
+                return [(path, refused) for path, _paths, _identity in copies]
+            for path, expected, identity in copies:
+                outcome = await self._delete_copy(path, keeper, expected, identity, travelling)
+                results.append((path, outcome))
+                if outcome.status == KEPT_UNKNOWN:
+                    # An unlink outlived the wait and took the locks with it,
+                    # the keeper's included: no further copy goes without them.
+                    for rest_path, _paths, _identity in copies[len(results):]:
+                        results.append((rest_path, KeptDeleteRetry(
+                            KEPT_KEPT, "an earlier delete was still running",
+                        )))
+                    break
+            return results
+        finally:
+            await self._let_go_in_background(travelling.take())
+
+    async def _delete_copy(
+        self, path: str, keeper: str, expected: List[str], identity: Tuple[int, int],
+        travelling: HeldLocks,
+    ) -> "KeptDeleteRetry":
+        """One copy of :meth:`delete_duplicate_copies`, under its own holds."""
+        owner_id = f"duplicate-delete:{uuid.uuid4().hex}"
+        try:
+            snapshot = await self._copy_snapshot_bounded(path, identity)
+            if isinstance(snapshot, str):
+                status = KEPT_KEPT if snapshot == KEPT_DELETE_UNANSWERED else KEPT_STALE
+                return KeptDeleteRetry(status, snapshot)
+            paths = list(snapshot["paths"])
+            if sorted(paths) != sorted(expected):
+                return KeptDeleteRetry(KEPT_STALE, "its delete plan changed since it was shown")
+            try:
+                taken = await run_detached_undoable(
+                    self._take_exclusively, paths,
+                    timeout=KEPT_DELETE_PROBE_SECONDS, undo=_let_go,
+                )
+            except DeadlineExpired:
+                return KeptDeleteRetry(KEPT_KEPT, KEPT_DELETE_UNANSWERED)
+            except (LockFailed, OSError) as exc:
+                return KeptDeleteRetry(KEPT_KEPT, str(exc))
+            if taken is None:
+                return KeptDeleteRetry(KEPT_READER, "it is in use by a job")
+            self._delete_holds[owner_id] = list(taken)
+            # Once more under the holds: nothing in the app can change it now.
+            again = await self._copy_snapshot_bounded(path, identity)
+            if isinstance(again, str) or self._norm_fps(again.get("fingerprints")) != (
+                self._norm_fps(snapshot.get("fingerprints"))
+            ):
+                return KeptDeleteRetry(KEPT_STALE, "it changed while it was being deleted")
+            deleted: List[str] = []
+            planned: List[str] = []
+            handed_off: List[bool] = []
+            try:
+                removal = await self._delete_source_set(
+                    owner_id, file_path=path, output_path=keeper, expected_paths=paths,
+                    fingerprints=snapshot.get("fingerprints") or {}, check_label="kept",
+                    cancel_event=asyncio.Event(), cancelled=lambda: False,
+                    deleted=deleted, probe_seconds=KEPT_DELETE_PROBE_SECONDS,
+                    travelling_locks=travelling, planned=planned, handed_off=handed_off,
+                )
+            except MutationInFlight as exc:
+                rest = unfinished_delete(planned, deleted, in_flight=True)
+                return KeptDeleteRetry(
+                    KEPT_UNKNOWN, str(exc), tuple(deleted), tuple(rest or planned),
+                )
+            except (RuntimeError, OSError) as exc:
+                rest = unfinished_delete(planned, deleted)
+                if rest:
+                    return KeptDeleteRetry(KEPT_STARTED, str(exc), tuple(deleted), tuple(rest))
+                return KeptDeleteRetry(KEPT_KEPT, str(exc), tuple(deleted))
+            if removal.kept_reason:
+                return KeptDeleteRetry(KEPT_KEPT, removal.kept_reason)
+            return KeptDeleteRetry(KEPT_DELETED, None, tuple(deleted))
+        finally:
+            await self._let_go_in_background(self._delete_holds.pop(owner_id, []))
+
     def _finish_problem(
         self, source_path: str, output_path: str, meta: dict, recorded_source: str,
         remaining: List[str], owner_id: str, jobs: List[ConversionJob],

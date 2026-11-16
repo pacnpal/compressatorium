@@ -5644,6 +5644,52 @@ which both a folder Library's removal and RomM's identity change
 
 Routes: `POST /api/libraries/{id}/find-duplicates` → `{job_id}`.
 
+### 3.3.21 Deleting from a duplicate group (`services/duplicate_cleanup.py`, #389)
+
+A `duplicate` Finding (3.3.20) becomes a cleanup the user confirms. Nothing here
+deletes on its own.
+
+**Suggested keeper** (`duplicate_cleanup.annotate`, called by `GET
+/api/findings`). Database only, so listing the Findings touches no Volume:
+`verification_store.records_blocking` (each copy's passing check, looked up by
+the path as listed) and `dat_store.get_matches_batch`. Order: Intact (a passing
+check whose recorded output fingerprint is the copy's size and mtime, or, with
+none, one made after the copy's mtime), then Recognized, then smallest, then
+path. `keeper_reason` names the rule that decided. Each copy in the Finding's
+cause now carries `mtime_ns` beside `size`: the identity its key was read for.
+
+**What may be deleted from** (`not_deletable`): only a group whose key kind is
+in `HASH_EQUAL_KINDS` (`raw`), not one the last run held (`held_keys` in the
+run summary), and with two or more copies.
+
+**The plan** (`POST /api/findings/{id}/delete-plan`, `{fingerprint, keep}`):
+the Finding must still have the fingerprint the user saw (409 otherwise). On a
+detached thread, bounded by `KEPT_DELETE_PROBE_SECONDS`, every copy and the
+keeper are checked against the cause: inside the Volumes, present, the same
+size and mtime, and still holding the group's key in `content_keys` for that
+identity. For each copy but the keeper: the shared `build_delete_plan`
+(confined to the Volumes), a refusal when a `.cue`/`.gdi` beside it lists it as
+a track, and one when its plan would touch the keeper. The Referrer changes come
+from `referrers.plan_changes_bounded` with every delete path mapped to the
+keeper, as a conversion maps them to its output. The answer has the
+delete-plan route's item shape (`delete_paths`, `missing_paths`,
+`unsafe_paths`, `errors`, `referrer_changes`) and `blocked`.
+
+**The delete** (`POST /api/findings/{id}/delete`, the `delete-file`
+confirmation header and `{fingerprint, keep, delete_paths}`): the plan is made
+again, must not be blocked, and must list exactly the confirmed paths (409
+otherwise). Then `JobManager.delete_duplicate_copies` takes the keeper's lock
+(`_take_output`), checks the keeper's identity under it, and for each copy runs
+the retried-delete pattern: `build_delete_snapshot` (the copy's own file must
+still have the Finding's identity), its delete paths taken exclusively without
+waiting (`_take_exclusively`: a copy a job holds is `reader`, kept), the
+snapshot again under the holds, then the shared delete step
+(`_delete_source_set`: per-path checks, the Referrer hook pointing playlists at
+the keeper, the unlinks as one mutation, the copy's check and metadata records
+cleared). Each copy's outcome is a `KeptDeleteRetry`. Afterwards
+`duplicate_cleanup._settle` rewrites the Finding with the copies left
+(`duplicates.finding_from_copies`), or resolves it once fewer than two are.
+
 ### 3.4 `registry.py`
 
 ```python

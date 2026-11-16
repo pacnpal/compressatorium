@@ -285,6 +285,32 @@ class VerificationStore:
         detached thread (a retried delete, #329)."""
         return self._get_record_sync(chd_path)
 
+    def records_blocking(self, paths: list[str]) -> dict[str, dict]:
+        """The passing check records of *paths*, by path, in one query. Blocking.
+
+        Looked up by each path as given (normalized, not resolved): for a
+        caller that must not touch the disk (the Findings view, #389) and whose
+        paths are already the resolved ones a Library lists. A path with no
+        record, or only a failed one, is left out.
+        """
+        by_norm = {os.path.normpath(path): path for path in paths}
+        out: dict[str, dict] = {}
+        norms = list(by_norm)
+        with self._session() as session:
+            for start in range(0, len(norms), 900):
+                rows = session.query(_db.Verification).filter(
+                    _db.Verification.chd_path.in_(norms[start:start + 900]),
+                ).all()
+                for row in rows:
+                    if row.check_passed == FAILED:
+                        continue
+                    out[by_norm[row.chd_path]] = {
+                        "verified_at": row.verified_at,
+                        "produced_meta": row.produced_meta,
+                        "check_passed": row.check_passed,
+                    }
+        return out
+
     def produced_meta_blocking(self, chd_path: str) -> dict | None:
         """What made ``chd_path``, passing or not: its ``produced_meta``. Blocking.
 

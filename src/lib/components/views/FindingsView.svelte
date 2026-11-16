@@ -31,6 +31,8 @@
   import EyeOff from '@lucide/svelte/icons/eye-off';
   import Eye from '@lucide/svelte/icons/eye';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
+  import Trash2 from '@lucide/svelte/icons/trash-2';
+  import DuplicateDeleteModal from '$lib/components/modals/DuplicateDeleteModal.svelte';
 
   const KIND_LABEL = {
     platform_conflict: 'Platform conflict',
@@ -122,6 +124,19 @@
       }
     } catch (e) {
       toast.error(e?.message ?? 'Could not check the Libraries');
+    }
+  }
+
+  // A duplicate delete finished (#389): say what went and what was kept.
+  function cleaned(result) {
+    const results = result?.results ?? [];
+    const gone = results.filter((r) => r.status === 'deleted').length;
+    const kept = results.filter((r) => r.status !== 'deleted');
+    if (gone) toast.success(`Deleted ${gone} cop${gone === 1 ? 'y' : 'ies'}`);
+    if (kept.length) {
+      toast.warning(`${kept.length} cop${kept.length === 1 ? 'y was' : 'ies were'} kept`, {
+        description: kept.map((r) => `${r.path.split(/[/\\]/).pop()}: ${r.reason ?? r.status}`).join('; '),
+      });
     }
   }
 
@@ -224,9 +239,18 @@
                   <li>
                     <code>{copy.path}</code>
                     <span class="muted small">{copy.container} · {bytes(copy.size)}</span>
+                    {#if copy.path === row.keeper}
+                      <Badge tone="success">Keep</Badge>
+                    {/if}
                   </li>
                 {/each}
               </ul>
+              {#if row.keeper_reason}
+                <span class="muted small">Suggested keeper: {row.keeper_reason}.</span>
+              {/if}
+              {#if !row.deletable && row.not_deletable}
+                <span class="muted small">No delete offered: {row.not_deletable}.</span>
+              {/if}
             {:else}
               <code>{row.image_key}</code>
               <span class="muted reason">{row.reason}</span>
@@ -260,6 +284,15 @@
                 Set Platform
               </Button>
             {/if}
+            {#if row.kind === 'duplicate' && row.deletable}
+              <Button
+                variant="ghost" size="sm" icon={deleteIcon}
+                ariaLabel={`Delete the other copies of ${findingName(row)}`}
+                onclick={() => findings.openCleanup(row)}
+              >
+                Delete others…
+              </Button>
+            {/if}
             {#if row.dismissed}
               <Button
                 variant="ghost" size="sm" icon={showIcon}
@@ -284,7 +317,10 @@
   {/if}
 </div>
 
+<DuplicateDeleteModal onDone={cleaned} />
+
 {#snippet refreshIcon()}<RefreshCw size={14} />{/snippet}
+{#snippet deleteIcon()}<Trash2 size={14} />{/snippet}
 {#snippet openIcon()}<FolderOpen size={14} />{/snippet}
 {#snippet mapIcon()}<FolderPen size={14} />{/snippet}
 {#snippet dismissIcon()}<EyeOff size={14} />{/snippet}

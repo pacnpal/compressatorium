@@ -338,6 +338,9 @@ async def _find(library: Library, job_id: str, current: Callable[[], bool]) -> d
         "unreadable": len(unseen),
         "unlisted": len(listing.unlisted),
         "held": len(held),
+        # Which groups: a held group is not proven by this run, so it is not
+        # offered for delete (#389).
+        "held_keys": sorted(held),
         "busy": len(in_use),
         "findings": counts,
     }
@@ -484,14 +487,21 @@ def _size(n: int) -> str:
 
 
 def finding_for(key: str, members: list[Candidate]) -> findings.Observed:
-    """The ``duplicate`` Finding for one group: every copy's path, container and size."""
-    copies = [
+    """The ``duplicate`` Finding for one group: every copy's path, container,
+    size and mtime. Size and mtime are the identity its key was read for: a
+    delete (#389) refuses a copy that no longer has them."""
+    return finding_from_copies(key, [
         {
-            "image_key": c.image_key, "path": c.path,
-            "container": c.container, "size": c.identity.size,
+            "image_key": c.image_key, "path": c.path, "container": c.container,
+            "size": c.identity.size, "mtime_ns": c.identity.mtime_ns,
         }
-        for c in sorted(members, key=lambda c: c.path)
-    ]
+        for c in members
+    ])
+
+
+def finding_from_copies(key: str, copies: list[dict]) -> findings.Observed:
+    """The ``duplicate`` Finding for *copies* as a Finding's cause lists them."""
+    copies = sorted((dict(c) for c in copies), key=lambda c: c["path"])
     containers = ", ".join(sorted({c["container"] for c in copies}))
     total = sum(c["size"] for c in copies)
     return findings.Observed(

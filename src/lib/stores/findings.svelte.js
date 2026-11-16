@@ -122,6 +122,55 @@ class FindingsStore {
     await this.load();
   }
 
+  // The open "delete the other copies" dialog (#389): the group, the copy to
+  // keep, and the plan the backend made for it (`null` while it loads).
+  cleanup = $state(null);
+  // Only the latest plan request may write it (a keeper picked twice fast).
+  #planRequest = 0;
+
+  /** Open the delete dialog on a duplicate group, keeping *keep*. */
+  async openCleanup(row, keep = row?.keeper) {
+    if (!row || !keep) return;
+    const request = ++this.#planRequest;
+    this.cleanup = { row, keep, plan: null, error: null, deleting: false };
+    try {
+      const plan = await api.duplicateDeletePlan(row.id, row.fingerprint, keep);
+      if (request !== this.#planRequest || !this.cleanup) return;
+      this.cleanup = { ...this.cleanup, plan };
+    } catch (e) {
+      if (request !== this.#planRequest || !this.cleanup) return;
+      this.cleanup = { ...this.cleanup, error: e?.message ?? 'Could not plan the delete' };
+    }
+  }
+
+  closeCleanup() {
+    this.#planRequest += 1;
+    this.cleanup = null;
+  }
+
+  /**
+   * Delete exactly what the open plan listed. Returns the backend's results;
+   * the list is read again either way, so the group shows what is left.
+   */
+  async confirmCleanup() {
+    const open = this.cleanup;
+    const plan = open?.plan;
+    if (!plan || plan.blocked) return null;
+    const paths = plan.items.flatMap((item) => item.delete_paths ?? []);
+    this.cleanup = { ...open, deleting: true };
+    try {
+      const result = await api.deleteDuplicates(open.row.id, open.row.fingerprint, open.keep, paths);
+      this.#superseded();
+      this.cleanup = null;
+      return result;
+    } catch (e) {
+      if (this.cleanup) this.cleanup = { ...this.cleanup, deleting: false, error: e?.message ?? 'Could not delete the copies' };
+      throw e;
+    } finally {
+      await this.load();
+    }
+  }
+
   /** Walk every folder Library now, then list what it found. */
   async check() {
     this.checking = true;

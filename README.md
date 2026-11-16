@@ -917,8 +917,28 @@ one disc.
   and size. It goes away once only one copy is left (at the next listing or
   run).
 
-Finding duplicates never deletes anything: open the folder to remove a copy
-yourself.
+Finding duplicates deletes nothing by itself. To clean a group up:
+
+- Each group names a **suggested keeper**, with the reason: an **Intact** copy
+  first (one whose check passed since it last changed), then a **Recognized**
+  one (a DAT or Hasheous names it), then the **smallest**.
+- **Delete others…** opens the confirmation list: every file each other copy's
+  delete would remove (a `.cue`'s tracks, a split set's parts) and any playlist
+  that would be pointed at the copy kept. You can pick another copy to keep.
+  Nothing is deleted until you confirm.
+- A delete is offered only when every copy is proven to hold the same disc
+  (equal content hashes), and not for a group the last run could not fully
+  see. A `.bin` that a `.cue` beside it lists is never deleted on its own.
+- When you confirm, every copy and the copy kept are checked again against
+  what the Finding showed: one that is gone, changed or unreadable stops the
+  delete. Each copy then goes through the same delete step, locks and checks
+  as a conversion's delete-on-verify; a copy a job is using is kept, and the
+  rest still go.
+- Afterwards the group lists what is left, or goes away once one copy is.
+
+| Light | Dark |
+|-------|------|
+| ![Deleting the other copies of a group, light](docs/screenshots/findings-duplicate-delete-light.png) | ![Deleting the other copies of a group, dark](docs/screenshots/findings-duplicate-delete-dark.png) |
 
 | Light | Dark |
 |-------|------|

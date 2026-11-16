@@ -403,6 +403,15 @@ def list_findings(*, include_dismissed: bool = False) -> list[dict[str, Any]]:
     return [row for row in out if not row["dismissed"]]
 
 
+def get_finding(finding_id: int) -> dict[str, Any] | None:
+    """One stored Finding as :func:`list_findings` describes it, or None. Blocking."""
+    with _session() as session:
+        row = session.get(_db.FindingRecord, finding_id)
+        if row is None:
+            return None
+        return _describe(row, _dismissed_keys(session))
+
+
 def count_dismissed() -> int:
     """How many Findings are hidden by a dismiss. Blocking."""
     return sum(1 for row in list_findings(include_dismissed=True) if row["dismissed"])

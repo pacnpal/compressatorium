@@ -1,0 +1,371 @@
+"""A duplicate group's suggested keeper, and deleting its other copies (#389).
+
+A ``duplicate`` Finding (#388) lists copies that hold one disc. This module
+turns it into a cleanup, and never more than the user confirms:
+
+* **The suggested keeper** (:func:`annotate`): Intact first (a passing check
+  recorded after the copy last changed), then Recognized (a cached DAT or
+  Hasheous match), then the smallest, then the first by path. Worked out from
+  the database only, so listing the Findings touches no Volume. The reason
+  shown names the rule that decided.
+* **What may be deleted from.** Only a group whose key proves the copies
+  hash-equal (:data:`HASH_EQUAL_KINDS`, ``raw:``), and not one the last run
+  held as it was (a copy it could not see).
+* **The plan** (:func:`plan`): for each copy but the keeper, the shared delete
+  plan (``build_delete_plan``: a sheet's tracks, a split set's parts) and the
+  Referrer changes that would point a playlist at the keeper instead. Blocked
+  when any copy, or the keeper, is not the file the Finding showed (gone,
+  changed, unreadable, or no longer holding the group's key), when a copy is a
+  track a ``.cue``/``.gdi`` beside it lists, or when a delete would touch the
+  keeper. The disk is read on a detached thread, bounded.
+* **The delete** (:func:`delete`): the plan is made again and must be the one
+  the user confirmed, path for path; then the job manager's own delete step
+  runs for each copy under its locks
+  (``JobManager.delete_duplicate_copies``). The Finding then lists what is
+  left, or clears once one copy is.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import os
+from datetime import datetime
+from typing import Any
+
+from fastapi.concurrency import run_in_threadpool
+from logging_setup import get_logger
+from services import content_keys, findings, libraries, referrers
+from services.content_keys import Identity
+from services.job_manager import (
+    KEPT_DELETE_PROBE_SECONDS,
+    KEPT_DELETED,
+    job_manager,
+)
+from services.referrers import ReferrerError
+from services.subprocess_runner import (
+    DeadlineExpired,
+    ReadCancelled,
+    run_detached_bounded,
+)
+from utils.delete_plan import build_delete_plan, sheet_track_paths
+from utils.path_utils import is_within_configured_volumes
+
+logger = get_logger("duplicate_cleanup")
+
+# Key kinds whose equal keys prove equal content. Only these groups offer a
+# delete; a group matched any looser way never does.
+HASH_EQUAL_KINDS = frozenset({content_keys.RAW})
+_SHEET_EXTENSIONS = (".cue", ".gdi")
+_INTACT_CHECKS = frozenset({"intact", "round_tripped"})
+
+
+class CleanupRefused(Exception):
+    """The plan or the delete may not go ahead: *status* is the HTTP answer."""
+
+    def __init__(self, status: int, message: str) -> None:
+        super().__init__(message)
+        self.status = status
+        self.message = message
+
+
+# ----------------------------------------------------------------------
+# the suggested keeper (database only)
+# ----------------------------------------------------------------------
+
+
+def _key_kind(key: str) -> str:
+    return str(key).split(":", 1)[0]
+
+
+def _stamp_ns(stamp: str | None) -> int | None:
+    try:
+        moment = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return int(moment.timestamp() * 1_000_000_000)
+
+
+def _is_intact(copy: dict, record: dict | None) -> bool:
+    """A passing check that still describes the copy: one its recorded output
+    fingerprint matches, or, with none, one made after the copy last changed."""
+    if not record or record.get("check_passed") not in _INTACT_CHECKS:
+        return False
+    output = (record.get("produced_meta") or {}).get("output")
+    if isinstance(output, dict):
+        return (output.get("size"), output.get("mtime_ns")) == (
+            copy.get("size"), copy.get("mtime_ns"),
+        )
+    checked = _stamp_ns(record.get("verified_at"))
+    return checked is not None and copy.get("mtime_ns") is not None and (
+        checked >= int(copy["mtime_ns"])
+    )
+
+
+def suggest_keeper(
+    copies: list[dict], intact: set[str], recognized: set[str],
+) -> tuple[str, str]:
+    """``(the copy to keep, why)``: Intact, then Recognized, then smallest."""
+    ordered = sorted(copies, key=lambda c: (
+        c["path"] not in intact, c["path"] not in recognized, int(c.get("size") or 0), c["path"],
+    ))
+    keeper = ordered[0]
+    path = keeper["path"]
+    if path in intact and len(intact) < len(copies):
+        return path, "Intact: it passed its check"
+    if path in recognized and len(recognized & {c["path"] for c in copies}) < len(copies):
+        return path, "Recognized: a DAT or Hasheous names it"
+    if any(int(c.get("size") or 0) > int(keeper.get("size") or 0) for c in copies):
+        return path, "the smallest copy"
+    return path, "every copy is alike; the first by path"
+
+
+def not_deletable(row: dict, held: set[str]) -> str | None:
+    """Why a duplicate group offers no delete, or None when it does."""
+    cause = row.get("cause") or {}
+    key = str(cause.get("key") or row.get("image_key") or "")
+    if _key_kind(key) not in HASH_EQUAL_KINDS:
+        return "its copies are not proven equal by a content hash"
+    if key in held:
+        return "the last run could not see every copy; run Find duplicates again"
+    if len(cause.get(findings.COPIES) or []) < 2:
+        return "fewer than two copies are left"
+    return None
+
+
+def _held_keys(library_id: str) -> set[str]:
+    from services import duplicates
+
+    for run in duplicates.list_runs():
+        if run.get("library_id") == library_id:
+            return set(run.get("held_keys") or ())
+    return set()
+
+
+def annotate(rows: list[dict]) -> None:
+    """Add ``keeper``, ``keeper_reason``, ``deletable`` and ``not_deletable``
+    to each duplicate row. Blocking: database reads only, no Volume."""
+    from services import duplicates
+    from services.dat_store import dat_store
+    from services.verification_store import verification_store
+
+    groups = [row for row in rows if row.get("kind") == findings.DUPLICATE]
+    if not groups:
+        return
+    paths = [
+        copy["path"] for row in groups
+        for copy in (row.get("cause") or {}).get(findings.COPIES) or []
+    ]
+    records = verification_store.records_blocking(paths)
+    try:
+        matches = dat_store.get_matches_batch(paths)
+    except Exception:  # a hint for the suggestion only, never a failure
+        logger.warning("duplicate_cleanup: could not read the match cache", exc_info=True)
+        matches = {}
+    held = {run["library_id"]: set(run.get("held_keys") or ()) for run in duplicates.list_runs()}
+    for row in groups:
+        copies = list((row.get("cause") or {}).get(findings.COPIES) or [])
+        intact = {c["path"] for c in copies if _is_intact(c, records.get(c["path"]))}
+        recognized = {c["path"] for c in copies if (matches.get(c["path"]) or {}).get("matched")}
+        if copies:
+            row["keeper"], row["keeper_reason"] = suggest_keeper(copies, intact, recognized)
+        else:
+            row["keeper"], row["keeper_reason"] = None, None
+        row["not_deletable"] = not_deletable(row, held.get(row["library_id"], set()))
+        row["deletable"] = row["not_deletable"] is None
+
+
+# ----------------------------------------------------------------------
+# the plan
+# ----------------------------------------------------------------------
+
+
+def _shown(finding_id: int, fingerprint: str) -> dict:
+    row = findings.get_finding(finding_id)
+    if row is None or row["kind"] != findings.DUPLICATE:
+        raise CleanupRefused(404, "Duplicate Finding not found")
+    if row["fingerprint"] != fingerprint:
+        raise CleanupRefused(409, "This Finding changed since it was listed; list it again")
+    return row
+
+
+def _copy_problem(copy: dict, key: str) -> str | None:
+    """Why *copy* is not the file the Finding showed, holding *key*. Blocking."""
+    path = copy["path"]
+    if not is_within_configured_volumes(path, treat_archives=False):
+        return "is outside the configured Volumes"
+    try:
+        st = os.stat(path)
+    except FileNotFoundError:
+        return "is gone"
+    except OSError as exc:
+        return f"could not be read ({exc.strerror or exc})"
+    identity = Identity(size=int(st.st_size), mtime_ns=int(st.st_mtime_ns))
+    if (identity.size, identity.mtime_ns) != (copy.get("size"), copy.get("mtime_ns")):
+        return "changed since the Finding was recorded"
+    stored = content_keys.stored({path: identity}).get(path)
+    if stored is None or stored.key != key:
+        return "no longer holds this group's content key"
+    return None
+
+
+def _sheet_owning(path: str) -> str | None:
+    """A ``.cue``/``.gdi`` beside *path* that lists it as a track. Blocking."""
+    folder = os.path.dirname(path)
+    real = os.path.realpath(path)
+    try:
+        names = sorted(os.listdir(folder))
+    except OSError:
+        return None
+    for name in names:
+        if not name.lower().endswith(_SHEET_EXTENSIONS):
+            continue
+        sheet = os.path.join(folder, name)
+        if real in {os.path.realpath(track) for track in sheet_track_paths(sheet)}:
+            return name
+    return None
+
+
+def _plan_blocking(row: dict, keep: str) -> dict:
+    """The plan, from the disk. Blocking: run detached and bounded."""
+    cause = row.get("cause") or {}
+    key = str(cause.get("key") or "")
+    copies = list(cause.get(findings.COPIES) or [])
+    keeper = next(c for c in copies if c["path"] == keep)
+    problem = _copy_problem(keeper, key)
+    if problem:
+        raise CleanupRefused(409, f"The copy to keep, {os.path.basename(keep)}, {problem}")
+    keep_real = os.path.realpath(keep)
+    items = []
+    for copy in copies:
+        if copy["path"] == keep:
+            continue
+        item = build_delete_plan(copy["path"], confine_to_volumes=True)
+        item.setdefault("errors", [])
+        problem = _copy_problem(copy, key)
+        if problem:
+            item["errors"].append(f"{os.path.basename(copy['path'])} {problem}")
+        sheet = _sheet_owning(copy["path"])
+        if sheet:
+            item["errors"].append(
+                f"{os.path.basename(copy['path'])} is a track of {sheet}; "
+                "it is never deleted on its own",
+            )
+        if keep_real in {os.path.realpath(p) for p in item.get("delete_paths") or []}:
+            item["errors"].append("Deleting it would delete the copy to keep")
+        item["identity"] = [copy.get("size"), copy.get("mtime_ns")]
+        items.append(item)
+    return {"keeper_identity": [keeper.get("size"), keeper.get("mtime_ns")], "items": items}
+
+
+async def plan(finding_id: int, fingerprint: str, keep: str) -> dict:
+    """What deleting every copy but *keep* would remove, for the user to confirm."""
+    row = await run_in_threadpool(_shown, finding_id, fingerprint)
+    copies = (row.get("cause") or {}).get(findings.COPIES) or []
+    if keep not in {c["path"] for c in copies}:
+        raise CleanupRefused(400, "The copy to keep is not one of this group's copies")
+    reason = not_deletable(row, await run_in_threadpool(_held_keys, row["library_id"]))
+    if reason:
+        raise CleanupRefused(409, f"No delete is offered for this group: {reason}")
+    library = await run_in_threadpool(libraries.get, row["library_id"])
+    if library is None:
+        raise CleanupRefused(409, "This Finding's Library is gone")
+    try:
+        found = await run_detached_bounded(
+            _plan_blocking, row, keep, timeout=KEPT_DELETE_PROBE_SECONDS,
+        )
+    except (DeadlineExpired, ReadCancelled):
+        raise CleanupRefused(503, "The copies' Volume did not answer in time") from None
+    total = 0
+    blocked = False
+    for item in found["items"]:
+        await _add_referrer_changes(item, keep, library)
+        total += len(item.get("delete_paths") or [])
+        if item.get("errors") or item.get("unsafe_paths") or item.get("missing_paths"):
+            blocked = True
+    return {
+        "finding_id": finding_id, "fingerprint": fingerprint, "keep": keep,
+        "keeper_identity": found["keeper_identity"],
+        "items": found["items"], "blocked": blocked, "total_delete_count": total,
+    }
+
+
+async def _add_referrer_changes(item: dict, keep: str, library: Any) -> None:
+    """The Referrer changes the delete step would make: a playlist naming the
+    copy is pointed at the keeper (as a conversion points one at its output)."""
+    item["referrer_changes"] = []
+    delete_paths = item.get("delete_paths") or []
+    if not delete_paths:
+        return
+    try:
+        changes = await referrers.plan_changes_bounded(
+            item["source_path"], {path: keep for path in delete_paths}, library,
+        )
+    except (ReferrerError, OSError, RuntimeError, ValueError, asyncio.TimeoutError) as exc:
+        logger.warning("duplicate_cleanup: planning the Referrers failed: %s", exc)
+        item.setdefault("warnings", []).append(
+            "Couldn't check the playlists that name this copy; it will be kept",
+        )
+        return
+    item["referrer_changes"] = [change.to_dict() for change in changes]
+
+
+# ----------------------------------------------------------------------
+# the delete
+# ----------------------------------------------------------------------
+
+
+async def delete(
+    finding_id: int, fingerprint: str, keep: str, confirmed: list[str],
+) -> dict:
+    """Delete every copy but *keep*, as the confirmed plan listed them."""
+    shown = await plan(finding_id, fingerprint, keep)
+    if shown["blocked"]:
+        reasons = [e for item in shown["items"] for e in item.get("errors") or []]
+        detail = "; ".join(reasons or ["see the plan"])
+        raise CleanupRefused(409, f"The delete is blocked: {detail}")
+    planned = sorted(p for item in shown["items"] for p in item.get("delete_paths") or [])
+    if planned != sorted(confirmed):
+        raise CleanupRefused(409, "The delete plan changed since it was shown; review it again")
+    outcomes = await job_manager.delete_duplicate_copies(
+        keeper=keep, keeper_identity=tuple(shown["keeper_identity"]),
+        copies=[
+            (item["source_path"], list(item["delete_paths"]), tuple(item["identity"]))
+            for item in shown["items"]
+        ],
+    )
+    gone = {path for path, outcome in outcomes if outcome.status == KEPT_DELETED}
+    await run_in_threadpool(_settle, finding_id, gone)
+    return {
+        "keep": keep,
+        "results": [
+            {"path": path, "status": outcome.status, "reason": outcome.reason,
+             "deleted": list(outcome.deleted)}
+            for path, outcome in outcomes
+        ],
+    }
+
+
+def _settle(finding_id: int, gone: set[str]) -> None:
+    """The Finding after a delete: what is left of the group, or nothing."""
+    from services import duplicates
+
+    row = findings.get_finding(finding_id)
+    if row is None:
+        return
+    library = libraries.get(row["library_id"])
+    if library is None:
+        return
+    is_current = getattr(library, "is_current", None)
+
+    def current() -> bool:
+        return is_current() if is_current is not None else True
+
+    cause = row.get("cause") or {}
+    left = [c for c in cause.get(findings.COPIES) or [] if c["path"] not in gone]
+    if len(left) < 2:
+        findings.resolve(row["library_id"], row["image_key"], findings.DUPLICATE, current=current)
+        return
+    findings.observe(
+        row["library_id"], duplicates.finding_from_copies(str(cause.get("key")), left),
+        current=current,
+    )

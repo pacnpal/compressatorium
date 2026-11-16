@@ -4,6 +4,15 @@
 
 ### Added
 
+- **Clean up a duplicate group** (#389). Each group of duplicates in Findings
+  now suggests which copy to keep (one that passed its check first, then one a
+  DAT recognizes, then the smallest) and says why. **Delete others…** shows
+  every file that would go, and nothing is deleted until you confirm. Each copy
+  is checked again first and goes through the same delete step and locks as a
+  conversion's delete-on-verify, so a copy that changed, or one a job is using,
+  is kept. Delete is only offered when the copies hold provably identical
+  content, and a `.cue`'s track file is never deleted on its own.
+
 - **Find duplicates in a Library** (#388). A **Find duplicates** button in the
   Rules view looks for the same disc stored twice in a folder Library, even in
   different containers: an ISO, the RVZ made from it and a DVD CHD are grouped
