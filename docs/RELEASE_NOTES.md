@@ -17,6 +17,16 @@
   it rejects the token) the switch also stays off. With the switch on, the
   RomM status shows any permission the token has since lost.
 
+- **Find duplicates in a Library** (#388). A **Find duplicates** button in the
+  Rules view looks for the same disc stored twice in a folder Library, even in
+  different containers: an ISO, the RVZ made from it and a DVD CHD are grouped
+  together, and so are plain copies. It runs as a job you can watch and cancel,
+  and a second run reads only new or changed files. Each group shows in
+  Findings with every copy's path, container and size. CD CHDs, CSO, ZSO, DAX,
+  NSZ, WUX and Z3DS files aren't checked yet, and Findings says how many of
+  each were left out. A folder or file it can't read leaves its groups as they
+  were. Nothing is deleted.
+
 ### Changed
 
 - **Groundwork for gamelist.xml and RomM updates** (#383). Before a Source is

@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from app.models import ConversionMode
+from app.services.job_manager import EXTERNAL_JOB_MODES
 from app.routes import convert as convert_routes
 from app.services.chdman import (
     CHDMAN_CONVERTIBLE_EXTENSIONS,
@@ -61,9 +62,9 @@ from app.services.z3ds_compress import (
 
 # ConversionMode values that are NOT conversion modes, handled by the
 # external job API, not by any of the three conversion services.
-EXTERNAL_MODES = {
-    ConversionMode.METADATA_SCAN, ConversionMode.DAT_MATCH, ConversionMode.CHECK,
-}
+# Read from the job manager's one table of them, so a new external mode (a
+# find-duplicates run, #388) is never taken for a conversion here.
+EXTERNAL_MODES = {ConversionMode(mode.value) for mode in EXTERNAL_JOB_MODES}
 CONVERSION_MODES = [m for m in ConversionMode if m not in EXTERNAL_MODES]
 
 

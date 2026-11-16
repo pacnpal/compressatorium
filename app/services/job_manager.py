@@ -270,6 +270,8 @@ EXTERNAL_JOB_MODES: Dict[ConversionMode, ExternalMode] = {
     ConversionMode.METADATA_SCAN: ExternalMode(),
     ConversionMode.DAT_MATCH: ExternalMode(),
     ConversionMode.CHECK: ExternalMode(in_ledger=False, started_by_hand=False),
+    # A find-duplicates run (#388) reads and converts nothing; a person starts it.
+    ConversionMode.FIND_DUPLICATES: ExternalMode(in_ledger=False),
 }
 _EXTERNAL_JOB_MODES = frozenset(EXTERNAL_JOB_MODES)
 
@@ -1495,14 +1497,48 @@ class JobManager:
             1 for job in self.jobs.values() if _is_active_conversion(job)
         )
 
+    def _active_jobs_snapshot(self) -> List[ConversionJob]:
+        """The queued and running jobs, copied. In memory only: safe on the loop.
+
+        A copy, so resolving their paths later (off the loop) reads the jobs as
+        they were here, not a job a running conversion is updating.
+        """
+        return [
+            job.model_copy() for job in list(self.jobs.values())
+            if job.status in (JobStatus.QUEUED, JobStatus.PROCESSING)
+        ]
+
+    def _candidates_of(self, jobs: List[ConversionJob]) -> List[Tuple[str, List[str]]]:
+        """Each job's candidate paths (input/output). Blocking: a sheet Source's
+        tracks are read from the sheet and stat'ed (``_track_candidate_paths``)."""
+        return [(job.id, self._candidate_paths(job)) for job in jobs]
+
     def get_active_job_candidates(self) -> List[Tuple[str, List[str]]]:
-        """Return active job ids with their candidate paths (input/output)."""
-        candidates: List[Tuple[str, List[str]]] = []
-        for job in self.jobs.values():
-            if job.status not in (JobStatus.QUEUED, JobStatus.PROCESSING):
-                continue
-            candidates.append((job.id, self._candidate_paths(job)))
-        return candidates
+        """Return active job ids with their candidate paths (input/output).
+
+        Blocking: it reads the disk, so a caller already off the loop (a
+        bounded probe, a threadpool step) uses it; code on the loop awaits
+        :meth:`active_job_candidates` instead.
+        """
+        return self._candidates_of(self._active_jobs_snapshot())
+
+    async def active_job_candidates(
+        self, *, cancel_event: Optional[asyncio.Event] = None,
+        stall: Optional[float] = None,
+    ) -> List[Tuple[str, List[str]]]:
+        """:meth:`get_active_job_candidates` for code on the event loop (#388).
+
+        The jobs are snapshot here, in memory; their filesystem-dependent paths
+        are resolved in one detached step under the shared stall bound, so a
+        mount that stops answering costs the caller ``Stalled``, never the
+        loop (*stall*: the bound, the shared one by default). ``ReadCancelled``
+        on a cancel.
+        """
+        jobs = self._active_jobs_snapshot()
+        return await run_detached_within_stall_bound(
+            self._candidates_of, jobs, what="resolving the active jobs' paths",
+            cancel_event=cancel_event, stall=stall,
+        )
 
     @staticmethod
     def _normalize_path(path: str) -> Optional[Path]:

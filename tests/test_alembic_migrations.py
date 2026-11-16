@@ -177,8 +177,8 @@ def test_0014_stacks_on_0013_and_walks_up_from_an_empty_database(fresh_db_path: 
     engine = _db.make_engine(fresh_db_path)
     cfg = _db._alembic_config(engine)
     script = ScriptDirectory.from_config(cfg)
-    # #337's 0015 and #386's 0016 sit on top; see their own tests below.
-    assert script.get_heads() == ["0016"]
+    # #386's 0016 sits on 0015 and #388's 0017 on that; see their own tests below.
+    assert script.get_heads() == ["0017"]
     assert script.get_revision("0014").down_revision == "0013"
     assert script.get_revision("0013").down_revision == "0012"
     assert script.get_revision("0012").down_revision == "0011"
@@ -254,6 +254,33 @@ def test_0016_adds_the_es_frontend_switch_off_by_default(fresh_db_path: str):
     with engine.connect() as conn:
         assert conn.exec_driver_sql("SELECT es_frontend FROM folder_libraries").scalar() == 0
     assert _current_rev(engine) == "0016"
+
+
+def test_0017_adds_the_content_keys(fresh_db_path: str):
+    """#388's 0017, on #386's 0016: the duplicate finder's content keys and each
+    Library's last find-duplicates run."""
+    from alembic import command
+    from alembic.script import ScriptDirectory
+
+    engine = _db.make_engine(fresh_db_path)
+    cfg = _db._alembic_config(engine)
+    assert ScriptDirectory.from_config(cfg).get_revision("0017").down_revision == "0016"
+
+    command.upgrade(cfg, "0016")
+    assert not {"content_keys", "duplicate_runs"} & set(inspect(engine).get_table_names())
+    command.upgrade(cfg, "0017")
+    assert {"content_keys", "duplicate_runs"} <= set(inspect(engine).get_table_names())
+    columns = {c["name"]: c for c in inspect(engine).get_columns("content_keys")}
+    # A key is tied to the file's size and mtime; a format with no key stores None.
+    assert {"path", "size", "mtime_ns", "key", "container"} <= set(columns)
+    assert columns["key"]["nullable"] is True
+    # The CHD metadata cache records the file's identity, size and
+    # st_mtime_ns (Codex 4589796866, CodeRabbit 4589859837); rows written
+    # before it read None and are stale.
+    chd = {c["name"]: c for c in inspect(engine).get_columns("chd_metadata")}
+    assert chd["size"]["nullable"] is True
+    assert chd["mtime_ns"]["nullable"] is True
+    assert _current_rev(engine) == "0017"
 
 
 # ---------------------------------------------------------------------------

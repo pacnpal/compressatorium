@@ -65,6 +65,9 @@ class ConversionMode(str, Enum):
     # A check Rule's run (#305): Verify over the Images it picked. An external
     # job like the two above, never a conversion.
     CHECK = "check"
+    # A Library's find-duplicates run (#388): reads content keys and groups
+    # the Images that hold one disc. External, never a conversion.
+    FIND_DUPLICATES = "find_duplicates"
 
 
 class DuplicateAction(str, Enum):

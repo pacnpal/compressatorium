@@ -75,6 +75,7 @@ from services.rules.library import (
     FAILED_HOLD,
     RECOGNIZED_FILTER,
     Image,
+    ImageListing,
     LibraryDefaults,
     LibraryUnreadable,
     Platform,
@@ -528,6 +529,9 @@ class FolderLibrary(LibraryDefaults):
             # A check Rule's "not Intact" (#305) for an Image that is gone
             # (converted away, deleted): no walk or check would see it again.
             findings.clear_gone(self.id, findings.NOT_INTACT, current=current)
+            # A duplicate group (#388) with one copy left is no duplicate,
+            # whether or not a find-duplicates run comes again.
+            findings.clear_gone(self.id, findings.DUPLICATE, current=current)
         except Exception:
             # The walk is still good for Rules; the Findings view is behind
             # until the next walk. Logged, not swallowed.
@@ -681,6 +685,33 @@ class FolderLibrary(LibraryDefaults):
             )
             for e in entries
         ]
+
+    def all_images(self) -> ImageListing:
+        """Every Image a fresh walk finds, Unsorted and Conflicted ones included (#388).
+
+        The same walk as every listing: junk (OS metadata, RomM's
+        ``.romm_tmp_*`` staging) is never listed, and a sheet's tracks belong
+        to their sheet. The walk's own record of what it could not see goes
+        with them (Codex 4589796861): the folders it could not list
+        (``Scan.unwalked``) and the Image files it could not read
+        (``Scan.unreadable_files``), as the walk's Findings already use them.
+        Raises :class:`ListingInProgress` while another walk runs.
+        """
+        try:
+            scan = self.scan(refresh=True)
+        except OSError as exc:
+            raise LibraryUnreadable(str(exc)) from exc
+        return ImageListing(
+            images=[
+                Image(
+                    key=e.key, name=os.path.basename(e.path), title=e.key, size=e.size,
+                    added_at=e.mtime, platform=e.detection.platform, path=e.path, record=e,
+                )
+                for e in scan.entries
+            ],
+            unlisted=tuple(scan.unwalked),
+            unreadable=tuple(scan.unreadable_files),
+        )
 
     def rule_defaults(self) -> dict[str, Any]:
         return {}
