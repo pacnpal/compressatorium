@@ -275,6 +275,42 @@ def test_the_registry_binds_the_referrer_to_the_librarys_folder(vol):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("reverse", [False, True])
+async def test_two_platform_folders_holding_one_image_keep_the_source(vol, monkeypatch, reverse):
+    """Codex PRRT_kwDOQ9nULM64Ki7x: ROMs/alias -> ROMs/ps2 makes both hold
+    Game.iso. Which one ES-DE lists it under can't be told, so the Source is
+    kept, whatever order the folder is listed in."""
+    from services.rules import library as library_module
+
+    source = _file(vol / "ROMs" / "ps2" / "Game.iso")
+    (vol / "ROMs" / "alias").symlink_to(vol / "ROMs" / "ps2", target_is_directory=True)
+    data = b"<gameList><game><path>./Game.iso</path></game></gameList>"
+    gamelist = _file(vol / "gamelists" / "alias" / "gamelist.xml", data)
+    real_scandir = library_module.os.scandir
+
+    class _Listing:
+        def __init__(self, path):
+            with real_scandir(path) as it:
+                self.entries = sorted(it, key=lambda e: e.name, reverse=reverse)
+
+        def __enter__(self):
+            return iter(self.entries)
+
+        def __exit__(self, *_exc):
+            return False
+
+    monkeypatch.setattr(library_module.os, "scandir", _Listing)
+
+    outcome = await _replace(
+        source, vol / "ROMs" / "ps2" / "Game.chd", _esde(vol, vol / "gamelists"),
+    )
+
+    assert not outcome.ok
+    assert "more than one Platform folder" in outcome.reason
+    assert gamelist.read_bytes() == data and source.is_file()
+
+
+@pytest.mark.asyncio
 async def test_an_image_in_no_platform_folder_keeps_the_source(vol):
     """Fail closed: with the ES-DE folder on, an Image whose Platform folder
     can't be told (directly in the ROM directory) is never "nothing to do"."""

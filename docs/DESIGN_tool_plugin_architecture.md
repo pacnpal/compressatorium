@@ -3924,8 +3924,10 @@ Knulli, muOS) key each game's artwork, favourite flag and play count on its
   `RommClient.local_path` makes), else directly under the root (which covers
   `<root>/<platform>/roms/...`). Both go through
   `rules.library.folder_holding(parent, path)`: the folder listed in
-  `parent` (`os.scandir`) whose resolved path holds the resolved file, the
-  deepest when several do, returned as listed. So `ROMs/ps2/psx/Game.iso` is
+  `parent` (`os.scandir`) whose resolved path holds the resolved file,
+  returned as listed. When more than one does (an alias, `alias -> ps2`), the
+  answer would depend on the listing's order, so it raises `AmbiguousFolder`
+  and the gamelist Referrer keeps the Source. So `ROMs/ps2/psx/Game.iso` is
   `ps2` and the `psx` system's gamelist is never read. Only
   `<gamelists folder>/<system>/gamelist.xml` is read, with the Platform
   folder as the entries' base: `ROMs/ps2/Game.iso` reaches

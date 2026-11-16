@@ -65,7 +65,7 @@ from dataclasses import dataclass
 
 from defusedxml.common import DefusedXmlException
 from defusedxml.ElementTree import DefusedXMLParser, ParseError
-from services.rules.library import GAMELISTS_FOLDER
+from services.rules.library import GAMELISTS_FOLDER, AmbiguousFolder
 from utils.path_utils import file_identity, volume_containment
 
 from .base import Phase, Referrer, ReferrerChange, ReferrerError
@@ -390,6 +390,8 @@ class GamelistReferrer(Referrer):
         keeps the Source, never "no gamelist, nothing to do"."""
         try:
             folder = self.library.platform_folder(path)
+        except AmbiguousFolder as exc:
+            raise ReferrerError(path, str(exc)) from exc
         except OSError as exc:
             raise ReferrerError(
                 path, f"can't tell its Platform folder ({exc.strerror or exc})",

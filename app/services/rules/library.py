@@ -49,28 +49,37 @@ ES_FRONTEND_REFERRER = "gamelist"
 GAMELISTS_FOLDER = "gamelists_folder"
 
 
+class AmbiguousFolder(Exception):
+    """More than one folder holds a file, so which one it belongs to can't be told."""
+
+    def __init__(self, path: str, folders: list[str]) -> None:
+        names = ", ".join(sorted(os.path.basename(f) for f in folders))
+        super().__init__(f"more than one Platform folder holds {path} ({names})")
+        self.folders = folders
+
+
 def folder_holding(parent: str, path: str) -> str | None:
     """The folder directly in *parent* that holds the file at *path*, spelled
     as *parent* lists it, or None when none does (#387).
 
     Which folder holds it is decided on resolved paths, so a symlinked folder
     (``ps2 -> actual/PlayStation2``) holds what its target holds; its name is
-    the one listed. When several do (folders nested through symlinks), the
-    one that resolves deepest is the nearest. Blocking; raises OSError when
-    *parent* can't be listed.
+    the one listed. When several do (an alias, ``alias -> ps2``, or folders
+    nested through symlinks), the answer would depend on the listing's order,
+    so it raises :class:`AmbiguousFolder` instead (Codex PRRT_kwDOQ9nULM64Ki7x).
+    Blocking; raises OSError when *parent* can't be listed.
     """
     real = os.path.realpath(path)
-    best: tuple[int, str] | None = None
+    holding = []
     with os.scandir(parent) as listing:
         for entry in listing:
-            if not entry.is_dir():
-                continue
-            target = os.path.realpath(entry.path)
-            if real.startswith(target.rstrip(os.sep) + os.sep):
-                depth = target.count(os.sep)
-                if best is None or depth > best[0]:
-                    best = (depth, entry.path)
-    return best[1] if best else None
+            if entry.is_dir() and real.startswith(
+                os.path.realpath(entry.path).rstrip(os.sep) + os.sep,
+            ):
+                holding.append(entry.path)
+    if len(holding) > 1:
+        raise AmbiguousFolder(path, holding)
+    return holding[0] if holding else None
 
 
 def duplicate_actions(library: Library) -> tuple[str, ...]:
@@ -329,7 +338,8 @@ class Library(Protocol):
         Spelled as listed under the Library (a symlinked folder keeps its own
         name), so its name is the Platform's name a frontend knows. None when
         no Platform folder holds *path* (it sits directly in the root, or
-        outside it). Blocking (lists a folder, resolves paths): off the loop.
+        outside it); raises :class:`AmbiguousFolder` when more than one does.
+        Blocking (lists a folder, resolves paths): off the loop.
         """
 
     def summary_fields(self) -> Mapping[str, Any]:
