@@ -4570,10 +4570,33 @@ command before printing anything to stdout.
 `cancelled` and `abandoned`, and `collect_verify` keeps it. It is set when the
 check ended without judging the file: the runner's overall timeout and stall
 bound in `run_verify`, the one-shot timeout in `capture_verify`, z3ds's own
-timeout, and `verify_preflight`'s stat/read errors ("File not found", "Error
-reading file"); not for an empty file or a wrong extension, which are verdicts.
-`valid` stays False, so nothing is deleted on it, but the CLI's verify keeps a
-stored check unless the failure is conclusive.
+timeout, and the open probe's errors ("File not found", "Could not open
+<file> to check it: [Errno N] ..."); not for an empty file or a wrong
+extension, which are verdicts. `valid` stays False, so nothing is deleted on
+it, but the CLI's verify keeps a stored check unless the failure is
+conclusive.
+
+**Whether the verifier can open the file is decided before it runs** (#359).
+A verifier that can't open its input exits non-zero (chdman's "Permission
+denied" on a `chmod 000` CHD), and an exit reads as a verdict, so a file the
+app cannot read used to lose its stored check. The shared verify entry probes
+first: `subprocess_runner._probe_for_verify` sizes the file and opens it for
+reading, detached and bounded by `_STAT_TIMEOUT`, raced against the cancel
+event. One that exists but can't be opened (EACCES, EPERM, EIO) is
+`inconclusive`, naming the file and the errno, and an open that stalls is
+abandoned as before. A missing file is not "could not read": it is gone, and
+each seam keeps its old answer (`verify_preflight`'s "File not found"; the
+subprocess verifiers run and judge it).
+Every tool goes through it: the Python checks via `verify_preflight`, the
+subprocess ones via `SubprocessRunner.run_verify` and `capture_verify`
+(`verify_readable`), so every caller (the verify routes, the CLI, a job's
+check, a retried delete) leaves the record as it was. A verifier's own
+non-zero exit after a successful open is still its verdict. No tool was found
+whose open succeeds but whose exit still means "could not read"; such a tool
+would say so through the plugin contract, not a branch on its name. The batch
+verify counts an `inconclusive` file with the uncheckable ones ("can't be
+checked"), not as failed, and the file menu's Verify warns rather than
+reporting a failure.
 
 `inconclusive` is an allowlist, never a catch-all. An exception a check raises
 is classified by one helper, `subprocess_runner.verify_exception_event`, for

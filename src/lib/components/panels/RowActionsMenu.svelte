@@ -112,8 +112,9 @@
           description: 'Intact',
           duration: 4000,
         });
-      } else if (result?.uncheckable) {
-        // Refused by a safety rule, not damaged: no verdict either way.
+      } else if (result?.uncheckable || result?.inconclusive) {
+        // Refused by a safety rule, or the file could not be read (#359): not
+        // damaged, no verdict either way.
         toast.warning(name, {
           id: toastId,
           description: result.message || "Can't be checked here",

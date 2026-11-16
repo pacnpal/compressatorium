@@ -1134,6 +1134,83 @@ async def run_detached_within_stall_bound(
         ) from exc
 
 
+def _open_for_verify(path: str) -> int:
+    """Size *path*, then open it for reading as its verifier will. Blocking:
+    run detached (:func:`_probe_for_verify`). ``O_NONBLOCK`` changes nothing
+    for a regular file, but keeps a FIFO with no writer from holding the
+    probe's thread for good."""
+    size = os.path.getsize(path)
+    os.close(os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)))
+    return size
+
+
+async def _probe_for_verify(
+    path: str, cancel_event: asyncio.Event | None, *, missing: dict | None,
+) -> tuple[dict | None, int]:
+    """The bounded "can the verifier open it" probe (#359): ``(None, size)``
+    when *path* opens for reading, else the event that says why not.
+
+    Opening is decided here, before any verifier runs, rather than by reading
+    each tool's error text: a file that exists but can't be opened (EACCES,
+    EPERM, EIO) is no verdict on the file (``inconclusive``), so a stored check
+    stays. Bounded and detached, and raced against *cancel_event*, like every
+    probe of storage that may have stopped answering: an open that stalls is
+    abandoned, as before. A missing file is not "could not read": it is gone,
+    and each caller keeps the answer it always gave (*missing*: the event to
+    return, or None to let the verifier run and judge it).
+    """
+    try:
+        size = await asyncio.wait_for(
+            run_detached(_open_for_verify, path, cancel_event=cancel_event),
+            timeout=_STAT_TIMEOUT,
+        )
+    except ReadCancelled:
+        return {
+            "type": "error",
+            "valid": False,
+            "cancelled": True,
+            "message": "Verification cancelled",
+        }, 0
+    except asyncio.TimeoutError:
+        return {
+            "type": "error",
+            "valid": False,
+            # The probe is still running on its own thread -- giving up on it
+            # is abandonment, and a caller walking a list has to stop rather
+            # than spend one more thread per remaining path on the same storage.
+            "abandoned": True,
+            "message": (
+                f"File stopped responding (no answer in {_STAT_TIMEOUT:.0f}s); "
+                "the volume may be offline"
+            ),
+        }, 0
+    except FileNotFoundError:
+        return missing, 0
+    except OSError as e:
+        return {
+            "type": "error", "valid": False, "inconclusive": True,
+            "message": (
+                f"Could not open {os.path.basename(path)} to check it: "
+                f"[Errno {e.errno}] {e.strerror or e}"
+            ),
+        }, 0
+    return None, size
+
+
+async def verify_readable(
+    path: str, *, cancel_event: asyncio.Event | None = None,
+) -> dict | None:
+    """The shared verify entry's open probe (:func:`_probe_for_verify`): the
+    event to yield and return on, or None when the verifier can open *path*.
+    Every verify goes through it, the Python checks via
+    :func:`verify_preflight` and the subprocess ones via
+    ``SubprocessRunner.run_verify`` / ``capture_verify``, so a verifier's
+    non-zero exit after a successful open is always its verdict. A missing
+    file passes through to the verifier, whose answer it always was."""
+    problem, _size = await _probe_for_verify(path, cancel_event, missing=None)
+    return problem
+
+
 async def verify_preflight(
     path: str,
     extensions: frozenset[str] | set[str],
@@ -1157,42 +1234,17 @@ async def verify_preflight(
     stopped answering, a cancel pressed during the probe must produce a
     *cancelled* verdict, not the "stopped responding" failure the bound would
     otherwise report ten seconds later.
+
+    The size comes from opening the file for reading (:func:`_probe_for_verify`,
+    #359): one the verifier could not open is no verdict.
     """
-    try:
-        size = await asyncio.wait_for(
-            run_detached(os.path.getsize, path, cancel_event=cancel_event),
-            timeout=_STAT_TIMEOUT,
-        )
-    except ReadCancelled:
-        return {
-            "type": "error",
-            "valid": False,
-            "cancelled": True,
-            "message": "Verification cancelled",
-        }, 0
-    except asyncio.TimeoutError:
-        return {
-            "type": "error",
-            "valid": False,
-            # The stat is still running on its own thread -- giving up on it is
-            # abandonment, and a caller walking a list has to stop rather than
-            # spend one more thread per remaining path on the same storage.
-            "abandoned": True,
-            "message": (
-                f"File stopped responding (no answer in {_STAT_TIMEOUT:.0f}s); "
-                "the volume may be offline"
-            ),
-        }, 0
-    except FileNotFoundError:
-        return {
-            "type": "error", "valid": False, "message": "File not found",
-            "inconclusive": True,
-        }, 0
-    except OSError as e:
-        return {
-            "type": "error", "valid": False, "message": f"Error reading file: {e}",
-            "inconclusive": True,
-        }, 0
+    # A missing file stays what it always was here: no verdict.
+    problem, size = await _probe_for_verify(path, cancel_event, missing={
+        "type": "error", "valid": False, "message": "File not found",
+        "inconclusive": True,
+    })
+    if problem is not None:
+        return problem, 0
     if size == 0:
         return {"type": "error", "valid": False, "message": "File is empty"}, 0
     ext = os.path.splitext(path)[1].lower()
@@ -1861,6 +1913,12 @@ class SubprocessRunner:
         (nsz's ``[NSP SHA256]``), so that verifier runs once per job.
         """
         yield {"type": "progress", "progress": 0, "message": start_message}
+        # One the verifier can't open is no verdict, decided before it runs
+        # (#359): its exit would read as one.
+        problem = await verify_readable(path, cancel_event=cancel_event)
+        if problem is not None:
+            yield problem
+            return
         timeout = await resolve_verify_timeout(
             path, self._owner, cancel_event=cancel_event,
         )
@@ -1951,6 +2009,13 @@ class SubprocessRunner:
         # either binary is absent its prefix is empty and the verify simply runs
         # unniced, which is what it did before this policy applied to it at all.
         cmd = nice_prefix(self._owner) + ioprio_prefix(self._owner) + cmd
+
+        # One the verifier can't open is no verdict, decided before it runs
+        # (#359): chdman's exit 1 on "Permission denied" would read as one.
+        problem = await verify_readable(path, cancel_event=cancel_event)
+        if problem is not None:
+            yield problem
+            return
 
         # Resolve the bounds *before* spawning. They stat the file, and an await
         # between the spawn and the try/finally below is a window where a
