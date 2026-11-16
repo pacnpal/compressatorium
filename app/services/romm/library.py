@@ -22,6 +22,7 @@ from services.romm import settings as romm_settings
 from services.rules.library import (
     CONVERTED_HISTORY,
     ES_FRONTEND_REFERRER,
+    HIDDEN_STAGING,
     RECOGNIZED_FILTER,
     Image,
     LibraryDefaults,
@@ -80,7 +81,7 @@ class RommLibrary(LibraryDefaults):
     id = "romm"
     kind = "romm"
     name = "RomM"
-    capabilities = frozenset({RECOGNIZED_FILTER, CONVERTED_HISTORY})
+    capabilities = frozenset({RECOGNIZED_FILTER, CONVERTED_HISTORY, HIDDEN_STAGING})
     legacy_preference_keys = MappingProxyType(
         {RULES_KEY: LEGACY_RULES_KEY, STATE_KEY: LEGACY_STATE_KEY},
     )

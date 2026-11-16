@@ -34,6 +34,12 @@ CONVERTED_HISTORY = "converted_history"
 # (size or mtime). Without it a sweep re-queues a failing Image every run,
 # which is what RomM's Rules have always done.
 FAILED_HOLD = "failed_hold"
+# The Library's own scanner indexes what appears beside an Image, so a
+# conversion must not write there until its output is checked: in-progress
+# output goes to a hidden staging folder and is placed only once its checks
+# pass (``services.staging``, #398). RomM 5.4.1 indexes even dot-prefixed
+# files, but skips dot-prefixed folders.
+HIDDEN_STAGING = "hidden_staging"
 
 # The opt-in Referrer a Library's "used by an EmulationStation frontend"
 # setting turns on (#386): ``referrer_enabled`` answers True for it then.

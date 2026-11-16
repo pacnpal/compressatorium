@@ -1,5 +1,6 @@
-"""The hidden temp files ``archive_edit.rewrite_zip`` writes, and sweeping
-the ones a hard kill left behind (#331).
+"""The hidden temp files ``archive_edit.rewrite_zip`` writes, the staging
+slots a conversion writes into (``services.staging``, #398), and sweeping the
+ones a hard kill left behind (#331).
 
 A rewrite writes to ``.partial-XXXXXXXX.tmp`` beside its target and places it
 only once it is checked (``.<target name>.partial-XXXXXXXX.tmp`` before #331).
@@ -36,6 +37,16 @@ A process killed hard (SIGKILL, power loss) leaves that file: hidden, ending in
   removed the file, or its folder is inside a Volume, is the very folder it
   was written in (same device and inode, so not an empty mount point) and no
   longer holds it. A Volume that is away keeps the record for the next start.
+* **Staging slots, by the same rules (#398).** A conversion that must stay
+  hidden from a Library scanner writes into ``slot-XXXXXXXX/`` inside the
+  hidden ``.compressatorium-stage/`` folder beside its output
+  (``services.staging``). Its lock file is ``slot-XXXXXXXX.lock`` beside the
+  slot, held from before the slot exists until it is gone, and the slot is
+  journaled like a temp file. The sweep removes a slot only when it can take
+  that lock, the slot is older than ``MIN_AGE_SECONDS``, and the name still
+  names the same real folder (never a link), then its lock file, then the
+  stage folder once it is empty. Opening a slot sweeps the stage folder first,
+  so a slot whose record was lost goes too.
 """
 from __future__ import annotations
 
@@ -43,12 +54,14 @@ import fcntl
 import hashlib
 import os
 import re
+import shutil
 import stat
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
 from logging_setup import get_logger
+from utils.junk import STAGE_DIR_NAME
 from utils.path_utils import (
     companion_name,
     open_dir_beneath,
@@ -70,6 +83,11 @@ MIN_AGE_SECONDS = 60.0
 # ``.<target name>`` the name carried before #331.
 _LEFTOVER = re.compile(r"\.(?:.+\.)?partial-[a-z0-9_]{8}\.tmp")
 _SIDECAR = re.compile(r"\.partial-[0-9a-f]{16}\.lock")
+# A staging slot: ``slot-`` + mkstemp's eight characters; its lock file adds
+# ``.lock``.
+SLOT_PREFIX = "slot-"
+_SLOT = re.compile(r"slot-[a-z0-9_]{8}")
+_SLOT_LOCK = re.compile(r"slot-[a-z0-9_]{8}\.lock")
 _CLOEXEC = getattr(os, "O_CLOEXEC", 0)
 _READ_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | _CLOEXEC
 # Read and write, never truncate: an exclusive flock needs a write open on NFS.
@@ -96,6 +114,21 @@ def sidecar_path(temp: str) -> str:
 def is_sidecar_name(name: str) -> bool:
     """Whether a file name is a temp file's lock file."""
     return _SIDECAR.fullmatch(name) is not None
+
+
+def is_slot_name(name: str) -> bool:
+    """Whether a name is a staging slot's (``services.staging``)."""
+    return _SLOT.fullmatch(name) is not None
+
+
+def slot_lock_name(slot_name: str) -> str:
+    """A staging slot's lock file, beside it in the stage folder: the one
+    rule the writer and the sweep share."""
+    return slot_name + LOCK_SUFFIX
+
+
+def _is_slot_lock_name(name: str) -> bool:
+    return _SLOT_LOCK.fullmatch(name) is not None
 
 
 # --- the journal -----------------------------------------------------------
@@ -407,6 +440,8 @@ def _sweep_marker(marker: Path, min_age: float) -> str | None:
     except OSError:
         return None
     folder, name = os.path.split(path)
+    if is_slot_name(name):
+        return _sweep_slot_marker(folder, name, folder_id, min_age)
     dir_fd = _open_folder(folder)
     if dir_fd is None:
         return None  # outside, can't tell, or the Volume is away: keep it
@@ -432,8 +467,155 @@ def _sweep_marker(marker: Path, min_age: float) -> str | None:
         os.close(dir_fd)
 
 
+# --- staging slots (#398) ----------------------------------------------------
+
+
+def open_stage_folder(folder_fd: int, *, create: bool) -> int:
+    """The stage folder inside the output folder ``folder_fd``, opened without
+    following a link (a link in its place fails, usually ``ELOOP``); made
+    first, mode 0700, when *create*. Raises ``OSError``."""
+    if create:
+        try:
+            os.mkdir(STAGE_DIR_NAME, 0o700, dir_fd=folder_fd)
+        except FileExistsError:
+            pass
+    return os.open(
+        STAGE_DIR_NAME, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | _CLOEXEC,
+        dir_fd=folder_fd,
+    )
+
+
+def remove_stage_folder_if_empty(folder_fd: int) -> None:
+    """Remove the stage folder once no slot is left in it. Never raises."""
+    try:
+        os.rmdir(STAGE_DIR_NAME, dir_fd=folder_fd)
+    except OSError:
+        pass  # not empty (another job's slot), already gone, or can't
+
+
+def _sweep_slot(stage_fd: int, name: str, min_age: float, *, where: str) -> bool | None:
+    """Remove one staging slot and its lock file from the stage folder
+    ``stage_fd``. True removed, False kept on purpose (its writer holds the
+    lock, or it is too young), None not ours or couldn't tell."""
+    if not is_slot_name(name):
+        return None
+    try:
+        info = os.stat(name, dir_fd=stage_fd, follow_symlinks=False)
+    except OSError:
+        return None
+    if not stat.S_ISDIR(info.st_mode):
+        return None  # a link or a file named like a slot: never ours
+    if time.time() - info.st_mtime < min_age:
+        return False
+    lock_name = slot_lock_name(name)
+    lock_fd = _open_sidecar(stage_fd, lock_name)
+    if lock_fd is None:
+        return None
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(lock_fd)
+        return False
+    except OSError:
+        os.close(lock_fd)
+        return None
+    try:
+        if not _same_file(stage_fd, name, info) or not _same_file(
+            stage_fd, lock_name, os.fstat(lock_fd)
+        ):
+            return None  # a name now points at something else
+        # Descriptor-based (``rmtree`` with ``dir_fd``): never follows a link
+        # inside the slot.
+        shutil.rmtree(name, dir_fd=stage_fd)
+        logger.info(
+            "Removed the staged output of an interrupted conversion: %s",
+            os.path.join(where, name),
+        )
+        _unlink_at(stage_fd, lock_name)
+        return True
+    except OSError:
+        return None
+    finally:
+        os.close(lock_fd)
+
+
+def sweep_stage(stage_fd: int, *, min_age: float = MIN_AGE_SECONDS, where: str = "") -> int:
+    """Remove the unlocked, old slots in an open stage folder, and the lock
+    files whose slot is gone. Never raises."""
+    try:
+        with os.scandir(stage_fd) as entries:
+            names = [entry.name for entry in entries]
+    except OSError:
+        return 0
+    removed = sum(
+        _sweep_slot(stage_fd, name, min_age, where=where) is True
+        for name in names if is_slot_name(name)
+    )
+    for name in names:
+        if _is_slot_lock_name(name):
+            _sweep_orphan_sidecar(
+                stage_fd, name, min_age, temp_name=name[: -len(LOCK_SUFFIX)],
+            )
+    return removed
+
+
+def _sweep_slot_marker(
+    stage: str, name: str, folder_id: tuple[int, int] | None, min_age: float,
+) -> str | None:
+    """Sweep one journaled staging slot: "removed", "gone" (proven gone
+    already), or None (keep the marker). Then removes the stage folder if
+    nothing is left in it."""
+    folder_fd = _open_folder(os.path.dirname(stage))
+    if folder_fd is None:
+        return None  # outside, can't tell, or the Volume is away: keep it
+    try:
+        try:
+            stage_fd = open_stage_folder(folder_fd, create=False)
+        except FileNotFoundError:
+            # No stage folder at all: gone, but only on the very filesystem
+            # it was made on (an empty mount point is another device).
+            try:
+                device = os.fstat(folder_fd).st_dev
+            except OSError:
+                return None
+            return "gone" if folder_id is not None and device == folder_id[0] else None
+        except OSError:
+            return None
+        try:
+            outcome = _sweep_slot_in(stage_fd, stage, name, folder_id, min_age)
+        finally:
+            os.close(stage_fd)
+        if outcome is not None:
+            remove_stage_folder_if_empty(folder_fd)
+        return outcome
+    finally:
+        os.close(folder_fd)
+
+
+def _sweep_slot_in(
+    stage_fd: int, stage: str, name: str, folder_id: tuple[int, int] | None,
+    min_age: float,
+) -> str | None:
+    """:func:`_sweep_slot_marker` once the stage folder is open."""
+    try:
+        info = os.fstat(stage_fd)
+    except OSError:
+        return None
+    if folder_id != (info.st_dev, info.st_ino):
+        return None  # not the stage folder the slot was made in
+    try:
+        os.stat(name, dir_fd=stage_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        _sweep_orphan_sidecar(stage_fd, slot_lock_name(name), min_age, temp_name=name)
+        return "gone"
+    except OSError:
+        return None
+    return "removed" if _sweep_slot(stage_fd, name, min_age, where=stage) is True else None
+
+
 def sweep_recorded(*, min_age: float = MIN_AGE_SECONDS) -> int:
-    """Startup: remove every journaled leftover nothing holds. Never raises.
+    """Startup: remove every journaled leftover nothing holds, temp files and
+    staging slots alike (#398), by the same rules. Never raises.
 
     A marker is dropped only on proof the file is gone: this sweep removed
     it, or its folder is inside a Volume, is the folder it was written in
@@ -457,6 +639,7 @@ def sweep_recorded(*, min_age: float = MIN_AGE_SECONDS) -> int:
 __all__ = [
     "LOCK_SUFFIX",
     "MIN_AGE_SECONDS",
+    "SLOT_PREFIX",
     "TEMP_PREFIX",
     "TEMP_SUFFIX",
     "TempClaim",
@@ -464,10 +647,15 @@ __all__ = [
     "forget",
     "is_leftover_name",
     "is_sidecar_name",
+    "is_slot_name",
+    "open_stage_folder",
     "record",
     "recorded_paths",
+    "remove_stage_folder_if_empty",
     "sidecar_name",
     "sidecar_path",
+    "slot_lock_name",
     "sweep_folder",
     "sweep_recorded",
+    "sweep_stage",
 ]
