@@ -155,6 +155,21 @@ async def test_paths_outside_the_volumes_are_still_refused(route_env) -> None:
     assert exc.value.status_code == 403
 
 
+@pytest.mark.asyncio
+async def test_a_probe_s_own_timeout_is_not_the_bound(monkeypatch) -> None:
+    """Only the bound answers 503; a probe's own ``TimeoutError`` (an NFS
+    ``ETIMEDOUT``) reaches the caller as itself (#343's ``run_detached_bounded``)."""
+    monkeypatch.setattr(volume_guard, "VOLUME_PROBE_TIMEOUT_SECONDS", 5)
+
+    def times_out_itself():
+        raise TimeoutError("ETIMEDOUT from the mount")
+
+    with pytest.raises(TimeoutError) as exc:
+        await volume_guard.off_loop_bounded(times_out_itself)
+    assert not isinstance(exc.value, convert_routes.HTTPException)
+    assert "ETIMEDOUT" in str(exc.value)
+
+
 # Calls that stat or resolve a path against the Volumes.
 _BLOCKING = {
     "is_within_configured_volumes", "ensure_path_within_volumes", "volume_containment",
