@@ -39,6 +39,11 @@ _MAX_RESPONSE_SIZE = 64 * 1024 * 1024
 
 _USER_AGENT = "compressatorium-romm/1.0"
 
+# One scope probe's timeout, and the ROM id it names: the largest a RomM row id
+# can be, so the probe can never touch a real ROM.
+_PROBE_TIMEOUT = 10
+_PROBE_ROM_ID = 2147483647
+
 # Page size for catalog reads. RomM allows up to 10000, but a smaller page keeps
 # each request's latency and memory bounded and costs only a few extra requests.
 PAGE_SIZE = 500
@@ -119,14 +124,16 @@ def _token() -> str | None:
     return romm_settings.token()
 
 
-def _urlopen(req: urllib.request.Request, origin_url: str):
+def _urlopen(
+    req: urllib.request.Request, origin_url: str, timeout: float = _HTTP_TIMEOUT,
+):
     """Open *req*, following redirects only within *origin_url*'s origin.
 
     The one seam every RomM HTTP call goes through, so the redirect policy
     cannot be bypassed by a caller reaching for ``urlopen`` directly.
     """
     opener = urllib.request.build_opener(_SameOriginRedirectHandler(origin_url))
-    return opener.open(req, timeout=_HTTP_TIMEOUT)  # nosec B310
+    return opener.open(req, timeout=timeout)  # nosec B310
 
 
 class _SameOriginRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -244,6 +251,7 @@ class RommClient:
         data: bytes | None = None,
         content_type: str | None = None,
         authenticated: bool = True,
+        timeout: float | None = None,
     ) -> Any:
         url = f"{self._require_configured()}{path}"
         if params:
@@ -264,8 +272,10 @@ class RommClient:
             headers["Authorization"] = f"Bearer {token}"
 
         req = urllib.request.Request(url, headers=headers, data=data, method=method)
+        # Only a caller that wants a tighter bound than the default passes one.
+        extra = {} if timeout is None else {"timeout": timeout}
         try:
-            with _urlopen(req, url) as resp:
+            with _urlopen(req, url, **extra) as resp:
                 raw = resp.read(_MAX_RESPONSE_SIZE + 1)
         except urllib.error.HTTPError as exc:
             detail = ""
@@ -452,6 +462,43 @@ class RommClient:
         self._request(
             "PUT", f"/api/roms/{int(rom_id)}", data=body, content_type=content_type,
         )
+
+    def token_permissions(self) -> dict[str, bool]:
+        """Which of the swap's scopes the token holds, by asking RomM.
+
+        RomM has no endpoint that reports a token's scopes, but three harmless
+        calls answer for them (spike #382, RomM 5.4.1): ``PUT`` to a ROM id
+        that cannot exist is 404 with ``roms.write`` and 403 without it, ``GET
+        /api/tasks/status`` is 200 with ``tasks.run`` and 403 without it, and
+        a one-row ROM list is 200 with ``roms.read``. Any other answer (a 401,
+        a 5xx, no answer) says nothing about scopes, so it is raised, not read
+        as "missing". Each call has its own short timeout.
+        """
+        body, content_type = _encode_multipart({"fs_name": "probe.chd"})
+        return {
+            "roms.read": self._probe_scope(
+                "GET", "/api/roms", allowed=200, params={"limit": 1},
+            ),
+            "roms.write": self._probe_scope(
+                "PUT", f"/api/roms/{_PROBE_ROM_ID}", allowed=404,
+                data=body, content_type=content_type,
+            ),
+            "tasks.run": self._probe_scope("GET", "/api/tasks/status", allowed=200),
+        }
+
+    def _probe_scope(
+        self, method: str, path: str, *, allowed: int, **request: Any,
+    ) -> bool:
+        """True on the *allowed* status, False on 403, RommError otherwise."""
+        try:
+            self._request(method, path, timeout=_PROBE_TIMEOUT, **request)
+        except RommError as exc:
+            if exc.status == 403:
+                return False
+            if exc.status == allowed:
+                return True
+            raise
+        return allowed == 200
 
     # ------------------------------------------------------------------
     # path mapping

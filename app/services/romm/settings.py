@@ -74,6 +74,11 @@ _FIELDS: dict[str, tuple[str, Any, str]] = {
     # Delete the source once the new output verifies. Off by default: it is
     # destructive, and the RomM library is the user's collection.
     "delete_source_after_verify": ("ROMM_DELETE_SOURCE_AFTER_VERIFY", False, "bool"),
+    # Keep RomM's ROM id (and the saves, notes and collections on it) when a
+    # conversion replaces a file, by renaming the record instead of letting RomM
+    # add a new one (#381). Off by default: it needs a token holding roms.write
+    # and tasks.run, which turning it on checks. The swap itself is #391.
+    "swap_keep_rom_id": ("ROMM_SWAP_KEEP_ROM_ID", False, "bool"),
     # The library is used by an EmulationStation frontend (#386): a conversion
     # rewrites the matching <path> in the Platform folder's gamelist.xml.
     "es_frontend": ("ROMM_ES_FRONTEND", False, "bool"),

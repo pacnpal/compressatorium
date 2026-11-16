@@ -18,7 +18,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 from routes import rules as shared_rule_routes
-from services import libraries
+from services import duplicates, libraries
 from services.libraries.folder import ListingInProgress
 from services.rules import editor as rules_editor
 from services.rules.library import Library, LibraryUnreadable
@@ -171,6 +171,36 @@ async def library_platforms(library_id: str) -> dict:
             if registry.mode_is_automatable(spec.mode)
         ),
     }
+
+
+@router.post("/libraries/{library_id}/find-duplicates")
+async def find_duplicates(library_id: str) -> dict:
+    """Start the Library's find-duplicates run (#388), as a background job.
+
+    The run reads the content keys it is missing and records each group of
+    Images that hold one disc as a ``duplicate`` Finding. Read-only: nothing is
+    deleted. 409 while the Library's previous run is still running.
+    """
+    library = _library(library_id)
+    try:
+        job = duplicates.start(library)
+    except duplicates.LibraryRemoving:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "library_being_removed",
+                "message": "This Library is being removed",
+            },
+        ) from None
+    except duplicates.AlreadyRunning as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "find_duplicates_running", "job_id": exc.job_id,
+                "message": "This Library's find-duplicates run is still running",
+            },
+        ) from None
+    return {"job_id": job.id, "library_id": library.id}
 
 
 @router.get("/libraries/{library_id}/rules")

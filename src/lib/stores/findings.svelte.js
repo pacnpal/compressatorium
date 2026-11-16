@@ -9,10 +9,27 @@
 
 import { api } from '$lib/api/endpoints.js';
 
+/**
+ * What labels and toasts call a Finding. A duplicate group (#388) is named
+ * by its first copy's file name and how many others there are ("Game.iso
+ * and 2 other copies"), never by its `raw:<sha1>` key; any other Finding by
+ * its Image key.
+ */
+export function findingName(row) {
+  if (row?.kind !== 'duplicate') return row?.image_key ?? '';
+  const copies = row.cause?.copies ?? [];
+  const first = copies[0]?.path?.split(/[/\\]/).filter(Boolean).pop() ?? 'A duplicate group';
+  const others = Math.max(0, copies.length - 1);
+  return `${first} and ${others} other ${others === 1 ? 'copy' : 'copies'}`;
+}
+
 class FindingsStore {
   list = $state([]);
   // How many Findings a dismiss is hiding right now.
   dismissed = $state(0);
+  // Each Library's last find-duplicates run (#388): what it keyed and which
+  // formats it could not check, shown beside the duplicate groups.
+  duplicateRuns = $state([]);
   showDismissed = $state(false);
   loading = $state(false);
   error = $state(null);
@@ -35,6 +52,23 @@ class FindingsStore {
   pending = $state(null);
   // Only the latest listing request may write the list (rapid toggles).
   #request = 0;
+  // The finished find-duplicates runs (#388) already accounted for, by job id;
+  // null until the view first reports them.
+  #runsSeen = null;
+
+  /**
+   * The view's finished find-duplicates runs. Lists again when one is new
+   * since the last report (a run just ended), not on the first report (the
+   * view lists on open anyway) or when one is cleared from the jobs list.
+   * Returns whether it listed.
+   */
+  noteFinishedRuns(ids) {
+    const before = this.#runsSeen;
+    this.#runsSeen = new Set(ids);
+    if (before === null || !ids.some((id) => !before.has(id))) return false;
+    this.load();
+    return true;
+  }
 
   async load() {
     const request = ++this.#request;
@@ -45,6 +79,7 @@ class FindingsStore {
       if (request !== this.#request) return this.list;
       this.list = Array.isArray(data?.findings) ? data.findings : [];
       this.dismissed = data?.dismissed ?? 0;
+      this.duplicateRuns = Array.isArray(data?.duplicate_runs) ? data.duplicate_runs : [];
     } catch (e) {
       if (request === this.#request) this.error = e?.message ?? 'Failed to list the Findings';
     } finally {

@@ -8,6 +8,7 @@ from pathlib import Path
 
 from config import settings
 from services.subprocess_runner import (
+    ReadCancelled,
     StorageAbandoned,
     abandonment_checkpoint,
     ConversionCancelled,
@@ -124,7 +125,9 @@ class ChdmanService:
         """
         return self._runner
 
-    async def info(self, chd_path: str) -> dict:
+    async def info(
+        self, chd_path: str, *, cancel_event: asyncio.Event | None = None,
+    ) -> dict:
         """Get information about a CHD file.
 
         Goes through the shared capture rather than a hand-rolled spawn: that
@@ -149,6 +152,7 @@ class ChdmanService:
                 nice_prefix(owner) + ioprio_prefix(owner)
                 + [self.chdman_path, "info", "-i", chd_path],
                 timeout=timeout or None,
+                cancel_event=cancel_event,
                 nice_via_wrapper=True,
             )
         # An ordinary timeout leaves the child dead; this one does not, and the
@@ -161,6 +165,9 @@ class ChdmanService:
                 "unresponsive storage; it is still running"
             )
         if returncode is None:
+            if cancel_event is not None and cancel_event.is_set():
+                # The caller's cancel stopped the child: no answer, no error.
+                raise ReadCancelled("chdman info cancelled")
             raise RuntimeError(f"chdman info timed out after {timeout}s")
 
         if returncode != 0:
