@@ -10,7 +10,7 @@ from collections.abc import Callable
 from typing import List, Tuple, Optional, Union, Dict
 
 from config import settings
-from services.archive_members import read_archive_members
+from services.archive_members import later_volume_of, read_archive_members
 from utils.junk import is_junk_path
 from utils.path_utils import match_extension
 
@@ -235,7 +235,12 @@ class ArchiveService:
         if ext in ARCHIVE_EXTENSIONS:
             start = time.monotonic()
             try:
-                raw_members = read_archive_members(archive_path, progress)
+                if later_volume_of(archive_path, progress) is not None:
+                    # A later volume of a RAR set (#369): its members are
+                    # listed under the first volume, and rarfile refuses it.
+                    raw_members = []
+                else:
+                    raw_members = read_archive_members(archive_path, progress)
                 entries, truncated = self._filter_members(
                     archive_path, raw_members, allowed,
                 )

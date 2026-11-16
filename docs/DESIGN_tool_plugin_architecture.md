@@ -654,7 +654,18 @@ every volume. Known limit: a single huge header block on a slow mount reports
 nothing while it is read; a complete member list matters more. `rarfile`'s
 default `errors="stop"` ends a parse quietly at a missing or broken volume, so
 `_read_rar` checks `strerror()` and raises `IncompleteArchive`, and a list
-that stopped early is never returned or cached.
+that stopped early is never returned or cached. A later volume of a set is
+not an archive of its own (#369): `archive_members.later_volume_of(path,
+progress)` is the one place that decides it. It matches the name first
+(`<stem>.partN.rar` with N > 1; `.r00`-style volumes are not listed archive
+extensions, so they are plain files already), then asks rarfile, which
+refuses a volume whose flags say it is not the first (`NeedFirstVolume`), so
+a single-volume RAR merely named `x.part2.rar` still lists. The answer is
+cached per `(path, mtime, size)`, and it returns the first volume's path. A
+later volume lists as a plain `file` row in `GET /files`, with no member
+count and no convert or Verify actions, and `scan_tree` skips it. The
+`list_archive_contents` call returns no members for it without logging an
+error.
 `services.archive_members.read_archive_members(path, progress)` opens the
 archive through it when given a callback (a cached answer reads nothing),
 and `ArchiveService.list_archive_contents(..., progress=...)`,
