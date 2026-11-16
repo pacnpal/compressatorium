@@ -4,6 +4,14 @@
 
 ### Fixed
 
+- **Conversions that finish during a check run are checked the next tick**
+  (#360). One scheduler tick could queue conversions and start a check Rule's
+  run; when the conversions finished while the check was still running, the
+  run was counted for the night anyway, so the new CHDs waited a full day for
+  their first check. Now a check run counts only if no conversion changed the
+  Library between its listing and the end of the check. Otherwise the next
+  tick runs it again and picks up the new Images. A check that ran with no
+  file changes still counts.
 - **A check right after conversions checks the new Images** (#353). A
   scheduled check Rule that ran within about 30 seconds of a conversion used
   the folder listing from before it, checked nothing new, and still counted
