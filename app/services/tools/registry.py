@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 
 from logging_setup import get_logger
 from models import InputKind
-from utils.path_utils import match_extension
+from utils.path_utils import match_extension, path_presence
 
 if TYPE_CHECKING:
     from .base import ToolPlugin
@@ -507,6 +507,31 @@ class ToolRegistry:
             ):
                 return True
         return False
+
+    def output_missing(self, path: str) -> bool:
+        """Whether the output stored under *path* is confirmed gone. May do disk I/O.
+
+        :meth:`output_exists` read the strict way (#373): True only when the
+        filesystem says nothing is at *path* and, for a split output's
+        logical name, nothing at its first numbered part either. A check that
+        can't answer (``EIO``, a stalled mount) is not "missing", so a store
+        pruning on this keeps the record (``utils.path_utils.path_presence``).
+        """
+        presence = path_presence(path)
+        if presence is not False:
+            return False
+        for spec in self.mode_specs():
+            if not spec.output_ext or match_extension(path, {spec.output_ext}) is None:
+                continue
+            parts = self._companions(spec.mode, path)
+            if not parts:
+                continue
+            part = path_presence(parts[0])
+            if part is None:
+                return False
+            if part and self.split_owner(parts[0]) == (path, spec.mode):
+                return False
+        return True
 
     def split_members(self, path: str) -> list[str]:
         """The later parts of the split output whose *first* part is *path*.

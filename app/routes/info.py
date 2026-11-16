@@ -94,6 +94,7 @@ from services.z3ds_compress import (
 )
 from services.verification_store import cannot_check, record_check, verification_store
 from sse_starlette.sse import EventSourceResponse
+from routes.volume_guard import off_loop_until_stalled
 from utils.path_utils import is_within_configured_volumes, match_extension, walk_tree
 
 DOLPHIN_INFO_EXTENSIONS = DOLPHIN_CONVERTIBLE_EXTENSIONS
@@ -963,41 +964,40 @@ async def get_chd_metadata_batch(
 
     For every requested path, an entry is returned. Invalid or non-CHD paths
     will have media_type=None, cached=False, and an error field.
-    """
-    result = {}
 
-    for path in request.paths:
+    One pass on a detached thread under the no-progress bound, one report per
+    path (#373): a frozen Volume answers 503 like the other bounded routes,
+    instead of holding the request and a shared pool worker.
+    """
+    return await off_loop_until_stalled(
+        _chd_metadata_entries, list(request.paths), what="Reading the CHD badges",
+    )
+
+
+def _chd_metadata_entries(paths: list[str], *, progress) -> dict:
+    """The badge entry for each path. Blocking; via ``off_loop_until_stalled``."""
+    result = {}
+    for path in paths:
+        progress(path)
         # Default entry for each requested path
         entry = {"media_type": None, "cached": False}
-
-        if not await run_in_threadpool(is_within_configured_volumes, path, treat_archives=False):
+        if not is_within_configured_volumes(path, treat_archives=False):
             entry["error"] = "path_outside_configured_volumes"
-            result[path] = entry
-            continue
-
-        if not await run_in_threadpool(os.path.isfile, path):
+        elif not os.path.isfile(path):
             entry["error"] = "file_not_found"
-            result[path] = entry
-            continue
-
-        if not path.lower().endswith(".chd"):
+        elif not path.lower().endswith(".chd"):
             entry["error"] = "not_a_chd_file"
-            result[path] = entry
-            continue
-
-        # Only return cached data, don't run chdman info
-        if not await chd_metadata_store.is_stale(path):
-            # Optimize: use get_full_info to avoid extra lock/lookup
-            _, media_type = await chd_metadata_store.get_full_info(path)
-            entry["media_type"] = media_type
-            entry["cached"] = True
-            # no error field for successful, cached entries
         else:
-            # Not cached yet - frontend can trigger individual info calls
-            entry["error"] = "not_cached"
-
+            # Only return cached data, don't run chdman info
+            cached, media_type = chd_metadata_store.cached_media_type_blocking(path)
+            if cached:
+                entry["media_type"] = media_type
+                entry["cached"] = True
+                # no error field for successful, cached entries
+            else:
+                # Not cached yet - frontend can trigger individual info calls
+                entry["error"] = "not_cached"
         result[path] = entry
-
     return result
 
 
@@ -1039,9 +1039,15 @@ async def list_verified() -> dict:
 
     ``checks`` maps each path to ``"intact"`` or ``"round_tripped"`` (#298) so
     the UI names the check instead of calling the file "verified".
+
+    Prunes the records whose output is confirmed gone first. Every record is
+    checked in one pass on a detached thread under the no-progress bound
+    (#373): a frozen Volume answers 503 like the other bounded routes, and a
+    record that can't be checked is kept.
     """
-    await verification_store.prune_missing()
-    return await _verified_answer(await verification_store.all_records())
+    return await off_loop_until_stalled(
+        _verified_blocking, None, what="Listing the files that passed a check",
+    )
 
 
 # How many paths one ``/verified/lookup`` may ask about: a check run's budget
@@ -1063,22 +1069,28 @@ async def lookup_verified(body: VerifiedLookup) -> dict:
         raise HTTPException(
             status_code=422, detail=f"At most {MAX_VERIFIED_LOOKUP} paths per lookup",
         )
-    wanted = set(body.paths)
-    records = [
-        r for r in await verification_store.all_records() if r.get("chd_path") in wanted
-    ]
-    return await _verified_answer(records)
+    return await off_loop_until_stalled(
+        _verified_blocking, frozenset(body.paths), what="Listing the files that passed a check",
+    )
 
 
-async def _verified_answer(records: list[dict]) -> dict:
-    """The ``{verified, checks}`` answer for *records*, inside the Volumes."""
+def _verified_blocking(wanted: frozenset[str] | None, *, progress) -> dict:
+    """The ``{verified, checks}`` answer, inside the Volumes (#373).
+
+    ``wanted`` None is the full list, pruned first; a set narrows it to those
+    paths, with no prune. Blocking; via ``off_loop_until_stalled``, which
+    answers 503 once a record's Volume stops answering.
+    """
+    if wanted is None:
+        verification_store.prune_missing_blocking(progress)
     verified = []
     checks: dict[str, str] = {}
-    for record in records:
+    for record in verification_store.all_records_blocking():
         chd_path = record.get("chd_path")
-        if chd_path and await run_in_threadpool(
-            is_within_configured_volumes, chd_path, treat_archives=False
-        ):
+        if not chd_path or (wanted is not None and chd_path not in wanted):
+            continue
+        progress(chd_path)
+        if is_within_configured_volumes(chd_path, treat_archives=False):
             verified.append(chd_path)
             checks[chd_path] = record.get("check_passed") or "intact"
     return {"verified": verified, "checks": checks}

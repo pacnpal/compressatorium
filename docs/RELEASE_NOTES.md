@@ -12,6 +12,15 @@
   result was kept. These now say `uncheckable`, the command exits `4` (a run
   that stops on such storage too, unless something had already failed), and
   the stored result is still kept. A corrupt file still fails.
+- **The check badges load while a Volume is frozen** (#373). Listing the
+  files that passed a check (the Intact and Round-tripped badges) looked at
+  every stored file with no time bound, so a frozen mount held the request
+  with no answer. It now gives up once a Volume reads nothing for 30 seconds
+  and answers "A Volume isn't responding", like the file browser. The same
+  goes for re-reading those badges after a check run, the CHD badge lookup
+  and pruning the DAT match cache. A record whose file
+  can't be checked (a frozen or failing Volume) is now kept instead of being
+  dropped as missing.
 - **`compressatorium verify` tells an unreadable file from a corrupt one**
   (#370). A file the command can't open (its permissions, a share that went
   away), or whose check runs past its time limit, now prints `uncheckable`

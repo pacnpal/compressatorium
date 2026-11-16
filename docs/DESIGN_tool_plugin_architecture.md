@@ -689,6 +689,23 @@ member cache. Progress callers:
   `folder_has_entries` through `off_loop_bounded`.
 - Folder Library walks (the Library platforms view, Findings, a Rule sweep)
   already run on a detached thread under a fixed bound, so they are unchanged.
+- Routes that check every stored record (#373) take one pass per request
+  through `off_loop_until_stalled`, one report per record, and answer 503 on
+  a stalled Volume like the routes above: `GET /api/verified` (prune, then
+  each record's containment), `POST /api/verified/lookup`, the CHD badge
+  lookup `POST /api/chd-metadata`, and `POST /api/dat/prune`. The stores give
+  them blocking, progress-aware forms (`prune_missing_blocking(progress)`,
+  `all_records_blocking()`, `cached_media_type_blocking(path)`) and read the
+  paths and delete the rows in separate sessions, so no session is held open
+  while a Volume is asked.
+- Pruning a stored record because its file is gone asks for a confirmed
+  absence, never `os.path.exists`, which answers False for every error:
+  `utils.path_utils.path_presence(path)` is True, False only for `ENOENT` or
+  `ENOTDIR`, and None when it can't tell. `ToolRegistry.output_missing(path)`
+  is the strict form of `output_exists` (a split output's logical name
+  counts as there while its first part is). The verification, DAT-match and
+  CHD-metadata stores prune on these, so a record whose check can't answer
+  is kept. A prune that was given up on stops before it deletes anything.
 
 If interrupting a step decides what gets cleaned up, base the cleanup on the
 step's *completed* outcome, recorded by the worker thread itself. xiso's final
