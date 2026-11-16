@@ -1624,7 +1624,9 @@ def _verify_timed_out(bound: int) -> dict:
     with ``"type": "error"`` exactly as a tool's own terminal event carries it.
     """
     return {
-        "valid": False, "timed_out": True,
+        # Ran out of time: no verdict, marked at the source (#374), so the
+        # batch counts it as not checkable rather than failed.
+        "valid": False, "timed_out": True, "inconclusive": True,
         "message": f"Verification timed out after {bound}s",
     }
 

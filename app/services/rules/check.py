@@ -49,7 +49,7 @@ from services.subprocess_runner import (
     verify_exception_event,
 )
 from services.tools import registry
-from services.verification_store import verification_store
+from services.verification_store import cannot_check, verification_store
 from services.workload_limiter import workload_limiter
 from utils.path_utils import is_within_configured_volumes
 
@@ -326,7 +326,9 @@ def outcome(result: dict) -> str:
     """
     if result.get("cancelled"):
         return CANCELLED
-    if result.get("inconclusive") or result.get("abandoned") or result.get("uncheckable"):
+    # The shared reading (#370): every producer marks a result with no
+    # verdict itself, an abandoned verifier included (#374).
+    if cannot_check(result):
         return INCONCLUSIVE
     return INTACT if result.get("valid") else NOT_INTACT
 

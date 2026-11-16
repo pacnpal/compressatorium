@@ -832,9 +832,10 @@ def test_verify_stops_after_a_verifier_is_abandoned(volume, dolphin, capsys, mon
     captured = capsys.readouterr()
     lines = [json.loads(line) for line in captured.out.splitlines() if line.strip()]
 
-    assert code == 1
+    # The run stops on stuck storage, but nothing was judged: exit 4 (#374).
+    assert code == 4
     assert len(lines) == 1
-    assert lines[0]["status"] == "failed"
+    assert lines[0]["status"] == "uncheckable"
     assert "could not be killed" in lines[0]["reason"]
     assert BATCH_STOPPED_MESSAGE in captured.err
 
@@ -952,7 +953,8 @@ def test_verify_stops_on_the_abandonment_sink(volume, dolphin, capsys, monkeypat
     captured = capsys.readouterr()
     lines = [json_module.loads(x) for x in captured.out.splitlines() if x.strip()]
 
-    assert code == 1
+    # The run stops on stuck storage, but nothing was judged: exit 4 (#374).
+    assert code == 4
     assert len(lines) == 1
     assert BATCH_STOPPED_MESSAGE in captured.err
 
@@ -991,7 +993,8 @@ def test_verify_stops_when_its_own_deadline_abandons_a_read(
     captured = capsys.readouterr()
     lines = [json_module.loads(x) for x in captured.out.splitlines() if x.strip()]
 
-    assert code == 1
+    # The run stops on stuck storage, but nothing was judged: exit 4 (#374).
+    assert code == 4
     assert len(lines) == 1
     assert "timed out" in lines[0]["reason"]
     assert BATCH_STOPPED_MESSAGE in captured.err

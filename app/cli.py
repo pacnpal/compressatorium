@@ -1403,7 +1403,9 @@ async def verify(args, printer: Printer, state: RunState) -> int:
             # The shared stop rule (`stops_verify_batch`), as the web UI's
             # batch verify applies it.
             print(f"compressatorium: {BATCH_STOPPED_MESSAGE}", file=sys.stderr)
-            return EXIT_FAILED
+            # Stuck storage judged nothing: a failure only if an Image already
+            # failed (#374).
+            return EXIT_FAILED if failed else EXIT_UNCHECKED
     if failed or state.stopping:
         return EXIT_FAILED
     return EXIT_UNCHECKED if unchecked else EXIT_OK
