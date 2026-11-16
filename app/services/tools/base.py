@@ -165,6 +165,12 @@ class ToolPlugin(Protocol):
     # (CSO, NSZ, WUX, Z3DS). Never a label that folds in anything else, such
     # as a CHD's overall ``chd_sha1``.
     raw_image_hash_labels: frozenset[str]
+    # Whether that hash is computed by rebuilding the whole image from the
+    # file's payload (dolphin-tool verify), so equal keys prove this file
+    # decodes to the image. False when it is read from a header (a CHD's data
+    # SHA1): equal keys then say only what the header claims, and the file is
+    # trusted as a copy to keep only once a check has passed (#389).
+    raw_image_hash_rebuilds_content: bool
     # Library-manager platform slugs whose media this tool handles, empty for
     # "no opinion". Part of the contract, not just BaseTool's default:
     # `ToolRegistry.narrow_to_platform` reads it off every registered tool, so
@@ -621,6 +627,8 @@ class BaseTool:
     embedded_hash_is_exhaustive: bool = False
     # Default: no labelled hash is a raw disc image's SHA1 (#388).
     raw_image_hash_labels: frozenset[str] = frozenset()
+    # Default: a raw image hash, where there is one, is read, not rebuilt.
+    raw_image_hash_rebuilds_content: bool = False
     # Library-manager platform slugs (RomM's vocabulary, which is IGDB's) whose
     # media this tool handles. Purely *narrowing*: an extension match still
     # decides convertibility, but when a library manager tells us the platform,

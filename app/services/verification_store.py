@@ -296,7 +296,8 @@ class VerificationStore:
         Looked up by each path as given (normalized, not resolved): for a
         caller that must not touch the disk (the Findings view, #389) and whose
         paths are already the resolved ones a Library lists. A path with no
-        record, or only a failed one, is left out.
+        record is left out; a failed one is kept, ``check_passed`` ``failed``,
+        so a caller can tell "failed" from "never checked".
         """
         by_norm = {os.path.normpath(path): path for path in paths}
         out: dict[str, dict] = {}
@@ -307,8 +308,6 @@ class VerificationStore:
                     _db.Verification.chd_path.in_(norms[start:start + 900]),
                 ).all()
                 for row in rows:
-                    if row.check_passed == FAILED:
-                        continue
                     out[by_norm[row.chd_path]] = {
                         "verified_at": row.verified_at,
                         "produced_meta": row.produced_meta,

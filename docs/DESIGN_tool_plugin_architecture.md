@@ -5790,16 +5790,30 @@ deletes on its own.
 
 **Suggested keeper** (`duplicate_cleanup.annotate`, called by `GET
 /api/findings`). Database only, so listing the Findings touches no Volume:
-`verification_store.records_blocking` (each copy's passing check, looked up by
-the path as listed) and `dat_store.get_matches_batch`. Order: Intact (a passing
-check whose recorded output fingerprint is the copy's size and mtime, or, with
-none, one made after the copy's mtime), then Recognized, then smallest, then
-path. `keeper_reason` names the rule that decided. Each copy in the Finding's
-cause now carries `mtime_ns` beside `size`: the identity its key was read for.
+`verification_store.records_blocking` (each copy's stored check, passing or
+failed, looked up by the path as listed) and `dat_store.get_matches_batch`. A
+copy whose check failed is never a keeper. Order: Intact (a passing check
+whose recorded output fingerprint is the copy's size and mtime, or, with none,
+one made after the copy's mtime; a passed check outranks everything), then a
+copy whose key was computed from its whole content, then Recognized, then
+smallest, then path. `keeper_reason` names the rule that decided. Each copy in
+the Finding's cause now carries `mtime_ns` beside `size`: the identity its key
+was read for.
+
+**A proven keeper** (`keeper_problem`, Codex PRRT_kwDOQ9nULM64Lh-l). A copy may
+be kept for a delete only when it is proven to decode to the disc: a current
+passing check (fresh against its identity), or a key computed from its whole
+content (`content_keys.key_reads_whole_content`: an `.iso`/`.bin` hashed here,
+or a tool whose `raw_image_hash_rebuilds_content` is true, which Dolphin's
+rebuilt disc SHA1 is). A key read from a header (a CHD's data SHA1) is only
+what the file claims, so a damaged CHD is not trusted over a healthy ISO: the
+plan and the delete answer 409, "check it first". A copy that failed its check
+is refused outright. The row carries `keeper_problem` for the view.
 
 **What may be deleted from** (`not_deletable`): only a group whose key kind is
 in `HASH_EQUAL_KINDS` (`raw`), not one the last run held (`held_keys` in the
-run summary), and with two or more copies.
+run summary), and with two or more copies. No run recorded for the Library
+means "fully seen" is unknown, so no delete.
 
 **The plan** (`POST /api/findings/{id}/delete-plan`, `{fingerprint, keep}`):
 the Finding must still have the fingerprint the user saw (409 otherwise). On a
@@ -5808,7 +5822,11 @@ keeper are checked against the cause: inside the Volumes, present, the same
 size and mtime, and still holding the group's key in `content_keys` for that
 identity. For each copy but the keeper: the shared `build_delete_plan`
 (confined to the Volumes), a refusal when a `.cue`/`.gdi` beside it lists it as
-a track, and one when its plan would touch the keeper. The Referrer changes come
+a track (`_sheet_problem`), and one when its plan would touch the keeper. The
+track check fails closed (Codex PRRT_kwDOQ9nULM64Lh-c): a folder that cannot
+be listed, or a sheet in it that cannot be read whole
+(`utils.sheet_text.sheet_is_readable`: unreadable, or over the size cap),
+blocks the copy, since "is it a track?" is unanswered. The Referrer changes come
 from `referrers.plan_changes_bounded` with every delete path mapped to the
 keeper, as a conversion maps them to its output. The answer has the
 delete-plan route's item shape (`delete_paths`, `missing_paths`,

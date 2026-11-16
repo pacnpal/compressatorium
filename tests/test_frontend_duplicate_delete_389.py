@@ -82,6 +82,9 @@ def test_the_view_offers_the_delete_only_where_the_backend_does() -> None:
     assert "row.kind === 'duplicate' && row.deletable" in view
     assert "findings.openCleanup(row)" in view
     assert "row.keeper_reason" in view and "row.not_deletable" in view
+    # A keeper not yet proven says what to do first (#389, Codex
+    # PRRT_kwDOQ9nULM64Lh-l); the delete itself is refused by the backend.
+    assert "row.keeper_problem" in view
     assert "<DuplicateDeleteModal" in view
     modal = _MODAL.read_text(encoding="utf-8")
     # Confirm is off until there is a plan, and while it is blocked.

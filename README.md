@@ -934,15 +934,22 @@ one disc.
 Finding duplicates deletes nothing by itself. To clean a group up:
 
 - Each group names a **suggested keeper**, with the reason: an **Intact** copy
-  first (one whose check passed since it last changed), then a **Recognized**
-  one (a DAT or Hasheous names it), then the **smallest**.
+  first (one whose check passed since it last changed), then one whose content
+  hash was read from the whole file, then a **Recognized** one (a DAT or
+  Hasheous names it), then the **smallest**. A copy that failed its check is
+  never kept.
+- The copy kept must be proven to hold the disc. A CHD's hash comes from its
+  header, so a CHD is kept only once its check has passed; until then the
+  Findings view says to check it first.
 - **Delete others…** opens the confirmation list: every file each other copy's
   delete would remove (a `.cue`'s tracks, a split set's parts) and any playlist
   that would be pointed at the copy kept. You can pick another copy to keep.
   Nothing is deleted until you confirm.
 - A delete is offered only when every copy is proven to hold the same disc
   (equal content hashes), and not for a group the last run could not fully
-  see. A `.bin` that a `.cue` beside it lists is never deleted on its own.
+  see. A `.bin` that a `.cue` beside it lists is never deleted on its own, and
+  when a sheet beside it can't be read, or its folder can't be listed, it isn't
+  deleted either.
 - When you confirm, every copy and the copy kept are checked again against
   what the Finding showed: one that is gone, changed or unreadable stops the
   delete. Each copy then goes through the same delete step, locks and checks

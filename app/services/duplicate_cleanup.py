@@ -48,6 +48,7 @@ from services.subprocess_runner import (
     run_detached_bounded,
 )
 from utils.delete_plan import build_delete_plan, sheet_track_paths
+from utils.sheet_text import sheet_is_readable
 from utils.path_utils import is_within_configured_volumes
 
 logger = get_logger("duplicate_cleanup")
@@ -101,30 +102,74 @@ def _is_intact(copy: dict, record: dict | None) -> bool:
     )
 
 
+def _failed(record: dict | None) -> bool:
+    return bool(record) and record.get("check_passed") == "failed"
+
+
+def keeper_problem(path: str, record: dict | None, copy: dict) -> str | None:
+    """Why *path* may not be the copy kept, or None when it is proven (#389).
+
+    A copy whose check failed never is. Otherwise it must be proven to decode
+    to the image: a passing check since it last changed (:func:`_is_intact`),
+    or a key computed from its whole content
+    (``content_keys.key_reads_whole_content``). A key read from a header is
+    only a claim, so such a copy needs a check first.
+    """
+    name = os.path.basename(path)
+    if _failed(record):
+        return f"{name} failed its check; a copy that failed is never kept"
+    if _is_intact(copy, record) or content_keys.key_reads_whole_content(path):
+        return None
+    return (
+        f"{name}'s content key comes from its header and it has not passed a "
+        "check since it last changed: check it first (Verify), or keep another copy"
+    )
+
+
 def suggest_keeper(
     copies: list[dict], intact: set[str], recognized: set[str],
-) -> tuple[str, str]:
-    """``(the copy to keep, why)``: Intact, then Recognized, then smallest."""
-    ordered = sorted(copies, key=lambda c: (
-        c["path"] not in intact, c["path"] not in recognized, int(c.get("size") or 0), c["path"],
+    *, proven: set[str] | None = None, failed: frozenset[str] | set[str] = frozenset(),
+) -> tuple[str | None, str]:
+    """``(the copy to keep, why)``. A copy that failed its check is never one.
+
+    Intact first (a passed check outranks everything), then a copy whose key
+    was read from its whole content (*proven*), then Recognized, then the
+    smallest, then the first by path. None when every copy failed its check.
+    """
+    proven = set(intact) if proven is None else set(proven) | set(intact)
+    candidates = [c for c in copies if c["path"] not in failed]
+    if not candidates:
+        return None, "every copy failed its check"
+    ordered = sorted(candidates, key=lambda c: (
+        c["path"] not in intact, c["path"] not in proven, c["path"] not in recognized,
+        int(c.get("size") or 0), c["path"],
     ))
     keeper = ordered[0]
     path = keeper["path"]
-    if path in intact and len(intact) < len(copies):
+    paths = {c["path"] for c in candidates}
+    if path in intact and len(intact & paths) < len(paths):
         return path, "Intact: it passed its check"
-    if path in recognized and len(recognized & {c["path"] for c in copies}) < len(copies):
+    if path in proven and len(proven & paths) < len(paths):
+        return path, "its content hash was read from the whole file"
+    if path in recognized and len(recognized & paths) < len(paths):
         return path, "Recognized: a DAT or Hasheous names it"
-    if any(int(c.get("size") or 0) > int(keeper.get("size") or 0) for c in copies):
+    if any(int(c.get("size") or 0) > int(keeper.get("size") or 0) for c in candidates):
         return path, "the smallest copy"
     return path, "every copy is alike; the first by path"
 
 
-def not_deletable(row: dict, held: set[str]) -> str | None:
-    """Why a duplicate group offers no delete, or None when it does."""
+def not_deletable(row: dict, held: set[str] | None) -> str | None:
+    """Why a duplicate group offers no delete, or None when it does.
+
+    *held* is the last run's held keys, None when no run is recorded for the
+    Library: then whether this group was fully seen is unknown, so no delete.
+    """
     cause = row.get("cause") or {}
     key = str(cause.get("key") or row.get("image_key") or "")
     if _key_kind(key) not in HASH_EQUAL_KINDS:
         return "its copies are not proven equal by a content hash"
+    if held is None:
+        return "no find-duplicates run is recorded for its Library; run one first"
     if key in held:
         return "the last run could not see every copy; run Find duplicates again"
     if len(cause.get(findings.COPIES) or []) < 2:
@@ -132,13 +177,14 @@ def not_deletable(row: dict, held: set[str]) -> str | None:
     return None
 
 
-def _held_keys(library_id: str) -> set[str]:
+def _held_keys(library_id: str) -> set[str] | None:
+    """The last run's held keys for *library_id*, None when no run is recorded."""
     from services import duplicates
 
     for run in duplicates.list_runs():
         if run.get("library_id") == library_id:
             return set(run.get("held_keys") or ())
-    return set()
+    return None
 
 
 def annotate(rows: list[dict]) -> None:
@@ -165,18 +211,34 @@ def annotate(rows: list[dict]) -> None:
     for row in groups:
         copies = list((row.get("cause") or {}).get(findings.COPIES) or [])
         intact = {c["path"] for c in copies if _is_intact(c, records.get(c["path"]))}
+        proven = {c["path"] for c in copies if content_keys.key_reads_whole_content(c["path"])}
+        failed = {c["path"] for c in copies if _failed(records.get(c["path"]))}
         recognized = {c["path"] for c in copies if (matches.get(c["path"]) or {}).get("matched")}
-        if copies:
-            row["keeper"], row["keeper_reason"] = suggest_keeper(copies, intact, recognized)
-        else:
-            row["keeper"], row["keeper_reason"] = None, None
-        row["not_deletable"] = not_deletable(row, held.get(row["library_id"], set()))
+        row["keeper"], row["keeper_reason"] = (
+            suggest_keeper(copies, intact, recognized, proven=proven, failed=failed)
+            if copies else (None, None)
+        )
+        keeper = next((c for c in copies if c["path"] == row["keeper"]), None)
+        # Shown beside the suggestion: what must happen before it can be kept.
+        row["keeper_problem"] = (
+            keeper_problem(keeper["path"], records.get(keeper["path"]), keeper)
+            if keeper else row["keeper_reason"]
+        )
+        row["not_deletable"] = not_deletable(row, held.get(row["library_id"]))
         row["deletable"] = row["not_deletable"] is None
 
 
 # ----------------------------------------------------------------------
 # the plan
 # ----------------------------------------------------------------------
+
+
+def _keeper_problem(keep: str, copies: list[dict]) -> str | None:
+    """:func:`keeper_problem` for the chosen copy, from its stored check. Blocking."""
+    from services.verification_store import verification_store
+
+    copy = next(c for c in copies if c["path"] == keep)
+    return keeper_problem(keep, verification_store.records_blocking([keep]).get(keep), copy)
 
 
 def _shown(finding_id: int, fingerprint: str) -> dict:
@@ -208,20 +270,35 @@ def _copy_problem(copy: dict, key: str) -> str | None:
     return None
 
 
-def _sheet_owning(path: str) -> str | None:
-    """A ``.cue``/``.gdi`` beside *path* that lists it as a track. Blocking."""
+def _sheet_problem(path: str) -> str | None:
+    """Why *path* may be a sheet's track, or None when no sheet beside it lists
+    it. Blocking.
+
+    Fails closed: a folder that cannot be listed, or a ``.cue``/``.gdi`` in it
+    that cannot be read whole (unreadable, or over the sheet size cap), leaves
+    "is this a track?" unanswered, which is never taken as "standalone".
+    """
+    name = os.path.basename(path)
     folder = os.path.dirname(path)
     real = os.path.realpath(path)
     try:
         names = sorted(os.listdir(folder))
-    except OSError:
-        return None
-    for name in names:
-        if not name.lower().endswith(_SHEET_EXTENSIONS):
+    except OSError as exc:
+        return (
+            f"its folder could not be listed ({exc.strerror or exc}), so whether a "
+            f"sheet needs {name} is unknown"
+        )
+    for sheet_name in names:
+        if not sheet_name.lower().endswith(_SHEET_EXTENSIONS):
             continue
-        sheet = os.path.join(folder, name)
+        sheet = os.path.join(folder, sheet_name)
+        if not sheet_is_readable(sheet):
+            return (
+                f"{sheet_name} could not be read (unreadable or too large), so "
+                f"whether it needs {name} is unknown"
+            )
         if real in {os.path.realpath(track) for track in sheet_track_paths(sheet)}:
-            return name
+            return f"{name} is a track of {sheet_name}; it is never deleted on its own"
     return None
 
 
@@ -244,12 +321,9 @@ def _plan_blocking(row: dict, keep: str) -> dict:
         problem = _copy_problem(copy, key)
         if problem:
             item["errors"].append(f"{os.path.basename(copy['path'])} {problem}")
-        sheet = _sheet_owning(copy["path"])
+        sheet = _sheet_problem(copy["path"])
         if sheet:
-            item["errors"].append(
-                f"{os.path.basename(copy['path'])} is a track of {sheet}; "
-                "it is never deleted on its own",
-            )
+            item["errors"].append(sheet)
         if keep_real in {os.path.realpath(p) for p in item.get("delete_paths") or []}:
             item["errors"].append("Deleting it would delete the copy to keep")
         item["identity"] = [copy.get("size"), copy.get("mtime_ns")]
@@ -266,6 +340,9 @@ async def plan(finding_id: int, fingerprint: str, keep: str) -> dict:
     reason = not_deletable(row, await run_in_threadpool(_held_keys, row["library_id"]))
     if reason:
         raise CleanupRefused(409, f"No delete is offered for this group: {reason}")
+    problem = await run_in_threadpool(_keeper_problem, keep, copies)
+    if problem:
+        raise CleanupRefused(409, problem)
     library = await run_in_threadpool(libraries.get, row["library_id"])
     if library is None:
         raise CleanupRefused(409, "This Finding's Library is gone")

@@ -248,6 +248,10 @@
               {#if row.keeper_reason}
                 <span class="muted small">Suggested keeper: {row.keeper_reason}.</span>
               {/if}
+              {#if row.deletable && row.keeper_problem}
+                <!-- Not yet proven to decode to the disc (#389): what to do first. -->
+                <span class="muted small">Before deleting: {row.keeper_problem}.</span>
+              {/if}
               {#if !row.deletable && row.not_deletable}
                 <span class="muted small">No delete offered: {row.not_deletable}.</span>
               {/if}

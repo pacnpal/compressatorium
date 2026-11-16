@@ -5,13 +5,17 @@
 ### Added
 
 - **Clean up a duplicate group** (#389). Each group of duplicates in Findings
-  now suggests which copy to keep (one that passed its check first, then one a
-  DAT recognizes, then the smallest) and says why. **Delete others…** shows
+  now suggests which copy to keep (one that passed its check first, then one
+  whose whole content was hashed, then one a DAT recognizes, then the
+  smallest) and says why. A copy that failed its check is never kept, and a
+  CHD is kept only once its check has passed, since its hash comes from its
+  header. **Delete others…** shows
   every file that would go, and nothing is deleted until you confirm. Each copy
   is checked again first and goes through the same delete step and locks as a
   conversion's delete-on-verify, so a copy that changed, or one a job is using,
   is kept. Delete is only offered when the copies hold provably identical
-  content, and a `.cue`'s track file is never deleted on its own.
+  content, and a `.cue`'s track file is never deleted on its own, nor is a
+  file whose folder or neighbouring sheet can't be read.
 - **A "Keep the ROM id" switch for RomM** (#390). A new card on the RomM
   Settings tab holds a switch, off by default, that says a conversion should
   keep RomM's ROM id (and the saves, notes and collections on it) rather than

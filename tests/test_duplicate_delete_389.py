@@ -65,16 +65,19 @@ def _paths(plan: dict) -> list[str]:
 
 @pytest.mark.asyncio
 async def test_the_smallest_copy_is_suggested_when_none_is_checked(
-    db: Path, client: httpx.AsyncClient,
+    db: Path, client: httpx.AsyncClient, monkeypatch,
 ) -> None:
+    """Among copies whose key was read from their whole content (an ISO's own
+    SHA1, an RVZ's rebuilt disc SHA1), the smallest."""
     roms = db / "roms"
     sha1 = d388._disc(roms / "Game.iso", b"game")
-    await d388._seed_chd(roms / "Game.chd", data_sha1=sha1, sha1="0" * 40)
+    (roms / "Game.rvz").write_bytes(b"RVZ\x01" + os.urandom(128))
+    d388._dolphin_answers(monkeypatch, {"Game.rvz": sha1})
     library = await d388._register(client, roms)
     await d388._find(client, library)
 
     group = await _group(client)
-    assert group["keeper"] == str(roms / "Game.chd")
+    assert group["keeper"] == str(roms / "Game.rvz")
     assert "smallest" in group["keeper_reason"]
     assert group["deletable"] is True
 
@@ -99,13 +102,14 @@ async def test_an_intact_copy_comes_before_a_smaller_one(
 
 @pytest.mark.asyncio
 async def test_a_recognized_copy_comes_before_a_smaller_one(
-    db: Path, client: httpx.AsyncClient,
+    db: Path, client: httpx.AsyncClient, monkeypatch,
 ) -> None:
     from services.dat_store import dat_store
 
     roms = db / "roms"
     sha1 = d388._disc(roms / "Game.iso", b"game")
-    await d388._seed_chd(roms / "Game.chd", data_sha1=sha1, sha1="0" * 40)
+    (roms / "Game.rvz").write_bytes(b"RVZ\x01" + os.urandom(128))
+    d388._dolphin_answers(monkeypatch, {"Game.rvz": sha1})
     await dat_store.set_match(str(roms / "Game.iso"), {
         "path": str(roms / "Game.iso"), "matched": True, "game_name": "Game",
         "match_type": "file_sha1", "file_hash": sha1,
@@ -388,3 +392,160 @@ async def test_a_playlist_naming_a_deleted_copy_is_pointed_at_the_keeper(
     assert done.status_code == 200, done.text
     assert (roms / "Game.m3u").read_text().splitlines() == ["Game.iso"]
     assert not (roms / "Copy.iso").exists()
+
+
+
+# ----------------------------------------------------------------------
+# a track whose sheet cannot be read (Codex PRRT_kwDOQ9nULM64Lh-c)
+# ----------------------------------------------------------------------
+
+
+async def _track_group(client, monkeypatch, roms: Path) -> dict:
+    """``Game.iso`` and ``Disc (Track 1).bin``, one disc, listed by RomM."""
+    d388._disc(roms / "Game.iso", b"game")
+    d388._copy(roms / "Game.iso", roms / "Disc (Track 1).bin")
+    release = threading.Event()
+    release.set()
+    d388._romm_images_resolving(
+        monkeypatch, release, [roms / "Game.iso", roms / "Disc (Track 1).bin"],
+    )
+    await d388._find(client, "romm")
+    return await _group(client)
+
+
+async def _blocked_for(client, group: dict, keep: str, words: str) -> None:
+    response = await _plan(client, group, keep)
+    assert response.status_code == 200, response.text
+    plan = response.json()
+    assert plan["blocked"] is True
+    errors = [e for item in plan["items"] for e in item["errors"]]
+    assert any(words in e for e in errors), errors
+    assert (await _delete(client, group, keep, _paths(plan))).status_code == 409
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(folder_library_303._IS_ROOT, reason="root reads every file")
+async def test_a_sheet_that_cannot_be_read_blocks_the_delete(
+    db: Path, client: httpx.AsyncClient, monkeypatch,
+) -> None:
+    """Whether an unreadable sheet needs the file is unknown: not standalone."""
+    roms = db / "romm"
+    group = await _track_group(client, monkeypatch, roms)
+    sheet = roms / "Disc.cue"
+    sheet.write_text('FILE "Disc (Track 1).bin" BINARY\n  TRACK 01 MODE1/2048\n')
+    sheet.chmod(0)
+    try:
+        await _blocked_for(client, group, str(roms / "Game.iso"), "Disc.cue could not be read")
+    finally:
+        sheet.chmod(0o644)
+    assert (roms / "Disc (Track 1).bin").exists()
+
+
+@pytest.mark.asyncio
+async def test_a_sheet_too_large_to_read_blocks_the_delete(
+    db: Path, client: httpx.AsyncClient, monkeypatch,
+) -> None:
+    from utils.sheet_text import MAX_SHEET_BYTES
+
+    roms = db / "romm"
+    group = await _track_group(client, monkeypatch, roms)
+    (roms / "Disc.cue").write_text(
+        'FILE "Disc (Track 1).bin" BINARY\n' + "REM x\n" * (MAX_SHEET_BYTES // 6 + 1),
+    )
+    await _blocked_for(client, group, str(roms / "Game.iso"), "Disc.cue could not be read")
+    assert (roms / "Disc (Track 1).bin").exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(folder_library_303._IS_ROOT, reason="root lists every folder")
+async def test_a_folder_that_cannot_be_listed_blocks_the_delete(
+    db: Path, client: httpx.AsyncClient, monkeypatch,
+) -> None:
+    """With the folder unlisted, no sheet in it can be ruled out."""
+    roms = db / "romm"
+    group = await _track_group(client, monkeypatch, roms)
+    roms.chmod(0o311)   # files reachable, the listing refused
+    try:
+        await _blocked_for(client, group, str(roms / "Game.iso"), "could not be listed")
+    finally:
+        roms.chmod(0o755)
+    assert (roms / "Disc (Track 1).bin").exists()
+
+
+# ----------------------------------------------------------------------
+# a keeper that is not proven (Codex PRRT_kwDOQ9nULM64Lh-l)
+# ----------------------------------------------------------------------
+
+
+async def _chd_and_iso(client, roms: Path) -> tuple[dict, str]:
+    """A DVD CHD keyed from its header, smaller than the ISO it equals."""
+    sha1 = d388._disc(roms / "Game.iso", b"game")
+    await d388._seed_chd(roms / "Game.chd", data_sha1=sha1, sha1="0" * 40)
+    library = await d388._register(client, roms)
+    await d388._find(client, library)
+    return await _group(client), str(roms / "Game.chd")
+
+
+@pytest.mark.asyncio
+async def test_a_header_keyed_copy_never_checked_is_no_keeper(
+    db: Path, client: httpx.AsyncClient,
+) -> None:
+    """Its key is what its header claims, not what its payload decodes to: it
+    is not suggested, and keeping it is refused until it passes a check."""
+    roms = db / "roms"
+    group, chd = await _chd_and_iso(client, roms)
+    assert group["keeper"] == str(roms / "Game.iso")
+
+    response = await _plan(client, group, chd)
+    assert response.status_code == 409, response.text
+    assert "check it first" in response.json()["detail"]
+    assert (await _delete(
+        client, group, chd, [os.path.realpath(roms / "Game.iso")],
+    )).status_code == 409
+    assert (roms / "Game.iso").exists()
+
+
+@pytest.mark.asyncio
+async def test_a_copy_that_failed_its_check_is_never_a_keeper(
+    db: Path, client: httpx.AsyncClient,
+) -> None:
+    from services.verification_store import verification_store
+
+    roms = db / "roms"
+    sha1 = d388._disc(roms / "Game.iso", b"game")
+    await d388._seed_chd(roms / "Game.chd", data_sha1=sha1, sha1="0" * 40)
+    await verification_store.mark_verified(str(roms / "Game.chd"))
+    await verification_store.mark_failed(str(roms / "Game.chd"))
+    library = await d388._register(client, roms)
+    await d388._find(client, library)
+    group = await _group(client)
+
+    assert group["keeper"] == str(roms / "Game.iso")
+    response = await _plan(client, group, str(roms / "Game.chd"))
+    assert response.status_code == 409
+    assert "failed its check" in response.json()["detail"]
+    assert (roms / "Game.iso").exists()
+
+
+@pytest.mark.asyncio
+async def test_a_header_keyed_copy_that_passed_its_check_may_be_kept(
+    db: Path, client: httpx.AsyncClient,
+) -> None:
+    from services.verification_store import verification_store
+
+    roms = db / "roms"
+    sha1 = d388._disc(roms / "Game.iso", b"game")
+    await d388._seed_chd(roms / "Game.chd", data_sha1=sha1, sha1="0" * 40)
+    await verification_store.mark_verified(str(roms / "Game.chd"))
+    library = await d388._register(client, roms)
+    await d388._find(client, library)
+    group = await _group(client)
+    chd = str(roms / "Game.chd")
+    assert group["keeper"] == chd and "Intact" in group["keeper_reason"]
+
+    plan = (await _plan(client, group, chd)).json()
+    assert plan["blocked"] is False
+    done = await _delete(client, group, chd, _paths(plan))
+    assert done.status_code == 200, done.text
+    assert not (roms / "Game.iso").exists()
+    assert (roms / "Game.chd").exists()

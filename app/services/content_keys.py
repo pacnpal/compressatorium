@@ -107,6 +107,20 @@ def is_raw_image(path: str) -> bool:
     return container_of(path) in RAW_IMAGE_EXTENSIONS
 
 
+def key_reads_whole_content(path: str) -> bool:
+    """Whether *path*'s key was computed from its whole content (#389).
+
+    An ``.iso``/``.bin`` is hashed here, every byte; a tool's raw hash counts
+    when the tool rebuilds the image to compute it
+    (``raw_image_hash_rebuilds_content``). A hash read from a header does not:
+    it is what the file claims, not what it decodes to. Names only, no disk.
+    """
+    if is_raw_image(path):
+        return True
+    tool = registry.tool_for_verify(path)
+    return bool(tool is not None and getattr(tool, "raw_image_hash_rebuilds_content", False))
+
+
 def _session():
     if _db.SessionLocal is None:
         raise RuntimeError("content_keys: db.init_engine() has not run")
