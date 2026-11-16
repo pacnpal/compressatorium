@@ -31,10 +31,37 @@ def is_playlist(path: str) -> bool:
     return Path(path).suffix.lower() in PLAYLIST_EXTENSIONS
 
 
+def _named_tracks(path: str) -> list[str]:
+    """The tracks a ``.cue``/``.gdi`` at *path* names. Blocking.
+
+    The resolved set (``sheet_track_paths``) when the sheet resolves as one.
+    When it does not (a reference it may not use, such as ``../Audio.bin``),
+    still every name that does resolve, from every spelling (Codex
+    PRRT_kwDOQ9nULM64MWFq): "the set is unknown" must not read as "the sheet
+    owns nothing", or its tracks would be listed, converted and deleted as
+    Images of their own. An unreadable sheet names nothing.
+    """
+    from utils.sheet_text import cue_tracks, gdi_track_names, resolve_track, sheet_readings
+
+    tracks = sheet_track_paths(path)
+    parse = {".cue": cue_tracks, ".gdi": gdi_track_names}.get(Path(path).suffix.lower())
+    if tracks or parse is None:
+        return tracks
+    folder = Path(path).parent
+    named: list[str] = []
+    for text in sheet_readings(path):
+        for ref in parse(text):
+            try:
+                named.append(str(resolve_track(folder, ref)))
+            except ValueError:
+                continue
+    return list(dict.fromkeys(named))
+
+
 def image_members(path: str) -> list[str]:
     """The other files the Image at *path* is made of. Reads the sheet; blocking."""
     members = [
-        *sheet_track_paths(path), *registry.source_companions(path),
+        *_named_tracks(path), *registry.source_companions(path),
         # A split output (`Game.iso.0` owns `.1`, `.2`): one logical Image.
         *registry.split_members(path),
     ]
@@ -63,12 +90,14 @@ def owning_sheet(
     compared by real path.
 
     Raises :class:`SheetOwnerUnknown` when the answer is unknown: a folder on
-    the way that cannot be listed, or a sheet in one that cannot be read whole
-    (``sheet_is_readable``: unreadable, or over the size cap). A caller about
+    the way that cannot be listed, a sheet in one that cannot be read whole
+    (``sheet_is_readable``: unreadable, or over the size cap), or a sheet whose
+    tracks do not resolve as one set (``sheet_track_list`` is None: a reference
+    it may not use, Codex PRRT_kwDOQ9nULM64MWFq). A caller about
     to delete *path* treats that as "it may be a track", never as "standalone".
     *progress* is called per folder and per sheet, for a stall-bounded caller.
     """
-    from utils.sheet_text import sheet_is_readable
+    from utils.sheet_text import sheet_is_readable, sheet_track_list
 
     tick = progress or (lambda *_args: None)
     real = os.path.realpath(path)
@@ -93,7 +122,12 @@ def owning_sheet(
                 continue
             if not sheet_is_readable(sheet):
                 raise SheetOwnerUnknown(f"{name} could not be read (unreadable or too large)")
-            if real in {os.path.realpath(track) for track in sheet_track_paths(sheet)}:
+            tracks = sheet_track_list(sheet)
+            if tracks is None:
+                raise SheetOwnerUnknown(
+                    f"{name} names a track it may not use, so its tracks are unknown",
+                )
+            if real in {os.path.realpath(track) for track in tracks}:
                 return sheet
         if folder == boundary:
             return None

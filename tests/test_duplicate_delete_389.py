@@ -737,3 +737,42 @@ async def test_a_keeper_that_cannot_be_read_in_time_deletes_nothing(
     assert all(r["status"] != "deleted" for r in done.json()["results"])
     assert any("could not be read in full" in (r["reason"] or "") for r in done.json()["results"])
     assert (roms / "Copy.iso").exists()
+
+
+# ----------------------------------------------------------------------
+# a sheet with a refused reference (Codex PRRT_kwDOQ9nULM64MWFq)
+# ----------------------------------------------------------------------
+
+
+def _cue_with_a_refused_reference(path: Path, track: str) -> None:
+    """A readable sheet naming *track* and one reference outside its folder."""
+    path.write_text(
+        f'FILE "{track}" BINARY\n  TRACK 01 MODE1/2048\n    INDEX 01 00:00:00\n'
+        'FILE "../Audio.bin" BINARY\n  TRACK 02 AUDIO\n    INDEX 01 00:00:00\n',
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_sheet_with_a_refused_reference_beside_the_track_blocks_it(
+    db: Path, client: httpx.AsyncClient, monkeypatch,
+) -> None:
+    """Its tracks cannot be resolved as one set, so whether it needs the file
+    is unknown: never "no sheet owns it"."""
+    roms = db / "romm"
+    group = await _track_group(client, monkeypatch, roms)
+    _cue_with_a_refused_reference(roms / "Disc.cue", "Disc (Track 1).bin")
+
+    await _blocked_for(client, group, str(roms / "Game.iso"), "Disc.cue")
+    assert (roms / "Disc (Track 1).bin").exists()
+
+
+@pytest.mark.asyncio
+async def test_a_sheet_with_a_refused_reference_further_up_blocks_the_track(
+    db: Path, client: httpx.AsyncClient, monkeypatch,
+) -> None:
+    roms = db / "romm"
+    group = await _nested_track_group(client, monkeypatch, roms, "tracks/Track.bin")
+    _cue_with_a_refused_reference(roms / "Disc.cue", "tracks/Track.bin")
+
+    await _blocked_for(client, group, str(roms / "Game.iso"), "Disc.cue")
+    assert (roms / "tracks" / "Track.bin").exists()

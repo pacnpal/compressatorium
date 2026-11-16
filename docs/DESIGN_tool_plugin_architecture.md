@@ -5830,8 +5830,13 @@ it, up to and including the Volume boundary (`lock_boundary_root`), never
 above (Codex PRRT_kwDOQ9nULM64L3Le). It fails closed (Codex
 PRRT_kwDOQ9nULM64Lh-c): a folder on the way that cannot be listed, a sheet that
 cannot be read whole (`utils.sheet_text.sheet_is_readable`: unreadable, or over
-the size cap), or a copy with no Volume boundary blocks the copy, since "is it
-a track?" is unanswered. The walk runs inside the plan's detached, bounded
+the size cap), a sheet whose tracks do not resolve as one set
+(`sheet_track_list` is None, as when one reference leaves its folder: Codex
+PRRT_kwDOQ9nULM64MWFq), or a copy with no Volume boundary blocks the copy,
+since "is it a track?" is unanswered. The same distinction holds for grouping:
+`image_members` no longer reads such a sheet as owning nothing; it keeps every
+track name that does resolve, so those tracks are never listed as Images of
+their own. The walk runs inside the plan's detached, bounded
 step, so a slow Volume answers 503 rather than an unchecked plan. The Referrer changes come
 from `referrers.plan_changes_bounded` with every delete path mapped to the
 keeper, as a conversion maps them to its output. The answer has the
