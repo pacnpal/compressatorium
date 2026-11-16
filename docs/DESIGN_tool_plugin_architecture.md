@@ -841,7 +841,7 @@ Three rules follow for any code that runs a verifier:
   `chd_metadata_store`, never in the CHD, and the reads that fill it are file
   reads on Volumes that may answer a cached `stat` and then block every read:
   - `disc_id.extract_from_chd` (the library scan's Phase 2 and `/api/info`)
-    reads the CHD's sectors and any companion file through `bounded_disc_read`:
+    reads the CHD's header and any companion file through `bounded_disc_read`:
     `run_detached_bounded`, `_DISC_READ_TIMEOUT_SECONDS`, raced against the
     caller's `cancel_event` (Phase 2 passes the scan job's). Past the bound the
     thread is written off into the open `collect_abandonment` sink, a warning
@@ -851,6 +851,24 @@ Three rules follow for any code that runs a verifier:
     Cancel before the sink, so a Cancel that cut a stuck read short ends the
     scan as cancelled, not failed. The scan's `_is_scanning` flag and
     `metadata_scan` lane are released either way.
+  - The CHD's disc sectors are read by chdman, not decoded here (#362). The
+    app parses only the v5 header, with MAME's layout (`parse_chd_header`:
+    compressors at 16, logical bytes 32, map offset 40, meta offset 48, hunk
+    bytes 56, unit bytes 60), for the unit size and the logical size. A
+    compressed CHD's map is itself compressed and its hunks use lzma, zlib,
+    huffman, flac or the CD codecs (cdlz, cdzl, cdfl), so the ISO 9660 walk
+    (`_identify_iso`: volume descriptor, root directory, SYSTEM.CNF or
+    PSP_GAME/PARAM.SFO) runs over a sector cache, and each run of sectors it
+    asks for that is not there yet is read with `chdman extractraw -isb START
+    -ib LENGTH` over the CHD's logical bytes (`_read_chd_units`), at most
+    `_MAX_CHD_READS` reads of at most `_MAX_CHD_READ_UNITS` units. A DVD CHD's
+    units are 2048-byte sectors; a CD CHD's are 2352 or 2448 bytes (with
+    subcode), tried as Mode 2 Form 1 (data at 24) and then Mode 1 (data at 16).
+    Each read goes through chdman's shared runner with
+    `_DISC_READ_TIMEOUT_SECONDS` and the caller's `cancel_event`: a child that
+    outlived SIGKILL or timed out raises `DiscIdStorageAbandoned`, a cancel
+    raises `ReadCancelled`, and a chdman failure (a damaged CHD) is a warning
+    and no disc ID.
   - `ChdmanTool.post_convert` reads the Source's disc ID (and checks the output
     exists) in one call through the same `bounded_disc_read`; past the bound,
     `DiscIdStorageAbandoned` names the Source and the job fails (above).
