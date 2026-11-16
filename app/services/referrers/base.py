@@ -5,7 +5,8 @@ playlist, later a frontend ``gamelist.xml`` or RomM's ROM. When a conversion
 replaces a Source, every Referrer that points at it is moved to the output
 before the Source is removed.
 
-Three operations, all synchronous (the job hook runs them off the event loop):
+Three operations. ``detect`` and ``plan`` are synchronous and run off the
+event loop, on the hook's detached thread:
 
 - ``detect(image_path)``: cheap check whether this Referrer could point at the
   Image at all (for ``.m3u``: is there a playlist beside it).
@@ -13,17 +14,29 @@ Three operations, all synchronous (the job hook runs them off the event loop):
   needs, one ``ReferrerChange`` per file or record. Planning writes nothing,
   so the delete confirmation can show the result.
 - ``apply(change)``: write one planned change atomically, keeping a one-time
-  backup. Raises ``ReferrerError`` when it can't.
+  backup. Raises ``ReferrerError`` when it can't. A plain ``def`` runs on the
+  detached thread; an ``async def`` (a network Referrer) is awaited on the
+  event loop under the hook's bound and its Cancel, so it must never block.
+
+Two declarations (#383), checked when the Referrer is registered:
+
+- ``opt_in``: False for a Referrer that is always on (``.m3u``); True for one
+  that runs only where the Image's Library turns it on
+  (``Library.referrer_enabled``).
+- ``phase``: a :class:`Phase`. File Referrers run first; a later phase runs
+  only when every Referrer of the earlier phases succeeded.
 """
 
 from __future__ import annotations
 
+import contextvars
 import os
 import threading
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
+from enum import IntEnum
 from typing import Any
 
 from utils.path_utils import (
@@ -63,11 +76,35 @@ class ReferrerChange:
         }
 
 
+class Phase(IntEnum):
+    """When a Referrer runs. Lower runs first.
+
+    A phase runs only when every Referrer of the phases before it succeeded,
+    so a file Referrer that fails leaves another app's record untouched.
+    """
+
+    # Local files that point at the Image (.m3u, gamelist.xml).
+    FILE = 10
+    # Another app's record, reached over the network (RomM).
+    NETWORK = 20
+
+    @property
+    def target(self) -> str:
+        """What the phase updates, named when it times out or is cancelled."""
+        return "playlists" if self is Phase.FILE else "linked records"
+
+
 class Referrer(ABC):
-    """A registry-driven Referrer plugin. ``id`` is stable; it lands in the Ledger."""
+    """A registry-driven Referrer plugin. ``id`` is stable; it lands in the Ledger.
+
+    Every Referrer declares ``opt_in`` and ``phase`` (see the module docstring);
+    the registry refuses one that doesn't.
+    """
 
     id: str
     label: str
+    opt_in: bool
+    phase: Phase
 
     @abstractmethod
     def detect(self, image_path: str) -> bool:
@@ -79,7 +116,11 @@ class Referrer(ABC):
 
     @abstractmethod
     def apply(self, change: ReferrerChange) -> None:
-        """Write *change* atomically with a one-time backup, or raise ReferrerError."""
+        """Write *change* atomically with a one-time backup, or raise ReferrerError.
+
+        May be ``async def``: the hook then awaits it on the event loop,
+        bounded and cancellable, instead of calling it on its thread.
+        """
 
 
 @dataclass
@@ -107,25 +148,41 @@ class WriteGuard:
                 )
 
 
-_guard = threading.local()
+# The guard ``check_write`` consults. A context variable, not thread-local
+# state, so one mechanism covers both kinds of apply (codex 4588646144): the
+# hook's worker thread sets it for its plain applies, and each async apply's
+# task runs in a context that holds it (``guarded_context``).
+_guard: contextvars.ContextVar[WriteGuard | None] = contextvars.ContextVar(
+    "referrer_write_guard", default=None,
+)
 
 
 @contextmanager
 def write_guard(guard: WriteGuard):
-    """Make *guard* the one ``check_write`` consults on this thread."""
-    previous = getattr(_guard, "current", None)
-    _guard.current = guard
+    """Make *guard* the one ``check_write`` consults in this context."""
+    token = _guard.set(guard)
     try:
         yield guard
     finally:
-        _guard.current = previous
+        _guard.reset(token)
+
+
+def guarded_context(guard: WriteGuard) -> contextvars.Context:
+    """A copy of the current context in which ``check_write`` consults
+    *guard*: an async apply's task runs in it."""
+    context = contextvars.copy_context()
+    context.run(_guard.set, guard)
+    return context
 
 
 def check_write(target: str) -> None:
     """Raise ReferrerError unless writing *target* is still allowed. Call it
     under the target's lock, right before each write. A no-op outside the hook
-    (planning, or a caller that writes a new playlist)."""
-    guard = getattr(_guard, "current", None)
+    (planning, or a caller that writes a new playlist).
+
+    It stats each output, so an async apply on a slow mount calls it off the
+    loop with its context (``asyncio.to_thread`` copies it)."""
+    guard = _guard.get()
     if guard is not None:
         guard.check(target)
 

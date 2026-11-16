@@ -90,6 +90,8 @@ _cleanup_pending = False
 # and then writes rows against it -- the re-pin plan -- carries this across its
 # awaits and refuses to write if it changed underneath. See `identity_generation`.
 _identity_generation = 0
+# Bumped by every save. See `save_generation`.
+_save_generation = 0
 _lock = threading.Lock()
 # Serialises the read-modify-write in save(). Two concurrent saves would
 # otherwise each read the pre-patch row and the later put would drop the
@@ -183,6 +185,7 @@ async def save(
     :func:`cleanup_owed`.
     """
     global _cache, _token, _token_cleared, _cleanup_pending, _identity_generation
+    global _save_generation
     # Read-modify-write, so it has to be one critical section: concurrent saves
     # of two different cards would otherwise each read the pre-patch row and the
     # later put would silently discard the earlier one.
@@ -221,7 +224,19 @@ async def save(
                 # Only an identity move asks for cleanup, so this is the one
                 # signal that says "anything holding the old catalog is stale".
                 _identity_generation += 1
+            _save_generation += 1
         return dict(merged)
+
+
+def save_generation() -> int:
+    """A counter that changes on every save of RomM's settings.
+
+    For a cache derived from them that a save must refresh even when the
+    stored text is the same: the canonical library root
+    (``libraries.library_for``), whose symlink may point elsewhere now.
+    """
+    with _lock:
+        return _save_generation
 
 
 def identity_generation() -> int:
