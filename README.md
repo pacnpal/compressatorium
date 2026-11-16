@@ -2053,7 +2053,9 @@ scheduler using the data directory, `4` when `verify` failed nothing but could
 not check at least one Image (`uncheckable`: no verdict, such as a file it
 can't open or a check that ran past its time limit). `2` and `3` stop the
 command before anything is checked or run, so a missing path checks nothing;
-among the Images checked the worst wins: `1`, then `4`, then `0`, so a corrupt
+a run that stops because the storage stopped answering exits `4` (or `1` if an
+Image had already failed); among the Images checked the worst wins: `1`, then
+`4`, then `0`, so a corrupt
 file is never hidden behind a softer code.
 
 Each Image is planned on its own, so one bad file is reported and the others

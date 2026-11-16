@@ -4708,6 +4708,18 @@ a real verdict stays `failed` (exit 1), and a path that does not exist is
 still a usage error (exit 2), raised before anything is checked; exit 3 is
 `run-rules` only. Among the Images checked the worst wins: 1, then 4, then 0.
 
+**Ran out of time is no verdict, marked at the source** (#374). Every
+producer of a result that ran out of time marks it `inconclusive` itself, so
+every consumer (`cannot_check`, the batch, the file menu, the CLI's exit 4,
+the check Rules' `outcome`, which now reads through `cannot_check` with no
+`abandoned` case of its own) agrees: the open probe that never answered
+(`_probe_for_verify`, `abandoned` + `inconclusive`), a verifier that outlived
+SIGKILL (`abandoned_verify_error`), the verify routes' own timeout
+(`_verify_timed_out`), and, as before, the runner's and z3ds's timeout and
+stall events and the CLI's own timeout. `abandoned` still stops a walk over a
+list (`stops_verify_batch`); the CLI's stop on it exits 4, or 1 when an Image
+had already failed.
+
 `inconclusive` is an allowlist, never a catch-all. An exception a check raises
 is classified by one helper, `subprocess_runner.verify_exception_event`, for
 every tool (maxcso, nsz, jwud, xiso, z3ds, romz): `ToolUnavailable` (a missing

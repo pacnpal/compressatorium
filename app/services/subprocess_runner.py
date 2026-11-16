@@ -1252,6 +1252,9 @@ async def _probe_for_verify(
             # is abandonment, and a caller walking a list has to stop rather
             # than spend one more thread per remaining path on the same storage.
             "abandoned": True,
+            # It ran out of time: nothing was judged, so no verdict, marked
+            # here for every consumer (#374).
+            "inconclusive": True,
             "message": (
                 f"File stopped responding (no answer in {_STAT_TIMEOUT:.0f}s); "
                 "the volume may be offline"
@@ -1411,6 +1414,8 @@ def abandoned_verify_error(pid: int) -> dict:
         "type": "error",
         "valid": False,
         "abandoned": True,
+        # Nothing was judged: no verdict, marked at the source (#374).
+        "inconclusive": True,
         "message": (
             f"Verification did not exit and could not be killed (pid {pid}); "
             "it is likely blocked on unresponsive storage."
