@@ -34,7 +34,7 @@ from routes.files import (
     detect_file_outputs,
     verifiable_tools,
 )
-from services import libraries
+from services import findings, libraries
 from services.file_hasher import compute_file_sha1_sync
 from services.job_manager import job_manager
 from services.lock_manager import lock_manager
@@ -1645,7 +1645,9 @@ async def _run_identity_cleanup() -> int:
 
     The caller must hold `_settle_lock` and the sweep pause.
     """
-    cleared = await romm_auto.forget_converted_locked()
+    # A started delete is reported under no Library: RomM's own Source-kept
+    # Findings are dropped just below, their ROM ids naming other games now.
+    cleared = await romm_auto.forget_converted_locked(owner=findings.NO_LIBRARY)
     # The new instance reuses ROM ids, so the check times and "not Intact"
     # Findings keyed by them (#305) describe other files now.
     await run_in_threadpool(rules_sweep.forget_checks_locked, romm_library)

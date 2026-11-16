@@ -30,8 +30,11 @@
     platform_conflict: 'Platform conflict',
     unsorted: 'Unsorted',
     not_intact: 'Not Intact',
+    source_kept: 'Source kept',
   };
-  const KIND_TONE = { platform_conflict: 'warning', not_intact: 'error' };
+  const KIND_TONE = {
+    platform_conflict: 'warning', not_intact: 'error', source_kept: 'warning',
+  };
 
   // Lists on open, and again when "Show dismissed" flips.
   $effect(() => {
@@ -175,9 +178,10 @@
             >
               Open folder
             </Button>
-            <!-- A check Rule's "not Intact" (#305) is about the file, not its
-                 Platform: Open folder reaches Verify and the backup. -->
-            {#if row.kind !== 'not_intact'}
+            <!-- A check Rule's "not Intact" (#305) and a Source a Rule could
+                 not delete (#329) are about the file, not its Platform: Open
+                 folder reaches Verify, the backup and the file itself. -->
+            {#if row.kind !== 'not_intact' && row.kind !== 'source_kept'}
               <Button
                 variant="ghost" size="sm" icon={mapIcon}
                 ariaLabel={`Set the Platform of the folder holding ${row.image_key}`}

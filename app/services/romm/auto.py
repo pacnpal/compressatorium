@@ -53,8 +53,10 @@ async def forget_converted(platform_ids: list[str] | None = None) -> int:
     return await _sweep.forget_converted(romm_library, platform_ids)
 
 
-async def forget_converted_locked(platform_ids: list[str] | None = None) -> int:
-    return await _sweep.forget_converted_locked(romm_library, platform_ids)
+async def forget_converted_locked(
+    platform_ids: list[str] | None = None, *, owner: str | None = None,
+) -> int:
+    return await _sweep.forget_converted_locked(romm_library, platform_ids, owner=owner)
 
 
 async def sweep(**kwargs) -> dict:

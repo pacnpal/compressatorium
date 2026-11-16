@@ -979,3 +979,42 @@ def test_a_lock_recorded_the_old_way_still_counts(tmp_path):
     lock_file = tmp_path / "old.lock"
     lock_file.write_bytes(os.fsencode(str(tmp_path / "Caf\udce9.bin")) + b"\n")
     assert LockManager._recorded_path(str(lock_file)) == str(tmp_path / "Caf\udce9.bin")
+
+
+# --------------------------------------------------------------------------- #
+# No filesystem I/O under the mutex (codex 4579852997)
+# --------------------------------------------------------------------------- #
+
+
+def test_no_filesystem_probe_runs_while_the_mutex_is_held(tmp_path, monkeypatch):
+    """A probe that stalls on a dead mount must never hold `_lock_mutex`
+    against a caller on the event loop, so none runs while it is held."""
+    manager = _manager(tmp_path / "locks")
+    target = tmp_path / "Game.rvz"
+    target.write_bytes(b"old")
+    folder = tmp_path / "GAME"
+    folder.mkdir()
+    real = {name: getattr(os.path, name) for name in ("isfile", "exists", "realpath")}
+    held = []
+
+    def watched(name):
+        def probe(path, *args, **kwargs):
+            if manager._lock_mutex.locked():
+                held.append((name, str(path)))
+            return real[name](path, *args, **kwargs)
+        return probe
+
+    for name in real:
+        monkeypatch.setattr(os.path, name, watched(name))
+
+    assert manager.acquire_lock(str(target), allow_existing=True)
+    manager.check_file_status(str(target))
+    manager.is_within_locked_dir(str(target))
+    # With an output lock held, the folder-lock overlap check walks it.
+    manager.dir_lock_would_conflict(str(folder))
+    assert manager.acquire_dir_lock(str(folder))
+    manager.is_within_locked_dir(str(folder / "x"))
+    manager.release_dir_lock(str(folder))
+    manager.release_lock(str(target))
+
+    assert held == []
