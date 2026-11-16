@@ -25,6 +25,7 @@
   import { CHECK_LEVEL, CHECK_LEVEL_LABELS } from '$lib/util/checkLevels.js';
   import { checkSummary, newCheckRule } from '$lib/rules/checkRule.js';
   import { registry, DEFAULT_COMPRESSION_LEVEL_RANGE } from '$lib/tools/registry.js';
+  import { clampLevel, fitLevel } from '$lib/tools/levels.js';
   import Button from '$lib/components/ui/Button.svelte';
   import Checkbox from '$lib/components/ui/Checkbox.svelte';
   import Select from '$lib/components/ui/Select.svelte';
@@ -234,8 +235,18 @@
   function setRuleCodec(platformId, rule, codec) {
     const range = levelRangeFor(rule.mode, codec || ruleCodec({ ...rule, compression: null }));
     const level = rule.compression_level;
-    const fits = level == null || (level >= range.min && level <= range.max);
+    const fits = level == null || fitLevel(range, level) === level;
     update(platformId, fits ? { compression: codec } : { compression: codec, compression_level: null });
+  }
+
+  /**
+   * Set a Rule's level from the box: pulled into the codec's range (19 on
+   * lzma2 is 9), the same clamp as the convert panel; blank is null, which
+   * runs the codec's default. A mode change already clears codec and level.
+   */
+  function setRuleLevel(platformId, rule, value) {
+    const range = levelRangeFor(rule.mode, ruleCodec(rule));
+    update(platformId, { compression_level: clampLevel(range, value) });
   }
 
   /** The codecs a rule currently has selected, as a list. */
@@ -669,11 +680,7 @@
                         type="number" min={range.min} max={range.max}
                         placeholder={String(range.default)}
                         value={rule.compression_level ?? ''}
-                        onchange={(e) => update(platform.id, {
-                          compression_level: e.currentTarget.value === ''
-                            ? null
-                            : Number(e.currentTarget.value),
-                        })}
+                        onchange={(e) => setRuleLevel(platform.id, rule, e.currentTarget.value)}
                       />
                       <span class="hint">{range.min}–{range.max}. Blank uses {range.default}.</span>
                     </label>

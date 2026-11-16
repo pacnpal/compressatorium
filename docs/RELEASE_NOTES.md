@@ -12,6 +12,14 @@
   listing, and a Rule run whose listing went out of date before it finished
   doesn't count: the next tick runs it again. A run that finds nothing to
   check on an up-to-date listing still counts.
+- **Dolphin WIA and GCZ conversions work** (#349). Every WIA and GCZ job failed
+  with "Block size must be set for GCZ/RVZ/WIA", because only RVZ was given a
+  block size. Each now gets Dolphin's own default: 2 MiB for WIA, 128 KiB for
+  GCZ and RVZ (RVZ is unchanged). In the convert panel, switching the target
+  between RVZ and WIA no longer leaves a level the codec can't use (lzma2 at
+  19): the level moves to that codec's default, and the slider and the number
+  box always show the same value. A level typed past the codec's range is held
+  to it, in the convert panel and in a Rule.
 - **eXoDOS repack: leftovers and repeat lookups** (#331).
   - A repack killed hard (SIGKILL, power loss) no longer leaves its hidden
     `.partial-*.tmp` file behind for good. It is removed at the next start,

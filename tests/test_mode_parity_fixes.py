@@ -812,6 +812,7 @@ async def test_delete_on_verify_clears_verification_store_for_non_chd_source(
         destination_path: str,
         mode: str = "dolphin_wia",
         compression: str | None = None,
+        block_size: int | None = None,
         cancel_event=None,
     ):
         Path(destination_path).write_bytes(b"converted")
