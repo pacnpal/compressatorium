@@ -40,8 +40,10 @@ from utils.path_utils import (
     lock_boundary_root,
     ensure_path_within_volumes,
     get_volume_name_for_path,
+    folder_has_entries,
     is_configured_volume_root,
     is_within_configured_volumes,
+    list_folder,
 )
 
 router = APIRouter()
@@ -423,9 +425,10 @@ async def list_files(
     ):
         entries = []
         try:
-            # This outer try-except catches errors from os.listdir() itself
+            # This outer try-except catches errors from the listing itself.
+            # Read one entry at a time, reporting each, then sorted (#361).
             progress(target_path)
-            for item in sorted(os.listdir(target_path)):
+            for item in list_folder(target_path, progress):
                 progress()
                 if is_junk_entry(item):
                     continue
@@ -613,8 +616,9 @@ def scan_tree(
         try:
             # Sorted for deterministic search order, matching scan_directory's
             # sorted walk above; raw readdir order varies by FS (issue #183).
+            # Read one entry at a time, reporting each, then sorted (#361).
             tick(dir_path)
-            for item in sorted(os.listdir(dir_path)):
+            for item in list_folder(dir_path, tick):
                 tick()
                 if is_junk_entry(item):
                     continue
@@ -976,8 +980,9 @@ async def delete_file(
 
     try:
         if is_dir:
-            # Bounded (#361): a frozen folder answers 503, not a hung request.
-            contents = await off_loop_bounded(os.listdir, path)
+            # Bounded, and one entry read at most (#361): a frozen folder
+            # answers 503, a huge one answers at once.
+            contents = await off_loop_bounded(folder_has_entries, path)
             if contents and not recursive:
                 # Non-empty without explicit opt-in: the UI re-requests with
                 # recursive=true after a second confirmation.
@@ -1052,7 +1057,7 @@ async def delete_files_batch(request: Request, payload: BulkDeleteRequest) -> di
                 # Only delete empty directories for safety. Bounded (#361): a
                 # frozen folder fails this path, not the whole batch.
                 try:
-                    contents = await off_loop_bounded(os.listdir, path)
+                    contents = await off_loop_bounded(folder_has_entries, path)
                 except HTTPException as exc:
                     return {"path": path, "success": False, "error": exc.detail}
                 if contents:

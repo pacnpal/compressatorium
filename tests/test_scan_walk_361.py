@@ -243,6 +243,115 @@ async def test_searching_under_a_frozen_folder_answers_503(tmp_path, files_env, 
     assert status == 503
 
 
+class _SlowEntries:
+    """``os.scandir`` on a slow but healthy mount: entries arrive one at a
+    time, each well inside the bound; ``first_blocks`` instead blocks before
+    the first entry, as a frozen mount does after the open succeeds."""
+
+    def __init__(self, entries, delay, first_blocks=None):
+        self._entries, self._delay, self._first_blocks = entries, delay, first_blocks
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        self.close()
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if self._first_blocks is not None:
+            gate, self._first_blocks = self._first_blocks, None
+            gate.wait(60)
+        time.sleep(self._delay)
+        return next(self._entries)
+
+    def close(self):
+        self._entries.close()
+
+
+ENTRIES = 12        # entries in the big folder
+DELAY = STALL / 4   # each entry well inside the bound; all of them past it
+
+
+@pytest.fixture(name="slow_folder")
+def _slow_folder(tmp_path, monkeypatch):
+    """A folder named ``Big`` whose entries arrive slowly: ``os.scandir`` per
+    entry, ``os.listdir`` all at once after the same total time."""
+    big = tmp_path / "Big"
+    big.mkdir()
+    names = [f"Game {index:02d}.iso" for index in reversed(range(ENTRIES))]
+    for name in names:
+        (big / name).write_bytes(b"x")
+    real_scandir, real_listdir = os.scandir, os.listdir
+
+    def scandir(path="."):
+        if os.path.basename(os.fspath(path)) == "Big":
+            return _SlowEntries(real_scandir(path), DELAY)
+        return real_scandir(path)
+
+    def listdir(path="."):
+        if os.path.basename(os.fspath(path)) == "Big":
+            time.sleep(DELAY * ENTRIES)
+        return real_listdir(path)
+
+    monkeypatch.setattr(os, "scandir", scandir)
+    monkeypatch.setattr(os, "listdir", listdir)
+    return big, sorted(names)
+
+
+@pytest.mark.asyncio
+async def test_a_big_folder_that_keeps_answering_is_listed_in_order(
+    files_env, slow_folder,
+):
+    big, names = slow_folder
+    listing = await asyncio.wait_for(
+        files_env.list_files(path=str(big), show_archives=True, summarize_archives=True),
+        BOUND,
+    )
+    assert [entry.name for entry in listing.entries] == names
+
+
+@pytest.mark.asyncio
+async def test_a_search_through_a_big_folder_that_keeps_answering_completes(
+    files_env, slow_folder,
+):
+    big, names = slow_folder
+    found = await asyncio.wait_for(
+        files_env.search_files(path=str(big), recursive=True, include_archives=True),
+        BOUND,
+    )
+    assert [row["name"] for row in found["files"]] == names
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", ["list", "search"])
+async def test_a_listing_that_blocks_before_its_first_entry_ends_at_the_bound(
+    tmp_path, files_env, monkeypatch, route,
+):
+    release = threading.Event()
+    real_scandir = os.scandir
+
+    def scandir(path="."):
+        if os.path.basename(os.fspath(path)) == "Frozen":
+            return _SlowEntries(real_scandir(path), 0, first_blocks=release)
+        return real_scandir(path)
+
+    (tmp_path / "Frozen" / "Game.iso").write_bytes(b"x")
+    monkeypatch.setattr(os, "scandir", scandir)
+    if route == "list":
+        call = files_env.list_files(
+            path=str(tmp_path / "Frozen"), show_archives=True, summarize_archives=True,
+        )
+    else:
+        call = files_env.search_files(path=str(tmp_path), recursive=True, include_archives=True)
+    try:
+        assert await _answer_of(call) == 503
+    finally:
+        release.set()
+
+
 # --- the shared helper ---------------------------------------------------------
 
 

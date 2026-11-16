@@ -859,6 +859,34 @@ def is_safe_directory_tree(path: str) -> bool:
     return not walk_errors
 
 
+def list_folder(path: str, progress: Callable[..., None] | None = None) -> list[str]:
+    """The names in folder *path*, sorted, like ``sorted(os.listdir(path))``.
+
+    Read one entry at a time with ``os.scandir``, calling ``progress()`` after
+    each, so a stall-bounded caller (``run_detached_within_stall_bound(
+    report_progress=True)``) sees a huge folder on a slow but healthy mount
+    keep moving, while ``os.listdir`` would read it all before the first
+    report (#361). Sorted afterwards, so order is unchanged. Raises what
+    ``os.scandir`` raises. Blocking.
+    """
+    tick = progress or (lambda *_args: None)
+    names: list[str] = []
+    with os.scandir(path) as entries:
+        for entry in entries:
+            tick()
+            names.append(entry.name)
+    names.sort()
+    return names
+
+
+def folder_has_entries(path: str) -> bool:
+    """Whether folder *path* holds anything, reading at most one entry (so a
+    huge folder answers as fast as an empty one). Raises what ``os.scandir``
+    raises. Blocking."""
+    with os.scandir(path) as entries:
+        return next(entries, None) is not None
+
+
 def walk_tree(
     top: str, progress: Callable[..., None],
 ) -> Iterator[tuple[str, list[str], list[str]]]:
