@@ -4,6 +4,12 @@
 
 ### Fixed
 
+- **Cancelling a fast conversion says cancelled, not failed.** When a tool's
+  output ended before the app had acted on a pending Cancel, the app stopped
+  the tool itself and then reported the job as failed with "return code -15"
+  instead of cancelled. The Cancel is now always recorded first. A tool that
+  had already finished before the Cancel took effect still keeps its output.
+  This also fixes the Wii U (JWUDTool) cancel test that had been failing.
 - **No false "concurrency invariant violated" error beside a check run**
   (#377). A conversion that started while a check run, a metadata scan or a
   DAT match was going logged `ERROR Processing concurrency invariant violated`,

@@ -2725,6 +2725,21 @@ class SubprocessRunner:
                     yield update
                 await _check_stall(time.monotonic())
 
+            # The read loop can drain stdout to EOF without ever yielding, so a
+            # cancel set before or during that drain may not have reached the
+            # watcher yet. If the reap below sent TERM first, the watcher would
+            # then find an exited child and never record the cancel, and a job
+            # the user cancelled would be reported as a failure (return code
+            # -15). Let the watcher act first: it records the cancel only while
+            # the child is still running, so a child that already finished stays
+            # complete. Bounded: the watcher waits its own TERM grace, then sends
+            # KILL without waiting, and the reap below handles anything left.
+            if cancel_task is not None and cancel_event.is_set() and not cancel_task.done():
+                with contextlib.suppress(asyncio.TimeoutError):
+                    await asyncio.wait_for(
+                        asyncio.shield(cancel_task), timeout=_TERM_GRACE + 1,
+                    )
+
             # A cancel or a stall already sent TERM (and KILL). Waiting out the
             # voluntary-exit grace again would hold the queue's only slot for
             # another minute for no reason, so go straight to the ladder.
