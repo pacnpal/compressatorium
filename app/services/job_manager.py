@@ -270,6 +270,8 @@ EXTERNAL_JOB_MODES: Dict[ConversionMode, ExternalMode] = {
     ConversionMode.METADATA_SCAN: ExternalMode(),
     ConversionMode.DAT_MATCH: ExternalMode(),
     ConversionMode.CHECK: ExternalMode(in_ledger=False, started_by_hand=False),
+    # A find-duplicates run (#388) reads and converts nothing; a person starts it.
+    ConversionMode.FIND_DUPLICATES: ExternalMode(in_ledger=False),
 }
 _EXTERNAL_JOB_MODES = frozenset(EXTERNAL_JOB_MODES)
 

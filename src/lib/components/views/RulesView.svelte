@@ -23,6 +23,8 @@
   import Spinner from '$lib/components/ui/Spinner.svelte';
   import FolderCog from '@lucide/svelte/icons/folder-cog';
   import Trash2 from '@lucide/svelte/icons/trash-2';
+  import Copy from '@lucide/svelte/icons/copy';
+  import { api } from '$lib/api/endpoints.js';
 
   let { embedded = false } = $props();
 
@@ -99,6 +101,26 @@
   function pick(id) {
     if (embedded && id !== ROMM_LIBRARY_ID) libraries.open(id);
     else libraries.select(id);
+  }
+
+  // Find duplicates (#388): a background job per Library. Its groups land in
+  // Findings when it ends; nothing is deleted.
+  let finding = $state(false);
+
+  async function findDuplicates() {
+    const lib = selected;
+    if (!lib) return;
+    finding = true;
+    try {
+      await api.findDuplicates(lib.id);
+      toast.success(`Looking for duplicates in ${lib.name}`, {
+        description: 'Each group shows in Findings when the job ends. Nothing is deleted.',
+      });
+    } catch (e) {
+      toast.error(e?.message ?? 'Could not start finding duplicates');
+    } finally {
+      finding = false;
+    }
   }
 
   let confirmRemove = $state(false);
@@ -180,9 +202,17 @@
           </span>
         {/if}
       </div>
-      <Button variant="ghost" onclick={() => (confirmRemove = true)} icon={trashIcon}>
-        Remove Library
-      </Button>
+      <div class="library-actions">
+        <Button
+          variant="secondary" onclick={findDuplicates} loading={finding} icon={copyIcon}
+          ariaLabel={`Find duplicates in ${selected.name}`}
+        >
+          Find duplicates
+        </Button>
+        <Button variant="ghost" onclick={() => (confirmRemove = true)} icon={trashIcon}>
+          Remove Library
+        </Button>
+      </div>
     </section>
   {/if}
 
@@ -209,6 +239,7 @@
 </BaseModal>
 
 {#snippet trashIcon()}<Trash2 size={14} />{/snippet}
+{#snippet copyIcon()}<Copy size={14} />{/snippet}
 
 <style>
   .rules-view {
@@ -260,6 +291,11 @@
     background: var(--surface-2);
     border: 1px solid var(--border);
     border-radius: var(--radius-md, 8px);
+  }
+  .library-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2, 8px);
   }
   .library-text {
     display: flex;

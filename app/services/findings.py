@@ -45,6 +45,15 @@ NOT_INTACT = "not_intact"
 # found one again until it gave up (#329). Written one Image at a time, like
 # NOT_INTACT, and cleared once the Source is gone.
 SOURCE_KEPT = "source_kept"
+# Two or more Images of one Library hold the same disc (#388). One Finding per
+# group, keyed by the content key (``raw:<sha1>``) in place of an Image key;
+# its cause lists the copies (:data:`COPIES`). Written by a find-duplicates run
+# (`services.duplicates`), which reconciles this kind alone, and settled by
+# :func:`clear_gone` once fewer than two copies are left.
+DUPLICATE = "duplicate"
+# A ``duplicate`` Finding's ``cause`` key: the copies, each ``{"image_key",
+# "path", "container", "size"}``.
+COPIES = "copies"
 
 # The owner of a Finding that belongs to no Library: a hand-started job's
 # part-deleted Source. No Library can have the empty id, so this owner never
@@ -264,7 +273,8 @@ def clear_gone(
     does an Image deleted from a folder it was alone in (dismiss that one).
     A Finding whose cause lists the files a delete left (:data:`REMAINING`)
     is cleared once every one of those is gone, by the same evidence (its
-    Source's first file may be the one already removed).
+    Source's first file may be the one already removed). A duplicate group
+    (:data:`COPIES`) is cleared once fewer than two of its copies are left.
     Dismissals are kept, as :func:`resolve` keeps them. Returns how many were
     cleared.
 
@@ -277,14 +287,10 @@ def clear_gone(
         rows = session.query(_db.FindingRecord).filter_by(
             library_id=library_id, kind=kind,
         ).all()
-        candidates = [
-            (row.id, row.fingerprint, row.path,
-             list((row.cause or {}).get(REMAINING) or ()))
-            for row in rows
-        ]
+        candidates = [(row.id, row.fingerprint, row.path, dict(row.cause or {})) for row in rows]
     gone = [
-        (row_id, fingerprint) for row_id, fingerprint, path, remaining in candidates
-        if all(_is_gone(p) for p in remaining or [path])
+        (row_id, fingerprint) for row_id, fingerprint, path, cause in candidates
+        if _settled(path, cause)
     ]
     if not gone:
         return 0
@@ -301,6 +307,20 @@ def clear_gone(
             ).delete(synchronize_session=False)
         session.commit()
     return cleared
+
+
+def _settled(path: str, cause: dict[str, Any]) -> bool:
+    """Whether a Finding's files say its cause went away.
+
+    A duplicate group (:data:`COPIES`) is settled once fewer than two of its
+    copies are left; a started delete (:data:`REMAINING`) once every file it
+    left is gone; anything else once its own file is gone.
+    """
+    copies = cause.get(COPIES)
+    if copies:
+        left = [c for c in copies if not _is_gone(str((c or {}).get("path") or ""))]
+        return len(left) < 2
+    return all(_is_gone(p) for p in list(cause.get(REMAINING) or ()) or [path])
 
 
 def _is_gone(path: str) -> bool:

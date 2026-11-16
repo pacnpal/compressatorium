@@ -35,6 +35,7 @@ from typing import Any, Iterable
 
 from sqlalchemy import (
     JSON,
+    BigInteger,
     Boolean,
     Column,
     Float,
@@ -405,6 +406,43 @@ class FindingDismissalRecord(Base):
             unique=True,
         ),
     )
+
+
+class ContentKeyRecord(Base):
+    """One file's content key for the duplicate finder (#388).
+
+    Keyed by the file's path and tied to its size and mtime: a row whose
+    ``size`` or ``mtime_ns`` no longer match the file says nothing about it,
+    so a changed file loses its key and is read again. ``key`` is
+    ``raw:<sha1>`` (the SHA1 of the disc image the file holds), or None for a
+    format with no content key yet; ``container`` is the file's extension, as
+    the Findings view shows it. Not tied to a Library: one file has one key
+    whichever Library lists it.
+    """
+
+    __tablename__ = "content_keys"
+    path = Column(String, primary_key=True)
+    size = Column(BigInteger, nullable=False)
+    mtime_ns = Column(BigInteger, nullable=False)
+    key = Column(String, nullable=True)
+    container = Column(String, nullable=False)
+    computed_at = Column(String, nullable=False)
+    __table_args__ = (Index("ix_content_keys_key", "key"),)
+
+
+class DuplicateRunRecord(Base):
+    """What a Library's last find-duplicates run saw (#388).
+
+    One row per Library: how many Images it keyed, how many it read this time,
+    which formats it could not check, and how many it could not read or found
+    in use. The Findings view shows it beside the groups. Removing the Library
+    removes it.
+    """
+
+    __tablename__ = "duplicate_runs"
+    library_id = Column(String, primary_key=True)
+    finished_at = Column(String, nullable=False)
+    summary = Column(JSON, nullable=False, default=dict)
 
 
 class ImageCheckRecord(Base):

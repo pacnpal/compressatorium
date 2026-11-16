@@ -372,8 +372,9 @@ def test_migrations_have_a_single_head():
     heads = ScriptDirectory.from_config(cfg).get_heads()
     # #303's 0012 (folder Libraries) stacks on this branch's 0011, #304's
     # 0013 (mappings and Findings) on that, #305's 0014 (check times) on
-    # that, and #337's 0015 (re-pin plan generation) on that.
-    assert heads == ["0015"]
+    # that, #337's 0015 (re-pin plan generation) on that, and #388's 0017
+    # (content keys) on that.
+    assert heads == ["0017"]
 
 
 def test_upgrade_from_0010_seeds_totals_from_populated_ledger(tmp_path):

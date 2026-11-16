@@ -13,6 +13,9 @@ class FindingsStore {
   list = $state([]);
   // How many Findings a dismiss is hiding right now.
   dismissed = $state(0);
+  // Each Library's last find-duplicates run (#388): what it keyed and which
+  // formats it could not check, shown beside the duplicate groups.
+  duplicateRuns = $state([]);
   showDismissed = $state(false);
   loading = $state(false);
   error = $state(null);
@@ -45,6 +48,7 @@ class FindingsStore {
       if (request !== this.#request) return this.list;
       this.list = Array.isArray(data?.findings) ? data.findings : [];
       this.dismissed = data?.dismissed ?? 0;
+      this.duplicateRuns = Array.isArray(data?.duplicate_runs) ? data.duplicate_runs : [];
     } catch (e) {
       if (request === this.#request) this.error = e?.message ?? 'Failed to list the Findings';
     } finally {

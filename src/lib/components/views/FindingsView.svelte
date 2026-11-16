@@ -7,6 +7,10 @@
    * its Platform). Each row links to what fixes it: open the folder in the
    * file browser, or set the folder's Platform. A check Rule (#305) adds a
    * "not Intact" row for an Image that failed its check, in any Library.
+   * A Library's find-duplicates run (#388) adds one "Duplicate" row per group
+   * of Images holding the same disc, with each copy's path, container and
+   * size, and says which formats it could not check. Read-only: deleting a
+   * copy is left to the file browser.
    * Dismiss hides a row until its cause changes. The app never moves or
    * deletes an Image over a Finding.
    */
@@ -31,10 +35,31 @@
     unsorted: 'Unsorted',
     not_intact: 'Not Intact',
     source_kept: 'Source kept',
+    duplicate: 'Duplicate',
   };
   const KIND_TONE = {
     platform_conflict: 'warning', not_intact: 'error', source_kept: 'warning',
+    duplicate: 'info',
   };
+  function bytes(n) {
+    const size = Number(n) || 0;
+    if (size < 1024) return `${size} bytes`;
+    const units = ['KB', 'MB', 'GB', 'TB'];
+    let value = size / 1024;
+    let unit = 0;
+    while (value >= 1024 && unit < units.length - 1) {
+      value /= 1024;
+      unit += 1;
+    }
+    return `${value.toFixed(1)} ${units[unit]}`;
+  }
+
+  // "3 .cso, 1 .chd": the formats a Library's last run could not check.
+  function notChecked(run) {
+    return Object.entries(run?.not_checked ?? {})
+      .map(([container, count]) => `${count} ${container}`)
+      .join(', ');
+  }
 
   // Lists on open, and again when "Show dismissed" flips.
   $effect(() => {
@@ -138,6 +163,20 @@
     <div class="notice error" role="alert">Could not list the Findings: {findings.error}</div>
   {/if}
 
+  {#each findings.duplicateRuns as run (run.library_id)}
+    <div class="notice runs" role="status">
+      <span>
+        <strong>{run.library_name}</strong>: duplicates last looked for {when(run.finished_at)}.
+        {run.groups} group{run.groups === 1 ? '' : 's'}, {run.keyed} Image{run.keyed === 1 ? '' : 's'} checked.
+        {#if notChecked(run)}
+          Not checked, no content key for these formats yet: {notChecked(run)}.
+        {/if}
+        {#if run.unreadable}{run.unreadable} could not be read.{/if}
+        {#if run.busy}{run.busy} in use by a job, left out.{/if}
+      </span>
+    </div>
+  {/each}
+
   {#if findings.loading && findings.list.length === 0}
     <p class="muted"><Spinner /> Loading…</p>
   {:else if findings.list.length === 0 && findings.error}
@@ -159,8 +198,20 @@
         <div class="row" class:dismissed={row.dismissed} role="row">
           <span role="cell" class="library">{row.library_name}</span>
           <span role="cell" class="image">
-            <code>{row.image_key}</code>
-            <span class="muted reason">{row.reason}</span>
+            {#if row.kind === 'duplicate'}
+              <span class="reason">{row.reason}</span>
+              <ul class="copies" aria-label="Copies">
+                {#each row.cause?.copies ?? [] as copy (copy.path)}
+                  <li>
+                    <code>{copy.path}</code>
+                    <span class="muted small">{copy.container} · {bytes(copy.size)}</span>
+                  </li>
+                {/each}
+              </ul>
+            {:else}
+              <code>{row.image_key}</code>
+              <span class="muted reason">{row.reason}</span>
+            {/if}
           </span>
           <span role="cell">
             <Badge tone={KIND_TONE[row.kind] ?? 'neutral'}>
@@ -181,7 +232,7 @@
             <!-- A check Rule's "not Intact" (#305) and a Source a Rule could
                  not delete (#329) are about the file, not its Platform: Open
                  folder reaches Verify, the backup and the file itself. -->
-            {#if row.kind !== 'not_intact' && row.kind !== 'source_kept'}
+            {#if row.kind !== 'not_intact' && row.kind !== 'source_kept' && row.kind !== 'duplicate'}
               <Button
                 variant="ghost" size="sm" icon={mapIcon}
                 ariaLabel={`Set the Platform of the folder holding ${row.image_key}`}
@@ -248,6 +299,22 @@
     border-radius: var(--radius-sm);
     color: var(--danger, #d33);
   }
+  .notice.runs {
+    padding: 8px 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text-2);
+    font-size: var(--text-sm, 0.85rem);
+  }
+  .copies {
+    margin: 2px 0 0;
+    padding: 0;
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .copies li { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; min-width: 0; }
   .notice.pending {
     display: flex;
     flex-wrap: wrap;

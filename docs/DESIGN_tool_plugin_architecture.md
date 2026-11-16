@@ -5452,6 +5452,83 @@ way to produce an edited copy of a zip. The first user is the eXoDOS repack
   name, Platform slug) live in a `CollectionProfile`. eXoWin3x and the other eXo
   packs are a new profile, not new logic. Only eXoDOS ships.
 
+### 3.3.20 The duplicate finder (`services/content_keys.py`, `services/duplicates.py`, #388)
+
+Finds the same disc stored more than once in one Library, across containers.
+Read-only: a group is a Finding, and nothing is deleted.
+
+**The content key.** One kind in the MVP, `raw:<sha1>`: the SHA1 of the raw
+disc image a file holds.
+
+| File | Where the SHA1 comes from |
+| --- | --- |
+| `.iso`, `.bin` (the longest declared extension, so not `.nkit.iso`) | the file's own SHA1, read by `content_keys` |
+| Dolphin RVZ/WIA/GCZ/WBFS | `embedded_hashes` label `dolphin_disc_sha1` |
+| DVD or hard-disk CHD | `embedded_hashes` label `chd_data_sha1` |
+| CD CHD, CSO/ZSO/DAX, NSZ, WUX, Z3DS, sheets, archives | none: no key, reported as not checked |
+
+The key builder never branches on a tool. It asks the tool that verifies the
+file for `raw_image_sha1(path, *, cancel_event)`, a contract method beside
+`embedded_hashes` and `content_digest`:
+
+```python
+raw_image_hash_labels: frozenset[str]   # labels whose value is the raw image SHA1
+async def raw_image_sha1(self, path, *, cancel_event=None) -> str | None
+```
+
+`BaseTool`'s default reads `embedded_hashes` and returns the one hash under a
+label in `raw_image_hash_labels`; with no labels it returns `None` without
+asking. A tool that declares labels but gets none back (or two that disagree)
+raises `EmbeddedHashUnavailable`: no key this time, nothing stored. Dolphin
+declares `dolphin_disc_sha1`. `ChdmanTool` declares `chd_data_sha1` and
+overrides the method: only a `.chd` whose metadata says DVD or hard disk
+(`_holds_image`, the same tag reading the Round-trip uses) goes on to the
+labelled hash; a CD or GD-ROM CHD is `None`, since its data SHA1 covers
+2448-byte frames padded per track. A CHD with no current row in the metadata
+store is read once with `chdman info` and the store primed. `chd_sha1`, the
+overall SHA1, is never a raw label: it folds in the metadata hashes.
+`tests/test_duplicates_388_real.py` checks against the real bundled chdman
+that a `createdvd` CHD's data SHA1 equals its ISO's SHA1 (and its overall SHA1
+does not), and that an ISO, its RVZ and its DVD CHD group together.
+
+**Stored per file, tied to its identity.** `content_keys` (migration 0017) holds
+`path`, `size`, `mtime_ns`, `key` (None for a format with no key) and
+`container`. `content_keys.stored(...)` returns only rows whose size and mtime
+still match, so a changed file loses its key. The DAT match cache is not read
+for this: its rows carry no size or mtime to tie a SHA1 to the file.
+
+**The run.** `duplicates.start(library)` creates an external job of
+`ConversionMode.FIND_DUPLICATES` (`ExternalMode(in_ledger=False)`, so never a
+conversion and never a slot) and runs it as a task; one per Library at a time
+(409 otherwise). It:
+
+1. lists the Library with `Library.all_images()`, a new Library contract method:
+   `LibraryDefaults` walks every Platform's `images()`, and `FolderLibrary`
+   returns every entry of a fresh walk, Unsorted and Conflicted included. The
+   walk already skips junk (`utils/junk.is_junk_entry`, RomM's `.romm_tmp_*`).
+   A walk already running is waited for, within `_LIST_SECONDS`;
+2. leaves out a file outside the Volumes, gone, locked (`lock_manager.is_locked`)
+   or on an active job's candidate paths: an output being written is never
+   grouped (counted as `busy`);
+3. reads each missing key one file at a time. An image's SHA1 goes through
+   `open_reporting_reads` under `run_detached_within_stall_bound(report_progress=True)`;
+   a tool's hash is bounded by its `verify_timeout`; stats by the stall bound.
+   A file whose identity changed while it was read is not stored;
+4. groups by key (two or more), re-checks each grouped file's identity and lock,
+   and reconciles `duplicate` Findings for the Library (`findings.DUPLICATE`, one
+   per group, `image_key` = the content key, `cause` = `{"key", "copies": [{"image_key",
+   "path", "container", "size"}]}`);
+5. stores the summary (`duplicate_runs`: keyed, read now, groups, `not_checked`
+   by container, unreadable, busy), which `/api/findings` returns as
+   `duplicate_runs`.
+
+A cancel, or the Library's removal (`library_generation` moved), ends the run
+with no Findings written. `findings.clear_gone(library, DUPLICATE)` settles a
+group once fewer than two copies are left; the folder walk calls it with
+`NOT_INTACT`'s. Removing a Library drops its `duplicate_runs` row.
+
+Routes: `POST /api/libraries/{id}/find-duplicates` → `{job_id}`.
+
 ### 3.4 `registry.py`
 
 ```python

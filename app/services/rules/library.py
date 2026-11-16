@@ -220,6 +220,13 @@ class Library(Protocol):
     def images(self, platform_id: str) -> list[Image]:
         """The Images of one Platform. Blocking. Raises :class:`LibraryUnreadable`."""
 
+    def all_images(self) -> list[Image]:
+        """Every Image in the Library, whatever its Platform. Blocking.
+
+        What a find-duplicates run groups (#388): a copy of a disc is a copy
+        whether or not its Platform is known. Raises :class:`LibraryUnreadable`.
+        """
+
     def rule_defaults(self) -> Mapping[str, Any]:
         """Overrides for the engine's Rule defaults (interval, cap, verify, delete)."""
 
@@ -282,6 +289,17 @@ class LibraryDefaults:
     def referrer_enabled(self, referrer_id: str) -> bool:
         """No opt-in Referrer is on until a Library's settings say so (#383)."""
         return False
+
+    def all_images(self) -> list[Image]:
+        """Every Platform's Images, one Platform after another (#388).
+
+        A Library that also knows Images it cannot place on a Platform (a
+        folder Library's Unsorted ones) overrides this to list them too.
+        """
+        out: list[Image] = []
+        for platform in self.platforms():
+            out.extend(self.images(platform.id))
+        return out
 
     def walk_generation(self) -> int:
         """Moves when what :meth:`images` lists is out of date (#353).

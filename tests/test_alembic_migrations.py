@@ -177,8 +177,8 @@ def test_0014_stacks_on_0013_and_walks_up_from_an_empty_database(fresh_db_path: 
     engine = _db.make_engine(fresh_db_path)
     cfg = _db._alembic_config(engine)
     script = ScriptDirectory.from_config(cfg)
-    # #337's 0015 sits on top; see test_0015_adds_the_re_pin_plan_generation.
-    assert script.get_heads() == ["0015"]
+    # #388's 0017 sits on top; see test_0017_adds_the_content_keys.
+    assert script.get_heads() == ["0017"]
     assert script.get_revision("0014").down_revision == "0013"
     assert script.get_revision("0013").down_revision == "0012"
     assert script.get_revision("0012").down_revision == "0011"
@@ -229,6 +229,27 @@ def test_0015_adds_the_re_pin_plan_generation(fresh_db_path: str):
     command.upgrade(cfg, "0015")
     assert columns()["plan_generation"]["nullable"] is True
     assert _current_rev(engine) == "0015"
+
+
+def test_0017_adds_the_content_keys(fresh_db_path: str):
+    """#388's 0017, on latest's head: the duplicate finder's content keys and each
+    Library's last find-duplicates run."""
+    from alembic import command
+    from alembic.script import ScriptDirectory
+
+    engine = _db.make_engine(fresh_db_path)
+    cfg = _db._alembic_config(engine)
+    assert ScriptDirectory.from_config(cfg).get_revision("0017").down_revision == "0015"
+
+    command.upgrade(cfg, "0015")
+    assert not {"content_keys", "duplicate_runs"} & set(inspect(engine).get_table_names())
+    command.upgrade(cfg, "0017")
+    assert {"content_keys", "duplicate_runs"} <= set(inspect(engine).get_table_names())
+    columns = {c["name"]: c for c in inspect(engine).get_columns("content_keys")}
+    # A key is tied to the file's size and mtime; a format with no key stores None.
+    assert {"path", "size", "mtime_ns", "key", "container"} <= set(columns)
+    assert columns["key"]["nullable"] is True
+    assert _current_rev(engine) == "0017"
 
 
 # ---------------------------------------------------------------------------

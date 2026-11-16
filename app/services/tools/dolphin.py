@@ -170,6 +170,9 @@ class DolphinTool(BaseTool):
     # reconstructed disc SHA1 does. A disc-hash miss is therefore definitive;
     # don't fall back to a (meaningless) file-level hash of the container.
     embedded_hash_is_exhaustive = True
+    # The rebuilt disc SHA1 is the raw disc image's SHA1, so a container's
+    # duplicate-finder key matches the .iso it was made from (#388).
+    raw_image_hash_labels = frozenset({"dolphin_disc_sha1"})
 
     def __init__(self, binary_path: str) -> None:
         super().__init__(binary_path)
