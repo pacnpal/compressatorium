@@ -145,6 +145,15 @@ class RommStore extends RulesSource {
     await this.saveSettings({ auto_convert: enabled });
   }
 
+  /** Used by an EmulationStation frontend: conversions update gamelist.xml (#386). */
+  get esFrontend() {
+    return this.settings?.es_frontend === true;
+  }
+
+  async setEsFrontend(enabled) {
+    await this.saveSettings({ es_frontend: enabled });
+  }
+
   /** Which modes may run unattended, from /api/romm/status (null: no opinion). */
   get automatableModes() {
     return this.status?.automatableModes ?? null;

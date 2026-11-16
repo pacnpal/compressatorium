@@ -649,6 +649,54 @@
   wait: 1800
   javascript: *js_rule_editor_check
 
+# --- EmulationStation frontend switch (#386) -------------------------------
+# The fixture's "ROM Library/roms" folder registered as a Library (a 409 means
+# it already is), its "used by an EmulationStation frontend" switch turned on
+# through the API, and the Rules view opened on it: the switch shows ticked
+# with its close-ES-DE-first note. After every other shot of the Rules view,
+# so they keep showing the switch off, as a new Library has it.
+- url: http://127.0.0.1:8099/?s=rules-es-frontend-light#/workspace/chdman
+  output: docs/screenshots/rules-es-frontend-light.png
+  width: 1280
+  height: 700
+  wait: 1800
+  javascript: &js_rules_es_frontend |
+    (async () => {
+      const theme = location.search.includes('-dark') ? 'dark' : 'light';
+      localStorage.setItem('theme-preference', theme);
+      window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: theme }));
+      const volumes = await (await fetch('/api/volumes')).json();
+      const volume = volumes.find(v => v.name === 'ROM Library');
+      if (!volume) throw new Error('ROM Library volume not found');
+      await fetch('/api/libraries', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: volume.path + '/roms' }),
+      });
+      const libs = await (await fetch('/api/libraries')).json();
+      const lib = libs.find(l => l.kind === 'folder');
+      if (!lib) throw new Error('folder Library not registered');
+      const id = encodeURIComponent(lib.id);
+      const saved = await fetch(`/api/libraries/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ es_frontend: true }),
+      });
+      if (!saved.ok) throw new Error('could not turn the frontend switch on');
+      location.hash = `#/rules/${id}`;
+      await new Promise(r => setTimeout(r, 1200));
+      const section = document.querySelector('.master.frontend');
+      if (!section) throw new Error('EmulationStation frontend switch not shown');
+      section.scrollIntoView({ block: 'center' });
+      await new Promise(r => setTimeout(r, 300));
+    })()
+- url: http://127.0.0.1:8099/?s=rules-es-frontend-dark#/workspace/chdman
+  output: docs/screenshots/rules-es-frontend-dark.png
+  width: 1280
+  height: 700
+  wait: 1800
+  javascript: *js_rules_es_frontend
+
 # --- Findings view (#304) -------------------------------------------------
 # The fixture's "ROM Library/roms" folder is registered as a Library (a 409
 # means it already is) and walked through Check now's endpoint, which records

@@ -3545,7 +3545,8 @@ its values were tool ids, so a value left from it still loads as a tab.
 ### 3.3.15 Referrers (`services/referrers/`)
 
 A Referrer is anything that points at an Image by its path: an `.m3u`
-playlist today, `gamelist.xml` and the RomM in-place swap later. When
+playlist, an EmulationStation frontend's `gamelist.xml` (#386), and the RomM
+in-place swap later. When
 delete-on-verify replaces a Source, every Referrer is moved to the output
 **before** the Source is removed. What is guaranteed: every reference a
 registered Referrer finds is either rewritten to the output before the Source
@@ -3572,6 +3573,7 @@ class ReferrerChange:
     target: str                               # the file/record rewritten
     edits: tuple[tuple[str, str], ...]        # (old, new) as shown to the user
     payload: Any                              # Referrer-private, never serialized
+    # to_dict() adds "entries": len(edits), for "gamelist.xml, 3 entries" (#386)
 ```
 
 `renames` is `{old_path: new_path}`: every file the delete will remove, mapped
@@ -3599,7 +3601,7 @@ the always-on ones only. It reads settings already in memory; if it raises,
 the hook fails with the Library as its target and keeps the Source (fail
 closed). `register` refuses a Referrer that doesn't declare `phase` (a
 `Phase`) and `opt_in` (a bool). `active` sorts by `phase`, keeping
-registration order within a phase. `Phase.FILE` (`.m3u`, later
+registration order within a phase. `Phase.FILE` (`.m3u`,
 `gamelist.xml`) runs before `Phase.NETWORK` (the RomM swap): the hook runs one
 phase at a time, and a later phase runs only when every Referrer of the
 earlier ones succeeded. Its Referrers are not even planned; each gets a
@@ -3629,8 +3631,9 @@ The package exposes the registry and two entry points:
   points ask `detect` about the Image *and*
   every path in `renames`, so a companion that is deleted too (a cue's track
   in a subfolder) gates planning as well. `POST /api/jobs/delete-plan` calls it
-  per item and returns `referrer_changes: [{referrer, target, edits: [{old,
-  new}]}]`, which `DeletePlanModal.svelte` lists under each source. The request
+  per item and returns `referrer_changes: [{referrer, target, entries, edits:
+  [{old, new}]}]`, which `DeletePlanModal.svelte` lists under each source as
+  "updates gamelist.xml, 3 entries: old → new". The request
   carries `output_dir` and `duplicate_action`; the planned output goes through
   `_renamed_output`, the same helper `plan_job` uses, so a RENAME preview names
   the numbered path the job writes. The route builds its plan with
@@ -3648,8 +3651,9 @@ The package exposes the registry and two entry points:
   Referrer of the phase first, then applies each change; the first failure
   stops it, and it never raises. It returns a `ReferrerOutcome` whose
   `records` hold one entry per target, `{referrer, target, status}` with
-  `status` `updated`, `failed` or `skipped` (not attempted after a failure) and
-  a `reason` for the last two. The records are copied to
+  `status` `updated`, `failed` or `skipped` (not attempted after a failure),
+  `entries` (how many entries the change moved, #386) for an updated one and
+  a `reason` for the others. The records are copied to
   `ConversionJob.referrers_updated` and the Ledger's `referrers_updated` JSON
   column, so a row says which Referrer kept the Source and why. On a failure
   the job skips the delete, keeps the Source and the output, ends `completed`
@@ -3663,7 +3667,8 @@ The package exposes the registry and two entry points:
   locks: on a timeout or a Cancel the thread is abandoned and the outcome keeps
   the Source with the reason, recording one `failed` entry per Referrer of that
   phase (target the Image; the outcome's target is the phase's
-  `Phase.target`, "playlists" for the file phase) so the Ledger row says why.
+  `Phase.target`, "playlists and gamelists" for the file phase) so the
+  Ledger row says why.
   An abandoned thread can't write late:
   `_update_sync` runs under a `base.WriteGuard` holding an `abandoned` event
   (set by the hook on a timeout or Cancel, on any failed outcome, and when the
@@ -3719,8 +3724,26 @@ names beside the playlist. The preview computes a free name (`<Title> (2).m3u`);
 the create call writes exactly the previewed name and answers 409 with the next
 free one if it was taken since, never picking a different name on its own.
 
+**Shared file-Referrer helpers** (`files.py`, #386). What every Referrer
+that is a text file inside a Volume shares, so `.m3u` and `gamelist.xml`
+don't each carry a copy: `Renames.of(renames, name_forms)` (each replaced
+file's identity and target, plus the folded names for the fail-safe check),
+`search_dirs` / `dirs_for` (the replaced file's folder and each one above it
+up to its Volume root), `points_at` (does a written entry reach the output:
+identity when the output exists, resolved path while planning before it does),
+`fold` / `named_file`, `may_read` (planning refuses a symlink and "couldn't
+tell" containment, and skips a file confirmed outside the Volumes),
+`target_lock` (the in-process lock per resolved path) and `rewrite_in_place`,
+the one `apply`: it refuses a symlinked, read-only or not-confirmed-inside
+file, takes the in-process lock and the cross-process
+`lock_manager.referrer_lock` (bounded wait, ending as soon as `check_write`
+refuses), re-reads the file, runs the Referrer's rewrite on what is there now,
+writes `<file>.bak` once and the new file through `atomic_write_bytes` with
+`check_write` as the publish guard. A Referrer supplies only its reader and
+rewrite.
+
 **The `.m3u` Referrer** (`m3u.py`) is always on (`opt_in = False`), in
-`Phase.FILE`, with a plain (thread) `apply`.
+`Phase.FILE`, with a plain (thread) `apply` (`files.rewrite_in_place`).
 
 - *Where it looks.* The replaced file's resolved folder and each folder above
   it up to and including its Volume root (`utils.path_utils.lock_boundary_root`,
@@ -3860,9 +3883,52 @@ free one if it was taken since, never picking a different name on its own.
   meanwhile the write fails rather than fall back to 0644, and the Source is
   kept), then the new playlist.
 
+**The `gamelist.xml` Referrer** (`gamelist.py`, #386) is opt-in
+(`opt_in = True`), in `Phase.FILE`, with a plain `apply`
+(`files.rewrite_in_place`). EmulationStation frontends (ES-DE, Batocera,
+Knulli, muOS) key each game's artwork, favourite flag and play count on its
+`<path>`.
+
+- *When it runs.* Only for an Image whose Library says
+  `referrer_enabled("gamelist")` (`rules.library.ES_FRONTEND_REFERRER`): a
+  folder Library's `es_frontend` column (migration 0016, off for every
+  existing row), RomM's `es_frontend` setting (`ROMM_ES_FRONTEND`). Both are
+  in memory, so the registry's question never blocks. `describe()` and
+  `GET /api/libraries` report `es_frontend`; `PATCH /api/libraries/{id}` and
+  `PUT /api/romm/settings` set it. The Rules editor shows the switch for the
+  selected Library (`source.esFrontend` / `source.setEsFrontend`) with the
+  note to close ES-DE first, since ES-DE rewrites its gamelist on exit.
+- *Where it looks.* A `gamelist.xml` directly in each folder of
+  `files.dirs_for(renames)`: the Platform folder, with the Image beside it or
+  in a subfolder. Each entry resolves against its gamelist's folder (the
+  change's payload carries that base, so an ES-DE gamelists folder, #387, can
+  give another).
+- *What it reads.* `defusedxml`'s `DefusedXMLParser` (no entity declarations,
+  no external references) with a target that records each `<path>` that is a
+  child of a child of the root (`<game>` and `<folder>` entries), its text,
+  and expat's `CurrentByteIndex` at its start and end tags. A file that
+  doesn't parse fails with "can't be parsed (...)". An entry is read the way
+  ES-DE reads it: backslashes are separators, `./` is the base, anything else
+  is taken as written (joined to the base when relative).
+- *What it rewrites.* Only an entry that resolves to a replaced file
+  (`same_identity`). The new text keeps the entry's `./` prefix, folder part
+  and backslash style (normalised form first, then literal, each checked with
+  `points_at`). It is escaped (`&`, `<`, `>`) and encoded in the file's own
+  encoding (BOM, else the declaration, else UTF-8; characters it can't hold
+  become numeric references) and replaces exactly the byte span of the old
+  text. Nothing else changes: declaration, BOM, line endings, comments,
+  attributes, element order and every other element stay byte for byte. The
+  result is parsed again and must give the same entries, untouched ones
+  unchanged and moved ones reaching the output.
+- *Fail closed.* An entry that doesn't resolve but names a replaced file
+  ("names game.iso but doesn't point at it"), or a matching entry that can't
+  be edited in place (CDATA, a comment or child element inside `<path>`, a
+  file whose encoding isn't ASCII-compatible such as UTF-16) raises
+  `ReferrerError` naming the gamelist: the Source and the output are kept.
+
 To add a Referrer: subclass `Referrer` in `services/referrers/`, give it a new
 `id`, declare `opt_in` and `phase`, and `registry.register(...)` it in
-`services/referrers/__init__.py`. An opt-in one also needs the Library's
+`services/referrers/__init__.py`. A file Referrer builds on `files.py`. An opt-in one also needs the Library's
 setting that `referrer_enabled` reads. Nothing in the job pipeline, the
 delete-plan route or the modal changes. The
 existing RomM re-pin (3.3.9) is not a Referrer yet.

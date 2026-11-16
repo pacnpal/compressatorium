@@ -9,7 +9,9 @@
 //
 // A subclass adds its Platforms and the members the editor reads beside the
 // Rules: platforms, imageCount(platform), platformName(id), emptyTitle,
-// emptyHint, scheduleEnabled, setScheduleEnabled(enabled), and optionally
+// emptyHint, scheduleEnabled, setScheduleEnabled(enabled), esFrontend,
+// setEsFrontend(enabled) (the "used by an EmulationStation frontend" switch,
+// #386), and optionally
 // automatableModes, losesDatMatch(spec), imageNouns, the filter labels, and
 // afterRun(result).
 //
