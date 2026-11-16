@@ -129,7 +129,8 @@ class StagedOutput:
                     moved.append(name)
             except OSError as exc:
                 if exc.errno == errno.EEXIST:
-                    exc.filename = os.path.join(self.folder, name)
+                    # The entry that failed is the one after those moved.
+                    exc.filename = os.path.join(self.folder, present[len(moved)])
                 for done in reversed(moved):
                     self._move_back(done)
                 raise
