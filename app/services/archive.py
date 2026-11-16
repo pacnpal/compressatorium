@@ -6,6 +6,7 @@ import time
 import logging
 from logging_setup import get_logger
 from pathlib import Path, PurePosixPath
+from collections.abc import Callable
 from typing import List, Tuple, Optional, Union, Dict
 
 from config import settings
@@ -201,6 +202,7 @@ class ArchiveService:
     def list_archive_contents(
         self, archive_path: str, *, include_meta: bool = False,
         convertible_only: bool = False,
+        progress: Optional[Callable[..., None]] = None,
     ) -> Union[List[dict], Dict[str, Union[List[dict], bool]]]:
         """List the files inside an archive.
 
@@ -217,6 +219,10 @@ class ArchiveService:
         subset (:meth:`_convert_gate_extensions`). The recursive search path sets
         it so list-only members never consume the entry cap ahead of a genuine
         convertible member.
+
+        ``progress``, when given, is called as the archive's bytes arrive
+        (:func:`services.archive_members.read_archive_members`), for a
+        stall-bounded listing (#361).
         """
         ext = Path(archive_path).suffix.lower()
         entries: List[dict] = []
@@ -229,7 +235,7 @@ class ArchiveService:
         if ext in ARCHIVE_EXTENSIONS:
             start = time.monotonic()
             try:
-                raw_members = read_archive_members(archive_path)
+                raw_members = read_archive_members(archive_path, progress)
                 entries, truncated = self._filter_members(
                     archive_path, raw_members, allowed,
                 )
