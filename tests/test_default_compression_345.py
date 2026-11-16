@@ -77,9 +77,11 @@ async def test_a_single_job_takes_the_tools_default_codec(env, mode) -> None:
     from app.routes import convert as convert_routes
 
     iso = _gamecube(env["tmp"] / "gc" / "Melee.iso")
-    await convert_routes.create_job(JobCreateRequest(
+    job = await convert_routes.create_job(JobCreateRequest(
         file_path=iso, mode=ConversionMode(mode),
     ))
+    # The job records the codec it runs with (the Ledger, the re-run fast path).
+    assert job.compression == registry.get("dolphin").default_compression
 
     await _run_all()
 

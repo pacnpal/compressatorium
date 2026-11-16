@@ -5466,11 +5466,14 @@ returned as it is; on a codec-offering mode, `":level"` becomes
 `requires_codec`; a mode without a codec picker keeps its string (nsz's
 meaningful empty part survives); and with no declared default a level is
 dropped and logged rather than send a job the tool will reject or invent a
-codec the operator did not choose. `JobManager` calls it once, where every job
-reaches its tool's `convert`, so Auto, a single job, the CLI (`--compression
-default` included) and a Rule all run with the same default (#345). The job
-keeps what it chose, so the re-run fast path still compares like with like;
-the Rules sweep (`_compression_arg`) passes the Rule's choice through as it is.
+codec the operator did not choose. `JobManager` calls it once, in
+`_queue_job_locked`, where every conversion job is built, so Auto, a single
+job, the CLI (`--compression default` included) and a Rule all run with the
+same default (#345). The job records the resolved codec, so the Ledger shows
+what ran and the re-run fast path compares a resolved request with a resolved
+record. The Rules sweep (`_compression_arg`) passes the Rule's choice through
+as it is; a Rule's delete decision (`_delete_decision_identity`) reads the
+Rule's own fields, so it is unaffected.
 
 The value mirrors `defaultCompression` in `src/lib/tools/registry.js`, which
 seeds the same choice in the manual picker — `tests/test_frontend_parity_186.py`
