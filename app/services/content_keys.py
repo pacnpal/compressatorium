@@ -208,8 +208,7 @@ async def build(path: str, *, cancel_event: asyncio.Event | None = None) -> str 
         sha1 = await asyncio.wait_for(
             tool.raw_image_sha1(path, cancel_event=cancel_event), timeout=bound or None,
         )
-    except ReadCancelled:
-        raise
+    # A cancel (`ReadCancelled`) is none of these, so it propagates as is.
     except (EmbeddedHashUnavailable, OSError, RuntimeError, asyncio.TimeoutError) as exc:
         _raise_if_cancelled(cancel_event)
         raise KeyUnavailable(f"{tool.id} could not hash {name}: {exc}") from exc
