@@ -7,6 +7,7 @@ Volumes, and only when nothing holds them.
 """
 from __future__ import annotations
 
+import errno
 import fcntl
 import os
 import time
@@ -88,11 +89,20 @@ def test_an_old_unlocked_leftover_is_swept(volume):
     assert not new.exists() and not old.exists()
 
 
-def test_a_locked_leftover_is_kept(volume):
+def _hold_sidecar(temp):
+    """What a live writer holds: an exclusive lock on ``<temp>.lock``."""
+    fd = os.open(f"{temp}.lock", os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    return fd
+
+
+def test_a_leftover_whose_writer_holds_its_sidecar_is_kept(volume):
     held = _leftover(volume / "dos", ".partial-abcd1234.tmp")
-    with open(held, "rb") as handle:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+    fd = _hold_sidecar(held)
+    try:
         assert partial_writes.sweep_folder(str(volume / "dos")) == 0
+    finally:
+        os.close(fd)
     assert held.exists()
 
 
@@ -154,9 +164,11 @@ def test_startup_sweeps_a_journaled_leftover_and_its_record(volume):
 def test_startup_keeps_a_journaled_temp_a_live_write_holds(volume):
     held = _leftover(volume / "dos", ".partial-abcd1234.tmp")
     marker = partial_writes.record(str(held))
-    with open(held, "rb") as handle:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+    fd = _hold_sidecar(held)
+    try:
         assert partial_writes.sweep_recorded() == 0
+    finally:
+        os.close(fd)
     assert held.exists() and os.path.exists(marker)
 
 
@@ -181,26 +193,93 @@ def test_a_rewrite_sweeps_its_destination_folder_first(volume, tmp_path):
     assert sorted(os.listdir(volume / "dos")) == ["out.dosz"]
 
 
-def test_a_rewrite_locks_and_journals_its_temp_file_while_it_writes(volume, tmp_path):
+def test_a_rewrite_locks_a_sidecar_and_journals_its_temp_file_while_it_writes(volume, tmp_path):
     src = _zip(tmp_path / "in.zip")
     seen = {}
 
     def watch(_done, _total):
         temps = [n for n in os.listdir(volume / "dos") if partial_writes.is_leftover_name(n)]
-        if not temps or "locked" in seen:
+        if not temps or "sidecar_locked" in seen:
             return
-        path = volume / "dos" / temps[0]
-        with open(path, "rb") as handle:
-            try:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                seen["locked"] = False
-            except BlockingIOError:
-                seen["locked"] = True
-        seen["journaled"] = str(path) in partial_writes.recorded_paths()
+        temp = volume / "dos" / temps[0]
+        fd = os.open(f"{temp}.lock", os.O_RDWR)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            seen["sidecar_locked"] = False
+        except BlockingIOError:
+            seen["sidecar_locked"] = True
+        finally:
+            os.close(fd)
+        seen["journaled"] = str(temp) in partial_writes.recorded_paths()
 
     rewrite_zip(src, str(volume / "dos" / "out.dosz"), on_progress=watch)
 
-    assert seen == {"locked": True, "journaled": True}
+    assert seen == {"sidecar_locked": True, "journaled": True}
+    assert partial_writes.recorded_paths() == []
+    assert sorted(os.listdir(volume / "dos")) == ["out.dosz"]  # sidecar removed too
+
+
+def test_the_product_check_reads_a_temp_file_nobody_locks(volume, tmp_path):
+    """SMB enforces locks: the writer must not lock the archive it checks."""
+    src = _zip(tmp_path / "in.zip")
+    seen = []
+
+    def check(path):
+        with open(path, "rb") as handle:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                seen.append("unlocked")
+            except BlockingIOError:
+                seen.append("locked")
+        zipfile.ZipFile(path).testzip()
+
+    rewrite_zip(src, str(volume / "dos" / "out.dosz"), check=check)
+
+    assert seen == ["unlocked"]
+
+
+def test_the_sweep_takes_the_sidecar_lock_through_a_write_open(volume, monkeypatch):
+    """On NFS an exclusive flock needs a descriptor open for writing."""
+    real = fcntl.flock
+
+    def nfs_flock(fd, operation):
+        read_only = fcntl.fcntl(fd, fcntl.F_GETFL) & os.O_ACCMODE == os.O_RDONLY
+        if operation & fcntl.LOCK_EX and read_only:
+            raise OSError(errno.EBADF, "Bad file descriptor")
+        return real(fd, operation)
+
+    monkeypatch.setattr(partial_writes.fcntl, "flock", nfs_flock)
+    _leftover(volume / "dos", ".partial-abcd1234.tmp")
+
+    assert partial_writes.sweep_folder(str(volume / "dos")) == 1
+
+    assert sorted(os.listdir(volume / "dos")) == []
+
+
+def test_an_orphaned_sidecar_is_swept_too(volume):
+    sidecar = _leftover(volume / "dos", ".partial-abcd1234.tmp.lock")
+
+    partial_writes.sweep_folder(str(volume / "dos"))
+
+    assert not sidecar.exists()
+
+
+def test_a_lock_failure_leaks_no_descriptor_and_leaves_nothing_behind(
+    volume, tmp_path, monkeypatch
+):
+    src = _zip(tmp_path / "in.zip")
+
+    def no_locks(_fd, _operation):
+        raise OSError(errno.ENOLCK, "No locks available")
+
+    monkeypatch.setattr(partial_writes.fcntl, "flock", no_locks)
+    before = len(os.listdir("/dev/fd"))
+
+    with pytest.raises(OSError):
+        rewrite_zip(src, str(volume / "dos" / "out.dosz"))
+
+    assert len(os.listdir("/dev/fd")) == before
+    assert os.listdir(volume / "dos") == []
     assert partial_writes.recorded_paths() == []
 
 

@@ -160,9 +160,13 @@ def test_the_temp_file_is_hidden_and_ends_in_tmp_while_it_is_written(tmp_path):
     in_flight = [names for names in seen if names and names != ["out.dosz"]]
     assert in_flight, "no progress was reported while the temp file existed"
     for names in in_flight:
-        assert len(names) == 1
-        assert names[0].startswith(".")
-        assert names[0].endswith(".tmp")
+        # The temp file and its sidecar lock (#331): both hidden, and both
+        # carry an extension RomM's scanner skips by default.
+        assert len(names) == 2
+        assert all(name.startswith(".") for name in names)
+        temp, lock = sorted(names)
+        assert temp.endswith(".tmp")
+        assert lock == temp + ".lock"
 
 
 def test_added_members_come_first(tmp_path):

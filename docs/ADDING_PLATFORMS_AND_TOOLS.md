@@ -1655,9 +1655,9 @@ matter when your *platform* is a game image processed by chdman.
   renames or drops members and adds new ones (written first, with a fixed
   timestamp), reads every member through zipfile (so a bad CRC fails the
   copy), writes under a short hidden `.partial-XXXXXXXX.tmp` name in the
-  destination folder (library scanners such as RomM's skip `.tmp`; it is
-  locked while written and swept after a hard kill, see
-  `services/partial_writes.py`), fsyncs, runs an
+  destination folder (library scanners such as RomM's skip `.tmp`; a
+  `<temp>.lock` sidecar is locked while it is written, and both are swept
+  after a hard kill, see `services/partial_writes.py`), fsyncs, runs an
   optional `check(temp_path)`, gives it the Source's permission bits, and
   places the result with the no-replace move.
   Use it instead of hand-rolling a zip rewrite. Pair it with

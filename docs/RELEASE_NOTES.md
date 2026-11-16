@@ -7,7 +7,10 @@
 - **eXoDOS repack: leftovers and repeat lookups** (#331).
   - A repack killed hard (SIGKILL, power loss) no longer leaves its hidden
     `.partial-*.tmp` file behind for good. It is removed at the next start,
-    or before the next repack into that folder, once nothing holds it.
+    or before the next repack into that folder, once nothing holds it. A
+    running repack holds a lock on a small `.lock` file beside it, never on
+    the archive, so the check before placing it works on SMB shares and the
+    cleanup works on NFS.
   - The temp file's name is now short and fixed-length, so a game whose name
     is near the 255-byte file name limit can be repacked.
   - A zip that is not an eXoDOS game is no longer reopened on every listing:

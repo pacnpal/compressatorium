@@ -792,3 +792,24 @@ def test_a_template_added_to_an_existing_game_folder_ends_a_cached_miss(tree, mo
 
     assert service.is_repackable(path) is True
     assert len(calls) == 2
+
+
+def test_a_template_fixed_in_place_ends_a_cached_miss(tree):
+    """An oversized template is a miss; trimming the same file (no folder
+    change) must be seen."""
+    service = ExodosService()
+    template = tree["dos"] / "Abaron" / "dosbox.conf"
+    template.write_bytes(b"[autoexec]\r\n" + b"x" * (exodos_module._MAX_TEMPLATE_BYTES + 1))
+    folder = os.stat(template.parent)
+    folder_times = (folder.st_atime_ns, folder.st_mtime_ns)
+    path = _game_zip(tree)
+    assert service.is_repackable(path) is False
+
+    with open(template, "r+b") as handle:  # in place: same inode, same folder
+        handle.truncate(len(TEMPLATE))
+        handle.seek(0)
+        handle.write(TEMPLATE)
+    os.utime(template.parent, ns=folder_times)
+    assert os.stat(template.parent).st_mtime_ns == folder_times[1]
+
+    assert service.is_repackable(path) is True

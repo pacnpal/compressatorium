@@ -4,9 +4,9 @@ import ctypes
 import errno
 import functools
 import os
+import secrets
 import stat
 import sys
-import tempfile
 import threading
 import time
 from collections.abc import Iterable, Sequence
@@ -971,16 +971,36 @@ def read_beneath(root: str, relative: str, *, max_bytes: int) -> bytes:
         os.close(fd)
 
 
+# The characters ``tempfile.mkstemp`` draws its eight random ones from.
+_TEMP_NAME_CHARS = "abcdefghijklmnopqrstuvwxyz0123456789_"
+_TEMP_NAME_ATTEMPTS = 100
+
+
+def short_temp_name(prefix: str = ".tmp-", suffix: str = "") -> str:
+    """A short, fixed-length temp file name: ``prefix``, eight random
+    characters from ``mkstemp``'s alphabet, ``suffix``. Never built from a
+    target's name, so a target near the 255-byte name limit can still be
+    written beside it. For a writer that must set something up under the name
+    before the file exists (``services.partial_writes``)."""
+    return prefix + "".join(secrets.choice(_TEMP_NAME_CHARS) for _ in range(8)) + suffix
+
+
 def short_temp_file(directory: str, *, prefix: str = ".tmp-", suffix: str = "") -> tuple[int, str]:
     """A new hidden temp file in *directory*: ``(fd, path)``, as ``mkstemp``.
 
-    The name is short and fixed-length, ``prefix`` plus eight random
-    characters plus ``suffix``, never built from the target's name, so a
-    target near the 255-byte file name limit can still be written beside it.
+    Named by :func:`short_temp_name`, created ``O_EXCL`` with mode ``0600``
+    (retrying another name if one is taken), and never through a symlink.
     Shared by every writer that places a finished file next to its target
-    (the Referrers' atomic writes, ``archive_edit.rewrite_zip``).
+    (the Referrers' atomic writes).
     """
-    return tempfile.mkstemp(dir=directory, prefix=prefix, suffix=suffix)
+    flags = os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    for _ in range(_TEMP_NAME_ATTEMPTS):
+        path = os.path.join(directory, short_temp_name(prefix, suffix))
+        try:
+            return os.open(path, flags, 0o600), path
+        except FileExistsError:
+            continue
+    raise FileExistsError(errno.EEXIST, "No free temp file name", directory)
 
 
 def safe_join(base_dir: str, *parts: str) -> Path:

@@ -316,9 +316,10 @@ class ExodosService:
         """Whether ``path`` can be repacked.
 
         Cached, a yes and a no alike, per (path, size, mtime) of the zip, and
-        valid only while the template tree's folders (the tree's root and the
-        game's folder) keep their mtimes: adding, removing or renaming a
-        template changes one of them and the zip is asked again (#331).
+        valid only while the template tree is unchanged: the root's and the
+        game folder's mtimes, and the template file's own mtime, size and
+        inode. Adding, removing, renaming or fixing a template in place
+        changes one of them, and the zip is asked again (#331).
         """
         if Path(path).suffix.lower() not in INPUT_EXTENSIONS:
             return False
@@ -644,17 +645,23 @@ _PROBE_CACHE_SIZE = 4096
 _PROBE_LOCK = threading.Lock()
 
 
-def _tree_stamp(root: str, top: str | None) -> tuple:
-    """The mtimes a cached answer depends on: the tree's root, and the game's
-    folder when the zip named one. ``None`` for a folder that is not there."""
-    stamps: list[int | None] = []
-    for folder in (root, os.path.join(root, top) if top else None):
-        if folder is None:
-            continue
+def _tree_stamp(root: str, top: str | None, conf_name: str) -> tuple:
+    """What a cached answer depends on: the tree root's mtime and, when the zip
+    named a game folder, that folder's mtime and the template file's own
+    (mtime, size, inode). A template created, removed, renamed or rewritten in
+    place changes one of them. ``None`` for anything that is not there."""
+    paths = [root]
+    if top:
+        folder = os.path.join(root, top)
+        paths += [folder, os.path.join(folder, conf_name)]
+    stamps: list[tuple[int, int, int] | None] = []
+    for path in paths:
         try:
-            stamps.append(os.lstat(folder).st_mtime_ns)
+            info = os.lstat(path)
         except OSError:
             stamps.append(None)
+            continue
+        stamps.append((info.st_mtime_ns, info.st_size, info.st_ino))
     return tuple(stamps)
 
 
@@ -667,14 +674,14 @@ def _probe(
         cached = _PROBE_CACHE.get(key)
     if cached is not None:
         answer, top, stamp = cached
-        if _tree_stamp(root, top) == stamp:
+        if _tree_stamp(root, top, profile.conf_name) == stamp:
             return answer
     try:
         plan = ExodosService(profile)._inspect(path, root)
         answer, top = True, plan.top
     except NotRepackable as exc:
         answer, top = False, exc.top
-    stamp = _tree_stamp(root, top)
+    stamp = _tree_stamp(root, top, profile.conf_name)
     with _PROBE_LOCK:
         _PROBE_CACHE[key] = (answer, top, stamp)
         _PROBE_CACHE.move_to_end(key)
