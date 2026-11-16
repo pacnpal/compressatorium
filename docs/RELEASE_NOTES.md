@@ -12,6 +12,7 @@
   19): the level moves to that codec's default, and the slider and the number
   box always show the same value. A level typed past the codec's range is held
   to it, in the convert panel and in a Rule.
+
 - **Starting with `PUID`/`PGID` no longer fails when another container is
   using `/config`** (#350). The ownership fix-up at start walked `/config`
   with `chown -R`, and a SQLite `-wal`/`-shm` file that vanished mid-walk
