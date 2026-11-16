@@ -19,7 +19,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.concurrency import run_in_threadpool
 from logging_setup import get_logger
 from pydantic import BaseModel
-from services import findings, libraries, platform_detect, platform_mappings
+from services import duplicates, findings, libraries, platform_detect, platform_mappings
 from services.libraries.folder import ListingInProgress
 from services.rules.library import LibraryUnreadable
 from services.subprocess_runner import run_detached
@@ -125,7 +125,14 @@ async def list_findings(include_dismissed: bool = False) -> dict:
         # The folder holding the Image: where "open the folder" goes, and the
         # folder a mapping would be set on.
         row["folder"] = os.path.dirname(row["path"])
-    return {"findings": rows, "dismissed": dismissed}
+    # Each Library's last find-duplicates run (#388): what it could not check
+    # is shown beside its groups. A run of a Library since removed is gone.
+    runs = [
+        {**run, "library_name": names[run["library_id"]]}
+        for run in await run_in_threadpool(duplicates.list_runs)
+        if run["library_id"] in names
+    ]
+    return {"findings": rows, "dismissed": dismissed, "duplicate_runs": runs}
 
 
 def _library_is_current(library_id: str) -> bool:

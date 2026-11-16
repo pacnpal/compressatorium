@@ -38,7 +38,7 @@ import os
 import shutil
 import threading
 import time
-from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
 
 from config import settings
 from logging_setup import get_logger
@@ -654,6 +654,69 @@ class ReadCancelled(Exception):
     pipeline) so a verify can translate it into its own terminal
     ``{"cancelled": True}`` event rather than letting it read as a failure.
     """
+
+
+# How long a cancelled awaitable gets to unwind (stop its child, leave a lane
+# queue) before :func:`until_cancelled` stops waiting for it.
+CANCEL_SETTLE_SECONDS = 5.0
+
+
+async def until_cancelled(
+    awaitable: Awaitable,
+    cancel_event: asyncio.Event | None,
+    *,
+    settle: float = CANCEL_SETTLE_SECONDS,
+    discard: Callable[[object], None] | None = None,
+) -> object:
+    """Await *awaitable*, or raise :class:`ReadCancelled` as soon as
+    *cancel_event* fires (#388).
+
+    For a call that does not watch the event all the way down (a lane wait, a
+    tool's hash under its own bound): the caller's Cancel ends the wait now,
+    not when the call's own timeout runs out. On a cancel the pending task is
+    cancelled and awaited for at most *settle* seconds, so whatever it holds
+    (a lane, a child) is let go before this returns. With no event, this is a
+    plain await of *awaitable*.
+
+    Every way out that does not hand the result to the caller gives it to
+    *discard* (a lane token to give back): the event's Cancel, and the
+    caller's own task being cancelled, even in the window where the call had
+    already finished but the caller had not yet resumed (Codex 4590926157). A
+    call still running then is cancelled, and its result, should it arrive
+    after all, is discarded as it lands.
+    """
+    if cancel_event is None:
+        return await awaitable
+    task = asyncio.ensure_future(awaitable)
+    waiter = asyncio.ensure_future(cancel_event.wait())
+    delivered = False
+    try:
+        await asyncio.wait({task, waiter}, return_when=asyncio.FIRST_COMPLETED)
+        if task.done():
+            delivered = True
+            return task.result()
+        task.cancel()
+        await asyncio.wait({task}, timeout=max(0.0, settle))
+        raise ReadCancelled("Cancelled while waiting")
+    finally:
+        waiter.cancel()
+        if not delivered:
+            _discard_when_done(task, discard)
+
+
+def _discard_when_done(task: asyncio.Future, discard: Callable[[object], None] | None) -> None:
+    """Give *task*'s result to *discard*, now or when it lands: nobody will
+    receive it. A task still running is cancelled first."""
+    def give_back(done: asyncio.Future) -> None:
+        if discard is None or done.cancelled() or done.exception() is not None:
+            return
+        discard(done.result())
+
+    if task.done():
+        give_back(task)
+        return
+    task.cancel()
+    task.add_done_callback(give_back)
 
 
 async def bounded_path_check(func: Callable, *args: object, **kwargs: object) -> object:

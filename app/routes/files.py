@@ -329,9 +329,9 @@ async def _assert_path_not_in_use(path: str, *, is_dir: bool = False) -> None:
                        "which a conversion is using",
             )
 
-    candidates = job_manager.get_active_job_candidates()
-
     def _match_job_id() -> str | None:
+        # Off the loop: resolving a job's candidate paths reads its sheet (#388).
+        candidates = job_manager.get_active_job_candidates()
         try:
             target = Path(path).expanduser().resolve(strict=False)
         except (OSError, RuntimeError):

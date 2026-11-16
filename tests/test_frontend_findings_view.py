@@ -416,7 +416,9 @@ def test_the_empty_state_does_not_claim_everything_has_a_platform():
 
 def test_each_row_action_names_its_image():
     view = _VIEW.read_text(encoding="utf-8")
-    assert "ariaLabel={`Open the folder of ${row.image_key}`}" in view
+    # Named through `findingName`: the Image key, or a duplicate group's first
+    # copy and a count (#388), never a bare content key.
+    assert "ariaLabel={`Open the folder of ${findingName(row)}`}" in view
     assert "ariaLabel" in (_SRC / "lib" / "components" / "ui" / "Button.svelte").read_text(
         encoding="utf-8",
     )

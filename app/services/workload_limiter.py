@@ -2,6 +2,7 @@ import asyncio
 import threading
 
 from config import settings
+from services.subprocess_runner import until_cancelled
 
 
 class WorkloadToken:
@@ -52,9 +53,19 @@ class WorkloadLimiter:
         self._in_use = {lane: 0 for lane in self._limits}
         self._counter_lock = threading.Lock()
 
-    async def acquire(self, lane: str) -> WorkloadToken:
+    async def acquire(
+        self, lane: str, *, cancel_event: asyncio.Event | None = None,
+    ) -> WorkloadToken:
+        """A slot in *lane*, waiting as long as it takes.
+
+        With *cancel_event*, the wait ends when it fires: ``ReadCancelled`` is
+        raised and nothing is left queued on the lane (#388). A slot that came
+        free just as the cancel won is given back.
+        """
         semaphore = self._semaphores[lane]
-        await semaphore.acquire()
+        await until_cancelled(
+            semaphore.acquire(), cancel_event, discard=lambda _got: semaphore.release(),
+        )
         with self._counter_lock:
             self._in_use[lane] += 1
         return WorkloadToken(self, lane)

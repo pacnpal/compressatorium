@@ -884,6 +884,46 @@ run's Check job in the Jobs panel with its result.
 | ![Findings with a Not Intact row, light](docs/screenshots/findings-not-intact-light.png) | ![Findings with a Not Intact row, dark](docs/screenshots/findings-not-intact-dark.png) |
 | ![A Check job in the Jobs panel, light](docs/screenshots/jobs-check-light.png) | ![A Check job in the Jobs panel, dark](docs/screenshots/jobs-check-dark.png) |
 
+### Finding duplicates
+
+**Find duplicates** (in the Rules view, beside a folder Library's name) looks
+for the same disc stored more than once in that Library, even in different
+containers: `Game.iso`, the `Game.rvz` made from it and a DVD `Game.chd` are
+one disc.
+
+- Each file gets a content key, the SHA1 of the disc image it holds: an
+  `.iso` or `.bin` file's own SHA1, a Dolphin container's (RVZ, WIA, GCZ,
+  WBFS) disc SHA1 from `dolphin-tool verify`, and a DVD or hard-disk CHD's data
+  SHA1. A CHD's overall SHA1 is never used: it folds in the metadata, so it
+  never equals an image's.
+- The key is kept with the file's size and modified time, so a second run reads
+  only the files that are new or changed. Reading an RVZ rebuilds the whole
+  disc once; reading a CHD is its header only.
+- CD CHDs, CSO, ZSO, DAX, NSZ, WUX and Z3DS files, sheets and archives get no
+  key yet. The Findings view says how many of each format the last run could
+  not check.
+- The run is one job in the Jobs panel, with its progress, and Cancel stops it
+  (a cancelled run changes no Finding). A file that can't be read costs that
+  file only. A file that stops answering on a slow Volume ends at a time bound,
+  and the run then stops, leaving nothing written, rather than leave a stuck
+  read behind for every file after it. It is not a conversion and takes no conversion
+  slot.
+- A file a job is writing or reading, and RomM's `.romm_tmp_*` staging files,
+  are never grouped.
+- A folder the run cannot list, a file it cannot read, or a copy in use by a
+  job is not taken as gone: a group with a copy there is kept as it was, and
+  Findings says how many it could not see.
+- Each group is a **Duplicate** Finding listing every copy's path, container
+  and size. It goes away once only one copy is left (at the next listing or
+  run).
+
+Finding duplicates never deletes anything: open the folder to remove a copy
+yourself.
+
+| Light | Dark |
+|-------|------|
+| ![Findings with a Duplicate group, light](docs/screenshots/findings-duplicates-light.png) | ![Findings with a Duplicate group, dark](docs/screenshots/findings-duplicates-dark.png) |
+
 ### Findings and folder Platforms
 
 The **Findings** view (in the sidebar) lists every Image in a folder Library

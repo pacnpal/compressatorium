@@ -18,10 +18,12 @@ export const ACTIVE_STATUSES = new Set(['queued', 'processing']);
 export const EXTERNAL_SCAN_MODES = new Set(['metadata_scan', 'dat_match']);
 
 // Display names for the externally-managed job modes, which have no registry
-// spec. A check Rule's run (#305) is visible by default; the two scans above
-// stay behind the toggle.
+// spec. A check Rule's run (#305) and a find-duplicates run (#388) are visible
+// by default; the two scans above stay behind the toggle.
 export const EXTERNAL_MODE_LABELS = Object.freeze({
   metadata_scan: 'Metadata scan',
   dat_match: 'DAT match',
   check: 'Check',
+  // A Library's find-duplicates run (#388), started from the Rules view.
+  find_duplicates: 'Find duplicates',
 });

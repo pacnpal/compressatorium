@@ -159,6 +159,12 @@ class ToolPlugin(Protocol):
     # Dolphin's recompressed RVZ/WIA/GCZ. False (default) for formats whose own
     # file SHA1 may legitimately be indexed (e.g. a CHD-container DAT).
     embedded_hash_is_exhaustive: bool
+    # The ``embedded_hashes`` labels whose value is the SHA1 of the raw disc
+    # image the file holds (#388): what the duplicate finder's ``raw:`` key is
+    # read from (:meth:`raw_image_sha1`). Empty for a tool with no such hash
+    # (CSO, NSZ, WUX, Z3DS). Never a label that folds in anything else, such
+    # as a CHD's overall ``chd_sha1``.
+    raw_image_hash_labels: frozenset[str]
     # Library-manager platform slugs whose media this tool handles, empty for
     # "no opinion". Part of the contract, not just BaseTool's default:
     # `ToolRegistry.narrow_to_platform` reads it off every registered tool, so
@@ -431,6 +437,20 @@ class ToolPlugin(Protocol):
         instead of blocking until the current file finishes.
         """
 
+    async def raw_image_sha1(
+        self, path: str, *, cancel_event: asyncio.Event | None = None,
+    ) -> str | None:
+        """The SHA1 of the raw disc image ``path`` holds, for the duplicate finder (#388).
+
+        Read from :meth:`embedded_hashes`: the hash under one of
+        :attr:`raw_image_hash_labels`. ``None`` when this file has no such hash
+        (a format with no raw image hash, a CD CHD): it gets no content key
+        and is reported as not checked. Raises
+        :class:`EmbeddedHashUnavailable` when it should have one but could not
+        get it this time; the caller stores nothing and asks again next run.
+        The caller bounds the call with ``verify_timeout(path)``.
+        """
+
     async def content_digest(
         self,
         path: str,
@@ -599,6 +619,8 @@ class BaseTool:
     # Default False: a tool whose container file SHA1 might be DAT-indexed
     # still falls back to a file-level hash after an embedded-hash miss.
     embedded_hash_is_exhaustive: bool = False
+    # Default: no labelled hash is a raw disc image's SHA1 (#388).
+    raw_image_hash_labels: frozenset[str] = frozenset()
     # Library-manager platform slugs (RomM's vocabulary, which is IGDB's) whose
     # media this tool handles. Purely *narrowing*: an extension match still
     # decides convertibility, but when a library manager tells us the platform,
@@ -809,6 +831,26 @@ class BaseTool:
     ) -> list[tuple[str, str]]:
         # Default: no embedded hash; callers fall back to file-level SHA1.
         return []
+
+    async def raw_image_sha1(
+        self, path: str, *, cancel_event: asyncio.Event | None = None,
+    ) -> str | None:
+        # Default: read the label, never guess. A tool with no raw label has
+        # no raw image hash at all, and is not asked for its hashes.
+        if not self.raw_image_hash_labels:
+            return None
+        found = {
+            sha1.strip().lower()
+            for sha1, label in await self.embedded_hashes(path, cancel_event=cancel_event)
+            if label in self.raw_image_hash_labels and sha1
+        }
+        if len(found) != 1:
+            # None came back this time (over a size cap, a verify that printed
+            # nothing), or two that disagree: no key now, and none stored.
+            raise EmbeddedHashUnavailable(
+                f"no single raw image hash for {Path(path).name} ({len(found)} found)",
+            )
+        return found.pop()
 
     async def source_problem(
         self,
