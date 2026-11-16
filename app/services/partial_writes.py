@@ -8,8 +8,9 @@ A process killed hard (SIGKILL, power loss) leaves that file: hidden, ending in
 
 * **One name pattern.** :func:`is_leftover_name` matches exactly what the
   writer names its temp file, eight characters from ``mkstemp``'s alphabet,
-  in either spelling. Its lock file is the same name plus ``.lock``. Nothing
-  else is ever swept.
+  in either spelling. Its lock file is :func:`sidecar_name`, a fixed-length
+  name derived from the temp file's (``.partial-<16 hex>.lock``), so even a
+  254-byte legacy name has one. Nothing else is ever swept.
 * **A live write holds a sidecar lock, never a lock on the archive.** The
   writer (:func:`claim_temp`) creates ``<temp>.lock`` and takes an exclusive
   ``flock`` on it *before* the temp file exists, and keeps it until the temp
@@ -29,7 +30,10 @@ A process killed hard (SIGKILL, power loss) leaves that file: hidden, ending in
   that folder. :func:`sweep_recorded` runs at startup, from a small journal in
   the data directory (one file per temp file in flight, written when the temp
   file is created and removed when it is gone), so a crash is cleaned up
-  without walking every Volume.
+  without walking every Volume. A record is dropped only on proof: the sweep
+  removed the file, or its folder is inside a Volume, is the very folder it
+  was written in (same device and inode, so not an empty mount point) and no
+  longer holds it. A Volume that is away keeps the record for the next start.
 """
 from __future__ import annotations
 
@@ -43,7 +47,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from logging_setup import get_logger
-from utils.path_utils import is_within_configured_volumes, short_temp_name
+from utils.path_utils import (
+    companion_name,
+    is_within_configured_volumes,
+    short_temp_name,
+    volume_containment,
+)
 
 from config import settings
 
@@ -58,6 +67,7 @@ MIN_AGE_SECONDS = 60.0
 # ``.partial-`` + mkstemp's eight characters + ``.tmp``, optionally after the
 # ``.<target name>`` the name carried before #331.
 _LEFTOVER = re.compile(r"\.(?:.+\.)?partial-[a-z0-9_]{8}\.tmp")
+_SIDECAR = re.compile(r"\.partial-[0-9a-f]{16}\.lock")
 _CLOEXEC = getattr(os, "O_CLOEXEC", 0)
 _READ_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | _CLOEXEC
 # Read and write, never truncate: an exclusive flock needs a write open on NFS.
@@ -70,9 +80,20 @@ def is_leftover_name(name: str) -> bool:
     return _LEFTOVER.fullmatch(name) is not None
 
 
+def sidecar_name(temp_name: str) -> str:
+    """The lock file's name for a temp file's name: the one rule the writer
+    and the sweep share. Fixed-length, whatever the temp file is called."""
+    return companion_name(temp_name, prefix=TEMP_PREFIX, suffix=LOCK_SUFFIX)
+
+
+def sidecar_path(temp: str) -> str:
+    """The lock file beside the temp file *temp*."""
+    return os.path.join(os.path.dirname(temp), sidecar_name(os.path.basename(temp)))
+
+
 def is_sidecar_name(name: str) -> bool:
-    """Whether a file name is a temp file's lock file (``<temp>.lock``)."""
-    return name.endswith(LOCK_SUFFIX) and is_leftover_name(name[: -len(LOCK_SUFFIX)])
+    """Whether a file name is a temp file's lock file."""
+    return _SIDECAR.fullmatch(name) is not None
 
 
 # --- the journal -----------------------------------------------------------
@@ -87,12 +108,19 @@ def _marker_for(path: str) -> Path:
     return _journal_dir() / f"{digest}.path"
 
 
+def _folder_id(folder: str) -> tuple[int, int]:
+    info = os.stat(folder)
+    return info.st_dev, info.st_ino
+
+
 def record(path: str) -> str | None:
-    """Note a temp file in flight; the marker's path, or None if it can't be."""
+    """Note a temp file in flight, with the identity of the folder it is in;
+    the marker's path, or None if it can't be."""
     marker = _marker_for(path)
     try:
+        dev, ino = _folder_id(os.path.dirname(path))
         marker.parent.mkdir(parents=True, exist_ok=True)
-        marker.write_bytes(os.fsencode(path))
+        marker.write_bytes(os.fsencode(path) + b"\0" + f"{dev}:{ino}".encode())
     except OSError as exc:
         logger.debug("Could not record temp file %s: %s", path, exc)
         return None
@@ -105,6 +133,16 @@ def forget(marker: str | None) -> None:
         _unlink_quietly(marker)
 
 
+def _read_marker(marker: Path) -> tuple[str, tuple[int, int] | None]:
+    """A marker's temp file path and its folder's (dev, ino), if it has one."""
+    raw, _, folder = marker.read_bytes().partition(b"\0")
+    try:
+        dev, ino = (int(part) for part in folder.split(b":"))
+    except ValueError:
+        return os.fsdecode(raw), None
+    return os.fsdecode(raw), (dev, ino)
+
+
 def recorded_paths() -> list[str]:
     """The temp files the journal says are in flight or were left behind."""
     try:
@@ -114,7 +152,7 @@ def recorded_paths() -> list[str]:
     paths = []
     for marker in markers:
         try:
-            paths.append(os.fsdecode(marker.read_bytes()))
+            paths.append(_read_marker(marker)[0])
         except OSError:
             continue
     return paths
@@ -158,7 +196,7 @@ def claim_temp(directory: str) -> TempClaim:
     this created is removed before the error propagates."""
     for _ in range(_CLAIM_ATTEMPTS):
         path = os.path.join(directory, short_temp_name(TEMP_PREFIX, TEMP_SUFFIX))
-        lock_path = path + LOCK_SUFFIX
+        lock_path = sidecar_path(path)
         try:
             lock_fd = os.open(lock_path, _LOCK_FLAGS | os.O_EXCL, 0o600)
         except FileExistsError:
@@ -226,7 +264,7 @@ def _sweep_one(path: str, min_age: float) -> bool | None:
             return None
         if time.time() - info.st_mtime < min_age:
             return False
-        lock_path = path + LOCK_SUFFIX
+        lock_path = sidecar_path(path)
         lock_fd = _open_sidecar(lock_path)
         if lock_fd is None:
             return None
@@ -239,8 +277,8 @@ def _sweep_one(path: str, min_age: float) -> bool | None:
             os.close(lock_fd)
             return None
         try:
-            if not _same_file(path, info):
-                return None  # the name now points at something else
+            if not _same_file(path, info) or not _same_file(lock_path, os.fstat(lock_fd)):
+                return None  # a name now points at something else
             os.unlink(path)
             logger.info("Removed a temp file left by an interrupted repack: %s", path)
             _unlink_quietly(lock_path)
@@ -253,10 +291,11 @@ def _sweep_one(path: str, min_age: float) -> bool | None:
         os.close(fd)
 
 
-def _sweep_orphan_sidecar(lock_path: str, min_age: float) -> bool:
-    """Remove a lock file whose temp file is gone, once nobody holds it."""
-    temp = lock_path[: -len(LOCK_SUFFIX)]
-    if os.path.lexists(temp):
+def _sweep_orphan_sidecar(lock_path: str, min_age: float, temp: str | None = None) -> bool:
+    """Remove a lock file whose temp file is gone, once nobody holds it.
+    *temp*, when known, must not exist; the folder sweep passes None for a
+    lock file no leftover in the folder maps to."""
+    if temp is not None and os.path.lexists(temp):
         return False
     try:
         info = os.lstat(lock_path)
@@ -269,7 +308,9 @@ def _sweep_orphan_sidecar(lock_path: str, min_age: float) -> bool:
         return False
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        if os.path.lexists(temp) or not _same_file(lock_path, os.fstat(fd)):
+        if (temp is not None and os.path.lexists(temp)) or not _same_file(
+            lock_path, os.fstat(fd)
+        ):
             return False
         os.unlink(lock_path)
         return True
@@ -292,22 +333,33 @@ def sweep_folder(directory: str, *, min_age: float = MIN_AGE_SECONDS) -> int:
             ]
     except OSError:
         return 0
-    removed = 0
+    leftovers = [name for name in names if is_leftover_name(name)]
+    in_use = {sidecar_name(name) for name in leftovers}
+    removed = sum(_sweep_one(os.path.join(directory, name), min_age) is True for name in leftovers)
     for name in names:
-        path = os.path.join(directory, name)
-        if is_leftover_name(name):
-            removed += _sweep_one(path, min_age) is True
-        else:
-            _sweep_orphan_sidecar(path, min_age)
+        if is_sidecar_name(name) and name not in in_use:
+            _sweep_orphan_sidecar(os.path.join(directory, name), min_age)
     return removed
+
+
+def _same_folder(folder: str, recorded: tuple[int, int] | None) -> bool:
+    """Whether *folder* is, on disk now, the folder the record was made in."""
+    if recorded is None:
+        return False
+    try:
+        return _folder_id(folder) == recorded
+    except OSError:
+        return False
 
 
 def sweep_recorded(*, min_age: float = MIN_AGE_SECONDS) -> int:
     """Startup: remove every journaled leftover nothing holds. Never raises.
 
-    A marker is dropped once its file is gone (swept now or placed long ago).
-    One whose file is held, too young, outside the Volumes or uncertain stays
-    for the next start.
+    A marker is dropped only on proof the file is gone: this sweep removed
+    it, or its folder is inside a Volume, is the folder it was written in
+    (same device and inode) and no longer holds it. A file that is held or
+    too young, a Volume that is away (unmounted, or an empty mount point in
+    its place), and anything uncertain keep the marker for the next start.
     """
     removed = 0
     try:
@@ -316,21 +368,25 @@ def sweep_recorded(*, min_age: float = MIN_AGE_SECONDS) -> int:
         return 0
     for marker in markers:
         try:
-            path = os.fsdecode(marker.read_bytes())
+            path, folder_id = _read_marker(marker)
         except OSError:
             continue
-        inside = is_within_configured_volumes(os.path.dirname(path), treat_archives=False)
+        folder = os.path.dirname(path)
+        if volume_containment(folder, treat_archives=False) is not True:
+            continue  # outside, or couldn't tell: keep it
         try:
             os.lstat(path)
         except FileNotFoundError:
+            if not _same_folder(folder, folder_id):
+                continue  # the Volume is away: missing proves nothing
             # Placed or removed long ago: the record is all that is left.
-            if inside and is_leftover_name(os.path.basename(path)):
-                _sweep_orphan_sidecar(path + LOCK_SUFFIX, min_age)
+            if is_leftover_name(os.path.basename(path)):
+                _sweep_orphan_sidecar(sidecar_path(path), min_age, temp=path)
             forget(str(marker))
             continue
         except OSError:
             continue
-        if inside and _sweep_one(path, min_age) is True:
+        if _sweep_one(path, min_age) is True:
             removed += 1
             forget(str(marker))
     return removed
@@ -348,6 +404,8 @@ __all__ = [
     "is_sidecar_name",
     "record",
     "recorded_paths",
+    "sidecar_name",
+    "sidecar_path",
     "sweep_folder",
     "sweep_recorded",
 ]

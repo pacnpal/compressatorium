@@ -3,6 +3,7 @@ from __future__ import annotations
 import ctypes
 import errno
 import functools
+import hashlib
 import os
 import secrets
 import stat
@@ -1001,6 +1002,15 @@ def short_temp_file(directory: str, *, prefix: str = ".tmp-", suffix: str = "") 
         except FileExistsError:
             continue
     raise FileExistsError(errno.EEXIST, "No free temp file name", directory)
+
+
+def companion_name(name: str, *, prefix: str, suffix: str = "") -> str:
+    """A fixed-length name derived from *name*: ``prefix``, 16 hex characters
+    of its SHA-256, ``suffix``. For a file that goes with another one (a temp
+    file's lock file, ``services.partial_writes``): the same *name* always
+    gives the same companion, and its length never grows with *name*, so a
+    file near the 255-byte name limit still has one."""
+    return prefix + hashlib.sha256(os.fsencode(name)).hexdigest()[:16] + suffix
 
 
 def safe_join(base_dir: str, *parts: str) -> Path:

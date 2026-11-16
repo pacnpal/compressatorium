@@ -10,7 +10,9 @@
     or before the next repack into that folder, once nothing holds it. A
     running repack holds a lock on a small `.lock` file beside it, never on
     the archive, so the check before placing it works on SMB shares and the
-    cleanup works on NFS.
+    cleanup works on NFS. A Volume that is unmounted at startup keeps its
+    leftovers on the list until it is back, and a leftover with a name near
+    the 255-byte limit is cleaned up too.
   - The temp file's name is now short and fixed-length, so a game whose name
     is near the 255-byte file name limit can be repacked.
   - A zip that is not an eXoDOS game is no longer reopened on every listing:

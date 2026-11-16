@@ -90,8 +90,8 @@ def test_an_old_unlocked_leftover_is_swept(volume):
 
 
 def _hold_sidecar(temp):
-    """What a live writer holds: an exclusive lock on ``<temp>.lock``."""
-    fd = os.open(f"{temp}.lock", os.O_RDWR | os.O_CREAT, 0o600)
+    """What a live writer holds: an exclusive lock on the temp file's sidecar."""
+    fd = os.open(partial_writes.sidecar_path(str(temp)), os.O_RDWR | os.O_CREAT, 0o600)
     fcntl.flock(fd, fcntl.LOCK_EX)
     return fd
 
@@ -180,6 +180,29 @@ def test_startup_drops_a_record_whose_file_is_already_gone(volume):
     assert not os.path.exists(marker)
 
 
+@pytest.mark.parametrize("while_away", ["missing", "empty mount point"])
+def test_startup_keeps_the_record_while_the_volume_is_away(volume, tmp_path, while_away):
+    """A missing file is no proof it is gone: an unmounted Volume hides it too.
+    The record stays until the Volume is back and the sweep removes the file."""
+    stray = _leftover(volume / "dos", ".partial-abcd1234.tmp")
+    marker = partial_writes.record(str(stray))
+    away = tmp_path / "away"
+    volume.rename(away)
+    if while_away == "empty mount point":
+        (volume / "dos").mkdir(parents=True)  # same path, not the same folder
+
+    assert partial_writes.sweep_recorded() == 0
+    assert os.path.exists(marker)
+
+    if while_away == "empty mount point":
+        (volume / "dos").rmdir()
+        volume.rmdir()
+    away.rename(volume)
+
+    assert partial_writes.sweep_recorded() == 1
+    assert not stray.exists() and not os.path.exists(marker)
+
+
 # --- what rewrite_zip does about it --------------------------------------------
 
 
@@ -202,7 +225,7 @@ def test_a_rewrite_locks_a_sidecar_and_journals_its_temp_file_while_it_writes(vo
         if not temps or "sidecar_locked" in seen:
             return
         temp = volume / "dos" / temps[0]
-        fd = os.open(f"{temp}.lock", os.O_RDWR)
+        fd = os.open(partial_writes.sidecar_path(str(temp)), os.O_RDWR)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             seen["sidecar_locked"] = False
@@ -257,7 +280,7 @@ def test_the_sweep_takes_the_sidecar_lock_through_a_write_open(volume, monkeypat
 
 
 def test_an_orphaned_sidecar_is_swept_too(volume):
-    sidecar = _leftover(volume / "dos", ".partial-abcd1234.tmp.lock")
+    sidecar = _leftover(volume / "dos", partial_writes.sidecar_name(".partial-abcd1234.tmp"))
 
     partial_writes.sweep_folder(str(volume / "dos"))
 
@@ -281,6 +304,26 @@ def test_a_lock_failure_leaks_no_descriptor_and_leaves_nothing_behind(
     assert len(os.listdir("/dev/fd")) == before
     assert os.listdir(volume / "dos") == []
     assert partial_writes.recorded_paths() == []
+
+
+def test_every_sidecar_name_is_short_and_fixed_length():
+    for temp in (".partial-abcd1234.tmp", "." + "G" * 232 + ".partial-abcd1234.tmp"):
+        name = partial_writes.sidecar_name(temp)
+        assert len(name) == len(".partial-") + 16 + len(".lock")
+        assert partial_writes.is_sidecar_name(name)
+        assert not partial_writes.is_leftover_name(name)
+
+
+def test_a_legacy_leftover_at_the_name_limit_is_swept(volume):
+    """``.<target>.partial-XXXXXXXX.tmp`` can be 254 bytes: its sidecar's name
+    must not grow with it."""
+    name = "." + "G" * 232 + ".partial-abcd1234.tmp"
+    assert len(name) == 254
+    _leftover(volume / "dos", name)
+
+    assert partial_writes.sweep_folder(str(volume / "dos")) == 1
+
+    assert os.listdir(volume / "dos") == []
 
 
 def test_a_target_name_near_the_length_limit_still_writes(volume, tmp_path):

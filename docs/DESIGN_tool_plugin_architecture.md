@@ -4935,8 +4935,8 @@ way to produce an edited copy of a zip. The first user is the eXoDOS repack
   one name raise `ValueError`.
 - **Nothing that looks finished appears early.** The archive is written to a
   temp file named `.partial-XXXXXXXX.tmp` in the destination directory
-  (`utils.path_utils.short_temp_file`, the helper the Referrers' atomic writes
-  use too: short and fixed-length, so a target near the 255-byte name limit
+  (`utils.path_utils.short_temp_name`, the name rule the Referrers' atomic
+  writes use too through `short_temp_file`: short and fixed-length, so a target near the 255-byte name limit
   still writes; hidden, and ending in `.tmp`, which RomM's scanner skips by
   default, so a partial file is never listed as a game), fsynced, passed to
   the caller's optional `check(temp_path)`, given the Source's permission
@@ -4949,7 +4949,8 @@ way to produce an edited copy of a zip. The first user is the eXoDOS repack
   existing file at `dst` raises `FileExistsError` and is never replaced; the job
   pipeline's authorized-overwrite sweep clears it first.
 - **What a hard kill leaves is swept (#331, `services/partial_writes.py`).**
-  The writer (`claim_temp`) first creates `<temp>.lock` and takes an exclusive
+  The writer (`claim_temp`) first creates the temp file's sidecar lock file
+  and takes an exclusive
   `flock` on it, opened read-write without truncating (NFS refuses an
   exclusive `flock` through a read-only open), and only then creates the temp
   file, so the temp file never exists without a held lock. The temp archive
@@ -4959,14 +4960,23 @@ way to produce an edited copy of a zip. The first user is the eXoDOS repack
   is all or nothing: if `flock` fails (`ENOLCK`), every descriptor is closed
   and every file it made is removed. When the temp file is placed or removed,
   the sidecar is unlinked while its lock is still held, then the lock and the
-  journal entry go. A sweep removes a leftover only when its name is exactly
+  journal entry go. The sidecar's name has one rule, shared by the writer and
+  the sweep (`sidecar_name`): `.partial-<16 hex>.lock`, the first 16 hex
+  characters of the SHA-256 of the temp file's name
+  (`utils.path_utils.companion_name`), so it is fixed-length and a 254-byte
+  legacy temp name still has one. A sweep removes a leftover only when its name is exactly
   that pattern (or the `.<target>.partial-XXXXXXXX.tmp` spelling used before
   #331); its folder is inside a configured Volume
   (`is_within_configured_volumes`, so "can't tell" keeps it); it opens with
   `O_NOFOLLOW` as a regular file and is over a minute old; the sweep can take
   the sidecar's lock (through the same read-write open); and the path still
-  names the inode it opened. The sidecar goes with it, and a sidecar whose
-  temp file is gone is swept the same way. `rewrite_zip` sweeps its
+  names the inode it opened. The sidecar goes with it, and a sidecar no
+  leftover maps to is swept the same way. A journal entry is dropped only on
+  proof that its file is gone: the sweep removed it, or its folder is inside
+  a Volume (`volume_containment(...) is True`), has the device and inode
+  recorded when the temp file was made, and no longer holds the file. A
+  Volume that is unmounted, or an empty mount point in its place, makes a
+  file look missing, so "missing" alone keeps the entry for the next start. `rewrite_zip` sweeps its
   destination folder before every write; at startup
   `main.startup_volume_work` sweeps the journaled files once the Volume roots
   are resolved, so a crash is cleaned up without walking the Volumes. The

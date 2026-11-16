@@ -13,6 +13,7 @@ import zipfile
 from pathlib import Path
 
 import pytest
+from services import partial_writes
 from services.archive_edit import rewrite_zip
 from services.subprocess_runner import ConversionCancelled
 
@@ -164,9 +165,9 @@ def test_the_temp_file_is_hidden_and_ends_in_tmp_while_it_is_written(tmp_path):
         # carry an extension RomM's scanner skips by default.
         assert len(names) == 2
         assert all(name.startswith(".") for name in names)
-        temp, lock = sorted(names)
+        lock, temp = sorted(names, key=lambda name: name.endswith(".tmp"))
         assert temp.endswith(".tmp")
-        assert lock == temp + ".lock"
+        assert lock == partial_writes.sidecar_name(temp)
 
 
 def test_added_members_come_first(tmp_path):
