@@ -20,7 +20,12 @@ from pathlib import Path
 
 import pytest
 
-_STORE_JS = Path(__file__).resolve().parents[1] / "src" / "lib" / "stores" / "conversion.svelte.js"
+_SRC = Path(__file__).resolve().parents[1] / "src" / "lib"
+_STORE_JS = _SRC / "stores" / "conversion.svelte.js"
+# The store's one real (unstubbed) sibling: the shared level fit/clamp, which
+# has no imports and is loaded as it ships.
+_LEVELS_JS = _SRC / "tools" / "levels.js"
+_PICKER = _SRC / "components" / "panels" / "CompressionPicker.svelte"
 
 
 def _find_node() -> str | None:
@@ -110,7 +115,8 @@ def _run(tmp_path: Path, scenario: str) -> dict:
     if node is None:
         pytest.skip("node not available to evaluate the conversion store")
     script = tmp_path / "conversion_store_eval.mjs"
-    script.write_text(_STUBS + _plain_js() + scenario, encoding="utf-8")
+    levels = re.sub(r"^export ", "", _LEVELS_JS.read_text(encoding="utf-8"), flags=re.MULTILINE)
+    script.write_text(_STUBS + levels + _plain_js() + scenario, encoding="utf-8")
     proc = subprocess.run(
         [node, str(script)], capture_output=True, text=True, timeout=30, check=False,
     )
@@ -1019,3 +1025,80 @@ const kept = store.compressionLevel;
 process.stdout.write(JSON.stringify({ reset, kept }));
 """)
     assert data == {"reset": {"level": "5", "sent": "lzma2:5"}, "kept": "7"}
+
+
+_DOLPHIN_LEVELS = """
+const CODECS = {
+  dolphin_rvz: ['none', 'zstd', 'bzip2', 'lzma', 'lzma2'],
+  dolphin_wia: ['none', 'bzip2', 'lzma', 'lzma2'],
+};
+const DEFAULTS = { dolphin_rvz: ['zstd'], dolphin_wia: ['none'] };
+registry.specFor = (m) => (CODECS[m]
+  ? { mode: m, supportsCompression: true, supportsCompressionLevel: true } : null);
+registry.codecsForMode = (m) => (CODECS[m] ?? []).map((value) => ({ value }));
+registry.defaultCompressionForMode = (m) => DEFAULTS[m];
+registry.levelRangeFor = (_m, codec) => (
+  codec === 'zstd' ? { min: 1, max: 22, default: 19 } : { min: 1, max: 9, default: 5 }
+);
+const store = new ConversionStore();
+store.setMode('dolphin_rvz');
+"""
+
+
+def test_a_mode_switch_keeps_the_level_in_the_codecs_range(tmp_path):
+    """RVZ+lzma2 at 19 switched to WIA: the codec carries over, and the level,
+    which both the slider and the number box read, becomes lzma2's default
+    instead of staying at a 19 the backend refuses."""
+    data = _run(tmp_path, _DOLPHIN_LEVELS + """
+store.setSingleCodec('lzma2');
+// Held from before the ranges (a saved preference, or zstd at 19).
+store.compressionLevel = '19';
+store.setMode('dolphin_wia');
+process.stdout.write(JSON.stringify({
+  codec: store.singleCodec, level: store.compressionLevel,
+  range: store.levelRange, sent: store.compressionValue,
+}));
+""")
+    assert data == {
+        "codec": "lzma2", "level": "5",
+        "range": {"min": 1, "max": 9, "default": 5}, "sent": "lzma2:5",
+    }
+
+
+def test_a_typed_level_is_held_to_the_codecs_range(tmp_path):
+    """The number box takes typing, so 19 on lzma2 is pulled to 9 rather than
+    held where the slider can't show it. A blank box mid-edit stays blank."""
+    data = _run(tmp_path, _DOLPHIN_LEVELS + """
+store.setSingleCodec('lzma2');
+store.setCompressionLevel('19');
+const typed = store.compressionLevel;
+store.setCompressionLevel('');
+const blank = store.compressionLevel;
+store.setSingleCodec('zstd');
+store.setCompressionLevel('19');
+process.stdout.write(JSON.stringify({ typed, blank, zstd: store.compressionLevel }));
+""")
+    assert data == {"typed": "9", "blank": "", "zstd": "19"}
+
+
+def test_the_rule_editor_holds_its_level_to_the_codecs_range(tmp_path):
+    """RuleEditor's level box goes through the same clamp, and its codec
+    change through the same fit, as the convert panel."""
+    editor = (_SRC / "components" / "views" / "RuleEditor.svelte").read_text(encoding="utf-8")
+    assert "onchange={(e) => setRuleLevel(platform.id, rule, e.currentTarget.value)}" in editor
+    assert "clampLevel(range, value)" in editor and "fitLevel(range, level)" in editor
+    data = _run(tmp_path, """
+const lzma2 = { min: 1, max: 9, default: 5 };
+process.stdout.write(JSON.stringify({
+  typed: clampLevel(lzma2, '19'), low: clampLevel(lzma2, '0'), blank: clampLevel(lzma2, ''),
+  refit: fitLevel(lzma2, 19), kept: fitLevel(lzma2, 7),
+}));
+""")
+    assert data == {"typed": 9, "low": 1, "blank": None, "refit": 5, "kept": 7}
+
+
+def test_the_picker_reads_the_stores_one_level_and_range():
+    """The slider and the number box read the same reconciled value and range."""
+    picker = _PICKER.read_text(encoding="utf-8")
+    assert "conversion.levelRange" in picker
+    assert picker.count("value={level}") == 2

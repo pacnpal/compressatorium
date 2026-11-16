@@ -51,6 +51,29 @@ def compression_problem(spec: ModeSpec, compression: str | None) -> str | None:
     return None
 
 
+def block_size_problem(spec: ModeSpec, size: int) -> str | None:
+    """Why *spec*'s mode refuses block size *size*, or None when it takes it.
+
+    Reads ``spec.block_size_rule`` (Dolphin's ``IsDiscImageBlockSizeValid``
+    for its containers). A mode with no rule takes no block size at all.
+    """
+    if not spec.block_size_rule:
+        return f"{spec.label} takes no block size"
+    minimum, multiple_from = spec.block_size_rule
+    power_of_two = size > 0 and size & (size - 1) == 0
+    if multiple_from and size >= multiple_from:
+        valid = size % multiple_from == 0
+    else:
+        valid = power_of_two
+    if size < minimum or not valid:
+        rule = "a power of two" + (
+            f" below {multiple_from} and a multiple of it from there"
+            if multiple_from else ""
+        )
+        return f"{spec.label} takes a block size of at least {minimum}, {rule}; {size} isn't"
+    return None
+
+
 class EmbeddedHashUnavailable(Exception):
     """A tool could not derive its embedded content hash for a file.
 

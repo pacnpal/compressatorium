@@ -44,6 +44,7 @@ class DolphinToolService:
         input_path: str,
         output_path: str,
         compression: str | None = None,
+        block_size: int | None = None,
     ) -> list[str]:
         fmt_name, _ = DOLPHIN_OUTPUT_FORMATS.get(mode, ("rvz", ".rvz"))
 
@@ -55,8 +56,10 @@ class DolphinToolService:
             "-f", fmt_name,
         ]
 
-        if fmt_name == "rvz":
-            cmd.extend(["-b", "131072"])
+        # The mode's block size (ModeSpec.block_size, from the plugin's
+        # per-container table); dolphin-tool refuses GCZ, RVZ and WIA without.
+        if block_size:
+            cmd.extend(["-b", str(block_size)])
 
         if compression and fmt_name in ("rvz", "wia"):
             if "," in compression:
@@ -106,11 +109,13 @@ class DolphinToolService:
         mode: str = "dolphin_rvz",
         *,
         compression: str | None = None,
+        block_size: int | None = None,
         cancel_event: asyncio.Event | None = None,
     ) -> AsyncGenerator[dict, None]:
         """Run dolphin-tool conversion and yield progress updates."""
         cmd = self._build_convert_command(
-            mode, input_path, output_path, compression=compression,
+            mode, input_path, output_path,
+            compression=compression, block_size=block_size,
         )
         cmd = self._wrap_with_stdbuf(cmd)
         async for update in self._runner.run(
