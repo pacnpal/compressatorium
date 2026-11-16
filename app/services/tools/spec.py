@@ -53,6 +53,14 @@ class ModeSpec:
     # (dolphin-tool: zstd 1-22, bzip2/lzma/lzma2 1-9). A codec not listed
     # takes no level of its own. Read through :meth:`level_range`.
     codec_levels: tuple[tuple[str, int, int, int], ...] = ()
+    # The block size this mode writes, for a tool that needs one (dolphin-tool
+    # refuses GCZ, RVZ and WIA without `-b`); None when the mode takes none.
+    block_size: int | None = None
+    # The rule a block size must meet, as ``(minimum, multiple_from)``: at
+    # least *minimum*, a power of two below *multiple_from* (everywhere when
+    # it is None), and a multiple of *multiple_from* from there up. Checked by
+    # ``tools.base.block_size_problem``.
+    block_size_rule: tuple[int, int | None] | None = None
     supports_delete_on_verify: bool = False
     # Whether the tool can verify this mode's product *without* the question of
     # deleting anything. Implied by `supports_delete_on_verify` (deleting needs
@@ -168,6 +176,9 @@ class ChainSpec:
     codecs: frozenset[str] = frozenset()
     default_compression: str | None = None
     codec_levels: tuple[tuple[str, int, int, int], ...] = ()
+    # Structural parity with ModeSpec: each step's own mode names its block size.
+    block_size: int | None = None
+    block_size_rule: tuple[int, int | None] | None = None
     supports_delete_on_verify: bool = True   # of the ORIGINAL source, gated on final verify
     # Structural parity with ModeSpec: a chain's final step verifies the
     # output, and its delete flag already implies that, so this stays False and

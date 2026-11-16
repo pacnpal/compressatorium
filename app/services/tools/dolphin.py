@@ -63,6 +63,23 @@ CODEC_LEVELS: dict[str, tuple[int, int, int] | None] = {
 }
 
 
+# Each container's block size (`-b`), which dolphin-tool requires for GCZ, RVZ
+# and WIA ("Block size must be set for GCZ/RVZ/WIA",
+# DolphinTool/ConvertCommand.cpp), as (default, (minimum, multiple_from)) for
+# ModeSpec.block_size / block_size_rule. The rules are DiscIO/DiscUtils.cpp's
+# IsDiscImageBlockSizeValid: GCZ a power of two; WIA at least
+# WIA_MIN_BLOCK_SIZE (2 MiB) and a multiple of it; RVZ at least
+# RVZ_MIN_BLOCK_SIZE (32 KiB), a power of two below RVZ_BIG_BLOCK_SIZE_LCM
+# (2 MiB) and a multiple of it above. The defaults are Dolphin's convert
+# dialog's (DolphinQt/ConvertDialog.cpp): GCZ_RVZ_PREFERRED_BLOCK_SIZE (128 KiB)
+# for GCZ and RVZ, and WIA's only offer, WIA_MIN_BLOCK_SIZE.
+CONTAINER_BLOCK_SIZES: dict[str, tuple[int, tuple[int, int | None]]] = {
+    "gcz": (0x20000, (1, None)),
+    "rvz": (0x20000, (0x8000, 0x200000)),
+    "wia": (0x200000, (0x200000, 0x200000)),
+}
+
+
 def _codec_levels(codecs: frozenset[str]) -> tuple[tuple[str, int, int, int], ...]:
     """``ModeSpec.codec_levels`` for *codecs*, from :data:`CODEC_LEVELS`."""
     return tuple(
@@ -73,6 +90,12 @@ def _codec_levels(codecs: frozenset[str]) -> tuple[tuple[str, int, int, int], ..
 def container_of(mode: str) -> str:
     """The container a Dolphin mode writes (``rvz``, ``wia``, ...)."""
     return DOLPHIN_OUTPUT_FORMATS[mode][0]
+
+
+def _block_size(mode: str) -> tuple[int | None, tuple[int, int | None] | None]:
+    """``(ModeSpec.block_size, block_size_rule)`` for *mode*; both None for a
+    container that takes no block size (ISO)."""
+    return CONTAINER_BLOCK_SIZES.get(container_of(mode), (None, None))
 
 
 # mode -> (label, output_ext, kind, supports_compression, supports_level).
@@ -117,6 +140,8 @@ def _build_modes() -> list[ModeSpec]:
                 _codec_levels(CONTAINER_CODECS[container_of(mode)])
                 if supports_compression else ()
             ),
+            block_size=_block_size(mode)[0],
+            block_size_rule=_block_size(mode)[1],
             supports_delete_on_verify=True,
             # Every input and output extension has a disc-SHA1 content digest.
             supports_round_trip=True,
@@ -215,9 +240,12 @@ class DolphinTool(BaseTool):
         # A codec the container refuses (a Rule saved before the routes
         # checked) fails here, with the reason, before dolphin-tool runs.
         self.refuse_unsupported_compression(mode, compression)
+        # The container's block size comes from the mode, so every job, chain
+        # step and CLI run (all through run_convert) sends the same `-b`.
         return self._service.convert(
             input_path, output_path, mode,
-            compression=compression, cancel_event=cancel_event,
+            compression=compression, block_size=self.spec(mode).block_size,
+            cancel_event=cancel_event,
         )
 
     async def verify(

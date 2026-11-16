@@ -232,7 +232,7 @@ def _e2e(tmp_path, monkeypatch, db_path, reset_db_engine):
     converts: list[str] = []
 
     async def fake_convert(input_path, output_path, mode="", *, compression=None,
-                           cancel_event=None):
+                           block_size=None, cancel_event=None):
         converts.append(output_path)
         Path(output_path).write_bytes(b"converted output")
         yield {"progress": 100, "message": "done"}
