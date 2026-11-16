@@ -1,6 +1,28 @@
 #!/bin/bash
 set -e
 
+# Give owner:group to every entry under the given paths that doesn't already
+# have it (#350), so a restart rewrites nothing that is already right.
+# Never follows a symlink: find walks with its default -P and chown -h
+# changes the link itself. An entry that vanishes during the walk is fine:
+# SQLite's -wal/-shm files come and go while another container uses the same
+# /config. Any other error is printed and returns 1, which stops the
+# container on purpose: the app can't run on files it can't own.
+fix_ownership() {
+    owner="$1"
+    group="$2"
+    shift 2
+    errors="$(LC_ALL=C /usr/bin/find "$@" \( ! -user "$owner" -o ! -group "$group" \) \
+        -exec /usr/bin/chown -h "$owner:$group" {} + 2>&1 >/dev/null)" || true
+    errors="$(/usr/bin/grep -v -e ': No such file or directory$' -e '^$' <<<"$errors")" || true
+    if [ -n "$errors" ]; then
+        echo "Could not set the owner of these files to $owner:$group:" >&2
+        echo "$errors" >&2
+        return 1
+    fi
+    return 0
+}
+
 # Remap converter UID/GID to PUID/PGID then drop privileges
 if [ "$(/usr/bin/id -u)" = "0" ]; then
     PUID=${PUID:-999}
@@ -34,24 +56,18 @@ if [ "$(/usr/bin/id -u)" = "0" ]; then
     fi
 
     if [ "$ownership_changed" = "1" ]; then
-        paths_to_chown=(/app /static /opt/venv)
-        for optional_path in /config /data/games; do
-            skip_optional_path=0
-            if /usr/bin/mountpoint -q "$optional_path" 2>/dev/null; then
-                mount_opts="$(/usr/bin/findmnt -n -o OPTIONS --target "$optional_path" 2>/dev/null || true)"
-                if [ -z "$mount_opts" ]; then
-                    echo "Warning: unable to determine mount options for $optional_path (findmnt failed); skipping ownership update to be safe." >&2
-                    skip_optional_path=1
-                elif echo "$mount_opts" | /usr/bin/grep -Eqw 'bind|rbind'; then
-                    skip_optional_path=1
-                fi
-            fi
-
-            if [ -e "$optional_path" ] && [ "$skip_optional_path" -eq 0 ]; then
-                paths_to_chown+=("$optional_path")
-            fi
-        done
-        /usr/bin/chown -R converter:"$(/usr/bin/id -g converter)" "${paths_to_chown[@]}"
+        # /config is the app's own state (its database, temp files, locks), so
+        # it is always brought to PUID:PGID, mounted or not: the app must be
+        # able to write it.
+        paths_to_fix=(/app /static /opt/venv /config)
+        # /data/games, once mounted, is the user's library: its ownership is
+        # never rewritten. Only the image's own empty folder is fixed. (The
+        # old check looked for "bind" in findmnt's OPTIONS, which never lists
+        # it, so it never matched and every mount was rewritten.)
+        if [ -e /data/games ] && ! /usr/bin/mountpoint -q /data/games 2>/dev/null; then
+            paths_to_fix+=(/data/games)
+        fi
+        fix_ownership "$PUID" "$(/usr/bin/id -g converter)" "${paths_to_fix[@]}"
     fi
     unset PUID PGID
     exec /usr/sbin/gosu converter "$0" "$@"

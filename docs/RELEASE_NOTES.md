@@ -12,6 +12,22 @@
   19): the level moves to that codec's default, and the slider and the number
   box always show the same value. A level typed past the codec's range is held
   to it, in the convert panel and in a Rule.
+
+- **Starting with `PUID`/`PGID` no longer fails when another container is
+  using `/config`** (#350). The ownership fix-up at start walked `/config`
+  with `chown -R`, and a SQLite `-wal`/`-shm` file that vanished mid-walk
+  stopped the container (seen when a second `compressatorium run-rules`
+  started while the first ran). Now:
+  - only files that don't already have the right owner are changed, so a
+    restart rewrites nothing that is already right;
+  - a file that vanishes during the walk is skipped; any other error is
+    printed, and still stops the container;
+  - symlinks are never followed;
+  - a mounted `/data/games` library is never rewritten. The old check for a
+    bind mount looked for "bind" in `findmnt`'s mount options, which never
+    list it, so it never matched. `/config`, the app's own state, is still
+    fixed whether it is mounted or not.
+
 - **eXoDOS repack: leftovers and repeat lookups** (#331).
   - A repack killed hard (SIGKILL, power loss) no longer leaves its hidden
     `.partial-*.tmp` file behind for good. It is removed at the next start,
