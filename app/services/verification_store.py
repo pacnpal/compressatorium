@@ -28,6 +28,38 @@ logger = get_logger("verification_store")
 FAILED = "failed"
 
 
+# What a ``verify`` result carries when it reached no verdict on the file: it
+# could not run or read it (``error``), was cut short (``cancelled``,
+# ``abandoned``, ``inconclusive``), outran its bound (``timed_out``, the verify
+# routes' own timeout), or would not check it here (``uncheckable``). The file
+# is not known bad, so what was stored stays.
+_NO_VERDICT = ("cancelled", "abandoned", "inconclusive", "timed_out", "uncheckable")
+
+
+def check_verdict(result: dict) -> bool | None:
+    """What a ``verify`` result says of the file: True it passed, False it is
+    bad (a real verdict), None no verdict."""
+    if result.get("valid"):
+        return True
+    if "error" in result or any(result.get(flag) for flag in _NO_VERDICT):
+        return None
+    return False
+
+
+async def record_check(store: "VerificationStore", path: str, result: dict) -> bool | None:
+    """Record a plain re-check of *path* in *store*, as every re-check does
+    (#351): a pass refreshes the record (``refresh_check``), a real verdict
+    that it is bad marks it failed (``mark_failed``), so no badge, lookup or
+    delete warning keeps presenting it as checked, and no verdict leaves the
+    record as it was. Returns the verdict (:func:`check_verdict`)."""
+    verdict = check_verdict(result)
+    if verdict is True:
+        await store.refresh_check(path)
+    elif verdict is False:
+        await store.mark_failed(path)
+    return verdict
+
+
 def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 

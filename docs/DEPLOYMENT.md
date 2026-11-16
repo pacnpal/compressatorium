@@ -14,7 +14,7 @@ This file started as a one-time readiness audit (2026-01-20). Several of its old
 
 **Command injection.** The chdman and subprocess services call `asyncio.create_subprocess_exec()` with an argument list, never `shell=True`. See `app/services/chdman.py` and `app/services/subprocess_runner.py`.
 
-**Privilege drop.** `entrypoint.sh` starts as root, optionally remaps `PUID`/`PGID`, then drops to the `converter` user with `gosu` before the app runs.
+**Privilege drop.** `entrypoint.sh` starts as root, optionally remaps `PUID`/`PGID`, then drops to the `converter` user with `gosu` before the app runs. After a remap it gives the new owner to the entries of `/app`, `/static`, `/opt/venv` and `/config` that don't already have it, never following a symlink and skipping files that vanish during the walk; a mounted `/data/games` library is never rewritten.
 
 **Input validation.** File paths, custom output directories, and archive extraction paths are all validated against the configured volumes before use.
 

@@ -44,13 +44,16 @@ def test_entrypoint_remaps_uid_gid_before_dropping_privileges():
     assert re.search(r'Cannot remap converter to PUID', entrypoint)
     assert re.search(r'/usr/sbin/usermod\s+-g\s+"\$PGID"\s+converter', entrypoint)
     assert re.search(r'/usr/sbin/usermod\s+-u\s+"\$PUID"\s+converter', entrypoint)
-    assert re.search(r'for\s+optional_path\s+in\s+/config\s+/data/games;\s+do', entrypoint)
-    assert re.search(r'skip_optional_path=0', entrypoint)
-    assert re.search(r'/usr/bin/findmnt\s+-n\s+-o\s+OPTIONS\s+--target\s+"\$optional_path"', entrypoint)
-    assert re.search(r'Warning: unable to determine mount options for', entrypoint)
-    assert re.search(r'echo\s+"\$mount_opts"\s+\|\s+/usr/bin/grep\s+-Eqw\s+\'bind\|rbind\'', entrypoint)
-    assert re.search(r'\[\s*"\$skip_optional_path"\s+-eq\s+0\s*\]', entrypoint)
-    assert re.search(r'/usr/bin/chown\s+-R\s+converter:"\$\(\s*/usr/bin/id -g converter\s*\)"\s+"\$\{paths_to_chown\[@\]\}"', entrypoint)
+    # What the ownership fix-up does is run for real in
+    # test_entrypoint_ownership.py (#350); here, only its shape.
+    assert re.search(r'paths_to_fix=\(/app /static /opt/venv /config\)', entrypoint)
+    assert re.search(r'!\s+/usr/bin/mountpoint\s+-q\s+/data/games', entrypoint)
+    assert re.search(
+        r'fix_ownership\s+"\$PUID"\s+"\$\(/usr/bin/id -g converter\)"\s+"\$\{paths_to_fix\[@\]\}"',
+        entrypoint,
+    )
+    assert re.search(r'-exec\s+/usr/bin/chown\s+-h\s', entrypoint)
+    assert "chown -R" not in entrypoint
     assert re.search(r'unset\s+PUID\s+PGID', entrypoint)
     assert re.search(r'exec\s+/usr/sbin/gosu\s+converter\s+"\$0"\s+"\$@"', entrypoint)
     assert re.search(
@@ -60,8 +63,8 @@ def test_entrypoint_remaps_uid_gid_before_dropping_privileges():
     assert re.search(r'PUID/PGID remap requires container startup as root', entrypoint)
 
     assert entrypoint.index("/usr/sbin/groupmod") < entrypoint.index("/usr/sbin/usermod -u")
-    assert entrypoint.index("/usr/sbin/usermod -u") < entrypoint.index("/usr/bin/chown -R")
-    assert entrypoint.index("/usr/bin/chown -R") < entrypoint.index("exec /usr/sbin/gosu converter")
+    assert entrypoint.index("/usr/sbin/usermod -u") < entrypoint.index('fix_ownership "$PUID"')
+    assert entrypoint.index('fix_ownership "$PUID"') < entrypoint.index("exec /usr/sbin/gosu converter")
 
 
 def test_root_mode_commands_bypass_converter_writable_path():
@@ -83,11 +86,11 @@ def test_root_mode_commands_bypass_converter_writable_path():
         '/usr/bin/getent',
         '/usr/sbin/usermod',
         '/usr/bin/mountpoint',
-        '/usr/bin/findmnt',
+        '/usr/bin/find',
         '/usr/bin/grep',
         '/usr/bin/chown',
         '/usr/sbin/gosu',
     ):
         assert command in root_block
 
-    assert re.search(r'(?<!/)(\$\(|!\s+|exec\s+|\|\s+|^\s*)(id|groupmod|getent|usermod|mountpoint|findmnt|grep|chown|gosu)\b', root_block, flags=re.MULTILINE) is None
+    assert re.search(r'(?<!/)(\$\(|!\s+|exec\s+|\|\s+|^\s*)(id|groupmod|getent|usermod|mountpoint|find|findmnt|grep|chown|gosu)\b', root_block, flags=re.MULTILINE) is None
