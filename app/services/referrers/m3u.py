@@ -58,6 +58,7 @@ from utils.path_utils import (
 )
 
 from .base import (
+    Phase,
     Referrer,
     ReferrerChange,
     ReferrerError,
@@ -575,6 +576,8 @@ def _read(path: str) -> bytes:
 class M3uReferrer(Referrer):
     id = "m3u"
     label = ".m3u playlist"
+    opt_in = False
+    phase = Phase.FILE
 
     def detect(self, image_path: str) -> bool:
         return any(_playlists(d) for d in _search_dirs(image_path))

@@ -245,6 +245,15 @@ class Library(Protocol):
     def sweep_blocked(self) -> str | None:
         """An error code when the Library must not be swept now, else None."""
 
+    def referrer_enabled(self, referrer_id: str) -> bool:
+        """Whether this Library's settings turn on the opt-in Referrer *referrer_id* (#383).
+
+        Asked by the Referrer registry for each opt-in Referrer (an always-on
+        one, like ``.m3u``, is never asked). Reads settings already in memory,
+        so it never blocks. If it raises, the hook can't tell what to update
+        and keeps the Source.
+        """
+
     def summary_fields(self) -> Mapping[str, Any]:
         """Extra keys every per-Platform summary starts with (and the result too)."""
 
@@ -269,6 +278,10 @@ class LibraryDefaults:
 
     async def before_pass(self, *, dry_run: bool) -> None:
         """No upkeep before ``run-rules`` sweeps this Library."""
+
+    def referrer_enabled(self, referrer_id: str) -> bool:
+        """No opt-in Referrer is on until a Library's settings say so (#383)."""
+        return False
 
     def walk_generation(self) -> int:
         """Moves when what :meth:`images` lists is out of date (#353).

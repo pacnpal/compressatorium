@@ -64,6 +64,49 @@ async def test_listing_hides_junk(vol: Path):
     assert names == {"game.nsp"}
 
 
+def _romm_staging(vol: Path) -> None:
+    """RomM's converter stages in `.romm_tmp_*` files and folders (#384)."""
+    (vol / ".romm_tmp_convert_abc.cue").write_bytes(b"x")
+    staging = vol / ".romm_tmp_convert_def"
+    staging.mkdir()
+    (staging / "inside.cue").write_bytes(b"x")
+    # `romm_tmp` anywhere but the prefix is an ordinary name.
+    (vol / "romm_tmp_kept.cue").write_bytes(b"x")
+    (vol / "my.romm_tmp_kept.cue").write_bytes(b"x")
+    keep = vol / "backup_romm_tmp_x"
+    keep.mkdir()
+    (keep / "deep.cue").write_bytes(b"x")
+
+
+def test_is_junk_entry_hides_only_the_romm_tmp_prefix():
+    assert is_junk_entry(".romm_tmp_convert_abc") is True
+    assert is_junk_entry(".ROMM_TMP_x.iso") is True
+    for keep in ("romm_tmp_x", "x.romm_tmp_y", "a.romm_tmp", ".romm_tmpx", "romm_tmp"):
+        assert is_junk_entry(keep) is False, keep
+
+
+@pytest.mark.asyncio
+async def test_listing_hides_romm_staging(vol: Path):
+    _romm_staging(vol)
+
+    listing = await files_routes.list_files(path=str(vol))
+
+    assert {e.name for e in listing.entries} == {
+        "romm_tmp_kept.cue", "my.romm_tmp_kept.cue", "backup_romm_tmp_x",
+    }
+
+
+@pytest.mark.asyncio
+async def test_search_skips_romm_staging(vol: Path):
+    _romm_staging(vol)
+
+    result = await files_routes.search_files(path=str(vol))
+
+    assert sorted(f["name"] for f in result["files"]) == [
+        "deep.cue", "my.romm_tmp_kept.cue", "romm_tmp_kept.cue",
+    ]
+
+
 @pytest.mark.asyncio
 async def test_rename_requires_confirmation_header(vol: Path):
     f = vol / "x.bin"

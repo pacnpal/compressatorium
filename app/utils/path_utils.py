@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import NamedTuple, Optional
 
 from config import settings
+from utils.junk import is_junk_entry
 
 
 def strip_archive_path(path: str) -> str:
@@ -987,6 +988,8 @@ def walk_tree(
             with os.scandir(current) as entries:
                 for entry in entries:
                     progress()
+                    if is_junk_entry(entry.name):
+                        continue
                     try:
                         is_dir = entry.is_dir()
                     except OSError:
