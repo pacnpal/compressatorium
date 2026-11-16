@@ -271,7 +271,10 @@ RomM swap follows for single-file Images behind an opt-in.
 **Verify.** That a `hashes` scan by `roms_ids` refreshes size and hashes after
 an out-of-band swap. The scan code was rewritten since the last check, and
 quick scans now skip unchanged size+mtime, so use the `hashes` type and confirm
-the mtime change is picked up.
+the mtime change is picked up. Answered by the #382 spike on RomM 5.4.1: yes,
+with three changes to the steps above (stage in a hidden folder, keep the
+Source until the rehash is read back, check the name RomM wrote). See "3.0
+spike findings" in `ROMM_INTEGRATION_ROADMAP.md`.
 
 ### A2. Convert what RomM skips
 
