@@ -19,6 +19,7 @@ from models import (
     Volume,
 )
 from services.archive import ARCHIVE_EXTENSIONS, archive_service
+from services.archive_members import later_volume_of
 from services.chd_metadata_store import chd_metadata_store
 from services.disc_playlist import (
     PlaylistBusy,
@@ -464,6 +465,16 @@ async def list_files(
                         is_archive = ext in ARCHIVE_EXTENSIONS
                         if is_archive and not show_archives_flag:
                             continue
+                        if is_archive and later_volume_of(item_path, progress):
+                            # A later volume of a RAR set (#369): a plain file
+                            # row. Its members list under the first volume.
+                            entries.append(
+                                FileEntry(
+                                    name=item, path=item_path, type="file",
+                                    size=size, extension=ext,
+                                ),
+                            )
+                            continue
 
                         # Registry-driven convertibility + sibling-output
                         # detection. Archives are never directly convertible
@@ -660,6 +671,11 @@ def scan_tree(
                             _scan(item_path)
                     elif os.path.isfile(item_path):
                         is_archive = ext in ARCHIVE_EXTENSIONS
+                        if is_archive and later_volume_of(item_path, tick):
+                            # A later volume of a RAR set (#369) is not an
+                            # archive of its own: the first volume lists the
+                            # set's members, so the search skips it.
+                            continue
                         if is_archive:
                             convertible_by, outputs = [], []
                         else:
