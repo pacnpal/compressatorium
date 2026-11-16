@@ -29,10 +29,12 @@ from services.subprocess_runner import (
 from utils.path_utils import file_identity
 
 from .base import (
+    Applied,
     Phase,
     Referrer,
     ReferrerChange,
     ReferrerError,
+    StagedPlacement,
     WriteGuard,
     atomic_write_bytes,
     guarded_context,
@@ -104,6 +106,19 @@ def _applies(referrer: Referrer, image_path: str, renames: Mapping[str, str]) ->
     return any(referrer.detect(p) for p in dict.fromkeys([image_path, *renames]))
 
 
+def places_output(image_path: str, renames: Mapping[str, str], library=None) -> bool:
+    """Whether a Referrer on for *library* moves the staged output into place
+    itself (``Referrer.places_output``), so the job must keep its output hidden
+    until the hook runs and hand the hook a :class:`StagedPlacement` (#391).
+    Cheap: reads settings in memory, no I/O. False when the Library's
+    settings can't be read (the hook then keeps the Source anyway)."""
+    try:
+        active = registry.active(library)
+    except ReferrerError:
+        return False
+    return any(referrer.places_output(image_path, renames) for referrer in active)
+
+
 def plan_changes(
     image_path: str, renames: Mapping[str, str], library=None,
 ) -> list[ReferrerChange]:
@@ -134,11 +149,18 @@ class ReferrerOutcome:
     ``lingering`` holds the async applies that were cancelled and were still
     cleaning up when the hook gave up on them ("abandoned"). The caller hands
     them its holds with :meth:`outlive` instead of letting go itself.
+
+    ``removed`` lists the Source files a Referrer already removed itself
+    (``Applied``, the RomM swap, #391): the caller records them as deleted
+    and does not delete them again. ``kept`` is the failing Referrer's own
+    wording for :attr:`kept_message` (``ReferrerError.kept``).
     """
 
     records: list[dict] = field(default_factory=list)
     failed: str | None = None
     reason: str | None = None
+    kept: str | None = None
+    removed: list[str] = field(default_factory=list)
     # The async applies a phase's thread left for the event loop, in order.
     pending: list[tuple[Referrer, ReferrerChange]] = field(
         default_factory=list, repr=False, compare=False,
@@ -175,6 +197,8 @@ class ReferrerOutcome:
 
     @property
     def kept_message(self) -> str:
+        if self.kept:
+            return f"converted, source kept: {self.kept} ({self.reason})"
         name = os.path.basename(self.failed or "")
         return f"converted, source kept: couldn't update {name} ({self.reason})"
 
@@ -189,16 +213,24 @@ class ReferrerOutcome:
             record["entries"] = entries
         self.records.append(record)
 
-    def _updated(self, referrer: str, change: ReferrerChange) -> None:
+    def _updated(
+        self, referrer: str, change: ReferrerChange, applied: object = None,
+    ) -> None:
         self._record(referrer, change.target, "updated", entries=len(change.edits))
+        # The change's own Ledger fields (the RomM swap's ROM id), never
+        # overriding the ones every record has.
+        for key, value in (change.record or {}).items():
+            self.records[-1].setdefault(key, value)
+        if isinstance(applied, Applied):
+            self.removed.extend(applied.removed)
 
     def _fail(self, referrer: str, exc: Exception, fallback_target: str) -> None:
         if isinstance(exc, ReferrerError):
-            target, reason = exc.target, exc.reason
+            target, reason, kept = exc.target, exc.reason, exc.kept
         else:
-            target, reason = fallback_target, str(exc) or type(exc).__name__
+            target, reason, kept = fallback_target, str(exc) or type(exc).__name__, None
         self._record(referrer, target, "failed", reason)
-        self.failed, self.reason = target, reason
+        self.failed, self.reason, self.kept = target, reason, kept
 
 
 _SKIPPED = "not attempted after an earlier Referrer failed"
@@ -208,18 +240,23 @@ def _update_sync(
     image_path: str, renames: Mapping[str, str],
     abandoned: threading.Event | None = None,
     referrers: list[Referrer] | None = None,
+    placement: StagedPlacement | None = None,
 ) -> ReferrerOutcome:
     """Plan *referrers* (one phase; by default every always-on Referrer), then
     apply each change. The first failure stops it.
 
     Every write is guarded (``base.check_write``, under the target's lock):
     once *abandoned* is set, or an output no longer has the identity it had
-    when this started, nothing more is written. An ``async def`` apply is not
-    called here: it is left in ``outcome.pending`` for the event loop.
+    when this started, nothing more is written. An output still staged
+    (*placement*, #391) is watched where it is staged. An ``async def`` apply
+    is not called here: it is left in ``outcome.pending`` for the event loop.
     """
+    staged = placement.staged if placement is not None else {}
+    watched = [staged.get(new, new) for new in dict.fromkeys(renames.values())]
     guard = WriteGuard(
         abandoned=abandoned or threading.Event(),
-        outputs={new: file_identity(new) for new in dict.fromkeys(renames.values())},
+        outputs={path: file_identity(path) for path in watched},
+        placement=placement,
     )
     if referrers is None:
         referrers = registry.active(None)
@@ -330,8 +367,9 @@ def _log_its_end(referrer_id: str, target: str) -> Callable[[asyncio.Task], None
 async def _await_bounded(
     referrer: Referrer, change: ReferrerChange, *, guard: WriteGuard | None,
     cancel_event: asyncio.Event | None, bound: float | None,
-) -> None:
-    """Await an async apply on the loop, bounded and raced against Cancel.
+) -> object:
+    """Await an async apply on the loop, bounded and raced against Cancel,
+    and return what it returned.
 
     The apply's task runs in a context holding *guard*, so its ``check_write``
     refuses as the thread's does. Past the bound or on a Cancel the apply is
@@ -354,8 +392,7 @@ async def _await_bounded(
             timeout=limit, return_when=asyncio.FIRST_COMPLETED,
         )
         if task in done:
-            task.result()
-            return
+            return task.result()
         reason = (
             "cancelled" if cancel_event is not None and cancel_event.is_set()
             else f"did not answer within {limit:g}s"
@@ -388,7 +425,7 @@ async def _apply_pending(
             outcome._record(referrer.id, change.target, "skipped", _SKIPPED)
             continue
         try:
-            await _await_bounded(
+            applied = await _await_bounded(
                 referrer, change, guard=guard, cancel_event=cancel_event, bound=bound,
             )
         except _Abandoned as exc:
@@ -404,25 +441,26 @@ async def _apply_pending(
             )
             outcome._fail(referrer.id, exc, change.target)
             continue
-        outcome._updated(referrer.id, change)
+        outcome._updated(referrer.id, change, applied)
 
 
 async def _run_phase(
     image_path: str, renames: dict[str, str], abandoned: threading.Event,
     referrers: list[Referrer], *, cancel_event, bound: float | None,
+    placement: StagedPlacement | None = None,
 ) -> ReferrerOutcome:
     """One phase's plans and blocking applies, on a detached thread, bounded."""
     if bound is not None:
         # A caller with its own, tighter bound (a retried delete, #329).
         return await asyncio.wait_for(
             run_detached(
-                _update_sync, image_path, renames, abandoned, referrers,
+                _update_sync, image_path, renames, abandoned, referrers, placement,
                 cancel_event=cancel_event,
             ),
             bound,
         )
     return await run_detached_within_stall_bound(
-        _update_sync, image_path, renames, abandoned, referrers,
+        _update_sync, image_path, renames, abandoned, referrers, placement,
         what=f"Updating {referrers[0].phase.target}", cancel_event=cancel_event,
     )
 
@@ -430,6 +468,7 @@ async def _run_phase(
 async def update_before_source_removal(
     image_path: str, renames: Mapping[str, str], *, library=None,
     cancel_event=None, bound: float | None = None,
+    placement: StagedPlacement | None = None,
 ) -> ReferrerOutcome:
     """Run every Referrer that is on for an Image whose Source is about to be removed.
 
@@ -449,6 +488,11 @@ async def update_before_source_removal(
     Source. The abandoned thread is told so: it checks under each playlist's
     lock before every write and writes nothing more, so it can't point a
     playlist at an output another job has since replaced.
+
+    *placement* is given when the job kept its output staged for a Referrer
+    that places it (``places_output``, #391); every phase and apply sees it
+    (``base.staged_placement``). Placing what is still staged afterwards is
+    the caller's job.
     """
     outcome = ReferrerOutcome()
     try:
@@ -461,7 +505,7 @@ async def update_before_source_removal(
     try:
         await _run_phases(
             outcome, phases, image_path, dict(renames), abandoned,
-            cancel_event=cancel_event, bound=bound,
+            cancel_event=cancel_event, bound=bound, placement=placement,
         )
     except BaseException:
         # This awaiter was cancelled (or worse) mid-phase: the detached worker,
@@ -479,7 +523,7 @@ async def update_before_source_removal(
 async def _run_phases(
     outcome: ReferrerOutcome, phases: list[list[Referrer]], image_path: str,
     renames: dict[str, str], abandoned: threading.Event, *,
-    cancel_event, bound: float | None,
+    cancel_event, bound: float | None, placement: StagedPlacement | None = None,
 ) -> None:
     """The hook's phase loop, filling *outcome*. Raises only on a cancel of
     the awaiter, after setting *abandoned*."""
@@ -492,7 +536,7 @@ async def _run_phases(
         try:
             stage = await _run_phase(
                 image_path, renames, abandoned, referrers,
-                cancel_event=cancel_event, bound=bound,
+                cancel_event=cancel_event, bound=bound, placement=placement,
             )
         except ReadCancelled:
             reason = "cancelled"
@@ -510,6 +554,7 @@ async def _run_phases(
         else:
             outcome.records.extend(stage.records)
             outcome.failed, outcome.reason = stage.failed, stage.reason
+            outcome.kept = stage.kept
             await _apply_pending(
                 outcome, stage.pending, guard=stage.guard,
                 cancel_event=cancel_event, bound=bound,
@@ -543,13 +588,16 @@ async def plan_changes_bounded(
 
 
 __all__ = [
+    "Applied",
     "Phase",
     "Referrer",
     "ReferrerChange",
     "ReferrerError",
     "ReferrerOutcome",
     "ReferrerRegistry",
+    "StagedPlacement",
     "atomic_write_bytes",
+    "places_output",
     "plan_changes",
     "plan_changes_bounded",
     "registry",

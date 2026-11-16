@@ -753,6 +753,40 @@ has converted, and that memory is kept honest for you:
 The schedule clock and the conversion history are separate, so forgetting one
 never disturbs the other.
 
+#### Keeping the ROM id
+
+Converting a game and deleting its source normally leaves RomM a new file and a
+missing one: RomM adds a new game, and the old one keeps your saves, states,
+notes, collections and play history. Turn on **Keep the ROM id when converting**
+on the RomM **Settings** tab and a conversion renames RomM's record to the new
+file instead, so the game keeps its id and everything on it. It works for a
+single-file game (an `.iso`, say) converted to one file beside it, when the
+source is deleted after its check, from the Workspace or a Rule:
+
+1. The output is checked while it is still hidden in the staging folder, and
+   `.m3u` playlists and gamelists are updated. If one can't be, RomM is not
+   touched.
+2. RomM renames the ROM's file to the output's name (it moves the source
+   there itself). The app reads the name back: if RomM refused, or wrote
+   another name, the old name is put back, both files are kept, and the job
+   says "converted, source kept: RomM refused the rename" with RomM's reason.
+3. The source RomM moved is set aside in the hidden staging folder, the output
+   takes its name, and RomM rehashes that one ROM.
+4. Only when RomM reads back the output's size and SHA-1 is the source deleted.
+   If it doesn't, the source goes back under its own name beside the output,
+   and the job says why.
+
+Every step is recorded before it runs. If one fails and can't be undone, the
+source stays set aside in the hidden staging folder, never deleted or swept
+away, and the record keeps the step it stopped at. The delete
+confirmation lists the rename ("RomM: rename ROM 1234 to Game.chd"), and the
+Ledger records that the ROM kept its id. Archives (`.zip`, `.7z`), multi-file
+games (`.cue`/`.bin`) and anything else keep the usual behaviour.
+
+| Light | Dark |
+|-------|------|
+| ![Delete confirmation listing the RomM rename, light](docs/screenshots/delete-plan-romm-light.png) | ![Delete confirmation listing the RomM rename, dark](docs/screenshots/delete-plan-romm-dark.png) |
+
 #### RomM's own converter
 
 Newer RomM releases can convert their own library: with

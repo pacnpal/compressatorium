@@ -22,16 +22,44 @@ source at ``eb10d95``:
   the set the fake's token holds; ``probe_status`` makes every probe fail with
   that status instead (a RomM that is down, or rejects the token).
 
+* The swap's calls (#391), on the ROMs the fake holds (:meth:`add_rom`),
+  whose files live under ``library`` (RomM's library root as mounted here):
+
+  - ``GET /api/roms?platform_ids=N`` lists a Platform's ROMs, and
+    ``GET /api/roms/{id}`` reads one back.
+  - ``PUT /api/roms/{id}`` with a multipart ``fs_name`` renames the record and
+    moves its file on disk, as RomM 5.4.1 does (spike #382): a name with a
+    path in it is sanitized to its last part, the name the record already has
+    is a 200 no-op, a name a file already has is a 409 (``Can't rename: X
+    already exists``), and a record whose file is gone is a 500 (``Failed to
+    rename ROM N on disk``). ``rename_reply`` makes it answer with that status
+    and detail instead, changing nothing; ``rename_as`` makes the next rename
+    write that name instead of the one asked for (RomM sanitizing a name).
+  - ``POST /api/tasks/scan`` with ``{"type": "hashes", "roms_ids": [...]}``
+    answers 202 with a ``task_id`` and rehashes those ROMs' files (size and
+    SHA-1); ``GET /api/tasks/{task_id}`` reads the task back, ``finished``.
+    ``scan_updates=False`` makes the scan finish without rehashing (its stats
+    say ``updated_roms: 0`` either way, as RomM's do); ``task_status`` ends it
+    with another status.
+
+  ``on_request`` is called with the method and path before each answer, so a
+  test can look at the app's state at the moment RomM is asked.
+
 ``converter=False`` is a RomM from before the converter: neither ``CONVERTO``
 key is served.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import re
 import threading
+import urllib.parse
+from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any
 
 # RomM's LIBRARY_TARGETS_BY_PLATFORM at eb10d95, as /api/config serves it
@@ -70,6 +98,7 @@ class FakeRomm:
         config_status: int = 200,
         scopes: set[str] | None = None,
         probe_status: int | None = None,
+        library: str | os.PathLike | None = None,
     ) -> None:
         self.version = version
         self.converter = converter
@@ -83,6 +112,19 @@ class FakeRomm:
         self.probe_status = probe_status
         self.requests: list[tuple[str, str]] = []
         self._server: ThreadingHTTPServer | None = None
+        # The swap's side (#391): RomM's library root and the ROMs it holds.
+        self.library = Path(library) if library is not None else None
+        self.roms: dict[int, dict[str, Any]] = {}
+        self.rename_reply: tuple[int, str] | None = None
+        self.rename_as: str | None = None
+        self.scan_updates = True
+        self.task_status = "finished"
+        self.on_request: Callable[[str, str], None] | None = None
+        # What the app asked: each rename's (ROM id, name) and each scan's body.
+        self.renames: list[tuple[int, str]] = []
+        self.scans: list[dict[str, Any]] = []
+        self._tasks: dict[str, dict[str, Any]] = {}
+        self._lock = threading.Lock()
 
     @property
     def url(self) -> str:
@@ -111,6 +153,90 @@ class FakeRomm:
                 continue
             indexed.append(entry.name)
         return sorted(indexed)
+
+    # ---- ROMs (#391) ----------------------------------------------------------
+
+    def add_rom(
+        self, rom_id: int, platform: dict, fs_name: str, **fields: Any,
+    ) -> dict[str, Any]:
+        """Hold a ROM for the file ``<library>/<platform fs_slug>/<fs_name>``,
+        sized and hashed from disk, in RomM 5.4.1's shape."""
+        slug = platform.get("fs_slug") or platform["slug"]
+        rom: dict[str, Any] = {
+            "id": rom_id,
+            "name": os.path.splitext(fs_name)[0],
+            "platform_id": platform["id"],
+            "platform_slug": platform["slug"],
+            "platform_fs_slug": slug,
+            "fs_path": f"roms/{slug}",
+            "has_multiple_files": False,
+            "missing_from_fs": False,
+            **fields,
+        }
+        self.roms[rom_id] = rom
+        self._set_name(rom, fs_name)
+        self._rehash(rom)
+        return rom
+
+    def file_of(self, rom_id: int) -> Path:
+        """The file a ROM's record names, on disk."""
+        assert self.library is not None, "FakeRomm(library=...) holds no files"
+        rom = self.roms[rom_id]
+        folder = rom["fs_path"]
+        if folder.startswith("roms/") and not (self.library / "roms").is_dir():
+            folder = folder[len("roms/"):]
+        return self.library / folder / rom["fs_name"]
+
+    @staticmethod
+    def _set_name(rom: dict, fs_name: str) -> None:
+        rom["fs_name"] = fs_name
+        rom["fs_name_no_ext"], rom["fs_extension"] = os.path.splitext(fs_name)
+        rom["full_path"] = f"{rom['fs_path']}/{fs_name}"
+
+    def _rehash(self, rom: dict) -> None:
+        data = self.file_of(rom["id"]).read_bytes()
+        rom["fs_size_bytes"] = len(data)
+        rom["sha1_hash"] = hashlib.sha1(data).hexdigest()
+
+    def _rename(self, rom_id: int, asked: str) -> tuple[int, Any]:
+        """``PUT /api/roms/{id}`` with ``fs_name``, as RomM 5.4.1 answers it."""
+        self.renames.append((rom_id, asked))
+        rom = self.roms.get(rom_id)
+        if rom is None:
+            return 404, {"detail": f"Rom with id {rom_id} not found"}
+        if self.rename_reply is not None:
+            status, detail = self.rename_reply
+            return status, {"detail": detail}
+        # ``rename_as`` is one-shot: the rename that puts the old name back
+        # gets the name it asks for.
+        name = self.rename_as or asked.replace("\\", "/").rsplit("/", 1)[-1]
+        self.rename_as = None
+        if name == rom["fs_name"]:
+            return 200, dict(rom)
+        old = self.file_of(rom_id)
+        new = old.with_name(name)
+        if new.exists():
+            return 409, {"detail": f"Can't rename: {name} already exists"}
+        if not old.is_file():
+            return 500, {"detail": f"Failed to rename ROM {rom_id} on disk"}
+        os.rename(old, new)
+        self._set_name(rom, name)
+        return 200, dict(rom)
+
+    def _scan(self, body: dict) -> tuple[int, Any]:
+        self.scans.append(body)
+        task_id = f"task-{len(self.scans)}"
+        if body.get("type") == "hashes" and self.scan_updates:
+            for rom_id in body.get("roms_ids") or []:
+                if rom_id in self.roms:
+                    self._rehash(self.roms[rom_id])
+        self._tasks[task_id] = {
+            "id": task_id,
+            "status": self.task_status,
+            # RomM's own stats say nothing changed even when the scan rehashed.
+            "result": {"scan_stats": {"updated_roms": 0}},
+        }
+        return 202, {"task_id": task_id, "status": "queued"}
 
     def heartbeat(self) -> dict[str, Any]:
         body: dict[str, Any] = {"SYSTEM": {"VERSION": self.version, "SHOW_SETUP_WIZARD": False}}
@@ -145,15 +271,42 @@ class FakeRomm:
             return ok, {}
         return 403, {"detail": f"Insufficient scope: {scope}"}
 
-    def _answer(self, method: str, path: str) -> tuple[int, Any]:
-        route = path.split("?", 1)[0]
+    def _answer(self, method: str, path: str, body: bytes = b"") -> tuple[int, Any]:
+        with self._lock:
+            return self._answer_locked(method, path, body)
+
+    def _answer_locked(self, method: str, path: str, body: bytes) -> tuple[int, Any]:
+        route, _, query = path.partition("?")
         if method == "PUT" and route == "/api/roms/2147483647":
             # The ROM does not exist, so a token allowed to write gets a 404.
             return self._gated("roms.write", 404)
         if method == "GET" and route == "/api/tasks/status":
             return self._gated("tasks.run", 200)
         if method == "GET" and route == "/api/roms":
-            return self._gated("roms.read", 200)
+            status, reply = self._gated("roms.read", 200)
+            if status != 200:
+                return status, reply
+            wanted = urllib.parse.parse_qs(query).get("platform_ids")
+            items = [
+                dict(rom) for rom in self.roms.values()
+                if not wanted or str(rom["platform_id"]) in wanted
+            ]
+            return 200, {"items": items, "total": len(items)}
+        rom_route = re.fullmatch(r"/api/roms/(\d+)", route)
+        if rom_route and method == "GET":
+            rom = self.roms.get(int(rom_route.group(1)))
+            return (200, dict(rom)) if rom else (404, {"detail": "Rom not found"})
+        if rom_route and method == "PUT":
+            field = re.search(rb'name="fs_name"\r\n\r\n(.*?)\r\n', body, re.DOTALL)
+            if field is None:
+                rom = self.roms.get(int(rom_route.group(1)))
+                return (200, dict(rom)) if rom else (404, {"detail": "Rom not found"})
+            return self._rename(int(rom_route.group(1)), field.group(1).decode())
+        if method == "POST" and route == "/api/tasks/scan":
+            return self._scan(json.loads(body or b"{}"))
+        task_route = re.fullmatch(r"/api/tasks/([\w-]+)", route)
+        if task_route and method == "GET" and task_route.group(1) in self._tasks:
+            return 200, dict(self._tasks[task_route.group(1)])
         if route == "/api/heartbeat":
             return 200, self.heartbeat()
         if route == "/api/config":
@@ -172,13 +325,18 @@ class FakeRomm:
                 self._serve("GET")
 
             def do_PUT(self) -> None:
-                # Drain the body so the connection stays well formed.
-                self.rfile.read(int(self.headers.get("Content-Length") or 0))
                 self._serve("PUT")
 
+            def do_POST(self) -> None:
+                self._serve("POST")
+
             def _serve(self, method: str) -> None:
+                # Read the body; draining it also keeps the connection well formed.
+                sent = self.rfile.read(int(self.headers.get("Content-Length") or 0))
                 fake.requests.append((method, self.path))
-                status, body = fake._answer(method, self.path)
+                if fake.on_request is not None:
+                    fake.on_request(method, self.path)
+                status, body = fake._answer(method, self.path, sent)
                 raw = json.dumps(body).encode()
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json")

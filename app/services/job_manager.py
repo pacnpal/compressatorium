@@ -3092,6 +3092,43 @@ class JobManager:
                         exc_info=True,
                     )
 
+    async def _staged_placement(
+        self, job: ConversionJob, slot: staging.StagedOutput | None, write_path: str,
+    ) -> referrers.StagedPlacement | None:
+        """The staged output, for a Referrer that places it itself (#391), or
+        None when the job places it now, as before.
+
+        Only for a job that will delete its Source, whose one output file is
+        staged (no companions) and whose Image's Library turns on a Referrer
+        that places the output (``referrers.places_output``: the RomM swap,
+        which must rename the ROM's file onto the output's name before the
+        output is there). When any of that can't be told, the job places the
+        output now, and a Referrer that needed it staged doesn't run."""
+        if slot is None or not job.delete_on_verify or "::" in job.file_path:
+            return None
+        paths = list((self._delete_plans.get(job.id) or {}).get("paths") or [])
+        if not paths:
+            return None
+        try:
+            names = await run_detached_bounded(
+                self._place_names, job, write_path, timeout=_CANONICAL_PROBE_SECONDS,
+            )
+            library = await self._image_library(job.file_path, None)
+        except Exception:
+            logger.warning(
+                "Couldn't tell whether a Referrer places %s; placing it now",
+                job.output_path, exc_info=True,
+            )
+            return None
+        if len(names) != 1 or not referrers.places_output(
+            job.file_path, {path: job.output_path for path in paths}, library,
+        ):
+            return None
+        return referrers.StagedPlacement(
+            staged={job.output_path: write_path},
+            place=lambda: self._place_staged(job, slot, write_path),
+        )
+
     async def _close_stage(
         self, job: ConversionJob, slot: staging.StagedOutput | None,
     ) -> None:
@@ -3199,10 +3236,15 @@ class JobManager:
             "device": int(getattr(st, "st_dev", 0) or 0),
         }
 
-    def _build_produced_meta(self, job: ConversionJob) -> Optional[Dict[str, object]]:
+    def _build_produced_meta(
+        self, job: ConversionJob, output_path: str | None = None,
+    ) -> Optional[Dict[str, object]]:
         """Snapshot of what produced this verified artifact, for the re-run fast
         path: the mode + output-shaping settings and stat fingerprints of the
         complete source set and the output.
+
+        *output_path* is where the output is now: its staged path while a
+        Referrer is still to place it (#391). A rename keeps the fingerprint.
 
         The source fingerprint is the **pre-conversion** delete snapshot
         (captured when the job was planned, before the converter read the
@@ -3226,10 +3268,12 @@ class JobManager:
         source_fp = self._norm_fps(pre.get("fingerprints"))
         if not source_fp or self._source_fingerprint(job.file_path) != source_fp:
             return None
-        output_fp = self._output_fingerprint(job.output_path)
+        output_fp = self._output_fingerprint(output_path or job.output_path)
         if not output_fp:
             return None
-        companions = self._companion_fingerprints(job.output_path, job.mode.value)
+        companions = self._companion_fingerprints(
+            output_path or job.output_path, job.mode.value,
+        )
         if companions is None:
             return None
         return {
@@ -3496,8 +3540,16 @@ class JobManager:
         travelling_locks: Optional["HeldLocks"] = None,
         planned: Optional[List[str]] = None,
         handed_off: Optional[List[bool]] = None,
+        placement: referrers.StagedPlacement | None = None,
     ) -> _SourceDelete:
         """The delete step, shared by a job and a retried delete (#329).
+
+        *placement* is the job's output, still staged for a Referrer that
+        places it itself (the RomM swap, #391). Whatever the hook did not
+        place is placed right after it, before anything is removed (a raise
+        there removes nothing). Source files a Referrer removed itself
+        (``ReferrerOutcome.removed``) are recorded as deleted and not removed
+        again.
 
         *handed_off* gets ``True`` appended when the unlinks were handed to
         their worker while still running: the outcome is then unknown, and
@@ -3559,7 +3611,18 @@ class JobManager:
             library=library,
             cancel_event=cancel_event,
             bound=probe_seconds,
+            placement=placement,
         )
+        if placement is not None and not referrer_outcome.lingering:
+            # The output is placed whatever the hook did (a kept Source keeps
+            # its output beside it), and before any unlink below.
+            await placement.place()
+        if referrer_outcome.removed:
+            # A Referrer replaced the Source and removed it itself (#391).
+            removed = set(referrer_outcome.removed)
+            deleted.extend(p for p in delete_order if p in removed)
+            expected_paths = [p for p in expected_paths if p not in removed]
+            delete_order = [p for p in delete_order if p not in removed]
         if referrer_outcome.lingering:
             # An async apply was cancelled and is still cleaning up (codex
             # 4588646155): like a mutation's worker, it owns the delete holds
@@ -3573,6 +3636,14 @@ class JobManager:
                 lambda: self._spawn_background(self._let_go_in_background(held)),
             )
         outcome = _SourceDelete(referrer_records=referrer_outcome.records)
+        if referrer_outcome.removed and not delete_order:
+            # Nothing is left to remove: the Source is gone, so a late cancel
+            # changes nothing.
+            if planned is not None:
+                planned[:] = list(deleted)
+            await self._release_delete_holds_in_background(owner_id, probe_seconds)
+            await self._clear_source_records(file_path, probe_seconds)
+            return outcome
         # The hook awaited a worker thread: re-ask cancel and every per-path
         # identity check before removing.
         skipped = f"Output is {check_label}. Delete skipped (cancelled)."
@@ -5044,8 +5115,14 @@ class JobManager:
                         raise RuntimeError(keep_source_reason)
                     # Both checks passed: only now does a staged output
                     # appear beside the Source (#398). Everything below
-                    # works on the placed output.
-                    await self._place_staged(job, slot, write_path)
+                    # works on the placed output, unless a Referrer places
+                    # it itself (the RomM swap, #391): it then stays staged
+                    # until the Referrer hook, and its records are written
+                    # where it is staged and carried along when it moves.
+                    placement = await self._staged_placement(job, slot, write_path)
+                    if placement is None:
+                        await self._place_staged(job, slot, write_path)
+                    checked_path = write_path if placement is not None else job.output_path
                     # Snapshot what produced this verified artifact (mode +
                     # output shaping + source/output fingerprints) so a later
                     # re-queue can recognize prior success and complete as a
@@ -5055,7 +5132,7 @@ class JobManager:
                     # Bounded like the output size (#352): it stats the
                     # output and the Source on the same storage.
                     snapshot_meta = await run_detached_within_stall_bound(
-                        self._build_produced_meta, job,
+                        self._build_produced_meta, job, checked_path,
                         what=f"Fingerprinting {os.path.basename(job.output_path)}",
                     )
                     # The verifier identity (the mode and tool that made the
@@ -5067,7 +5144,7 @@ class JobManager:
                         **self._verifier_identity(job), **(snapshot_meta or {}),
                     }
                     await verification_store.mark_verified(
-                        job.output_path,
+                        checked_path,
                         source_path=job.file_path,
                         produced_meta=produced_meta,
                         check=check_passed,
@@ -5168,6 +5245,7 @@ class JobManager:
                                 travelling_locks=self._output_locks.get(job_id),
                                 planned=job_planned,
                                 handed_off=job_handed_off,
+                                placement=placement,
                             )
                         except asyncio.CancelledError:
                             # The task itself was cancelled once the unlinks

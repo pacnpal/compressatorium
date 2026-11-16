@@ -3545,8 +3545,8 @@ its values were tool ids, so a value left from it still loads as a tab.
 ### 3.3.15 Referrers (`services/referrers/`)
 
 A Referrer is anything that points at an Image by its path: an `.m3u`
-playlist, an EmulationStation frontend's `gamelist.xml` (#386), and the RomM
-in-place swap later. When
+playlist, an EmulationStation frontend's `gamelist.xml` (#386), and RomM's
+ROM (the swap, #391). When
 delete-on-verify replaces a Source, every Referrer is moved to the output
 **before** the Source is removed. What is guaranteed: every reference a
 registered Referrer finds is either rewritten to the output before the Source
@@ -3564,8 +3564,9 @@ class Referrer(ABC):                          # services/referrers/base.py
     phase: Phase                              # Phase.FILE or Phase.NETWORK (#383)
     def detect(self, image_path) -> bool      # could it point at this Image?
     def plan(self, renames) -> list[ReferrerChange]   # writes nothing
-    def apply(self, change) -> None           # atomic, one-time backup; raises ReferrerError
+    def apply(self, change) -> Applied | None # atomic, one-time backup; raises ReferrerError
                                               # (may be `async def`, see below)
+    def places_output(self, image_path, renames) -> bool  # default False (#391)
 
 @dataclass(frozen=True)
 class ReferrerChange:
@@ -3573,7 +3574,19 @@ class ReferrerChange:
     target: str                               # the file/record rewritten
     edits: tuple[tuple[str, str], ...]        # (old, new) as shown to the user
     payload: Any                              # Referrer-private, never serialized
-    # to_dict() adds "entries": len(edits), for "gamelist.xml, 3 entries" (#386)
+    summary: str | None                       # one line for the confirmation (#391)
+    record: Mapping | None                    # extra fields for its Ledger record (#391)
+    # to_dict() adds "entries": len(edits), for "gamelist.xml, 3 entries" (#386),
+    # and "summary" when set
+
+class ReferrerError(Exception):               # target, reason, kept=None (#391)
+@dataclass(frozen=True)
+class Applied:                                # an apply's return (#391)
+    removed: tuple[str, ...]                  # Source files it removed itself
+@dataclass(frozen=True)
+class StagedPlacement:                        # the job's still-staged output (#391)
+    staged: Mapping[str, str]                 # {final output path: staged path}
+    place: Callable[[], Awaitable[None]]      # the job's _place_staged
 ```
 
 `renames` is `{old_path: new_path}`: every file the delete will remove, mapped
@@ -3925,6 +3938,95 @@ Knulli, muOS) key each game's artwork, favourite flag and play count on its
   be edited in place (CDATA, a comment or child element inside `<path>`, a
   file whose encoding isn't ASCII-compatible such as UTF-16) raises
   `ReferrerError` naming the gamelist: the Source and the output are kept.
+
+**The RomM swap (#391, `services/romm/swap_referrer.py`).** RomM's ROM as a
+Referrer: `id = "romm_swap"`, `opt_in = True`, `Phase.NETWORK`, with an async
+`apply`. `RommLibrary.referrer_enabled` turns it on with the
+`swap_keep_rom_id` setting (#390). It is registered when
+`services.romm.library` is imported (it imports the job manager's hook, so it
+can't be registered from `services/referrers/__init__.py`). It takes a
+`renames` of one file replaced by one output file beside it under another
+name, not an archive (`.zip`/`.7z`: RomM hashes an archive's largest member,
+so the read-back can't confirm one), and `plan` finds RomM's single-file ROM
+for that file (only the Platform whose `fs_slug` is the file's folder is
+listed). Anything else plans nothing and keeps today's behaviour, as does a
+RomM that doesn't know the file. A RomM that can't be read fails the plan, so
+the Source is kept. The change's `target` is `RomM ROM <id>`, its `summary`
+"RomM: rename ROM <id> to Game.chd", and its `record` `{rom_id, kept_rom_id:
+true}`, which lands in the Ledger's `referrers_updated` once it applied.
+
+*Why the output stays staged.* RomM refuses a rename onto a name a file
+already has (409), and a RomM scan that sees the output beside the Source
+makes a duplicate ROM. So the job keeps the checked output in its hidden
+staging slot (3.3.21) until the hook: `JobManager._staged_placement` asks
+`referrers.places_output(source, renames, library)`, which is True when a
+Referrer on for the Library says `places_output` (no I/O; the swap answers
+for one file beside the Source). Only for a delete-on-verify job whose output
+is one file in a slot, not an archive member. The job then writes the
+verified record and the reuse snapshot at the staged path (a rename keeps the
+fingerprint; `_place_staged` carries the records along) and hands
+`_delete_source_set` a `StagedPlacement`. The hook carries it in the
+`WriteGuard` (`base.staged_placement()`, `base.hook_running()`), which also
+watches the staged path instead of the final one, so the file Referrers'
+writes still check the output's identity. Right after the hook,
+`_delete_source_set` calls `placement.place()` (a no-op once placed), so a
+kept Source keeps its output beside it and nothing is unlinked before the
+output is in place; a lingering apply is left to place it itself. In the hook
+the swap plans nothing when the output is not staged (the job placed it).
+
+*The steps*, each written to the swap journal before it runs
+(`services/romm/swap_journal.py`, table `romm_swaps`, migration 0019):
+
+| State | Step |
+| --- | --- |
+| `renaming` | `RommClient.rename_rom` (`PUT /api/roms/{id}`, multipart `fs_name`). RomM moves the Source to the new name itself. The name is read back with `GET /api/roms/{id}`. |
+| `parking` | The file now at the new name must have the Source's size and mtime (a rename keeps them). It moves into a parking slot (`staging.open_slot(folder, parking=True)`). |
+| `placing` | `placement.place()`: the staged output takes the name. |
+| `rehashing` | `RommClient.scan_rom_hashes([id])` (`POST /api/tasks/scan`, `{"type": "hashes", "roms_ids": [id], "apis": []}`), `RommClient.task` polled to an end (`REHASH_SECONDS`), then the ROM read back: its name, `fs_size_bytes` and `sha1_hash` must be the output's (the size only on a Platform RomM never hashes). The task's stats are never read: RomM's say `updated_roms: 0` even when it worked. |
+| `deleting` | The parked file must still be the Source; it is removed and the parking slot closed. |
+
+A success ends `done`, returns `Applied(removed=(source,))` (the job records
+the Source as deleted and unlinks nothing), and closes the output's pending
+re-pin row as done (`repin.settle_swapped`): the provider ids never left the
+ROM. With the switch off, or when the swap doesn't apply, the re-pin queue
+works exactly as before.
+
+*Failures, and what each journal state leaves.* `ReferrerError.kept` sets the
+job's wording (`ReferrerOutcome.kept_message`): "converted, source kept:
+RomM refused the rename (<RomM's detail>)" for a refusal, "RomM didn't
+confirm the new file (...)" for a rehash that failed or didn't match, and the
+default "couldn't update RomM ROM <id> (...)" otherwise. `RommError.detail`
+carries RomM's own `detail` text.
+
+- Before RomM renamed: a 409 ends `refused`; any other HTTP answer (the 500
+  "file is gone", a 403) means nothing changed and ends `failed`. Nothing to
+  undo.
+- RomM renamed (or wrote another name, which counts as a refusal, or didn't
+  answer at all) and the output is not in place: a parked Source goes back
+  under the new name (`restoring`), then RomM is asked for the old name
+  (`reverting`; a no-op when it never renamed) and it is read back. Ends
+  `refused` or `rolled_back`; the job places the output beside the Source.
+- The output is in place (the rehash failed or didn't match, or the parked
+  Source couldn't be deleted): the parked Source goes back under its own name
+  beside the output (`restoring`), and the ROM keeps its id on the checked
+  output; RomM's next scan refreshes its hashes. Ends `kept`.
+- An undo that fails, a cancel during one, or a process that dies leaves the
+  row on the step it reached, with the reason in `detail`, and a parked
+  Source stays parked. A parking slot (`park-XXXXXXXX`) is never swept (the
+  sweeps match `slot-` names only) and is not journaled in `partial_writes`;
+  `StagedOutput.keep()` lets go of it without removing it. So the Source is
+  never deleted unconfirmed. `swap_journal.unfinished()` lists those rows for
+  the next run (#392: finish or show as a Finding).
+
+Blocking calls in the async `apply` go off the loop with `asyncio.to_thread`
+(which copies the guard's context). A call that changes something
+(`_mutate`) is shielded: a cancel waits for it to finish before the undo
+runs, so an undo never races a move or a rename still in flight, and the
+hook's grace and `lingering` hand-off cover one that outlasts it. The fake
+RomM (`tests/fake_romm.py`) holds ROMs backed by files and answers the
+rename, the scan, the task and the read-back the way RomM 5.4.1 does, with
+knobs for a refusal, a sanitized name, a scan that doesn't rehash and a task
+that fails.
 
 To add a Referrer: subclass `Referrer` in `services/referrers/`, give it a new
 `id`, declare `opt_in` and `phase`, and `registry.register(...)` it in
@@ -5721,6 +5823,15 @@ The RomM swap (#391) stages through the same helper.
 - **Hidden everywhere here too.** `STAGE_DIR_NAME` lives in `utils/junk.py`
   and is an ignored entry (`is_junk_entry`), so listings, search and every
   walk skip it.
+- **Parking slots (#391).** `open_slot(folder, parking=True)` makes a
+  `park-XXXXXXXX/` slot for the RomM swap's Source while the output takes its
+  name. It is never swept (the sweeps match `slot-` names only) and not
+  journaled in `partial_writes`; the swap journal records it. `take(name)`
+  moves an entry of the folder into the slot, `restore(name, as_name=None)`
+  moves it back out, both no-replace renames through the slot's descriptors;
+  `remove(name)` deletes a file in it; `keep()` lets go and leaves the slot
+  and its content in place. A job whose output a Referrer places itself keeps
+  it staged until the Referrer hook (`StagedPlacement`, 3.3.15).
 
 ### 3.4 `registry.py`
 
@@ -5929,8 +6040,8 @@ does.
 
 `swap_keep_rom_id` is a RomM setting (`services/romm/settings.py`, env
 `ROMM_SWAP_KEEP_ROM_ID`, off by default), stored with the rest of the RomM
-settings and returned by `GET /api/romm/settings`. Nothing reads it yet except
-the status block: the swap itself (#391) will.
+settings and returned by `GET /api/romm/settings`. It turns on the RomM swap
+Referrer (#391, 3.3.15) through `RommLibrary.referrer_enabled`.
 
 The swap needs `roms.read` (the read-back), `roms.write` (renaming the record)
 and `tasks.run` (the rescan). RomM has no endpoint that lists a token's scopes,

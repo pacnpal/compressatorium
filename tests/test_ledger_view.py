@@ -373,9 +373,9 @@ def test_migrations_have_a_single_head():
     # #303's 0012 (folder Libraries) stacks on this branch's 0011, #304's
     # 0013 (mappings and Findings) on that, #305's 0014 (check times) on
     # that, #337's 0015 (re-pin plan generation) on that, #386's 0016
-    # (the EmulationStation frontend switch) on that, and #388's 0017
-    # (content keys) on that.
-    assert heads == ["0017"]
+    # (the EmulationStation frontend switch) on that, #388's 0017 (content
+    # keys) on that, and #391's 0019 (the RomM swap journal) on that.
+    assert heads == ["0019"]
 
 
 def test_upgrade_from_0010_seeds_totals_from_populated_ledger(tmp_path):

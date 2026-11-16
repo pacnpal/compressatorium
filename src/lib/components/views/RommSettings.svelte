@@ -367,8 +367,10 @@
       <p>
         When a conversion replaces a file, rename RomM's record to the new file
         instead of letting RomM add a new game, so the saves, states, notes and
-        collections on it stay put. Off by default. This switch only stores the
-        choice and checks the token; the swap that uses it comes separately.
+        collections on it stay put. Off by default. It applies when the source
+        is deleted after its check, to a single-file game converted to one file
+        beside it; anything else converts as before. If RomM refuses the rename,
+        the source is kept and the job says why.
       </p>
     </header>
     <Checkbox

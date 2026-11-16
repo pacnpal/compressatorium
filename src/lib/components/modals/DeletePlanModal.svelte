@@ -93,8 +93,8 @@
     </p>
     {#if hasReferrerChanges}
       <p class="dp-note">
-        Playlists and gamelists that name a source are pointed at the output
-        first. If one can't be updated, that source is kept.
+        Playlists, gamelists and RomM ROMs that name a source are pointed at
+        the output first. If one can't be updated, that source is kept.
       </p>
     {/if}
 
@@ -157,12 +157,17 @@
           {/if}
           {#each item.referrer_changes ?? [] as change (change.target)}
             <div class="dp-referrer" title={change.target}>
-              <span class="dp-referrer-file">
-                updates {shortName(change.target)}, {entryCount(change)}:
-              </span>
-              {#each change.edits ?? [] as edit, i (i)}
-                <span class="dp-edit">{edit.old} → {edit.new}</span>
-              {/each}
+              {#if change.summary}
+                <!-- One line of its own: "RomM: rename ROM 12 to Game.chd" (#391). -->
+                <span class="dp-referrer-file">{change.summary}</span>
+              {:else}
+                <span class="dp-referrer-file">
+                  updates {shortName(change.target)}, {entryCount(change)}:
+                </span>
+                {#each change.edits ?? [] as edit, i (i)}
+                  <span class="dp-edit">{edit.old} → {edit.new}</span>
+                {/each}
+              {/if}
             </div>
           {/each}
         </li>

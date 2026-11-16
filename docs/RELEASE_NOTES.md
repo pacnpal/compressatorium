@@ -4,6 +4,25 @@
 
 ### Added
 
+- **Converting a RomM game keeps its ROM id** (#391). With **Keep the ROM id
+  when converting** on, a single-file game (an `.iso`, say) converted to one
+  file beside it, with its source deleted after the check, no longer turns
+  into a new game in RomM plus a missing one holding your saves, states,
+  notes, collections and play history. The output stays hidden until its
+  checks pass and every playlist and gamelist is updated; then RomM renames
+  the ROM's file to the output's name, the output takes that name, and RomM
+  rehashes that one ROM. The source is deleted only once RomM reads back the
+  output's size and SHA-1. If RomM refuses the rename (or quietly writes
+  another name), the old name is put back, both files stay, and the job says
+  "converted, source kept: RomM refused the rename" with RomM's reason. If the
+  rehash doesn't confirm the new file, the source goes back under its own name
+  beside the output. Each step is recorded before it runs, and a source that
+  couldn't be put back stays hidden in the staging folder, never deleted. The
+  delete confirmation lists the rename ("RomM: rename ROM 1234 to Game.chd"),
+  the Ledger records that the ROM kept its id, and the ROM's metadata re-pin
+  is marked done. Workspace conversions and Rule sweeps both do it. Archives,
+  multi-file games and everything with the switch off convert as before.
+
 - **A "Keep the ROM id" switch for RomM** (#390). A new card on the RomM
   Settings tab holds a switch, off by default, that says a conversion should
   keep RomM's ROM id (and the saves, notes and collections on it) rather than
