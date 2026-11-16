@@ -20,6 +20,7 @@ from app.models import (
     BatchJobCreateRequest,
 )
 from app.routes import convert as convert_routes
+from routes import volume_guard  # the module the routes import (app/ is on sys.path)
 
 _BLOCK_SECONDS = 3.0
 
@@ -52,7 +53,8 @@ async def test_a_stuck_volume_check_leaves_the_loop_free_and_answers_503(
         return True
 
     monkeypatch.setattr(convert_routes, "is_within_configured_volumes", stuck)
-    monkeypatch.setattr(convert_routes, "VOLUME_PROBE_TIMEOUT_SECONDS", 0.5)
+    # The bound lives in the one shared helper every route uses (#327).
+    monkeypatch.setattr(volume_guard, "VOLUME_PROBE_TIMEOUT_SECONDS", 0.5)
     path = str(route_env["tmp_path"] / "game.iso")
 
     loop = asyncio.get_running_loop()

@@ -345,6 +345,13 @@
 
 ### Fixed
 
+- **A Volume that stops answering no longer freezes the app** (#327).
+  Starting a single conversion, opening the delete confirmation, checking for
+  existing outputs, and listing, searching or opening an archive in the file
+  browser used to check the path against your Volumes in a way that held up
+  every other request while a mount was slow or hung. Each now waits at most
+  30 seconds and then answers "A Volume isn't responding. Try again later.",
+  and the rest of the app keeps working meanwhile, as Auto convert already did.
 - **A conversion Rule waits for a running check** (#330). With a check Rule and
   a conversion Rule on the same Platform, the conversion Rule no longer queues
   an Image a running check has picked; it is converted on a sweep after the
