@@ -4960,7 +4960,12 @@ way to produce an edited copy of a zip. The first user is the eXoDOS repack
   names the locked inode. `rewrite_zip` sweeps its destination folder before
   every write; at startup `main.startup_volume_work` sweeps the journaled
   files once the Volume roots are resolved, so a crash is cleaned up without
-  walking the Volumes.
+  walking the Volumes. The sweep is synchronous and runs only on threads that
+  are already off the event loop: the rewrite's detached worker, and the
+  startup thread that resolves the Volume roots. It needs no
+  `run_detached_mutation` hand-off even when that worker is abandoned by the
+  stall bound: its unlink is guarded by the `flock` and inode check the same
+  thread holds while it unlinks, not by locks a caller could release.
 
 `archive_service.member_segments(name)` is the public face of the extract path's
 member-name rules (no backslashes, absolute paths, `..`, empty segments or drive
