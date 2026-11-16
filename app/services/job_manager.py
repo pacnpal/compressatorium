@@ -684,6 +684,17 @@ class JobManager:
             input_kind = registry.mode_input_kind(mode.value)
         except KeyError:
             input_kind = InputKind.FILE
+        # What the job runs with: its choice, with the tool's default where the
+        # mode needs a codec and none was chosen (#345). Every conversion job is
+        # built here, whoever queued it (Auto, a single job, the CLI, a Rule),
+        # so this is the one place the default applies, and the job records
+        # the codec it really ran with (the Ledger, the re-run fast path).
+        try:
+            compression = registry.for_mode(mode.value).compression_for(
+                mode.value, compression,
+            )
+        except KeyError:
+            pass
 
         job = ConversionJob(
             id=job_id,
@@ -4546,7 +4557,7 @@ class JobManager:
             await self._clear_existing_output(job)
 
             _convert_service = registry.for_mode(job.mode.value)
-            async for update in _convert_service.convert(
+            async for update in _convert_service.run_convert(
                 input_path,
                 job.output_path,
                 job.mode.value,

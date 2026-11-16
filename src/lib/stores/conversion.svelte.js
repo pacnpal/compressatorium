@@ -144,6 +144,22 @@ class ConversionStore {
     return registry.specFor(this.mode);
   }
 
+  /**
+   * The one codec a single-codec mode (Dolphin RVZ/WIA) sends: the first one
+   * selected, unless the current mode doesn't take it, in which case the
+   * mode's own default. The selection is kept per tool, so a codec picked for
+   * RVZ (zstd) must not reach WIA, which refuses it (#345). 'none' when
+   * nothing is selected.
+   */
+  get singleCodec() {
+    const codec = this.compressionSelection.find((c) => c && c !== 'none') ?? 'none';
+    const allowed = registry.codecsForMode(this.mode).map((c) => c.value);
+    if (allowed.length && !allowed.includes(codec)) {
+      return registry.defaultCompressionForMode(this.mode)?.[0] ?? 'none';
+    }
+    return codec;
+  }
+
   get supportsCompression() {
     return !!this.currentSpec?.supportsCompression;
   }
@@ -296,20 +312,22 @@ class ConversionStore {
       return 'none';
     }
     if (this.supportsCompressionLevel) {
-      // Dolphin RVZ/WIA: pick the first non-'none' codec and pair with level.
-      const codec = selection[0];
-      if (!codec) return 'none';
+      // Dolphin RVZ/WIA: one codec the mode takes, paired with the level.
+      const codec = this.singleCodec;
+      if (codec === 'none') return 'none';
       // Normalize the level, the picker's number input lets the user
       // clear it temporarily (browsers allow empty string). If we
       // forwarded that we'd build "<codec>:" and the backend would
       // reject the token. Fall back to the registered default range
       // value when the field is empty or non-numeric, then clamp into
       // [min, max] so out-of-range edits also stay safe.
-      const range = this.currentTool?.compressionLevelRange ?? DEFAULT_COMPRESSION_LEVEL_RANGE;
-      const rawLevel = this.compressionLevel;
-      const parsed = Number.parseInt(rawLevel, 10);
-      const safeLevel = Number.isFinite(parsed)
-        ? Math.min(range.max, Math.max(range.min, parsed))
+      // The codec's own range (lzma2 takes 1-9, zstd 1-22). A level it does
+      // not take is sent as the codec's default, never as itself.
+      const range = registry.levelRangeFor(this.mode, codec)
+        ?? this.currentTool?.compressionLevelRange ?? DEFAULT_COMPRESSION_LEVEL_RANGE;
+      const parsed = Number.parseInt(this.compressionLevel, 10);
+      const safeLevel = Number.isFinite(parsed) && parsed >= range.min && parsed <= range.max
+        ? parsed
         : (range.default ?? range.min);
       return `${codec}:${safeLevel}`;
     }
@@ -575,6 +593,13 @@ class ConversionStore {
   /** Replace selection with a single codec (dolphin RVZ/WIA, nsz solid/block). */
   setSingleCodec(codec) {
     this.compressionSelection = codec ? [codec] : [];
+    // A level the new codec does not take (zstd 19, then lzma2 at 1-9) is
+    // reset to that codec's own default level.
+    const range = codec ? registry.levelRangeFor(this.mode, codec) : null;
+    const level = Number.parseInt(this.compressionLevel, 10);
+    if (range && !(level >= range.min && level <= range.max)) {
+      this.compressionLevel = String(range.default ?? range.min);
+    }
     this.#persistCompression();
   }
 

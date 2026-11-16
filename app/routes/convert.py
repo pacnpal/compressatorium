@@ -51,6 +51,7 @@ from services.output_conflicts import (
     get_unique_output_path as _get_unique_output_path,
 )
 from services.tools import InputKind, ModeKind, registry
+from services.tools.base import compression_problem
 from sse_starlette.sse import EventSourceResponse
 from utils.delete_plan import build_delete_plan, build_delete_snapshot
 from utils.path_utils import (
@@ -189,6 +190,11 @@ def _validate_request_compression(
             status_code=400,
             detail="Dolphin compression supports only one codec at a time",
         )
+    # A codec the mode does not take (dolphin-tool refuses zstd in WIA), or a
+    # level outside that codec's range (lzma2 takes 1-9). Never clamped.
+    problem = compression_problem(spec, compression)
+    if problem:
+        raise HTTPException(status_code=400, detail=problem)
 
 
 def _validate_delete_on_verify(spec, delete_on_verify: bool) -> None:

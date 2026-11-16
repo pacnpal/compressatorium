@@ -192,7 +192,7 @@
    */
   function defaultCodecLabel(mode) {
     const spec = specFor(mode);
-    const fallback = toolFor(mode)?.defaultCompression?.[0];
+    const fallback = registry.defaultCompressionForMode(mode)?.[0];
     if (!spec?.supportsCompression || !fallback) return 'Tool default';
     return `Tool default (${fallback})`;
   }
@@ -207,15 +207,35 @@
   // joins them as `codec:level`).
 
   function codecsFor(mode) {
-    return toolFor(mode)?.compressionCodecs ?? [];
+    // The mode's own codecs where it names them (WIA refuses zstd), else the tool's.
+    return registry.codecsForMode(mode);
   }
 
   function codecStyleFor(mode) {
     return toolFor(mode)?.compressionStyle ?? 'none';
   }
 
-  function levelRangeFor(mode) {
-    return toolFor(mode)?.compressionLevelRange ?? DEFAULT_COMPRESSION_LEVEL_RANGE;
+  /** The level range for `codec` in `mode` (Dolphin's lzma2 takes 1-9, zstd 1-22). */
+  function levelRangeFor(mode, codec) {
+    return registry.levelRangeFor(mode, codec)
+      ?? toolFor(mode)?.compressionLevelRange ?? DEFAULT_COMPRESSION_LEVEL_RANGE;
+  }
+
+  /** The codec a single-codec Rule runs with: its own, or the mode's default. */
+  function ruleCodec(rule) {
+    return rule.compression || registry.defaultCompressionForMode(rule.mode)?.[0] || null;
+  }
+
+  /**
+   * Set a single-codec Rule's codec. A level the new codec does not take
+   * (19, from zstd, on lzma2) is cleared, so the Rule runs at that codec's own
+   * default level rather than one dolphin-tool refuses.
+   */
+  function setRuleCodec(platformId, rule, codec) {
+    const range = levelRangeFor(rule.mode, codec || ruleCodec({ ...rule, compression: null }));
+    const level = rule.compression_level;
+    const fits = level == null || (level >= range.min && level <= range.max);
+    update(platformId, fits ? { compression: codec } : { compression: codec, compression_level: null });
   }
 
   /** The codecs a rule currently has selected, as a list. */
@@ -596,7 +616,7 @@
               {#if rule.mode}
                 {@const codecs = codecsFor(rule.mode)}
                 {@const style = codecStyleFor(rule.mode)}
-                {@const range = levelRangeFor(rule.mode)}
+                {@const range = levelRangeFor(rule.mode, ruleCodec(rule))}
                 {@const chosen = selectedCodecs(rule)}
 
                 <div class="grid">
@@ -636,7 +656,7 @@
                             ...codecs.map((c) => ({ value: c.value, label: c.label })),
                           ]}
                           ariaLabel="Compression codec"
-                          onchange={(v) => update(platform.id, { compression: v || null })}
+                          onchange={(v) => setRuleCodec(platform.id, rule, v || null)}
                         />
                       </label>
                     {/if}

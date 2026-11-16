@@ -363,6 +363,17 @@
 
 ### Fixed
 
+- **RVZ and WIA work before you save a compression** (#345). On a fresh install,
+  an Auto convert of a GameCube or Wii image, a single RVZ or WIA job, and
+  `compressatorium convert --to rvz` (or `--compression default`) failed with
+  "Compression method must be set for WIA or RVZ". They now use the same
+  defaults as Dolphin's own convert dialog: zstd for RVZ, and no compression
+  for WIA, which can't use zstd. A codec you choose still wins, and the
+  compression picker no longer offers zstd for WIA. The level now follows the
+  codec: bzip2, lzma and lzma2 take 1 to 9 (zstd 1 to 22), switching codec
+  resets a level the new one can't use, and a level out of range is refused
+  with a clear message instead of failing in dolphin-tool. NKit to RVZ gets
+  the same zstd default for its RVZ step.
 - **RomM metadata is kept when two runs aim at one file, and Clear completed
   keeps jobs that finish while it runs** (#337). A slow or aborted RomM
   snapshot no longer overwrites the metadata a newer run saved for the same

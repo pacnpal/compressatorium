@@ -626,34 +626,15 @@ def _compression_arg(rule: dict) -> str | None:
 
     The level is not a separate parameter anywhere downstream -- ``/api/jobs``
     encodes it into the compression string and the tools parse it back out --
-    so sending the codec alone silently dropped the level the operator set.
+    so sending the codec alone silently dropped the level the operator set. A
+    level with the codec on "tool default" is ``":level"``; the tool names its
+    own codec for it when the job runs (``ToolPlugin.compression_for``, #345),
+    as it does for a job from anywhere else.
     """
     codec = rule["compression"]
     level = rule["compression_level"]
     if level is None:
         return codec or None
-    if not codec and registry.spec(rule["mode"]).supports_compression:
-        # An empty codec is only a "tool default" where the mode offers no
-        # codec choice at all: nsz reads the empty layout part of ":18" and
-        # still honours the level. Where the mode *does* have a codec picker
-        # and the operator left it on "Tool default", the empty part is a
-        # blank, not a default -- dolphin-tool receives `-c "" -l 19` and
-        # every such job fails at the tool -- so name the tool's own default.
-        codec = registry.default_compression(rule["mode"])
-        if not codec:
-            # A codec-picking mode whose tool declares no default. The level
-            # cannot be expressed without a codec, and inventing one would
-            # convert the library with settings the operator did not choose,
-            # so drop the level and say so rather than queue a failing job.
-            logger.warning(
-                "romm_auto: %s needs a codec alongside a compression level and "
-                "declares no default; ignoring the level",
-                rule["mode"],
-            )
-            return None
-    # A level with no codec is meaningful: nsz reads the empty layout part as
-    # "tool default" and still honours the level, so ":18" must not collapse to
-    # None or the operator's level would be silently discarded.
     return f"{codec or ''}:{level}"
 
 

@@ -5452,14 +5452,63 @@ is meaningful is a per-tool fact:
   blank, not a default. `DolphinTool._build_convert_command` emits
   `-c "" -l 19`, which dolphin-tool refuses.
 
-**`ToolPlugin.default_compression: str | None`** names the codec to use in the
-second case, so the resolution stays a per-tool declaration instead of an
-if-ladder on tool identity at the call site.
-`registry.default_compression(mode)` applies it *only* to codec-offering modes,
-returning `None` elsewhere so nsz's meaningful empty part survives. The RomM
-sweep (`services/rules/sweep._compression_arg`) is the current consumer: with no
-declared default it drops the level and logs, rather than queue a job the tool
-will reject or invent a codec the operator did not choose.
+A mode can also need a codec when nothing at all was chosen: dolphin-tool
+refuses RVZ and WIA without `-c`. Those modes declare
+**`ModeSpec.requires_codec=True`**; a mode that works without one (chdman picks
+its own best codecs) leaves it False and is sent nothing.
+
+The codecs and the default can differ per mode of one tool: dolphin-tool
+refuses zstd in a WIA container (`DolphinTool/ConvertCommand.cpp`), so one
+tool-wide default cannot serve RVZ and WIA. **`ModeSpec.codecs`** lists the
+codecs a mode takes (empty for no opinion) and **`ModeSpec.default_compression`**
+its own default; the dolphin plugin fills both from its `CONTAINER_CODECS` and
+`CONTAINER_DEFAULTS` tables (RVZ: zstd, as Dolphin's convert dialog selects;
+WIA: none, the dialog's first entry, since it selects nothing for WIA). The
+routes refuse a codec outside `codecs` (`_validate_request_compression`), and
+the plugin refuses it again before its tool runs
+(`refuse_unsupported_compression`), for a Rule saved before. Levels are per
+codec too: **`ModeSpec.codec_levels`** holds each codec's `(min, max, default)`,
+read through `ModeSpec.level_range(codec)`, from the plugin's `CODEC_LEVELS`
+(Dolphin's `DiscIO/WIABlob.cpp` `GetAllowedCompressionLevels`: bzip2, lzma and
+lzma2 1-9, zstd 1-22; zstd keeps this app's 19, the others Dolphin's dialog
+default, 5). `compression_for` gives a codec with no level its default level;
+an explicit level outside the range is refused, never clamped, by the same
+two checks (`base.compression_problem`). The frontend mirrors both per mode in `registry.js`
+(`compressionCodecs`, `defaultCompression` on the mode entry, read through
+`registry.codecsForMode` / `defaultCompressionForMode`), and each codec entry's
+`levelRange` (`registry.levelRangeFor(mode, codec)`), so the pickers never
+offer or send a codec or level the mode refuses: the level control follows the
+selected codec, and switching codec resets a level the new codec does not take
+to its default. `test_frontend_parity_186` fails on drift.
+
+**`ToolPlugin.default_compression: str | None`** names the codec to use in both
+cases, so the resolution stays a per-tool declaration instead of an if-ladder on
+tool identity at the call site. **`ToolPlugin.compression_for(mode,
+compression)`** (`BaseTool` implements it) applies it, the mode's own default
+first: a chosen codec is returned as it is; on a codec-offering mode,
+`":level"` becomes `"<default>:level"` and nothing chosen becomes `"<default>"` when the mode
+`requires_codec`; a mode without a codec picker keeps its string (nsz's
+meaningful empty part survives); and with no declared default a level is
+dropped and logged rather than send a job the tool will reject or invent a
+codec the operator did not choose. `JobManager` calls it in
+`_queue_job_locked`, where every conversion job is built, so Auto, a single
+job, the CLI (`--compression default` included) and a Rule all run with the
+same default (#345). The job records the resolved codec, so the Ledger shows
+what ran and the re-run fast path compares a resolved request with a resolved
+record.
+
+It applies again at the convert boundary. **`ToolPlugin.run_convert`**
+(`BaseTool` implements it) is `convert` with the compression passed through
+`compression_for` first, and it is the only way callers start a conversion:
+the job runner calls it, and so does each `ChainTool` step. A chain passes a
+step the chain's own compression only when both advertise compression, so
+`nkit_to_rvz` passes its RVZ step None; `run_convert` on that step resolves
+`dolphin_rvz`'s default, with no chain-specific code. `compression_for` returns
+a resolved value unchanged, so the job runner's second pass is a no-op. A tool
+implements `convert` and receives the resolved value; nothing calls a tool's
+`convert` directly. The Rules sweep (`_compression_arg`) passes the Rule's choice through
+as it is; a Rule's delete decision (`_delete_decision_identity`) reads the
+Rule's own fields, so it is unaffected.
 
 The value mirrors `defaultCompression` in `src/lib/tools/registry.js`, which
 seeds the same choice in the manual picker — `tests/test_frontend_parity_186.py`

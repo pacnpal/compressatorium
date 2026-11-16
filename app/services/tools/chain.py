@@ -286,7 +286,10 @@ class ChainTool(BaseTool):
                 base = cumulative * 100.0
                 span = weights[i] * 100.0
                 last_message = ""
-                async for update in tool.convert(
+                # run_convert, not convert: the step's own mode resolves its
+                # codec, so a step the chain passes None (nkit_to_rvz's RVZ
+                # step) still gets its default.
+                async for update in tool.run_convert(
                     current_in, step_out, step.mode,
                     compression=step_compression, cancel_event=cancel_event,
                 ):

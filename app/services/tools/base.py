@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
+from logging_setup import get_logger
 from pydantic import BaseModel
 
 from models import OutputStatus
@@ -21,6 +22,33 @@ from services.subprocess_runner import resolve_verify_timeout
 from utils.path_utils import match_extension
 
 from .spec import ModeSpec
+
+logger = get_logger("tools.base")
+
+
+def compression_problem(spec: ModeSpec, compression: str | None) -> str | None:
+    """Why *spec*'s mode refuses *compression*, or None when it takes it.
+
+    A codec outside ``spec.codecs`` (when the mode names its codecs), or a
+    level outside that codec's range (``spec.level_range``). The routes answer
+    400 with it, and the plugin refuses with it before its tool runs.
+    """
+    for part in (compression or "").split(","):
+        codec, _, level = part.partition(":")
+        if spec.codecs and codec and codec not in spec.codecs:
+            return (
+                f"{spec.label} can't use {codec} compression; it takes "
+                f"{', '.join(sorted(spec.codecs))}"
+            )
+        levels = spec.level_range(codec) if codec else None
+        if levels and level:
+            low, high, _default = levels
+            if not level.isdigit() or not low <= int(level) <= high:
+                return (
+                    f"{spec.label} {codec} takes levels {low}-{high}; "
+                    f"{level} is out of range"
+                )
+    return None
 
 
 class EmbeddedHashUnavailable(Exception):
@@ -108,11 +136,10 @@ class ToolPlugin(Protocol):
     # an implementation that satisfies the protocol without it would fail there
     # rather than at registration. See BaseTool.platform_slugs for the semantics.
     platform_slugs: frozenset[str]
-    # The codec this tool falls back to when a caller asks for a compression
-    # level but leaves the codec on "tool default". Part of the contract
-    # because `ToolRegistry.default_compression` reads it off every registered
-    # tool. None means "this tool names no default" -- see
-    # BaseTool.default_compression for what that costs.
+    # The codec a job of this tool runs with when it needs one and none was
+    # chosen (#345): a mode that requires a codec, or a level set with the
+    # codec on "tool default". Read by :meth:`compression_for`. None means
+    # "this tool names no default" -- see BaseTool.default_compression.
     default_compression: str | None
     # What to tell the user when ``is_ready()`` is False: why this tool cannot
     # run here. Auto shows it beside an Image it skipped for that reason.
@@ -122,6 +149,16 @@ class ToolPlugin(Protocol):
 
     def spec(self, mode: str) -> ModeSpec:
         """Return the ModeSpec for a mode this tool owns."""
+
+    def compression_for(self, mode: str, compression: str | None) -> str | None:
+        """The compression a job of *mode* runs with, given what it chose (#345).
+
+        Every job reaches its tool through this, whoever queued it (Auto, a
+        single job, the CLI, a Rule), so the tool's default applies in one
+        place. *compression* is ``"codec"``, ``"codec:level"``, ``":level"``
+        (a level with the codec on "tool default"), or None/"" for nothing
+        chosen. A chosen codec is returned as it is.
+        """
 
     def output_path(
         self,
@@ -276,6 +313,26 @@ class ToolPlugin(Protocol):
         ``split`` is honored only by tools whose mode declares it (makeps3iso
         folder->iso, ``-s`` 4 GB FAT32 split); other tools accept and ignore it,
         exactly as they do ``compression`` they don't use.
+
+        Callers go through :meth:`run_convert`, which resolves *compression*
+        first; ``convert`` receives what the job runs with.
+        """
+
+    def run_convert(
+        self,
+        input_path: str,
+        output_path: str,
+        mode: str,
+        *,
+        compression: str | None = None,
+        split: bool = False,
+        cancel_event: asyncio.Event | None = None,
+    ) -> AsyncGenerator[dict, None]:
+        """:meth:`convert` with *compression* resolved by :meth:`compression_for`.
+
+        The one way into a conversion: the job runner and every chain step call
+        this, so a step a chain passes no codec (nkit_to_rvz's RVZ step) still
+        gets its mode's default (CodeRabbit 4581672840).
         """
 
     async def verify(
@@ -564,6 +621,65 @@ class BaseTool:
             if m.mode == mode:
                 return m
         raise KeyError(mode)
+
+    def compression_for(self, mode: str, compression: str | None) -> str | None:
+        # Only a mode with a codec picker can be missing a codec. Where a mode
+        # has none (nsz picks a solid/block *layout*) the empty part of ":18"
+        # reads as the tool's own layout and is kept.
+        spec = self.spec(mode)
+        codec, _, level = (compression or "").partition(":")
+        if codec and not level and spec.level_range(codec):
+            # A chosen codec with no level gets that codec's own default level
+            # (dolphin-tool needs one, and its range depends on the codec).
+            return f"{codec}:{spec.level_range(codec)[2]}"
+        if codec or not spec.supports_compression:
+            return compression
+        if not (spec.requires_codec or level):
+            # Nothing chosen and nothing needed: the tool picks (chdman's own
+            # default is better than naming one).
+            return compression or None
+        # The mode's own default first (RVZ and WIA differ), then the tool's.
+        default = spec.default_compression or self.default_compression
+        if not default:
+            if level:
+                # A level cannot be sent without a codec, and inventing one
+                # would convert with a setting nobody chose: drop it, say so.
+                logger.warning(
+                    "%s needs a codec alongside a compression level and declares no "
+                    "default; ignoring the level", mode,
+                )
+            return None
+        if level:
+            return f"{default}:{level}"
+        levels = spec.level_range(default)
+        return f"{default}:{levels[2]}" if levels else default
+
+    def run_convert(
+        self,
+        input_path: str,
+        output_path: str,
+        mode: str,
+        *,
+        compression: str | None = None,
+        split: bool = False,
+        cancel_event: asyncio.Event | None = None,
+    ) -> AsyncGenerator[dict, None]:
+        # compression_for is idempotent on what it returns, so a job resolved
+        # at queue time (_queue_job_locked) resolves to the same value here.
+        return self.convert(
+            input_path, output_path, mode,
+            compression=self.compression_for(mode, compression),
+            split=split, cancel_event=cancel_event,
+        )
+
+    def refuse_unsupported_compression(self, mode: str, compression: str | None) -> None:
+        """Raise ``ValueError`` for what *mode* refuses: a codec outside
+        ``ModeSpec.codecs``, or a level outside that codec's range. Nothing is
+        clamped. A no-op when the mode names no codecs, or nothing was chosen.
+        """
+        problem = compression_problem(self.spec(mode), compression)
+        if problem:
+            raise ValueError(problem)
 
     @staticmethod
     def _basic_info_fields(raw: dict) -> dict:

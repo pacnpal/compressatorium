@@ -35,6 +35,24 @@ class ModeSpec:
     input_extensions: frozenset[str]
     supports_compression: bool = False
     supports_compression_level: bool = False  # dolphin rvz/wia only
+    # The tool refuses this mode without a codec (dolphin-tool's RVZ and WIA):
+    # a job that chose none runs with the tool's `default_compression`, through
+    # `ToolPlugin.compression_for`. A mode that works without one (chdman picks
+    # its own best codecs) leaves it False and is sent nothing.
+    requires_codec: bool = False
+    # The codecs this mode accepts, when the tool restricts them per mode
+    # (dolphin-tool refuses zstd in a WIA container); empty for no opinion.
+    # The routes refuse any other, and so does the plugin before its tool runs.
+    codecs: frozenset[str] = frozenset()
+    # This mode's default codec, when it differs from the tool's
+    # (`ToolPlugin.default_compression`): RVZ and WIA each have their own.
+    # `ToolPlugin.compression_for` prefers it.
+    default_compression: str | None = None
+    # Each codec's valid level range and default level, as
+    # ``(codec, min, max, default)``, for a tool that bounds levels per codec
+    # (dolphin-tool: zstd 1-22, bzip2/lzma/lzma2 1-9). A codec not listed
+    # takes no level of its own. Read through :meth:`level_range`.
+    codec_levels: tuple[tuple[str, int, int, int], ...] = ()
     supports_delete_on_verify: bool = False
     # Whether the tool can verify this mode's product *without* the question of
     # deleting anything. Implied by `supports_delete_on_verify` (deleting needs
@@ -97,6 +115,19 @@ class ModeSpec:
     # game beside its Source, which a Rule over a RomM folder would multiply).
     automatable: bool = True
 
+    def level_range(self, codec: str) -> tuple[int, int, int] | None:
+        """``(min, max, default)`` level for *codec*, or None when it takes none."""
+        return _level_range(self.codec_levels, codec)
+
+
+def _level_range(
+    codec_levels: tuple[tuple[str, int, int, int], ...], codec: str,
+) -> tuple[int, int, int] | None:
+    for name, low, high, default in codec_levels:
+        if name == codec:
+            return low, high, default
+    return None
+
 
 @dataclass(frozen=True)
 class ChainStep:
@@ -132,6 +163,11 @@ class ChainSpec:
     verify_step: int = -1           # index of the step whose tool verifies the final output
     supports_compression: bool = False
     supports_compression_level: bool = False
+    # Structural parity with ModeSpec: `ToolPlugin.compression_for` reads these.
+    requires_codec: bool = False
+    codecs: frozenset[str] = frozenset()
+    default_compression: str | None = None
+    codec_levels: tuple[tuple[str, int, int, int], ...] = ()
     supports_delete_on_verify: bool = True   # of the ORIGINAL source, gated on final verify
     # Structural parity with ModeSpec: a chain's final step verifies the
     # output, and its delete flag already implies that, so this stays False and
@@ -159,3 +195,7 @@ class ChainSpec:
     auto_platform_slugs: frozenset[str] = frozenset()
     # Structural parity with ModeSpec.automatable.
     automatable: bool = True
+
+    def level_range(self, codec: str) -> tuple[int, int, int] | None:
+        """Structural parity with :meth:`ModeSpec.level_range`."""
+        return _level_range(self.codec_levels, codec)
