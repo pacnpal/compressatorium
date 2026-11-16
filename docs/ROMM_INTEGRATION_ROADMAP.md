@@ -587,7 +587,8 @@ provider keys and Hasheous off. Title-id extraction (sigil) was on, as it is
 by default (heartbeat `FILESYSTEM.TITLE_ID_EXTRACTION_ENABLED: true`). The
 Images are small real-format PS2, PSP and GameCube ISOs built the way the
 smoke harness builds them, each with its own serial, converted by the app's
-own CLI (`compressatorium:smoke-latest`, image `sha256:c17a3893…`). Each ROM
+own CLI (`compressatorium:smoke-latest`, image `sha256:c17a3893…`; a re-run on
+a fresh build of `latest`, `sha256:bd2666a2…`, gave the same results). Each ROM
 under test had a save, a state, a note, two collection entries (one the
 Favourites collection), user props and a play session before anything was
 done to it. The script and how to re-run it are in
