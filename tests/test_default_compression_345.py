@@ -275,3 +275,71 @@ def test_the_codec_is_read_after_a_priority_prefix(monkeypatch) -> None:
 
     assert cmd[:3] == ["ionice", "-c", "2"]
     assert (dolphin_option(cmd, "-c"), dolphin_option(cmd, "-l")) == ("zstd", "19")
+
+
+# --------------------------------------------------------------------------- #
+# A chain step resolves its codec at the convert boundary (CodeRabbit 4581672840)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture(name="nkit_chain")
+def _nkit_chain(env, monkeypatch):
+    """nkit_to_rvz with the restore step faked (it writes a GameCube ISO) and
+    the RVZ step's dolphin-tool command captured at its runner."""
+    from services.tools import chain as chain_mod
+
+    work = env["tmp"] / "chainwork"
+
+    def scratch(prefix=""):
+        work.mkdir(parents=True, exist_ok=True)
+        return str(work)
+
+    async def no_tagging(*_args, **_kwargs):
+        return None
+
+    def restore(_input_path, output_path, _mode, **_kwargs):
+        async def run():
+            _gamecube(Path(output_path))
+            yield {"progress": 100, "message": "restored"}
+
+        return run()
+
+    monkeypatch.setattr(chain_mod, "create_scratch_dir", scratch)
+    monkeypatch.setattr(registry.get("dolphin"), "post_convert", no_tagging)
+    monkeypatch.setattr(registry.get("nkit"), "convert", restore)
+    source = env["tmp"] / "Melee.nkit.iso"
+    source.write_bytes(b"x" * 1000)
+    return {"source": str(source), "out": str(env["tmp"] / "Melee.rvz")}
+
+
+async def _run_chain(chain, nkit_chain, compression=None) -> None:
+    async for _ in chain.convert(
+        nkit_chain["source"], nkit_chain["out"], "nkit_to_rvz", compression=compression,
+    ):
+        pass
+
+
+@pytest.mark.asyncio
+async def test_the_nkit_chain_gives_its_rvz_step_the_default_codec(env, nkit_chain) -> None:
+    """nkit_to_rvz advertises no compression, so its RVZ step used to reach
+    dolphin-tool with no ``-c``, which dolphin-tool refuses."""
+    await _run_chain(registry.for_mode("nkit_to_rvz"), nkit_chain)
+
+    (cmd,) = env["commands"]
+    assert (dolphin_option(cmd, "-c"), dolphin_option(cmd, "-l")) == ("zstd", "19")
+
+
+@pytest.mark.asyncio
+async def test_a_chain_step_keeps_an_explicit_compression(
+    env, nkit_chain, monkeypatch,
+) -> None:
+    chain = registry.for_mode("nkit_to_rvz")
+    spec = dataclasses.replace(chain.spec("nkit_to_rvz"), supports_compression=True)
+    monkeypatch.setattr(chain, "modes", tuple(
+        spec if m.mode == "nkit_to_rvz" else m for m in chain.modes
+    ))
+
+    await _run_chain(chain, nkit_chain, compression="lzma:7")
+
+    (cmd,) = env["commands"]
+    assert (dolphin_option(cmd, "-c"), dolphin_option(cmd, "-l")) == ("lzma", "7")

@@ -313,6 +313,26 @@ class ToolPlugin(Protocol):
         ``split`` is honored only by tools whose mode declares it (makeps3iso
         folder->iso, ``-s`` 4 GB FAT32 split); other tools accept and ignore it,
         exactly as they do ``compression`` they don't use.
+
+        Callers go through :meth:`run_convert`, which resolves *compression*
+        first; ``convert`` receives what the job runs with.
+        """
+
+    def run_convert(
+        self,
+        input_path: str,
+        output_path: str,
+        mode: str,
+        *,
+        compression: str | None = None,
+        split: bool = False,
+        cancel_event: asyncio.Event | None = None,
+    ) -> AsyncGenerator[dict, None]:
+        """:meth:`convert` with *compression* resolved by :meth:`compression_for`.
+
+        The one way into a conversion: the job runner and every chain step call
+        this, so a step a chain passes no codec (nkit_to_rvz's RVZ step) still
+        gets its mode's default (CodeRabbit 4581672840).
         """
 
     async def verify(
@@ -633,6 +653,24 @@ class BaseTool:
             return f"{default}:{level}"
         levels = spec.level_range(default)
         return f"{default}:{levels[2]}" if levels else default
+
+    def run_convert(
+        self,
+        input_path: str,
+        output_path: str,
+        mode: str,
+        *,
+        compression: str | None = None,
+        split: bool = False,
+        cancel_event: asyncio.Event | None = None,
+    ) -> AsyncGenerator[dict, None]:
+        # compression_for is idempotent on what it returns, so a job resolved
+        # at queue time (_queue_job_locked) resolves to the same value here.
+        return self.convert(
+            input_path, output_path, mode,
+            compression=self.compression_for(mode, compression),
+            split=split, cancel_event=cancel_event,
+        )
 
     def refuse_unsupported_compression(self, mode: str, compression: str | None) -> None:
         """Raise ``ValueError`` for what *mode* refuses: a codec outside

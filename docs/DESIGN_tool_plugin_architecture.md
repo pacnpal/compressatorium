@@ -5490,12 +5490,23 @@ first: a chosen codec is returned as it is; on a codec-offering mode,
 `requires_codec`; a mode without a codec picker keeps its string (nsz's
 meaningful empty part survives); and with no declared default a level is
 dropped and logged rather than send a job the tool will reject or invent a
-codec the operator did not choose. `JobManager` calls it once, in
+codec the operator did not choose. `JobManager` calls it in
 `_queue_job_locked`, where every conversion job is built, so Auto, a single
 job, the CLI (`--compression default` included) and a Rule all run with the
 same default (#345). The job records the resolved codec, so the Ledger shows
 what ran and the re-run fast path compares a resolved request with a resolved
-record. The Rules sweep (`_compression_arg`) passes the Rule's choice through
+record.
+
+It applies again at the convert boundary. **`ToolPlugin.run_convert`**
+(`BaseTool` implements it) is `convert` with the compression passed through
+`compression_for` first, and it is the only way callers start a conversion:
+the job runner calls it, and so does each `ChainTool` step. A chain passes a
+step the chain's own compression only when both advertise compression, so
+`nkit_to_rvz` passes its RVZ step None; `run_convert` on that step resolves
+`dolphin_rvz`'s default, with no chain-specific code. `compression_for` returns
+a resolved value unchanged, so the job runner's second pass is a no-op. A tool
+implements `convert` and receives the resolved value; nothing calls a tool's
+`convert` directly. The Rules sweep (`_compression_arg`) passes the Rule's choice through
 as it is; a Rule's delete decision (`_delete_decision_identity`) reads the
 Rule's own fields, so it is unaffected.
 

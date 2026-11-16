@@ -4557,7 +4557,7 @@ class JobManager:
             await self._clear_existing_output(job)
 
             _convert_service = registry.for_mode(job.mode.value)
-            async for update in _convert_service.convert(
+            async for update in _convert_service.run_convert(
                 input_path,
                 job.output_path,
                 job.mode.value,
