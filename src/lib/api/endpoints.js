@@ -673,6 +673,15 @@ export const api = {
   getRommRules: () =>
     fetchJson(`${API_BASE}/romm/rules`, undefined, 'Failed to load RomM rules'),
 
+  // The Rules importing RomM's converter targets would create (#385). Read
+  // only: the store saves them through saveRommRules like any edit.
+  getRommConverterImportPlan: () =>
+    fetchJson(
+      `${API_BASE}/romm/converter/import-plan`,
+      undefined,
+      "Failed to read RomM's converter targets",
+    ),
+
   // `checkRules` (#305) is sent when given; without it the server keeps them.
   saveRommRules: (rules, checkRules) =>
     fetchJson(

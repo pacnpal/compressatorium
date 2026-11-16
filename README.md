@@ -737,6 +737,40 @@ has converted, and that memory is kept honest for you:
 The schedule clock and the conversion history are separate, so forgetting one
 never disturbs the other.
 
+#### RomM's own converter
+
+Newer RomM releases can convert their own library: with
+`ROM_CONVERTO_ENABLED=true`, RomM's "Convert library" task stores each Platform
+listed under `converto.platform_formats` in its `config.yml` in that format.
+**We advise turning it off (`ROM_CONVERTO_ENABLED=false`) and letting
+Compressatorium do the converting**, because:
+
+- RomM deletes the sources once the conversion tool exits cleanly. Nothing
+  reads the output back first. Compressatorium checks every output (Intact,
+  and Round-tripped where the format allows) before it deletes a source.
+- Two converters on one library work against each other. RomM can store a
+  Platform in a different format than your Rule does, so the same game gets
+  converted twice.
+
+Nothing is blocked either way; the app only warns. When RomM reports its
+converter on, the RomM **Settings** tab shows a banner saying so, and the
+**Automation** tab flags each Rule whose Platform RomM also converts, with
+RomM's target and the Rule's side by side. Platforms RomM can't convert at all
+are marked too, since only Compressatorium converts those. A RomM without the
+converter, or with it off, shows none of this.
+
+The banner's **Import RomM's targets as Rules** button turns RomM's targets into
+Rules, for Platforms that have no Rule yet. Each RomM target is mapped onto a
+mode here that writes the same format (`chd` on PlayStation becomes CHDMAN's CD
+mode, `rvz` on GameCube becomes Dolphin RVZ). A target nothing here writes, such
+as Xbox 360's `zar`, is skipped and named. Imported Rules start off, so switch
+them on in Automation once you've switched RomM's converter off.
+
+| Light | Dark |
+|-------|------|
+| ![RomM's converter banner, light](docs/screenshots/romm-converter-light.png) | ![RomM's converter banner, dark](docs/screenshots/romm-converter-dark.png) |
+| ![RomM converter flags on Rules, light](docs/screenshots/romm-converter-rules-light.png) | ![RomM converter flags on Rules, dark](docs/screenshots/romm-converter-rules-dark.png) |
+
 ### Folder Libraries and the Rules view
 
 You don't need RomM to automate conversions. Open any folder inside a Volume in

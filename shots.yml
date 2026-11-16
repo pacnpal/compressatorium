@@ -547,6 +547,98 @@
   wait: 1800
   javascript: *js_rule_editor
 
+# --- Beside RomM's converter (#385) ----------------------------------------
+# RomM with its own converter switched on. The status (with its `converter`
+# block), platforms, Rules and import plan are canned in the page, as in the
+# rule editor shots above. The first pair is the Settings tab's banner with the
+# import button; the second the Automation tab, where GameCube's Rule writes a
+# different format from RomM's (open, so the two targets show side by side),
+# PlayStation's Rule agrees with RomM, and Game Boy Advance is a Platform RomM
+# cannot convert. The theme comes from the `?s=` suffix; the tab from it too.
+- url: http://127.0.0.1:8099/?s=romm-converter-light#/romm
+  output: docs/screenshots/romm-converter-light.png
+  width: 1280
+  height: 1100
+  wait: 1800
+  javascript: &js_romm_converter |
+    (async () => {
+      const theme = location.search.includes('-dark') ? 'dark' : 'light';
+      const onRules = location.search.includes('-rules');
+      localStorage.setItem('theme-preference', theme);
+      window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: theme }));
+      const real = window.fetch.bind(window);
+      const live = async (path) => (await real(path)).json();
+      const rules = await live('/api/romm/rules');
+      const canned = {
+        '/api/romm/status': { ...(await live('/api/romm/status')), configured: true,
+          connected: true, version: '4.9.0', library_root: '/library',
+          library_root_mounted: true, token_set: true,
+          converter: { enabled: true, error: null,
+            platform_formats: { ngc: 'rvz', psx: 'chd', xbox360: 'zar' },
+            library_targets: { ngc: ['iso', 'rvz'], psx: ['chd'], xbox360: ['zar'],
+              wii: ['iso', 'rvz', 'wbfs'] },
+            modes: { ngc: ['dolphin_rvz', 'nkit_to_rvz'], psx: ['createcd'], xbox360: [] } } },
+        '/api/romm/settings': { ...(await live('/api/romm/settings')),
+          url: 'http://romm:8080', library_root: '/library', token_set: true },
+        '/api/romm/platforms': [
+          { id: 7, name: 'GameCube', slug: 'ngc', rom_count: 12, tool_ids: ['dolphin'],
+            mode_ids: ['dolphin_rvz', 'dolphin_wia', 'dolphin_gcz'] },
+          { id: 8, name: 'PlayStation', slug: 'psx', rom_count: 40, tool_ids: ['chdman'],
+            mode_ids: ['createcd'] },
+          { id: 11, name: 'Game Boy Advance', slug: 'gba', rom_count: 96, tool_ids: ['romz'],
+            mode_ids: ['romz_7z', 'romz_zip'] },
+        ],
+        '/api/romm/rules': { ...rules, state: {}, rules: {
+          7: { ...rules.defaults, enabled: true, mode: 'dolphin_wia' },
+          8: { ...rules.defaults, enabled: true, mode: 'createcd' } } },
+        '/api/romm/roms': { entries: [], diagnostics: null },
+        '/api/rules/notices': { check_level: { show: false } },
+      };
+      window.fetch = (input, init) => {
+        const url = new URL(typeof input === 'string' ? input : input.url, location.href);
+        const body = canned[url.pathname];
+        if (body === undefined) return real(input, init);
+        return Promise.resolve(new Response(JSON.stringify(body),
+          { headers: { 'Content-Type': 'application/json' } }));
+      };
+      location.hash = '#/dashboard';
+      await new Promise(r => setTimeout(r, 300));
+      location.hash = '#/romm';
+      await new Promise(r => setTimeout(r, 800));
+      const label = onRules ? 'Automation' : 'Settings';
+      const tab = [...document.querySelectorAll('.tab')].find(b => b.textContent.trim() === label);
+      if (!tab) throw new Error(`${label} tab not found`);
+      tab.click();
+      await new Promise(r => setTimeout(r, 500));
+      if (onRules) {
+        const row = document.querySelector('.row-toggle[data-platform-id="7"]');
+        if (!row) throw new Error('GameCube rule not found');
+        row.click();
+        await new Promise(r => setTimeout(r, 400));
+        if (!document.querySelector('.converter-conflict')) throw new Error('conflict flag not shown');
+      } else if (!document.querySelector('.converter-banner')) {
+        throw new Error('converter banner not shown');
+      }
+    })()
+- url: http://127.0.0.1:8099/?s=romm-converter-dark#/romm
+  output: docs/screenshots/romm-converter-dark.png
+  width: 1280
+  height: 1100
+  wait: 1800
+  javascript: *js_romm_converter
+- url: http://127.0.0.1:8099/?s=romm-converter-rules-light#/romm
+  output: docs/screenshots/romm-converter-rules-light.png
+  width: 1280
+  height: 1300
+  wait: 1800
+  javascript: *js_romm_converter
+- url: http://127.0.0.1:8099/?s=romm-converter-rules-dark#/romm
+  output: docs/screenshots/romm-converter-rules-dark.png
+  width: 1280
+  height: 1300
+  wait: 1800
+  javascript: *js_romm_converter
+
 # --- Rules view on a folder Library (#303) --------------------------------
 # The fixture's "ROM Library/roms" folder is registered as a Library through the
 # API (a 409 on the second shot means it already is), given a PS2 Rule, and

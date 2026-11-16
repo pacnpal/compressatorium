@@ -399,3 +399,115 @@ def test_a_policy_only_save_does_not_rescan_the_catalog(tmp_path):
     # The connection save still re-derives everything downstream.
     assert data["afterUrl"] > 0, data
     assert "status" in data["reloads"], data
+
+
+# --- Beside RomM's converter (#385) ---------------------------------------
+
+_CONVERTER_STATUS = """
+const store = new RommStore();
+const answer = store.loadStatus();
+await tick();
+__calls[0].resolve({
+  configured: true, connected: true,
+  converter: {
+    enabled: true,
+    platform_formats: { ngc: 'rvz', psx: 'chd' },
+    library_targets: { ngc: ['iso', 'rvz'], psx: ['chd'], wii: ['iso', 'rvz', 'wbfs'] },
+    modes: { ngc: ['dolphin_rvz', 'nkit_to_rvz'], psx: ['createcd'] },
+    error: null,
+  },
+});
+await answer;
+const ngc = { id: 7, slug: 'ngc' };
+process.stdout.write(JSON.stringify({
+  active: store.activeConverter !== null,
+  agrees: store.converterNoteFor(ngc, { mode: 'dolphin_rvz' }),
+  differs: store.converterNoteFor(ngc, { mode: 'dolphin_wia' }),
+  noRule: store.converterNoteFor(ngc, null),
+  cannot: store.converterNoteFor({ id: 11, slug: 'gba' }, null),
+  canButDoesNot: store.converterNoteFor({ id: 10, slug: 'wii' }, null),
+}));
+"""
+
+
+def test_the_converter_notes_come_from_the_one_status_read(tmp_path):
+    """The Rule flag carries both targets; the mark names what RomM cannot convert."""
+    data = _run(tmp_path, _CONVERTER_STATUS)
+
+    assert data["active"] is True, data
+    assert data["agrees"] == {
+        "kind": "converts", "target": "rvz",
+        "modes": ["dolphin_rvz", "nkit_to_rvz"], "agrees": True,
+    }, data
+    assert data["differs"]["agrees"] is False, data
+    assert data["noRule"]["agrees"] is None, data
+    assert data["cannot"] == {"kind": "cannot"}, data
+    # RomM can convert Wii, it just isn't told to: nothing to say.
+    assert data["canButDoesNot"] is None, data
+
+
+_CONVERTER_OFF = """
+const notes = [];
+for (const converter of [null, { enabled: false, platform_formats: {}, library_targets: null,
+  modes: {}, error: null }]) {
+  const store = new RommStore();
+  const answer = store.loadStatus();
+  await tick();
+  __calls[__calls.length - 1].resolve({ configured: true, connected: true, converter });
+  await answer;
+  notes.push({
+    active: store.activeConverter,
+    note: store.converterNoteFor({ id: 11, slug: 'gba' }, null),
+  });
+}
+process.stdout.write(JSON.stringify(notes));
+"""
+
+
+def test_no_banner_and_no_flags_without_a_converter_switched_on(tmp_path):
+    """A RomM without the converter, or with it off, gets no warnings at all."""
+    data = _run(tmp_path, _CONVERTER_OFF)
+    assert data == [{"active": None, "note": None}, {"active": None, "note": None}], data
+
+
+_IMPORT = """
+const store = new RommStore();
+store.ruleDefaults = { enabled: false, mode: '', timezone: 'UTC', interval_minutes: 60 };
+const saved = [];
+api.getRommRules = async () => ({
+  rules: { '10': { mode: 'dolphin_wia', enabled: true } },
+  check_rules: {}, defaults: store.ruleDefaults, state: {},
+});
+api.getRommConverterImportPlan = async () => ({
+  enabled: true,
+  rules: {
+    '7': { mode: 'dolphin_rvz', target: 'rvz' },
+    '8': { mode: 'createcd', target: 'chd' },
+    '10': { mode: 'dolphin_rvz', target: 'rvz' },
+  },
+  skipped: [{ platform_id: '9', name: 'Xbox 360', slug: 'xbox360', target: 'zar' }],
+  existing: [],
+});
+api.saveRommRules = async (rules, checkRules) => {
+  saved.push(rules);
+  return { rules, check_rules: checkRules };
+};
+const result = await store.importConverterTargets();
+process.stdout.write(JSON.stringify({ result, saved, rules: store.rules }));
+"""
+
+
+def test_import_saves_new_rules_through_the_rules_api_only_where_none_exists(tmp_path):
+    """Imported Rules go out through PUT /api/romm/rules, and a Rule is never replaced."""
+    data = _run(tmp_path, _IMPORT)
+
+    assert data["result"]["created"] == 2, data
+    assert data["result"]["skipped"][0]["name"] == "Xbox 360", data
+    assert len(data["saved"]) == 1, data
+    sent = data["saved"][0]
+    assert sent["7"]["mode"] == "dolphin_rvz", sent
+    assert sent["8"]["mode"] == "createcd", sent
+    # Off until the operator turns it on.
+    assert sent["7"]["enabled"] is False, sent
+    # The Wii Rule the operator already had is left exactly as it was.
+    assert sent["10"] == {"mode": "dolphin_wia", "enabled": True}, sent
