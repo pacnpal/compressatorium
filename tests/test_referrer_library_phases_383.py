@@ -70,7 +70,7 @@ class _AsyncFake(_Fake):
         self.thread: int | None = None
         self.cancelled = False
 
-    async def apply(self, change: ReferrerChange) -> None:
+    async def apply_async(self, change: ReferrerChange) -> None:
         self.thread = threading.get_ident()
         self._log.append(("apply", self.id))
         if self.gate is not None:
@@ -265,6 +265,29 @@ async def test_an_async_apply_runs_on_the_loop_after_the_file_phase(tmp_path, fa
     ]
     assert log[-1] == ("apply", "network")
     assert network.thread == threading.get_ident()
+
+
+@pytest.mark.asyncio
+async def test_apply_async_defaults_to_the_sync_apply_off_the_loop(tmp_path):
+    """#391: ``apply`` stays synchronous on every Referrer; ``apply_async`` is
+    the async hook, and by default it runs ``apply`` on a worker thread."""
+    import inspect
+
+    from services.referrers import Referrer
+
+    log: list = []
+    plain = _Fake("plain", log)
+    seen: list[int] = []
+    plain.apply = lambda change: seen.append(threading.get_ident())
+    image, renames = _renames(tmp_path)
+    change = plain.plan(renames)[0]
+
+    assert not inspect.iscoroutinefunction(Referrer.apply)
+    assert inspect.iscoroutinefunction(Referrer.apply_async)
+    await plain.apply_async(change)
+    assert seen and seen[0] != threading.get_ident()
+    for referrer in referrers.registry.all():
+        assert not inspect.iscoroutinefunction(referrer.apply), referrer.id
 
 
 @pytest.mark.asyncio
@@ -495,7 +518,7 @@ async def test_the_canonical_romm_root_is_kept_until_romm_settings_are_saved(
 class _CheckingAsyncFake(_AsyncFake):
     """Awaits, then checks the write guard before writing, as a real one would."""
 
-    async def apply(self, change: ReferrerChange) -> None:
+    async def apply_async(self, change: ReferrerChange) -> None:
         from services.referrers.base import check_write
 
         self._log.append(("apply", self.id))
@@ -533,7 +556,7 @@ class _SlowCleanupFake(_AsyncFake):
         super().__init__(*a, **kw)
         self.cleanup = cleanup
 
-    async def apply(self, change: ReferrerChange) -> None:
+    async def apply_async(self, change: ReferrerChange) -> None:
         self._log.append(("apply", self.id))
         try:
             await asyncio.Event().wait()

@@ -360,6 +360,26 @@ async def test_an_undo_that_fails_leaves_the_source_parked_for_the_next_run(vol,
     assert parked.read_bytes() == SOURCE_BYTES
 
 
+def test_the_fake_never_moves_a_file_out_of_its_folder(vol, romm):
+    """RomM never moves a ROM's file out of its Platform folder: a name with a
+    path in it is sanitized to its last part (spike #382), and a name that
+    still points elsewhere is refused (CodeQL py/path-injection)."""
+    from services.romm import RommClient, RommError
+
+    platform = _platform(vol)
+    client = RommClient(base_url=romm.url, token="rmm_x")
+
+    with pytest.raises(RommError) as refused:
+        client.rename_rom(ROM_ID, "..")
+    assert refused.value.status == 400
+    assert (platform / "Game.iso").read_bytes() == SOURCE_BYTES
+    assert romm.roms[ROM_ID]["fs_name"] == "Game.iso"
+
+    assert client.rename_rom(ROM_ID, "../escape.iso")["fs_name"] == "escape.iso"
+    assert (platform / "escape.iso").read_bytes() == SOURCE_BYTES
+    assert not (vol / "romm" / "escape.iso").exists()
+
+
 # ---- when the swap does not run ----------------------------------------------
 
 

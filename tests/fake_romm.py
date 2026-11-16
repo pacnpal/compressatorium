@@ -32,7 +32,9 @@ source at ``eb10d95``:
     path in it is sanitized to its last part, the name the record already has
     is a 200 no-op, a name a file already has is a 409 (``Can't rename: X
     already exists``), and a record whose file is gone is a 500 (``Failed to
-    rename ROM N on disk``). ``rename_reply`` makes it answer with that status
+    rename ROM N on disk``). A name that would still land outside the ROM's
+    own folder (``..``) is a 400: RomM never moves a file out of its folder.
+    ``rename_reply`` makes it answer with that status
     and detail instead, changing nothing; ``rename_as`` makes the next rename
     write that name instead of the one asked for (RomM sanitizing a name).
   - ``POST /api/tasks/scan`` with ``{"type": "hashes", "roms_ids": [...]}``
@@ -214,8 +216,13 @@ class FakeRomm:
         if name == rom["fs_name"]:
             return 200, dict(rom)
         old = self.file_of(rom_id)
-        new = old.with_name(name)
-        if new.exists():
+        # RomM never moves a file out of its folder: the new name must
+        # resolve to an entry directly in the ROM's own folder.
+        folder = os.path.realpath(old.parent)
+        new = os.path.realpath(os.path.join(folder, name))
+        if not new.startswith(folder + os.sep) or os.path.dirname(new) != folder:
+            return 400, {"detail": f"Invalid file name: {asked}"}
+        if os.path.lexists(new):
             return 409, {"detail": f"Can't rename: {name} already exists"}
         if not old.is_file():
             return 500, {"detail": f"Failed to rename ROM {rom_id} on disk"}

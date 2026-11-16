@@ -203,7 +203,13 @@ class RommSwapReferrer(Referrer):
             record={"rom_id": rom_id, "kept_rom_id": True},
         )]
 
-    async def apply(self, change: ReferrerChange) -> Applied:
+    def apply(self, change: ReferrerChange) -> Applied:
+        """The swap, for a caller off the event loop: it runs
+        :meth:`apply_async` on a loop of its own. The hook never calls it:
+        it awaits :meth:`apply_async` on its own loop, bounded."""
+        return asyncio.run(self.apply_async(change))
+
+    async def apply_async(self, change: ReferrerChange) -> Applied:
         plan: _Plan = change.payload
         placement = staged_placement()
         staged = placement.staged.get(plan.output) if placement is not None else None

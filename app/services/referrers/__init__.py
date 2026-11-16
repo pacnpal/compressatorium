@@ -13,7 +13,6 @@ Library's settings turn it on (#383).
 from __future__ import annotations
 
 import asyncio
-import inspect
 import os
 import threading
 from collections.abc import Callable, Mapping
@@ -248,8 +247,9 @@ def _update_sync(
     Every write is guarded (``base.check_write``, under the target's lock):
     once *abandoned* is set, or an output no longer has the identity it had
     when this started, nothing more is written. An output still staged
-    (*placement*, #391) is watched where it is staged. An ``async def`` apply
-    is not called here: it is left in ``outcome.pending`` for the event loop.
+    (*placement*, #391) is watched where it is staged. A Referrer with its own
+    ``apply_async`` is not applied here: it is left in ``outcome.pending`` for
+    the event loop.
     """
     staged = placement.staged if placement is not None else {}
     watched = [staged.get(new, new) for new in dict.fromkeys(renames.values())]
@@ -267,7 +267,8 @@ def _update_sync(
 
 
 def _is_async(referrer: Referrer) -> bool:
-    return inspect.iscoroutinefunction(referrer.apply)
+    """Whether *referrer* is applied on the event loop (``apply_async``)."""
+    return referrer.applies_async()
 
 
 def _plan_and_apply(
@@ -382,7 +383,7 @@ async def _await_bounded(
         raise ReferrerError(change.target, "cancelled")
     limit = _limit(bound)
     task = asyncio.get_running_loop().create_task(
-        referrer.apply(change),
+        referrer.apply_async(change),
         context=guarded_context(guard) if guard is not None else None,
     )
     stop = asyncio.ensure_future(cancel_event.wait()) if cancel_event is not None else None

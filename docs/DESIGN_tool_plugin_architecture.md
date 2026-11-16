@@ -3565,7 +3565,9 @@ class Referrer(ABC):                          # services/referrers/base.py
     def detect(self, image_path) -> bool      # could it point at this Image?
     def plan(self, renames) -> list[ReferrerChange]   # writes nothing
     def apply(self, change) -> Applied | None # atomic, one-time backup; raises ReferrerError
-                                              # (may be `async def`, see below)
+                                              # always synchronous
+    async def apply_async(self, change) -> Applied | None  # the async form (#391);
+                                              # default: apply() on a worker thread
     def places_output(self, image_path, renames) -> bool  # default False (#391)
 
 @dataclass(frozen=True)
@@ -3618,9 +3620,13 @@ registration order within a phase. `Phase.FILE` (`.m3u`,
 `gamelist.xml`) runs before `Phase.NETWORK` (the RomM swap): the hook runs one
 phase at a time, and a later phase runs only when every Referrer of the
 earlier ones succeeded. Its Referrers are not even planned; each gets a
-`skipped` record. `apply` may be `async def` (detected with
-`inspect.iscoroutinefunction`). A phase's plans and plain applies run on the
-detached thread as before. Its async applies wait in `ReferrerOutcome.pending`
+`skipped` record. `apply` is always synchronous, on every Referrer. A network
+Referrer also overrides `apply_async` (#391), the contract's async form,
+whose default runs `apply` on a worker thread (`asyncio.to_thread`, so the
+caller's context and its guard come along). `Referrer.applies_async()` says
+whether a Referrer overrides it, and the hook asks that, never the
+signature. A phase's plans and its other applies run on the detached thread
+as before. Its async applies (`apply_async`) wait in `ReferrerOutcome.pending`
 and run after the thread returns, on the event loop, one at a time
 (`_await_bounded`): each is raced against the job's `cancel_event` and
 bounded by the hook's bound (`bound`, else `conversion_stall_bound()`). Past
@@ -3634,8 +3640,10 @@ exception included, logged), and the job hands it its delete holds and
 travelling locks through `ReferrerOutcome.outlive(release)`, which lets them
 go from the last lingering task's done callback, never earlier. A network
 Referrer therefore never holds
-the loop: its blocking work goes in `plan` or a plain `apply` (the thread), and
-its network calls in an async `apply` (the loop).
+the loop: its blocking work goes in `plan` or `apply` (the thread), and its
+network calls in `apply_async` (the loop). Its own `apply` stays a working
+synchronous form for a caller off the loop: the RomM swap's runs
+`apply_async` on a loop of its own (`asyncio.run`).
 
 The package exposes the registry and two entry points:
 
@@ -3940,8 +3948,8 @@ Knulli, muOS) key each game's artwork, favourite flag and play count on its
   `ReferrerError` naming the gamelist: the Source and the output are kept.
 
 **The RomM swap (#391, `services/romm/swap_referrer.py`).** RomM's ROM as a
-Referrer: `id = "romm_swap"`, `opt_in = True`, `Phase.NETWORK`, with an async
-`apply`. `RommLibrary.referrer_enabled` turns it on with the
+Referrer: `id = "romm_swap"`, `opt_in = True`, `Phase.NETWORK`, with its own
+`apply_async` (and a synchronous `apply` that runs it). `RommLibrary.referrer_enabled` turns it on with the
 `swap_keep_rom_id` setting (#390). It is registered when
 `services.romm.library` is imported (it imports the job manager's hook, so it
 can't be registered from `services/referrers/__init__.py`). It takes a
@@ -4018,7 +4026,7 @@ carries RomM's own `detail` text.
   never deleted unconfirmed. `swap_journal.unfinished()` lists those rows for
   the next run (#392: finish or show as a Finding).
 
-Blocking calls in the async `apply` go off the loop with `asyncio.to_thread`
+Blocking calls in `apply_async` go off the loop with `asyncio.to_thread`
 (which copies the guard's context). A call that changes something
 (`_mutate`) is shielded: a cancel waits for it to finish before the undo
 runs, so an undo never races a move or a rename still in flight, and the

@@ -14,9 +14,12 @@ event loop, on the hook's detached thread:
   needs, one ``ReferrerChange`` per file or record. Planning writes nothing,
   so the delete confirmation can show the result.
 - ``apply(change)``: write one planned change atomically, keeping a one-time
-  backup. Raises ``ReferrerError`` when it can't. A plain ``def`` runs on the
-  detached thread; an ``async def`` (a network Referrer) is awaited on the
-  event loop under the hook's bound and its Cancel, so it must never block.
+  backup. Raises ``ReferrerError`` when it can't. Always synchronous; the
+  hook runs it on the detached thread.
+- ``apply_async(change)``: the async form. A network Referrer overrides it
+  (#391); the hook then awaits it on the event loop under the hook's bound
+  and its Cancel, so it must never block. By default it runs ``apply`` on a
+  worker thread.
 
 Two declarations (#383), checked when the Referrer is registered:
 
@@ -36,6 +39,7 @@ Source files it removed itself.
 
 from __future__ import annotations
 
+import asyncio
 import contextvars
 import os
 import threading
@@ -169,11 +173,29 @@ class Referrer(ABC):
     def apply(self, change: ReferrerChange) -> Applied | None:
         """Write *change* atomically with a one-time backup, or raise ReferrerError.
 
-        May be ``async def``: the hook then awaits it on the event loop,
-        bounded and cancellable, instead of calling it on its thread. An
-        async apply may return :class:`Applied` naming Source files it
-        removed itself.
+        Always synchronous. The hook calls it on its detached thread, unless
+        the Referrer overrides :meth:`apply_async`. May return
+        :class:`Applied` naming Source files it removed itself.
         """
+
+    async def apply_async(self, change: ReferrerChange) -> Applied | None:
+        """The async form of :meth:`apply`, for a Referrer whose apply waits
+        on the network (the RomM swap, #391).
+
+        A Referrer that overrides it is applied on the event loop: the hook
+        awaits this, bounded by its bound and raced against Cancel (#383),
+        instead of calling :meth:`apply` on its thread. It must never block
+        the loop. By default it runs the synchronous :meth:`apply` on a worker
+        thread, carrying the caller's context (so ``check_write`` sees the
+        hook's guard).
+        """
+        return await asyncio.to_thread(self.apply, change)
+
+    @classmethod
+    def applies_async(cls) -> bool:
+        """Whether this Referrer overrides :meth:`apply_async`, so the hook
+        applies it on the event loop."""
+        return cls.apply_async is not Referrer.apply_async
 
     def places_output(self, image_path: str, renames: Mapping[str, str]) -> bool:
         """Whether this Referrer, when on, moves a staged output into place
