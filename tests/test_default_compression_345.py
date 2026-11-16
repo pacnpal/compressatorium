@@ -10,6 +10,7 @@ and read the dolphin-tool command it built. The CLI's are in ``test_cli_306``.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 from collections import OrderedDict
 from pathlib import Path
 
@@ -81,12 +82,12 @@ async def test_a_single_job_takes_the_tools_default_codec(env, mode) -> None:
         file_path=iso, mode=ConversionMode(mode),
     ))
     # The job records the codec it runs with (the Ledger, the re-run fast path).
-    assert job.compression == registry.get("dolphin").default_compression
+    assert job.compression == registry.spec(mode).default_compression
 
     await _run_all()
 
     (cmd,) = env["commands"]
-    assert _codec(cmd) == registry.get("dolphin").default_compression
+    assert _codec(cmd) == registry.spec(mode).default_compression
 
 
 @pytest.mark.asyncio
@@ -104,7 +105,7 @@ async def test_an_auto_convert_takes_the_tools_default_codec(env) -> None:
     await _run_all()
 
     (cmd,) = env["commands"]
-    assert _codec(cmd) == registry.get("dolphin").default_compression
+    assert _codec(cmd) == registry.spec(row.mode).default_compression
 
 
 @pytest.mark.asyncio
@@ -127,7 +128,8 @@ async def test_a_chosen_codec_still_wins(env) -> None:
     # Nothing chosen: RVZ and WIA need a codec, so the tool's own is named.
     ("dolphin_rvz", None, "zstd"),
     ("dolphin_rvz", "", "zstd"),
-    ("dolphin_wia", None, "zstd"),
+    # WIA's own default: Dolphin refuses zstd in a WIA container.
+    ("dolphin_wia", None, "none"),
     # A level with "tool default" for the codec keeps the level.
     ("dolphin_rvz", ":19", "zstd:19"),
     # A chosen codec is never second-guessed.
@@ -149,5 +151,50 @@ def test_a_codec_mode_with_no_declared_default_sends_no_level(monkeypatch) -> No
     a setting nobody chose, so the level is dropped rather than fail at the tool."""
     tool = registry.for_mode("dolphin_rvz")
     monkeypatch.setattr(tool, "default_compression", None)
+    # And the mode's own default, which comes first.
+    rvz = tool.spec("dolphin_rvz")
+    others = [m for m in tool.modes if m is not rvz]
+    no_default = dataclasses.replace(rvz, default_compression=None)
+    monkeypatch.setattr(tool, "modes", [no_default, *others])
 
     assert tool.compression_for("dolphin_rvz", ":19") is None
+
+
+# --------------------------------------------------------------------------- #
+# Each container's own codecs (codex 4581559119)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("mode", ["dolphin_rvz", "dolphin_wia"])
+def test_each_modes_default_is_a_codec_its_container_takes(mode) -> None:
+    """dolphin-tool refuses zstd in a WIA container, so one tool-wide default
+    cannot serve both. The default is the mode's, checked against the plugin's
+    table of what each container accepts, not against a string written here."""
+    from services.tools.dolphin import CONTAINER_CODECS, container_of
+
+    allowed = CONTAINER_CODECS[container_of(mode)]
+    resolved = registry.for_mode(mode).compression_for(mode, None)
+    assert resolved.split(":", 1)[0] in allowed
+    assert registry.spec(mode).codecs == allowed
+
+
+@pytest.mark.asyncio
+async def test_a_wia_job_with_zstd_is_refused_before_the_tool_runs(env) -> None:
+    from app.models import ConversionMode, JobCreateRequest
+    from app.routes import convert as convert_routes
+    from fastapi import HTTPException
+
+    iso = _gamecube(env["tmp"] / "gc" / "Melee.iso")
+    with pytest.raises(HTTPException) as refused:
+        await convert_routes.create_job(JobCreateRequest(
+            file_path=iso, mode=ConversionMode.DOLPHIN_WIA, compression="zstd:19",
+        ))
+
+    assert refused.value.status_code == 400
+    assert "zstd" in refused.value.detail
+    # A job that got past the routes (a Rule saved before this) fails at the
+    # plugin, with the same reason, and dolphin-tool never runs.
+    tool = registry.for_mode("dolphin_wia")
+    with pytest.raises(ValueError, match="zstd"):
+        tool.convert(iso, str(env["tmp"] / "Melee.wia"), "dolphin_wia", compression="zstd")
+    assert env["commands"] == []

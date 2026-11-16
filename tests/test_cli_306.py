@@ -2687,7 +2687,7 @@ def test_rvz_and_wia_take_the_tools_default_codec(
 
     assert code == 0, lines
     (cmd,) = commands
-    assert _codec(cmd) == registry.get("dolphin").default_compression
+    assert _codec(cmd) == registry.spec(f"dolphin_{target}").default_compression
 
 
 def test_an_explicit_codec_still_wins(volume, dolphin, capsys, monkeypatch):

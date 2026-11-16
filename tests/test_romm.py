@@ -2116,8 +2116,15 @@ def test_a_codec_mode_with_no_declared_default_drops_the_level(monkeypatch) -> N
     from services.romm import auto as romm_auto
     from services.tools import registry
 
+    import dataclasses
+
     tool = registry.for_mode("dolphin_rvz")
     monkeypatch.setattr(tool, "default_compression", None)
+    # And the mode's own default, which comes first.
+    rvz = tool.spec("dolphin_rvz")
+    others = [m for m in tool.modes if m is not rvz]
+    no_default = dataclasses.replace(rvz, default_compression=None)
+    monkeypatch.setattr(tool, "modes", [no_default, *others])
     rule = romm_auto.normalize_rule({
         "mode": "dolphin_rvz", "compression_level": 19,
     })

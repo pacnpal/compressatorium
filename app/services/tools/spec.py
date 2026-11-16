@@ -40,6 +40,14 @@ class ModeSpec:
     # `ToolPlugin.compression_for`. A mode that works without one (chdman picks
     # its own best codecs) leaves it False and is sent nothing.
     requires_codec: bool = False
+    # The codecs this mode accepts, when the tool restricts them per mode
+    # (dolphin-tool refuses zstd in a WIA container); empty for no opinion.
+    # The routes refuse any other, and so does the plugin before its tool runs.
+    codecs: frozenset[str] = frozenset()
+    # This mode's default codec, when it differs from the tool's
+    # (`ToolPlugin.default_compression`): RVZ and WIA each have their own.
+    # `ToolPlugin.compression_for` prefers it.
+    default_compression: str | None = None
     supports_delete_on_verify: bool = False
     # Whether the tool can verify this mode's product *without* the question of
     # deleting anything. Implied by `supports_delete_on_verify` (deleting needs
@@ -137,8 +145,10 @@ class ChainSpec:
     verify_step: int = -1           # index of the step whose tool verifies the final output
     supports_compression: bool = False
     supports_compression_level: bool = False
-    # Structural parity with ModeSpec: `ToolPlugin.compression_for` reads it.
+    # Structural parity with ModeSpec: `ToolPlugin.compression_for` reads these.
     requires_codec: bool = False
+    codecs: frozenset[str] = frozenset()
+    default_compression: str | None = None
     supports_delete_on_verify: bool = True   # of the ORIGINAL source, gated on final verify
     # Structural parity with ModeSpec: a chain's final step verifies the
     # output, and its delete flag already implies that, so this stays False and

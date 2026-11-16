@@ -144,6 +144,22 @@ class ConversionStore {
     return registry.specFor(this.mode);
   }
 
+  /**
+   * The one codec a single-codec mode (Dolphin RVZ/WIA) sends: the first one
+   * selected, unless the current mode doesn't take it, in which case the
+   * mode's own default. The selection is kept per tool, so a codec picked for
+   * RVZ (zstd) must not reach WIA, which refuses it (#345). 'none' when
+   * nothing is selected.
+   */
+  get singleCodec() {
+    const codec = this.compressionSelection.find((c) => c && c !== 'none') ?? 'none';
+    const allowed = registry.codecsForMode(this.mode).map((c) => c.value);
+    if (allowed.length && !allowed.includes(codec)) {
+      return registry.defaultCompressionForMode(this.mode)?.[0] ?? 'none';
+    }
+    return codec;
+  }
+
   get supportsCompression() {
     return !!this.currentSpec?.supportsCompression;
   }
@@ -296,9 +312,9 @@ class ConversionStore {
       return 'none';
     }
     if (this.supportsCompressionLevel) {
-      // Dolphin RVZ/WIA: pick the first non-'none' codec and pair with level.
-      const codec = selection[0];
-      if (!codec) return 'none';
+      // Dolphin RVZ/WIA: one codec the mode takes, paired with the level.
+      const codec = this.singleCodec;
+      if (codec === 'none') return 'none';
       // Normalize the level, the picker's number input lets the user
       // clear it temporarily (browsers allow empty string). If we
       // forwarded that we'd build "<codec>:" and the backend would

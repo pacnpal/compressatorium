@@ -192,7 +192,7 @@
    */
   function defaultCodecLabel(mode) {
     const spec = specFor(mode);
-    const fallback = toolFor(mode)?.defaultCompression?.[0];
+    const fallback = registry.defaultCompressionForMode(mode)?.[0];
     if (!spec?.supportsCompression || !fallback) return 'Tool default';
     return `Tool default (${fallback})`;
   }
@@ -207,7 +207,8 @@
   // joins them as `codec:level`).
 
   function codecsFor(mode) {
-    return toolFor(mode)?.compressionCodecs ?? [];
+    // The mode's own codecs where it names them (WIA refuses zstd), else the tool's.
+    return registry.codecsForMode(mode);
   }
 
   function codecStyleFor(mode) {

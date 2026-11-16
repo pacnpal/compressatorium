@@ -11,14 +11,15 @@
   // (optionally) a level range; this file does not need editing.
 
   import { conversion } from '$lib/stores/conversion.svelte.js';
-  import { DEFAULT_COMPRESSION_LEVEL_RANGE } from '$lib/tools/registry.js';
+  import { DEFAULT_COMPRESSION_LEVEL_RANGE, registry } from '$lib/tools/registry.js';
   import { toast } from 'svelte-sonner';
   import Check from '@lucide/svelte/icons/check';
   import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
 
   const tool = $derived(conversion.currentTool);
   const spec = $derived(conversion.currentSpec);
-  const codecs = $derived(tool?.compressionCodecs ?? []);
+  // The mode's own codecs where it names them (WIA refuses zstd), else the tool's.
+  const codecs = $derived(registry.codecsForMode(spec?.mode));
   const style = $derived(tool?.compressionStyle ?? 'none');
   const selection = $derived(conversion.compressionSelection);
   const level = $derived(conversion.compressionLevel);
@@ -28,9 +29,7 @@
   const supports = $derived(
     !!(spec?.supportsCompression || spec?.supportsCompressionLevel),
   );
-  const singleCodec = $derived(
-    selection.find((c) => c && c !== 'none') ?? 'none',
-  );
+  const singleCodec = $derived(conversion.singleCodec);
   // True when the current tool's settings already match its defaults; used to
   // disable the Reset button so it's not a silent no-op.
   const atDefault = $derived(conversion.isCompressionDefault);

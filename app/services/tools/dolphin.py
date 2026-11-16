@@ -33,9 +33,30 @@ from .spec import ModeKind, ModeSpec
 # GameCube/Wii disc image, the same hash Redump indexes.
 DISC_SHA1_KIND = "gc_wii_disc_sha1"
 
+# The codecs dolphin-tool accepts in each container. From its
+# Source/Core/DolphinTool/ConvertCommand.cpp: a WIA container refuses zstd and
+# an RVZ container refuses purge ("Compression type is not supported for the
+# container format"), and its `--compression` choices leave purge out entirely.
+CONTAINER_CODECS = {
+    "rvz": frozenset({"none", "zstd", "bzip2", "lzma", "lzma2"}),
+    "wia": frozenset({"none", "bzip2", "lzma", "lzma2"}),
+}
+# Each container's default, as Dolphin's own convert dialog picks it
+# (Source/Core/DolphinQt/ConvertDialog.cpp, OnFormatChanged): RVZ selects
+# Zstandard ("recommended"); WIA selects nothing, so it stays on its first
+# entry, No Compression.
+CONTAINER_DEFAULTS = {"rvz": "zstd", "wia": "none"}
+
+
+def container_of(mode: str) -> str:
+    """The container a Dolphin mode writes (``rvz``, ``wia``, ...)."""
+    return DOLPHIN_OUTPUT_FORMATS[mode][0]
+
+
 # mode -> (label, output_ext, kind, supports_compression, supports_level).
 # A mode with a codec picker is RVZ or WIA, which dolphin-tool refuses without
-# `-c`: those two require a codec (`ModeSpec.requires_codec`).
+# `-c`: those two require a codec (`ModeSpec.requires_codec`), and take their
+# container's codecs and default from the tables above.
 _MODES = {
     "dolphin_rvz": ("Dolphin RVZ", ".rvz", ModeKind.COMPRESS, True, True),
     "dolphin_wia": ("Dolphin WIA", ".wia", ModeKind.COMPRESS, True, True),
@@ -63,6 +84,13 @@ def _build_modes() -> list[ModeSpec]:
             supports_compression=supports_compression,
             supports_compression_level=supports_level,
             requires_codec=supports_compression,
+            codecs=(
+                CONTAINER_CODECS[container_of(mode)] if supports_compression
+                else frozenset()
+            ),
+            default_compression=(
+                CONTAINER_DEFAULTS[container_of(mode)] if supports_compression else None
+            ),
             supports_delete_on_verify=True,
             # Every input and output extension has a disc-SHA1 content digest.
             supports_round_trip=True,
@@ -158,6 +186,9 @@ class DolphinTool(BaseTool):
         split: bool = False,  # noqa: ARG002 - split applies only to makeps3iso
         cancel_event: asyncio.Event | None = None,
     ) -> AsyncGenerator[dict, None]:
+        # A codec the container refuses (a Rule saved before the routes
+        # checked) fails here, with the reason, before dolphin-tool runs.
+        self.refuse_unsupported_codec(mode, compression)
         return self._service.convert(
             input_path, output_path, mode,
             compression=compression, cancel_event=cancel_event,

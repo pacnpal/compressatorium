@@ -5457,12 +5457,27 @@ refuses RVZ and WIA without `-c`. Those modes declare
 **`ModeSpec.requires_codec=True`**; a mode that works without one (chdman picks
 its own best codecs) leaves it False and is sent nothing.
 
+The codecs and the default can differ per mode of one tool: dolphin-tool
+refuses zstd in a WIA container (`DolphinTool/ConvertCommand.cpp`), so one
+tool-wide default cannot serve RVZ and WIA. **`ModeSpec.codecs`** lists the
+codecs a mode takes (empty for no opinion) and **`ModeSpec.default_compression`**
+its own default; the dolphin plugin fills both from its `CONTAINER_CODECS` and
+`CONTAINER_DEFAULTS` tables (RVZ: zstd, as Dolphin's convert dialog selects;
+WIA: none, the dialog's first entry, since it selects nothing for WIA). The
+routes refuse a codec outside `codecs` (`_validate_request_compression`), and
+the plugin refuses it again before its tool runs (`refuse_unsupported_codec`),
+for a Rule saved before. The frontend mirrors both per mode in `registry.js`
+(`compressionCodecs`, `defaultCompression` on the mode entry, read through
+`registry.codecsForMode` / `defaultCompressionForMode`), so the pickers never
+offer or send a codec the mode refuses; `test_frontend_parity_186` fails on
+drift.
+
 **`ToolPlugin.default_compression: str | None`** names the codec to use in both
 cases, so the resolution stays a per-tool declaration instead of an if-ladder on
 tool identity at the call site. **`ToolPlugin.compression_for(mode,
-compression)`** (`BaseTool` implements it) applies it: a chosen codec is
-returned as it is; on a codec-offering mode, `":level"` becomes
-`"<default>:level"` and nothing chosen becomes `"<default>"` when the mode
+compression)`** (`BaseTool` implements it) applies it, the mode's own default
+first: a chosen codec is returned as it is; on a codec-offering mode,
+`":level"` becomes `"<default>:level"` and nothing chosen becomes `"<default>"` when the mode
 `requires_codec`; a mode without a codec picker keeps its string (nsz's
 meaningful empty part survives); and with no declared default a level is
 dropped and logged rather than send a job the tool will reject or invent a

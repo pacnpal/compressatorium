@@ -26,6 +26,14 @@ from .spec import ModeSpec
 logger = get_logger("tools.base")
 
 
+def unsupported_codec_message(spec: ModeSpec, codec: str) -> str:
+    """Why *codec* is refused for *spec*'s mode, naming the ones it takes."""
+    return (
+        f"{spec.label} can't use {codec} compression; it takes "
+        f"{', '.join(sorted(spec.codecs))}"
+    )
+
+
 class EmbeddedHashUnavailable(Exception):
     """A tool could not derive its embedded content hash for a file.
 
@@ -589,7 +597,9 @@ class BaseTool:
             # Nothing chosen and nothing needed: the tool picks (chdman's own
             # default is better than naming one).
             return compression or None
-        if not self.default_compression:
+        # The mode's own default first (RVZ and WIA differ), then the tool's.
+        default = spec.default_compression or self.default_compression
+        if not default:
             if level:
                 # A level cannot be sent without a codec, and inventing one
                 # would convert with a setting nobody chose: drop it, say so.
@@ -598,7 +608,17 @@ class BaseTool:
                     "default; ignoring the level", mode,
                 )
             return None
-        return f"{self.default_compression}:{level}" if level else self.default_compression
+        return f"{default}:{level}" if level else default
+
+    def refuse_unsupported_codec(self, mode: str, compression: str | None) -> None:
+        """Raise ``ValueError`` for a codec *mode* does not take (``ModeSpec.codecs``).
+
+        A no-op for a mode that names no codecs, or when none was chosen.
+        """
+        allowed = self.spec(mode).codecs
+        codec = (compression or "").partition(":")[0]
+        if allowed and codec and codec not in allowed:
+            raise ValueError(unsupported_codec_message(self.spec(mode), codec))
 
     @staticmethod
     def _basic_info_fields(raw: dict) -> dict:

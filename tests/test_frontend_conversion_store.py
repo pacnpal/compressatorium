@@ -960,3 +960,31 @@ def test_an_aborted_run_s_planner_sends_no_further_snapshot_requests(tmp_path):
     assert data["queued"] == 0, data
     # What the late request did record is still retired.
     assert data["retired"] == [[1]], data
+
+
+def test_a_codec_picked_for_rvz_never_reaches_wia(tmp_path):
+    """#345, codex 4581559119: the codec selection is kept per tool, so zstd
+    picked for RVZ is still selected when the mode turns to WIA, which
+    dolphin-tool refuses with zstd. The store sends the mode's own default
+    instead; RVZ still gets what was picked."""
+    data = _run(tmp_path, """
+const CODECS = {
+  dolphin_rvz: ['none', 'zstd', 'bzip2', 'lzma', 'lzma2'],
+  dolphin_wia: ['none', 'bzip2', 'lzma', 'lzma2'],
+};
+const DEFAULTS = { dolphin_rvz: ['zstd'], dolphin_wia: ['none'] };
+registry.specFor = () => ({ supportsCompression: true, supportsCompressionLevel: true });
+registry.codecsForMode = (m) => (CODECS[m] ?? []).map((value) => ({ value }));
+registry.defaultCompressionForMode = (m) => DEFAULTS[m];
+const store = new ConversionStore();
+store.compressionSelection = ['zstd'];
+store.compressionLevel = '19';
+store.mode = 'dolphin_rvz';
+const rvz = store.compressionValue;
+store.mode = 'dolphin_wia';
+const wia = store.compressionValue;
+store.compressionSelection = ['lzma2'];
+const chosen = store.compressionValue;
+process.stdout.write(JSON.stringify({ rvz, wia, chosen }));
+""")
+    assert data == {"rvz": "zstd:19", "wia": "none", "chosen": "lzma2:19"}

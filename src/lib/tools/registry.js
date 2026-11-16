@@ -306,7 +306,17 @@ export const TOOLS = [
         outputExt: '.wia', inputExtensions: DOLPHIN_SOURCE_EXTS,
         supportsCompression: true,  supportsCompressionLevel: true,
         supportsDeleteOnVerify: true, supportsRoundTrip: true,
-        allowsArchiveInput: true },
+        allowsArchiveInput: true,
+        // dolphin-tool refuses zstd in a WIA container, and Dolphin's own
+        // convert dialog leaves WIA on No compression. Mirrors the backend's
+        // `ModeSpec.codecs` / `default_compression` for this mode (#345).
+        compressionCodecs: [
+          { value: 'bzip2', label: 'bzip2', hint: 'Good ratio, slower' },
+          { value: 'lzma',  label: 'lzma' },
+          { value: 'lzma2', label: 'lzma2' },
+          { value: 'none',  label: 'No compression' },
+        ],
+        defaultCompression: ['none'] },
       { mode: 'dolphin_gcz', kind: 'compress', label: 'Dolphin GCZ', group: 'dolphin',
         outputExt: '.gcz', inputExtensions: DOLPHIN_SOURCE_EXTS,
         supportsCompression: false, supportsCompressionLevel: false,
@@ -856,6 +866,18 @@ export const registry = {
 
   /** How many codecs this mode's tool accepts at once (Infinity if unbounded). */
   maxCodecsFor: (mode) => byMode.get(mode)?.tool?.maxCodecs ?? Infinity,
+
+  /** The codecs a picker offers for `mode`: the mode's own list, else its tool's. */
+  codecsForMode: (mode) => {
+    const entry = byMode.get(mode);
+    return entry?.spec?.compressionCodecs ?? entry?.tool?.compressionCodecs ?? [];
+  },
+
+  /** The codec(s) a picker starts on for `mode`: the mode's own, else its tool's. */
+  defaultCompressionForMode: (mode) => {
+    const entry = byMode.get(mode);
+    return entry?.spec?.defaultCompression ?? entry?.tool?.defaultCompression;
+  },
 
   /** Pick the tool whose verify_extensions match a given file path, or null.
    *  Pure extension match — use `verifyToolForPath` when an entry's backend
