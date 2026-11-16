@@ -37,7 +37,8 @@ from services.job_manager import (
     is_external_mode,
     job_manager,
 )
-from services import referrers
+from services import libraries, referrers
+from services.referrers import ReferrerError
 from services.platform_detect import plan_auto
 from services.preferences_store import preferences_store
 from services.romz import romz_service
@@ -881,6 +882,16 @@ def _renamed_output(mode: str, output_path: str, duplicate_action: DuplicateActi
     return get_unique_output_path(output_path, mode) if exists or locked else output_path
 
 
+async def _image_library(image_path: str):
+    """The Library holding *image_path* (None when none does), off the loop
+    and bounded. Raises ReferrerError when it can't tell, so the confirmation
+    says the Source will be kept, as the job would (#383)."""
+    try:
+        return await off_loop_bounded(libraries.library_for, image_path)
+    except HTTPException as exc:
+        raise ReferrerError("the Library", str(exc.detail)) from exc
+
+
 async def _add_referrer_changes(
     item: dict, mode: str, file_path: str, output_dir: str | None,
     duplicate_action: DuplicateAction = DuplicateAction.SKIP,
@@ -916,6 +927,7 @@ async def _add_referrer_changes(
     try:
         changes = await referrers.plan_changes_bounded(
             image_path, {p: output_path for p in delete_paths},
+            await _image_library(image_path),
         )
     except Exception as exc:
         # Any planning failure is shown as "the source will be kept" (the job
