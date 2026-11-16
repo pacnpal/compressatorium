@@ -14,6 +14,14 @@
   them. The library scan reads a disc ID from the CHD itself (its sectors, the
   Dreamcast IP.BIN tag or a companion file) and no longer tries to tag it.
   When a disc ID cannot be read or stored, a warning names the file.
+- **An output found bad on a re-check stops showing as checked** (#351). When
+  a later check finds an output bad (the retried delete of a Source kept for
+  a reader, or Verify in the file browser), the output now loses its Intact or
+  Round-tripped badge, `/api/verified` stops listing it, and the delete
+  confirmation warns again, as after a failed check Rule. The Source is still
+  kept. A check that times out, can't run, or can't read the file (a
+  permission or disk error, a share that went away) leaves the badge as it
+  was; for an eXoDOS `.dosz` such an error used to count as a failed check.
 - **Dolphin WIA and GCZ conversions work** (#349). Every WIA and GCZ job failed
   with "Block size must be set for GCZ/RVZ/WIA", because only RVZ was given a
   block size. Each now gets Dolphin's own default: 2 MiB for WIA, 128 KiB for
@@ -22,6 +30,22 @@
   19): the level moves to that codec's default, and the slider and the number
   box always show the same value. A level typed past the codec's range is held
   to it, in the convert panel and in a Rule.
+
+- **Starting with `PUID`/`PGID` no longer fails when another container is
+  using `/config`** (#350). The ownership fix-up at start walked `/config`
+  with `chown -R`, and a SQLite `-wal`/`-shm` file that vanished mid-walk
+  stopped the container (seen when a second `compressatorium run-rules`
+  started while the first ran). Now:
+  - only files that don't already have the right owner are changed, so a
+    restart rewrites nothing that is already right;
+  - a file that vanishes during the walk is skipped; any other error is
+    printed, and still stops the container;
+  - symlinks are never followed;
+  - a mounted `/data/games` library is never rewritten. The old check for a
+    bind mount looked for "bind" in `findmnt`'s mount options, which never
+    list it, so it never matched. `/config`, the app's own state, is still
+    fixed whether it is mounted or not.
+
 - **eXoDOS repack: leftovers and repeat lookups** (#331).
   - A repack killed hard (SIGKILL, power loss) no longer leaves its hidden
     `.partial-*.tmp` file behind for good. It is removed at the next start,
