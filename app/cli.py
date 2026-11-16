@@ -24,7 +24,11 @@ drives the same pieces the web UI does, in-process:
 
 Exit status: 0 when everything finished or there was nothing to do, 1 when any
 Image failed (or was cancelled), 2 on bad arguments, 3 when ``run-rules`` finds
-another scheduler (a server) using the data directory.
+another scheduler (a server) using the data directory, 4 when ``verify``
+failed nothing but could not check at least one Image (``uncheckable``: no
+verdict, e.g. a file it could not open, or its own timeout). 2 and 3 stop the
+command before anything is checked or run; among the Images checked the worst
+wins: 1, then 4, then 0.
 """
 from __future__ import annotations
 
@@ -48,6 +52,9 @@ EXIT_OK = 0
 EXIT_FAILED = 1
 EXIT_USAGE = 2
 EXIT_LOCKED = 3
+# `verify`: nothing failed, but at least one Image could not be checked here
+# (no verdict: a file the verifier could not open, a stall), #370.
+EXIT_UNCHECKED = 4
 
 # `--compression default`: the tool's own default, not the saved web UI choice.
 TOOL_DEFAULT = "default"
@@ -111,10 +118,21 @@ class Item:
 # --------------------------------------------------------------------------- #
 
 
+_EXIT_STATUS = (
+    "exit status: 0 done (or nothing to do); 1 an Image or job failed; 2 bad "
+    "arguments or a path that does not exist; 3 run-rules found another "
+    "scheduler; 4 verify failed nothing but could not check an Image "
+    "(uncheckable). Order: 2 and 3 stop the command before anything is "
+    "checked or run; among the Images checked, the worst wins: 1, then 4, "
+    "then 0."
+)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="compressatorium",
         description="Convert and verify game Images, and run Rules, without the web UI.",
+        epilog=_EXIT_STATUS,
     )
     sub = parser.add_subparsers(dest="command", required=True, metavar="COMMAND")
 
@@ -165,7 +183,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _common(convert)
 
-    verify = sub.add_parser("verify", help="check Images are Intact")
+    verify = sub.add_parser("verify", help="check Images are Intact", epilog=_EXIT_STATUS)
     verify.add_argument("paths", nargs="+", metavar="PATH")
     verify.add_argument(
         "--since", metavar="AGE",
@@ -1243,8 +1261,12 @@ async def _check_held(
 ) -> dict:
     """The check and its record, run while ``_verify_one`` holds the file.
     ``read`` is the file checked; ``path`` the one recorded."""
-    from services.subprocess_runner import collect_abandonment, stops_verify_batch
-    from services.verification_store import record_check
+    from services.subprocess_runner import (
+        collect_abandonment,
+        stops_verify_batch,
+        verify_exception_event,
+    )
+    from services.verification_store import cannot_check, record_check
 
     read = read or path
     bound = await tool.verify_timeout(read)
@@ -1254,11 +1276,18 @@ async def _check_held(
         try:
             result = await asyncio.wait_for(tool.verify(read), timeout=bound or None)
         except asyncio.TimeoutError:
-            result = {"error": f"Verification timed out after {bound}s"}
+            # Its bound ran out: nothing was judged, so no verdict (#351,
+            # #370), the same as the routes' own timeout. The record stays.
+            result = {
+                "valid": False, "timed_out": True, "inconclusive": True,
+                "error": f"Verification timed out after {bound}s",
+            }
         except Exception as exc:
-            # One bad file must not stop the rest: it is reported failed.
+            # One bad file must not stop the rest. Read by the shared rule
+            # (`verify_exception_event`): a file that could not be read is no
+            # verdict, the tool rejecting the data is one.
             logger.debug("Verification of %s could not run", read, exc_info=True)
-            result = {"error": f"Verification could not run: {exc}"}
+            result = verify_exception_event(exc, prefix="Verification could not run")
     if stops_verify_batch(result, abandoned):
         line["_stop"] = True
     # The shared rule every re-check records by (#351): a pass refreshes the
@@ -1271,11 +1300,16 @@ async def _check_held(
         line["status"], line["reason"] = "intact", result.get("message")
     elif result.get("uncheckable"):
         # The tool won't check it here (an archive safety rule refused it):
-        # not a failure.
+        # not a failure, and nothing to retry.
         line["status"], line["reason"] = "skipped", result.get("message")
+    elif cannot_check(result):
+        # No verdict this time (a file the verifier could not open, a stall,
+        # this command's own bound, a missing prerequisite): the batch
+        # verify's word, and its own exit code, never a failure (#370).
+        line["status"] = "uncheckable"
+        line["reason"] = result.get("error") or result.get("message")
     else:
-        # Failed, or no verdict (a timeout or stall, a file that could not be
-        # read, a tool that would not run, a check cut short).
+        # A real verdict that it is bad.
         line["status"] = "failed"
         line["reason"] = result.get("error") or result.get("message")
     return line
@@ -1302,6 +1336,7 @@ async def verify(args, printer: Printer, state: RunState) -> int:
     # Once, on the final input set, before any verifier is chosen.
     await run_in_threadpool(_skip_outside_volumes, items)
     failed = False
+    unchecked = False  # an Image with no verdict: exit 4 unless one failed
     # Asked once per tool per run, dry runs included: a probe can walk the
     # volumes (nsz looking for prod.keys), so never once per file.
     ready: dict[str, bool] = {}
@@ -1362,13 +1397,16 @@ async def verify(args, printer: Printer, state: RunState) -> int:
         )
         stop = line.pop("_stop", False)
         failed = failed or line["status"] == "failed"
+        unchecked = unchecked or line["status"] == "uncheckable"
         printer.line(line)
         if stop:
             # The shared stop rule (`stops_verify_batch`), as the web UI's
             # batch verify applies it.
             print(f"compressatorium: {BATCH_STOPPED_MESSAGE}", file=sys.stderr)
             return EXIT_FAILED
-    return EXIT_FAILED if failed or state.stopping else EXIT_OK
+    if failed or state.stopping:
+        return EXIT_FAILED
+    return EXIT_UNCHECKED if unchecked else EXIT_OK
 
 
 # --------------------------------------------------------------------------- #

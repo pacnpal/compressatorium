@@ -4,6 +4,14 @@
 
 ### Fixed
 
+- **`compressatorium verify` tells an unreadable file from a corrupt one**
+  (#370). A file the command can't open (its permissions, a share that went
+  away), or whose check runs past its time limit, now prints `uncheckable`
+  with the reason, as the web's batch verify says, instead of `failed`, and
+  its stored result is kept. The command exits `4` when nothing failed but
+  something couldn't be checked; a corrupt file still exits `1`, and a path
+  that doesn't exist still exits `2` before anything is checked. Among the
+  files checked the worst wins: `1`, then `4`, then `0`.
 - **A later volume of a multi-volume RAR lists as a plain file** (#369).
   `Pack.part2.rar` showed as an archive of its own with 0 items, and every
   listing or search of its folder logged an error ("Need to start from first
@@ -11,7 +19,6 @@
   nothing is logged; `Pack.part1.rar` lists the whole set. A single-volume
   RAR that is only named like a later part (`x.part2.rar`) still lists its
   members.
-
 - **A Rule offers a compression level only when its codec takes one** (#363).
   A Dolphin WIA Rule on "Tool default (none)" or "No compression" showed a
   level box ("1–22. Blank uses 19.") and saved what was typed there. It now

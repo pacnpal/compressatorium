@@ -1998,7 +1998,11 @@ compressatorium run-rules --dry-run
 **`verify PATH... [--since AGE]`** checks each Image is Intact and stores the
 result. `--since 30d` (also `12h`, `2w`) skips Images checked within that window.
 A check that fails drops the stored result; one that times out or cannot run
-leaves it and reports the error.
+leaves it and reports the error. Each line's status is `intact`, `failed`,
+`uncheckable` (no verdict this time, such as a file the command can't open
+or a check that ran past its time limit; the stored result stays, as in the
+web's batch verify) or `skipped` (refused
+by the archive safety rules, or no tool checks it here).
 
 **`run-rules [--library ID]`** does one pass over the Rules stored in the web UI
 for every Library (RomM and each registered folder Library), waits for the jobs
@@ -2043,8 +2047,14 @@ Every command takes `--dry-run` (print the plan, convert or check nothing) and
 job, on stdout).
 Warnings and errors always go to stderr; `-v` adds INFO messages there. Exit
 status: `0` when everything finished or there was nothing to do, `1` when any
-Image or job failed (for `run-rules`, also a sweep error), `2` on bad arguments,
-`3` when `run-rules` found another scheduler using the data directory.
+Image or job failed (for `run-rules`, also a sweep error), `2` on bad arguments
+(a path that does not exist included), `3` when `run-rules` found another
+scheduler using the data directory, `4` when `verify` failed nothing but could
+not check at least one Image (`uncheckable`: no verdict, such as a file it
+can't open or a check that ran past its time limit). `2` and `3` stop the
+command before anything is checked or run, so a missing path checks nothing;
+among the Images checked the worst wins: `1`, then `4`, then `0`, so a corrupt
+file is never hidden behind a softer code.
 
 Each Image is planned on its own, so one bad file is reported and the others
 still convert. When `MAX_QUEUE_DEPTH` is set, jobs are fed in batches below it.

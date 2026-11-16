@@ -4697,7 +4697,16 @@ whose open succeeds but whose exit still means "could not read"; such a tool
 would say so through the plugin contract, not a branch on its name. The batch
 verify counts an `inconclusive` file with the uncheckable ones ("can't be
 checked"), not as failed, and the file menu's Verify warns rather than
-reporting a failure.
+reporting a failure. The batch and the CLI read "could not be checked" through
+one function, `verification_store.cannot_check` (`uncheckable` or
+`inconclusive`, #370). The CLI's `verify` prints an `inconclusive` file as
+`uncheckable` with the reason and exits 4 (`cli.EXIT_UNCHECKED`) when nothing
+failed. Its own timeout is no verdict too (`timed_out`, `inconclusive`), and an
+exception from a check is read by `verify_exception_event`, as the check Rules
+read it. An archive the safety rules refuse stays `skipped` (exit unaffected),
+a real verdict stays `failed` (exit 1), and a path that does not exist is
+still a usage error (exit 2), raised before anything is checked; exit 3 is
+`run-rules` only. Among the Images checked the worst wins: 1, then 4, then 0.
 
 `inconclusive` is an allowlist, never a catch-all. An exception a check raises
 is classified by one helper, `subprocess_runner.verify_exception_event`, for

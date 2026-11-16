@@ -46,6 +46,15 @@ def check_verdict(result: dict) -> bool | None:
     return False
 
 
+def cannot_check(result: dict) -> bool:
+    """Whether a ``verify`` result says the file could not be checked here:
+    refused by this app's own rules (``uncheckable``) or not checkable this
+    time (``inconclusive``: a file the verifier could not open, a stall, a
+    missing prerequisite). No verdict either way, so it is neither Intact nor
+    failed (#370). The one reading for the web's batch verify and the CLI."""
+    return bool(result.get("uncheckable") or result.get("inconclusive"))
+
+
 async def record_check(store: "VerificationStore", path: str, result: dict) -> bool | None:
     """Record a plain re-check of *path* in *store*, as every re-check does
     (#351): a pass refreshes the record (``refresh_check``), a real verdict
