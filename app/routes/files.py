@@ -32,7 +32,7 @@ from services.job_manager import job_manager
 from services.lock_manager import lock_manager
 from services.mutation_guard import locked_for_mutation
 from services.tools import registry
-from routes.volume_guard import off_loop_bounded
+from routes.volume_guard import off_loop_bounded, off_loop_until_stalled
 from services.verification_store import verification_store
 from utils.junk import is_junk_entry
 from utils.path_utils import (
@@ -40,8 +40,10 @@ from utils.path_utils import (
     lock_boundary_root,
     ensure_path_within_volumes,
     get_volume_name_for_path,
+    folder_has_entries,
     is_configured_volume_root,
     is_within_configured_volumes,
+    list_folder,
 )
 
 router = APIRouter()
@@ -246,7 +248,9 @@ def verifiable_tools(path: str) -> list[str]:
     return [t.id for t in registry.tools_verifying_path(path)]
 
 
-def _summarize_archive(item_path: str) -> dict:
+def _summarize_archive(
+    item_path: str, progress: Callable[..., None] | None = None,
+) -> dict:
     """Per-archive summary fields for the file listing / archive-summary batch.
 
     Reads the archive once (via the shared mtime-cached member reader) and
@@ -256,14 +260,18 @@ def _summarize_archive(item_path: str) -> dict:
     Shared by the inline ``summarize_archives=True`` path and the lazy
     ``/archive-summary`` batch the browser hydrates with, so both report
     identical badges. Blocking I/O — call it off the event loop.
+    ``progress``, when given, is told each member as it is checked, so a
+    stall-bounded listing keeps moving through a large archive (#361).
     """
+    tick = progress or (lambda *_args: None)
     archive_result = archive_service.list_archive_contents(
-        item_path, include_meta=True,
+        item_path, include_meta=True, progress=progress,
     )
     contents = archive_result["entries"]
     archive_dir = os.path.dirname(item_path)
     archive_has_output = 0
     for entry in contents:
+        tick()
         _, _, _, member_by_tool = _detect_archive_member_outputs(entry, archive_dir)
         # A member counts as "converted" once any tool already has a sibling
         # output for it, not just CHDMAN.
@@ -419,11 +427,15 @@ async def list_files(
 
     def scan_directory(
         target_path: str, show_archives_flag: bool, summarize_archives_flag: bool,
+        *, progress: Callable[..., None],
     ):
         entries = []
         try:
-            # This outer try-except catches errors from os.listdir() itself
-            for item in sorted(os.listdir(target_path)):
+            # This outer try-except catches errors from the listing itself.
+            # Read one entry at a time, reporting each, then sorted (#361).
+            progress(target_path)
+            for item in list_folder(target_path, progress):
+                progress()
                 if is_junk_entry(item):
                     continue
                 item_path = os.path.join(target_path, item)
@@ -474,7 +486,7 @@ async def list_files(
                         verifiable_by: list[str] = []
                         if is_archive:
                             if summarize_archives_flag:
-                                summary = _summarize_archive(item_path)
+                                summary = _summarize_archive(item_path, progress)
                                 archive_items = summary["archive_items"]
                                 archive_has_output = summary["archive_has_output"]
                                 archive_truncated = summary["archive_truncated"]
@@ -505,8 +517,10 @@ async def list_files(
             raise HTTPException(status_code=404, detail="Directory not found") from None
         return _fold_split_iso_entries(entries)
 
-    entries = await run_in_threadpool(
-        scan_directory, path, show_archives, summarize_archives,
+    # On a detached thread under a stall bound (#361): a frozen folder answers
+    # 503 instead of holding the request and a shared pool worker forever.
+    entries = await off_loop_until_stalled(
+        scan_directory, path, show_archives, summarize_archives, what="Listing a folder",
     )
 
     return DirectoryListing(volume=volume_name, path=path, entries=entries)
@@ -563,6 +577,7 @@ def scan_tree(
     also_reads: frozenset[str] | None = None,
     also_include: Callable[[str], bool] | None = None,
     unreadable: list[tuple[str, str]] | None = None,
+    progress: Callable[..., None] | None = None,
 ) -> tuple[list[dict], list[dict], list[str]]:
     """Every convertible thing under ``root_path``: the recursive search walk.
 
@@ -583,7 +598,11 @@ def scan_tree(
     verify: a numbered part of a split output). A folder
     that can't be read is skipped as always; with ``unreadable`` given, it is
     appended there as ``(path, reason)`` so a caller can report it.
+    ``progress``, when given, is told each folder before it is listed and
+    each entry after it is read, for a stall-bounded walk
+    (``off_loop_until_stalled``, #361).
     """
+    tick = progress or (lambda *_args: None)
     if purpose not in ("convert", "verify"):
         raise ValueError(f"unknown scan purpose {purpose!r}")
     include_verifiable = purpose == "verify"
@@ -603,7 +622,10 @@ def scan_tree(
         try:
             # Sorted for deterministic search order, matching scan_directory's
             # sorted walk above; raw readdir order varies by FS (issue #183).
-            for item in sorted(os.listdir(dir_path)):
+            # Read one entry at a time, reporting each, then sorted (#361).
+            tick(dir_path)
+            for item in list_folder(dir_path, tick):
+                tick()
                 if is_junk_entry(item):
                     continue
                 item_path = os.path.join(dir_path, item)
@@ -690,6 +712,20 @@ def scan_tree(
                                 },
                             )
                         elif include_archive_scan and is_archive:
+                            # List archive contents first, reporting each
+                            # chunk as it arrives (#361): it also warms the
+                            # shared member cache the Verify gate below reads.
+                            # Search surfaces
+                            # convertible hits, so gate to the convert-gate
+                            # subset (not the wider browse listing): that
+                            # both drops list-only members (a romz ROM is
+                            # browse-only) and keeps them from consuming the
+                            # per-archive entry cap ahead of a genuine
+                            # convertible member.
+                            archive_result = archive_service.list_archive_contents(
+                                item_path, include_meta=True,
+                                convertible_only=True, progress=progress,
+                            )
                             # Emit the archive container itself so modes that
                             # take an archive directly (e.g. romz_extract on
                             # .7z/.zip) can select it from recursive search;
@@ -716,22 +752,12 @@ def scan_tree(
                                     "verifiable_by": claims(item_path),
                                 },
                             )
-                            # List archive contents. Search surfaces
-                            # convertible hits, so gate to the convert-gate
-                            # subset (not the wider browse listing): that
-                            # both drops list-only members (a romz ROM is
-                            # browse-only) and keeps them from consuming the
-                            # per-archive entry cap ahead of a genuine
-                            # convertible member.
-                            archive_result = archive_service.list_archive_contents(
-                                item_path, include_meta=True,
-                                convertible_only=True,
-                            )
                             archive_contents = archive_result["entries"]
                             if archive_result["truncated"]:
                                 archives_truncated.add(item_path)
                             archive_dir = os.path.dirname(item_path)
                             for entry in archive_contents:
+                                tick()  # one report per member (#361)
                                 (
                                     output_stem,
                                     member_convertible_by,
@@ -776,8 +802,10 @@ async def search_files(
     # Off the event loop and bounded (#327).
     await off_loop_bounded(_resolve_in_volumes, path, folder=True)
 
-    files, archives, archives_truncated = await run_in_threadpool(
-        scan_tree, path, recursive, include_archives,
+    # On a detached thread under a stall bound (#361): a frozen folder answers
+    # 503; a large tree that keeps moving is never cut off.
+    files, archives, archives_truncated = await off_loop_until_stalled(
+        scan_tree, path, recursive, include_archives, what="Searching a folder",
     )
 
     return {
@@ -962,7 +990,9 @@ async def delete_file(
 
     try:
         if is_dir:
-            contents = await run_in_threadpool(os.listdir, path)
+            # Bounded, and one entry read at most (#361): a frozen folder
+            # answers 503, a huge one answers at once.
+            contents = await off_loop_bounded(folder_has_entries, path)
             if contents and not recursive:
                 # Non-empty without explicit opt-in: the UI re-requests with
                 # recursive=true after a second confirmation.
@@ -1034,9 +1064,12 @@ async def delete_files_batch(request: Request, payload: BulkDeleteRequest) -> di
                         "success": False,
                         "error": "Cannot delete a configured volume root",
                     }
-                # Only delete empty directories for safety
-                # os.listdir can be blocking
-                contents = await run_in_threadpool(os.listdir, path)
+                # Only delete empty directories for safety. Bounded (#361): a
+                # frozen folder fails this path, not the whole batch.
+                try:
+                    contents = await off_loop_bounded(folder_has_entries, path)
+                except HTTPException as exc:
+                    return {"path": path, "success": False, "error": exc.detail}
                 if contents:
                     return {
                         "path": path,

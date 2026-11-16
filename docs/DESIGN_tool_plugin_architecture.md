@@ -603,16 +603,81 @@ job has no outer deadline. So a blocking step before the child starts (xiso's
 header probe, its filesystem walk, its workspace setup) or after it exits (the
 final rename into place) would hold the job, and the single-slot queue behind
 it, for as long as a dead mount takes.
-`run_detached_within_stall_bound(func, *args, what=..., cancel_event=...)` is
-`run_detached` under the same no-progress limit the subprocess phase gets
-(`CHD_PROGRESS_TIMEOUT`, floored the same way, `0` disables). On expiry it
-raises a `RuntimeError` naming `what`. A cancel still raises `ReadCancelled`,
-which the conversion must translate to `ConversionCancelled`, or the job is
-recorded as failed rather than cancelled. Only the bound's own expiry is
-reworded: a `TimeoutError` that fails at once (`ProbeCapacityExceeded`, an OS
-`ETIMEDOUT`) keeps its own type and message. Use it for small steps (headers,
-directory tables, a rename); a whole-file pass belongs under a size-scaled
-bound instead.
+`run_detached_within_stall_bound(func, *args, what=..., cancel_event=...,
+stall=..., report_progress=...)` is the one stall-bounded detached seam: it
+runs `func` on a detached thread and gives up only after a stretch with no
+progress. The bound is `stall` seconds or, by default, the limit the
+subprocess phase gets (`CHD_PROGRESS_TIMEOUT`, floored the same way); `0`
+disables it. On expiry it raises `Stalled`, a `RuntimeError` naming `what`
+and, for a walk, the last folder reported. A cancel still raises
+`ReadCancelled`, which a conversion must translate to `ConversionCancelled`,
+or the job is recorded as failed rather than cancelled. Only the bound's own
+expiry is reworded: a `TimeoutError` that fails at once
+(`ProbeCapacityExceeded`, an OS `ETIMEDOUT`) keeps its own type and message,
+and a call that finished just as the bound ran out is answered.
+
+Without `report_progress` (a conversion's small steps: headers, directory
+tables, a rename), `func` reports nothing, so the bound is simply how long it
+may take; a whole-file pass belongs under a size-scaled bound instead. With
+`report_progress=True` (a walk over a tree that may be large and healthy, or
+frozen, #361), `func` is called with a `progress=<Progress>` keyword and
+reports every step: `progress()` after each entry, `progress(where)` before
+each folder. Each report restarts the clock, so a big Library that keeps
+moving is never cut off and a listing blocked on a frozen mount ends at the
+bound. Whatever ends the wait, the thread is abandoned (counted like any
+other), and the next `progress()` call inside it raises `ProgressAbandoned`,
+so a walk that is still moving stops instead of finishing for nobody.
+`utils.path_utils.walk_tree(top, progress)` is the walk to use with it:
+`os.walk(top)` semantics (top-down, a symlinked folder listed but never
+walked into, unreadable folders skipped) built on `os.scandir`, reporting each
+folder and each entry. Anything under the progress clock reads entries one at
+a time and reports each: `os.listdir` reads a whole folder before its caller
+sees an entry, so a huge folder on a slow but healthy mount would pass the
+bound while still reading. `utils.path_utils.list_folder(path, progress)` is
+the one-folder form (`os.scandir`, one report per entry, sorted afterwards so
+order is unchanged), and `folder_has_entries(path)` answers "is it empty" by
+reading at most one entry. Reading a file under the clock reports bytes as
+they arrive, not loop iterations: `utils.path_utils.open_reporting_reads(path,
+progress)` is a read-only binary file (a `BufferedReader` over a raw reader)
+that asks the OS for at most `READ_CHUNK` (64 KiB) per read and reports every
+read that returns data, and every seek. `zipfile` and `py7zr` take it as
+their file, so a `.zip`/`.7z` member table streaming in from a slow but
+healthy mount keeps the clock moving, and a read that returns nothing ends at
+the bound. A file object never changes what they read: `zipfile` refuses a
+multi-disk zip either way, and `py7zr` reads split `.7z.001` volumes only
+through an explicit `multivolumefile` object (and `.001` is not a listed
+archive extension). `.rar` is different and always opens by path: `rarfile`
+finds a multi-volume archive's next volume from the file name and silently
+stops after the first volume when given a file object. Its progress comes
+from its supported `info_callback`, one report per header parsed, across
+every volume. Known limit: a single huge header block on a slow mount reports
+nothing while it is read; a complete member list matters more. `rarfile`'s
+default `errors="stop"` ends a parse quietly at a missing or broken volume, so
+`_read_rar` checks `strerror()` and raises `IncompleteArchive`, and a list
+that stopped early is never returned or cached.
+`services.archive_members.read_archive_members(path, progress)` opens the
+archive through it when given a callback (a cached answer reads nothing),
+and `ArchiveService.list_archive_contents(..., progress=...)`,
+`_summarize_archive(path, progress)` and `scan_tree` pass the listing's
+callback down. No archive is listed through a subprocess, so there are no
+output lines to report. Callers without a callback (romz's gate, the
+`/archive-summary` batch, the CLI) are unchanged. Separate from the bytes,
+each archive member a listing or search checks is one report, because those
+checks stat sibling outputs after the read. `scan_tree` lists an archive
+before its Verify gate reads it, so that gate is served from the warmed
+member cache. Progress callers:
+- The metadata scan's file listing (`routes/info.py`, `_WALK_STALL_SECONDS`).
+  A stall ends the scan as failed, with a warning naming the folder, and frees
+  `_is_scanning` and the `metadata_scan` lane, so a later scan can start.
+  Cancel ends it as cancelled.
+- Routes go through `routes.volume_guard.off_loop_until_stalled(func, *args,
+  what=...)`, which answers 503 on `Stalled` or a full probe ceiling with
+  `WALK_STALL_SECONDS` as the bound. The folder listing (`GET /files`) and the
+  recursive search (`GET /files/search`, `scan_tree(progress=...)`) use it,
+  both through `list_folder`. The delete routes' emptiness check is
+  `folder_has_entries` through `off_loop_bounded`.
+- Folder Library walks (the Library platforms view, Findings, a Rule sweep)
+  already run on a detached thread under a fixed bound, so they are unchanged.
 
 If interrupting a step decides what gets cleaned up, base the cleanup on the
 step's *completed* outcome, recorded by the worker thread itself. xiso's final
@@ -776,7 +841,7 @@ Three rules follow for any code that runs a verifier:
   `chd_metadata_store`, never in the CHD, and the reads that fill it are file
   reads on Volumes that may answer a cached `stat` and then block every read:
   - `disc_id.extract_from_chd` (the library scan's Phase 2 and `/api/info`)
-    reads the CHD's sectors and any companion file through `bounded_disc_read`:
+    reads the CHD's header and any companion file through `bounded_disc_read`:
     `run_detached_bounded`, `_DISC_READ_TIMEOUT_SECONDS`, raced against the
     caller's `cancel_event` (Phase 2 passes the scan job's). Past the bound the
     thread is written off into the open `collect_abandonment` sink, a warning
@@ -786,6 +851,24 @@ Three rules follow for any code that runs a verifier:
     Cancel before the sink, so a Cancel that cut a stuck read short ends the
     scan as cancelled, not failed. The scan's `_is_scanning` flag and
     `metadata_scan` lane are released either way.
+  - The CHD's disc sectors are read by chdman, not decoded here (#362). The
+    app parses only the v5 header, with MAME's layout (`parse_chd_header`:
+    compressors at 16, logical bytes 32, map offset 40, meta offset 48, hunk
+    bytes 56, unit bytes 60), for the unit size and the logical size. A
+    compressed CHD's map is itself compressed and its hunks use lzma, zlib,
+    huffman, flac or the CD codecs (cdlz, cdzl, cdfl), so the ISO 9660 walk
+    (`_identify_iso`: volume descriptor, root directory, SYSTEM.CNF or
+    PSP_GAME/PARAM.SFO) runs over a sector cache, and each run of sectors it
+    asks for that is not there yet is read with `chdman extractraw -isb START
+    -ib LENGTH` over the CHD's logical bytes (`_read_chd_units`), at most
+    `_MAX_CHD_READS` reads of at most `_MAX_CHD_READ_UNITS` units. A DVD CHD's
+    units are 2048-byte sectors; a CD CHD's are 2352 or 2448 bytes (with
+    subcode), tried as Mode 2 Form 1 (data at 24) and then Mode 1 (data at 16).
+    Each read goes through chdman's shared runner with
+    `_DISC_READ_TIMEOUT_SECONDS` and the caller's `cancel_event`: a child that
+    outlived SIGKILL or timed out raises `DiscIdStorageAbandoned`, a cancel
+    raises `ReadCancelled`, and a chdman failure (a damaged CHD) is a warning
+    and no disc ID.
   - `ChdmanTool.post_convert` reads the Source's disc ID (and checks the output
     exists) in one call through the same `bounded_disc_read`; past the bound,
     `DiscIdStorageAbandoned` names the Source and the job fails (above).

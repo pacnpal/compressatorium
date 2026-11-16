@@ -22,6 +22,7 @@ import pytest
 
 from app.services.tools import registry
 
+from ._chd_fakes import serve_extractraw
 from .test_disc_id import _make_chd_v5, _make_iso
 
 SYSTEM_CNF = b"BOOT2 = cdrom0:\\SLUS_203.12;1\r\nVER = 1.00\r\n"
@@ -46,6 +47,10 @@ def _chdman_calls(monkeypatch):
         calls.append(list(cmd))
         if "addmeta" in cmd:
             return 1, b"", b"Error opening CHD file: File not writeable\n"
+        # The disc's sectors are read with extractraw since #362.
+        answer = serve_extractraw(cmd)
+        if answer is not None:
+            return answer
         return 1, b"", b"Error reading metadata: Metadata not found\n"
 
     runner = registry.get("chdman")._service.runner

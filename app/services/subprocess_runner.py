@@ -1085,53 +1085,126 @@ async def run_detached_bounded(
         raise DeadlineExpired(f"no answer in {timeout:g}s") from exc
 
 
+class Stalled(RuntimeError):
+    """A detached call made no progress for its stall bound.
+
+    ``where`` is the last place it reported (the folder a walk was listing),
+    so the message can name what stopped answering.
+    """
+
+    def __init__(self, what: str, where: str | None, seconds: float) -> None:
+        self.what, self.where, self.seconds = what, where, seconds
+        at = f" at {where}" if where else ""
+        super().__init__(f"{what} stopped responding{at} (no answer in {seconds:g}s)")
+
+
+class ProgressAbandoned(RuntimeError):
+    """Raised inside a detached call by :class:`Progress` once its awaiter has
+    given up (a cancel, the stall bound): the call stops at its next step
+    instead of walking on for a result nobody reads."""
+
+
+class Progress:
+    """What a call run by :func:`run_detached_within_stall_bound` reports as it moves.
+
+    Call it after every step (each entry a walk reads): ``progress()`` notes
+    the time, ``progress(where)`` also notes where it is. Thread-safe. Raises
+    :class:`ProgressAbandoned` once the awaiter has given up.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._at = time.monotonic()
+        self._where: str | None = None
+        self._abandoned = False
+
+    def __call__(self, where: str | None = None) -> None:
+        with self._lock:
+            if self._abandoned:
+                raise ProgressAbandoned("the caller stopped waiting")
+            self._at = time.monotonic()
+            if where is not None:
+                self._where = where
+
+    def snapshot(self) -> tuple[float, str | None]:
+        with self._lock:
+            return self._at, self._where
+
+    def abandon(self) -> None:
+        with self._lock:
+            self._abandoned = True
+
+
 async def run_detached_within_stall_bound(
     func: Callable,
     *args: object,
     what: str,
     cancel_event: asyncio.Event | None = None,
+    stall: float | None = None,
+    report_progress: bool = False,
     **kwargs: object,
 ) -> object:
-    """:func:`run_detached`, bounded by the conversion's no-progress timeout.
+    """:func:`run_detached`, given up on after a stretch with no progress.
 
-    For a conversion's blocking reads *before* its subprocess starts (a header
-    probe, a filesystem walk, workspace setup). ``SubprocessRunner.run``'s stall
-    watchdog only starts with the child, and the job has no outer deadline, so
-    without this a source mount that stops answering during those reads holds
-    the job, and the single-slot queue behind it, indefinitely.
+    The one stall-bounded detached seam. Two kinds of caller:
 
-    The bound is ``CHD_PROGRESS_TIMEOUT``, the same "no progress for this long"
-    limit the subprocess phase gets, floored like it and disabled by ``0``. It
-    is the baseline, not size-scaled: these reads are small (headers and
-    directory tables), never a pass over the whole file. On expiry the thread is
-    abandoned (as ``run_detached`` does for a cancel) and ``RuntimeError`` names
-    ``what``; ``ReadCancelled`` still propagates for a cancel.
+    * A conversion's blocking reads *before* its subprocess starts (a header
+      probe, a filesystem walk, workspace setup). ``SubprocessRunner.run``'s
+      stall watchdog only starts with the child, and the job has no outer
+      deadline, so without this a source mount that stops answering during
+      those reads holds the job, and the single-slot queue behind it,
+      indefinitely. They report no progress, so the bound is simply how long
+      the call may take.
+    * A walk over a tree that may be large and healthy, or frozen
+      (``report_progress=True``, #361): ``func`` is called with a
+      ``progress=<Progress>`` keyword and reports every step
+      (``utils.path_utils.walk_tree`` does it). The clock restarts on each
+      report, so a big Library that keeps moving is never cut off, and a
+      listing blocked on a frozen mount ends at the bound.
+
+    The bound is ``stall`` seconds, or by default ``CHD_PROGRESS_TIMEOUT``,
+    the conversion's own "no progress for this long" limit, floored like it;
+    ``0`` (or less) disables it. On expiry the thread is abandoned (as
+    ``run_detached`` does for a cancel; counted the same way) and
+    :class:`Stalled`, a ``RuntimeError`` naming ``what`` and the last place
+    reported, is raised. ``ReadCancelled`` still propagates for a cancel. A
+    call that finished just as the bound ran out is answered, or raises its
+    own error, and an instant ``TimeoutError`` (``ProbeCapacityExceeded``, an
+    OS ``ETIMEDOUT``) keeps its own type and message (codex 4579904147).
+    Whatever ends the wait, the call is told to stop at its next report.
     """
-    bound = conversion_stall_bound()
+    bound = conversion_stall_bound() if stall is None else stall
+    progress = Progress()
     finished = _Finished()
-    read = run_detached(
-        finished.wrap(func, args, kwargs), cancel_event=cancel_event,
+    call_kwargs = {**kwargs, "progress": progress} if report_progress else kwargs
+    task = asyncio.ensure_future(
+        run_detached(finished.wrap(func, args, call_kwargs), cancel_event=cancel_event),
     )
-    if bound <= 0:
-        return await read
     try:
-        return await asyncio.wait_for(read, timeout=bound)
-    except asyncio.TimeoutError as exc:
-        # Only the bound's own expiry is "stopped responding", told by who
-        # finished (codex 4579904147). Other TimeoutErrors carry their own
-        # cause: the probe ceiling (`ProbeCapacityExceeded` subclasses
-        # TimeoutError) and an OS-level ETIMEDOUT raised by ``func``. Rewording
-        # those as a full-bound wait would hide what an operator needs to act on.
-        settled, error, result = finished.snapshot()
-        if isinstance(exc, ProbeCapacityExceeded) or error is exc:
-            raise
-        if error is not None:
-            raise error from None  # it failed just as the bound ran out
-        if settled:
-            return result
-        raise RuntimeError(
-            f"{what} stopped responding (no answer in {bound:.0f}s)",
-        ) from exc
+        if bound <= 0:
+            return await task
+        while True:
+            at, where = progress.snapshot()
+            remaining = at + bound - time.monotonic()
+            if remaining > 0:
+                done, _pending = await asyncio.wait({task}, timeout=remaining)
+                if task in done:
+                    return task.result()
+                continue
+            settled, error, result = finished.snapshot()
+            if error is not None:
+                raise error  # it failed just as the bound ran out
+            if settled:
+                return result
+            raise Stalled(what, where, bound)
+    finally:
+        # Tell the call to stop at its next step, whatever ended the wait (a
+        # finished call never reads the flag again).
+        progress.abandon()
+        if not task.done():
+            task.cancel()  # run_detached notes the thread as abandoned
+            with contextlib.suppress(asyncio.CancelledError, ReadCancelled):
+                await task
 
 
 def _open_for_verify(path: str) -> int:

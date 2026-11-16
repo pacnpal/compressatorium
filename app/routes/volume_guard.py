@@ -14,10 +14,37 @@ from services.job_manager import VOLUME_PROBE_TIMEOUT_SECONDS
 from services.subprocess_runner import (
     DeadlineExpired,
     ProbeCapacityExceeded,
+    Stalled,
     run_detached_bounded,
+    run_detached_within_stall_bound,
 )
 
 VOLUME_UNRESPONSIVE_DETAIL = "A Volume isn't responding. Try again later."
+
+# How long a folder listing or walk may go without reading one entry (#361).
+# Reset on every entry, so a large folder that keeps moving is never cut off.
+WALK_STALL_SECONDS = VOLUME_PROBE_TIMEOUT_SECONDS
+
+
+async def off_loop_until_stalled(func, *args, what: str, **kwargs):
+    """Run a blocking listing or walk off the event loop; 503 once it stops moving.
+
+    Through ``run_detached_within_stall_bound(report_progress=True)`` (#361):
+    *func* is called with a
+    ``progress`` keyword it reports every entry to (``utils.path_utils.
+    walk_tree`` does it for a walk), on a disposable thread. A listing that
+    reads nothing for ``WALK_STALL_SECONDS`` (a frozen mount), or the
+    process-wide probe ceiling being full, answers 503; the thread is
+    abandoned and stops at its next step. A large folder that keeps moving
+    is never cut off. Anything *func* raises reaches the caller as itself.
+    """
+    try:
+        return await run_detached_within_stall_bound(
+            func, *args, what=what, stall=WALK_STALL_SECONDS, report_progress=True,
+            **kwargs,
+        )
+    except (Stalled, ProbeCapacityExceeded):
+        raise HTTPException(status_code=503, detail=VOLUME_UNRESPONSIVE_DETAIL) from None
 
 
 async def off_loop_bounded(func, *args, **kwargs):

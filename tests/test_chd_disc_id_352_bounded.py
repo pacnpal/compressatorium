@@ -42,7 +42,7 @@ def _stuck_sectors(disc_id, monkeypatch):
         release.wait(60)
         return None
 
-    monkeypatch.setattr(disc_id, "_extract_from_chd_sectors", blocked)
+    monkeypatch.setattr(disc_id, "read_chd_header", blocked)
     monkeypatch.setattr(disc_id, "_DISC_READ_TIMEOUT_SECONDS", 0.3, raising=False)
     yield calls
     release.set()
@@ -166,7 +166,7 @@ async def test_cancel_during_a_stuck_disc_id_read_stops_the_scan(
         release.wait(60)
         return None
 
-    monkeypatch.setattr(disc_id, "_extract_from_chd_sectors", blocked_until_cancelled)
+    monkeypatch.setattr(disc_id, "read_chd_header", blocked_until_cancelled)
     try:
         await asyncio.wait_for(info_routes.scan_metadata_task(force=False), BOUND)
     finally:

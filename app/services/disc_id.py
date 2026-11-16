@@ -36,20 +36,20 @@ the library scan stores what ``extract_from_chd`` finds the same way.
 from __future__ import annotations
 
 import asyncio
-import lzma as _lzma
 import logging
 from logging_setup import get_logger
 import os
 import re
 import struct
 import tempfile
-import zlib as _zlib
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
 from services.subprocess_runner import (
     DeadlineExpired,
     ProbeCapacityExceeded,
+    ReadCancelled,
     StorageAbandoned,
     abandonment_checkpoint,
     ioprio_prefix,
@@ -62,10 +62,9 @@ logger = get_logger("disc_id")
 
 # Resource limits for CHD metadata/disc-ID probing. CHD files live in user
 # volumes, so treat header/map fields and chdman output as untrusted input.
-_MAX_CHD_HUNK_BYTES = 8 * 1024 * 1024
-_MAX_CHD_COMPRESSED_BYTES = 8 * 1024 * 1024
-_MAX_CHD_LZMA_DICT_BYTES = 16 * 1024 * 1024
 _MAX_DUMPMETA_BYTES = 1 * 1024 * 1024
+
+
 class DiscIdStorageAbandoned(StorageAbandoned):
     """A chdman child for this CHD outlived SIGKILL and is still running.
 
@@ -778,394 +777,259 @@ class _BinSectorStream:
 
 
 # ===========================================================================
-# CHD v5 direct disc-sector reader
+# CHD disc sectors, read through chdman (#362)
 # ===========================================================================
-# Implements the same low-level sector reading as libchdr, the C library used
-# by PCSX2, AetherSX2, NetherSX2, and Argosy Launcher, so we can extract
-# SYSTEM.CNF from the CHD's own disc content without a full extraction pass.
+# A compressed CHD's map and hunks (lzma, zlib, huffman, flac, and the CD codecs
+# cdlz/cdzl/cdfl) are chdman's business, not this module's: the few sectors the
+# ISO 9660 walk needs are read with `chdman extractraw` over a byte range of
+# the CHD's logical image. Only the v5 header is parsed here, with MAME's
+# layout (src/lib/util/chd.h), for the unit size and the logical size.
 
-class _CHDReader:
+_CHD_MAGIC = b"MComprHD"
+_CHD_V5_HEADER_BYTES = 124
+_CHD_UNIT_DVD = 2048
+_CHD_UNITS_CD = (2352, 2448)   # sector, or sector + 96 bytes of subcode
+# One chdman read covers at most what one ISO walk read may ask for
+# (``_MAX_ISO_READ`` of user data), and a walk is a handful of reads: the
+# volume descriptor, the root directory, a subdirectory, the file.
+_MAX_CHD_READ_UNITS = _MAX_ISO_READ // _SECTOR_SIZE
+_MAX_CHD_READS = 8
+
+
+@dataclass(frozen=True)
+class ChdHeader:
+    """The CHD v5 header fields the disc-ID reader uses (MAME's layout)."""
+
+    version: int
+    compressors: tuple[str, str, str, str]
+    logical_bytes: int
+    map_offset: int
+    meta_offset: int
+    hunk_bytes: int
+    unit_bytes: int
+
+
+def parse_chd_header(raw: bytes) -> Optional[ChdHeader]:
+    """The CHD v5 header in *raw*, or None when it is not one.
+
+    MAME's v5 layout, big-endian: magic at 0, header length 8, version 12,
+    compressors[4] 16, logical bytes 32, map offset 40, meta offset 48, hunk
+    bytes 56, unit bytes 60, raw SHA1 64, SHA1 84, parent SHA1 104. The map
+    of a compressed CHD is itself compressed; nothing here reads it.
     """
-    Minimal CHD v5 reader.
-
-    Reads individual disc sectors from a CHD file using the same hunk-map
-    lookup and decompression mechanism as libchdr.
-
-    Supported compression codecs:
-      • ZLIB (0x7A6C6962), common for older CHD files
-      • LZMA (0x6C7A6D61), default for ``chdman createdvd`` on modern MAME
-      • Uncompressed (hunk compression type 4)
-
-    CHD v5 uses big-endian byte order for all multi-byte header and map fields.
-    """
-
-    _MAGIC = b"MComprHD"
-    _HEADER_SIZE = 124
-    _VERSION = 5
-    _MAP_ENTRY_SIZE = 12   # bytes per hunk-map entry
-
-    # Hunk compression types (byte 0 of each 12-byte map entry)
-    _CTYPE_CODEC0 = 0    # compressed with codec[0]
-    _CTYPE_CODEC1 = 1    # compressed with codec[1]
-    _CTYPE_CODEC2 = 2    # compressed with codec[2]
-    _CTYPE_CODEC3 = 3    # compressed with codec[3]
-    _CTYPE_NONE   = 4    # uncompressed (raw hunk stored verbatim)
-    _CTYPE_SELF   = 5    # back-reference to an earlier hunk (not implemented)
-    _CTYPE_PARENT = 6    # reference to parent CHD           (not implemented)
-    _CTYPE_MINI   = 7    # 8-byte value replicated to fill the hunk
-
-    # Compression codec 4-char tags stored as big-endian uint32 in the header
-    _CODEC_ZLIB = 0x7A6C6962   # b'zlib'
-    _CODEC_LZMA = 0x6C7A6D61   # b'lzma'
-    _CODEC_ZSTD = 0x7A737464   # b'zstd'
-
-    def __init__(self, path: str) -> None:
-        self._path = path
-        self._f = None
-        self._hunk_bytes = 0
-        self._unit_bytes = 0
-        self._map_offset = 0
-        self._codecs: list[int] = [0, 0, 0, 0]
-        self._cache: dict[int, bytes] = {}
-
-    @property
-    def unit_bytes(self) -> int:
-        """Bytes per disc unit (sector): 2048 for DVD, 2352/2448 for CD."""
-        return self._unit_bytes
-
-    def open(self) -> bool:
-        """Open and validate the CHD v5 header.  Returns False on failure."""
-        try:
-            self._f = open(self._path, "rb")
-            hdr = self._f.read(self._HEADER_SIZE)
-            if len(hdr) < self._HEADER_SIZE or hdr[:8] != self._MAGIC:
-                logger.debug(
-                    "disc_id: CHD open failed, bad magic or short header in %s",
-                    self._path,
-                )
-                return False
-            # All multi-byte fields are big-endian in CHD v5
-            hdr_len = struct.unpack_from(">I", hdr, 8)[0]
-            version = struct.unpack_from(">I", hdr, 12)[0]
-            if version != self._VERSION or hdr_len < self._HEADER_SIZE:
-                logger.debug(
-                    "disc_id: CHD open failed, version=%d hdr_len=%d in %s",
-                    version,
-                    hdr_len,
-                    self._path,
-                )
-                return False
-            self._map_offset = struct.unpack_from(">Q", hdr, 24)[0]
-            self._hunk_bytes = struct.unpack_from(">I", hdr, 40)[0]
-            self._unit_bytes = struct.unpack_from(">I", hdr, 44)[0]
-            self._codecs = list(struct.unpack_from(">4I", hdr, 108))
-            if not (
-                0 < self._unit_bytes <= self._hunk_bytes <= _MAX_CHD_HUNK_BYTES
-                and self._hunk_bytes % self._unit_bytes == 0
-            ):
-                logger.debug(
-                    "disc_id: CHD open failed, hunk_bytes=%d unit_bytes=%d in %s",
-                    self._hunk_bytes,
-                    self._unit_bytes,
-                    self._path,
-                )
-                return False
-            logger.debug(
-                "disc_id: CHD opened unit_bytes=%d hunk_bytes=%d in %s",
-                self._unit_bytes,
-                self._hunk_bytes,
-                self._path,
-            )
-            return True
-        except OSError as e:
-            logger.debug("disc_id: CHD open OSError for %s: %s", self._path, e)
-            return False
-
-    def close(self) -> None:
-        if self._f:
-            self._f.close()
-            self._f = None
-
-    def __enter__(self) -> "_CHDReader":
-        return self
-
-    def __exit__(self, *_) -> None:
-        self.close()
-
-    def read_sector(self, lba: int) -> Optional[bytes]:
-        """
-        Read one disc unit (``unit_bytes``) at the given LBA.
-        Returns None on error or unsupported compression.
-        """
-        units_per_hunk = self._hunk_bytes // self._unit_bytes
-        if units_per_hunk <= 0:
-            return None
-        hunk_idx = lba // units_per_hunk
-        hunk_off = (lba % units_per_hunk) * self._unit_bytes
-        hunk = self._get_hunk(hunk_idx)
-        if hunk is None or hunk_off + self._unit_bytes > len(hunk):
-            return None
-        return hunk[hunk_off : hunk_off + self._unit_bytes]
-
-    def _get_hunk(self, idx: int) -> Optional[bytes]:
-        if idx in self._cache:
-            return self._cache[idx]
-        data = self._decode_hunk(idx)
-        if data is not None and len(self._cache) < 64:
-            self._cache[idx] = data
-        return data
-
-    def _decode_hunk(self, idx: int) -> Optional[bytes]:
-        try:
-            self._f.seek(self._map_offset + idx * self._MAP_ENTRY_SIZE)
-            entry = self._f.read(self._MAP_ENTRY_SIZE)
-            if len(entry) < self._MAP_ENTRY_SIZE:
-                return None
-            ctype = entry[0]
-            # Compressed length: bytes 1–3, big-endian
-            clen = struct.unpack_from(">I", b"\x00" + entry[1:4])[0]
-            if clen > _MAX_CHD_COMPRESSED_BYTES:
-                return None
-            # File offset: bytes 4–9, big-endian
-            foff = struct.unpack_from(">Q", b"\x00\x00" + entry[4:10])[0]
-
-            if ctype == self._CTYPE_NONE:
-                self._f.seek(foff)
-                raw = self._f.read(self._hunk_bytes)
-                return raw if len(raw) == self._hunk_bytes else None
-
-            if ctype == self._CTYPE_MINI:
-                # For COMP_MINI hunks in CHD v5, the 8-byte fill value is stored
-                # directly in bytes 4–11 of the map entry, not at a file offset.
-                mini = entry[4:12]
-                return (mini * ((self._hunk_bytes + 7) // 8))[: self._hunk_bytes]
-
-            if ctype in (self._CTYPE_CODEC0, self._CTYPE_CODEC1,
-                         self._CTYPE_CODEC2, self._CTYPE_CODEC3):
-                codec = self._codecs[ctype]
-                self._f.seek(foff)
-                compressed = self._f.read(clen)
-                if len(compressed) != clen:
-                    return None
-                return self._decompress(codec, compressed)
-
-            # COMP_SELF, COMP_PARENT, require CHD linkage; not needed here
-            return None
-        except Exception:
-            return None
-
-    def _decompress(self, codec: int, data: bytes) -> Optional[bytes]:
-        try:
-            if codec == self._CODEC_ZLIB:
-                decompressor = _zlib.decompressobj()
-                out = decompressor.decompress(data, self._hunk_bytes)
-                if (
-                    len(out) != self._hunk_bytes
-                    or not decompressor.eof
-                    or decompressor.unconsumed_tail
-                ):
-                    return None
-                return out
-            if codec == self._CODEC_LZMA:
-                # MAME stores LZMA as 5-byte prop header + raw LZMA1 stream,
-                # matching libchdr's lzma_decompress implementation.
-                if len(data) < 5:
-                    return None
-                lc = data[0] % 9
-                tmp = data[0] // 9
-                lp = tmp % 5
-                pb = tmp // 5
-                dict_size = struct.unpack_from("<I", data, 1)[0]
-                if dict_size > _MAX_CHD_LZMA_DICT_BYTES:
-                    return None
-                filters = [
-                    {
-                        "id": _lzma.FILTER_LZMA1,
-                        "lc": lc,
-                        "lp": lp,
-                        "pb": pb,
-                        "dict_size": dict_size,
-                    }
-                ]
-                decompressor = _lzma.LZMADecompressor(
-                    format=_lzma.FORMAT_RAW, filters=filters
-                )
-                out = decompressor.decompress(data[5:], max_length=self._hunk_bytes)
-                if (
-                    len(out) != self._hunk_bytes
-                    or not decompressor.eof
-                    or decompressor.unused_data
-                ):
-                    return None
-                return out
-            if codec == self._CODEC_ZSTD:
-                try:
-                    import zstandard  # optional; not required for PS2/PS1
-                    out = zstandard.ZstdDecompressor().decompress(
-                        data, max_output_size=self._hunk_bytes
-                    )
-                    return out if len(out) == self._hunk_bytes else None
-                except ImportError:
-                    return None
-            return None  # unsupported codec (e.g. FLAC for audio tracks)
-        except Exception:
-            return None
+    if len(raw) < _CHD_V5_HEADER_BYTES or raw[:8] != _CHD_MAGIC:
+        return None
+    length, version = struct.unpack_from(">II", raw, 8)
+    if version != 5 or length < _CHD_V5_HEADER_BYTES:
+        return None
+    compressors = tuple(
+        raw[16 + 4 * i:20 + 4 * i].rstrip(b"\0").decode("ascii", "replace")
+        for i in range(4)
+    )
+    logical_bytes, map_offset, meta_offset = struct.unpack_from(">QQQ", raw, 32)
+    hunk_bytes, unit_bytes = struct.unpack_from(">II", raw, 56)
+    return ChdHeader(
+        version, compressors, logical_bytes, map_offset, meta_offset,
+        hunk_bytes, unit_bytes,
+    )
 
 
-class _CHDSectorStream:
-    """
-    Wraps a ``_CHDReader`` as a file-like object exposing 2048-byte logical
-    sectors, the same interface that ``_read_pvd`` and ``_find_file`` expect.
+def read_chd_header(path: str) -> Optional[ChdHeader]:
+    """The v5 header of the CHD at *path* (blocking: read it through
+    ``bounded_disc_read``)."""
+    with open(path, "rb") as f:
+        return parse_chd_header(f.read(_CHD_V5_HEADER_BYTES))
 
-    ``data_offset`` is the byte offset within each raw CHD sector where the
-    2048-byte user-data payload begins:
-      0 , DVD CHDs (unit_bytes=2048): pure ISO data, no framing
-      16, Mode 1 CD sector (sync + header)
-      24, Mode 2 Form 1 CD sector (sync + header + sub-header)
+
+class _NeedSectors(Exception):
+    """The ISO walk asked for logical sectors that are not fetched yet."""
+
+    def __init__(self, first: int, count: int) -> None:
+        super().__init__(f"sectors {first}..{first + count - 1}")
+        self.first = first
+        self.count = count
+
+
+class _ChdSectorCache:
+    """A seekable view of a CHD's ISO 9660 data, filled by chdman reads.
+
+    ``units`` holds raw CHD units by logical sector number (shared between the
+    Mode 2 and Mode 1 attempts on a CD); a sector's 2048 bytes of user data
+    start at ``data_offset`` in its unit (0 for a DVD, 24 for Mode 2 Form 1,
+    16 for Mode 1). A read touching a sector not fetched yet raises
+    ``_NeedSectors`` for the run, and the caller fetches it and walks again.
+    ``logical_size`` lets ``_bounded_read`` refuse a read past the image.
     """
 
-    def __init__(self, reader: "_CHDReader", data_offset: int = 0) -> None:
-        self._reader = reader
+    def __init__(self, units: dict[int, bytes], sectors: int, data_offset: int) -> None:
+        self._units = units
+        self._sectors = sectors
         self._data_offset = data_offset
         self._pos = 0
+        self.logical_size = sectors * _SECTOR_SIZE
 
     def seek(self, pos: int) -> None:
         self._pos = pos
 
     def read(self, size: int) -> bytes:
-        result = bytearray()
-        remaining = size
-        pos = self._pos
-        while remaining > 0:
-            logical_lba = pos // _SECTOR_SIZE
-            offset_in = pos % _SECTOR_SIZE
-            chunk_sz = min(remaining, _SECTOR_SIZE - offset_in)
-            sector = self._reader.read_sector(logical_lba)
-            if sector is None:
-                break
-            user_data = sector[self._data_offset : self._data_offset + _SECTOR_SIZE]
-            if len(user_data) < _SECTOR_SIZE:
-                break
-            chunk = user_data[offset_in : offset_in + chunk_sz]
-            if not chunk:
-                break
-            result.extend(chunk)
-            pos += len(chunk)
-            remaining -= len(chunk)
-        self._pos = pos
-        return bytes(result)
+        if size <= 0:
+            return b""
+        first = self._pos // _SECTOR_SIZE
+        last = min((self._pos + size - 1) // _SECTOR_SIZE, self._sectors - 1)
+        if first > last:
+            return b""
+        missing = [n for n in range(first, last + 1) if n not in self._units]
+        if missing:
+            raise _NeedSectors(missing[0], missing[-1] - missing[0] + 1)
+        data = b"".join(
+            self._units[n][self._data_offset:self._data_offset + _SECTOR_SIZE]
+            for n in range(first, last + 1)
+        )
+        start = self._pos - first * _SECTOR_SIZE
+        out = data[start:start + size]
+        self._pos += len(out)
+        return out
 
 
-def _extract_from_chd_sectors(chd_path: str) -> Optional[dict]:
+def _identify_iso(stream) -> Optional[dict]:
+    """The disc ID in an ISO 9660 stream: SYSTEM.CNF (PS1/PS2), then
+    PSP_GAME/PARAM.SFO (PSP). None when there is no volume descriptor or no
+    disc ID."""
+    pvd = _read_pvd(stream)
+    if not pvd:
+        return None
+    root_lba, root_size = _pvd_root_dir(pvd)
+    cnf = _find_file(stream, root_lba, root_size, ["SYSTEM.CNF"])
+    if cnf:
+        result = _parse_system_cnf(cnf)
+        if result.get("game_id"):
+            return result
+    sfo = _find_file(stream, root_lba, root_size, ["PSP_GAME", "PARAM.SFO"])
+    if sfo:
+        result = _parse_param_sfo(sfo)
+        if result.get("game_id"):
+            return result
+    return None
+
+
+async def _read_chd_units(
+    chd_path: str,
+    chdman_path: str,
+    first: int,
+    count: int,
+    unit_bytes: int,
+    cancel_event: asyncio.Event | None,
+) -> Optional[bytes]:
+    """*count* raw units of the CHD from unit *first*, via ``chdman extractraw``.
+
+    Through chdman's shared runner, bounded by ``_DISC_READ_TIMEOUT_SECONDS``
+    and raced against *cancel_event*, like the GDRO ``dumpmeta`` read: a child
+    that outlived SIGKILL raises ``DiscIdStorageAbandoned`` (into the open
+    abandonment sink), a timed-out one raises it too (the storage is not
+    answering), a cancel raises ``ReadCancelled``. A chdman failure (a damaged
+    CHD) is a warning and None.
     """
-    Extract game identity by reading disc sectors directly from a CHD file.
+    name = os.path.basename(chd_path)
+    with tempfile.TemporaryDirectory(prefix="cmptr-discid-") as tmp:
+        out = os.path.join(tmp, "units.bin")
+        with abandonment_checkpoint() as abandoned:
+            returncode, _, stderr = await _chdman_runner().run_capture(
+                _chdman_cmd(
+                    chdman_path, "extractraw", "-f", "-i", chd_path, "-o", out,
+                    "-isb", str(first * unit_bytes), "-ib", str(count * unit_bytes),
+                ),
+                timeout=_DISC_READ_TIMEOUT_SECONDS,
+                cancel_event=cancel_event,
+                nice_via_wrapper=True,
+            )
+        _abort_if_abandoned(abandoned, "chdman extractraw", chd_path)
+        if returncode is None:
+            if cancel_event is not None and cancel_event.is_set():
+                raise ReadCancelled("Read cancelled")
+            logger.warning(
+                "disc_id: reading %s with chdman did not answer in %gs; its disc ID "
+                "is skipped", chd_path, _DISC_READ_TIMEOUT_SECONDS,
+            )
+            raise DiscIdStorageAbandoned(
+                f"reading {name} did not answer in {_DISC_READ_TIMEOUT_SECONDS:g}s; "
+                "the storage is not responding"
+            )
+        if returncode != 0:
+            logger.warning(
+                "disc_id: chdman extractraw failed for %s (rc=%s): %s",
+                chd_path, returncode, stderr.decode(errors="replace").strip(),
+            )
+            return None
+        with open(out, "rb") as f:
+            return f.read(count * unit_bytes)
 
-    This mirrors the approach used by PCSX2, AetherSX2, NetherSX2, and Argosy
-    Launcher, all of which use libchdr to read the CHD's raw disc sectors and
-    then walk the ISO 9660 filesystem to find SYSTEM.CNF or PARAM.SFO.
 
-    Handles both DVD CHDs (unit_bytes=2048, plain ISO sectors) and CD CHDs
-    (unit_bytes=2352/2448, Mode 1 or Mode 2 Form 1 framing with 16- or 24-byte
-    sector headers).  For CD CHDs, both header sizes are probed automatically so
-    PS1 discs compressed from Mode 2 Form 1 BINs and those from Mode 1 BINs are
-    both supported.
+async def _extract_from_chd_sectors(
+    chd_path: str,
+    chdman_path: str,
+    *,
+    cancel_event: asyncio.Event | None = None,
+) -> Optional[dict]:
+    """The disc ID from a CHD's own sectors, like libchdr-based emulators.
 
-    Returns a dict with a normalized ``game_id`` on success, or None.
+    Reads the v5 header (bounded) for the unit size, then walks the CHD's
+    ISO 9660 filesystem to SYSTEM.CNF or PARAM.SFO, fetching only the sectors
+    the walk asks for through chdman (``_read_chd_units``). A DVD CHD's units
+    are plain 2048-byte sectors; a CD CHD's are 2352 or 2448 bytes, probed as
+    Mode 2 Form 1 (data at 24) and then Mode 1 (data at 16). Returns the disc
+    ID dict, or None. Storage that does not answer raises
+    ``DiscIdStorageAbandoned``; a cancel raises ``ReadCancelled``.
     """
-    logger.debug("disc_id: _extract_from_chd_sectors starting for %s", chd_path)
     try:
-        with _CHDReader(chd_path) as reader:
-            if not reader.open():
-                logger.debug("disc_id: CHD reader failed to open %s", chd_path)
-                return None
-
-            if reader.unit_bytes == _SECTOR_SIZE:
-                # DVD CHDs: plain 2048-byte ISO sectors, no CD framing.
-                data_offsets: list[int] = [0]
-                logger.debug(
-                    "disc_id: %s detected as DVD CHD (unit_bytes=%d)",
-                    chd_path,
-                    reader.unit_bytes,
+        header = await bounded_disc_read(
+            read_chd_header, chd_path, path=chd_path, cancel_event=cancel_event,
+        )
+    except OSError as exc:
+        logger.debug("disc_id: cannot read the CHD header of %s: %s", chd_path, exc)
+        return None
+    if header is None:
+        logger.debug("disc_id: %s is not a CHD v5 file", chd_path)
+        return None
+    if header.unit_bytes == _CHD_UNIT_DVD:
+        offsets = [0]
+    elif header.unit_bytes in _CHD_UNITS_CD:
+        offsets = [_RAW_SECTOR_HEADER_SIZE_MODE2, _RAW_SECTOR_HEADER_SIZE_MODE1]
+    else:
+        logger.debug(
+            "disc_id: %s has unit_bytes=%d, not a CD or DVD", chd_path, header.unit_bytes,
+        )
+        return None
+    sectors = header.logical_bytes // header.unit_bytes
+    units: dict[int, bytes] = {}
+    reads = 0
+    for data_offset in offsets:
+        cache = _ChdSectorCache(units, sectors, data_offset)
+        while True:
+            try:
+                result = _identify_iso(cache)
+                break
+            except _NeedSectors as need:
+                if reads >= _MAX_CHD_READS:
+                    logger.debug("disc_id: gave up walking %s after %d reads", chd_path, reads)
+                    return None
+                reads += 1
+                count = min(need.count, _MAX_CHD_READ_UNITS)
+                data = await _read_chd_units(
+                    chd_path, chdman_path, need.first, count, header.unit_bytes,
+                    cancel_event,
                 )
-            elif reader.unit_bytes in (2352, 2448):
-                # CD CHDs: 2352- or 2448-byte physical sectors with a CD sector
-                # frame header preceding the 2048-byte user-data payload.
-                # Try Mode 2 Form 1 (24-byte header) first, the most common PS1
-                # format, then fall back to Mode 1 (16-byte header).
-                data_offsets = [
-                    _RAW_SECTOR_HEADER_SIZE_MODE2,
-                    _RAW_SECTOR_HEADER_SIZE_MODE1,
-                ]
-                logger.debug(
-                    "disc_id: %s detected as CD CHD (unit_bytes=%d), probing"
-                    " Mode 2 Form 1 (offset=%d) then Mode 1 (offset=%d)",
-                    chd_path,
-                    reader.unit_bytes,
-                    _RAW_SECTOR_HEADER_SIZE_MODE2,
-                    _RAW_SECTOR_HEADER_SIZE_MODE1,
-                )
-            else:
-                logger.debug(
-                    "disc_id: %s has unsupported unit_bytes=%d, skipping sector extraction",
-                    chd_path,
-                    reader.unit_bytes,
-                )
-                return None
-
-            for data_offset in data_offsets:
-                stream = _CHDSectorStream(reader, data_offset=data_offset)
-                pvd = _read_pvd(stream)
-                if not pvd:
-                    logger.debug(
-                        "disc_id: no ISO 9660 PVD at data_offset=%d in %s",
-                        data_offset,
-                        chd_path,
-                    )
-                    continue
-                logger.debug(
-                    "disc_id: ISO 9660 PVD found at data_offset=%d in %s",
-                    data_offset,
-                    chd_path,
-                )
-                root_lba, root_size = _pvd_root_dir(pvd)
-
-                # PS2 / PS1, SYSTEM.CNF in root
-                cnf = _find_file(stream, root_lba, root_size, ["SYSTEM.CNF"])
-                if cnf:
-                    result = _parse_system_cnf(cnf)
-                    if result.get("game_id"):
-                        logger.debug(
-                            "disc_id: game_id=%r (platform=%r) from SYSTEM.CNF in %s",
-                            result["game_id"],
-                            result.get("platform"),
-                            chd_path,
-                        )
-                        return result
-                    logger.debug(
-                        "disc_id: SYSTEM.CNF found but no valid game_id in %s",
-                        chd_path,
-                    )
-
-                # PSP, /PSP_GAME/PARAM.SFO
-                sfo = _find_file(stream, root_lba, root_size, ["PSP_GAME", "PARAM.SFO"])
-                if sfo:
-                    result = _parse_param_sfo(sfo)
-                    if result.get("game_id"):
-                        logger.debug(
-                            "disc_id: game_id=%r (platform=%r) from PARAM.SFO in %s",
-                            result["game_id"],
-                            result.get("platform"),
-                            chd_path,
-                        )
-                        return result
-                    logger.debug(
-                        "disc_id: PARAM.SFO found but no valid game_id in %s",
-                        chd_path,
-                    )
-
-    except Exception as e:
-        logger.debug("disc_id: CHD sector extraction failed for %s: %s", chd_path, e)
-    logger.debug("disc_id: no game_id found via sector extraction in %s", chd_path)
+                if data is None:
+                    return None
+                for i in range(count):
+                    units[need.first + i] = data[
+                        i * header.unit_bytes:(i + 1) * header.unit_bytes
+                    ]
+        if result:
+            logger.debug(
+                "disc_id: game_id=%r from the sectors of %s (data offset %d)",
+                result["game_id"], chd_path, data_offset,
+            )
+            return result
     return None
 
 
@@ -1264,8 +1128,8 @@ async def extract_from_chd(
     # --- Strategy 1: read disc sectors directly (like PCSX2 / AetherSX2) ----
     # For DVD CHDs (unit_bytes=2048) this reads SYSTEM.CNF / PARAM.SFO from
     # the CHD's own ISO 9660 filesystem without any extraction pass.
-    disc_result = await bounded_disc_read(
-        _extract_from_chd_sectors, chd_path, path=chd_path, cancel_event=cancel_event,
+    disc_result = await _extract_from_chd_sectors(
+        chd_path, chdman_path, cancel_event=cancel_event,
     )
     if disc_result and disc_result.get("game_id"):
         logger.debug(

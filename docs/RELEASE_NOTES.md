@@ -11,6 +11,14 @@
   asking for a level on `none` is refused with a message that says so. The
   level box's range and "Blank uses" hint always match the codec that will
   run, including the mode's default when the codec is left blank.
+- **The library scan reads the disc ID of every CHD again** (#362). The reader
+  for a CHD's own sectors could not open any CHD chdman makes (it read the
+  header at the wrong offsets and could not decode a compressed one), so a
+  scan recorded no disc ID for PS1, PS2 and PSP CHDs unless the source image
+  was still beside them. Now the few sectors it needs are read through
+  chdman itself, so the info panel shows the serial (for example `SLUS-20312`)
+  for CHDs made by the bundled chdman. A read that does not answer still gives
+  up after 30 seconds, and Cancel stops it.
 - **Conversions that finish during a check run are checked the next tick**
   (#360). One scheduler tick could queue conversions and start a check Rule's
   run; when the conversions finished while the check was still running, the
@@ -27,6 +35,17 @@
   the file and the error, and its badge stays. In a batch verify it counts as
   "can't be checked", not failed. A file that opens and fails its check is
   still marked failed.
+
+- **A metadata scan on a frozen Volume mount ends, and Cancel stops it**
+  (#361). Listing the files to scan ran with no bound, so a mount that froze
+  held the scan for good: Cancel did nothing and every later scan was refused
+  as already running. The listing now gives up once it reads nothing for 30
+  seconds. The scan then ends with a message naming the folder that stopped
+  answering, and the next scan can start. A large Library that keeps moving is
+  never cut off. Cancel ends the scan at once. The file browser's folder
+  listing and its search work the same way: a frozen folder answers "A Volume
+  isn't responding" instead of hanging.
+
 - **A check right after conversions checks the new Images** (#353). A
   scheduled check Rule that ran within about 30 seconds of a conversion used
   the folder listing from before it, checked nothing new, and still counted
