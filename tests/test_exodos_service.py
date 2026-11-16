@@ -857,3 +857,23 @@ def test_a_template_made_while_the_probe_runs_is_not_cached_as_missing(tree, mon
 
     assert service.is_repackable(path) is False
     assert service.is_repackable(path) is True
+
+
+def test_a_zip_that_cannot_be_read_for_a_moment_is_not_remembered(tree, monkeypatch):
+    """EACCES on the game zip is not a verdict: restoring access changes
+    neither its size nor its mtime, so the miss must not be cached."""
+    service = ExodosService()
+    path = _game_zip(tree)
+    real = zipfile.ZipFile
+    calls = []
+
+    def flaky(*args, **kwargs):
+        calls.append(None)
+        if len(calls) == 1:
+            raise PermissionError(errno.EACCES, "Permission denied", path)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(zipfile, "ZipFile", flaky)
+
+    assert service.is_repackable(path) is False
+    assert service.is_repackable(path) is True

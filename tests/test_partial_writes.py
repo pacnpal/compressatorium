@@ -312,6 +312,38 @@ def test_a_cleanup_that_cannot_remove_the_temp_file_keeps_its_record(
     assert partial_writes.recorded_paths() == [str(volume / "dos" / temps[0])]
 
 
+def test_a_temp_name_left_after_placing_keeps_its_record_until_swept(
+    volume, tmp_path, monkeypatch
+):
+    """Placing hard-links the output and then unlinks the temp name, ignoring
+    a failure: the output is published, but the temp name stays journaled
+    until a sweep removes it."""
+    src = _zip(tmp_path / "in.zip")
+    dst = volume / "dos" / "out.dosz"
+    real_unlink = os.unlink
+
+    def stuck(path, *args, **kwargs):
+        if str(path).endswith(partial_writes.TEMP_SUFFIX):
+            raise PermissionError(errno.EACCES, "Permission denied", path)
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "unlink", stuck)
+
+    rewrite_zip(src, str(dst))
+
+    monkeypatch.setattr(os, "unlink", real_unlink)
+    temps = [n for n in os.listdir(volume / "dos") if partial_writes.is_leftover_name(n)]
+    assert dst.exists() and len(temps) == 1
+    assert partial_writes.recorded_paths() == [str(volume / "dos" / temps[0])]
+
+    os.utime(volume / "dos" / temps[0], (HOUR_AGO, HOUR_AGO))
+    assert partial_writes.sweep_recorded() == 1
+
+    assert sorted(os.listdir(volume / "dos")) == ["out.dosz"]
+    assert zipfile.ZipFile(dst).namelist() == ["A"]
+    assert partial_writes.recorded_paths() == []
+
+
 @pytest.mark.parametrize("sweep", ["folder", "recorded"])
 def test_a_folder_link_swapped_after_the_check_never_reaches_outside(
     volume, tmp_path, monkeypatch, sweep

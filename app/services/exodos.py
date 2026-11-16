@@ -214,10 +214,20 @@ class NotRepackable(ValueError):
         self.top = top
 
 
-class TemplateUnreadable(NotRepackable):
-    """The template could not be read just now (a permission or I/O error),
-    which says nothing about the game: never cached, asked again next time.
-    Still a :class:`NotRepackable`, so a job fails and keeps its Source."""
+class ProbeUnavailable(NotRepackable):
+    """The zip or its template could not be read just now (a permission or
+    I/O error, an unreadable folder, a timeout), which says nothing about the
+    game: the probe never caches it and asks again next time. Still a
+    :class:`NotRepackable`, so a job fails and keeps its Source. Only a
+    verdict (not an eXoDOS layout, no template) is ever cached."""
+
+
+class ZipUnreadable(ProbeUnavailable):
+    """The game zip could not be read just now."""
+
+
+class TemplateUnreadable(ProbeUnavailable):
+    """The template could not be read just now."""
 
 
 # What a template read can fail with that is a fact about the tree, not a
@@ -290,12 +300,16 @@ class ExodosService:
         )
 
     def _read_zip(self, path: str) -> tuple[list[zipfile.ZipInfo], str]:
-        """The zip's members and its one game folder, or NotRepackable."""
+        """The zip's members and its one game folder, or NotRepackable.
+        A zip that is not a zip is a verdict; any OSError reading it is
+        :class:`ZipUnreadable`, which the probe never caches."""
         try:
             with zipfile.ZipFile(path) as zf:
                 infos = zf.infolist()
-        except (OSError, zipfile.BadZipFile) as exc:
+        except zipfile.BadZipFile as exc:
             raise NotRepackable(f"Cannot read zip: {exc}") from exc
+        except OSError as exc:
+            raise ZipUnreadable(f"Cannot read zip: {exc}") from exc
         return infos, self._game_folder(infos)
 
     @staticmethod
@@ -359,8 +373,8 @@ class ExodosService:
         therefore cannot swap the template for a link between the check in
         ``inspect`` and this read (PR #324's security review). Any refusal is
         ``NotRepackable``, which fails the job and keeps the Source; one that
-        may pass (a permission or I/O error) is :class:`TemplateUnreadable`,
-        which the probe cache never keeps.
+        may pass (a permission or I/O error, an unreadable folder, a timeout)
+        is :class:`TemplateUnreadable`, which the probe cache never keeps.
         """
         relative = f"{top}/{self.profile.conf_name}"
         try:
@@ -710,8 +724,8 @@ def _probe(
         before = _tree_stamp(root, top, profile.conf_name)
         service._read_template(root, top)
         answer = True
-    except TemplateUnreadable:
-        return False  # a passing failure: asked again next time, never cached
+    except ProbeUnavailable:
+        return False  # not a verdict: asked again next time, never cached
     except NotRepackable:
         answer = False
     if _tree_stamp(root, top, profile.conf_name) != before:

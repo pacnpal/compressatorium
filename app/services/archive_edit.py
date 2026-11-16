@@ -212,7 +212,10 @@ def rewrite_zip(
             raise ConversionCancelled("Conversion cancelled")
         os.chmod(tmp, _product_mode(src))
         place_without_clobbering(tmp, dst)
-        temp_gone = True
+        # Placing ignores a failed unlink of the temp name once the output is
+        # linked: the output is published, so this is success either way, but
+        # the journal entry stays until the temp name is seen gone.
+        temp_gone = _remove_temp(tmp)
         _fsync_dir(directory)
     except BaseException:
         if fd >= 0:
@@ -220,14 +223,23 @@ def rewrite_zip(
         temp_gone = temp_gone or _remove_temp(tmp)
         raise
     finally:
-        # The journal entry goes only once the temp file is known to be gone;
-        # one that could not be removed is left for the startup sweep.
+        # The journal entry goes only once the temp name is known to be gone;
+        # one that could not be removed is left for the next sweep.
         claim.release(temp_gone=temp_gone)
 
 
 def _remove_temp(tmp: str) -> bool:
-    """Remove a failed rewrite's temp file; whether it is gone. A failure is
-    logged, never raised over the error that caused the cleanup."""
+    """Make sure the temp name is gone: True only from an observed absence
+    (no-follow ``lstat``) or a successful unlink, never assumed. A failure is
+    logged, never raised (over the error that caused a cleanup, or after an
+    output that is already published)."""
+    try:
+        os.lstat(tmp)
+    except FileNotFoundError:
+        return True
+    except OSError as exc:
+        logger.warning("Could not check the temp file %s: %s", tmp, exc)
+        return False
     try:
         os.unlink(tmp)
     except FileNotFoundError:

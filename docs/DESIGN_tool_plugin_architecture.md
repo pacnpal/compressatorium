@@ -4961,9 +4961,14 @@ way to produce an edited copy of a zip. The first user is the eXoDOS repack
   closed and every file it made is removed. When the temp file is placed or
   removed, the sidecar is unlinked while its lock is still held, then the lock
   goes, and the journal entry goes only if the temp file is known to be gone
-  (`TempClaim.release(temp_gone=...)`): a failed rewrite whose cleanup could
-  not remove it logs that, re-raises the original error, and leaves the entry
-  for the startup sweep. The sidecar's name has one rule, shared by the writer
+  (`TempClaim.release(temp_gone=...)`). `temp_gone` comes only from an
+  observed absence (no-follow `lstat`) or a successful unlink, never assumed:
+  `place_without_clobbering` ignores a failed unlink of the temp name after
+  linking the output, so `rewrite_zip` checks the name afterwards and tries
+  once more. A temp name still there keeps the entry for the next sweep (the
+  output is published, so the rewrite still succeeds), and a failed rewrite
+  whose cleanup could not remove it logs that, re-raises the original error,
+  and keeps the entry too. The sidecar's name has one rule, shared by the writer
   and the sweep (`sidecar_name`): `.partial-<16 hex>.lock`, the first 16 hex
   characters of the SHA-256 of the temp file's name
   (`utils.path_utils.companion_name`), so it is fixed-length and a 254-byte
@@ -5010,10 +5015,12 @@ way to produce an edited copy of a zip. The first user is the eXoDOS repack
   (#331): the root's and the game folder's mtimes, and the template file's
   own mtime, size and inode. That stamp is taken before the template is read
   and checked again after; if the tree moved in between, the answer is not
-  cached. Only a fact about the zip or the tree is cached: a template read
-  that fails with a permission or I/O error raises `TemplateUnreadable` (a
-  `NotRepackable`, so a job still fails and keeps its Source) and is asked
-  again on the next probe, since fixing it changes no stamp. Adding, removing
+  cached. Only a verdict is cached (not an eXoDOS layout, no template): any
+  OSError reading the zip or the template (a permission or I/O error, an
+  unreadable folder, a timeout) raises `ProbeUnavailable` (`ZipUnreadable`
+  or `TemplateUnreadable`; a `NotRepackable`, so a job still fails and keeps
+  its Source) and is asked again on the next probe, since restoring access
+  changes no stamp. Adding, removing
   or fixing a template in place is seen at once, while an unrelated zip is not
   reopened on every pass, and
   `convert` reads the template again the same way rather than trusting the
