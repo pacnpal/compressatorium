@@ -2,26 +2,6 @@
 
 ## Unreleased
 
-### Added
-
-- **ES-DE, Batocera, Knulli and muOS keep their gamelist entries** (#386). A
-  Library (a folder Library or RomM) has a new switch at the top of its
-  Rules: **Used by an EmulationStation frontend**, off by default. When it's
-  on and a conversion deletes its Source, the matching `<path>` in the
-  Platform folder's `gamelist.xml` is pointed at the new file first
-  (`./Game.iso` becomes `./Game.chd`; `./Multi Disc/Game.cue` keeps its
-  folder), so the game's artwork, description, favourite flag and play count
-  stay. Only the path text of entries for replaced files changes: the XML
-  declaration, encoding, comments, element order and every other element are
-  left byte for byte, and the first change keeps `gamelist.xml.bak`. The
-  delete confirmation says "updates gamelist.xml, 1 entry", and the Ledger
-  row records the file and the entry count. A gamelist that can't be parsed
-  or written, or that names the Source in a path that doesn't lead to it,
-  keeps the Source and the output, and the job says which file and why.
-  Close ES-DE before converting: it rewrites its gamelist when it exits.
-  The delete confirmation now also counts the entries each playlist change
-  moves.
-
 ### Changed
 
 - **Groundwork for gamelist.xml and RomM updates** (#383). Before a Source is
@@ -34,6 +14,11 @@
 
 ### Fixed
 
+- **RomM's `.romm_tmp_*` staging files are ignored everywhere** (#384). RomM's
+  own converter stages work in names starting `.romm_tmp_`. They no longer show
+  in the file browser or search, and the folder Library walk (so sweeps, check
+  Rules and the Platform walk) and the DAT scan skip them. Only the prefix
+  counts: a folder named `backup_romm_tmp_x` still shows.
 - **Cancelling a fast conversion says cancelled, not failed.** When a tool's
   output ended before the app had acted on a pending Cancel, the app stopped
   the tool itself and then reported the job as failed with "return code -15"
@@ -189,6 +174,36 @@
     error) is not remembered, so fixing it is seen on the next listing.
 
 ### Added
+
+- **ES-DE, Batocera, Knulli and muOS keep their gamelist entries** (#386). A
+  Library (a folder Library or RomM) has a new switch at the top of its
+  Rules: **Used by an EmulationStation frontend**, off by default. When it's
+  on and a conversion deletes its Source, the matching `<path>` in the
+  Platform folder's `gamelist.xml` is pointed at the new file first
+  (`./Game.iso` becomes `./Game.chd`; `./Multi Disc/Game.cue` keeps its
+  folder), so the game's artwork, description, favourite flag and play count
+  stay. Only the path text of entries for replaced files changes: the XML
+  declaration, encoding, comments, element order and every other element are
+  left byte for byte, and the first change keeps `gamelist.xml.bak`. The
+  delete confirmation says "updates gamelist.xml, 1 entry", and the Ledger
+  row records the file and the entry count. A gamelist that can't be parsed
+  or written, or that names the Source in a path that doesn't lead to it,
+  keeps the Source and the output, and the job says which file and why.
+  Close ES-DE before converting: it rewrites its gamelist when it exits.
+  The delete confirmation now also counts the entries each playlist change
+  moves.
+- **Beside RomM's own converter** (#385). Newer RomM releases can convert
+  their library themselves (`ROM_CONVERTO_ENABLED`), and they delete the
+  sources without reading the output back. When RomM reports its converter
+  on, the RomM Settings tab now says so in a banner and advises switching it
+  off. The Automation tab flags each Rule whose Platform RomM also converts,
+  with RomM's target and the Rule's side by side, and marks the Platforms RomM
+  can't convert. The banner's **Import RomM's targets as Rules** button creates
+  a Rule for each Platform RomM converts that has no Rule yet, mapping RomM's
+  format onto a mode here; a format nothing here writes (Xbox 360 `zar`) is
+  skipped and named, and the new Rules start off. Nothing is blocked: these
+  are warnings. A RomM without the converter, or with it off, shows none of
+  it. The README explains why we advise turning RomM's converter off.
 
 - **A Source kept because another job was reading it is deleted later**
   (#329). When a Rule's delete step finds the Source still in use, the job

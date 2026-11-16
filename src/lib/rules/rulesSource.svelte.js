@@ -112,6 +112,11 @@ export class RulesSource {
     return false;
   }
 
+  /** What another converter does to a Platform (#385). Only RomM has one. */
+  converterNoteFor() {
+    return null;
+  }
+
   /** Called after a real run, before the state reload (RomM: the re-pin badge). */
   afterRun() {}
 
@@ -189,6 +194,23 @@ export class RulesSource {
     this.rules = { ...this.rules, [key]: withoutStaleWindowFlag(this.rules[key], rule) };
     this.rulesDirty = true;
     this.#rulesRevision += 1;
+  }
+
+  /**
+   * Add a Rule for each Platform in *modes* (Platform id -> mode) that has no
+   * Rule yet: the backend defaults with that mode, in the browser's zone, off
+   * as every new Rule is. A Platform that has a Rule, saved or not, keeps it.
+   * Nothing is saved here. Returns how many were added.
+   */
+  addRules(modes) {
+    const zone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+    let added = 0;
+    for (const [platformId, mode] of Object.entries(modes ?? {})) {
+      if (!mode || this.rules[String(platformId)]) continue;
+      this.setRule(platformId, { ...this.ruleFor(platformId), mode, timezone: zone });
+      added += 1;
+    }
+    return added;
   }
 
   removeRule(platformId) {

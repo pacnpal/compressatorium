@@ -608,6 +608,7 @@
         {@const check = source.checkRuleFor(platform.id)}
         {@const spec = specFor(rule.mode)}
         {@const open = expanded.has(platform.id)}
+        {@const converterNote = source.converterNoteFor(platform, configured ? rule : null)}
         <article class="rule" class:configured={configured || !!check}>
           <header>
             <!-- data-platform-id: a stable handle (the label is a display name). -->
@@ -637,6 +638,19 @@
               {#if !configured && !check}
                 <span class="muted">not configured</span>
               {/if}
+              <!-- RomM's own converter (#385): a flag, never a block. -->
+              {#if converterNote?.kind === 'converts'}
+                <Badge
+                  tone={configured ? 'warning' : 'neutral'}
+                  title="RomM's own converter also converts this Platform"
+                >
+                  RomM → {converterNote.target.toUpperCase()}
+                </Badge>
+              {:else if converterNote?.kind === 'cannot'}
+                <Badge tone="info" title="RomM's converter has no format for this Platform">
+                  RomM can't convert
+                </Badge>
+              {/if}
             </div>
           </header>
 
@@ -653,6 +667,37 @@
                   />
                 </label>
               </div>
+
+              {#if configured && converterNote?.kind === 'converts'}
+                <div class="warn converter-conflict" role="note">
+                  <p>RomM's own converter also converts this Platform.</p>
+                  <dl class="targets">
+                    <div><dt>RomM</dt><dd>{converterNote.target.toUpperCase()}</dd></div>
+                    <div>
+                      <dt>This Rule</dt>
+                      <dd>
+                        {spec?.label ?? rule.mode}{spec?.outputExt ? ` (${spec.outputExt})` : ''}
+                      </dd>
+                    </div>
+                  </dl>
+                  <p>
+                    {#if converterNote.agrees}
+                      Both write the same format, so whichever runs first converts
+                      a game and the other finds nothing left to do.
+                    {:else}
+                      They write different formats, so the same game can be
+                      converted twice.
+                    {/if}
+                    RomM deletes its sources without checking the output. Switch
+                    one of them off; nothing here is blocked.
+                  </p>
+                </div>
+              {:else if converterNote?.kind === 'cannot'}
+                <p class="muted converter-cannot">
+                  RomM's converter can't convert this Platform, so only
+                  Compressatorium does.
+                </p>
+              {/if}
 
               {#if rule.mode}
                 {@const codecs = codecsFor(rule.mode)}
@@ -1291,6 +1336,23 @@
     font-size: var(--text-sm);
   }
   .last-run { margin: 0; }
+  .converter-conflict {
+    display: grid;
+    gap: var(--space-2);
+    background: var(--warning-muted);
+    border-color: var(--warning);
+  }
+  .converter-conflict p { margin: 0; }
+  .converter-conflict .targets {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-4);
+    margin: 0;
+  }
+  .converter-conflict .targets div { display: flex; gap: var(--space-2); }
+  .converter-conflict dt { color: var(--text-2); }
+  .converter-conflict dd { margin: 0; font-weight: var(--weight-semibold); }
+  .converter-cannot { margin: 0; font-size: var(--text-sm); }
 
   .save-bar {
     position: sticky;

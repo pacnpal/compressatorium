@@ -57,6 +57,9 @@ from services.romm import (
     auto as romm_auto,
 )
 from services.romm import (
+    converter as romm_converter,
+)
+from services.romm import (
     repin as romm_repin,
 )
 from services.romm import (
@@ -264,6 +267,10 @@ async def romm_status() -> dict:
         "connected": False,
         "version": None,
         "error": None,
+        # RomM's own converter (#385): None when this RomM has none, or is not
+        # reachable. The banner, the Rule flags and the can't-convert marks all
+        # read this one block. See `services.romm.converter`.
+        "converter": None,
     }
     if library_root:
         # A dead NFS/SMB mount blocks in uninterruptible I/O, so this stat goes
@@ -304,8 +311,51 @@ async def romm_status() -> dict:
         except RommError as exc:
             logger.warning("romm: heartbeat failed: %s", exc)
             result["error"] = _safe_error(exc)
+        else:
+            result["converter"] = await _converter_status(heartbeat)
     result["pending_repins"] = await run_in_threadpool(romm_repin.count_pending)
     return result
+
+
+async def _converter_status(heartbeat: dict) -> dict | None:
+    """The status's ``converter`` block, from the heartbeat already in hand.
+
+    A RomM whose converter is on but whose ``/api/config`` cannot be read still
+    reports the converter on, with no targets and the reason: the banner is
+    owed either way, and the connection itself is fine.
+    """
+    try:
+        converter = await run_in_threadpool(romm_client.converter_config, heartbeat)
+    except RommError as exc:
+        logger.warning("romm: reading RomM's converter config failed: %s", exc)
+        return romm_converter.describe(
+            {"enabled": True, "platform_formats": {}, "library_targets": None},
+            error=_safe_error(exc),
+        )
+    return romm_converter.describe(converter)
+
+
+@router.get("/romm/converter/import-plan")
+async def romm_converter_import_plan() -> dict:
+    """The Rules importing RomM's converter targets would create (#385).
+
+    Read-only: nothing is saved here. The view merges ``rules`` into the
+    Rules it holds and saves them through ``PUT /api/romm/rules``, the same as
+    any edit. Only Platforms with no conversion Rule are planned; a RomM target
+    with no matching mode here is listed in ``skipped``.
+    """
+    _require_configured()
+    try:
+        heartbeat = await run_in_threadpool(romm_client.heartbeat)
+        converter = await run_in_threadpool(romm_client.converter_config, heartbeat)
+        platforms = (
+            await run_in_threadpool(romm_client.platforms)
+            if converter and converter.get("enabled") else []
+        )
+    except RommError as exc:
+        raise _romm_call(exc, context="reading RomM's converter config") from exc
+    rules = await rules_sweep.get_rules(romm_library)
+    return romm_converter.import_plan(converter, platforms, rules)
 
 
 @router.get("/romm/platforms")

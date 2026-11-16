@@ -17,6 +17,8 @@
   import XIcon from '@lucide/svelte/icons/x';
   import Plug from '@lucide/svelte/icons/plug';
   import Save from '@lucide/svelte/icons/save';
+  import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
+  import Import from '@lucide/svelte/icons/import';
 
   let { onsaved } = $props();
 
@@ -100,6 +102,35 @@
   const handleSaveMetadata = () =>
     save(metadataPatch(), 'Metadata settings saved');
 
+  // RomM's own converter (#385), when it is switched on. A warning and an
+  // offer, never a block: nothing here stops either converter.
+  const converter = $derived(romm.activeConverter);
+  const rommTargets = $derived(
+    Object.entries(converter?.platformFormats ?? {}).sort(([a], [b]) => a.localeCompare(b))
+  );
+  let importing = $state(false);
+
+  async function handleImport() {
+    importing = true;
+    try {
+      const { created, skipped } = await romm.importConverterTargets();
+      const made = created === 1 ? '1 Rule' : `${created} Rules`;
+      const left = skipped.length
+        ? ` Skipped ${skipped.map((p) => `${p.name} (${p.target.toUpperCase()})`).join(', ')}: `
+          + 'no mode here writes that format.'
+        : '';
+      if (created > 0) {
+        toast.success(`Imported ${made}, off until you turn them on in Automation.${left}`);
+      } else {
+        toast.info(`No Rules to import: every Platform RomM converts already has one.${left}`);
+      }
+    } catch (e) {
+      toast.error(e?.message ?? "Could not import RomM's targets");
+    } finally {
+      importing = false;
+    }
+  }
+
   async function handleTest() {
     try {
       const result = await romm.testConnection(patch());
@@ -115,6 +146,46 @@
 </script>
 
 <div class="settings">
+  {#if converter}
+    <section class="card converter-banner" role="status" aria-live="polite">
+      <header>
+        <h2><TriangleAlert size={18} /> RomM's own converter is on</h2>
+      </header>
+      <p>
+        RomM converts the Platforms listed in its config and then deletes the
+        sources. It checks only that the conversion tool exited cleanly, and
+        never reads the output back. Compressatorium checks every output before
+        it deletes a source. Two converters on one library can convert the same
+        game twice, so we suggest switching RomM's off
+        (<code>ROM_CONVERTO_ENABLED=false</code>). Nothing here is blocked: the
+        choice is yours.
+      </p>
+      {#if rommTargets.length}
+        <p class="targets">
+          RomM converts:
+          {#each rommTargets as [slug, target], i (slug)}
+            {#if i > 0}, {/if}<code>{slug}</code> → {target.toUpperCase()}
+          {/each}
+        </p>
+      {/if}
+      {#if converter.error}
+        <p class="error">Could not read RomM's targets: {converter.error}</p>
+      {/if}
+      <div class="actions">
+        <Button
+          variant="secondary"
+          onclick={handleImport}
+          loading={importing}
+          disabled={!rommTargets.length}
+          icon={importIcon}
+        >
+          Import RomM's targets as Rules
+        </Button>
+        <span class="hint">Only for Platforms that have no Rule yet. New Rules start off.</span>
+      </div>
+    </section>
+  {/if}
+
   <section class="card">
     <header>
       <h2>Connection</h2>
@@ -273,6 +344,7 @@
 
 {#snippet plugIcon()}<Plug size={14} />{/snippet}
 {#snippet saveIcon()}<Save size={14} />{/snippet}
+{#snippet importIcon()}<Import size={14} />{/snippet}
 
 <style>
   .days {
@@ -354,4 +426,21 @@
   .test-results li.ok { color: var(--text-1); }
   .muted { color: var(--text-2); }
   .error { color: var(--danger-text, var(--text-1)); margin: 0; }
+  .converter-banner {
+    background: var(--warning-muted);
+    border-color: var(--warning);
+  }
+  .converter-banner h2 {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
+  .converter-banner :global(svg) { color: var(--warning); }
+  .converter-banner p { margin: 0; }
+  .converter-banner code {
+    background: var(--surface-2);
+    padding: 0 4px;
+    border-radius: var(--radius-sm);
+  }
+  .converter-banner .actions { align-items: center; }
 </style>
