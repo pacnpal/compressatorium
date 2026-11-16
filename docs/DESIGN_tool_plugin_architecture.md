@@ -5465,12 +5465,21 @@ its own default; the dolphin plugin fills both from its `CONTAINER_CODECS` and
 `CONTAINER_DEFAULTS` tables (RVZ: zstd, as Dolphin's convert dialog selects;
 WIA: none, the dialog's first entry, since it selects nothing for WIA). The
 routes refuse a codec outside `codecs` (`_validate_request_compression`), and
-the plugin refuses it again before its tool runs (`refuse_unsupported_codec`),
-for a Rule saved before. The frontend mirrors both per mode in `registry.js`
+the plugin refuses it again before its tool runs
+(`refuse_unsupported_compression`), for a Rule saved before. Levels are per
+codec too: **`ModeSpec.codec_levels`** holds each codec's `(min, max, default)`,
+read through `ModeSpec.level_range(codec)`, from the plugin's `CODEC_LEVELS`
+(Dolphin's `DiscIO/WIABlob.cpp` `GetAllowedCompressionLevels`: bzip2, lzma and
+lzma2 1-9, zstd 1-22; zstd keeps this app's 19, the others Dolphin's dialog
+default, 5). `compression_for` gives a codec with no level its default level;
+an explicit level outside the range is refused, never clamped, by the same
+two checks (`base.compression_problem`). The frontend mirrors both per mode in `registry.js`
 (`compressionCodecs`, `defaultCompression` on the mode entry, read through
-`registry.codecsForMode` / `defaultCompressionForMode`), so the pickers never
-offer or send a codec the mode refuses; `test_frontend_parity_186` fails on
-drift.
+`registry.codecsForMode` / `defaultCompressionForMode`), and each codec entry's
+`levelRange` (`registry.levelRangeFor(mode, codec)`), so the pickers never
+offer or send a codec or level the mode refuses: the level control follows the
+selected codec, and switching codec resets a level the new codec does not take
+to its default. `test_frontend_parity_186` fails on drift.
 
 **`ToolPlugin.default_compression: str | None`** names the codec to use in both
 cases, so the resolution stays a per-tool declaration instead of an if-ladder on

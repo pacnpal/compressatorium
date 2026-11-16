@@ -46,6 +46,28 @@ CONTAINER_CODECS = {
 # Zstandard ("recommended"); WIA selects nothing, so it stays on its first
 # entry, No Compression.
 CONTAINER_DEFAULTS = {"rvz": "zstd", "wia": "none"}
+# Each codec's valid level range and default level, as (min, max, default);
+# None for a codec that takes no level. The ranges are Dolphin's
+# (Source/Core/DiscIO/WIABlob.cpp, GetAllowedCompressionLevels: bzip2, lzma
+# and lzma2 1-9; zstd 1 to ZSTD_maxCLevel(), 22, in the GUI range), and
+# DolphinTool/ConvertCommand.cpp refuses any other level ("Compression level
+# not in acceptable range") and any codec but none without one. zstd keeps
+# this app's 19 (it matches MAME's Redump sets); the others take Dolphin's own
+# convert-dialog default, 5 (DolphinQt/ConvertDialog.cpp).
+CODEC_LEVELS: dict[str, tuple[int, int, int] | None] = {
+    "none": None,
+    "zstd": (1, 22, 19),
+    "bzip2": (1, 9, 5),
+    "lzma": (1, 9, 5),
+    "lzma2": (1, 9, 5),
+}
+
+
+def _codec_levels(codecs: frozenset[str]) -> tuple[tuple[str, int, int, int], ...]:
+    """``ModeSpec.codec_levels`` for *codecs*, from :data:`CODEC_LEVELS`."""
+    return tuple(
+        (codec, *CODEC_LEVELS[codec]) for codec in sorted(codecs) if CODEC_LEVELS[codec]
+    )
 
 
 def container_of(mode: str) -> str:
@@ -90,6 +112,10 @@ def _build_modes() -> list[ModeSpec]:
             ),
             default_compression=(
                 CONTAINER_DEFAULTS[container_of(mode)] if supports_compression else None
+            ),
+            codec_levels=(
+                _codec_levels(CONTAINER_CODECS[container_of(mode)])
+                if supports_compression else ()
             ),
             supports_delete_on_verify=True,
             # Every input and output extension has a disc-SHA1 content digest.
@@ -188,7 +214,7 @@ class DolphinTool(BaseTool):
     ) -> AsyncGenerator[dict, None]:
         # A codec the container refuses (a Rule saved before the routes
         # checked) fails here, with the reason, before dolphin-tool runs.
-        self.refuse_unsupported_codec(mode, compression)
+        self.refuse_unsupported_compression(mode, compression)
         return self._service.convert(
             input_path, output_path, mode,
             compression=compression, cancel_event=cancel_event,

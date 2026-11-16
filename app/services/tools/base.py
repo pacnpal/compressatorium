@@ -26,12 +26,29 @@ from .spec import ModeSpec
 logger = get_logger("tools.base")
 
 
-def unsupported_codec_message(spec: ModeSpec, codec: str) -> str:
-    """Why *codec* is refused for *spec*'s mode, naming the ones it takes."""
-    return (
-        f"{spec.label} can't use {codec} compression; it takes "
-        f"{', '.join(sorted(spec.codecs))}"
-    )
+def compression_problem(spec: ModeSpec, compression: str | None) -> str | None:
+    """Why *spec*'s mode refuses *compression*, or None when it takes it.
+
+    A codec outside ``spec.codecs`` (when the mode names its codecs), or a
+    level outside that codec's range (``spec.level_range``). The routes answer
+    400 with it, and the plugin refuses with it before its tool runs.
+    """
+    for part in (compression or "").split(","):
+        codec, _, level = part.partition(":")
+        if spec.codecs and codec and codec not in spec.codecs:
+            return (
+                f"{spec.label} can't use {codec} compression; it takes "
+                f"{', '.join(sorted(spec.codecs))}"
+            )
+        levels = spec.level_range(codec) if codec else None
+        if levels and level:
+            low, high, _default = levels
+            if not level.isdigit() or not low <= int(level) <= high:
+                return (
+                    f"{spec.label} {codec} takes levels {low}-{high}; "
+                    f"{level} is out of range"
+                )
+    return None
 
 
 class EmbeddedHashUnavailable(Exception):
@@ -591,6 +608,10 @@ class BaseTool:
         # reads as the tool's own layout and is kept.
         spec = self.spec(mode)
         codec, _, level = (compression or "").partition(":")
+        if codec and not level and spec.level_range(codec):
+            # A chosen codec with no level gets that codec's own default level
+            # (dolphin-tool needs one, and its range depends on the codec).
+            return f"{codec}:{spec.level_range(codec)[2]}"
         if codec or not spec.supports_compression:
             return compression
         if not (spec.requires_codec or level):
@@ -608,17 +629,19 @@ class BaseTool:
                     "default; ignoring the level", mode,
                 )
             return None
-        return f"{default}:{level}" if level else default
+        if level:
+            return f"{default}:{level}"
+        levels = spec.level_range(default)
+        return f"{default}:{levels[2]}" if levels else default
 
-    def refuse_unsupported_codec(self, mode: str, compression: str | None) -> None:
-        """Raise ``ValueError`` for a codec *mode* does not take (``ModeSpec.codecs``).
-
-        A no-op for a mode that names no codecs, or when none was chosen.
+    def refuse_unsupported_compression(self, mode: str, compression: str | None) -> None:
+        """Raise ``ValueError`` for what *mode* refuses: a codec outside
+        ``ModeSpec.codecs``, or a level outside that codec's range. Nothing is
+        clamped. A no-op when the mode names no codecs, or nothing was chosen.
         """
-        allowed = self.spec(mode).codecs
-        codec = (compression or "").partition(":")[0]
-        if allowed and codec and codec not in allowed:
-            raise ValueError(unsupported_codec_message(self.spec(mode), codec))
+        problem = compression_problem(self.spec(mode), compression)
+        if problem:
+            raise ValueError(problem)
 
     @staticmethod
     def _basic_info_fields(raw: dict) -> dict:

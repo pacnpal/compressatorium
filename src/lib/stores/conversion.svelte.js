@@ -321,11 +321,13 @@ class ConversionStore {
       // reject the token. Fall back to the registered default range
       // value when the field is empty or non-numeric, then clamp into
       // [min, max] so out-of-range edits also stay safe.
-      const range = this.currentTool?.compressionLevelRange ?? DEFAULT_COMPRESSION_LEVEL_RANGE;
-      const rawLevel = this.compressionLevel;
-      const parsed = Number.parseInt(rawLevel, 10);
-      const safeLevel = Number.isFinite(parsed)
-        ? Math.min(range.max, Math.max(range.min, parsed))
+      // The codec's own range (lzma2 takes 1-9, zstd 1-22). A level it does
+      // not take is sent as the codec's default, never as itself.
+      const range = registry.levelRangeFor(this.mode, codec)
+        ?? this.currentTool?.compressionLevelRange ?? DEFAULT_COMPRESSION_LEVEL_RANGE;
+      const parsed = Number.parseInt(this.compressionLevel, 10);
+      const safeLevel = Number.isFinite(parsed) && parsed >= range.min && parsed <= range.max
+        ? parsed
         : (range.default ?? range.min);
       return `${codec}:${safeLevel}`;
     }
@@ -591,6 +593,13 @@ class ConversionStore {
   /** Replace selection with a single codec (dolphin RVZ/WIA, nsz solid/block). */
   setSingleCodec(codec) {
     this.compressionSelection = codec ? [codec] : [];
+    // A level the new codec does not take (zstd 19, then lzma2 at 1-9) is
+    // reset to that codec's own default level.
+    const range = codec ? registry.levelRangeFor(this.mode, codec) : null;
+    const level = Number.parseInt(this.compressionLevel, 10);
+    if (range && !(level >= range.min && level <= range.max)) {
+      this.compressionLevel = String(range.default ?? range.min);
+    }
     this.#persistCompression();
   }
 

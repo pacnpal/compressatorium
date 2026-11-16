@@ -264,6 +264,9 @@ def _frontend_mode_compression(tmp_path: Path) -> dict[str, dict]:
         ".map((c) => c.value).sort(),"
         " default_compression: (m.defaultCompression ?? t.defaultCompression ?? [])[0]"
         " ?? null,"
+        " levels: Object.fromEntries((m.compressionCodecs ?? t.compressionCodecs ?? [])"
+        ".filter((c) => c.levelRange)"
+        ".map((c) => [c.value, [c.levelRange.min, c.levelRange.max, c.levelRange.default]])),"
         "})));\n"
         "process.stdout.write(JSON.stringify(__rows));\n"
     )
@@ -291,5 +294,15 @@ def test_each_modes_codecs_and_default_mirror_the_backend(tmp_path):
             problems.append(
                 f"  {spec.mode}: registry.js seeds {fe['default_compression']!r}, the "
                 f"mode's default is {spec.default_compression!r}"
+            )
+        # Each codec's level range and default level (lzma2 takes 1-9, zstd 1-22).
+        backend_levels = {
+            codec: list(spec.level_range(codec)) for codec in spec.codecs
+            if spec.level_range(codec)
+        }
+        if spec.codecs and fe["levels"] != backend_levels:
+            problems.append(
+                f"  {spec.mode}: registry.js level ranges {fe['levels']}, the mode's "
+                f"are {backend_levels}"
             )
     assert not problems, "\n".join(problems)

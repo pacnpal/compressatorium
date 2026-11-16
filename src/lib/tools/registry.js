@@ -287,11 +287,16 @@ export const TOOLS = [
     accent: 'var(--badge-dat-match)',
     // Dolphin RVZ / WIA accept exactly one codec + a compression level.
     // GCZ ignores both; dolphin_iso is an extract op.
+    // Each codec's level range mirrors the backend's `CODEC_LEVELS` (Dolphin
+    // takes zstd at 1-22 but bzip2/lzma/lzma2 only at 1-9); the level control
+    // follows the selected codec (#345).
     compressionCodecs: [
-      { value: 'zstd',  label: 'zstd',  hint: 'Recommended, level 19 matches MAME Redump' },
-      { value: 'bzip2', label: 'bzip2', hint: 'Good ratio, slower' },
-      { value: 'lzma',  label: 'lzma' },
-      { value: 'lzma2', label: 'lzma2' },
+      { value: 'zstd',  label: 'zstd',  hint: 'Recommended, level 19 matches MAME Redump',
+        levelRange: { min: 1, max: 22, default: 19 } },
+      { value: 'bzip2', label: 'bzip2', hint: 'Good ratio, slower',
+        levelRange: { min: 1, max: 9, default: 5 } },
+      { value: 'lzma',  label: 'lzma', levelRange: { min: 1, max: 9, default: 5 } },
+      { value: 'lzma2', label: 'lzma2', levelRange: { min: 1, max: 9, default: 5 } },
       { value: 'none',  label: 'No compression' },
     ],
     compressionStyle: 'single-with-level',  // one codec + numeric level (0-22)
@@ -311,9 +316,10 @@ export const TOOLS = [
         // convert dialog leaves WIA on No compression. Mirrors the backend's
         // `ModeSpec.codecs` / `default_compression` for this mode (#345).
         compressionCodecs: [
-          { value: 'bzip2', label: 'bzip2', hint: 'Good ratio, slower' },
-          { value: 'lzma',  label: 'lzma' },
-          { value: 'lzma2', label: 'lzma2' },
+          { value: 'bzip2', label: 'bzip2', hint: 'Good ratio, slower',
+            levelRange: { min: 1, max: 9, default: 5 } },
+          { value: 'lzma',  label: 'lzma', levelRange: { min: 1, max: 9, default: 5 } },
+          { value: 'lzma2', label: 'lzma2', levelRange: { min: 1, max: 9, default: 5 } },
           { value: 'none',  label: 'No compression' },
         ],
         defaultCompression: ['none'] },
@@ -877,6 +883,19 @@ export const registry = {
   defaultCompressionForMode: (mode) => {
     const entry = byMode.get(mode);
     return entry?.spec?.defaultCompression ?? entry?.tool?.defaultCompression;
+  },
+
+  /**
+   * The level range `{min, max, default}` for `codec` in `mode`: the codec's
+   * own (Dolphin's lzma2 takes 1-9, zstd 1-22), else the tool's, else the
+   * shared default range.
+   */
+  levelRangeFor: (mode, codec) => {
+    const entry = byMode.get(mode);
+    const codecs = entry?.spec?.compressionCodecs ?? entry?.tool?.compressionCodecs ?? [];
+    return codecs.find((c) => c.value === codec)?.levelRange
+      ?? entry?.tool?.compressionLevelRange
+      ?? DEFAULT_COMPRESSION_LEVEL_RANGE;
   },
 
   /** Pick the tool whose verify_extensions match a given file path, or null.

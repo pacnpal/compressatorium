@@ -48,6 +48,11 @@ class ModeSpec:
     # (`ToolPlugin.default_compression`): RVZ and WIA each have their own.
     # `ToolPlugin.compression_for` prefers it.
     default_compression: str | None = None
+    # Each codec's valid level range and default level, as
+    # ``(codec, min, max, default)``, for a tool that bounds levels per codec
+    # (dolphin-tool: zstd 1-22, bzip2/lzma/lzma2 1-9). A codec not listed
+    # takes no level of its own. Read through :meth:`level_range`.
+    codec_levels: tuple[tuple[str, int, int, int], ...] = ()
     supports_delete_on_verify: bool = False
     # Whether the tool can verify this mode's product *without* the question of
     # deleting anything. Implied by `supports_delete_on_verify` (deleting needs
@@ -110,6 +115,19 @@ class ModeSpec:
     # game beside its Source, which a Rule over a RomM folder would multiply).
     automatable: bool = True
 
+    def level_range(self, codec: str) -> tuple[int, int, int] | None:
+        """``(min, max, default)`` level for *codec*, or None when it takes none."""
+        return _level_range(self.codec_levels, codec)
+
+
+def _level_range(
+    codec_levels: tuple[tuple[str, int, int, int], ...], codec: str,
+) -> tuple[int, int, int] | None:
+    for name, low, high, default in codec_levels:
+        if name == codec:
+            return low, high, default
+    return None
+
 
 @dataclass(frozen=True)
 class ChainStep:
@@ -149,6 +167,7 @@ class ChainSpec:
     requires_codec: bool = False
     codecs: frozenset[str] = frozenset()
     default_compression: str | None = None
+    codec_levels: tuple[tuple[str, int, int, int], ...] = ()
     supports_delete_on_verify: bool = True   # of the ORIGINAL source, gated on final verify
     # Structural parity with ModeSpec: a chain's final step verifies the
     # output, and its delete flag already implies that, so this stays False and
@@ -176,3 +195,7 @@ class ChainSpec:
     auto_platform_slugs: frozenset[str] = frozenset()
     # Structural parity with ModeSpec.automatable.
     automatable: bool = True
+
+    def level_range(self, codec: str) -> tuple[int, int, int] | None:
+        """Structural parity with :meth:`ModeSpec.level_range`."""
+        return _level_range(self.codec_levels, codec)

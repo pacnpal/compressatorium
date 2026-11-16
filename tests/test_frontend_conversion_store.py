@@ -976,6 +976,9 @@ const DEFAULTS = { dolphin_rvz: ['zstd'], dolphin_wia: ['none'] };
 registry.specFor = () => ({ supportsCompression: true, supportsCompressionLevel: true });
 registry.codecsForMode = (m) => (CODECS[m] ?? []).map((value) => ({ value }));
 registry.defaultCompressionForMode = (m) => DEFAULTS[m];
+registry.levelRangeFor = (_m, codec) => (
+  codec === 'zstd' ? { min: 1, max: 22, default: 19 } : { min: 1, max: 9, default: 5 }
+);
 const store = new ConversionStore();
 store.compressionSelection = ['zstd'];
 store.compressionLevel = '19';
@@ -987,4 +990,32 @@ store.compressionSelection = ['lzma2'];
 const chosen = store.compressionValue;
 process.stdout.write(JSON.stringify({ rvz, wia, chosen }));
 """)
-    assert data == {"rvz": "zstd:19", "wia": "none", "chosen": "lzma2:19"}
+    assert data == {"rvz": "zstd:19", "wia": "none", "chosen": "lzma2:5"}
+
+
+def test_switching_codec_resets_a_level_the_new_codec_refuses(tmp_path):
+    """dolphin-tool takes zstd at 1-22 but lzma2 only at 1-9: switching from
+    zstd at 19 to lzma2 lands on lzma2's own default, never 19. A level the new
+    codec takes is kept."""
+    data = _run(tmp_path, """
+const RANGES = {
+  zstd: { min: 1, max: 22, default: 19 },
+  lzma2: { min: 1, max: 9, default: 5 },
+  bzip2: { min: 1, max: 9, default: 5 },
+};
+registry.specFor = () => ({ supportsCompression: true, supportsCompressionLevel: true });
+registry.codecsForMode = () => ['none', 'zstd', 'lzma2', 'bzip2'].map((value) => ({ value }));
+registry.defaultCompressionForMode = () => ['zstd'];
+registry.levelRangeFor = (_mode, codec) => RANGES[codec];
+const store = new ConversionStore();
+store.mode = 'dolphin_rvz';
+store.setSingleCodec('zstd');
+store.setCompressionLevel('19');
+store.setSingleCodec('lzma2');
+const reset = { level: store.compressionLevel, sent: store.compressionValue };
+store.setCompressionLevel('7');
+store.setSingleCodec('bzip2');
+const kept = store.compressionLevel;
+process.stdout.write(JSON.stringify({ reset, kept }));
+""")
+    assert data == {"reset": {"level": "5", "sent": "lzma2:5"}, "kept": "7"}

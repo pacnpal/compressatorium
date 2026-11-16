@@ -82,7 +82,7 @@ async def test_a_single_job_takes_the_tools_default_codec(env, mode) -> None:
         file_path=iso, mode=ConversionMode(mode),
     ))
     # The job records the codec it runs with (the Ledger, the re-run fast path).
-    assert job.compression == registry.spec(mode).default_compression
+    assert job.compression.partition(":")[0] == registry.spec(mode).default_compression
 
     await _run_all()
 
@@ -125,9 +125,12 @@ async def test_a_chosen_codec_still_wins(env) -> None:
 
 
 @pytest.mark.parametrize(("mode", "given", "sent"), [
-    # Nothing chosen: RVZ and WIA need a codec, so the tool's own is named.
-    ("dolphin_rvz", None, "zstd"),
-    ("dolphin_rvz", "", "zstd"),
+    # Nothing chosen: RVZ and WIA need a codec, so the mode's own is named,
+    # with that codec's default level (dolphin-tool needs one).
+    ("dolphin_rvz", None, "zstd:19"),
+    ("dolphin_rvz", "", "zstd:19"),
+    # A chosen codec without a level gets that codec's default level.
+    ("dolphin_wia", "lzma2", "lzma2:5"),
     # WIA's own default: Dolphin refuses zstd in a WIA container.
     ("dolphin_wia", None, "none"),
     # A level with "tool default" for the codec keeps the level.
@@ -197,4 +200,59 @@ async def test_a_wia_job_with_zstd_is_refused_before_the_tool_runs(env) -> None:
     tool = registry.for_mode("dolphin_wia")
     with pytest.raises(ValueError, match="zstd"):
         tool.convert(iso, str(env["tmp"] / "Melee.wia"), "dolphin_wia", compression="zstd")
+    assert env["commands"] == []
+
+
+# --------------------------------------------------------------------------- #
+# Each codec's own level range (Dolphin rejects lzma2 at 19)
+# --------------------------------------------------------------------------- #
+
+
+def test_every_codec_a_container_takes_has_a_valid_level_range() -> None:
+    """From DiscIO/WIABlob.cpp GetAllowedCompressionLevels: bzip2, lzma and
+    lzma2 take 1-9, zstd 1-22 (the GUI range), and none takes no level."""
+    from services.tools.dolphin import CODEC_LEVELS, CONTAINER_CODECS
+
+    for container, codecs in CONTAINER_CODECS.items():
+        for codec in codecs:
+            assert codec in CODEC_LEVELS, (container, codec)
+            levels = CODEC_LEVELS[codec]
+            if codec == "none":
+                assert levels is None
+                continue
+            low, high, default = levels
+            assert 1 <= low <= default <= high, (codec, levels)
+    for mode in ("dolphin_rvz", "dolphin_wia"):
+        spec = registry.spec(mode)
+        for codec in spec.codecs:
+            assert spec.level_range(codec) == CODEC_LEVELS[codec], (mode, codec)
+
+
+@pytest.mark.parametrize("mode", ["dolphin_rvz", "dolphin_wia"])
+def test_a_codec_without_a_level_gets_one_in_its_range(mode) -> None:
+    from services.tools.dolphin import CODEC_LEVELS
+
+    resolved = registry.for_mode(mode).compression_for(mode, "lzma2")
+    codec, _, level = resolved.partition(":")
+    low, high, _default = CODEC_LEVELS[codec]
+    assert low <= int(level) <= high
+
+
+@pytest.mark.asyncio
+async def test_an_out_of_range_level_is_refused_before_the_tool_runs(env) -> None:
+    from app.models import ConversionMode, JobCreateRequest
+    from app.routes import convert as convert_routes
+    from fastapi import HTTPException
+
+    iso = _gamecube(env["tmp"] / "gc" / "Melee.iso")
+    with pytest.raises(HTTPException) as refused:
+        await convert_routes.create_job(JobCreateRequest(
+            file_path=iso, mode=ConversionMode.DOLPHIN_WIA, compression="lzma2:19",
+        ))
+
+    assert refused.value.status_code == 400
+    assert "lzma2" in refused.value.detail and "1-9" in refused.value.detail
+    tool = registry.for_mode("dolphin_wia")
+    with pytest.raises(ValueError, match="1-9"):
+        tool.convert(iso, str(env["tmp"] / "Melee.wia"), "dolphin_wia", compression="lzma2:19")
     assert env["commands"] == []

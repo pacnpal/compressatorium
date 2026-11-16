@@ -23,8 +23,10 @@
   const style = $derived(tool?.compressionStyle ?? 'none');
   const selection = $derived(conversion.compressionSelection);
   const level = $derived(conversion.compressionLevel);
+  // The selected codec's own range (Dolphin's lzma2 takes 1-9, zstd 1-22).
   const levelRange = $derived(
-    tool?.compressionLevelRange ?? DEFAULT_COMPRESSION_LEVEL_RANGE,
+    registry.levelRangeFor(spec?.mode, conversion.singleCodec)
+      ?? tool?.compressionLevelRange ?? DEFAULT_COMPRESSION_LEVEL_RANGE,
   );
   const supports = $derived(
     !!(spec?.supportsCompression || spec?.supportsCompressionLevel),
@@ -126,7 +128,7 @@
             />
           </div>
           <p class="hint">
-            {levelRange.min}–{levelRange.max}; {levelRange.default} matches MAME Redump.
+            {levelRange.min}–{levelRange.max}; default {levelRange.default}{#if singleCodec === 'zstd' && levelRange.default === 19}, which matches MAME Redump{/if}.
           </p>
         </label>
       {/if}
