@@ -4,6 +4,14 @@
 
 ### Fixed
 
+- **Verifying a file the app can't read keeps its Intact badge** (#359). A
+  CHD (or any output) whose permissions keep the app from reading it used to
+  lose its Intact or Round-tripped badge when verified, because the verifier
+  reported "Permission denied" as a failure. Every verify now first checks it
+  can open the file: one it can't is reported as "couldn't be checked", naming
+  the file and the error, and its badge stays. In a batch verify it counts as
+  "can't be checked", not failed. A file that opens and fails its check is
+  still marked failed.
 - **A check right after conversions checks the new Images** (#353). A
   scheduled check Rule that ran within about 30 seconds of a conversion used
   the folder listing from before it, checked nothing new, and still counted
