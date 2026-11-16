@@ -15,9 +15,12 @@ import inspect
 import pytest
 
 from app.models import ConversionMode
+from app.services.job_manager import EXTERNAL_JOB_MODES
 from app.services.tools import registry
 
-EXTERNAL_MODES = {ConversionMode.METADATA_SCAN, ConversionMode.DAT_MATCH, ConversionMode.CHECK}
+# Every externally-managed mode (scans, a check run, a find-duplicates run):
+# read from the one table that declares them, so a new one is never routed.
+EXTERNAL_MODES = set(EXTERNAL_JOB_MODES)
 # Composite/chain modes orchestrate several services and have no single
 # ``_service`` to monkeypatch, so the single-tool ladder/parity model below
 # doesn't apply (they get dedicated coverage in test_chain_service.py).

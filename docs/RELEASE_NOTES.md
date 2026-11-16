@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+### Added
+
+- **A "Keep the ROM id" switch for RomM** (#390). A new card on the RomM
+  Settings tab holds a switch, off by default, that says a conversion should
+  keep RomM's ROM id (and the saves, notes and collections on it) rather than
+  let RomM add a new game. The conversion that uses it comes separately; for
+  now the switch is only stored. It needs a token that can read and write ROMs
+  and run tasks (`roms.read`, `roms.write`, `tasks.run`), and RomM only gives
+  the last two to a token created by an admin user, so the card says so. RomM
+  can't list a token's permissions, so turning the switch on asks it three
+  harmless questions first. If the token lacks one, the switch stays off and
+  the message names each missing permission. If RomM can't be asked (down, or
+  it rejects the token) the switch also stays off. With the switch on, the
+  RomM status shows any permission the token has since lost.
+
+- **Find duplicates in a Library** (#388). A **Find duplicates** button in the
+  Rules view looks for the same disc stored twice in a folder Library, even in
+  different containers: an ISO, the RVZ made from it and a DVD CHD are grouped
+  together, and so are plain copies. It runs as a job you can watch and cancel,
+  and a second run reads only new or changed files. Each group shows in
+  Findings with every copy's path, container and size. CD CHDs, CSO, ZSO, DAX,
+  NSZ, WUX and Z3DS files aren't checked yet, and Findings says how many of
+  each were left out. A folder or file it can't read leaves its groups as they
+  were. Nothing is deleted.
+
 ### Changed
 
 - **Groundwork for gamelist.xml and RomM updates** (#383). Before a Source is
@@ -14,6 +39,18 @@
 
 ### Fixed
 
+- **A RomM scan during a conversion no longer makes a duplicate game** (#398).
+  RomM indexes every file in a Platform folder, even hidden ones, so a scan
+  that ran while a conversion was writing could add the half-written output
+  (or the tool's temp file) as a second game, which became a "missing" ghost
+  later. For Images in RomM's library, the conversion now writes into a
+  hidden `.compressatorium-stage` folder beside the Source, which RomM skips,
+  and moves the output into place only once its checks pass (or once it
+  finishes, when no check was asked for). An output that fails a check is
+  removed instead of being left beside the Source. A crash leaves the work
+  hidden, and the next start removes it, the same way it already removes a
+  half-written repack. Folder Libraries and folders outside any Library
+  convert exactly as before.
 - **RomM's `.romm_tmp_*` staging files are ignored everywhere** (#384). RomM's
   own converter stages work in names starting `.romm_tmp_`. They no longer show
   in the file browser or search, and the folder Library walk (so sweeps, check

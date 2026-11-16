@@ -26,7 +26,7 @@ from services.disc_id import (
 from services.disk import InsufficientDiskSpace, headroom_scratch_dir
 from services.file_hasher import compute_files_sha1_sync
 from services.lock_manager import lock_manager
-from services.subprocess_runner import ReadCancelled, run_detached
+from services.subprocess_runner import ReadCancelled, StorageAbandoned, run_detached
 from utils.disc_sheet import read_disc_sheet
 from utils.sheet_text import sheet_track_list
 
@@ -35,6 +35,7 @@ from .base import (
     BaseTool,
     ContentDigest,
     ContentDigestUnavailable,
+    EmbeddedHashUnavailable,
 )
 from .spec import ModeKind, ModeSpec
 
@@ -136,6 +137,22 @@ _TAG_RE = re.compile(r"^\s*Metadata:\s*Tag='(.{4})'", re.MULTILINE)
 _SHA1_RE = re.compile(r"[0-9a-fA-F]{40}")
 
 
+def _holds_image(info: dict) -> bool | None:
+    """Whether a CHD's data is a flat image, from its ``chdman info``.
+
+    True for a DVD or hard-disk CHD, or one with no Metadata lines at all (a
+    createraw CHD): its data SHA1 is the SHA1 of the image's bytes. False for a
+    CD or GD-ROM CHD, whose data is frames padded per track. None when the
+    Metadata lines are there but name no tag this reads: not proven either way.
+    """
+    tags = set(_TAG_RE.findall(info.get("raw_data", "") or ""))
+    if tags & _IMAGE_TAGS or not (tags or info.get("metadata_lines")):
+        return True
+    if tags & (_CD_TAGS | _GDROM_TAGS):
+        return False
+    return None
+
+
 def _build_modes() -> list[ModeSpec]:
     modes: list[ModeSpec] = [
         ModeSpec(
@@ -219,6 +236,10 @@ class ChdmanTool(BaseTool):
     verify_extensions = frozenset({".chd"})
     # One disc each. A .bin is a track of a disc, never the disc itself.
     disc_extensions = frozenset({".cue", ".gdi", ".iso", ".chd"})
+    # The data SHA1, and only for a DVD or hard-disk CHD (#388,
+    # `raw_image_sha1`). Never `chd_sha1`: the overall SHA1 folds in the
+    # metadata hashes, so it never equals a raw image's.
+    raw_image_hash_labels = frozenset({"chd_data_sha1"})
 
     def __init__(self, binary_path: str) -> None:
         super().__init__(binary_path)
@@ -397,6 +418,41 @@ class ChdmanTool(BaseTool):
             out.append((data_sha1, "chd_data_sha1"))
         return out
 
+    async def raw_image_sha1(
+        self, path: str, *, cancel_event: asyncio.Event | None = None,
+    ) -> str | None:
+        # Only a DVD or hard-disk CHD's data SHA1 is its image's SHA1 (checked
+        # on a real createdvd CHD, tests/test_duplicates_388_real.py). A CD
+        # CHD's covers 2448-byte frames padded per track, so it gets no key.
+        # The labelled hash is read from the metadata store; a CHD it has no
+        # current row for is read once with `chdman info` (the header only,
+        # under its own bound) and the store primed, as a scan would.
+        if Path(path).suffix.lower() != ".chd":
+            return None
+        from services.chd_metadata_store import chd_metadata_store
+
+        # A row must match the file's size and st_mtime_ns (one written before
+        # they were recorded is stale): a key stored against the new identity
+        # must never come from the file it replaced.
+        metadata = await chd_metadata_store.get_fresh_metadata(path)
+        if not metadata:
+            try:
+                metadata, stored = await chd_metadata_store.read_and_cache(
+                    path, lambda: self._service.info(path, cancel_event=cancel_event),
+                )
+            except Exception as e:  # chdman failed or timed out
+                if isinstance(e, (ReadCancelled, StorageAbandoned)):
+                    # A cancel, or a child that outlived SIGKILL (the storage
+                    # is not answering): no failure of this file, and the
+                    # caller decides whether to go on.
+                    raise
+                raise EmbeddedHashUnavailable(f"chdman info failed: {e}") from e
+            if stored is None:
+                raise EmbeddedHashUnavailable(f"{Path(path).name} changed while it was read")
+        if not _holds_image(metadata):
+            return None
+        return await super().raw_image_sha1(path, cancel_event=cancel_event)
+
     async def content_digest(
         self,
         path: str,
@@ -449,20 +505,21 @@ class ChdmanTool(BaseTool):
         not computed in place). Never the overall SHA1: it folds in metadata.
         """
         try:
-            info = await self._service.info(path)
+            info = await self._service.info(path, cancel_event=cancel_event)
         except Exception as e:  # chdman failed, timed out, or left a child behind
             raise ContentDigestUnavailable(f"chdman info failed: {e}") from e
-        tags = set(_TAG_RE.findall(info.get("raw_data", "")))
+        holds_image = _holds_image(info)
         # DVD/HD, or no Metadata lines at all (a createraw CHD): the data SHA1
         # is the SHA1 of the image's bytes, proven by the container check
         # before this. Metadata lines the tag reader cannot parse are not "no
         # metadata": they fall through to "not proven" below.
-        if tags & _IMAGE_TAGS or not (tags or info.get("metadata_lines")):
+        if holds_image:
             data_sha1 = (info.get("data_sha1") or "").strip()
             if not _SHA1_RE.fullmatch(data_sha1):
                 raise ContentDigestUnavailable("chdman info gave no data SHA1")
             return data_sha1
-        if tags & (_CD_TAGS | _GDROM_TAGS):
+        if holds_image is False:
+            tags = set(_TAG_RE.findall(info.get("raw_data", "")))
             sheet_ext = ".gdi" if tags & _GDROM_TAGS else ".cue"
             return await self._extracted_cd_sha1(
                 path, sheet_ext, _logical_bytes(info), cancel_event,

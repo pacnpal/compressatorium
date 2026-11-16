@@ -3909,7 +3909,7 @@ Knulli, muOS) key each game's artwork, favourite flag and play count on its
   A Library can name the folder: `referrer_options("gamelist")` (the
   `Library` contract; `LibraryDefaults` returns `{}`) gives
   `{"gamelists_folder": path}` (`rules.library.GAMELISTS_FOLDER`) from a
-  folder Library's `gamelists_folder` column (migration 0017, null for
+  folder Library's `gamelists_folder` column (migration 0018, null for
   existing rows) or RomM's `gamelists_folder` setting
   (`ROMM_GAMELISTS_FOLDER`). The registry binds each active Referrer to the
   Image's Library through `Referrer.for_library(library)` (default: the
@@ -5550,6 +5550,210 @@ way to produce an edited copy of a zip. The first user is the eXoDOS repack
   name, Platform slug) live in a `CollectionProfile`. eXoWin3x and the other eXo
   packs are a new profile, not new logic. Only eXoDOS ships.
 
+### 3.3.20 The duplicate finder (`services/content_keys.py`, `services/duplicates.py`, #388)
+
+Finds the same disc stored more than once in one Library, across containers.
+Read-only: a group is a Finding, and nothing is deleted.
+
+**The content key.** One kind in the MVP, `raw:<sha1>`: the SHA1 of the raw
+disc image a file holds.
+
+| File | Where the SHA1 comes from |
+| --- | --- |
+| `.iso`, `.bin` (the longest declared extension, so not `.nkit.iso`) | the file's own SHA1, read by `content_keys` |
+| Dolphin RVZ/WIA/GCZ/WBFS | `embedded_hashes` label `dolphin_disc_sha1` |
+| DVD or hard-disk CHD | `embedded_hashes` label `chd_data_sha1` |
+| CD CHD, CSO/ZSO/DAX, NSZ, WUX, Z3DS, sheets, archives | none: no key, reported as not checked |
+
+The key builder never branches on a tool. It asks the tool that verifies the
+file for `raw_image_sha1(path, *, cancel_event)`, a contract method beside
+`embedded_hashes` and `content_digest`:
+
+```python
+raw_image_hash_labels: frozenset[str]   # labels whose value is the raw image SHA1
+async def raw_image_sha1(self, path, *, cancel_event=None) -> str | None
+```
+
+`BaseTool`'s default reads `embedded_hashes` and returns the one hash under a
+label in `raw_image_hash_labels`; with no labels it returns `None` without
+asking. A tool that declares labels but gets none back (or two that disagree)
+raises `EmbeddedHashUnavailable`: no key this time, nothing stored. Dolphin
+declares `dolphin_disc_sha1`. `ChdmanTool` declares `chd_data_sha1` and
+overrides the method: only a `.chd` whose metadata says DVD or hard disk
+(`_holds_image`, the same tag reading the Round-trip uses) goes on to the
+labelled hash; a CD or GD-ROM CHD is `None`, since its data SHA1 covers
+2448-byte frames padded per track. A CHD with no current row in the metadata
+store is read once with `chdman info` and the store primed. `chd_sha1`, the
+overall SHA1, is never a raw label: it folds in the metadata hashes.
+`tests/test_duplicates_388_real.py` checks against the real bundled chdman
+that a `createdvd` CHD's data SHA1 equals its ISO's SHA1 (and its overall SHA1
+does not), and that an ISO, its RVZ and its DVD CHD group together.
+
+**CHD metadata freshness.** `chd_metadata_store.get_fresh_metadata` checks the
+file's identity, its size and integer `st_mtime_ns` (`chd_metadata.size` and
+`mtime_ns`, added by 0017), the same identity `content_keys` uses, so a
+replacement that kept the float mtime never hands back the old hashes, for
+every caller. One check (`CHDMetadataStore._describes`) answers it for
+`get_fresh_metadata`, `is_stale` and `cached_media_type_blocking`, so they
+cannot disagree. A row written before the identity was recorded is stale
+everywhere: the metadata scan and the info route read it again, after which
+`embedded_hashes` supplies its SHA1s as before.
+
+**Stored per file, tied to its identity.** `content_keys` (migration 0017) holds
+`path`, `size`, `mtime_ns`, `key` (None for a format with no key) and
+`container`. `content_keys.stored(...)` returns only rows whose size and mtime
+still match, so a changed file loses its key. The DAT match cache is not read
+for this: its rows carry no size or mtime to tie a SHA1 to the file.
+
+**The run.** `duplicates.start(library)` creates an external job of
+`ConversionMode.FIND_DUPLICATES` (`ExternalMode(in_ledger=False)`, so never a
+conversion and never a slot) and runs it as a task; one per Library at a time
+(409 otherwise). It:
+
+1. lists the Library with `Library.all_images()`, a new Library contract method
+   returning an `ImageListing`: the Images, plus what the listing could not see
+   (`unlisted` folders, `unreadable` files). `LibraryDefaults` walks every
+   Platform's `images()` and reports nothing unseen; `FolderLibrary` returns
+   every entry of a fresh walk, Unsorted and Conflicted included, with the
+   walk's own `Scan.unwalked` and `Scan.unreadable_files`. The walk already
+   skips junk (`utils/junk.is_junk_entry`, RomM's `.romm_tmp_*`). A walk
+   already running is waited for, within `_LIST_SECONDS`;
+2. leaves out a file outside the Volumes, gone, locked (`lock_manager.is_locked`)
+   or on an active job's candidate paths: an output being written is never
+   grouped (counted as `busy`);
+3. reads each missing key one file at a time. An image's SHA1 goes through
+   `open_reporting_reads` under `run_detached_within_stall_bound(report_progress=True)`;
+   a tool's hash is bounded by its `verify_timeout`; stats by the stall bound.
+   A file whose identity changed while it was read is not stored;
+4. groups by key (two or more), re-checks each grouped file's identity and lock,
+   and reconciles `duplicate` Findings for the Library. A stored group with a
+   copy the run did not see (under an `unlisted` folder, an `unreadable` file,
+   a stat or key read that failed, a file in use or changed while it looked)
+   is held: left out of the observed groups and
+   passed as `keep_under`, so it stays exactly as it was. The write's `current`
+   predicate, asked under the store's write lock, is the commit point: it is
+   false once the job is cancelled or the Library removed, and a rejected write
+   ends the run as cancelled with nothing written. A cancel after it is too late
+   to undo the write, so the run reports what it did (`findings.DUPLICATE`, one
+   per group, `image_key` = the content key, `cause` = `{"key", "copies": [{"image_key",
+   "path", "container", "size"}]}`);
+5. stores the summary (`duplicate_runs`: keyed, read now, groups, `not_checked`
+   by container, unreadable, busy), which `/api/findings` returns as
+   `duplicate_runs`.
+
+Every Image's path is read in the detached, stall-bounded inspection step,
+never on the loop: RomM resolves `Image.path` lazily on its mount, so a mount
+that stops answering ends that step at the bound, or on Cancel.
+
+Each file's key is read under `collect_abandonment()`, and what it collected is
+checked once, right after the read and before anything branches on its result
+(a key, `KeyUnavailable`, `StorageAbandoned`): a child that outlived teardown,
+or a detached read the stall bound gave up on, stops the run with nothing
+written, as the metadata scan stops. An ordinary failure costs that file only.
+
+The active jobs' paths come from `job_manager.active_job_candidates()`: the
+jobs are snapshot on the loop (in memory) and their filesystem-dependent
+candidate paths (a sheet's tracks) resolved in one detached, stall-bounded
+step. `get_active_job_candidates()` is the blocking form, for callers already
+off the loop (the sweep's and RomM's bounded probes, the delete route's
+threadpool step).
+
+Cancel reaches every wait. Each tool call the key builder makes
+(`verify_timeout`, `raw_image_sha1`) is raced against the run's cancel event
+through `subprocess_runner.until_cancelled`, which cancels the pending call and
+gives it `CANCEL_SETTLE_SECONDS` to unwind. `workload_limiter.acquire(lane,
+cancel_event=...)` ends a lane wait on a cancel and leaves nothing queued, and
+`ChdmanService.info(..., cancel_event=...)` forwards it to `run_capture` so the
+child stops.
+
+A cancel, or the Library's removal (`library_generation` moved), ends the run
+with no Findings written. `findings.clear_gone(library, DUPLICATE)` settles a
+group once fewer than two copies are left; the folder walk calls it with
+`NOT_INTACT`'s. A Library's records (every Finding with its dismissals, its `duplicate_runs`
+row, its check times) are forgotten by one call, `library_records.forget`,
+which both a folder Library's removal and RomM's identity change
+(`rules_sweep.forget_checks_locked`) make, so a new record kind is added once.
+
+Routes: `POST /api/libraries/{id}/find-duplicates` → `{job_id}`.
+
+### 3.3.21 Staging output out of a scanner's sight (`services/staging.py`, #398)
+
+RomM 5.4.1 indexes every file in a Platform folder, dot-prefixed ones
+included, but skips dot-prefixed folders (the swap spike, #382; see the
+findings under Phase 3 of `docs/ROMM_INTEGRATION_ROADMAP.md`). A scan that
+lands while a conversion's temp file or unchecked output sits beside the
+Source makes a duplicate ROM, and a ghost once the Source goes. So a job whose
+output lands in a Library declaring the `HIDDEN_STAGING` capability
+(`services/rules/library.py`; RomM declares it, folder Libraries do not)
+writes into a hidden slot and places the output only once its checks pass.
+The RomM swap (#391) stages through the same helper.
+
+- **The helper.** `staging.open_slot(folder, *, make_folder=False)` makes
+  `<folder>/.compressatorium-stage/slot-XXXXXXXX/` and returns a
+  `StagedOutput`. The folder must be inside a configured Volume
+  (`volume_containment(real) is True`), and with `make_folder` a missing one
+  is made only after that check; it is opened with `open_dir_beneath`,
+  the stage folder and the slot `O_NOFOLLOW | O_DIRECTORY` beneath it (a link
+  in place of the stage folder is refused), and every later step works
+  through those descriptors. `path_for(name)` is where a tool writes: the
+  output's own name inside the slot, so a `.cue` naming its `.bin` is still
+  right once moved. `place(names)` moves the named entries (files or
+  folders) into the folder with `utils.path_utils.place_without_clobbering`
+  given both folder descriptors (`src_dir_fd` / `dst_dir_fd`): a `linkat`
+  then removing the staged name, or for a folder (or a filesystem without
+  hard links) `renameat2(RENAME_NOREPLACE)` / `renameatx_np(RENAME_EXCL)`.
+  Each move is atomic and no-replace, so an entry another process creates at
+  the destination at any moment raises `FileExistsError` and is never
+  touched; the existence check before the moves is only a fast path. All or
+  none: when one move fails, the ones already made go back into the slot the
+  same no-replace way. Returns the `(staged, final)` pairs.
+  `close()` removes what is left in the slot (an unplaced output, a tool's
+  scratch) with the descriptor-based `shutil.rmtree(dir_fd=...)`, then the
+  slot's lock file, its journal record, and the stage folder once no other
+  slot is in it. `place` and `close` share a mutex, so a close waits for a
+  placing still running on another thread. Everything is blocking.
+- **Crash cleanup is the `.partial` sweep's (#331).** The slot's lock file,
+  `slot-XXXXXXXX.lock` beside it in the stage folder, is created and
+  `flock`ed before the slot exists and held until it is gone, and the slot is
+  journaled in `<data dir>/partial-writes/` like a temp file.
+  `partial_writes.sweep_recorded` (the startup sweep) removes a journaled
+  slot only when it can take that lock, the slot is a real folder (never a
+  link) older than `MIN_AGE_SECONDS`, and both names still name what was
+  checked; then the stage folder if empty. A stage folder that is gone drops
+  the record only on the same device as the one recorded (an empty mount
+  point is another). `open_slot` sweeps its stage folder first
+  (`partial_writes.sweep_stage`), so a slot whose record was lost goes the
+  next time a job stages there. The name rules (`is_slot_name`,
+  `slot_lock_name`) live in `partial_writes`, shared by writer and sweep.
+- **In the job pipeline (`JobManager._process_job`).** `_open_stage` asks
+  `libraries.library_for(output_path)` (detached, bounded): a Library with
+  `HIDDEN_STAGING` gets a slot, one without it (or no Library) writes in place
+  exactly as before, and "can't tell" stages, since hiding the work is always
+  safe. The slot opens with `make_folder=True` in the same bounded call,
+  since staging runs before the tool's runner would make a missing output
+  folder (a conversion into a new subfolder). A slot that can't be made
+  fails the job; it never falls back to writing in sight. A slot that
+  arrives after the bound gave up is closed (`run_detached_undoable`'s
+  `undo`). `job.output_path` stays the final path; a local
+  `write_path` (the slot's copy of that name) goes to `run_convert`,
+  `post_convert`, the output size, the Intact check and the Round-trip. Once
+  both pass, `_place_staged` moves the output and its `companion_outputs`
+  into place under `run_detached_mutation` (the output locks travel with a
+  rename the bound gives up on), and carries their store records (a CHD's
+  disc ID, `chd_metadata_store.move_blocking`, `verification_store.move_blocking`)
+  to the final paths. Then the verified record, the reuse snapshot and the
+  Source delete run as before on the placed output. A job with no check
+  places once the conversion ends. An output that fails a check is never
+  placed: `_close_stage`, in the job's `finally`, clears its records and
+  discards it with the slot, so a failed or cancelled job leaves nothing
+  visible. That close always runs: like `_let_go_in_background`, its worker
+  starts before the first await (`start_detached`), and with no detached
+  slot free it gets a thread of its own, so the slot's descriptors and lock
+  are never left open until a restart.
+- **Hidden everywhere here too.** `STAGE_DIR_NAME` lives in `utils/junk.py`
+  and is an ignored entry (`is_junk_entry`), so listings, search and every
+  walk skip it.
+
 ### 3.4 `registry.py`
 
 ```python
@@ -5752,6 +5956,37 @@ config is read only when the converter is on, during the RomM status refresh,
 and the status's `converter` block is the one source for the banner, the Rule
 flags and the can't-convert marks. None of it changes what a Rule or a sweep
 does.
+
+#### The swap switch and its token check (#390)
+
+`swap_keep_rom_id` is a RomM setting (`services/romm/settings.py`, env
+`ROMM_SWAP_KEEP_ROM_ID`, off by default), stored with the rest of the RomM
+settings and returned by `GET /api/romm/settings`. Nothing reads it yet except
+the status block: the swap itself (#391) will.
+
+The swap needs `roms.read` (the read-back), `roms.write` (renaming the record)
+and `tasks.run` (the rescan). RomM has no endpoint that lists a token's scopes,
+so `RommClient.token_permissions()` asks with the three probes found in the
+spike (#382, RomM 5.4.1): `PUT /api/roms/2147483647` is 404 with `roms.write`
+and 403 without it, `GET /api/tasks/status` is 200 with `tasks.run` and 403
+without, and `GET /api/roms?limit=1` is 200 with `roms.read`. A 403 is a missing
+scope; any other status is not an answer about scopes and raises `RommError`,
+so a 401 or a 5xx is never read as "missing". Each probe goes through
+`RommClient._request` with its own 10 second `timeout` (the new optional
+parameter, which `_urlopen` takes too), and the route runs the three in the
+threadpool under `swap.CHECK_SECONDS`, so a RomM that stops answering holds
+neither the loop nor the request. `services/romm/swap.py` owns the wording:
+the scope list, the admin-token hint, and the refusal.
+
+`PUT /api/romm/settings` with `swap_keep_rom_id: true` runs the check first,
+against the URL and token the same request would save, before any lock and
+before anything is persisted. Missing scopes answer 422 naming each one; no
+token is a 422; RomM not configured, unreachable, or rejecting the token is
+503, 502, or 504 and the switch stays off. Turning it off, or saving anything
+else, asks RomM nothing. `GET /api/romm/status` carries
+`swap: {keep_rom_id, missing, error}`; it probes only when the switch is on and
+RomM is connected, so a token that has lost a scope shows up there.
+`tests/fake_romm.py` answers the probes from a configurable `scopes` set.
 
 #### Asking a tool whether it can run (`registry.tool_is_ready`)
 
@@ -6680,7 +6915,8 @@ Net: a smaller, flatter codebase where the cost of the *next* tool drops from
 
 `is_junk_entry(name)` is the one predicate for names no listing or walk should
 see: OS and NAS metadata, plus RomM's `.romm_tmp_*` converter staging (prefix
-match only). The file browser listing and search, `walk_tree` (DAT scan), the
+match only) and this app's own `.compressatorium-stage` folder
+(`STAGE_DIR_NAME`, section 3.3.21). The file browser listing and search, `walk_tree` (DAT scan), the
 folder Library walk (which feeds sweeps, check Rules and the Platform walk) and
 the Switch key search all route through it. Add a new ignored name there, not in
 a caller.

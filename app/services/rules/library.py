@@ -34,6 +34,12 @@ CONVERTED_HISTORY = "converted_history"
 # (size or mtime). Without it a sweep re-queues a failing Image every run,
 # which is what RomM's Rules have always done.
 FAILED_HOLD = "failed_hold"
+# The Library's own scanner indexes what appears beside an Image, so a
+# conversion must not write there until its output is checked: in-progress
+# output goes to a hidden staging folder and is placed only once its checks
+# pass (``services.staging``, #398). RomM 5.4.1 indexes even dot-prefixed
+# files, but skips dot-prefixed folders.
+HIDDEN_STAGING = "hidden_staging"
 
 # The opt-in Referrer a Library's "used by an EmulationStation frontend"
 # setting turns on (#386): ``referrer_enabled`` answers True for it then.
@@ -184,6 +190,22 @@ class Image:
 
 
 @dataclass(frozen=True)
+class ImageListing:
+    """Every Image of a Library, and what the listing could not see (#388).
+
+    ``unlisted`` names the folders it could not look into and ``unreadable``
+    the Image files it found but could not read. Not seen is not gone: a
+    caller that removes something because it was not listed (a duplicate
+    group) keeps whatever touches these. A Library that lists from its own
+    records (RomM) leaves both empty.
+    """
+
+    images: list[Image]
+    unlisted: tuple[str, ...] = ()
+    unreadable: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class QueuedImage:
     """One Image a sweep just queued, as handed to ``Library.after_queue``."""
 
@@ -225,6 +247,14 @@ class Library(Protocol):
 
     def images(self, platform_id: str) -> list[Image]:
         """The Images of one Platform. Blocking. Raises :class:`LibraryUnreadable`."""
+
+    def all_images(self) -> ImageListing:
+        """Every Image in the Library, whatever its Platform, and what the
+        listing could not see. Blocking.
+
+        What a find-duplicates run groups (#388): a copy of a disc is a copy
+        whether or not its Platform is known. Raises :class:`LibraryUnreadable`.
+        """
 
     def rule_defaults(self) -> Mapping[str, Any]:
         """Overrides for the engine's Rule defaults (interval, cap, verify, delete)."""
@@ -300,6 +330,18 @@ class LibraryDefaults:
     def referrer_options(self, referrer_id: str) -> Mapping[str, Any]:
         """No Referrer settings (#387)."""
         return {}
+
+    def all_images(self) -> ImageListing:
+        """Every Platform's Images, one Platform after another (#388).
+
+        A Library that also knows Images it cannot place on a Platform (a
+        folder Library's Unsorted ones), or folders and files its listing
+        could not read, overrides this to report them too.
+        """
+        out: list[Image] = []
+        for platform in self.platforms():
+            out.extend(self.images(platform.id))
+        return ImageListing(images=out)
 
     def walk_generation(self) -> int:
         """Moves when what :meth:`images` lists is out of date (#353).

@@ -40,8 +40,9 @@ from services.disc_id import DiscIdStorageAbandoned
 from services.concurrency_manager import concurrency_manager
 from services.lock_manager import LockFailed, lock_manager
 from services.mutation_guard import locked_for_mutation
-from services import referrers
+from services import referrers, staging
 from services.round_trip import round_trip, round_trip_applies
+from services.rules.library import HIDDEN_STAGING
 from services.subprocess_runner import (
     DeadlineExpired,
     MutationInFlight,
@@ -270,6 +271,8 @@ EXTERNAL_JOB_MODES: Dict[ConversionMode, ExternalMode] = {
     ConversionMode.METADATA_SCAN: ExternalMode(),
     ConversionMode.DAT_MATCH: ExternalMode(),
     ConversionMode.CHECK: ExternalMode(in_ledger=False, started_by_hand=False),
+    # A find-duplicates run (#388) reads and converts nothing; a person starts it.
+    ConversionMode.FIND_DUPLICATES: ExternalMode(in_ledger=False),
 }
 _EXTERNAL_JOB_MODES = frozenset(EXTERNAL_JOB_MODES)
 
@@ -1495,14 +1498,48 @@ class JobManager:
             1 for job in self.jobs.values() if _is_active_conversion(job)
         )
 
+    def _active_jobs_snapshot(self) -> List[ConversionJob]:
+        """The queued and running jobs, copied. In memory only: safe on the loop.
+
+        A copy, so resolving their paths later (off the loop) reads the jobs as
+        they were here, not a job a running conversion is updating.
+        """
+        return [
+            job.model_copy() for job in list(self.jobs.values())
+            if job.status in (JobStatus.QUEUED, JobStatus.PROCESSING)
+        ]
+
+    def _candidates_of(self, jobs: List[ConversionJob]) -> List[Tuple[str, List[str]]]:
+        """Each job's candidate paths (input/output). Blocking: a sheet Source's
+        tracks are read from the sheet and stat'ed (``_track_candidate_paths``)."""
+        return [(job.id, self._candidate_paths(job)) for job in jobs]
+
     def get_active_job_candidates(self) -> List[Tuple[str, List[str]]]:
-        """Return active job ids with their candidate paths (input/output)."""
-        candidates: List[Tuple[str, List[str]]] = []
-        for job in self.jobs.values():
-            if job.status not in (JobStatus.QUEUED, JobStatus.PROCESSING):
-                continue
-            candidates.append((job.id, self._candidate_paths(job)))
-        return candidates
+        """Return active job ids with their candidate paths (input/output).
+
+        Blocking: it reads the disk, so a caller already off the loop (a
+        bounded probe, a threadpool step) uses it; code on the loop awaits
+        :meth:`active_job_candidates` instead.
+        """
+        return self._candidates_of(self._active_jobs_snapshot())
+
+    async def active_job_candidates(
+        self, *, cancel_event: Optional[asyncio.Event] = None,
+        stall: Optional[float] = None,
+    ) -> List[Tuple[str, List[str]]]:
+        """:meth:`get_active_job_candidates` for code on the event loop (#388).
+
+        The jobs are snapshot here, in memory; their filesystem-dependent paths
+        are resolved in one detached step under the shared stall bound, so a
+        mount that stops answering costs the caller ``Stalled``, never the
+        loop (*stall*: the bound, the shared one by default). ``ReadCancelled``
+        on a cancel.
+        """
+        jobs = self._active_jobs_snapshot()
+        return await run_detached_within_stall_bound(
+            self._candidates_of, jobs, what="resolving the active jobs' paths",
+            cancel_event=cancel_event, stall=stall,
+        )
 
     @staticmethod
     def _normalize_path(path: str) -> Optional[Path]:
@@ -2925,7 +2962,9 @@ class JobManager:
             finally:
                 self._queue.task_done()
 
-    async def _output_size_bounded(self, job: ConversionJob) -> Optional[int]:
+    async def _output_size_bounded(
+        self, job: ConversionJob, path: str | None = None,
+    ) -> Optional[int]:
         """:meth:`_compute_output_size`, off the loop and bounded (#352).
 
         Through ``run_detached_within_stall_bound``, the conversion's
@@ -2934,11 +2973,13 @@ class JobManager:
         holding its queue slot on a ``getsize`` that never returns.
         """
         return await run_detached_within_stall_bound(
-            self._compute_output_size, job,
+            self._compute_output_size, job, path,
             what=f"Sizing {os.path.basename(job.output_path)}",
         )
 
-    def _compute_output_size(self, job: ConversionJob) -> Optional[int]:
+    def _compute_output_size(
+        self, job: ConversionJob, path: str | None = None,
+    ) -> Optional[int]:
         """Total bytes of a completed job's output (None if absent).
 
         Single source of truth for every output shape: the primary output plus
@@ -2948,18 +2989,156 @@ class JobManager:
         split build leaves no bare .iso, so the primary getsize simply misses
         and the numbered parts carry the whole total. Synchronous (a directory
         mode's companion lookup scans the output dir): call it through
-        :meth:`_output_size_bounded`.
+        :meth:`_output_size_bounded`. *path* is where the output was written
+        when not yet at ``job.output_path`` (a staging slot, #398).
         """
+        primary = path or job.output_path
         companions = registry.for_mode(job.mode.value).companion_outputs(
-            job.output_path, job.mode.value,
+            primary, job.mode.value,
         )
         total_size = 0
-        for path in [job.output_path, *companions]:
+        for part in [primary, *companions]:
             try:
-                total_size += os.path.getsize(path)
+                total_size += os.path.getsize(part)
             except OSError:
                 pass
         return total_size if total_size > 0 else None
+
+    # --- staging the output out of a Library scanner's sight (#398) --------
+
+    @staticmethod
+    async def _needs_stage(job: ConversionJob) -> bool:
+        """Whether *job* writes into a hidden staging slot: its output lands
+        in a Library declaring ``HIDDEN_STAGING`` (RomM). When which Library
+        holds it can't be told (a timeout, the Library list unreadable), it
+        stages: hiding the work is always safe. No Library, or one without
+        the capability (a folder Library), writes in place as before."""
+        # Imported here: services.libraries imports this module.
+        from services import libraries
+
+        try:
+            library = await run_detached_bounded(
+                libraries.library_for, job.output_path, timeout=_CANONICAL_PROBE_SECONDS,
+            )
+        except Exception:
+            logger.warning(
+                "Couldn't tell which Library holds %s; staging its output",
+                job.output_path, exc_info=True,
+            )
+            return True
+        return library is not None and HIDDEN_STAGING in library.capabilities
+
+    async def _open_stage(self, job: ConversionJob) -> staging.StagedOutput | None:
+        """A staging slot beside the job's output, or None when the job
+        writes in place (:meth:`_needs_stage`). A slot that can't be made
+        fails the job: never fall back to writing where a scanner looks.
+
+        Staging runs before the tool's runner, which would make a missing
+        output folder (a conversion into a new subfolder), so the slot's
+        opening makes it, inside the Volume, in the same bounded call. A
+        slot that arrives after the bound gave up is closed (``undo``); none
+        is opened when no detached worker is free."""
+        if not await self._needs_stage(job):
+            return None
+        folder = os.path.dirname(job.output_path)
+        try:
+            return await run_detached_undoable(
+                staging.open_slot, folder, make_folder=True,
+                timeout=_CANONICAL_PROBE_SECONDS, undo=lambda slot: slot.close(),
+            )
+        except (OSError, DeadlineExpired, ProbeCapacityExceeded) as exc:
+            raise RuntimeError(
+                f"Could not make the hidden staging folder beside the output: {exc}"
+            ) from exc
+
+    def _place_names(self, job: ConversionJob, write_path: str) -> list[str]:
+        """The names a placing moves: the output and each companion the mode
+        wrote (``companion_outputs``, which may probe the slot). Blocking."""
+        companions = registry.for_mode(job.mode.value).companion_outputs(
+            write_path, job.mode.value,
+        )
+        return [os.path.basename(p) for p in [write_path, *companions]]
+
+    async def _place_staged(
+        self, job: ConversionJob, slot: staging.StagedOutput | None, write_path: str,
+    ) -> None:
+        """Move a staged output, and its companions, into place beside the
+        Source, then carry their store records (a CHD's disc ID) to the final
+        paths. A no-op for a job writing in place.
+
+        A rename is a mutation: one still running when the bound runs out
+        keeps the job's output locks until it ends (``run_detached_mutation``)
+        and the job fails. A name already taken at the destination fails the
+        job with nothing moved (``StagedOutput.place``)."""
+        if slot is None or slot.placed:
+            return
+        try:
+            placed = await run_detached_mutation(
+                lambda: slot.place(self._place_names(job, write_path)),
+                timeout=_CANONICAL_PROBE_SECONDS,
+                hand_off=lambda: self._hand_off_locks(job.id, self._output_locks.get(job.id)),
+            )
+        except (MutationInFlight, MutationNotStarted, OSError) as exc:
+            raise RuntimeError(f"Could not place the checked output: {exc}") from exc
+        for staged, final in placed:
+            for store in (verification_store, chd_metadata_store):
+                try:
+                    await run_detached_bounded(
+                        store.move_blocking, staged, final, timeout=_CANONICAL_PROBE_SECONDS,
+                    )
+                except Exception:
+                    logger.warning(
+                        "Could not carry the records of %s to %s", staged, final,
+                        exc_info=True,
+                    )
+
+    async def _close_stage(
+        self, job: ConversionJob, slot: staging.StagedOutput | None,
+    ) -> None:
+        """Close the job's slot: discard what was never placed, and its store
+        records, then the slot. Never raises.
+
+        Like ``_let_go_in_background``: the worker starts before the first
+        await (``start_detached``), so a cancel can't stop it from starting;
+        with no detached slot free it gets a thread of its own, so the slot's
+        descriptors and lock are never left open until restart. The wait is
+        bounded; what doesn't finish goes on in the background."""
+        if slot is None:
+            return
+
+        def discard() -> None:
+            try:
+                if not slot.placed:
+                    self._clear_staged_records(job, slot)
+            finally:
+                slot.close()
+
+        try:
+            worker = start_detached(discard)
+        except ProbeCapacityExceeded:
+            threading.Thread(target=discard, daemon=True).start()
+            return
+        try:
+            await asyncio.wait_for(asyncio.shield(worker), _CANONICAL_PROBE_SECONDS)
+        except Exception:
+            logger.warning(
+                "Removing the staging slot %s did not finish", slot.path, exc_info=True,
+            )
+
+    def _clear_staged_records(self, job: ConversionJob, slot: staging.StagedOutput) -> None:
+        """Drop the store records of a staged output that was never placed (a
+        failed check marks it). Blocking; never raises."""
+        try:
+            names = self._place_names(job, slot.path_for(os.path.basename(job.output_path)))
+        except Exception:
+            logger.debug("Could not list the staged output of %s", job.output_path, exc_info=True)
+            return
+        for name in names:
+            for store in (verification_store, chd_metadata_store):
+                try:
+                    store.clear_blocking(slot.path_for(name))
+                except Exception:
+                    logger.debug("No record to clear for %s", name, exc_info=True)
 
     @staticmethod
     def _norm_fps(
@@ -4448,6 +4627,10 @@ class JobManager:
         # From the moment the input locks may be taken until the try/finally
         # below owns them: a cancellation here (worker shutdown) releases
         # them, or the Source would stay shared-locked until restart (#306).
+        # The hidden staging slot the output is written into until its checks
+        # pass, when the output's Library needs one (#398); closed in the
+        # `finally`, which discards whatever was never placed.
+        slot: staging.StagedOutput | None = None
         try:
             try:
                 inputs_held = job.input_kind == InputKind.DIRECTORY or await run_in_threadpool(
@@ -4674,10 +4857,20 @@ class JobManager:
 
             await self._clear_existing_output(job)
 
+            # Where the tool writes: the output path itself, or the same name
+            # in a hidden staging slot when the output's Library has its own
+            # scanner (#398). Every step up to the placing below works on it;
+            # job.output_path stays the final path throughout.
+            slot = await self._open_stage(job)
+            write_path = (
+                slot.path_for(os.path.basename(job.output_path))
+                if slot is not None else job.output_path
+            )
+
             _convert_service = registry.for_mode(job.mode.value)
             async for update in _convert_service.run_convert(
                 input_path,
-                job.output_path,
+                write_path,
                 job.mode.value,
                 compression=job.compression,
                 split=job.split,
@@ -4735,7 +4928,7 @@ class JobManager:
                 # is requested (deletion happens after verify).
                 try:
                     await registry.for_mode(job.mode.value).post_convert(
-                        input_path, job.output_path, job.mode.value, within=within,
+                        input_path, write_path, job.mode.value, within=within,
                     )
                 except DiscIdStorageAbandoned:
                     # Deliberately not swallowed with the rest. Everything below
@@ -4754,7 +4947,7 @@ class JobManager:
                 # helper. Off the event loop and bounded: a split folder_to_iso's
                 # companion lookup scans the output dir, and an output Volume
                 # that stops answering must fail the job, not hold its slot.
-                job.output_size = await self._output_size_bounded(job)
+                job.output_size = await self._output_size_bounded(job, write_path)
 
                 verified = False
                 source_deleted = False
@@ -4819,7 +5012,7 @@ class JobManager:
                     # The shared check (`_container_check`), the one a retried
                     # delete re-runs before it removes anything.
                     verify_path = await self._container_check(
-                        tool, job.output_path, job.mode.value, cancel_event,
+                        tool, write_path, job.mode.value, cancel_event,
                         verifying_id=job_id,
                     )
 
@@ -4840,14 +5033,19 @@ class JobManager:
                         # keeps provenance: the record names this output's
                         # mode and tool (replacing whatever an earlier run
                         # left) and is marked failed, so the next check still
-                        # goes to the tool that made it.
+                        # goes to the tool that made it. A staged output is
+                        # never placed: its records go with it (#398).
                         await verification_store.mark_verified(
-                            job.output_path,
+                            write_path,
                             source_path=job.file_path,
                             produced_meta=self._verifier_identity(job),
                         )
-                        await verification_store.mark_failed(job.output_path)
+                        await verification_store.mark_failed(write_path)
                         raise RuntimeError(keep_source_reason)
+                    # Both checks passed: only now does a staged output
+                    # appear beside the Source (#398). Everything below
+                    # works on the placed output.
+                    await self._place_staged(job, slot, write_path)
                     # Snapshot what produced this verified artifact (mode +
                     # output shaping + source/output fingerprints) so a later
                     # re-queue can recognize prior success and complete as a
@@ -5025,6 +5223,11 @@ class JobManager:
                         else:
                             source_deleted = True
 
+                if slot is not None and not slot.placed:
+                    # No check was asked for: the output is placed once the
+                    # conversion has finished (#398).
+                    await self._place_staged(job, slot, write_path)
+
                 job.status = JobStatus.COMPLETED
                 job.completed_at = datetime.now(timezone.utc)
                 await self._notify_subscribers(
@@ -5102,8 +5305,12 @@ class JobManager:
                         concurrency_manager.release(job_id)
                         self._forget_job_runtime(job_id)
                 try:
-                    # Clean up temp directory if this was an archive extraction
-                    await self._cleanup_temp_dir(job)
+                    try:
+                        # Whatever was never placed goes, with the slot (#398).
+                        await self._close_stage(job, slot)
+                    finally:
+                        # Clean up temp directory if this was an archive extraction
+                        await self._cleanup_temp_dir(job)
                 finally:
                     await self._prune_jobs(exclude_id=job_id)
             if logger.isEnabledFor(logging.DEBUG):

@@ -1,7 +1,7 @@
 """add_folder_library_gamelists_folder
 
-Revision ID: 0017
-Revises: 0016
+Revision ID: 0018
+Revises: 0017
 Create Date: 2026-11-16 00:00:00.000000
 """
 
@@ -13,8 +13,8 @@ import sqlalchemy as sa
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision: str = '0017'
-down_revision: str | Sequence[str] | None = '0016'
+revision: str = '0018'
+down_revision: str | Sequence[str] | None = '0017'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

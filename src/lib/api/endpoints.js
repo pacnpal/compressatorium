@@ -794,6 +794,14 @@ export const api = {
   runLibrary: (id, body = {}) =>
     jsonPost(`${API_BASE}/libraries/${encodeURIComponent(id)}/run`, body, {}, 'Run failed'),
 
+  // A Library's find-duplicates run (#388): a background job whose groups
+  // land in Findings. `{ job_id }`; 409 while the previous run still runs.
+  findDuplicates: (id) =>
+    jsonPost(
+      `${API_BASE}/libraries/${encodeURIComponent(id)}/find-duplicates`, {}, {},
+      'Could not start finding duplicates',
+    ),
+
   // ── Findings and folder Platform mappings (#304) ───────────────────────
   listFindings: (includeDismissed = false) =>
     fetchJson(

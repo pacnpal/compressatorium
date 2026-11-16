@@ -41,7 +41,7 @@ from typing import Any
 
 from logging_setup import get_logger
 from models import ConversionMode, JobStatus
-from services import findings, image_checks, notifications, subprocess_runner
+from services import findings, notifications, subprocess_runner
 from services.image_sets import image_fingerprint
 from services.job_manager import (
     KEPT_DELETED,
@@ -2528,17 +2528,20 @@ async def _clear_vanished(library: Library) -> None:
 
 
 def forget_checks_locked(library: Library) -> None:
-    """Drop *library*'s check times and "not Intact" Findings. Blocking.
+    """Drop every record kept for *library*'s Images. Blocking.
 
     For a Library whose Image keys now name other Images (RomM pointed at
-    another instance reuses ROM ids). The caller holds :func:`paused`; the
-    Library's generation moves first, so a check run in flight writes nothing
-    more.
+    another instance reuses ROM ids): its check times, every Finding (the
+    "not Intact", Source-kept and duplicate ones) with its dismissals, and its
+    last find-duplicates run, through the same call a folder Library's removal
+    makes (:func:`services.library_records.forget`). The caller holds
+    :func:`paused`; the Library's generation moves first, so a check or
+    find-duplicates run in flight writes nothing more.
     """
+    from services import library_records
+
     _generations[library.id] = _generations.get(library.id, 0) + 1
-    findings.forget_kind(library.id, findings.NOT_INTACT)
-    findings.forget_kind(library.id, findings.SOURCE_KEPT)
-    image_checks.forget_library(library.id)
+    library_records.forget(library.id)
 
 
 def _walk_generation(library: Library) -> int:

@@ -12,6 +12,7 @@ import asyncio
 from logging_setup import get_logger
 import os
 import re
+from collections.abc import Awaitable, Callable
 from typing import Dict, List, Optional
 
 from fastapi.concurrency import run_in_threadpool
@@ -163,6 +164,21 @@ class CHDMetadataStore:
     # Queries
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _describes(row: Optional[_db.CHDMetadata], st: os.stat_result) -> bool:
+        """Whether *row* still describes the file *st* is a stat of (#388).
+
+        The one identity check every freshness question in this store asks
+        (``is_stale``, ``get_fresh_metadata``, ``cached_media_type_blocking``),
+        so they cannot disagree: the file's size and integer ``st_mtime_ns``,
+        the identity ``content_keys`` uses. A row without them (written before
+        0017 recorded them) does not, so the scan and the info route read it
+        again.
+        """
+        if row is None or row.size is None or row.mtime_ns is None:
+            return False
+        return (st.st_size, st.st_mtime_ns) == (row.size, row.mtime_ns)
+
     def _get_sync(self, chd_path: str) -> Optional[_db.CHDMetadata]:
         normalized = self._normalize_path(chd_path)
         with self._session() as session:
@@ -226,37 +242,42 @@ class CHDMetadataStore:
         already off the event loop (the badge lookup, #373). Blocking."""
         normalized = self._normalize_path(chd_path)
         try:
-            current_mtime = os.path.getmtime(normalized)
+            st = os.stat(normalized)
         except OSError:
             return False, None
         row = self._get_sync(chd_path)
-        if row is None or row.mtime is None or row.mtime != current_mtime:
+        if not self._describes(row, st):
             return False, None
         return True, row.media_type
 
     async def is_stale(self, chd_path: str) -> bool:
+        """Whether the cached row no longer describes the file (:meth:`_describes`)."""
         normalized = self._normalize_path(chd_path)
         try:
-            current_mtime = await run_in_threadpool(os.path.getmtime, normalized)
+            st = await run_in_threadpool(os.stat, normalized)
         except OSError:
             # File missing / unreadable → treat as stale.
             return True
         row = await run_in_threadpool(self._get_sync, chd_path)
-        if row is None or row.mtime is None:
-            return True
-        return current_mtime != row.mtime
+        return not self._describes(row, st)
 
     async def get_fresh_metadata(self, chd_path: str) -> Optional[dict]:
         """Return cached ``metadata_json`` only if it still describes the file.
 
         Reads the row, then re-stats the file — both inside one threadpool
         call, no ``await`` between — and returns the hashes only when the
-        file's current mtime still equals the row's captured mtime. The writer
-        (``_set_metadata_sync``) always stats then stores ``(metadata, mtime)``
-        together, so the row's mtime lags the file; reading the row *first* and
-        comparing against a *later* stat means a concurrent rewrite (new file,
-        row not yet re-scanned) shows ``mtime != row.mtime`` and we refuse the
-        stale hashes. Stat-then-read instead would re-use an old mtime that can
+        file's identity still equals the row's: its size and its integer
+        ``st_mtime_ns``, the identity ``content_keys`` uses (#388). A
+        replacement of another size that kept the mtime, or a same-size
+        rewrite within the same second, is a different file; the float
+        ``mtime`` cannot tell the latter apart. A row written before the
+        identity was recorded is stale, so its hashes are read again. The store
+        keeps no inode. The writer
+        (``_set_metadata_sync``) always stats then stores ``(metadata, identity)``
+        together, so the row's identity lags the file; reading the row *first*
+        and comparing against a *later* stat means a concurrent rewrite (new
+        file, row not yet re-scanned) shows a different identity and we refuse
+        the stale hashes. Stat-then-read instead would re-use an old mtime that can
         still match the old row for an already-replaced file. ``get_metadata()``
         + ``is_stale()`` instead read the row twice and stat separately across
         awaits, a TOCTOU where the hashes can reflect one mtime and the verdict
@@ -267,17 +288,15 @@ class CHDMetadataStore:
             normalized = self._normalize_path(chd_path)
             with self._session() as session:
                 row = session.get(_db.CHDMetadata, normalized)
-            if row is None or row.mtime is None:
+            if row is None:
                 return None
             # Stat AFTER the row read so a rewrite that lands while we read the
-            # row moves the file's mtime away from the (now older) row mtime.
+            # row moves the file's identity away from the (now older) row's.
             try:
-                current_mtime = os.path.getmtime(normalized)
+                st = os.stat(normalized)
             except OSError:
                 return None
-            if current_mtime != row.mtime:
-                return None
-            return row.metadata_json
+            return row.metadata_json if self._describes(row, st) else None
 
         return await run_in_threadpool(_read)
 
@@ -315,12 +334,28 @@ class CHDMetadataStore:
     # Writes
     # ------------------------------------------------------------------
 
-    def _set_metadata_sync(self, chd_path: str, info: dict) -> dict:
+    def _set_metadata_sync(
+        self, chd_path: str, info: dict, before: os.stat_result | None = None,
+    ) -> dict | None:
         normalized = self._normalize_path(chd_path)
+        # One stat for both: the identity the hashes are tied to.
         try:
-            mtime = os.path.getmtime(normalized)
+            st = os.stat(normalized)
+            mtime: float | None = st.st_mtime
+            size: int | None = st.st_size
+            mtime_ns: int | None = st.st_mtime_ns
         except OSError:
-            mtime = None
+            st = None
+            mtime = size = mtime_ns = None
+        if before is not None:
+            # The identity taken before *info* was read is the one stored, and
+            # only if the file is still that one: a swap during the read would
+            # otherwise tie one disc's hashes to another file (#388).
+            if st is None or (st.st_size, st.st_mtime_ns) != (
+                before.st_size, before.st_mtime_ns,
+            ):
+                return None
+            mtime, size, mtime_ns = before.st_mtime, before.st_size, before.st_mtime_ns
 
         media_type = self.extract_media_type(info)
         now = _utcnow_iso()
@@ -331,6 +366,8 @@ class CHDMetadataStore:
                 metadata_json=info,
                 media_type=media_type,
                 mtime=mtime,
+                size=size,
+                mtime_ns=mtime_ns,
                 cached_at=now,
                 disc_id_checked=False,
             )
@@ -348,6 +385,8 @@ class CHDMetadataStore:
                     "metadata": stmt.excluded["metadata"],
                     "media_type": stmt.excluded.media_type,
                     "mtime": stmt.excluded.mtime,
+                    "size": stmt.excluded.size,
+                    "mtime_ns": stmt.excluded.mtime_ns,
                     "cached_at": stmt.excluded.cached_at,
                 },
             )
@@ -371,15 +410,45 @@ class CHDMetadataStore:
                 "title": row.title,
             }
 
-    async def set_metadata(self, chd_path: str, info: dict, persist: bool = True) -> dict:
+    async def read_and_cache(
+        self, chd_path: str, read: Callable[[], Awaitable[dict]],
+    ) -> tuple[dict, dict | None]:
+        """Read a CHD's metadata with *read* (``chdman info``) and cache it,
+        bound to the file it was read from (#388).
+
+        The file is stat'ed before the read and again before the write; the
+        metadata is stored with that first identity, and only when the file is
+        still the same one. Returns ``(info, record)``; *record* is None when
+        the file changed during the read, or could not be stat'ed before it
+        (nothing stored, the info is still returned for the caller to show).
+        """
+        normalized = self._normalize_path(chd_path)
+        try:
+            before = await run_in_threadpool(os.stat, normalized)
+        except OSError:
+            before = None
+        info = await read()
+        if before is None:
+            # Nothing ties this metadata to a file: a later stat could name a
+            # file swapped in after the read. Returned, never cached.
+            return info, None
+        record = await self.set_metadata(chd_path, info, persist=False, before=before)
+        return info, record
+
+    async def set_metadata(
+        self, chd_path: str, info: dict, persist: bool = True,
+        *, before: os.stat_result | None = None,
+    ) -> dict | None:
         """Cache metadata for a CHD file.
 
         ``persist`` is kept for interface parity; SQLite always commits
         per call so the flag is effectively a no-op (the old JSON code
-        used it to batch writes).
+        used it to batch writes). *before* is the file's stat taken before
+        *info* was read (:meth:`read_and_cache`): the row gets that identity,
+        and nothing is stored (None) if the file is no longer that one.
         """
         _ = persist
-        return await run_in_threadpool(self._set_metadata_sync, chd_path, info)
+        return await run_in_threadpool(self._set_metadata_sync, chd_path, info, before)
 
     def _mark_disc_id_checked_sync(
         self, normalized: str, current_mtime: float | None,
@@ -451,9 +520,12 @@ class CHDMetadataStore:
         old_normalized = self._normalize_path(old_path)
         new_normalized = self._normalize_path(new_path)
         try:
-            new_mtime: float | None = os.path.getmtime(new_normalized)
+            new_st = os.stat(new_normalized)
+            new_mtime: float | None = new_st.st_mtime
+            new_size: int | None = new_st.st_size
+            new_mtime_ns: int | None = new_st.st_mtime_ns
         except OSError:
-            new_mtime = None
+            new_mtime = new_size = new_mtime_ns = None
 
         with self._session() as session:
             old = session.get(_db.CHDMetadata, old_normalized)
@@ -466,6 +538,8 @@ class CHDMetadataStore:
                 "metadata_json": old.metadata_json,
                 "media_type": old.media_type,
                 "mtime": new_mtime,
+                "size": new_size,
+                "mtime_ns": new_mtime_ns,
                 "cached_at": old.cached_at,
                 "disc_id_checked": old.disc_id_checked,
                 "disc_id_checked_mtime": old.disc_id_checked_mtime,
@@ -484,6 +558,11 @@ class CHDMetadataStore:
 
     async def move(self, old_path: str, new_path: str) -> None:
         await run_in_threadpool(self._move_sync, old_path, new_path)
+
+    def move_blocking(self, old_path: str, new_path: str) -> None:
+        """:meth:`move`, blocking, for a caller that bounds it on its own
+        detached thread (placing a staged output, #398)."""
+        self._move_sync(old_path, new_path)
 
     # ------------------------------------------------------------------
     # Housekeeping
