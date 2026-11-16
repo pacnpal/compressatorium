@@ -52,6 +52,7 @@ from services.subprocess_runner import (
     run_detached_bounded,
     run_detached_mutation,
     run_detached_undoable,
+    run_detached_within_stall_bound,
     start_detached,
 )
 from services.tools import ModeKind, registry
@@ -2914,6 +2915,19 @@ class JobManager:
             finally:
                 self._queue.task_done()
 
+    async def _output_size_bounded(self, job: ConversionJob) -> Optional[int]:
+        """:meth:`_compute_output_size`, off the loop and bounded (#352).
+
+        Through ``run_detached_within_stall_bound``, the conversion's
+        no-progress bound: an output Volume that answers nothing raises
+        ``RuntimeError`` naming the output, and the job fails instead of
+        holding its queue slot on a ``getsize`` that never returns.
+        """
+        return await run_detached_within_stall_bound(
+            self._compute_output_size, job,
+            what=f"Sizing {os.path.basename(job.output_path)}",
+        )
+
     def _compute_output_size(self, job: ConversionJob) -> Optional[int]:
         """Total bytes of a completed job's output (None if absent).
 
@@ -2923,8 +2937,8 @@ class JobManager:
         tool's ``companion_outputs`` hook rather than re-encoded per mode. A
         split build leaves no bare .iso, so the primary getsize simply misses
         and the numbered parts carry the whole total. Synchronous (a directory
-        mode's companion lookup scans the output dir) — call via
-        ``run_in_threadpool`` off the event loop.
+        mode's companion lookup scans the output dir): call it through
+        :meth:`_output_size_bounded`.
         """
         companions = registry.for_mode(job.mode.value).companion_outputs(
             job.output_path, job.mode.value,
@@ -4469,9 +4483,7 @@ class JobManager:
                     raise ConversionCancelled("Conversion cancelled")
                 self._cancelled.discard(job_id)
                 job.progress = 100
-                job.output_size = await run_in_threadpool(
-                    self._compute_output_size, job,
-                )
+                job.output_size = await self._output_size_bounded(job)
                 job.status = JobStatus.COMPLETED
                 job.completed_at = datetime.now(timezone.utc)
                 # No check ran in this job, so job.check_passed stays unset;
@@ -4669,10 +4681,9 @@ class JobManager:
                 job.progress = 100
 
                 # Run the tool's post-convert hook before sizing the output.
-                # chdman uses it to embed disc-ID GAME/NAME tags into a freshly
-                # created CD/DVD CHD; the default is a no-op, so this is safe to
-                # call for every mode. Running it first means the output_size
-                # computed below reflects the tagged file. The source
+                # chdman uses it to record a freshly created CD/DVD CHD's disc
+                # ID (read from the Source) in the metadata store; the default
+                # is a no-op, so this is safe to call for every mode. The source
                 # (input_path) is still present here, even when delete-on-verify
                 # is requested (deletion happens after verify).
                 try:
@@ -4682,9 +4693,9 @@ class JobManager:
                 except DiscIdStorageAbandoned:
                     # Deliberately not swallowed with the rest. Everything below
                     # touches job.output_path on the same storage -- the output
-                    # size probe is an unbounded run_in_threadpool, and
-                    # delete-on-verify spawns a verifier -- so let the outer
-                    # handler fail this job now rather than hang it (#263/#268).
+                    # size probe, and delete-on-verify spawns a verifier -- so
+                    # let the outer handler fail this job now rather than spend
+                    # each later bound on storage known to be gone (#263/#268).
                     raise
                 except Exception as e:
                     logger.debug(
@@ -4693,11 +4704,10 @@ class JobManager:
 
                 # Output size = primary + companions (extractcd's .bin, a split
                 # folder_to_iso's numbered parts), via the shared companion-aware
-                # helper. Off the event loop: a split folder_to_iso's companion
-                # lookup scans the output dir.
-                job.output_size = await run_in_threadpool(
-                    self._compute_output_size, job,
-                )
+                # helper. Off the event loop and bounded: a split folder_to_iso's
+                # companion lookup scans the output dir, and an output Volume
+                # that stops answering must fail the job, not hold its slot.
+                job.output_size = await self._output_size_bounded(job)
 
                 verified = False
                 source_deleted = False
@@ -4797,8 +4807,11 @@ class JobManager:
                     # no-op without re-spawning the converter (#184, site 1).
                     # The source still exists here (delete runs below), so its
                     # complete set can be fingerprinted.
-                    snapshot_meta = await run_in_threadpool(
+                    # Bounded like the output size (#352): it stats the
+                    # output and the Source on the same storage.
+                    snapshot_meta = await run_detached_within_stall_bound(
                         self._build_produced_meta, job,
+                        what=f"Fingerprinting {os.path.basename(job.output_path)}",
                     )
                     # The verifier identity (the mode and tool that made the
                     # output) is recorded for every passing check, with or

@@ -14,7 +14,7 @@ Responsibilities unique to a chain:
   partial final at once (see ``services.disk``);
 * weighted progress aggregation into one 0-100 bar (chd compression dominates
   cso decompression, so an even split misreports);
-* the final verify and disc-ID tagging delegate to the last step's tool
+* the final verify and disc-ID recording delegate to the last step's tool
   (chdman), so a ``cso_to_chd`` CHD is verified and tagged exactly like a direct
   ``createdvd``.
 """
@@ -137,7 +137,7 @@ class ChainTool(BaseTool):
 
     def __init__(self, registry: "ToolRegistry") -> None:
         # No binary of its own; it drives the component tools via the registry,
-        # including the final step's post_convert hook for disc-ID tagging.
+        # including the final step's post_convert hook, which records the disc ID.
         super().__init__("")
         self._registry = registry
 

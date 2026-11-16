@@ -334,8 +334,8 @@ the non-obvious rows is in §8 to §14.
 | 12 | `app/routes/convert.py` | Add `SkipReason.<TOOL>_BAD_EXTENSION`, its `_SKIP_HTTP` message, and one `_BAD_EXTENSION_REASON["<tool>"]` entry. No `if`-block: validation is table-driven. If your `converts_path` refines on file *content* (§19), also one `_NOT_CONVERTIBLE_REASON["<tool>"]` row naming your own reason. | New tool |
 | 13 | `app/routes/files.py` | **Nothing.** The directory scan and `search_files` loop over `registry.all()`; a registered tool is annotated automatically. | Never (registry-driven) |
 | 14 | `app/routes/info.py` | A `_VERIFY_CONFIG["<tool>"]` entry + one `register_verify_routes(router, registry.get("<tool>"))` call, and a hand-written `GET /<tool>-info` endpoint. Both are optional for a tool with no user-facing verify/info (makeps3iso registers neither). | New tool |
-| 15 | `app/services/job_manager.py` | Usually nothing: convert and verify dispatch through the registry. Touch only for special post-processing (disc-id tagging, multi-file sidecars). | Rare |
-| 16 | `app/services/disc_id.py` | Add a serial/title parser if the new **disc** platform should get GAME/NAME tags embedded (chdman create modes only). | New disc platform, optional |
+| 15 | `app/services/job_manager.py` | Usually nothing: convert and verify dispatch through the registry. Touch only for special post-processing (multi-file sidecars). | Rare |
+| 16 | `app/services/disc_id.py` | Add a serial/title parser if the new **disc** platform should get a disc ID recorded (chdman create modes only). | New disc platform, optional |
 | 17 | `app/services/archive.py` | Nothing for a new tool, and that's by design: browse lists every *known* source (`convertible_extensions()` minus archives), and the convert gate is `archive_input_extensions()` — both come straight from the registry. Just declare your `input_extensions` and your members show up when folks browse in; set `allows_archive_input=True` only when a mode should also convert them in place (see §17.5). | Rare |
 | 18 | `app/services/dat_*.py` / `app/routes/dat.py` | Touch only if the platform participates in DAT (MAMERedump) hash-matching. | Rare |
 | 19 | `migrations/versions/*.py` | New Alembic migration **only** if you add DB-persisted columns/tables (use `scripts/new_migration.sh`). The verification/metadata stores are keyed by path and need no migration for a new tool. | If schema changes |
@@ -856,7 +856,7 @@ plugin is registered, **the pipeline needs no edits** for a standard
 compress-style tool.
 
 Touch `job_manager` only for special post-processing. The current special cases
-are chdman-specific: GAME/NAME disc-id tagging after `createcd`/`createdvd`, and
+are chdman-specific: recording the disc ID after `createcd`/`createdvd`, and
 `.bin` sidecar handling for multi-track CD inputs. A clean single-file tool like
 nszip needs none of that.
 
@@ -1632,9 +1632,10 @@ These are **disc-format-specific** and usually irrelevant to a non-disc tool, bu
 matter when your *platform* is a game image processed by chdman.
 
 - **`app/services/disc_id.py`** extracts a game serial/title (for example
-  `SLUS-20312`) from PS1/PS2/PSP/Dreamcast sources and embeds GAME/NAME tags into
-  the CHD after `createcd`/`createdvd` (driven from `job_manager._process_job`).
-  To make a **new disc platform** get tags, add a parser branch in
+  `SLUS-20312`) from PS1/PS2/PSP/Dreamcast sources. After `createcd`/`createdvd`
+  `ChdmanTool.post_convert` records it for the CHD in `chd_metadata_store`; nothing
+  is written into the CHD, since chdman cannot add metadata to a compressed one.
+  To make a **new disc platform** get a disc ID, add a parser branch in
   `extract_from_source` and a normalizer like `_normalize_ps_serial`. Not needed
   for RVZ/3DS/etc.
 - **`app/services/archive.py`** lists the inputs that can be converted from

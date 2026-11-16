@@ -258,10 +258,13 @@ class ToolPlugin(Protocol):
     def active_pids(self) -> list[int]: ...
 
     # Post-convert hook, run once after a successful conversion. Default no-op
-    # (BaseTool); ChdmanTool overrides it to embed disc-ID GAME/NAME tags into a
-    # freshly created CD/DVD CHD. job_manager calls it generically for every
-    # mode, and ChainTool routes its final step through the same hook, so a
-    # cso_to_chd CHD is tagged exactly like a direct createdvd.
+    # (BaseTool); ChdmanTool overrides it to record the disc ID it reads from
+    # the Source in chd_metadata_store for a freshly created CD/DVD CHD. Nothing
+    # is written into the CHD: chdman opens a compressed CHD read-only (MAME
+    # chd.cpp: m_allow_writes = !compressed()), so `chdman addmeta` fails on
+    # every CHD this app makes (#352). job_manager calls it generically for
+    # every mode, and ChainTool routes its final step through the same hook, so
+    # a cso_to_chd CHD gets its disc ID exactly like a direct createdvd.
     async def post_convert(self, input_path: str, output_path: str, mode: str) -> None: ...
 
     # Sibling outputs a multi-file mode writes beside its primary output_path
@@ -735,11 +738,12 @@ Three rules follow for any code that runs a verifier:
   the resolver falls back to the flat baseline — so `disc_hashes` would spawn
   `dolphin-tool verify` into a mount already proven unresponsive, buying a full
   verify timeout and likely a second written-off resource. And an abandoned
-  `chdman dumpmeta` reports "no GAME tag", which is indistinguishable from a
+  `chdman dumpmeta` reported "no GAME tag", which was indistinguishable from a
   genuinely untagged CHD — so `post_convert` answered it by firing `addmeta` at a
-  file the abandoned reader still held, and `ensure_disc_id_embedded` fell
+  file the abandoned reader still held, and the scan's disc-ID step fell
   through to a whole-disc sector read on the default executor with no bound of
-  its own.
+  its own. (#352 later removed the GAME/NAME tag entirely; `dumpmeta` is now
+  only read for the Dreamcast GDRO tag, and the same rule applies to it.)
 
   `abandonment_checkpoint()` is the seam for this: it yields a list for the
   immediate decision and then forwards whatever it caught to the enclosing sink,
@@ -751,14 +755,45 @@ Three rules follow for any code that runs a verifier:
   after resolving the bound, before spawning"* extended to abandonment, and the
   reward for ignoring it is larger: a child that blocks immediately and may
   outlive SIGKILL.
-- **`post_convert` is best-effort about tagging, not about storage.** Its
-  contract is that a tagging failure never fails the job, because a missing
-  disc-ID tag is cosmetic. An abandoned chdman child is not that: it says the
-  output's storage stopped answering, and every step after the hook reads that
-  storage -- `_compute_output_size` is an unbounded `run_in_threadpool`, and
-  delete-on-verify spawns a verifier. Swallowing it trades a skipped tag for a
-  hung job, which is #263's original failure, so `DiscIdStorageAbandoned` alone
-  propagates and `JobManager` lets it reach the handler that fails the job.
+- **`post_convert` is best-effort about the disc ID, not about storage.** Its
+  contract is that a disc-ID failure never fails the job, because a missing
+  disc ID is cosmetic; it is logged as a warning naming the output, never
+  silently. Storage that stopped answering is not that: every step after the
+  hook reads that storage (sizing the output, verify, delete). So the hook
+  raises `DiscIdStorageAbandoned` for it and `JobManager` lets that through to
+  the handler that fails the job, rather than spending each later bound on
+  storage known to be gone. Since #352 chdman's hook spawns no chdman child (it
+  records the Source's disc ID in `chd_metadata_store`); it raises when its
+  bounded read of the Source or its bounded stat of the output does not answer,
+  and only warns for an ordinary read error (`OSError`, `ValueError`) or a
+  database error (`SQLAlchemyError`, `RuntimeError`, `OSError`).
+- **The finish path is bounded (#352).** After the hook, `_process_job` sizes
+  the output (`_output_size_bounded`) and fingerprints it and the Source
+  (`_build_produced_meta`) through `run_detached_within_stall_bound`, the
+  conversion's no-progress bound. An output Volume that stops answering fails
+  the job with an error naming the file instead of holding its queue slot.
+- **Every disc-ID read is bounded (#352).** The disc ID is kept in
+  `chd_metadata_store`, never in the CHD, and the reads that fill it are file
+  reads on Volumes that may answer a cached `stat` and then block every read:
+  - `disc_id.extract_from_chd` (the library scan's Phase 2 and `/api/info`)
+    reads the CHD's sectors and any companion file through `bounded_disc_read`:
+    `run_detached_bounded`, `_DISC_READ_TIMEOUT_SECONDS`, raced against the
+    caller's `cancel_event` (Phase 2 passes the scan job's). Past the bound the
+    thread is written off into the open `collect_abandonment` sink, a warning
+    names the file and `DiscIdStorageAbandoned` is raised, so `/api/info`
+    caches nothing and answers 503, and Phase 2 stops its pass at that file
+    (the same rule as a chdman child that outlived SIGKILL). Phase 2 checks for
+    Cancel before the sink, so a Cancel that cut a stuck read short ends the
+    scan as cancelled, not failed. The scan's `_is_scanning` flag and
+    `metadata_scan` lane are released either way.
+  - `ChdmanTool.post_convert` reads the Source's disc ID (and checks the output
+    exists) in one call through the same `bounded_disc_read`; past the bound,
+    `DiscIdStorageAbandoned` names the Source and the job fails (above).
+  - `chd_metadata_store.is_disc_id_checked` / `mark_disc_id_checked` resolve
+    and stat the file through `bounded_path_check`. A stat that does not answer
+    is "not checked" for the scan (its own bounded read then decides) and is
+    not marked; after a conversion, `post_convert` turns it into
+    `DiscIdStorageAbandoned` naming the output.
 - **One volume's failure stops the whole pass, deliberately.** A scan or batch is
   one user-initiated walk, and the loops do not resolve which configured volume
   each path belongs to, so the first abandonment ends all of it — including
@@ -769,8 +804,8 @@ Three rules follow for any code that runs a verifier:
   jobs that may target unrelated volumes, whereas one scan is a single pass the
   user asked for as a unit.
 - **One-shot chdman/dolphin captures go through `run_capture`.** `chdman info`,
-  `dolphin-tool header`, and the `chdman addmeta` / `delmeta` / `dumpmeta`
-  helpers in `services.disc_id` used to spawn directly, untracked, and finish
+  `dolphin-tool header`, and the `chdman dumpmeta` helper in
+  `services.disc_id` used to spawn directly, untracked, and finish
   with an unbounded wait after `kill()` — `dumpmeta` could hang the scan's Phase
   2 outright. They now share the capture path, so they are PID-tracked, bounded,
   subject to the tool priority policy, and able to report abandonment.
@@ -2933,8 +2968,7 @@ across a sample set, and then skip the extract.
 
 DVD and HD CHDs need no spike: they store the image's bytes as-is, so the data
 SHA1 is the SHA1 of the Source image. The overall `SHA1` that `chdman info`
-also prints folds in the metadata (and changes when the disc-ID tags are
-added), so it is never a content digest.
+also prints folds in the metadata, so it is never a content digest.
 
 **A failed Round-trip stores nothing.** On a mismatch or an unreadable digest
 the output's verification record is cleared, not written: the output gets no
