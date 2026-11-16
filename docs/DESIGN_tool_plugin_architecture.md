@@ -2339,13 +2339,20 @@ API and the Rules view; the engine never reads those three), and:
   server's lifespan and the CLI's job runner (`libraries.attach`, like
   `notifications.attach`), hands every Library the paths a finished job
   changed (its output and its Source), on the event loop and from memory
-  only. A folder Library whose root holds one bumps a files counter, so the
-  next listing walks again instead of serving the kept walk. The sweep reads
-  `walk_generation()` before it lists a Platform and again before it records
-  that Platform's run (`_listing_current`): a run whose listing went out of
-  date in between is not recorded (`stale_listing` in its summary), so its
-  Rule stays due and the next tick lists the new Images. The same rule for
-  conversion and check Rules.
+  only. An externally-managed job (`is_external_mode`: a check run, a
+  metadata scan, a DAT match) writes no Library file and is skipped, so a
+  check job's own end never makes its run look stale (#360). A folder Library
+  whose root holds one bumps a files counter, so the next listing walks again
+  instead of serving the kept walk. The sweep reads `walk_generation()` before
+  it lists a Platform and carries that number with the run to `_record_run`,
+  the one place every run is recorded, which compares it again
+  (`_listing_current`) at the moment of recording. For a conversion Rule that
+  is the end of its tick; for a check Rule it is when its check job ends
+  (`check_run_ended` -> `record_check_runs`), so conversions that finish while
+  the job checks count too (#360). A run whose listing went out of date in
+  between is not recorded (`stale_listing` in its summary), so its Rule stays
+  due and the next tick lists the new Images. The same rule for conversion and
+  check Rules.
 
 Capabilities (`RECOGNIZED_FILTER`, `CONVERTED_HISTORY`, `FAILED_HOLD`) say
 what a Library supports. Nothing in `rules/` asks what kind of Library it has.
@@ -4895,8 +4902,10 @@ window that selected it), and `_is_due` reads only
 `last_run_at`, so the nightly run still comes in its window; a Platform whose tool is not ready and that picked nothing is not
 stamped at all. Nor is a run whose listing a finished job made out of date
 before it was recorded (#353, `_listing_current`): a conversion that lands
-just before or during the nightly run would otherwise wait a full day for its
-first check. A run that looked at a current walk and found nothing to check is
+just before the nightly run, during its pick, or while its check job runs
+(#360: compared when the job ends, in `_record_run`) would otherwise wait a
+full day for its first check. What such a run picked is still checked and
+stamped per Image, so the next run moves on to the next stalest. A run that looked at a current walk and found nothing to check is
 a real run and is stamped. Before the loop a real sweep calls `_clear_vanished` (bounded,
 detached): `findings.clear_gone(library, NOT_INTACT)` drops a not-Intact
 Finding whose file is missing while its folder lists other entries. A share

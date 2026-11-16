@@ -12,6 +12,14 @@
   chdman itself, so the info panel shows the serial (for example `SLUS-20312`)
   for CHDs made by the bundled chdman. A read that does not answer still gives
   up after 30 seconds, and Cancel stops it.
+- **Conversions that finish during a check run are checked the next tick**
+  (#360). One scheduler tick could queue conversions and start a check Rule's
+  run; when the conversions finished while the check was still running, the
+  run was counted for the night anyway, so the new CHDs waited a full day for
+  their first check. Now a check run counts only if no conversion changed the
+  Library between its listing and the end of the check. Otherwise the next
+  tick runs it again and picks up the new Images. A check that ran with no
+  file changes still counts.
 - **Verifying a file the app can't read keeps its Intact badge** (#359). A
   CHD (or any output) whose permissions keep the app from reading it used to
   lose its Intact or Round-tripped badge when verified, because the verifier
