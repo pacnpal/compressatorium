@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 from services.tools import registry
 
+from .dolphin_helpers import dolphin_option
 from .test_platform_detect import _gamecube
 
 pytestmark = pytest.mark.usefixtures("fresh_detect_cache")
@@ -68,7 +69,9 @@ async def _run_all() -> None:
 
 
 def _codec(cmd: list[str]) -> str | None:
-    return cmd[cmd.index("-c") + 1] if "-c" in cmd else None
+    """dolphin-tool's codec, read after its binary (a priority prefix such
+    as `ionice -c 2` may come first)."""
+    return dolphin_option(cmd, "-c")
 
 
 @pytest.mark.asyncio
@@ -121,7 +124,7 @@ async def test_a_chosen_codec_still_wins(env) -> None:
     await _run_all()
 
     (cmd,) = env["commands"]
-    assert (_codec(cmd), cmd[cmd.index("-l") + 1]) == ("lzma2", "9")
+    assert (_codec(cmd), dolphin_option(cmd, "-l")) == ("lzma2", "9")
 
 
 @pytest.mark.parametrize(("mode", "given", "sent"), [
@@ -256,3 +259,19 @@ async def test_an_out_of_range_level_is_refused_before_the_tool_runs(env) -> Non
     with pytest.raises(ValueError, match="1-9"):
         tool.convert(iso, str(env["tmp"] / "Melee.wia"), "dolphin_wia", compression="lzma2:19")
     assert env["commands"] == []
+
+
+def test_the_codec_is_read_after_a_priority_prefix(monkeypatch) -> None:
+    """On Linux with `ionice`, `ionice -c 2 -n …` comes before dolphin-tool;
+    its `-c` is the I/O class, not the codec (codex 4581651579)."""
+    from services import dolphin_tool
+
+    monkeypatch.setattr(
+        dolphin_tool, "ioprio_prefix", lambda _owner: ["ionice", "-c", "2", "-n", "7"],
+    )
+    service = registry.get("dolphin")._service
+
+    cmd = service._build_convert_command("dolphin_rvz", "in.iso", "out.rvz", compression="zstd:19")
+
+    assert cmd[:3] == ["ionice", "-c", "2"]
+    assert (dolphin_option(cmd, "-c"), dolphin_option(cmd, "-l")) == ("zstd", "19")

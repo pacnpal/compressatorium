@@ -17,6 +17,8 @@ from pathlib import Path
 import pytest
 from services.tools import registry
 
+from .dolphin_helpers import dolphin_option
+
 
 @pytest.fixture(name="volume")
 def _volume(tmp_path, monkeypatch, reset_db_engine):
@@ -2669,7 +2671,9 @@ def _dolphin_commands(monkeypatch) -> list[list[str]]:
 
 
 def _codec(cmd: list[str]) -> str | None:
-    return cmd[cmd.index("-c") + 1] if "-c" in cmd else None
+    """dolphin-tool's codec, read after its binary (a priority prefix such
+    as `ionice -c 2` may come first)."""
+    return dolphin_option(cmd, "-c")
 
 
 @pytest.mark.parametrize("target", ["rvz", "wia"])
@@ -2700,4 +2704,4 @@ def test_an_explicit_codec_still_wins(volume, dolphin, capsys, monkeypatch):
 
     assert code == 0, lines
     (cmd,) = commands
-    assert (_codec(cmd), cmd[cmd.index("-l") + 1]) == ("lzma2", "9")
+    assert (_codec(cmd), dolphin_option(cmd, "-l")) == ("lzma2", "9")
