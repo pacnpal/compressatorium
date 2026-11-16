@@ -5823,10 +5823,16 @@ size and mtime, and still holding the group's key in `content_keys` for that
 identity. For each copy but the keeper: the shared `build_delete_plan`
 (confined to the Volumes), a refusal when a `.cue`/`.gdi` beside it lists it as
 a track (`_sheet_problem`), and one when its plan would touch the keeper. The
-track check fails closed (Codex PRRT_kwDOQ9nULM64Lh-c): a folder that cannot
-be listed, or a sheet in it that cannot be read whole
-(`utils.sheet_text.sheet_is_readable`: unreadable, or over the size cap),
-blocks the copy, since "is it a track?" is unanswered. The Referrer changes come
+track check is the shared `image_sets.owning_sheet` (the other direction of
+`image_members`): a sheet may name a track in a subfolder (`Disc.cue` →
+`tracks/Track.bin`), so it looks in the copy's folder and every folder above
+it, up to and including the Volume boundary (`lock_boundary_root`), never
+above (Codex PRRT_kwDOQ9nULM64L3Le). It fails closed (Codex
+PRRT_kwDOQ9nULM64Lh-c): a folder on the way that cannot be listed, a sheet that
+cannot be read whole (`utils.sheet_text.sheet_is_readable`: unreadable, or over
+the size cap), or a copy with no Volume boundary blocks the copy, since "is it
+a track?" is unanswered. The walk runs inside the plan's detached, bounded
+step, so a slow Volume answers 503 rather than an unchecked plan. The Referrer changes come
 from `referrers.plan_changes_bounded` with every delete path mapped to the
 keeper, as a conversion maps them to its output. The answer has the
 delete-plan route's item shape (`delete_paths`, `missing_paths`,

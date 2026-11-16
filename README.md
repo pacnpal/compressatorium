@@ -947,9 +947,9 @@ Finding duplicates deletes nothing by itself. To clean a group up:
   Nothing is deleted until you confirm.
 - A delete is offered only when every copy is proven to hold the same disc
   (equal content hashes), and not for a group the last run could not fully
-  see. A `.bin` that a `.cue` beside it lists is never deleted on its own, and
-  when a sheet beside it can't be read, or its folder can't be listed, it isn't
-  deleted either.
+  see. A `.bin` that a `.cue` lists, beside it or in a folder above it, is
+  never deleted on its own, and when a sheet there can't be read, or a folder
+  on the way can't be listed, it isn't deleted either.
 - When you confirm, every copy and the copy kept are checked again against
   what the Finding showed: one that is gone, changed or unreadable stops the
   delete. Each copy then goes through the same delete step, locks and checks

@@ -14,8 +14,9 @@
   is checked again first and goes through the same delete step and locks as a
   conversion's delete-on-verify, so a copy that changed, or one a job is using,
   is kept. Delete is only offered when the copies hold provably identical
-  content, and a `.cue`'s track file is never deleted on its own, nor is a
-  file whose folder or neighbouring sheet can't be read.
+  content, and a `.cue`'s track file is never deleted on its own, even when
+  the sheet sits in a folder above it, nor is a file when a folder or sheet on
+  the way up can't be read.
 - **A "Keep the ROM id" switch for RomM** (#390). A new card on the RomM
   Settings tab holds a switch, off by default, that says a conversion should
   keep RomM's ROM id (and the saves, notes and collections on it) rather than

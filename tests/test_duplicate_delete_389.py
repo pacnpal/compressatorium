@@ -549,3 +549,78 @@ async def test_a_header_keyed_copy_that_passed_its_check_may_be_kept(
     assert done.status_code == 200, done.text
     assert not (roms / "Game.iso").exists()
     assert (roms / "Game.chd").exists()
+
+
+# ----------------------------------------------------------------------
+# a track a sheet further up names (Codex PRRT_kwDOQ9nULM64L3Le)
+# ----------------------------------------------------------------------
+
+
+async def _nested_track_group(client, monkeypatch, roms: Path, track: str) -> dict:
+    """``Game.iso`` and the track at *track* (relative to *roms*), one disc."""
+    d388._disc(roms / "Game.iso", b"game")
+    d388._copy(roms / "Game.iso", roms / track)
+    release = threading.Event()
+    release.set()
+    d388._romm_images_resolving(monkeypatch, release, [roms / "Game.iso", roms / track])
+    await d388._find(client, "romm")
+    return await _group(client)
+
+
+def _cue(path: Path, track: str) -> None:
+    path.write_text(f'FILE "{track}" BINARY\n  TRACK 01 MODE1/2048\n    INDEX 01 00:00:00\n')
+
+
+@pytest.mark.asyncio
+async def test_a_sheet_one_folder_up_naming_the_track_blocks_it(
+    db: Path, client: httpx.AsyncClient, monkeypatch,
+) -> None:
+    roms = db / "romm"
+    group = await _nested_track_group(client, monkeypatch, roms, "tracks/Track.bin")
+    _cue(roms / "Disc.cue", "tracks/Track.bin")
+
+    await _blocked_for(client, group, str(roms / "Game.iso"), "is a track of Disc.cue")
+    assert (roms / "tracks" / "Track.bin").exists()
+
+
+@pytest.mark.asyncio
+async def test_a_sheet_two_folders_up_naming_the_track_blocks_it(
+    db: Path, client: httpx.AsyncClient, monkeypatch,
+) -> None:
+    roms = db / "romm"
+    group = await _nested_track_group(client, monkeypatch, roms, "a/b/Track.bin")
+    _cue(roms / "Disc.cue", "a/b/Track.bin")
+
+    await _blocked_for(client, group, str(roms / "Game.iso"), "is a track of Disc.cue")
+    assert (roms / "a" / "b" / "Track.bin").exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(folder_library_303._IS_ROOT, reason="root reads every file")
+async def test_an_unreadable_sheet_further_up_blocks_the_track(
+    db: Path, client: httpx.AsyncClient, monkeypatch,
+) -> None:
+    roms = db / "romm"
+    group = await _nested_track_group(client, monkeypatch, roms, "tracks/Track.bin")
+    sheet = roms / "Other.cue"
+    _cue(sheet, "Other.bin")
+    sheet.chmod(0)
+    try:
+        await _blocked_for(client, group, str(roms / "Game.iso"), "Other.cue could not be read")
+    finally:
+        sheet.chmod(0o644)
+    assert (roms / "tracks" / "Track.bin").exists()
+
+
+@pytest.mark.asyncio
+async def test_a_sheet_further_up_naming_other_files_does_not_block(
+    db: Path, client: httpx.AsyncClient, monkeypatch,
+) -> None:
+    roms = db / "romm"
+    group = await _nested_track_group(client, monkeypatch, roms, "tracks/Track.bin")
+    _cue(roms / "Other.cue", "Other.bin")
+    (roms / "Other.bin").write_bytes(b"\0" * 2048)
+
+    response = await _plan(client, group, str(roms / "Game.iso"))
+    assert response.status_code == 200, response.text
+    assert response.json()["blocked"] is False, response.json()

@@ -34,7 +34,7 @@ from typing import Any
 
 from fastapi.concurrency import run_in_threadpool
 from logging_setup import get_logger
-from services import content_keys, findings, libraries, referrers
+from services import content_keys, findings, image_sets, libraries, referrers
 from services.content_keys import Identity
 from services.job_manager import (
     KEPT_DELETE_PROBE_SECONDS,
@@ -47,16 +47,14 @@ from services.subprocess_runner import (
     ReadCancelled,
     run_detached_bounded,
 )
-from utils.delete_plan import build_delete_plan, sheet_track_paths
-from utils.sheet_text import sheet_is_readable
-from utils.path_utils import is_within_configured_volumes
+from utils.delete_plan import build_delete_plan
+from utils.path_utils import is_within_configured_volumes, lock_boundary_root
 
 logger = get_logger("duplicate_cleanup")
 
 # Key kinds whose equal keys prove equal content. Only these groups offer a
 # delete; a group matched any looser way never does.
 HASH_EQUAL_KINDS = frozenset({content_keys.RAW})
-_SHEET_EXTENSIONS = (".cue", ".gdi")
 _INTACT_CHECKS = frozenset({"intact", "round_tripped"})
 
 
@@ -271,35 +269,28 @@ def _copy_problem(copy: dict, key: str) -> str | None:
 
 
 def _sheet_problem(path: str) -> str | None:
-    """Why *path* may be a sheet's track, or None when no sheet beside it lists
-    it. Blocking.
+    """Why *path* may be a sheet's track, or None when no sheet lists it. Blocking.
 
-    Fails closed: a folder that cannot be listed, or a ``.cue``/``.gdi`` in it
-    that cannot be read whole (unreadable, or over the sheet size cap), leaves
-    "is this a track?" unanswered, which is never taken as "standalone".
+    Through the shared ``image_sets.owning_sheet``: *path*'s folder and every
+    folder above it up to its Volume boundary (``lock_boundary_root``), since a
+    sheet may name a track in a subfolder. Fails closed: a folder on the way
+    that cannot be listed, or a ``.cue``/``.gdi`` that cannot be read whole,
+    leaves "is this a track?" unanswered, which is never taken as
+    "standalone"; so does a path with no Volume boundary.
     """
     name = os.path.basename(path)
-    folder = os.path.dirname(path)
-    real = os.path.realpath(path)
+    boundary = lock_boundary_root(path)
+    if boundary is None:
+        return f"{name} is outside the configured Volumes"
     try:
-        names = sorted(os.listdir(folder))
-    except OSError as exc:
-        return (
-            f"its folder could not be listed ({exc.strerror or exc}), so whether a "
-            f"sheet needs {name} is unknown"
-        )
-    for sheet_name in names:
-        if not sheet_name.lower().endswith(_SHEET_EXTENSIONS):
-            continue
-        sheet = os.path.join(folder, sheet_name)
-        if not sheet_is_readable(sheet):
-            return (
-                f"{sheet_name} could not be read (unreadable or too large), so "
-                f"whether it needs {name} is unknown"
-            )
-        if real in {os.path.realpath(track) for track in sheet_track_paths(sheet)}:
-            return f"{name} is a track of {sheet_name}; it is never deleted on its own"
-    return None
+        sheet = image_sets.owning_sheet(path, stop_at=str(boundary))
+    except image_sets.SheetOwnerUnknown as exc:
+        return f"{exc}, so whether a sheet needs {name} is unknown"
+    if sheet is None:
+        return None
+    return (
+        f"{name} is a track of {os.path.basename(sheet)}; it is never deleted on its own"
+    )
 
 
 def _plan_blocking(row: dict, keep: str) -> dict:
