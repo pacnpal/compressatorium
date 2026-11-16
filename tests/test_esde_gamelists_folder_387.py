@@ -639,3 +639,84 @@ def test_the_rules_editor_offers_the_folder_beside_the_switch():
     for theme in ("light", "dark"):
         assert f"output: docs/screenshots/rules-esde-gamelists-{theme}.png" in shots
         assert f"docs/screenshots/rules-esde-gamelists-{theme}.png" in readme
+
+
+# ---- review round (CodeRabbit) ----------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_missing_gamelists_folder_keeps_the_source(vol):
+    """CodeRabbit PRRT_kwDOQ9nULM64KujE: a folder that is gone (unmounted,
+    renamed) is not "no gamelist, nothing to do"."""
+    source = _file(vol / "ROMs" / "ps2" / "Game.iso")
+
+    outcome = await _replace(
+        source, vol / "ROMs" / "ps2" / "Game.chd", _esde(vol, vol / "gone" / "gamelists"),
+    )
+
+    assert not outcome.ok
+    assert "gamelists folder" in outcome.reason
+    assert source.is_file()
+
+
+@pytest.mark.asyncio
+async def test_a_blank_romm_gamelists_folder_is_saved_as_none(vol, db):
+    """CodeRabbit PRRT_kwDOQ9nULM64Kuig: spaces are no folder; stored as such
+    they would turn the ES-DE lookup on with a folder that isn't there."""
+    from routes import romm as romm_routes
+    from services.romm import settings as romm_settings
+    from services.romm.library import romm_library
+
+    await romm_settings.load(force=True)
+    await romm_routes.put_romm_settings(romm_routes.RommSettingsPatch(gamelists_folder="   "))
+
+    assert romm_settings.public()["gamelists_folder"] == ""
+    assert romm_library.referrer_options("gamelist") == {}
+
+
+_FOLLOW = Path(__file__).resolve().parents[1] / "src" / "lib" / "util" / "followSaved.js"
+
+
+def test_the_folder_draft_follows_saves_without_losing_edits(tmp_path):
+    """CodeRabbit PRRT_kwDOQ9nULM64KujX / Codex PRRT_kwDOQ9nULM64KlGn: the
+    field adopts a new saved folder only while it holds no edit of its own."""
+    import json
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node not available")
+    assert _FOLLOW.is_file(), "src/lib/util/followSaved.js is missing"
+    script = tmp_path / "follow.mjs"
+    script.write_text(
+        f"import {{ followSaved }} from {json.dumps(_FOLLOW.as_uri())};\n"
+        "const out = {};\n"
+        "out.first = followSaved(null, '');\n"
+        # An unrelated save (the switch) re-reports the same folder: the edit stays.
+        "out.unrelated = followSaved({ draft: '/roms/typed', seen: '' }, '');\n"
+        # The answer to saving /roms/A lands after the user typed /roms/B.
+        "out.stale = followSaved({ draft: '/roms/B', seen: '' }, '/roms/A');\n"
+        # A change from elsewhere while the field holds no edit is shown.
+        "out.external = followSaved({ draft: '/roms/A', seen: '/roms/A' }, '/roms/C');\n"
+        "process.stdout.write(JSON.stringify(out));\n",
+        encoding="utf-8",
+    )
+    proc = subprocess.run(
+        [node, str(script)], capture_output=True, text=True, timeout=30, check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads(proc.stdout) == {
+        "first": {"draft": "", "seen": ""},
+        "unrelated": {"draft": "/roms/typed", "seen": ""},
+        "stale": {"draft": "/roms/B", "seen": "/roms/A"},
+        "external": {"draft": "/roms/C", "seen": "/roms/C"},
+    }
+
+
+def test_the_editor_drives_the_draft_through_follow_saved():
+    editor = (
+        Path(__file__).resolve().parents[1] / "src/lib/components/views/RuleEditor.svelte"
+    ).read_text()
+    assert "followSaved(" in editor
+    assert "$derived(source.gamelistsFolder" not in editor

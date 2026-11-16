@@ -17,7 +17,8 @@
    * no target format, a nightly byte budget, a window and weekdays. See
    * `$lib/rules/checkRule.js`.
    */
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
+  import { followSaved } from '$lib/util/followSaved.js';
   import { SvelteSet } from 'svelte/reactivity';
   import { toast } from 'svelte-sonner';
   import { DAY_LABELS, ORDER_LABELS } from '$lib/stores/romm.svelte.js';
@@ -75,8 +76,19 @@
 
   // The Library's ES-DE gamelists folder (#387): edited here, saved on Save.
   // Follows the saved value whenever it changes (a save, another tab).
-  let gamelistsDraft = $derived(source.gamelistsFolder ?? '');
+  // `followSaved` adopts a new saved folder only while the field holds no
+  // edit: another setting's save, or the answer to an earlier save, never
+  // throws away what the operator typed since.
+  let gamelistsDraft = $state('');
+  let gamelistsSeen = null; // the saved folder the field last adopted
   let gamelistsSaving = $state(false);
+  $effect(() => {
+    const saved = source.gamelistsFolder ?? '';
+    untrack(() => {
+      const prior = gamelistsSeen === null ? null : { draft: gamelistsDraft, seen: gamelistsSeen };
+      ({ draft: gamelistsDraft, seen: gamelistsSeen } = followSaved(prior, saved));
+    });
+  });
 
   async function saveGamelistsFolder() {
     gamelistsSaving = true;

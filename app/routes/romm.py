@@ -1724,12 +1724,13 @@ async def put_romm_settings(patch: RommSettingsPatch) -> dict:
     # on a mount that stopped answering then holds neither of them.
     try:
         folder = submitted.get("gamelists_folder")
-        if folder and folder.strip():
+        if folder is not None:
             # The ES-DE gamelists folder must be inside a Volume (#387):
-            # checked bounded, and stored resolved; "" clears it.
+            # checked bounded, and stored resolved. Blank (spaces included,
+            # CodeRabbit PRRT_kwDOQ9nULM64Kuig) is stored as "", which clears it.
             submitted["gamelists_folder"] = await libraries.admitted(
                 libraries.check_gamelists_folder, folder, what="The gamelists folder",
-            )
+            ) if folder.strip() else ""
         async with libraries.romm_root_claim(submitted.get("library_root")):
             return await _save_settings(submitted)
     except libraries.LibraryPathError as exc:

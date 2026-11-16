@@ -375,14 +375,18 @@ class GamelistReferrer(Referrer):
 
     def _check_folder(self) -> None:
         """Fail closed when the gamelists folder isn't confirmed inside the
-        Volumes (they changed after it was set, or a probe failed)."""
-        if self.gamelists_folder and volume_containment(
-            self.gamelists_folder, treat_archives=False,
-        ) is not True:
+        Volumes (they changed after it was set, or a probe failed), or isn't
+        a folder now (unmounted, renamed): finding no gamelist there must not
+        read as "nothing to update" (CodeRabbit PRRT_kwDOQ9nULM64KujE)."""
+        folder = self.gamelists_folder
+        if not folder:
+            return
+        if volume_containment(folder, treat_archives=False) is not True:
             raise ReferrerError(
-                self.gamelists_folder,
-                "the gamelists folder isn't confirmed inside the configured Volumes",
+                folder, "the gamelists folder isn't confirmed inside the configured Volumes",
             )
+        if not os.path.isdir(folder):
+            raise ReferrerError(folder, "the gamelists folder isn't there")
 
     def _platform_folder(self, path: str) -> str:
         """The Platform folder holding *path*, from the Library
