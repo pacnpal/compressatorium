@@ -39,6 +39,7 @@ from .base import (
     write_guard,
     write_new_bytes,
 )
+from .gamelist import GamelistReferrer
 from .m3u import M3uReferrer
 
 logger = get_logger("referrers")
@@ -91,6 +92,7 @@ class ReferrerRegistry:
 
 registry = ReferrerRegistry()
 registry.register(M3uReferrer())
+registry.register(GamelistReferrer())
 
 
 def _applies(referrer: Referrer, image_path: str, renames: Mapping[str, str]) -> bool:
@@ -124,7 +126,8 @@ class ReferrerOutcome:
 
     ``records`` has one entry per Referrer target, in order:
     ``{"referrer", "target", "status": "updated" | "failed" | "skipped" |
-    "abandoned"}``, plus ``"reason"`` for all but updated ones. It is what the
+    "abandoned"}``, plus ``"entries"`` (how many entries changed, #386) for
+    an updated one and ``"reason"`` for all the others. It is what the
     Ledger's ``referrers_updated`` column stores. ``failed``/``reason`` name
     the first failure, which is why the Source was kept.
 
@@ -175,11 +178,19 @@ class ReferrerOutcome:
         name = os.path.basename(self.failed or "")
         return f"converted, source kept: couldn't update {name} ({self.reason})"
 
-    def _record(self, referrer: str, target: str, status: str, reason: str | None = None):
+    def _record(
+        self, referrer: str, target: str, status: str, reason: str | None = None,
+        *, entries: int | None = None,
+    ):
         record = {"referrer": referrer, "target": target, "status": status}
         if reason is not None:
             record["reason"] = reason
+        if entries is not None:
+            record["entries"] = entries
         self.records.append(record)
+
+    def _updated(self, referrer: str, change: ReferrerChange) -> None:
+        self._record(referrer, change.target, "updated", entries=len(change.edits))
 
     def _fail(self, referrer: str, exc: Exception, fallback_target: str) -> None:
         if isinstance(exc, ReferrerError):
@@ -254,7 +265,7 @@ def _plan_and_apply(
             )
             outcome._fail(referrer.id, exc, change.target)
             continue
-        outcome._record(referrer.id, change.target, "updated")
+        outcome._updated(referrer.id, change)
     return outcome
 
 
@@ -393,7 +404,7 @@ async def _apply_pending(
             )
             outcome._fail(referrer.id, exc, change.target)
             continue
-        outcome._record(referrer.id, change.target, "updated")
+        outcome._updated(referrer.id, change)
 
 
 async def _run_phase(
@@ -519,15 +530,16 @@ async def plan_changes_bounded(
     hook: on a detached thread under the conversion's no-progress bound, so a
     playlist on a mount that stopped answering can't hang the confirmation.
     *library* is the Image's Library, as the job's hook gets it. Raises
-    ReferrerError (target "playlists") on a timeout."""
+    ReferrerError (target: the file phase's ``Phase.target``) on a timeout."""
     try:
         return await run_detached_within_stall_bound(
-            plan_changes, image_path, dict(renames), library, what="Reading playlists",
+            plan_changes, image_path, dict(renames), library,
+            what=f"Reading {Phase.FILE.target}",
         )
     except ReferrerError:
         raise
     except Exception as exc:
-        raise ReferrerError("playlists", str(exc) or type(exc).__name__) from exc
+        raise ReferrerError(Phase.FILE.target, str(exc) or type(exc).__name__) from exc
 
 
 __all__ = [

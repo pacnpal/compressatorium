@@ -41,6 +41,10 @@ FAILED_HOLD = "failed_hold"
 # files, but skips dot-prefixed folders.
 HIDDEN_STAGING = "hidden_staging"
 
+# The opt-in Referrer a Library's "used by an EmulationStation frontend"
+# setting turns on (#386): ``referrer_enabled`` answers True for it then.
+ES_FRONTEND_REFERRER = "gamelist"
+
 
 def duplicate_actions(library: Library) -> tuple[str, ...]:
     """The duplicate policies *library*'s Rules may use.

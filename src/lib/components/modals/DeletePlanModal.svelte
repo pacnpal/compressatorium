@@ -22,7 +22,8 @@
   const items = $derived(Array.isArray(plan?.items) ? plan.items : []);
   const totalDelete = $derived(plan?.total_delete_count ?? 0);
   const blocked = $derived(!!plan?.blocked);
-  // Referrers (.m3u playlists) the job will rewrite before deleting (#295).
+  // Referrers (.m3u playlists, gamelist.xml) the job rewrites before deleting
+  // (#295, #386).
   const hasReferrerChanges = $derived(
     items.some((item) => (item.referrer_changes?.length ?? 0) > 0),
   );
@@ -67,6 +68,12 @@
   function shortName(p) {
     return p?.split(/[/\\]/).pop() ?? p ?? '';
   }
+
+  // "gamelist.xml, 3 entries" (#386): how many entries one file's change moves.
+  function entryCount(change) {
+    const n = change?.entries ?? change?.edits?.length ?? 0;
+    return n === 1 ? '1 entry' : `${n} entries`;
+  }
 </script>
 
 <BaseModal {open} onClose={() => onResolve(false)} title="Confirm delete-on-verify" size="md">
@@ -86,8 +93,8 @@
     </p>
     {#if hasReferrerChanges}
       <p class="dp-note">
-        Playlists that name a source are pointed at the output first. If one
-        can't be updated, that source is kept.
+        Playlists and gamelists that name a source are pointed at the output
+        first. If one can't be updated, that source is kept.
       </p>
     {/if}
 
@@ -150,7 +157,9 @@
           {/if}
           {#each item.referrer_changes ?? [] as change (change.target)}
             <div class="dp-referrer" title={change.target}>
-              <span class="dp-referrer-file">updates {shortName(change.target)}:</span>
+              <span class="dp-referrer-file">
+                updates {shortName(change.target)}, {entryCount(change)}:
+              </span>
               {#each change.edits ?? [] as edit, i (i)}
                 <span class="dp-edit">{edit.old} → {edit.new}</span>
               {/each}
