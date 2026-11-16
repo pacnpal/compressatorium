@@ -86,7 +86,7 @@ from services.z3ds_compress import (
     Z3DS_DECOMPRESS_EXTENSIONS,
     z3ds_compress_service,
 )
-from services.verification_store import verification_store
+from services.verification_store import record_check, verification_store
 from sse_starlette.sse import EventSourceResponse
 from utils.path_utils import is_within_configured_volumes, match_extension
 
@@ -1559,7 +1559,10 @@ def _verify_timed_out(bound: int) -> dict:
     ``{"valid", "message"}`` the sync route returns, which the SSE paths widen
     with ``"type": "error"`` exactly as a tool's own terminal event carries it.
     """
-    return {"valid": False, "message": f"Verification timed out after {bound}s"}
+    return {
+        "valid": False, "timed_out": True,
+        "message": f"Verification timed out after {bound}s",
+    }
 
 
 def _sse_from_verify_stream(
@@ -1617,8 +1620,12 @@ def _sse_from_verify_stream(
                     },
                 )
             except Exception as exc:
+                # The stream itself failed: no verdict on the file (`error`).
                 await _offer_verify_update(
-                    queue, {"type": "error", "valid": False, "message": str(exc)},
+                    queue, {
+                        "type": "error", "valid": False, "message": str(exc),
+                        "error": str(exc),
+                    },
                 )
             finally:
                 done.set()
@@ -1660,11 +1667,13 @@ def _sse_from_verify_stream(
                 if update.get("type") == "progress":
                     yield {"event": "verify_progress", "data": json.dumps(update)}
                 elif update.get("type") == "complete":
-                    if update.get("valid"):
-                        await verification_store.refresh_check(path)
+                    await record_check(verification_store, path, update)
                     yield {"event": "verify_complete", "data": json.dumps(update)}
                     break
                 elif update.get("type") == "error":
+                    # A tool's own error event can be a verdict (a corrupt
+                    # file); a timeout or a failed stream says it is none.
+                    await record_check(verification_store, path, update)
                     yield {"event": "verify_error", "data": json.dumps(update)}
                     break
         finally:
@@ -1744,7 +1753,9 @@ def _sse_batch_from_verify_stream(
                 # Use the streaming verify to get progress updates
                 queue: asyncio.Queue = asyncio.Queue(maxsize=_VERIFY_QUEUE_LIMIT)
                 done = asyncio.Event()
-                final_result = {"valid": False, "message": "Unknown error"}
+                final_result = {
+                    "valid": False, "message": "Unknown error", "error": "Unknown error",
+                }
 
                 bound = await tool.verify_timeout(path)
 
@@ -1790,6 +1801,7 @@ def _sse_batch_from_verify_stream(
                             "type": "error",
                             "valid": False,
                             "message": str(exc),
+                            "error": str(exc),  # the stream failed: no verdict
                         }
                         await _offer_verify_update(queue, final_result)
                     finally:
@@ -1856,8 +1868,7 @@ def _sse_batch_from_verify_stream(
                         lane["token"].release()
                         lane["token"] = None
 
-                if final_result.get("valid"):
-                    await verification_store.refresh_check(path)
+                if await record_check(verification_store, path, final_result):
                     verified_count += 1
                     status = "verified"
                 elif final_result.get("uncheckable"):
@@ -1968,8 +1979,9 @@ def register_verify_routes(router_: APIRouter, tool: ToolPlugin) -> tuple:
             result = await asyncio.wait_for(
                 cfg.service().verify(path), timeout=bound or None,
             )
-            if result.get("valid"):
-                await verification_store.refresh_check(path)
+            # A pass refreshes the record, a real verdict that it is bad marks
+            # it failed, no verdict leaves it (#351).
+            await record_check(verification_store, path, result)
             return result
         except asyncio.TimeoutError:
             # A verdict-shaped answer, not a 500: the file is not known bad, the

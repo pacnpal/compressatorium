@@ -4265,6 +4265,18 @@ The preparation:
   delete re-runs the container check only: the Round-trip cannot compare
   against a part-deleted Source. The stat filter runs once more right before
   the unlinks.
+- **A re-check that finds an output bad records it** (#351). Every re-check
+  records its result by one rule (`verification_store.check_verdict` /
+  `record_check`): a pass refreshes the record (`refresh_check`), a real
+  verdict that the file is bad marks it failed (`mark_failed`, the call a
+  check Rule makes), and no verdict (`error`, `cancelled`, `abandoned`,
+  `inconclusive`, `timed_out`, `uncheckable`) leaves the record as it was. The
+  CLI's `verify`, the verify routes (the single check, its event stream and
+  the batch, whose own timeouts and failed streams say `timed_out` or
+  `error`), and `JobManager._container_check` (a job's check and every
+  retried delete's re-check) all apply it, so no badge, `/api/verified`
+  lookup or delete warning keeps showing a once-checked output as checked
+  after a re-check found it bad.
 - Then `_delete_source_set` runs, as for the job. A Referrer or path check
   that keeps the Source, or a removal the filesystem refuses part way, is
   `kept`: try again.

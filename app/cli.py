@@ -1243,6 +1243,7 @@ async def _check_held(
     """The check and its record, run while ``_verify_one`` holds the file.
     ``read`` is the file checked; ``path`` the one recorded."""
     from services.subprocess_runner import collect_abandonment, stops_verify_batch
+    from services.verification_store import record_check
 
     read = read or path
     bound = await tool.verify_timeout(read)
@@ -1259,29 +1260,23 @@ async def _check_held(
             result = {"error": f"Verification could not run: {exc}"}
     if stops_verify_batch(result, abandoned):
         line["_stop"] = True
-    if result.get("valid"):
+    # The shared rule every re-check records by (#351): a pass refreshes the
+    # record; a real verdict that it is bad marks it failed (a stored pass
+    # would be a false badge, and `--since` would skip it next time; marked,
+    # not cleared, so the next check still goes to the tool that made it); no
+    # verdict leaves what was stored.
+    verdict = await record_check(verification_store, path, result)
+    if verdict:
         line["status"], line["reason"] = "intact", result.get("message")
-        await verification_store.refresh_check(path)
-        return line
-    if result.get("uncheckable"):
+    elif result.get("uncheckable"):
         # The tool won't check it here (an archive safety rule refused it):
-        # not a failure, and what was stored stays.
+        # not a failure.
         line["status"], line["reason"] = "skipped", result.get("message")
-        return line
-    line["status"] = "failed"
-    no_verdict = ("cancelled", "abandoned", "inconclusive")
-    if "error" in result or any(result.get(flag) for flag in no_verdict):
-        # No verdict: a timeout or stall, a file that could not be read, a tool
-        # that would not run, a check cut short.
-        # The file is not known bad, so what was stored stays.
+    else:
+        # Failed, or no verdict (a timeout or stall, a file that could not be
+        # read, a tool that would not run, a check cut short).
+        line["status"] = "failed"
         line["reason"] = result.get("error") or result.get("message")
-        return line
-    line["reason"] = result.get("message")
-    # A real verdict: it is not Intact any more. A stored pass would be a false
-    # badge, and `--since` would skip it next time. Marked failed, not cleared:
-    # the record keeps what made the file, so the next check still goes to
-    # that tool (a repaired PS3 ISO back to makeps3iso).
-    await verification_store.mark_failed(path)
     return line
 
 

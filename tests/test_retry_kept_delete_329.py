@@ -183,6 +183,99 @@ def test_a_re_verify_that_times_out_is_a_counted_attempt(
     assert pending["attempts"] == 1
 
 
+def _checked_outputs(output) -> tuple[list[str], list[str]]:
+    """Whether ``/api/verified`` and ``/api/verified/lookup`` list *output*
+    as checked: the paths each answer names."""
+    from routes import info as info_routes
+
+    async def ask():
+        listed = await info_routes.list_verified()
+        looked_up = await info_routes.lookup_verified(
+            info_routes.VerifiedLookup(paths=[str(output)]),
+        )
+        return listed["verified"], looked_up["verified"]
+
+    return asyncio.run(ask())
+
+
+def test_a_re_verify_that_finds_the_output_bad_records_it(
+    env, dolphin, capsys, kept, monkeypatch,
+):
+    """#351: the retry re-checks an output corrupted in place and finds it
+    bad. The Source is kept, and the failure is recorded where every badge,
+    lookup and delete warning reads it (``mark_failed``, as a check Rule
+    records one): the output is no longer listed as checked."""
+    output = kept["output"]
+    assert _checked_outputs(output) == ([str(output)], [str(output)])
+    before = output.stat()
+    with open(output, "r+b") as handle:
+        handle.write(b"X" * before.st_size)
+    os.utime(output, ns=(before.st_atime_ns, before.st_mtime_ns))
+    _content_checking_verify(monkeypatch)
+
+    code, lines, _err = _cli(capsys, "run-rules", "--json")
+
+    assert code == 0, lines
+    assert kept["iso"].exists()
+    assert _checked_outputs(output) == ([], [])
+
+
+def test_a_re_verify_that_times_out_leaves_the_record_as_it_was(
+    env, dolphin, capsys, kept, monkeypatch,
+):
+    """No verdict is not a bad result: the output stays listed as checked."""
+    tool = registry.for_mode("dolphin_rvz")
+
+    async def short(path, *, cancel_event=None):
+        return 0.2
+
+    monkeypatch.setattr(tool, "verify_timeout", short)
+    _content_checking_verify(monkeypatch, stall=5)
+
+    code, lines, _err = _cli(capsys, "run-rules", "--json")
+
+    assert code == 0, lines
+    assert kept["iso"].exists()
+    output = str(kept["output"])
+    assert _checked_outputs(kept["output"]) == ([output], [output])
+
+
+def test_a_manual_verify_that_finds_the_output_bad_records_it(
+    env, dolphin, capsys, kept, monkeypatch,
+):
+    """#351, the same rule for every re-check: the verify route's bad verdict
+    marks the output failed, as the CLI and a check Rule do."""
+    from routes import info as info_routes
+
+    output = kept["output"]
+    dolphin["valid"] = False
+
+    result = asyncio.run(info_routes.verify_dolphin(path=str(output)))
+
+    assert result["valid"] is False
+    assert _checked_outputs(output) == ([], [])
+
+
+def test_a_manual_verify_that_times_out_leaves_the_record_as_it_was(
+    env, dolphin, capsys, kept, monkeypatch,
+):
+    from routes import info as info_routes
+
+    tool = registry.get("dolphin")
+
+    async def short(path, *, cancel_event=None):
+        return 0.2
+
+    monkeypatch.setattr(tool, "verify_timeout", short)
+    _content_checking_verify(monkeypatch, stall=5)
+    output = str(kept["output"])
+
+    result = asyncio.run(info_routes.verify_dolphin(path=output))
+
+    assert result.get("timed_out") is True
+    assert _checked_outputs(kept["output"]) == ([output], [output])
+
+
 def test_a_round_trip_rule_runs_the_round_trip_again(env, dolphin, capsys, monkeypatch):
     """A Rule whose check is the Round-trip has it re-run on the retry, by the
     same function the job uses."""

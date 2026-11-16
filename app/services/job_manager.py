@@ -55,7 +55,7 @@ from services.subprocess_runner import (
     start_detached,
 )
 from services.tools import ModeKind, registry
-from services.verification_store import verification_store
+from services.verification_store import check_verdict, verification_store
 from utils.delete_plan import build_delete_plan, build_delete_snapshot
 from utils.path_utils import (
     is_safe_directory_tree,
@@ -4045,7 +4045,10 @@ class JobManager:
         retried delete before it removes anything (#329, codex 4580346573).
         Raises :class:`VerifyUnanswered` when nothing was judged (the bound
         ran out, the storage stopped answering), ``ConversionCancelled`` on a
-        Cancel, and ``RuntimeError`` when the output fails its check.
+        Cancel, and ``RuntimeError`` when the output fails its check, after
+        recording that failure in the verification store (``mark_failed``,
+        #351), so a later re-check that finds a once-checked output bad no
+        longer leaves it shown as checked.
         *verifying_id* is the job reported as verifying (not stalled) meanwhile.
         """
         verify_path = await self._verify_target_bounded(
@@ -4085,6 +4088,14 @@ class JobManager:
                 f"Verification could not be stopped: {verify_result.get('message')}"
             )
         if not verify_result.get("valid"):
+            # A real verdict that the output is bad is recorded the way every
+            # re-check records one (`mark_failed`, `check_verdict`), so no
+            # badge, `/api/verified` lookup or delete warning keeps presenting
+            # it as checked, for every caller of this check (#351). No verdict
+            # (a timeout, a Cancel, an abandoned or uncheckable verify) records
+            # nothing.
+            if check_verdict(verify_result) is False:
+                await verification_store.mark_failed(output_path)
             raise RuntimeError(f"Verification failed: {verify_result.get('message')}")
         return verify_path
 

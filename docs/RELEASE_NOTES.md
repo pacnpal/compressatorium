@@ -4,6 +4,13 @@
 
 ### Fixed
 
+- **An output found bad on a re-check stops showing as checked** (#351). When
+  a later check finds an output bad (the retried delete of a Source kept for
+  a reader, or Verify in the file browser), the output now loses its Intact or
+  Round-tripped badge, `/api/verified` stops listing it, and the delete
+  confirmation warns again, as after a failed check Rule. The Source is still
+  kept. A check that times out or can't run leaves the badge as it was.
+
 - **eXoDOS repack: leftovers and repeat lookups** (#331).
   - A repack killed hard (SIGKILL, power loss) no longer leaves its hidden
     `.partial-*.tmp` file behind for good. It is removed at the next start,
