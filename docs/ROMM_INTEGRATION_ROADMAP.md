@@ -562,7 +562,7 @@ Saves, states, notes, collections and play history stay attached.
 
 | # | Item | Needs | Size |
 | --- | --- | --- | --- |
-| 3.0 | **Spike** against a live RomM 5.4: does a `hashes` scan by `roms_ids` refresh size and hashes after an out-of-band swap? Which formats does sigil read the same title id from, before and after conversion? | test RomM | S |
+| 3.0 | **Spike** against a live RomM 5.4: does a `hashes` scan by `roms_ids` refresh size and hashes after an out-of-band swap? Which formats does sigil read the same title id from, before and after conversion? **Done 2026-11-16 (#382), see the findings below.** | test RomM | S |
 | 3.1 | In-place swap for single-file ROMs under delete-after-verify, with the persisted per-step recovery (P1-1) | 3.0, 1.1, `roms.write`, `tasks.run` | L |
 | 3.2 | Detect title-id reassociation and skip the swap and the re-pin where RomM already keeps the id (P1-1) | 3.0, 0.2 | S |
 | 3.3 | Ghost-record cleanup (opt-in) for setups where 3.1 can't run (H-2) | `roms.write` | M |
@@ -573,6 +573,117 @@ with its saves and collections, and a crash at any step resumes or surfaces
 the ROM for manual recovery. *Risk:* this is the only phase that changes
 RomM's own record. It ships behind an opt-in until it has run unattended for a
 release, the same caution 4.5.0's beta applied to delete-after-verify.
+
+#### 3.0 spike findings (2026-11-16, RomM 5.4.1)
+
+**Verdict: go.** The swap keeps the ROM id and every piece of user data, for
+every format tried. It needs three changes to the plan in #381 (staging,
+the order of the Source delete, and checking the name RomM actually wrote),
+listed under "What changes for #390 to #393".
+
+**Setup.** `rommapp/romm:5.4.1` (digest `sha256:8677fb7b…`) and `mariadb:11.8`
+from RomM's own compose example, on a scratch library, with no metadata
+provider keys and Hasheous off. Title-id extraction (sigil) was on, as it is
+by default (heartbeat `FILESYSTEM.TITLE_ID_EXTRACTION_ENABLED: true`). The
+Images are small real-format PS2, PSP and GameCube ISOs built the way the
+smoke harness builds them, each with its own serial, converted by the app's
+own CLI (`compressatorium:smoke-latest`, image `sha256:c17a3893…`; a re-run on
+a fresh build of `latest`, `sha256:bd2666a2…`, gave the same results). Each ROM
+under test had a save, a state, a note, two collection entries (one the
+Favourites collection), user props and a play session before anything was
+done to it. The script and how to re-run it are in
+`scripts/spike/romm_swap/` (README there). Every request and response, and
+the database rows before and after each step, are written to its evidence
+folder.
+
+**What running without provider keys limits.** "Same title" here means the
+same ROM id and the same sigil title id, which is what RomM's own
+reassociation keys on. Provider matches weren't exercised: name-based ones
+(IGDB, Moby) don't depend on the file format, and hash-based ones (Hasheous,
+RetroAchievements, ScreenScraper by hash) can't match a converted container
+anyway. One code-read caveat: a `hashes` scan that runs Hasheous or RA lookups
+clears a previous hash match when the new hashes don't match
+(`handler/scan_handler.py`), so the swap's rescan should pass `apis: []`.
+
+**The swap that worked**, for `Swap PS2` → CHD, `Swap GC` → RVZ and
+`Swap PSP` → CSO, with a token holding only `roms.read roms.write tasks.run`:
+
+1. Convert, verify, and stage the output at
+   `<platform folder>/.compressatorium-stage/Game.chd`.
+2. `PUT /api/roms/{id}`, multipart, one field: `fs_name=Game.chd` → 200,
+   response `fs_name: "Game.chd"`. RomM renames the file on disk itself:
+   afterwards `Game.iso` is gone and `Game.chd` holds the ISO's bytes (SHA-1
+   checked). The row keeps its size and hashes, and its `rom_files` row keeps
+   its id, with the file name rewritten.
+3. Move the staged output over `Game.chd` (`os.replace`, same filesystem).
+4. `POST /api/tasks/scan` `{"type": "hashes", "roms_ids": [id], "apis": []}`
+   → 202 with a `task_id`; poll `GET /api/tasks/{task_id}` until `finished`
+   (about a second here).
+5. Read back `GET /api/roms/{id}`: same id, `fs_size_bytes` and `sha1_hash`
+   equal to the new file, the `rom_files` row (same id) carries the new size,
+   mtime and hashes, `chd_sha1_hash` filled for a CHD, and `title_id`
+   unchanged. Saves, states, notes, collection and Favourites entries, user
+   props and play sessions are identical row for row (asset paths are keyed
+   on the ROM id, not the file name). A library quick scan afterwards found
+   one row per game and no ghosts.
+
+The scan's own `scan_stats` reported `updated_roms: 0` even though it
+rehashed, so the swap must check the result by reading the ROM back, not
+from the task.
+
+**Answers to the questions in #381.**
+
+| Question | Answer, with the evidence |
+| --- | --- |
+| Does a `hashes` scan by `roms_ids` pick up an out-of-band swap? | **Yes.** Size, CRC/MD5/SHA-1, the file row and the CHD SHA-1 all refreshed for CHD, RVZ and CSO (step 5 above). It also caught a "stealth" swap (same name, same size, same mtime, other bytes) that a quick scan missed. |
+| Does a quick scan skip a swapped file whose size and mtime changed? | **No.** `QuickSwap PS2` renamed and replaced, then a library quick scan: size and SHA-1 updated, same id, user data kept. A quick scan only keeps stored hashes when size **and** mtime are both unchanged (the stealth case: SHA-1 stayed stale, though the title id was re-read). A conversion always changes the size, so a quick scan is a usable fallback, but it walks the whole library. |
+| Does `PUT /api/roms/{id}` with a new `fs_name` rename the record and keep its user data? | **Yes**, and it moves the file on disk too (above). It refuses with **409** `Can't rename: Game.chd already exists` when a file already has the new name (row and Source untouched); returns **500** `Failed to rename ROM {id} on disk` when the record's file is gone (row untouched); a PUT to the name it already has is a **200** no-op; and a name with a path in it is **silently sanitized** (`../escape.iso` → 200, `fs_name: "escape.iso"`, still in the platform folder). |
+| Which output formats does RomM re-identify to the same title on its own? | When the app converts with `--delete-source` and RomM then runs a library scan, RomM moves the missing ROM onto the new file by title id, keeping the id and all user data, for **PS2 CHD, PSP CHD, PSP CSO and GameCube RVZ**. It does **not** for PS2 CSO, PS2 ZSO, PSP ZSO, GameCube WIA or GCZ: sigil reads no title id from them, so RomM adds a new ROM and leaves the old one missing with the user data on it. The control (a plain rename, same bytes) reassociated by hash. Conditions, all observed: the Source must be gone before RomM first sees the output (in the race run a scan between the write and the delete made a second ROM, and the old one stayed a ghost after the delete); the title id must be unique among the platform's missing ROMs (in an earlier run the GameCube fixtures shared the 4-byte game code RomM uses as the title id, and none of them reassociated); title-id extraction must be on; and it happens only in a library scan, not a scan by `roms_ids`. |
+| Where is RomM's converter config? | On/off: `GET /api/heartbeat` → `CONVERTO.ENABLED` (no auth). It is `false` unless the container has `ROM_CONVERTO_ENABLED=true` and the `rom-converto` binary probes fine (5.4.1 ships it at `/usr/bin/rom-converto`). Per-platform targets: `GET /api/config` → `CONVERTO.platform_formats`, e.g. `{"ngc": "rvz", "ps2": "chd"}`, plus `CONVERTO.download_conversion_enabled` (convert-on-download) and `CONVERTO_LIBRARY_TARGETS` (what each platform may target); no auth. Targets are written with `PUT /api/config/converto_settings` (`platforms.write`) into `config.yml` under `converto:`. The library converter is the manual task `convert_library`: `GET /api/tasks` (`tasks.run`) lists it with `enabled` and `manual_run` following the env switch and an empty `cron_string`, so it runs only when someone starts it. From the code (not run here): it converts identified ROMs only, renames the record itself the way the swap does, and with an empty `platform_formats` it has nothing to do. |
+| Which token permissions does each call need? | `PUT /api/roms/{id}`: `roms.write`. `POST /api/tasks/scan`, `GET /api/tasks/{id}` and `GET /api/tasks/status`: `tasks.run`. `GET /api/roms/{id}` (read-back): `roms.read`. `GET /api/heartbeat` and `GET /api/config`: none. Each call the spike probed was 403 with a token missing exactly that scope and worked with it (the task poll was probed through `GET /api/tasks/status`, which takes the same scope). `roms.write` and `tasks.run` come only with the admin role or a permission group that grants ROM write and task write: a default non-admin user asking for them got 403 `Requested scopes exceed your permissions: roms.write, tasks.run`. No endpoint reports a token's own scopes, but two harmless calls do: `PUT /api/roms/2147483647` answers 404 with `roms.write` and 403 without it, and `GET /api/tasks/status` answers 200 with `tasks.run` and 403 without it. |
+
+**Staging.** A RomM 5.4.1 scan indexes dot-prefixed **files**: a
+`.Probe PS2.chd.stage` beside the Source became a ROM row, which turned into a
+missing ghost once the file moved. Dot-prefixed **folders** are skipped (a
+hard-coded rule for multi-file folders), and so are default-excluded
+extensions such as `.tmp`, but those come from `config.yml` and a user can
+change them. The hidden folder is the safe choice; staging a sibling file under
+the final name is impossible anyway, since the rename then fails with 409.
+
+**What changes for #390 to #393.**
+
+- **#390 (switch and permission check).** The needed scopes are `roms.write`
+  and `tasks.run`, plus `roms.read` for the read-back. Check them with the two
+  probe calls above, since nothing returns a token's scopes. The help text
+  should say the token has to come from an admin (or a group with ROM write
+  and task write).
+- **#391 (the swap).** Stage in `<platform folder>/.compressatorium-stage/`,
+  not a sibling name. The Source is no longer deleted "as today": once the
+  PUT succeeds, RomM has already moved the Source's bytes to the final name, and
+  moving the output over them destroys them. To keep the Source until RomM
+  confirms, move the renamed file into the stage folder first, move the output
+  into place, rescan, read back, and only then delete the parked Source. The
+  rescan is `hashes` by `roms_ids` with `apis: []`, and success means the
+  read-back size and SHA-1 equal the output's, not the task stats. Treat a 200
+  whose `fs_name` differs from the name sent (sanitized) as a refusal and PUT
+  the old name back. A 409 is the "RomM refused the rename" case.
+- **#392 (recovery).** Every step can be retried safely: a PUT to the current
+  name is a no-op, a PUT back to the old name should undo the rename (the same
+  code path as the forward rename; not run in the spike), and a rescan can be
+  repeated. A crash after the
+  PUT and before the move leaves RomM pointing at the final name holding the
+  Source's bytes, with the verified output still staged, so finishing is a move
+  and a rescan. A swap whose record points at a file that is gone can't be
+  renamed (500) and should become a Finding.
+- **#393 (skip where RomM re-identifies).** The list for RomM 5.4.1 is PS2
+  CHD, PSP CHD, PSP CSO and GameCube RVZ, and only while heartbeat reports
+  `TITLE_ID_EXTRACTION_ENABLED: true`. It holds only if RomM never sees the
+  output before the Source is gone, so the output has to be staged in the
+  hidden folder and moved in after the delete. Even then the id is kept only
+  at RomM's next library scan, and only when the title id is unique among the
+  platform's missing ROMs. Since the swap worked for every format, it may be
+  simpler to keep the swap for all single-file formats when it's on and use
+  this list only to skip the re-pin when the swap is off.
 
 ### Phase 4 — Select by RomM's knowledge, and coexist with its converter
 
