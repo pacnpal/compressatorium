@@ -742,11 +742,11 @@ class _Swap:
                 if not self.ended:
                     await self._end("refused" if refusal else "rolled_back", reason)
             return None
-        except asyncio.CancelledError:
-            raise
         except Exception as undo_exc:
             # Fail closed: the row stays on the step reached, a parked Source
-            # stays parked, and the output is held back, for the next run.
+            # stays parked, and the output is held back, for the next run. A
+            # cancel (not an Exception) propagates to the caller, which
+            # leaves the row itself.
             left = f"undoing it failed ({undo_exc}), so it is {LEFT}"
             logger.exception(
                 "romm_swap: swap %s of ROM %s: %s; %s", self.row, self.plan.rom_id, reason, left,
