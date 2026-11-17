@@ -172,7 +172,7 @@ def apply_bps(source: bytes, patch: bytes) -> bytes:
                     raise PatchError("The BPS patch copies from outside its target")
                 # An overlapping copy repeats the `out - target_rel` bytes before
                 # the cursor, so build the run in one go rather than a byte loop.
-                run = target[target_rel:out]
+                run = target[target_rel:target_rel + min(length, out - target_rel)]
                 if len(run) < length:
                     run = run * -(-length // len(run))
                 target[out:out + length] = run[:length]
