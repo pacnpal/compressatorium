@@ -1075,6 +1075,9 @@ class _Outcome(str, Enum):
     WAITING = "waiting"          # output not there yet, or still being written
     ABANDONED = "abandoned"      # aged out; the output never appeared
     REPINNED = "repinned"        # metadata re-applied
+    # RomM had moved the source ROM onto the output itself, ids intact: closed
+    # with no write (#393).
+    REIDENTIFIED = "reidentified"
     FAILED = "failed"            # local failure; skip this row, keep going
     UPSTREAM_ERROR = "upstream"  # RomM is unwell; stop the whole pass
 
@@ -1147,7 +1150,10 @@ async def _settle_one_repin(
     ten Switch rows cost one catalog read, not ten.
     """
     (output_path, sha1, rom_id, ids, created_at, row_id, pre_fingerprint,
-     mode, platform_id, platform_slug) = row
+     mode, platform_id, platform_slug, expected) = row
+    # A row expected to self-identify (#393) is checked against the source ROM
+    # before anything is written.
+    kept_by = rom_id if expected else None
 
     try:
         exists = await bounded_path_check(os.path.isfile, output_path)
@@ -1223,7 +1229,7 @@ async def _settle_one_repin(
             )
             return _Outcome.ABANDONED
         return await _match_and_settle(
-            row_id, _by_sha1(sha1), ids, output_path, created_at,
+            row_id, _by_sha1(sha1), ids, output_path, created_at, kept_by=kept_by,
         )
 
     # Never hash a file a converter is still writing. An output becomes a
@@ -1261,7 +1267,7 @@ async def _settle_one_repin(
         # exactly where the conversion wrote it, so join on that.
         return await _match_and_settle(
             row_id, _by_path(output_path, platform_id, catalogs, deadline), ids,
-            output_path, created_at,
+            output_path, created_at, kept_by=kept_by,
         )
 
     try:
@@ -1278,7 +1284,7 @@ async def _settle_one_repin(
         return _Outcome.FAILED
 
     return await _match_and_settle(
-        row_id, _by_sha1(sha1), ids, output_path, created_at,
+        row_id, _by_sha1(sha1), ids, output_path, created_at, kept_by=kept_by,
     )
 
 
@@ -1397,11 +1403,17 @@ async def _hash_output(output_path: str, deadline: float | None = None) -> str |
 
 async def _match_and_settle(
     row_id: int, find, ids: dict, output_path: str, created_at: str,
+    *, kept_by: int | None = None,
 ) -> _Outcome:
     """Ask RomM which ROM the output is, and stamp the ids onto it.
 
     *find* is the join -- :func:`_by_sha1` or :func:`_by_path` -- so both
     share one claim/update/settle sequence rather than two copies of it.
+
+    *kept_by* is the source ROM's id when the row is expected to
+    self-identify (#393). If the output's ROM is that ROM with every captured
+    id still on it, RomM moved it by itself: the row closes with no write.
+    Anything else (a new ROM beside a ghost, another match) is re-pinned.
     """
     try:
         try:
@@ -1427,6 +1439,13 @@ async def _match_and_settle(
                 )
                 return _Outcome.ABANDONED
             return _Outcome.WAITING
+
+        if kept_by is not None and romm_repin.self_identified(match, kept_by, ids):
+            if await run_in_threadpool(
+                romm_repin.settle, row_id, "done", romm_repin.SELF_IDENTIFIED,
+            ):
+                return _Outcome.REIDENTIFIED
+            return _Outcome.FAILED
 
         # Claim the row before the outbound write, in one conditional update.
         # Hashing the output above can take minutes, and a conversion
@@ -1486,7 +1505,7 @@ async def settle_romm_repins() -> dict:
     # whole walk again for rows the first pass had already settled.
     if _settle_lock.locked():
         return {
-            "repinned": 0, "waiting": 0, "abandoned": 0, "failed": 0,
+            "repinned": 0, "reidentified": 0, "waiting": 0, "abandoned": 0, "failed": 0,
             "busy": True,
             "pending": await run_in_threadpool(romm_repin.count_pending),
         }
@@ -1548,7 +1567,9 @@ async def _settle_pass(*, bounded: bool = True) -> dict:
             break
         # `settled` counts only work that actually finished, so a page full of
         # waiters still advances to the next page.
-        if outcome in (_Outcome.ABANDONED, _Outcome.REPINNED, _Outcome.FAILED):
+        if outcome in (
+            _Outcome.ABANDONED, _Outcome.REPINNED, _Outcome.REIDENTIFIED, _Outcome.FAILED,
+        ):
             settled += 1
 
     # `rows` empty means the pass reached the tail, so the next call starts over
@@ -1557,6 +1578,7 @@ async def _settle_pass(*, bounded: bool = True) -> dict:
 
     return {
         "repinned": counts[_Outcome.REPINNED],
+        "reidentified": counts[_Outcome.REIDENTIFIED],
         "waiting": counts[_Outcome.WAITING],
         "abandoned": counts[_Outcome.ABANDONED],
         "failed": counts[_Outcome.FAILED] + counts[_Outcome.UPSTREAM_ERROR],

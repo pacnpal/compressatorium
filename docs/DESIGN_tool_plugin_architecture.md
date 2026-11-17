@@ -4466,6 +4466,60 @@ rename, the scan, the task and the read-back the way RomM 5.4.1 does, with
 knobs for a refusal, a sanitized name, a scan that doesn't rehash and a task
 that fails.
 
+**Formats RomM re-identifies by itself (#393,
+`services/romm/reidentify.py`).** Spike #382 found that RomM 5.4.1, with
+title-id extraction on, moves a missing ROM onto its converted file by title
+id at its next library scan, keeping the id, for some (Platform, output
+format) pairs. `REIDENTIFIED` is that finding as data: RomM version ->
+frozenset of `(RomM Platform slug, output extension)` (5.4.1: PS2 CHD, PSP
+CHD, PSP CSO, GameCube RVZ). A RomM release that behaves differently gets
+its own key; a version with no key gets the re-pin. `reason(heartbeat,
+platform_slug, mode, output_path)` is the one decision: it answers only when
+the heartbeat's `SYSTEM.VERSION` (a leading `v` dropped) has a key,
+`FILESYSTEM.TITLE_ID_EXTRACTION_ENABLED` is `True`, and the output's
+extension is one `registry.mode_output_extensions(mode)` says the mode writes
+and is listed with the source ROM's Platform slug. Never by tool identity.
+
+An answer never skips the re-pin on its own. RomM keeps the id only when it
+never sees the output beside the Source, and the output is placed just
+before the Source is deleted: a RomM scan in that moment adds a new ROM for
+the output and leaves the old one a ghost. So the answer only marks the
+re-pin row, and the settle pass checks what RomM actually did.
+
+*The mark.* A second RomM Referrer: `id = "romm_reidentify"`, `opt_in = True`,
+`Phase.NETWORK`, registered by importing `services.romm.library`.
+`RommLibrary.referrer_enabled` turns it on while `repin_enabled` is on and
+`swap_keep_rom_id` is off, so it never runs beside the swap. The re-pin row
+is still written before the conversion (the plan route and `after_queue`
+are unchanged: the provider ids are readable only then). `plan` takes a
+`renames` of one file replaced by one file in the same folder, finds that
+conversion's pending row (`repin.pending_for(output, source)`, matched on
+the row's `source_path`), reads RomM's heartbeat, and asks `reason`. Every
+failure (no row, RomM not answering, anything raised) returns no change, so
+the row stays unmarked and re-pins as today; it never keeps a Source. The
+change has no edits; its `summary` (shown in the delete confirmation) says
+the re-pin is expected to be unnecessary and will be confirmed, and its
+`record` carries `rom_id` and the row's `repin_id`. `apply` marks the row
+(`repin.mark_expected`) and returns that line as `Applied.note`, so the job's
+message and warning and the Ledger record say it; a mark that can't be
+written returns no note. The mark is the pending row's `detail`
+(`repin.EXPECTED_SELF_IDENTIFY` and the reason), a column a pending row
+doesn't otherwise use, so no migration; `pending_rows` adds whether a row is
+marked as the tuple's last field, and any settle overwrites `detail`.
+
+*The check.* `_settle_one_repin` passes a marked row's source ROM id to
+`_match_and_settle` (`kept_by`). Once the join (by SHA-1, or by path where
+RomM doesn't hash) has found the output's ROM, `repin.self_identified(rom,
+source_rom_id, ids)` asks whether it is the source ROM itself with every
+provider id the row captured. If so, the row closes as done with
+`repin.SELF_IDENTIFIED` ("RomM re-identified it on its own") and nothing is
+written to RomM; the pass counts it under `reidentified`. Anything else (a
+new ROM beside a ghost, another match, a missing id) takes the normal claim
+and write. An unmarked row is never checked. The fake RomM serves
+`FILESYSTEM.TITLE_ID_EXTRACTION_ENABLED` (`title_id_extraction`), can fail
+its heartbeat (`heartbeat_status`), answers `GET /api/roms/by-hash`, and
+records metadata writes (`metadata_writes`).
+
 To add a Referrer: subclass `Referrer` in `services/referrers/`, give it a new
 `id`, declare `opt_in` and `phase`, and `registry.register(...)` it in
 `services/referrers/__init__.py`. A file Referrer builds on `files.py`. An opt-in one also needs the Library's

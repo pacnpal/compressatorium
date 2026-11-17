@@ -17,7 +17,22 @@
   can't be reached it tries again every 10 minutes, and the Finding stays
   until the swap is settled. Swaps now also record the RomM instance and
   the fingerprints recovery needs (database migration 0021).
-
+- **The metadata re-pin checks whether RomM found the game again by itself**
+  (#393). With **Keep the ROM id when converting** off, RomM 5.4.1
+  (title-id extraction on, its default) moves a missing game onto its
+  converted file by title id at its next library scan, keeping the ROM id and
+  everything on it, for PS2 CHD, PSP CHD, PSP CSO and GameCube RVZ. A
+  conversion to one of those whose source is deleted now says so in the job
+  and the Ledger ("... so the metadata re-pin is expected to be unnecessary;
+  the next re-pin pass will confirm it"). The re-pin stays queued: when it
+  runs and RomM's record for the output is the original ROM with all its
+  provider ids, it closes as "RomM re-identified it on its own" without
+  writing anything; otherwise (RomM saw the output before the source was gone
+  and added a new game, say) it re-pins as before. PS2 CSO and ZSO, PSP ZSO
+  and GameCube WIA and GCZ, other RomM versions, and a RomM whose heartbeat
+  can't be read re-pin as before. The list is data, kept per RomM version.
+  With the switch on, the swap keeps the id for every single-file format, as
+  before. The re-pin pass's result also counts these (`reidentified`).
 - **Converting a RomM game keeps its ROM id** (#391). With **Keep the ROM id
   when converting** on, a single-file game (an `.iso`, say) converted to one
   file beside it, with its source deleted after the check, no longer turns
