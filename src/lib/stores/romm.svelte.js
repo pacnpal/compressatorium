@@ -383,25 +383,29 @@ class RommStore extends RulesSource {
     // credential change is only ever visible here as a submitted field.
     const identityKeys = ['url', 'library_root', 'token', 'clear_token'];
     const changesIdentity = identityKeys.some((key) => key in (patch ?? {}));
-    const latest = () => this.#saveQueue.isLatest('settings', ticket);
     let saved;
     try {
       saved = await api.saveRommSettings(patch);
     } catch (error) {
-      if (!latest()) return { error, refresh: false };
+      if (!this.#isLatestSave(ticket)) return { error, refresh: false };
       await this.loadSettings();
       // An earlier connection change skipped its refresh for this save; the
       // backend already uses the new connection, so the refresh is still owed.
       return { error, refresh: this.#takeIdentityRefresh() };
     }
     if (changesIdentity) this.#identityDirty = true;
-    if (!latest()) return { error: null, refresh: false };
+    if (!this.#isLatestSave(ticket)) return { error: null, refresh: false };
     // Supersede any read still waiting on the previous connection before
     // adopting the answer: one of them landing afterwards would replace the
     // settings this save just installed with the ones it replaced.
     this.#settingsTicket += 1;
     this.settings = saved;
     return { error: null, refresh: this.#takeIdentityRefresh() };
+  }
+
+  /** True while *ticket* is still the latest settings save asked for. */
+  #isLatestSave(ticket) {
+    return this.#saveQueue.isLatest('settings', ticket);
   }
 
   #takeIdentityRefresh() {
