@@ -21,8 +21,8 @@ import platform
 import shutil
 import stat
 import struct
+import subprocess
 import sys
-import tempfile
 import urllib.parse
 
 _SPEC = importlib.util.spec_from_file_location(
@@ -201,25 +201,21 @@ class Result:
         self.stderr = stderr
 
 
-def spawn(argv, cwd, env):
+def spawn(argv, cwd, env, timeout=300):
     """Run argv in cwd with stdout and stderr captured apart. Returns a Result."""
-    with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
-        actions = [
-            (os.POSIX_SPAWN_DUP2, out.fileno(), 1),
-            (os.POSIX_SPAWN_DUP2, err.fileno(), 2),
-        ]
-        here = os.getcwd()
-        os.chdir(cwd)
-        try:
-            pid = os.posix_spawnp(argv[0], argv, env, file_actions=actions)
-        finally:
-            os.chdir(here)
-        _, status = os.waitpid(pid, 0)
-        texts = []
-        for f in (out, err):
-            f.seek(0)
-            texts.append(f.read().decode("utf-8", "replace"))
-    return Result(os.waitstatus_to_exitcode(status), texts[0], texts[1])
+    proc = subprocess.run(
+        ["/usr/bin/env", *argv],
+        cwd=cwd,
+        env=env,
+        check=False,
+        capture_output=True,
+        timeout=timeout,
+    )
+    return Result(
+        proc.returncode,
+        proc.stdout.decode("utf-8", "replace"),
+        proc.stderr.decode("utf-8", "replace"),
+    )
 
 
 def tree(root):
