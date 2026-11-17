@@ -144,6 +144,12 @@ class StagedPlacement:
     place: Callable[[], Awaitable[None]]
     is_placed: Callable[[], bool] = field(default=lambda: False, compare=False)
     held: threading.Event = field(default_factory=threading.Event, compare=False)
+    # The Sources' fingerprints from before the conversion (the delete
+    # snapshot: size, mtime_ns, inode, device, by path): what a Referrer that
+    # moves a Source checks it against before it does (Codex 4594537162).
+    source_fingerprints: Mapping[str, Mapping[str, int]] = field(
+        default_factory=dict, compare=False,
+    )
 
 
 class Phase(IntEnum):

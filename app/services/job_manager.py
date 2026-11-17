@@ -3157,6 +3157,9 @@ class JobManager:
             staged={job.output_path: write_path},
             place=lambda: self._place_staged(job, slot, write_path),
             is_placed=lambda: slot.placed,
+            source_fingerprints=dict(
+                (self._delete_plans.get(job.id) or {}).get("fingerprints") or {},
+            ),
         )
 
     async def _set_aside_output(

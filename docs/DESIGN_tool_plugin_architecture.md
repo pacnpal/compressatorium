@@ -4248,6 +4248,24 @@ locks and delete holds, the input and folder locks, the concurrency slot,
 4594326475); the slot is taken out of the job's hands before the await, so
 a set-aside the cancel cut short finishes on its worker and is never closed.
 
+*The Source the swap touches is the one converted* (Codex 4594537162). The
+job puts the Source's pre-conversion fingerprint, the delete snapshot the
+normal delete path checks (size, `mtime_ns`, inode, device, by path), in
+`StagedPlacement.source_fingerprints`. The swap compares the Source against
+it (`_is_snapshot`, the job's own rule) under the Source's hold right before
+the RomM rename, the file RomM moved before parking it, and the parked file
+right before deleting it. A swap with no fingerprint doesn't start; a
+mismatch before the rename ends the row `failed` with nothing changed, and a
+later one rolls back as any failure does. The Source is kept, with the
+reason.
+
+*After the Source is deleted the result is never lost* (Codex 4594537178).
+Recording `done` and settling the re-pin run as a task of their own
+(`_finish`), awaited shielded: a cancel landing there leaves it running
+(referenced in `_after_swaps`) and the swap still returns
+`Applied(removed=(source,))`, which the hook takes, so the job records the
+Source as deleted.
+
 Three more edges of the swap (CodeRabbit review 5931463835):
 
 - The removal of the parked Source sets `removed` on its own thread. A

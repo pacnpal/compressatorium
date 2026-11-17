@@ -451,14 +451,23 @@ def _size_and_sha1(path: str) -> tuple[int, str]:
     return os.stat(path).st_size, compute_file_sha1_sync(path).lower()
 
 
-def _same_file(now: FileIdentity | None, then: FileIdentity | None) -> bool:
-    """Whether *now* is the file *then* described, after renames: a rename on
-    one filesystem keeps the size and mtime (the path changes, and a FUSE
-    mount may not keep the inode)."""
-    return (
-        now is not None and then is not None
-        and (now.size, now.mtime_ns) == (then.size, then.mtime_ns)
-    )
+def _is_snapshot(now: FileIdentity | None, snapshot: Mapping[str, int] | None) -> bool:
+    """Whether *now* is the file the delete snapshot *snapshot* fingerprinted
+    before the conversion (Codex 4594537162), by the job's own rule
+    (``JobManager._delete_path_problem``): the same size and ``mtime_ns``,
+    and the same inode and device where both sides know them. A rename on
+    one filesystem keeps all four, so the Source RomM moved, and the one
+    parked, still match. False when either is missing."""
+    if now is None or not snapshot:
+        return False
+    if (int(snapshot.get("size", -1)), int(snapshot.get("mtime_ns", -1))) != (
+        now.size, now.mtime_ns,
+    ):
+        return False
+    inode, device = int(snapshot.get("inode", 0) or 0), int(snapshot.get("device", 0) or 0)
+    if inode and now.ino and inode != now.ino:
+        return False
+    return not (device and now.dev and device != now.dev)
 
 
 def _read_back_problem(rom: dict, plan: _Plan, size: int, sha1: str) -> str | None:
@@ -531,6 +540,10 @@ async def _fall_back(plan: _Plan, target: str) -> Applied:
 
 LEFT = "left for the next run"
 
+# Bookkeeping tasks of finished swaps still running after a cancel, kept
+# referenced until they end (the loop holds only weak references to tasks).
+_after_swaps: set[asyncio.Task] = set()
+
 
 class _Stopped(ReferrerError):
     """What the undo is given when a Cancel, a shutdown or the hook's bound
@@ -571,7 +584,12 @@ class _Swap:
         # The parked Source was removed: set on the removal's own thread,
         # so a cancel landing meanwhile still knows (CodeRabbit 4594326517).
         self.removed = False
-        self.source_identity: FileIdentity | None = None
+        # The Source as the delete snapshot fingerprinted it before the
+        # conversion: the only file this swap renames, parks or deletes.
+        fingerprints = placement.source_fingerprints
+        self.snapshot = fingerprints.get(plan.source) or fingerprints.get(
+            os.path.realpath(plan.source),
+        )
         self.binding = plan.binding or _Binding.now()
         self.client = self.binding.client()
 
@@ -610,16 +628,18 @@ class _Swap:
 
     async def _run(self) -> Applied:
         plan = self.plan
+        if not self.snapshot:
+            # Fail closed: nothing to tell the converted Source by.
+            raise ReferrerError(
+                self.target, "the Source has no fingerprint from before it was converted",
+            )
         try:
-            self.source_identity = await _probe(file_identity, plan.source)
             size, sha1 = await _read_whole(
                 _size_and_sha1, self.staged, what=f"Hashing {plan.new_name}",
             )
             await _probe(check_write, self.target)
         except (OSError, RuntimeError) as exc:
             raise ReferrerError(self.target, f"couldn't read the output ({exc})") from exc
-        if self.source_identity is None:
-            raise ReferrerError(self.target, "the Source is gone")
 
         def begin() -> None:
             self.row = swap_journal.begin(
@@ -664,6 +684,26 @@ class _Swap:
             # first: the swap is done, and is reported so.
         finally:
             await self._release_park()
+        # The Source is gone: from here on the swap's result is never lost
+        # (Codex 4594537178). The bookkeeping runs as a task of its own; a
+        # cancel landing on it leaves it running and still returns the result,
+        # which the hook takes (``_await_bounded``).
+        bookkeeping = asyncio.ensure_future(self._finish())
+        _after_swaps.add(bookkeeping)
+        bookkeeping.add_done_callback(_after_swaps.discard)
+        try:
+            await asyncio.shield(bookkeeping)
+        except asyncio.CancelledError:
+            logger.warning(
+                "romm_swap: swap %s finished; its bookkeeping goes on after a cancel", self.row,
+            )
+        return Applied(removed=(plan.source,))
+
+    async def _finish(self) -> None:
+        """Record the finished swap and settle the output's re-pin. Never
+        raises: bookkeeping after the Source is gone never makes the applied
+        swap look failed (CodeRabbit 4594326492)."""
+        plan = self.plan
         try:
             await self._end("done")
         except Exception:
@@ -672,15 +712,12 @@ class _Swap:
         try:
             await _probe(_settle_repin, plan.output, plan.rom_id)
         except Exception:
-            # Bookkeeping after the Source is gone (CodeRabbit 4594326492): a
-            # timeout here never makes the applied swap look failed.
             logger.warning(
                 "romm_swap: could not settle the re-pin of %s", plan.output, exc_info=True,
             )
         logger.info(
             "romm_swap: ROM %s kept its id: %s -> %s", plan.rom_id, plan.old_name, plan.new_name,
         )
-        return Applied(removed=(plan.source,))
 
     # ---- the journal -----------------------------------------------------
 
@@ -728,6 +765,17 @@ class _Swap:
         """Step 1 (the journal row was begun in ``renaming``)."""
         plan = self.plan
         self._require_same_instance("the rename")
+        # Under the Source's hold (the job holds it through the hook): still
+        # the file that was converted? (Codex 4594537162)
+        try:
+            source = await _probe(file_identity, plan.source)
+        except OSError as exc:
+            source, reason = None, f"the Source couldn't be read ({exc})"
+        else:
+            reason = "the Source changed since it was converted"
+        if not _is_snapshot(source, self.snapshot):
+            await self._end("failed", reason)
+            raise self._fail(reason)
         self.romm_name = None
         try:
             await _mutate(self.client.rename_rom, plan.rom_id, plan.new_name)
@@ -762,7 +810,7 @@ class _Swap:
         parking slot."""
         name = self.plan.new_name
         moved = await _probe(file_identity, os.path.join(self.folder, name))
-        if not _same_file(moved, self.source_identity):
+        if not _is_snapshot(moved, self.snapshot):
             raise self._fail(f"{name} is not the Source RomM moved there")
 
         def open_park() -> None:
@@ -830,7 +878,7 @@ class _Swap:
     async def _delete_parked(self) -> None:
         """Step 5: the read-back passed; the parked Source goes."""
         await self._step("deleting")
-        if not _same_file(await _probe(file_identity, self.parked_path), self.source_identity):
+        if not _is_snapshot(await _probe(file_identity, self.parked_path), self.snapshot):
             raise self._fail("the parked Source changed, so it was not deleted")
 
         def remove() -> None:

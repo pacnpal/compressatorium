@@ -1175,6 +1175,83 @@ async def test_a_cancel_before_the_set_aside_starts_still_keeps_the_output(
 
 
 @pytest.mark.asyncio
+async def test_a_source_changed_during_the_rom_lookup_is_never_swapped(
+    vol, romm, monkeypatch,
+):
+    """Codex 4594537162: the swap's baseline is the Source's pre-conversion
+    fingerprint (the delete snapshot), not a fresh stat. A Source replaced
+    while the ROM is looked up is not renamed, parked or deleted."""
+    from services.romm import swap_referrer
+
+    platform = _platform(vol)
+    real_lookup = swap_referrer._rom_for
+
+    def lookup_while_replaced(source):
+        replacement = platform / ".replacement"
+        replacement.write_bytes(b"another disc altogether")
+        os.replace(replacement, source)
+        return real_lookup(source)
+
+    monkeypatch.setattr(swap_referrer, "_rom_for", lookup_while_replaced)
+    job = await _convert(platform / "Game.iso")
+
+    assert romm.renames == []
+    assert job.deleted_paths == []
+    assert (platform / "Game.iso").read_bytes() == b"another disc altogether"
+    assert job.warning and job.warning.startswith("converted, source kept"), job.warning
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("during", ["settle", "done"])
+async def test_a_cancel_after_the_source_is_deleted_still_reports_it_deleted(
+    vol, romm, monkeypatch, during,
+):
+    """Codex 4594537178: once the parked Source is deleted, a Cancel during
+    the bookkeeping after it (settling the re-pin, recording ``done``) never
+    loses the swap's result: the job records the Source as deleted."""
+    from services.romm import swap_journal, swap_referrer
+
+    platform = _platform(vol)
+    job = await convert_routes.create_job(JobCreateRequest(
+        file_path=str(platform / "Game.iso"), mode=ConversionMode.CREATEDVD,
+        duplicate_action=DuplicateAction.SKIP, delete_on_verify=True,
+    ))
+    loop = asyncio.get_running_loop()
+
+    def cancel_now():
+        event = convert_routes.job_manager.get_cancel_event(job.id)
+        loop.call_soon_threadsafe(event.set)
+        time.sleep(0.3)
+
+    if during == "settle":
+        real_settle = swap_referrer._settle_repin
+
+        def cancelled_settle(output, rom_id):
+            cancel_now()
+            return real_settle(output, rom_id)
+
+        monkeypatch.setattr(swap_referrer, "_settle_repin", cancelled_settle)
+    else:
+        real_step = swap_journal.step
+
+        def cancelled_done(row_id, state, **kwargs):
+            if state == "done":
+                cancel_now()
+            return real_step(row_id, state, **kwargs)
+
+        monkeypatch.setattr(swap_journal, "step", cancelled_done)
+    await convert_routes.job_manager._process_job(job.id)
+
+    assert job.deleted_paths == [str(platform / "Game.iso")]
+    assert romm.roms[ROM_ID]["fs_name"] == "Game.chd"
+    for _ in range(40):
+        if [r["state"] for r in _journal()] == ["done"]:
+            break
+        await asyncio.sleep(0.05)
+    assert [r["state"] for r in _journal()] == ["done"]
+
+
+@pytest.mark.asyncio
 async def test_a_cancel_while_the_parked_source_is_deleted_ends_done(vol, romm, monkeypatch):
     """CodeRabbit 4594326517: the Cancel lands while the parked Source is
     removed. The removal is recorded on its own thread, so the swap ends
