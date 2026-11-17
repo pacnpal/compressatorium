@@ -13,6 +13,7 @@ import { conversion } from '$lib/stores/conversion.svelte.js';
 import { ui } from '$lib/stores/ui.svelte.js';
 import { registry } from '$lib/tools/registry.js';
 import { RulesSource } from '$lib/rules/rulesSource.svelte.js';
+import { LatestSaveQueue } from '$lib/stores/latestSaveQueue.js';
 
 /** Weekday labels for the schedule editor; index === Date.getDay() - 1 (Mon=0). */
 export const DAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -93,6 +94,13 @@ class RommStore extends RulesSource {
   // one that can be superseded mid-flight by `cancelPlatformLoad`.
   #statusTicket = 0;
   #settingsTicket = 0;
+  // Settings saves run one at a time in click order and only the latest
+  // answer is adopted (#408), as for a folder Library's settings.
+  #saveQueue = new LatestSaveQueue();
+  #pendingSaves = 0;
+  // A save that changed the connection may have been superseded before it
+  // could re-derive the status and platforms; the latest save does it for it.
+  #identityDirty = false;
   platformsError = $state(null);
   selectedPlatformId = $state(null);
 
@@ -330,45 +338,69 @@ class RommStore extends RulesSource {
     return this.settings;
   }
 
-  async saveSettings(patch) {
+  /**
+   * Save RomM's settings. Saves are queued and sent one at a time, in click
+   * order, so the backend applies them in that order; only the latest save's
+   * answer is adopted, so a slower, older answer never puts older settings on
+   * screen. A superseded save still reports its own error to its caller
+   * without touching the state. If the latest save fails, the settings are
+   * read back, since an earlier save may have landed without being adopted.
+   */
+  saveSettings(patch) {
+    this.#pendingSaves += 1;
     this.settingsSaving = true;
+    return this.#saveQueue
+      .schedule('settings', (ticket) => this.#saveSettingsNow(patch, ticket))
+      .finally(() => {
+        this.#pendingSaves -= 1;
+        if (this.#pendingSaves === 0) this.settingsSaving = false;
+      });
+  }
+
+  async #saveSettingsNow(patch, ticket) {
+    // Only an identity change invalidates what is on screen. Re-deriving
+    // unconditionally meant that toggling automation, or saving a metadata
+    // preference, re-listed every platform and re-entered the selected one —
+    // whose catalog load stats every ROM in it. On a large remote library
+    // that holds the Save action for the catalog scan's multi-minute bound
+    // and discards a listing that was still correct, because none of those
+    // settings changes which server or which files are being described.
+    //
+    // Keyed off what the *patch* carried rather than off a diff of the saved
+    // settings, because the token is never returned to the browser: a
+    // credential change is only ever visible here as a submitted field.
+    const identityKeys = ['url', 'library_root', 'token', 'clear_token'];
+    const changesIdentity = identityKeys.some((key) => key in (patch ?? {}));
+    let saved;
     try {
-      const saved = await api.saveRommSettings(patch);
-      // Supersede any read still waiting on the previous connection before
-      // adopting the answer: one of them landing afterwards would replace the
-      // settings this save just installed with the ones it replaced.
-      this.#settingsTicket += 1;
-      this.settings = saved;
-      // Only an identity change invalidates what is on screen. Re-deriving
-      // unconditionally meant that toggling automation, or saving a metadata
-      // preference, re-listed every platform and re-entered the selected one —
-      // whose catalog load stats every ROM in it. On a large remote library
-      // that holds the Save action for the catalog scan's multi-minute bound
-      // and discards a listing that was still correct, because none of those
-      // settings changes which server or which files are being described.
-      //
-      // Keyed off what the *patch* carried rather than off a diff of the saved
-      // settings, because the token is never returned to the browser: a
-      // credential change is only ever visible here as a submitted field.
-      const identityKeys = ['url', 'library_root', 'token', 'clear_token'];
-      if (!identityKeys.some((key) => key in (patch ?? {}))) return this.settings;
-      await this.loadStatus();
-      if (this.usable) {
-        await this.loadPlatforms({ force: true });
-      } else {
-        // Saving an unreachable URL or an unmounted library leaves nothing to
-        // browse, and the previous instance's catalog must not outlive it:
-        // returning to the Library tab would show those rows, still selected
-        // and still wired to the Convert panel, against a connection that no
-        // longer exists. Same cleanup the failed-reload path does.
-        this.platforms = [];
-        this.selectedPlatformId = null;
-        fileBrowser.exitRomm();
-      }
-      return this.settings;
-    } finally {
-      this.settingsSaving = false;
+      saved = await api.saveRommSettings(patch);
+    } catch (e) {
+      if (this.#saveQueue.isLatest('settings', ticket)) await this.loadSettings();
+      throw e;
     }
+    if (changesIdentity) this.#identityDirty = true;
+    if (!this.#saveQueue.isLatest('settings', ticket)) return this.settings;
+    // Supersede any read still waiting on the previous connection before
+    // adopting the answer: one of them landing afterwards would replace the
+    // settings this save just installed with the ones it replaced.
+    this.#settingsTicket += 1;
+    this.settings = saved;
+    if (!this.#identityDirty) return this.settings;
+    this.#identityDirty = false;
+    await this.loadStatus();
+    if (this.usable) {
+      await this.loadPlatforms({ force: true });
+    } else {
+      // Saving an unreachable URL or an unmounted library leaves nothing to
+      // browse, and the previous instance's catalog must not outlive it:
+      // returning to the Library tab would show those rows, still selected
+      // and still wired to the Convert panel, against a connection that no
+      // longer exists. Same cleanup the failed-reload path does.
+      this.platforms = [];
+      this.selectedPlatformId = null;
+      fileBrowser.exitRomm();
+    }
+    return this.settings;
   }
 
   async testConnection(patch = {}) {

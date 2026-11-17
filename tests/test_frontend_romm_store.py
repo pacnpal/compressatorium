@@ -24,6 +24,7 @@ import pytest
 _SRC = Path(__file__).resolve().parents[1] / "src"
 _ROMM_STORE_JS = _SRC / "lib" / "stores" / "romm.svelte.js"
 _RULES_SOURCE_JS = _SRC / "lib" / "rules" / "rulesSource.svelte.js"
+_SAVE_QUEUE_JS = _SRC / "lib" / "stores" / "latestSaveQueue.js"
 
 
 def _find_node() -> str | None:
@@ -46,7 +47,8 @@ def _plain_js() -> str:
     so that file goes first; it has no imports.
     """
     base = _RULES_SOURCE_JS.read_text(encoding="utf-8").replace("export class ", "class ")
-    src = base + "\n" + _ROMM_STORE_JS.read_text(encoding="utf-8")
+    queue = _SAVE_QUEUE_JS.read_text(encoding="utf-8").replace("export class ", "class ")
+    src = queue + "\n" + base + "\n" + _ROMM_STORE_JS.read_text(encoding="utf-8")
     kept = [
         line for line in src.splitlines()
         if not (line.strip().startswith("import ") and line.strip().endswith(";"))
@@ -74,7 +76,10 @@ const api = {
   getRommPlatforms: (...a) => { __reloads.push('platforms'); return __defer(...a); },
   saveRommRules: __defer,
   getRommStatus: (...a) => { __reloads.push('status'); return __defer(...a); },
-  saveRommSettings: async (patch) => ({ ...patch, saved: true }),
+  saveRommSettings: async (patch) => (
+    globalThis.__saveSettings ? globalThis.__saveSettings(patch) : { ...patch, saved: true }
+  ),
+  getRommSettings: (...a) => globalThis.__getSettings(...a),
 };
 const fileBrowser = { rommPlatformId: null, exitRomm() {}, async enterRomm(id) {
   this.rommPlatformId = id;
@@ -511,3 +516,94 @@ def test_import_saves_new_rules_through_the_rules_api_only_where_none_exists(tmp
     assert sent["7"]["enabled"] is False, sent
     # The Wii Rule the operator already had is left exactly as it was.
     assert sent["10"] == {"mode": "dolphin_wia", "enabled": True}, sent
+
+
+_SETTINGS_SAVES = """
+const sent = [];
+const answers = [];
+globalThis.__saveSettings = (patch) => new Promise((resolve, reject) => {
+  sent.push(patch);
+  answers.push({ resolve, reject });
+});
+globalThis.__getSettings = async () => ({
+  auto_convert: true, es_frontend: false, readBack: true,
+});
+const store = new RommStore();
+"""
+
+
+def test_overlapping_settings_saves_keep_the_newest_settings(tmp_path):
+    """Issue 408: the older save answering last must not win.
+
+    Two saves go out together. The second is not sent until the first has
+    answered (the backend applies them in click order), and the screen ends on
+    the second save's answer, however the answers are timed.
+    """
+    data = _run(tmp_path, _SETTINGS_SAVES + """
+const first = store.saveSettings({ auto_convert: true });
+await tick();
+const second = store.saveSettings({ es_frontend: true });
+await tick();
+const sentBeforeFirstAnswered = sent.length;
+answers[0].resolve({ auto_convert: true, es_frontend: false });
+await first;
+await tick();
+const afterFirst = JSON.stringify(store.settings);
+answers[1].resolve({ auto_convert: true, es_frontend: true });
+await second;
+process.stdout.write(JSON.stringify({
+  sentBeforeFirstAnswered, sent, afterFirst, settings: store.settings,
+  saving: store.settingsSaving,
+}));
+""")
+    assert data["sentBeforeFirstAnswered"] == 1, data
+    assert data["sent"] == [{"auto_convert": True}, {"es_frontend": True}], data
+    # The superseded first answer is not adopted while a newer save is queued.
+    assert data["afterFirst"] == "null", data
+    assert data["settings"] == {"auto_convert": True, "es_frontend": True}, data
+    assert data["saving"] is False, data
+
+
+def test_a_failing_earlier_settings_save_does_not_overwrite_a_later_success(tmp_path):
+    """The earlier save's error reaches its caller; the later save's answer stands."""
+    data = _run(tmp_path, _SETTINGS_SAVES + """
+const first = store.saveSettings({ auto_convert: true }).catch((e) => e.message);
+await tick();
+const second = store.saveSettings({ es_frontend: true });
+await tick();
+const sentBeforeFirstSettled = sent.length;
+answers[0].reject(new Error('first failed'));
+const error = await first;
+await tick();
+answers[1].resolve({ auto_convert: false, es_frontend: true });
+await second;
+process.stdout.write(JSON.stringify({
+  error, settings: store.settings, sent, sentBeforeFirstSettled,
+}));
+""")
+    assert data["sentBeforeFirstSettled"] == 1, data
+    assert data["error"] == "first failed", data
+    assert data["settings"] == {"auto_convert": False, "es_frontend": True}, data
+    assert len(data["sent"]) == 2, data
+
+
+def test_a_failed_latest_settings_save_reads_the_settings_back(tmp_path):
+    """An earlier save landed unadopted, so after the latest fails, the screen
+    shows what the server holds rather than the last answer it happened to see.
+    """
+    data = _run(tmp_path, _SETTINGS_SAVES + """
+const first = store.saveSettings({ auto_convert: true });
+await tick();
+const second = store.saveSettings({ es_frontend: true }).catch((e) => e.message);
+await tick();
+answers[0].resolve({ auto_convert: true, es_frontend: false });
+await first;
+await tick();
+answers[1].reject(new Error('second failed'));
+const error = await second;
+process.stdout.write(JSON.stringify({ error, settings: store.settings }));
+""")
+    assert data["error"] == "second failed", data
+    assert data["settings"] == {
+        "auto_convert": True, "es_frontend": False, "readBack": True,
+    }, data
