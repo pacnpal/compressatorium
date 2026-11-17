@@ -2483,6 +2483,15 @@ policy change clears them with every other badge. `startMatchJob` remembers
 each job's full path set and `hydrateFinishedJobs` (an effect in the RomM view)
 reads all of it back once the job ends, not only the rows on screen.
 
+Every read of the match cache, a lookup (`hydrate`) or a RomM listing, takes a
+place in one read order when it is requested (`_hydrateSeq`; a listing's comes
+from `beginListingRead`), and its answer writes a path only if no newer answer
+has written that path (`_claimPaths`, per path, never per map). So a full job's
+read is not lost to a page's read that answered first, a refreshed listing's
+newer hit replaces a cached miss, a listing row with no match clears a stale
+one, and an older answer never undoes a newer one. A match job's own results
+are fresh, so they take a new place in the order as they land.
+
 ### 3.3.9 Verify without delete (`ConversionJob.verify_after`)
 
 `delete_on_verify` verifies as a *precondition* for deleting the source. A

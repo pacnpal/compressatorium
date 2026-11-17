@@ -48,13 +48,13 @@ const rows = [
 ];
 
 // 1. A seed taken under the current policy fills the store.
-datMatching.seedListing(rows, datMatching.policyGeneration);
+datMatching.seedListing(rows, datMatching.beginListingRead());
 out.seeded = datMatching.matchFor('/a.iso');
 out.unseeded = datMatching.matchFor('/b.iso');
 
 // 2. A policy change (Hasheous switched on in another tab) clears the store;
 // a seed from a listing loaded before it is dropped.
-const before = datMatching.policyGeneration;
+const before = datMatching.beginListingRead();
 datMatching._generation += 1;
 datMatching.matches.clear();
 datMatching.seedListing(rows, before);
@@ -150,6 +150,42 @@ def test_a_full_job_read_is_not_lost_to_a_page_read_that_answered_first():
     result = _run(_RACE)
     assert result["off"] == {"matched": True, "game_name": "Off Page"}
     assert result["on"] == {"matched": True, "game_name": "newer"}
+
+
+_LISTING_ORDER = """
+const out = {};
+// This tab cached a miss for an off-page ROM; another client then recognized
+// it, and a refreshed listing carries the hit.
+await datMatching.hydrate(['/off.iso']);
+datMatching.matches.set('/off.iso', { matched: false });
+datMatching.seedListing(
+  [{ path: '/off.iso', dat_match: { matched: true, game_name: 'Hit' } }],
+  datMatching.beginListingRead(),
+);
+out.refreshedHit = datMatching.matchFor('/off.iso');
+
+// A newer listing with no match for a path clears the stale hit.
+datMatching.seedListing([{ path: '/off.iso', dat_match: null }], datMatching.beginListingRead());
+out.cleared = datMatching.matchFor('/off.iso');
+
+// A listing read issued before a lookup that answered first doesn't undo it.
+const older = datMatching.beginListingRead();
+await datMatching.hydrate(['/x.iso']);
+datMatching.seedListing([{ path: '/x.iso', dat_match: { matched: false } }], older);
+out.olderListing = datMatching.matchFor('/x.iso');
+console.log(JSON.stringify(out));
+"""
+
+
+def test_a_listing_orders_against_the_store_per_path_like_a_lookup():
+    """Codex on PR #442: seeding skipped any path the store already had, so a
+    refreshed listing's newer hit never landed and its null couldn't clear a
+    removed verdict. A listing read takes its place in the same per-path
+    order as a lookup: newer replaces (null clears), older doesn't."""
+    result = _run(_LISTING_ORDER)
+    assert result["refreshedHit"] == {"matched": True, "game_name": "Hit"}
+    assert result["cleared"] is None
+    assert result["olderListing"] == {"matched": True, "game_name": "/x.iso"}
 
 
 def test_the_views_read_the_store_and_not_the_listing_snapshot():

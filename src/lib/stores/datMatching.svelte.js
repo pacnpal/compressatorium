@@ -350,12 +350,7 @@ class DATMatchingStore {
       if (generation !== this._generation) return;
       // The paths this answer is still the newest for; the rest are left to
       // the newer answer that already wrote them.
-      const current = Object.create(null);
-      for (const path of paths) {
-        if (seq < (this._appliedSeqByPath[path] ?? 0)) continue;
-        this._appliedSeqByPath[path] = seq;
-        current[path] = true;
-      }
+      const current = this._claimPaths(seq, paths);
       const results = data?.results ?? {};
       // Compare-and-delete against the snapshotted value, not just the key: a
       // match job can land between the request and this response, and its
@@ -568,6 +563,7 @@ class DATMatchingStore {
     try {
       const data = await api.matchBatch(paths);
       const results = data?.results ?? {};
+      this._claimPaths(++this._hydrateSeq, Object.keys(results));
       for (const [path, result] of Object.entries(results)) {
         this.matches.set(path, result);
       }
@@ -600,6 +596,8 @@ class DATMatchingStore {
     // so a static page stayed blank until the user navigated.
     const results = response?.results;
     if (results) {
+      // Fresh answers: newer than any read still in flight for these paths.
+      this._claimPaths(++this._hydrateSeq, Object.keys(results));
       for (const [path, match] of Object.entries(results)) {
         if (match) this.matches.set(path, match);
       }
@@ -629,21 +627,50 @@ class DATMatchingStore {
   }
 
   /**
+   * The paths of *paths* an answer numbered *seq* is still the newest for,
+   * which it now owns (a set as a plain object). The one ordering rule every
+   * read of the match cache shares, lookups and RomM listings alike: an
+   * answer for a path replaces only an older one for that same path, never
+   * anything about the other paths it carries (Codex on PR #442).
+   */
+  _claimPaths(seq, paths) {
+    const current = Object.create(null);
+    for (const path of paths) {
+      if (seq < (this._appliedSeqByPath[path] ?? 0)) continue;
+      this._appliedSeqByPath[path] = seq;
+      current[path] = true;
+    }
+    return current;
+  }
+
+  /**
+   * A ticket for a RomM listing about to be requested: its place in the read
+   * order and the matching policy it is read under. Taken before the request,
+   * handed to :meth:`seedListing` with the answer.
+   */
+  beginListingRead() {
+    return { seq: ++this._hydrateSeq, generation: this._generation };
+  }
+
+  /**
    * Put the matches a RomM listing shipped with its rows into the store
-   * (#427), as long as the matching policy is still the one the listing was
-   * loaded under (*generation*, read before the request).
+   * (#427), ordered per path against every other read (:meth:`_claimPaths`):
+   * for a path no newer answer has written, the listing's match replaces what
+   * is stored, and a row with none clears it. Dropped whole when the matching
+   * policy changed since *ticket* was taken (:meth:`beginListingRead`).
    *
    * Seeded rather than read as a fallback beside the store: a policy change
    * clears the store and re-hydrates it, while a snapshot kept beside it
-   * would bring back a miss recorded before Hasheous was switched on (Codex on
-   * PR #442). A path the store already has keeps its newer answer.
+   * would bring back a miss recorded before Hasheous was switched on.
    */
-  seedListing(entries, generation) {
-    if (generation !== this._generation) return;
-    for (const entry of entries ?? []) {
-      if (entry?.path && entry.dat_match && !this.matches.has(entry.path)) {
-        this.matches.set(entry.path, entry.dat_match);
-      }
+  seedListing(entries, ticket) {
+    if (!ticket || ticket.generation !== this._generation) return;
+    const rows = (entries ?? []).filter((entry) => entry?.path);
+    const current = this._claimPaths(ticket.seq, rows.map((entry) => entry.path));
+    for (const entry of rows) {
+      if (!current[entry.path]) continue;
+      if (entry.dat_match) this.matches.set(entry.path, entry.dat_match);
+      else this.matches.delete(entry.path);
     }
   }
 

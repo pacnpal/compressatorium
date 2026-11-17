@@ -776,15 +776,16 @@ class FileBrowserStore {
     this.loading = true;
     this.entriesError = null;
     this.rommDiagnostics = null;
-    // The matching policy the listing's cached matches belong to (#427).
-    const matchGeneration = datMatching.policyGeneration;
+    // Where the listing's cached matches sit in the read order, and the matching
+    // policy they belong to (#427).
+    const matchTicket = datMatching.beginListingRead();
     try {
       const data = await api.getRommRoms(platformId, { unidentified: this.rommUnidentified });
       if (this._listingRequestSeq !== myReq || this.rommPlatformId !== platformId) return;
       this.entries = data?.entries ?? [];
-      // Into the match store, which a policy change clears, rather than kept
-      // beside it as a fallback that would outlive the policy it was read under.
-      datMatching.seedListing(this.entries, matchGeneration);
+      // Into the match store, ordered per path against its other reads and
+      // cleared with it by a policy change, rather than kept beside it.
+      datMatching.seedListing(this.entries, matchTicket);
       this.rommDiagnostics = data?.diagnostics ?? null;
       this.rommSummary = data?.romm ?? null;
       this._listingGeneration += 1;
