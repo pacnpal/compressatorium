@@ -1460,6 +1460,14 @@ Import or sync No-Intro / Redump / MAMERedump datasets and match converted files
 |-------|------|
 | ![DAT Library, light](docs/screenshots/dat-light.png) | ![DAT Library, dark](docs/screenshots/dat-dark.png) |
 
+When more than one DAT knows a file, the higher one in the list names it. Each
+DAT shows its family; move them up or down to set your own order. Until you do,
+Redump comes first for disc Images and No-Intro first for cartridge Images.
+
+| Light | Dark |
+|-------|------|
+| ![DAT order, light](docs/screenshots/dat-ranking-light.png) | ![DAT order, dark](docs/screenshots/dat-ranking-dark.png) |
+
 #### Settings
 
 Notification destinations for finished sweeps and failed jobs.
