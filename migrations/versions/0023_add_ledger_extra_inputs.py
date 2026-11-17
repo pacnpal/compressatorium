@@ -4,8 +4,8 @@ The Ledger's list of inputs besides the Source (#428): a patch job's patch
 file, each as {"kind", "path", "sha1"}. Rows written before this had none, so
 the server default backfills them as an empty list.
 
-Revision ID: 0022
-Revises: 0021
+Revision ID: 0023
+Revises: 0022
 Create Date: 2026-11-17 12:00:00
 """
 
@@ -16,8 +16,8 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = '0022'
-down_revision: str | Sequence[str] | None = '0021'
+revision: str = '0023'
+down_revision: str | Sequence[str] | None = '0022'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

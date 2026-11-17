@@ -923,6 +923,26 @@ export const api = {
 
   listDATs: () => fetchJson(`${API_BASE}/dat/list`, undefined, 'Failed to list DATs'),
 
+  /** The DATs in ranked order: `{ custom, dats: [{ id, name, family, rank, ... }] }`. */
+  getDATRanking: () =>
+    fetchJson(`${API_BASE}/dat/ranking`, undefined, 'Failed to load the DAT order'),
+
+  /** Save the DAT order (ids, first wins). Resolves the new ranking. */
+  setDATRanking: (order) =>
+    fetchJson(
+      `${API_BASE}/dat/ranking`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ order }),
+      },
+      'Failed to save the DAT order',
+    ),
+
+  /** Forget the saved order so the family defaults apply again. */
+  resetDATRanking: () =>
+    fetchJson(`${API_BASE}/dat/ranking`, { method: 'DELETE' }, 'Failed to reset the DAT order'),
+
   deleteDAT: (datId) =>
     fetchJson(`${API_BASE}/dat/${datId}`, { method: 'DELETE' }, 'Failed to delete DAT'),
 
