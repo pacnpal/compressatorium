@@ -761,6 +761,7 @@
       const homebrew = rom('swiss_r1788.iso', 'swiss_r1788', false, {
         path: '/library/roms/ngc/swiss_r1788.iso', matched: true, source: 'hasheous',
         dat_name: 'Redump', game_name: 'Swiss (World) (r1788)', platform: 'Nintendo GameCube',
+        provider_ids: { hasheous_id: 4242 },
       });
       const mystery = rom('disc2.iso', 'disc2', false, null);
       const canned = {
@@ -773,10 +774,15 @@
         '/api/romm/platforms': [{ id: 7, name: 'GameCube', slug: 'ngc', rom_count: 3,
           tool_ids: ['dolphin'], mode_ids: ['dolphin_rvz'] }],
         '/api/romm/rules': { ...(await live('/api/romm/rules')), state: {}, rules: {} },
-        // The canned paths are outside this fixture's Volume: the listing's
-        // own matches stand, and nothing is matched for real.
-        '/api/dat/matches/lookup': { results: {} },
-        '/api/dat/match-batch/job': { status: 'idle', results: {} },
+        // The canned paths are outside this fixture's Volume, so the match
+        // cache answers as it would for them in a real library: with the
+        // matches it holds. An empty answer means "no usable row", and the
+        // store then drops the match the listing seeded. Nothing is matched
+        // for real.
+        '/api/dat/matches/lookup': { results: { [homebrew.path]: homebrew.dat_match } },
+        '/api/dat/match-batch/job': {
+          status: 'idle', results: { [homebrew.path]: homebrew.dat_match },
+        },
       };
       const listing = (unidentified) => unidentified
         ? { entries: [mystery, homebrew], diagnostics: null,

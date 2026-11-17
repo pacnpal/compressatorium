@@ -73,7 +73,7 @@ console.log(JSON.stringify(out));
 """
 
 
-def _run() -> dict:
+def _run(scenario: str = _SCENARIO) -> dict:
     node = harness._find_node()
     if node is None:
         pytest.skip("Node is not installed")
@@ -83,7 +83,7 @@ def _run() -> dict:
         harness._plain(stores / "latestSaveQueue.js"),
         harness._plain(stores / "datMatching.svelte.js"),
         "(async () => {",
-        _SCENARIO,
+        scenario,
         "})().catch((e) => { console.error(e); process.exit(1); });",
     ])
     done = subprocess.run(
@@ -110,6 +110,46 @@ def test_every_path_of_a_finished_match_job_is_read_again_once():
     assert result["lookups"] == [["/p1.iso", "/p2.iso", "/p3.iso"]]
     assert result["p3"] == {"matched": True, "game_name": "/p3.iso"}
     assert result["lookupsAfterRepeat"] == 1
+
+
+_RACE = """
+// Lookups answer when the test says, in any order.
+const waiting = [];
+api.getMatchCache = (paths) => new Promise((resolve) => {
+  waiting.push({ paths: [...paths], resolve });
+});
+const answer = (i, results) => waiting[i].resolve({ results });
+const out = {};
+
+// The job "Recognize these" started covered an off-page ROM and a visible one.
+await datMatching.startMatchJob(['/off.iso', '/on.iso']);
+// It ends: the store reads the whole job back, then the file list reads the
+// visible page.
+const full = datMatching.hydrateFinishedJobs([{ id: 'j1', status: 'completed' }]);
+const visible = datMatching.hydrate(['/on.iso']);
+for (let i = 0; i < 5; i += 1) await tick();
+// The visible page answers first, then the whole job.
+answer(1, { '/on.iso': { matched: true, game_name: 'newer' } });
+await visible;
+answer(0, {
+  '/off.iso': { matched: true, game_name: 'Off Page' },
+  '/on.iso': { matched: true, game_name: 'older' },
+});
+await full;
+out.off = datMatching.matchFor('/off.iso');
+out.on = datMatching.matchFor('/on.iso');
+console.log(JSON.stringify(out));
+"""
+
+
+def test_a_full_job_read_is_not_lost_to_a_page_read_that_answered_first():
+    """Codex on PR #442: the visible page's read answering first threw away
+    the whole job's read, off-page ROMs included, and the job was already
+    forgotten. Answers are ordered per path: the page's newer answer for its
+    own row stands, and the off-page row still lands."""
+    result = _run(_RACE)
+    assert result["off"] == {"matched": True, "game_name": "Off Page"}
+    assert result["on"] == {"matched": True, "game_name": "newer"}
 
 
 def test_the_views_read_the_store_and_not_the_listing_snapshot():

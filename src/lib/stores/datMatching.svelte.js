@@ -93,13 +93,16 @@ class DATMatchingStore {
   // navigation. This is the dependency that makes the clear self-healing.
   _generation = $state(0);
   // Hydration ordering. _hydrateSeq numbers each request as it goes out;
-  // _appliedSeq records the newest one that has actually written to the map.
+  // _appliedSeqByPath records, per path, the newest one that has actually
+  // written that path. Per path, not one counter for the map: a read of a
+  // whole job's paths answering after the visible page's read was otherwise
+  // dropped whole, off-page paths included (Codex on PR #442).
   // Two counters, not one: discarding on "a newer request exists" would throw
   // away an in-order answer whenever two hydrations overlap, while discarding
   // on "a newer answer already applied" only drops the responses that are
   // genuinely stale.
   _hydrateSeq = 0;
-  _appliedSeq = 0;
+  _appliedSeqByPath = Object.create(null);
   // Orders /dat/stats responses against each other without claiming the
   // matching policy changed. See refreshMatchingAvailability().
   _statsSeq = 0;
@@ -310,7 +313,7 @@ class DATMatchingStore {
     // observable: hydration A reads a hit, a rescan deletes it, hydration B
     // correctly evicts it -- and then A's delayed answer put the obsolete hit
     // back, indefinitely, because returned rows were merged unconditionally.
-    // Only apply an answer if nothing newer has already applied.
+    // Only apply an answer for a path if nothing newer has applied to it.
     const seq = ++this._hydrateSeq;
     // Snapshot the entries this hydration can invalidate. Overlaying returned
     // rows is not enough: the server omits a path it no longer has a usable
@@ -345,20 +348,27 @@ class DATMatchingStore {
     try {
       const data = await api.getMatchCache(paths);
       if (generation !== this._generation) return;
-      if (seq < this._appliedSeq) return;
-      this._appliedSeq = seq;
+      // The paths this answer is still the newest for; the rest are left to
+      // the newer answer that already wrote them.
+      const current = Object.create(null);
+      for (const path of paths) {
+        if (seq < (this._appliedSeqByPath[path] ?? 0)) continue;
+        this._appliedSeqByPath[path] = seq;
+        current[path] = true;
+      }
       const results = data?.results ?? {};
       // Compare-and-delete against the snapshotted value, not just the key: a
       // match job can land between the request and this response, and its
       // result is newer than the answer we are holding. Dropping it would
       // erase a fresh badge and re-queue a file the backend had just done.
       for (const [path, previous] of before) {
+        if (!current[path]) continue;
         if (!Object.hasOwn(results, path) && this.matches.get(path) === previous) {
           this.matches.delete(path);
         }
       }
       for (const [path, result] of Object.entries(results)) {
-        this.matches.set(path, result);
+        if (current[path]) this.matches.set(path, result);
       }
     } catch (_e) {
       // non-fatal
