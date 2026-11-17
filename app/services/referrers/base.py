@@ -143,6 +143,10 @@ class StagedPlacement:
     staged: Mapping[str, str]
     place: Callable[[], Awaitable[None]]
     is_placed: Callable[[], bool] = field(default=lambda: False, compare=False)
+    # The same placing, blocking and with no hand-off of the job's locks, for
+    # a Referrer that runs it as a step of its own it always waits for (the
+    # RomM swap, Codex 4594650576). None: only ``place`` is offered.
+    place_blocking: Callable[[], None] | None = field(default=None, compare=False)
     held: threading.Event = field(default_factory=threading.Event, compare=False)
     # The Sources' fingerprints from before the conversion (the delete
     # snapshot: size, mtime_ns, inode, device, by path): what a Referrer that

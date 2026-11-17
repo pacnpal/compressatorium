@@ -3089,6 +3089,26 @@ class JobManager:
         )
         return [os.path.basename(p) for p in [write_path, *companions]]
 
+    def _place_staged_blocking(
+        self, job: ConversionJob, slot: staging.StagedOutput, write_path: str,
+    ) -> None:
+        """The placing :meth:`_place_staged` does, blocking, with no lock
+        hand-off: for a caller that owns the job's holds and locks and always
+        waits for the outcome itself (the RomM swap's ``_mutate``, Codex
+        4594650576). A no-op once placed. Raises ``OSError`` when nothing
+        moved; the records' carrying is logged, never raised."""
+        if slot.placed:
+            return
+        placed = slot.place(self._place_names(job, write_path))
+        for staged, final in placed:
+            for store in (verification_store, chd_metadata_store):
+                try:
+                    store.move_blocking(staged, final)
+                except Exception:
+                    logger.warning(
+                        "Could not carry the records of %s to %s", staged, final, exc_info=True,
+                    )
+
     async def _place_staged(
         self, job: ConversionJob, slot: staging.StagedOutput | None, write_path: str,
     ) -> None:
@@ -3157,6 +3177,7 @@ class JobManager:
         return referrers.StagedPlacement(
             staged={job.output_path: write_path},
             place=lambda: self._place_staged(job, slot, write_path),
+            place_blocking=lambda: self._place_staged_blocking(job, slot, write_path),
             is_placed=lambda: slot.placed,
             source_fingerprints=dict(
                 (self._delete_plans.get(job.id) or {}).get("fingerprints") or {},

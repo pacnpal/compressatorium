@@ -835,17 +835,28 @@ class _Swap:
             raise self._fail(f"couldn't park the Source ({exc})") from exc
 
     async def _place_output(self) -> None:
-        """Step 3: the job's staged output takes the name."""
+        """Step 3: the job's staged output takes the name.
+
+        A step like every other move (``_mutate``, Codex 4594650576): run on a
+        thread of its own and never abandoned, so a cancel waits for its real
+        outcome before the undo picks its branch, and with no hand-off of the
+        job's holds to a worker. The swap, and its undo, keep them until it
+        ends; past the hook's grace ``outlive`` hands them to this task."""
         await self._step("placing")
+        place_blocking = self.placement.place_blocking
+        if place_blocking is None:
+            raise self._fail("the job offers no placing the swap can wait on")
+
+        def place() -> None:
+            place_blocking()
+            self.placed = True  # on the step's own thread, with the move
+
         try:
-            await self.placement.place()
-        except BaseException as exc:
+            await _mutate(place)
+        except Exception as exc:
             # Whether it moved, from the slot itself, not from how this ended.
-            self.placed = self.placement.is_placed()
-            if isinstance(exc, Exception):
-                raise self._fail(f"couldn't place the output ({exc})") from exc
-            raise
-        self.placed = True
+            self.placed = self.placed or self.placement.is_placed()
+            raise self._fail(f"couldn't place the output ({exc})") from exc
         await self._step("placed")
 
     async def _rehash(self, size: int, sha1: str) -> None:

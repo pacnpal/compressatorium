@@ -1195,6 +1195,65 @@ async def test_a_cancel_before_the_set_aside_starts_still_keeps_the_output(
 
 
 @pytest.mark.asyncio
+async def test_a_cancel_during_placing_waits_for_it_and_keeps_the_holds(
+    vol, romm, monkeypatch,
+):
+    """Codex 4594650576: a Cancel lands while the swap places the output.
+    Placing is never abandoned: the swap waits for its real outcome (here,
+    placed), undoes accordingly (the Source back beside the output, ``kept``),
+    and no hold or lock of the job is let go before that undo has ended."""
+    from services import staging
+    from services.romm import swap_journal
+
+    platform = _platform(vol)
+    source = os.path.realpath(platform / "Game.iso")
+    events: list[str] = []
+    real_place, real_step = staging.StagedOutput.place, swap_journal.step
+    real_let_go = job_manager_module._let_go
+    job = await convert_routes.create_job(JobCreateRequest(
+        file_path=str(platform / "Game.iso"), mode=ConversionMode.CREATEDVD,
+        duplicate_action=DuplicateAction.SKIP, delete_on_verify=True,
+    ))
+    loop = asyncio.get_running_loop()
+
+    def cancelled_place(self, names):
+        names = list(names)
+        if "Game.chd" in names and not events:
+            event = convert_routes.job_manager.get_cancel_event(job.id)
+            loop.call_soon_threadsafe(event.set)
+            events.append("placing")
+            time.sleep(0.5)
+        return real_place(self, names)
+
+    def recording_step(row_id, state, **kwargs):
+        if state in swap_journal.ENDINGS:
+            events.append(f"ended {state}")
+        return real_step(row_id, state, **kwargs)
+
+    def recording_let_go(paths):
+        paths = list(paths or ())
+        if source in paths:
+            events.append("released the Source")
+        return real_let_go(paths)
+
+    monkeypatch.setattr(staging.StagedOutput, "place", cancelled_place)
+    monkeypatch.setattr(swap_journal, "step", recording_step)
+    monkeypatch.setattr(job_manager_module, "_let_go", recording_let_go)
+    await convert_routes.job_manager._process_job(job.id)
+    for _ in range(60):
+        if "released the Source" in events:
+            break
+        await asyncio.sleep(0.05)
+
+    assert events[0] == "placing", events
+    assert events.index("ended kept") < events.index("released the Source"), events
+    assert [r["state"] for r in _journal()] == ["kept"]
+    assert (platform / "Game.iso").read_bytes() == SOURCE_BYTES
+    assert (platform / "Game.chd").read_bytes() == OUTPUT_BYTES
+    assert romm.roms[ROM_ID]["fs_name"] == "Game.chd"
+
+
+@pytest.mark.asyncio
 async def test_a_source_changed_during_the_rom_lookup_is_never_swapped(
     vol, romm, monkeypatch,
 ):
