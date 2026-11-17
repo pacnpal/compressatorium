@@ -29,6 +29,7 @@
   import Badge from '$lib/components/ui/Badge.svelte';
   import { datMatching } from '$lib/stores/datMatching.svelte.js';
   import { jobs } from '$lib/stores/jobs.svelte.js';
+  import { ARCHIVE_EXTS, isDatMatchable } from '$lib/util/datMatchable.js';
   import Spinner from '$lib/components/ui/Spinner.svelte';
   import EmptyState from '$lib/components/ui/EmptyState.svelte';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
@@ -191,7 +192,17 @@
    * updates, so the count moves as "Recognize these" runs without reloading
    * the platform, and a policy change clears it with every other badge.
    */
-  const unidentifiedRows = $derived(entries.filter((e) => e.romm_identified === false));
+  const allUnidentified = $derived(entries.filter((e) => e.romm_identified === false));
+  // Only what the matcher can identify, by the file list's own rule: an
+  // archived ROM's match would hash the compressed bytes and record a miss
+  // (Codex on PR #442), so those are counted apart and never submitted.
+  const matchableExts = registry.allFilterableExts();
+  const unidentifiedRows = $derived(
+    allUnidentified.filter((e) => isDatMatchable(e, matchableExts)),
+  );
+  const archivedUnidentified = $derived(
+    allUnidentified.filter((e) => ARCHIVE_EXTS.has((e.extension ?? '').toLowerCase())).length,
+  );
   const recognizedUnidentified = $derived(
     unidentifiedRows.filter((e) => datMatching.matchFor(e.path)?.matched).length,
   );
@@ -208,7 +219,7 @@
   // when they are wanted). A cached miss is not asked again.
   const toRecognize = $derived(
     unidentifiedRows
-      .filter((e) => e.type !== 'directory' && needsMatch(e))
+      .filter((e) => needsMatch(e))
       .map((e) => e.path),
   );
   // The file list re-reads only the rows on screen when a match job ends; the
@@ -462,6 +473,13 @@
             {unidentifiedRows.length} from its own DATs or Hasheous, so a Rule
             set to "only Recognized" converts them too.
           </span>
+          {#if archivedUnidentified > 0}
+            <span class="muted">
+              Archived ROMs (zip, 7z) aren't recognized yet, so
+              {archivedUnidentified === 1 ? 'the 1 here is' : `the ${archivedUnidentified} here are`}
+              left out of the count and the match.
+            </span>
+          {/if}
           {#if toRecognize.length > 0}
             <Button
               size="sm" variant="secondary" loading={recognizing}

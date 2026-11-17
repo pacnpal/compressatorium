@@ -9,7 +9,8 @@
   identify, with a count of how many of them the app Recognizes from your own
   DATs or Hasheous, and the DAT or Hasheous name beside each one it does. The
   list reads the matches the app already has and never hashes by itself;
-  "Recognize these" starts the usual match job for the rest. A ROM now counts
+  "Recognize these" starts the usual match job for the rest. ROMs stored as
+  zip or 7z aren't recognized yet and are left out of both. A ROM now counts
   as Recognized when RomM identified it or the app's own match is a hit, so a
   Rule set to "Only Recognized" converts these ROMs too, while "only ROMs RomM
   could not identify" still means exactly that. A new switch in RomM Settings

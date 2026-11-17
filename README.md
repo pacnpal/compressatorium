@@ -786,7 +786,9 @@ only the ROMs RomM couldn't identify, with a count of how many of them the app
 Recognizes and, beside each one it does, the name its DAT or Hasheous gives it.
 The list reads the matches the app already has and never starts hashing by
 itself; **Recognize these** starts the usual match job for the rest (see the
-Jobs panel).
+Jobs panel). ROMs stored as zip or 7z aren't recognized yet (the match would
+hash the archive, not the ROM inside), so they're left out of the count and
+the match, and the view says how many there are.
 
 A ROM is Recognized when RomM identified it **or** the app's own DAT or
 Hasheous match for its file is a hit, so a Rule set to **Only Recognized**

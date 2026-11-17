@@ -29,6 +29,7 @@
   import ShieldCheck from '@lucide/svelte/icons/shield-check';
   import Trash2 from '@lucide/svelte/icons/trash-2';
   import ListMusic from '@lucide/svelte/icons/list-music';
+  import { isDatMatchable } from '$lib/util/datMatchable.js';
 
   const entries = $derived(fileBrowser.visibleEntries);
   const pageCount = $derived(fileBrowser.pageCount);
@@ -240,18 +241,11 @@
       // either. Reading the policy generation re-runs the hydration that
       // repopulates what the clear dropped.
       const _policyGeneration = datMatching.policyGeneration;
+      // The rows the matcher can identify, by the rule "Recognize these"
+      // shares (folders, archives and folded split sets are left out).
       const matchableExts = registry.allFilterableExts();
-      const matchExtSet = new Set(matchableExts.map((e) => e.toLowerCase()));
       const filePaths = entries
-        .filter((e) => {
-          if (!e?.path || e.type === 'directory' || e.type === 'archive') return false;
-          // A folded split set advertises `.iso` but its path is only the .0
-          // part; hashing that as a whole ISO yields a false unmatched badge
-          // (and wastes a 4 GB hash pass), so skip it.
-          if (e.split_parts != null) return false;
-          const ext = (e.extension ?? '').toLowerCase();
-          return ext && matchExtSet.has(ext);
-        })
+        .filter((e) => isDatMatchable(e, matchableExts))
         .map((e) => e.path);
       if (filePaths.length > 0) {
         datMatching.hydrateAndMatch(filePaths).catch(() => {});

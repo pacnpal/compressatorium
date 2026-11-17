@@ -195,3 +195,51 @@ def test_the_views_read_the_store_and_not_the_listing_snapshot():
     assert "dat_match ??" not in row and "dat_match ??" not in view
     assert "datMatching.seedListing(" in browser
     assert "datMatching.hydrateFinishedJobs(" in view
+
+
+_UTIL = _SRC / "util" / "datMatchable.js"
+
+
+def test_the_shared_matchable_rule_leaves_out_archives_and_folders():
+    """Codex on PR #442: the match job hashes a zip's or 7z's compressed bytes,
+    so an archived ROM in a DAT was recorded as a miss and never offered
+    again. One rule, shared by the file list and "Recognize these", says
+    which rows the matcher can identify."""
+    node = harness._find_node()
+    if node is None:
+        pytest.skip("Node is not installed")
+    src = _UTIL.read_text(encoding="utf-8") if _UTIL.exists() else ""
+    script = src.replace("export ", "") + """
+const exts = ['.iso', '.chd', '.zip', '.7z'];
+const row = (name, extra = {}) => ({ path: `/r/${name}`, type: 'file',
+  extension: name.slice(name.lastIndexOf('.')), ...extra });
+console.log(JSON.stringify({
+  iso: isDatMatchable(row('a.iso'), exts),
+  zip: isDatMatchable(row('a.zip'), exts),
+  sevenZip: isDatMatchable(row('a.7z'), exts),
+  archiveRow: isDatMatchable(row('a.iso', { type: 'archive' }), exts),
+  folder: isDatMatchable(row('Game.iso', { type: 'directory' }), exts),
+  split: isDatMatchable(row('a.iso', { split_parts: 2 }), exts),
+  unknown: isDatMatchable(row('a.txt'), exts),
+}));
+"""
+    done = subprocess.run(
+        [node, "--input-type=module", "-e", script],
+        capture_output=True, text=True, timeout=60, check=False,
+    )
+    assert done.returncode == 0, done.stderr
+    assert json.loads(done.stdout) == {
+        "iso": True, "zip": False, "sevenZip": False, "archiveRow": False,
+        "folder": False, "split": False, "unknown": False,
+    }
+
+
+def test_the_file_list_and_the_romm_view_share_that_rule():
+    file_list = (_SRC / "components" / "panels" / "FileList.svelte").read_text(encoding="utf-8")
+    view = (_SRC / "components" / "views" / "RommView.svelte").read_text(encoding="utf-8")
+    for source in (file_list, view):
+        assert "isDatMatchable(" in source
+    # No second copy of the check in the file list.
+    assert "matchExtSet" not in file_list
+    # The view says archived ROMs aren't recognized yet.
+    assert "aren't recognized yet" in view

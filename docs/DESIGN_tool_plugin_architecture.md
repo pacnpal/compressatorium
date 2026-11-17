@@ -2475,6 +2475,12 @@ RomM couldn't identify, decided before any ROM is stat'ed). Each row carries
 carries `romm` (`RommListingSummary`: `unidentified`, `recognized`,
 `recognized_unidentified`). It never hashes; "Recognize these" in the view
 posts the rows with no answer (on every page) to `/dat/match-batch/job`.
+Which rows count is `util/datMatchable.isDatMatchable`, the same rule the file
+list's match hydration uses: no folders, no folded split sets, no archives (a
+zip or 7z would be hashed as the container, which no DAT lists; RomM lists
+them as plain files, so the extension decides), and an extension the registry
+lets a user filter by. The view counts the archived rows apart and says they
+aren't recognized yet.
 
 In the browser the rows' matches are seeded into the DAT match store
 (`datMatching.seedListing`), only while the matching-policy generation is the
