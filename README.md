@@ -1114,6 +1114,34 @@ Finding duplicates deletes nothing by itself. To clean a group up:
 |-------|------|
 | ![Findings with a Duplicate group, light](docs/screenshots/findings-duplicates-light.png) | ![Findings with a Duplicate group, dark](docs/screenshots/findings-duplicates-dark.png) |
 
+### Patching a cartridge Image
+
+**Patch…** in a file's row menu applies an IPS or BPS patch (a translation, a
+fix) to a cartridge Image: a loose ROM, a ROM inside a `.zip` or `.7z`, or a
+`.zip`/`.7z` that holds one ROM. Give the path of a patch file on a Volume, or
+upload one (it is kept in `<CHD_DATA_DIR>/patches`).
+
+- The result is written as `Name (Patched).7z` beside the original, packed
+  with the same 7z packer as the ROM 7z mode. When that name is taken it
+  becomes `Name (Patched) (2).7z`, and so on. The original is never changed.
+- A BPS patch carries checksums: one made for another ROM (a different size
+  or CRC32) is refused, and the patched ROM must match the patch's target
+  CRC32 or nothing is written.
+- An IPS patch carries none, so it is applied either way; when the Image
+  isn't Recognized (no DAT or Hasheous match) the job finishes with a warning
+  that the patch may not be for it.
+- A ROM inside an archive is unpacked under the usual archive limits
+  (`CHD_ARCHIVE_MAX_*`). A patch file is at most `CHD_PATCH_MAX_SIZE` (32 MiB).
+- Disc Images (`.iso`, `.cue`, `.chd`, `.rvz` and the other disc formats) are
+  refused for now, with the reason. xdelta, UPS and PPF patches aren't read.
+- The job is a **Patch** job in the jobs list, and its Ledger row names the
+  patch file and its SHA1 under **extra inputs**. A patched copy is an Image
+  like any other that isn't Recognized. The app never downloads a patch.
+
+| Light | Dark |
+|-------|------|
+| ![The Patch dialog, light](docs/screenshots/patch-dialog-light.png) | ![The Patch dialog, dark](docs/screenshots/patch-dialog-dark.png) |
+
 ### Findings and folder Platforms
 
 The **Findings** view (in the sidebar) lists every Image in a folder Library
@@ -2702,6 +2730,7 @@ The Web UI communicates with a REST API that can also be used directly. Interact
 | `CHD_ARCHIVE_MAX_ENTRIES` | `5000` | Max archive members to list (0 disables limit) |
 | `CHD_ARCHIVE_MAX_MEMBER_SIZE` | `0` | Max size in bytes per archive member (0 disables limit) |
 | `CHD_ARCHIVE_MAX_TOTAL_SIZE` | `0` | Max total size in bytes for archive listings/extractions (0 disables limit) |
+| `CHD_PATCH_MAX_SIZE` | `33554432` | Largest IPS or BPS file, in bytes, the Patch action reads or accepts as an upload (32 MiB) |
 | `LOGLEVEL` | `INFO` | Log verbosity level (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`) |
 | `LOG_PATH` | (none) | Path to log file (logs to stdout only if unset) |
 | `LOG_COLOR` | `always` | ANSI-color stdout logs by level. Values: `always` (default, colored `docker logs` out of the box), `auto` (TTY and no `NO_COLOR`), `never`. File logs are never colored. |

@@ -1,7 +1,7 @@
 """add_folder_library_layout
 
 Revision ID: 0024
-Revises: 0022
+Revises: 0023
 Create Date: 2026-11-17 00:00:00.000000
 """
 
@@ -14,7 +14,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = '0024'
-down_revision: str | Sequence[str] | None = '0022'
+down_revision: str | Sequence[str] | None = '0023'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

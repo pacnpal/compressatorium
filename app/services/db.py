@@ -358,6 +358,9 @@ class LedgerEntry(Base):
     image_key = Column(String, nullable=True)
     platform = Column(String, nullable=True)
     error = Column(String, nullable=True)
+    # Inputs besides the Source (#428): a patch job's patch file,
+    # [{"path": ..., "sha1": ...}].
+    extra_inputs = Column(JSON, nullable=False, default=list, server_default="[]")
     __table_args__ = (
         Index("ix_ledger_finished_at", "finished_at"),
         Index("ux_ledger_job_finished", "job_id", "finished_at", unique=True),

@@ -71,6 +71,9 @@ class ConversionMode(str, Enum):
     # A confirmed delete of a duplicate group's other copies (#389): reads
     # the keeper in full, then deletes each copy under its locks. External.
     DELETE_DUPLICATES = "delete_duplicates"
+    # An IPS/BPS patch applied to a cartridge Image (#428): writes
+    # "Name (Patched).7z" beside it. External, with its own Ledger row.
+    PATCH = "patch"
 
 
 class DuplicateAction(str, Enum):
@@ -208,6 +211,9 @@ class ConversionJob(BaseModel):
     # {"referrer": id, "target": file, "status": "updated" | "failed" |
     # "skipped", "reason": why, for failed and skipped}.
     referrers_updated: list[dict] = []
+    # Inputs besides the Source, for the Ledger: a patch job's patch file
+    # (#428), {"path": ..., "sha1": ...} each.
+    extra_inputs: list[dict] = []
     # What an external job came to, for whoever started it: a duplicate
     # delete's per-copy outcomes and whether the copy kept changed (#389).
     # None for every other job.

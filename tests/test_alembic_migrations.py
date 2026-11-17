@@ -179,7 +179,8 @@ def test_0014_stacks_on_0013_and_walks_up_from_an_empty_database(fresh_db_path: 
     script = ScriptDirectory.from_config(cfg)
     # #386's 0016 sits on 0015, #388's 0017 on that, #387's 0018 on that and
     # #389's 0019 on that, #391's 0020 on that, #392's 0021 on that and
-    # #424's 0022 on that and #430's 0024 on that; see their own tests below.
+    # #424's 0022 on that, #428's 0023 on that and #430's 0024 on that; see
+    # their own tests below.
     assert script.get_heads() == ["0024"]
     assert script.get_revision("0014").down_revision == "0013"
     assert script.get_revision("0013").down_revision == "0012"
@@ -420,9 +421,9 @@ def test_0024_adds_a_folder_librarys_layout(fresh_db_path: str):
 
     engine = _db.make_engine(fresh_db_path)
     cfg = _db._alembic_config(engine)
-    assert ScriptDirectory.from_config(cfg).get_revision("0024").down_revision == "0022"
+    assert ScriptDirectory.from_config(cfg).get_revision("0024").down_revision == "0023"
 
-    command.upgrade(cfg, "0022")
+    command.upgrade(cfg, "0023")
     with engine.begin() as conn:
         conn.exec_driver_sql(
             "INSERT INTO folder_libraries (root, name, schedule_enabled, max_per_sweep, "
@@ -432,6 +433,32 @@ def test_0024_adds_a_folder_librarys_layout(fresh_db_path: str):
     with engine.connect() as conn:
         assert conn.exec_driver_sql("SELECT layout FROM folder_libraries").scalar() == "esde"
     assert _current_rev(engine) == "0024"
+
+
+def test_0023_gives_the_ledger_extra_inputs(fresh_db_path: str):
+    """#428's 0023: the Ledger's ``extra_inputs`` (a patch job's patch file
+    and its SHA1). A row written before it reads back as an empty list."""
+    from alembic import command
+    from alembic.script import ScriptDirectory
+    from sqlalchemy import text
+
+    engine = _db.make_engine(fresh_db_path)
+    cfg = _db._alembic_config(engine)
+    assert ScriptDirectory.from_config(cfg).get_revision("0023").down_revision == "0022"
+
+    command.upgrade(cfg, "0022")
+    with engine.begin() as c:
+        c.execute(text(
+            "insert into ledger (job_id, finished_at, mode, source_path, status, "
+            "check_passed, source_deleted, deleted_paths, referrers_updated) "
+            "values ('j', '2026-01-01', 'm', '/p', 'completed', 'none', 0, '[]', '[]')"
+        ))
+    command.upgrade(cfg, "0023")
+    columns = {c["name"]: c for c in inspect(engine).get_columns("ledger")}
+    assert columns["extra_inputs"]["nullable"] is False
+    with engine.begin() as c:
+        assert c.execute(text("select extra_inputs from ledger")).scalar() == "[]"
+    assert _current_rev(engine) == "0023"
 
 
 # ---------------------------------------------------------------------------

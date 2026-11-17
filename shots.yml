@@ -1207,6 +1207,56 @@
   wait: 1800
   javascript: *js_findings_duplicate_delete
 
+# --- Patch dialog (#428) ---------------------------------------------------
+# The ROM Library's roms/gba folder, the row menu of tiny-golf.zip (one GBA
+# ROM inside) and its "Patch..." item: the dialog that takes an IPS/BPS path
+# on a Volume or an upload. Nothing is submitted, so nothing is written.
+- url: http://127.0.0.1:8099/?s=patch-dialog-light#/workspace/romz
+  output: docs/screenshots/patch-dialog-light.png
+  width: 1280
+  height: 900
+  wait: 1800
+  javascript: &js_patch_dialog |
+    (async () => {
+      const theme = location.search.includes('-dark') ? 'dark' : 'light';
+      localStorage.setItem('theme-preference', theme);
+      window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: theme }));
+      const wait = (ms) => new Promise(r => setTimeout(r, ms));
+      const open = async (name) => {
+        const button = [...document.querySelectorAll('tbody .name-button')]
+          .find(b => b.textContent.includes(name));
+        if (!button) throw new Error(`${name} not listed`);
+        button.click();
+        await wait(800);
+      };
+      await wait(400);
+      const vol = [...document.querySelectorAll('button.item')]
+        .find(b => b.textContent.trim() === 'ROM Library');
+      if (!vol) throw new Error('ROM Library volume not found');
+      vol.click();
+      await wait(800);
+      await open('roms');
+      await open('gba');
+      const row = [...document.querySelectorAll('tbody tr')]
+        .find(tr => tr.textContent.includes('tiny-golf.zip'));
+      const trigger = row?.querySelector('.actions-trigger');
+      if (!trigger) throw new Error('row actions not found');
+      trigger.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, pointerType: 'mouse' }));
+      await wait(400);
+      const item = [...document.querySelectorAll('.row-actions-item')]
+        .find(i => i.textContent.includes('Patch'));
+      if (!item) throw new Error('Patch item not shown');
+      item.click();
+      await wait(800);
+      if (!document.querySelector('[role="dialog"]')) throw new Error('patch dialog not open');
+    })()
+- url: http://127.0.0.1:8099/?s=patch-dialog-dark#/workspace/romz
+  output: docs/screenshots/patch-dialog-dark.png
+  width: 1280
+  height: 900
+  wait: 1800
+  javascript: *js_patch_dialog
+
 # --- DAT Library ----------------------------------------------------------
 - url: http://127.0.0.1:8099/?s=dat-light#/dat
   output: docs/screenshots/dat-light.png
