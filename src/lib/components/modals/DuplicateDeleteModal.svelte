@@ -128,10 +128,13 @@
     {/if}
   {/snippet}
   {#snippet footer()}
-    <Button variant="secondary" onclick={() => findings.closeCleanup()}>Cancel</Button>
+    <!-- Closing never stops a delete already sent: say Close, not Cancel. -->
+    <Button variant="secondary" onclick={() => findings.closeCleanup()}>
+      {open?.deleting ? 'Close' : 'Cancel'}
+    </Button>
     <Button
       variant="destructive"
-      disabled={!plan || blocked || !!open?.error}
+      disabled={!plan || blocked || !!open?.error || !!open?.deleting}
       loading={!!open?.deleting}
       onclick={confirm}
     >

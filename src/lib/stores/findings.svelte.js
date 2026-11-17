@@ -127,11 +127,23 @@ class FindingsStore {
   cleanup = $state(null);
   // Only the latest plan request may write it (a keeper picked twice fast).
   #planRequest = 0;
+  // Deletes still running, by Finding id: `{ keep, plan }`. Kept apart from
+  // the dialog, so closing it stops nothing and reopening that Finding shows
+  // the delete as running, its keeper fixed, until the request settles.
+  #inflight = new Map();
 
   /** Open the delete dialog on a duplicate group, keeping *keep*. */
   async openCleanup(row, keep = row?.keeper) {
     if (!row || !keep) return;
     // The keeper is fixed while its delete runs: a new plan would drop it.
+    const running = this.#inflight.get(row.id);
+    if (running) {
+      if (this.cleanup?.row?.id !== row.id) {
+        this.#planRequest += 1;
+        this.cleanup = { row, keep: running.keep, plan: running.plan, error: null, deleting: true };
+      }
+      return;
+    }
     if (this.cleanup?.deleting) return;
     const request = ++this.#planRequest;
     this.cleanup = { row, keep, plan: null, error: null, deleting: false };
@@ -157,19 +169,23 @@ class FindingsStore {
   async confirmCleanup() {
     const open = this.cleanup;
     const plan = open?.plan;
-    if (!plan || plan.blocked || open.deleting) return null;
+    if (!plan || plan.blocked || open.deleting || this.#inflight.has(open.row.id)) return null;
+    const id = open.row.id;
     const paths = plan.items.flatMap((item) => item.delete_paths ?? []);
-    // This dialog's generation: a close, or another dialog opened meanwhile,
-    // moves it, and the answer then writes nothing to the dialog now open.
-    const request = this.#planRequest;
+    this.#inflight.set(id, { keep: open.keep, plan });
     this.cleanup = { ...open, deleting: true };
+    // The answer belongs to this Finding: it writes only to a dialog open on
+    // it now (reopened meanwhile included), never to one for another Finding.
+    const showing = () => this.cleanup?.row?.id === id;
     try {
-      const result = await api.deleteDuplicates(open.row.id, open.row.fingerprint, open.keep, paths);
+      const result = await api.deleteDuplicates(id, open.row.fingerprint, open.keep, paths);
+      this.#inflight.delete(id);
       this.#superseded();
-      if (request === this.#planRequest) this.cleanup = null;
+      if (showing()) this.cleanup = null;
       return result;
     } catch (e) {
-      if (request === this.#planRequest && this.cleanup) {
+      this.#inflight.delete(id);
+      if (showing()) {
         this.cleanup = { ...this.cleanup, deleting: false, error: e?.message ?? 'Could not delete the copies' };
       }
       throw e;

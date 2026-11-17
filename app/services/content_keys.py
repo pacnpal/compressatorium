@@ -268,9 +268,10 @@ async def recompute(
 
     An ``.iso``/``.bin`` is hashed whole, under the stall bound, as
     :func:`build` reads it; through *fd* when given (the caller holds the file
-    open, so what is hashed is the file it then checks the path against). Any other file goes through its tool's
-    ``content_sha1`` (a full pass: a rebuild or a verify), bounded by the
-    tool's ``verify_timeout`` and raced against *cancel_event*.
+    open, so what is hashed is the file it then checks the path against). Any
+    other file goes through its tool's ``content_sha1`` (a full pass: a
+    rebuild or a verify), bounded by the tool's ``verify_timeout`` and raced
+    against *cancel_event*.
     """
     name = os.path.basename(path)
     if is_raw_image(path):

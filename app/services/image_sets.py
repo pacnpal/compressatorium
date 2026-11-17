@@ -41,7 +41,12 @@ def _named_tracks(path: str) -> list[str]:
     owns nothing", or its tracks would be listed, converted and deleted as
     Images of their own. An unreadable sheet names nothing.
     """
-    from utils.sheet_text import cue_tracks, gdi_track_names, resolve_track, sheet_readings
+    from utils.sheet_text import (
+        cue_tracks,
+        gdi_track_names,
+        resolve_track,
+        sheet_readings,
+    )
 
     tracks = sheet_track_paths(path)
     parse = {".cue": cue_tracks, ".gdi": gdi_track_names}.get(Path(path).suffix.lower())
@@ -145,13 +150,16 @@ def _is_track(own: os.stat_result, real: str, track: str) -> bool:
     """Whether *track* (a sheet's spelling) is the file *own* is a stat of.
 
     By file identity (device and inode), so a case-insensitive share's
-    ``track.bin`` is ``Track.bin``. A track that does not exist is compared by
-    its case-folded real path. Any other stat failure leaves it unknown.
+    ``track.bin`` is ``Track.bin``. A track the filesystem reports missing is
+    compared by its real path with case folded on both sides (``casefold``;
+    ``os.path.normcase`` folds nothing on POSIX): that only widens what counts
+    as the sheet's own, so it fails closed. Any other stat failure leaves it
+    unknown.
     """
     try:
         st = os.stat(track)
     except FileNotFoundError:
-        return os.path.normcase(os.path.realpath(track)) == os.path.normcase(real)
+        return os.path.realpath(track).casefold() == real.casefold()
     except OSError as exc:
         raise SheetOwnerUnknown(f"{track} could not be read ({exc.strerror or exc})") from exc
     return (st.st_dev, st.st_ino) == (own.st_dev, own.st_ino)

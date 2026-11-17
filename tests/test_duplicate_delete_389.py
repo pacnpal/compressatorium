@@ -988,3 +988,26 @@ async def test_no_cleanup_is_offered_when_every_copy_failed(
     assert group["keeper"] is None
     assert group["deletable"] is False
     assert "failed" in group["not_deletable"]
+
+
+
+@pytest.mark.asyncio
+async def test_a_missing_track_named_in_another_case_still_owns_the_copy(
+    db: Path, client: httpx.AsyncClient, monkeypatch,
+) -> None:
+    """CodeRabbit 4593353319: a track the filesystem reports missing is
+    compared by its case-folded path, which only widens what counts as the
+    sheet's own, so it fails closed."""
+    roms = db / "romm"
+    group = await _track_group(client, monkeypatch, roms)
+    _cue(roms / "Disc.cue", "DISC (TRACK 1).BIN")
+    spelled = os.path.realpath(roms / "DISC (TRACK 1).BIN")
+    real_stat = os.stat
+
+    def missing(path, *args, **kwargs):
+        if os.fspath(path) == spelled:
+            raise FileNotFoundError(2, "No such file", spelled)
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "stat", missing)
+    await _blocked_for(client, group, str(roms / "Game.iso"), "is a track of Disc.cue")

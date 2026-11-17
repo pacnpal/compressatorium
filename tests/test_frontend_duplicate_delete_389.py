@@ -88,7 +88,7 @@ def test_the_view_offers_the_delete_only_where_the_backend_does() -> None:
     assert "<DuplicateDeleteModal" in view
     modal = _MODAL.read_text(encoding="utf-8")
     # Confirm is off until there is a plan, and while it is blocked.
-    assert "disabled={!plan || blocked || !!open?.error}" in modal
+    assert "disabled={!plan || blocked || !!open?.error || !!open?.deleting}" in modal
     endpoints = _ENDPOINTS.read_text(encoding="utf-8")
     assert "/delete-plan`" in endpoints
     assert "'X-CHD-Action-Confirm': CONFIRM.DELETE_FILE" in endpoints
@@ -150,3 +150,45 @@ def test_cleanup_is_offered_only_with_a_keeper() -> None:
     keeper, so no Delete others button."""
     view = _VIEW.read_text(encoding="utf-8")
     assert "row.kind === 'duplicate' && row.deletable && row.keeper" in view
+
+
+
+def test_closing_and_reopening_during_a_delete_keeps_it_locked(tmp_path):
+    """CodeRabbit 4593355703: the delete in flight belongs to the Finding, not
+    the dialog. Closed and reopened while it runs, the dialog shows it as
+    deleting, keeps its keeper, and plans nothing new until it settles."""
+    data = _run(tmp_path, f"""
+api.duplicateDeletePlan = __call('duplicateDeletePlan');
+let finish;
+api.deleteDuplicates = (...args) => {{
+  __log.push(['deleteDuplicates', ...args]);
+  return new Promise((resolve) => {{ finish = resolve; }});
+}};
+__answers.listFindings = {{ findings: [], dismissed: 0 }};
+__answers.duplicateDeletePlan = {{ items: [{{ source_path: '/v/Copy.iso',
+  delete_paths: ['/v/Copy.iso'] }}], blocked: false, total_delete_count: 1 }};
+await findings.openCleanup({_ROW});
+const running = findings.confirmCleanup();
+findings.closeCleanup();
+await findings.openCleanup({_ROW});
+const reopened = {{ keep: findings.cleanup.keep, deleting: findings.cleanup.deleting }};
+await findings.openCleanup({_ROW}, '/v/Copy.iso');
+const picked = findings.cleanup.keep;
+const again = await findings.confirmCleanup();
+finish({{ results: [] }});
+await running;
+process.stdout.write(JSON.stringify({{
+  reopened, picked, again, open: findings.cleanup,
+  plans: __log.filter((c) => c[0] === 'duplicateDeletePlan').length,
+  deletes: __log.filter((c) => c[0] === 'deleteDuplicates').length,
+}}));
+""")
+    assert data["reopened"] == {"keep": "/v/Game.iso", "deleting": True}, data
+    assert data["picked"] == "/v/Game.iso", data
+    assert data["again"] is None, data
+    assert data["plans"] == 1 and data["deletes"] == 1, data
+    # Settled: the reopened dialog for that Finding closes.
+    assert data["open"] is None, data
+    modal = _MODAL.read_text(encoding="utf-8")
+    # Closing does not stop the delete, and the button says so.
+    assert "open?.deleting ? 'Close' : 'Cancel'" in modal
