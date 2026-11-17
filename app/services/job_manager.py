@@ -3695,8 +3695,13 @@ class JobManager:
     @classmethod
     async def _image_library(cls, path: str, probe_seconds: Optional[float]):
         """The Library holding *path*, for the Referrer hook (#383); None when
-        none does. A delete-step probe: when it can't tell (a timeout, the
-        Library list unreadable) it raises RuntimeError, so nothing is removed."""
+        none does. *path* is the Source as the job was given it, never
+        resolved: a file listed in a Library's folders is that Library's,
+        wherever a symlinked folder leads (#413). A delete-step probe: when it
+        can't tell (a timeout, the Library list unreadable) it raises
+        RuntimeError, so nothing is removed. Listed in one Library and living
+        in another, it answers ``referrers.UndecidedLibrary``: the hook then
+        keeps the Source and says why."""
         # Imported here: services.libraries imports this module.
         from services import libraries
 
@@ -3706,6 +3711,8 @@ class JobManager:
             )
         except RuntimeError:
             raise
+        except libraries.AmbiguousLibrary as exc:
+            return referrers.UndecidedLibrary(path, str(exc))
         except Exception as exc:
             raise RuntimeError(
                 f"Couldn't tell which Library holds the Source ({exc}); refusing to delete"

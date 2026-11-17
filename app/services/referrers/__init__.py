@@ -45,6 +45,25 @@ from .m3u import M3uReferrer
 
 logger = get_logger("referrers")
 
+# What a job says when it keeps a Source because which Library holds the Image
+# can't be told (#413).
+UNDECIDED_LIBRARY_KEPT = "couldn't tell which Library holds it"
+
+
+@dataclass(frozen=True)
+class UndecidedLibrary:
+    """Stands in for the Image's Library when which one holds it can't be told (#413).
+
+    The caller that looked the Library up (``libraries.library_for`` raised
+    ``AmbiguousLibrary``: the file is listed in one Library and lives in
+    another) passes this instead of a Library. :meth:`ReferrerRegistry.active`
+    raises ReferrerError for it, so the hook keeps the Source with *reason*,
+    the delete confirmation says so, and ``places_output`` answers False.
+    """
+
+    target: str
+    reason: str
+
 
 class ReferrerRegistry:
     def __init__(self) -> None:
@@ -70,8 +89,11 @@ class ReferrerRegistry:
         (*library* None) gets the always-on ones only. Registration order is
         kept within a phase. Each is bound to *library*
         (``Referrer.for_library``, #387). Raises ReferrerError (target: the
-        Library) when the settings can't be read, so the caller keeps the Source.
+        Library) when the settings can't be read, so the caller keeps the Source,
+        and for an :class:`UndecidedLibrary` (#413).
         """
+        if isinstance(library, UndecidedLibrary):
+            raise ReferrerError(library.target, library.reason, kept=UNDECIDED_LIBRARY_KEPT)
         return [
             self._bound(referrer, library)
             for referrer in sorted(self._referrers.values(), key=lambda r: r.phase)
@@ -669,6 +691,7 @@ __all__ = [
     "ReferrerOutcome",
     "ReferrerRegistry",
     "StagedPlacement",
+    "UndecidedLibrary",
     "atomic_write_bytes",
     "places_output",
     "plan_changes",
