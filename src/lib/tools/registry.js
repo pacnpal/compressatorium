@@ -104,6 +104,12 @@ const NKIT_VERIFY_EXTS = [];
 const XISO_COMPRESS_EXTS = ['.iso'];
 const XISO_VERIFY_EXTS = ['.xiso.iso'];
 const XISO_SOURCE_EXTS = [...XISO_COMPRESS_EXTS, ...XISO_VERIFY_EXTS];
+// rom-converto: one tool, several unrelated modes (#420). Xbox 360 ISO -> ZAR
+// is the first; like xiso, its `.iso` claim is decided by the backend's Xbox
+// filesystem probe (`contentRefined` below), so it is offered only on Xbox 360
+// images.
+const ZAR_COMPRESS_EXTS = ['.iso'];
+const ROM_CONVERTO_VERIFY_EXTS = ['.zar'];
 // eXoDOS repack: an eXoDOS game zip in, a DOSBox Pure zip (.dosz) out. `.zip`
 // is also romz's archive extension; the backend reads each zip's directory in
 // plan_job and skips one that is not an eXoDOS game, with the reason.
@@ -123,6 +129,8 @@ const EXODOS_VERIFY_EXTS = ['.dosz'];
  * @property {boolean} supportsCompressionLevel
  * @property {boolean} supportsDeleteOnVerify
  * @property {boolean} [supportsRoundTrip] delete-source compares content digests (Round-trip)
+ * @property {string} [sourceKeptReason] why this mode always keeps its Source (mirrors
+ *                                        ModeSpec.source_kept_reason); shown where the delete option would be
  * @property {boolean} allowsArchiveInput
  * @property {boolean} [supportsSplit] makeps3iso -s 4 GB FAT32 split (opt-in)
  */
@@ -733,6 +741,47 @@ export const TOOLS = [
     productPath: (path) => {
       if (/\.xiso\.iso$/i.test(path)) return path;
       if (/\.iso$/i.test(path)) return path.replace(/\.iso$/i, '.xiso.iso');
+      return path;
+    },
+  },
+  {
+    id: 'rom_converto',
+    label: 'rom-converto',
+    hint: 'The converter RomM ships, for formats nothing else here writes. Xbox 360 ISO to ZAR for Xenia.',
+    verifyPrefix: 'rom-converto',
+    sourceExts: ZAR_COMPRESS_EXTS,
+    verifyExts: ROM_CONVERTO_VERIFY_EXTS,
+    // Offered only on files the backend's Xbox 360 probe matched, as for xiso.
+    contentRefined: true,
+    modeGroups: ['xenon'],
+    groups: { xenon: 'Xbox 360' },
+    defaultMode: 'zar_compress',
+    glyph: 'RC',
+    accent: 'var(--badge-dvd)',
+    // rom-converto 0.24.0 picks its own ZArchive settings; nothing to tune.
+    compressionCodecs: [],
+    compressionStyle: 'none',
+    modes: [
+      { mode: 'zar_compress', kind: 'compress', label: 'Xbox 360 ISO → ZAR', group: 'xenon',
+        outputExt: '.zar', inputExtensions: ZAR_COMPRESS_EXTS,
+        supportsCompression: false, supportsCompressionLevel: false,
+        // Verifiable (every block decoded and hash-checked) but never
+        // deletable, and it says why. Mirrors the backend ModeSpec.
+        supportsDeleteOnVerify: false, supportsVerify: true,
+        sourceKeptReason: 'A ZAR holds the disc\'s files, not the disc itself, and rom-converto '
+          + '0.24.0 can\'t turn a ZAR back into an ISO, so the output can\'t be Round-tripped '
+          + 'against the ISO. The Source ISO is always kept.',
+        // Not from archives: the Xbox 360 probe needs the real file.
+        allowsArchiveInput: false },
+    ],
+    getInfo: (path) => api.getRomConvertoInfo(path),
+    verify: (path, opts) => api.verifyRomConverto(path, opts),
+    verifyBatch: (paths, opts) => api.verifyBatchRomConverto(paths, opts),
+    // `Game.iso` / `Game.xiso.iso` -> `Game.zar`; a product maps to itself.
+    productPath: (path) => {
+      if (/\.zar$/i.test(path)) return path;
+      if (/\.xiso\.iso$/i.test(path)) return path.replace(/\.xiso\.iso$/i, '.zar');
+      if (/\.iso$/i.test(path)) return path.replace(/\.iso$/i, '.zar');
       return path;
     },
   },

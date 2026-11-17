@@ -32,6 +32,7 @@ from app.services.jwudtool import (
     JWUD_DECOMPRESS_EXTENSIONS,
     jwudtool_service,
 )
+from app.services.rom_converto import ZAR_INPUT_EXTENSIONS, rom_converto_service
 from app.services.tools import registry
 from app.services.tools.registry import ToolRegistry
 from app.services.tools.spec import ModeKind, ModeSpec
@@ -96,6 +97,8 @@ def _legacy_tool_for_mode(mode: str) -> str:
         return "jwud"
     if mode.startswith("xiso_"):
         return "xiso"
+    if mode.startswith("zar_"):
+        return "rom_converto"
     if mode.startswith("exodos_"):
         return "exodos"
     return "chdman"
@@ -103,7 +106,7 @@ def _legacy_tool_for_mode(mode: str) -> str:
 
 def test_every_conversion_mode_resolves_to_exactly_one_tool():
     resolved = {m.value: registry.for_mode(m.value).id for m in CONVERSION_MODES}
-    assert len(resolved) == 35
+    assert len(resolved) == 36
     # Each registered mode is owned by exactly one tool (no duplicates).
     assert sorted(s.mode for s in registry.mode_specs()) == sorted(resolved)
 
@@ -148,6 +151,8 @@ def test_kind_classification():
     assert spec("cso_decompress").kind is ModeKind.EXTRACT
     # extract-xiso trims a disc image in one direction only
     assert spec("xiso_rewrite").kind is ModeKind.COMPRESS
+    # rom-converto packs an Xbox 360 image into a ZAR, one direction only
+    assert spec("zar_compress").kind is ModeKind.COMPRESS
     # the eXoDOS repack writes a new file of a different kind beside its source
     assert spec("exodos_repack").kind is ModeKind.COMPRESS
     # romz 7z/zip compress vs extract
@@ -220,18 +225,20 @@ def test_convertible_extensions_match_service_constants():
         | set(JWUD_COMPRESS_EXTENSIONS)
         | set(JWUD_DECOMPRESS_EXTENSIONS)
         | set(XISO_CONVERTIBLE_EXTENSIONS)
+        | set(ZAR_INPUT_EXTENSIONS)
         | set(EXODOS_INPUT_EXTENSIONS)
     )
     assert set(registry.convertible_extensions()) == expected
 
 
 def test_tools_for_input_representative():
-    # `.iso` by extension alone; xiso then narrows per file by content
-    # (``converts_path``), which this extension-level listing doesn't apply.
+    # `.iso` by extension alone; xiso and rom_converto then narrow per file by
+    # content (``converts_path``), which this extension-level listing doesn't apply.
     assert sorted(t.id for t in registry.tools_for_input("game.iso")) == [
         "chdman",
         "cso",
         "dolphin",
+        "rom_converto",
         "xiso",
     ]
     assert [t.id for t in registry.tools_for_input("rom.3ds")] == ["z3ds"]
@@ -265,6 +272,7 @@ def test_tools_for_input_representative():
         "cso",
         "dolphin",
         "nkit",
+        "rom_converto",
         "xiso",
     ]
     assert sorted(t.id for t in registry.tools_for_input("game.nkit.gcz")) == [
@@ -288,6 +296,7 @@ def test_tool_for_verify_representative():
     assert registry.tool_for_verify("Game.zip").id == "romz"
     assert registry.tool_for_verify("Game.wux").id == "jwud"
     assert registry.tool_for_verify("Game.dosz").id == "exodos"
+    assert registry.tool_for_verify("Game.zar").id == "rom_converto"
     # A compound product outranks the generic `.iso` tail Dolphin claims...
     assert registry.tool_for_verify("Game.xiso.iso").id == "xiso"
     # ...while a plain `.iso` still resolves exactly as before.
@@ -348,6 +357,7 @@ def test_tools_verifying_path_refines_extension_match(tmp_path):
         ("jwud_compress", jwudtool_service, "/data/Game.wud"),
         ("jwud_decompress", jwudtool_service, "/data/Game.wux"),
         ("xiso_rewrite", extract_xiso_service, "/data/Game.iso"),
+        ("zar_compress", rom_converto_service, "/data/Game.iso"),
         ("exodos_repack", exodos_service, "/data/Abaron (1995).zip"),
     ],
 )
@@ -422,7 +432,8 @@ def test_mode_spec_tool_id_must_match_owner():
 
 
 @pytest.mark.parametrize(
-    "tool_id", ["chdman", "dolphin", "z3ds", "nsz", "cso", "romz", "jwud", "exodos"],
+    "tool_id",
+    ["chdman", "dolphin", "z3ds", "nsz", "cso", "romz", "jwud", "rom_converto", "exodos"],
 )
 def test_output_extensions_cover_mode_output_exts(tool_id):
     tool = registry.get(tool_id)
@@ -491,7 +502,12 @@ def _mode_output_exts(tool, mode) -> set[str]:
 # a rewritten dosbox.conf added), so its verify proves the product reads back,
 # never that it holds the Source. The Source is the operator's eXoDOS install,
 # which eXoDOS itself still needs.
-_DELETE_ON_VERIFY_DECLINED = {"nkit_to_rvz", "createld", "exodos_repack"}
+#
+# zar_compress (#422): `xenon verify` decodes every block and checks its hash,
+# but a ZAR holds the disc's files, not the disc, and rom-converto 0.24.0 has no
+# ZAR -> ISO, so nothing can Round-trip it against the Source ISO. The mode says
+# so itself (ModeSpec.source_kept_reason).
+_DELETE_ON_VERIFY_DECLINED = {"nkit_to_rvz", "createld", "exodos_repack", "zar_compress"}
 
 
 def test_delete_on_verify_requires_a_verifiable_output():

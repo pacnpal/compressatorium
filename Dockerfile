@@ -243,6 +243,43 @@ RUN wget -q "${JWUDTOOL_URL}" -O JWUDTool.jar && \
       | grep -qx "version=${COMMONS_IO_VERSION}"
 
 # ---------------------------------------------------------------------------
+# rom-converto builder stage: the pinned release binary for the build arch.
+#
+# DevYukine/rom-converto (MIT) is the converter RomM ships; this app runs the
+# version RomM pins, v0.24.0, for Xbox 360 ISO -> ZAR. Upstream publishes plain
+# per-arch binaries (no archive). The asset names say x64, not amd64, so
+# TARGETARCH is mapped here. Each SHA-256 is the one the spike (#421) recorded,
+# which matched the release's own .sha256 files; a mismatch fails the build.
+# The glibc builds run on trixie-slim with no extra libraries. The runtime
+# stage smoke-tests the binary with --version.
+# DL3008 ignored for the same reason as the other builders (generic deps).
+# ---------------------------------------------------------------------------
+FROM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2 AS rom-converto-builder
+ENV DEBIAN_FRONTEND=noninteractive
+ARG TARGETARCH
+ARG ROM_CONVERTO_VERSION="0.24.0"
+ARG ROM_CONVERTO_SHA256_AMD64="0d4abd56cfec477ff447f68b656d45ca48f670f464363bca2d895b1eee2c356d"
+ARG ROM_CONVERTO_SHA256_ARM64="990286bc3367342b0e04ab6dd0d28d8e95c3133ac2b4c5d6440a119e541b0b43"
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+# hadolint ignore=DL3008
+RUN apt-get update -o Acquire::Retries=3 && \
+    apt-get install -y --no-install-recommends \
+    wget \
+    ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /tmp/rom-converto
+RUN case "${TARGETARCH}" in \
+      amd64) ASSET="rom-converto-cli-linux-x64"; EXPECTED_SHA256="${ROM_CONVERTO_SHA256_AMD64}" ;; \
+      arm64) ASSET="rom-converto-cli-linux-arm64"; EXPECTED_SHA256="${ROM_CONVERTO_SHA256_ARM64}" ;; \
+      *) echo "Unsupported architecture for rom-converto: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac && \
+    wget -q "https://github.com/DevYukine/rom-converto/releases/download/v${ROM_CONVERTO_VERSION}/${ASSET}" \
+      -O rom-converto && \
+    echo "${EXPECTED_SHA256}  rom-converto" | sha256sum -c - && \
+    chmod 755 rom-converto
+
+# ---------------------------------------------------------------------------
 # Frontend builder stage: compile the Svelte 5 SPA with Vite.
 #
 # Output is emitted to /build/static via vite.config.js (build.outDir),
@@ -382,6 +419,11 @@ RUN printf '#!/bin/sh\nexec java -XX:MaxRAMPercentage=75.0 -jar /usr/local/share
 # Modified-BSD: the license text ships with the binary, as it requires.
 COPY --from=extract-xiso-builder /tmp/extract-xiso/build/extract-xiso /usr/local/bin/extract-xiso
 COPY --from=extract-xiso-builder /tmp/extract-xiso/LICENSE.TXT /usr/share/doc/extract-xiso/LICENSE.TXT
+
+# Install rom-converto from its stage (the pinned, SHA-256-checked v0.24.0
+# release; Xbox 360 ISO -> ZAR). --version runs no update check.
+COPY --from=rom-converto-builder /tmp/rom-converto/rom-converto /usr/local/bin/rom-converto
+RUN rom-converto --version > /dev/null
 
 # Install nkit2iso from its builder stage (NKit-shrunk GC/Wii image -> .iso),
 # built from the vendored third_party/nkit2iso. MIT, statically linked (CGO_ENABLED=0), so it needs no extra runtime libs.

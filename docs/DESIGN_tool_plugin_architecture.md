@@ -138,6 +138,7 @@ class ModeSpec:
     supports_compression_level: bool = False   # dolphin rvz/wia only
     supports_delete_on_verify: bool = False  # may this job delete its source?
     supports_verify: bool = False            # can its output be checked at all?
+    source_kept_reason: str = ""               # why it never deletes its Source (see 3.3.9)
     allows_archive_input: bool = False         # opt-in; set True on every mode that can take a member straight from an archive (chdman create + extract, dolphin, z3ds). Only chdman copy (.chd recompress round-trip) leaves it False
 ```
 
@@ -415,6 +416,10 @@ class SubprocessRunner:
         - `heartbeat` — dolphin's 2s "Converting... (Ns)" keep-alive.
         - `output_growth_paths()` — widen the stall probe to a set of files whose
           summed size grows even as filenames change mid-run (makeps3iso split).
+          `files_in_folder(folder)` builds one over every file in a private
+          work folder, for a tool that writes under a temp name of its own and
+          renames at the end (rom-converto); see "A tool that names its own
+          temp file" below.
         - `mode` — the conversion mode, used to look up an expected output/input
           size ratio in `SIZE_RATIOS` so the size-growth fallback (below) can
           emit a percentage as well as a message. Optional: a mode with no row
@@ -535,6 +540,30 @@ The rate matters as much as the byte count: it is what distinguishes a job that
 is merely slow (bytes climbing, MB/min collapsing) from one that has stopped
 dead. Before this, dolphin-tool reported only elapsed seconds against a 0% bar,
 and users could not tell a crawling conversion from a hung one.
+
+### A tool that names its own temp file (`files_in_folder`, #422)
+
+The growth signal above watches `output_path`, which works for every tool that
+writes there as it goes. rom-converto does not: it writes
+`.Game.zar.<random>.tmp` beside the path it was given and renames it at the very
+end, it prints nothing on a pipe (no TTY, no progress), and what it does print
+goes to stderr. Watching `output_path`, such a run shows no growth at all, so
+the stall watchdog would kill a healthy multi-gigabyte ZAR job at
+`CHD_PROGRESS_TIMEOUT` and the bar would never move.
+
+`subprocess_runner.files_in_folder(folder)` returns an `output_growth_paths`
+callable that lists every regular file directly in *folder* (not following
+subfolders or links; a missing folder is no files). The tool is run into a
+private work folder beside the output (hidden, mode 0700, a same-filesystem
+rename away from the output), and the folder's summed size becomes the growth
+signal: the watchdog sees activity, the size fallback reports bytes and rate
+(and a percentage when `SIZE_RATIOS` has the mode, `zar_compress` 0.5), and none
+of it depends on the name the tool picks. The callable runs in the runner's
+probe thread, never on the event loop. `tests/test_subprocess_runner.py` pins
+both halves: such a child stalls out on the default probe and completes with
+`files_in_folder`. Any later tool with the same habit passes the same helper.
+
+stderr needs nothing new: `run()` already merges it into the stream it reads.
 
 ### Verify is bounded and cancellable (issue #266)
 
@@ -985,6 +1014,35 @@ it only after the output is derived and skip/locked collisions short-circuit,
 and the create/batch routes apply queue-depth backpressure (HTTP 429) *before*
 planning when the queue is already full — so a doomed submit never pays for the
 tree walk.
+
+### Placing a product from a work folder (`services/output_placement.py`, #422)
+
+A service whose tool writes into a private work folder (extract-xiso, and
+rom-converto through `files_in_folder`) ends with one move: the product onto the
+output path. That move runs after the child's stall watchdog has stopped, can
+block on a stuck mount, and can complete long after the job gave up. Both
+services do it through one helper, `OutputPlacement(output_path, label=...)`:
+
+- `place(produced)` (blocking; run it through `run_detached_within_stall_bound`)
+  records the product's identity (device and inode), then
+  `place_without_clobbering`: a file already at the output path is not this
+  job's, so it is refused, never replaced. Errors name the format from `label`
+  ("... appeared while the XISO was being written; not overwriting it",
+  "Could not place the ZAR output: ...").
+- `abandon()` marks the job as having given up and returns the product's
+  identity only if the move had completed. The two are synchronized under a
+  lock held for a couple of assignments, never across I/O.
+- `abandon_and_sweep()` is what the service's failure and cancel path awaits:
+  a completed move's product is removed (bounded, through
+  `remove_partial_output`) only while the path is still that file. A move not
+  yet complete leaves the output path untouched, and when it lands later,
+  `place` sees the job gave up and removes its own product, again only while it
+  is still the same file.
+
+So a cancel or a stall never deletes a file this job didn't put there, and a
+late move never leaves one behind. `tests/test_output_placement.py` pins the
+helper, including the late-landing cancellation path; the xiso suite's
+placement tests pin extract-xiso on it unchanged.
 
 ### Cleaning up partial output is bounded too (issue #267)
 
@@ -2386,6 +2444,27 @@ verified at all") and `ToolPlugin.delete_on_verify_is_safe(mode, compression)`
 ("can *this* job's settings prove it") — re-asked in `_process_job` itself,
 because that is where the source is unlinked and a job can arrive there without
 having passed either plan-time check.
+
+**A mode that keeps its Source on principle says why.** `ModeSpec.source_kept_reason`
+(mirrored on `ChainSpec`, and as `sourceKeptReason` on the frontend mode entry,
+which `tests/test_frontend_parity_186.py` compares) is the user-facing reason for
+a mode whose `supports_delete_on_verify` is False not for want of a check but
+because deleting would lose something nothing can rebuild. rom-converto's
+`zar_compress` (#422) is the first: a ZAR holds the disc's files, not the disc,
+and v0.24.0 can't turn one back into an ISO, so there is no Round-trip against
+the Source. The mode contract is the only switch: no caller branches on the tool.
+It is read in four places, each falling back to its old wording when the reason
+is empty:
+
+- `routes/convert.py`: the 400 that refuses delete-on-verify (single, batch and
+  `/jobs/delete-plan`) carries the reason (`_delete_on_verify_unsupported_detail`).
+- `app/cli.py`: `--delete-source` refused at parse time, and each kept Source's
+  "Source kept: ..." line in the plan.
+- The convert panel shows "Sources are kept." and the reason where the delete
+  checkbox would be; the Rule editor appends it to the verify checkbox's text.
+
+A mode with a reason never sets `supports_delete_on_verify`
+(`tests/test_rom_converto.py` checks every registered mode).
 
 ### 3.3.10 The Ledger (`services/ledger.py`)
 

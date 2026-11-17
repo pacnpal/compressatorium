@@ -75,6 +75,13 @@ class ModeSpec:
     # job compares the two before deleting the Source. False keeps the
     # container check alone, and such a job says Intact (#298).
     supports_round_trip: bool = False
+    # Why this mode always keeps its Source, in the user's words, for a mode
+    # whose delete-on-verify is off on principle rather than for want of a
+    # check (ZAR stores files, not the disc, and nothing rebuilds the ISO).
+    # Only meaningful with ``supports_delete_on_verify`` False. The convert
+    # panel, the Rule editor, the refusing 400 and the CLI all show it, so the
+    # user learns why the option isn't there. Empty says nothing.
+    source_kept_reason: str = ""
     allows_archive_input: bool = False         # chdman create modes only
     # Sibling outputs this mode writes beside its primary output_path, expressed
     # as suffix swaps off the primary (e.g. extractcd's ``.cue`` -> ``.bin``
@@ -202,6 +209,8 @@ class ChainSpec:
     # Structural parity with ModeSpec. A chain that sets it compares the first
     # step's decoded Source with the final output (ChainTool.content_digest).
     supports_round_trip: bool = False
+    # Structural parity with ModeSpec.source_kept_reason.
+    source_kept_reason: str = ""
     allows_archive_input: bool = True        # == step 1's
     input_kinds: frozenset[InputKind] = field(
         default_factory=lambda: frozenset({InputKind.FILE})
