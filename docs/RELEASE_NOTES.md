@@ -144,6 +144,17 @@
   conversion or undoing it, and the undo first moves the converted file
   aside to a named path, so no step puts a file where another one is. Swaps
   set aside before this update are still recovered.
+- **A symlinked system folder keeps its ES-DE gamelist entry** (#413). In a
+  Library used by an EmulationStation frontend, a system folder that is a
+  symlink to somewhere outside the Library (`ROMs/psx -> /elsewhere/psx`) was
+  treated as in no Library: converting a game there deleted the source and
+  left `gamelists/psx/gamelist.xml` pointing at a file that was gone, so the
+  game lost its artwork, favourite and play count. The Library is now found
+  from the path as it is listed in the Library's folders, so the gamelist is
+  updated before the source is deleted, as for any other game. A folder that
+  is listed in one Library but leads into another keeps its source, and the
+  job says "couldn't tell which Library holds it". A symlink that leads out
+  of every Volume is still refused, as before.
 - **RomM settings saves land in order** (#408). Two RomM settings saves made
   close together (a RomM Settings card save and the Rules editor's
   EmulationStation switch, say) could be answered out of order, leaving the
