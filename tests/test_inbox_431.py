@@ -1579,7 +1579,8 @@ def test_a_replacement_that_cant_be_put_back_is_kept_and_named(tmp_path, monkeyp
 
     [kept] = _quarantined(a)
     assert kept in str(failed.value)
-    assert (a / kept).read_bytes() == b"a replacement"
+    # A private folder of the app's own, holding the replacement.
+    assert [p.read_bytes() for p in (a / kept).iterdir()] == [b"a replacement"]
     assert (a / "Game.iso").read_bytes() == b"made again"
     assert (b / "Game.iso").read_bytes() == b"original"
 
@@ -1825,3 +1826,82 @@ async def test_an_open_in_flight_when_the_stop_lands_reads_nothing(vol, db, monk
     assert verified == ["A.iso"]
     assert b_reads == []
     assert not list((vol / "ROMs").rglob("*.iso"))
+
+
+
+# ---- review round six (CodeRabbit follow-ups on #443) -----------------------
+
+
+def test_the_quarantine_is_a_private_folder_no_name_can_collide_with(tmp_path, monkeypatch):
+    """CodeRabbit 4605168938, ruled: the source is quarantined into a fresh
+    folder of its own (mode 0700, same filesystem), not under a name in the
+    shared folder: a name already there is never overwritten, and the
+    quarantined entry is reachable only inside the private folder."""
+    import stat as st
+
+    from utils import path_utils
+
+    monkeypatch.setattr(path_utils, "_rename_noreplace_at", lambda *_a: False)
+    a, b = _two_folders(tmp_path)
+    taken = a / ".compressatorium-q-taken"
+    taken.write_bytes(b"someone else's")
+    names = iter([".compressatorium-q-taken", ".compressatorium-q-fresh"])
+    monkeypatch.setattr(path_utils, "short_temp_name", lambda **_k: next(names))
+    real_rename = os.rename
+    seen = {}
+
+    def rename(src, dst, **kwargs):
+        real_rename(src, dst, **kwargs)
+        private = a / ".compressatorium-q-fresh"
+        seen["mode"] = st.S_IMODE(private.stat().st_mode)
+        seen["inside"] = sorted(p.name for p in private.iterdir())
+        seen["shared"] = sorted(p.name for p in a.iterdir())
+
+    monkeypatch.setattr(path_utils.os, "rename", rename)
+    src_fd, dst_fd = os.open(a, os.O_RDONLY), os.open(b, os.O_RDONLY)
+    try:
+        path_utils.place_without_clobbering(
+            "Game.iso", "Game.iso", src_dir_fd=src_fd, dst_dir_fd=dst_fd,
+            identity_sensitive=True,
+        )
+    finally:
+        os.close(src_fd)
+        os.close(dst_fd)
+
+    assert taken.read_bytes() == b"someone else's"
+    assert seen["mode"] == 0o700
+    assert seen["inside"] == ["Game.iso"]
+    assert "Game.iso" not in seen["shared"]
+    assert (b / "Game.iso").read_bytes() == b"original"
+    assert sorted(p.name for p in a.iterdir()) == [".compressatorium-q-taken"]
+
+
+@pytest.mark.asyncio
+async def test_a_stop_before_the_read_back_open_reads_nothing(vol, db, monkeypatch):
+    """CodeRabbit 4605167178: the read-back of the staged copy is an open like
+    any other: a stop that lands between its check and its open closes it
+    unread, and the copy ends deferred."""
+    from services.inbox import intake
+
+    library = _library(vol)
+    box = _inbox(vol, library, settle=0)
+    _drop(vol / "Downloads" / "ps2" / "Game.iso")
+    real_may_open = intake._may_open
+    checks_seen = []
+
+    def may_open(name):
+        answer = real_may_open(name)
+        checks_seen.append(name)
+        if len(checks_seen) == 3:  # the read-back's check: a stop lands now
+            intake._set_stop(True)
+        return answer
+
+    monkeypatch.setattr(intake, "_may_open", may_open)
+
+    await _poll(box, now=0)
+    await _poll(box, now=1)
+
+    assert len(checks_seen) == 3
+    assert not (vol / "ROMs" / "ps2" / "Game.iso").exists()
+    assert (vol / "Downloads" / "ps2" / "Game.iso").exists()
+    assert _inbox_findings() == []

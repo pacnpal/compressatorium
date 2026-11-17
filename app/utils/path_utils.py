@@ -163,6 +163,23 @@ def _link_no_clobber(src: str, dst: str, src_dir_fd: int | None, dst_dir_fd: int
         ) from exc
 
 
+def _private_folder(parent: int) -> tuple[str, int]:
+    """A fresh folder in the open folder *parent* (same filesystem), mode 0700
+    so only this app's user can enter it, and its descriptor, opened with no
+    link followed. Made with ``mkdir``, which never takes an existing name: a
+    colliding random name is tried again, never reused."""
+    for _ in range(100):
+        name = short_temp_name(prefix=".compressatorium-q-")
+        try:
+            os.mkdir(name, 0o700, dir_fd=parent)
+        except FileExistsError:
+            continue
+        fd = os.open(name, _BENEATH_DIR_FLAGS, dir_fd=parent)
+        os.fchmod(fd, 0o700)  # whatever the umask left
+        return name, fd
+    raise OSError(errno.EEXIST, "No free name for a quarantine folder")
+
+
 def _move_by_quarantine(
     src: str, dst: str, src_dir_fd: int | None, dst_dir_fd: int | None,
 ) -> None:
@@ -170,45 +187,61 @@ def _move_by_quarantine(
     there is no atomic no-replace rename:
 
     1. ``link(src, dst)``: no clobber, ``dst`` taken raises.
-    2. ``rename(src, quarantine)``: a fresh random name beside ``src``, which
-       nothing else knows; atomic.
-    3. The quarantined entry is the inode linked: unlink the quarantine name.
-       Done, and a file put at ``src`` after step 2 is never touched.
-       It isn't (``src`` was replaced between steps 1 and 2): the file moved
-       is the one that was there at step 1, now at ``dst`` alone, and is kept
-       there; the replacement is put back at ``src`` (``link``, which fails if
-       ``src`` was made again meanwhile) and its quarantine name removed. If it
-       can't be put back it stays under its quarantine name, and
-       :class:`MoveRollbackFailed` names it.
+    2. ``rename(src, <private>/<name>)``: into a fresh folder of its own beside
+       ``src`` (:func:`_private_folder`: 0700, same filesystem), atomic. No
+       name in the shared folder is involved, so none can collide, and the
+       quarantined entry is reachable only inside the private folder, which
+       only this app's user can enter.
+    3. The quarantined entry is the inode linked: unlink it inside the private
+       folder, then remove that folder. Done, and a file put at ``src`` after
+       step 2 is never touched. It isn't (``src`` was replaced between steps 1
+       and 2): the file moved is the one that was there at step 1, now at
+       ``dst`` alone, and is kept there; the replacement is put back at
+       ``src`` (``link``, which fails if ``src`` was made again meanwhile) and
+       the private folder removed. If it can't be put back it stays in the
+       private folder, and :class:`MoveRollbackFailed` names it.
 
     Nothing is ever deleted that a name doesn't also keep: each unlink removes
     a second name of an inode another name still holds.
     """
-    _link_no_clobber(src, dst, src_dir_fd, dst_dir_fd)
-    linked = os.stat(dst, dir_fd=dst_dir_fd, follow_symlinks=False)
-    quarantine = short_temp_name(prefix=".compressatorium-q-")
+    if src_dir_fd is None:
+        parent = os.open(os.path.dirname(src) or ".", _BENEATH_DIR_FLAGS)
+    else:
+        parent = src_dir_fd
+    name = os.path.basename(src) if src_dir_fd is None else src
     try:
-        os.rename(src, quarantine, src_dir_fd=src_dir_fd, dst_dir_fd=src_dir_fd)
-    except FileNotFoundError:
-        return  # the src name is gone already: the file is at dst
-    held = os.stat(quarantine, dir_fd=src_dir_fd, follow_symlinks=False)
-    if (held.st_dev, held.st_ino) == (linked.st_dev, linked.st_ino):
-        os.unlink(quarantine, dir_fd=src_dir_fd)
-        return
-    # Replaced between the link and the quarantine rename: put it back.
-    try:
-        _link_no_clobber(quarantine, src, src_dir_fd, src_dir_fd)
-    except OSError as exc:
-        logger.error(
-            "place_without_clobbering: %s was replaced while it was moved and the "
-            "replacement couldn't be put back; it is kept as %s: %s", src, quarantine, exc,
-        )
-        raise MoveRollbackFailed(
-            exc.errno or errno.EIO,
-            f"{src} was replaced while it was moved, and the replacement couldn't be "
-            f"put back: it is kept as {quarantine} beside it ({exc})",
-        ) from exc
-    os.unlink(quarantine, dir_fd=src_dir_fd)
+        _link_no_clobber(src, dst, src_dir_fd, dst_dir_fd)
+        linked = os.stat(dst, dir_fd=dst_dir_fd, follow_symlinks=False)
+        private, private_fd = _private_folder(parent)
+        try:
+            try:
+                os.rename(name, name, src_dir_fd=parent, dst_dir_fd=private_fd)
+            except FileNotFoundError:
+                os.rmdir(private, dir_fd=parent)
+                return  # the src name is gone already: the file is at dst
+            held = os.stat(name, dir_fd=private_fd, follow_symlinks=False)
+            if (held.st_dev, held.st_ino) != (linked.st_dev, linked.st_ino):
+                # Replaced between the link and the quarantine: put it back.
+                try:
+                    _link_no_clobber(name, name, private_fd, parent)
+                except OSError as exc:
+                    logger.error(
+                        "place_without_clobbering: %s was replaced while it was moved "
+                        "and the replacement couldn't be put back; it is kept in %s: %s",
+                        src, private, exc,
+                    )
+                    raise MoveRollbackFailed(
+                        exc.errno or errno.EIO,
+                        f"{src} was replaced while it was moved, and the replacement "
+                        f"couldn't be put back: it is kept in {private} beside it ({exc})",
+                    ) from exc
+            os.unlink(name, dir_fd=private_fd)
+        finally:
+            os.close(private_fd)
+        os.rmdir(private, dir_fd=parent)
+    finally:
+        if src_dir_fd is None:
+            os.close(parent)
 
 
 # errnos meaning "this kernel/filesystem has no no-replace rename", as opposed

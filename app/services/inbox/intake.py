@@ -1017,7 +1017,12 @@ def _stage_copy(
                 dst.flush()
                 os.fsync(dst.fileno())
             read = new_hasher("sha1")
-            with open(target, "rb") as back:
+            # The read-back is an open like any other: guarded by the same
+            # stop check right before it and right after it.
+            generation = _may_open(name)
+            back_fd = os.open(target, os.O_RDONLY | _NOFOLLOW)
+            _opened(name, back_fd, generation)
+            with os.fdopen(back_fd, "rb") as back:
                 while chunk := back.read(_CHUNK):
                     progress(target)
                     read.update(chunk)
