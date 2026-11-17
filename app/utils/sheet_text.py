@@ -152,6 +152,14 @@ def _sheet_spellings(path: str | Path) -> tuple[list[str], str] | None:
             raw = fh.read(MAX_SHEET_BYTES + 1)
     except OSError:
         return None
+    return sheet_spellings_of(raw, Path(path).suffix)
+
+
+def sheet_spellings_of(raw: bytes, suffix: str) -> tuple[list[str], str] | None:
+    """``(readings, native)`` of the sheet bytes *raw* (a ``.cue`` or
+    ``.gdi`` by *suffix*), or None when it isn't one read whole: the
+    spellings every reader here tries, in order (``sheet_readings``), for a
+    caller that already holds the bytes (an Image rename, #426)."""
     if len(raw) > MAX_SHEET_BYTES or not _chd_framing_ok(raw):
         return None
     # Exactly the bytes chdman reads, BOM included: chdman does not strip a
@@ -166,7 +174,7 @@ def _sheet_spellings(path: str | Path) -> tuple[list[str], str] | None:
         first = raw.decode("cp1252", errors="replace")
     latin1 = raw.decode("latin-1")
     # Quotes and whitespace are ASCII, the same in every spelling.
-    if not _quotes_close(latin1, cue=Path(path).suffix.lower() == ".cue"):
+    if not _quotes_close(latin1, cue=suffix.lower() == ".cue"):
         return None
     readings = [first, latin1]
     if native not in readings:

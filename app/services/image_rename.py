@@ -89,6 +89,7 @@ from utils.sheet_text import (
     cue_tracks,
     gdi_track_names,
     rewrite_track_names,
+    sheet_spellings_of,
 )
 
 logger = get_logger("image_rename")
@@ -144,6 +145,17 @@ def inner_renames(renames: Mapping[str, str], folder: Folder | None) -> dict[str
         old: os.path.join(folder.old, os.path.relpath(new, folder.new))
         for old, new in renames.items()
     }
+
+
+def referrer_renames(renames: Mapping[str, str], folder: Folder | None) -> dict[str, str]:
+    """What the Referrers are told moves: every file, and a renamed folder
+    too, so an entry that names the folder itself (an ES-DE ``<folder>``
+    entry, Codex 4604233211) follows it as an entry naming a file does. The
+    preview plans with it and the hook runs with it."""
+    moved = dict(renames)
+    if folder is not None:
+        moved[folder.old] = folder.new
+    return moved
 
 
 def _problem_blocking(renames: Mapping[str, str], folder: Folder | None) -> str | None:
@@ -280,8 +292,11 @@ class _Files:
         """Open each folder beneath its Volume root and fingerprint each
         file through it. Raises OSError or ValueError when one can't be."""
         files = cls()
-        # A sheet kept under its own name (``_every_file``) is no rename.
-        files.renames = {old: new for old, new in renames.items() if old != new}
+        # A sheet kept under its own name (``_every_file``) is no rename; a
+        # renamed folder is one (``referrer_renames``).
+        files.renames = referrer_renames(
+            {old: new for old, new in renames.items() if old != new}, folder,
+        )
         files.sheet = sheet if sheet in renames else None
         files.journal = journal
         try:
@@ -550,28 +565,50 @@ def sheet_reference_changes(
     """``{reference as written: new reference}`` for each track the sheet at
     *sheet* (its bytes *raw*) names that *renames* (``{old: new}``, each in
     its own folder) renames: the reference's folder part kept, its file name
-    changed. None when a renamed track's reference doesn't end with its file
-    name, so it can't be rewritten without guessing (#426)."""
-    parse = {".cue": cue_tracks, ".gdi": gdi_track_names}.get(
-        os.path.splitext(sheet)[1].lower(),
-    )
+    changed (#426). None when that can't be told exactly.
+
+    A reference is resolved the way the tracks were found
+    (``sheet_track_list``, ``pick_existing``): each spelling of it the sheet
+    has, in order (Codex 4604233197: a Windows-1252 ``café`` whose file is
+    spelled in UTF-8). The written reference is the native one, which is
+    what the rewrite changes, and its folder part must be the resolved
+    spelling's. Every file *renames* renames in the sheet's folders must be
+    reached by a reference, or None: the sheet would be left naming a file
+    that is gone."""
+    suffix = os.path.splitext(sheet)[1]
+    parse = {".cue": cue_tracks, ".gdi": gdi_track_names}.get(suffix.lower())
     if parse is None:
         return {}
+    spellings = sheet_spellings_of(raw, suffix)
+    if spellings is None:
+        return None
+    readings, native = spellings
+    written = parse(native)
+    spelled = [parse(text) for text in readings]
     folder = os.path.dirname(sheet)
     by_path = {os.path.normpath(old): new for old, new in renames.items()}
+    reached: set[str] = set()
     changes: dict[str, str] = {}
-    for ref in parse(os.fsdecode(raw)):
-        track = os.path.normpath(os.path.join(folder, ref))
-        new = by_path.get(track)
-        if new is None or ref in changes:
+    for index, ref in enumerate(written):
+        for spelling in [names[index] for names in spelled if index < len(names)] + [ref]:
+            track = os.path.normpath(os.path.join(folder, spelling))
+            if track in by_path:
+                break
+        else:
             continue
-        old_name, new_name = os.path.basename(track), os.path.basename(new)
-        if old_name == new_name:
-            continue
-        if not ref.endswith(old_name):
+        reached.add(track)
+        head, sep, name = spelling.rpartition("/")
+        if name != os.path.basename(track) or ref.rpartition("/")[0] != head:
             return None
-        changes[ref] = ref[: len(ref) - len(old_name)] + new_name
-    return changes
+        new_name = os.path.basename(by_path[track])
+        if new_name != name:
+            changes[ref] = head + sep + new_name
+    own = os.path.normpath(sheet)
+    renamed = {
+        old for old, new in by_path.items()
+        if old != own and os.path.basename(old) != os.path.basename(new)
+    }
+    return changes if renamed <= reached else None
 
 
 def sheet_rewrite(sheet: str, raw: bytes, renames: Mapping[str, str]) -> bytes | None:
@@ -713,7 +750,7 @@ async def _rename_locked(
     try:
         handed: list[HandedOff] = []
         hook = await referrers.update_before_source_removal(
-            image_path, renames, library=library, cancel_event=cancel_event,
+            image_path, files.renames, library=library, cancel_event=cancel_event,
             placement=files.placement(), unawaited=handed, journal=journal,
         )
         await _settle(hook, handed, journal, on_wait)

@@ -6912,7 +6912,12 @@ is the same call with a longer map. It runs the existing Referrer hook
 order, all through the checked folder descriptors:
 
 1. *Rewrite the sheet's track references.* `sheet_reference_changes` maps each
-   reference as written (its folder part kept) to the track's new name, and
+   reference as written (its folder part kept) to the track's new name. A
+   reference is resolved through every spelling of the sheet in order
+   (`sheet_text.sheet_spellings_of`, the same readings `sheet_track_list`
+   picks from), so a Windows-1252 `café` whose file is spelled in UTF-8 is
+   found; the native token is the one changed, and every renamed track must
+   be reached by a reference or the rename stops. Then
    `utils.sheet_text.rewrite_track_names` changes only that token, in the
    quoting it had (double quotes when the new name needs them), reading the
    sheet as chdman does (native spelling, `chd_tokens`). Every other byte is
@@ -6931,7 +6936,10 @@ order, all through the checked folder descriptors:
    that was opened (device and inode through its parent's descriptor), with
    `place_without_clobbering` (a folder takes the no-replace rename). With a
    folder, `renames` names each file under the folder's new name, which is
-   what the Referrers see; `inner_renames` gives the in-folder step. The locks
+   what the Referrers see; `inner_renames` gives the in-folder step. The
+   folder itself is in the Referrers' map too (`referrer_renames`, for the
+   preview and the hook), so an entry naming the folder (an ES-DE
+   `<folder><path>./game</path>`) follows it like a file's entry. The locks
    cover the old files, their new paths in both folders, and the new folder.
 
 A step that fails puts back the files it already renamed, newest first and

@@ -293,6 +293,69 @@ async def test_a_failure_on_the_last_track_puts_every_file_the_sheet_and_the_pla
     assert dat_store.get_match(str(image["sheet"]))["game_name"] == GAME
 
 
+@pytest.mark.asyncio
+async def test_a_gamelist_entry_for_the_renamed_folder_follows_it(
+    db: Path, client: httpx.AsyncClient,
+) -> None:
+    """Codex 4604233211: an ES-DE ``<folder>`` entry names the folder itself."""
+    psx = db / "roms" / "psx"
+    image = await _cue_image(client, psx / "game")
+    gamelist = psx / "gamelist.xml"
+    gamelist.write_text(
+        '<?xml version="1.0"?>\n<gameList>\n'
+        "\t<folder>\n\t\t<path>./game</path>\n\t\t<name>Ape</name>\n\t</folder>\n"
+        "\t<game>\n\t\t<path>./game/game.cue</path>\n\t\t<name>Ape</name>\n\t</game>\n"
+        "</gameList>\n",
+    )
+    await _register(client, db / "roms", es_frontend=True)
+
+    preview = await _preview(client, image["sheet"])
+    (item,) = preview["items"]
+    assert item["status"] == "rename", item
+    (change,) = item["referrer_changes"]
+    assert change["entries"] == 2, change
+
+    job = await _run(client, preview)
+
+    assert _result(job)[str(image["sheet"])]["status"] == "renamed"
+    text = gamelist.read_text()
+    assert f"<path>./{GAME}</path>" in text
+    assert f"<path>./{GAME}/{GAME}.cue</path>" in text
+
+
+@pytest.mark.asyncio
+async def test_a_windows_1252_sheet_has_its_reference_rewritten_as_it_was_resolved(
+    db: Path, client: httpx.AsyncClient,
+) -> None:
+    """Codex 4604233197: the sheet names ``café`` in Windows-1252 and the
+    file is spelled in UTF-8; the reference found is the one rewritten."""
+    psx = db / "roms" / "psx"
+    game = "Cafe Racer (Europe)"
+    raw = (
+        b"REM caf\xe9\r\n"
+        b'FILE "caf\xe9 (Track 1).bin" BINARY\r\n'
+        b"  TRACK 01 MODE1/2352\r\n    INDEX 01 00:00:00\r\n"
+    )
+    sheet = psx / "game.cue"
+    psx.mkdir(parents=True)
+    sheet.write_bytes(raw)
+    roms = {
+        f"{game}.cue": (hashlib.sha1(raw).hexdigest(), len(raw)),
+        f"{game} (Track 1).bin": _track(psx / "café (Track 1).bin", b"data", 4704),
+    }
+    await _import(client, _dat("Sony - PlayStation", game, roms))
+    await _match(client, sheet)
+    await _register(client, db / "roms")
+
+    job = await _run(client, await _preview(client, sheet))
+
+    assert _result(job)[str(sheet)]["status"] == "renamed"
+    assert (psx / f"{game}.cue").read_bytes() == raw.replace(
+        b'"caf\xe9 (Track 1).bin"', f'"{game} (Track 1).bin"'.encode(),
+    )
+    assert (psx / f"{game} (Track 1).bin").exists()
+
+
 async def _assert_untouched(client, db: Path, monkeypatch, seam: str, broken) -> None:
     """Break the sheet rewrite's *seam* with *broken*: the Image is not
     renamed, and the sheet, its tracks, the folder and the playlist end

@@ -387,9 +387,17 @@ def plan_blocking(path: str, tracks: Owners | None) -> tuple[dict, Any]:
         status=RENAME, new_path=final[path],
         files=[{"path": old, "new_path": new} for old, new in final.items()],
         folder={"path": folder.old, "new_path": folder.new} if folder else None,
-        sheet_rewrite=[{"old": old, "new": new} for old, new in rewrite.items()],
+        sheet_rewrite=[
+            {"old": _shown(old), "new": _shown(new)} for old, new in rewrite.items()
+        ],
     )
     return item, library
+
+
+def _shown(reference: str) -> str:
+    """A sheet reference as the preview shows it: a byte that isn't UTF-8
+    (a Windows-1252 sheet's ``é``) written as ``\\xe9``."""
+    return reference.encode("utf-8", "surrogateescape").decode("utf-8", "backslashreplace")
 
 
 def _sheet_changes(path: str, inner: Mapping[str, str]) -> dict[str, str] | None:
@@ -454,7 +462,8 @@ async def _with_referrer_changes(item: dict, library) -> dict:
     placement. One that can't be told skips the Image."""
     if item["status"] != RENAME:
         return item
-    renames, _folder = renames_of(item)
+    # The folder too, as the rename tells the hook (``referrer_renames``).
+    renames = image_rename.referrer_renames(*renames_of(item))
     try:
         changes = await referrers.plan_changes_bounded(
             item["path"], renames, library, image_rename.placement_for(renames),
