@@ -74,6 +74,12 @@
       io: '.iso  →  .xiso.iso',
     },
     {
+      glyph: 'RC',
+      name: 'rom-converto',
+      blurb: 'The converter RomM ships (rom-converto 0.24.0, the version RomM pins), used here only for formats nothing else in this app writes. Its first job is Xbox 360 disc images to ZAR, the ZArchive format Xenia mounts directly: the game\'s files, zstd-compressed, without the video partition and disc padding. Like the Xbox tool, it looks inside each .iso and is only offered on Xbox 360 images; an original Xbox disc can\'t become a ZAR. The result is Game.zar beside the source. The source ISO is always kept: a ZAR holds the disc\'s files, not the disc itself, and nothing turns a ZAR back into an ISO, so the output can\'t be Round-tripped against it, and there is no delete-after-verify option. Verify has rom-converto decode every block and check its hash. Info shows how many files the ZAR holds, their size, and whether default.xex (what Xenia boots) is at its root. rom-converto is downloaded into the image at a pinned version and checked against its SHA-256; outside the image, set ROM_CONVERTO_PATH, and the tool is hidden until the binary is there and runs.',
+      io: '.iso  →  .zar',
+    },
+    {
       glyph: 'DOS',
       name: 'eXoDOS',
       blurb: 'eXoDOS game zips repacked for RomM\'s in-browser DOS player (DOSBox Pure). eXoDOS keeps each game\'s DOSBox setup in a separate !dos folder, with mount paths that point into the whole collection, so a game zip copied into RomM alone does not start. The repack moves the game to the root of a new file and writes its dosbox.conf there with those paths rewritten, which is where DOSBox Pure looks for one. Only mount, imgmount and boot lines change. The result is Game.dosz beside the source (a zip under the name DOSBox Pure documents for one); the original is only ever read. If the config still points outside the game after the rewrite, the job says so, because that game will probably not start. Set EXODOS_DOS_DIR to your eXoDOS !dos folder (inside a volume) to turn the tool on, and in RomM\'s config.yml set emulatorjs.settings.dosbox_pure.dosbox_pure_conf: inside (and leave emulatorjs.disable_batch_bootup at false) so DOSBox Pure can load the file\'s dosbox.conf, which is the file\'s first entry. Whether a repacked game boots in RomM\'s player (EmulatorJS 4.2.3 or the nightly) has not been tested yet.',
@@ -301,8 +307,9 @@
       How deep verify goes depends on the format. The Xbox XISO check is structural only:
       it confirms every file lies inside the image and that extract-xiso can list it, but an
       XISO has no checksums, so a pass does not prove the game data matches the source.
-      That is why XISO offers no delete-on-verify. Read a tool's own entry above before you
-      delete a source by hand.
+      That is why XISO offers no delete-on-verify. A ZAR's check is a real one (every block is
+      decoded and hash-checked), but a ZAR can't be turned back into the ISO it came from, so
+      ZAR keeps its source too. Read a tool's own entry above before you delete a source by hand.
     </p>
     <p>
       Bulk Verify checks a whole selection at once across CHD, Dolphin, 3DS, Switch, and

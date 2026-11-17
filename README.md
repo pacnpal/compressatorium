@@ -2,11 +2,11 @@
 
 > **Fork notice:** This is a fork of MarcTV's Docker CHD Converter. It adds a Web UI and more conversion tools on top of the original CLI converter. Thanks to [MarcTV](https://github.com/MarcTV) for the original.
 
-A game image converter that wraps ten tools: **CHDMAN** (MAME), **dolphin-tool** (Dolphin Emulator), **z3ds_compressor** (Nintendo 3DS), **nsz** (Nintendo Switch), **maxcso** (PSP/PS2 CSO/ZSO), **7z** (handheld ROM archives), **makeps3iso** (PS3 decrypted folder → ISO), **nkit2iso** (NKit-shrunk GameCube/Wii image → ISO), **JWUDTool** (Wii U WUD ↔ WUX), and **extract-xiso** (Xbox / Xbox 360 disc image → XISO). It also repacks **eXoDOS** game zips for RomM's in-browser DOS player. Pick the tool that matches your files and convert from a browser, or run it headless from the command line.
+A game image converter that wraps eleven tools: **CHDMAN** (MAME), **dolphin-tool** (Dolphin Emulator), **z3ds_compressor** (Nintendo 3DS), **nsz** (Nintendo Switch), **maxcso** (PSP/PS2 CSO/ZSO), **7z** (handheld ROM archives), **makeps3iso** (PS3 decrypted folder → ISO), **nkit2iso** (NKit-shrunk GameCube/Wii image → ISO), **JWUDTool** (Wii U WUD ↔ WUX), **extract-xiso** (Xbox / Xbox 360 disc image → XISO), and **rom-converto** (the converter RomM ships; Xbox 360 disc image → ZAR). It also repacks **eXoDOS** game zips for RomM's in-browser DOS player. Pick the tool that matches your files and convert from a browser, or run it headless from the command line.
 
 ## Features
 
-* **Ten tools in one.** CHDMAN, Dolphin, 3DS, Switch, CSO/ZSO, handheld ROM (GB/GBC/GBA/DS), PS3 ISO (a decrypted PS3 folder packed to `.iso`), NKit (an NKit-shrunk GameCube/Wii image restored to a full `.iso`), Wii U (WUD ↔ WUX), or Xbox (a full Xbox / Xbox 360 disc image trimmed to XISO), chosen per job.
+* **Eleven tools in one.** CHDMAN, Dolphin, 3DS, Switch, CSO/ZSO, handheld ROM (GB/GBC/GBA/DS), PS3 ISO (a decrypted PS3 folder packed to `.iso`), NKit (an NKit-shrunk GameCube/Wii image restored to a full `.iso`), Wii U (WUD ↔ WUX), Xbox (a full Xbox / Xbox 360 disc image trimmed to XISO), or rom-converto (an Xbox 360 disc image packed to ZAR for Xenia), chosen per job.
 * **Web UI** for browsing files and converting them. The tool picker filters the whole interface down to the tool you chose.
 * **Nested directories and archives.** Browse subfolders and look inside ZIP, 7z, and RAR archives.
 * **Multiple volume mounts** so you can keep separate game libraries separate.
@@ -14,7 +14,7 @@ A game image converter that wraps ten tools: **CHDMAN** (MAME), **dolphin-tool**
 * **Existing-output detection** with skip, rename, or overwrite.
 * **Delete-on-verify.** Optionally remove the source once the output passes its check. Off by default. By default the output must be Round-tripped: it decodes to the same content as the source. CHDMAN Create LD offers no delete-on-verify.
 * **Progress tracking** through a live job queue.
-* **File info** for CHD, Dolphin, 3DS, Switch, CSO, handheld ROM, NKit, Wii U, and Xbox files.
+* **File info** for CHD, Dolphin, 3DS, Switch, CSO, handheld ROM, NKit, Wii U, Xbox, and ZAR files.
 
 ### Supported Conversions
 
@@ -30,6 +30,7 @@ A game image converter that wraps ten tools: **CHDMAN** (MAME), **dolphin-tool**
 | **Wii U** | Wii U disc images | .wud, .wux | .wux, .wud | None (fixed); a verify-after-conversion toggle | None | `JWUDTool` (Java) |
 | **NKit** | NKit-shrunk GameCube / Wii discs | .nkit.iso, .nkit.gcz | .iso, .rvz (via the `nkit_to_rvz` chain) | None (fixed) | None | `nkit2iso` (+ dolphin-tool for `nkit_to_rvz`) |
 | **Xbox** | Xbox / Xbox 360 disc images | .iso (only images holding an Xbox filesystem) | .xiso.iso | None (fixed) | None | `extract-xiso` |
+| **rom-converto** | Xbox 360 disc images, for Xenia | .iso, .xiso.iso (only images holding an Xbox 360 filesystem) | .zar | None (fixed) | None | `rom-converto` v0.24.0 |
 | **eXoDOS** | eXoDOS DOS game zips, for RomM | .zip (only zips holding one game folder with a template in `EXODOS_DOS_DIR`) | .dosz | None (fixed) | Your own eXoDOS `!dos` folder (`EXODOS_DOS_DIR`) | none (built in) |
 
 Most conversions above are lossless and fully reversible, including **3DS**, which
@@ -45,6 +46,10 @@ The compressed `.z3ds` can be read directly by Azahar, or restored to
 folder into a `.iso` that RPCS3 mounts directly; there is no reverse mode back to
 a folder, and it never deletes the source. See
 [PlayStation 3 Support](#playstation-3-support-folder--iso).
+
+**ZAR** is the other one-way format. A ZAR holds an Xbox 360 game's files, not
+the disc, and nothing turns it back into an ISO, so the ZAR mode never deletes
+its source and says why. See [Xbox 360 ZAR Support](#xbox-360-zar-support-iso--zar).
 
 The CSO tool also has a one-step chain, `cso_to_chd`, that runs a `.cso`/`.zso`/`.dax`
 through maxcso to a temporary `.iso` and then chdman to a `.chd` in a single job.
@@ -685,7 +690,8 @@ picking a tool tab. RomM's platform resolves it:
 | PlayStation 2 | CHDMAN (CHD), maxcso (CSO/ZSO/DAX) |
 | PSP | CHDMAN, maxcso |
 | PlayStation 3 | PS3 ISO |
-| Xbox / Xbox 360 | Xbox (XISO) |
+| Xbox | Xbox (XISO) |
+| Xbox 360 | Xbox (XISO), rom-converto (ZAR) |
 
 Narrowing is conservative on purpose: a tool that declares no platforms is never
 filtered out, and an unrecognised RomM platform falls back to plain
@@ -962,8 +968,9 @@ converter, or with it off, shows none of this.
 The banner's **Import RomM's targets as Rules** button turns RomM's targets into
 Rules, for Platforms that have no Rule yet. Each RomM target is mapped onto a
 mode here that writes the same format (`chd` on PlayStation becomes CHDMAN's CD
-mode, `rvz` on GameCube becomes Dolphin RVZ). A target nothing here writes, such
-as Xbox 360's `zar`, is skipped and named. Imported Rules start off, so switch
+mode, `rvz` on GameCube becomes Dolphin RVZ, `zar` on Xbox 360 becomes
+rom-converto's ZAR mode). A target nothing here writes, such as `wbfs` on Wii, is
+skipped and named. Imported Rules start off, so switch
 them on in Automation once you've switched RomM's converter off.
 
 | Light | Dark |
@@ -2233,6 +2240,57 @@ goes from 7.3 GB to 5.7 GB.
 extract-xiso is distributed under a modified BSD license; its license text ships
 in the image at `/usr/share/doc/extract-xiso/LICENSE.TXT`.
 
+## Xbox 360 ZAR Support (.iso → .zar)
+
+The rom-converto tool packs an Xbox 360 disc image into a **ZAR** (ZArchive), the
+format [Xenia](https://xenia.jp) mounts directly, using
+[rom-converto](https://github.com/DevYukine/rom-converto) (MIT), the converter
+RomM ships. The image runs the version RomM pins, **v0.24.0**, downloaded from
+the release and checked against its SHA-256 for amd64 and arm64.
+
+- **Offered only on Xbox 360 images.** Like the Xbox tool, it looks inside each
+  `.iso` for an Xbox 360 filesystem: a full XGD2 or XGD3 disc image, or a
+  trimmed image (including the Xbox tool's own `.xiso.iso`) whose boot
+  executable is `default.xex`. An original Xbox image is not offered: ZAR is a
+  Xenia format.
+- **Output is `Game.zar`**, beside the source or in the chosen output directory.
+  Only the game's files go in, zstd-compressed; the video partition and disc
+  padding don't.
+- **The source is always kept.** A ZAR holds the disc's files, not the disc, and
+  rom-converto 0.24.0 has no ZAR to ISO command, so the output can't be
+  Round-tripped against the ISO. There is no delete-after-verify option, and the
+  convert panel, the Rule editor and the API say why. Keep (or delete) the ISO
+  yourself once you've checked the ZAR in Xenia.
+- **Verify** has rom-converto decode every block and check its hash
+  (`xenon verify`, never from its cache).
+- **Info** shows how many files the ZAR holds, their uncompressed size, and
+  whether `default.xex` (what Xenia boots) is at its root.
+- **Progress** comes from the ZAR growing on disk: rom-converto prints nothing
+  while it works when it isn't on a terminal.
+- **Not an Auto default.** Auto keeps Xbox 360 on the XISO trim; pick ZAR by hand
+  or in a Rule.
+- **Off the network.** Every call passes `--no-update-check`, so rom-converto
+  never looks for a newer release.
+- If the binary is missing or won't run, the tool is hidden and the reason is
+  logged; the rest of the app keeps working.
+
+Whether a ZAR made here boots in a current Xenia build has not been checked yet
+(it needs a disc the owner dumped).
+
+| Light | Dark |
+|-------|------|
+| ![Xbox 360 ISO to ZAR, light](docs/screenshots/workspace-rom-converto-light.png) | ![Xbox 360 ISO to ZAR, dark](docs/screenshots/workspace-rom-converto-dark.png) |
+
+### Xbox 360 ZAR Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ROM_CONVERTO_PATH` | `/usr/local/bin/rom-converto` | Path to the rom-converto binary |
+| `COMPRESSATORIUM_ROM_CONVERTO_NICE` | *(shared default)* | CPU priority override for rom-converto |
+| `COMPRESSATORIUM_ROM_CONVERTO_IOPRIO_CLASS` / `_LEVEL` | *(shared default)* | I/O priority override for rom-converto |
+| `COMPRESSATORIUM_ROM_CONVERTO_INFO_TIMEOUT` | *(shared default)* | Bound on `xenon info` |
+| `COMPRESSATORIUM_ROM_CONVERTO_VERIFY_TIMEOUT` | *(shared default)* | Verify bound override for ZAR files |
+
 ## eXoDOS Support (.zip → .dosz)
 
 The eXoDOS tool repacks [eXoDOS](https://www.retro-exo.com/exodos.html) game zips
@@ -2568,6 +2626,11 @@ All actions are queued and processed by the job queue (FIFO). The queue is the o
 
 **Wii U**
 - `jwud_compress` (.wud → .wux), `jwud_decompress` (.wux → .wud)
+
+**Xbox / Xbox 360**
+- `xiso_rewrite` (.iso → .xiso.iso)
+- `zar_compress` (Xbox 360 .iso / .xiso.iso → .zar, through rom-converto; the source is always kept)
+
 **NKit (GameCube/Wii)**
 - `nkit_restore` (.nkit.iso / .nkit.gcz → the original full-size `.iso`)
 - `nkit_to_rvz` (.nkit.iso / .nkit.gcz → .rvz, one-step chain through nkit2iso + dolphin-tool)
@@ -2746,7 +2809,7 @@ The Web UI communicates with a REST API that can also be used directly. Interact
 | `COMPRESSATORIUM_TOOL_VERIFY_TIMEOUT_PER_GIB` | `600` | Extra verify allowance in seconds per GiB of the verified file (0 makes the bound flat). |
 | `COMPRESSATORIUM_TOOL_VERIFY_TIMEOUT_CAP` | `86400` | Upper bound in seconds on the size-scaled verify timeout (0 uncapped). |
 | `COMPRESSATORIUM_TOOL_VERIFY_PROGRESS_TIMEOUT` | `600` | Timeout in seconds without any verify output, for the verifiers that stream progress (chdman, dolphin-tool); catches a wedged verify long before the overall bound. Independent of `COMPRESSATORIUM_TOOL_VERIFY_TIMEOUT` — it still applies when that is `0`. 0 disables. Legacy alias: `CHD_VERIFY_PROGRESS_TIMEOUT`. |
-| `COMPRESSATORIUM_<TOOL>_NICE` / `_IOPRIO_CLASS` / `_IOPRIO_LEVEL` / `_VERIFY_TIMEOUT` | (shared default) | Optional per-tool overrides that fall back to the shared `COMPRESSATORIUM_TOOL_*` values. `<TOOL>` is `CHDMAN`, `DOLPHIN_TOOL`, `NSZ`, `Z3DS`, `MAXCSO`, `ROMZ` (handheld ROM), `MAKEPS3ISO`, `NKIT2ISO`, `JWUD` (Wii U), or `XISO` (Xbox / Xbox 360) (e.g. `COMPRESSATORIUM_DOLPHIN_TOOL_NICE=15`, `COMPRESSATORIUM_NSZ_VERIFY_TIMEOUT=300`, `COMPRESSATORIUM_MAXCSO_VERIFY_TIMEOUT=300`). `NKIT2ISO` and `MAKEPS3ISO` take the `_NICE`/`_IOPRIO_*` knobs but no `_VERIFY_TIMEOUT`: nkit2iso has no verify step, and makeps3iso's has no reachable entry point (no verify route, no delete-on-verify; its post-build PARAM.SFO readback belongs to the conversion). `JWUD` verifies without a subprocess (a WUX container walk), so its `_VERIFY_TIMEOUT` bounds the verify call itself rather than a child process. |
+| `COMPRESSATORIUM_<TOOL>_NICE` / `_IOPRIO_CLASS` / `_IOPRIO_LEVEL` / `_VERIFY_TIMEOUT` | (shared default) | Optional per-tool overrides that fall back to the shared `COMPRESSATORIUM_TOOL_*` values. `<TOOL>` is `CHDMAN`, `DOLPHIN_TOOL`, `NSZ`, `Z3DS`, `MAXCSO`, `ROMZ` (handheld ROM), `MAKEPS3ISO`, `NKIT2ISO`, `JWUD` (Wii U), `XISO` (Xbox / Xbox 360), or `ROM_CONVERTO` (e.g. `COMPRESSATORIUM_DOLPHIN_TOOL_NICE=15`, `COMPRESSATORIUM_NSZ_VERIFY_TIMEOUT=300`, `COMPRESSATORIUM_MAXCSO_VERIFY_TIMEOUT=300`). `NKIT2ISO` and `MAKEPS3ISO` take the `_NICE`/`_IOPRIO_*` knobs but no `_VERIFY_TIMEOUT`: nkit2iso has no verify step, and makeps3iso's has no reachable entry point (no verify route, no delete-on-verify; its post-build PARAM.SFO readback belongs to the conversion). `JWUD` verifies without a subprocess (a WUX container walk), so its `_VERIFY_TIMEOUT` bounds the verify call itself rather than a child process. |
 | `COMPRESSATORIUM_<TOOL>_INFO_TIMEOUT` | (shared default) | Optional per-tool info-timeout override, only for `<TOOL>` = `CHDMAN` or `DOLPHIN_TOOL` (the only tools whose `info` runs a subprocess); falls back to the shared `COMPRESSATORIUM_TOOL_INFO_TIMEOUT`. |
 | `CHD_ARCHIVE_MAX_ENTRIES` | `5000` | Max archive members to list (0 disables limit) |
 | `CHD_ARCHIVE_MAX_MEMBER_SIZE` | `0` | Max size in bytes per archive member (0 disables limit) |
