@@ -7,7 +7,7 @@ vertical slice, from the binary in the Docker image, through the Python service
 and tool plugin, the job pipeline, the FastAPI routes, and finally the Svelte
 web UI, and shows how to add a tool and a platform in tandem.
 
-It is written against the codebase as it stands today, with nine real tools
+It is written against the codebase as it stands today, with these real tools
 plus one synthetic pipeline tool already wired up:
 
 | Tool id | Binary | Service module | Plugin | Handles |
@@ -22,6 +22,7 @@ plus one synthetic pipeline tool already wired up:
 | **`nkit`** | built from source, Go (`/usr/local/bin/nkit2iso`) | `app/services/nkit2iso.py` | `app/services/tools/nkit2iso.py` | NKit-shrunk GameCube/Wii `.nkit.iso`/`.nkit.gcz` restored to `.iso` — **compound extensions**, info route but no verify |
 | **`jwud`** | JWUDTool release jar + JRE (`/usr/local/bin/jwudtool`) | `app/services/jwudtool.py` | `app/services/tools/jwud.py` | Wii U disc images `.wud` to/from `.wux` — **multi-file source** (a split dump) |
 | **`xiso`** | built from source (`/usr/local/bin/extract-xiso`) | `app/services/extract_xiso.py` | `app/services/tools/xiso.py` | Xbox / Xbox 360 `.iso` trimmed to `.xiso.iso` — **content-refined source** on a shared extension |
+| **`rom_converto`** | pinned release binary, SHA-256 checked (`/usr/local/bin/rom-converto`) | `app/services/rom_converto.py` | `app/services/tools/rom_converto.py` | Xbox 360 `.iso` to `.zar` so far — **one tool, several unrelated modes** (§20), and a mode that keeps its Source and says why |
 | **`chain`** | *(none — drives the tools above)* | *(none)* | `app/services/tools/chain.py` | Composite `cso_to_chd` (`.cso/.zso/.dax` → `.iso` → `.chd`) and `nkit_to_rvz` (`.nkit.iso/.nkit.gcz` → `.iso` → `.rvz`), each one job |
 
 Note the **tool id is not always the binary name**: maxcso registers as `cso`,
@@ -195,6 +196,7 @@ class ModeSpec:
     supports_compression: bool = False
     supports_compression_level: bool = False  # dolphin rvz/wia only
     supports_delete_on_verify: bool = False
+    source_kept_reason: str = ""              # why it never deletes its Source (rom-converto ZAR)
     allows_archive_input: bool = False        # True for convertible-source modes; see §17
     # Sibling outputs written beside the primary output, as suffix swaps off it
     # (extractcd's .cue -> its .bin data track). Read by BaseTool.companion_outputs
@@ -234,6 +236,7 @@ A plugin subclasses `BaseTool` and provides:
 | `detect_output(input_path, *, from_archive=False)` | optional, returns an `OutputStatus` so the file list can badge "output already exists". May content-validate the candidate before claiming it: `romz` only reports a `.7z`/`.zip` sibling as its output when it's a genuine single-ROM archive (not just any file matching the `Game.gba.7z` naming), so the badge and the source row's verify-from-output flow track real outputs. `from_archive` marks `input_path` as the *synthesised* location an archive member would occupy once extracted — the listing-side counterpart of the `treat_as_stem` `plan_job` passes for the same member. Ignore it unless your output *name* depends on the input's neighbours: extraction hands over one member and never its siblings, so a member can only produce a single-file output (`jwud` forwards it, so a member named `game_part1.wud` doesn't badge a real split set's `game.wux`). |
 | `converts_path(path)` | optional per-file refinement of `input_extensions` — the input-side mirror of `verifies_path`. Default is the plain extension match; override when your source is really a *set* of files so only the primary is offered (`jwud` hides the secondary members of a split `game_part1.wud` … `game_part12.wud` dump, which stay listed but non-convertible). Drives `FileEntry.convertible_by`. May do disk I/O — it runs inside the threadpool scan. |
 | `header_platform(path)` | optional. The Platform your tool reads from the file's own header (a few bytes), or `None`. Default `None`. Platform detection (`services/platform_detect.py`) asks every tool whose `input_extensions` match, maps the answer onto a RomM slug, and uses it for the convert panel's Auto choice. Override it when your consoles can be told apart from the bytes (chdman: `SYSTEM.CNF` / `PARAM.SFO` / sector-0 ids; dolphin: GC/Wii magic; xiso: XDVDFS layout). Never guess: answer `None` when unsure. Add your Platform's folder names to `_ALIASES` and its display name to `_NAMES` in `platform_detect.py`, keyed by RomM's slug (tests fail until you do). If a mode cannot read every input it accepts by hand, set `ModeSpec.reads_extensions`; set `auto_target=False` on a mode that should never be an Auto default, and `auto_platform_slugs` for a Platform a mode should serve in Auto but not by hand. Add your rows to `tests/test_auto_routing_table.py`. If the probe reads other files (a sheet's tracks), list them from `header_reads(path)` so the cache sees them change. If `is_ready()` can be False, set `not_ready_reason` to say why. See design doc §3.3.14. |
+| `ModeSpec.source_kept_reason` | optional. For a mode whose `supports_delete_on_verify` is False on principle (deleting would lose what nothing can rebuild), the reason in the user's words. The refusing 400, the CLI, the convert panel and the Rule editor show it. Mirror it as `sourceKeptReason` in `registry.js` (the parity test compares them). rom-converto's ZAR mode is the example (§20). |
 | `delete_on_verify_is_safe(mode, compression)` | optional per-job guard on delete-on-verify. `ModeSpec.supports_delete_on_verify` says the *mode* offers it; this says the *job* may, given its settings. Default `True` (your `verify()` reads the whole output). Override when a job setting can weaken the guarantee — `jwud` returns `False` for `-noVerify`, because its verify is a structural WUX walk backed by JWUDTool's conversion-time byte-for-byte comparison. `routes/convert.py` rejects the combination for single and batch alike. |
 | `scannable_path(path)` | optional per-file veto on the library metadata / DAT-match walk. `scannable_extensions` selects it by *type*; this drops an individual path. Default `True`; override only when a name matching a produced extension provably is not a standalone artifact (`jwud` vetoes `game_partN.wud` — twelve 2 GiB slices of one disc image that no DAT can match, so hashing them is ~25 GB of pure waste per set). Any tool answering `False` drops the path. May do *bounded* disk I/O — jwud's veto is on membership of a real set, not on the name, so a lone `game_part1.wud` stays scannable and the same path stops being scannable once its siblings appear — but it runs once per candidate across the whole library, so keep it to a stat or two, never a read. It runs inside the threadpool scan walk, never on the event loop. |
 | `source_companions(path)` | optional sibling *input* files this source also consumes, never including `path` — the input-side mirror of `companion_outputs`. Default `[]`. `utils/delete_plan.build_delete_plan` adds them, so delete-on-verify removes a multi-file source whole instead of orphaning the parts the job didn't name. (`.cue`/`.gdi` tracks are still parsed from file *contents* in `delete_plan.py` rather than routed through this hook — see the design doc.) |
@@ -1241,6 +1244,11 @@ PLUGIN (app/services/tools/<tool>.py)
     non-convertible, the second makes delete-on-verify take the whole set
 [ ] optional: delete_on_verify_is_safe() when a job setting can weaken your
     verify (jwud's -noVerify) — the route then rejects that combination
+[ ] optional: source_kept_reason on a mode that never deletes its Source on
+    principle (and sourceKeptReason in registry.js), so the UI says why
+[ ] optional: your binary writes under a temp name of its own? run it into a
+    private work folder and pass output_growth_paths=files_in_folder(folder),
+    or the stall bound kills a quiet job (rom-converto, §20)
 [ ] optional: embedded_hashes()/embedded_hash_is_exhaustive for the DAT-match
     fast path (default falls back to file-level SHA1)
 [ ] optional: content_digest() + ModeSpec.supports_round_trip (and
@@ -1354,6 +1362,7 @@ have solved the awkward part.
 | …can report a content hash cheaply for DAT matching | **dolphin** | `embedded_hashes()` via `SubprocessRunner.run_capture()`, plus `embedded_hash_is_exhaustive=True` for recompressed containers. |
 | …shares a generic extension with other tools and must tell its files apart **by content** | **xiso** (`services/extract_xiso.py` + `tools/xiso.py`) | `converts_path()` running a cached header probe so the tool appears in `convertible_by` only for its own format, a `_NOT_CONVERTIBLE_REASON` row so plan-time rejection says why, `contentRefined: true` on the frontend descriptor so the Info modal asks it first, and a binary that **renames its input**: the service hands it a symlink in scratch space and moves the product into place itself. Also `supports_verify` without delete-on-verify for a structural-only check. |
 | …runs **no binary at all**, edits a zip, or reads a user-supplied side input | **exodos** (`services/exodos.py` + `tools/exodos.py`) | A pure-Python tool registered with an empty binary path, gated on an env var (`EXODOS_DOS_DIR`) through `is_ready()` the way nsz is gated on keys, `converts_path()` reading a zip's directory so `plan_job` takes only its own `.zip` files (without `contentRefined`: archive rows carry no `convertible_by`, so the frontend content gate would refuse every zip), and a product written through the shared `services/archive_edit.rewrite_zip` (rename, drop or add members; crash-safe placement). Also a verify that checks CRCs and structure in Python, served through the shared verify routes (`_VERIFY_CONFIG["exodos"]`) and passed to `rewrite_zip` as its `check`, so every job checks its own product before keeping it; and a verifiable product with no Info (`getInfo` left undefined, so `registry.infoToolForRow` offers no Info action). |
+| …is one binary that converts **several unrelated formats**, ships as a **prebuilt per-arch release binary**, or writes its product under a **temp name of its own** | **rom_converto** (`services/rom_converto.py` + `tools/rom_converto.py`) | Per-mode `platform_slugs` under one tool (§20), a builder stage that maps `TARGETARCH` onto upstream's asset names and checks a pinned SHA-256 per arch, a readiness probe that runs the binary once (`--version`) so a broken download is "not ready" with its reason, `files_in_folder` over a private work folder as the growth signal, and `source_kept_reason` for a mode that is checkable but never deletes its Source. |
 | …has a **compound** extension, or info-but-no-verify | **nkit** (`services/nkit2iso.py` + `tools/nkit2iso.py`) | Declaring `.nkit.iso`/`.nkit.gcz` against the shared suffix match (§18), a Go builder stage in the Dockerfile, a one-direction tool that registers an info route but `verify_extensions = frozenset()` (claiming a *shared* extension like `.iso` for verify would hijack every other tool's rows — see the plugin docstring), an `info()` that parses a header in Python because the binary has no info subcommand, and a service that rewrites the runner's terminal message when the tool reports a caveat. |
 
 For a **binary-backed** tool — every row above except **chain** — the *shape* of
@@ -2229,3 +2238,75 @@ to look inside it isn't worth it, so leave `allows_archive_input=False`.
   reason.
 - Service tests that build real headers at each layout offset, rather than
   mocking the probe.
+
+---
+
+## 20. One tool, several unrelated modes (rom-converto)
+
+rom-converto is one binary that converts formats with nothing in common: Xbox 360
+ISO to ZAR, PSP PBP to ISO, 3DS CIA to and from CCI. It is one plugin
+(`RomConvertoTool`) that owns all of those modes, not one plugin per format,
+because the binary, its path setting, its readiness, its Docker stage and its
+runner policy are one thing. Xbox 360 ISO to ZAR (#422) is the first mode; the
+others (#420) are added as more `ModeSpec` rows on the same tool.
+
+### 20.1 Each mode names its own Platform
+
+A single-system tool declares `platform_slugs` once and every mode inherits it.
+Here that would offer the ZAR mode on PSP and the PBP mode on Xbox 360, and a
+Rule could convert a disc to a format for the wrong console. So each mode sets
+`ModeSpec.platform_slugs` (`{"xbox360"}` for ZAR), and the tool's own
+`platform_slugs` is the union of its modes'. This is the same seam the chain tool
+uses (§7). `tests/test_auto_routing_table.py` and the Rule editor read the
+per-mode answer.
+
+### 20.2 Per-mode content checks and naming
+
+`converts_path(path)` and `output_path(mode, ...)` are per tool, so a multi-mode
+tool dispatches on the file and the mode inside its service, never on its own id
+elsewhere. ZAR's source is any Xbox 360 `.iso` (content-refined, §19, through
+`extract_xiso.probe_console`, which raises on a read error so the cached verdict
+never remembers an outage). When a later mode claims a different extension
+(`.pbp`), `converts_path` answers per extension: keep each mode's check in the
+service, keyed by the input's extension.
+
+### 20.3 The binary: a pinned release per arch
+
+`Dockerfile`'s `rom-converto-builder` stage downloads the release asset for
+`TARGETARCH` (upstream says `x64`, Docker says `amd64`), checks the SHA-256 the
+spike (#421) recorded for that arch, and the runtime stage runs
+`rom-converto --version` as a smoke test. `ROM_CONVERTO_PATH` overrides the path.
+`is_ready()` stats the binary and, once per (size, mtime), runs `--version`; a
+missing, non-executable or broken binary is not ready and `not_ready_reason` says
+which. The rest of the app keeps working.
+
+### 20.4 What rom-converto does differently, and the shared answer
+
+- **Everything on stderr, nothing on stdout, no progress on a pipe.** The runner
+  already merges stderr; the growth fallback supplies status.
+- **A temp name of its own** (`.Game.zar.<random>.tmp`, renamed at the end). The
+  service runs it into a private work folder and passes
+  `files_in_folder(work_folder)` as `output_growth_paths` (DESIGN, "A tool that
+  names its own temp file"), then moves the product into place with
+  `services.output_placement.OutputPlacement` (shared with extract-xiso: never
+  over a file, and a move that lands after a cancel removes its own product).
+- **Flags on every call**: `--no-update-check` (never the network),
+  `--no-cache` (verify must decode, not read a cache), `NO_COLOR=1`. The first
+  `Error:` line is the failure message; a `[WARN]` line is marked
+  `warning: True` so it survives onto the job.
+- **No way back.** A ZAR stores files, not the disc, so there is no Round-trip
+  and `supports_delete_on_verify` stays False, with `source_kept_reason` saying
+  why. `supports_verify` is True: `xenon verify` decodes every block.
+- **Not an Auto default** (`auto_target=False`): Auto keeps Xbox 360 on the XISO
+  trim, and ZAR is chosen by hand or in a Rule.
+
+### 20.5 Tests
+
+- `tests/test_rom_converto.py` drives the plugin with a stub `rom-converto`
+  script that behaves as the spike recorded (stderr only, a temp-named product,
+  `Error:` and exit 1, `Hash: OK`) and logs every call: the mode spec, naming,
+  success, failure, warnings, readiness (missing and broken), verify, info, the
+  refused delete-on-verify and the RomM coexistence match.
+- `tests/test_rom_converto_real.py` runs the real binary on the xiso suite's
+  synthetic XDVDFS images when `ROM_CONVERTO_PATH` points at one, and skips
+  otherwise.

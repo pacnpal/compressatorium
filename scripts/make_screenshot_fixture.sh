@@ -25,6 +25,7 @@ mkdir -p \
   "$root/Nintendo 3DS" \
   "$root/PlayStation" \
   "$root/Wii U" \
+  "$root/Xbox 360" \
   "$root/eXoDOS/!dos/SQuest"
 
 # Placeholder file sizes are in KiB. `dd` is used rather than `head -c` because
@@ -67,6 +68,25 @@ placeholder "$root/Nintendo 3DS/mario-3d-land.cci" 2048
 # shippable nor needed to render the row.
 placeholder "$root/Wii U/splatoon.wud" 3072
 placeholder "$root/Wii U/mario-maker.wux" 1024
+
+# Xbox 360: a synthetic trimmed XDVDFS image whose root holds default.xex, so
+# the Xbox and rom-converto tools both recognise it (they probe the content, not
+# the extension). Random-free filler: nothing from a real disc.
+python3 - "$root/Xbox 360/Sample Arcade (USA).iso" <<'PY'
+import struct
+import sys
+
+sector, magic = 2048, b"MICROSOFT*XBOX*MEDIA"
+name = b"default.xex"
+entry = struct.pack("<HHIIBB", 0, 0, 34, 4096, 0x20, len(name)) + name
+table = entry + b"\xff" * (sector - len(entry))
+with open(sys.argv[1], "wb") as fh:
+    fh.seek(0x10000)
+    fh.write(magic + struct.pack("<II", 33, len(table)) + b"\0" * 0x7D0 + magic)
+    fh.seek(33 * sector)
+    fh.write(table)
+    fh.write(b"\xab" * 4096)
+PY
 
 # A folder Library (#303): Platform folders the way ES-DE and Batocera lay them
 # out. The placeholders carry no header, so each Image's Platform comes from its
