@@ -355,6 +355,12 @@ def is_external_mode(mode) -> bool:
     return mode in _EXTERNAL_JOB_MODES
 
 
+def _reads(job) -> str:
+    """The path a job reads its Source from: the bound link once its Source
+    was bound (#431, ``_bind_source_bounded``), else its own path."""
+    return getattr(job, "_read_path", None) or job.file_path
+
+
 def _is_conversion_job(job) -> bool:
     """A real conversion job, not external bookkeeping (metadata scan / DAT match).
 
@@ -5409,7 +5415,7 @@ class JobManager:
         try:
             return await asyncio.wait_for(
                 run_detached(
-                    _source_bytes, job._read_path or job.file_path, cancel_event=cancel_event,
+                    _source_bytes, _reads(job), cancel_event=cancel_event,
                 ),
                 timeout=_CANONICAL_PROBE_SECONDS,
             )
@@ -5439,7 +5445,7 @@ class JobManager:
 
         try:
             detection = await run_detached_bounded(
-                detect_platform, job._read_path or job.file_path,
+                detect_platform, _reads(job),
                 timeout=_CANONICAL_PROBE_SECONDS, cancel_event=cancel_event,
             )
         except ReadCancelled:
@@ -5758,7 +5764,7 @@ class JobManager:
                 return
 
             # A bound Source (#431) is read from its private folder of links.
-            input_path = job._read_path or job.file_path
+            input_path = _reads(job)
             # The trusted root(s) an extracted source's track sheet may name
             # files under (utils.sheet_text.resolve_track's ``within``). None
             # for a source in a Volume; the extraction dir for an archive
