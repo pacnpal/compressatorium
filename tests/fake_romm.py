@@ -7,6 +7,9 @@ source at ``eb10d95``:
 * ``GET /api/heartbeat`` (``backend/endpoints/heartbeat.py``): the version under
   ``SYSTEM.VERSION`` and, on a RomM with the converter, ``CONVERTO.ENABLED``
   (``ROM_CONVERTO_ENABLED`` is set and the rom-converto binary answers).
+  ``title_id_extraction`` serves ``FILESYSTEM.TITLE_ID_EXTRACTION_ENABLED``
+  (RomM 5.4.1 sends it; None leaves it out, as an older RomM does), and
+  ``heartbeat_status`` makes the heartbeat fail with that status (#393).
 * ``GET /api/config`` (``backend/endpoints/configs.py``): ``CONVERTO`` is the
   ``converto:`` block of ``config.yml`` (``ConvertoConfig``), with the
   ``platform_formats`` map of Platform slug to target, and
@@ -102,8 +105,12 @@ class FakeRomm:
         scopes: set[str] | None = None,
         probe_status: int | None = None,
         library: str | os.PathLike | None = None,
+        title_id_extraction: bool | None = None,
+        heartbeat_status: int = 200,
     ) -> None:
         self.version = version
+        self.title_id_extraction = title_id_extraction
+        self.heartbeat_status = heartbeat_status
         self.converter = converter
         self.enabled = enabled
         self.platform_formats = dict(platform_formats or {})
@@ -248,6 +255,8 @@ class FakeRomm:
 
     def heartbeat(self) -> dict[str, Any]:
         body: dict[str, Any] = {"SYSTEM": {"VERSION": self.version, "SHOW_SETUP_WIZARD": False}}
+        if self.title_id_extraction is not None:
+            body["FILESYSTEM"] = {"TITLE_ID_EXTRACTION_ENABLED": self.title_id_extraction}
         if self.converter:
             body["CONVERTO"] = {"ENABLED": self.enabled}
         return body
@@ -320,6 +329,8 @@ class FakeRomm:
         if task_route and method == "GET" and task_route.group(1) in self._tasks:
             return 200, dict(self._tasks[task_route.group(1)])
         if route == "/api/heartbeat":
+            if self.heartbeat_status != 200:
+                return self.heartbeat_status, {"detail": "heartbeat unavailable"}
             return 200, self.heartbeat()
         if route == "/api/config":
             if self.config_status != 200:

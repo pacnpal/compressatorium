@@ -4390,6 +4390,44 @@ rename, the scan, the task and the read-back the way RomM 5.4.1 does, with
 knobs for a refusal, a sanitized name, a scan that doesn't rehash and a task
 that fails.
 
+**The re-pin skip for formats RomM re-identifies by itself (#393,
+`services/romm/reidentify.py`).** Spike #382 found that RomM 5.4.1, with
+title-id extraction on, moves a missing ROM onto its converted file by title
+id at its next library scan, keeping the id, for some (Platform, output
+format) pairs. `REIDENTIFIED` is that finding as data: RomM version ->
+frozenset of `(RomM Platform slug, output extension)` (5.4.1: PS2 CHD, PSP
+CHD, PSP CSO, GameCube RVZ). A RomM release that behaves differently gets
+its own key; a version with no key gets the re-pin. `reason(heartbeat,
+platform_slug, mode, output_path)` is the one decision: it answers only when
+the heartbeat's `SYSTEM.VERSION` (a leading `v` dropped) has a key,
+`FILESYSTEM.TITLE_ID_EXTRACTION_ENABLED` is `True`, and the output's
+extension is one `registry.mode_output_extensions(mode)` says the mode writes
+and is listed with the source ROM's Platform slug. Never by tool identity.
+
+It is a second RomM Referrer: `id = "romm_reidentify"`, `opt_in = True`,
+`Phase.NETWORK`, registered by importing `services.romm.library`.
+`RommLibrary.referrer_enabled` turns it on while `repin_enabled` is on and
+`swap_keep_rom_id` is off, so it never runs beside the swap. The re-pin row
+is still written before the conversion (the plan route and `after_queue`
+are unchanged: the provider ids are readable only then). `plan` takes a
+`renames` of one file replaced by one file in the same folder, finds that
+conversion's pending row (`repin.pending_for(output, source)`, matched on
+the row's `source_path`), reads RomM's heartbeat, and asks `reason`. Every
+failure (no row, RomM not answering, anything raised) returns no change, so
+the Source goes as usual and the re-pin runs as today; it never keeps a
+Source. The change has no edits; its `summary` is the reason (shown in the
+delete confirmation) and its `record` carries `rom_id` and the row's
+`repin_id`. `apply` writes nothing and returns `Applied(note=reason)`, so
+the job's message and warning and the Ledger record say why. The row is
+closed (`repin.settle(row, "done", reason)`) by `reidentify.note_job_finished`,
+a terminal listener that `libraries.attach` registers for the server and the
+CLI, and only when the job completed with its Source deleted: RomM
+re-identifies only when it never sees the output beside the Source, so a
+kept Source, a failed or cancelled job, or a process that stops first
+leaves the row pending (fail closed). The fake RomM serves
+`FILESYSTEM.TITLE_ID_EXTRACTION_ENABLED` (`title_id_extraction`) and can
+fail its heartbeat (`heartbeat_status`).
+
 To add a Referrer: subclass `Referrer` in `services/referrers/`, give it a new
 `id`, declare `opt_in` and `phase`, and `registry.register(...)` it in
 `services/referrers/__init__.py`. A file Referrer builds on `files.py`. An opt-in one also needs the Library's

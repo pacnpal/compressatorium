@@ -848,6 +848,24 @@ games (`.cue`/`.bin`) and anything else keep the usual behaviour.
 |-------|------|
 | ![Delete confirmation listing the RomM rename, light](docs/screenshots/delete-plan-romm-light.png) | ![Delete confirmation listing the RomM rename, dark](docs/screenshots/delete-plan-romm-dark.png) |
 
+#### Formats RomM re-identifies by itself
+
+With **Keep the ROM id when converting** off, some conversions don't need the
+metadata re-pin: RomM finds the game again on its own. RomM 5.4.1, with
+title-id extraction on (its default), moves a missing ROM onto its converted
+file by the game's title id at its next library scan, keeping the ROM id and
+everything on it, for **PS2 CHD, PSP CHD, PSP CSO and GameCube RVZ**. It
+doesn't for PS2 CSO or ZSO, PSP ZSO, or GameCube WIA or GCZ, which keep the
+re-pin. For a conversion on that list whose source is deleted, the re-pin is
+closed once the job finishes, and the job and the Ledger say why ("RomM 5.4.1
+re-identifies PSP CSO by its title id at its next library scan, so no
+metadata re-pin is needed"). The list is kept per RomM version: another
+version, a RomM whose heartbeat can't be read or doesn't report title-id
+extraction on, or a kept source, gets the re-pin as before. With the switch
+on, the swap above keeps the id for every single-file format. RomM keeps the
+id only when it never sees the output and the source together, and only when
+no other missing ROM on the Platform has the same title id.
+
 #### RomM's own converter
 
 Newer RomM releases can convert their own library: with

@@ -22,6 +22,7 @@ from __future__ import annotations
 import os
 import threading
 from collections.abc import Callable
+from typing import NamedTuple
 
 from logging_setup import get_logger
 from services import db as _db
@@ -733,6 +734,33 @@ def settle_swapped(output_path: str, rom_id: int) -> int:
         )
         session.commit()
         return int(updated)
+
+
+class PendingRepin(NamedTuple):
+    """What :func:`pending_for` hands back about one pending row."""
+
+    row_id: int
+    rom_id: int
+    platform_slug: str | None
+    mode: str | None
+
+
+def pending_for(output_path: str, source_path: str) -> PendingRepin | None:
+    """The pending re-pin recorded for converting *source_path* into
+    *output_path*, or None. A row that can't name its source (written before
+    ``source_path`` existed) is not this conversion's (#393)."""
+    with _session() as session:
+        row = (
+            session.query(_db.RommRepin)
+            .filter(
+                _db.RommRepin.output_path == output_path,
+                _db.RommRepin.state == "pending",
+            )
+            .one_or_none()
+        )
+        if row is None or not row.source_path or row.source_path != _canonical(source_path):
+            return None
+        return PendingRepin(int(row.id), int(row.source_rom_id), row.platform_slug, row.mode)
 
 
 def is_pending(row_id: int) -> bool:

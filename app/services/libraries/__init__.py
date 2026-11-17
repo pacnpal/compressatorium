@@ -186,13 +186,18 @@ def note_job_finished(job) -> None:
 
 
 def attach(job_manager) -> None:
-    """Register :func:`note_job_finished` on *job_manager*. Idempotent.
+    """Register :func:`note_job_finished` on *job_manager*, and RomM's
+    closing of the re-pins it skipped once a job's Source is gone
+    (``services.romm.reidentify``, #393). Idempotent.
 
     The server's lifespan and the CLI's job runner both call this, so the two
     cannot drift.
     """
-    if note_job_finished not in job_manager._terminal_listeners:
-        job_manager.add_terminal_listener(note_job_finished)
+    from services.romm import reidentify
+
+    for listener in (note_job_finished, reidentify.note_job_finished):
+        if listener not in job_manager._terminal_listeners:
+            job_manager.add_terminal_listener(listener)
 
 
 def without_a_database() -> list[Library]:
