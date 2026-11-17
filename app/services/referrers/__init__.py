@@ -35,8 +35,10 @@ from .base import (
     ReferrerError,
     StagedPlacement,
     WriteGuard,
+    WriteJournal,
     atomic_write_bytes,
     guarded_context,
+    planning,
     write_guard,
     write_new_bytes,
 )
@@ -100,6 +102,24 @@ class ReferrerRegistry:
             if not referrer.opt_in or self._enabled(referrer, library)
         ]
 
+    def rename_refused(self, library) -> str | None:
+        """Why an Image in *library* must not be renamed (#425), or None.
+
+        Asked of every opt-in Referrer the Library has off
+        (``Referrer.rename_refused``): RomM's, whose ROM would otherwise get
+        a new id. Raises ReferrerError when the settings can't be read, as
+        :meth:`active` does, and for an :class:`UndecidedLibrary`."""
+        if isinstance(library, UndecidedLibrary):
+            raise ReferrerError(library.target, library.reason, kept=UNDECIDED_LIBRARY_KEPT)
+        if library is None:
+            return None
+        for referrer in self._referrers.values():
+            if referrer.opt_in and not self._enabled(referrer, library):
+                reason = referrer.rename_refused(library)
+                if reason:
+                    return reason
+        return None
+
     @staticmethod
     def _bound(referrer: Referrer, library) -> Referrer:
         try:
@@ -156,17 +176,22 @@ def places_output(image_path: str, renames: Mapping[str, str], library=None) -> 
 
 def plan_changes(
     image_path: str, renames: Mapping[str, str], library=None,
+    placement: StagedPlacement | None = None,
 ) -> list[ReferrerChange]:
     """The planned change of every Referrer on for *library*, for *renames*,
     in phase order. Writes nothing.
+
+    *placement* is what the hook will be given (an Image rename's, #425):
+    each Referrer plans as it will then (``base.planning``).
 
     Raises ReferrerError when a Referrer can't tell what it would change, or
     the Library's settings can't be read.
     """
     changes: list[ReferrerChange] = []
-    for referrer in registry.active(library):
-        if _applies(referrer, image_path, renames):
-            changes.extend(referrer.plan(renames))
+    with planning(placement):
+        for referrer in registry.active(library):
+            if _applies(referrer, image_path, renames):
+                changes.extend(referrer.plan(renames))
     return changes
 
 
@@ -284,9 +309,14 @@ def _update_sync(
     abandoned: threading.Event | None = None,
     referrers: list[Referrer] | None = None,
     placement: StagedPlacement | None = None,
+    journal: WriteJournal | None = None,
 ) -> ReferrerOutcome:
     """Plan *referrers* (one phase; by default every always-on Referrer), then
     apply each change. The first failure stops it.
+
+    *journal*, when given, records each file written, and counts this worker
+    as running until it ends, however long after its caller stopped waiting
+    (#425).
 
     Every write is guarded (``base.check_write``, under the target's lock):
     once *abandoned* is set, or an output no longer has the identity it had
@@ -295,19 +325,26 @@ def _update_sync(
     ``apply_async`` is not applied here: it is left in ``outcome.pending`` for
     the event loop.
     """
-    staged = placement.staged if placement is not None else {}
-    watched = [staged.get(new, new) for new in dict.fromkeys(renames.values())]
-    guard = WriteGuard(
-        abandoned=abandoned or threading.Event(),
-        outputs={path: file_identity(path) for path in watched},
-        placement=placement,
-    )
-    if referrers is None:
-        referrers = registry.active(None)
-    with write_guard(guard):
-        outcome = _plan_and_apply(image_path, renames, referrers)
-    outcome.guard = guard
-    return outcome
+    if journal is not None:
+        journal.worker_started()
+    try:
+        staged = placement.staged if placement is not None else {}
+        watched = [staged.get(new, new) for new in dict.fromkeys(renames.values())]
+        guard = WriteGuard(
+            abandoned=abandoned or threading.Event(),
+            outputs={path: file_identity(path) for path in watched},
+            placement=placement,
+            journal=journal,
+        )
+        if referrers is None:
+            referrers = registry.active(None)
+        with write_guard(guard):
+            outcome = _plan_and_apply(image_path, renames, referrers)
+        outcome.guard = guard
+        return outcome
+    finally:
+        if journal is not None:
+            journal.worker_ended()
 
 
 def _is_async(referrer: Referrer) -> bool:
@@ -530,7 +567,7 @@ async def _apply_pending(
 async def _run_phase(
     image_path: str, renames: dict[str, str], abandoned: threading.Event,
     referrers: list[Referrer], *, cancel_event, bound: float | None,
-    placement: StagedPlacement | None = None,
+    placement: StagedPlacement | None = None, journal: WriteJournal | None = None,
 ) -> ReferrerOutcome:
     """One phase's plans and blocking applies, on a detached thread, bounded."""
     if bound is not None:
@@ -538,12 +575,12 @@ async def _run_phase(
         return await asyncio.wait_for(
             run_detached(
                 _update_sync, image_path, renames, abandoned, referrers, placement,
-                cancel_event=cancel_event,
+                journal, cancel_event=cancel_event,
             ),
             bound,
         )
     return await run_detached_within_stall_bound(
-        _update_sync, image_path, renames, abandoned, referrers, placement,
+        _update_sync, image_path, renames, abandoned, referrers, placement, journal,
         what=f"Updating {referrers[0].phase.target}", cancel_event=cancel_event,
     )
 
@@ -553,8 +590,13 @@ async def update_before_source_removal(
     cancel_event=None, bound: float | None = None,
     placement: StagedPlacement | None = None,
     unawaited: list[HandedOff] | None = None,
+    journal: WriteJournal | None = None,
 ) -> ReferrerOutcome:
     """Run every Referrer that is on for an Image whose Source is about to be removed.
+
+    *journal*, when given, records every Referrer file written, with its
+    bytes before and after, including writes of a phase this stopped waiting
+    for (``WriteJournal``): what an Image rename puts back (#425).
 
     *unawaited*, when given, receives each async apply still running when
     this awaiter itself is cancelled (a shutdown, #391): the caller hands it
@@ -595,7 +637,7 @@ async def update_before_source_removal(
         await _run_phases(
             outcome, phases, image_path, dict(renames), abandoned,
             cancel_event=cancel_event, bound=bound, placement=placement,
-            unawaited=unawaited,
+            unawaited=unawaited, journal=journal,
         )
     except BaseException:
         # This awaiter was cancelled (or worse) mid-phase: the detached worker,
@@ -614,7 +656,7 @@ async def _run_phases(
     outcome: ReferrerOutcome, phases: list[list[Referrer]], image_path: str,
     renames: dict[str, str], abandoned: threading.Event, *,
     cancel_event, bound: float | None, placement: StagedPlacement | None = None,
-    unawaited: list[HandedOff] | None = None,
+    unawaited: list[HandedOff] | None = None, journal: WriteJournal | None = None,
 ) -> None:
     """The hook's phase loop, filling *outcome*. Raises only on a cancel of
     the awaiter, after setting *abandoned*."""
@@ -628,6 +670,7 @@ async def _run_phases(
             stage = await _run_phase(
                 image_path, renames, abandoned, referrers,
                 cancel_event=cancel_event, bound=bound, placement=placement,
+                journal=journal,
             )
         except ReadCancelled:
             reason = "cancelled"
@@ -664,21 +707,46 @@ async def _run_phases(
 
 async def plan_changes_bounded(
     image_path: str, renames: Mapping[str, str], library=None,
+    placement: StagedPlacement | None = None,
 ) -> list[ReferrerChange]:
     """``plan_changes`` for the delete confirmation, bounded like the job's
     hook: on a detached thread under the conversion's no-progress bound, so a
     playlist on a mount that stopped answering can't hang the confirmation.
-    *library* is the Image's Library, as the job's hook gets it. Raises
-    ReferrerError (target: the file phase's ``Phase.target``) on a timeout."""
+    *library* is the Image's Library, as the job's hook gets it; *placement*
+    as for ``plan_changes`` (the rename preview, #425). Raises ReferrerError
+    (target: the file phase's ``Phase.target``) on a timeout."""
     try:
         return await run_detached_within_stall_bound(
-            plan_changes, image_path, dict(renames), library,
+            plan_changes, image_path, dict(renames), library, placement,
             what=f"Reading {Phase.FILE.target}",
         )
     except ReferrerError:
         raise
     except Exception as exc:
         raise ReferrerError(Phase.FILE.target, str(exc) or type(exc).__name__) from exc
+
+
+# How long putting a Referrer file back waits for another writer of it.
+RESTORE_LOCK_WAIT_SECONDS = 30.0
+
+
+def restore_written(journal: WriteJournal) -> list[str]:
+    """Put back every Referrer file *journal* recorded, newest first, as it
+    was before (an Image rename that didn't go ahead, #425). Blocking.
+
+    Exact bytes (``files.restore_in_place``): only a file that still holds
+    what the hook wrote is written, so an entry the rename never changed, or
+    a file changed since, is left alone. Returns what couldn't be put back,
+    one line each; empty when everything was."""
+    from .files import restore_in_place
+
+    problems: list[str] = []
+    for path, before, after in reversed(journal.written()):
+        try:
+            restore_in_place(path, before, after, wait=RESTORE_LOCK_WAIT_SECONDS)
+        except ReferrerError as exc:
+            problems.append(f"{os.path.basename(exc.target)} {exc.reason}")
+    return problems
 
 
 __all__ = [
@@ -692,11 +760,13 @@ __all__ = [
     "ReferrerRegistry",
     "StagedPlacement",
     "UndecidedLibrary",
+    "WriteJournal",
     "atomic_write_bytes",
     "places_output",
     "plan_changes",
     "plan_changes_bounded",
     "registry",
+    "restore_written",
     "update_before_source_removal",
     "write_new_bytes",
 ]

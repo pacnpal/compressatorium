@@ -1256,6 +1256,29 @@ def companion_name(name: str, *, prefix: str, suffix: str = "") -> str:
     return prefix + hashlib.sha256(os.fsencode(name)).hexdigest()[:16] + suffix
 
 
+# Characters some filesystem a Volume may sit on can't hold in a name: the
+# Windows/SMB/exFAT set, and every C0 control character.
+_UNSAFE_NAME_CHARS = frozenset('<>:"/\\|?*') | frozenset(chr(c) for c in range(32))
+# The longest file name most filesystems take, in bytes (ext4, XFS, APFS).
+MAX_NAME_BYTES = 255
+
+
+def safe_file_name(name: str) -> str | None:
+    """*name* as a file name every Volume can hold, or None when nothing is left.
+
+    The one rule for a name the app makes from data (a DAT's game name, #425):
+    each character a filesystem can't hold (``< > : " / \\ | ? *`` and control
+    characters) becomes ``_``; leading and trailing spaces, and trailing dots
+    (Windows and SMB drop them), are removed. None for a name that comes out
+    empty, ``.`` or ``..``, or longer than :data:`MAX_NAME_BYTES` in UTF-8.
+    """
+    cleaned = "".join("_" if ch in _UNSAFE_NAME_CHARS else ch for ch in name)
+    cleaned = cleaned.strip(" ").rstrip(". ")
+    if not cleaned or len(cleaned.encode("utf-8")) > MAX_NAME_BYTES:
+        return None
+    return cleaned
+
+
 def safe_join(base_dir: str, *parts: str) -> Path:
     """Join parts to a base directory while ensuring the result stays inside the base.
 

@@ -12,6 +12,7 @@ from logging_setup import get_logger
 import os
 import threading
 import time
+from collections.abc import Sequence
 from pathlib import Path
 
 from config import settings
@@ -717,6 +718,36 @@ class LockManager:
             # Not contention (that returned False above): an error, so the job
             # fails with the reason rather than being requeued forever.
             raise LockFailed(normalized_path, exc) from exc
+
+    def acquire_all(self, wanted: Sequence[tuple[str, bool]]) -> str | None:
+        """Take every lock in *wanted* (``(path, allow_existing)`` pairs, as
+        for :meth:`acquire_lock`), or none of them.
+
+        Returns None once all are held, or the first path that couldn't be
+        taken (someone holds it, or it exists where *allow_existing* is
+        False), having let go of the ones taken before it. A
+        :class:`LockFailed` (or anything else) on a later path lets go of
+        them too before it propagates, so no exit leaves a lock held
+        (Codex 4602538955)."""
+        held: list[str] = []
+        try:
+            for path, allow_existing in wanted:
+                if not self.acquire_lock(path, allow_existing=allow_existing):
+                    self._release_all(held)
+                    return path
+                held.append(path)
+        except BaseException:
+            self._release_all(held)
+            raise
+        return None
+
+    def _release_all(self, paths: Sequence[str]) -> None:
+        for path in reversed(paths):
+            try:
+                self.release_lock(path)
+            except Exception:
+                # Letting go is cleanup: a lock left is cleared as stale.
+                logger.warning("Could not release the lock on %s", path, exc_info=True)
 
     def release_lock(self, output_path: str):
         """Release the lock for an output file path: every identity it was
