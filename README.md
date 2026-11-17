@@ -978,6 +978,14 @@ becomes a Library, and the **Rules** view (in the sidebar) shows it:
   now** queues it. **Run automatically** turns the scheduler on for that Library.
 - If the folder cannot be reached during a run (a NAS rebooting, a mount
   dropping), that run says so and queues nothing; the next run checks again.
+- **Layout** says where a Platform's Images go: ES-DE / Batocera style
+  (`<root>/ps2`, the default), RomM style (`<root>/roms/ps2`) or flat (every
+  Image in the root, sorted by its header). **Where new Images go** lists the
+  folder for each Platform, named the way Platform detection reads it (an
+  existing `GameCube` folder, or a new `gc` one), and marks a folder that will
+  be created. Two folders for one Platform are shown as "can't tell" instead
+  of picking one. Changing the layout moves nothing. On RomM the list follows
+  RomM's own folder structure.
 - **Remove Library** forgets the Library and its Rules. It never touches a file.
 
 The RomM view's **Automation** tab is the same Rules view, opened on RomM.
@@ -1436,6 +1444,14 @@ The ES-DE gamelists folder field under the switch, with a folder typed in and re
 |-------|------|
 | ![ES-DE gamelists folder, light](docs/screenshots/rules-esde-gamelists-light.png) | ![ES-DE gamelists folder, dark](docs/screenshots/rules-esde-gamelists-dark.png) |
 
+#### Library layout
+
+The folder Library's layout picker and where new Images of each of its Platforms would land. See [Folder Libraries and the Rules view](#folder-libraries-and-the-rules-view).
+
+| Light | Dark |
+|-------|------|
+| ![Library layout, light](docs/screenshots/rules-folder-layout-light.png) | ![Library layout, dark](docs/screenshots/rules-folder-layout-dark.png) |
+
 #### Check Rule
 
 A PS2 Platform with a conversion Rule and a check Rule: 50 GB a night between 01:00 and 05:00. See [Check Rules](#check-rules).
@@ -1459,6 +1475,14 @@ Import or sync No-Intro / Redump / MAMERedump datasets and match converted files
 | Light | Dark |
 |-------|------|
 | ![DAT Library, light](docs/screenshots/dat-light.png) | ![DAT Library, dark](docs/screenshots/dat-dark.png) |
+
+When more than one DAT knows a file, the higher one in the list names it. Each
+DAT shows its family; move them up or down to set your own order. Until you do,
+Redump comes first for disc Images and No-Intro first for cartridge Images.
+
+| Light | Dark |
+|-------|------|
+| ![DAT order, light](docs/screenshots/dat-ranking-light.png) | ![DAT order, dark](docs/screenshots/dat-ranking-dark.png) |
 
 #### Settings
 

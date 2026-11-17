@@ -15,8 +15,35 @@
   import XIcon from '@lucide/svelte/icons/x';
   import Globe from '@lucide/svelte/icons/globe';
   import PlugZap from '@lucide/svelte/icons/plug-zap';
+  import ArrowUp from '@lucide/svelte/icons/arrow-up';
+  import ArrowDown from '@lucide/svelte/icons/arrow-down';
+  import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
 
+  // In ranked order (GET /api/dat/ranking): when two DATs match the same
+  // file, the higher one names it.
   const dats = $derived(datMatching.dats);
+  const rankingCustom = $derived(datMatching.datsRankingCustom);
+  let savingOrder = $state(false);
+
+  async function saveOrder(order) {
+    savingOrder = true;
+    try {
+      await datMatching.setDATRanking(order);
+      toast.success(order === null ? 'DAT order back to the defaults' : 'DAT order saved');
+    } catch (e) {
+      toast.error(e?.message ?? 'Could not save the DAT order');
+    } finally {
+      savingOrder = false;
+    }
+  }
+
+  function moveDat(index, delta) {
+    const target = index + delta;
+    if (target < 0 || target >= dats.length) return;
+    const order = dats.map((d) => d.id);
+    [order[index], order[target]] = [order[target], order[index]];
+    saveOrder(order);
+  }
   const loading = $derived(datMatching.datsLoading);
   const error = $derived(datMatching.datsError);
   const stats = $derived(datMatching.stats);
@@ -303,13 +330,38 @@
     </article>
   {/if}
 
-  <article class="panel">
+  <article class="panel dat-ranking">
     <header class="panel-head">
       <h2 class="panel-title">Imported DATs</h2>
-      <IconButton label="Refresh" size="sm" onclick={() => datMatching.loadDATs()}>
-        <RefreshCw size={14} />
-      </IconButton>
+      <div class="panel-actions">
+        {#if rankingCustom}
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={savingOrder}
+            onclick={() => saveOrder(null)}
+          >
+            {#snippet icon()}<RotateCcw size={14} />{/snippet}
+            Use default order
+          </Button>
+        {/if}
+        <IconButton label="Refresh" size="sm" onclick={() => datMatching.loadDATs()}>
+          <RefreshCw size={14} />
+        </IconButton>
+      </div>
     </header>
+    {#if dats.length > 1}
+      <p class="ranking-hint">
+        When more than one DAT knows a file, the higher one names it.
+        {#if rankingCustom}
+          Your order applies to every Image.
+        {:else}
+          Until you reorder them, Redump comes first for disc Images and
+          No-Intro first for cartridge Images. Two DATs with no order between
+          them that name a file differently leave it unnamed.
+        {/if}
+      </p>
+    {/if}
 
     {#if loading}
       <div class="loading"><Spinner size="md" /> Loading…</div>
@@ -323,16 +375,42 @@
       />
     {:else}
       <ul class="dat-list">
-        {#each dats as dat (dat.id ?? dat.name)}
+        {#each dats as dat, index (dat.id ?? dat.name)}
           <li class="dat-row">
+            {#if dats.length > 1}
+              <span class="dat-rank" aria-label="Position {index + 1}">{index + 1}</span>
+            {/if}
             <div class="dat-meta">
-              <div class="dat-name">{dat.name ?? '(unnamed)'}</div>
+              <div class="dat-name">
+                {dat.name ?? '(unnamed)'}
+                {#if dat.family}
+                  <Badge tone={dat.family === 'other' ? 'neutral' : 'dat-match'}>{dat.family}</Badge>
+                {/if}
+              </div>
               <div class="dat-sub">
                 {#if dat.version}<span>v{dat.version}</span>{/if}
                 {#if dat.file_count != null}<span>{dat.file_count} entries</span>{/if}
                 {#if dat.description}<span class="dat-desc" title={dat.description}>{dat.description}</span>{/if}
               </div>
             </div>
+            {#if dats.length > 1}
+              <IconButton
+                label="Move {dat.name ?? 'DAT'} up"
+                size="sm"
+                disabled={savingOrder || index === 0}
+                onclick={() => moveDat(index, -1)}
+              >
+                <ArrowUp size={14} />
+              </IconButton>
+              <IconButton
+                label="Move {dat.name ?? 'DAT'} down"
+                size="sm"
+                disabled={savingOrder || index === dats.length - 1}
+                onclick={() => moveDat(index, 1)}
+              >
+                <ArrowDown size={14} />
+              </IconButton>
+            {/if}
             <IconButton label="Delete DAT" size="sm" onclick={() => handleDeleteDat(dat)}>
               <Trash2 size={14} />
             </IconButton>
@@ -384,7 +462,10 @@
   .dat-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: var(--space-1); }
   .dat-row { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); background: var(--surface-2); }
   .dat-meta { flex: 1; min-width: 0; }
-  .dat-name { color: var(--text-1); font-size: var(--text-sm); font-weight: var(--weight-medium); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dat-name { color: var(--text-1); font-size: var(--text-sm); font-weight: var(--weight-medium); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: flex; align-items: center; gap: var(--space-2); }
+  .dat-rank { flex: none; min-width: 1.75em; text-align: right; color: var(--text-3); font-size: var(--text-xs); font-variant-numeric: tabular-nums; }
+  .panel-actions { display: inline-flex; align-items: center; gap: var(--space-2); }
+  .ranking-hint { margin: 0 0 var(--space-3); color: var(--text-2); font-size: var(--text-sm); line-height: 1.5; }
   .dat-sub { color: var(--text-3); font-size: var(--text-xs); display: flex; gap: var(--space-2); flex-wrap: wrap; }
   .dat-desc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 320px; }
 
