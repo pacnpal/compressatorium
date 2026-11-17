@@ -12,11 +12,13 @@ batch is queued, and the re-pin backlog reported when the sweep ends.
 from __future__ import annotations
 
 import os
+from collections.abc import Sequence
 from types import MappingProxyType
 from typing import Any
 
 from fastapi.concurrency import run_in_threadpool
 from logging_setup import get_logger
+from services.platform_detect import canonical_slug
 from services.romm import RommError, romm_client
 from services.romm import repin as romm_repin
 from services.romm import settings as romm_settings
@@ -34,9 +36,12 @@ from services.rules.library import (
     Image,
     LibraryDefaults,
     LibraryUnreadable,
+    Placement,
+    PlacementUnknown,
     Platform,
     QueuedImage,
     folder_holding,
+    placed_in,
 )
 from services.rules.store import RULES_KEY, STATE_KEY
 
@@ -126,6 +131,8 @@ class RommLibrary(LibraryDefaults):
                 id=str(p["id"]),
                 slug=p.get("slug"),
                 name=p.get("display_name") or p.get("name") or str(p["id"]),
+                # Its folder on disk, which the operator may have renamed (#430).
+                folder=p.get("fs_slug"),
             )
             for p in catalog if isinstance(p, dict) and p.get("id") is not None
         ]
@@ -223,6 +230,58 @@ class RommLibrary(LibraryDefaults):
             return None
         roms = os.path.join(root, "roms")
         return folder_holding(roms if os.path.isdir(roms) else root, path)
+
+    def placement(
+        self, platform: str, *, known: Sequence[Platform] | None = None,
+    ) -> Placement:
+        """Where *platform*'s Images go in RomM's own folder structure (#430).
+
+        The folder is named by the RomM platform's ``fs_slug`` (its folder on
+        disk, which the operator may have renamed), or by the slug itself for
+        a Platform RomM has no record of yet, as RomM names a new one. Where
+        that folder sits is read off the disk, at the directory level as
+        ``RommClient.local_path`` maps ROMs:
+
+        * ``<root>/roms`` exists: RomM's standard structure,
+          ``<root>/roms/<folder>``.
+        * ``<root>/<folder>/roms`` exists: the other structure,
+          ``<root>/<folder>/roms``.
+        * ``<root>/<folder>`` exists with neither ``roms`` nor ``bios`` in
+          it: the root is RomM's ``roms`` folder itself, ``<root>/<folder>``.
+
+        Anything else can't be told (RomM 5.3 declares its structure in a
+        setting this app doesn't read), so it refuses, as it does for two RomM
+        platforms with the slug or a folder name with a path in it. Blocking:
+        asks RomM for its platforms (unless *known* already holds them) and
+        stats a few folders.
+        """
+        root = self.root
+        if not root:
+            raise PlacementUnknown("RomM's library folder isn't set")
+        slug = canonical_slug(platform)
+        if slug is None:
+            raise PlacementUnknown(f"{platform!r} is not a Platform")
+        listed = self.platforms() if known is None else known
+        records = [p for p in listed if canonical_slug(p.slug) == slug]
+        if len(records) > 1:
+            ids = ", ".join(p.id for p in records)
+            raise PlacementUnknown(f"RomM has more than one {slug} platform ({ids})")
+        name = (records[0].folder if records else None) or slug
+        if name in (".", "..") or "/" in name or os.sep in name:
+            raise PlacementUnknown(f"RomM's folder name {name!r} for {slug} isn't one folder")
+        own = os.path.join(root, name)
+        if os.path.isdir(os.path.join(root, "roms")):
+            folder = os.path.join(root, "roms", name)
+        elif os.path.isdir(os.path.join(own, "roms")):
+            folder = os.path.join(own, "roms")
+        elif os.path.isdir(own) and not os.path.isdir(os.path.join(own, "bios")):
+            folder = own
+        else:
+            raise PlacementUnknown(
+                f"RomM's folder structure can't be told: {root} has no roms folder, "
+                f"and no {name} folder with its ROMs yet",
+            )
+        return placed_in(folder, slug)
 
     def referrer_options(self, referrer_id: str) -> dict:
         """The gamelist Referrer's ES-DE gamelists folder from RomM's settings,

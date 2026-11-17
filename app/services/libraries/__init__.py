@@ -30,7 +30,7 @@ from fastapi.concurrency import run_in_threadpool
 from logging_setup import get_logger
 from services import db as _db
 from services.job_manager import VOLUME_PROBE_TIMEOUT_SECONDS
-from services.libraries.folder import ID_PREFIX, FolderLibrary
+from services.libraries.folder import ID_PREFIX, LAYOUTS, FolderLibrary
 from services.rules.library import (
     ES_FRONTEND_REFERRER,
     GAMELISTS_FOLDER,
@@ -118,6 +118,7 @@ def _from_row(row: _db.FolderLibraryRecord) -> FolderLibrary:
         max_per_sweep=int(row.max_per_sweep),
         es_frontend=bool(row.es_frontend),
         gamelists_folder=row.gamelists_folder,
+        layout=row.layout,
     )
 
 
@@ -569,6 +570,7 @@ def update(
     library_id: str, *, name: str | None = None,
     schedule_enabled: bool | None = None, max_per_sweep: int | None = None,
     es_frontend: bool | None = None, gamelists_folder: str | None = None,
+    layout: str | None = None,
 ) -> FolderLibrary | None:
     """Change a folder Library's name or settings. None when there is no such Library.
 
@@ -580,7 +582,12 @@ def update(
     first, bounded (:func:`admitted`): this only persists, so a check that
     outlasts its bound and is abandoned never saves anything later (Codex
     PRRT_kwDOQ9nULM64Jpv1).
+
+    *layout* (#430) is one of :data:`LAYOUTS`; any other is refused with
+    :class:`LibraryPathError` 422 and nothing is saved.
     """
+    if layout is not None and layout not in LAYOUTS:
+        raise LibraryPathError(422, f"Unknown layout {layout!r}; use one of {', '.join(LAYOUTS)}")
     record_id = _record_id(library_id)
     if record_id is None:
         return None
@@ -608,10 +615,12 @@ def update(
                 row.es_frontend = bool(es_frontend)
             if folder is not None:
                 row.gamelists_folder = folder or None
+            if layout is not None:
+                row.layout = layout
             session.commit()
         library.apply_settings(
             name=label, schedule_enabled=schedule_enabled, max_per_sweep=max_per_sweep,
-            es_frontend=es_frontend, gamelists_folder=folder,
+            es_frontend=es_frontend, gamelists_folder=folder, layout=layout,
         )
     return library
 
@@ -673,4 +682,7 @@ def describe(library: Library) -> dict[str, Any]:
         "gamelists_folder": (
             library.referrer_options(ES_FRONTEND_REFERRER).get(GAMELISTS_FOLDER) or None
         ),
+        # Where a Platform's Images go (#430): a folder Library's layout, or
+        # None for a Library whose own structure decides (RomM).
+        "layout": getattr(library, "layout", None),
     }
