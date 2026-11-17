@@ -1198,6 +1198,62 @@
   wait: 1800
   javascript: *js_theme_dark
 
+# --- DAT Library: the DAT order (#424) -----------------------------------
+# The fixture has no DATs, so three small synthetic ones (made-up names and
+# hashes, one per family) are imported first; skipped when already there, so
+# the dark shot reuses the light shot's. Shows the family badges, the move
+# up/down controls and the default-order hint.
+- url: http://127.0.0.1:8099/?s=dat-ranking-light#/dat
+  output: docs/screenshots/dat-ranking-light.png
+  width: 1280
+  height: 900
+  wait: 1800
+  javascript: |
+    (async (theme) => {
+      localStorage.setItem('theme-preference', theme);
+      window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: theme }));
+      const sets = [
+        ['Example Console - Discs', 'redump.org', 'Example Disc Game'],
+        ['Example Handheld', 'No-Intro', 'Example Cartridge Game'],
+        ['My homebrew set', '', 'Example Homebrew'],
+      ];
+      const have = (await (await fetch('/api/dat/ranking')).json()).dats.map(d => d.name);
+      for (const [index, [name, home, game]] of sets.entries()) {
+        if (have.includes(name)) continue;
+        const sha1 = String(index + 1).repeat(40);
+        const xml = `<?xml version="1.0"?><datafile><header><name>${name}</name>` +
+          `<description>${name}</description><homepage>${home}</homepage></header>` +
+          `<game name="${game}"><rom name="${game}.bin" size="4" sha1="${sha1}"/></game></datafile>`;
+        const form = new FormData();
+        form.append('file', new Blob([xml], { type: 'text/xml' }), `${index}.dat`);
+        const response = await fetch('/api/dat/import', { method: 'POST', body: form });
+        if (!response.ok) throw new Error(`DAT import failed: ${response.status}`);
+      }
+      const panel = document.querySelector('.dat-ranking');
+      if (!panel) throw new Error('DAT list panel not shown');
+      panel.querySelector('button[aria-label="Refresh"]').click();
+      await new Promise(r => setTimeout(r, 900));
+      if (!panel.querySelector('button[aria-label^="Move "]')) throw new Error('no move controls');
+      panel.scrollIntoView({ block: 'start' });
+      await new Promise(r => setTimeout(r, 300));
+    })('light')
+- url: http://127.0.0.1:8099/?s=dat-ranking-dark#/dat
+  output: docs/screenshots/dat-ranking-dark.png
+  width: 1280
+  height: 900
+  wait: 1800
+  javascript: |
+    (async () => {
+      localStorage.setItem('theme-preference', 'dark');
+      window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: 'dark' }));
+      await new Promise(r => setTimeout(r, 500));
+      const panel = document.querySelector('.dat-ranking');
+      if (!panel) throw new Error('DAT list panel not shown');
+      if (!panel.querySelector('button[aria-label^="Move "]')) throw new Error('no move controls');
+      panel.scrollIntoView({ block: 'start' });
+      await new Promise(r => setTimeout(r, 300));
+    })()
+
 # --- Settings: notifications ----------------------------------------------
 # No destination is configured in the fixture, so this captures the first-run
 # state: nothing is sent until one is added.

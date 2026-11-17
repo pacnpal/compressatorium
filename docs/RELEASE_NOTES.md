@@ -29,6 +29,22 @@
   for its whole run and would have been stopped for it. Such a tool now runs in
   a private work folder whose growth counts as progress, and the job shows
   bytes written and the rate as usual.
+- **Every DAT's match is kept, and you choose which DAT names a file** (#424).
+  A file whose hash is in two imported DATs used to keep only the later
+  import's match; now both are kept. Each DAT shows its family (Redump,
+  No-Intro, TOSEC, MAME or other), read from its header, and a Hasheous match
+  shows the family of the DAT it came from. The DAT Library lists your DATs in
+  priority order with buttons to move each one up or down, and the order is
+  saved. When more than one DAT knows a file, the higher one names it. Until
+  you reorder them, Redump comes first for disc Images and No-Intro first for
+  cartridge Images ("Use default order" goes back to that). Two DATs with no
+  order between them that name a file differently leave it unnamed, and the
+  match says which two disagree. Reordering takes effect without re-hashing
+  anything, and a DAT the MAMERedump sync replaces keeps its place. Your own
+  DATs are still always checked before Hasheous. Database migration 0022 keeps
+  every existing match; a DAT imported before it gets its family from its name
+  and description, so a No-Intro DAT that only says so in its homepage reads
+  "other" until you import it again.
 - **Unfinished RomM swaps are picked up after a restart** (#392). If the app
   stops part way through keeping a ROM's id, the next start settles the swap
   in the background, without holding up startup. What is safe to finish is
