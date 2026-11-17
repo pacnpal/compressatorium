@@ -5205,11 +5205,11 @@ def test_record_repin_stores_the_source_platform(repin_db) -> None:
     rom = {"id": 7, "platform_id": 12, "platform_slug": "switch"}
     romm_repin.record(rom, "/vol/Game.nsz", {"igdb_id": 42})
     row = romm_repin.pending_rows(10)[0]
-    assert row[8:] == (12, "switch")
+    assert row[8:10] == (12, "switch")
 
     # RomM not saying is "unknown", distinct from a pre-migration NULL.
     romm_repin.record({"id": 8}, "/vol/Other.rvz", {"igdb_id": 43})
-    assert romm_repin.pending_rows(10)[1][8:] == (None, "")
+    assert romm_repin.pending_rows(10)[1][8:10] == (None, "")
 
 
 @pytest.mark.asyncio
@@ -5448,7 +5448,7 @@ def test_rom_at_path_matches_an_output_inside_a_folder_record(tmp_path: Path) ->
 def test_record_keeps_a_slugless_platform_backfillable(repin_db) -> None:
     """An id without a slug must not be filed as "no platform" for good."""
     romm_repin.record({"id": 7, "platform_id": 12}, "/vol/Game.nsz", {"igdb_id": 1})
-    assert romm_repin.pending_rows(10)[0][8:] == (12, None)
+    assert romm_repin.pending_rows(10)[0][8:10] == (12, None)
 
 
 def test_rom_at_path_matches_a_folder_record_under_a_symlinked_platform(

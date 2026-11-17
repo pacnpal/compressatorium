@@ -21,7 +21,9 @@ from services.romm import RommError, romm_client
 from services.romm import repin as romm_repin
 from services.romm import settings as romm_settings
 
-# Importing it registers the RomM swap Referrer (#391).
+# Importing them registers the RomM Referrers: the swap (#391), and the
+# re-pin skip for formats RomM re-identifies by itself (#393).
+from services.romm.reidentify import REIDENTIFY_REFERRER
 from services.romm.swap_referrer import SWAP_REFERRER
 from services.rules.library import (
     CONVERTED_HISTORY,
@@ -197,13 +199,18 @@ class RommLibrary(LibraryDefaults):
     def referrer_enabled(self, referrer_id: str) -> bool:
         """The gamelist.xml Referrer is on when RomM's settings say the library
         is used by an EmulationStation frontend (#386), and the RomM swap when
-        the "keep the ROM id" switch is on (#390, #391); every other opt-in
-        one is off. Reads the settings in memory."""
+        the "keep the ROM id" switch is on (#390, #391). The re-pin skip for
+        formats RomM re-identifies by itself is on while re-pinning is on and
+        the swap is off (#393): with the swap on, the swap keeps the id. Every
+        other opt-in one is off. Reads the settings in memory."""
+        cfg = romm_settings.effective()
+        if referrer_id == REIDENTIFY_REFERRER:
+            return bool(cfg.get("repin_enabled")) and not cfg.get("swap_keep_rom_id")
         setting = {
             ES_FRONTEND_REFERRER: "es_frontend",
             SWAP_REFERRER: "swap_keep_rom_id",
         }.get(referrer_id)
-        return setting is not None and bool(romm_settings.effective().get(setting))
+        return setting is not None and bool(cfg.get(setting))
 
     def platform_folder(self, path: str) -> str | None:
         """The Platform folder holding *path* in either RomM layout (#387):
