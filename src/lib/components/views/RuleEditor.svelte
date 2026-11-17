@@ -27,6 +27,8 @@
   import { checkSummary, newCheckRule } from '$lib/rules/checkRule.js';
   import { registry } from '$lib/tools/registry.js';
   import { clampLevel, fitLevel } from '$lib/tools/levels.js';
+  import { compat } from '$lib/stores/compat.svelte.js';
+  import { compatEntry, compatWarning } from '$lib/tools/compat.js';
   import Button from '$lib/components/ui/Button.svelte';
   import Checkbox from '$lib/components/ui/Checkbox.svelte';
   import Select from '$lib/components/ui/Select.svelte';
@@ -48,6 +50,7 @@
   // says whether to show it, so this asks each time the editor opens.
   onMount(() => {
     ruleNotices.load();
+    compat.load();
   });
 
   async function dismissCheckLevelNotice() {
@@ -286,6 +289,29 @@
   function setRuleLevel(platformId, rule, value) {
     const range = ruleLevelRange(rule);
     update(platformId, { compression_level: range ? clampLevel(range, value) : null });
+  }
+
+  // "Compatible with...": the emulator picked for each Platform's Rule, kept in
+  // the editor only (the Rule saves its codecs, not the target). The table is
+  // served by the server; choosing a target selects its preferred codecs, and
+  // a codec it does not read only shows a warning.
+  let compatPick = $state({});
+
+  function chooseCompat(platformId, rule, targetId) {
+    compatPick = { ...compatPick, [platformId]: targetId };
+    const entry = compatEntry(compat.target(targetId), rule.mode);
+    if (!entry) return;
+    if (codecStyleFor(rule.mode) === 'multi') {
+      update(platformId, { compression: entry.preferred.join(',') });
+    } else {
+      setRuleCodec(platformId, rule, entry.preferred[0]);
+    }
+  }
+
+  /** The codecs the Rule would run with, for the compatibility warning. */
+  function runningCodecs(rule) {
+    if (codecStyleFor(rule.mode) === 'multi') return selectedCodecs(rule);
+    return [rule.compression || registry.defaultCompressionForMode(rule.mode)?.[0]];
   }
 
   /** The codecs a rule currently has selected, as a list. */
@@ -761,6 +787,26 @@
 
                 <div class="grid">
                   {#if (spec?.supportsCompression || spec?.supportsCompressionLevel) && codecs.length > 0}
+                    {@const compatTargets = compat.targetsForMode(rule.mode)}
+                    {#if compatTargets.length > 0}
+                      {@const picked = compatTargets.find((t) => t.id === compatPick[platform.id]) ?? null}
+                      {@const compatNote = compatWarning(picked, rule.mode, runningCodecs(rule))}
+                      <div class="field wide">
+                        <span>Compatible with…</span>
+                        <Select
+                          value={picked?.id ?? ''}
+                          options={[
+                            { value: '', label: 'Any emulator' },
+                            ...compatTargets.map((t) => ({ value: t.id, label: t.label })),
+                          ]}
+                          ariaLabel="Compatible with"
+                          onchange={(v) => chooseCompat(platform.id, rule, v)}
+                        />
+                        {#if compatNote}
+                          <p class="warn" role="status">{compatNote} The Rule still runs.</p>
+                        {/if}
+                      </div>
+                    {/if}
                     {#if style === 'multi'}
                       <div class="field wide">
                         <span>Compression</span>

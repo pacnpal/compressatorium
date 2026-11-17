@@ -112,6 +112,8 @@ export const api = {
   // ─── Preferences (server-stored UI layout) ─────────────────────────────
   getPreferences: () =>
     fetchJson(`${API_BASE}/preferences`, undefined, 'Failed to fetch preferences'),
+  getCompatPresets: () =>
+    fetchJson(`${API_BASE}/compat-presets`, undefined, 'Failed to fetch compatibility presets'),
   getConversionPrefs: () =>
     fetchJson(
       `${API_BASE}/preferences/conversion`,

@@ -12,6 +12,9 @@
 
   import { conversion } from '$lib/stores/conversion.svelte.js';
   import { registry } from '$lib/tools/registry.js';
+  import { compat } from '$lib/stores/compat.svelte.js';
+  import { compatEntry, compatWarning } from '$lib/tools/compat.js';
+  import { onMount } from 'svelte';
   import { toast } from 'svelte-sonner';
   import Check from '@lucide/svelte/icons/check';
   import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
@@ -36,6 +39,28 @@
   // disable the Reset button so it's not a silent no-op.
   const atDefault = $derived(conversion.isCompressionDefault);
 
+  // "Compatible with...": the targets that have an entry for this mode, from
+  // the table the server serves. Picking one selects its preferred codecs;
+  // the warning only advises, it never disables a control.
+  let compatId = $state('');
+  const compatTargets = $derived(compat.targetsForMode(spec?.mode));
+  const compatTarget = $derived(compatTargets.find((t) => t.id === compatId) ?? null);
+  const compatNote = $derived(
+    compatWarning(compatTarget, spec?.mode, style === 'multi' ? selection : [singleCodec]),
+  );
+
+  onMount(() => {
+    compat.load();
+  });
+
+  function chooseCompat(id) {
+    compatId = id;
+    const entry = compatEntry(compat.target(id), spec?.mode);
+    if (!entry) return;
+    if (style === 'multi') conversion.setCompression(entry.preferred);
+    else conversion.setSingleCodec(entry.preferred[0]);
+  }
+
   function isSelected(value) {
     return selection.includes(value);
   }
@@ -49,6 +74,25 @@
 {#if supports && codecs.length > 0}
   <fieldset class="picker">
     <legend class="legend">Compression</legend>
+
+    {#if compatTargets.length > 0}
+      <label class="single-codec">
+        <span class="sublabel">Compatible with…</span>
+        <select
+          value={compatId}
+          onchange={(e) => chooseCompat(e.currentTarget.value)}
+          aria-label="Compatible with"
+        >
+          <option value="">Any emulator</option>
+          {#each compatTargets as target (target.id)}
+            <option value={target.id}>{target.label}</option>
+          {/each}
+        </select>
+      </label>
+      {#if compatNote}
+        <p class="compat-warning" role="status">{compatNote} You can still convert.</p>
+      {/if}
+    {/if}
 
     {#if style === 'multi'}
       {@const max = conversion.CHDMAN_MAX_CODECS ?? 4}
@@ -249,6 +293,15 @@
     font-size: var(--text-xs);
   }
   .cap-note { color: var(--warning); margin-left: var(--space-1); }
+  .compat-warning {
+    margin: 0;
+    padding: var(--space-2);
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--warning);
+    background: var(--warning-muted);
+    color: var(--text-1);
+    font-size: var(--text-xs);
+  }
   .chip:disabled {
     opacity: 0.45;
     cursor: not-allowed;

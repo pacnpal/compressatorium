@@ -2471,6 +2471,17 @@ errors like “Failed to initialize cdvd,” re-convert with **zlib only**.
 For Dolphin formats, choose a single codec (zstd/bzip2/lzma/lzma2) and an optional level.
 Use `chdman help createcd` or `chdman help createdvd` for codec details.
 
+You don't have to remember which emulator reads what. In the compression picker
+(and in each Platform's Rule in the Rule editor), pick **Compatible with…** and
+choose NetherSX2, PCSX2, DuckStation, a RetroArch core, MiSTer, PPSSPP or
+Dolphin: the codecs are set to the ones that emulator reads. If you then pick a
+codec it doesn't read, a warning appears, but nothing is blocked. The list lives
+in one file (`app/data/compat_presets.yaml`), and each entry cites the doc or
+source file it came from.
+
+| ![Compatible with, light](docs/screenshots/compat-picker-light.png) |
+| --- |
+
 ---
 
 ## Supported Operations
