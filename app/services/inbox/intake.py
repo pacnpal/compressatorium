@@ -140,6 +140,10 @@ class _Flight:
     identities: dict[str, dict[str, int]] = field(default_factory=dict)
     job_id: str | None = None
     task: asyncio.Task | None = None
+    # Its output is in the Library and the originals still wait to go to
+    # processed/: set when another job held one of them (Codex 4607108034),
+    # so the next poll tries the move again (``_settle_flights``).
+    archive: str | None = None
 
 
 @dataclass
@@ -148,6 +152,10 @@ class _State:
     # Path -> the fingerprint it got a Finding (or a cancel) at. Not tried
     # again until it changes.
     held: dict[str, str] = field(default_factory=dict)
+    # Path -> what an ownership hold depends on (the sheets that caused it,
+    # each with its fingerprint): recomputed each poll, and a hold whose key
+    # changed is lifted and the Image looked at again (Codex 4607108025).
+    held_by: dict[str, tuple] = field(default_factory=dict)
     flights: dict[str, _Flight] = field(default_factory=dict)
     # What was placed since the last poll reported it: ``{"path", "platform",
     # "output"}``, for what runs after a pass (#433).
@@ -354,37 +362,69 @@ def _list(
                     or registry.split_owner(entry.path) is not None
                 ):
                     files.append(entry.path)
-    images = {path: image_fingerprint(path) for path in group_images(sorted(files))}
-    return images, unlisted, _sharing(images), _behind_unreadable_sheets(images)
+    # Progress between Images through grouping, fingerprinting and the
+    # ownership checks too, so the stall bound measures stalled storage, not
+    # how long a big pass takes (Codex 4607108046).
+
+    def members(path: str) -> list[str]:
+        progress(path)
+        return image_members(path)
+
+    images: dict[str, str] = {}
+    for path in group_images(sorted(files), members=members):
+        progress(path)
+        images[path] = image_fingerprint(path)
+    return (
+        images, unlisted, _sharing(images, progress),
+        _behind_unreadable_sheets(images, progress),
+    )
 
 
-def _behind_unreadable_sheets(images: dict[str, str]) -> dict[str, str]:
-    """Image -> the unreadable sheet beside it, for every file a sheet that
-    can't be read whole (unreadable, over the size cap) could name (Codex
-    4606061269). Such a sheet owns nobody, so its tracks would be taken as
-    Images of their own: they are held instead, failing closed. Blocking."""
+def _behind_unreadable_sheets(images: dict[str, str], progress=None) -> dict[str, str]:
+    """Image -> the unreadable sheet (its path) that could name it, for every
+    loose track-type file in the folder of a sheet that can't be read whole
+    (unreadable, over the size cap) or in any folder below it (Codex
+    4606061269, 4607108018): a sheet may name ``tracks/Track.bin``. Such a
+    sheet owns nobody, so its tracks would be taken as Images of their own:
+    they are held instead, failing closed. Blocking."""
     from services.image_sets import SHEET_EXTENSIONS, is_playlist
     from utils.sheet_text import sheet_is_readable
 
     unreadable: dict[str, str] = {}
     for path in images:
+        if progress is not None:
+            progress(path)
         if path.lower().endswith(SHEET_EXTENSIONS) and not sheet_is_readable(path):
-            unreadable.setdefault(os.path.dirname(path), os.path.basename(path))
-    return {
-        path: unreadable[os.path.dirname(path)]
-        for path in images
-        if os.path.dirname(path) in unreadable
-        and not path.lower().endswith(SHEET_EXTENSIONS)
-        and not is_playlist(path)
-    }
+            unreadable.setdefault(os.path.dirname(path), path)
+
+    def holder(path: str) -> str | None:
+        folder = os.path.dirname(path)
+        while True:
+            if folder in unreadable:
+                return unreadable[folder]
+            parent = os.path.dirname(folder)
+            if parent == folder:
+                return None
+            folder = parent
+
+    held: dict[str, str] = {}
+    for path in images:
+        if path.lower().endswith(SHEET_EXTENSIONS) or is_playlist(path):
+            continue
+        sheet = holder(path)
+        if sheet is not None:
+            held[path] = sheet
+    return held
 
 
-def _sharing(images: dict[str, str]) -> dict[str, list[str]]:
+def _sharing(images: dict[str, str], progress=None) -> dict[str, list[str]]:
     """The Images that share a file with another (two sheets naming one
     track): each one -> the others it shares with. Taking one in would move
     a file the other still needs to ``processed/``. Blocking (reads sheets)."""
     owners: dict[str, list[str]] = {}
     for path in images:
+        if progress is not None:
+            progress(path)
         for member in image_members(path):
             key = os.path.normcase(os.path.realpath(member))
             owners.setdefault(key, []).append(path)
@@ -399,12 +439,31 @@ def _sharing(images: dict[str, str]) -> dict[str, list[str]]:
 # ---- Findings ------------------------------------------------------------
 
 
+def _ownership_key(
+    path: str, listing: dict[str, str], sharing: dict[str, list[str]],
+    blocked: dict[str, str],
+) -> tuple | None:
+    """What an ownership hold on *path* depends on: the sheets sharing its
+    files, or the unreadable sheet that may own it, each with its
+    fingerprint now (None when it's gone). None when nothing holds it."""
+    sheets = [*sharing.get(path, ()), *([blocked[path]] if path in blocked else [])]
+    if not sheets:
+        return None
+    return tuple(sorted((sheet, listing.get(sheet)) for sheet in sheets))
+
+
 async def _hold(
     inbox: inbox_store.Inbox, state: _State, path: str, fingerprint: str,
     kind: str, reason: str, cause: dict[str, Any] | None = None,
+    *, depends: tuple | None = None,
 ) -> None:
-    """Leave the file where it is with a Finding saying why, until it changes."""
+    """Leave the file where it is with a Finding saying why, until it changes
+    (or, for an ownership hold, until what it *depends* on changes)."""
     state.held[path] = fingerprint
+    if depends is not None:
+        state.held_by[path] = depends
+    else:
+        state.held_by.pop(path, None)
     state.seen.pop(path, None)
     item = findings.Observed(
         kind=kind, image_key=inbox.image_key(path), path=path, reason=reason,
@@ -503,9 +562,19 @@ async def poll(inbox: inbox_store.Inbox, *, now: float | None = None) -> dict[st
         for path, fingerprint in listing.items():
             if state.revoked:
                 break  # removed meanwhile: nothing more is taken
-            if path in state.flights or state.held.get(path) == fingerprint:
+            if path in state.flights:
                 continue
+            depends = _ownership_key(path, listing, sharing, blocked)
+            if state.held.get(path) == fingerprint:
+                if path not in state.held_by or state.held_by[path] == depends:
+                    continue
+                # What held it changed (the other sheet gone, the unreadable
+                # sheet removed or fixed): its stale Finding goes and it is
+                # looked at again now, settled as it was.
+                await _clear(inbox, path)
+                state.seen[path] = _Seen(fingerprint, now - inbox.settle_seconds)
             state.held.pop(path, None)
+            state.held_by.pop(path, None)
             seen = state.seen.get(path)
             if seen is None or seen.fingerprint != fingerprint:
                 state.seen[path] = _Seen(fingerprint, now)
@@ -519,9 +588,9 @@ async def poll(inbox: inbox_store.Inbox, *, now: float | None = None) -> dict[st
                 # sheet's tracks can't be told: it isn't taken on its own.
                 await _hold(
                     inbox, state, path, fingerprint, findings.INBOX_FAILED,
-                    f"The track sheet beside it, {blocked[path]}, can't be read, so it "
-                    "may be one of that sheet's tracks: fix or remove the sheet first",
-                    {"sheet": blocked[path]},
+                    f"The track sheet {blocked[path]} can't be read, so it may be one "
+                    "of that sheet's tracks: fix or remove the sheet first",
+                    {"sheet": blocked[path]}, depends=depends,
                 )
                 result["held"] += 1
                 continue
@@ -533,7 +602,7 @@ async def poll(inbox: inbox_store.Inbox, *, now: float | None = None) -> dict[st
                     inbox, state, path, fingerprint, findings.INBOX_FAILED,
                     f"It shares files with {others}, so it isn't taken in on its own: "
                     "take them in by hand, or give each its own copy of the files",
-                    {"shares_with": sharing[path]},
+                    {"shares_with": sharing[path]}, depends=depends,
                 )
                 result["held"] += 1
                 continue
@@ -839,7 +908,10 @@ async def _settle_flights(inbox: inbox_store.Inbox, state: _State) -> None:
     """Finish the conversions intake queued that have ended."""
     for path, flight in list(state.flights.items()):
         if flight.job_id is None:
-            continue  # a copy, which finishes itself
+            if flight.archive is not None and (flight.task is None or flight.task.done()):
+                # Its archival was deferred: tried again now.
+                _archive_later(inbox, state, path, flight, flight.archive)
+            continue  # a copy, or an archival, which finishes itself
         job = job_manager.get_job_for_lookup(flight.job_id)
         if job is None:
             state.flights.pop(path, None)
@@ -854,7 +926,7 @@ async def _settle_flights(inbox: inbox_store.Inbox, state: _State) -> None:
             # (CodeRabbit 4606147968): a slow move never holds up this poll,
             # and the Image stays in flight, not taken again, until it ends.
             flight.job_id = None
-            _track(state, path, flight, _finish(inbox, state, path, flight, job.output_path))
+            _archive_later(inbox, state, path, flight, job.output_path)
         elif job.status == JobStatus.FAILED:
             state.flights.pop(path, None)
             await _hold(
@@ -870,6 +942,32 @@ async def _settle_flights(inbox: inbox_store.Inbox, state: _State) -> None:
             )
 
 
+def _archive_later(
+    inbox: inbox_store.Inbox, state: _State, path: str, flight: _Flight, output: str | None,
+) -> None:
+    """Move the originals to ``processed/`` as *flight*'s own tracked task
+    (CodeRabbit 4606147968): a slow move never holds up a poll."""
+    flight.archive = None
+    _track(state, path, flight, _finish(inbox, state, path, flight, output))
+
+
+async def _lock_all(paths: list[str], *, allow_existing: bool) -> str | None:
+    """The lock manager's exclusive locks on every one of *paths*, or none
+    (``LockManager.acquire_all``, the path a conversion's locks take): None
+    once all are held, else the path another job holds. Bounded; an
+    acquisition that finishes after its wait gave up gives back what it took.
+    Raises ``DeadlineExpired``, ``TimeoutError``, ``OSError``, ``LockFailed``."""
+
+    def give_back(result: str | None) -> None:
+        if result is None:
+            _release_locks(paths)
+
+    return await run_detached_undoable(
+        lock_manager.acquire_all, [(path, allow_existing) for path in paths],
+        timeout=_LOCK_SECONDS, undo=give_back,
+    )
+
+
 async def _finish(
     inbox: inbox_store.Inbox, state: _State, path: str, flight: _Flight, output: str | None,
 ) -> None:
@@ -877,8 +975,39 @@ async def _finish(
 
     Only while it is still the Image that was taken: replaced or changed since,
     the Library holds the old contents, so the file stays in the Inbox to
-    settle and be taken again.
+    settle and be taken again. And only under the exclusive locks on every
+    original (Codex 4607108034): while another job reads one (its input
+    lock), nothing moves, no Finding is written, and the Image stays in
+    flight for the next poll (``flight.archive``).
     """
+    try:
+        refused = await _lock_all(flight.files, allow_existing=True)
+    except DeadlineExpired:
+        refused = "(no answer)"
+    except (OSError, asyncio.TimeoutError, LockFailed) as exc:
+        await _hold(
+            inbox, state, path, flight.fingerprint, findings.INBOX_FAILED,
+            f"It's in the Library, but its files couldn't be locked to move them "
+            f"to processed/: {exc}", {"platform": flight.platform},
+        )
+        return
+    if refused is not None:
+        logger.info("inbox: %s is in use (%s); moving it to processed/ later", path, refused)
+        flight.archive = output or ""
+        return
+    try:
+        await _finish_locked(inbox, state, path, flight, output)
+    finally:
+        try:
+            await _step(_release_locks, flight.files)
+        except (asyncio.TimeoutError, OSError):
+            logger.warning("inbox: could not release the locks of %s", path, exc_info=True)
+
+
+async def _finish_locked(
+    inbox: inbox_store.Inbox, state: _State, path: str, flight: _Flight, output: str | None,
+) -> None:
+    """:func:`_finish`, its locks held."""
     try:
         same = await _step(image_fingerprint, path) == flight.fingerprint
         if same:
@@ -1126,7 +1255,8 @@ def _track(state: _State, path: str, flight: _Flight, work: Any) -> None:
         try:
             await work
         finally:
-            if state.flights.get(path) is flight:
+            # A deferred archival keeps the Image in flight for the next poll.
+            if state.flights.get(path) is flight and flight.archive is None:
                 state.flights.pop(path, None)
 
     task = asyncio.ensure_future(run())
@@ -1405,17 +1535,8 @@ async def _copy_in(
     # takes on its outputs, held through the placement: a conversion (here or
     # in the CLI) writing one of those names meanwhile can't collide with it.
     targets = [os.path.join(folder, os.path.basename(f)) for f in flight.files]
-    def give_back(result: str | None) -> None:
-        # An acquisition that finished after its wait gave up: what it took
-        # (all of them, when it answered None) goes back, never left held.
-        if result is None:
-            _release_locks(targets)
-
     try:
-        refused = await run_detached_undoable(
-            lock_manager.acquire_all, [(target, False) for target in targets],
-            timeout=_LOCK_SECONDS, undo=give_back,
-        )
+        refused = await _lock_all(targets, allow_existing=False)
     except DeadlineExpired:
         return "deferred", "its output locks didn't answer in time", None
     except (asyncio.TimeoutError, OSError, LockFailed) as exc:

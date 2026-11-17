@@ -7383,14 +7383,23 @@ tick with a fake clock and real files. Each poll:
    link (a linked folder is reported as not listed), grouped into Images
    by `image_sets.group_images` and fingerprinted by `image_fingerprint`
    (every file's size and mtime). The folder must still be inside a Volume
-   and still clear of its Library's root.
-3. Every file beside a track sheet that can't be read whole (unreadable, over
-   the size cap) is held with a Finding naming the sheet
-   (`_behind_unreadable_sheets`): the sheet owns nobody, so its tracks would
-   otherwise be taken as Images of their own. Images that share a file (two
-   sheets naming one track, `_sharing`) are held,
-   each with a Finding naming the others, once settled: taking one in would
-   move a file the other still needs. None of them is taken.
+   and still clear of its Library's root. Progress is reported between
+   Images all through the grouping, the fingerprinting and the ownership
+   checks below as well as the walk, so the stall bound measures stalled
+   storage, never how long a big pass takes (Codex 4607108046).
+3. Every loose track-type file in the folder of a track sheet that can't be
+   read whole (unreadable, over the size cap), or in any folder below it (a
+   sheet may name `tracks/Track.bin`, Codex 4607108018), is held with a
+   Finding naming the sheet (`_behind_unreadable_sheets`): the sheet owns
+   nobody, so its tracks would otherwise be taken as Images of their own.
+   Images that share a file (two sheets naming one track, `_sharing`) are
+   held, each with a Finding naming the others, once settled: taking one in
+   would move a file the other still needs. None of them is taken. Each of
+   these ownership holds keeps what caused it (`_ownership_key`: the sheets'
+   paths and fingerprints, in `_State.held_by`), recomputed every poll; once
+   it changes (the other sheet removed, the unreadable sheet removed or
+   fixed), the hold lifts, its stale Finding goes and the Image is looked at
+   again as settled, without waiting for it to change (Codex 4607108025).
 4. Settles each Image: first seen (or changed) records `(fingerprint, now)`;
    it is taken once a later poll at least `settle_seconds` after that sees the
    same fingerprint. So it always takes two polls, even with a settle time of 0.
@@ -7555,8 +7564,13 @@ can't see it: intake calls the Library's `note_paths_changed` with what it
 placed before the job is announced finished, so its kept walk is dropped. A
 conversion's output is already covered by `note_job_finished`.
 
-**Moving the original** (`_move_to_processed`). Only while the Image is still
-the one taken: its whole fingerprint is compared first, and a source replaced
+**Moving the original** (`_move_to_processed`). Only under the lock
+manager's exclusive locks on every original, the sheet and its tracks
+(`_lock_all`, `LockManager.acquire_all`, the acquisition a copy's output locks
+take too): while another job reads one (its input lock), nothing moves, no
+Finding is written, and the Image stays in flight (`_Flight.archive`) for the
+next poll to try again; the locks go on every outcome (Codex 4607108034). And
+only while the Image is still the one taken: its whole fingerprint is compared first, and a source replaced
 after its conversion stays in the Inbox to settle again (the Library holds the
 old contents). The move is anchored, as the Image rename's is: the source
 folder and `processed/<its folder in the Inbox>/` are opened beneath the Inbox

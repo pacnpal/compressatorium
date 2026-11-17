@@ -2753,3 +2753,134 @@ async def test_a_committed_move_whose_name_is_taken_again_is_kept_and_reported(
     [finding] = [f for f in _inbox_findings() if f["kind"] == findings.INBOX_FAILED]
     assert str(processed) in finding["reason"]
     assert str(game) in finding["reason"]
+
+
+# ---- round thirteen: Codex on db9e530f -----------------------------------
+
+
+def _oversized_sheet(track: str) -> bytes:
+    from utils.sheet_text import MAX_SHEET_BYTES
+
+    return (
+        f'FILE "{track}" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n'.encode()
+        + b"REM " + b"x" * MAX_SHEET_BYTES + b"\n"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_track_below_an_unreadable_sheet_is_held_too(vol, db):
+    """Codex 4607108018, ruled: a sheet that can't be read holds every loose
+    track-type file in its folder and every folder below it."""
+    library = _library(vol)
+    box = _inbox(vol, library, settle=0)
+    _drop(vol / "Downloads" / "psx" / "Game.cue", _oversized_sheet("tracks/Track.bin"))
+    track = _drop(vol / "Downloads" / "psx" / "tracks" / "Track.bin", b"track")
+
+    for now in (0, 1, 2):
+        await _poll(box, now=now)
+
+    assert track.read_bytes() == b"track"
+    assert not (vol / "ROMs" / "psx").exists()
+    held = {Path(f["path"]).name: f["reason"] for f in _inbox_findings()}
+    assert "Game.cue" in held["Track.bin"]
+
+
+@pytest.mark.asyncio
+async def test_a_sheet_hold_lifts_once_the_other_sheet_is_gone(vol, db):
+    """Codex 4607108025, ruled: an ownership hold remembers the sheets that
+    caused it; once B.cue is removed, A.cue is taken without waiting to
+    change, and its stale Finding goes."""
+    library = _library(vol)
+    box = _inbox(vol, library, settle=0)
+    sheet = b'FILE "Track.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n'
+    _drop(vol / "Downloads" / "psx" / "A.cue", sheet)
+    b = _drop(vol / "Downloads" / "psx" / "B.cue", sheet)
+    _drop(vol / "Downloads" / "psx" / "Track.bin", b"track")
+    for now in (0, 1, 2):
+        await _poll(box, now=now)
+    assert {Path(f["path"]).name for f in _inbox_findings()} == {"A.cue", "B.cue"}
+
+    b.unlink()
+    for now in (3, 4):
+        await _poll(box, now=now)
+
+    assert (vol / "ROMs" / "psx" / "A.cue").exists()
+    assert (vol / "ROMs" / "psx" / "Track.bin").exists()
+    assert _inbox_findings() == []
+
+
+@pytest.mark.asyncio
+async def test_a_track_held_by_an_unreadable_sheet_is_taken_once_it_is_gone(vol, db):
+    """Codex 4607108025, ruled: once the unreadable sheet is removed, the
+    track it held is taken on its own and the stale Finding goes."""
+    library = _library(vol)
+    box = _inbox(vol, library, settle=0)
+    cue = _drop(vol / "Downloads" / "psx" / "Game.cue", _oversized_sheet("Track.bin"))
+    _drop(vol / "Downloads" / "psx" / "Track.bin", b"track")
+    for now in (0, 1, 2):
+        await _poll(box, now=now)
+    assert any(Path(f["path"]).name == "Track.bin" for f in _inbox_findings())
+
+    cue.unlink()
+    for now in (3, 4):
+        await _poll(box, now=now)
+
+    assert (vol / "ROMs" / "psx" / "Track.bin").exists()
+    assert not any(Path(f["path"]).name == "Track.bin" for f in _inbox_findings())
+
+
+@pytest.mark.asyncio
+async def test_archival_waits_for_a_job_reading_the_original(vol, db):
+    """Codex 4607108034, ruled: the originals are moved to processed/ only
+    under the lock manager's exclusive locks; while another job reads one
+    (its input lock), archival is deferred, with no Finding and nothing
+    moved, and the next poll after the lock goes moves it."""
+    from services.lock_manager import lock_manager
+
+    library = _library(vol)
+    box = _inbox(vol, library, settle=0)
+    game = _drop(vol / "Downloads" / "ps2" / "Game.iso")
+    assert lock_manager.acquire_input_lock(str(game))
+    try:
+        for now in (0, 1, 2):
+            await _poll(box, now=now)
+        assert game.exists()
+        assert (vol / "ROMs" / "ps2" / "Game.iso").exists()  # placed
+        assert _inbox_findings() == []
+    finally:
+        lock_manager.release_input_lock(str(game))
+
+    await _poll(box, now=3)
+
+    assert not game.exists()
+    assert (vol / "Downloads" / "processed" / "ps2" / "Game.iso").exists()
+    assert not lock_manager.is_locked(str(game))
+
+
+@pytest.mark.asyncio
+async def test_a_slow_but_moving_listing_isnt_cut_off(vol, db, monkeypatch):
+    """Codex 4607108046, ruled: the listing reports progress between Images
+    through grouping, fingerprinting and the ownership checks, so its stall
+    bound measures stalled storage, not the whole pass."""
+    import time as clock
+
+    from services import inbox
+    from services.inbox import intake
+
+    library = _library(vol)
+    box = _inbox(vol, library)
+    for n in range(6):
+        _drop(vol / "Downloads" / "ps2" / f"Game{n}.iso")
+    monkeypatch.setattr(intake, "_LIST_STALL_SECONDS", 0.3)
+    real = intake.image_fingerprint
+
+    def quick_but_many(path):
+        clock.sleep(0.1)  # each answers in time; all six take 0.6s
+        return real(path)
+
+    monkeypatch.setattr(intake, "image_fingerprint", quick_but_many)
+
+    result = await intake.poll(inbox.get(box.id), now=0)
+
+    assert result["error"] is None
+    assert result["waiting"] == 6
