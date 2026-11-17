@@ -4,19 +4,6 @@
 
 ### Added
 
-- **Every DAT's match is kept, and you rank your DATs** (#424). A hash that
-  two imported DATs both list now keeps both matches; before, the later
-  import replaced the earlier one. Each DAT gets a family read from its
-  header (Redump, No-Intro, TOSEC, MAME or other), and a Hasheous hit uses
-  its signature source as its family. A new **DAT ranking** card in Settings
-  lists your DATs twice, once for disc Images and once for cartridge Images,
-  and lets you reorder each; until you do, Redump comes first for discs and
-  No-Intro first for cartridges. Whether an Image is a disc comes from the
-  tools' own disc formats. A match now names the Image after the top-ranked
-  DAT that knows it, and says so when two DATs the ranking doesn't order give
-  it different names. Saving a new order updates the names already shown
-  without hashing anything again. A local DAT is still preferred over
-  Hasheous, as before (database migration 0022).
 - **A Library says where each Platform's Images go** (#430). A folder
   Library now has a layout in the Rules view: ES-DE / Batocera style
   (`ps2`, `gc`, `megadrive`, ... directly in the Library folder, the
@@ -50,6 +37,22 @@
   links the upstream docs or source it rests on; claims without a source are
   left out. `GET /api/compat-targets` serves it, and a test checks every mode
   and codec in it against the tool registry.
+- **Every DAT's match is kept, and you choose which DAT names a file** (#424).
+  A file whose hash is in two imported DATs used to keep only the later
+  import's match; now both are kept. Each DAT shows its family (Redump,
+  No-Intro, TOSEC, MAME or other), read from its header, and a Hasheous match
+  shows the family of the DAT it came from. The DAT Library lists your DATs in
+  priority order with buttons to move each one up or down, and the order is
+  saved. When more than one DAT knows a file, the higher one names it. Until
+  you reorder them, Redump comes first for disc Images and No-Intro first for
+  cartridge Images ("Use default order" goes back to that). Two DATs with no
+  order between them that name a file differently leave it unnamed, and the
+  match says which two disagree. Reordering takes effect without re-hashing
+  anything, and a DAT the MAMERedump sync replaces keeps its place. Your own
+  DATs are still always checked before Hasheous. Database migration 0022 keeps
+  every existing match; a DAT imported before it gets its family from its name
+  and description, so a No-Intro DAT that only says so in its homepage reads
+  "other" until you import it again.
 - **Unfinished RomM swaps are picked up after a restart** (#392). If the app
   stops part way through keeping a ROM's id, the next start settles the swap
   in the background, without holding up startup. What is safe to finish is

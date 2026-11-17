@@ -382,34 +382,47 @@ def test_0021_records_each_swaps_instance_and_fingerprints(fresh_db_path: str):
     assert _current_rev(engine) == "0021"
 
 
-def test_0022_keys_dat_hashes_per_dat_and_classifies_existing_dats(fresh_db_path: str):
-    """#424's 0022: a hash two DATs share keeps both rows, every existing row
-    survives the rekey, and existing DATs get a family from their name."""
+def test_0022_keeps_every_dats_match_and_adds_families(fresh_db_path: str):
+    """#424's 0022, on #392's 0021: a hash is unique per DAT, not overall, and
+    each DAT gains a family and a rank. Existing rows survive, and a DAT
+    imported before it gets the family its name and description show."""
     from alembic import command
+    from alembic.script import ScriptDirectory
 
     engine = _db.make_engine(fresh_db_path)
     cfg = _db._alembic_config(engine)
+    assert ScriptDirectory.from_config(cfg).get_revision("0022").down_revision == "0021"
+
     command.upgrade(cfg, "0021")
     with engine.begin() as conn:
-        conn.execute(text(
+        conn.exec_driver_sql(
             "INSERT INTO dats (id, name, description, version, imported_at, file_count) "
-            "VALUES ('a', 'Sony - PlayStation', 'Redump set', '', '', 1), "
-            "('b', 'Nintendo - Game Boy', 'No-Intro', '', '', 1)"
-        ))
-        conn.execute(text(
-            "INSERT INTO dat_hashes VALUES ('h', 'sha1', 'a', 'Game', 'Game.bin', 1)"
-        ))
-
+            "VALUES ('a', 'Sony - PlayStation', 'Redump disc set', '1', 't', 1), "
+            "('b', 'Nintendo - Game Boy', 'Nintendo - Game Boy', '1', 't', 1)",
+        )
+        conn.exec_driver_sql(
+            "INSERT INTO dat_hashes (hash, hash_type, dat_id, game_name, rom_name, size) "
+            "VALUES ('aa', 'sha1', 'a', 'Disc', 'Disc.bin', 4)",
+        )
     command.upgrade(cfg, "0022")
-    pk = inspect(engine).get_pk_constraint("dat_hashes")["constrained_columns"]
-    assert pk == ["hash", "hash_type", "dat_id"]
+
+    assert inspect(engine).get_pk_constraint("dat_hashes")["constrained_columns"] == [
+        "hash", "hash_type", "dat_id",
+    ]
+    columns = {c["name"]: c for c in inspect(engine).get_columns("dats")}
+    assert columns["family"]["nullable"] is False
+    assert columns["rank"]["nullable"] is True
     with engine.begin() as conn:
-        families = dict(conn.execute(text("SELECT id, family FROM dats")).all())
-        assert families == {"a": "redump", "b": "no-intro"}
-        conn.execute(text(
-            "INSERT INTO dat_hashes VALUES ('h', 'sha1', 'b', 'Other', 'Other.gb', 1)"
-        ))
-        assert conn.execute(text("SELECT count(*) FROM dat_hashes")).scalar() == 2
+        assert conn.exec_driver_sql(
+            "SELECT id, family, rank FROM dats ORDER BY id",
+        ).all() == [("a", "Redump", None), ("b", "other", None)]
+        # The same hash under a second DAT is now its own row.
+        conn.exec_driver_sql(
+            "INSERT INTO dat_hashes (hash, hash_type, dat_id, game_name, rom_name, size) "
+            "VALUES ('aa', 'sha1', 'b', 'Cart', 'Cart.gb', 4)",
+        )
+        assert conn.exec_driver_sql("SELECT count(*) FROM dat_hashes").scalar() == 2
+    assert "ix_dat_hashes_dat_id" in {i["name"] for i in inspect(engine).get_indexes("dat_hashes")}
     assert _current_rev(engine) == "0022"
 
 
