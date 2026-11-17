@@ -139,6 +139,14 @@
 
 ### Fixed
 
+- **Rules editor checkboxes save again** (#412). Ticking "Run automatically",
+  "Used by an EmulationStation frontend", a Platform's enable switch, the ID
+  filters, "Check the container only", the checking switch or a per-check
+  enable changed the box on screen but sent nothing, so a reload showed the
+  old value. The shared checkbox had no `onchange` to call. It has one now,
+  and a test fails if any component is given a prop its child does not
+  declare.
+
 - **A symlinked system folder keeps its ES-DE gamelist entry** (#413). In a
   Library used by an EmulationStation frontend, a system folder that is a
   symlink to somewhere outside the Library (`ROMs/psx -> /elsewhere/psx`) was

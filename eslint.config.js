@@ -17,6 +17,11 @@ export default [
   js.configs.recommended,
   ...svelte.configs['flat/recommended'],
   {
+    // Node scripts the Python tests run.
+    files: ['tests/support/*.mjs'],
+    languageOptions: { globals: { ...globals.node } },
+  },
+  {
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: 'module',
