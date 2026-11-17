@@ -56,6 +56,7 @@ from services.subprocess_runner import (
     run_detached_undoable,
     run_detached_within_stall_bound,
     start_detached,
+    NoThreadAvailable,
     start_detached_or_own_thread,
 )
 from services.tools import ModeKind, registry
@@ -3226,7 +3227,20 @@ class JobManager:
         # with none free, one of its own (CodeRabbit 4594613612), so the slot
         # is renamed or marked kept whatever happens to this await. An answer
         # nobody waits for any more goes to ``late``, once.
-        future = start_detached_or_own_thread(slot.set_aside)
+        future: asyncio.Future | None
+        try:
+            future = start_detached_or_own_thread(slot.set_aside)
+        except NoThreadAvailable:
+            # The OS thread limit (CodeRabbit 4594745731): the last resort is
+            # inline, one small create through the slot's descriptor, so the
+            # slot is marked kept before anything else; if even that fails,
+            # its lock stays held for the life of the process.
+            future = None
+            try:
+                slot.mark_kept()
+            except OSError:
+                logger.exception("Could not mark %s kept; holding its slot", slot.path)
+                self._held_slots.append(slot)
         state = {"waiting": True}
 
         def answered(done: asyncio.Future) -> None:
@@ -3236,10 +3250,11 @@ class JobManager:
 
         def stop_waiting() -> None:
             state["waiting"] = False
-            if future.done():
+            if future is not None and future.done():
                 answered(future)
 
-        future.add_done_callback(answered)
+        if future is not None:
+            future.add_done_callback(answered)
         kept: str | None
         try:
             try:
@@ -3251,9 +3266,15 @@ class JobManager:
                 logger.warning(
                     "Could not list the outputs of %s", job.output_path, exc_info=True,
                 )
-            kept = await asyncio.wait_for(asyncio.shield(future), SET_ASIDE_SECONDS)
+            if future is None:
+                kept = before  # marked kept in place (or held) above
+            else:
+                kept = await asyncio.wait_for(asyncio.shield(future), SET_ASIDE_SECONDS)
         except asyncio.TimeoutError:
-            if future.done() and not future.cancelled() and future.exception() is not None:
+            if (
+                future is None
+                or (future.done() and not future.cancelled() and future.exception() is not None)
+            ):
                 kept = before  # its own timeout, not the bound's: it failed
                 self._held_slots.append(slot)
             else:
@@ -5938,8 +5959,9 @@ class JobManager:
             )
 
         finally:
-            # A cancel during the set-aside below is held until every release
-            # after it has run (CodeRabbit 4594326475).
+            # Whatever the set-aside below raises, a cancel or any error, is
+            # held until every release after it has run, then raised
+            # (CodeRabbit 4594326475, 4594745731).
             set_aside_cancel: BaseException | None = None
             if placeable and slot is not None and not slot.placed:
                 # A checked output that could not be placed (its name was
@@ -5950,7 +5972,11 @@ class JobManager:
                 aside, slot = slot, None
                 try:
                     await self._set_aside_output(job, aside)
-                except asyncio.CancelledError as exc:
+                except BaseException as exc:
+                    # Raised again once every release below has run.
+                    logger.warning(
+                        "Job %s: setting its output aside ended early", job.id, exc_info=True,
+                    )
                     set_aside_cancel = exc
             # Before any cleanup: this is the one place every runner outcome
             # (completed, failed, cancelled mid-run) passes through, and a

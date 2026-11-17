@@ -255,6 +255,18 @@ class StagedOutput:
         self.keep()
         return self.path
 
+    def mark_kept(self) -> str:
+        """Mark the slot kept where it is (``partial_writes.KEEP_MARKER``,
+        which every sweep honours), then let go of it. The last resort for a
+        checked output when no thread can run :meth:`set_aside`: one small
+        create through the slot's descriptor. Returns the slot's path.
+        Raises ``OSError`` (the slot is then still open, its lock held)."""
+        with self._mutex:
+            self._require_open()
+            os.close(os.open(partial_writes.KEEP_MARKER, _KEEP_FLAGS, 0o600, dir_fd=self._slot_fd))
+        self.keep()
+        return self.path
+
     def _require_open(self) -> None:
         if self._closed:
             raise ValueError("The staging slot is closed")

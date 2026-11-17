@@ -18,6 +18,7 @@ post-convert and verify, and the Round-trip comparison, are stubbed.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import os
 import threading
@@ -1110,6 +1111,55 @@ async def test_a_cancel_during_set_aside_still_releases_and_announces_the_job(
 
 
 @pytest.mark.asyncio
+async def test_a_set_aside_with_no_thread_at_all_marks_the_slot_and_ends_the_job(
+    vol, romm, monkeypatch,
+):
+    """CodeRabbit 4594745731: no detached thread is free and a thread of its
+    own can't start either (the OS thread limit). The slot is still marked
+    kept, inline, and the job still announces its end and lets go of every
+    lock."""
+    from services import partial_writes, subprocess_runner
+    from services.lock_manager import lock_manager
+    from services.romm import settings as romm_settings
+
+    platform = _platform(vol)
+    await romm_settings.save({"swap_keep_rom_id": False})
+    real_start = threading.Thread.start
+
+    def no_slot_free(*_args, **_kwargs):
+        raise subprocess_runner.ProbeCapacityExceeded("no detached thread free")
+
+    def thread_limit(self):
+        if getattr(self, "_target", None) is not None and self._target.__qualname__.startswith(
+            "start_detached_or_own_thread",
+        ):
+            raise RuntimeError("can't start new thread")
+        return real_start(self)
+
+    async def checked_then_taken(tool, source_path, output_path, **_kw):
+        (platform / "Game.chd").write_bytes(b"someone else's")
+        return RoundTripOutcome(passed=True)
+
+    monkeypatch.setattr(subprocess_runner, "start_detached", no_slot_free)
+    monkeypatch.setattr(threading.Thread, "start", thread_limit)
+    monkeypatch.setattr(job_manager_module, "round_trip", checked_then_taken)
+    job = await convert_routes.create_job(JobCreateRequest(
+        file_path=str(platform / "Game.iso"), mode=ConversionMode.CREATEDVD,
+        duplicate_action=DuplicateAction.SKIP, delete_on_verify=True,
+    ))
+    with contextlib.suppress(Exception):
+        await convert_routes.job_manager._process_job(job.id)
+
+    assert job.id in convert_routes.job_manager._terminal_announced
+    assert not lock_manager.is_locked(str(platform / "Game.chd"))
+    assert not lock_manager.is_locked(os.path.realpath(platform / "Game.iso"))
+    (kept,) = (platform / STAGE_DIR_NAME).glob("slot-*/Game.chd")
+    assert kept.read_bytes() == OUTPUT_BYTES
+    assert (kept.parent / partial_writes.KEEP_MARKER).exists()
+    assert f"kept at {kept}" in job.message
+
+
+@pytest.mark.asyncio
 async def test_a_set_aside_with_no_detached_thread_free_still_keeps_the_output(
     vol, romm, monkeypatch,
 ):
@@ -1192,6 +1242,53 @@ async def test_a_cancel_before_the_set_aside_starts_still_keeps_the_output(
     kept = list(stage.rglob("Game.chd"))
     assert [p.read_bytes() for p in kept] == [OUTPUT_BYTES], kept
     assert (platform / "Game.iso").read_bytes() == SOURCE_BYTES
+
+
+@pytest.mark.asyncio
+async def test_a_lingering_swap_keeps_the_job_from_placing_the_output(
+    vol, romm, monkeypatch,
+):
+    """Codex 4594772381: a Cancel lands while the Source is parked, and the
+    parking's journal write outlives the hook's grace, so the swap lingers.
+    The job must not place the output meanwhile: the swap's undo then puts
+    the Source back under its old name (``rolled_back``), and the checked
+    output is kept, set aside, not over the Source's way back."""
+    from services import referrers, staging
+    from services.romm import swap_journal
+
+    platform = _platform(vol)
+    monkeypatch.setattr(referrers, "CANCEL_GRACE_SECONDS", 0.3)
+    real_take, real_step = staging.StagedOutput.take, swap_journal.step
+    job = await convert_routes.create_job(JobCreateRequest(
+        file_path=str(platform / "Game.iso"), mode=ConversionMode.CREATEDVD,
+        duplicate_action=DuplicateAction.SKIP, delete_on_verify=True,
+    ))
+    loop = asyncio.get_running_loop()
+
+    def cancelled_take(self, name):
+        event = convert_routes.job_manager.get_cancel_event(job.id)
+        loop.call_soon_threadsafe(event.set)
+        return real_take(self, name)
+
+    def slow_parked(row_id, state, **kwargs):
+        if state == "parked":
+            time.sleep(1.0)  # outlives the hook's grace
+        return real_step(row_id, state, **kwargs)
+
+    monkeypatch.setattr(staging.StagedOutput, "take", cancelled_take)
+    monkeypatch.setattr(swap_journal, "step", slow_parked)
+    await convert_routes.job_manager._process_job(job.id)
+    for _ in range(80):
+        if [r["state"] for r in _journal()] == ["rolled_back"]:
+            break
+        await asyncio.sleep(0.05)
+
+    assert [r["state"] for r in _journal()] == ["rolled_back"], _journal()
+    assert (platform / "Game.iso").read_bytes() == SOURCE_BYTES
+    assert romm.roms[ROM_ID]["fs_name"] == "Game.iso"
+    assert not (platform / "Game.chd").exists()
+    kept = list((platform / STAGE_DIR_NAME).glob("park-*/Game.chd"))
+    assert [p.read_bytes() for p in kept] == [OUTPUT_BYTES]
 
 
 @pytest.mark.asyncio

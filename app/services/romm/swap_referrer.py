@@ -586,6 +586,9 @@ class _Swap:
         # The parked Source was removed: set on the removal's own thread,
         # so a cancel landing meanwhile still knows (CodeRabbit 4594326517).
         self.removed = False
+        # The row was left for the next run (``_leave``): the output stays
+        # held when the swap ends.
+        self.left = False
         # The Source as the delete snapshot fingerprinted it before the
         # conversion: the only file this swap renames, parks or deletes.
         fingerprints = placement.source_fingerprints
@@ -627,6 +630,11 @@ class _Swap:
             return await self._run()
         finally:
             _active_swaps -= 1
+            # The job may place the output again only once the swap has ended
+            # somewhere that allows it, never while it may still be running
+            # (a lingering undo) nor when its row is left for the next run.
+            if not self.left:
+                self.placement.held.clear()
 
     async def _run(self) -> Applied:
         plan = self.plan
@@ -653,6 +661,10 @@ class _Swap:
             await _mutate(begin)
         except Exception as exc:
             raise ReferrerError(self.target, f"couldn't write the swap journal ({exc})") from exc
+        # From the first move on, the job never places the output on its own
+        # (Codex 4594772381): the swap places it, or releases it when it ends
+        # (``run``), so a lingering swap is never overtaken.
+        self.placement.held.set()
         try:
             await self._rename()
             await self._park_source()
@@ -734,6 +746,7 @@ class _Swap:
         """Leave the row for the next run: on the state the flags say, with
         *detail*. The output is held back from the job: the name it would
         take may hold, or be owed to, the Source. Never raises."""
+        self.left = True
         if not self.placed:
             self.placement.held.set()
 
@@ -924,18 +937,16 @@ class _Swap:
             except BaseException:
                 logger.warning("romm_swap: could not end swap %s", self.row, exc_info=True)
             return
-        self.placement.held.set()
         # Read here, not imported: the hook's value at the time (tests set it).
+        # The output stays held all along (set at the first move; ``run``
+        # releases it once the swap ends where that is allowed).
         grace = referrers_module.CANCEL_GRACE_SECONDS
         try:
-            left = await asyncio.wait_for(self._undo(_Stopped(self.target, why)), grace)
+            await asyncio.wait_for(self._undo(_Stopped(self.target, why)), grace)
         except (asyncio.TimeoutError, asyncio.CancelledError):
             # Each step the undo finished is journaled; the one it was on
             # finished too (``_mutate``) before this.
             await self._leave(f"{why}; the undo didn't finish within {grace:g}s; {LEFT}")
-            return
-        if left is None:
-            self.placement.held.clear()
 
     async def _undo(self, exc: BaseException) -> str | None:
         """Leave the files and RomM as a kept Source would (see the module

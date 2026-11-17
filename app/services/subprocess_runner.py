@@ -788,9 +788,20 @@ def start_detached_or_own_thread(
         except RuntimeError:
             pass  # the loop is closed: nobody is waiting any more
 
-    threading.Thread(target=run, daemon=True).start()
+    try:
+        threading.Thread(target=run, daemon=True).start()
+    except RuntimeError as exc:
+        # The OS thread limit: nothing started, so nothing will settle the
+        # future. Said plainly, for the caller to fall back on.
+        raise NoThreadAvailable(f"no thread could start: {exc}") from exc
     future.add_done_callback(lambda done: done.cancelled() or done.exception())
     return future
+
+
+class NoThreadAvailable(RuntimeError):
+    """No thread could start for :func:`start_detached_or_own_thread`: every
+    detached slot is in use and the OS refused a thread of its own. The call
+    never ran."""
 
 
 async def run_detached(

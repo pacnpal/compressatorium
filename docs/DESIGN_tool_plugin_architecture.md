@@ -4155,12 +4155,15 @@ carries RomM's own `detail` text.
   read when it runs). The hook waits that long for the cancelled task; if
   the undo outlasts it, the hook treats the task as lingering and hands it
   the job's delete holds and output locks (`ReferrerOutcome.outlive`), which
-  are let go only when it ends. While the undo runs the output is held back
-  from the job (`StagedPlacement.held`, which `_delete_source_set` and the
-  job's end-of-job placing both honour); an undo that finishes clears it,
-  so the job places the output beside the Source (the row ends
-  `rolled_back`, or `kept` once the output was in place). A swap stopped
-  before anything changed ends `failed`.
+  are let go only when it ends. From the swap's first move until it ends,
+  the output is held back from the job (`StagedPlacement.held`, which
+  `_delete_source_set` and the job's end-of-job placing both honour), so a
+  lingering swap is never overtaken by the job placing the output over the
+  Source's way back (Codex 4594772381). `run` releases it when the swap
+  ends anywhere but a row left for the next run, so the job places the
+  output beside the Source when it still can (the row ends `rolled_back`,
+  or `kept` once the output was in place), and otherwise sets it aside. A
+  swap stopped before anything changed ends `failed`.
 - An undo that runs out of grace or fails, or a process that dies, leaves
   the row on the state reached (`parked`, `placed`, or the undo step it was
   on), with the reason and "left for the next run" in `detail`; a parked
@@ -4229,7 +4232,15 @@ is the only copy (CodeRabbit 4594086355):
   thread in use it gets a daemon thread of its own (the fallback
   `_close_stage` and `_let_go_in_background` take, now shared as
   `subprocess_runner.start_detached_or_own_thread`; CodeRabbit 4594613612),
-  so it always starts. The slot stays protected
+  so it always starts. If even that thread can't start (the OS thread
+  limit), the helper raises `NoThreadAvailable` and the job marks the slot
+  kept inline (`StagedOutput.mark_kept`: one small create through the
+  slot's descriptor, then the lock goes), or holds the slot if that fails
+  too (CodeRabbit 4594745731). The job's `finally` holds back anything the
+  set-aside raises, a cancel or an error, until every release and the
+  terminal notice have run. In the swap, `_mutate` raising
+  `NoThreadAvailable` means the step never ran: the swap treats it as that
+  step failing (undo, or the row left for the next run). The slot stays protected
   all along (its lock is held until the rename or the marker is in place).
   The job waits `SET_ASIDE_SECONDS` for it (shielded). An answer that comes
   after the bound, or after a cancel, goes once to `late` on a thread of its
