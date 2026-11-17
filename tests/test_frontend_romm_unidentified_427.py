@@ -243,3 +243,110 @@ def test_the_file_list_and_the_romm_view_share_that_rule():
     assert "matchExtSet" not in file_list
     # The view says archived ROMs aren't recognized yet.
     assert "aren't recognized yet" in view
+
+
+def _util(scenario: str) -> dict:
+    node = harness._find_node()
+    if node is None:
+        pytest.skip("Node is not installed")
+    script = _UTIL.read_text(encoding="utf-8").replace("export ", "") + scenario
+    done = subprocess.run(
+        [node, "--input-type=module", "-e", script],
+        capture_output=True, text=True, timeout=60, check=False,
+    )
+    assert done.returncode == 0, done.stderr
+    return json.loads(done.stdout)
+
+
+def test_ids_are_wanted_only_while_re_pinning_is_on_too():
+    """CodeRabbit on PR #442: the backend writes Hasheous ids only while
+    re-pinning is on as well, so the view must not offer a refresh otherwise."""
+    result = _util("""
+const legacy = { matched: true, source: 'hasheous' };
+console.log(JSON.stringify({
+  both: wantsHasheousIds({ hasheous_write_ids: true, repin_enabled: true }),
+  repinOff: wantsHasheousIds({ hasheous_write_ids: true, repin_enabled: false }),
+  switchOff: wantsHasheousIds({ hasheous_write_ids: false, repin_enabled: true }),
+  none: wantsHasheousIds(null),
+  unknown: needsDatMatch(null, false),
+  legacyWanted: needsDatMatch(legacy, true),
+  legacyNotWanted: needsDatMatch(legacy, false),
+  withIds: needsDatMatch({ ...legacy, provider_ids: {} }, true),
+  miss: needsDatMatch({ matched: false }, true),
+}));
+""")
+    assert result == {
+        "both": True, "repinOff": False, "switchOff": False, "none": False,
+        "unknown": True, "legacyWanted": True, "legacyNotWanted": False,
+        "withIds": False, "miss": False,
+    }
+
+
+_CODERABBIT = """
+const out = {};
+const waiting = [];
+api.getMatchCache = (paths) => new Promise((resolve, reject) => {
+  waiting.push({ paths: [...paths], resolve, reject });
+});
+api.startMatchJob = (paths) => new Promise((resolve) => {
+  waiting.push({ paths: [...paths], resolve, job: true });
+});
+const settleNext = async (value) => {
+  for (let i = 0; i < 50 && !waiting.length; i += 1) await tick();
+  waiting.shift().resolve(value);
+  for (let i = 0; i < 5; i += 1) await tick();
+};
+
+// 1. A lookup issued after a listing read, answering after the listing landed
+// with no row for a path, clears what the older listing put there.
+const listing = datMatching.beginListingRead();
+const lookup = datMatching.hydrate(['/gone.iso']);
+datMatching.seedListing([{ path: '/gone.iso', dat_match: { matched: true } }], listing);
+await settleNext({ results: {} });
+await lookup;
+out.reconciled = datMatching.matchFor('/gone.iso');
+
+// 2. A match job's idle answer is ordered by when it was asked: a lookup
+// asked after it and answered first keeps its newer answer.
+const job = datMatching.startMatchJob(['/x.iso']);
+for (let i = 0; i < 5; i += 1) await tick();
+const later = datMatching.hydrate(['/x.iso']);
+waiting.splice(1, 1)[0].resolve({ results: { '/x.iso': { matched: true, game_name: 'new' } } });
+await later;
+await settleNext({ status: 'idle', results: { '/x.iso': { matched: false } } });
+await job;
+out.ordered = datMatching.matchFor('/x.iso');
+
+// 3. A finished job's read that fails is retried, then lands.
+datMatching._jobHydrateRetryMs = 1;
+const started = datMatching.startMatchJob(['/r.iso']);
+await settleNext({ status: 'started', job_id: 'j2', results: {} });
+await started;
+const read = datMatching.hydrateFinishedJobs([{ id: 'j2', status: 'completed' }]);
+for (let i = 0; i < 50 && !waiting.length; i += 1) await tick();
+waiting.shift().reject(new Error('network'));
+await settleNext({ results: { '/r.iso': { matched: true, game_name: 'Retried' } } });
+await read;
+out.retried = datMatching.matchFor('/r.iso');
+console.log(JSON.stringify(out));
+"""
+
+
+def test_coderabbit_ordering_and_retry_cases():
+    """CodeRabbit on PR #442: a lookup reconciles every path it is newest for,
+    a match job's answer takes its place when it was asked, and a finished
+    job's read is retried when it fails."""
+    result = _run(_CODERABBIT)
+    assert result["reconciled"] is None
+    assert result["ordered"] == {"matched": True, "game_name": "new"}
+    assert result["retried"] == {"matched": True, "game_name": "Retried"}
+
+
+def test_a_job_that_ended_before_it_was_tracked_is_read_back():
+    """CodeRabbit on PR #442: the jobs list may already show the job ended
+    when "Recognize these" learns its id, and nothing re-runs the effect."""
+    view = (_SRC / "components" / "views" / "RommView.svelte").read_text(encoding="utf-8")
+    start = view.index("async function handleRecognize()")
+    body = view[start:view.index("\n  }\n", start)]
+    assert "datMatching.hydrateFinishedJobs(jobs.jobs)" in body
+    assert "wantsHasheousIds(" in view and "needsDatMatch(" in view

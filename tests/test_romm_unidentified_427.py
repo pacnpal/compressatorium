@@ -169,6 +169,21 @@ def test_the_hasheous_normaliser_keeps_provider_ids_as_romm_fields() -> None:
     assert [link["source"] for link in record["metadata_links"]] == ["IGDB", "TheGamesDb"]
 
 
+def test_an_id_that_only_looks_numeric_is_dropped_not_raised() -> None:
+    """CodeRabbit on PR #442: ``"²".isdigit()`` is True but ``int("²")``
+    raises, which would fail the whole lookup."""
+    from services import hasheous
+
+    response = dict(HASHEOUS_RESPONSE, metadata=[
+        {"source": "IGDB", "id": "²", "link": "x", "status": "Mapped"},
+        {"source": "TheGamesDb", "id": "24326", "link": "y", "status": "Mapped"},
+    ])
+
+    assert hasheous._normalize(response)["provider_ids"] == {
+        "hasheous_id": 13633, "tgdb_id": 24326,
+    }
+
+
 # ---- the listing ----------------------------------------------------------------
 
 
@@ -526,3 +541,109 @@ async def test_a_kept_rom_id_still_gets_the_hasheous_ids(client, romm, vol):
     assert romm.metadata_writes == [
         (HOMEBREW_ID, {"igdb_id": "12296", "tgdb_id": "24326", "hasheous_id": "13633"}),
     ]
+
+
+@pytest.mark.asyncio
+async def test_switching_off_stops_pending_hasheous_writes(client, romm, vol):
+    """CodeRabbit on PR #442: a row recorded while the switch was on must not
+    write Hasheous ids once it is off. RomM's own carried ids still are, and
+    the row still settles."""
+    from services.dat_store import dat_store
+
+    await dat_store.set_match(_path(vol, "Known.iso"), _hasheous_hit(
+        _path(vol, "Known.iso"), "Known Game", HOMEBREW_IDS,
+    ))
+    await _switch(client, True)
+    await _plan(client, vol, "Known.iso")
+    await _plan(client, vol, "Homebrew.iso")
+    await _switch(client, False)
+    _romm_scans_output(romm, vol, "Known.rvz", 45)
+    _romm_scans_output(romm, vol, "Homebrew.rvz", 46)
+
+    settled = await _settle(client)
+
+    assert romm.metadata_writes == [(45, {"igdb_id": "11"})]
+    assert settled["pending"] == 0
+
+
+@pytest.mark.asyncio
+async def test_a_sweep_record_does_not_supersede_a_plan_made_during_its_lookup(
+    client, romm, vol, monkeypatch,
+):
+    """CodeRabbit on PR #442: the sweep's re-pin took its plan generation after
+    awaiting the Hasheous lookup, so a manual plan recorded in that window for
+    the same destination was superseded by the older sweep."""
+    from services.romm import repin as romm_repin
+    from services.romm.library import romm_library
+    from services.rules.library import Image, QueuedImage
+    from services.tools import registry
+
+    await _switch(client, True)
+    rom = dict(romm.roms[KNOWN_ID])
+    source = _path(vol, "Known.iso")
+    destination = _path(vol, "Known.rvz")
+    real_fills = romm_repin.hasheous_fills
+    manual: list[int] = []
+
+    async def fills_while_a_plan_lands(sources):
+        # A manual submit plans the same destination while the sweep waits.
+        manual.append(romm_repin.record(
+            rom, destination, {"igdb_id": 99}, "dolphin_rvz", "", source,
+        ))
+        return await real_fills(sources)
+
+    monkeypatch.setattr(romm_repin, "hasheous_fills", fills_while_a_plan_lands)
+    image = Image(key=KNOWN_ID, name="Known.iso", record=rom)
+    summary: dict = {}
+    result = {"repins_recorded": 0}
+    await romm_library.after_queue(
+        {"mode": "dolphin_rvz"}, registry.spec("dolphin_rvz"),
+        [QueuedImage(image=image, source=source, destination=destination, pre="")],
+        summary, result,
+    )
+
+    assert manual and manual[0]
+    assert summary["repins_recorded"] == 0
+    with _db.SessionLocal() as session:
+        (row,) = session.query(_db.RommRepin).filter_by(state="pending").all()
+        assert row.id == manual[0]
+
+
+@pytest.mark.asyncio
+async def test_the_swap_fallback_never_waits_on_a_stalled_lookup(
+    client, romm, vol, monkeypatch,
+):
+    """CodeRabbit on PR #442: the fallback re-pin read the Hasheous ids inside
+    a step that is never abandoned, so a stalled mount held it forever. The
+    lookup is bounded and done first; on a timeout RomM's own ids are still
+    recorded."""
+    import threading
+    import time
+    from types import SimpleNamespace
+
+    from services.romm import repin as romm_repin
+    from services.romm import swap_referrer
+
+    release = threading.Event()
+
+    def stalled(_sources):
+        release.wait(30)
+        return {}
+
+    monkeypatch.setattr(romm_repin, "_hasheous_fills_blocking", stalled)
+    monkeypatch.setattr(romm_repin, "FILL_LOOKUP_SECONDS", 0.2)
+    await _switch(client, True)
+    plan = SimpleNamespace(
+        binding=None, rom=dict(romm.roms[KNOWN_ID]),
+        output=_path(vol, "Known.rvz"), source=_path(vol, "Known.iso"),
+    )
+    started = time.monotonic()
+    try:
+        await swap_referrer._fall_back(plan, "RomM ROM 1")
+    finally:
+        release.set()
+
+    assert time.monotonic() - started < 5
+    with _db.SessionLocal() as session:
+        (row,) = session.query(_db.RommRepin).filter_by(state="pending").all()
+        assert row.metadata_ids == {"igdb_id": 11}

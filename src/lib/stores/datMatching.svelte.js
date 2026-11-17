@@ -1,7 +1,6 @@
 // DAT matching store, wraps /api/dat endpoints. Caches per-path match
 // results so FileList rows can render badges without per-row fetches.
 
-import { untrack } from 'svelte';
 import { SvelteMap } from 'svelte/reactivity';
 import { api } from '$lib/api/endpoints.js';
 import { LatestSaveQueue } from '$lib/stores/latestSaveQueue.js';
@@ -66,10 +65,14 @@ class DATMatchingStore {
   // the transient ones and costs a permanently-skipped file one cheap no-op
   // job per interval (it re-checks the size cap without hashing).
   _attemptedPaths = Object.create(null);
-  // Match jobs startMatchJob() started, job id -> every path submitted, until
-  // hydrateFinishedJobs() has read them back. A plain object, for the reason
-  // _attemptedPaths is one.
+  // Match jobs startMatchJob() started, job id -> { paths, reading }, every
+  // path submitted, kept until hydrateFinishedJobs() has read them back. A
+  // plain object, for the reason _attemptedPaths is one.
   _submittedJobs = Object.create(null);
+  // How often, and how far apart, a finished job's read is tried before it is
+  // given up on (the file list's own hydration still covers the visible rows).
+  _jobHydrateAttempts = 3;
+  _jobHydrateRetryMs = 2000;
   _retryTimer = null;
   _retryPaths = null;
   // Runs only while nothing can answer a lookup (see watchMatchingAvailability).
@@ -299,9 +302,15 @@ class DATMatchingStore {
     }
   }
 
-  /** Fetch cached matches (never hashes) for a batch of paths. */
+  /**
+   * Fetch cached matches (never hashes) for a batch of paths.
+   *
+   * Resolves true once the lookup answered (applied, or dropped because the
+   * policy changed meanwhile) and false when it failed, so a caller that must
+   * see the answer can try again.
+   */
   async hydrate(paths) {
-    if (!paths?.length) return;
+    if (!paths?.length) return true;
     // A lookup that started before a provider change answers with the OLD
     // policy. Landing after matches.clear() it would put a stale local-only
     // miss back in the map, and hydrateAndMatch() treats any key in the map as
@@ -309,64 +318,35 @@ class DATMatchingStore {
     // effect need not re-run) the newly enabled fallback stayed dead until a
     // reload.
     const generation = this._generation;
-    // Responses can land out of order, and the reconcile below made that
-    // observable: hydration A reads a hit, a rescan deletes it, hydration B
-    // correctly evicts it -- and then A's delayed answer put the obsolete hit
-    // back, indefinitely, because returned rows were merged unconditionally.
-    // Only apply an answer for a path if nothing newer has applied to it.
+    // Responses can land out of order: hydration A reads a hit, a rescan
+    // deletes it, hydration B correctly evicts it -- and then A's delayed
+    // answer put the obsolete hit back. Each read takes its place in one order
+    // when it is asked, and its answer writes a path only if nothing newer has
+    // written it (_claimPaths), whoever wrote it: a lookup, a RomM listing or
+    // a match job's answer.
     const seq = ++this._hydrateSeq;
-    // Snapshot the entries this hydration can invalidate. Overlaying returned
-    // rows is not enough: the server omits a path it no longer has a usable
-    // row for -- one dropped because a rescan proved the file changed, or one
-    // withheld by cached_result_usable() because it predates a now-enabled
-    // lookup source -- and an omitted path used to keep its old entry
-    // indefinitely. That is worse than a stale badge, because
-    // hydrateAndMatch() treats any key in the map as known: a replaced file
-    // was never re-matched and went on showing the previous file's game until
-    // a reload. Every other invalidation site (import, delete, sync, provider
-    // toggle) clears the whole map; this reconciles the per-path case.
-    // Plain array of pairs, not a Map: this is a throwaway local snapshot with
-    // no lookups, and svelte/prefer-svelte-reactivity flags built-in Maps (the
-    // same reason _attemptedPaths is a plain object).
-    //
-    // untrack: this reads the reactive map, and hydrate() is entered
-    // synchronously from the file list's $effect -- so without it the effect
-    // subscribes to exactly the entries this function is about to overwrite.
-    // The response installs freshly deserialized objects (new identities even
-    // when logically identical), which invalidates that subscription, re-runs
-    // the effect, and hydrates again: a folder holding any cached match
-    // requested in a loop for as long as it stayed on screen. The effect
-    // already tracks what it means to track -- `datMatchTerminalCount` and
-    // `matchingAvailable` -- and must not also track the cache it is filling.
-    const before = untrack(() => {
-      const snapshot = [];
-      for (const path of paths) {
-        if (this.matches.has(path)) snapshot.push([path, this.matches.get(path)]);
-      }
-      return snapshot;
-    });
     try {
       const data = await api.getMatchCache(paths);
-      if (generation !== this._generation) return;
-      // The paths this answer is still the newest for; the rest are left to
-      // the newer answer that already wrote them.
+      if (generation !== this._generation) return true;
       const current = this._claimPaths(seq, paths);
       const results = data?.results ?? {};
-      // Compare-and-delete against the snapshotted value, not just the key: a
-      // match job can land between the request and this response, and its
-      // result is newer than the answer we are holding. Dropping it would
-      // erase a fresh badge and re-queue a file the backend had just done.
-      for (const [path, previous] of before) {
+      // Reconcile every path this answer is the newest for. Overlaying the
+      // returned rows is not enough: the server omits a path it no longer has
+      // a usable row for -- one dropped because a rescan proved the file
+      // changed, or one withheld by cached_result_usable() because it predates
+      // a now-enabled lookup source -- and hydrateAndMatch() treats any key in
+      // the map as known, so a replaced file kept the previous file's game. A
+      // path an older read put there meanwhile is cleared too (CodeRabbit on
+      // PR #442); a newer one is not this answer's to touch.
+      for (const path of paths) {
         if (!current[path]) continue;
-        if (!Object.hasOwn(results, path) && this.matches.get(path) === previous) {
-          this.matches.delete(path);
-        }
+        if (Object.hasOwn(results, path)) this.matches.set(path, results[path]);
+        else this.matches.delete(path);
       }
-      for (const [path, result] of Object.entries(results)) {
-        if (current[path]) this.matches.set(path, result);
-      }
+      return true;
     } catch (_e) {
       // non-fatal
+      return false;
     }
   }
 
@@ -560,12 +540,14 @@ class DATMatchingStore {
 
   async matchBatch(paths) {
     if (!paths?.length) return null;
+    // Its place in the read order is when it was asked (CodeRabbit on PR #442).
+    const seq = ++this._hydrateSeq;
     try {
       const data = await api.matchBatch(paths);
       const results = data?.results ?? {};
-      this._claimPaths(++this._hydrateSeq, Object.keys(results));
+      const current = this._claimPaths(seq, Object.keys(results));
       for (const [path, result] of Object.entries(results)) {
-        this.matches.set(path, result);
+        if (current[path]) this.matches.set(path, result);
       }
       return data;
     } catch (_e) {
@@ -582,11 +564,13 @@ class DATMatchingStore {
     // idle response fires no terminal job event, Hasheous was never tried for
     // it until some later cache reset.
     const generation = this._generation;
+    // Its place in the read order is when it was asked (CodeRabbit on PR #442).
+    const seq = ++this._hydrateSeq;
     const response = await api.startMatchJob(paths);
     // Remembered whatever the policy did meanwhile: hydrate() applies its own
     // generation guard when the job ends.
     if (response?.status === 'started' && response.job_id) {
-      this._submittedJobs[response.job_id] = [...paths];
+      this._submittedJobs[response.job_id] = { paths: [...paths], reading: false };
     }
     if (generation !== this._generation) return response;
     // The endpoint answers {status: "idle", results} and creates NO job when
@@ -596,10 +580,9 @@ class DATMatchingStore {
     // so a static page stayed blank until the user navigated.
     const results = response?.results;
     if (results) {
-      // Fresh answers: newer than any read still in flight for these paths.
-      this._claimPaths(++this._hydrateSeq, Object.keys(results));
+      const current = this._claimPaths(seq, Object.keys(results));
       for (const [path, match] of Object.entries(results)) {
-        if (match) this.matches.set(path, match);
+        if (match && current[path]) this.matches.set(path, match);
       }
     }
     return response;
@@ -618,12 +601,27 @@ class DATMatchingStore {
   async hydrateFinishedJobs(jobList) {
     const ended = [];
     for (const job of jobList ?? []) {
-      const paths = this._submittedJobs[job?.id];
-      if (!paths || !TERMINAL_JOB_STATUSES.includes(job.status)) continue;
-      delete this._submittedJobs[job.id];
-      ended.push(this.hydrate(paths));
+      const tracked = this._submittedJobs[job?.id];
+      if (!tracked || tracked.reading || !TERMINAL_JOB_STATUSES.includes(job.status)) continue;
+      tracked.reading = true;
+      ended.push(this._readBackJob(job.id, tracked.paths));
     }
     await Promise.all(ended);
+  }
+
+  /**
+   * Read a finished job's paths back, retrying a read that fails a bounded
+   * number of times before giving the job up (CodeRabbit on PR #442). The
+   * job stays tracked until then, so another call doesn't start a second read.
+   */
+  async _readBackJob(jobId, paths) {
+    for (let attempt = 1; attempt <= this._jobHydrateAttempts; attempt += 1) {
+      if (await this.hydrate(paths)) break;
+      if (attempt < this._jobHydrateAttempts) {
+        await new Promise((resolve) => setTimeout(resolve, this._jobHydrateRetryMs * attempt));
+      }
+    }
+    delete this._submittedJobs[jobId];
   }
 
   /**

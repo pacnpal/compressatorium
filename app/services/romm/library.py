@@ -11,6 +11,7 @@ batch is queued, and the re-pin backlog reported when the sweep ends.
 
 from __future__ import annotations
 
+import functools
 import os
 from collections.abc import Sequence
 from types import MappingProxyType
@@ -360,6 +361,10 @@ class RommLibrary(LibraryDefaults):
         if not (bool(cfg.get("repin_enabled", True)) and (carry or write_hasheous)):
             summary["repins_recorded"] = 0
             return
+        # This batch's age, fixed before the lookup is awaited: a manual plan
+        # recorded for one of these destinations meanwhile is newer, and
+        # `record()` must not let this one supersede it (CodeRabbit on PR #442).
+        generation = await run_in_threadpool(romm_repin.plan_generation, None)
         fills = await romm_repin.hasheous_fills({
             item.source: item.image.record for item in queued if item.image.record
         }) if write_hasheous else {}
@@ -381,8 +386,10 @@ class RommLibrary(LibraryDefaults):
                 # change and abandons the row, losing exactly the metadata this
                 # exists to protect.
                 if await run_in_threadpool(
-                    romm_repin.record, rom, item.destination, ids,
-                    rule["mode"], item.pre, item.source,
+                    functools.partial(
+                        romm_repin.record, rom, item.destination, ids,
+                        rule["mode"], item.pre, item.source, generation=generation,
+                    ),
                 ):
                     repin_count += 1
             except Exception:  # bookkeeping only; see below

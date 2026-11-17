@@ -21,6 +21,33 @@ export const ARCHIVE_EXTS = new Set(['.7z', '.zip']);
  *   split_parts?: number | null }} entry
  * @param {Iterable<string>} matchableExts
  */
+/**
+ * Whether the app wants Hasheous provider ids for RomM ROMs, by RomM's
+ * *settings*: the switch is on and so is re-pinning, which carries them. The
+ * same gate as the backend's `repin.hasheous_write_on` (CodeRabbit on PR #442).
+ *
+ * @param {{ hasheous_write_ids?: boolean, repin_enabled?: boolean } | null} settings
+ */
+export function wantsHasheousIds(settings) {
+  return settings?.hasheous_write_ids === true && settings?.repin_enabled !== false;
+}
+
+/**
+ * Whether a row whose cached match is *match* should go to the match job: it
+ * has no answer yet, or (when *wantsIds*) it is a Hasheous hit cached before
+ * the provider ids were kept, which the job looks up again (#427). A cached
+ * miss is not asked again.
+ *
+ * @param {{ matched?: boolean, source?: string } | null} match
+ * @param {boolean} wantsIds
+ */
+export function needsDatMatch(match, wantsIds) {
+  if (match == null) return true;
+  return Boolean(
+    wantsIds && match.matched && match.source === 'hasheous' && !('provider_ids' in match),
+  );
+}
+
 export function isDatMatchable(entry, matchableExts) {
   if (!entry?.path || entry.type === 'directory' || entry.type === 'archive') return false;
   if (entry.split_parts != null) return false;

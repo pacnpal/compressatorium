@@ -29,7 +29,9 @@
   import Badge from '$lib/components/ui/Badge.svelte';
   import { datMatching } from '$lib/stores/datMatching.svelte.js';
   import { jobs } from '$lib/stores/jobs.svelte.js';
-  import { ARCHIVE_EXTS, isDatMatchable } from '$lib/util/datMatchable.js';
+  import {
+    ARCHIVE_EXTS, isDatMatchable, needsDatMatch, wantsHasheousIds,
+  } from '$lib/util/datMatchable.js';
   import Spinner from '$lib/components/ui/Spinner.svelte';
   import EmptyState from '$lib/components/ui/EmptyState.svelte';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
@@ -208,18 +210,14 @@
   );
   // With the Hasheous ids switch on, a Hasheous hit cached before the ids were
   // kept has none to write; the match job looks it up again (Codex on PR #442).
-  const wantsIds = $derived(romm.settings?.hasheous_write_ids === true);
-  function needsMatch(entry) {
-    const match = datMatching.matchFor(entry.path);
-    if (match == null) return true;
-    return wantsIds && match.matched && match.source === 'hasheous' && !('provider_ids' in match);
-  }
+  // The same gate as the backend's: the switch and re-pinning both on.
+  const wantsIds = $derived(wantsHasheousIds(romm.settings));
   // What "Recognize these" hands the match job: the files among those rows,
   // on every page, the app has no verdict for yet (or no Hasheous ids for,
   // when they are wanted). A cached miss is not asked again.
   const toRecognize = $derived(
     unidentifiedRows
-      .filter((e) => needsMatch(e))
+      .filter((e) => needsDatMatch(datMatching.matchFor(e.path), wantsIds))
       .map((e) => e.path),
   );
   // The file list re-reads only the rows on screen when a match job ends; the
@@ -233,6 +231,9 @@
     recognizing = true;
     try {
       const response = await datMatching.startMatchJob(toRecognize);
+      // The jobs list may already show this job ended, and the effect below
+      // runs only when that list changes: read it back once now as well.
+      datMatching.hydrateFinishedJobs(jobs.jobs);
       if (response?.status === 'started') {
         toast.info(`Matching ${toRecognize.length} ROM${toRecognize.length === 1 ? '' : 's'} — see Jobs`);
       } else {

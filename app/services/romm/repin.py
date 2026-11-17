@@ -133,21 +133,6 @@ async def hasheous_fills(sources: dict[str, dict]) -> dict[str, dict]:
         return {}
 
 
-def ids_for(rom: dict, source_path: str | None, *, carry: bool = True) -> dict:
-    """The ``metadata_ids`` to record for converting *rom*'s file *source_path*.
-
-    RomM's own ids when *carry* (the format loses RomM's match), and the
-    Hasheous ids the ROM lacks when the switch is on. Empty when there is
-    nothing to write. Blocking, for a caller already on a worker thread under
-    its own bound (the swap Referrer's).
-    """
-    carried = metadata_ids(rom) if carry else {}
-    fill = {}
-    if source_path and hasheous_write_on():
-        fill = _hasheous_fills_blocking({source_path: rom}).get(source_path, {})
-    return row_ids(carried, fill)
-
-
 def _hasheous_fills_blocking(sources: dict[str, dict]) -> dict[str, dict]:
     """:func:`hasheous_fills`' work. Blocking."""
     if not sources:
@@ -187,7 +172,14 @@ def carried_ids(stored: dict) -> dict:
 
 
 def fill_to_write(stored: dict, rom: dict) -> dict:
-    """The row's Hasheous ids that *rom* (RomM's record) still lacks."""
+    """The row's Hasheous ids that *rom* (RomM's record) still lacks.
+
+    Nothing while the switch is off: a row recorded while it was on must not
+    write them once it has been turned off (CodeRabbit on PR #442). RomM's own
+    carried ids are written either way, and the row still settles.
+    """
+    if not hasheous_write_on():
+        return {}
     return {
         k: v for k, v in ((stored or {}).get(FILL_KEY) or {}).items() if not rom.get(k)
     }

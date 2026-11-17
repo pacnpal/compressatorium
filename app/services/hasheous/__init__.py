@@ -345,7 +345,8 @@ def _provider_id(field: str, value) -> int | str | None:
         return None
     if field in _TEXT_ID_FIELDS:
         return text
-    return int(text) if text.isdigit() else None
+    # ASCII digits only: "²".isdigit() is True, and int() refuses it.
+    return int(text) if text.isascii() and text.isdigit() else None
 
 
 def _provider_ids(data: dict) -> dict:

@@ -2439,15 +2439,20 @@ every place that records a row also records the ids the source's cached
 Hasheous hit carries and the ROM lacks (`repin.hasheous_fills`, one cache read
 per batch, never a hash), under `metadata_ids[FILL_KEY]`. The rest of
 `metadata_ids` is RomM's own ids, as before. The three recorders share it: the
-plan route, the sweep's `after_queue`, and the swap Referrer's fallback re-pin
-(`repin.ids_for`). Those ids are recorded whatever the output format, a CHD
+plan route, the sweep's `after_queue` (which takes its plan generation before
+awaiting the lookup, so a manual plan recorded meanwhile stays the newer), and
+the swap Referrer's fallback re-pin (which does the bounded lookup before its
+never-abandoned record step, and records RomM's own ids alone on a timeout).
+Those ids are recorded whatever the output format, a CHD
 included, since RomM never matched these ROMs; RomM's own ids are still
 carried only across a format that loses its match.
 
 At settle, `repin.ids_to_write(stored, rom)` is what reaches
 `update_rom_metadata`: the carried ids, and the fill ids only where RomM's
 record for the output has none (`fill_to_write`), so a match RomM made is
-never replaced. A row expected to self-identify that did writes only the fill.
+never replaced, and none at all while the switch is off: a row recorded while
+it was on still settles, with RomM's carried ids only. A row expected to
+self-identify that did writes only the fill.
 `settle_swapped` keeps a row holding fill ids pending with only those, since
 they were never on the kept ROM; the next settle pass writes them there.
 `FILL_KEY` is not a provider field, so nothing that sends ids to RomM can pass
@@ -2487,17 +2492,24 @@ In the browser the rows' matches are seeded into the DAT match store
 (`datMatching.seedListing`), only while the matching-policy generation is the
 one the listing was loaded under, and the views read the store alone, so a
 policy change clears them with every other badge. `startMatchJob` remembers
-each job's full path set and `hydrateFinishedJobs` (an effect in the RomM view)
-reads all of it back once the job ends, not only the rows on screen.
+each job's full path set and `hydrateFinishedJobs` (an effect in the RomM view,
+and once more right after "Recognize these" learns the job's id, in case it
+already ended) reads all of it back once the job ends, not only the rows on
+screen. The job stays tracked until that read answers; a failed read is
+retried a bounded number of times.
 
 Every read of the match cache, a lookup (`hydrate`) or a RomM listing, takes a
 place in one read order when it is requested (`_hydrateSeq`; a listing's comes
 from `beginListingRead`), and its answer writes a path only if no newer answer
-has written that path (`_claimPaths`, per path, never per map). So a full job's
-read is not lost to a page's read that answered first, a refreshed listing's
-newer hit replaces a cached miss, a listing row with no match clears a stale
-one, and an older answer never undoes a newer one. A match job's own results
-are fresh, so they take a new place in the order as they land.
+has written that path (`_claimPaths`, per path, never per map). A lookup
+reconciles every path it is the newest for: written when the answer has it,
+cleared when it doesn't. So a full job's read is not lost to a page's read
+that answered first, a refreshed listing's newer hit replaces a cached miss, a
+listing row with no match clears a stale one, and an older answer never undoes
+a newer one. `matchBatch` and `startMatchJob` take their place when they are
+asked, like a lookup. Which rows want a match is `util/datMatchable`:
+`needsDatMatch(match, wantsHasheousIds(settings))`, where wanting the ids
+needs re-pinning on too, as the backend's gate does.
 
 ### 3.3.9 Verify without delete (`ConversionJob.verify_after`)
 

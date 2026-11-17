@@ -603,16 +603,15 @@ def _settle_repin(output: str, rom_id: int) -> None:
         logger.warning("romm_swap: could not settle the re-pin of %s", output, exc_info=True)
 
 
-def _queue_repin(plan: _Plan) -> bool:
+def _queue_repin(plan: _Plan, fill: dict) -> bool:
     """Queue the re-pin a conversion gets with the swap off: RomM's provider
-    ids, re-applied to the ROM RomM adds for the output. False when the ROM
-    has none to carry. Blocking."""
+    ids, re-applied to the ROM RomM adds for the output, and *fill*, the
+    Hasheous ids the ROM lacks (#427), read before this step. False when there
+    is nothing to carry. Blocking; only the durable record is done here."""
     # Imported here: repin imports the job manager, which imports the hook.
     from services.romm import repin
 
-    # With the Hasheous switch on (#427), the ids the app's match found and
-    # the ROM lacks ride along.
-    ids = repin.ids_for(plan.rom or {}, plan.source)
+    ids = repin.row_ids(repin.metadata_ids(plan.rom or {}), fill)
     if not ids:
         return False
     # The output is in place already; "" says the path held nothing before
@@ -642,9 +641,20 @@ async def _fall_back(plan: _Plan, target: str) -> Applied:
         raise ReferrerError(
             target, f"{FALLBACK}, and RomM's settings changed, so no re-pin was queued",
         )
+    # The Hasheous ids (#427) first, bounded and abandonable: the lookup maps
+    # the Source on its mount, and `_mutate` is never abandoned, so a stalled
+    # mount there would hold the fallback forever (CodeRabbit on PR #442). A
+    # lookup that doesn't answer in time records RomM's own ids without them.
+    from services.romm import repin
+
+    fill = {}
+    if plan.source and repin.hasheous_write_on():
+        fill = (await repin.hasheous_fills({plan.source: plan.rom or {}})).get(
+            plan.source, {},
+        )
     _active_swaps += 1
     try:
-        queued = await _mutate(_queue_repin, plan)
+        queued = await _mutate(_queue_repin, plan, fill)
     except Exception as exc:
         raise ReferrerError(
             target, f"{FALLBACK}, and the re-pin couldn't be queued ({exc})",

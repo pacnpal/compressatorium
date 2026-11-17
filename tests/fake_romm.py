@@ -353,7 +353,12 @@ class FakeRomm:
                 }
                 if ids:
                     self.metadata_writes.append((rom["id"], ids))
-                    rom.update({name: int(value) for name, value in ids.items()})
+                    # RomM stores every provider id as an integer except
+                    # Flashpoint's, which is text.
+                    rom.update({
+                        name: value if name == "flashpoint_id" else int(value)
+                        for name, value in ids.items()
+                    })
                 return 200, dict(rom)
             return self._rename(int(rom_route.group(1)), field.group(1).decode())
         if method == "POST" and route == "/api/tasks/scan":
