@@ -84,9 +84,12 @@ from services.tools import registry
 from utils.delete_plan import sheet_reference_problems
 from utils.junk import is_junk_entry
 from utils.path_utils import (
+    file_snapshot,
     match_extension,
+    move_anchored,
     open_dir_beneath,
     place_without_clobbering,
+    stat_at,
     volume_containment,
 )
 
@@ -124,7 +127,7 @@ class _Flight:
     # Each file's (device, inode, size, mtime) when it was taken, read through
     # the Inbox's own folders: what the copy reads and the move to
     # ``processed/`` takes must still be these files.
-    identities: dict[str, tuple[int, int, int, int]] = field(default_factory=dict)
+    identities: dict[str, dict[str, int]] = field(default_factory=dict)
     job_id: str | None = None
     task: asyncio.Task | None = None
 
@@ -726,10 +729,6 @@ class _SourceChanged(OSError):
     """A file isn't the one intake took (replaced, changed or gone)."""
 
 
-def _identity(st: os.stat_result) -> tuple[int, int, int, int]:
-    return st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns
-
-
 def _folder_beneath(inbox: inbox_store.Inbox, files: list[str]) -> tuple[int, list[str]]:
     """The Image's folder in the Inbox, opened beneath the Inbox's own folder
     with no link followed on the way (``open_dir_beneath``), and the files'
@@ -743,9 +742,7 @@ def _folder_beneath(inbox: inbox_store.Inbox, files: list[str]) -> tuple[int, li
     return fd, [os.path.basename(f) for f in files]
 
 
-def _identities(
-    inbox: inbox_store.Inbox, files: list[str],
-) -> dict[str, tuple[int, int, int, int]]:
+def _identities(inbox: inbox_store.Inbox, files: list[str]) -> dict[str, dict[str, int]]:
     """Each file's identity, read through the Inbox's own folders. Each must
     be a regular file. Blocking."""
     fd, names = _folder_beneath(inbox, files)
@@ -755,7 +752,7 @@ def _identities(
             st = os.stat(name, dir_fd=fd, follow_symlinks=False)
             if not stat.S_ISREG(st.st_mode):
                 raise OSError(errno.EINVAL, f"{name} isn't a regular file")
-            out[name] = _identity(st)
+            out[name] = file_snapshot(st)
         return out
     finally:
         os.close(fd)
@@ -774,15 +771,14 @@ def _still_taken(inbox: inbox_store.Inbox, path: str, flight: _Flight) -> None:
         raise _SourceChanged(errno.ESTALE, f"{os.path.basename(path)} changed since it was taken")
 
 
-def _check_identities(fd: int, identities: dict[str, tuple[int, int, int, int]]) -> None:
+def _check_identities(fd: int, identities: dict[str, dict[str, int]]) -> None:
     """Raise :class:`_SourceChanged` unless every file in the folder *fd* is
     still the one that was taken."""
     for name, taken in identities.items():
-        try:
-            st = os.stat(name, dir_fd=fd, follow_symlinks=False)
-        except FileNotFoundError:
-            raise _SourceChanged(errno.ENOENT, f"{name} is gone") from None
-        if not stat.S_ISREG(st.st_mode) or _identity(st) != taken:
+        st = stat_at(name, fd)
+        if st is None:
+            raise _SourceChanged(errno.ENOENT, f"{name} is gone")
+        if not stat.S_ISREG(st.st_mode) or file_snapshot(st) != taken:
             raise _SourceChanged(errno.ESTALE, f"{name} changed since it was taken")
 
 
@@ -835,7 +831,7 @@ def _processed_folder(inbox: inbox_store.Inbox, files: list[str], names: list[st
 
 def _move_to_processed(
     inbox: inbox_store.Inbox, files: list[str],
-    identities: dict[str, tuple[int, int, int, int]],
+    identities: dict[str, dict[str, int]],
 ) -> None:
     """Move an Image's *files* into ``processed/``, keeping their folder in the
     Inbox. Anchored, as the Image rename is: both folders are opened beneath
@@ -854,15 +850,16 @@ def _move_to_processed(
             moved: list[str] = []
             try:
                 for name in names:
-                    place_without_clobbering(name, name, src_dir_fd=src, dst_dir_fd=dst)
+                    # The shared anchored move (#425's too): only while it is
+                    # the file taken, never over anything, and the entry that
+                    # landed checked again (one swapped in is moved back).
+                    try:
+                        move_anchored(name, src, dst, identities[name])
+                    except OSError as exc:
+                        if exc.errno == errno.ESTALE:
+                            raise _SourceChanged(errno.ESTALE, str(exc)) from exc
+                        raise
                     moved.append(name)
-                    # The name was checked, not the entry: one swapped in
-                    # since the check is put back, and nothing is moved.
-                    st = os.stat(name, dir_fd=dst, follow_symlinks=False)
-                    if _identity(st) != identities.get(name):
-                        raise _SourceChanged(
-                            errno.ESTALE, f"{name} was replaced as it was moved",
-                        )
             except OSError:
                 # Back the way they came, through the same two folders.
                 for name in reversed(moved):
@@ -915,7 +912,7 @@ def _stage_copy(
             wrote = new_hasher("sha1")
             fd = os.open(name, os.O_RDONLY | _NOFOLLOW, dir_fd=folder_fd)
             try:
-                if _identity(os.fstat(fd)) != flight.identities.get(name):
+                if file_snapshot(os.fstat(fd)) != flight.identities.get(name):
                     raise _SourceChanged(errno.ESTALE, f"{name} changed since it was taken")
             except BaseException:
                 os.close(fd)
@@ -927,7 +924,7 @@ def _stage_copy(
                     dst.write(chunk)
                 # The file read is still the one taken after its last read
                 # (written to in place meanwhile, its mtime moved).
-                if _identity(os.fstat(src.fileno())) != flight.identities.get(name):
+                if file_snapshot(os.fstat(src.fileno())) != flight.identities.get(name):
                     raise _SourceChanged(errno.ESTALE, f"{name} changed while it was copied")
                 dst.flush()
                 os.fsync(dst.fileno())

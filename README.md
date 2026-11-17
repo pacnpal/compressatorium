@@ -637,6 +637,47 @@ aren't synced, the title isn't in the DAT, or the file is larger than
 `MATCH_MAX_FILE_SIZE` (which skips the expensive full-disc reconstruction) — not that
 the file is bad.
 
+### Rename to DAT name
+
+Tick Images in the file browser and press **Rename to DAT name**. Each
+Recognized Image takes the name the top-ranked DAT gives it (see the DAT
+order under [DAT Library](#dat-library)), keeping its own extension: a
+`game.iso` matched by Redump's `Ico (USA)` becomes `Ico (USA).iso`.
+Characters some filesystems can't hold (`< > : " / \ | ? *`) become `_`.
+
+- The preview lists each old and new name, the DAT that gives it, and every
+  playlist, gamelist and RomM ROM the rename updates ("RomM: rename ROM 1234
+  to Ico (USA).iso", "update games.m3u", "update gamelist.xml, 2 entries").
+  Nothing changes until you confirm.
+- An Image is skipped, with the reason, when it isn't Recognized, already has
+  its DAT name, or its new name is taken (by a file, or by another Image in
+  the same rename). Only single-file Images are renamed for now: a `.cue` and
+  its tracks are skipped, and so is a track on its own.
+- When two DATs your order puts level give an Image different names, it is
+  left alone and the Findings view shows a **Rename conflict** naming both.
+  Order the DATs and it clears.
+- Confirming starts a **Rename to DAT name** job you can follow in the jobs
+  list. Every Image is checked again first; one that changed since the
+  preview is skipped. Each rename goes through the same Referrer update a
+  conversion uses, so `.m3u` playlists, ES-DE gamelists and RomM follow it.
+  In a RomM Library RomM renames the file itself, so the ROM keeps its id,
+  saves and collections; this needs **Keep the ROM id when converting** on in
+  RomM's settings, and without it a RomM Library's Images are skipped.
+- If any of them can't be updated, or the job is cancelled part way, the job
+  first waits for anything still running (a RomM request, a playlist write),
+  then looks at where the file actually is:
+  - still under its old name: the Image is reported **not renamed**, and the
+    job tries to put back every playlist or gamelist it already updated,
+    exactly as it was (a file changed meanwhile is left alone, and anything
+    it can't put back is named in the result);
+  - under its new name (RomM finished the rename after all): the Image is
+    reported **renamed**, with a note saying what went wrong on the way;
+  - anywhere else: the result says the Image was left partly renamed, or
+    that where it is couldn't be told, and to check it by hand.
+
+  The job lists every change and every skip, and a summary goes to your
+  notification destinations.
+
 ### RomM integration
 
 Point Compressatorium at a [RomM](https://romm.app) instance and the **RomM** view
@@ -1541,6 +1582,15 @@ Redump comes first for disc Images and No-Intro first for cartridge Images.
 | Light | Dark |
 |-------|------|
 | ![DAT order, light](docs/screenshots/dat-ranking-light.png) | ![DAT order, dark](docs/screenshots/dat-ranking-dark.png) |
+
+#### Rename to DAT name
+
+The preview for a Recognized cartridge, then the finished job. See [Rename to DAT name](#rename-to-dat-name).
+
+| Light | Dark |
+|-------|------|
+| ![Rename to DAT name preview, light](docs/screenshots/dat-rename-preview-light.png) | ![Rename to DAT name preview, dark](docs/screenshots/dat-rename-preview-dark.png) |
+| ![Rename to DAT name finished, light](docs/screenshots/dat-rename-done-light.png) | ![Rename to DAT name finished, dark](docs/screenshots/dat-rename-done-dark.png) |
 
 #### Settings
 

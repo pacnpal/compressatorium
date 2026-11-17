@@ -1173,6 +1173,96 @@ def open_dir_beneath(root: str, relative: str = "") -> int:
     return fd
 
 
+# ---- anchored moves: files bound to the folders that were checked ----------
+#
+# One helper for every move of a user's file that was checked first: the Image
+# rename (#425) and an Inbox moving its originals to ``processed/`` (#431). A
+# folder is opened beneath its Volume root with no link on the way
+# (:class:`AnchoredFolders`); each file is looked at and moved through those
+# descriptors (``*at`` calls), only while it is still the file that was
+# snapshotted (:func:`file_snapshot`), never over another file, and the entry
+# that landed is checked again (:func:`move_anchored`). A folder swapped for a
+# link, or a file swapped under the checked name, can't redirect a move.
+
+
+def file_snapshot(st: os.stat_result) -> dict[str, int]:
+    """A file's identity as a delete snapshot has it: size, mtime, inode, device."""
+    return {
+        "size": st.st_size, "mtime_ns": st.st_mtime_ns,
+        "inode": st.st_ino, "device": st.st_dev,
+    }
+
+
+def stat_at(name: str, folder: int) -> os.stat_result | None:
+    """*name* in the open folder *folder*, not followed; None when it isn't there."""
+    try:
+        return os.stat(name, dir_fd=folder, follow_symlinks=False)
+    except FileNotFoundError:
+        return None
+
+
+class AnchoredFolders:
+    """Folders opened beneath their Volume root with no link followed, one
+    descriptor per real path, closed together (:meth:`close`). Blocking."""
+
+    def __init__(self) -> None:
+        self._fds: dict[str, int] = {}
+
+    @property
+    def descriptors(self) -> dict[str, int]:
+        """The folders open now: real path -> descriptor."""
+        return dict(self._fds)
+
+    def open(self, folder: str) -> tuple[int, str]:
+        """``(descriptor, real path)`` of *folder*. Raises OSError when it isn't
+        confirmed inside a Volume, or can't be opened without following a link."""
+        real = os.path.realpath(folder)
+        if real in self._fds:
+            return self._fds[real], real
+        root = lock_boundary_root(real)
+        if root is None or volume_containment(real, treat_archives=False) is not True:
+            raise OSError(f"{real} isn't confirmed inside the configured Volumes")
+        relative = os.path.relpath(real, str(root))
+        fd = open_dir_beneath(str(root), "" if relative == "." else relative)
+        self._fds[real] = fd
+        return fd, real
+
+    def close(self) -> None:
+        for fd in self._fds.values():
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        self._fds.clear()
+
+
+def move_anchored(
+    name: str, src: int, dst: int, expected: dict[str, int], *, new_name: str | None = None,
+) -> None:
+    """Move *name* from the open folder *src* to *dst* (as *new_name*, else
+    its own name), only while it is the file *expected* (:func:`file_snapshot`),
+    never over another file (:func:`place_without_clobbering` with folder
+    descriptors). The entry that landed is checked again: one swapped in under
+    the name between the check and the move is moved back (never over another
+    file either) and nothing stays moved. Raises ``OSError(ESTALE)`` when the
+    file isn't the one expected, and whatever the move raises."""
+    target = new_name or name
+    st = stat_at(name, src)
+    if st is None or not stat.S_ISREG(st.st_mode) or file_snapshot(st) != expected:
+        raise OSError(errno.ESTALE, f"{name} changed since it was checked")
+    place_without_clobbering(name, target, src_dir_fd=src, dst_dir_fd=dst)
+    landed = stat_at(target, dst)
+    if landed is not None and file_snapshot(landed) == expected:
+        return
+    try:
+        place_without_clobbering(target, name, src_dir_fd=dst, dst_dir_fd=src)
+    except OSError:
+        # Its old name was taken again meanwhile: nothing is replaced, and the
+        # caller hears the file changed either way.
+        pass
+    raise OSError(errno.ESTALE, f"{name} was replaced as it was moved")
+
+
 def read_beneath(root: str, relative: str, *, max_bytes: int) -> bytes:
     """Read the regular file ``root/relative`` without following any symlink.
 
@@ -1254,6 +1344,29 @@ def companion_name(name: str, *, prefix: str, suffix: str = "") -> str:
     gives the same companion, and its length never grows with *name*, so a
     file near the 255-byte name limit still has one."""
     return prefix + hashlib.sha256(os.fsencode(name)).hexdigest()[:16] + suffix
+
+
+# Characters some filesystem a Volume may sit on can't hold in a name: the
+# Windows/SMB/exFAT set, and every C0 control character.
+_UNSAFE_NAME_CHARS = frozenset('<>:"/\\|?*') | frozenset(chr(c) for c in range(32))
+# The longest file name most filesystems take, in bytes (ext4, XFS, APFS).
+MAX_NAME_BYTES = 255
+
+
+def safe_file_name(name: str) -> str | None:
+    """*name* as a file name every Volume can hold, or None when nothing is left.
+
+    The one rule for a name the app makes from data (a DAT's game name, #425):
+    each character a filesystem can't hold (``< > : " / \\ | ? *`` and control
+    characters) becomes ``_``; leading and trailing spaces, and trailing dots
+    (Windows and SMB drop them), are removed. None for a name that comes out
+    empty, ``.`` or ``..``, or longer than :data:`MAX_NAME_BYTES` in UTF-8.
+    """
+    cleaned = "".join("_" if ch in _UNSAFE_NAME_CHARS else ch for ch in name)
+    cleaned = cleaned.strip(" ").rstrip(". ")
+    if not cleaned or len(cleaned.encode("utf-8")) > MAX_NAME_BYTES:
+        return None
+    return cleaned
 
 
 def safe_join(base_dir: str, *parts: str) -> Path:

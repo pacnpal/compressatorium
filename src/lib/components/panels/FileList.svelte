@@ -29,6 +29,7 @@
   import ShieldCheck from '@lucide/svelte/icons/shield-check';
   import Trash2 from '@lucide/svelte/icons/trash-2';
   import ListMusic from '@lucide/svelte/icons/list-music';
+  import FilePen from '@lucide/svelte/icons/file-pen';
 
   const entries = $derived(fileBrowser.visibleEntries);
   const pageCount = $derived(fileBrowser.pageCount);
@@ -294,6 +295,14 @@
       .filter((e) => e?.path && !e.path.includes('::') && e.split_parts == null);
   }
 
+  function openDatRename() {
+    // Same filesystem paths as Delete: the backend skips anything that isn't
+    // a single-file Image it Recognizes, with the reason.
+    ui.datRenamePaths = Array.from(fileBrowser.selectedFiles.values())
+      .filter((e) => e?.path && !e.path.includes('::') && e.split_parts == null)
+      .map((e) => e.path);
+  }
+
   function openPlaylist() {
     ui.playlistPaths = playlistCandidates;
   }
@@ -401,6 +410,9 @@
         </button>
       {/if}
       {#if selectedHasFilesystemPath}
+        <button type="button" class="bulk-action" onclick={openDatRename}>
+          <FilePen size={12} aria-hidden="true" /> Rename to DAT name
+        </button>
         <button type="button" class="bulk-action danger" onclick={openBulkDelete}>
           <Trash2 size={12} aria-hidden="true" /> Delete
         </button>

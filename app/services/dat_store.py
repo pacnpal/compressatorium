@@ -715,6 +715,31 @@ class DATStore:
         """
         return await run_in_threadpool(self._delete_match_sync, file_path)
 
+    def move_match_blocking(self, old_path: str, new_path: str) -> bool:
+        """Carry *old_path*'s cached match over to *new_path*, for a file
+        renamed without its bytes changing (#425). A row already at
+        *new_path* is replaced. True when a row moved. Blocking."""
+        old, new = self._normalize(old_path), self._normalize(new_path)
+        with self._session() as session:
+            row = session.get(_db.DATMatch, old)
+            if row is None:
+                return False
+            payload = dict(row.payload or {})
+            if "path" in payload:
+                payload["path"] = new
+            existing = session.get(_db.DATMatch, new)
+            if existing is not None:
+                session.delete(existing)
+                session.flush()
+            session.add(_db.DATMatch(
+                path=new, matched=row.matched, dat_id=row.dat_id,
+                game_name=row.game_name, rom_name=row.rom_name,
+                match_type=row.match_type, file_hash=row.file_hash, payload=payload,
+            ))
+            session.delete(row)
+            session.commit()
+            return True
+
     def _drop_match_if_changed_sync(self, file_path: str, match: dict) -> bool:
         normalized = self._normalize(file_path)
         with self._session() as session:
