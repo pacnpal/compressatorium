@@ -1,0 +1,106 @@
+# "Compatible with..." table: which modes and codecs each target reads.
+#
+# One file, served at GET /api/compat-presets; the compression picker and the
+# Rule editor read it and keep no copy. Every entry carries a `source`, the
+# page or source file the claim comes from. An entry nobody can cite is left
+# out, which is why MiSTer lists one core's CHD reader only and PCSX2 has no
+# entry for the cores it was never read from.
+#
+# Entry fields:
+#   mode       a conversion mode (checked against the tool registry by a test)
+#   codecs     every codec the target reads for that mode
+#   preferred  the codec choice "Compatible with..." selects (a subset of codecs)
+#   source     https URL of the doc or source file the entry rests on
+#   note       optional, shown beside the warning
+#
+# A codec outside `codecs` only produces a warning; nothing is ever blocked.
+# A mode the target has no entry for gets no opinion and no warning.
+targets:
+  - id: nethersx2
+    label: NetherSX2 / AetherSX2
+    entries:
+      - &nethersx2
+        mode: createdvd
+        codecs: [zlib]
+        preferred: [zlib]
+        source: https://github.com/Trixarian/NetherSX2-patch/releases
+        note: NetherSX2's release notes say CHDs need `-c zlib`.
+      - <<: *nethersx2
+        mode: createcd
+      - <<: *nethersx2
+        mode: copy
+
+  - id: pcsx2
+    label: PCSX2
+    entries:
+      - &pcsx2
+        mode: createdvd
+        codecs: [zlib, lzma, zstd, huff, flac, cdzl, cdlz, cdzs, cdfl]
+        preferred: [zstd]
+        source: https://github.com/PCSX2/pcsx2/blob/master/pcsx2/CDVD/ChdFileReader.cpp
+        note: PCSX2 reads CHD through libchdr (zlib, lzma, zstd, huffman and FLAC codecs).
+      - <<: *pcsx2
+        mode: createcd
+      - <<: *pcsx2
+        mode: copy
+
+  - id: duckstation
+    label: DuckStation
+    entries:
+      - &duckstation
+        mode: createcd
+        codecs: [zlib, lzma, zstd, huff, flac, cdzl, cdlz, cdzs, cdfl]
+        preferred: [zstd]
+        source: https://github.com/stenzek/duckstation/blob/master/src/util/cd_image_chd.cpp
+        note: DuckStation reads CHD through libchdr (zlib, lzma, zstd, huffman and FLAC codecs).
+      - <<: *duckstation
+        mode: copy
+
+  - id: retroarch-beetle-psx
+    label: RetroArch (Beetle PSX core)
+    entries:
+      - &beetle
+        mode: createcd
+        codecs: [zlib, lzma, zstd, huff, flac, cdzl, cdlz, cdzs, cdfl]
+        preferred: [zlib]
+        source: https://github.com/libretro/beetle-psx-libretro/blob/master/Makefile.common
+        note: The core builds libretro-common's CHD reader with deflate, LZMA, FLAC and zstd. Other cores differ.
+      - <<: *beetle
+        mode: copy
+
+  - id: mister
+    label: MiSTer (Main_MiSTer CHD reader)
+    entries:
+      - &mister
+        mode: createcd
+        codecs: [zlib, lzma, zstd, cdzl, cdlz, cdzs]
+        preferred: [zlib]
+        source: https://github.com/MiSTer-devel/Main_MiSTer/blob/master/Makefile
+        note: Main_MiSTer builds libchdr with zlib, LZMA and zstd, and no FLAC.
+      - <<: *mister
+        mode: createdvd
+      - <<: *mister
+        mode: copy
+
+  - id: ppsspp
+    label: PPSSPP
+    entries:
+      - mode: cso_compress
+        codecs: [default, fast, max]
+        preferred: [default]
+        source: https://github.com/hrydgard/ppsspp/blob/master/Core/FileSystems/BlockDevices.cpp
+        note: PPSSPP opens CSO version 0 and 1 only, so the effort presets are all fine.
+
+  - id: dolphin
+    label: Dolphin
+    entries:
+      - mode: dolphin_rvz
+        codecs: [zstd, bzip2, lzma, lzma2, none]
+        preferred: [zstd]
+        source: https://github.com/dolphin-emu/dolphin/blob/master/Source/Core/DiscIO/WIABlob.cpp
+        note: Dolphin decodes every RVZ compression type it can write.
+      - mode: dolphin_wia
+        codecs: [bzip2, lzma, lzma2, none]
+        preferred: [none]
+        source: https://github.com/dolphin-emu/dolphin/blob/master/Source/Core/DiscIO/WIABlob.cpp
+        note: Dolphin decodes every WIA compression type it can write.

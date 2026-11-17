@@ -2,11 +2,11 @@
 
 > **Fork notice:** This is a fork of MarcTV's Docker CHD Converter. It adds a Web UI and more conversion tools on top of the original CLI converter. Thanks to [MarcTV](https://github.com/MarcTV) for the original.
 
-A game image converter that wraps eleven tools: **CHDMAN** (MAME), **dolphin-tool** (Dolphin Emulator), **z3ds_compressor** (Nintendo 3DS), **nsz** (Nintendo Switch), **maxcso** (PSP/PS2 CSO/ZSO), **7z** (handheld ROM archives), **makeps3iso** (PS3 decrypted folder → ISO), **nkit2iso** (NKit-shrunk GameCube/Wii image → ISO), **JWUDTool** (Wii U WUD ↔ WUX), **extract-xiso** (Xbox / Xbox 360 disc image → XISO), and **rom-converto** (the converter RomM ships; Xbox 360 disc image → ZAR). It also repacks **eXoDOS** game zips for RomM's in-browser DOS player. Pick the tool that matches your files and convert from a browser, or run it headless from the command line.
+A game image converter that wraps eleven tools: **CHDMAN** (MAME), **dolphin-tool** (Dolphin Emulator), **z3ds_compressor** (Nintendo 3DS), **nsz** (Nintendo Switch), **maxcso** (PSP/PS2 CSO/ZSO), **7z** (handheld ROM archives), **makeps3iso** (PS3 decrypted folder → ISO), **nkit2iso** (NKit-shrunk GameCube/Wii image → ISO), **JWUDTool** (Wii U WUD ↔ WUX), **extract-xiso** (Xbox / Xbox 360 disc image → XISO), and **rom-converto** (the converter RomM ships; Xbox 360 disc image → ZAR, PSP PBP → ISO, 3DS CIA ↔ CCI). It also repacks **eXoDOS** game zips for RomM's in-browser DOS player. Pick the tool that matches your files and convert from a browser, or run it headless from the command line.
 
 ## Features
 
-* **Eleven tools in one.** CHDMAN, Dolphin, 3DS, Switch, CSO/ZSO, handheld ROM (GB/GBC/GBA/DS), PS3 ISO (a decrypted PS3 folder packed to `.iso`), NKit (an NKit-shrunk GameCube/Wii image restored to a full `.iso`), Wii U (WUD ↔ WUX), Xbox (a full Xbox / Xbox 360 disc image trimmed to XISO), or rom-converto (an Xbox 360 disc image packed to ZAR for Xenia), chosen per job.
+* **Eleven tools in one.** CHDMAN, Dolphin, 3DS, Switch, CSO/ZSO, handheld ROM (GB/GBC/GBA/DS), PS3 ISO (a decrypted PS3 folder packed to `.iso`), NKit (an NKit-shrunk GameCube/Wii image restored to a full `.iso`), Wii U (WUD ↔ WUX), Xbox (a full Xbox / Xbox 360 disc image trimmed to XISO), or rom-converto (an Xbox 360 disc image packed to ZAR for Xenia, a PSP PBP turned back into its ISO, or a 3DS CIA converted to CCI and back), chosen per job.
 * **Web UI** for browsing files and converting them. The tool picker filters the whole interface down to the tool you chose.
 * **Nested directories and archives.** Browse subfolders and look inside ZIP, 7z, and RAR archives.
 * **Multiple volume mounts** so you can keep separate game libraries separate.
@@ -30,7 +30,7 @@ A game image converter that wraps eleven tools: **CHDMAN** (MAME), **dolphin-too
 | **Wii U** | Wii U disc images | .wud, .wux | .wux, .wud | None (fixed); a verify-after-conversion toggle | None | `JWUDTool` (Java) |
 | **NKit** | NKit-shrunk GameCube / Wii discs | .nkit.iso, .nkit.gcz | .iso, .rvz (via the `nkit_to_rvz` chain) | None (fixed) | None | `nkit2iso` (+ dolphin-tool for `nkit_to_rvz`) |
 | **Xbox** | Xbox / Xbox 360 disc images | .iso (only images holding an Xbox filesystem) | .xiso.iso | None (fixed) | None | `extract-xiso` |
-| **rom-converto** | Xbox 360 disc images, for Xenia | .iso, .xiso.iso (only images holding an Xbox 360 filesystem) | .zar | None (fixed) | None | `rom-converto` v0.24.0 |
+| **rom-converto** | Xbox 360 disc images for Xenia; PSP PBPs; 3DS CIA and CCI | .iso, .xiso.iso (only images holding an Xbox 360 filesystem), .pbp (PSP games only), .cia, .cci, .3ds | .zar, .iso, .cci, .cia | None (fixed) | None (keys built into rom-converto; the app never downloads or ships any) | `rom-converto` v0.24.0 |
 | **eXoDOS** | eXoDOS DOS game zips, for RomM | .zip (only zips holding one game folder with a template in `EXODOS_DOS_DIR`) | .dosz | None (fixed) | Your own eXoDOS `!dos` folder (`EXODOS_DOS_DIR`) | none (built in) |
 
 Most conversions above are lossless and fully reversible, including **3DS**, which
@@ -556,7 +556,13 @@ folder for this, and both its track data and its track table (tracks, types,
 lengths, index offsets, gaps) must match the source cue or gdi; the folder is removed
 afterwards. Without about a disc's worth of free scratch space the job keeps the
 source and fails. **Container check only (faster, weaker)** in the convert panel
-drops back to the Intact check for that job. You get a confirmation list of
+drops back to the Intact check for that job. A few conversions can't be
+Round-tripped at all (PSP PBP to ISO, 3DS CIA to CCI and back), so their proof is
+**Recognized** instead: the output's SHA-1 must be in one of your DATs or in
+Hasheous before the source goes. Otherwise the source is kept and the job says
+`converted, source kept: output not Recognized`; the container-only box isn't
+offered for them, and the Ledger records the DAT that recognized an output. The
+convert panel and the Rule editor say which proof each format uses. You get a confirmation list of
 everything to be deleted first, including the `.cue`/`.gdi` track files that ride
 with a `.bin`, and the whole archive if the source came from one. **Bulk Verify**
 checks a whole selection at once across CHD, Dolphin, 3DS, Switch, and CSO;
@@ -649,10 +655,22 @@ Characters some filesystems can't hold (`< > : " / \ | ? *`) become `_`.
   playlist, gamelist and RomM ROM the rename updates ("RomM: rename ROM 1234
   to Ico (USA).iso", "update games.m3u", "update gamelist.xml, 2 entries").
   Nothing changes until you confirm.
+- A `.cue` or `.gdi` Image is renamed whole: the sheet takes the game's name,
+  each track takes the file name the DAT lists for it (`Ape Escape (USA)
+  (Track 2).bin`), and the sheet's references to its tracks are rewritten to
+  the new names with every other byte left as it was. A folder that holds
+  only that Image and carries its old name (`game/game.cue`) is renamed too;
+  a folder holding anything else is left alone. The preview lists every file,
+  the folder and each line of the sheet that changes. Tracks pair with the
+  DAT's files by size, and in track order when two are the same size; an
+  Image whose tracks don't pair, or a track another sheet also names, is
+  skipped with the reason. Every file is renamed, or none is: if one fails,
+  the files already renamed, the sheet and every playlist are put back.
 - An Image is skipped, with the reason, when it isn't Recognized, already has
   its DAT name, or its new name is taken (by a file, or by another Image in
-  the same rename). Only single-file Images are renamed for now: a `.cue` and
-  its tracks are skipped, and so is a track on its own.
+  the same rename). A track on its own is skipped (it goes with its sheet),
+  and so is any other Image of several files. In a RomM Library only a
+  single file is renamed: RomM renames one file within its folder.
 - When two DATs your order puts level give an Image different names, it is
   left alone and the Findings view shows a **Rename conflict** naming both.
   Order the DATs and it clears.
@@ -698,7 +716,7 @@ picking a tool tab. RomM's platform resolves it:
 |---|---|
 | GameCube / Wii | Dolphin (RVZ/WIA/GCZ), NKit |
 | PlayStation 2 | CHDMAN (CHD), maxcso (CSO/ZSO/DAX) |
-| PSP | CHDMAN, maxcso |
+| PSP | CHDMAN, maxcso, rom-converto (PBP to ISO, for a `.pbp`) |
 | PlayStation 3 | PS3 ISO |
 | Xbox | Xbox (XISO) |
 | Xbox 360 | Xbox (XISO), rom-converto (ZAR) |
@@ -963,7 +981,8 @@ Compressatorium do the converting**, because:
 
 - RomM deletes the sources once the conversion tool exits cleanly. Nothing
   reads the output back first. Compressatorium checks every output (Intact,
-  and Round-tripped where the format allows) before it deletes a source.
+  and Round-tripped where the format allows, or Recognized in a DAT or
+  Hasheous where it can't be Round-tripped) before it deletes a source.
 - Two converters on one library work against each other. RomM can store a
   Platform in a different format than your Rule does, so the same game gets
   converted twice.
@@ -979,7 +998,9 @@ The banner's **Import RomM's targets as Rules** button turns RomM's targets into
 Rules, for Platforms that have no Rule yet. Each RomM target is mapped onto a
 mode here that writes the same format (`chd` on PlayStation becomes CHDMAN's CD
 mode, `rvz` on GameCube becomes Dolphin RVZ, `zar` on Xbox 360 becomes
-rom-converto's ZAR mode). A target nothing here writes, such as `wbfs` on Wii, is
+rom-converto's ZAR mode, `iso` on PSP becomes rom-converto's PBP to ISO, and
+`cci` or `cia` on 3DS becomes its CIA to CCI or CCI to CIA). A target nothing
+here writes, such as `wbfs` on Wii, is
 skipped and named. Imported Rules start off, so switch
 them on in Automation once you've switched RomM's converter off.
 
@@ -1573,12 +1594,13 @@ Redump comes first for disc Images and No-Intro first for cartridge Images.
 
 #### Rename to DAT name
 
-The preview for a Recognized cartridge, then the finished job. See [Rename to DAT name](#rename-to-dat-name).
+The preview for a Recognized cartridge, then the finished job, then the preview for a two-track `.cue` Image in a folder named after it. See [Rename to DAT name](#rename-to-dat-name).
 
 | Light | Dark |
 |-------|------|
 | ![Rename to DAT name preview, light](docs/screenshots/dat-rename-preview-light.png) | ![Rename to DAT name preview, dark](docs/screenshots/dat-rename-preview-dark.png) |
 | ![Rename to DAT name finished, light](docs/screenshots/dat-rename-done-light.png) | ![Rename to DAT name finished, dark](docs/screenshots/dat-rename-done-dark.png) |
+| ![Rename to DAT name for a cue Image, light](docs/screenshots/dat-rename-cue-light.png) | ![Rename to DAT name for a cue Image, dark](docs/screenshots/dat-rename-cue-dark.png) |
 
 #### Settings
 
@@ -2338,7 +2360,42 @@ Whether a ZAR made here boots in a current Xenia build has not been checked yet
 | `COMPRESSATORIUM_ROM_CONVERTO_NICE` | *(shared default)* | CPU priority override for rom-converto |
 | `COMPRESSATORIUM_ROM_CONVERTO_IOPRIO_CLASS` / `_LEVEL` | *(shared default)* | I/O priority override for rom-converto |
 | `COMPRESSATORIUM_ROM_CONVERTO_INFO_TIMEOUT` | *(shared default)* | Bound on `xenon info` |
-| `COMPRESSATORIUM_ROM_CONVERTO_VERIFY_TIMEOUT` | *(shared default)* | Verify bound override for ZAR files |
+| `COMPRESSATORIUM_ROM_CONVERTO_VERIFY_TIMEOUT` | *(shared default)* | Verify bound override for ZAR files, and for the PSP and 3DS outputs' check and Recognized lookup |
+
+## PSP PBP and 3DS CIA / CCI (rom-converto)
+
+rom-converto also handles the two formats RomM's converter could convert and
+this app couldn't, under the same binary and version:
+
+- **PSP PBP → ISO** (`pbp_to_iso`): a PSP game's `EBOOT.PBP` (a PSN download)
+  becomes the UMD ISO inside it, `Game.iso` beside the source. Only a PBP whose
+  `DATA.PSAR` holds a PSP game is offered; a PS1 Classic or an update is not.
+- **3DS CIA → CCI** (`cia_to_cci`): written as `Game.cci`, trimmed after its last
+  partition, so a small game isn't padded to its card's size.
+- **3DS CCI → CIA** (`cci_to_cia`): from `.cci` or `.3ds`, written as `Game.cia`.
+- **Keys and seeds.** rom-converto carries the 3DS common keys itself and takes no
+  key or seed file. The app never downloads or ships keys or a `seeddb.bin`. An
+  input that needs one it doesn't have fails with a message that says so.
+- **The check** reads the output's structure (an ISO's volume, a CCI's
+  partitions, a CIA's sections) and fails a cut-off file. rom-converto has no
+  check of its own for these formats.
+- **Deleting the source needs the output to be Recognized.** None of these
+  outputs can be Round-tripped: an ISO can't be turned back into its PBP, and a
+  converted CIA is unsigned with a zero title key. So with delete-source on, the
+  output's SHA-1 is looked up in your DATs, then in Hasheous if it's on, and the
+  source goes only on a hit. Otherwise the source is kept and the job says
+  `converted, source kept: output not Recognized`. The Ledger records the DAT
+  that recognized an output. A PSN PBP or a converted CIA will usually not be
+  Recognized, so expect those sources to stay; that is intended.
+- **Not an Auto default.** Auto keeps PSP on CSO and 3DS on Z3DS; pick these by
+  hand or in a Rule.
+
+The PBP success path and encrypted retail CIA/CCI were not tested in the spike
+(they need dumps the owner made).
+
+| Light | Dark |
+|-------|------|
+| ![3DS CIA to CCI with the Recognized proof, light](docs/screenshots/workspace-rom-converto-recognized-light.png) | ![3DS CIA to CCI with the Recognized proof, dark](docs/screenshots/workspace-rom-converto-recognized-dark.png) |
 
 ## eXoDOS Support (.zip → .dosz)
 
@@ -2642,6 +2699,17 @@ errors like “Failed to initialize cdvd,” re-convert with **zlib only**.
 For Dolphin formats, choose a single codec (zstd/bzip2/lzma/lzma2) and an optional level.
 Use `chdman help createcd` or `chdman help createdvd` for codec details.
 
+You don't have to remember which emulator reads what. In the compression picker
+(and in each Platform's Rule in the Rule editor), pick **Compatible with…** and
+choose NetherSX2, PCSX2, DuckStation, a RetroArch core, MiSTer, PPSSPP or
+Dolphin: the codecs are set to the ones that emulator reads. If you then pick a
+codec it doesn't read, a warning appears, but nothing is blocked. The list lives
+in one file (`app/data/compat_presets.yaml`), and each entry cites the doc or
+source file it came from.
+
+| ![Compatible with, light](docs/screenshots/compat-picker-light.png) |
+| --- |
+
 ---
 
 ## Supported Operations
@@ -2679,6 +2747,11 @@ All actions are queued and processed by the job queue (FIFO). The queue is the o
 **Xbox / Xbox 360**
 - `xiso_rewrite` (.iso → .xiso.iso)
 - `zar_compress` (Xbox 360 .iso / .xiso.iso → .zar, through rom-converto; the source is always kept)
+
+**PSP and 3DS, through rom-converto** (deletes its source only when the output is Recognized)
+- `pbp_to_iso` (PSP .pbp → .iso)
+- `cia_to_cci` (3DS .cia → .cci, trimmed)
+- `cci_to_cia` (3DS .cci / .3ds → .cia)
 
 **NKit (GameCube/Wii)**
 - `nkit_restore` (.nkit.iso / .nkit.gcz → the original full-size `.iso`)

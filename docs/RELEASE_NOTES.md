@@ -13,12 +13,60 @@
   and its result must match the patch's own checksum. An IPS patch has no
   checksums, so on a ROM that isn't Recognized the job warns that the patch
   may not fit. Disc Images are refused for now. The Ledger row names the
-  patch file and its SHA1 (database migration 0024 adds that column), and the
+  patch file and its SHA1 (database migration 0026 adds that column), and the
   Ledger view shows it under the Source. New settings
   `CHD_PATCH_MAX_PATCH_SIZE` (64 MiB) and `CHD_PATCH_MAX_ROM_SIZE` (512 MiB)
   cap what is read; archived ROMs are unpacked under the `CHD_ARCHIVE_MAX_*`
   limits too.
 
+- **Rename to DAT name renames a `.cue` or `.gdi` Image whole** (#426). The
+  sheet takes the game's name, each track takes the file name the DAT lists
+  for it, and the sheet's track references are rewritten to the new names
+  with every other byte kept. A folder that holds only that Image and carries
+  its old name is renamed too. The preview lists every file, the folder and
+  each reference that changes. Every file is renamed or none is: a failure
+  part way puts back the files already renamed, the sheet's bytes and every
+  playlist and gamelist. An Image whose tracks don't pair with the DAT's
+  files by size, or a track another sheet also names, is skipped with the
+  reason, and so is a sheet's Image in a RomM Library (RomM renames one file
+  within its folder). Track names come from each DAT's file list, which the
+  app now keeps when a DAT is imported (a database upgrade adds it): import a
+  DAT again to give it one, so tracks that share their bytes are named too.
+- **"Compatible with…" in the compression picker and the Rule editor**
+  (#429). Pick NetherSX2, PCSX2, DuckStation, a RetroArch core (Beetle PSX),
+  MiSTer, PPSSPP or Dolphin and the codecs are set to the ones it reads. A
+  codec the emulator doesn't read shows a warning in both places and is never
+  blocked. The table is one file, `app/data/compat_presets.yaml`, served at
+  `GET /api/compat-presets`; every entry cites its source, and a test checks
+  each mode and codec in it against the tool registry. Adds PyYAML as a
+  declared dependency.
+- **PSP PBP to ISO, and 3DS CIA to CCI and back, with rom-converto** (#423).
+  Three more rom-converto modes: **PSP PBP → ISO** turns a PSP game's
+  `EBOOT.PBP` back into the UMD ISO inside it, **3DS CIA → CCI** writes a
+  trimmed `Game.cci`, and **3DS CCI → CIA** reads a `.cci` or `.3ds`. Each is
+  offered only on a file whose header says it is one (a PS1 Classic PBP is
+  not), works from the convert panel and from a Rule, and is checked after
+  conversion by reading the output's structure, so a cut-off file fails.
+  rom-converto carries its own 3DS common keys; the app never downloads or
+  ships keys or seeds, and an input that needs one fails with a message that
+  says so. Auto still picks CSO for PSP and Z3DS for 3DS. RomM's converter
+  targets `iso` for PSP and `cci`/`cia` for 3DS, so the RomM view stops
+  marking those as Platforms only RomM converts, and **Import RomM's targets
+  as Rules** maps them onto these modes.
+- **A second delete proof: Recognized** (#423). These outputs can't be
+  Round-tripped against their source (an ISO can't be turned back into its
+  PBP, and a converted CIA is unsigned with a zero title key), so with
+  delete-source on, the output's SHA-1 is looked up in your DATs, then in
+  Hasheous if it's on, and the source is deleted only on a hit. Otherwise the
+  source is kept, the output stays, and the job completes saying
+  "converted, source kept: output not Recognized". A PSN PBP or a converted
+  CIA will usually not be Recognized, so expect those sources to stay. The
+  convert panel, the delete confirmation and the Rule editor say which proof
+  each format uses, Preview says "Recognized ... before deleting the source",
+  and **Container check only** is offered only where a Round-trip runs. The
+  Ledger's check column says Recognized, with the DAT that matched (a new
+  `check_dat` column, also last in the CSV export), and a converted file's
+  badge says Recognized.
 - **Rename to DAT name** (#425). Tick Images in the file browser and press
   **Rename to DAT name**: each Recognized single-file Image takes the name the
   top-ranked DAT gives it, keeping its own extension, with characters a

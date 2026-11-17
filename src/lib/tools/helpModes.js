@@ -100,6 +100,24 @@ export const MODE_BLURBS = {
     + 'Game.zar beside the source and always keeps the source: a ZAR holds the '
     + 'files, not the disc, and nothing turns it back into an ISO. Verify decodes '
     + 'every block and checks its hash. Offered only on Xbox 360 images.',
+  pbp_to_iso:
+    'Turn a PSP game\'s EBOOT.PBP (a PSN download) back into the UMD ISO inside '
+    + 'it, so emulators and the CSO/CHD conversions can use it. Uses rom-converto. '
+    + 'A PS1 Classic or an update PBP is not offered. The ISO can\'t be '
+    + 'Round-tripped against the PBP, so with delete-source on, the PBP goes only '
+    + 'when the ISO is Recognized (its hash is in one of your DATs or in Hasheous); '
+    + 'otherwise it is kept and the job says so.',
+  cia_to_cci:
+    'Convert a 3DS CIA (the installable format) to a CCI, the cartridge image '
+    + 'emulators load, trimmed to the game\'s size. Uses rom-converto, which '
+    + 'carries its own common keys; the app never downloads or ships keys or seeds. '
+    + 'The CIA goes on delete-source only when the CCI is Recognized; a converted '
+    + 'CCI rarely matches a DAT, so expect the CIA to be kept.',
+  cci_to_cia:
+    'Convert a 3DS CCI (.cci or .3ds) to a CIA, the format a modded 3DS installs. '
+    + 'Uses rom-converto. The CIA is unsigned with a zero title key, so it can\'t '
+    + 'be Round-tripped against the CCI; the CCI goes on delete-source only when '
+    + 'the CIA is Recognized, which is rare, so expect it to be kept.',
   // eXoDOS
   exodos_repack:
     'Repack an eXoDOS game zip for RomM\'s in-browser DOS player (DOSBox Pure): '

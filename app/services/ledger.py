@@ -83,6 +83,7 @@ def row_from_job(job: ConversionJob) -> dict:
         "duration_s": duration,
         "status": getattr(job.status, "value", str(job.status)),
         "check_passed": job.check_passed or "none",
+        "check_dat": getattr(job, "check_dat", None),
         "source_deleted": bool(job.deleted_paths),
         "deleted_paths": list(job.deleted_paths),
         "referrers_updated": list(job.referrers_updated),
@@ -281,7 +282,10 @@ CSV_COLUMNS = (
     "job_id", "finished_at", "tool", "mode", "source_path", "output_path",
     "input_bytes", "output_bytes", "duration_s", "status", "check_passed",
     "source_deleted", "deleted_paths", "referrers_updated", "library_id",
-    "image_key", "platform", "error", "extra_inputs",
+    "image_key", "platform", "error",
+    # Last, so a script reading the columns by position before #423 (then
+    # #428) still works.
+    "check_dat", "extra_inputs",
 )
 _CSV_PAGE = 500
 # Always exported so a scrape sees a zero, not a missing series.

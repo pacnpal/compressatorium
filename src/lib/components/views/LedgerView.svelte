@@ -113,7 +113,7 @@
   }
 
   // Intact and Round-tripped are the two checks; "none" shows nothing.
-  const CHECK_LABEL = { intact: 'Intact', round_tripped: 'Round-tripped' };
+  const CHECK_LABEL = { intact: 'Intact', round_tripped: 'Round-tripped', recognized: 'Recognized' };
   // Jobs with a Ledger row that no tool's mode describes.
   const JOB_LABEL = { patch: 'Patch' };
 </script>
@@ -196,7 +196,10 @@
                 <td><Badge tone={tone(row.status)} size="sm">{row.status}</Badge></td>
                 <td class="num">{formatSize(row.input_bytes)}</td>
                 <td class="num">{formatSize(row.output_bytes)}</td>
-                <td>{CHECK_LABEL[row.check_passed] ?? ''}</td>
+                <td>
+                  {CHECK_LABEL[row.check_passed] ?? ''}
+                  {#if row.check_dat}<span class="muted" title="The DAT that Recognized the output">({row.check_dat})</span>{/if}
+                </td>
                 <td>{row.source_deleted ? 'Deleted' : 'Kept'}</td>
               </tr>
             {/each}
@@ -233,6 +236,7 @@
   th { text-align: left; color: var(--text-3); font-size: var(--text-xs); font-weight: var(--weight-medium); text-transform: uppercase; letter-spacing: 0.05em; padding: var(--space-2); border-bottom: 1px solid var(--border-subtle); white-space: nowrap; }
   td { padding: var(--space-2); border-bottom: 1px solid var(--border-subtle); color: var(--text-1); vertical-align: top; }
   tr:last-child td { border-bottom: none; }
+  .muted { color: var(--text-3); font-size: var(--text-xs); }
   .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
   .when { color: var(--text-2); white-space: nowrap; }
   .path { max-width: 320px; }
