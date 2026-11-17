@@ -260,6 +260,12 @@
 
 ### Fixed
 
+- **The CLI no longer hangs on exit** (#450). `JobManager.shutdown` and `drain`
+  waited on sets that only shrink when the loop runs a done callback, and on
+  Python 3.14 awaiting finished tasks doesn't give the loop a turn, so
+  `convert` and `run-rules` could spin forever at the end of a run and ignore
+  SIGTERM. Both now remove finished tasks themselves.
+
 - **Swap recovery logs a stuck swap once** (#445). A swap it can't finish used
   to log the same warning every 10 minutes. It now warns when it first sees a
   reason, and again when the reason changes; repeats go to the debug log. The
