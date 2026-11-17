@@ -2452,6 +2452,20 @@ they were never on the kept ROM; the next settle pass writes them there.
 `FILL_KEY` is not a provider field, so nothing that sends ids to RomM can pass
 it on, and no schema change was needed.
 
+The fill lookup resolves each source on its mount, so the plan route and
+`after_queue` call it through `repin.hasheous_fills`, which runs the blocking
+read on a detached thread under `FILL_LOOKUP_SECONDS` and records no ids when
+it doesn't answer in time. A row for a CHD or archive output (one only the
+Hasheous ids put there) is settled by the path join, as for a Platform RomM
+never hashes (`repin.joins_on_path`): RomM stores the digest of what is inside
+those files, so the output's own SHA-1 never finds its ROM.
+
+A Hasheous hit cached before the normaliser kept `provider_ids` has none to
+write. It still Recognizes its file everywhere, but while the ids are wanted
+and Hasheous is on, `routes.dat.cached_result_needs_refresh` has
+`/dat/match-batch/job` look it up again (the row is still served meanwhile).
+The rule is decided on read, like `is_unrankable_local_hit`; no row is dropped.
+
 #### The RomM ROM listing (#427)
 
 `GET /romm/roms` gains `unidentified` (only the ROMs `rom_identified` says
@@ -2460,7 +2474,14 @@ RomM couldn't identify, decided before any ROM is stat'ed). Each row carries
 (`cached_matches`, one read in the same worker as the stats), and the listing
 carries `romm` (`RommListingSummary`: `unidentified`, `recognized`,
 `recognized_unidentified`). It never hashes; "Recognize these" in the view
-posts the rows with no answer to `/dat/match-batch/job`.
+posts the rows with no answer (on every page) to `/dat/match-batch/job`.
+
+In the browser the rows' matches are seeded into the DAT match store
+(`datMatching.seedListing`), only while the matching-policy generation is the
+one the listing was loaded under, and the views read the store alone, so a
+policy change clears them with every other badge. `startMatchJob` remembers
+each job's full path set and `hydrateFinishedJobs` (an effect in the RomM view)
+reads all of it back once the job ends, not only the rows on screen.
 
 ### 3.3.9 Verify without delete (`ConversionJob.verify_after`)
 

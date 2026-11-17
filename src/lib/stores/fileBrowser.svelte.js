@@ -7,6 +7,7 @@ import { STORAGE_KEYS, readString, writeString } from '$lib/util/localStorage.js
 import { jobs } from './jobs.svelte.js';
 import { conversion } from './conversion.svelte.js';
 import { ui } from './ui.svelte.js';
+import { datMatching } from './datMatching.svelte.js';
 
 const DEFAULT_PAGE_SIZE = 50;
 // Rows-per-page choices offered in the file list footer.
@@ -775,10 +776,15 @@ class FileBrowserStore {
     this.loading = true;
     this.entriesError = null;
     this.rommDiagnostics = null;
+    // The matching policy the listing's cached matches belong to (#427).
+    const matchGeneration = datMatching.policyGeneration;
     try {
       const data = await api.getRommRoms(platformId, { unidentified: this.rommUnidentified });
       if (this._listingRequestSeq !== myReq || this.rommPlatformId !== platformId) return;
       this.entries = data?.entries ?? [];
+      // Into the match store, which a policy change clears, rather than kept
+      // beside it as a fallback that would outlive the policy it was read under.
+      datMatching.seedListing(this.entries, matchGeneration);
       this.rommDiagnostics = data?.diagnostics ?? null;
       this.rommSummary = data?.romm ?? null;
       this._listingGeneration += 1;

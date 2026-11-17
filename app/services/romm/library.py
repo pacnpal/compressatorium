@@ -366,7 +366,7 @@ class RommLibrary(LibraryDefaults):
         if not (bool(cfg.get("repin_enabled", True)) and (carry or write_hasheous)):
             summary["repins_recorded"] = 0
             return
-        fills = await run_in_threadpool(romm_repin.hasheous_fills, {
+        fills = await romm_repin.hasheous_fills({
             item.source: item.image.record for item in queued if item.image.record
         }) if write_hasheous else {}
         repin_count = 0

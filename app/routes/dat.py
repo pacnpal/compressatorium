@@ -587,6 +587,8 @@ async def match_batch_job(request: MatchBatchRequest, background_tasks: Backgrou
     cached = await run_in_threadpool(
         dat_store.get_matches_batch, list(normalized_to_originals.keys()),
     )
+    # In memory only (the Hasheous toggle and the RomM settings snapshot).
+    refreshes = {path: cached_result_needs_refresh(row) for path, row in cached.items()}
 
     results: dict[str, dict] = {}
     to_compute: list[str] = []
@@ -603,6 +605,10 @@ async def match_batch_job(request: MatchBatchRequest, background_tasks: Backgrou
         if cached_result_usable(cached_entry):
             for original_path in original_paths:
                 results[original_path] = cached_entry
+            # Still served (it Recognizes the file), but looked up again for
+            # the provider ids it was cached without (#427).
+            if can_match and refreshes.get(normalized_path):
+                to_compute.append(normalized_path)
             continue
         if not can_match:
             for original_path in original_paths:
@@ -1613,6 +1619,33 @@ def cached_result_usable(payload: dict | None) -> bool:
     if stamp is None:
         return True
     return payload.get("checked_remote") == stamp
+
+
+def cached_result_needs_refresh(payload: dict | None) -> bool:
+    """True for a usable cached hit the match job should look up again (#427).
+
+    A Hasheous hit cached before the normaliser kept the provider ids carries
+    no ``provider_ids``. It still Recognizes its file, so every reader keeps
+    using it, but while the RomM Library wants those ids written
+    (``repin.hasheous_write_on``) the match job re-asks Hasheous for it, or
+    the switch could never write anything for a ROM already Recognized.
+    Decided on read, like ``dat_ranking.is_unrankable_local_hit``: no row is
+    dropped. Only while Hasheous is on, since only it can supply the ids; with
+    it off the re-match could not improve the row.
+    """
+    if not (
+        payload
+        and payload.get("matched")
+        and payload.get("source") == "hasheous"
+        and "provider_ids" not in payload
+        and remote_stamp() is not None
+    ):
+        return False
+    # Imported here: the RomM package imports the job manager, and its switch
+    # is the only reason to ask.
+    from services.romm import repin as romm_repin
+
+    return romm_repin.hasheous_write_on()
 
 
 def cached_matches(paths: list[str]) -> dict[str, dict | None]:

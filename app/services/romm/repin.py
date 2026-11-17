@@ -19,6 +19,7 @@ opt out of the guarantee the manual path makes.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import threading
 from collections.abc import Callable
@@ -60,6 +61,16 @@ def mode_needs_repin(output_ext: str | None) -> bool:
     return (output_ext or "").lower() not in DAT_SAFE_OUTPUT_EXTS
 
 
+def joins_on_path(output_path: str) -> bool:
+    """True when the settle pass must find *output_path*'s ROM by its path.
+
+    RomM stores a CHD's or an archive's SHA-1 from what is inside it (the
+    header's digest, the decompressed contents), so the output's own hash
+    never finds it. A row for one exists only for Hasheous ids (#427).
+    """
+    return os.path.splitext(output_path)[1].lower() in DAT_SAFE_OUTPUT_EXTS
+
+
 def metadata_ids(rom: dict) -> dict:
     """The provider ids worth carrying across, dropping the ones RomM has not set."""
     return {f: rom.get(f) for f in METADATA_ID_FIELDS if rom.get(f)}
@@ -89,14 +100,56 @@ def hasheous_write_on() -> bool:
     return bool(cfg.get("hasheous_write_ids")) and bool(cfg.get("repin_enabled", True))
 
 
-def hasheous_fills(sources: dict[str, dict]) -> dict[str, dict]:
+# How long recording a batch waits for the Hasheous ids before recording
+# without them. The lookup resolves every source on its mount (``realpath``,
+# then the store's own normalising), so a mount that stops answering would
+# otherwise hold a conversion submit or a sweep (Codex on PR #442).
+FILL_LOOKUP_SECONDS = 30.0
+
+
+async def hasheous_fills(sources: dict[str, dict]) -> dict[str, dict]:
     """For each ``{source path: ROM record}``, the Hasheous ids the ROM lacks.
 
     Read from the app's match cache for the source (never a hash): only a
     Hasheous hit carries ``provider_ids``. An id the ROM already has is left
-    out, so a match RomM made is never replaced. A cache that can't be read
-    gives nothing to write. Blocking.
+    out, so a match RomM made is never replaced. Runs on a detached thread
+    under :data:`FILL_LOOKUP_SECONDS`; a lookup that doesn't answer in time, or
+    a cache that can't be read, gives nothing to write.
     """
+    if not sources:
+        return {}
+    # Imported here: the subprocess runner pulls in the tool registry.
+    from services.subprocess_runner import run_detached
+
+    try:
+        return await asyncio.wait_for(
+            run_detached(_hasheous_fills_blocking, dict(sources)), FILL_LOOKUP_SECONDS,
+        )
+    except (asyncio.TimeoutError, OSError):
+        logger.warning(
+            "romm_repin: the Hasheous id lookup for %d source(s) did not finish in "
+            "time; recording without them (a volume is not answering)", len(sources),
+        )
+        return {}
+
+
+def ids_for(rom: dict, source_path: str | None, *, carry: bool = True) -> dict:
+    """The ``metadata_ids`` to record for converting *rom*'s file *source_path*.
+
+    RomM's own ids when *carry* (the format loses RomM's match), and the
+    Hasheous ids the ROM lacks when the switch is on. Empty when there is
+    nothing to write. Blocking, for a caller already on a worker thread under
+    its own bound (the swap Referrer's).
+    """
+    carried = metadata_ids(rom) if carry else {}
+    fill = {}
+    if source_path and hasheous_write_on():
+        fill = _hasheous_fills_blocking({source_path: rom}).get(source_path, {})
+    return row_ids(carried, fill)
+
+
+def _hasheous_fills_blocking(sources: dict[str, dict]) -> dict[str, dict]:
+    """:func:`hasheous_fills`' work. Blocking."""
     if not sources:
         return {}
     # Imported here, as the folder Library does: the usability rule lives with
@@ -126,20 +179,6 @@ def hasheous_fills(sources: dict[str, dict]) -> dict[str, dict]:
 def row_ids(carried: dict, fill: dict) -> dict:
     """What a row's ``metadata_ids`` holds: RomM's *carried* ids, and *fill*."""
     return {**carried, FILL_KEY: dict(fill)} if fill else dict(carried)
-
-
-def ids_for(rom: dict, source_path: str | None, *, carry: bool = True) -> dict:
-    """The ``metadata_ids`` to record for converting *rom*'s file *source_path*.
-
-    RomM's own ids when *carry* (the format loses RomM's match), and the
-    Hasheous ids the ROM lacks when the switch is on. Empty when there is
-    nothing to write. Blocking.
-    """
-    carried = metadata_ids(rom) if carry else {}
-    fill = {}
-    if source_path and hasheous_write_on():
-        fill = hasheous_fills({source_path: rom}).get(source_path, {})
-    return row_ids(carried, fill)
 
 
 def carried_ids(stored: dict) -> dict:

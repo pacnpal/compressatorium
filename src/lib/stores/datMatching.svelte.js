@@ -26,6 +26,9 @@ const MAX_AUTO_RETRIES = 2;
 // needs a reload to notice.
 const AVAILABILITY_POLL_MS = 60_000;
 
+// A job in one of these has ended.
+const TERMINAL_JOB_STATUSES = ['completed', 'failed', 'cancelled'];
+
 class DATMatchingStore {
   matches = new SvelteMap();
   matchingAvailable = $state(false);
@@ -63,6 +66,10 @@ class DATMatchingStore {
   // the transient ones and costs a permanently-skipped file one cheap no-op
   // job per interval (it re-checks the size cap without hashing).
   _attemptedPaths = Object.create(null);
+  // Match jobs startMatchJob() started, job id -> every path submitted, until
+  // hydrateFinishedJobs() has read them back. A plain object, for the reason
+  // _attemptedPaths is one.
+  _submittedJobs = Object.create(null);
   _retryTimer = null;
   _retryPaths = null;
   // Runs only while nothing can answer a lookup (see watchMatchingAvailability).
@@ -570,6 +577,11 @@ class DATMatchingStore {
     // it until some later cache reset.
     const generation = this._generation;
     const response = await api.startMatchJob(paths);
+    // Remembered whatever the policy did meanwhile: hydrate() applies its own
+    // generation guard when the job ends.
+    if (response?.status === 'started' && response.job_id) {
+      this._submittedJobs[response.job_id] = [...paths];
+    }
     if (generation !== this._generation) return response;
     // The endpoint answers {status: "idle", results} and creates NO job when
     // every path was cached between our hydrate() and this call (another
@@ -583,6 +595,46 @@ class DATMatchingStore {
       }
     }
     return response;
+  }
+
+  /**
+   * Re-read every path of each match job this store started that has ended
+   * (#427, Codex on PR #442).
+   *
+   * The file list re-reads only the rows on screen when a match job ends, but
+   * "Recognize these" submits the unidentified rows of every page, so the
+   * count and the button went on describing off-page ROMs the job had already
+   * done. Each job is read back once, then forgotten. Call it with the jobs
+   * list from an `$effect`, so it runs as jobs change.
+   */
+  async hydrateFinishedJobs(jobList) {
+    const ended = [];
+    for (const job of jobList ?? []) {
+      const paths = this._submittedJobs[job?.id];
+      if (!paths || !TERMINAL_JOB_STATUSES.includes(job.status)) continue;
+      delete this._submittedJobs[job.id];
+      ended.push(this.hydrate(paths));
+    }
+    await Promise.all(ended);
+  }
+
+  /**
+   * Put the matches a RomM listing shipped with its rows into the store
+   * (#427), as long as the matching policy is still the one the listing was
+   * loaded under (*generation*, read before the request).
+   *
+   * Seeded rather than read as a fallback beside the store: a policy change
+   * clears the store and re-hydrates it, while a snapshot kept beside it
+   * would bring back a miss recorded before Hasheous was switched on (Codex on
+   * PR #442). A path the store already has keeps its newer answer.
+   */
+  seedListing(entries, generation) {
+    if (generation !== this._generation) return;
+    for (const entry of entries ?? []) {
+      if (entry?.path && entry.dat_match && !this.matches.has(entry.path)) {
+        this.matches.set(entry.path, entry.dat_match);
+      }
+    }
   }
 
   _applyRanking(data) {

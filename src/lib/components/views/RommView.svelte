@@ -28,6 +28,7 @@
   import Checkbox from '$lib/components/ui/Checkbox.svelte';
   import Badge from '$lib/components/ui/Badge.svelte';
   import { datMatching } from '$lib/stores/datMatching.svelte.js';
+  import { jobs } from '$lib/stores/jobs.svelte.js';
   import Spinner from '$lib/components/ui/Spinner.svelte';
   import EmptyState from '$lib/components/ui/EmptyState.svelte';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
@@ -186,22 +187,35 @@
    * "Unidentified in RomM" (#427): the rows RomM couldn't identify, and how
    * many of those the app Recognizes from its own DAT or Hasheous match.
    *
-   * The listing ships each row's cached match; the live store answer wins once
-   * a match job has reached the row, so the count moves as "Recognize these"
-   * runs without reloading the platform.
+   * Read from the match store, which the listing seeds and a match job
+   * updates, so the count moves as "Recognize these" runs without reloading
+   * the platform, and a policy change clears it with every other badge.
    */
-  const matchOf = (e) => datMatching.matchFor(e.path) ?? e.dat_match ?? null;
   const unidentifiedRows = $derived(entries.filter((e) => e.romm_identified === false));
   const recognizedUnidentified = $derived(
-    unidentifiedRows.filter((e) => matchOf(e)?.matched).length,
+    unidentifiedRows.filter((e) => datMatching.matchFor(e.path)?.matched).length,
   );
-  // What "Recognize these" hands the match job: the files among those rows the
-  // app has no verdict for yet. A cached miss is not asked again.
+  // With the Hasheous ids switch on, a Hasheous hit cached before the ids were
+  // kept has none to write; the match job looks it up again (Codex on PR #442).
+  const wantsIds = $derived(romm.settings?.hasheous_write_ids === true);
+  function needsMatch(entry) {
+    const match = datMatching.matchFor(entry.path);
+    if (match == null) return true;
+    return wantsIds && match.matched && match.source === 'hasheous' && !('provider_ids' in match);
+  }
+  // What "Recognize these" hands the match job: the files among those rows,
+  // on every page, the app has no verdict for yet (or no Hasheous ids for,
+  // when they are wanted). A cached miss is not asked again.
   const toRecognize = $derived(
     unidentifiedRows
-      .filter((e) => e.type !== 'directory' && matchOf(e) == null)
+      .filter((e) => e.type !== 'directory' && needsMatch(e))
       .map((e) => e.path),
   );
+  // The file list re-reads only the rows on screen when a match job ends; the
+  // job "Recognize these" started covers every page, so all of it is read back.
+  $effect(() => {
+    datMatching.hydrateFinishedJobs(jobs.jobs);
+  });
   let recognizing = $state(false);
 
   async function handleRecognize() {

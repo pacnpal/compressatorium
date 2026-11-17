@@ -356,6 +356,118 @@ async def test_a_dat_safe_output_still_gets_the_hasheous_ids(client, romm, vol):
 
 
 @pytest.mark.asyncio
+async def test_a_zip_output_is_found_by_its_path_not_its_container_hash(client, romm, vol):
+    """Codex on PR #442: RomM hashes a zip by its contents, so the output's own
+    SHA-1 never finds it. The settle pass joins on the path instead."""
+    import zipfile
+
+    await _switch(client, True)
+    planned = await _plan(client, vol, "Homebrew.iso", mode="romz_zip")
+    output = Path(_path(vol, "Homebrew.iso.zip"))
+    with zipfile.ZipFile(output, "w") as archive:
+        archive.writestr("Homebrew.iso", Path(_path(vol, "Homebrew.iso")).read_bytes())
+    romm.add_rom(44, NGC, "Homebrew.iso.zip")
+
+    await _settle(client)
+
+    assert planned["recorded"] == 1
+    assert romm.metadata_writes == [
+        (44, {"igdb_id": "12296", "tgdb_id": "24326", "hasheous_id": "13633"}),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_stalled_cache_read_records_no_ids_and_does_not_hang(
+    client, romm, vol, monkeypatch,
+):
+    """Codex on PR #442: the fill lookup resolves each source on the mount. A
+    mount that stops answering must not hold the plan; it records no ids."""
+    import threading
+
+    from services.romm import repin as romm_repin
+
+    release = threading.Event()
+
+    def stalled(_sources):
+        release.wait(30)
+        return {}
+
+    monkeypatch.setattr(romm_repin, "_hasheous_fills_blocking", stalled)
+    monkeypatch.setattr(romm_repin, "FILL_LOOKUP_SECONDS", 0.2)
+    await _switch(client, True)
+    try:
+        planned = await _plan(client, vol, "Homebrew.iso")
+    finally:
+        release.set()
+
+    assert planned["recorded"] == 0
+
+
+def _legacy_hit(vol: Path, name: str) -> dict:
+    """A Hasheous hit cached before #427: no ``provider_ids``."""
+    hit = _hasheous_hit(_path(vol, name), "Homebrew Quest", {})
+    hit.pop("provider_ids")
+    return hit
+
+
+@pytest.fixture(name="hasheous_on")
+def _hasheous_on(monkeypatch):
+    from services import hasheous
+
+    monkeypatch.setattr(app_settings, "hasheous_enabled", True)
+    monkeypatch.setattr(app_settings, "hasheous_base_url", "https://hasheous.example")
+    hasheous._clear_cooldown()
+    yield
+    hasheous._clear_cooldown()
+
+
+@pytest.mark.asyncio
+async def test_a_hit_cached_without_ids_is_matched_again_once_ids_are_wanted(
+    client, romm, vol, hasheous_on,
+):
+    """Codex on PR #442: a Hasheous hit cached before the normaliser kept the
+    ids carries none, and a cached hit is always reused, so turning the switch
+    on wrote nothing for it. Once ids are wanted, the match job looks it up
+    again; the listing still counts it Recognized meanwhile."""
+    from routes import dat as dat_routes
+    from services import hasheous
+    from services.dat_store import dat_store
+
+    homebrew = _path(vol, "Homebrew.iso")
+    await dat_store.set_match(homebrew, _legacy_hit(vol, "Homebrew.iso"))
+    await _switch(client, True)
+    assert _by_name(await _listing(client))["Homebrew.iso"]["dat_match"]["matched"] is True
+
+    with patch.object(dat_routes.hasheous, "lookup", return_value=hasheous._normalize(
+        HASHEOUS_RESPONSE,
+    )):
+        started = await client.post("/api/dat/match-batch/job", json={"paths": [homebrew]})
+
+    assert started.json()["status"] == "started", started.text
+    assert dat_store.get_match(homebrew)["provider_ids"] == HOMEBREW_IDS
+    await _plan(client, vol, "Homebrew.iso")
+    _romm_scans_output(romm, vol, "Homebrew.rvz", 43)
+    await _settle(client)
+    assert romm.metadata_writes == [
+        (43, {"igdb_id": "12296", "tgdb_id": "24326", "hasheous_id": "13633"}),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_hit_cached_without_ids_is_reused_while_ids_are_not_wanted(
+    client, romm, vol, hasheous_on,
+):
+    from services.dat_store import dat_store
+
+    homebrew = _path(vol, "Homebrew.iso")
+    await dat_store.set_match(homebrew, _legacy_hit(vol, "Homebrew.iso"))
+
+    started = await client.post("/api/dat/match-batch/job", json={"paths": [homebrew]})
+
+    assert started.json()["status"] == "idle", started.text
+
+
+@pytest.mark.asyncio
 async def test_a_kept_rom_id_still_gets_the_hasheous_ids(client, romm, vol):
     """With the swap the ROM keeps its id: closing its re-pin as done must not
     drop the Hasheous ids still owed to it."""

@@ -25,9 +25,9 @@
   // folder-input mode (makeps3iso) and only when the backend marked them
   // convertible. Drives the checkbox; the name button still navigates.
   const selectable = $derived(fileBrowser.isSelectable(entry));
-  // The store's live answer, else the match a RomM listing shipped with the
-  // row (#427), so a cached match shows before any lookup comes back.
-  const datMatch = $derived(datMatching.matchFor(path) ?? entry?.dat_match ?? null);
+  // A RomM listing's own matches are seeded into the store (#427), so this is
+  // the one answer, and a policy change clears it everywhere at once.
+  const datMatch = $derived(datMatching.matchFor(path));
   // A RomM row RomM couldn't identify, that the app Recognizes: the name the
   // DAT or Hasheous gives it goes beside RomM's own title (#427).
   const appName = $derived(

@@ -851,7 +851,7 @@ async def romm_repin_plan(payload: RepinPlanRequest) -> dict:
             len(payload.paths),
         )
     # The Hasheous ids each ROM lacks, from the match cache in one read.
-    fills = await run_in_threadpool(romm_repin.hasheous_fills, {
+    fills = await romm_repin.hasheous_fills({
         key: platform_roms[key] for key in resolved_keys.values()
         if key is not None and platform_roms.get(key)
     }) if write_hasheous else {}
@@ -1314,10 +1314,14 @@ async def _settle_one_repin(
         except RommError as exc:
             logger.warning("romm: could not read source ROM %s: %s", rom_id, exc)
             return _Outcome.UPSTREAM_ERROR
-    if platform_id is not None and platform_slug in UNHASHED_PLATFORM_SLUGS:
+    if platform_id is not None and (
+        platform_slug in UNHASHED_PLATFORM_SLUGS or romm_repin.joins_on_path(output_path)
+    ):
         # RomM never hashes this platform, so there is no digest to join on and
-        # hashing the output would be minutes of I/O for nothing. The file is
-        # exactly where the conversion wrote it, so join on that.
+        # hashing the output would be minutes of I/O for nothing. Nor does the
+        # output's own SHA-1 find a CHD or an archive (a row for one carries
+        # only Hasheous ids, #427): RomM stores the digest of what is inside.
+        # The file is exactly where the conversion wrote it, so join on that.
         return await _match_and_settle(
             row_id, _by_path(output_path, platform_id, catalogs, deadline), ids,
             output_path, created_at, kept_by=kept_by,
