@@ -674,3 +674,43 @@ process.stdout.write(JSON.stringify({ statusCalls, reloads: __reloads }));
     assert data["statusCalls"] == 2, data
     # The superseded refresh never goes on to list platforms.
     assert "platforms" not in data["reloads"], data
+
+
+_FAILING_REFRESH = _SETTINGS_SAVES + """
+// The refresh's cleanup throws once the status says nothing is usable.
+fileBrowser.exitRomm = () => { throw new Error('refresh blew up'); };
+const first = store.saveSettings({ url: 'http://new:8080' });
+await tick();
+"""
+
+
+def test_a_failed_save_keeps_its_own_error_when_the_refresh_also_fails(tmp_path):
+    """CodeRabbit 4595283279: the caller gets the save's error, not the refresh's."""
+    data = _run(tmp_path, _FAILING_REFRESH + """
+const second = store.saveSettings({ es_frontend: true }).catch((e) => e.message);
+await tick();
+answers[0].resolve({ url: 'http://new:8080' });
+await first;
+await tick();
+answers[1].reject(new Error('second failed'));
+await tick();
+__calls[0].resolve({ configured: true, connected: false });
+const error = await second;
+process.stdout.write(JSON.stringify({ error }));
+""")
+    assert data["error"] == "second failed", data
+
+
+def test_a_failing_refresh_is_reported_when_the_save_succeeded(tmp_path):
+    """With no save error to keep, the refresh's own error reaches the caller."""
+    data = _run(tmp_path, _FAILING_REFRESH + """
+const outcome = first.catch((e) => e.message);
+answers[0].resolve({ url: 'http://new:8080' });
+await tick();
+__calls[0].resolve({ configured: true, connected: false });
+const error = await outcome;
+process.stdout.write(JSON.stringify({ error, settings: store.settings }));
+""")
+    assert data["error"] == "refresh blew up", data
+    # The new settings were adopted before the refresh failed.
+    assert data["settings"] == {"url": "http://new:8080"}, data

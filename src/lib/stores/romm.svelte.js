@@ -358,8 +358,17 @@ class RommStore extends RulesSource {
     return this.#saveQueue
       .schedule('settings', (ticket) => this.#saveSettingsNow(patch, ticket))
       .then(async ({ error, refresh }) => {
-        if (refresh) await this.#refreshConnection();
-        if (error) throw error;
+        let refreshError = null;
+        if (refresh) {
+          try {
+            await this.#refreshConnection();
+          } catch (e) {
+            refreshError = e;
+          }
+        }
+        // The save's own error wins; the refresh's is surfaced only when the
+        // save has none to report.
+        if (error || refreshError) throw error ?? refreshError;
         return this.settings;
       })
       .finally(() => {
