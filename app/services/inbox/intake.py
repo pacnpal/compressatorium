@@ -162,6 +162,7 @@ _storage_stop = False
 # Guards `_storage_stop`, which a copy's staging (on a worker thread) reads
 # right before it opens a file. Never held across I/O.
 _stop_lock = threading.Lock()
+_stop_generation = 0
 _check_lock: asyncio.Lock | None = None
 _check_lock_loop: asyncio.AbstractEventLoop | None = None
 
@@ -172,20 +173,40 @@ def _stopped() -> bool:
 
 
 def _set_stop(value: bool) -> None:
-    global _storage_stop
+    global _storage_stop, _stop_generation
     with _stop_lock:
         _storage_stop = value
+        if value:
+            # Moves with every stop, so a check that raced one can tell.
+            _stop_generation += 1
 
 
 class _Deferred(Exception):
     """A copy that won't open another file this pass (a check had to stop)."""
 
 
-def _may_open(name: str) -> None:
+def _may_open(name: str) -> int:
     """Right before a copy opens a file: raise :class:`_Deferred` when a
-    check stopped with a reader still on the storage. Blocking-safe."""
-    if _stopped():
-        raise _Deferred(f"{name} isn't opened: an earlier check is still reading the storage")
+    check stopped with a reader still on the storage, else the stop
+    generation the open goes ahead under (:func:`_opened`). Blocking-safe."""
+    with _stop_lock:
+        if _storage_stop:
+            raise _Deferred(
+                f"{name} isn't opened: an earlier check is still reading the storage",
+            )
+        return _stop_generation
+
+
+def _opened(name: str, fd: int, generation: int) -> None:
+    """Right after the open *generation* went ahead under: a stop that landed
+    while it was in flight closes *fd* before a byte is read, and the copy
+    ends deferred. The lock is never held across the open itself, which can
+    stall on a mount that stopped answering."""
+    with _stop_lock:
+        raced = _storage_stop or _stop_generation != generation
+    if raced:
+        os.close(fd)
+        raise _Deferred(f"{name} was opened as a check stopped; nothing was read from it")
 
 
 def _checking() -> asyncio.Lock:
@@ -922,7 +943,7 @@ def _move_to_processed(
                 for name in reversed(moved):
                     try:
                         place_without_clobbering(
-                            name, name, src_dir_fd=dst, dst_dir_fd=src, link_fallback=False,
+                            name, name, src_dir_fd=dst, dst_dir_fd=src, identity_sensitive=True,
                         )
                     except OSError as exc:
                         # Its name in the Inbox was taken again meanwhile:
@@ -973,10 +994,11 @@ def _stage_copy(
     try:
         slot = staging.open_slot(folder, make_folder=True)
         for name in names:
-            _may_open(name)
+            generation = _may_open(name)
             target = slot.path_for(name)
             wrote = new_hasher("sha1")
             fd = os.open(name, os.O_RDONLY | _NOFOLLOW, dir_fd=folder_fd)
+            _opened(name, fd, generation)
             try:
                 if file_snapshot(os.fstat(fd)) != flight.identities.get(name):
                     raise _SourceChanged(errno.ESTALE, f"{name} changed since it was taken")
@@ -1227,7 +1249,8 @@ async def _copy_in(
         return "failed", f"its output couldn't be locked: {exc}", None
     if refused is not None:
         if await _step(os.path.lexists, refused):
-            return "failed", f"{os.path.basename(refused)} is already in the Library ({folder})", None
+            taken = os.path.basename(refused)
+            return "failed", f"{taken} is already in the Library ({folder})", None
         return "deferred", f"another job is writing {os.path.basename(refused)}", None
     try:
         return await _copy_locked(job_id, inbox, path, flight, folder, cancel)

@@ -53,7 +53,7 @@ _NO_HARDLINK_ERRNOS = frozenset({
 
 def place_without_clobbering(
     src: str, dst: str, *, src_dir_fd: int | None = None, dst_dir_fd: int | None = None,
-    link_fallback: bool = True,
+    identity_sensitive: bool = False,
 ) -> None:
     """Move ``src`` to ``dst``, never replacing anything already at ``dst``.
 
@@ -72,15 +72,15 @@ def place_without_clobbering(
     3. Neither available: refuse with ``OSError(ENOTSUP)`` rather than fall
        back to a check-then-rename that could overwrite another file.
 
-    The link fallback still has a window between its identity check and the
-    unlink. A move of a user's file, whose name someone else may reuse at any
-    moment (``move_anchored``: the Image rename and an Inbox's originals,
-    #431), passes ``link_fallback=False`` and is refused with
-    ``OSError(ENOTSUP)`` where there is no atomic no-replace rename; the file
-    stays where it is. The fallback is kept for the app's own files only,
-    whose names nobody else writes: a staging slot's entries, a temp file
-    (``archive_edit``, the Referrer writers), a tool's product
-    (``output_placement``).
+    That link fallback still has a window between its check and the unlink. A
+    move of a user's file, whose name someone else may reuse at any moment,
+    passes ``identity_sensitive=True`` and takes :func:`_move_by_quarantine`
+    instead, which never deletes a file it didn't move: ``move_anchored`` (the
+    Image rename and an Inbox's originals, #431) and ``StagedOutput.take`` /
+    ``restore`` (a RomM swap parking its Source, #391). The plain fallback is
+    kept for the app's own files, whose names nobody else writes: a staging
+    slot's placed entries, a temp file (``archive_edit``, the Referrer
+    writers), a tool's product (``output_placement``).
 
     Both paths must be on one filesystem, as for ``os.replace``.
 
@@ -100,13 +100,9 @@ def place_without_clobbering(
         renamed = _rename_noreplace(src, dst)
     if renamed:
         return
-    if not link_fallback:
-        raise OSError(
-            errno.ENOTSUP,
-            "this filesystem has no atomic no-replace rename, so the file isn't "
-            "moved: a link and unlink could delete a file put under its name meanwhile",
-            src,
-        )
+    if identity_sensitive:
+        _move_by_quarantine(src, dst, src_dir_fd, dst_dir_fd)
+        return
     try:
         if at:
             os.link(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd,
@@ -147,6 +143,72 @@ def place_without_clobbering(
         os.unlink(src, dir_fd=src_dir_fd)
     except OSError:
         pass
+
+
+def _link_no_clobber(src: str, dst: str, src_dir_fd: int | None, dst_dir_fd: int | None) -> None:
+    """``link(src, dst)``, never followed; ``FileExistsError`` when *dst* is
+    taken, ``OSError(ENOTSUP)`` where the filesystem has no hard links."""
+    try:
+        os.link(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd, follow_symlinks=False)
+    except FileExistsError:
+        raise
+    except OSError as exc:
+        if exc.errno not in _NO_HARDLINK_ERRNOS:
+            raise
+        raise OSError(
+            errno.ENOTSUP,
+            "the filesystem supports neither hard links nor an atomic no-replace "
+            "rename, so the file can't be moved without risking another one",
+            dst,
+        ) from exc
+
+
+def _move_by_quarantine(
+    src: str, dst: str, src_dir_fd: int | None, dst_dir_fd: int | None,
+) -> None:
+    """The fallback for moving a user's file with no delete race (#431), where
+    there is no atomic no-replace rename:
+
+    1. ``link(src, dst)``: no clobber, ``dst`` taken raises.
+    2. ``rename(src, quarantine)``: a fresh random name beside ``src``, which
+       nothing else knows; atomic.
+    3. The quarantined entry is the inode linked: unlink the quarantine name.
+       Done, and a file put at ``src`` after step 2 is never touched.
+       It isn't (``src`` was replaced between steps 1 and 2): the file moved
+       is the one that was there at step 1, now at ``dst`` alone, and is kept
+       there; the replacement is put back at ``src`` (``link``, which fails if
+       ``src`` was made again meanwhile) and its quarantine name removed. If it
+       can't be put back it stays under its quarantine name, and
+       :class:`MoveRollbackFailed` names it.
+
+    Nothing is ever deleted that a name doesn't also keep: each unlink removes
+    a second name of an inode another name still holds.
+    """
+    _link_no_clobber(src, dst, src_dir_fd, dst_dir_fd)
+    linked = os.stat(dst, dir_fd=dst_dir_fd, follow_symlinks=False)
+    quarantine = short_temp_name(prefix=".compressatorium-q-")
+    try:
+        os.rename(src, quarantine, src_dir_fd=src_dir_fd, dst_dir_fd=src_dir_fd)
+    except FileNotFoundError:
+        return  # the src name is gone already: the file is at dst
+    held = os.stat(quarantine, dir_fd=src_dir_fd, follow_symlinks=False)
+    if (held.st_dev, held.st_ino) == (linked.st_dev, linked.st_ino):
+        os.unlink(quarantine, dir_fd=src_dir_fd)
+        return
+    # Replaced between the link and the quarantine rename: put it back.
+    try:
+        _link_no_clobber(quarantine, src, src_dir_fd, src_dir_fd)
+    except OSError as exc:
+        logger.error(
+            "place_without_clobbering: %s was replaced while it was moved and the "
+            "replacement couldn't be put back; it is kept as %s: %s", src, quarantine, exc,
+        )
+        raise MoveRollbackFailed(
+            exc.errno or errno.EIO,
+            f"{src} was replaced while it was moved, and the replacement couldn't be "
+            f"put back: it is kept as {quarantine} beside it ({exc})",
+        ) from exc
+    os.unlink(quarantine, dir_fd=src_dir_fd)
 
 
 # errnos meaning "this kernel/filesystem has no no-replace rename", as opposed
@@ -1284,8 +1346,8 @@ def move_anchored(
     """Move *name* from the open folder *src* to *dst* (as *new_name*, else
     its own name), only while it is the file *expected* (:func:`file_snapshot`),
     never over another file (:func:`place_without_clobbering` with folder
-    descriptors, and never its link fallback: refused with ``ENOTSUP`` where
-    the filesystem has no atomic no-replace rename). The entry that landed is checked again: one swapped in under
+    descriptors, identity-sensitive: its fallback never deletes a file it
+    didn't move). The entry that landed is checked again: one swapped in under
     the name between the check and the move is moved back (never over another
     file either) and nothing stays moved. Raises ``OSError(ESTALE)`` when the
     file isn't the one expected, :class:`MoveRollbackFailed` when such a file
@@ -1295,14 +1357,14 @@ def move_anchored(
     if st is None or not stat.S_ISREG(st.st_mode) or file_snapshot(st) != expected:
         raise OSError(errno.ESTALE, f"{name} changed since it was checked")
     place_without_clobbering(
-        name, target, src_dir_fd=src, dst_dir_fd=dst, link_fallback=False,
+        name, target, src_dir_fd=src, dst_dir_fd=dst, identity_sensitive=True,
     )
     landed = stat_at(target, dst)
     if landed is not None and file_snapshot(landed) == expected:
         return
     try:
         place_without_clobbering(
-            target, name, src_dir_fd=dst, dst_dir_fd=src, link_fallback=False,
+            target, name, src_dir_fd=dst, dst_dir_fd=src, identity_sensitive=True,
         )
     except OSError as exc:
         # Its old name taken again meanwhile, or the folder failing: nothing
@@ -1354,7 +1416,10 @@ def source_identity_problem(path: str, identity: dict) -> str | None:
     try:
         fd, name = _folder_beneath_root(path, identity["root"])
     except OSError as exc:
-        return f"the Source can't be reached under {identity['root']} without following a link ({exc})"
+        return (
+            f"the Source can't be reached under {identity['root']} without "
+            f"following a link ({exc})"
+        )
     try:
         st = stat_at(name, fd)
     finally:

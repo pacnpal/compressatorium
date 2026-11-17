@@ -1466,37 +1466,122 @@ async def test_a_failed_put_back_in_processed_is_held_with_a_finding(vol, db, qu
 # ---- review round five (CodeRabbit follow-ups on #443) ----------------------
 
 
-def test_an_identity_sensitive_move_refuses_without_an_atomic_rename(tmp_path, monkeypatch):
-    """CodeRabbit 4604215988, ruled: a move of a user's file never takes the
-    link-then-unlink fallback, whose unlink could delete a file put under the
-    name meanwhile; it refuses, and the file stays where it is."""
-    from utils import path_utils
-
-    monkeypatch.setattr(path_utils, "_rename_noreplace_at", lambda *_a: False)
+def _two_folders(tmp_path):
     a, b = tmp_path / "a", tmp_path / "b"
     a.mkdir()
     b.mkdir()
-    (a / "Game.iso").write_bytes(b"checked")
-    expected = path_utils.file_snapshot((a / "Game.iso").stat())
+    (a / "Game.iso").write_bytes(b"original")
+    return a, b
+
+
+def _quarantined(folder) -> list:
+    return [p.name for p in folder.iterdir() if p.name.startswith(".compressatorium-q-")]
+
+
+def test_a_replacement_between_link_and_quarantine_is_put_back(tmp_path, monkeypatch):
+    """Where there is no atomic no-replace rename, a user's file moves by link,
+    quarantine rename and check (#431, CodeRabbit 4604215988): a file put
+    under the name between the link and the quarantine rename is put back,
+    and the file moved stays moved. Nothing is deleted."""
+    from utils import path_utils
+
+    monkeypatch.setattr(path_utils, "_rename_noreplace_at", lambda *_a: False)
+    a, b = _two_folders(tmp_path)
     real_link = os.link
+    calls = []
 
     def link_then_replace(src, dst, **kwargs):
         real_link(src, dst, **kwargs)
-        (a / "new.tmp").write_bytes(b"a replacement")
-        os.replace(a / "new.tmp", a / "Game.iso")  # just before the unlink
+        calls.append(src)
+        if len(calls) == 1:  # the move's link, not the put-back
+            (a / "new.tmp").write_bytes(b"a replacement")
+            os.replace(a / "new.tmp", a / "Game.iso")
 
     monkeypatch.setattr(path_utils.os, "link", link_then_replace)
     src_fd, dst_fd = os.open(a, os.O_RDONLY), os.open(b, os.O_RDONLY)
     try:
-        with pytest.raises(OSError) as refused:
-            path_utils.move_anchored("Game.iso", src_fd, dst_fd, expected)
+        path_utils.place_without_clobbering(
+            "Game.iso", "Game.iso", src_dir_fd=src_fd, dst_dir_fd=dst_fd,
+            identity_sensitive=True,
+        )
     finally:
         os.close(src_fd)
         os.close(dst_fd)
 
-    assert refused.value.errno == errno.ENOTSUP
-    assert (a / "Game.iso").read_bytes() == b"checked"
-    assert not (b / "Game.iso").exists()
+    assert (b / "Game.iso").read_bytes() == b"original"
+    assert (a / "Game.iso").read_bytes() == b"a replacement"
+    assert _quarantined(a) == []
+
+
+def test_a_replacement_after_the_quarantine_rename_is_left_alone(tmp_path, monkeypatch):
+    """A file put under the name after the quarantine rename, before the
+    check, is never touched; the moved file's quarantine name goes."""
+    from utils import path_utils
+
+    monkeypatch.setattr(path_utils, "_rename_noreplace_at", lambda *_a: False)
+    a, b = _two_folders(tmp_path)
+    real_rename = os.rename
+
+    def rename_then_recreate(src, dst, **kwargs):
+        real_rename(src, dst, **kwargs)
+        (a / "Game.iso").write_bytes(b"a new download")
+
+    monkeypatch.setattr(path_utils.os, "rename", rename_then_recreate)
+    src_fd, dst_fd = os.open(a, os.O_RDONLY), os.open(b, os.O_RDONLY)
+    try:
+        path_utils.place_without_clobbering(
+            "Game.iso", "Game.iso", src_dir_fd=src_fd, dst_dir_fd=dst_fd,
+            identity_sensitive=True,
+        )
+    finally:
+        os.close(src_fd)
+        os.close(dst_fd)
+
+    assert (b / "Game.iso").read_bytes() == b"original"
+    assert (a / "Game.iso").read_bytes() == b"a new download"
+    assert _quarantined(a) == []
+
+
+def test_a_replacement_that_cant_be_put_back_is_kept_and_named(tmp_path, monkeypatch):
+    """When the name is taken again before the replacement can go back, the
+    replacement stays under its quarantine name, and MoveRollbackFailed
+    names it."""
+    from utils import path_utils
+
+    monkeypatch.setattr(path_utils, "_rename_noreplace_at", lambda *_a: False)
+    a, b = _two_folders(tmp_path)
+    real_link, real_rename = os.link, os.rename
+    state = {"links": 0}
+
+    def link(src, dst, **kwargs):
+        state["links"] += 1
+        real_link(src, dst, **kwargs)
+        if state["links"] == 1:
+            (a / "new.tmp").write_bytes(b"a replacement")
+            os.replace(a / "new.tmp", a / "Game.iso")
+
+    def rename_then_recreate(src, dst, **kwargs):
+        real_rename(src, dst, **kwargs)
+        (a / "Game.iso").write_bytes(b"made again")
+
+    monkeypatch.setattr(path_utils.os, "link", link)
+    monkeypatch.setattr(path_utils.os, "rename", rename_then_recreate)
+    src_fd, dst_fd = os.open(a, os.O_RDONLY), os.open(b, os.O_RDONLY)
+    try:
+        with pytest.raises(path_utils.MoveRollbackFailed) as failed:
+            path_utils.place_without_clobbering(
+                "Game.iso", "Game.iso", src_dir_fd=src_fd, dst_dir_fd=dst_fd,
+                identity_sensitive=True,
+            )
+    finally:
+        os.close(src_fd)
+        os.close(dst_fd)
+
+    [kept] = _quarantined(a)
+    assert kept in str(failed.value)
+    assert (a / kept).read_bytes() == b"a replacement"
+    assert (a / "Game.iso").read_bytes() == b"made again"
+    assert (b / "Game.iso").read_bytes() == b"original"
 
 
 @pytest.mark.asyncio
@@ -1529,8 +1614,9 @@ async def test_a_copy_paused_before_its_first_open_sees_the_stop(vol, db, monkey
                 if intake._stopped():
                     break
                 clock.sleep(0.02)
-        real_may_open(name)
+        answer = real_may_open(name)
         opened.append(name)
+        return answer
 
     monkeypatch.setattr(intake, "_may_open", may_open)
     verified = []
@@ -1667,3 +1753,75 @@ async def test_a_conversion_is_queued_with_its_sources_identity(vol, db, queue):
         "size": taken.st_size, "mtime_ns": taken.st_mtime_ns,
         "inode": taken.st_ino, "device": taken.st_dev,
     }
+
+
+@pytest.mark.asyncio
+async def test_an_open_in_flight_when_the_stop_lands_reads_nothing(vol, db, monkeypatch):
+    """CodeRabbit 4604533199, ruled: a copy past `_may_open()` but not yet in
+    `os.open()` when another copy's check stops may finish that one open, but
+    the stop is checked again as soon as it returns: the file is closed
+    without a byte read, and the copy ends deferred."""
+    import asyncio
+    import threading
+    import time as clock
+
+    from services.inbox import intake
+    from services.job_manager import job_manager
+    from services.rules import check as checks
+    from services.tools import registry
+
+    monkeypatch.setattr(job_manager, "max_concurrent", 2)
+    monkeypatch.setattr(job_manager, "_semaphore", asyncio.Semaphore(2))
+    library = _library(vol)
+    _inbox(vol, library, settle=0)
+    _drop(vol / "Downloads" / "ps2" / "A.iso")
+    _drop(vol / "Downloads" / "ps2" / "B.iso")
+    monkeypatch.setattr(registry, "check_tool", lambda *_a, **_k: SimpleNamespace(id="fake"))
+    real_may_open = intake._may_open
+    b_thread = []
+    b_checks = []
+
+    def may_open(name):
+        answer = real_may_open(name)
+        if name == "B.iso":
+            b_checks.append(name)
+        # The check right before the file's own open (the first is before the
+        # slot is made): past it, not yet opened.
+        if name == "B.iso" and len(b_checks) == 2 and not b_thread:
+            b_thread.append(threading.get_ident())
+            for _ in range(250):
+                if intake._stopped():
+                    break
+                clock.sleep(0.02)
+        return answer
+
+    monkeypatch.setattr(intake, "_may_open", may_open)
+    real_fdopen = os.fdopen
+    b_reads = []
+
+    def fdopen(fd, *args, **kwargs):
+        if b_thread and threading.get_ident() == b_thread[0]:
+            b_reads.append(fd)
+        return real_fdopen(fd, *args, **kwargs)
+
+    monkeypatch.setattr(intake.os, "fdopen", fdopen)
+    verified = []
+
+    async def verify(check, cancel_event):
+        verified.append(os.path.basename(check.path))
+        for _ in range(250):  # the other copy is between its check and its open
+            if b_thread:
+                break
+            await asyncio.sleep(0.02)
+        return checks.INTACT, "", True
+
+    monkeypatch.setattr(checks, "_verify", verify)
+
+    await intake.poll_all(now=0)
+    await intake.poll_all(now=1)
+    await intake.drain()
+
+    assert b_thread, "the second copy never reached its open"
+    assert verified == ["A.iso"]
+    assert b_reads == []
+    assert not list((vol / "ROMs").rglob("*.iso"))

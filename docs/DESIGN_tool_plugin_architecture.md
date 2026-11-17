@@ -776,14 +776,25 @@ unlink is someone else's and stays. Where neither is available, it refuses
 with `OSError(ENOTSUP)` rather than falling back to a check-then-rename.
 
 That check still leaves a window before the unlink, so a move of a user's file,
-whose name someone else may reuse at any moment, never takes the fallback:
-`move_anchored` (the Image rename and an Inbox's originals) and intake's
-put-back pass `link_fallback=False` and are refused with `ENOTSUP` where there is
-no atomic no-replace rename, leaving the file where it is and saying why (#431).
-The fallback stays for the app's own files, whose names nobody else writes: a
-staging slot's entries (`StagedOutput.place`, `_move_back`, `set_aside`), a temp
-file (`archive_edit.rewrite_zip`, the Referrer writers in `referrers/base.py`)
-and a tool's product (`OutputPlacement`). A
+whose name someone else may reuse at any moment, passes `identity_sensitive=True`
+and, where there is no atomic no-replace rename (Linux CIFS, older NFS), takes
+`_move_by_quarantine` instead (#431): (1) `link(src, dst)`, which fails if `dst`
+exists; (2) `rename(src, quarantine)`, a fresh random name beside `src` that
+nothing else knows; (3) if the quarantined entry is the inode linked, unlink the
+quarantine name, so a file put at `src` after step 2 is never touched. If it
+isn't (`src` was replaced between steps 1 and 2), the file moved is the one that
+was there at step 1, now held by `dst` alone, and stays there; the replacement
+goes back to `src` by `link` (which fails if `src` was made again) and its
+quarantine name is removed. If it can't go back, it stays under its quarantine
+name and `MoveRollbackFailed` names it, which intake turns into a Finding. Each
+unlink removes a second name of an inode another name still holds, so nothing
+is ever deleted. The identity-sensitive callers are `move_anchored` (the Image
+rename and an Inbox's originals), intake's put-back, and `StagedOutput.take` /
+`restore` (a RomM swap parking its Source, #391). The plain fallback stays for
+the app's own files, whose names nobody else writes: a staging slot's placed
+entries (`StagedOutput.place`, `_move_back`, `set_aside`), a temp file
+(`archive_edit.rewrite_zip`, the Referrer writers in `referrers/base.py`) and a
+tool's product (`OutputPlacement`). A
 claim-then-rename can overwrite a file another writer swapped in for the claim,
 so it is deliberately not used. The worker of an abandoned job removes its late
 product only while `output_path` is still that inode (`remove_if_same_file`),
@@ -7140,7 +7151,11 @@ beside one whose check stopped (`max_concurrent` > 1) neither checks nor places.
 The flag is thread-safe (`_stopped()`, `_set_stop()`): a copy reads it after
 taking its slot, and its staging reads it again on its worker thread right
 before it opens each file (`_may_open`), so a copy that reaches its first open
-after another's check stopped opens nothing (`deferred`). A cancel is checked
+after another's check stopped opens nothing (`deferred`). The lock is never held across an
+open, which can stall on a mount that stopped answering, so one open already in
+flight when the stop lands may complete: the stop (and a stop generation that
+moves with every stop) is checked again the moment it returns (`_opened`), and
+the file is closed without a byte read. A cancel is checked
 again once the check-and-place lock is held and right before placing, so a copy
 cancelled while it waited for the lock places nothing even when no tool checks
 its file. Before it stages anything, a copy takes the shared output locks

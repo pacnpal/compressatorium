@@ -173,8 +173,11 @@ class StagedOutput:
         target = as_name or name
         with self._mutex:
             self._require_open()
+            # A user's file (a RomM swap parks its Source): moved with no
+            # delete race where there is no no-replace rename (#431).
             place_without_clobbering(
                 name, target, src_dir_fd=self._folder_fd, dst_dir_fd=self._slot_fd,
+                identity_sensitive=True,
             )
             return os.path.join(self.path, target)
 
@@ -188,6 +191,7 @@ class StagedOutput:
             self._require_open()
             place_without_clobbering(
                 name, target, src_dir_fd=self._slot_fd, dst_dir_fd=self._folder_fd,
+                identity_sensitive=True,
             )
             return os.path.join(self.folder, target)
 
