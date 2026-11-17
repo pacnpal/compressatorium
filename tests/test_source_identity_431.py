@@ -481,3 +481,37 @@ async def test_deleting_a_finished_job_whose_binding_is_still_held_answers(
     assert archived is not None and archived._bound is None
     go_on.set()
     await asyncio.wait_for(run, 5)
+
+
+@pytest.mark.asyncio
+async def test_a_bound_source_is_removed_with_every_probe_slot_taken(
+    env, monkeypatch,
+) -> None:
+    """CodeRabbit 4606887319, ruled: the bound folder is removed through
+    ``start_detached_eventually``, which falls back to a thread of its own,
+    so a job ending while every probe slot is taken still removes it."""
+    import asyncio
+    import threading
+
+    from services import subprocess_runner
+    from services.job_manager import job_manager
+    from utils import path_utils
+
+    inbox = env["tmp"] / "Downloads"
+    game = _gamecube(inbox / "gc" / "Game.iso")
+    identity = path_utils.source_identity(game, str(inbox))
+    into = env["tmp"] / "temp" / "bind_full"
+    into.mkdir(parents=True)
+    job = await _queue(env, game, inbox)
+    job._bound = path_utils.bind_source(game, identity, str(into))
+    monkeypatch.setattr(subprocess_runner, "_probe_slots", threading.Semaphore(0))
+
+    await job_manager._cleanup_temp_dir(job)
+    for _ in range(100):
+        if not into.exists():
+            break
+        await asyncio.sleep(0.02)
+
+    assert not into.exists()
+    assert job._bound is None
+    assert Path(game).exists()

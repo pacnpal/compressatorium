@@ -802,8 +802,17 @@ reason but `ENOENT` (CodeRabbit 4606738359): only "gone" says `dst` isn't
 published, anything else means it may be. A failure
 after step 2 raises `PlacementCommitted` (an `OSError`): the file is at `dst`
 and its old name gone, so a caller that rolls back counts it as moved (the
-Image rename and `_move_to_processed` put it back with the rest;
-`StagedOutput.take` / `restore` answer it as moved). Each unlink removes a
+Image rename and `_move_to_processed` put it back with the rest).
+`StagedOutput.take` / `restore` tell the two apart by what is left
+(`staging._move_committed`, CodeRabbit 4606887339): the old name gone is a
+move whose cleanup failed, answered as moved; the old name still the same
+inode as the new one (both names: it never moved) is not a move, so the new
+name is taken back after that inode check and the failure raised (raising too
+if it can't be), and the RomM swap fails cleanly. Swap recovery drops a parked
+name that is a second hard link of the Source the same way
+(`swap_recovery._drop_second_link`) instead of refusing it. `move_anchored`
+raises `PlacementCommitted` too when the move landed but the check of what
+landed can't stat it (CodeRabbit outside-diff note). Each unlink removes a
 second name of an inode another name still holds, so nothing is ever deleted. The identity-sensitive callers are `move_anchored` (the Image
 rename and an Inbox's originals), intake's put-back, and `StagedOutput.take` /
 `restore` (a RomM swap parking its Source, #391). The plain fallback stays for
@@ -7331,7 +7340,10 @@ RomM's root save and a folder Library's removal take (removal takes it before
 anything is cleaned up, its Rules' run state included, waiting at most
 `REGISTER_WAIT_SECONDS` and answering a retryable 409 with the Library untouched
 when it isn't free, CodeRabbit 4606147989, and holds it across its Inboxes'
-removal, the delete and the cache), so an Inbox and a Library saved
+removal, the delete and the cache; the delete's worker lets go of it once it
+has started, else the request does, decided under a lock, so a removal
+cancelled while waiting for a worker leaves no lock held, CodeRabbit
+4606887332), so an Inbox and a Library saved
 or removed at once can't interleave (Codex 4603071815); `inboxes.folder` unique is the backstop. The other way
 round, `libraries.register` and `check_romm_root` refuse a Library root that
 is, holds or sits inside an Inbox (`inbox.holding`), and every poll checks its
@@ -7433,7 +7445,9 @@ returns a `BoundSource` (`path`, `read_path`, `changed()`, `close()`) that keeps
 descriptors from bind time: the folder's and its parent's, which `close()`
 removes it through (the folder taken from its parent only while that name is
 still the same inode), and one per bound file with its size, mtime and ctime
-then. A hard link shares its inode with the Inbox's file, so a resumed download
+then, taken only once every name is bound (linking a second name of one
+inode, two track names hard-linked together, moves its ctime; CodeRabbit
+4606887346). A hard link shares its inode with the Inbox's file, so a resumed download
 writing it in place would reach the converter: before any output is published
 (both placement points in `_process_job`), `_require_bound_unchanged` `fstat`s
 every bound file through its descriptor, and one that changed raises
@@ -7450,7 +7464,10 @@ the Inbox name. The bound folder is the job's trusted root (`_trusted_roots`,
 the same `within` an archive member's extraction dir gets): the companion check,
 the post-conversion checks and the Round-trip take its sheet's tracks there,
 outside every Volume, and still refuse one that leaves it (Codex 4606794168).
-`_cleanup_temp_dir` removes the folder on every ending. The
+`_cleanup_temp_dir` removes the folder on every ending, through
+`start_detached_eventually` (a thread of its own when every probe slot is
+taken, retried when no thread can start), so it is never skipped (CodeRabbit
+4606887319). The
 move to `processed/` still acts on the Inbox names, with its own inode check. So the job is a conversion in every sense the
 queue has: it takes a `max_concurrent` slot, gets its Ledger row and its
 Cancel. A Rule that is disabled, or whose mode doesn't take the file (it is

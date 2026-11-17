@@ -1996,7 +1996,7 @@ class JobManager:
             if late is not None:
                 # Answered, but the answer never reached here: removed on a
                 # thread of its own (it touches the disk).
-                threading.Thread(target=late.close, daemon=True).start()
+                start_detached_eventually(late.close)
             if isinstance(exc, ReadCancelled):
                 raise ConversionCancelled("Conversion cancelled") from exc
             if isinstance(exc, (OSError, RuntimeError, asyncio.TimeoutError)):
@@ -2856,12 +2856,15 @@ class JobManager:
     async def _cleanup_temp_dir(self, job: ConversionJob):
         if job._bound is not None:
             bound, job._bound = job._bound, None
-            try:
-                await asyncio.wait_for(
-                    run_detached(bound.close), _CANONICAL_PROBE_SECONDS,
-                )
-            except (asyncio.TimeoutError, OSError):
-                logger.warning("Could not remove the bound Source folder %s", bound)
+            # Cleanup that must happen: started now whatever the probe slots
+            # say (a thread of its own when they are all taken, retried when
+            # no thread can start), never skipped (CodeRabbit 4606887319).
+            closing = start_detached_eventually(bound.close)
+            if closing is not None:
+                try:
+                    await asyncio.wait_for(asyncio.shield(closing), _CANONICAL_PROBE_SECONDS)
+                except (asyncio.TimeoutError, OSError):
+                    logger.warning("Removing the bound Source folder %s is slow", bound.path)
         if job.temp_dir:
             temp_dir = job.temp_dir
             try:

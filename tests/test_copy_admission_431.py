@@ -98,6 +98,9 @@ async def test_a_copy_behind_queued_conversions_never_deadlocks(env, one_slot) -
 
         copy = asyncio.ensure_future(_copy(job_manager, held))
         await _all_done(job_manager, jobs, copy)
+        # Every run to its very end (its slot given back) before reading it
+        # (CodeRabbit 4606887354).
+        await job_manager.drain()
     finally:
         dispatcher.cancel()
 
@@ -120,6 +123,7 @@ async def test_a_waiting_copy_gets_the_slot_as_a_conversion_ends_with_more_queue
         more = await _conversions(env, ["B", "C"])
 
         await _all_done(job_manager, [*first, *more], copy)
+        await job_manager.drain()  # every run ended before the slot is read
     finally:
         dispatcher.cancel()
 

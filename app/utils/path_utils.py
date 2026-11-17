@@ -1419,10 +1419,7 @@ def file_snapshot(st: os.stat_result) -> dict[str, int]:
 
 def stat_at(name: str, folder: int) -> os.stat_result | None:
     """*name* in the open folder *folder*, not followed; None when it isn't there."""
-    try:
-        return os.stat(name, dir_fd=folder, follow_symlinks=False)
-    except FileNotFoundError:
-        return None
+    return _stat_unless_gone(name, folder)
 
 
 class AnchoredFolders:
@@ -1485,7 +1482,15 @@ def move_anchored(
     place_without_clobbering(
         name, target, src_dir_fd=src, dst_dir_fd=dst, identity_sensitive=True,
     )
-    landed = stat_at(target, dst)
+    try:
+        landed = stat_at(target, dst)
+    except OSError as exc:
+        # It moved; only what landed can't be checked. Never a plain error a
+        # caller would take for nothing moved (CodeRabbit outside-diff note).
+        raise PlacementCommitted(
+            exc.errno or errno.EIO,
+            f"{name} was moved to {target}, but what landed couldn't be checked ({exc})",
+        ) from exc
     if landed is not None and file_snapshot(landed) == expected:
         return
     try:
@@ -1735,9 +1740,16 @@ def bind_source(path: str, identity: dict, into: str, progress=None) -> BoundSou
         bound = BoundSource(into, os.path.join(into, name), parent_fd, private, bound_fd)
         try:
             files = {name: identity["snapshot"], **identity.get("members", {})}
+            linked = {
+                each: _bind_one(each, folder_fd, bound_fd, expected, progress)
+                for each, expected in files.items()
+            }
+            # Baselines only once every name is bound: linking a second name
+            # of one inode (two track names hard-linked together) moves its
+            # ctime (CodeRabbit 4606887346). Each is still checked against
+            # the identity validated.
             for each, expected in files.items():
-                linked = _bind_one(each, folder_fd, bound_fd, expected, progress)
-                bound._hold(each, expected if linked else None)
+                bound._hold(each, expected if linked[each] else None)
             if progress is not None:
                 progress()  # a caller that gave up makes this raise: cleaned below
         except BaseException:

@@ -45,20 +45,26 @@ def _env(tmp_path: Path, monkeypatch):
     return {"volume": volume, "work": work, "calls": calls}
 
 
-async def _convert_bound(volume: Path, files: dict[str, bytes], sheet: str):
+async def _convert_bound(
+    volume: Path, files: dict[str, bytes], sheet: str, members: list[str] | None = None,
+):
+    """Write *files* into an Inbox's ``ps1`` folder (beside any already
+    there), queue *sheet* bound with its *members* (by default every other
+    file written), and run it."""
     from services.job_manager import job_manager
     from utils import path_utils
 
     inbox = volume / "Downloads"
     folder = inbox / "ps1"
-    folder.mkdir(parents=True)
+    folder.mkdir(parents=True, exist_ok=True)
     for name, data in files.items():
         (folder / name).write_bytes(data)
     game = str(folder / sheet)
     identity = path_utils.source_identity(game, str(inbox))
+    names = members if members is not None else [n for n in files if n != sheet]
     identity["members"] = {
         name: path_utils.source_identity(str(folder / name), str(inbox))["snapshot"]
-        for name in files if name != sheet
+        for name in names
     }
     out = volume / "ROMs"
     out.mkdir()
@@ -94,3 +100,25 @@ async def test_a_bound_cue_naming_a_file_outside_its_folder_is_refused(
 
     assert job.status == JobStatus.FAILED
     assert env["calls"] == []
+
+
+@pytest.mark.asyncio
+async def test_two_track_names_linked_to_one_file_convert_cleanly(env) -> None:
+    """CodeRabbit 4606887346, ruled: binding the second of two names of one
+    inode changes its ctime; the baselines are taken once every name is
+    bound, so the Source isn't taken for changed and the job converts."""
+    volume = env["volume"]
+    folder = volume / "Downloads" / "ps1"
+    folder.mkdir(parents=True)
+    (folder / "Track1.bin").write_bytes(b"\0" * 4096)
+    os.link(folder / "Track1.bin", folder / "Track2.bin")
+
+    job = await _convert_bound(volume, {
+        "Game.cue": (
+            b'FILE "Track1.bin" BINARY\n  TRACK 01 MODE1/2352\n'
+            b'FILE "Track2.bin" BINARY\n  TRACK 02 AUDIO\n'
+        ),
+    }, "Game.cue", members=["Track1.bin", "Track2.bin"])
+
+    assert job.status == JobStatus.COMPLETED, job.error_message
+    assert env["calls"][0]["files"] == ["Game.cue", "Track1.bin", "Track2.bin"]

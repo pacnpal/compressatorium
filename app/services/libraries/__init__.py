@@ -699,13 +699,21 @@ async def _remove(library: FolderLibrary, library_id: str, record_id: int) -> No
     # cleaned up, and bounded (CodeRabbit 4606147989): a registration that
     # won't end answers a retryable 409 with the Library untouched.
     await _claim_registration()
-    handed_off = False
+    # Who lets go of the lock: the delete's worker once it has started, else
+    # this request. Decided under `guard`, so a worker that starts as the
+    # request gives up never runs without it (CodeRabbit 4606887332).
+    guard = threading.Lock()
+    run = {"started": False, "abandoned": False}
     try:
         await rules_sweep.forget_library(library)
 
         def _delete() -> None:
             from services import inbox, library_records, platform_mappings
 
+            with guard:
+                if run["abandoned"]:
+                    return  # the request gave up and let go of the lock
+                run["started"] = True
             try:
                 inbox.forget_library(library_id)
                 platform_mappings.forget_library(library_id)
@@ -721,12 +729,12 @@ async def _remove(library: FolderLibrary, library_id: str, record_id: int) -> No
             finally:
                 _register_lock.release()
 
-        # The worker always runs `_delete` once handed it, and lets go of the
-        # lock when it ends, however this request ends.
-        handed_off = True
         await run_in_threadpool(_delete)
     finally:
-        if not handed_off:
+        with guard:
+            mine = not run["started"]
+            run["abandoned"] = True
+        if mine:
             _register_lock.release()
 
 

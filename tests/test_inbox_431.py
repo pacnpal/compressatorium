@@ -2517,3 +2517,124 @@ async def test_a_destination_already_on_disk_stays_taken(vol, db, queue):
     [finding] = _inbox_findings()
     assert "already in the Library" in finding["reason"]
     assert Path(output).read_bytes() == b"the Library's own"
+
+
+# ---- round twelve: CodeRabbit on 93bda823 --------------------------------
+
+
+def test_a_move_whose_landing_cant_be_checked_says_it_is_committed(tmp_path, monkeypatch):
+    """CodeRabbit outside-diff note (path_utils move_anchored): the move
+    landed, then the check of what landed fails. The file is at its new name
+    and its old name gone, so it is PlacementCommitted, the failure chained,
+    never a plain error a caller would take for nothing moved."""
+    from utils import path_utils
+
+    a, b = _two_folders(tmp_path)
+    real_stat_at = path_utils.stat_at
+    calls = []
+
+    def fails_after_the_move(name, folder):
+        calls.append(name)
+        if len(calls) == 2:
+            raise OSError(errno.EIO, "Input/output error (stat)")
+        return real_stat_at(name, folder)
+
+    src_fd, dst_fd = os.open(a, os.O_RDONLY), os.open(b, os.O_RDONLY)
+    try:
+        expected = path_utils.file_snapshot(real_stat_at("Game.iso", src_fd))
+        monkeypatch.setattr(path_utils, "stat_at", fails_after_the_move)
+        with pytest.raises(path_utils.PlacementCommitted) as committed:
+            path_utils.move_anchored("Game.iso", src_fd, dst_fd, expected)
+    finally:
+        os.close(src_fd)
+        os.close(dst_fd)
+
+    assert "stat" in str(committed.value.__cause__)
+    assert (b / "Game.iso").read_bytes() == b"original"
+    assert not (a / "Game.iso").exists()
+
+
+@pytest.mark.asyncio
+async def test_a_removal_cancelled_before_its_worker_starts_lets_go_of_the_lock(
+    vol, db, monkeypatch,
+):
+    """CodeRabbit 4606887332, ruled: the registration lock is let go of by
+    the delete's worker once it has started, else by the request: a removal
+    cancelled while waiting for a worker leaves no lock behind."""
+    import asyncio
+
+    from services import libraries
+
+    library = _library(vol)
+    waiting = asyncio.Event()
+
+    async def no_worker_free(func, *args, **kwargs):
+        waiting.set()
+        await asyncio.sleep(30)  # waiting for a threadpool worker
+
+    monkeypatch.setattr(libraries, "run_in_threadpool", no_worker_free)
+    removal = asyncio.ensure_future(libraries.remove(library.id))
+    await asyncio.wait_for(waiting.wait(), 5)
+    removal.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await removal
+
+    assert libraries._register_lock.acquire(blocking=False)  # not left held
+    libraries._register_lock.release()
+    (vol / "More").mkdir()
+    assert libraries.register(str(vol / "More")) is not None
+
+
+def test_a_take_that_left_both_names_is_put_back_and_not_moved(vol, monkeypatch):
+    """CodeRabbit 4606887339, ruled: a PlacementCommitted that left both
+    names (the Source never moved; the slot holds a second link to it) isn't
+    a move. The second link is taken back once checked to be the same file,
+    and take says it failed, so the swap fails cleanly."""
+    from services import staging
+    from utils import path_utils
+
+    folder = vol / "ps2"
+    folder.mkdir()
+    source = folder / "Game.chd"
+    source.write_bytes(b"the Source")
+    slot = staging.open_slot(str(folder), parking=True)
+
+    def linked_then_failed(name, target, *, src_dir_fd, dst_dir_fd, **_k):
+        os.link(name, target, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
+        raise path_utils.PlacementCommitted(errno.EIO, "dst couldn't be taken back")
+
+    monkeypatch.setattr(staging, "place_without_clobbering", linked_then_failed)
+    try:
+        with pytest.raises(OSError) as failed:
+            slot.take("Game.chd", "Game.iso")
+        assert not isinstance(failed.value, path_utils.PlacementCommitted)
+        assert slot.contents() == []
+    finally:
+        slot.close()
+
+    assert source.read_bytes() == b"the Source"
+
+
+def test_a_take_that_moved_but_couldnt_clean_up_is_a_move(vol, monkeypatch):
+    """The Source really moved and only the quarantine's cleanup failed: take
+    answers with the parked path, as before."""
+    from services import staging
+    from utils import path_utils
+
+    folder = vol / "ps2"
+    folder.mkdir()
+    (folder / "Game.chd").write_bytes(b"the Source")
+    slot = staging.open_slot(str(folder), parking=True)
+
+    def moved_then_failed(name, target, *, src_dir_fd, dst_dir_fd, **_k):
+        os.rename(name, target, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
+        raise path_utils.PlacementCommitted(errno.EIO, "cleanup failed")
+
+    monkeypatch.setattr(staging, "place_without_clobbering", moved_then_failed)
+    try:
+        parked = slot.take("Game.chd", "Game.iso")
+        assert Path(parked).read_bytes() == b"the Source"
+        assert slot.contents() == ["Game.iso"]
+    finally:
+        slot.keep()
+    assert not (folder / "Game.chd").exists()
