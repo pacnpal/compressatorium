@@ -291,7 +291,7 @@ async def test_the_library_api_lists_a_folder_to_be_created(vol, db):
     listed = await library_routes.library_placements(created["id"])
 
     assert listed["placements"] == [{
-        "platform": "ps2", "name": "PlayStation 2",
+        "id": "ps2", "platform": "ps2", "name": "PlayStation 2",
         "folder": "roms/ps2", "exists": False, "error": None,
     }]
 
@@ -451,11 +451,177 @@ async def test_the_library_api_lists_romms_placements(romm, db):
 
     assert listed["layout"] is None
     assert listed["placements"] == [
-        {"platform": "ngc", "name": "GameCube", "folder": "roms/gc",
+        {"id": "4", "platform": "ngc", "name": "GameCube", "folder": "roms/gc",
          "exists": False, "error": None},
-        {"platform": "ps2", "name": "PlayStation 2", "folder": "roms/ps2",
+        {"id": "3", "platform": "ps2", "name": "PlayStation 2", "folder": "roms/ps2",
          "exists": True, "error": None},
     ]
+
+
+# ---- review round (Codex on PR #437) -------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_the_listing_reads_romms_catalog_once(romm, db, monkeypatch):
+    """Codex PRRT_kwDOQ9nULM64es7O: one catalog per listing, not one per
+    Platform on top of the listing's own."""
+    from routes import libraries as library_routes
+    from services.romm import client as romm_client_module
+
+    root, catalog = romm
+    (root / "roms").mkdir()
+    catalog.extend(
+        {"id": n, "slug": slug, "fs_slug": slug, "display_name": slug}
+        for n, slug in enumerate(("ps2", "psx", "ngc", "dc", "saturn"), start=1)
+    )
+    calls = []
+    monkeypatch.setattr(
+        romm_client_module.romm_client, "platforms",
+        lambda: calls.append(1) or list(catalog),
+    )
+
+    listed = await library_routes.library_placements("romm")
+
+    assert len(listed["placements"]) == 5
+    assert all(row["error"] is None for row in listed["placements"])
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_two_romm_platforms_for_one_slug_are_two_rows_with_their_own_ids(romm, db):
+    """Codex PRRT_kwDOQ9nULM64es7J: both rows stay, each saying why, and each
+    has its own key (the RomM platform id), so the view can list both."""
+    from routes import libraries as library_routes
+
+    root, catalog = romm
+    (root / "roms").mkdir()
+    catalog.extend([
+        {"id": 3, "slug": "ps2", "fs_slug": "ps2", "display_name": "PlayStation 2"},
+        {"id": 9, "slug": "playstation2", "fs_slug": "PS2 Games", "display_name": "PS2 (old)"},
+    ])
+
+    rows = (await library_routes.library_placements("romm"))["placements"]
+
+    assert sorted(row["id"] for row in rows) == ["3", "9"]
+    assert {row["platform"] for row in rows} == {"ps2"}
+    assert all("more than one" in row["error"] for row in rows)
+
+
+def test_an_existing_image_keeps_its_platform_folder_after_a_layout_change(vol, db):
+    """Codex PRRT_kwDOQ9nULM64es7B: the layout decides where new Images go,
+    not which folder holds the ones already there. Switched from ES-DE to
+    RomM style (no ``roms`` folder yet), an Image in ``<root>/ps2`` is still
+    in the ps2 Platform folder."""
+    from services import libraries
+
+    library = _library(vol, "esde")
+    image = vol / "ROMs" / "ps2" / "Game.iso"
+    image.parent.mkdir()
+    image.write_bytes(b"x")
+    libraries.update(library.id, layout="romm")
+    library = libraries.get(library.id)
+
+    assert library.platform_folder(str(image)) == str(vol / "ROMs" / "ps2")
+
+
+def test_a_romm_style_image_in_an_es_de_style_library_has_its_platform_folder(vol, db):
+    library = _library(vol, "esde")
+    image = vol / "ROMs" / "roms" / "ps2" / "Game.iso"
+    image.parent.mkdir(parents=True)
+    image.write_bytes(b"x")
+
+    assert library.platform_folder(str(image)) == str(vol / "ROMs" / "roms" / "ps2")
+
+
+@pytest.mark.asyncio
+async def test_the_gamelist_follows_an_image_converted_after_a_layout_change(vol, db):
+    """The same, through the gamelist Referrer: the Source isn't kept."""
+    from services import libraries, referrers
+
+    library = _library(vol, "esde")
+    libraries.update(
+        library.id, es_frontend=True,
+        gamelists_folder=libraries.check_gamelists_folder(str(_mkdir(vol / "gamelists"))),
+    )
+    source = vol / "ROMs" / "ps2" / "Game.iso"
+    source.parent.mkdir()
+    source.write_bytes(b"disc")
+    output = source.with_suffix(".chd")
+    output.write_bytes(b"output")
+    gamelist = _mkdir(vol / "gamelists" / "ps2") / "gamelist.xml"
+    gamelist.write_bytes(b"<gameList><game><path>./Game.iso</path></game></gameList>")
+    libraries.update(library.id, layout="romm")
+
+    outcome = await referrers.update_before_source_removal(
+        str(source), {str(source): str(output)}, library=libraries.get(library.id),
+    )
+
+    assert outcome.ok, outcome.reason
+    assert b"./Game.chd" in gamelist.read_bytes()
+
+
+def _mkdir(path: Path) -> Path:
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+_LATEST = Path(__file__).resolve().parents[1] / "src/lib/util/latestOnly.js"
+
+
+def test_an_older_placements_answer_never_overwrites_a_newer_one(tmp_path):
+    """Codex PRRT_kwDOQ9nULM64es7U: two loads for one Library (a layout
+    change while the first is out); the first answers last and is dropped,
+    for its data and for its error alike."""
+    import json
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node not available")
+    assert _LATEST.is_file(), "src/lib/util/latestOnly.js is missing"
+    script = tmp_path / "latest.mjs"
+    script.write_text(
+        f"import {{ LatestOnly }} from {json.dumps(_LATEST.as_uri())};\n"
+        "const deferred = () => { let ok, no; const p = new Promise((a, b) => { ok = a; no = b; });"
+        " return { p, ok, no }; };\n"
+        "const latest = new LatestOnly();\n"
+        "const older = deferred(), newer = deferred();\n"
+        "const first = latest.run(() => older.p);\n"
+        "const second = latest.run(() => newer.p);\n"
+        "newer.ok('romm');\n"
+        "const b = await second;\n"
+        "older.ok('esde');\n"
+        "const a = await first;\n"
+        "const failing = deferred(), winning = deferred();\n"
+        "const third = latest.run(() => failing.p);\n"
+        "const fourth = latest.run(() => winning.p);\n"
+        "winning.ok('flat');\n"
+        "failing.no(new Error('late'));\n"
+        "const c = await third, d = await fourth;\n"
+        "process.stdout.write(JSON.stringify({ a, b, c: { current: c.current },"
+        " d: { current: d.current, value: d.value } }));\n",
+        encoding="utf-8",
+    )
+    proc = subprocess.run(
+        [node, str(script)], capture_output=True, text=True, timeout=30, check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads(proc.stdout) == {
+        "a": {"current": False, "value": "esde"},
+        "b": {"current": True, "value": "romm"},
+        "c": {"current": False},
+        "d": {"current": True, "value": "flat"},
+    }
+
+
+def test_the_panel_keys_rows_by_id_and_drops_superseded_answers():
+    panel = (
+        Path(__file__).resolve().parents[1] / "src/lib/components/views/LibraryPlacement.svelte"
+    ).read_text()
+    assert "{#each placements as row (row.id)}" in panel
+    assert "new LatestOnly()" in panel
+    assert "if (!result.current) return;" in panel
 
 
 # ---- the Libraries view -------------------------------------------------------------

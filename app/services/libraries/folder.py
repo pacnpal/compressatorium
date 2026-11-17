@@ -63,7 +63,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from typing import Any
 
 from logging_setup import get_logger
@@ -313,12 +313,26 @@ class FolderLibrary(LibraryDefaults):
         return os.path.join(self.root, "roms") if self.layout == ROMM else self.root
 
     def platform_folder(self, path: str) -> str | None:
-        """The Platform folder holding *path* (#387), under ``roms`` in the
-        RomM style layout (#430), directly under the root otherwise."""
-        return folder_holding(self._platforms_parent(), path)
+        """The Platform folder holding *path* (#387): the folder directly under
+        the root that holds it, or, when that is the root's ``roms`` folder,
+        the one directly under ``roms`` (RomM style, #430).
 
-    def placement(self, platform: str) -> Placement:
+        Whatever the layout: the layout decides where new Images go, and
+        changing it moves nothing, so an Image already in ``<root>/ps2`` is
+        still in its Platform folder after a switch to RomM style (Codex
+        PRRT_kwDOQ9nULM64es7B). None for an Image directly in the root or in
+        ``roms``.
+        """
+        holding = folder_holding(self.root, path)
+        if holding is not None and os.path.basename(holding) == "roms":
+            return folder_holding(holding, path)
+        return holding
+
+    def placement(
+        self, platform: str, *, known: Sequence[Platform] | None = None,
+    ) -> Placement:
         """Where *platform*'s Images go, by this Library's layout (#430).
+        *known* is unused: the folders themselves say where a Platform is.
 
         Flat: the root. Otherwise a folder directly under the root (ES-DE
         style) or under ``roms`` (RomM style) that already names the Platform,

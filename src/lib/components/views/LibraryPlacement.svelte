@@ -12,6 +12,7 @@
   import { toast } from 'svelte-sonner';
   import { api } from '$lib/api/endpoints.js';
   import { libraries } from '$lib/stores/libraries.svelte.js';
+  import { LatestOnly } from '$lib/util/latestOnly.js';
   import Select from '$lib/components/ui/Select.svelte';
   import Spinner from '$lib/components/ui/Spinner.svelte';
 
@@ -36,23 +37,28 @@
   let error = $state(null);
   let saving = $state(false);
 
+  // Only the latest load counts: a layout change (or another Library) while
+  // one is out starts another, and the older answer, data or error, is
+  // dropped however late it arrives (Codex PRRT_kwDOQ9nULM64es7U).
+  const latest = new LatestOnly();
+
   async function load(id) {
     loading = true;
     error = null;
-    try {
-      const data = await api.getLibraryPlacements(id);
-      if (library?.id !== id) return;
-      placements = Array.isArray(data?.placements) ? data.placements : [];
-    } catch (e) {
-      if (library?.id !== id) return;
+    const result = await latest.run(() => api.getLibraryPlacements(id));
+    if (!result.current) return;
+    loading = false;
+    if (result.error) {
+      const e = result.error;
       // Another listing of the folder is still running: a wait, not an
       // error. The next change of `platforms` loads again.
       if (e?.status === 409 && e?.message === LISTING_IN_PROGRESS) return;
       error = e?.message ?? 'Could not read where Images go';
       placements = [];
-    } finally {
-      if (library?.id === id) loading = false;
+      return;
     }
+    const data = result.value;
+    placements = Array.isArray(data?.placements) ? data.placements : [];
   }
 
   // Again whenever the Library, its layout or its listed Platforms change,
@@ -121,7 +127,9 @@
     <p class="muted">No Platforms yet.</p>
   {:else}
     <ul class="rows">
-      {#each placements as row (row.platform)}
+      <!-- Keyed by the Library's own Platform id: two RomM platforms can
+           share a slug, and both rows show why (Codex PRRT_kwDOQ9nULM64es7J). -->
+      {#each placements as row (row.id)}
         <li>
           <span class="name">{row.name}</span>
           {#if row.error}

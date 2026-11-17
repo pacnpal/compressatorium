@@ -198,16 +198,24 @@ async def library_platforms(library_id: str) -> dict:
 
 
 def _placements(library: Library) -> list[dict]:
-    """Where each of *library*'s Platforms' Images go (#430). Blocking."""
+    """Where each of *library*'s Platforms' Images go (#430). Blocking.
+
+    One listing of the Platforms, handed to every row's ``placement`` (Codex
+    PRRT_kwDOQ9nULM64es7O: RomM's catalog was fetched again per row). Each
+    row carries the Library's own Platform id: two RomM platforms can share a
+    slug, and both rows stay, each saying why it can't be placed (Codex
+    PRRT_kwDOQ9nULM64es7J).
+    """
+    listed = library.platforms()
     out = []
-    for platform in library.platforms():
+    for platform in listed:
         slug = canonical_slug(platform.slug or platform.id)
         row = {
-            "platform": slug, "name": platform.name,
+            "id": platform.id, "platform": slug, "name": platform.name,
             "folder": None, "exists": None, "error": None,
         }
         try:
-            placed = library.placement(slug)
+            placed = library.placement(slug, known=listed)
         except PlacementUnknown as exc:
             row["error"] = str(exc)
         else:
@@ -215,7 +223,7 @@ def _placements(library: Library) -> list[dict]:
             row["folder"] = "" if rel == "." else rel.replace(os.sep, "/")
             row["exists"] = placed.exists
         out.append(row)
-    return sorted(out, key=lambda r: r["platform"] or "")
+    return sorted(out, key=lambda r: (r["platform"] or "", r["id"]))
 
 
 @router.get("/libraries/{library_id}/placements")

@@ -12,6 +12,7 @@ batch is queued, and the re-pin backlog reported when the sweep ends.
 from __future__ import annotations
 
 import os
+from collections.abc import Sequence
 from types import MappingProxyType
 from typing import Any
 
@@ -130,6 +131,8 @@ class RommLibrary(LibraryDefaults):
                 id=str(p["id"]),
                 slug=p.get("slug"),
                 name=p.get("display_name") or p.get("name") or str(p["id"]),
+                # Its folder on disk, which the operator may have renamed (#430).
+                folder=p.get("fs_slug"),
             )
             for p in catalog if isinstance(p, dict) and p.get("id") is not None
         ]
@@ -228,7 +231,9 @@ class RommLibrary(LibraryDefaults):
         roms = os.path.join(root, "roms")
         return folder_holding(roms if os.path.isdir(roms) else root, path)
 
-    def placement(self, platform: str) -> Placement:
+    def placement(
+        self, platform: str, *, known: Sequence[Platform] | None = None,
+    ) -> Placement:
         """Where *platform*'s Images go in RomM's own folder structure (#430).
 
         The folder is named by the RomM platform's ``fs_slug`` (its folder on
@@ -247,7 +252,8 @@ class RommLibrary(LibraryDefaults):
         Anything else can't be told (RomM 5.3 declares its structure in a
         setting this app doesn't read), so it refuses, as it does for two RomM
         platforms with the slug or a folder name with a path in it. Blocking:
-        asks RomM for its platforms and stats a few folders.
+        asks RomM for its platforms (unless *known* already holds them) and
+        stats a few folders.
         """
         root = self.root
         if not root:
@@ -255,18 +261,12 @@ class RommLibrary(LibraryDefaults):
         slug = canonical_slug(platform)
         if slug is None:
             raise PlacementUnknown(f"{platform!r} is not a Platform")
-        try:
-            catalog = romm_client.platforms()
-        except RommError as exc:
-            raise LibraryUnreadable(str(exc)) from exc
-        records = [
-            p for p in catalog
-            if isinstance(p, dict) and canonical_slug(p.get("slug")) == slug
-        ]
+        listed = self.platforms() if known is None else known
+        records = [p for p in listed if canonical_slug(p.slug) == slug]
         if len(records) > 1:
-            ids = ", ".join(str(p.get("id")) for p in records)
+            ids = ", ".join(p.id for p in records)
             raise PlacementUnknown(f"RomM has more than one {slug} platform ({ids})")
-        name = (records[0].get("fs_slug") if records else None) or slug
+        name = (records[0].folder if records else None) or slug
         if name in (".", "..") or "/" in name or os.sep in name:
             raise PlacementUnknown(f"RomM's folder name {name!r} for {slug} isn't one folder")
         own = os.path.join(root, name)

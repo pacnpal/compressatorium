@@ -17,7 +17,7 @@ network or a mount. The engine calls them off the event loop.
 from __future__ import annotations
 
 import os
-from collections.abc import Callable, Hashable, Iterable, Mapping
+from collections.abc import Callable, Hashable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -150,11 +150,14 @@ class Platform:
     ``id`` is the Library's own id for it as a string (RomM's platform id,
     or a folder Library's folder slug). ``slug`` is the console slug the tool
     registry knows (``ngc``, ``ps2``), used to check a mode fits the Platform.
+    ``folder`` is the Library's own name for its folder on disk, where that
+    can differ from the slug (RomM's ``fs_slug``); None otherwise (#430).
     """
 
     id: str
     slug: str | None
     name: str
+    folder: str | None = None
 
 
 class Image:
@@ -363,9 +366,17 @@ class Library(Protocol):
         Blocking (lists a folder, resolves paths): off the loop.
         """
 
-    def placement(self, platform: str) -> Placement:
+    def placement(
+        self, platform: str, *, known: Sequence[Platform] | None = None,
+    ) -> Placement:
         """Where Images of *platform* (a Platform slug, as detection names it)
         go in this Library (#430): the inverse of :meth:`platform_folder`.
+
+        *known* is this Library's :meth:`platforms`, when the caller already
+        listed them (placing every Platform of a listing): a Library that
+        needs its own Platform records reads them from there instead of
+        listing again (Codex PRRT_kwDOQ9nULM64es7O). Omitted, it lists them
+        itself if it needs them.
 
         A folder that isn't there yet comes back with ``exists`` False;
         nothing here creates it. Detecting an Image placed there gives
