@@ -395,9 +395,11 @@
         {#if repinState === 'on'}
           <span>
             RomM cannot hash-match <strong>{activeMode?.outputExt}</strong> files.
-            Their metadata is saved before converting and restored by
-            <em>Re-match in RomM</em> once RomM rescans. CHD and ZIP/7z keep their
-            match automatically.
+            Their metadata is saved before converting. Where RomM re-identifies
+            the format on its own, the saved metadata is confirmed against
+            RomM's record and only re-applied if RomM didn't match it; otherwise
+            it is restored by <em>Re-match in RomM</em> once RomM rescans. CHD
+            and ZIP/7z keep their match automatically.
           </span>
         {:else if repinState === 'unknown'}
           <span>

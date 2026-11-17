@@ -877,8 +877,10 @@ With **Keep the ROM id when converting** off, some conversions shouldn't
 need the metadata re-pin: RomM finds the game again on its own. RomM 5.4.1,
 with title-id extraction on (its default), moves a missing ROM onto its
 converted file by the game's title id at its next library scan, keeping the
-ROM id and everything on it, for **PS2 CHD, PSP CHD, PSP CSO and GameCube
-RVZ**. It doesn't for PS2 CSO or ZSO, PSP ZSO, or GameCube WIA or GCZ.
+ROM id and everything on it, for **PSP CSO and GameCube RVZ**. It doesn't
+for PS2 CSO or ZSO, PSP ZSO, or GameCube WIA or GCZ. CHD, ZIP and 7z are not
+on the list because they never need it: RomM keeps its match for them, so no
+re-pin is recorded and the job and the Ledger say nothing about one.
 
 For a conversion on that list whose source is deleted, the job and the Ledger
 say the re-pin is expected to be unnecessary and will be confirmed ("RomM
