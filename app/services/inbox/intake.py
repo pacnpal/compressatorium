@@ -51,6 +51,7 @@ from __future__ import annotations
 import asyncio
 import errno
 import os
+import stat
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -78,6 +79,7 @@ from services.tools import registry
 from utils.junk import is_junk_entry
 from utils.path_utils import (
     match_extension,
+    open_dir_beneath,
     place_without_clobbering,
     volume_containment,
 )
@@ -91,6 +93,9 @@ _STEP_SECONDS = 60
 _LIST_STALL_SECONDS = 120
 _CHUNK = 4 * 1024 * 1024
 _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+_DIR_FLAGS = (
+    os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | _NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+)
 
 
 @dataclass
@@ -106,6 +111,10 @@ class _Flight:
     fingerprint: str
     files: list[str]
     platform: str
+    # Each file's (device, inode, size, mtime) when it was taken, read through
+    # the Inbox's own folders: what the copy reads and the move to
+    # ``processed/`` takes must still be these files.
+    identities: dict[str, tuple[int, int, int, int]] = field(default_factory=dict)
     job_id: str | None = None
     task: asyncio.Task | None = None
 
@@ -190,11 +199,13 @@ def _image_extensions() -> tuple[str, ...]:
     return extensions()
 
 
-def _list(folder: str, library: Library, progress) -> dict[str, str]:
-    """Every Image in the Inbox at *folder*: path -> fingerprint. Blocking.
+def _list(folder: str, library: Library, progress) -> tuple[dict[str, str], list[str]]:
+    """Every Image in the Inbox at *folder* (path -> fingerprint), and the
+    folders the walk couldn't list. Blocking.
 
     Skips ``processed/``, dot-entries, links and files no tool reads or
-    writes; walks no link. Raises :class:`InboxUnavailable` when the folder
+    writes (a numbered split part, ``Game.iso.0``, counts as its output's,
+    as the folder Library lists it); walks no link. Raises :class:`InboxUnavailable` when the folder
     isn't there, isn't confirmed inside a Volume, or now overlaps its
     Library (its root moved since the Inbox was saved): intake would read
     its own output.
@@ -212,6 +223,7 @@ def _list(folder: str, library: Library, progress) -> dict[str, str]:
         raise InboxUnavailable(problem)
     extensions = _image_extensions()
     files: list[str] = []
+    unlisted: list[str] = []
     stack = [folder]
     while stack:
         current = stack.pop()
@@ -219,6 +231,7 @@ def _list(folder: str, library: Library, progress) -> dict[str, str]:
         try:
             listing = os.scandir(current)
         except OSError:
+            unlisted.append(current)
             continue
         with listing:
             for entry in listing:
@@ -230,6 +243,9 @@ def _list(folder: str, library: Library, progress) -> dict[str, str]:
                     continue
                 try:
                     if entry.is_symlink():
+                        # Never taken nor walked; and not gone either: a
+                        # Finding under it is kept.
+                        unlisted.append(entry.path)
                         continue
                     if entry.is_dir(follow_symlinks=False):
                         stack.append(entry.path)
@@ -238,9 +254,13 @@ def _list(folder: str, library: Library, progress) -> dict[str, str]:
                         continue
                 except OSError:
                     continue
-                if match_extension(name, extensions) is not None:
+                if (
+                    match_extension(name, extensions) is not None
+                    or registry.split_owner(entry.path) is not None
+                ):
                     files.append(entry.path)
-    return {path: image_fingerprint(path) for path in group_images(sorted(files))}
+    images = {path: image_fingerprint(path) for path in group_images(sorted(files))}
+    return images, unlisted
 
 
 # ---- Findings ------------------------------------------------------------
@@ -327,7 +347,7 @@ async def poll(inbox: inbox_store.Inbox, *, now: float | None = None) -> dict[st
             state.error = result["error"] = "library_missing"
             return result
         try:
-            listing = await run_detached_within_stall_bound(
+            listing, unlisted = await run_detached_within_stall_bound(
                 _list, inbox.folder, library, what=f"The Inbox {inbox.folder}",
                 stall=_LIST_STALL_SECONDS, report_progress=True,
             )
@@ -339,7 +359,7 @@ async def poll(inbox: inbox_store.Inbox, *, now: float | None = None) -> dict[st
             state.error = result["error"] = f"The Inbox couldn't be listed: {exc}"
             return result
         state.error = None
-        await _forget_gone(inbox, state, listing)
+        await _forget_gone(inbox, state, listing, unlisted)
         stop = False
         for path, fingerprint in listing.items():
             if path in state.flights or state.held.get(path) == fingerprint:
@@ -369,13 +389,37 @@ async def poll(inbox: inbox_store.Inbox, *, now: float | None = None) -> dict[st
         state.polling = False
 
 
-async def _forget_gone(inbox: inbox_store.Inbox, state: _State, listing: dict) -> None:
-    """Forget files no longer in the Inbox, and clear the Findings of held ones."""
+async def _forget_gone(
+    inbox: inbox_store.Inbox, state: _State, listing: dict, unlisted: list[str],
+) -> None:
+    """Forget files no longer in the Inbox, and clear their Findings.
+
+    The stored Findings are reconciled against the listing, not only the held
+    paths in memory: after a restart those are empty, and a Finding for a
+    file removed meanwhile would otherwise stay for good. A Finding under a
+    folder the walk couldn't list is kept: not seen is not gone.
+    """
     for path in [p for p in state.seen if p not in listing]:
         state.seen.pop(path, None)
     for path in [p for p in state.held if p not in listing]:
         state.held.pop(path, None)
-        await _clear(inbox, path)
+    keep = {inbox.image_key(p) for p in (*listing, *state.flights)}
+    hidden = tuple(inbox.image_key(folder) for folder in unlisted)
+
+    def reconcile() -> None:
+        for kind in findings.INBOX_KINDS:
+            for row in findings.stored_of(inbox.library_id, kind):
+                key = row["image_key"]
+                if not key.startswith(f"{inbox.key_prefix}/") or key in keep:
+                    continue
+                if any(key == h or key.startswith(f"{h}/") for h in hidden):
+                    continue
+                findings.resolve(inbox.library_id, key, kind)
+
+    try:
+        await _step(reconcile)
+    except Exception:
+        logger.warning("inbox: could not settle the Findings of %s", inbox.folder, exc_info=True)
 
 
 # ---- taking one Image ----------------------------------------------------
@@ -416,6 +460,16 @@ async def _take(
         await _hold(inbox, state, path, fingerprint, findings.INBOX_FAILED, problem)
         return "held"
     try:
+        identities = await _step(_identities, inbox, files)
+    except asyncio.TimeoutError:
+        return "retry"
+    except OSError as exc:
+        await _hold(
+            inbox, state, path, fingerprint, findings.INBOX_FAILED,
+            f"Its files can't be read inside the Inbox without following a link: {exc}",
+        )
+        return "held"
+    try:
         plan = await _plan(library, platform, path)
     except PlacementUnknown as exc:
         await _hold(
@@ -433,8 +487,11 @@ async def _take(
             {"platform": platform},
         )
         return "held"
+    flight = _Flight(
+        fingerprint=fingerprint, files=files, platform=platform, identities=identities,
+    )
     if plan.rule is not None:
-        return await _convert(inbox, state, path, fingerprint, files, platform, plan)
+        return await _convert(inbox, state, path, flight, plan)
     try:
         taken = await _step(_taken, plan.folder, files)
     except (asyncio.TimeoutError, OSError):
@@ -445,7 +502,7 @@ async def _take(
             f"{taken} is already in the Library ({plan.folder})", {"platform": platform},
         )
         return "held"
-    return _start_copy(inbox, state, path, fingerprint, files, platform, plan.folder)
+    return _start_copy(inbox, state, path, flight, plan.folder)
 
 
 def _taken(folder: str, files: list[str]) -> str | None:
@@ -502,7 +559,7 @@ async def _plan(library: Library, platform: str, path: str) -> _Plan:
             placement.folder, None,
             f"The {platform} Rule converts with {rule['mode']}, which isn't for {platform}",
         )
-    if not sweep._accepts_source(tool, spec, path):
+    if not await _step(sweep._accepts_source, tool, spec, path):
         # Already in a form the Rule doesn't convert (the target format):
         # it goes in as it is.
         return _Plan(folder=placement.folder, rule=None)
@@ -525,13 +582,13 @@ def _destination(path: str, rule: dict, folder: str) -> tuple[str | None, str]:
 
 
 async def _convert(
-    inbox: inbox_store.Inbox, state: _State, path: str, fingerprint: str,
-    files: list[str], platform: str, plan: _Plan,
+    inbox: inbox_store.Inbox, state: _State, path: str, flight: _Flight, plan: _Plan,
 ) -> str:
     """Queue the Rule's conversion into the placement folder."""
     from services.rules import sweep
 
     rule = plan.rule
+    fingerprint, platform = flight.fingerprint, flight.platform
     try:
         destination, decision = await _step(_destination, path, rule, plan.folder)
     except (asyncio.TimeoutError, OSError):
@@ -548,7 +605,10 @@ async def _convert(
         jobs = await job_manager.create_batch_jobs(
             [path], ConversionMode(rule["mode"]),
             output_dir=plan.folder, compression=sweep._compression_arg(rule),
-            split=rule["split"], verify_after=True,
+            split=rule["split"],
+            # The Intact check wherever the mode can check its output; the
+            # registry says which (a WUD from jwud_decompress can't be).
+            verify_after=registry.mode_supports_verify(rule["mode"]),
             output_paths={path: destination},
         )
     except QueueBackpressureError:
@@ -562,9 +622,8 @@ async def _convert(
         return "held"
     job = jobs[0]
     job.platform = platform
-    state.flights[path] = _Flight(
-        fingerprint=fingerprint, files=files, platform=platform, job_id=job.id,
-    )
+    flight.job_id = job.id
+    state.flights[path] = flight
     return "queued"
 
 
@@ -603,15 +662,28 @@ async def _settle_flights(inbox: inbox_store.Inbox, state: _State) -> None:
 async def _finish(
     inbox: inbox_store.Inbox, state: _State, path: str, flight: _Flight, output: str | None,
 ) -> None:
-    """The output is in the Library: move the original to ``processed/``."""
+    """The output is in the Library: move the original to ``processed/``.
+
+    Only while it is still the Image that was taken: replaced or changed since,
+    the Library holds the old contents, so the file stays in the Inbox to
+    settle and be taken again.
+    """
     try:
-        await _step(_move_to_processed, inbox, flight.files)
+        same = await _step(image_fingerprint, path) == flight.fingerprint
+        if same:
+            await _step(_move_to_processed, inbox, flight.files, flight.identities)
+    except _SourceChanged:
+        same = False
     except (OSError, asyncio.TimeoutError) as exc:
         await _hold(
             inbox, state, path, flight.fingerprint, findings.INBOX_FAILED,
             f"It's in the Library, but couldn't be moved to processed/: {exc}",
             {"platform": flight.platform},
         )
+        return
+    if not same:
+        logger.info("inbox: %s changed after it was placed; leaving it to settle again", path)
+        state.seen.pop(path, None)
         return
     state.seen.pop(path, None)
     state.held.pop(path, None)
@@ -623,50 +695,149 @@ async def _finish(
     await _clear(inbox, path)
 
 
-def _move_to_processed(inbox: inbox_store.Inbox, files: list[str]) -> str:
-    """Move an Image's *files* into ``processed/``, keeping their path in the
-    Inbox. A name already there gets ``<name> (2)/`` and so on. All or none:
-    a move that fails puts back the ones already moved. Blocking."""
-    owner = files[0]
-    rel = os.path.relpath(os.path.dirname(owner), inbox.folder)
-    base = os.path.normpath(os.path.join(inbox.processed_folder, rel))
-    if volume_containment(base) is not True:
-        raise OSError(errno.EACCES, "processed/ isn't confirmed inside a Volume")
-    stem = os.path.splitext(os.path.basename(owner))[0]
-    names = [os.path.basename(f) for f in files]
-    target = base
-    for n in range(2, 1000):
-        if not any(os.path.lexists(os.path.join(target, name)) for name in names):
-            break
-        target = os.path.join(base, f"{stem} ({n})")
-    else:
-        raise OSError(errno.EEXIST, "No free name in processed/")
-    os.makedirs(target, exist_ok=True)
-    moved: list[tuple[str, str]] = []
+class _SourceChanged(OSError):
+    """A file isn't the one intake took (replaced, changed or gone)."""
+
+
+def _identity(st: os.stat_result) -> tuple[int, int, int, int]:
+    return st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns
+
+
+def _folder_beneath(inbox: inbox_store.Inbox, files: list[str]) -> tuple[int, list[str]]:
+    """The Image's folder in the Inbox, opened beneath the Inbox's own folder
+    with no link followed on the way (``open_dir_beneath``), and the files'
+    names in it. Every later look at the files goes through the descriptor,
+    so a folder swapped for a link afterwards can't redirect it. Raises
+    OSError; the caller closes the descriptor. Blocking."""
+    rel = os.path.relpath(os.path.dirname(files[0]), inbox.folder)
+    if rel == os.pardir or rel.startswith(os.pardir + os.sep):
+        raise OSError(errno.EACCES, f"{files[0]} isn't in the Inbox")
+    fd = open_dir_beneath(inbox.folder, "" if rel == "." else rel.replace(os.sep, "/"))
+    return fd, [os.path.basename(f) for f in files]
+
+
+def _identities(
+    inbox: inbox_store.Inbox, files: list[str],
+) -> dict[str, tuple[int, int, int, int]]:
+    """Each file's identity, read through the Inbox's own folders. Each must
+    be a regular file. Blocking."""
+    fd, names = _folder_beneath(inbox, files)
     try:
-        for f in files:
-            dst = os.path.join(target, os.path.basename(f))
-            place_without_clobbering(f, dst)
-            moved.append((f, dst))
-    except OSError:
-        # Back the way they came: each moved file from processed/ to where it was.
-        for original, moved_to in reversed(moved):
-            try:
-                place_without_clobbering(src=moved_to, dst=original)
-            except OSError:
-                logger.error("inbox: could not put %s back at %s", moved_to, original)
+        out = {}
+        for name in names:
+            st = os.stat(name, dir_fd=fd, follow_symlinks=False)
+            if not stat.S_ISREG(st.st_mode):
+                raise OSError(errno.EINVAL, f"{name} isn't a regular file")
+            out[name] = _identity(st)
+        return out
+    finally:
+        os.close(fd)
+
+
+def _check_identities(fd: int, identities: dict[str, tuple[int, int, int, int]]) -> None:
+    """Raise :class:`_SourceChanged` unless every file in the folder *fd* is
+    still the one that was taken."""
+    for name, taken in identities.items():
+        try:
+            st = os.stat(name, dir_fd=fd, follow_symlinks=False)
+        except FileNotFoundError:
+            raise _SourceChanged(errno.ENOENT, f"{name} is gone") from None
+        if not stat.S_ISREG(st.st_mode) or _identity(st) != taken:
+            raise _SourceChanged(errno.ESTALE, f"{name} changed since it was taken")
+
+
+def _dir_at(parent: int, name: str, *, make: bool) -> int:
+    """The folder *name* in *parent*, made if asked, opened with no link followed."""
+    if make:
+        try:
+            os.mkdir(name, dir_fd=parent)
+        except FileExistsError:
+            pass
+    return os.open(name, _DIR_FLAGS, dir_fd=parent)
+
+
+def _exists_at(parent: int, name: str) -> bool:
+    try:
+        os.stat(name, dir_fd=parent, follow_symlinks=False)
+    except FileNotFoundError:
+        return False
+    return True
+
+
+def _processed_folder(inbox: inbox_store.Inbox, files: list[str], names: list[str]) -> int:
+    """``processed/<the Image's folder in the Inbox>``, or a numbered
+    ``<stem> (n)`` folder in it when one of *names* is taken there, made and
+    opened beneath the Inbox with no link followed. Blocking."""
+    rel = os.path.relpath(os.path.dirname(files[0]), inbox.folder)
+    parts = [inbox_store.PROCESSED, *([] if rel == "." else rel.split(os.sep))]
+    fd = open_dir_beneath(inbox.folder)
+    try:
+        for part in parts:
+            child = _dir_at(fd, part, make=True)
+            os.close(fd)
+            fd = child
+        if not any(_exists_at(fd, name) for name in names):
+            return fd
+        stem = os.path.splitext(names[0])[0]
+        for n in range(2, 1000):
+            numbered = f"{stem} ({n})"
+            child = _dir_at(fd, numbered, make=not _exists_at(fd, numbered))
+            if any(_exists_at(child, name) for name in names):
+                os.close(child)
+                continue
+            os.close(fd)
+            return child
+        raise OSError(errno.EEXIST, "No free name in processed/")
+    except BaseException:
+        os.close(fd)
         raise
-    return target
+
+
+def _move_to_processed(
+    inbox: inbox_store.Inbox, files: list[str],
+    identities: dict[str, tuple[int, int, int, int]],
+) -> None:
+    """Move an Image's *files* into ``processed/``, keeping their folder in the
+    Inbox. Anchored, as the Image rename is: both folders are opened beneath
+    the Inbox with no link followed, each file must still be the one taken
+    (*identities*; else :class:`_SourceChanged` and nothing moves), and each
+    move is a no-replace rename between the two descriptors
+    (``place_without_clobbering`` with ``src_dir_fd``/``dst_dir_fd``). All or
+    none: a move that fails puts back the ones already moved. Blocking."""
+    if volume_containment(inbox.folder) is not True:
+        raise OSError(errno.EACCES, "The Inbox isn't confirmed inside a Volume")
+    src, names = _folder_beneath(inbox, files)
+    try:
+        _check_identities(src, identities)
+        dst = _processed_folder(inbox, files, names)
+        try:
+            moved: list[str] = []
+            try:
+                for name in names:
+                    place_without_clobbering(name, name, src_dir_fd=src, dst_dir_fd=dst)
+                    moved.append(name)
+            except OSError:
+                # Back the way they came, through the same two folders.
+                for name in reversed(moved):
+                    try:
+                        place_without_clobbering(
+                            name, name, src_dir_fd=dst, dst_dir_fd=src,
+                        )
+                    except OSError:
+                        logger.error("inbox: could not put %s back in the Inbox", name)
+                raise
+        finally:
+            os.close(dst)
+    finally:
+        os.close(src)
 
 
 # ---- copying an Image in as it is ----------------------------------------
 
 
 def _start_copy(
-    inbox: inbox_store.Inbox, state: _State, path: str, fingerprint: str,
-    files: list[str], platform: str, folder: str,
+    inbox: inbox_store.Inbox, state: _State, path: str, flight: _Flight, folder: str,
 ) -> str:
-    flight = _Flight(fingerprint=fingerprint, files=files, platform=platform)
     task = asyncio.ensure_future(_copy(inbox, state, path, flight, folder))
     flight.task = task
     state.flights[path] = flight
@@ -679,20 +850,30 @@ class _CopyDiffers(Exception):
     pass
 
 
-def _stage_copy(files: list[str], folder: str, progress) -> tuple[Any, list[str]]:
-    """Copy *files* into a fresh staging slot beside *folder*'s files, each
-    read back and compared. Returns the open slot and the names. Blocking."""
-    slot = staging.open_slot(folder, make_folder=True)
+def _stage_copy(
+    inbox: inbox_store.Inbox, flight: _Flight, folder: str, progress,
+) -> tuple[Any, list[str]]:
+    """Copy the Image's files into a fresh staging slot beside *folder*'s
+    files, each read through the Inbox's own folder (no link followed) and
+    only while it is still the file that was taken, then read back and
+    compared. Returns the open slot and the names. Blocking."""
+    folder_fd, names = _folder_beneath(inbox, flight.files)
+    slot = None
     try:
-        names = []
-        for source in files:
-            name = os.path.basename(source)
+        slot = staging.open_slot(folder, make_folder=True)
+        for name in names:
             target = slot.path_for(name)
             wrote = new_hasher("sha1")
-            fd = os.open(source, os.O_RDONLY | _NOFOLLOW)
+            fd = os.open(name, os.O_RDONLY | _NOFOLLOW, dir_fd=folder_fd)
+            try:
+                if _identity(os.fstat(fd)) != flight.identities.get(name):
+                    raise _SourceChanged(errno.ESTALE, f"{name} changed since it was taken")
+            except BaseException:
+                os.close(fd)
+                raise
             with os.fdopen(fd, "rb") as src, open(target, "xb") as dst:
                 while chunk := src.read(_CHUNK):
-                    progress(source)
+                    progress(name)
                     wrote.update(chunk)
                     dst.write(chunk)
                 dst.flush()
@@ -704,11 +885,13 @@ def _stage_copy(files: list[str], folder: str, progress) -> tuple[Any, list[str]
                     read.update(chunk)
             if read.hexdigest() != wrote.hexdigest():
                 raise _CopyDiffers(f"the copy of {name} doesn't read back the same")
-            names.append(name)
         return slot, names
     except BaseException:
-        slot.close()
+        if slot is not None:
+            slot.close()
         raise
+    finally:
+        os.close(folder_fd)
 
 
 async def _gate_acquire(cancel_event: asyncio.Event | None) -> bool:
@@ -749,7 +932,9 @@ async def _copy(
             outcome = "cancelled"
         else:
             try:
-                outcome, why, output = await _copy_in(job.id, path, flight, folder, cancel)
+                outcome, why, output = await _copy_in(
+                    job.id, inbox, path, flight, folder, cancel,
+                )
             finally:
                 _copy_gate.release()
     except Exception as exc:
@@ -766,23 +951,33 @@ async def _copy(
                     "Its intake was cancelled", {"platform": flight.platform})
         await job_manager.finish_external_job_cancelled(job.id, message="Cancelled")
         return
+    if outcome == "changed":
+        # Not a failure of the file: it is left to settle and be taken again.
+        state.seen.pop(path, None)
+        await job_manager.finish_external_job(
+            job.id, success=False, error_message=f"{why}; it is taken again once it settles",
+        )
+        return
     await _hold(inbox, state, path, flight.fingerprint, findings.INBOX_FAILED,
                 f"Copying it into the Library failed: {why}", {"platform": flight.platform})
     await job_manager.finish_external_job(job.id, success=False, error_message=why)
 
 
 async def _copy_in(
-    job_id: str, path: str, flight: _Flight, folder: str, cancel: asyncio.Event | None,
+    job_id: str, inbox: inbox_store.Inbox, path: str, flight: _Flight, folder: str,
+    cancel: asyncio.Event | None,
 ) -> tuple[str, str, str | None]:
     """Stage, compare, check Intact and place: ``(outcome, why, output)``."""
     await job_manager.update_external_job(job_id, message=f"Copying into {folder}")
     try:
         slot, names = await run_detached_within_stall_bound(
-            _stage_copy, flight.files, folder, what=f"Copying {os.path.basename(path)}",
+            _stage_copy, inbox, flight, folder, what=f"Copying {os.path.basename(path)}",
             cancel_event=cancel, report_progress=True,
         )
     except ReadCancelled:
         return "cancelled", "", None
+    except _SourceChanged as exc:
+        return "changed", str(exc), None
     except _CopyDiffers as exc:
         return "failed", str(exc), None
     try:

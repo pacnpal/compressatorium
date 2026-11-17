@@ -12,6 +12,7 @@ The tick is called directly, with a fake clock and real files.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -624,3 +625,161 @@ async def test_an_inbox_whose_library_now_overlaps_it_takes_nothing(vol, db, mon
     assert "can't be inside its Library" in result["error"]
     assert game.exists()
     assert not (vol / "Downloads" / "processed").exists()
+
+
+# ---- review round one (Codex on #443) --------------------------------------
+
+
+async def _converted(vol, queue, box):
+    """A ps2 Image whose conversion intake queued and the queue then completed."""
+    from models import JobStatus
+
+    game = _drop(vol / "Downloads" / "ps2" / "Game.iso")
+    await _poll(box, now=0)
+    await _poll(box, now=61)
+    queue.jobs["job0"].status = JobStatus.COMPLETED
+    return game
+
+
+@pytest.mark.asyncio
+async def test_a_parent_swapped_for_a_link_never_moves_a_file_outside_the_inbox(vol, db, queue):
+    """Codex 4603069915: the move to processed/ is anchored to the Inbox, so a
+    folder swapped for a symlink after the conversion can't redirect it."""
+    library = _library(vol)
+    await _ps2_rule(library)
+    box = _inbox(vol, library)
+    game = await _converted(vol, queue, box)
+    # The same size and mtime as the file taken, so only the anchoring (not
+    # the fingerprint) can tell it isn't the Inbox's.
+    taken = game.stat()
+    protected = _drop(vol / "Protected" / "Game.iso", DISC)
+    os.utime(protected, ns=(taken.st_atime_ns, taken.st_mtime_ns))
+    game.unlink()
+    (vol / "Downloads" / "ps2").rmdir()
+    (vol / "Downloads" / "ps2").symlink_to(vol / "Protected")
+
+    await _poll(box, now=122)
+
+    assert protected.exists()
+    assert not (vol / "Downloads" / "processed" / "ps2" / "Game.iso").exists()
+    [finding] = _inbox_findings()
+    assert "couldn't be moved to processed/" in finding["reason"]
+
+
+@pytest.mark.asyncio
+async def test_a_source_replaced_after_its_conversion_stays_in_the_inbox(vol, db, queue):
+    """Codex 4603071785: the Library holds the old contents, so a replaced
+    source is not archived as processed; it settles and is taken again."""
+    from services import inbox
+
+    library = _library(vol)
+    await _ps2_rule(library)
+    box = _inbox(vol, library)
+    game = await _converted(vol, queue, box)
+    game.write_bytes(b"a different download entirely")
+
+    await _poll(box, now=122)
+
+    assert game.read_bytes() == b"a different download entirely"
+    assert not (vol / "Downloads" / "processed").exists()
+    assert inbox.get(box.id).processed_count == 0
+
+
+@pytest.mark.asyncio
+async def test_a_numbered_split_image_is_taken_as_one(vol, db):
+    """Codex 4603071794: Game.iso.0 and .1 are one Image, listed by its parts."""
+    library = _library(vol)
+    box = _inbox(vol, library, settle=0)
+    first = _drop(vol / "Downloads" / "ps3" / "Game.iso.0", b"part one")
+    second = _drop(vol / "Downloads" / "ps3" / "Game.iso.1", b"part two")
+
+    await _poll(box, now=0)
+    await _poll(box, now=1)
+
+    assert (vol / "ROMs" / "ps3" / "Game.iso.0").read_bytes() == b"part one"
+    assert (vol / "ROMs" / "ps3" / "Game.iso.1").read_bytes() == b"part two"
+    assert not first.exists() and not second.exists()
+    assert (vol / "Downloads" / "processed" / "ps3" / "Game.iso.1").exists()
+
+
+@pytest.mark.asyncio
+async def test_a_finding_for_a_file_removed_across_a_restart_is_cleared(vol, db):
+    """Codex 4603071801: the held paths live in memory; the stored Findings are
+    reconciled against each listing, so a restart doesn't strand one."""
+    from services.inbox import intake
+
+    library = _library(vol)
+    box = _inbox(vol, library)
+    unsorted = _drop(vol / "Downloads" / "Mystery.iso")
+    _drop(vol / "Downloads" / "Other.iso")
+    await _poll(box, now=0)
+    await _poll(box, now=61)
+    assert {Path(f["path"]).name for f in _inbox_findings()} == {"Mystery.iso", "Other.iso"}
+
+    intake.reset_for_tests()  # a restart
+    unsorted.unlink()
+    await _poll(box, now=122)
+
+    assert {Path(f["path"]).name for f in _inbox_findings()} == {"Other.iso"}
+
+
+def test_saving_an_inbox_waits_for_a_library_registration(vol, db, monkeypatch):
+    """Codex 4603071815: Inbox and Library saves share one registration lock,
+    so neither can pass its overlap check while the other is inserting."""
+    from services import inbox, libraries
+
+    library = _library(vol)
+    (vol / "Downloads").mkdir()
+    monkeypatch.setattr(inbox, "_REGISTER_WAIT_SECONDS", 0.05)
+
+    with libraries.registration_lock(), pytest.raises(inbox.InboxError) as refused:
+        inbox.register(str(vol / "Downloads"), library.id)
+
+    assert refused.value.status == 409
+    assert inbox.all_inboxes() == []
+
+
+@pytest.mark.asyncio
+async def test_the_rules_source_check_runs_off_the_event_loop(vol, db, queue, monkeypatch):
+    """Codex 4603071827: whether the Rule's mode takes the file can read its
+    header (xiso), so it runs on a worker thread, bounded."""
+    import threading
+
+    from services.rules import sweep
+
+    seen_on = []
+    real = sweep._accepts_source
+
+    def accepts(*args):
+        seen_on.append(threading.current_thread() is threading.main_thread())
+        return real(*args)
+
+    monkeypatch.setattr(sweep, "_accepts_source", accepts)
+    library = _library(vol)
+    await _ps2_rule(library)
+    box = _inbox(vol, library)
+    _drop(vol / "Downloads" / "ps2" / "Game.iso")
+
+    await _poll(box, now=0)
+    await _poll(box, now=61)
+
+    assert seen_on == [False]
+
+
+@pytest.mark.asyncio
+async def test_a_mode_that_cant_verify_is_not_asked_to(vol, db, queue, monkeypatch):
+    """Codex 4603071837: the Intact check runs where the mode supports it
+    (the registry says), never forced onto one that can't."""
+    from services.tools import registry
+
+    monkeypatch.setattr(registry, "mode_supports_verify", lambda mode: False)
+    library = _library(vol)
+    await _ps2_rule(library)
+    box = _inbox(vol, library)
+    _drop(vol / "Downloads" / "ps2" / "Game.iso")
+
+    await _poll(box, now=0)
+    await _poll(box, now=61)
+
+    [job] = queue.submitted
+    assert job["verify_after"] is False

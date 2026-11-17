@@ -21,7 +21,7 @@ import asyncio
 import os
 import threading
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -48,6 +48,7 @@ __all__ = [
     "FolderLibrary",
     "LibraryPathError",
     "check_gamelists_folder",
+    "registration_lock",
     "all_libraries",
     "describe",
     "folder_libraries",
@@ -374,6 +375,25 @@ def _romm_root() -> Path | None:
     if not romm_library.root:
         return None
     return _resolved(romm_library.root)
+
+
+class RegistrationBusy(Exception):
+    """:func:`registration_lock` wasn't free in time."""
+
+
+@contextmanager
+def registration_lock(timeout: float | None = None):
+    """The lock every save of a root that must not overlap another is made
+    under: a folder Library's registration, RomM's root, and an Inbox (#431),
+    so no two of them pass their overlap checks at once. Blocking; with
+    *timeout*, raises :class:`RegistrationBusy` when it isn't free in time.
+    Taken in a worker thread only."""
+    if not _register_lock.acquire(timeout=-1 if timeout is None else timeout):
+        raise RegistrationBusy("another registration is still running")
+    try:
+        yield
+    finally:
+        _register_lock.release()
 
 
 def _refuse_inbox(root: Path, *, what: str = "A Library") -> None:

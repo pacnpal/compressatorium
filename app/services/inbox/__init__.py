@@ -56,9 +56,8 @@ MAX_SETTLE_SECONDS = 7 * 24 * 3600
 # never held across disk or database access.
 _cache: dict[int, Inbox] | None = None
 _lock = threading.Lock()
-# Serialises the overlap check and the insert of `register`. Taken in a worker
-# thread only: it is held across resolves and a database write.
-_register_lock = threading.Lock()
+# How long a save waits for another registration (an Inbox's, a Library's or
+# RomM's root, which share `libraries.registration_lock`) to finish.
 _REGISTER_WAIT_SECONDS = 5.0
 
 
@@ -222,36 +221,48 @@ def register(
     path: str, library_id: str, settle_seconds: Any = DEFAULT_SETTLE_SECONDS,
 ) -> Inbox:
     """Save the folder at *path* as an Inbox for *library_id*. Blocking."""
+    from services import libraries
+
     seconds = _settle(settle_seconds)
     folder = _checked_folder(path)
-    _check_library(folder, library_id)
     _loaded()
-    if not _register_lock.acquire(timeout=_REGISTER_WAIT_SECONDS):
-        raise InboxError(409, "Another Inbox is being saved; try again shortly")
+    # The Library overlap checks and the insert run under the lock a Library's
+    # registration and RomM's root save take too, so a Library registered in
+    # or around this folder meanwhile can't slip past either check.
     try:
-        for other in all_inboxes():
-            if _overlaps(folder, Path(other.folder)):
-                if str(folder) == other.folder:
-                    raise InboxError(409, f"{folder} is already an Inbox")
-                raise InboxError(409, f"Overlaps the Inbox at {other.folder}")
-        with _session() as session:
-            row = _db.InboxRecord(
-                folder=str(folder), library_id=library_id, settle_seconds=seconds,
-                processed_count=0,
-                created_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-            )
-            session.add(row)
-            try:
-                session.commit()
-            except IntegrityError:
-                session.rollback()
-                raise InboxError(409, f"{folder} is already an Inbox") from None
-            inbox = _from_row(row)
-        with _lock:
-            if _cache is not None:
-                _cache[inbox.id] = inbox
-    finally:
-        _register_lock.release()
+        with libraries.registration_lock(timeout=_REGISTER_WAIT_SECONDS):
+            return _insert(folder, library_id, seconds)
+    except libraries.RegistrationBusy:
+        raise InboxError(
+            409, "Another registration is still running; try again shortly",
+        ) from None
+
+
+def _insert(folder: Path, library_id: str, seconds: int) -> Inbox:
+    """Check *folder* against every Library and Inbox, then store it. Called
+    with ``libraries.registration_lock`` held. Blocking."""
+    _check_library(folder, library_id)
+    for other in all_inboxes():
+        if _overlaps(folder, Path(other.folder)):
+            if str(folder) == other.folder:
+                raise InboxError(409, f"{folder} is already an Inbox")
+            raise InboxError(409, f"Overlaps the Inbox at {other.folder}")
+    with _session() as session:
+        row = _db.InboxRecord(
+            folder=str(folder), library_id=library_id, settle_seconds=seconds,
+            processed_count=0,
+            created_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        )
+        session.add(row)
+        try:
+            session.commit()
+        except IntegrityError:
+            session.rollback()
+            raise InboxError(409, f"{folder} is already an Inbox") from None
+        inbox = _from_row(row)
+    with _lock:
+        if _cache is not None:
+            _cache[inbox.id] = inbox
     return inbox
 
 

@@ -6839,8 +6839,10 @@ Fails closed: the folder must be absolute and `volume_containment(...) is True`
 (None is 503), a real folder, not inside any Library's root nor holding one
 (`inbox.overlap_problem`, resolved both: its own Library would feed intake its
 own output, another's would have its Images moved to `processed/`), and not
-equal to, inside or around another Inbox. The overlap check and the insert run
-under one lock, with `inboxes.folder` unique as the backstop. The other way
+equal to, inside or around another Inbox. The overlap checks and the insert run
+under `libraries.registration_lock`, the lock a folder Library's registration
+and RomM's root save take, so an Inbox and a Library saved at once can't both
+pass (Codex 4603071815); `inboxes.folder` unique is the backstop. The other way
 round, `libraries.register` and `check_romm_root` refuse a Library root that
 is, holds or sits inside an Inbox (`inbox.holding`), and every poll checks its
 Library's root again before it lists anything (a RomM root saved elsewhere since). Removing an Inbox (or its folder Library, from `libraries._remove`)
@@ -6856,8 +6858,10 @@ tick with a fake clock and real files. Each poll:
    completed moves the original; failed or cancelled holds it with a Finding.
 2. Lists the Inbox on a stall-bounded detached thread
    (`run_detached_within_stall_bound(report_progress=True)`): regular files
-   with an extension a tool reads or writes, never the top-level `processed/`,
-   a dot-entry (a staging folder), a junk entry or a link, grouped into Images
+   with an extension a tool reads or writes, or a numbered split part
+   (`registry.split_owner`, as the folder Library lists `Game.iso.0`), never the
+   top-level `processed/`, a dot-entry (a staging folder), a junk entry or a
+   link (a linked folder is reported as not listed), grouped into Images
    by `image_sets.group_images` and fingerprinted by `image_fingerprint`
    (every file's size and mtime). The folder must still be inside a Volume
    and still clear of its Library's root.
@@ -6869,17 +6873,21 @@ tick with a fake clock and real files. Each poll:
    Image moves as one. `_plan` reads the Library's conversion Rules
    (`sweep.get_rules`) and finds the Platform's Rule (`canonical_platform_id`,
    or the Library's `platforms()` by slug for RomM's numeric ids, passed on as
-   `known`), then `Library.placement(platform)` (§3.3.11).
+   `known`), then `Library.placement(platform)` (§3.3.11). Each file's
+   identity (device, inode, size, mtime) is read then through the Inbox's own
+   folders (`open_dir_beneath`, no link followed) and kept with the flight.
    `PlacementUnknown` holds it; `LibraryUnreadable` or a timeout retries next
    poll.
 
 **Converting.** An enabled Rule whose mode is for the Platform and takes the
-file (`sweep._accepts_source`), with its tool ready, queues through
+file (`sweep._accepts_source`, on a bounded worker thread: it can read a
+header), with its tool ready, queues through
 `job_manager.create_batch_jobs`, the call a Rule sweep makes: the placement
 folder (made if missing) as `output_dir`, the destination resolved with the
 `skip` policy (`resolve_destination`; taken holds it), the Rule's compression
-(`sweep._compression_arg`) and `split`, `verify_after=True` (the Intact check)
-and never `delete_on_verify`. So the job is a conversion in every sense the
+(`sweep._compression_arg`) and `split`, `verify_after` wherever
+`registry.mode_supports_verify` says the mode can check its output (the Intact
+check; a `jwud_decompress` WUD can't be), and never `delete_on_verify`. So the job is a conversion in every sense the
 queue has: it takes a `max_concurrent` slot, gets its Ledger row and its
 Cancel. A Rule that is disabled, or whose mode doesn't take the file (it is
 already in the target format), copies instead; one whose mode isn't for the
@@ -6889,24 +6897,36 @@ Platform, or whose tool isn't ready, holds the file with a Finding.
 started_by_hand=False)`: it converts nothing). One background task per Image,
 one copy at a time (a semaphore), each an external job whose cancel event is
 raced against the wait and the copy. The copy goes into a fresh
-`staging.open_slot(folder, make_folder=True)` (§3.3.21), read with
-`O_NOFOLLOW`, then read back and compared by SHA-1; then, when
+`staging.open_slot(folder, make_folder=True)` (§3.3.21), each file opened
+through the Inbox folder's descriptor with `O_NOFOLLOW` and refused unless its
+`fstat` identity is the one taken, then read back and compared
+(`stream_digest.new_hasher`); then, when
 `registry.check_tool(staged, platform)` names a tool, `check.verify_file` (the
 check Rule's Verify on the `verify` lane) must say Intact; only then
 `slot.place(names)`, which never replaces (a taken name holds the file). The
 slot is always closed, so nothing half-copied is left in sight.
 
-**Moving the original** (`_move_to_processed`). Every file of the Image into
-`processed/<its folder in the Inbox>/`, by `place_without_clobbering`; a name
-already there uses `processed/.../<stem> (2)/` and so on. All or none: a failed
-move puts back the ones already moved. Then `processed_count` is incremented
-and the file's Findings cleared.
+**Moving the original** (`_move_to_processed`). Only while the Image is still
+the one taken: its whole fingerprint is compared first, and a source replaced
+after its conversion stays in the Inbox to settle again (the Library holds the
+old contents). The move is anchored, as the Image rename's is: the source
+folder and `processed/<its folder in the Inbox>/` are opened beneath the Inbox
+with no link followed (`open_dir_beneath`, then `mkdirat`/`openat` with
+`O_NOFOLLOW`), every file's identity is checked through the source descriptor,
+and each file moves by `place_without_clobbering` between the two descriptors,
+so a folder swapped for a link after the conversion can't redirect it (Codex
+4603069915). A name already there uses `processed/.../<stem> (2)/` and so on.
+All or none: a failed move puts back the ones already moved, through the same
+descriptors. Then `processed_count` is incremented and the file's Findings
+cleared.
 
 **Holding.** A file that gets a Finding (`inbox_unsorted`, `inbox_conflict`,
 `inbox_failed`, in `findings.INBOX_KINDS`, under the Inbox's Library, keyed
 `inbox:<id>/<path in the Inbox>`) is remembered with its fingerprint and not
-taken again until it changes; a held file that leaves the Inbox has its
-Findings cleared. So a second poll over the same files changes nothing. The
+taken again until it changes. Every poll reconciles the Inbox's stored
+Findings against its listing (`findings.stored_of`), not only the held paths in
+memory, so a Finding for a file removed across a restart is cleared too; one
+under a folder the walk couldn't list (or a link it won't walk) is kept. So a second poll over the same files changes nothing. The
 state (seen, held, in flight) lives in memory: after a restart every file
 settles again, and a held one gets its Finding again.
 

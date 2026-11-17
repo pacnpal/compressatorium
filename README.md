@@ -1012,19 +1012,21 @@ long a file must stay unchanged before it's taken (60 seconds by default).
   on NFS and SMB shares where change notifications don't. A file is taken only
   once its size and modified time are the same across two polls at least the
   settle time apart: a download still in progress is never touched. A sheet
-  and its tracks are one Image, and wait for every file.
+  and its tracks, or a split `Game.iso.0`, `.1`, ..., are one Image, and wait
+  for every file.
 - Its Platform is worked out the same way a folder Library does it: the header
   first, then a folder named after a Platform. So `downloads/ps2/Game.iso` is a
   PS2 Image even when its header can't be read.
 - It goes where **Where new Images go** says. If that Platform has an enabled
   Rule, the Image is converted under it as a normal job (it shows in the queue,
   counts toward the concurrency limit, gets a Ledger row and can be cancelled),
-  and the output is checked Intact. With no enabled Rule, or a file already in
+  and the output is checked Intact wherever its mode can check it. With no enabled Rule, or a file already in
   the Rule's format, it's copied as it is, as an **Inbox copy** job you can
   cancel: the copy is read back and compared, checked Intact by its own tool
   when one checks it, and only then appears in the Library.
 - The original then moves to `processed/` inside the Inbox, keeping its
-  folder. Intake never reads `processed/`. **Nothing is ever deleted**: clear
+  folder, if it is still the file that was taken (one replaced meanwhile
+  stays in the Inbox to settle again). Intake never reads `processed/`. **Nothing is ever deleted**: clear
   out `processed/` yourself once you're happy with the result.
 - A file it can't place stays in the Inbox with a Finding saying why: Unsorted
   (no Platform), a Platform conflict, or not taken (a failed or cancelled
