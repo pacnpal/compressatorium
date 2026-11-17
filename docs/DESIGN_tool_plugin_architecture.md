@@ -3912,14 +3912,74 @@ Knulli, muOS) key each game's artwork, favourite flag and play count on its
   note to close ES-DE first, since ES-DE rewrites its gamelist on exit.
 - *Where it looks.* A `gamelist.xml` directly in each folder of
   `files.dirs_for(renames)`: the Platform folder, with the Image beside it or
-  in a subfolder. Each entry resolves against its gamelist's folder (the
-  change's payload carries that base, so an ES-DE gamelists folder, #387, can
-  give another).
+  in a subfolder. Each entry resolves against its gamelist's folder; the
+  change's payload carries that base.
+- *ES-DE's gamelists folder* (#387). ES-DE keeps its gamelists in a folder of
+  its own, one subfolder per system named after the system's ROM folder (its
+  `es_systems.xml` puts each system at `%ROMPATH%/<name>` and its gamelist at
+  `gamelists/<name>/gamelist.xml`), with entries relative to that ROM folder.
+  A Library can name the folder: `referrer_options("gamelist")` (the
+  `Library` contract; `LibraryDefaults` returns `{}`) gives
+  `{"gamelists_folder": path}` (`rules.library.GAMELISTS_FOLDER`) from a
+  folder Library's `gamelists_folder` column (migration 0018, null for
+  existing rows) or RomM's `gamelists_folder` setting
+  (`ROMM_GAMELISTS_FOLDER`). The registry binds each active Referrer to the
+  Image's Library through `Referrer.for_library(library)` (default: the
+  Referrer itself; a failure keeps the Source); the gamelist Referrer returns
+  a copy carrying the folder and the Library. *The system-folder rule*
+  (`_systems`): a replaced file's ES-DE system is its Platform folder, which
+  the Library gives for its own layout through `Library.platform_folder(path)`
+  (on the contract; blocking, called on the hook's thread). `LibraryDefaults`
+  (folder Libraries) answers the folder directly under the root;
+  `RommLibrary` answers the folder directly under `<root>/roms` when the root
+  holds one (RomM's standard layout, the same directory-level test
+  `RommClient.local_path` makes), else directly under the root (which covers
+  `<root>/<platform>/roms/...`). Both go through
+  `rules.library.folder_holding(parent, path)`: the folder listed in
+  `parent` (`os.scandir`) whose resolved path holds the resolved file,
+  returned as listed. When more than one does (an alias, `alias -> ps2`), the
+  answer would depend on the listing's order, so it raises `AmbiguousFolder`
+  and the gamelist Referrer keeps the Source. So `ROMs/ps2/psx/Game.iso` is
+  `ps2` and the `psx` system's gamelist is never read. Only
+  `<gamelists folder>/<system>/gamelist.xml` is read, with the Platform
+  folder as the entries' base: `ROMs/ps2/Game.iso` reaches
+  `gamelists/ps2/gamelist.xml` and its `./Game.iso`, `ROMs/ps2/ps2/Game.iso`
+  its `./ps2/Game.iso`, RomM's `ps2/roms/Game.iso` its `./roms/Game.iso`. The
+  system's name is the Platform folder's name as listed, never a resolved
+  one, so a symlinked `ROMs/ps2 -> actual/PlayStation2` is still `ps2`. Fail
+  closed: a file no Platform folder holds (it sits directly in the root), or
+  whose folder can't be listed, raises `ReferrerError` and keeps the Source;
+  it is never "no gamelist, nothing to do".
+  The subfolder is the ROM folder's own name, not a mapping of the Platform
+  slug: ES-DE's system names are its ROM folder names, and the slug table's
+  canonical ids differ from them (`ngc` for ES-DE's `gc`). Each gamelist is
+  settled before it is read (`_settled`): every way to reach it is collected,
+  and one reached with two different bases (a gamelists folder that overlaps
+  the ROM folders) has no single base, so planning refuses ("more than one
+  ROM folder could be its system's") and the Source is kept. The
+  Platform folder lookup still runs beside it. The folder must be confirmed
+  inside the Volumes when planning (`volume_containment`, "couldn't tell"
+  refused), or the Source is kept. Saving it is two steps.
+  `libraries.check_gamelists_folder` is read-only and runs bounded
+  (`libraries.admitted`, which abandons its worker past `ROOT_CHECK_SECONDS`
+  with a 503): it refuses a relative path (400), one outside every Volume
+  (403), "couldn't tell" (503) and a missing folder (404), and returns it
+  resolved. Only then do `PATCH /api/libraries/{id}` (`libraries.update`,
+  which only persists) and `PUT /api/romm/settings` save it, so a check
+  abandoned at the bound never saves anything later; `""` clears it. The Rules editor edits it under the switch
+  (`source.gamelistsFolder` / `source.setGamelistsFolder`).
 - *What it reads.* `defusedxml`'s `DefusedXMLParser` (no entity declarations,
   no external references) with a target that records each `<path>` that is a
-  child of a child of the root (`<game>` and `<folder>` entries), its text,
-  and expat's `CurrentByteIndex` at its start and end tags. A file that
-  doesn't parse fails with "can't be parsed (...)". An entry is read the way
+  child of a child of a top-level element (`<game>` and `<folder>` entries),
+  its text, and expat's `CurrentByteIndex` at its start and end tags. ES-DE
+  writes `<alternativeEmulator>` beside `<gameList>`, two top-level elements
+  that strict XML refuses and pugixml reads as a fragment, so an
+  ASCII-compatible file is parsed wrapped in one more element after its
+  BOM and declaration, its byte indexes shifted back. A file that doesn't
+  parse fails with "can't be parsed (...)". The wrapper would let an empty,
+  declaration-only or text-only file parse as a list with no entries, so a
+  file with no top-level `<gameList>`, or with text between its top-level
+  elements, fails with "isn't a gamelist" and keeps the Source. An entry is read the way
   ES-DE reads it: backslashes are separators, `./` is the base, anything else
   is taken as written (joined to the base when relative).
 - *What it rewrites.* Only an entry that resolves to a replaced file
@@ -3941,7 +4001,8 @@ Knulli, muOS) key each game's artwork, favourite flag and play count on its
 To add a Referrer: subclass `Referrer` in `services/referrers/`, give it a new
 `id`, declare `opt_in` and `phase`, and `registry.register(...)` it in
 `services/referrers/__init__.py`. A file Referrer builds on `files.py`. An opt-in one also needs the Library's
-setting that `referrer_enabled` reads. Nothing in the job pipeline, the
+setting that `referrer_enabled` reads, and one with settings of its own reads
+them from `referrer_options` in `for_library`. Nothing in the job pipeline, the
 delete-plan route or the modal changes. The
 existing RomM re-pin (3.3.9) is not a Referrer yet.
 

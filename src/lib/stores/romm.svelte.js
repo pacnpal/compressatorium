@@ -247,6 +247,16 @@ class RommStore extends RulesSource {
     await this.saveSettings({ es_frontend: enabled });
   }
 
+  /** The library's ES-DE gamelists folder, or null (#387). */
+  get gamelistsFolder() {
+    return this.settings?.gamelists_folder || null;
+  }
+
+  /** Save it ('' clears); the backend refuses one outside every Volume. */
+  async setGamelistsFolder(path) {
+    await this.saveSettings({ gamelists_folder: path });
+  }
+
   /** Which modes may run unattended, from /api/romm/status (null: no opinion). */
   get automatableModes() {
     return this.status?.automatableModes ?? null;

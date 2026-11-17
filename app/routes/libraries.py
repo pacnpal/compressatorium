@@ -52,6 +52,8 @@ class UpdateLibraryRequest(BaseModel):
     max_per_sweep: int | None = Field(default=None, ge=1)
     # Used by an EmulationStation frontend: conversions update gamelist.xml (#386).
     es_frontend: bool | None = None
+    # Its ES-DE gamelists folder (#387): inside a Volume; "" clears it.
+    gamelists_folder: str | None = None
 
 
 class SweepRequest(BaseModel):
@@ -100,19 +102,35 @@ async def register_library(payload: RegisterLibraryRequest) -> dict:
 
 @router.patch("/libraries/{library_id}")
 async def update_library(library_id: str, payload: UpdateLibraryRequest) -> dict:
-    """Rename a folder Library, or change its schedule switch, sweep limit or
-    "used by an EmulationStation frontend" switch.
+    """Rename a folder Library, or change its schedule switch, sweep limit,
+    "used by an EmulationStation frontend" switch or ES-DE gamelists folder
+    (inside a Volume, refused otherwise; ``""`` clears it).
 
     RomM's equivalents live in its own settings (``/api/romm/settings``).
     """
     if _library(library_id).kind != "folder":
         raise HTTPException(status_code=400, detail="Change RomM in its own settings")
+
+    folder = payload.gamelists_folder
+    try:
+        if folder and folder.strip():
+            # Only the read-only check runs under the abandonment bound: it
+            # resolves a folder that may sit on a mount that stopped
+            # answering. Nothing is saved unless it passes in time, so a check
+            # abandoned at the bound never saves later (Codex
+            # PRRT_kwDOQ9nULM64Jpv1), as RomM's settings route does.
+            folder = await libraries.admitted(
+                libraries.check_gamelists_folder, folder, what="The gamelists folder",
+            )
+    except libraries.LibraryPathError as exc:
+        raise HTTPException(status_code=exc.status, detail=str(exc)) from None
     library = await run_in_threadpool(
         lambda: libraries.update(
             library_id, name=payload.name,
             schedule_enabled=payload.schedule_enabled,
             max_per_sweep=payload.max_per_sweep,
             es_frontend=payload.es_frontend,
+            gamelists_folder=folder,
         ),
     )
     if library is None:

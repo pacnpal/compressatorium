@@ -82,6 +82,10 @@ _FIELDS: dict[str, tuple[str, Any, str]] = {
     # The library is used by an EmulationStation frontend (#386): a conversion
     # rewrites the matching <path> in the Platform folder's gamelist.xml.
     "es_frontend": ("ROMM_ES_FRONTEND", False, "bool"),
+    # ES-DE's gamelists folder for the library (#387), resolved and inside a
+    # Volume (checked when saved through the API); "" keeps the Platform
+    # folder lookup.
+    "gamelists_folder": ("ROMM_GAMELISTS_FOLDER", "", "str"),
 }
 
 _INT_BOUNDS = {
