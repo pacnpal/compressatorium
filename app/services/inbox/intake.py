@@ -50,7 +50,6 @@ from __future__ import annotations
 
 import asyncio
 import errno
-import hashlib
 import os
 import time
 from dataclasses import dataclass, field
@@ -69,6 +68,7 @@ from services.output_conflicts import QUEUE, resolve_destination
 from services.rules import check as checks
 from services.rules.library import Library, LibraryUnreadable, PlacementUnknown
 from services.rules.rules import CONVERT
+from services.stream_digest import new_hasher
 from services.subprocess_runner import (
     ReadCancelled,
     run_detached,
@@ -649,11 +649,12 @@ def _move_to_processed(inbox: inbox_store.Inbox, files: list[str]) -> str:
             place_without_clobbering(f, dst)
             moved.append((f, dst))
     except OSError:
-        for src, dst in reversed(moved):
+        # Back the way they came: each moved file from processed/ to where it was.
+        for original, moved_to in reversed(moved):
             try:
-                place_without_clobbering(dst, src)
+                place_without_clobbering(src=moved_to, dst=original)
             except OSError:
-                logger.error("inbox: could not put %s back at %s", dst, src)
+                logger.error("inbox: could not put %s back at %s", moved_to, original)
         raise
     return target
 
@@ -687,7 +688,7 @@ def _stage_copy(files: list[str], folder: str, progress) -> tuple[Any, list[str]
         for source in files:
             name = os.path.basename(source)
             target = slot.path_for(name)
-            wrote = hashlib.sha1()
+            wrote = new_hasher("sha1")
             fd = os.open(source, os.O_RDONLY | _NOFOLLOW)
             with os.fdopen(fd, "rb") as src, open(target, "xb") as dst:
                 while chunk := src.read(_CHUNK):
@@ -696,12 +697,12 @@ def _stage_copy(files: list[str], folder: str, progress) -> tuple[Any, list[str]
                     dst.write(chunk)
                 dst.flush()
                 os.fsync(dst.fileno())
-            read = hashlib.sha1()
+            read = new_hasher("sha1")
             with open(target, "rb") as back:
                 while chunk := back.read(_CHUNK):
                     progress(target)
                     read.update(chunk)
-            if read.digest() != wrote.digest():
+            if read.hexdigest() != wrote.hexdigest():
                 raise _CopyDiffers(f"the copy of {name} doesn't read back the same")
             names.append(name)
         return slot, names
