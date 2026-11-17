@@ -22,6 +22,7 @@ _SRC = Path(__file__).resolve().parents[1] / "src"
 _STORE = _SRC / "lib" / "stores" / "libraries.svelte.js"
 _RULES_SOURCE = _SRC / "lib" / "rules" / "rulesSource.svelte.js"
 _ROMM_STORE = _SRC / "lib" / "stores" / "romm.svelte.js"
+_SAVE_QUEUE = _SRC / "lib" / "stores" / "latestSaveQueue.js"
 _VIEWS = _SRC / "lib" / "components" / "views"
 _EDITOR = _VIEWS / "RuleEditor.svelte"
 _RULES_VIEW = _VIEWS / "RulesView.svelte"
@@ -41,7 +42,11 @@ def _find_node() -> str | None:
 
 def _plain_js() -> str:
     # FolderRulesSource extends the shared RulesSource, which has no imports.
-    src = _RULES_SOURCE.read_text(encoding="utf-8") + "\n" + _STORE.read_text(encoding="utf-8")
+    queue = _SAVE_QUEUE.read_text(encoding="utf-8").replace("export class ", "class ")
+    src = (
+        queue + "\n" + _RULES_SOURCE.read_text(encoding="utf-8") + "\n"
+        + _STORE.read_text(encoding="utf-8")
+    )
     kept = [
         line for line in src.splitlines()
         if not (line.strip().startswith("import ") and line.strip().endswith(";"))

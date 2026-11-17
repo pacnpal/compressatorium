@@ -11,6 +11,7 @@
 
 import { api } from '$lib/api/endpoints.js';
 import { RulesSource } from '$lib/rules/rulesSource.svelte.js';
+import { LatestSaveQueue } from '$lib/stores/latestSaveQueue.js';
 import { romm } from '$lib/stores/romm.svelte.js';
 import { ui } from '$lib/stores/ui.svelte.js';
 
@@ -154,13 +155,10 @@ class LibrariesStore {
   // started at; a Library row it brings back is adopted only if no save began
   // since, so a read older than a save never puts the old settings back.
   #settingsGenerations = new Map();
-  // Library id -> the ticket of the latest settings save asked for. Only that
-  // save's answer is adopted.
-  #latestSave = new Map();
-  // Library id -> the tail of its settings-save queue. A Library's saves run
-  // one at a time in click order, so the backend applies them in that order:
-  // two in flight could land the older one last.
-  #saveQueues = new Map();
+  // Library id -> its settings saves, one at a time in click order so the
+  // backend applies them in that order, of which only the latest save's answer
+  // is adopted: two in flight could land the older one last.
+  #saves = new LatestSaveQueue();
   // Bumped by every registration. A Library registered after a list load set
   // off is missing from that load's (older) catalogue and is kept, not dropped.
   #catalogueEpoch = 0;
@@ -249,15 +247,9 @@ class LibrariesStore {
    * earlier save may have landed without being adopted.
    */
   saveSettings(id, patch) {
-    const ticket = (this.#latestSave.get(id) ?? 0) + 1;
-    this.#latestSave.set(id, ticket);
     // Reads that set off from here on are older than this save.
     this.#bumpSettings(id);
-    const previous = this.#saveQueues.get(id) ?? Promise.resolve();
-    const turn = previous.then(() => this.#saveNow(id, patch, ticket));
-    // The queue only orders; each caller still sees its own save's failure.
-    this.#saveQueues.set(id, turn.catch(() => {}));
-    return turn;
+    return this.#saves.schedule(id, (ticket) => this.#saveNow(id, patch, ticket));
   }
 
   async #saveNow(id, patch, ticket) {
@@ -266,12 +258,12 @@ class LibrariesStore {
     try {
       saved = await api.updateLibrary(id, patch);
     } catch (e) {
-      if (this.#latestSave.get(id) === ticket) await this.#reloadRow(id);
+      if (this.#saves.isLatest(id, ticket)) await this.#reloadRow(id);
       throw e;
     } finally {
       this.#bumpSettings(id);
     }
-    if (this.#latestSave.get(id) === ticket) this.adopt(saved);
+    if (this.#saves.isLatest(id, ticket)) this.adopt(saved);
     return saved;
   }
 
