@@ -4048,7 +4048,14 @@ fingerprint; `_place_staged` carries the records along) and hands
 `_delete_source_set` a `StagedPlacement`. The hook carries it in the
 `WriteGuard` (`base.staged_placement()`, `base.hook_running()`), which also
 watches the staged path instead of the final one, so the file Referrers'
-writes still check the output's identity. Right after the hook,
+writes still check the output's identity. `files.points_at`, which the
+`.m3u` and gamelist Referrers use to confirm a rewritten entry reaches the
+output, asks `base.staged_output(final)` too: while the output is staged,
+the entry must resolve to its final path and the staged output must exist.
+A file Referrer's own temp file (#404) lives in a `slot-` slot of its own,
+opened and closed per write; the job's output slot is locked and the swap's
+`park-` slot is never swept, so the three never touch each other's slot or
+lock. Right after the hook,
 `_delete_source_set` calls `placement.place()` (a no-op once placed), so a
 kept Source keeps its output beside it and nothing is unlinked before the
 output is in place; a lingering apply is left to place it itself. In the hook

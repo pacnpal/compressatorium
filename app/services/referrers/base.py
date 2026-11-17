@@ -289,6 +289,20 @@ def staged_placement() -> StagedPlacement | None:
     return guard.placement if guard is not None else None
 
 
+def staged_output(final: str) -> str | None:
+    """Where the output whose final path is *final* is still staged during
+    the hook (``StagedPlacement``, #391), or None when it is in place, or
+    outside the hook. *final* may be the resolved path. Blocking (it
+    resolves paths): call it off the loop."""
+    placement = staged_placement()
+    if placement is None:
+        return None
+    for output, staged in placement.staged.items():
+        if output == final or os.path.realpath(output) == final:
+            return staged
+    return None
+
+
 def check_write(target: str) -> None:
     """Raise ReferrerError unless writing *target* is still allowed. Call it
     under the target's lock, right before each write. A no-op outside the hook

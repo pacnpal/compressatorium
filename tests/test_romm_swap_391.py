@@ -274,6 +274,39 @@ async def test_a_failed_rehash_keeps_the_source_where_it_was(vol, romm, failure)
 
 
 @pytest.mark.asyncio
+async def test_a_gamelist_rewrite_and_the_swap_share_the_stage_folder(vol, romm):
+    """#404's Referrer temp file is written in a staging slot of its own
+    beside the job's output slot; the swap then parks the Source in a third.
+    Each holds its own lock, so none sweeps or closes another's."""
+    from services.romm import settings as romm_settings
+
+    platform = _platform(vol)
+    await romm_settings.save({"es_frontend": True})
+    (platform / "gamelist.xml").write_text(
+        "<gameList><game><path>./Game.iso</path><name>Game</name></game></gameList>\n",
+        "utf-8",
+    )
+    (platform / "Game.m3u").write_text("Game.iso\n", "utf-8")
+
+    job = await _convert(platform / "Game.iso")
+
+    assert job.status == JobStatus.COMPLETED, job.error_message
+    assert job.warning is None, job.warning
+    # Both file Referrers point at the output's final name, which it had not
+    # taken yet while they ran (it was still staged for the swap).
+    assert "<path>./Game.chd</path>" in (platform / "gamelist.xml").read_text("utf-8")
+    assert (platform / "Game.m3u").read_text("utf-8") == "Game.chd\n"
+    assert romm.roms[ROM_ID]["fs_name"] == "Game.chd"
+    assert (platform / "Game.chd").read_bytes() == OUTPUT_BYTES
+    assert not (platform / "Game.iso").exists()
+    assert sorted(p.name for p in platform.iterdir() if p.suffix != ".bak") == [
+        "Game.chd", "Game.m3u", "gamelist.xml",
+    ]
+    assert _left_in_stage(vol) == []
+    assert [r["state"] for r in _journal()] == ["done"]
+
+
+@pytest.mark.asyncio
 async def test_a_rule_sweep_swaps_too(vol, romm):
     from services.romm import auto as romm_auto
 

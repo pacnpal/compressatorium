@@ -36,7 +36,7 @@ from utils.path_utils import (
     volume_containment,
 )
 
-from .base import ReferrerError, atomic_write_bytes, check_write
+from .base import ReferrerError, atomic_write_bytes, check_write, staged_output
 
 BACKUP_SUFFIX = ".bak"
 
@@ -151,8 +151,18 @@ def points_at(base: str, entry: str, target: Target, *, strict: bool) -> bool:
     abandoned apply can't point a file at an output removed meanwhile.
     Otherwise (the delete confirmation, planning before the output exists) the
     resolved paths are compared.
+
+    While the output is still staged for a Referrer that places it (the RomM
+    swap, #391), its final path is empty: the entry must resolve to that path,
+    and, when *strict*, the staged output must still be there (the hook's
+    guard checks it is the same file before each write).
     """
     path = os.path.join(base, entry)
+    staged = staged_output(target.new)
+    if staged is not None:
+        return os.path.realpath(path) == target.new and (
+            not strict or file_identity(staged) is not None
+        )
     output = file_identity(target.new)
     if output is not None:
         return same_identity(file_identity(path), output)
