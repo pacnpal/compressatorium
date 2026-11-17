@@ -377,7 +377,8 @@ def test_migrations_have_a_single_head():
     # keys) on that, #387's 0018 (the ES-DE gamelists folder) on that, and
     # #389's 0019 (a content key's device and inode) on that, and #391's
     # 0020 (the RomM swap journal) on that, and #392's 0021 (what swap
-    # recovery needs) on that, and #424's 0022 (per-DAT hashes) on that, and #430's 0024 (a folder Library's layout) on that.
+    # recovery needs) on that, and #424's 0022 (per-DAT hashes) on that, and
+    # #430's 0024 (a folder Library's layout) on that.
     assert heads == ["0024"]
 
 
