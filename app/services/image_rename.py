@@ -177,7 +177,7 @@ def _lock_blocking(
     inner = inner_renames(renames, folder)
     news = [
         *(new for new in renames.values() if new not in renames),
-        *(path for old, path in inner.items() if path != old and path != renames[old]),
+        *(path for old, path in inner.items() if path not in (old, renames[old])),
         *((folder.new,) if folder is not None else ()),
     ]
     wanted = [*((old, True) for old in renames), *((new, False) for new in dict.fromkeys(news))]
