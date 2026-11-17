@@ -161,7 +161,9 @@ def _recognized(image: str, source: bytes) -> bool:
     """Recognized: a cached DAT/Hasheous hit, or the bytes' SHA1 in a local DAT."""
     if (dat_store.get_match(image) or {}).get("matched"):
         return True
-    return dat_store.lookup_sha1(hashlib.sha1(source, usedforsecurity=False).hexdigest()) is not None  # nosec # nosemgrep: insecure-hash-algorithm-sha1
+    # A content id, not security.
+    digest = hashlib.sha1(source, usedforsecurity=False)  # nosec # nosemgrep
+    return dat_store.lookup_sha1(digest.hexdigest()) is not None
 
 
 def _name(stem: str, n: int) -> str:
@@ -218,7 +220,8 @@ async def _run(job_id: str, plan: dict) -> None:
         kind = patch_engine.patch_format(patch)
         if kind is None:
             raise patch_engine.PatchError("Not an IPS or BPS patch")
-        job.extra_inputs = [{"path": plan["patch"], "sha1": hashlib.sha1(patch, usedforsecurity=False).hexdigest()}]  # nosec # nosemgrep: insecure-hash-algorithm-sha1
+        digest = hashlib.sha1(patch, usedforsecurity=False)  # nosec # nosemgrep
+        job.extra_inputs = [{"path": plan["patch"], "sha1": digest.hexdigest()}]
         await job_manager.update_external_job(job_id, progress=10, message="Reading the Image")
         source = await _step(_read_image, plan, what="reading the Image", job_id=job_id)
         job.input_bytes = len(source)
