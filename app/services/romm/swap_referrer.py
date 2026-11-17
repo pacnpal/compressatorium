@@ -197,16 +197,34 @@ _active_swaps = 0
 _identity_changes = 0
 
 
+# How long a settings save that moves RomM's identity waits for running swaps
+# before it is refused (CodeRabbit 4594841850): a swap stuck on a mount that
+# stopped answering must not hang the request, nor the locks it holds.
+IDENTITY_CHANGE_WAIT_SECONDS = 30.0
+
+
+class SwapsStillRunning(RuntimeError):
+    """A RomM swap was still running when an identity change stopped waiting
+    for it: nothing was changed, try again."""
+
+
 @contextlib.asynccontextmanager
 async def identity_change():
     """Hold off RomM swaps while RomM's identity changes: no new one starts,
     and this waits for those running (an undo outliving its hook included)
     to end. The settings route takes it around the save that moves the
-    instance; it waits, as that route waits for sweeps and the settle pass."""
+    instance. It waits at most ``IDENTITY_CHANGE_WAIT_SECONDS``, then raises
+    :class:`SwapsStillRunning` before the body runs, so nothing is saved
+    while a swap still runs, and lets new swaps start again."""
     global _identity_changes
     _identity_changes += 1
     try:
+        deadline = time.monotonic() + IDENTITY_CHANGE_WAIT_SECONDS
         while _active_swaps:
+            if time.monotonic() >= deadline:
+                raise SwapsStillRunning(
+                    "a RomM swap is still running; try again once it has finished",
+                )
             await asyncio.sleep(0.05)
         yield
     finally:
@@ -307,7 +325,7 @@ def _rom_for(source: str) -> dict | None:
         roms = romm_client.roms(int(pid), with_files=False)
         found.extend(
             rom for rom in roms
-            if rom.get("id") and not rom.get("missing_from_fs")
+            if rom.get("id")
             and rom.get("fs_name") == os.path.basename(source)
             and romm_client.local_path(rom) == real
         )
@@ -316,6 +334,13 @@ def _rom_for(source: str) -> dict | None:
         raise ReferrerError("RomM", f"more than one ROM is {os.path.basename(source)} ({ids})")
     if not found:
         return None
+    if found[0].get("missing_from_fs"):
+        # RomM says the file is gone while it is here: its scan state can't
+        # be trusted, so nothing is renamed and the Source is kept (fail
+        # closed, CodeRabbit 4594841868).
+        raise ReferrerError(
+            "RomM", f"RomM marks ROM {found[0]['id']} ({os.path.basename(source)}) missing",
+        )
     if found[0].get("has_multiple_files"):
         raise ReferrerError(
             "RomM", f"ROM {found[0]['id']} is {os.path.basename(source)} but has several files",
@@ -444,9 +469,14 @@ async def _mutate(func: Callable[..., Any], *args: Any) -> Any:
     future = start_detached_or_own_thread(contextvars.copy_context().run, func, *args)
     try:
         return await asyncio.shield(future)
-    except asyncio.CancelledError:
-        await asyncio.wait({future})
-        raise
+    except asyncio.CancelledError as cancel:
+        # Every further cancel (a shutdown cancelling again during the
+        # hook's grace) waits too: the step ends before anything released
+        # after it can race it (CodeRabbit 4594841855).
+        while not future.done():
+            with contextlib.suppress(asyncio.CancelledError):
+                await asyncio.wait({future})
+        raise cancel
 
 
 def _size_and_sha1(path: str) -> tuple[int, str]:
@@ -518,22 +548,40 @@ def _queue_repin(plan: _Plan) -> bool:
         return False
     # The output is in place already; "" says the path held nothing before
     # this conversion, so the re-pin waits on nothing but RomM's next scan.
-    return bool(repin.record(
+    if not repin.record(
         plan.rom, plan.output, ids, None, pre_fingerprint="", source_path=plan.source,
-    ))
+    ):
+        # Refused (RomM's identity changing, or no row written): the Source
+        # stays rather than lose the metadata (CodeRabbit 4594841873).
+        raise RuntimeError("the re-pin was refused")
+    return True
 
 
 async def _fall_back(plan: _Plan, target: str) -> Applied:
     """The swap can't run (the output is in place): take today's path. The
     Source is deleted by the job as with the switch off, the re-pin carries
     the metadata, and the job and the Ledger say the ROM did not keep its id
-    (CodeRabbit 4593839018). A re-pin that can't be queued keeps the Source."""
+    (CodeRabbit 4593839018). A re-pin that can't be queued keeps the Source.
+
+    Refused, keeping the Source, while RomM's identity is being changed or
+    once the settings no longer name the instance planned against; counted
+    as a running swap while the re-pin is written, so an identity change
+    waits for it (CodeRabbit 4594841887)."""
+    global _active_swaps
+    binding = plan.binding
+    if _identity_changes or (binding is not None and not binding.still_live()):
+        raise ReferrerError(
+            target, f"{FALLBACK}, and RomM's settings changed, so no re-pin was queued",
+        )
+    _active_swaps += 1
     try:
         queued = await _mutate(_queue_repin, plan)
     except Exception as exc:
         raise ReferrerError(
             target, f"{FALLBACK}, and the re-pin couldn't be queued ({exc})",
         ) from exc
+    finally:
+        _active_swaps -= 1
     what = "re-pin queued" if queued else "RomM had no metadata ids to re-pin"
     note = f"{FALLBACK}; {what} ({target})"
     logger.warning("romm_swap: %s", note)

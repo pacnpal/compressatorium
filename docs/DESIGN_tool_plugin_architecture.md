@@ -4117,7 +4117,12 @@ ROM <id>)". The job deletes the Source as today. The note reaches the
 Ledger's record (`note`), the job's message and warning
 (`_SourceDelete.notes`), and a retried delete's outcome reason, which the
 sweep logs and lists under `kept_sources_notes`; a retried delete writes no
-Ledger row of its own. A re-pin that can't be queued keeps the Source. A
+Ledger row of its own. A re-pin that can't be queued keeps the Source, and
+so does one `repin.record` refuses (it returns 0; CodeRabbit 4594841873).
+The fallback is refused, keeping the Source, while RomM's identity is being
+changed or once the settings no longer name the instance `plan` bound to,
+and counts itself in `_active_swaps` while it writes the re-pin, so
+`identity_change()` waits for it (CodeRabbit 4594841887). A
 plain `apply`'s `Applied` result now counts like an async one's: the hook
 keeps it (`_plan_and_apply`) and carries each phase's `removed` and `notes`
 into the outcome (CodeRabbit review 5930768363).
@@ -4181,7 +4186,13 @@ carries RomM's own `detail` text.
   `_delete_source_set` catches that cancel and hands its delete holds and
   output locks to those tasks (`_hand_holds_to`, the same transfer as the
   `outlive` hand-off after the grace) before letting the cancel go on, so
-  they are let go only when the swap's undo ends (Codex 4594286704). The
+  they are let go only when the swap's undo ends (Codex 4594286704). Each
+  `unawaited` entry is a `referrers.HandedOff` (the Referrer, its change and
+  the task), not a bare task: the job adds a done callback per entry
+  (`JobManager._take_late_outcome`) that, when the task ends with a result,
+  adds the Source files it removed to the job's deleted list and its Ledger
+  record to the job's records, so a swap that finishes after the cancel is
+  not reported as nothing done (CodeRabbit 4594841860). The
   undo runs as far as the event loop lets it before the process exits, each
   step journaled; whatever it didn't reach is left for the next run, and a
   parked Source is never removed.
@@ -4204,7 +4215,18 @@ against swaps too: a save that moves the identity runs inside
 keep the Source, "RomM's settings are being changed") and waits for those
 running, undo included, to end. It waits rather than refuses, as the same
 route waits for sweeps (`romm_auto.paused`) and the settle pass
-(`_settle_lock`); each swap is bounded by the conversion's stall bound.
+(`_settle_lock`); each swap is bounded by the conversion's stall bound. The
+wait is bounded too (`IDENTITY_CHANGE_WAIT_SECONDS`): a swap still running
+then raises `SwapsStillRunning`, which the route answers with 409 and
+nothing saved (CodeRabbit 4594841850). A step on its thread (`_mutate`) is
+waited for through every cancel, not just the first, so a second cancel
+never leaves a rename or a move unrecorded (CodeRabbit 4594841855).
+
+*A record RomM marks missing* (CodeRabbit 4594841868). `_rom_for` keeps
+records with `missing_from_fs`: when the record that is the file says it is
+missing while the file is there, RomM's scan state can't be trusted, so the
+swap raises `ReferrerError` and the Source is kept, rather than treating
+the file as one RomM doesn't know.
 
 *A checked output is never discarded* (CodeRabbit 4593970363). The job
 marks its output `placeable` once its checks pass (or none was asked). If
@@ -4236,7 +4258,16 @@ is the only copy (CodeRabbit 4594086355):
   limit), the helper raises `NoThreadAvailable` and the job marks the slot
   kept inline (`StagedOutput.mark_kept`: one small create through the
   slot's descriptor, then the lock goes), or holds the slot if that fails
-  too (CodeRabbit 4594745731). The job's `finally` holds back anything the
+  too (CodeRabbit 4594745731). A free detached slot whose thread the OS
+  refuses is given back and reported as `ProbeCapacityExceeded`
+  (`_probe_in_daemon_thread`), so it takes the same fallback rather than
+  raising a bare `RuntimeError` with the slot lost. Cleanup the caller no
+  longer owns (letting go of locks in `_let_go_in_background`, closing a
+  slot in `_close_stage`, the late set-aside answer) starts through
+  `subprocess_runner.start_detached_eventually`: the same helper, and when
+  no thread can start at all, the same again on the loop every
+  `NO_THREAD_RETRY_SECONDS` until one does, so the locks are let go once a
+  thread frees up rather than dropped (CodeRabbit 4594855525). The job's `finally` holds back anything the
   set-aside raises, a cancel or an error, until every release and the
   terminal notice have run. In the swap, `_mutate` raising
   `NoThreadAvailable` means the step never ran: the swap treats it as that

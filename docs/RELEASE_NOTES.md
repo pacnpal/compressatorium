@@ -33,10 +33,17 @@
   source's name, RomM gets the old name back and the source returns; after,
   the source returns beside the output and RomM keeps the output's name (and
   the ROM its id); and once the source has been deleted (the last step), the
-  swap is simply complete. If that can't finish, the source stays safely set
-  aside in `.compressatorium-stage/park-…` and the swap is recorded; picking it up
-  on the next start comes later (#392), and until then you can move the
-  source back by hand. A checked output that can't be put in place
+  swap is simply complete. If that can't finish, the swap is recorded and
+  the source is kept: set aside in `.compressatorium-stage/park-…` once it was
+  parked, or, when the swap stopped after RomM's rename and before parking,
+  still beside the output under RomM's new name. Picking it up on the next
+  start comes later (#392); until then you can move the source back by hand
+  from whichever of the two it is in. A ROM RomM marks missing while its
+  file is there keeps its source, and so does a delete whose metadata re-pin
+  RomM's settings change stops from being queued. Saving RomM settings that
+  move to another instance waits up to 30 seconds for a running swap, then
+  answers "try again once it has finished" with nothing saved. When the
+  system runs out of threads, locks are let go as soon as one frees up. A checked output that can't be put in place
   (something took its name) is now kept in the hidden staging folder, and
   the job says where, instead of being discarded.
 

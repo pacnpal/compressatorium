@@ -226,7 +226,14 @@ def _probe_in_daemon_thread(func: Callable[[], object]) -> asyncio.Future:
             # reflects probes that are *stuck*, not probes that were started.
             _probe_slots.release()
 
-    threading.Thread(target=_worker, daemon=True, name="fs-probe").start()
+    try:
+        threading.Thread(target=_worker, daemon=True, name="fs-probe").start()
+    except RuntimeError as exc:
+        # The OS thread limit: nothing started, so the slot is given back and
+        # the caller hears what it hears when no slot is free (CodeRabbit
+        # 4594855525).
+        _probe_slots.release()
+        raise ProbeCapacityExceeded(f"no filesystem probe thread could start: {exc}") from exc
     return future
 
 
@@ -802,6 +809,40 @@ class NoThreadAvailable(RuntimeError):
     """No thread could start for :func:`start_detached_or_own_thread`: every
     detached slot is in use and the OS refused a thread of its own. The call
     never ran."""
+
+
+# How long :func:`start_detached_eventually` waits between attempts while no
+# thread can start at all.
+NO_THREAD_RETRY_SECONDS = 1.0
+
+
+def start_detached_eventually(
+    func: Callable, *args: object, **kwargs: object,
+) -> asyncio.Future | None:
+    """:func:`start_detached_or_own_thread`, or, when no thread can start at
+    all (the OS thread limit), the same again on the loop every
+    :data:`NO_THREAD_RETRY_SECONDS` until one does. For cleanup that must
+    happen and that the caller no longer owns, such as letting go of locks
+    (CodeRabbit 4594855525). Returns the started call's future, or None when
+    it was left to the retries. Never raises :class:`NoThreadAvailable`.
+    Must be called on the event loop."""
+    try:
+        return start_detached_or_own_thread(func, *args, **kwargs)
+    except NoThreadAvailable:
+        _cleanup_logger.warning(
+            "No thread could start for %s; trying again every %gs",
+            getattr(func, "__name__", func), NO_THREAD_RETRY_SECONDS,
+        )
+    loop = asyncio.get_running_loop()
+
+    def again() -> None:
+        try:
+            start_detached_or_own_thread(func, *args, **kwargs)
+        except NoThreadAvailable:
+            loop.call_later(NO_THREAD_RETRY_SECONDS, again)
+
+    loop.call_later(NO_THREAD_RETRY_SECONDS, again)
+    return None
 
 
 async def run_detached(

@@ -664,7 +664,10 @@ extension-matching, so a new console never leaves you with an unconvertible row.
 
 1. In RomM, go to **Administration → Client API Tokens** and create one. Grant
    `platforms.read` and `roms.read`, plus `roms.write` if you want Compressatorium
-   to restore metadata after conversion (recommended — see below).
+   to restore metadata after conversion (recommended — see below). To keep the
+   ROM id when converting (see [Keeping the ROM id](#keeping-the-rom-id)), also
+   grant `tasks.run`. RomM hands out `roms.write` and `tasks.run` only to an
+   admin user (or a user in a group that has them), so create the token as one.
 2. Mount RomM's library folder into the Compressatorium container, and make sure
    it's inside a configured Compressatorium volume.
 3. Open **RomM → Settings**, paste the URL, token and library path, and press
@@ -797,7 +800,9 @@ The ROM is found by the RomM Platform folder holding the file, in either RomM
 layout (`roms/<platform>/` or `<platform>/roms/`), subfolders included. A
 file RomM doesn't know as a ROM of its own (not in a Platform folder, or one
 RomM records as part of a folder ROM) converts as usual. One whose ROM can't
-be told (RomM can't be read, or two records claim it) keeps its source.
+be told keeps its source: RomM can't be read, two records claim it, the record
+that is the file says it has several files, or RomM marks that record missing
+while the file is there.
 
 If the source was kept because another job was reading it, the output was
 already put in place, so a later retried delete can't rename RomM's record

@@ -578,8 +578,15 @@ async def test_a_romm_identity_change_waits_for_a_running_swap(vol, romm):
     ))
     try:
         running = asyncio.create_task(convert_routes.job_manager._process_job(job.id))
-        while not renaming.is_set():
+        # Bounded, and never past the job's end (CodeRabbit 4594841908): a
+        # conversion that ends without renaming fails here with its state.
+        for _ in range(500):
+            if renaming.is_set() or running.done():
+                break
             await asyncio.sleep(0.02)
+        if not renaming.is_set():
+            await running
+            pytest.fail(f"the job ended without renaming: {job.status} {job.error_message}")
         save = asyncio.create_task(romm_routes._save_settings({"url": other.url}))
         await asyncio.sleep(0.4)
         assert not save.done()
@@ -592,6 +599,142 @@ async def test_a_romm_identity_change_waits_for_a_running_swap(vol, romm):
     assert romm.roms[ROM_ID]["fs_name"] == "Game.chd"
     assert other.renames == []
     assert [r["state"] for r in _journal()] == ["done"]
+
+
+@pytest.mark.asyncio
+async def test_an_identity_change_waits_for_a_stuck_swap_only_so_long(
+    vol, romm, monkeypatch,
+):
+    """CodeRabbit 4594841850: a swap stuck on a mount that stopped answering
+    must not hang the settings save. Past its bound the save is refused, a
+    409 to try again, and nothing is saved."""
+    from fastapi import HTTPException
+    from routes import romm as romm_routes
+    from services.romm import settings as romm_settings
+    from services.romm import swap_referrer
+
+    other = FakeRomm(platforms=[PS2], library=vol / "romm").start()
+    monkeypatch.setattr(swap_referrer, "_active_swaps", 1)  # one that never ends
+    monkeypatch.setattr(swap_referrer, "IDENTITY_CHANGE_WAIT_SECONDS", 0.3)
+    try:
+        with pytest.raises(HTTPException) as refused:
+            await asyncio.wait_for(romm_routes._save_settings({"url": other.url}), 5)
+    finally:
+        other.stop()
+
+    assert refused.value.status_code == 409
+    assert "swap" in str(refused.value.detail).lower()
+    assert romm_settings.effective()["url"] == romm.url
+    assert swap_referrer._identity_changes == 0
+
+
+@pytest.mark.asyncio
+async def test_a_step_finishes_before_a_second_cancel_goes_on(monkeypatch):
+    """CodeRabbit 4594841855: a step is never abandoned, not even by a second
+    cancel landing while ``_mutate`` waits for it: the cancel goes on only
+    once the step has ended, so nothing released after it races it."""
+    from services.romm import swap_referrer
+
+    done = threading.Event()
+
+    def slow_step():
+        time.sleep(0.4)
+        done.set()
+
+    task = asyncio.create_task(swap_referrer._mutate(slow_step))
+    await asyncio.sleep(0.05)
+    task.cancel()
+    await asyncio.sleep(0.05)
+    task.cancel()  # a second cancel, while it waits for the step
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert done.is_set()
+
+
+@pytest.mark.asyncio
+async def test_a_removal_handed_off_at_shutdown_still_reaches_the_job(
+    vol, romm, monkeypatch,
+):
+    """CodeRabbit 4594841860: a shutdown cancels the job's task after the
+    swap deleted the Source, while its bookkeeping still runs. The swap's
+    result is still taken: the Source is recorded as deleted, and its record
+    is kept, once the handed-off swap ends."""
+    from services.romm import swap_referrer
+
+    platform = _platform(vol)
+    job = await convert_routes.create_job(JobCreateRequest(
+        file_path=str(platform / "Game.iso"), mode=ConversionMode.CREATEDVD,
+        duplicate_action=DuplicateAction.SKIP, delete_on_verify=True,
+    ))
+    loop = asyncio.get_running_loop()
+    running = asyncio.create_task(convert_routes.job_manager._process_job(job.id))
+    real_settle = swap_referrer._settle_repin
+
+    def shut_down_then_settle(output, rom_id):
+        loop.call_soon_threadsafe(running.cancel)
+        time.sleep(0.3)
+        return real_settle(output, rom_id)
+
+    monkeypatch.setattr(swap_referrer, "_settle_repin", shut_down_then_settle)
+    with pytest.raises(asyncio.CancelledError):
+        await running
+    for _ in range(40):
+        if job.deleted_paths:
+            break
+        await asyncio.sleep(0.05)
+
+    assert job.deleted_paths == [str(platform / "Game.iso")]
+    assert [r["status"] for r in job.referrers_updated if r["referrer"] == "romm_swap"] == [
+        "updated",
+    ]
+    assert not (platform / "Game.iso").exists()
+
+
+@pytest.mark.asyncio
+async def test_a_rom_romm_marks_missing_keeps_the_source(vol, romm):
+    """CodeRabbit 4594841868: RomM's ``missing_from_fs`` can be stale (the
+    file is back, RomM hasn't rescanned). A record that is the Source but is
+    marked missing is not taken as "no ROM": the Source is kept, so its id is
+    never left behind on a missing name."""
+    platform = _platform(vol)
+    romm.roms[ROM_ID]["missing_from_fs"] = True
+
+    job = await _convert(platform / "Game.iso")
+
+    assert job.warning and job.warning.startswith("converted, source kept"), job.warning
+    assert "missing" in job.warning
+    assert (platform / "Game.iso").read_bytes() == SOURCE_BYTES
+    assert romm.renames == []
+    assert job.deleted_paths == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("why", ["refused", "identity_changing"])
+async def test_a_fallback_that_cant_queue_its_re_pin_keeps_the_source(
+    vol, romm, monkeypatch, why,
+):
+    """CodeRabbit 4594841873, 4594841887: the fallback (the output placed
+    before the hook) deletes the Source only once its re-pin is queued. A
+    re-pin record a newer plan refuses, or one written while RomM's identity
+    is changing (the same gate as swaps), keeps the Source."""
+    from services.romm import repin as romm_repin
+    from services.romm import swap_referrer
+
+    platform = _platform(vol)
+
+    async def no_staging(self, job, slot, write_path):
+        return None
+
+    monkeypatch.setattr(job_manager_module.JobManager, "_staged_placement", no_staging)
+    if why == "refused":
+        monkeypatch.setattr(romm_repin, "record", lambda *args, **kwargs: 0)
+    else:
+        monkeypatch.setattr(swap_referrer, "_identity_changes", 1)
+    job = await _convert(platform / "Game.iso")
+
+    assert job.warning and job.warning.startswith("converted, source kept"), job.warning
+    assert (platform / "Game.iso").read_bytes() == SOURCE_BYTES
+    assert job.deleted_paths == []
 
 
 @pytest.mark.asyncio
@@ -1147,16 +1290,74 @@ async def test_a_set_aside_with_no_thread_at_all_marks_the_slot_and_ends_the_job
         file_path=str(platform / "Game.iso"), mode=ConversionMode.CREATEDVD,
         duplicate_action=DuplicateAction.SKIP, delete_on_verify=True,
     ))
+    monkeypatch.setattr(subprocess_runner, "NO_THREAD_RETRY_SECONDS", 0.01)
     with contextlib.suppress(Exception):
         await convert_routes.job_manager._process_job(job.id)
 
     assert job.id in convert_routes.job_manager._terminal_announced
-    assert not lock_manager.is_locked(str(platform / "Game.chd"))
-    assert not lock_manager.is_locked(os.path.realpath(platform / "Game.iso"))
+    # The locks are let go once a thread can start again (CodeRabbit
+    # 4594855525): never dropped while none can.
+    monkeypatch.setattr(threading.Thread, "start", real_start)
+    held = (str(platform / "Game.chd"), os.path.realpath(platform / "Game.iso"))
+    for _ in range(300):
+        if not any(lock_manager.is_locked(path) for path in held):
+            break
+        await asyncio.sleep(0.01)
+    assert not any(lock_manager.is_locked(path) for path in held)
     (kept,) = (platform / STAGE_DIR_NAME).glob("slot-*/Game.chd")
     assert kept.read_bytes() == OUTPUT_BYTES
     assert (kept.parent / partial_writes.KEEP_MARKER).exists()
     assert f"kept at {kept}" in job.message
+
+
+@pytest.mark.asyncio
+async def test_a_detached_thread_that_cant_start_frees_its_slot_and_falls_back(monkeypatch):
+    """CodeRabbit 4594855525: a free detached slot whose thread the OS
+    refuses gives the slot back and falls back to a thread of its own, as
+    when no slot is free, instead of raising a bare RuntimeError."""
+    from services import subprocess_runner
+
+    real_start = threading.Thread.start
+
+    def refuse_probes(self):
+        if self.name == "fs-probe":
+            raise RuntimeError("can't start new thread")
+        return real_start(self)
+
+    free = subprocess_runner._probe_slots._value
+    monkeypatch.setattr(threading.Thread, "start", refuse_probes)
+    future = subprocess_runner.start_detached_or_own_thread(lambda: 7)
+    assert await asyncio.wait_for(future, 5) == 7
+    assert subprocess_runner._probe_slots._value == free
+
+
+@pytest.mark.asyncio
+async def test_letting_go_with_no_thread_at_all_still_releases_the_locks(monkeypatch):
+    """CodeRabbit 4594855525: when no thread can start at all, letting go of
+    locks the job no longer owns neither raises nor drops them: it tries
+    again until a thread starts, and the locks are let go."""
+    from services import subprocess_runner
+
+    real_start = threading.Thread.start
+    refusing = True
+    released: list[list[str]] = []
+
+    def thread_limit(self):
+        if refusing:
+            raise RuntimeError("can't start new thread")
+        return real_start(self)
+
+    monkeypatch.setattr(subprocess_runner, "NO_THREAD_RETRY_SECONDS", 0.01)
+    monkeypatch.setattr(job_manager_module, "_let_go", lambda paths: released.append(paths))
+    monkeypatch.setattr(threading.Thread, "start", thread_limit)
+    await job_manager_module.JobManager._let_go_in_background(["/held/Game.chd"], 0.1)
+    assert released == []
+    refusing = False
+    for _ in range(300):
+        if released:
+            break
+        await asyncio.sleep(0.01)
+    assert released == [["/held/Game.chd"]]
 
 
 @pytest.mark.asyncio
@@ -1173,7 +1374,6 @@ async def test_a_set_aside_with_no_detached_thread_free_still_keeps_the_output(
         raise subprocess_runner.ProbeCapacityExceeded("no detached thread free")
 
     monkeypatch.setattr(subprocess_runner, "start_detached", no_slot_free)
-    monkeypatch.setattr(job_manager_module, "start_detached", no_slot_free)
     await test_a_cancel_before_the_set_aside_starts_still_keeps_the_output(
         vol, romm, monkeypatch,
     )

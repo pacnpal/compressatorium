@@ -1797,12 +1797,17 @@ async def _save_settings(submitted: dict) -> dict:
         # its undo included, and starts none meanwhile: a swap renames a ROM
         # by id, which the new instance reuses for another game (Codex
         # 4594286722). It waits, as this route waits for sweeps and the
-        # settle pass; swaps are bounded by the conversion's stall bound.
-        async with (
-            romm_swap_referrer.identity_change() if changed else contextlib.nullcontext()
-        ):
-            values = await romm_settings.save(submitted, cleanup_pending=changed)
-            cleared = await _run_identity_cleanup() if owed else 0
+        # settle pass, but only so long: a swap stuck on a mount that stopped
+        # answering gets a 409 to try again, with nothing saved (CodeRabbit
+        # 4594841850).
+        try:
+            async with (
+                romm_swap_referrer.identity_change() if changed else contextlib.nullcontext()
+            ):
+                values = await romm_settings.save(submitted, cleanup_pending=changed)
+                cleared = await _run_identity_cleanup() if owed else 0
+        except romm_swap_referrer.SwapsStillRunning as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         if cleared:
             logger.info(
                 "romm: RomM instance or library changed; cleared the conversion "

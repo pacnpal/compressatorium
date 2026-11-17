@@ -55,8 +55,8 @@ from services.subprocess_runner import (
     run_detached_mutation,
     run_detached_undoable,
     run_detached_within_stall_bound,
-    start_detached,
     NoThreadAvailable,
+    start_detached_eventually,
     start_detached_or_own_thread,
 )
 from services.tools import ModeKind, registry
@@ -3246,7 +3246,7 @@ class JobManager:
         def answered(done: asyncio.Future) -> None:
             if state["waiting"] or done.cancelled() or done.exception() is not None:
                 return
-            threading.Thread(target=late, args=(done.result(),), daemon=True).start()
+            start_detached_eventually(late, done.result())
 
         def stop_waiting() -> None:
             state["waiting"] = False
@@ -3367,10 +3367,8 @@ class JobManager:
             finally:
                 slot.close()
 
-        try:
-            worker = start_detached(discard)
-        except ProbeCapacityExceeded:
-            threading.Thread(target=discard, daemon=True).start()
+        worker = start_detached_eventually(discard)
+        if worker is None:
             return
         try:
             await asyncio.wait_for(asyncio.shield(worker), _CANONICAL_PROBE_SECONDS)
@@ -3816,7 +3814,7 @@ class JobManager:
         # Referrers (.m3u, ...) move to the output before the Source goes; if
         # any can't, the Source stays (#295). The Image's Library decides
         # which opt-in Referrers run (#383).
-        unawaited: list[asyncio.Task] = []
+        unawaited: list[referrers.HandedOff] = []
         try:
             referrer_outcome = await referrers.update_before_source_removal(
                 source_for_delete,
@@ -3833,9 +3831,16 @@ class JobManager:
             # abandoned one does below (Codex 4594286704).
             if unawaited:
                 self._hand_holds_to(
-                    referrers.ReferrerOutcome(lingering=unawaited), owner_id,
-                    travelling_locks,
+                    referrers.ReferrerOutcome(lingering=[h.task for h in unawaited]),
+                    owner_id, travelling_locks,
                 )
+                # What each one did, when it ends, still reaches the job: a
+                # Source the swap removed is recorded as deleted, with its
+                # record (CodeRabbit 4594841860).
+                for handed in unawaited:
+                    handed.task.add_done_callback(
+                        self._take_late_outcome(handed, deleted, hook_records),
+                    )
             raise
         if hook_records is not None:
             hook_records[:] = referrer_outcome.records
@@ -3909,6 +3914,28 @@ class JobManager:
         await self._release_delete_holds_in_background(owner_id, probe_seconds)
         await self._clear_source_records(file_path, probe_seconds)
         return outcome
+
+    @staticmethod
+    def _take_late_outcome(
+        handed: referrers.HandedOff, deleted: list[str], records: list[dict] | None,
+    ) -> Callable[[asyncio.Future], None]:
+        """A done callback that records what an apply handed off at shutdown
+        did once it ends: the Source files it removed go to *deleted*, its
+        Ledger record to *records*. Runs on the loop; never raises."""
+
+        def ended(_task: asyncio.Future) -> None:
+            outcome = handed.outcome()
+            if outcome is None:
+                return
+            deleted.extend(p for p in outcome.removed if p not in deleted)
+            if records is not None:
+                records.extend(outcome.records)
+            logger.info(
+                "A %s update handed off at shutdown ended: %s", handed.referrer_id,
+                ", ".join(outcome.removed) or "nothing removed",
+            )
+
+        return ended
 
     def _hand_holds_to(
         self, outcome: referrers.ReferrerOutcome, owner_id: str,
@@ -4013,11 +4040,11 @@ class JobManager:
         if not paths:
             return
         bound = KEPT_DELETE_PROBE_SECONDS if seconds is None else seconds
-        try:
-            worker = start_detached(_let_go, paths)
-        except ProbeCapacityExceeded:
-            # No detached slot: a thread of its own, still never the pool.
-            threading.Thread(target=_let_go, args=(paths,), daemon=True).start()
+        # No detached slot: a thread of its own, still never the pool; no
+        # thread at all: tried again until one starts, so the locks are never
+        # left held (CodeRabbit 4594855525).
+        worker = start_detached_eventually(_let_go, paths)
+        if worker is None:
             return
         try:
             await asyncio.wait_for(asyncio.shield(worker), bound)

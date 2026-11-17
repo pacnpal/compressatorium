@@ -358,6 +358,27 @@ class _Abandoned(ReferrerError):
         self.task = task
 
 
+@dataclass(frozen=True)
+class HandedOff:
+    """An async apply still running when the hook's own awaiter was cancelled
+    (a shutdown, #391): the caller hands it its holds and, when it ends,
+    takes what it did (:meth:`outcome`)."""
+
+    referrer_id: str
+    change: ReferrerChange
+    task: asyncio.Task
+
+    def outcome(self) -> ReferrerOutcome | None:
+        """What the ended apply did, as the hook would have recorded it, or
+        None when it failed or was cancelled."""
+        task = self.task
+        if not task.done() or task.cancelled() or task.exception() is not None:
+            return None
+        outcome = ReferrerOutcome()
+        outcome._updated(self.referrer_id, self.change, task.result())
+        return outcome
+
+
 # Applies nobody awaits any more, kept referenced until they end: the loop
 # holds only weak references to tasks, and one collected mid-cleanup would
 # never run its `finally` nor release the holds handed to it.
@@ -388,7 +409,7 @@ def _log_its_end(referrer_id: str, target: str) -> Callable[[asyncio.Task], None
 async def _await_bounded(
     referrer: Referrer, change: ReferrerChange, *, guard: WriteGuard | None,
     cancel_event: asyncio.Event | None, bound: float | None,
-    unawaited: list[asyncio.Task] | None = None,
+    unawaited: list[HandedOff] | None = None,
 ) -> object:
     """Await an async apply on the loop, bounded and raced against Cancel,
     and return what it returned.
@@ -426,8 +447,9 @@ async def _await_bounded(
         _let_it_end(task, referrer.id, change.target)
         if not task.done() and unawaited is not None:
             # This awaiter is cancelled (a shutdown) while the apply still
-            # cleans up: the caller hands it its holds, as ``outlive`` does.
-            unawaited.append(task)
+            # cleans up: the caller hands it its holds, as ``outlive`` does,
+            # and takes its result when it ends (CodeRabbit 4594841860).
+            unawaited.append(HandedOff(referrer.id, change, task))
         raise
     finally:
         if stop is not None:
@@ -448,7 +470,7 @@ async def _await_bounded(
 async def _apply_pending(
     outcome: ReferrerOutcome, pending: list[tuple[Referrer, ReferrerChange]], *,
     guard: WriteGuard | None, cancel_event: asyncio.Event | None, bound: float | None,
-    unawaited: list[asyncio.Task] | None = None,
+    unawaited: list[HandedOff] | None = None,
 ) -> None:
     """Apply a phase's async changes in order; the first failure stops it."""
     for referrer, change in pending:
@@ -501,7 +523,7 @@ async def update_before_source_removal(
     image_path: str, renames: Mapping[str, str], *, library=None,
     cancel_event=None, bound: float | None = None,
     placement: StagedPlacement | None = None,
-    unawaited: list[asyncio.Task] | None = None,
+    unawaited: list[HandedOff] | None = None,
 ) -> ReferrerOutcome:
     """Run every Referrer that is on for an Image whose Source is about to be removed.
 
@@ -563,7 +585,7 @@ async def _run_phases(
     outcome: ReferrerOutcome, phases: list[list[Referrer]], image_path: str,
     renames: dict[str, str], abandoned: threading.Event, *,
     cancel_event, bound: float | None, placement: StagedPlacement | None = None,
-    unawaited: list[asyncio.Task] | None = None,
+    unawaited: list[HandedOff] | None = None,
 ) -> None:
     """The hook's phase loop, filling *outcome*. Raises only on a cancel of
     the awaiter, after setting *abandoned*."""
@@ -632,6 +654,7 @@ async def plan_changes_bounded(
 
 __all__ = [
     "Applied",
+    "HandedOff",
     "Phase",
     "Referrer",
     "ReferrerChange",
