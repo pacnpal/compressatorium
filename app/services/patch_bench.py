@@ -33,7 +33,6 @@ and its Ledger row is written by the usual terminal listener.
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import os
 import re
 import secrets
@@ -51,6 +50,7 @@ from services.archive_members import read_archive_members
 from services.job_manager import job_manager
 from services.patch_engine import PatchError, apply_patch, patch_kind
 from services.romz import romz_service
+from services.stream_digest import new_hasher
 from services.subprocess_runner import (
     ConversionCancelled,
     ReadCancelled,
@@ -138,6 +138,13 @@ def uploads_dir() -> Path:
     return Path(settings.data_dir) / UPLOAD_FOLDER
 
 
+def _sha1(data: bytes) -> str:
+    """The SHA1 a DAT names a file by: an identity, not a security check."""
+    hasher = new_hasher("sha1")
+    hasher.update(data)
+    return hasher.hexdigest()
+
+
 def _limit(name: str) -> int:
     return max(0, int(getattr(settings, name, 0) or 0))
 
@@ -164,7 +171,7 @@ async def save_upload(name: str, read: Callable[[int], Awaitable[bytes]]) -> dic
     cap = _limit("patch_max_patch_size")
     await run_in_threadpool(folder.mkdir, parents=True, exist_ok=True)
     fd, staged = await run_in_threadpool(short_temp_file, str(folder), prefix=".upload-")
-    digest = hashlib.sha1()
+    digest = new_hasher("sha1")
     head = b""
     size = 0
     try:
@@ -298,7 +305,9 @@ async def start(
     packer = romz_service.sevenzip_path
     if not await run_in_threadpool(shutil.which, packer):
         raise PatchRefused(
-            503, f"The 7z packer isn't available here ({packer}), so the patched ROM can't be packed",
+            503,
+            f"The 7z packer isn't available here ({packer}), "
+            "so the patched ROM can't be packed",
         )
     name = os.path.basename(image.member or image.disk)
     job = job_manager.create_external_job(
@@ -372,7 +381,7 @@ async def _patch(job_id: str, image: _Image, patch: _Patch) -> None:
         job_id, patch.read, _limit("patch_max_patch_size"), what="reading the patch",
     )
     job.extra_inputs = [{
-        "kind": "patch", "path": patch.path, "sha1": hashlib.sha1(patch_bytes).hexdigest(),
+        "kind": "patch", "path": patch.path, "sha1": _sha1(patch_bytes),
     }]
 
     await _step(job_id, 10, "Reading the ROM")
@@ -382,7 +391,9 @@ async def _patch(job_id: str, image: _Image, patch: _Patch) -> None:
         )
     else:
         rom_name = os.path.basename(image.disk)
-        source = await _detached(job_id, _read_in_volume, image.disk, rom_cap, what="reading the ROM")
+        source = await _detached(
+            job_id, _read_in_volume, image.disk, rom_cap, what="reading the ROM",
+        )
     job.input_bytes = len(source)
     job.platform = await run_in_threadpool(_platform, image.path)
 
@@ -478,7 +489,7 @@ def _recognized(image_path: str, data: bytes) -> bool:
     from services.dat_store import dat_store
 
     try:
-        if dat_store.lookup_sha1(hashlib.sha1(data).hexdigest()) is not None:
+        if dat_store.lookup_sha1(_sha1(data)) is not None:
             return True
     except MultipleResultsFound:
         return True  # named by more than one DAT
