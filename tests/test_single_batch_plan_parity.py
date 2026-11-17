@@ -135,6 +135,15 @@ def _cases():
         build_image(path, layout="XISO", exe="default.xex")
         return str(path)
 
+    def container(tmp_path: Path, name: str) -> str:
+        """A synthetic PBP, CIA or CCI by its extension, as rom-converto takes (#423)."""
+        from . import rom_converto_fixtures as fx
+
+        build = {".pbp": fx.pbp_bytes, ".cia": fx.cia_bytes, ".cci": fx.cci_bytes}
+        path = tmp_path / name
+        path.write_bytes(build[path.suffix]())
+        return str(path)
+
     def exodos_game(tmp_path: Path, name: str) -> str:
         """An eXoDOS-shaped game zip plus its template in the fixture's tree."""
         template = tmp_path / "!dos" / "Abaron" / "dosbox.conf"
@@ -297,6 +306,34 @@ def _cases():
             "zar_bad_ext_reject",  # ROM_CONVERTO_BAD_EXTENSION
             lambda t: write(t, "game.wud"),
             ConversionMode.ZAR_COMPRESS,
+            DuplicateAction.SKIP,
+            "reject",
+        ),
+        (
+            "pbp_to_iso_accept",
+            lambda t: container(t, "game.pbp"),
+            ConversionMode.PBP_TO_ISO,
+            DuplicateAction.SKIP,
+            "accept",
+        ),
+        (
+            "cia_to_cci_accept",
+            lambda t: container(t, "game.cia"),
+            ConversionMode.CIA_TO_CCI,
+            DuplicateAction.SKIP,
+            "accept",
+        ),
+        (
+            "cci_to_cia_accept",
+            lambda t: container(t, "game.cci"),
+            ConversionMode.CCI_TO_CIA,
+            DuplicateAction.SKIP,
+            "accept",
+        ),
+        (
+            "cia_not_cia_reject",  # ROM_CONVERTO_NOT_CIA
+            lambda t: write(t, "game.cia"),
+            ConversionMode.CIA_TO_CCI,
             DuplicateAction.SKIP,
             "reject",
         ),

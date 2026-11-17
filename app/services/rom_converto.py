@@ -1,9 +1,18 @@
 """Service wrapper for rom-converto (DevYukine/rom-converto), the converter RomM ships.
 
 One binary that converts several unrelated formats. This app runs the version
-RomM pins, v0.24.0, and uses it only for what no other tool here does. The
-first mode is Xbox 360 ISO -> ZAR (Xenia's ZArchive); PSP PBP -> ISO and 3DS
-CIA <-> CCI come later under the same plugin (#420).
+RomM pins, v0.24.0, and uses it only for what no other tool here does: Xbox 360
+ISO -> ZAR (Xenia's ZArchive, #422), PSP PBP -> ISO and 3DS CIA <-> CCI (#423).
+One table (``_CALLS``) says how each mode runs; every mode goes through the
+same ``convert``: a private work folder, then a move into place.
+
+For the PSP and 3DS modes (#423): ``psp to-iso IN OUT`` and ``ctr convert IN
+OUT [--trim]`` (the direction comes from the input's extension, so the work
+folder product is named ``.3ds`` or ``.cia``; the CCI is placed as ``.cci``,
+trimmed). rom-converto carries the 3DS common keys and takes no key or seed
+file; an ``Error:`` line about keys or a seed is said plainly
+(:data:`KEYS_MESSAGE`). Their outputs have no rom-converto check, so the
+container check reads their structure in Python (``rom_converto_formats``).
 
 What the spike (#421) recorded about v0.24.0, and what this module does about
 it:
@@ -37,10 +46,12 @@ import shutil
 import threading
 import uuid
 from collections.abc import AsyncGenerator
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
 from logging_setup import get_logger
+from services import rom_converto_formats as formats
 from services.extract_xiso import XISO_VERIFY_EXTENSIONS, probe_console
 from services.output_placement import OutputPlacement
 from services.subprocess_runner import (
@@ -77,6 +88,71 @@ ZAR_INPUT_EXTENSIONS = frozenset({".iso"})
 ZAR_OUTPUT_EXTENSION = ".zar"
 ZAR_VERIFY_EXTENSIONS = frozenset({ZAR_OUTPUT_EXTENSION})
 
+# PSP PBP -> ISO and 3DS CIA <-> CCI (#423). Their outputs can't be
+# Round-tripped against the Source (a converted CIA is unsigned with a zero
+# title key, and nothing turns an ISO back into its PBP), so the modes use the
+# Recognized proof (``ModeSpec.delete_proof``).
+PBP_MODE = "pbp_to_iso"
+CIA_TO_CCI_MODE = "cia_to_cci"
+CCI_TO_CIA_MODE = "cci_to_cia"
+PBP_INPUT_EXTENSIONS = formats.PBP_EXTENSIONS
+CIA_INPUT_EXTENSIONS = formats.CIA_EXTENSIONS
+CCI_INPUT_EXTENSIONS = formats.CCI_EXTENSIONS
+# The extensions each output is checked under: ISO for PBP, CIA, and CCI as
+# this app writes it (`.cci`, the extension RomM's `cci` target writes) and as
+# rom-converto writes it (`.3ds`).
+CONTAINER_VERIFY_EXTENSIONS = frozenset({".iso", ".cia", ".cci", ".3ds"})
+VERIFY_EXTENSIONS = ZAR_VERIFY_EXTENSIONS | CONTAINER_VERIFY_EXTENSIONS
+
+
+@dataclass(frozen=True)
+class _ModeCall:
+    """How one mode runs: the subcommand, the product's name in the work
+    folder, and what to call the format in messages."""
+
+    command: tuple[str, ...]
+    inputs: frozenset[str]
+    output_ext: str
+    work_ext: str  # the name rom-converto writes in the work folder
+    label: str
+    source_label: str  # what the Source must be, for a refusal
+    start: str
+    done: str
+    extra: tuple[str, ...] = ()
+
+
+_CALLS: dict[str, _ModeCall] = {
+    ZAR_MODE: _ModeCall(
+        ("xenon", "compress"), ZAR_INPUT_EXTENSIONS, ZAR_OUTPUT_EXTENSION,
+        ZAR_OUTPUT_EXTENSION, "ZAR", "an Xbox 360 disc image",
+        "Starting ZAR compression...", "Compressed Xbox 360 image to ZAR",
+    ),
+    PBP_MODE: _ModeCall(
+        ("psp", "to-iso"), PBP_INPUT_EXTENSIONS, ".iso", ".iso", "ISO",
+        "a PSP game PBP", "Starting PBP to ISO...", "Converted PSP PBP to ISO",
+    ),
+    CIA_TO_CCI_MODE: _ModeCall(
+        # `.3ds` in the work folder is the name the spike ran; the output is
+        # placed as `.cci`. Trimmed: a padded CCI is the card's full size
+        # (128 MiB for a 1 MiB homebrew), and emulators read a trimmed one.
+        ("ctr", "convert"), CIA_INPUT_EXTENSIONS, ".cci", ".3ds", "CCI", "a CIA",
+        "Starting CIA to CCI...", "Converted 3DS CIA to CCI", extra=("--trim",),
+    ),
+    CCI_TO_CIA_MODE: _ModeCall(
+        ("ctr", "convert"), CCI_INPUT_EXTENSIONS, ".cia", ".cia", "CIA", "a CCI",
+        "Starting CCI to CIA...", "Converted 3DS CCI to CIA",
+    ),
+}
+
+# An `Error:` line about keys or seeds (#423): rom-converto 0.24.0 carries its
+# common keys and takes no key or seed file, so an input that needs one it
+# doesn't have can only fail. The spike saw none; the message is ready for it.
+_KEYS_ERROR = re.compile(r"\b(keys?|seed(db)?|decrypt\w*|title ?key|crypto)\b", re.IGNORECASE)
+KEYS_MESSAGE = (
+    "it needs keys or a seed this app doesn't have. The app never downloads or "
+    "ships keys or seeds, and rom-converto has only its own built-in common keys"
+)
+
 # Why the ZAR mode never deletes its Source (ruling 1 on #422, spike #421).
 ZAR_SOURCE_KEPT_REASON = (
     "A ZAR holds the disc's files, not the disc itself, and rom-converto "
@@ -107,6 +183,14 @@ def _env() -> dict[str, str]:
     return {**os.environ, "NO_COLOR": "1"}
 
 
+def _failure_message(error: str) -> str:
+    """A failed run's message from rom-converto's first ``Error:`` line, saying
+    plainly when the input needs keys or a seed this app doesn't have."""
+    if _KEYS_ERROR.search(error):
+        return f"rom-converto could not convert this file: {KEYS_MESSAGE}. It said: {error}"
+    return f"rom-converto failed: {error}"
+
+
 def _first_error(output: str) -> str | None:
     for line in output.splitlines():
         line = line.strip()
@@ -124,6 +208,22 @@ def _probe_xbox360(path: str, size: int, mtime_ns: int) -> bool:
     "not an Xbox 360 image".
     """
     return probe_console(path) == "Xbox 360"
+
+
+@lru_cache(maxsize=4096)
+def _probe_container(path: str, size: int, mtime_ns: int) -> str | None:
+    """:func:`rom_converto_formats.source_problem`, cached on (path, size, mtime).
+
+    As for :func:`_probe_xbox360`, a read error propagates and is never cached.
+    """
+    return formats.source_problem(path)
+
+
+def _call(mode: str) -> _ModeCall:
+    try:
+        return _CALLS[mode]
+    except KeyError:
+        raise ValueError(f"Unsupported rom-converto mode: {mode}") from None
 
 
 class RomConvertoService:
@@ -240,6 +340,35 @@ class RomConvertoService:
             return False
 
     @staticmethod
+    def is_container_source(path: str) -> bool:
+        """Whether ``path`` is a PSP game PBP, a CIA or a CCI, by its header.
+
+        The extension says which (``rom_converto_formats.source_problem``).
+        Cached on path, size and mtime. Never raises.
+        """
+        try:
+            st = os.stat(path)
+            return _probe_container(path, st.st_size, st.st_mtime_ns) is None
+        except OSError:
+            return False
+
+    def is_source(self, path: str) -> bool:
+        """Whether any rom-converto mode converts ``path``: an Xbox 360 ``.iso``,
+        or a PBP, CIA or CCI by its content. Never raises."""
+        if match_extension(path, ZAR_INPUT_EXTENSIONS) is not None:
+            return self.is_zar_source(path)
+        return self.is_container_source(path)
+
+    def is_source_for(self, mode: str, path: str) -> bool:
+        """Whether ``mode`` converts ``path``: its extension, then its content."""
+        call = _CALLS.get(mode)
+        if call is None or match_extension(path, call.inputs) is None:
+            return False
+        if mode == ZAR_MODE:
+            return self.is_zar_source(path)
+        return self.is_container_source(path)
+
+    @staticmethod
     def _output_stem(name: str) -> str:
         """``Game.iso`` -> ``Game`` (and the xiso tool's ``Game.xiso.iso`` -> ``Game``)."""
         matched = match_extension(name, set(XISO_VERIFY_EXTENSIONS) | ZAR_INPUT_EXTENSIONS)
@@ -253,9 +382,10 @@ class RomConvertoService:
         output_dir: str | None = None,
         *,
         treat_as_stem: bool = False,
+        output_ext: str = ZAR_OUTPUT_EXTENSION,
     ) -> str:
         input_p = Path(input_path)
-        filename = f"{self._output_stem(input_p.name)}{ZAR_OUTPUT_EXTENSION}"
+        filename = f"{self._output_stem(input_p.name)}{output_ext}"
         if output_dir:
             return str(Path(output_dir) / filename)
         return str(input_p.parent / filename)
@@ -268,9 +398,19 @@ class RomConvertoService:
         *,
         treat_as_stem: bool = False,
     ) -> str:
-        if mode != ZAR_MODE:
-            raise ValueError(f"Unsupported rom-converto mode: {mode}")
-        return self.get_output_path(input_path, output_dir, treat_as_stem=treat_as_stem)
+        return self.get_output_path(
+            input_path, output_dir, treat_as_stem=treat_as_stem,
+            output_ext=_call(mode).output_ext,
+        )
+
+    def detect_output_path(self, input_path: str) -> str | None:
+        """Where a conversion of ``input_path`` would be written beside it, by
+        extension alone (no content read), or None for a file no mode takes.
+        For the "output exists" badge."""
+        for mode, call in _CALLS.items():
+            if match_extension(input_path, call.inputs) is not None:
+                return self.get_output_path_for_mode(mode, input_path)
+        return None
 
     # --- convert ------------------------------------------------------------
 
@@ -291,31 +431,37 @@ class RomConvertoService:
         compression: str | None = None,
         cancel_event: asyncio.Event | None = None,
     ) -> AsyncGenerator[dict, None]:
-        """Compress an Xbox 360 image to a ZAR at ``output_path``, yielding progress."""
-        if mode != ZAR_MODE:
-            raise ValueError(f"Unsupported rom-converto mode: {mode}")
+        """Convert ``input_path`` in ``mode`` into ``output_path``, yielding progress.
+
+        Every mode runs the same way: rom-converto writes into a private work
+        folder beside the output, and the product is moved into place, never
+        over anything.
+        """
+        call = _call(mode)
         # Re-checked: the file may have changed since planning. Bounded like
         # every read before the subprocess (whose stall watchdog isn't up yet).
         try:
             is_source = await run_detached_within_stall_bound(
-                self.is_zar_source, input_path,
-                what="Reading the Xbox 360 image header", cancel_event=cancel_event,
+                self.is_source_for, mode, input_path,
+                what=f"Reading the header of {os.path.basename(input_path)}",
+                cancel_event=cancel_event,
             )
         except ReadCancelled as exc:
             raise ConversionCancelled("Conversion cancelled") from exc
         if not is_source:
-            raise ValueError(f"Not an Xbox 360 disc image: {input_path}")
+            raise ValueError(f"Not {call.source_label}: {input_path}")
 
-        yield {"progress": 1, "message": "Starting ZAR compression..."}
+        yield {"progress": 1, "message": call.start}
         out_dir = os.path.dirname(os.path.abspath(output_path))
         # Named up front so the sweep below always knows it, even when creating
         # it is abandoned half-way. Hidden, beside the output, so the final move
         # is a same-filesystem rename.
         work_dir = os.path.join(out_dir, f".rom-converto-{uuid.uuid4().hex[:12]}")
-        produced = os.path.join(work_dir, os.path.basename(output_path))
+        stem = os.path.splitext(os.path.basename(output_path))[0]
+        produced = os.path.join(work_dir, f"{stem}{call.work_ext}")
         abandoned = threading.Event()
         # The final move, safe to give up on (services.output_placement).
-        placement = OutputPlacement(output_path, label="ZAR")
+        placement = OutputPlacement(output_path, label=call.label)
         errors: list[str] = []
 
         def parse_progress(line: str) -> int | None:
@@ -334,14 +480,14 @@ class RomConvertoService:
             )
             try:
                 async for update in self._runner.run(
-                    self._command("xenon", "compress", input_path, produced),
+                    self._command(*call.command, input_path, produced, *call.extra),
                     input_path=input_path,
                     output_path=produced,
                     parse_progress=parse_progress,
                     initial_progress=1,
                     cancel_event=cancel_event,
                     fail_label="rom-converto",
-                    complete_message="ZAR written",
+                    complete_message=f"{call.label} written",
                     # rom-converto names its file itself while it writes, so the
                     # whole work folder is the growth signal (ruling 2, #422).
                     output_growth_paths=files_in_folder(work_dir),
@@ -360,11 +506,11 @@ class RomConvertoService:
                     yield update
             except RuntimeError as exc:
                 if errors and "failed with return code" in str(exc):
-                    raise RuntimeError(f"rom-converto failed: {errors[0]}") from exc
+                    raise RuntimeError(_failure_message(errors[0])) from exc
                 raise
             await run_detached_within_stall_bound(
                 placement.place, produced,
-                what="Placing the ZAR output", cancel_event=cancel_event,
+                what=f"Placing the {call.label} output", cancel_event=cancel_event,
             )
         except (
             ConversionCancelled, ReadCancelled, RuntimeError,
@@ -379,7 +525,7 @@ class RomConvertoService:
             abandoned.set()
             await remove_partial_tree(work_dir, label="rom-converto work dir")
 
-        yield {"progress": 100, "message": "Compressed Xbox 360 image to ZAR"}
+        yield {"progress": 100, "message": call.done}
 
     # --- verify -------------------------------------------------------------
 
@@ -394,7 +540,17 @@ class RomConvertoService:
     async def verify_stream(
         self, file_path: str, *, cancel_event: asyncio.Event | None = None,
     ) -> AsyncGenerator[dict, None]:
-        """``rom-converto xenon verify``: decode every block and check its hash."""
+        """The output's container check.
+
+        A ZAR: ``rom-converto xenon verify`` decodes every block and checks its
+        hash. An ISO, CCI or CIA (#423): its structure is read in Python
+        (``rom_converto_formats.output_problem``), since rom-converto has no
+        check of its own for them; a cut-off file fails.
+        """
+        if match_extension(file_path, CONTAINER_VERIFY_EXTENSIONS) is not None:
+            async for update in self._container_verify(file_path, cancel_event):
+                yield update
+            return
         if match_extension(file_path, ZAR_VERIFY_EXTENSIONS) is None:
             yield {
                 "type": "error", "valid": False,
@@ -421,6 +577,41 @@ class RomConvertoService:
         except Exception as exc:
             logger.exception("Error during ZAR verification of %s", file_path)
             yield verify_exception_event(exc)
+
+    @staticmethod
+    async def _container_verify(
+        file_path: str, cancel_event: asyncio.Event | None,
+    ) -> AsyncGenerator[dict, None]:
+        """An ISO, CCI or CIA output's structure: whole, or why not."""
+        problem, _size = await verify_preflight(
+            file_path, CONTAINER_VERIFY_EXTENSIONS, cancel_event=cancel_event,
+        )
+        if problem is not None:
+            yield problem
+            return
+        try:
+            found = await run_detached_within_stall_bound(
+                formats.output_problem, file_path,
+                what=f"Reading {os.path.basename(file_path)}", cancel_event=cancel_event,
+            )
+        except ReadCancelled:
+            yield {
+                "type": "error", "valid": False, "cancelled": True,
+                "message": "Verification cancelled",
+            }
+            return
+        except (OSError, RuntimeError, ValueError) as exc:
+            # A file that could not be read, or a read that stalled, is no
+            # verdict (the shared rule).
+            yield verify_exception_event(exc)
+            return
+        if found is not None:
+            yield {"type": "error", "valid": False, "message": f"Not Intact: {found}"}
+            return
+        yield {
+            "type": "complete", "valid": True,
+            "message": "File is Intact: its structure reads back whole",
+        }
 
     # --- info ---------------------------------------------------------------
 

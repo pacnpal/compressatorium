@@ -60,6 +60,9 @@ class ConversionMode(str, Enum):
     NKIT_TO_RVZ = "nkit_to_rvz"
     XISO_REWRITE = "xiso_rewrite"
     ZAR_COMPRESS = "zar_compress"
+    PBP_TO_ISO = "pbp_to_iso"
+    CIA_TO_CCI = "cia_to_cci"
+    CCI_TO_CIA = "cci_to_cia"
     EXODOS_REPACK = "exodos_repack"
     METADATA_SCAN = "metadata_scan"
     DAT_MATCH = "dat_match"
@@ -196,10 +199,14 @@ class ConversionJob(BaseModel):
     # Platform for a Rule's job, else what shared Platform detection made of
     # the Source before the job could delete it. None when neither places it.
     platform: str | None = None
-    # Which check the output passed: "intact" (its tool's container check) or
-    # "round_tripped" (its content digest equalled the Source's, #298). None if
-    # no check ran.
+    # Which check the output passed: "intact" (its tool's container check),
+    # "round_tripped" (its content digest equalled the Source's, #298) or
+    # "recognized" (its SHA-1 is in a DAT or Hasheous, #423). None if no check
+    # ran.
     check_passed: str | None = None
+    # The DAT that Recognized the output (a local DAT's name, or the source
+    # Hasheous names), when ``check_passed`` is "recognized". Else None.
+    check_dat: str | None = None
     deleted_paths: list[str] = []
     # A finished job that did less than asked without failing, such as a
     # delete-source run that kept its Source because another job was reading

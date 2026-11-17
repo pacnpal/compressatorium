@@ -143,7 +143,9 @@ def test_mode_spec():
     assert spec.auto_target is False
     assert spec.allows_archive_input is False
     assert registry.mode_is_automatable("zar_compress")
-    assert TOOL.verify_extensions == frozenset({".zar"})
+    # The ZAR is checked by xenon verify; the PSP and 3DS outputs (#423) by
+    # their structure. Only the ZAR is a Verify row action (verifies_path).
+    assert TOOL.verify_extensions == frozenset({".zar", ".iso", ".cia", ".cci", ".3ds"})
     assert ".zar" in registry.output_extensions()
 
 

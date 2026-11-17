@@ -63,6 +63,21 @@ placeholder "$root/GameCube/zelda-wind-waker.rvz" 1024
 placeholder "$root/Nintendo 3DS/pokemon-x.3ds" 2048
 placeholder "$root/Nintendo 3DS/mario-3d-land.cci" 2048
 
+# A synthetic CIA (#423): only a CIA archive header and zero-filled sections, so
+# rom-converto's header probe offers it for CIA -> CCI. Nothing from a real game.
+python3 - "$root/Nintendo 3DS/Homebrew Demo (World).cia" <<'PY'
+import struct
+import sys
+
+def align(n):
+    return (n + 63) & ~63
+
+sizes = (0x2020, 0xA00, 0x350, 0x208, 0x400, 0)  # header, cert, ticket, TMD, content, meta
+head = struct.pack("<IHHIIIIQ", 0x2020, 0, 0, *sizes[1:4], sizes[5], sizes[4])
+with open(sys.argv[1], "wb") as fh:
+    fh.write(head + b"\0" * (sum(align(n) for n in sizes) - len(head)))
+PY
+
 # Wii U: a raw disc dump plus an already-compressed .wux. These are placeholders
 # for the file list only — a real .wud is a fixed 25 GB, which is neither
 # shippable nor needed to render the row.
