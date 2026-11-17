@@ -942,22 +942,6 @@ export const api = {
 
   getDATStats: () => fetchJson(`${API_BASE}/dat/stats`, undefined, 'Failed to get DAT stats'),
 
-  /** `{ disc: [...], cartridge: [...] }`, each DAT best first with its `rank`. */
-  getDATRanking: () =>
-    fetchJson(`${API_BASE}/dat/ranking`, undefined, 'Failed to load the DAT ranking'),
-
-  /** Save the DAT order per Image kind (`{ disc: [ids], cartridge: [ids] }`). */
-  setDATRanking: (body) =>
-    fetchJson(
-      `${API_BASE}/dat/ranking`,
-      {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      },
-      'Failed to save the DAT ranking',
-    ),
-
   /** Turn the Hasheous fallback on/off. `null` hands control back to the env var. */
   setHasheousEnabled(enabled) {
     return fetchJson(

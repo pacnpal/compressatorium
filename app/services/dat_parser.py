@@ -15,34 +15,6 @@ logger = get_logger("dat_parser")
 _SHA1_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 _MD5_RE = re.compile(r"^[0-9a-fA-F]{32}$")
 
-#: The DAT families a DAT is ranked by (#424), most specific first: a
-#: "MAME Redump" DAT is MAME's, and No-Intro/TOSEC names never say "redump".
-FAMILIES = ("no-intro", "tosec", "mame", "redump", "other")
-_FAMILY_MARKERS = (
-    ("no-intro", ("no-intro", "nointro")),
-    ("tosec", ("tosec",)),
-    ("mame", ("mame",)),
-    ("redump", ("redump",)),
-)
-
-#: The header fields a DAT's family is read from. Redump and No-Intro name a
-#: DAT after its system ("Sony - PlayStation"), so the group's own name is in
-#: ``homepage``/``url``/``author``, not ``name``.
-_HEADER_FIELDS = ("name", "description", "version", "homepage", "url", "author")
-
-
-def dat_family(*texts: str | None) -> str:
-    """The family (``FAMILIES``) the given header text names, else ``"other"``.
-
-    Shared by imported DATs (their header fields) and Hasheous hits (their
-    ``signatureSource``, e.g. ``NoIntros``, ``MAMERedump``).
-    """
-    text = " ".join(t for t in texts if t).lower()
-    for family, markers in _FAMILY_MARKERS:
-        if any(m in text for m in markers):
-            return family
-    return "other"
-
 
 def parse_dat(source: str) -> tuple[dict, list[dict]]:
     """Parse a Logiqx XML DAT file from a file path or XML string.
@@ -56,7 +28,6 @@ def parse_dat(source: str) -> tuple[dict, list[dict]]:
 
     Returns:
         (header_info, entries) where header_info has name/description/version
-        (plus homepage/url/author when present) and its ``family``,
         and entries is a list of dicts with game_name, rom_name, size, sha1, md5.
     """
     header: dict = {}
@@ -78,8 +49,12 @@ def parse_dat(source: str) -> tuple[dict, list[dict]]:
             if tag == "header":
                 for child in elem:
                     child_tag = _strip_ns(child.tag)
-                    if child_tag in _HEADER_FIELDS and child.text:
-                        header[child_tag] = child.text.strip()
+                    if child_tag == "name" and child.text:
+                        header["name"] = child.text.strip()
+                    elif child_tag == "description" and child.text:
+                        header["description"] = child.text.strip()
+                    elif child_tag == "version" and child.text:
+                        header["version"] = child.text.strip()
                 elem.clear()
 
             elif tag in ("game", "machine", "software"):
@@ -111,7 +86,6 @@ def parse_dat(source: str) -> tuple[dict, list[dict]]:
     except DefusedXmlException as exc:
         raise ValueError(f"DAT file contains forbidden XML content: {exc}") from exc
 
-    header["family"] = dat_family(*(header.get(f) for f in _HEADER_FIELDS))
     if not header.get("name"):
         header["name"] = "Unknown DAT"
 

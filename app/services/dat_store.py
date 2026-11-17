@@ -23,7 +23,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from services import db as _db
-from services.dat_parser import FAMILIES, parse_dat
+from services.dat_parser import parse_dat
 from utils.path_utils import path_presence
 
 logger = get_logger("dat_store")
@@ -63,21 +63,6 @@ def recomputed_hash_in(match: dict, match_type: str) -> str | None:
     if match_type == "file_sha1":
         return match.get("file_hash")
     return None
-
-
-#: Preference key holding the user's DAT ranking (#424): ``{"disc": [dat
-#: ids], "cartridge": [dat ids]}``, best first.
-RANKING_KEY = "dat_ranking"
-#: The two kinds of Image the ranking is kept for. Which one a file is comes
-#: from the tool registry's disc extensions, decided by the caller.
-IMAGE_KINDS = ("disc", "cartridge")
-#: Until the user orders them, DATs rank by family: Redump first for discs,
-#: No-Intro first for cartridges. DATs of one family are unordered.
-DEFAULT_FAMILY_ORDER = {
-    "disc": ("redump", "no-intro", "tosec", "mame", "other"),
-    "cartridge": ("no-intro", "redump", "tosec", "mame", "other"),
-}
-assert all(set(order) == set(FAMILIES) for order in DEFAULT_FAMILY_ORDER.values())
 
 
 def _utcnow_iso() -> str:
@@ -164,7 +149,6 @@ class DATStore:
             "version": header.get("version", ""),
             "imported_at": now,
             "file_count": len(entries),
-            "family": header.get("family", "other"),
         }
 
         added = 0
@@ -176,7 +160,6 @@ class DATStore:
                 version=dat_info["version"],
                 imported_at=now,
                 file_count=len(entries),
-                family=dat_info["family"],
             )
             session.add(dat_row)
             # bulk_insert_mappings bypasses the unit-of-work, so flush
@@ -207,15 +190,15 @@ class DATStore:
                     added += 1
 
             if hash_rows:
-                # Keyed per DAT (#424): a hash another DAT already lists keeps
-                # that DAT's row too. The upsert only folds a hash listed
-                # twice within this one DAT.
+                # Use INSERT OR REPLACE (ON CONFLICT DO UPDATE) so that
+                # importing an updated DAT whose hashes overlap with an
+                # existing DAT set never raises a UNIQUE constraint error.
                 chunk_size = 900
                 for i in range(0, len(hash_rows), chunk_size):
                     chunk = hash_rows[i:i + chunk_size]
                     stmt = sqlite_insert(_db.DATHash).values(chunk)
                     stmt = stmt.on_conflict_do_update(
-                        index_elements=["hash", "hash_type", "dat_id"],
+                        index_elements=["hash", "hash_type"],
                         set_={
                             "dat_id": stmt.excluded.dat_id,
                             "game_name": stmt.excluded.game_name,
@@ -261,7 +244,6 @@ class DATStore:
                 "version": header.get("version", ""),
                 "imported_at": now,
                 "file_count": len(entries),
-                "family": header.get("family", "other"),
             }
             added = 0
             hash_rows: list[dict[str, Any]] = []
@@ -317,18 +299,19 @@ class DATStore:
                     version=dat_info["version"],
                     imported_at=dat_info["imported_at"],
                     file_count=dat_info["file_count"],
-                    family=dat_info["family"],
                 )
                 session.add(dat_row)
                 session.flush()
                 if hash_rows:
-                    # Keyed per DAT, as in _import_dat_sync (#424).
+                    # Use INSERT OR REPLACE so that staging a new DAT set
+                    # while old DATs are still present never raises a UNIQUE
+                    # constraint error on overlapping (hash, hash_type) pairs.
                     chunk_size = 900
                     for i in range(0, len(hash_rows), chunk_size):
                         chunk = hash_rows[i:i + chunk_size]
                         stmt = sqlite_insert(_db.DATHash).values(chunk)
                         stmt = stmt.on_conflict_do_update(
-                            index_elements=["hash", "hash_type", "dat_id"],
+                            index_elements=["hash", "hash_type"],
                             set_={
                                 "dat_id": stmt.excluded.dat_id,
                                 "game_name": stmt.excluded.game_name,
@@ -408,7 +391,6 @@ class DATStore:
                     "version": r.version,
                     "imported_at": r.imported_at,
                     "file_count": r.file_count,
-                    "family": r.family,
                 }
                 for r in rows
             ]
@@ -418,169 +400,28 @@ class DATStore:
             row = session.get(_db.DAT, dat_id)
             return row.name if row is not None else "Unknown"
 
-    # ------------------------------------------------------------------
-    # Ranking (#424)
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _saved_order(session) -> dict[str, list[str]]:
-        row = session.get(_db.Preference, RANKING_KEY)
-        value = row.value if row is not None and isinstance(row.value, dict) else {}
-        return {
-            kind: [i for i in (value.get(kind) or []) if isinstance(i, str)]
-            for kind in IMAGE_KINDS
-        }
-
-    @staticmethod
-    def _rank_key(dat_id: str, family: str, kind: str, saved: dict) -> tuple[int, int]:
-        """Lower ranks higher. Equal keys are DATs the ranking doesn't order.
-
-        A DAT the user placed ranks by that place; one they never placed (none
-        yet, or imported since) ranks after every placed one, by its family's
-        default position.
-        """
-        order = saved[kind]
-        if dat_id in order:
-            return (0, order.index(dat_id))
-        families = DEFAULT_FAMILY_ORDER[kind]
-        return (1, families.index(family) if family in families else len(families))
-
-    def get_ranking(self) -> dict[str, list[dict]]:
-        """Every DAT per Image kind, best first, with its ``rank``.
-
-        DATs sharing a ``rank`` are ones the ranking doesn't order (same
-        family, never placed by the user).
-        """
+    def _lookup_hash(self, hex_hash: str, hash_type: str) -> dict | None:
         with self._session() as session:
-            dats = session.scalars(select(_db.DAT)).all()
-            saved = self._saved_order(session)
-            out: dict[str, list[dict]] = {}
-            for kind in IMAGE_KINDS:
-                ranked: list[dict] = []
-                rank, last = 0, None
-                for d in sorted(dats, key=lambda d: (
-                    self._rank_key(d.id, d.family, kind, saved), d.name, d.id,
-                )):
-                    key = self._rank_key(d.id, d.family, kind, saved)
-                    if key != last:
-                        rank, last = rank + 1, key
-                    ranked.append({
-                        "id": d.id, "name": d.name, "family": d.family, "rank": rank,
-                    })
-                out[kind] = ranked
-            return out
-
-    def set_ranking(self, ranking: dict[str, list[str]]) -> None:
-        """Persist the user's order per Image kind (ids of existing DATs only)."""
-        with self._session() as session:
-            known = set(session.scalars(select(_db.DAT.id)).all())
-            value = {
-                kind: list(dict.fromkeys(
-                    i for i in (ranking.get(kind) or []) if i in known
-                ))
-                for kind in IMAGE_KINDS
-            }
-            stmt = sqlite_insert(_db.Preference).values(
-                key=RANKING_KEY, value=value, updated_at=_utcnow_iso(),
-            )
-            session.execute(stmt.on_conflict_do_update(
-                index_elements=["key"],
-                set_={"value": stmt.excluded.value, "updated_at": stmt.excluded.updated_at},
-            ))
-            session.commit()
-
-    def _ranked_record(
-        self, session, hex_hash: str, hash_type: str, kind: str, saved: dict,
-    ) -> dict | None:
-        """The top-ranked DAT row for a hash, with a ``conflict`` when unordered.
-
-        ``conflict`` lists the DATs tied for the top rank, and is present only
-        when they give different names: the ranking can't pick one.
-        """
-        rows = session.execute(
-            select(_db.DATHash, _db.DAT.name, _db.DAT.family, _db.DAT.imported_at)
-            .join(_db.DAT, _db.DAT.id == _db.DATHash.dat_id)
-            .where(_db.DATHash.hash == hex_hash.lower(), _db.DATHash.hash_type == hash_type)
-        ).all()
-        if not rows:
-            return None
-
-        def key(r):
-            return self._rank_key(r.DATHash.dat_id, r.family, kind, saved)
-
-        # Within a tie, the latest import first: what the one-row-per-hash
-        # store returned, so a hash with no rival answers as it always did.
-        rows = sorted(rows, key=lambda r: r.imported_at or "", reverse=True)
-        rows.sort(key=key)
-        top = rows[0]
-        record = {
-            "dat_id": top.DATHash.dat_id,
-            "dat_name": top.name,
-            "family": top.family,
-            "game_name": top.DATHash.game_name,
-            "rom_name": top.DATHash.rom_name,
-            "size": top.DATHash.size,
-        }
-        tied = [r for r in rows if key(r) == key(top)]
-        if len({r.DATHash.game_name for r in tied}) > 1:
-            record["conflict"] = [
-                {
-                    "dat_id": r.DATHash.dat_id,
-                    "dat_name": r.name,
-                    "game_name": r.DATHash.game_name,
-                }
-                for r in tied
-            ]
-        return record
-
-    def _lookup_hash(self, hex_hash: str, hash_type: str, disc: bool) -> dict | None:
-        with self._session() as session:
-            return self._ranked_record(
-                session, hex_hash, hash_type,
-                "disc" if disc else "cartridge", self._saved_order(session),
-            )
-
-    def lookup_sha1(self, sha1: str, *, disc: bool = False) -> dict | None:
-        """The top-ranked DAT match for *sha1*; *disc* picks which ranking."""
-        return self._lookup_hash(sha1, "sha1", disc)
-
-    def lookup_md5(self, md5: str, *, disc: bool = False) -> dict | None:
-        return self._lookup_hash(md5, "md5", disc)
-
-    def rerank_matches(self, is_disc: Callable[[str], bool]) -> int:
-        """Re-pick the DAT of every cached local hit under the current ranking.
-
-        A reorder changes which DAT names a file, not what the file is, so the
-        cached hash is looked up again rather than the file hashed again.
-        Remote hits and misses are left as they are. Returns rows changed.
-        """
-        changed = 0
-        with self._session() as session:
-            saved = self._saved_order(session)
-            rows = session.scalars(
-                select(_db.DATMatch).where(
-                    _db.DATMatch.matched.is_(True), ~_remote_hit_clause(),
+            row = session.execute(
+                select(_db.DATHash).where(
+                    _db.DATHash.hash == hex_hash.lower(),
+                    _db.DATHash.hash_type == hash_type,
                 )
-            ).all()
-            for row in rows:
-                if not row.file_hash:
-                    continue
-                kind = "disc" if is_disc(row.path) else "cartridge"
-                record = self._ranked_record(session, row.file_hash, "sha1", kind, saved)
-                if record is None:
-                    continue
-                payload = dict(row.payload or {})
-                payload.pop("conflict", None)
-                payload.update({k: v for k, v in record.items() if k != "size"})
-                if payload == row.payload:
-                    continue
-                row.payload = payload
-                row.dat_id = record["dat_id"]
-                row.game_name = record["game_name"]
-                row.rom_name = record["rom_name"]
-                changed += 1
-            session.commit()
-        return changed
+            ).scalar_one_or_none()
+            if row is None:
+                return None
+            return {
+                "dat_id": row.dat_id,
+                "game_name": row.game_name,
+                "rom_name": row.rom_name,
+                "size": row.size,
+            }
+
+    def lookup_sha1(self, sha1: str) -> dict | None:
+        return self._lookup_hash(sha1, "sha1")
+
+    def lookup_md5(self, md5: str) -> dict | None:
+        return self._lookup_hash(md5, "md5")
 
     # ------------------------------------------------------------------
     # Match cache
@@ -717,11 +558,7 @@ class DATStore:
         if file_hash and file_hash not in hashes:
             hashes.append(file_hash)
         return any(
-            session.execute(
-                select(_db.DATHash.hash).where(
-                    _db.DATHash.hash == sha1, _db.DATHash.hash_type == "sha1",
-                ).limit(1)
-            ).first() is not None
+            session.get(_db.DATHash, (sha1, "sha1")) is not None
             for sha1 in hashes if sha1
         )
 

@@ -484,7 +484,7 @@ async def test_all_candidates_checked_locally_before_any_remote_call(hasheous_on
         "rom_name": "g.chd", "source": "dat",
     }
 
-    async def _local(sha1, **_):
+    async def _local(sha1):
         return local if sha1 == data else None
 
     with patch.object(dat_routes, "_local_dat_record", _local):
@@ -508,7 +508,7 @@ async def test_remote_outage_cannot_mask_a_later_local_candidate(hasheous_on):
         "rom_name": "g.chd", "source": "dat",
     }
 
-    async def _local(sha1, **_):
+    async def _local(sha1):
         return local if sha1 == data else None
 
     async def _boom(_sha1):
@@ -951,7 +951,7 @@ async def test_file_level_sha1_is_checked_locally_before_any_remote_call(
         dat_routes, "compute_file_sha1", AsyncMock(return_value=container),
     )
 
-    async def _local(sha1, **_):
+    async def _local(sha1):
         if sha1 != container:
             return None
         return {
@@ -1743,7 +1743,7 @@ async def test_the_outage_result_carries_the_recomputed_hash(
     monkeypatch.setattr(
         dat_routes.dat_store, "has_dats", lambda: True,
     )
-    monkeypatch.setattr(dat_routes.dat_store, "lookup_sha1", lambda _h, **_: None)
+    monkeypatch.setattr(dat_routes.dat_store, "lookup_sha1", lambda _h: None)
 
     async def _down(_sha1):
         raise hasheous.HasheousUnavailable("down")
@@ -1812,7 +1812,7 @@ async def test_a_dat_landing_mid_hash_still_wins_over_the_remote(
     # The DAT library gains the embedded hash only after the file hash is in.
     seen: list[str] = []
 
-    def _lookup(h, **_):
+    def _lookup(h):
         seen.append(h)
         # Nothing known until the file-level hash has been computed...
         if file_level not in seen:
@@ -2427,7 +2427,7 @@ async def test_a_dat_import_during_the_remote_await_still_wins(
     sha1 = "d" * 40
     imported: dict[str, dict | None] = {"row": None}
 
-    async def _local(hash_value, **_):
+    async def _local(hash_value):
         return imported["row"]
 
     async def _remote(hash_value):
@@ -2511,7 +2511,7 @@ async def test_a_dat_import_mid_lookup_wins_on_any_candidate(
     header, data = "a" * 40, "b" * 40
     imported: dict[str, dict | None] = {}
 
-    async def _local(hash_value, **_):
+    async def _local(hash_value):
         return imported.get(hash_value)
 
     async def _remote(hash_value):
@@ -2544,7 +2544,7 @@ async def test_a_dat_import_mid_lookup_beats_an_all_miss_pass(hasheous_on, monke
     sha1 = "c" * 40
     imported: dict[str, dict | None] = {}
 
-    async def _local(hash_value, **_):
+    async def _local(hash_value):
         return imported.get(hash_value)
 
     async def _remote(hash_value):
@@ -3095,7 +3095,7 @@ async def test_a_dat_import_mid_lookup_stops_the_next_candidate_going_out(
     header, data = "a" * 40, "b" * 40
     imported: dict[str, dict | None] = {}
 
-    async def _local(hash_value, **_):
+    async def _local(hash_value):
         return imported.get(hash_value)
 
     sent = []

@@ -1814,42 +1814,6 @@ a misconfigured or hostile server bounce a lookup to `http://` and put the file'
 SHA1 on the wire in the clear. Extra fields ride in the existing
 `dat_matches.payload` JSON column, so no migration is involved.
 
-### 3.3.5.2 DAT families and the DAT ranking (`dat_store`, #424)
-
-`dat_hashes` is keyed on `(hash, hash_type, dat_id)` (migration 0022), so a
-hash two DATs list keeps both rows; importing a second DAT no longer replaces
-the first one's match. Deleting a DAT removes only its own rows.
-
-Each DAT has a **family** — `redump`, `no-intro`, `tosec`, `mame` or `other` —
-read at import by `dat_parser.dat_family()` from the header's `name`,
-`description`, `homepage`, `url` and `author` (Redump and No-Intro name a DAT
-after its system, so the group is only in `homepage`/`url`/`author`). The same
-function maps a Hasheous hit's `signatureSource` onto `family`, so a remote hit
-and a local one describe their source the same way.
-
-`dat_store.lookup_sha1(sha1, disc=...)` returns the **top-ranked** row. There
-are two rankings, `disc` and `cartridge`; the caller says which applies, and
-`routes.dat.is_disc_image()` decides it from `registry.disc_extensions()` (the
-union of every tool's `disc_extensions`), never from a list of its own. Each
-DAT's rank key comes from `_rank_key()`: its place in the user's saved order
-(the `dat_ranking` preference, `{"disc": [ids], "cartridge": [ids]}`) if it has
-one, else after every placed DAT by its family's position in
-`DEFAULT_FAMILY_ORDER` — Redump first for discs, No-Intro first for
-cartridges. DATs with equal keys are ones the ranking doesn't order. When the
-top rank is tied and the tied DATs give different game names, the record
-carries `conflict: [{dat_id, dat_name, game_name}, ...]`; the match is still a
-hit (the hash is known), and a caller that has to pick one name (a rename)
-must refuse instead of guessing. Ties resolve to the latest import, which is
-what the one-row-per-hash store returned.
-
-Local-before-remote ordering (§3.3.5.1) is unchanged: the ranking only chooses
-among local DATs. `GET /api/dat/ranking` lists every DAT per kind with its
-`rank`; `PUT /api/dat/ranking` saves the order (unknown ids dropped) and then
-`dat_store.rerank_matches()` re-picks the DAT of every cached *local* hit from
-its stored hash — a reorder changes which DAT names a file, not what the file
-is, so nothing is re-hashed. The Settings view's **DAT ranking** card
-(`DatRankingSettings.svelte`) edits it.
-
 ### 3.3.6 Re-run fast path (`JobManager._output_already_verified`)
 
 `_process_job` recognizes a prior success before it re-spawns the converter: a
