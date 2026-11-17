@@ -148,3 +148,23 @@ def test_a_sheet_with_a_refused_reference_still_owns_the_tracks_it_names(tmp_pat
 
     assert group_images([cue, track]) == [cue]
     assert track in image_members(cue)
+
+
+
+def test_a_sheet_that_cannot_be_read_names_no_track_set(tmp_path: Path) -> None:
+    """Codex PRRT_kwDOQ9nULM64N2yy: "could not tell" is never an empty list.
+    An oversized sheet gives None from the track helper, and its identities
+    are unknown, never an empty set."""
+    import pytest as _pytest
+    from services import image_sets
+    from utils.sheet_text import MAX_SHEET_BYTES
+
+    cue = _write(
+        tmp_path / "Disc" / "Disc.cue",
+        'FILE "Track 1.bin" BINARY\n' + "REM x\n" * (MAX_SHEET_BYTES // 6 + 1),
+    )
+    _write(tmp_path / "Disc" / "Track 1.bin")
+
+    assert image_sets._named_tracks(cue) is None
+    with _pytest.raises(image_sets.SheetOwnerUnknown):
+        image_sets.sheet_track_identities(cue)

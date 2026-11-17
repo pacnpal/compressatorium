@@ -31,26 +31,37 @@ def is_playlist(path: str) -> bool:
     return Path(path).suffix.lower() in PLAYLIST_EXTENSIONS
 
 
-def _named_tracks(path: str) -> list[str]:
-    """The tracks a ``.cue``/``.gdi`` at *path* names. Blocking.
+def _named_tracks(path: str) -> list[str] | None:
+    """The tracks a ``.cue``/``.gdi`` at *path* names, or None when that
+    cannot be told. Blocking.
+
+    Never ``[]`` for "could not tell" (Codex PRRT_kwDOQ9nULM64N2yy): a sheet
+    that cannot be read whole (unreadable, or over the size cap) is None, and
+    every caller decides what an unknown track set means for it. ``[]`` only
+    for a file that is not a sheet, or a sheet that names nothing.
 
     The resolved set (``sheet_track_paths``) when the sheet resolves as one.
     When it does not (a reference it may not use, such as ``../Audio.bin``),
     still every name that does resolve, from every spelling (Codex
     PRRT_kwDOQ9nULM64MWFq): "the set is unknown" must not read as "the sheet
     owns nothing", or its tracks would be listed, converted and deleted as
-    Images of their own. An unreadable sheet names nothing.
+    Images of their own.
     """
     from utils.sheet_text import (
         cue_tracks,
         gdi_track_names,
         resolve_track,
+        sheet_is_readable,
         sheet_readings,
     )
 
-    tracks = sheet_track_paths(path)
     parse = {".cue": cue_tracks, ".gdi": gdi_track_names}.get(Path(path).suffix.lower())
-    if tracks or parse is None:
+    if parse is None:
+        return []
+    if not sheet_is_readable(path):
+        return None
+    tracks = sheet_track_paths(path)
+    if tracks:
         return tracks
     folder = Path(path).parent
     named: list[str] = []
@@ -64,9 +75,17 @@ def _named_tracks(path: str) -> list[str]:
 
 
 def image_members(path: str) -> list[str]:
-    """The other files the Image at *path* is made of. Reads the sheet; blocking."""
+    """The other files the Image at *path* is made of. Reads the sheet; blocking.
+
+    A sheet that cannot be read whole contributes no members here: a listing
+    cannot hide files it cannot name, so they stay listed. Nothing that deletes
+    relies on that: the duplicate finder's record of sheet tracks
+    (:func:`sheet_track_identities`) is marked incomplete for such a sheet, and
+    a delete is then not offered.
+    """
+    tracks = _named_tracks(path)
     members = [
-        *_named_tracks(path), *registry.source_companions(path),
+        *(tracks or ()), *registry.source_companions(path),
         # A split output (`Game.iso.0` owns `.1`, `.2`): one logical Image.
         *registry.split_members(path),
     ]
@@ -149,15 +168,26 @@ def owning_sheet(
 def sheet_track_identities(sheet: str) -> set[tuple[int, int]]:
     """``(st_dev, st_ino)`` of every track *sheet* names, links followed. Blocking.
 
-    The track names are :func:`image_members`' (``_named_tracks``: the same
-    ``resolve_track`` every sheet reader uses), and each is stat'ed through its
-    links, so a sheet that reaches a file in another folder through a linked
-    track names that file (Codex PRRT_kwDOQ9nULM64NUn9). A track that does not
-    exist names nothing. Raises :class:`SheetOwnerUnknown` when one that may
-    exist cannot be stat'ed.
+    The sheet's whole resolved track set (``sheet_track_list``, the same
+    ``resolve_track`` every sheet reader uses), each stat'ed through its links,
+    so a sheet that reaches a file in another folder through a linked track
+    names that file (Codex PRRT_kwDOQ9nULM64NUn9). A track that does not exist
+    names nothing. Raises :class:`SheetOwnerUnknown` whenever the set is not
+    known whole (Codex PRRT_kwDOQ9nULM64N2yy): a sheet that cannot be read
+    whole (unreadable, or over the size cap), one whose tracks do not resolve
+    as one set, or a track that may exist but cannot be stat'ed. Never an
+    empty set for "could not tell".
     """
+    from utils.sheet_text import sheet_is_readable, sheet_track_list
+
+    name = os.path.basename(sheet)
+    if not sheet_is_readable(sheet):
+        raise SheetOwnerUnknown(f"{name} could not be read (unreadable or too large)")
+    tracks = sheet_track_list(sheet)
+    if tracks is None:
+        raise SheetOwnerUnknown(f"{name} names a track it may not use, so its tracks are unknown")
     out: set[tuple[int, int]] = set()
-    for track in _named_tracks(sheet):
+    for track in tracks:
         try:
             st = os.stat(track)
         except FileNotFoundError:

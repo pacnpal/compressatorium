@@ -1296,3 +1296,64 @@ async def test_a_container_keeper_with_no_path_to_its_held_file_refuses(
     assert all(r["status"] != "deleted" for r in results)
     assert any("held" in (r["reason"] or "") for r in results), results
     assert (roms / "Game.iso").exists()
+
+
+
+# ----------------------------------------------------------------------
+# a linked sheet the run cannot read (Codex PRRT_kwDOQ9nULM64N2yy)
+# ----------------------------------------------------------------------
+
+
+async def _linked_group_with_sheet(client, monkeypatch, roms: Path, write_sheet) -> dict:
+    target = _linked_track(roms)
+    write_sheet(roms / "disc" / "Disc.cue")
+    release = threading.Event()
+    release.set()
+    d388._romm_images_resolving(
+        monkeypatch, release, [roms / "Game.iso", target, roms / "disc" / "Disc.cue"],
+    )
+    await d388._find(client, "romm")
+    return await _group(client)
+
+
+async def _no_delete_offered(client, group: dict, keep: str) -> None:
+    assert group["deletable"] is False, group
+    assert "sheet" in group["not_deletable"], group
+    assert (await _plan(client, group, keep)).status_code == 409
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(folder_library_303._IS_ROOT, reason="root reads every file")
+async def test_an_unreadable_sheet_leaves_the_run_record_incomplete(
+    db: Path, client: httpx.AsyncClient, monkeypatch,
+) -> None:
+    """The sheet that reaches the target cannot be read: which files are its
+    tracks is unknown, so the run's record is incomplete and no delete is
+    offered, never "this sheet owns nothing"."""
+    roms = db / "romm"
+
+    def unreadable(sheet: Path) -> None:
+        sheet.chmod(0)
+
+    try:
+        group = await _linked_group_with_sheet(client, monkeypatch, roms, unreadable)
+        await _no_delete_offered(client, group, str(roms / "Game.iso"))
+    finally:
+        (roms / "disc" / "Disc.cue").chmod(0o644)
+    assert (roms / "shared" / "Track.bin").exists()
+
+
+@pytest.mark.asyncio
+async def test_an_oversized_sheet_leaves_the_run_record_incomplete(
+    db: Path, client: httpx.AsyncClient, monkeypatch,
+) -> None:
+    from utils.sheet_text import MAX_SHEET_BYTES
+
+    roms = db / "romm"
+
+    def oversized(sheet: Path) -> None:
+        sheet.write_text('FILE "Track.bin" BINARY\n' + "REM x\n" * (MAX_SHEET_BYTES // 6 + 1))
+
+    group = await _linked_group_with_sheet(client, monkeypatch, roms, oversized)
+    await _no_delete_offered(client, group, str(roms / "Game.iso"))
+    assert (roms / "shared" / "Track.bin").exists()

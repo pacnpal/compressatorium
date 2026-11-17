@@ -174,6 +174,11 @@ def not_deletable(row: dict, run: dict | None) -> str | None:
     if run is None:
         return "no find-duplicates run is recorded for its Library; run one first"
     if run.get("sheet_tracks") is None:
+        problem = run.get("sheet_tracks_problem")
+        if problem:
+            return (
+                f"the last run could not tell which files are sheets' tracks ({problem})"
+            )
         return (
             "the last run has no record of which files are sheets' tracks; "
             "run Find duplicates again"

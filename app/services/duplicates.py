@@ -213,7 +213,7 @@ async def _find(library: Library, job_id: str, current: Callable[[], bool]) -> d
             )
             for path in paths
         ]
-        candidates, in_use, unstatted, sheet_tracks = await run_detached_within_stall_bound(
+        inspected = await run_detached_within_stall_bound(
             _inspect, listed, active, what=f"looking at {library.name}",
             cancel_event=cancel_event, stall=content_keys.STALL_SECONDS,
             report_progress=True,
@@ -222,6 +222,7 @@ async def _find(library: Library, job_id: str, current: Callable[[], bool]) -> d
         raise _Stopped("Cancelled: no Findings were written") from None
     except (OSError, Stalled, ProgressAbandoned) as exc:
         raise LibraryUnreadable(f"the Library's files did not answer: {exc}") from exc
+    candidates, in_use, unstatted, (sheet_tracks, sheet_problem) = inspected
     keys = await run_in_threadpool(
         content_keys.stored, {c.path: c.identity for c in candidates},
     )
@@ -348,6 +349,8 @@ async def _find(library: Library, job_id: str, current: Callable[[], bool]) -> d
         "sheet_tracks": None if sheet_tracks is None else sorted(
             [dev, ino] for dev, ino in sheet_tracks
         ),
+        # Why the record is incomplete, for the Findings view.
+        "sheet_tracks_problem": sheet_problem,
         "busy": len(in_use),
         "findings": counts,
     }
@@ -408,6 +411,7 @@ def _inspect(
     busy: list[str] = []
     unstatted: list[str] = []
     sheet_tracks: set[tuple[int, int]] | None = set()
+    sheet_problem: str | None = None
     for image in listed:
         progress(str(image.key))
         path = image.path
@@ -418,8 +422,10 @@ def _inspect(
         if sheet_tracks is not None and path.lower().endswith(image_sets.SHEET_EXTENSIONS):
             try:
                 sheet_tracks |= image_sets.sheet_track_identities(path)
-            except image_sets.SheetOwnerUnknown:
+            except image_sets.SheetOwnerUnknown as exc:
+                # Incomplete: no delete is offered while it stays so.
                 sheet_tracks = None
+                sheet_problem = str(exc)
         if not is_within_configured_volumes(path):
             continue
         # Only a file confirmed missing drops a copy. Any other stat failure (a
@@ -441,7 +447,7 @@ def _inspect(
             image_key=image_key, path=path, identity=identity,
             container=content_keys.container_of(path),
         ))
-    return out, busy, unstatted, sheet_tracks
+    return out, busy, unstatted, (sheet_tracks, sheet_problem)
 
 
 def _held(library_id: str, unseen: set[str], unlisted: Iterable[str]) -> set[str]:

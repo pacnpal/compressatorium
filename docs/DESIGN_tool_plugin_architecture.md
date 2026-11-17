@@ -5928,10 +5928,23 @@ lists the whole Library, so it records every listed sheet's track identities,
 through the same `resolve_track`), as `sheet_tracks` in the run's summary on
 `duplicate_runs` (no migration). The plan, and the check under each copy's
 locks (`_copy_sheet_problem`), block a copy whose identity is any recorded
-track, besides the walk up. A run with no such record (an older run, or a
-sheet whose tracks could not be stat'ed, stored as None) offers no delete. The
-listing itself no longer shows such a target as an Image: `group_images` also
-counts a member's resolved link target as owned.
+track, besides the walk up. A run with no such record (an older run) offers no
+delete, and neither does an incomplete one (Codex PRRT_kwDOQ9nULM64N2yy):
+`sheet_track_identities` raises for a sheet that cannot be read whole
+(unreadable, or over the size cap), one whose tracks do not resolve as one set
+(`sheet_track_list` is None) or a track it cannot stat, and the run then stores
+`sheet_tracks: None` with the reason in `sheet_tracks_problem`. The listing
+itself no longer shows a linked target as an Image: `group_images` also counts
+a member's resolved link target as owned.
+
+The rule throughout, so the class cannot recur: no helper that answers an
+ownership question returns an empty answer for "could not tell".
+`image_sets._named_tracks` returns None for a sheet it cannot read whole (`[]`
+only for a file that is not a sheet, or a sheet that names nothing);
+`sheet_track_identities` and `owning_sheet` raise `SheetOwnerUnknown`; every
+caller handles it. `image_members` keeps listing what it cannot name (it
+cannot hide files it cannot name) and says so; nothing that deletes relies on
+it.
 
 `owning_sheet` compares a sheet's tracks with the copy by file identity (device
 and inode), so a case-insensitive share's `track.bin` is `Track.bin`; a track
