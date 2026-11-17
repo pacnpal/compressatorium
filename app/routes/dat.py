@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from config import settings
 from models import ConversionMode
 from services import hasheous
+from services.dat_ranking import record_of
 from services.dat_store import CANDIDATE_HASHES_KEY, dat_store
 from services.file_hasher import compute_file_sha1
 from services.hasheous import HasheousUnavailable
@@ -201,6 +202,37 @@ async def import_dat(file: UploadFile = File(...)):
 async def list_dats():
     """List all imported DATs."""
     return await run_in_threadpool(dat_store.list_dats)
+
+
+class DatRankingRequest(BaseModel):
+    #: DAT ids, first wins. A DAT left out is unranked (its family default).
+    order: list[str]
+
+
+# Declared before /dat/{dat_id} so DELETE /dat/ranking is not read as a DAT id.
+@router.get("/dat/ranking")
+async def get_dat_ranking():
+    """The imported DATs in ranked order, and whether the user set it (#424)."""
+    return await run_in_threadpool(dat_store.get_ranking)
+
+
+@router.put("/dat/ranking")
+async def put_dat_ranking(request: DatRankingRequest):
+    """Save the user's DAT order. An unknown or repeated id saves nothing (400).
+
+    Matches are ranked when read, so the new order shows on the next lookup
+    without re-hashing a file.
+    """
+    try:
+        return await dat_store.set_ranking(request.order)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+
+
+@router.delete("/dat/ranking")
+async def delete_dat_ranking():
+    """Forget the user's order: Redump first for discs, No-Intro for cartridges."""
+    return await dat_store.reset_ranking()
 
 
 @router.delete("/dat/{dat_id}")
@@ -1296,18 +1328,28 @@ def matching_available(has_dats: bool) -> bool:
 
 
 async def _local_dat_record(sha1: str) -> dict | None:
-    """Look ``sha1`` up in the imported DATs; ``None`` when absent."""
+    """Look ``sha1`` up in the imported DATs; ``None`` when absent.
+
+    Carries every DAT's match (``matches``); :func:`_local_lookup_match` ranks
+    them for the file once the result is built.
+    """
     record = await run_in_threadpool(dat_store.lookup_sha1, sha1)
     if not record:
         return None
-    dat_name = await run_in_threadpool(dat_store.get_dat_name, record.get("dat_id", ""))
-    return {
+    dat_name = record.get("dat_name") or await run_in_threadpool(
+        dat_store.get_dat_name, record.get("dat_id", ""),
+    )
+    local = {
         "dat_id": record.get("dat_id"),
         "dat_name": dat_name,
+        "family": record.get("family"),
         "game_name": record.get("game_name"),
         "rom_name": record.get("rom_name"),
         "source": "dat",
     }
+    if record.get("matches"):
+        local["matches"] = record["matches"]
+    return local
 
 
 def _match_result(file_path: str, sha1: str, match_type: str, record: dict) -> dict:
@@ -1370,17 +1412,50 @@ def _carrying_file_hash(result: dict, candidates: list[tuple[str, str]]) -> dict
 async def _local_lookup_match(
     file_path: str, candidates: list[tuple[str, str]],
 ) -> dict | None:
-    """First of ``candidates`` the imported DATs know, or ``None``.
+    """The imported DATs' verdict over every one of ``candidates``, or ``None``.
 
     ``candidates`` is a list of ``(sha1, match_type)``: a tool can report
     several content hashes for one file (a CHD carries a header SHA1 and a data
     SHA1) and the file-level fallback supplies one more.
+
+    Every candidate is looked up before anything is ranked (#424, Codex on PR
+    #435). Different DATs can know different hashes of the same Image -- a
+    MAME set the CHD header hash, Redump the data hash -- and stopping at the
+    first hit let whichever hash came first decide the name, whatever the
+    ranking said. Each match in ``matches`` keeps the hash and domain it
+    matched on, so the winner's becomes the result's ``file_hash`` /
+    ``match_type``, and so does a later re-ranking's.
+
+    The candidates are what the caller has already computed; the file-level
+    SHA1 a caller only computes when the embedded ones miss is not forced here.
     """
+    hits = []
     for sha1, match_type in candidates:
         record = await _local_dat_record(sha1)
         if record is not None:
-            return _match_result(file_path, sha1, match_type, record)
-    return None
+            hits.append(_match_result(file_path, sha1, match_type, record))
+    if not hits:
+        return None
+    result = hits[0]
+    if any(hit.get("matches") for hit in hits):
+        merged: list[dict] = []
+        seen: set[tuple] = set()
+        for hit in hits:
+            for match in hit.get("matches") or [hit]:
+                # One entry per DAT and name: a DAT knowing two of the hashes
+                # under the same game keeps the earlier candidate's.
+                key = (match.get("dat_id"), match.get("game_name"))
+                if key not in seen:
+                    seen.add(key)
+                    merged.append({
+                        **record_of(match),
+                        "file_hash": hit["file_hash"],
+                        "match_type": hit["match_type"],
+                    })
+        result = {**result, "matches": merged}
+    # Which of the DATs that know the Image names it: the top-ranked one, or a
+    # conflict (services.dat_ranking).
+    return await run_in_threadpool(dat_store.with_current_ranking, result, file_path)
 
 
 def _remote_pass_stopped(cancel_event: asyncio.Event | None) -> bool:

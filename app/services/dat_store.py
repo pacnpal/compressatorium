@@ -24,6 +24,10 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from services import db as _db
 from services.dat_parser import parse_dat
+from services.dat_ranking import (
+    FAMILIES, RankedMatch, apply_ranking, dat_family, image_kind,
+    is_unrankable_local_hit, ranked_match,
+)
 from utils.path_utils import path_presence
 
 logger = get_logger("dat_store")
@@ -67,6 +71,51 @@ def recomputed_hash_in(match: dict, match_type: str) -> str | None:
 
 def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _dat_info(header: dict, entries: list[dict]) -> dict:
+    """The ``dats`` row for a freshly parsed DAT (a new id, its family)."""
+    return {
+        "id": str(uuid.uuid4())[:8],
+        "name": header.get("name", "Unknown DAT"),
+        "description": header.get("description", ""),
+        "version": header.get("version", ""),
+        "imported_at": _utcnow_iso(),
+        "file_count": len(entries),
+        "family": dat_family(
+            header.get("name"), header.get("description"), header.get("homepage"),
+            header.get("url"), header.get("author"),
+        ),
+    }
+
+
+def _hash_rows(entries: list[dict], dat_id: str) -> list[dict[str, Any]]:
+    """One ``dat_hashes`` row per SHA1 and per MD5 of each entry."""
+    rows: list[dict[str, Any]] = []
+    for entry in entries:
+        for hash_type in ("sha1", "md5"):
+            if entry.get(hash_type):
+                rows.append({
+                    "hash": entry[hash_type],
+                    "hash_type": hash_type,
+                    "dat_id": dat_id,
+                    "game_name": entry["game_name"],
+                    "rom_name": entry["rom_name"],
+                    "size": entry["size"],
+                })
+    return rows
+
+
+def _import_result(dat_info: dict, added: int) -> dict:
+    return {
+        "id": dat_info["id"],
+        "name": dat_info["name"],
+        "version": dat_info["version"],
+        "family": dat_info["family"],
+        "file_count": dat_info["file_count"],
+        "hashes_added": added,
+        "message": f"Imported {dat_info['file_count']} entries from {dat_info['name']}",
+    }
 
 
 def _remote_hit_clause():
@@ -138,149 +187,77 @@ class DATStore:
     def _import_dat_sync(self, source: str) -> tuple[dict, dict]:
         """Parse *source* and insert all entries into the DB in one transaction."""
         header, entries = parse_dat(source)
-
-        dat_id = str(uuid.uuid4())[:8]
-        now = _utcnow_iso()
-
-        dat_info = {
-            "id": dat_id,
-            "name": header.get("name", "Unknown DAT"),
-            "description": header.get("description", ""),
-            "version": header.get("version", ""),
-            "imported_at": now,
-            "file_count": len(entries),
-        }
-
-        added = 0
+        dat_info = _dat_info(header, entries)
+        hash_rows = _hash_rows(entries, dat_info["id"])
         with self._session() as session:
-            dat_row = _db.DAT(
-                id=dat_id,
-                name=dat_info["name"],
-                description=dat_info["description"],
-                version=dat_info["version"],
-                imported_at=now,
-                file_count=len(entries),
-            )
-            session.add(dat_row)
-            # bulk_insert_mappings bypasses the unit-of-work, so flush
-            # the DAT row first or the FK from dat_hashes will fail.
-            session.flush()
-
-            hash_rows: list[dict[str, Any]] = []
-            for entry in entries:
-                if entry.get("sha1"):
-                    hash_rows.append({
-                        "hash": entry["sha1"],
-                        "hash_type": "sha1",
-                        "dat_id": dat_id,
-                        "game_name": entry["game_name"],
-                        "rom_name": entry["rom_name"],
-                        "size": entry["size"],
-                    })
-                    added += 1
-                if entry.get("md5"):
-                    hash_rows.append({
-                        "hash": entry["md5"],
-                        "hash_type": "md5",
-                        "dat_id": dat_id,
-                        "game_name": entry["game_name"],
-                        "rom_name": entry["rom_name"],
-                        "size": entry["size"],
-                    })
-                    added += 1
-
-            if hash_rows:
-                # Use INSERT OR REPLACE (ON CONFLICT DO UPDATE) so that
-                # importing an updated DAT whose hashes overlap with an
-                # existing DAT set never raises a UNIQUE constraint error.
-                chunk_size = 900
-                for i in range(0, len(hash_rows), chunk_size):
-                    chunk = hash_rows[i:i + chunk_size]
-                    stmt = sqlite_insert(_db.DATHash).values(chunk)
-                    stmt = stmt.on_conflict_do_update(
-                        index_elements=["hash", "hash_type"],
-                        set_={
-                            "dat_id": stmt.excluded.dat_id,
-                            "game_name": stmt.excluded.game_name,
-                            "rom_name": stmt.excluded.rom_name,
-                            "size": stmt.excluded.size,
-                        },
-                    )
-                    session.execute(stmt)
-
+            self._insert_dat(session, dat_info, hash_rows)
             # Importing a new DAT invalidates the match cache (a
             # previously-"unmatched" file may now match, or a previously
             # matched file may now match against a different DAT) -- except
             # for remote hits, which the local DATs did not produce.
             self._invalidate_dat_derived_matches(session)
-
             session.commit()
+        return dat_info, _import_result(dat_info, len(hash_rows))
 
-        result = {
-            "id": dat_id,
-            "name": dat_info["name"],
-            "version": dat_info["version"],
-            "file_count": len(entries),
-            "hashes_added": added,
-            "message": f"Imported {len(entries)} entries from {dat_info['name']}",
-        }
-        return dat_info, result
+    @staticmethod
+    def _insert_dat(session, dat_info: dict, hash_rows: list[dict[str, Any]]) -> None:
+        """Add one DAT and its hashes. Shared by both import paths.
+
+        A DAT re-imported under the same name and family (a newer version, or
+        the MAMERedump sync, which replaces every DAT with a fresh id) takes
+        the rank of the one it replaces, so the user's order survives it.
+        """
+        rank = session.scalars(
+            select(_db.DAT.rank).where(
+                _db.DAT.name == dat_info["name"],
+                _db.DAT.family == dat_info["family"],
+                _db.DAT.rank.is_not(None),
+            ).order_by(_db.DAT.imported_at.desc()).limit(1)
+        ).first()
+        session.add(_db.DAT(
+            id=dat_info["id"],
+            name=dat_info["name"],
+            description=dat_info["description"],
+            version=dat_info["version"],
+            imported_at=dat_info["imported_at"],
+            file_count=dat_info["file_count"],
+            family=dat_info["family"],
+            rank=rank,
+        ))
+        # The multi-row insert bypasses the unit-of-work, so flush the DAT row
+        # first or the FK from dat_hashes will fail.
+        session.flush()
+        # Unique per DAT (#424): another DAT knowing the same hash keeps its
+        # own row. A DAT listing one hash twice keeps its last entry, as before.
+        chunk_size = 900
+        for i in range(0, len(hash_rows), chunk_size):
+            stmt = sqlite_insert(_db.DATHash).values(hash_rows[i:i + chunk_size])
+            stmt = stmt.on_conflict_do_update(
+                index_elements=["hash", "hash_type", "dat_id"],
+                set_={
+                    "game_name": stmt.excluded.game_name,
+                    "rom_name": stmt.excluded.rom_name,
+                    "size": stmt.excluded.size,
+                },
+            )
+            session.execute(stmt)
 
     async def import_dat(self, source: str) -> dict:
         """Parse and import a DAT file (path or XML string)."""
-        _dat_info, result = await run_in_threadpool(self._import_dat_sync, source)
+        _info, result = await run_in_threadpool(self._import_dat_sync, source)
         return result
 
     async def import_dat_no_persist(self, source: str) -> dict:
         """Stage a DAT in memory; call :meth:`persist` to atomically commit all staged DATs."""
         def _stage() -> tuple[dict, dict]:
             header, entries = parse_dat(source)
-            dat_id = str(uuid.uuid4())[:8]
-            now = _utcnow_iso()
-            dat_info = {
-                "id": dat_id,
-                "name": header.get("name", "Unknown DAT"),
-                "description": header.get("description", ""),
-                "version": header.get("version", ""),
-                "imported_at": now,
-                "file_count": len(entries),
-            }
-            added = 0
-            hash_rows: list[dict[str, Any]] = []
-            for entry in entries:
-                if entry.get("sha1"):
-                    hash_rows.append({
-                        "hash": entry["sha1"],
-                        "hash_type": "sha1",
-                        "dat_id": dat_id,
-                        "game_name": entry["game_name"],
-                        "rom_name": entry["rom_name"],
-                        "size": entry["size"],
-                    })
-                    added += 1
-                if entry.get("md5"):
-                    hash_rows.append({
-                        "hash": entry["md5"],
-                        "hash_type": "md5",
-                        "dat_id": dat_id,
-                        "game_name": entry["game_name"],
-                        "rom_name": entry["rom_name"],
-                        "size": entry["size"],
-                    })
-                    added += 1
-            result = {
-                "id": dat_id,
-                "name": dat_info["name"],
-                "version": dat_info["version"],
-                "file_count": len(entries),
-                "hashes_added": added,
-                "message": f"Imported {len(entries)} entries from {dat_info['name']}",
-            }
+            dat_info = _dat_info(header, entries)
+            hash_rows = _hash_rows(entries, dat_info["id"])
             with self._pending_lock:
                 self._pending_imports.append((dat_info, hash_rows))
-            return dat_info, result
+            return dat_info, _import_result(dat_info, len(hash_rows))
 
-        _dat_info, result = await run_in_threadpool(_stage)
+        _info, result = await run_in_threadpool(_stage)
         return result
 
     def _persist_sync(self) -> None:
@@ -292,34 +269,7 @@ class DATStore:
             return
         with self._session() as session:
             for dat_info, hash_rows in pending:
-                dat_row = _db.DAT(
-                    id=dat_info["id"],
-                    name=dat_info["name"],
-                    description=dat_info["description"],
-                    version=dat_info["version"],
-                    imported_at=dat_info["imported_at"],
-                    file_count=dat_info["file_count"],
-                )
-                session.add(dat_row)
-                session.flush()
-                if hash_rows:
-                    # Use INSERT OR REPLACE so that staging a new DAT set
-                    # while old DATs are still present never raises a UNIQUE
-                    # constraint error on overlapping (hash, hash_type) pairs.
-                    chunk_size = 900
-                    for i in range(0, len(hash_rows), chunk_size):
-                        chunk = hash_rows[i:i + chunk_size]
-                        stmt = sqlite_insert(_db.DATHash).values(chunk)
-                        stmt = stmt.on_conflict_do_update(
-                            index_elements=["hash", "hash_type"],
-                            set_={
-                                "dat_id": stmt.excluded.dat_id,
-                                "game_name": stmt.excluded.game_name,
-                                "rom_name": stmt.excluded.rom_name,
-                                "size": stmt.excluded.size,
-                            },
-                        )
-                        session.execute(stmt)
+                self._insert_dat(session, dat_info, hash_rows)
             self._invalidate_dat_derived_matches(session)
             session.commit()
 
@@ -380,20 +330,23 @@ class DATStore:
     # Lookups
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _dat_dict(r) -> dict:
+        return {
+            "id": r.id,
+            "name": r.name,
+            "description": r.description,
+            "version": r.version,
+            "imported_at": r.imported_at,
+            "file_count": r.file_count,
+            "family": r.family,
+            "rank": r.rank,
+        }
+
     def list_dats(self) -> list[dict]:
         with self._session() as session:
             rows = session.scalars(select(_db.DAT)).all()
-            return [
-                {
-                    "id": r.id,
-                    "name": r.name,
-                    "description": r.description,
-                    "version": r.version,
-                    "imported_at": r.imported_at,
-                    "file_count": r.file_count,
-                }
-                for r in rows
-            ]
+            return [self._dat_dict(r) for r in rows]
 
     def get_dat_name(self, dat_id: str) -> str:
         with self._session() as session:
@@ -401,27 +354,135 @@ class DATStore:
             return row.name if row is not None else "Unknown"
 
     def _lookup_hash(self, hex_hash: str, hash_type: str) -> dict | None:
+        """Every DAT's record for *hex_hash*, or None when no DAT knows it.
+
+        The top-level fields are the oldest import's (a stable order, not a
+        ranking: :meth:`with_current_ranking` decides which DAT names a file);
+        ``matches`` lists every DAT's record, each with its DAT's name and
+        family.
+        """
         with self._session() as session:
-            row = session.execute(
-                select(_db.DATHash).where(
+            rows = session.execute(
+                select(_db.DATHash, _db.DAT.name, _db.DAT.family)
+                .join(_db.DAT, _db.DAT.id == _db.DATHash.dat_id)
+                .where(
                     _db.DATHash.hash == hex_hash.lower(),
                     _db.DATHash.hash_type == hash_type,
                 )
-            ).scalar_one_or_none()
-            if row is None:
+                .order_by(_db.DAT.imported_at, _db.DAT.id)
+            ).all()
+            if not rows:
                 return None
-            return {
-                "dat_id": row.dat_id,
-                "game_name": row.game_name,
-                "rom_name": row.rom_name,
-                "size": row.size,
-            }
+            matches = [
+                {
+                    "dat_id": row.dat_id,
+                    "dat_name": dat_name,
+                    "family": family,
+                    "game_name": row.game_name,
+                    "rom_name": row.rom_name,
+                    "size": row.size,
+                }
+                for row, dat_name, family in rows
+            ]
+            return {**matches[0], "matches": matches}
 
     def lookup_sha1(self, sha1: str) -> dict | None:
         return self._lookup_hash(sha1, "sha1")
 
     def lookup_md5(self, md5: str) -> dict | None:
         return self._lookup_hash(md5, "md5")
+
+    # ------------------------------------------------------------------
+    # Ranking (#424)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _ranks(session) -> dict[str, tuple[int | None, str]]:
+        """``{dat_id: (rank, family)}`` for every existing DAT."""
+        return {
+            dat_id: (rank, family)
+            for dat_id, rank, family in session.execute(
+                select(_db.DAT.id, _db.DAT.rank, _db.DAT.family)
+            ).all()
+        }
+
+    @staticmethod
+    def _ranked(payload: dict, path: str, ranks) -> dict | None:
+        if is_unrankable_local_hit(payload):
+            return None  # cached before #424: read as uncached, match it again
+        if not payload.get("matches"):
+            return payload  # nothing to rank; skip the registry lookup
+        return apply_ranking(payload, kind=image_kind(path), ranks=ranks)
+
+    def with_current_ranking(self, payload: dict, path: str) -> dict | None:
+        """*payload* (a match result for *path*) ranked by the current order.
+
+        Applied when a result is computed and again whenever a cached one is
+        read, so reordering DATs takes effect without re-hashing anything.
+        ``None`` when every DAT the payload names is gone: there is no local
+        hit any more.
+        """
+        if not payload.get("matches"):
+            return payload  # nothing to rank (a miss, a remote hit)
+        with self._session() as session:
+            return self._ranked(payload, path, self._ranks(session))
+
+    def ranked_match_for_image(self, path: str) -> RankedMatch:
+        """Which DAT names the Image at *path*: the top-ranked match, or a conflict.
+
+        The one shared answer to "what is this Image called?" (rename to DAT
+        name, the Inbox, the RomM view). Reads the match the app already has
+        for *path* and never hashes: ``top`` is ``None`` both when there is no
+        match and when equally ranked DATs disagree, which ``conflict`` then
+        lists. A Hasheous hit is a single match named by its own record.
+        Blocking; call it off the event loop.
+        """
+        return ranked_match(self.get_match(path))
+
+    def get_ranking(self) -> dict:
+        """The DATs in ranked order, and whether the user has set the order.
+
+        Ranked DATs come first in the user's order; any DAT they have not
+        placed follows, by family (Redump, No-Intro, TOSEC, MAME, other) and
+        then name. Until an order is saved the family defaults apply, which
+        put No-Intro first for cartridge Images.
+        """
+        with self._session() as session:
+            rows = session.scalars(select(_db.DAT)).all()
+            dats = [self._dat_dict(r) for r in rows]
+        family_order = {family: i for i, family in enumerate(FAMILIES)}
+        dats.sort(key=lambda d: (
+            d["rank"] is None,
+            d["rank"] if d["rank"] is not None else 0,
+            family_order.get(d["family"], len(FAMILIES)),
+            d["name"].lower(),
+        ))
+        return {"custom": any(d["rank"] is not None for d in dats), "dats": dats}
+
+    def _set_ranking_sync(self, order: list[str]) -> dict:
+        if len(set(order)) != len(order):
+            raise ValueError("A DAT is listed more than once")
+        with self._session() as session:
+            known = set(session.scalars(select(_db.DAT.id)).all())
+            unknown = [dat_id for dat_id in order if dat_id not in known]
+            if unknown:
+                raise ValueError(f"Unknown DAT id(s): {', '.join(unknown)}")
+            position = {dat_id: i for i, dat_id in enumerate(order)}
+            for row in session.scalars(select(_db.DAT)).all():
+                row.rank = position.get(row.id)
+            session.commit()
+        return self.get_ranking()
+
+    async def set_ranking(self, order: list[str]) -> dict:
+        """Save the user's order (DAT ids, first wins); unlisted DATs are unranked.
+
+        Raises ``ValueError`` for an unknown or repeated id, saving nothing.
+        """
+        return await run_in_threadpool(self._set_ranking_sync, list(order))
+
+    async def reset_ranking(self) -> dict:
+        """Forget the user's order, so the family defaults apply again."""
+        return await run_in_threadpool(self._set_ranking_sync, [])
 
     # ------------------------------------------------------------------
     # Match cache
@@ -435,7 +496,9 @@ class DATStore:
         normalized = self._normalize(file_path)
         with self._session() as session:
             row = session.get(_db.DATMatch, normalized)
-            return dict(row.payload) if row is not None else None
+            if row is None:
+                return None
+            return self._ranked(dict(row.payload), normalized, self._ranks(session))
 
     @staticmethod
     def _would_downgrade_remote_hit(existing, match: dict) -> bool:
@@ -558,7 +621,11 @@ class DATStore:
         if file_hash and file_hash not in hashes:
             hashes.append(file_hash)
         return any(
-            session.get(_db.DATHash, (sha1, "sha1")) is not None
+            session.execute(
+                select(_db.DATHash.hash).where(
+                    _db.DATHash.hash == sha1, _db.DATHash.hash_type == "sha1",
+                ).limit(1)
+            ).first() is not None
             for sha1 in hashes if sha1
         )
 
@@ -748,12 +815,15 @@ class DATStore:
         chunk_size = 900
         by_norm: dict[str, dict] = {}
         with self._session() as session:
+            ranks = self._ranks(session)
             for i in range(0, len(unique_norms), chunk_size):
                 chunk = unique_norms[i:i + chunk_size]
                 rows = session.scalars(
                     select(_db.DATMatch).where(_db.DATMatch.path.in_(chunk))
                 ).all()
-                by_norm.update({r.path: dict(r.payload) for r in rows})
+                by_norm.update({
+                    r.path: self._ranked(dict(r.payload), r.path, ranks) for r in rows
+                })
         return {orig: by_norm.get(norm) for orig, norm in normalized_map.items()}
 
     # ------------------------------------------------------------------
