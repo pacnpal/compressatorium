@@ -749,6 +749,50 @@ def start_detached(func: Callable, *args: object, **kwargs: object) -> asyncio.F
     return future
 
 
+def start_detached_or_own_thread(
+    func: Callable, *args: object, **kwargs: object,
+) -> asyncio.Future:
+    """:func:`start_detached`, or, when no detached slot is free, a daemon
+    thread of its own (the fallback ``_close_stage`` and
+    ``_let_go_in_background`` take): either way the call starts now, before
+    the caller's next await, and the future settles with it. For work that
+    must start whatever happens next, such as keeping the only copy of a
+    checked output out of every sweep (#391). Must be called on the event
+    loop."""
+    try:
+        return start_detached(func, *args, **kwargs)
+    except ProbeCapacityExceeded:
+        pass
+    loop = asyncio.get_running_loop()
+    future: asyncio.Future = loop.create_future()
+
+    def settle(result: object, error: BaseException | None) -> None:
+        if future.done():
+            return
+        if error is not None:
+            future.set_exception(error)
+        else:
+            future.set_result(result)
+
+    def run() -> None:
+        try:
+            result = func(*args, **kwargs)
+        except BaseException as exc:
+            # Relayed to whoever awaits the future, which acts on it.
+            _cleanup_logger.debug("A call on its own thread raised; relaying it", exc_info=True)
+            answer: tuple[object, BaseException | None] = (None, exc)
+        else:
+            answer = (result, None)
+        try:
+            loop.call_soon_threadsafe(settle, *answer)
+        except RuntimeError:
+            pass  # the loop is closed: nobody is waiting any more
+
+    threading.Thread(target=run, daemon=True).start()
+    future.add_done_callback(lambda done: done.cancelled() or done.exception())
+    return future
+
+
 async def run_detached(
     func: Callable,
     *args: object,

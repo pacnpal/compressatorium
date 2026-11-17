@@ -1110,6 +1110,26 @@ async def test_a_cancel_during_set_aside_still_releases_and_announces_the_job(
 
 
 @pytest.mark.asyncio
+async def test_a_set_aside_with_no_detached_thread_free_still_keeps_the_output(
+    vol, romm, monkeypatch,
+):
+    """CodeRabbit 4594613612: with every detached thread in use, the
+    set-aside still starts before the first await a cancel can interrupt,
+    on a thread of its own; a cancel during the listing, a restart and the
+    sweeps leave the output kept."""
+    from services import subprocess_runner
+
+    def no_slot_free(*_args, **_kwargs):
+        raise subprocess_runner.ProbeCapacityExceeded("no detached thread free")
+
+    monkeypatch.setattr(subprocess_runner, "start_detached", no_slot_free)
+    monkeypatch.setattr(job_manager_module, "start_detached", no_slot_free)
+    await test_a_cancel_before_the_set_aside_starts_still_keeps_the_output(
+        vol, romm, monkeypatch,
+    )
+
+
+@pytest.mark.asyncio
 async def test_a_cancel_before_the_set_aside_starts_still_keeps_the_output(
     vol, romm, monkeypatch,
 ):

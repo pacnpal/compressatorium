@@ -91,7 +91,7 @@ did not keep its id (``_fall_back``).
 
 Every read of a file or of RomM runs on a detached thread under a bound
 (``run_detached_bounded``, ``run_detached_within_stall_bound``), and every
-move on one never abandoned (``start_detached``), never on the event loop's
+move on one never abandoned (``start_detached_or_own_thread``), never on the event loop's
 shared executor.
 
 A successful swap closes the output's pending re-pin row as done
@@ -134,7 +134,7 @@ from services.romm.client import (
 from services.subprocess_runner import (
     run_detached_bounded,
     run_detached_within_stall_bound,
-    start_detached,
+    start_detached_or_own_thread,
 )
 from utils.path_utils import FileIdentity, file_identity
 
@@ -435,11 +435,13 @@ async def _read_whole(func: Callable[..., Any], *args: Any, what: str) -> Any:
 
 
 async def _mutate(func: Callable[..., Any], *args: Any) -> Any:
-    """A step that changes something, on a detached thread (``start_detached``),
-    never abandoned. A cancel waits for it to finish before it goes on, and
-    *func* records its own outcome on its thread (a flag, the journal), so
-    what happened is known before anything acts on the cancel."""
-    future = start_detached(contextvars.copy_context().run, func, *args)
+    """A step that changes something, on a detached thread, or one of its own
+    when none is free (``start_detached_or_own_thread``: the step, and an
+    undo, always start), never abandoned. A cancel waits for it to finish
+    before it goes on, and *func* records its own outcome on its thread (a
+    flag, the journal), so what happened is known before anything acts on
+    the cancel."""
+    future = start_detached_or_own_thread(contextvars.copy_context().run, func, *args)
     try:
         return await asyncio.shield(future)
     except asyncio.CancelledError:

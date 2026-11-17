@@ -4222,10 +4222,14 @@ is the only copy (CodeRabbit 4594086355):
   between the two looks still keeps it (CodeRabbit 4594218526). The other
   sweeps (`_sweep_one`, `_sweep_orphan_sidecar`) already make their last
   check under the lock.
-- `set_aside` is started first, with `start_detached`, before anything in
-  `_set_aside_output` that a cancel could interrupt (listing the output's
-  names comes after; CodeRabbit 4594495308), so the slot is renamed or
-  marked kept whatever happens to the job's task. The slot stays protected
+- `set_aside` is started first, with `start_detached_or_own_thread`, before
+  anything in `_set_aside_output` that a cancel could interrupt (listing the
+  output's names comes after; CodeRabbit 4594495308), so the slot is renamed
+  or marked kept whatever happens to the job's task. With every detached
+  thread in use it gets a daemon thread of its own (the fallback
+  `_close_stage` and `_let_go_in_background` take, now shared as
+  `subprocess_runner.start_detached_or_own_thread`; CodeRabbit 4594613612),
+  so it always starts. The slot stays protected
   all along (its lock is held until the rename or the marker is in place).
   The job waits `SET_ASIDE_SECONDS` for it (shielded). An answer that comes
   after the bound, or after a cancel, goes once to `late` on a thread of its
@@ -4303,7 +4307,9 @@ Every read of a file or of RomM in the swap runs on a detached thread under
 a bound: a stat or a RomM call through `run_detached_bounded`
 (`PROBE_SECONDS`, `ROMM_SECONDS`), hashing the output through
 `run_detached_within_stall_bound`. Every move, journal write and RomM write
-runs through `start_detached` (`_mutate`). Each carries the caller's context
+runs through `start_detached_or_own_thread` (`_mutate`: a detached thread,
+or one of its own when none is free, so a step, or its undo, always starts).
+Each carries the caller's context
 (`contextvars.copy_context().run`), so `check_write` sees the hook's guard. A
 mount that stops answering strands a throwaway thread, never a worker every
 other offload needs; the hook's grace and `lingering` hand-off cover a move

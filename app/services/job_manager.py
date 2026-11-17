@@ -56,6 +56,7 @@ from services.subprocess_runner import (
     run_detached_undoable,
     run_detached_within_stall_bound,
     start_detached,
+    start_detached_or_own_thread,
 )
 from services.tools import ModeKind, registry
 from services.verification_store import check_verdict, verification_store
@@ -3200,14 +3201,11 @@ class JobManager:
             job.warning = f"{job.warning}; {note}" if job.warning else note
 
         # The set-aside starts before anything a cancel can interrupt
-        # (CodeRabbit 4594495308): ``start_detached`` starts its thread now,
-        # so the slot is renamed or marked kept whatever happens to this
-        # await. An answer nobody waits for any more goes to ``late``, once.
-        try:
-            future: asyncio.Future | None = start_detached(slot.set_aside)
-        except ProbeCapacityExceeded:
-            logger.error("No thread to set aside %s; holding its slot", job.output_path)
-            future = None
+        # (CodeRabbit 4594495308): its thread starts now, a detached one or,
+        # with none free, one of its own (CodeRabbit 4594613612), so the slot
+        # is renamed or marked kept whatever happens to this await. An answer
+        # nobody waits for any more goes to ``late``, once.
+        future = start_detached_or_own_thread(slot.set_aside)
         state = {"waiting": True}
 
         def answered(done: asyncio.Future) -> None:
@@ -3217,11 +3215,10 @@ class JobManager:
 
         def stop_waiting() -> None:
             state["waiting"] = False
-            if future is not None and future.done():
+            if future.done():
                 answered(future)
 
-        if future is not None:
-            future.add_done_callback(answered)
+        future.add_done_callback(answered)
         kept: str | None
         try:
             try:
@@ -3233,11 +3230,9 @@ class JobManager:
                 logger.warning(
                     "Could not list the outputs of %s", job.output_path, exc_info=True,
                 )
-            if future is None:
-                raise OSError("no thread to set the slot aside")
             kept = await asyncio.wait_for(asyncio.shield(future), SET_ASIDE_SECONDS)
         except asyncio.TimeoutError:
-            if future is not None and future.done() and future.exception() is not None:
+            if future.done() and not future.cancelled() and future.exception() is not None:
                 kept = before  # its own timeout, not the bound's: it failed
                 self._held_slots.append(slot)
             else:
