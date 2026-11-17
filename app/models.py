@@ -75,6 +75,9 @@ class ConversionMode(str, Enum):
     # A patch applied to a cartridge Image (#428): writes "Name (Patched).7z"
     # beside it and never changes it. External, but it has a Ledger row.
     PATCH = "patch"
+    # A confirmed rename of Images to their DAT names (#425): each one renamed
+    # through the Referrer hook, nothing converted or deleted. External.
+    DAT_RENAME = "dat_rename"
 
 
 class DuplicateAction(str, Enum):

@@ -53,6 +53,8 @@ class UIStore {
   bulkVerifyItems = $state(null);
   // Full paths of the discs a playlist is being made from (null = closed).
   playlistPaths = $state(null);
+  // Full paths of the Images a rename to DAT name was asked for (#425).
+  datRenamePaths = $state(null);
   duplicateCheck = $state(null);
   deletePlan = $state(null);
   showCancelAll = $state(false);
@@ -86,6 +88,7 @@ class UIStore {
       !!this.bulkDeleteEntries ||
       !!this.bulkVerifyItems ||
       !!this.playlistPaths ||
+      !!this.datRenamePaths ||
       !!this.duplicateCheck ||
       !!this.deletePlan ||
       this.duplicatePromptOpen ||

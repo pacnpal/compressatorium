@@ -550,6 +550,29 @@ class JobsStore {
     }
   }
 
+  /**
+   * Follow job *jobId* (one a request just started) until it ends, reading
+   * it from the API and adding each read to the list (#425). The job stream
+   * subscribes to running jobs every 0.1 s, so a job that ends sooner is
+   * never sent on it. Independent of whatever started it: a dialog closed
+   * meanwhile stops nothing. A failed read is tried again; a job the server
+   * no longer has (404) ends the tracking. Resolves with the ended job, or
+   * null for one the server no longer has.
+   */
+  async track(jobId, { interval = 500 } = {}) {
+    for (;;) {
+      try {
+        const read = await api.getJob(jobId);
+        this.adopt([read]);
+        if (TERMINAL_STATUSES.has(read?.status)) return read;
+      } catch (e) {
+        if (e?.status === 404) return null;
+        // Anything else is transient: the next read tries again.
+      }
+      await new Promise((resolve) => setTimeout(resolve, interval));
+    }
+  }
+
   /** Add jobs another endpoint created (Auto) to the live list. */
   adopt(created) {
     if (!Array.isArray(created)) return;

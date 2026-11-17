@@ -236,3 +236,40 @@ process.stdout.write(JSON.stringify(store.jobs.map((j) => j.id)));
 @pytest.mark.parametrize("path", ["sse", "refresh", "adopt"])
 def test_a_job_the_clear_deleted_never_comes_back(tmp_path, path):
     assert _evaluate(tmp_path, _LATE_COPY_AFTER_CLEAR % {"path": path}) == ["j2"]
+
+
+# CodeRabbit 4602984524 (#425): a job one request started, followed until it
+# ends whoever is looking. A short job can end before the job stream
+# subscribes to it, so it is read from the API: each read joins the list, a
+# failed read is tried again, and a job the server no longer has stops it.
+_TRACKED = """
+const store = new JobsStore();
+const answers = %(answers)s;
+let calls = 0;
+api.getJob = async (id) => {
+  const next = answers[Math.min(calls, answers.length - 1)];
+  calls += 1;
+  if (next.fail) { const err = new Error('read failed'); err.status = next.fail; throw err; }
+  return { id, file_path: '/__external_jobs__/' + id, mode: 'dat_rename', ...next };
+};
+const ended = await store.track('r1', { interval: 1 });
+process.stdout.write(JSON.stringify({
+  calls, ended: ended && ended.status,
+  listed: store.jobs.map((j) => [j.id, j.status]),
+}));
+"""
+
+
+def test_a_tracked_job_is_read_until_it_ends_through_failed_reads(tmp_path):
+    answers = (
+        "[{ fail: 500 }, { status: 'processing' }, { fail: 502 }, { status: 'completed' }]"
+    )
+    data = _evaluate(tmp_path, _TRACKED % {"answers": answers})
+
+    assert data == {"calls": 4, "ended": "completed", "listed": [["r1", "completed"]]}
+
+
+def test_a_tracked_job_the_server_no_longer_has_stops_the_tracking(tmp_path):
+    data = _evaluate(tmp_path, _TRACKED % {"answers": "[{ status: 'processing' }, { fail: 404 }]"})
+
+    assert data["calls"] == 2 and data["ended"] is None, data

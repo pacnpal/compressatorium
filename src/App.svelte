@@ -29,6 +29,7 @@
   import BulkVerifyModal from '$lib/components/modals/BulkVerifyModal.svelte';
   import BulkDeleteModal from '$lib/components/modals/BulkDeleteModal.svelte';
   import PlaylistModal from '$lib/components/modals/PlaylistModal.svelte';
+  import DatRenameModal from '$lib/components/modals/DatRenameModal.svelte';
   import DeleteModal from '$lib/components/modals/DeleteModal.svelte';
   import RenameModal from '$lib/components/modals/RenameModal.svelte';
   import PatchModal from '$lib/components/modals/PatchModal.svelte';
@@ -172,6 +173,7 @@
 <BulkVerifyModal />
 <BulkDeleteModal />
 <PlaylistModal />
+<DatRenameModal />
 <DeleteModal />
 <RenameModal />
 <PatchModal />
