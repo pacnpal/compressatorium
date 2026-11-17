@@ -194,6 +194,10 @@
 
 ### Fixed
 
+- **Swap recovery logs a stuck swap once** (#445). A swap it can't finish used
+  to log the same warning every 10 minutes. It now warns when it first sees a
+  reason, and again when the reason changes; repeats go to the debug log. The
+  Finding and the retry every 10 minutes are unchanged.
 - **A set-aside RomM source keeps its own name** (#415). While a swap keeps a
   ROM's id, the source it sets aside in `.compressatorium-stage/park-…/` is
   now named as it was (`Game.iso`), not with the converted file's name, so
