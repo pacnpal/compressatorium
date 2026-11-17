@@ -71,6 +71,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import os
 import time
 from collections.abc import Iterator
@@ -104,6 +105,11 @@ logger = get_logger("romm_swap_recovery")
 # How long the background run waits before trying the rows it couldn't settle
 # again.
 RETRY_SECONDS = 600.0
+
+# The reason each unfinished swap was last left for (row id -> reason), so a
+# pass that leaves it for the same reason logs at DEBUG, not WARNING (#445).
+# In-process: after a restart the reason is logged once more.
+_last_reason: dict[int, str] = {}
 # How long taking a row's job locks may take.
 LOCK_SECONDS = 20.0
 # The RomM Library's id (``RommLibrary.id``): the owner of these Findings.
@@ -592,11 +598,14 @@ async def _recover_row(row: dict, binding: _Binding) -> bool:
         await _mutate(lambda: swap_journal.step(row["id"], ending, detail=detail))
     except _Left as exc:
         why = str(exc)
-        logger.warning("Swap recovery: swap %s of ROM %s: %s", row["id"], row["rom_id"], why)
+        _log_left(row, why)
         await _leave_finding(row, recovery.facts, why)
         return False
     except Exception as exc:
-        logger.exception("Swap recovery: swap %s of ROM %s failed", row["id"], row["rom_id"])
+        if _log_left(row, f"recovery failed ({exc})"):
+            logger.exception(
+                "Swap recovery: swap %s of ROM %s failed (traceback)", row["id"], row["rom_id"],
+            )
         await _leave_finding(row, recovery.facts, f"recovery failed ({exc})")
         return False
     finally:
@@ -607,8 +616,22 @@ async def _recover_row(row: dict, binding: _Binding) -> bool:
         await _probe(findings.resolve, LIBRARY_ID, _image_key(row), findings.ROMM_SWAP)
     except Exception:
         logger.warning("Swap recovery: could not clear the Finding", exc_info=True)
+    _last_reason.pop(row["id"], None)
     logger.info("Swap recovery: swap %s of ROM %s ended %s", row["id"], row["rom_id"], ending)
     return True
+
+
+def _log_left(row: dict, why: str) -> bool:
+    """Log why a swap was left: WARNING when this reason is new for the swap,
+    DEBUG when the last pass left it for the same one (#445). True when it
+    was new."""
+    repeat = _last_reason.get(row["id"]) == why
+    _last_reason[row["id"]] = why
+    logger.log(
+        logging.DEBUG if repeat else logging.WARNING,
+        "Swap recovery: swap %s of ROM %s: %s", row["id"], row["rom_id"], why,
+    )
+    return not repeat
 
 
 def _observe_finding(row: dict, facts: _Facts | None, why: str) -> None:
