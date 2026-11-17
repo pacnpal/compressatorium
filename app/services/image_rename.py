@@ -272,7 +272,10 @@ async def _put_back(
     try:
         await run_detached_to_end(_move_blocking, renames)
     except OSError as exc:
-        return f"{left} still name the new name: the file couldn't be moved to put them back ({exc})"
+        return (
+            f"{left} still name the new name: the file couldn't be moved to put "
+            f"them back ({exc})"
+        )
     undo: ReferrerOutcome | None = None
     failed: str | None = None
     try:

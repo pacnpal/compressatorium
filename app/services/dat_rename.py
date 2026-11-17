@@ -356,9 +356,10 @@ async def _rename_one(job_id: str, path: str, confirmed: str | None) -> dict:
     if item["status"] != RENAME:
         return _result(path, confirmed, "skipped", item["reason"])
     if confirmed != item["new_path"]:
+        now = os.path.basename(item["new_path"])
         why = (
             "it wasn't to be renamed when the preview was shown" if confirmed is None
-            else f"its DAT name changed since the preview (now {os.path.basename(item['new_path'])})"
+            else f"its DAT name changed since the preview (now {now})"
         )
         return _result(path, confirmed, "skipped", why)
     outcome = await image_rename.rename_image(
