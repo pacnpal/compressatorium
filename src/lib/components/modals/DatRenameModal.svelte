@@ -61,11 +61,12 @@
     return p?.split(/[/\\]/).pop() ?? p ?? '';
   }
 
-  // The Image's other files the rename moves (a sheet's tracks, #426): one
-  // the folder rename carries under the same name too.
+  // Every other file of the Image (a sheet's tracks, #426), each with its
+  // new path: one the folder rename carries under the same name, and one
+  // that already has its DAT name, too.
   function otherFiles(item) {
     const files = Array.isArray(item?.files) ? item.files : [];
-    return files.filter((f) => f.path !== item.path && f.new_path !== f.path);
+    return files.filter((f) => f.path !== item.path);
   }
 
   // One preview item as confirmed: its new path and each file's (#426), so

@@ -16,9 +16,9 @@ its id); whatever is still under its old name afterwards is renamed here.
 map holds its tracks, the placing step first rewrites the sheet's track
 references to the new names (``sheet_rewrite``: only those tokens change,
 every other byte is kept), atomically through its folder (a whole new sheet
-renamed over it), and records that write in the same ``WriteJournal`` as the Referrers' files, under the sheet's
-old path. Then each file is renamed, and last a :class:`Folder` that holds
-only the Image and carries its name. A step that fails puts back the files
+renamed over it), and records that write in the same ``WriteJournal`` as the
+Referrers' files, under the sheet's old path. Then each file is renamed, and
+last a :class:`Folder` that holds only the Image and carries its name. A step that fails puts back the files
 already renamed and raises, so the files are found under their old names
 and the journal puts the sheet's bytes and every Referrer back exactly.
 
