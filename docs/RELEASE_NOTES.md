@@ -32,8 +32,9 @@
   a swap undoes it within a few seconds: before the output takes the
   source's name, RomM gets the old name back and the source returns; after,
   the source returns beside the output and RomM keeps the output's name (and
-  the ROM its id). If that can't finish, the source stays safely set aside
-  in `.compressatorium-stage/park-…` and the swap is recorded; picking it up
+  the ROM its id); and once the source has been deleted (the last step), the
+  swap is simply complete. If that can't finish, the source stays safely set
+  aside in `.compressatorium-stage/park-…` and the swap is recorded; picking it up
   on the next start comes later (#392), and until then you can move the
   source back by hand. A checked output that can't be put in place
   (something took its name) is now kept in the hidden staging folder, and

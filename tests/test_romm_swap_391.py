@@ -1110,6 +1110,71 @@ async def test_a_cancel_during_set_aside_still_releases_and_announces_the_job(
 
 
 @pytest.mark.asyncio
+async def test_a_cancel_before_the_set_aside_starts_still_keeps_the_output(
+    vol, romm, monkeypatch,
+):
+    """CodeRabbit 4594495308: a cancel during the first probe of preserving
+    a checked output (listing its names) must not leave its slot merely
+    locked. After a "restart" (every slot's lock let go) and the sweeps, the
+    output is still there."""
+    from services import partial_writes, staging
+    from services.romm import settings as romm_settings
+
+    platform = _platform(vol)
+    await romm_settings.save({"swap_keep_rom_id": False})
+    opened: list[staging.StagedOutput] = []
+    real_open = staging.open_slot
+
+    def recording_open(*args, **kwargs):
+        slot = real_open(*args, **kwargs)
+        opened.append(slot)
+        return slot
+
+    async def checked_then_taken(tool, source_path, output_path, **_kw):
+        (platform / "Game.chd").write_bytes(b"someone else's")
+        return RoundTripOutcome(passed=True)
+
+    monkeypatch.setattr(staging, "open_slot", recording_open)
+    monkeypatch.setattr(job_manager_module, "round_trip", checked_then_taken)
+    job = await convert_routes.create_job(JobCreateRequest(
+        file_path=str(platform / "Game.iso"), mode=ConversionMode.CREATEDVD,
+        duplicate_action=DuplicateAction.SKIP, delete_on_verify=True,
+    ))
+    loop = asyncio.get_running_loop()
+    running = asyncio.create_task(convert_routes.job_manager._process_job(job.id))
+    real_names = job_manager_module.JobManager._place_names
+    probes: list[str] = []
+
+    def cancelled_probe(self, job_, write_path):
+        # The first listings are the placing decision's and the placing's
+        # (which fails: the name is taken); the third is the set-aside's,
+        # which the cancel cuts short.
+        probes.append(write_path)
+        if len(probes) == 3:
+            loop.call_soon_threadsafe(running.cancel)
+            time.sleep(0.3)
+        return real_names(self, job_, write_path)
+
+    monkeypatch.setattr(job_manager_module.JobManager, "_place_names", cancelled_probe)
+    with pytest.raises(asyncio.CancelledError):
+        await running
+    await asyncio.sleep(0.5)  # a set-aside the cancel cut short finishes on its worker
+    # A "restart": every slot this process still holds lets go of its lock.
+    for slot in opened:
+        slot.keep()
+    stage = platform / STAGE_DIR_NAME
+    for entry in stage.iterdir():
+        hour_ago = time.time() - 3600
+        os.utime(entry, (hour_ago, hour_ago))
+    partial_writes.sweep_recorded(min_age=0)
+    real_open(str(platform)).close()  # opening a slot sweeps the stage folder
+
+    kept = list(stage.rglob("Game.chd"))
+    assert [p.read_bytes() for p in kept] == [OUTPUT_BYTES], kept
+    assert (platform / "Game.iso").read_bytes() == SOURCE_BYTES
+
+
+@pytest.mark.asyncio
 async def test_a_cancel_while_the_parked_source_is_deleted_ends_done(vol, romm, monkeypatch):
     """CodeRabbit 4594326517: the Cancel lands while the parked Source is
     removed. The removal is recorded on its own thread, so the swap ends

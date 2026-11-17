@@ -3183,16 +3183,10 @@ class JobManager:
         the stage folder meanwhile."""
         base = os.path.basename(job.output_path)
         names: list[str] = [base]
-        try:
-            names = await run_detached_bounded(
-                self._place_names, job, slot.path_for(base), timeout=_CANONICAL_PROBE_SECONDS,
-            )
-        except Exception:
-            logger.warning("Could not list the outputs of %s", job.output_path, exc_info=True)
         before = slot.path
 
         def late(kept: str) -> None:
-            # On the worker's thread, once nobody waits for it any more.
+            # On its own thread, once nobody waits for the set-aside any more.
             self._keep_records_blocking(job, names, before, kept)
             note = (
                 "its slot was set aside after the job ended; "
@@ -3202,15 +3196,56 @@ class JobManager:
             job.message = f"{job.message}; {note}" if job.message else note
             job.warning = f"{job.warning}; {note}" if job.warning else note
 
+        # The set-aside starts before anything a cancel can interrupt
+        # (CodeRabbit 4594495308): ``start_detached`` starts its thread now,
+        # so the slot is renamed or marked kept whatever happens to this
+        # await. An answer nobody waits for any more goes to ``late``, once.
+        try:
+            future: asyncio.Future | None = start_detached(slot.set_aside)
+        except ProbeCapacityExceeded:
+            logger.error("No thread to set aside %s; holding its slot", job.output_path)
+            future = None
+        state = {"waiting": True}
+
+        def answered(done: asyncio.Future) -> None:
+            if state["waiting"] or done.cancelled() or done.exception() is not None:
+                return
+            threading.Thread(target=late, args=(done.result(),), daemon=True).start()
+
+        def stop_waiting() -> None:
+            state["waiting"] = False
+            if future is not None and future.done():
+                answered(future)
+
+        if future is not None:
+            future.add_done_callback(answered)
         kept: str | None
         try:
-            kept = await run_detached_undoable(
-                slot.set_aside, timeout=SET_ASIDE_SECONDS, undo=late,
-            )
-        except DeadlineExpired:
-            kept = None  # still running, its lock held; ``late`` takes it from here
+            try:
+                names = await run_detached_bounded(
+                    self._place_names, job, slot.path_for(base),
+                    timeout=_CANONICAL_PROBE_SECONDS,
+                )
+            except Exception:
+                logger.warning(
+                    "Could not list the outputs of %s", job.output_path, exc_info=True,
+                )
+            if future is None:
+                raise OSError("no thread to set the slot aside")
+            kept = await asyncio.wait_for(asyncio.shield(future), SET_ASIDE_SECONDS)
+        except asyncio.TimeoutError:
+            if future is not None and future.done() and future.exception() is not None:
+                kept = before  # its own timeout, not the bound's: it failed
+                self._held_slots.append(slot)
+            else:
+                kept = None  # still running, its lock held; ``late`` takes it from here
+                stop_waiting()
+        except asyncio.CancelledError:
+            stop_waiting()
+            raise
         except Exception:
-            # Fail closed: the lock stays held, so no sweep removes it.
+            # Fail closed: the slot stays open, its lock held, so no sweep
+            # removes it.
             logger.exception("Could not set aside the checked output of %s", job.output_path)
             self._held_slots.append(slot)
             kept = before

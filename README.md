@@ -817,13 +817,21 @@ seconds, and what that leaves depends on how far it got:
 A checked output that can't be put in place (something took its name) is
 kept in the hidden staging folder, and the job says where.
 
-Every step is recorded before it runs. If one fails and can't be undone, or
-the undo can't finish in time, or the app stops, the source stays set aside
-in the hidden staging folder (`.compressatorium-stage/park-…` beside the
-output), never deleted or swept away, and the record keeps the step it
-stopped at. Picking such a swap up on the next start is a later change
-(#392); until then nothing acts on it, and you can move the source back by
-hand from that folder. The delete
+Every step is recorded before it runs, and the record keeps the step a swap
+stopped at. If a step fails and can't be undone, the undo can't finish in
+time, or the app stops, where the source is depends on how far the swap got:
+
+- *Before the source was set aside:* it is still where it was (under its old
+  name, or under the new one if RomM had already renamed it).
+- *While it was set aside:* it is in the hidden staging folder
+  (`.compressatorium-stage/park-…` beside the output), never deleted or swept
+  away.
+- *After it was deleted* (the last step): the swap had in fact finished, and
+  the output is under RomM's new name, with the ROM's id.
+
+Picking such a swap up on the next start is a later change (#392); until
+then nothing acts on it, and you can move a set-aside source back by hand
+from that folder. The delete
 confirmation lists the rename ("RomM: rename ROM 1234 to Game.chd"), and the
 Ledger records that the ROM kept its id. Archives (`.zip`, `.7z`), multi-file
 games (`.cue`/`.bin`) and anything else keep the usual behaviour.

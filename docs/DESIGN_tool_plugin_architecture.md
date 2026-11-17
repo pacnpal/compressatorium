@@ -4222,13 +4222,16 @@ is the only copy (CodeRabbit 4594086355):
   between the two looks still keeps it (CodeRabbit 4594218526). The other
   sweeps (`_sweep_one`, `_sweep_orphan_sidecar`) already make their last
   check under the lock.
-- `set_aside` runs under `SET_ASIDE_SECONDS` through `run_detached_undoable`.
-  The slot stays protected all along (its lock is held until the rename or
-  the marker is in place). If it answers after the bound, the job has
-  reported the stage folder; the late answer goes to `undo`, which moves the
-  records itself (`_keep_records_blocking`), logs the real path and adds it
-  to the job's message and warning (the Ledger row, already written, keeps
-  the stage folder).
+- `set_aside` is started first, with `start_detached`, before anything in
+  `_set_aside_output` that a cancel could interrupt (listing the output's
+  names comes after; CodeRabbit 4594495308), so the slot is renamed or
+  marked kept whatever happens to the job's task. The slot stays protected
+  all along (its lock is held until the rename or the marker is in place).
+  The job waits `SET_ASIDE_SECONDS` for it (shielded). An answer that comes
+  after the bound, or after a cancel, goes once to `late` on a thread of its
+  own, which moves the records (`_keep_records_blocking`), logs the real path
+  and adds it to the job's message and warning; the job has reported the
+  stage folder meanwhile (and the Ledger row, already written, keeps it).
 - Its records go with it: the check and CHD-metadata records are moved from
   the staged paths to the kept ones with the store helpers placing uses
   (`move_blocking`), and when placing failed before the job wrote the check
