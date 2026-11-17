@@ -67,6 +67,7 @@ from services import findings, platform_detect, staging
 from services import inbox as inbox_store
 from services.image_sets import group_images, image_fingerprint, image_members
 from services.job_manager import OutputClaimedError, QueueBackpressureError, job_manager
+from services.lock_manager import LockFailed, lock_manager
 from services.output_conflicts import QUEUE, resolve_destination
 from services.rules import check as checks
 from services.rules.library import Library, LibraryUnreadable, PlacementUnknown
@@ -102,6 +103,8 @@ _STEP_SECONDS = 60
 # How long placing a checked copy may run before intake stops waiting on it
 # with a bound and waits for its outcome instead: a rename can still land.
 _PLACE_SECONDS = _STEP_SECONDS
+# The same for moving an original to processed/.
+_MOVE_SECONDS = _STEP_SECONDS
 _PLACE_POLL_SECONDS = 0.05
 # How long a listing may go without reading an entry before it is given up.
 _LIST_STALL_SECONDS = 120
@@ -156,8 +159,33 @@ _tasks: set[asyncio.Task] = set()
 # under `_check_lock`, which every copy's check-and-place runs under, so a
 # copy running beside the one that stops (max_concurrent > 1) sees it.
 _storage_stop = False
+# Guards `_storage_stop`, which a copy's staging (on a worker thread) reads
+# right before it opens a file. Never held across I/O.
+_stop_lock = threading.Lock()
 _check_lock: asyncio.Lock | None = None
 _check_lock_loop: asyncio.AbstractEventLoop | None = None
+
+
+def _stopped() -> bool:
+    with _stop_lock:
+        return _storage_stop
+
+
+def _set_stop(value: bool) -> None:
+    global _storage_stop
+    with _stop_lock:
+        _storage_stop = value
+
+
+class _Deferred(Exception):
+    """A copy that won't open another file this pass (a check had to stop)."""
+
+
+def _may_open(name: str) -> None:
+    """Right before a copy opens a file: raise :class:`_Deferred` when a
+    check stopped with a reader still on the storage. Blocking-safe."""
+    if _stopped():
+        raise _Deferred(f"{name} isn't opened: an earlier check is still reading the storage")
 
 
 def _checking() -> asyncio.Lock:
@@ -340,8 +368,7 @@ async def poll_all(*, now: float | None = None) -> list[dict[str, Any]]:
     """One poll of every Inbox: a pass. Never raises; called from the
     scheduler's tick. A new pass may open files again after a check that had
     to stop (``_storage_stop``)."""
-    global _storage_stop
-    _storage_stop = False
+    _set_stop(False)
     try:
         inboxes = await run_in_threadpool(inbox_store.all_inboxes)
     except Exception:
@@ -655,6 +682,13 @@ async def _convert(
             # registry says which (a WUD from jwud_decompress can't be).
             verify_after=registry.mode_supports_verify(rule["mode"]),
             output_paths={path: destination},
+            # The file taken, and the Inbox it must stay under: the job checks
+            # both, under its Source lock, before its tool reads anything, so a
+            # folder swapped for a link meanwhile converts nothing.
+            source_identities={path: {
+                "root": inbox.folder,
+                "snapshot": flight.identities[os.path.basename(path)],
+            }},
         )
     except QueueBackpressureError:
         return "queue_full"
@@ -716,10 +750,15 @@ async def _finish(
     try:
         same = await _step(image_fingerprint, path) == flight.fingerprint
         if same:
-            await _step(_move_to_processed, inbox, flight.files, flight.identities)
+            # A move past its bound may still land: its outcome is waited for
+            # (`_owned`), so a move that lands late is counted, not lost.
+            await _owned(
+                _move_to_processed, inbox, flight.files, flight.identities,
+                timeout=_MOVE_SECONDS, what=f"moving {os.path.basename(path)} to processed/",
+            )
     except _SourceChanged:
         same = False
-    except (OSError, asyncio.TimeoutError) as exc:
+    except (OSError, asyncio.TimeoutError, MutationNotStarted) as exc:
         await _hold(
             inbox, state, path, flight.fingerprint, findings.INBOX_FAILED,
             f"It's in the Library, but couldn't be moved to processed/: {exc}",
@@ -883,7 +922,7 @@ def _move_to_processed(
                 for name in reversed(moved):
                     try:
                         place_without_clobbering(
-                            name, name, src_dir_fd=dst, dst_dir_fd=src,
+                            name, name, src_dir_fd=dst, dst_dir_fd=src, link_fallback=False,
                         )
                     except OSError as exc:
                         # Its name in the Inbox was taken again meanwhile:
@@ -928,11 +967,13 @@ def _stage_copy(
     files, each read through the Inbox's own folder (no link followed) and
     only while it is still the file that was taken, then read back and
     compared. Returns the open slot and the names. Blocking."""
+    _may_open(os.path.basename(flight.files[0]))
     folder_fd, names = _folder_beneath(inbox, flight.files)
     slot = None
     try:
         slot = staging.open_slot(folder, make_folder=True)
         for name in names:
+            _may_open(name)
             target = slot.path_for(name)
             wrote = new_hasher("sha1")
             fd = os.open(name, os.O_RDONLY | _NOFOLLOW, dir_fd=folder_fd)
@@ -993,7 +1034,7 @@ async def _copy(
             outcome = "cancelled"
         else:
             try:
-                if _storage_stop:
+                if _stopped():
                     outcome = "deferred"
                 else:
                     outcome, why, output = await _copy_in(
@@ -1047,24 +1088,42 @@ def _tell_library(inbox: inbox_store.Inbox, placed: list[str]) -> None:
         logger.warning("inbox: %s could not drop its walk", library.id, exc_info=True)
 
 
-async def _place(slot: Any, names: list[str]) -> None:
-    """Place a checked copy, keeping hold of the outcome.
+async def _owned(func, *args: Any, timeout: float, what: str) -> Any:
+    """Run a move that can't be taken back (*func*), keeping hold of its
+    outcome: its result, or its own failure raised.
 
-    A rename past ``_PLACE_SECONDS`` may still land, so it is never taken for
-    one that did nothing: intake stops waiting with a bound
-    (``run_detached_mutation``) and waits instead for the worker to say it
-    has finished, however long that takes. ``slot.placed`` then says whether
-    it landed. Its own failure (a name taken) propagates.
+    A rename past *timeout* may still land, so it is never taken for one that
+    did nothing: intake stops waiting with the bound
+    (``run_detached_mutation``) and waits instead for the worker to say it has
+    finished, however long that takes, then answers with what it did.
     """
     finished = threading.Event()
+    outcome: dict[str, Any] = {}
+
+    def call() -> Any:
+        try:
+            outcome["result"] = func(*args)
+        except BaseException as exc:
+            outcome["error"] = exc
+            raise
+        return outcome["result"]
+
     try:
-        await run_detached_mutation(
-            slot.place, names, timeout=_PLACE_SECONDS, hand_off=lambda: finished.set,
-        )
+        return await run_detached_mutation(call, timeout=timeout, hand_off=lambda: finished.set)
     except MutationInFlight:
-        logger.warning("inbox: placing %s is slow; waiting for it to finish", names[0])
+        logger.warning("inbox: %s is slow; waiting for it to finish", what)
         while not finished.is_set():
             await asyncio.sleep(_PLACE_POLL_SECONDS)
+    if "error" in outcome:
+        raise outcome["error"]
+    return outcome.get("result")
+
+
+async def _place(slot: Any, names: list[str]) -> None:
+    """Place a checked copy, keeping hold of the outcome (:func:`_owned`);
+    ``slot.placed`` then says whether it landed. Its own failure (a name
+    taken) propagates."""
+    await _owned(slot.place, names, timeout=_PLACE_SECONDS, what=f"placing {names[0]}")
 
 
 async def _check_and_place(
@@ -1074,9 +1133,10 @@ async def _check_and_place(
     """Check the staged copy Intact and place it. Under ``_checking()``: the
     stop is read and set under it, so a copy beside one whose check stopped
     neither checks nor places."""
-    global _storage_stop
-    if _storage_stop:
+    if _stopped():
         return "deferred", "the storage is still being read by an earlier check", None
+    if cancel is not None and cancel.is_set():  # cancelled while it waited
+        return "cancelled", "", None
     staged = slot.path_for(names[0])
     # Choosing the checker can open the file (romz lists an archive's
     # members), so it runs on a worker thread, bounded.
@@ -1087,7 +1147,7 @@ async def _check_and_place(
         # A stop first, whatever the verdict (a cancelled read can leave a
         # reader on the storage too): place nothing, open nothing more.
         if stop:
-            _storage_stop = True
+            _set_stop(True)
             return "deferred", "its check had to stop with the storage still busy", None
         if verdict == checks.CANCELLED:
             return "cancelled", "", None
@@ -1097,6 +1157,8 @@ async def _check_and_place(
         await _step(_still_taken, inbox, path, flight)
     except _SourceChanged as exc:
         return "changed", str(exc), None
+    if cancel is not None and cancel.is_set():
+        return "cancelled", "", None
     try:
         await _place(slot, names)
     except FileExistsError:
@@ -1153,6 +1215,39 @@ async def _copy_in(
     cancel: asyncio.Event | None,
 ) -> tuple[str, str, list[str] | None]:
     """Stage, compare, check Intact and place: ``(outcome, why, placed paths)``."""
+    # The shared output locks on every name it will place, as a conversion
+    # takes on its outputs, held through the placement: a conversion (here or
+    # in the CLI) writing one of those names meanwhile can't collide with it.
+    targets = [os.path.join(folder, os.path.basename(f)) for f in flight.files]
+    try:
+        refused = await _step(
+            lock_manager.acquire_all, [(target, False) for target in targets],
+        )
+    except (asyncio.TimeoutError, OSError, LockFailed) as exc:
+        return "failed", f"its output couldn't be locked: {exc}", None
+    if refused is not None:
+        if await _step(os.path.lexists, refused):
+            return "failed", f"{os.path.basename(refused)} is already in the Library ({folder})", None
+        return "deferred", f"another job is writing {os.path.basename(refused)}", None
+    try:
+        return await _copy_locked(job_id, inbox, path, flight, folder, cancel)
+    finally:
+        try:
+            await _step(_release_locks, targets)
+        except (asyncio.TimeoutError, OSError):
+            logger.warning("inbox: could not release the output locks of %s", path, exc_info=True)
+
+
+def _release_locks(paths: list[str]) -> None:
+    for target in reversed(paths):
+        lock_manager.release_lock(target)
+
+
+async def _copy_locked(
+    job_id: str, inbox: inbox_store.Inbox, path: str, flight: _Flight, folder: str,
+    cancel: asyncio.Event | None,
+) -> tuple[str, str, list[str] | None]:
+    """Stage, compare, check and place, with the output locks held."""
     await job_manager.update_external_job(job_id, message=f"Copying into {folder}")
     handoff = _SlotHandoff()
     try:
@@ -1166,6 +1261,8 @@ async def _copy_in(
         handoff.abandon()
         if isinstance(exc, ReadCancelled):
             return "cancelled", "", None
+        if isinstance(exc, _Deferred):
+            return "deferred", str(exc), None
         if isinstance(exc, _SourceChanged):
             return "changed", str(exc), None
         if isinstance(exc, _CopyDiffers):

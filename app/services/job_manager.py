@@ -66,6 +66,7 @@ from utils.delete_plan import build_delete_plan, build_delete_snapshot
 from utils.path_utils import (
     is_safe_directory_tree,
     is_within_configured_volumes,
+    source_identity_problem,
     source_companions_are_safe,
     strip_archive_path,
 )
@@ -743,6 +744,7 @@ class JobManager:
         delete_snapshot: Optional[Dict[str, object]] = None,
         reservation: Optional[_Reservation] = None,
         owner: Optional[str] = None,
+        source_identity: Optional[Dict[str, object]] = None,
     ) -> ConversionJob:
         """Queue a job while holding _create_lock (no backpressure check here)."""
         job_id = str(uuid.uuid4())[:8]
@@ -793,6 +795,7 @@ class JobManager:
             input_kind=input_kind,
         )
         job._sweep_owner = owner
+        job._source_identity = source_identity
 
         self.jobs[job_id] = job
         # Every key this job claims -- its destination and the sidecars the
@@ -920,6 +923,7 @@ class JobManager:
                         delete_snapshot=spec.get("delete_snapshot"),
                         reservation=reservation,
                         owner=owner,
+                        source_identity=spec.get("source_identity"),
                     )
                 )
         return jobs
@@ -939,6 +943,7 @@ class JobManager:
         allow_overwrite: bool = False,
         container_only: bool = False,
         owner: Optional[str] = None,
+        source_identities: Optional[Dict[str, Dict[str, object]]] = None,
     ) -> List[ConversionJob]:
         """Create multiple conversion jobs.
 
@@ -947,6 +952,11 @@ class JobManager:
         so a caller that has already resolved duplicates (the RomM sweep's
         rename/overwrite policy) hands the decision down instead of the queue
         re-deriving a different answer.
+
+        ``source_identities`` maps an input to the identity it must still have
+        when its job runs (``utils.path_utils.source_identity``, #431): checked
+        under the job's Source lock right before the tool runs, and the job is
+        refused when the Source was replaced or is reached through a link.
         """
         job_specs: List[Dict[str, object]] = []
         for fp in file_paths:
@@ -960,6 +970,9 @@ class JobManager:
             override = output_paths.get(fp) if output_paths else None
             if override:
                 spec["output_path"] = override
+            identity = source_identities.get(fp) if source_identities else None
+            if identity:
+                spec["source_identity"] = identity
             job_specs.append(spec)
         return await self.create_jobs_atomic(
             job_specs,
@@ -1802,6 +1815,21 @@ class JobManager:
         held = self._output_locks.pop(job.id, None)
         if held is not None:
             held.release()
+
+    async def _source_identity_problem_bounded(self, job: ConversionJob) -> Optional[str]:
+        """Why the job's Source isn't the one it was queued with
+        (``_source_identity``), or None; None too for a job queued without
+        one. Bounded: a Source that doesn't answer is a reason, never a pass."""
+        identity = job._source_identity
+        if not identity or job.input_kind == InputKind.DIRECTORY:
+            return None
+        try:
+            return await asyncio.wait_for(
+                run_detached(source_identity_problem, job.file_path, identity),
+                _CANONICAL_PROBE_SECONDS,
+            )
+        except (asyncio.TimeoutError, OSError) as exc:
+            return f"the Source couldn't be checked ({exc or 'no answer'})"
 
     async def _fail_before_start(
         self, job_id: str, job: ConversionJob, message: str, *, dir_lock_held: bool,
@@ -5575,6 +5603,15 @@ class JobManager:
                     job_id,
                     output_lock_held=True,
                     message="Waiting for another job using this Source or its folder...",
+                )
+                return
+            # The Source is still the file the job was queued for, read beneath
+            # the folder it must stay under with no link followed (#431), now
+            # that its lock is held and before anything reads it.
+            problem = await self._source_identity_problem_bounded(job)
+            if problem is not None:
+                await self._fail_before_start(
+                    job_id, job, f"Not converted: {problem}", dir_lock_held=dir_lock_acquired,
                 )
                 return
 

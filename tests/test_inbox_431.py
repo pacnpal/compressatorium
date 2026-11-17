@@ -1461,3 +1461,209 @@ async def test_a_failed_put_back_in_processed_is_held_with_a_finding(vol, db, qu
 
     [finding] = _inbox_findings()
     assert "couldn't be put back" in finding["reason"]
+
+
+# ---- review round five (CodeRabbit follow-ups on #443) ----------------------
+
+
+def test_an_identity_sensitive_move_refuses_without_an_atomic_rename(tmp_path, monkeypatch):
+    """CodeRabbit 4604215988, ruled: a move of a user's file never takes the
+    link-then-unlink fallback, whose unlink could delete a file put under the
+    name meanwhile; it refuses, and the file stays where it is."""
+    from utils import path_utils
+
+    monkeypatch.setattr(path_utils, "_rename_noreplace_at", lambda *_a: False)
+    a, b = tmp_path / "a", tmp_path / "b"
+    a.mkdir()
+    b.mkdir()
+    (a / "Game.iso").write_bytes(b"checked")
+    expected = path_utils.file_snapshot((a / "Game.iso").stat())
+    real_link = os.link
+
+    def link_then_replace(src, dst, **kwargs):
+        real_link(src, dst, **kwargs)
+        (a / "new.tmp").write_bytes(b"a replacement")
+        os.replace(a / "new.tmp", a / "Game.iso")  # just before the unlink
+
+    monkeypatch.setattr(path_utils.os, "link", link_then_replace)
+    src_fd, dst_fd = os.open(a, os.O_RDONLY), os.open(b, os.O_RDONLY)
+    try:
+        with pytest.raises(OSError) as refused:
+            path_utils.move_anchored("Game.iso", src_fd, dst_fd, expected)
+    finally:
+        os.close(src_fd)
+        os.close(dst_fd)
+
+    assert refused.value.errno == errno.ENOTSUP
+    assert (a / "Game.iso").read_bytes() == b"checked"
+    assert not (b / "Game.iso").exists()
+
+
+@pytest.mark.asyncio
+async def test_a_copy_paused_before_its_first_open_sees_the_stop(vol, db, monkeypatch):
+    """CodeRabbit 4604222784: with two slots, a copy that reached its first
+    file open before the other's check stopped checks the stop there, and
+    opens nothing."""
+    import asyncio
+    import time as clock
+
+    from services.inbox import intake
+    from services.job_manager import job_manager
+    from services.rules import check as checks
+    from services.tools import registry
+
+    monkeypatch.setattr(job_manager, "max_concurrent", 2)
+    monkeypatch.setattr(job_manager, "_semaphore", asyncio.Semaphore(2))
+    library = _library(vol)
+    _inbox(vol, library, settle=0)
+    _drop(vol / "Downloads" / "ps2" / "A.iso")
+    _drop(vol / "Downloads" / "ps2" / "B.iso")
+    monkeypatch.setattr(registry, "check_tool", lambda *_a, **_k: SimpleNamespace(id="fake"))
+    real_may_open = intake._may_open
+    opened = []
+
+    def may_open(name):
+        if name == "B.iso" and not opened:
+            opened.append("paused")
+            for _ in range(250):  # until the other copy's check has stopped
+                if intake._stopped():
+                    break
+                clock.sleep(0.02)
+        real_may_open(name)
+        opened.append(name)
+
+    monkeypatch.setattr(intake, "_may_open", may_open)
+    verified = []
+
+    async def verify(check, cancel_event):
+        verified.append(os.path.basename(check.path))
+        return checks.INTACT, "", True
+
+    monkeypatch.setattr(checks, "_verify", verify)
+
+    await intake.poll_all(now=0)
+    await intake.poll_all(now=1)
+    await intake.drain()
+
+    assert verified == ["A.iso"]
+    assert "B.iso" not in opened
+    assert not list((vol / "ROMs").rglob("*.iso"))
+
+
+@pytest.mark.asyncio
+async def test_a_copy_cancelled_while_it_waits_to_place_places_nothing(vol, db):
+    """Codex 4604289928: a copy cancelled while it waits for the
+    check-and-place lock (no tool checks a PS2 .iso) doesn't place."""
+    import asyncio
+
+    from models import ConversionMode
+    from services.inbox import intake
+
+    library = _library(vol)
+    box = _inbox(vol, library, settle=0)
+    game = _drop(vol / "Downloads" / "ps2" / "Game.iso")
+    from services import inbox
+
+    async with intake._checking():
+        await intake.poll(inbox.get(box.id), now=0)
+        await intake.poll(inbox.get(box.id), now=1)
+        for _ in range(100):  # staged, now waiting for the lock
+            if _slots(vol / "ROMs" / "ps2"):
+                break
+            await asyncio.sleep(0.02)
+        [job] = [
+            j for j in intake.job_manager.jobs.values()
+            if j.mode == ConversionMode.INBOX_COPY and j.status == "processing"
+        ]
+        await intake.job_manager.cancel_job(job.id)
+    await intake.drain()
+
+    assert not (vol / "ROMs" / "ps2" / "Game.iso").exists()
+    assert game.exists()
+    [finding] = _inbox_findings()
+    assert "cancelled" in finding["reason"]
+
+
+@pytest.mark.asyncio
+async def test_a_slow_move_to_processed_is_seen_through(vol, db, monkeypatch):
+    """Codex 4604289941: a move to processed/ past its bound may still land;
+    intake waits for its outcome and counts it, rather than holding the
+    Image with a Finding that then vanishes."""
+    import time as clock
+
+    from services import inbox
+    from services.inbox import intake
+
+    monkeypatch.setattr(intake, "_MOVE_SECONDS", 0.05)
+    real = intake._move_to_processed
+
+    def slow_move(*args):
+        clock.sleep(0.3)
+        return real(*args)
+
+    monkeypatch.setattr(intake, "_move_to_processed", slow_move)
+    library = _library(vol)
+    box = _inbox(vol, library, settle=0)
+    _drop(vol / "Downloads" / "ps2" / "Game.iso")
+
+    await _poll(box, now=0)
+    result = await _poll(box, now=1)
+    later = await _poll(box, now=2)
+
+    assert (vol / "Downloads" / "processed" / "ps2" / "Game.iso").exists()
+    assert inbox.get(box.id).processed_count == 1
+    assert [p["platform"] for p in result["placed"] + later["placed"]] == ["ps2"]
+    assert _inbox_findings() == []
+
+
+@pytest.mark.asyncio
+async def test_a_copy_waits_for_another_job_writing_its_output(vol, db):
+    """Codex 4604289947: a copy takes the shared output locks for what it
+    places; one another job holds (a conversion writing that name) leaves the
+    Image for the next poll, untouched and with no Finding."""
+    from services.lock_manager import lock_manager
+
+    library = _library(vol)
+    box = _inbox(vol, library, settle=0)
+    game = _drop(vol / "Downloads" / "ps2" / "Game.iso")
+    target = vol / "ROMs" / "ps2" / "Game.iso"
+    target.parent.mkdir(parents=True)
+    assert lock_manager.acquire_lock(str(target))
+    try:
+        await _poll(box, now=0)
+        await _poll(box, now=1)
+        assert not target.exists()
+        assert game.exists()
+        assert _inbox_findings() == []
+    finally:
+        lock_manager.release_lock(str(target))
+
+    for now in (2, 3):
+        await _poll(box, now=now)
+    assert target.exists()
+    assert not lock_manager.is_locked(str(target))
+
+
+@pytest.mark.asyncio
+async def test_a_conversion_is_queued_with_its_sources_identity(vol, db, queue):
+    """Codex 4604325922: intake hands the conversion the Source's identity and
+    the Inbox it must stay under, which the job checks before its tool runs
+    (tests/test_source_identity_431.py)."""
+    from services import inbox
+
+    library = _library(vol)
+    await _ps2_rule(library)
+    box = _inbox(vol, library)
+    game = _drop(vol / "Downloads" / "ps2" / "Game.iso")
+
+    await _poll(box, now=0)
+    await _poll(box, now=61)
+
+    [job] = queue.submitted
+    identity = job["source_identities"][str(game.resolve())]
+    assert identity["root"] == inbox.get(box.id).folder
+    taken = game.stat()
+    assert identity["snapshot"] == {
+        "size": taken.st_size, "mtime_ns": taken.st_mtime_ns,
+        "inode": taken.st_ino, "device": taken.st_dev,
+    }

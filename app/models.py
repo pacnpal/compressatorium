@@ -234,6 +234,10 @@ class ConversionJob(BaseModel):
     # The planned Source files still to remove when the delete step stopped
     # part way (#329): the Rule's sweep finishes them, else a Finding says so.
     _unfinished_delete: list[str] | None = PrivateAttr(default=None)
+    # The Source's identity when the job was queued and the folder it must stay
+    # under (``utils.path_utils.source_identity``, #431), or None. Checked under
+    # the job's Source lock right before the tool runs.
+    _source_identity: dict | None = PrivateAttr(default=None)
 
 
 class JobCreateRequest(BaseModel):

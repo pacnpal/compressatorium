@@ -53,6 +53,7 @@ _NO_HARDLINK_ERRNOS = frozenset({
 
 def place_without_clobbering(
     src: str, dst: str, *, src_dir_fd: int | None = None, dst_dir_fd: int | None = None,
+    link_fallback: bool = True,
 ) -> None:
     """Move ``src`` to ``dst``, never replacing anything already at ``dst``.
 
@@ -70,6 +71,16 @@ def place_without_clobbering(
        file put under that name in between is never deleted.
     3. Neither available: refuse with ``OSError(ENOTSUP)`` rather than fall
        back to a check-then-rename that could overwrite another file.
+
+    The link fallback still has a window between its identity check and the
+    unlink. A move of a user's file, whose name someone else may reuse at any
+    moment (``move_anchored``: the Image rename and an Inbox's originals,
+    #431), passes ``link_fallback=False`` and is refused with
+    ``OSError(ENOTSUP)`` where there is no atomic no-replace rename; the file
+    stays where it is. The fallback is kept for the app's own files only,
+    whose names nobody else writes: a staging slot's entries, a temp file
+    (``archive_edit``, the Referrer writers), a tool's product
+    (``output_placement``).
 
     Both paths must be on one filesystem, as for ``os.replace``.
 
@@ -89,6 +100,13 @@ def place_without_clobbering(
         renamed = _rename_noreplace(src, dst)
     if renamed:
         return
+    if not link_fallback:
+        raise OSError(
+            errno.ENOTSUP,
+            "this filesystem has no atomic no-replace rename, so the file isn't "
+            "moved: a link and unlink could delete a file put under its name meanwhile",
+            src,
+        )
     try:
         if at:
             os.link(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd,
@@ -1266,7 +1284,8 @@ def move_anchored(
     """Move *name* from the open folder *src* to *dst* (as *new_name*, else
     its own name), only while it is the file *expected* (:func:`file_snapshot`),
     never over another file (:func:`place_without_clobbering` with folder
-    descriptors). The entry that landed is checked again: one swapped in under
+    descriptors, and never its link fallback: refused with ``ENOTSUP`` where
+    the filesystem has no atomic no-replace rename). The entry that landed is checked again: one swapped in under
     the name between the check and the move is moved back (never over another
     file either) and nothing stays moved. Raises ``OSError(ESTALE)`` when the
     file isn't the one expected, :class:`MoveRollbackFailed` when such a file
@@ -1275,12 +1294,16 @@ def move_anchored(
     st = stat_at(name, src)
     if st is None or not stat.S_ISREG(st.st_mode) or file_snapshot(st) != expected:
         raise OSError(errno.ESTALE, f"{name} changed since it was checked")
-    place_without_clobbering(name, target, src_dir_fd=src, dst_dir_fd=dst)
+    place_without_clobbering(
+        name, target, src_dir_fd=src, dst_dir_fd=dst, link_fallback=False,
+    )
     landed = stat_at(target, dst)
     if landed is not None and file_snapshot(landed) == expected:
         return
     try:
-        place_without_clobbering(target, name, src_dir_fd=dst, dst_dir_fd=src)
+        place_without_clobbering(
+            target, name, src_dir_fd=dst, dst_dir_fd=src, link_fallback=False,
+        )
     except OSError as exc:
         # Its old name taken again meanwhile, or the folder failing: nothing
         # is replaced, and the caller is told where the file was left.
@@ -1294,6 +1317,53 @@ def move_anchored(
             f"(it is still at {target}): {exc}",
         ) from exc
     raise OSError(errno.ESTALE, f"{name} was replaced as it was moved")
+
+
+def _folder_beneath_root(path: str, root: str) -> tuple[int, str]:
+    """The folder holding *path*, opened beneath *root* with no link followed
+    (:func:`open_dir_beneath`), and *path*'s name. *path* is taken lexically
+    under *root* (both as given, never resolved). Raises OSError."""
+    rel = os.path.relpath(os.path.dirname(os.path.abspath(path)), os.path.abspath(root))
+    if rel == os.pardir or rel.startswith(os.pardir + os.sep) or os.path.isabs(rel):
+        raise OSError(errno.EACCES, f"{path} isn't under {root}")
+    fd = open_dir_beneath(os.path.abspath(root), "" if rel == "." else rel.replace(os.sep, "/"))
+    return fd, os.path.basename(path)
+
+
+def source_identity(path: str, root: str) -> dict:
+    """What a queued conversion carries to be sure, when it runs, that it reads
+    the file it was queued for (#431): *path*'s :func:`file_snapshot`, read
+    beneath *root* with no link followed, and *root*. Raises OSError when it
+    can't be read that way or isn't a regular file. Blocking."""
+    fd, name = _folder_beneath_root(path, root)
+    try:
+        st = stat_at(name, fd)
+    finally:
+        os.close(fd)
+    if st is None or not stat.S_ISREG(st.st_mode):
+        raise OSError(errno.ENOENT, f"{path} isn't a regular file under {root}")
+    return {"root": os.path.abspath(root), "snapshot": file_snapshot(st)}
+
+
+def source_identity_problem(path: str, identity: dict) -> str | None:
+    """Why *path* isn't the Source a job was queued for (:func:`source_identity`),
+    or None. Fail closed: outside the Volumes, reached through a link, gone, or
+    another file (device, inode, size or mtime) are all reasons. Blocking."""
+    if not is_within_configured_volumes(path, treat_archives=False):
+        return "the Source is no longer inside the configured Volumes"
+    try:
+        fd, name = _folder_beneath_root(path, identity["root"])
+    except OSError as exc:
+        return f"the Source can't be reached under {identity['root']} without following a link ({exc})"
+    try:
+        st = stat_at(name, fd)
+    finally:
+        os.close(fd)
+    if st is None:
+        return "the Source is gone"
+    if not stat.S_ISREG(st.st_mode) or file_snapshot(st) != identity["snapshot"]:
+        return "the Source isn't the file this job was queued for (it was replaced or changed)"
+    return None
 
 
 def read_beneath(root: str, relative: str, *, max_bytes: int) -> bytes:

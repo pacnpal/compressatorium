@@ -773,7 +773,17 @@ caller's cleanup already swept doesn't count as a failure. That name is removed
 only while it is still the inode just linked (`stat` through the same folder
 descriptor, #431): a file put under the `src` name between the link and the
 unlink is someone else's and stays. Where neither is available, it refuses
-with `OSError(ENOTSUP)` rather than falling back to a check-then-rename. A
+with `OSError(ENOTSUP)` rather than falling back to a check-then-rename.
+
+That check still leaves a window before the unlink, so a move of a user's file,
+whose name someone else may reuse at any moment, never takes the fallback:
+`move_anchored` (the Image rename and an Inbox's originals) and intake's
+put-back pass `link_fallback=False` and are refused with `ENOTSUP` where there is
+no atomic no-replace rename, leaving the file where it is and saying why (#431).
+The fallback stays for the app's own files, whose names nobody else writes: a
+staging slot's entries (`StagedOutput.place`, `_move_back`, `set_aside`), a temp
+file (`archive_edit.rewrite_zip`, the Referrer writers in `referrers/base.py`)
+and a tool's product (`OutputPlacement`). A
 claim-then-rename can overwrite a file another writer swapped in for the claim,
 so it is deliberately not used. The worker of an abandoned job removes its late
 product only while `output_path` is still that inode (`remove_if_same_file`),
@@ -7085,7 +7095,16 @@ folder (made if missing) as `output_dir`, the destination resolved with the
 `skip` policy (`resolve_destination`; taken holds it), the Rule's compression
 (`sweep._compression_arg`) and `split`, `verify_after` wherever
 `registry.mode_supports_verify` says the mode can check its output (the Intact
-check; a `jwud_decompress` WUD can't be), and never `delete_on_verify`. So the job is a conversion in every sense the
+check; a `jwud_decompress` WUD can't be), and never `delete_on_verify`. It also passes `source_identities`: the Source's `file_snapshot` and the Inbox
+folder it must stay under (`path_utils.source_identity`). That is a shared job
+mechanism, not an Inbox branch: any caller may queue a conversion with it, and
+`_process_job`, once it holds the job's Source lock and before the tool reads
+anything, re-reads the Source beneath that folder with no link followed and
+refuses the job (`source_identity_problem`: outside the Volumes, reached through
+a link, gone, or another file) with the reason. A folder swapped for a link
+while the job waits converts nothing from outside the Inbox. A job queued
+without one (a Rule sweep, a hand-started job) is not re-checked this way when
+it runs. So the job is a conversion in every sense the
 queue has: it takes a `max_concurrent` slot, gets its Ledger row and its
 Cancel. A Rule that is disabled, or whose mode doesn't take the file (it is
 already in the target format), copies instead; one whose mode isn't for the
@@ -7118,6 +7137,17 @@ Intact; only then `slot.place(names)`, which never replaces (a taken name holds
 the file). The check and the placement run under one asyncio lock
 (`_checking()`), and `_storage_stop` is read and set under it: a copy staged
 beside one whose check stopped (`max_concurrent` > 1) neither checks nor places.
+The flag is thread-safe (`_stopped()`, `_set_stop()`): a copy reads it after
+taking its slot, and its staging reads it again on its worker thread right
+before it opens each file (`_may_open`), so a copy that reaches its first open
+after another's check stopped opens nothing (`deferred`). A cancel is checked
+again once the check-and-place lock is held and right before placing, so a copy
+cancelled while it waited for the lock places nothing even when no tool checks
+its file. Before it stages anything, a copy takes the shared output locks
+(`LockManager.acquire_all`) on every name it will place, as a conversion does on
+its outputs, and holds them through the placement: a name another job (a
+conversion here or in the CLI) is writing leaves the Image for the next poll,
+untouched and with no Finding.
 A stop is honoured before the verdict, so a cancelled read that left a reader on
 the storage stops the pass too. The staged slot is handed from its worker to
 the awaiter by `_SlotHandoff`, under one lock: once the awaiter has taken it,
@@ -7156,7 +7186,10 @@ that fails is never swallowed: `move_anchored` logs it and raises
 files already moved, so the Image gets an `inbox_failed` Finding naming what
 was left in `processed/`, never the quiet "changed, settle again". A name already there uses `processed/.../<stem> (2)/` and so on.
 All or none: a failed move puts back the ones already moved, through the same
-descriptors. Then `processed_count` is incremented in one `UPDATE ... SET
+descriptors. The move runs like a copy's placement (`_owned`: past
+`_MOVE_SECONDS` its worker's outcome is still waited for), so a move that lands
+late is counted and reported, never lost behind a Finding. Then
+`processed_count` is incremented in one `UPDATE ... SET
 processed_count = processed_count + 1` (a copy and a conversion can finish at
 once; the cached total only grows to what the database answers) and the file's
 Findings cleared.
