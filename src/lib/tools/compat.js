@@ -17,15 +17,20 @@ export function compatTargetsForMode(table, mode) {
  * caller never disables anything on it. "none" is never warned about, and a
  * mode the target has no entry for gives no opinion.
  *
- * An empty selection is not "nothing": the tool then uses its own codecs, which
- * the server lists per mode in `implicit` (the table's `implicit_codecs`), so
- * those are checked instead. This file keeps no list of its own.
+ * An empty selection is not "nothing": the tool then uses its own codecs. The
+ * served `table` lists them per mode (`implicit_codecs`), so those are checked;
+ * a mode whose defaults depend on the input (`implicit_codecs_unknown`) cannot
+ * be checked, so the warning says so and suggests choosing codecs. This file
+ * keeps no list of its own.
  */
-export function compatWarning(target, mode, codecs, implicit) {
+export function compatWarning(target, mode, codecs, table) {
   const entry = compatEntry(target, mode);
   if (!entry) return null;
   const chosen = (codecs ?? []).filter(Boolean);
-  const fallback = chosen.length === 0 ? (implicit?.[mode] ?? []) : [];
+  if (chosen.length === 0 && table?.implicit_codecs_unknown?.includes(mode)) {
+    return `With no codec chosen, whether ${target.label} can read the result can't be confirmed: the tool picks codecs from the input. Choose codecs explicitly (it reads ${entry.codecs.join(', ')}).`;
+  }
+  const fallback = chosen.length === 0 ? (table?.implicit_codecs?.[mode] ?? []) : [];
   const unread = (chosen.length ? chosen : fallback).filter(
     (c) => c !== 'none' && !entry.codecs.includes(c),
   );

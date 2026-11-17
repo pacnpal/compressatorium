@@ -217,6 +217,7 @@ def _build_modes() -> list[ModeSpec]:
             output_ext=".chd",
             input_extensions=_CHD,
             supports_compression=True,
+            implicit_codecs_unknown=True,
             supports_delete_on_verify=True,
             # Source and output are both CHDs, digested the same way.
             supports_round_trip=True,

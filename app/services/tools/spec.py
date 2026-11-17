@@ -58,6 +58,10 @@ class ModeSpec:
     # none or the mode has no codec choice. Served with the compatibility
     # presets so the pickers can warn about an empty selection (#429).
     implicit_codecs: tuple[str, ...] = ()
+    # True when the tool's own codecs for this mode depend on the input and so
+    # cannot be listed up front (chdman's copy follows the input CHD). A
+    # compatibility warning for an empty selection then says it cannot confirm.
+    implicit_codecs_unknown: bool = False
     # The block size this mode writes, for a tool that needs one (dolphin-tool
     # refuses GCZ, RVZ and WIA without `-b`); None when the mode takes none.
     block_size: int | None = None

@@ -178,10 +178,10 @@ def test_an_empty_selection_is_checked_against_the_tools_implicit_codecs(tmp_pat
         + "\nconst t = {label: 'NetherSX2', entries: [{mode: 'createcd', codecs: ['zlib']}]};\n"
         + "const implicit = {createcd: ['cdlz', 'cdzl', 'cdfl']};\n"
         + "process.stdout.write(JSON.stringify([\n"
-        + "  compatWarning(t, 'createcd', [], implicit),\n"
-        + "  compatWarning(t, 'createcd', ['none'], implicit),\n"
-        + "  compatWarning(t, 'createcd', ['zlib'], implicit),\n"
-        + "  compatWarning(t, 'createcd', [], {}),\n"
+        + "  compatWarning(t, 'createcd', [], {implicit_codecs: implicit}),\n"
+        + "  compatWarning(t, 'createcd', ['none'], {implicit_codecs: implicit}),\n"
+        + "  compatWarning(t, 'createcd', ['zlib'], {implicit_codecs: implicit}),\n"
+        + "  compatWarning(t, 'createcd', [], {implicit_codecs: {}}),\n"
         + "]));\n",
         encoding="utf-8",
     )
@@ -196,4 +196,74 @@ def test_an_empty_selection_is_checked_against_the_tools_implicit_codecs(tmp_pat
 def test_both_views_pass_the_served_implicit_codecs_to_the_warning():
     src = Path(__file__).resolve().parents[1] / "src" / "lib"
     for rel in ("components/panels/CompressionPicker.svelte", "components/views/RuleEditor.svelte"):
-        assert "implicit_codecs" in (src / rel).read_text(encoding="utf-8"), rel
+        assert "compat.table" in (src / rel).read_text(encoding="utf-8"), rel
+
+
+def test_a_mode_whose_default_codecs_depend_on_the_input_is_served_as_unknown():
+    """chdman's copy picks its codecs from the input CHD, so nothing can be
+    listed up front. The mode says so, and the served table carries it."""
+    from services import compat_presets
+    from services.tools import registry
+
+    served = compat_presets.served_presets()
+
+    assert "copy" in served["implicit_codecs_unknown"]
+    assert registry.spec("copy").implicit_codecs_unknown is True
+    assert "copy" not in served["implicit_codecs"]
+    assert not set(served["implicit_codecs"]) & set(served["implicit_codecs_unknown"])
+
+
+def test_every_mode_that_can_be_left_empty_declares_what_the_tool_then_uses():
+    """The picker can hold an empty selection only for the multi-codec style
+    (chdman). Every such compressing mode must declare its defaults or say they
+    are unknown, so the warning has no gap (#429)."""
+    from services.tools import registry
+
+    node = _find_node()
+    if node is None:
+        pytest.skip("node not available to evaluate the frontend registry")
+    src = "const api = {};\n" + _strip_imports(_REGISTRY_JS.read_text(encoding="utf-8"))
+    src += (
+        "\nprocess.stdout.write(JSON.stringify(TOOLS.filter((t) => t.compressionStyle === 'multi')"
+        ".flatMap((t) => t.modes.map((m) => m.mode))));\n"
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        script = Path(tmp) / "multi.mjs"
+        script.write_text(src, encoding="utf-8")
+        proc = subprocess.run([node, str(script)], capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0, proc.stderr
+    gaps = []
+    for mode in json.loads(proc.stdout):
+        spec = registry.spec(mode)
+        if spec.supports_compression and not (
+            spec.implicit_codecs or spec.implicit_codecs_unknown or spec.requires_codec
+        ):
+            gaps.append(mode)
+
+    assert gaps == []
+
+
+def test_an_empty_selection_in_an_input_dependent_mode_says_it_cannot_be_confirmed(tmp_path):
+    node = _find_node()
+    if node is None:
+        pytest.skip("node not available")
+    src = (Path(__file__).resolve().parents[1] / "src/lib/tools/compat.js").read_text("utf-8")
+    script = tmp_path / "compat_unknown_eval.mjs"
+    script.write_text(
+        src
+        + "\nconst t = {label: 'NetherSX2', entries: [{mode: 'copy', codecs: ['zlib']}]};\n"
+        + "const table = {implicit_codecs: {}, implicit_codecs_unknown: ['copy']};\n"
+        + "process.stdout.write(JSON.stringify([\n"
+        + "  compatWarning(t, 'copy', [], table),\n"
+        + "  compatWarning(t, 'copy', ['zlib'], table),\n"
+        + "  compatWarning(t, 'copy', ['none'], table),\n"
+        + "  compatWarning(null, 'copy', [], table),\n"
+        + "]));\n",
+        encoding="utf-8",
+    )
+    proc = subprocess.run([node, str(script)], capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0, proc.stderr
+    empty, zlib, none, no_target = json.loads(proc.stdout)
+
+    assert "can't be confirmed" in empty and "NetherSX2" in empty and "zlib" in empty
+    assert zlib is None and none is None and no_target is None

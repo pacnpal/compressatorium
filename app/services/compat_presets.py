@@ -62,4 +62,9 @@ def served_presets() -> dict:
         for spec in registry.mode_specs()
         if (codecs := getattr(spec, "implicit_codecs", ()))
     }
-    return {**cached_presets(), "implicit_codecs": implicit}
+    unknown = [
+        spec.mode
+        for spec in registry.mode_specs()
+        if getattr(spec, "implicit_codecs_unknown", False)
+    ]
+    return {**cached_presets(), "implicit_codecs": implicit, "implicit_codecs_unknown": unknown}

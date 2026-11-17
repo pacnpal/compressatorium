@@ -50,7 +50,7 @@
       compatTarget,
       spec?.mode,
       style === 'multi' ? selection : [singleCodec],
-      compat.table?.implicit_codecs,
+      compat.table,
     ),
   );
 

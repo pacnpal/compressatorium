@@ -790,7 +790,7 @@
                     {@const compatTargets = compat.targetsForMode(rule.mode)}
                     {#if compatTargets.length > 0}
                       {@const picked = compatTargets.find((t) => t.id === compatPick[platform.id]) ?? null}
-                      {@const compatNote = compatWarning(picked, rule.mode, runningCodecs(rule), compat.table?.implicit_codecs)}
+                      {@const compatNote = compatWarning(picked, rule.mode, runningCodecs(rule), compat.table)}
                       <div class="field wide">
                         <span>Compatible with…</span>
                         <Select
