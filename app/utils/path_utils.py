@@ -188,9 +188,10 @@ def _private_folder(parent: int, *, prefix: str = ".compressatorium-q-") -> tupl
 
 
 class PlacementCommitted(OSError):
-    """:func:`place_without_clobbering` failed after the file reached its
-    destination: it is there, and its old name is gone (#431). A caller that
-    rolls back treats it as moved."""
+    """:func:`place_without_clobbering` failed with the file published at its
+    destination (#431): after the move (its old name gone), or before it when
+    the destination couldn't be taken back (both names left). Either way a
+    caller that rolls back treats it as moved."""
 
 
 def _same_inode(a: os.stat_result | None, b: os.stat_result | None) -> bool:
@@ -221,8 +222,10 @@ def _move_by_quarantine(
 
     A failure between the link and the quarantine rename (the file still at
     ``src``) unlinks ``dst`` again, once it is checked to be that same inode,
-    and raises: nothing was moved. A failure after the rename raises
-    :class:`PlacementCommitted`: the file is at ``dst`` and its old name gone.
+    and raises: nothing was moved. If ``dst`` can't be unlinked it raises
+    :class:`PlacementCommitted` instead, the first failure chained. A failure
+    after the rename raises :class:`PlacementCommitted`: the file is at ``dst``
+    and its old name gone.
 
     Nothing is ever deleted that a name doesn't also keep: each unlink removes
     a second name of an inode another name still holds.
@@ -256,14 +259,27 @@ def _quarantine_move(
         os.rename(name, name, src_dir_fd=parent, dst_dir_fd=private_fd)
     except FileNotFoundError:
         return  # the src name is gone already: the file is at dst
-    except BaseException:
+    except BaseException as failure:
         # Nothing has moved yet: the file is still at src. The name published
-        # at dst goes again, only while it is that same file.
+        # at dst goes again, only while it is that same file. If it can't, dst
+        # stays published beside src: answered PlacementCommitted, the first
+        # failure chained, so a caller rolls it back as moved
+        # (CodeRabbit 4606441954).
         here = _stat_or_none(name, parent)
         there = _stat_or_none(dst, dst_dir_fd)
         if _same_inode(here, there):
-            with contextlib.suppress(OSError):
+            try:
                 os.unlink(dst, dir_fd=dst_dir_fd)
+            except OSError as exc:
+                logger.error(
+                    "place_without_clobbering: moving %s failed (%s) and %s couldn't "
+                    "be taken back: %s", src, failure, dst, exc,
+                )
+                raise PlacementCommitted(
+                    exc.errno or errno.EIO,
+                    f"{src} was linked at {dst}, moving it failed ({failure}), and "
+                    f"{dst} couldn't be taken back ({exc})",
+                ) from failure
         raise
     try:
         held = os.stat(name, dir_fd=private_fd, follow_symlinks=False)

@@ -13,7 +13,10 @@ The tick is called directly, with a fake clock and real files.
 from __future__ import annotations
 
 import errno
+import json
 import os
+import shutil
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -2241,3 +2244,173 @@ def test_the_inbox_screenshot_requires_its_own_inbox():
     block = shots[shots.index("rules-inboxes-light"):shots.index("rules-inboxes-dark")]
     assert "/inboxes`" in block and "listed.inboxes" in block
     assert "downloads" in block and "status row" in block
+
+
+# ---- round ten: CodeRabbit follow-ups on f90d9826 -------------------------
+
+
+def test_a_failed_unpublish_after_a_failed_quarantine_says_it_is_committed(
+    tmp_path, monkeypatch,
+):
+    """CodeRabbit 4606441954, ruled: the quarantine rename fails and taking
+    the destination back fails too. Both names are left, so the move is
+    answered PlacementCommitted (dst still published), the first failure
+    chained, never swallowed."""
+    from utils import path_utils
+
+    monkeypatch.setattr(path_utils, "_rename_noreplace_at", lambda *_a: False)
+    a, b = _two_folders(tmp_path)
+
+    def rename_fails(*_a, **_k):
+        raise OSError(errno.EIO, "Input/output error (rename)")
+
+    def unlink_fails(*_a, **_k):
+        raise OSError(errno.EROFS, "Read-only file system (unlink)")
+
+    monkeypatch.setattr(path_utils.os, "rename", rename_fails)
+    monkeypatch.setattr(path_utils.os, "unlink", unlink_fails)
+    src_fd, dst_fd = os.open(a, os.O_RDONLY), os.open(b, os.O_RDONLY)
+    try:
+        with pytest.raises(path_utils.PlacementCommitted) as committed:
+            path_utils.place_without_clobbering(
+                "Game.iso", "Game.iso", src_dir_fd=src_fd, dst_dir_fd=dst_fd,
+                identity_sensitive=True,
+            )
+    finally:
+        os.close(src_fd)
+        os.close(dst_fd)
+
+    assert "rename" in str(committed.value.__cause__)
+    assert (b / "Game.iso").read_bytes() == b"original"
+    assert (a / "Game.iso").read_bytes() == b"original"
+
+
+@pytest.mark.asyncio
+async def test_removing_an_inbox_waits_for_a_copy_being_admitted(vol, db, monkeypatch):
+    """CodeRabbit 4606443430, ruled: a copy's revoked check and its
+    scheduling are one step under the state's lock, so a removal on another
+    thread can't land between them."""
+    import threading
+
+    from services import inbox
+    from services.inbox import intake
+
+    library = _library(vol)
+    box = _inbox(vol, library, settle=0)
+    _drop(vol / "Downloads" / "ps2" / "Game.iso")
+    await _poll(box, now=0)
+    real_track = intake._track
+    seen: dict = {}
+
+    def removed_while_admitting(*args, **kwargs):
+        remover = threading.Thread(target=intake.forget, args=(box.id,))
+        remover.start()
+        remover.join(0.3)
+        seen["removal_waited"] = remover.is_alive()
+        result = real_track(*args, **kwargs)
+        seen["remover"] = remover
+        return result
+
+    monkeypatch.setattr(intake, "_track", removed_while_admitting)
+    await intake.poll(inbox.get(box.id), now=1)
+    seen["remover"].join(5)
+    await intake.drain()
+
+    assert seen["removal_waited"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_conversion_queued_as_its_inbox_is_removed_is_cancelled(
+    vol, db, queue, monkeypatch,
+):
+    """CodeRabbit 4606443430, ruled: an Inbox removed while its conversion is
+    being queued has the jobs just made cancelled while they are still
+    queued, and the Source is left alone."""
+    from services import inbox
+    from services.inbox import intake
+
+    library = _library(vol)
+    await _ps2_rule(library)
+    box = _inbox(vol, library)
+    game = _drop(vol / "Downloads" / "ps2" / "Game.iso")
+    await _poll(box, now=0)
+    real_create = intake.job_manager.create_batch_jobs
+    cancelled: list[tuple[str, str]] = []
+
+    async def removed_while_queueing(*args, **kwargs):
+        jobs = await real_create(*args, **kwargs)
+        intake.forget(box.id)
+        return jobs
+
+    async def cancel_job(job_id):
+        job = queue.jobs[job_id]
+        cancelled.append((job_id, job.status))
+        job.status = "cancelled"
+        return True
+
+    monkeypatch.setattr(intake.job_manager, "create_batch_jobs", removed_while_queueing)
+    monkeypatch.setattr(intake.job_manager, "cancel_job", cancel_job)
+    result = await intake.poll(inbox.get(box.id), now=61)
+
+    assert cancelled == [("job0", "queued")]
+    assert result["queued"] == 0
+    assert game.read_bytes() == DISC
+    assert not (vol / "Downloads" / "processed").exists()
+
+
+def _run_inbox_shot(listed: list[str]) -> subprocess.CompletedProcess:
+    """Run the Inbox screenshot's script under node with a stubbed browser:
+    the Library registered at ``/real/vol/roms`` (its root resolved by the
+    backend; the Volume says ``/vol``), the Inbox save answering 409, and
+    *listed* as this Library's Inboxes, each with its status row."""
+    import yaml
+
+    shots = yaml.safe_load((Path(__file__).resolve().parents[1] / "shots.yml").read_text())
+    script = next(s for s in shots if "rules-inboxes-light" in s["url"])["javascript"]
+    harness = """
+const listed = JSON.parse(process.argv[1]);
+const json = (data, status = 200) => ({ ok: status < 300, status, json: async () => data });
+globalThis.location = { search: '?s=rules-inboxes-light', hash: '' };
+globalThis.localStorage = { setItem() {} };
+globalThis.StorageEvent = class { constructor() {} };
+globalThis.window = { dispatchEvent() {} };
+globalThis.setTimeout = (fn) => Promise.resolve().then(fn);
+globalThis.fetch = async (url, opts = {}) => {
+  if (url === '/api/volumes') return json([{ name: 'ROM Library', path: '/vol' }]);
+  if (url === '/api/libraries' && opts.method === 'POST') return json({}, 409);
+  const library = { kind: 'folder', id: 'lib1', root: '/real/vol/roms' };
+  if (url === '/api/libraries') return json([library]);
+  if (url.endsWith('/inboxes') && opts.method === 'POST') return json({}, 409);
+  if (url.endsWith('/inboxes')) return json({ inboxes: listed.map(folder => ({ folder })) });
+  throw new Error('unexpected fetch ' + url);
+};
+const rows = listed.map(folder => ({
+  querySelector: sel => (sel === '.where code' ? { textContent: folder }
+    : sel === '.status' ? {} : null),
+}));
+const panel = { querySelectorAll: () => rows, scrollIntoView() {} };
+globalThis.document = { querySelector: sel => (sel === '.inboxes' ? panel : null) };
+eval(require('fs').readFileSync(process.argv[2], 'utf8'))
+  .then(() => console.log('captured'), e => { console.log('refused: ' + e.message); });
+"""
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as scratch:
+        shot = Path(scratch) / "shot.js"
+        shot.write_text(script)
+        return subprocess.run(
+            ["node", "-e", harness, json.dumps(listed), str(shot)],
+            capture_output=True, text=True, timeout=30, check=False,
+        )
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node isn't installed")
+def test_the_inbox_shot_refuses_another_inbox_named_downloads():
+    """CodeRabbit 4606444987, ruled: the shot compares the full canonical
+    folder (resolved as the backend resolves it), so another Inbox whose
+    basename is also ``downloads`` is never taken for the expected one."""
+    refused = _run_inbox_shot(["/real/other/downloads"])
+    assert refused.stdout.strip().startswith("refused"), refused.stdout + refused.stderr
+
+    captured = _run_inbox_shot(["/real/other/downloads", "/real/vol/downloads"])
+    assert captured.stdout.strip() == "captured", captured.stdout + captured.stderr

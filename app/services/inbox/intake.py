@@ -159,6 +159,10 @@ class _State:
     # Set when the Inbox is removed (`forget`): a poll or copy still holding
     # this state admits nothing new (CodeRabbit 4606147955).
     revoked: bool = False
+    # Guards `revoked` against a removal on another thread: set under it, and
+    # each admission checks it and records what it admitted under it, with no
+    # await between (CodeRabbit 4606443430). Never held across I/O or awaits.
+    guard: threading.Lock = field(default_factory=threading.Lock)
 
 
 _states: dict[int, _State] = {}
@@ -240,7 +244,8 @@ def forget(inbox_id: int) -> None:
     on it starts no copy or conversion. A copy already running finishes."""
     state = _states.pop(inbox_id, None)
     if state is not None:
-        state.revoked = True
+        with state.guard:
+            state.revoked = True
 
 
 def _state(inbox_id: int) -> _State:
@@ -807,10 +812,20 @@ async def _convert(
         await _hold(inbox, state, path, fingerprint, findings.INBOX_FAILED,
                     f"Couldn't queue its conversion: {exc}", {"platform": platform})
         return "held"
-    job = jobs[0]
-    job.platform = platform
-    flight.job_id = job.id
-    state.flights[path] = flight
+    with state.guard:
+        revoked = state.revoked
+        if not revoked:
+            job = jobs[0]
+            job.platform = platform
+            flight.job_id = job.id
+            state.flights[path] = flight
+    if revoked:
+        # Removed while the jobs were being made: they are cancelled here,
+        # before this task yields to the dispatcher, so none starts; the
+        # Source is left as it is.
+        for each in jobs:
+            await job_manager.cancel_job(each.id)
+        return "retry"
     return "queued"
 
 
@@ -1062,9 +1077,11 @@ def _move_to_processed(
 def _start_copy(
     inbox: inbox_store.Inbox, state: _State, path: str, flight: _Flight, folder: str,
 ) -> str:
-    if state.revoked:
-        return "retry"  # the Inbox was removed meanwhile: no copy starts
-    _track(state, path, flight, _copy(inbox, state, path, flight, folder))
+    with state.guard:
+        # The check and the scheduling as one step: a removal waits for it.
+        if state.revoked:
+            return "retry"  # the Inbox was removed meanwhile: no copy starts
+        _track(state, path, flight, _copy(inbox, state, path, flight, folder))
     return "copying"
 
 

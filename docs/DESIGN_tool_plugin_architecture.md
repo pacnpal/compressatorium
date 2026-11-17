@@ -794,7 +794,10 @@ goes back to `src` by `link` (which fails if `src` was made again) and its
 private folder is removed. If it can't go back, it stays in the private folder
 and `MoveRollbackFailed` names it, which intake turns into a Finding. A
 failure between steps 1 and 2 (the file still at `src`) unlinks `dst` again,
-once it is checked to be the same inode, and raises: nothing moved. A failure
+once it is checked to be the same inode, and raises: nothing moved. If that
+unlink fails too, `dst` stays published beside `src` and it raises
+`PlacementCommitted` with the first failure chained (CodeRabbit 4606441954),
+never swallowing it. A failure
 after step 2 raises `PlacementCommitted` (an `OSError`): the file is at `dst`
 and its old name gone, so a caller that rolls back counts it as moved (the
 Image rename and `_move_to_processed` put it back with the rest;
@@ -7332,7 +7335,12 @@ round, `libraries.register` and `check_romm_root` refuse a Library root that
 is, holds or sits inside an Inbox (`inbox.holding`), and every poll checks its
 Library's root again before it lists anything (a RomM root saved elsewhere since). Removing an Inbox (or its folder Library, from `libraries._remove`)
 drops the row, its intake state (revoked: a poll still running on it starts
-no copy or conversion, CodeRabbit 4606147955) and its Findings
+no copy or conversion, CodeRabbit 4606147955) and its Findings. The revoke is
+set under the state's own `threading.Lock` (removal runs on a worker thread):
+a copy's check and its scheduling are one step under it, and a conversion
+checks it again under it once `create_batch_jobs` returns, cancelling the jobs
+it just made while they are still queued, the Source untouched, if the Inbox
+was removed meanwhile (CodeRabbit 4606443430)
 (`findings.forget_under(library_id, "inbox:<id>", INBOX_KINDS)`); no file. A
 settle-time change writes the row and publishes it to the cache under one
 mutation lock, so two saves publish in commit order.

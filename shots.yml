@@ -1240,10 +1240,13 @@
       if (!saved.ok && saved.status !== 409) throw new Error('could not save the Inbox');
       // A 409 is only fine when it is this Library's downloads Inbox already:
       // a folder taken by anything else must fail the shot, not capture it.
-      const folder = volume.path + '/downloads';
+      // The full canonical path, resolved as the backend resolves it: the
+      // fixture's downloads folder sits beside roms, and the Library's root
+      // is roms resolved, so the Inbox's saved folder is exactly this.
+      const folder = lib.root.replace(/\/roms$/, '') + '/downloads';
+      if (!lib.root.endsWith('/roms')) throw new Error('unexpected Library root ' + lib.root);
       const listed = await (await fetch(`/api/libraries/${id}/inboxes`)).json();
-      // (Matched by its end: the saved folder is the resolved path.)
-      const ours = f => f === folder || (f || '').endsWith('/downloads');
+      const ours = f => f === folder;
       if (!(listed.inboxes || []).some(b => ours(b.folder))) {
         throw new Error('the downloads Inbox is not this Library\'s');
       }
