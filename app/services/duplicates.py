@@ -223,6 +223,13 @@ async def _find(library: Library, job_id: str, current: Callable[[], bool]) -> d
     except (OSError, Stalled, ProgressAbandoned) as exc:
         raise LibraryUnreadable(f"the Library's files did not answer: {exc}") from exc
     candidates, in_use, unstatted, (sheet_tracks, sheet_problem) = inspected
+    # A listing that did not see the whole Library may have missed a sheet
+    # whose track links anywhere, whatever folders the groups' copies are in
+    # (Codex PRRT_kwDOQ9nULM64OGLk): the record is incomplete, from the same
+    # listing the summary's ``unlisted`` count comes from, so they agree.
+    partial = listing_problem(listing, getattr(library, "root", None))
+    if partial is not None:
+        sheet_tracks, sheet_problem = None, partial
     keys = await run_in_threadpool(
         content_keys.stored, {c.path: c.identity for c in candidates},
     )
@@ -344,8 +351,9 @@ async def _find(library: Library, job_id: str, current: Callable[[], bool]) -> d
         "held_keys": sorted(held),
         # Every sheet's track identities ((st_dev, st_ino), links followed):
         # a copy that is any sheet's track is never deleted, wherever the
-        # sheet is (#389). None when a sheet's tracks could not be read: then
-        # no delete is offered for this Library.
+        # sheet is (#389). None when a sheet's tracks could not be read, or
+        # the listing did not see the whole Library: then no delete is
+        # offered for this Library.
         "sheet_tracks": None if sheet_tracks is None else sorted(
             [dev, ino] for dev, ino in sheet_tracks
         ),
@@ -388,6 +396,31 @@ async def _list(
                 raise
         _stop_if_cancelled(job_id, current)
         await asyncio.sleep(_LIST_RETRY_SECONDS)
+
+
+def listing_problem(listing: ImageListing, root: str | None = None) -> str | None:
+    """What *listing* could not see of its Library, or None when it saw it all.
+
+    The folders it could not list and the files it found but could not read,
+    named relative to *root* (a folder Library's) when they are under it. A
+    Library that lists from its own records (RomM) reports neither, so this is
+    None for it: its listing is whatever its records hold.
+    """
+    def named(paths: Iterable[str], suffix: str) -> str:
+        shown = []
+        for path in sorted(paths):
+            if root and os.path.normpath(path).startswith(os.path.normpath(root) + os.sep):
+                path = os.path.relpath(path, root)
+            shown.append(path + suffix)
+        more = len(shown) - 3
+        return ", ".join(shown[:3]) + (f" and {more} more" if more > 0 else "")
+
+    parts = []
+    if listing.unlisted:
+        parts.append(f"{named(listing.unlisted, '/')} could not be listed")
+    if listing.unreadable:
+        parts.append(f"{named(listing.unreadable, '')} could not be read")
+    return "; ".join(parts) or None
 
 
 def _inspect(

@@ -1357,3 +1357,59 @@ async def test_an_oversized_sheet_leaves_the_run_record_incomplete(
     group = await _linked_group_with_sheet(client, monkeypatch, roms, oversized)
     await _no_delete_offered(client, group, str(roms / "Game.iso"))
     assert (roms / "shared" / "Track.bin").exists()
+
+
+
+# ----------------------------------------------------------------------
+# a sheet in a folder the walk could not list (Codex PRRT_kwDOQ9nULM64OGLk)
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(folder_library_303._IS_ROOT, reason="root lists every folder")
+async def test_an_unlisted_folder_leaves_the_run_record_incomplete(
+    db: Path, client: httpx.AsyncClient,
+) -> None:
+    """``disc/`` cannot be listed, so its sheet (whose track links to
+    ``shared/Track.bin``) is never read. Neither copy is inside ``disc/``, so
+    the group is not held: the run's record of sheet tracks must say it is
+    incomplete, and name the folder, or the linked track would be deleted."""
+    roms = db / "roms"
+    target = _linked_track(roms)
+    library = await d388._register(client, roms)
+    (roms / "disc").chmod(0)
+    try:
+        await d388._find(client, library)
+        group = await _group(client)
+        plan = await _plan(client, group, str(roms / "Game.iso"))
+    finally:
+        (roms / "disc").chmod(0o755)
+
+    assert d388._names(group) == ["Game.iso", "Track.bin"]
+    assert group["deletable"] is False, group
+    assert "disc/" in group["not_deletable"], group
+    assert plan.status_code == 409
+    assert target.exists()
+
+
+@pytest.mark.asyncio
+async def test_a_run_that_did_not_list_every_folder_offers_no_delete(
+    db: Path, client: httpx.AsyncClient,
+) -> None:
+    """A run recorded before the rule (folders unlisted, yet a sheet-track
+    record) is not taken as complete: the two must agree."""
+    from services import db as _db
+
+    roms = db / "roms"
+    d388._disc(roms / "Game.iso", b"game")
+    d388._copy(roms / "Game.iso", roms / "Copy.iso")
+    library = await d388._register(client, roms)
+    await d388._find(client, library)
+    with _db.SessionLocal() as session:
+        row = session.get(_db.DuplicateRunRecord, library)
+        row.summary = {**row.summary, "unlisted": 1}
+        session.commit()
+
+    group = await _group(client)
+    assert group["deletable"] is False, group
+    assert "list" in group["not_deletable"], group

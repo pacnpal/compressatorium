@@ -183,6 +183,10 @@ def not_deletable(row: dict, run: dict | None) -> str | None:
             "the last run has no record of which files are sheets' tracks; "
             "run Find duplicates again"
         )
+    if run.get("unlisted"):
+        # A run that also kept a sheet-track record (one from before the
+        # listing counted): the two must agree, so partial wins.
+        return "the last run could not list every folder of its Library; run Find duplicates again"
     if key in set(run.get("held_keys") or ()):
         return "the last run could not see every copy; run Find duplicates again"
     if len(cause.get(findings.COPIES) or []) < 2:

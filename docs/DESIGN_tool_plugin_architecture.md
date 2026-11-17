@@ -5933,7 +5933,17 @@ delete, and neither does an incomplete one (Codex PRRT_kwDOQ9nULM64N2yy):
 `sheet_track_identities` raises for a sheet that cannot be read whole
 (unreadable, or over the size cap), one whose tracks do not resolve as one set
 (`sheet_track_list` is None) or a track it cannot stat, and the run then stores
-`sheet_tracks: None` with the reason in `sheet_tracks_problem`. The listing
+`sheet_tracks: None` with the reason in `sheet_tracks_problem`. So does a run
+whose listing did not see the whole Library (Codex PRRT_kwDOQ9nULM64OGLk): a
+sheet in a folder it could not list may own a linked track anywhere, so any
+unlisted folder or unreadable file (`ImageListing.unlisted` / `.unreadable`,
+named by `duplicates.listing_problem`) makes the record incomplete, wherever
+the groups' copies are, not only for a group with a copy inside it. The record
+and the summary's `unlisted` count come from the same listing, and
+`not_deletable` also refuses a run whose `unlisted` is non-zero, so a run
+recorded before this rule cannot read as complete. A RomM Library lists from
+its own records and reports neither, so this signal does not exist for it; a
+sheet RomM does not record is not seen. The listing
 itself no longer shows a linked target as an Image: `group_images` also counts
 a member's resolved link target as owned.
 
