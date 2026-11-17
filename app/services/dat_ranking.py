@@ -49,6 +49,12 @@ _FAMILY_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 
 #: The fields of a match record that say which DAT gave which name.
 _RECORD_KEYS = ("dat_id", "dat_name", "family", "game_name", "rom_name")
+#: Which of the Image's hashes the record matched, and in which domain (a CHD
+#: offers ``chd_sha1`` and ``chd_data_sha1``, and different DATs can know
+#: different ones). Carried only when known, so the winner's hash becomes the
+#: payload's ``file_hash``/``match_type`` and a freshness check compares
+#: within the right domain.
+_HASH_KEYS = ("file_hash", "match_type")
 
 
 def dat_family(*texts: str | None) -> str:
@@ -127,7 +133,9 @@ def rank_matches(
 
 def record_of(match: Mapping) -> dict:
     """The DAT-identity part of a match record (what ``matches`` lists)."""
-    return {key: match.get(key) for key in _RECORD_KEYS}
+    record = {key: match.get(key) for key in _RECORD_KEYS}
+    record.update({key: match[key] for key in _HASH_KEYS if match.get(key)})
+    return record
 
 
 def apply_ranking(

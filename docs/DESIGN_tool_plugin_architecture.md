@@ -1824,7 +1824,15 @@ staged `persist()`) go through one `DATStore._insert_dat`. `lookup_sha1` /
 `lookup_md5` return every DAT's record under `matches` (each with `dat_id`,
 `dat_name`, `family`, `game_name`, `rom_name`), and `_local_dat_record` carries
 them into the match result, so the cached `dat_matches.payload` stores the
-facts, not a verdict.
+facts, not a verdict. `_local_lookup_match` looks up **every** candidate hash
+it is given before ranking (a CHD's `chd_sha1` and `chd_data_sha1` can be
+known to different DATs, and stopping at the first hit let the hash order pick
+the name), and each entry in `matches` keeps the `file_hash` / `match_type` it
+matched on, so the winner's hash and domain become the payload's and a later
+re-ranking switches them with the name. Every match path (`/dat/match`,
+`/dat/match-batch`, the match job, the metadata scan) reaches the DATs through
+it. A file-level SHA1 that `_match_single_file` computes only when the
+embedded hashes miss is still not forced.
 
 **Families.** Each DAT has a `family`: Redump, No-Intro, TOSEC, MAME or other.
 `dat_ranking.dat_family()` reads it at import from the header's name,

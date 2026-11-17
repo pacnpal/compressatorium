@@ -253,3 +253,61 @@ async def test_a_reimported_dat_keeps_its_place_in_the_ranking(store):
     assert [d["id"] for d in (await dat_routes.get_dat_ranking())["dats"]] == [
         b2["id"], a["id"],
     ]
+
+
+# ---------------------------------------------------------------------------
+# Different DATs knowing different hashes of the same Image (Codex, PR #435)
+# ---------------------------------------------------------------------------
+
+HEADER_SHA1 = "c1" * 20
+DATA_SHA1 = "d2" * 20
+
+
+@pytest.fixture
+def chd_tool(monkeypatch):
+    """A CHD reports its header hash first, then its data hash."""
+
+    class _Tool:
+        embedded_hash_is_exhaustive = False
+
+        async def embedded_hashes(self, _path, **_kw):
+            return [(HEADER_SHA1, "chd_sha1"), (DATA_SHA1, "chd_data_sha1")]
+
+    monkeypatch.setattr(dat_routes.registry, "tool_for_verify", lambda _p: _Tool())
+
+
+@pytest.mark.asyncio
+async def test_matches_on_every_candidate_hash_are_ranked_together(
+    store, tmp_path, chd_tool,
+):
+    """A MAME DAT knowing the CHD's header hash must not beat a Redump DAT
+    knowing its data hash just because the header hash is checked first."""
+    await _import(_dat_xml("MAME 0.260 CHDs", "mame name", sha1=HEADER_SHA1))
+    redump = await _import(
+        _dat_xml("Sony - PlayStation", "Redump Name", homepage="redump.org", sha1=DATA_SHA1),
+    )
+    path = _file(tmp_path, "game.chd")
+
+    result = await _match(path)
+    assert (result["game_name"], result["dat_id"]) == ("Redump Name", redump["id"])
+    # The winner's own hash and domain, so a later freshness check compares
+    # like with like.
+    assert (result["file_hash"], result["match_type"]) == (DATA_SHA1, "chd_data_sha1")
+    assert {(m["game_name"], m["match_type"]) for m in result["matches"]} == {
+        ("Redump Name", "chd_data_sha1"), ("mame name", "chd_sha1"),
+    }
+
+    # The cached row keeps both, and re-ranking it (no re-hash) picks the
+    # identity the new order says, with that identity's hash.
+    await dat_routes.match_batch(dat_routes.MatchBatchRequest(paths=[str(path)]))
+    real = os.path.realpath(path)
+    assert store.ranked_match_for_image(real).top["game_name"] == "Redump Name"
+    mame_id = next(d["id"] for d in store.list_dats() if d["family"] == "MAME")
+    await dat_routes.put_dat_ranking(
+        dat_routes.DatRankingRequest(order=[mame_id, redump["id"]]),
+    )
+    cached = store.get_match(real)
+    assert (cached["game_name"], cached["file_hash"], cached["match_type"]) == (
+        "mame name", HEADER_SHA1, "chd_sha1",
+    )
+    assert store.ranked_match_for_image(real).top["game_name"] == "mame name"
