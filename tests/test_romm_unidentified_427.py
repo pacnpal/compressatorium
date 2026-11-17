@@ -184,6 +184,21 @@ def test_an_id_that_only_looks_numeric_is_dropped_not_raised() -> None:
     }
 
 
+def test_an_id_too_long_to_convert_is_dropped_not_raised() -> None:
+    """CodeRabbit on PR #442: 5,000 ASCII digits pass both checks, and then
+    ``int()`` refuses them (Python's integer-string limit)."""
+    from services import hasheous
+
+    response = dict(HASHEOUS_RESPONSE, metadata=[
+        {"source": "IGDB", "id": "1" * 5000, "link": "x", "status": "Mapped"},
+        {"source": "TheGamesDb", "id": "24326", "link": "y", "status": "Mapped"},
+    ])
+
+    assert hasheous._normalize(response)["provider_ids"] == {
+        "hasheous_id": 13633, "tgdb_id": 24326,
+    }
+
+
 # ---- the listing ----------------------------------------------------------------
 
 
@@ -647,3 +662,41 @@ async def test_the_swap_fallback_never_waits_on_a_stalled_lookup(
     with _db.SessionLocal() as session:
         (row,) = session.query(_db.RommRepin).filter_by(state="pending").all()
         assert row.metadata_ids == {"igdb_id": 11}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["identity_change", "binding"])
+async def test_the_swap_fallback_records_nothing_if_romm_changes_during_the_lookup(
+    client, romm, vol, monkeypatch, change,
+):
+    """CodeRabbit on PR #442: the fallback checked RomM's binding before the
+    Hasheous lookup and not after it, so a settings change during the lookup
+    could record the old instance's ids against the new one."""
+    from types import SimpleNamespace
+
+    from services.referrers import ReferrerError
+    from services.romm import repin as romm_repin
+    from services.romm import swap_referrer
+
+    live = {"value": True}
+
+    async def lookup_while_romm_changes(_sources):
+        if change == "identity_change":
+            monkeypatch.setattr(swap_referrer, "_identity_changes", 1)
+        else:
+            live["value"] = False
+        return {}
+
+    monkeypatch.setattr(romm_repin, "hasheous_fills", lookup_while_romm_changes)
+    await _switch(client, True)
+    plan = SimpleNamespace(
+        binding=SimpleNamespace(still_live=lambda: live["value"]),
+        rom=dict(romm.roms[KNOWN_ID]),
+        output=_path(vol, "Known.rvz"), source=_path(vol, "Known.iso"),
+    )
+
+    with pytest.raises(ReferrerError):
+        await swap_referrer._fall_back(plan, "RomM ROM 1")
+
+    with _db.SessionLocal() as session:
+        assert session.query(_db.RommRepin).count() == 0

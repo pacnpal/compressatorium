@@ -346,7 +346,13 @@ def _provider_id(field: str, value) -> int | str | None:
     if field in _TEXT_ID_FIELDS:
         return text
     # ASCII digits only: "²".isdigit() is True, and int() refuses it.
-    return int(text) if text.isascii() and text.isdigit() else None
+    if not (text.isascii() and text.isdigit()):
+        return None
+    try:
+        return int(text)
+    except ValueError:
+        # Past Python's integer-string limit (4,300 digits): no real id.
+        return None
 
 
 def _provider_ids(data: dict) -> dict:

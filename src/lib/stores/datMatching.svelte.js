@@ -611,17 +611,23 @@ class DATMatchingStore {
 
   /**
    * Read a finished job's paths back, retrying a read that fails a bounded
-   * number of times before giving the job up (CodeRabbit on PR #442). The
-   * job stays tracked until then, so another call doesn't start a second read.
+   * number of times (CodeRabbit on PR #442). Marked as being read meanwhile,
+   * so another call doesn't start a second read. Forgotten once a read
+   * answers; when every try fails it stays tracked, with no loop of its own,
+   * and the next call (another job ending, a refresh) reads it again.
    */
   async _readBackJob(jobId, paths) {
     for (let attempt = 1; attempt <= this._jobHydrateAttempts; attempt += 1) {
-      if (await this.hydrate(paths)) break;
+      if (await this.hydrate(paths)) {
+        delete this._submittedJobs[jobId];
+        return;
+      }
       if (attempt < this._jobHydrateAttempts) {
         await new Promise((resolve) => setTimeout(resolve, this._jobHydrateRetryMs * attempt));
       }
     }
-    delete this._submittedJobs[jobId];
+    const tracked = this._submittedJobs[jobId];
+    if (tracked) tracked.reading = false;
   }
 
   /**

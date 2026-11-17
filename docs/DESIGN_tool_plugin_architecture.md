@@ -2442,7 +2442,9 @@ per batch, never a hash), under `metadata_ids[FILL_KEY]`. The rest of
 plan route, the sweep's `after_queue` (which takes its plan generation before
 awaiting the lookup, so a manual plan recorded meanwhile stays the newer), and
 the swap Referrer's fallback re-pin (which does the bounded lookup before its
-never-abandoned record step, and records RomM's own ids alone on a timeout).
+never-abandoned record step, and records RomM's own ids alone on a timeout;
+it checks RomM's identity and binding again after that await, with none
+between the check and counting the swap, and records nothing if they moved).
 Those ids are recorded whatever the output format, a CHD
 included, since RomM never matched these ROMs; RomM's own ids are still
 carried only across a format that loses its match.
@@ -2496,7 +2498,8 @@ each job's full path set and `hydrateFinishedJobs` (an effect in the RomM view,
 and once more right after "Recognize these" learns the job's id, in case it
 already ended) reads all of it back once the job ends, not only the rows on
 screen. The job stays tracked until that read answers; a failed read is
-retried a bounded number of times.
+retried a bounded number of times, and when every try fails the job stays
+tracked, with no loop of its own, for the next call to read again.
 
 Every read of the match cache, a lookup (`hydrate`) or a RomM listing, takes a
 place in one read order when it is requested (`_hydrateSeq`; a listing's comes

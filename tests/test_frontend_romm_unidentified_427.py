@@ -342,6 +342,47 @@ def test_coderabbit_ordering_and_retry_cases():
     assert result["retried"] == {"matched": True, "game_name": "Retried"}
 
 
+_EXHAUSTED = """
+const out = {};
+let failing = true;
+const calls = [];
+api.startMatchJob = async () => ({ status: 'started', job_id: 'j3', results: {} });
+api.getMatchCache = async (paths) => {
+  calls.push([...paths]);
+  if (failing) throw new Error('network');
+  return { results: { '/off.iso': { matched: true, game_name: 'Late' } } };
+};
+datMatching._jobHydrateRetryMs = 1;
+await datMatching.startMatchJob(['/off.iso']);
+const ended = [{ id: 'j3', status: 'completed' }];
+// Every try fails: the job stays tracked, nothing loops on its own.
+await datMatching.hydrateFinishedJobs(ended);
+out.triesWhenFailing = calls.length;
+out.afterFailing = datMatching.matchFor('/off.iso');
+for (let i = 0; i < 20; i += 1) await tick();
+out.noLoop = calls.length;
+// The next real trigger (another job ending, a refresh) reads it back.
+failing = false;
+await datMatching.hydrateFinishedJobs(ended);
+out.afterTrigger = datMatching.matchFor('/off.iso');
+await datMatching.hydrateFinishedJobs(ended);
+out.callsAfterDone = calls.length;
+console.log(JSON.stringify(out));
+"""
+
+
+def test_a_job_whose_reads_all_fail_is_read_on_the_next_trigger():
+    """CodeRabbit on PR #442: once every retry failed, the job was forgotten
+    and its off-page rows were never read. It stays tracked, without a loop of
+    its own, and the next trigger reads it back."""
+    result = _run(_EXHAUSTED)
+    assert result["triesWhenFailing"] == 3
+    assert result["afterFailing"] is None
+    assert result["noLoop"] == 3
+    assert result["afterTrigger"] == {"matched": True, "game_name": "Late"}
+    assert result["callsAfterDone"] == 4
+
+
 def test_a_job_that_ended_before_it_was_tracked_is_read_back():
     """CodeRabbit on PR #442: the jobs list may already show the job ended
     when "Recognize these" learns its id, and nothing re-runs the effect."""
