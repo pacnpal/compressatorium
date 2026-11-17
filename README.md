@@ -426,6 +426,10 @@ picker in the convert panel:
   output); the other tools default to broadly-compatible settings (chdman `zlib`,
   Dolphin `zstd:19`, Switch `solid:18`). See also
   [Compression Compatibility Tips](#compression-compatibility-tips).
+* **Compatible with….** Pick a target (NetherSX2, PCSX2, DuckStation, PPSSPP,
+  Dolphin, RetroArch cores, MiSTer) and the codecs are set to ones it reads. A
+  codec it isn't known to read shows a warning, here and in the Rule editor,
+  and is still allowed. Each entry links the upstream source it rests on.
 
 ### Output location and duplicates
 
@@ -1335,6 +1339,12 @@ A three-pane layout: navigation and tool picker on the left, the volume and file
 | Light | Dark |
 |-------|------|
 | ![Batch selection, light](docs/screenshots/workspace-batch-light.png) | ![Batch selection, dark](docs/screenshots/workspace-batch-dark.png) |
+
+**Compatible with….** Pick the emulator or device the files are for and the codecs are set to ones it reads. Here NetherSX2 set Create DVD to zlib, and adding zstd shows the warning; nothing is blocked.
+
+| Light | Dark |
+|-------|------|
+| ![Compatible with NetherSX2, light](docs/screenshots/compat-picker-light.png) | ![Compatible with NetherSX2, dark](docs/screenshots/compat-picker-dark.png) |
 
 **Delete-on-verify confirmation.** Before anything is queued, the app lists every file it will delete after the output verifies, and each `.m3u` playlist entry it will point at the new file first.
 
@@ -2458,6 +2468,12 @@ Or use the Web UI's CHD Inspector feature by clicking on any `.chd` file.
 ---
 
 ## Compression Compatibility Tips
+
+The compression picker and the Rule editor have a **Compatible with…** choice that
+sets the codecs for a target emulator or device and warns when you pick one it isn't
+known to read (see [Compression settings](#compression-settings)). The table behind
+it, with a source for every entry, is `app/services/compat_targets.yml`, also served
+at `GET /api/compat-targets`.
 
 Some emulators (notably NetherSX2/AetherSX2) only support **zlib**-compressed CHDs. If you see
 errors like “Failed to initialize cdvd,” re-convert with **zlib only**.

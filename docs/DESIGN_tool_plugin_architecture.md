@@ -7069,6 +7069,36 @@ by returning null. Every consumer reads one of the two:
 - the convert panel and the Rule editor show no level control when the range
   is null, and take the bounds and the "Blank uses" hint from that codec.
 
+#### "Compatible with…" (`services/compat_targets.yml`, #429)
+
+Which modes and codecs a target (NetherSX2, PCSX2, DuckStation, PPSSPP,
+Dolphin, RetroArch cores, MiSTer) reads is data, not code: one YAML file,
+`app/services/compat_targets.yml`, read once by `services/compat_targets.py`
+and served unchanged by `GET /api/compat-targets`. Each target has entries of
+`modes` (ModeSpec wire values), optional `codecs` (the picker's codec values the
+target decodes), optional `preferred` (what choosing the target sets), an
+optional `note`, and `sources`, at least one upstream URL. A claim with no
+citable source is left out: an absent mode means "not documented", not "can't
+read". Adding a tool's target is a YAML edit; nothing branches on tool or
+target identity.
+
+The frontend holds no copy. `stores/compatTargets.svelte.js` fetches the table
+once and exports `compatWarning(target, entry, codecs)`; one component,
+`panels/CompatTargetSelect.svelte`, renders the select, the warning and the
+sources in both the compression picker and the Rule editor. Each caller passes
+the codecs the job actually runs with (a single-codec mode's resolved codec;
+null for chdman's own default, which the table cannot vouch for) and applies
+`preferred` through its own setter (`setCompression` / `setSingleCodec`, or the
+Rule's `update` / `setRuleCodec`), so the existing codec cap and level
+reconciliation still apply. The target is advisory: it is never saved with a
+Rule or sent with a job, and a codec outside its list only warns.
+
+`tests/test_compat_targets.py` checks every mode against `registry.spec`, every
+codec against the backend's `ModeSpec.codecs` where the mode names them and
+against `registry.js`'s `codecsForMode` (through the same Node evaluation as
+`test_frontend_parity_186`), `preferred` ⊆ `codecs`, and an https source on
+every entry, so a renamed mode or codec fails the test instead of the picker.
+
 #### Block size (`ModeSpec.block_size`, `block_size_rule`)
 
 dolphin-tool refuses GCZ, RVZ and WIA without `-b` ("Block size must be set for

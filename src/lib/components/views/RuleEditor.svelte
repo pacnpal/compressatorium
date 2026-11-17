@@ -19,7 +19,7 @@
    */
   import { onMount, untrack } from 'svelte';
   import { followSaved } from '$lib/util/followSaved.js';
-  import { SvelteSet } from 'svelte/reactivity';
+  import { SvelteMap, SvelteSet } from 'svelte/reactivity';
   import { toast } from 'svelte-sonner';
   import { DAY_LABELS, ORDER_LABELS } from '$lib/stores/romm.svelte.js';
   import { ruleNotices } from '$lib/stores/ruleNotices.svelte.js';
@@ -27,6 +27,7 @@
   import { checkSummary, newCheckRule } from '$lib/rules/checkRule.js';
   import { registry } from '$lib/tools/registry.js';
   import { clampLevel, fitLevel } from '$lib/tools/levels.js';
+  import CompatTargetSelect from '$lib/components/panels/CompatTargetSelect.svelte';
   import Button from '$lib/components/ui/Button.svelte';
   import Checkbox from '$lib/components/ui/Checkbox.svelte';
   import Select from '$lib/components/ui/Select.svelte';
@@ -286,6 +287,28 @@
   function setRuleLevel(platformId, rule, value) {
     const range = ruleLevelRange(rule);
     update(platformId, { compression_level: range ? clampLevel(range, value) : null });
+  }
+
+  // Each Platform's "Compatible with…" target (#429), by platform id. Advisory
+  // only, like the picker's: it sets codecs when chosen and warns, and is not
+  // part of the saved Rule.
+  const compatByPlatform = new SvelteMap();
+
+  /**
+   * The codecs a Rule runs with, for the compatibility warning: its own, else
+   * a single-codec mode's default; null for chdman's own default, which the
+   * table cannot vouch for.
+   */
+  function ruleRunCodecs(rule) {
+    const chosen = selectedCodecs(rule);
+    if (chosen.length) return chosen;
+    if (codecStyleFor(rule.mode) === 'multi' || !specFor(rule.mode)?.supportsCompression) return null;
+    return registry.defaultCompressionForMode(rule.mode)?.slice(0, 1) ?? null;
+  }
+
+  function applyRuleCompat(platformId, rule, preferred) {
+    if (codecStyleFor(rule.mode) === 'multi') update(platformId, { compression: preferred.join(',') });
+    else setRuleCodec(platformId, rule, preferred[0]);
   }
 
   /** The codecs a rule currently has selected, as a list. */
@@ -761,6 +784,17 @@
 
                 <div class="grid">
                   {#if (spec?.supportsCompression || spec?.supportsCompressionLevel) && codecs.length > 0}
+                    <div class="field wide">
+                      <CompatTargetSelect
+                        mode={rule.mode}
+                        codecs={ruleRunCodecs(rule)}
+                        bind:target={
+                          () => compatByPlatform.get(platform.id) ?? '',
+                          (v) => compatByPlatform.set(platform.id, v)
+                        }
+                        onpick={(preferred) => applyRuleCompat(platform.id, rule, preferred)}
+                      />
+                    </div>
                     {#if style === 'multi'}
                       <div class="field wide">
                         <span>Compression</span>

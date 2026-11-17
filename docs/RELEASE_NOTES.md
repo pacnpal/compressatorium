@@ -4,6 +4,15 @@
 
 ### Added
 
+- **"Compatible with…" in the compression picker and the Rule editor**
+  (#429). Pick NetherSX2, PCSX2, DuckStation, PPSSPP, Dolphin, a RetroArch
+  core (PCSX ReARMed, SwanStation) or MiSTer and the codecs are set to ones it
+  reads: NetherSX2 sets Create DVD to zlib, for example. A codec the target
+  isn't known to read shows a warning in both places and is still allowed. The
+  table is one data file, `app/services/compat_targets.yml`, where every entry
+  links the upstream docs or source it rests on; claims without a source are
+  left out. `GET /api/compat-targets` serves it, and a test checks every mode
+  and codec in it against the tool registry.
 - **Unfinished RomM swaps are picked up after a restart** (#392). If the app
   stops part way through keeping a ROM's id, the next start settles the swap
   in the background, without holding up startup. What is safe to finish is

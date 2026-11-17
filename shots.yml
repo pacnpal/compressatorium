@@ -303,6 +303,44 @@
       await sleep(1200);
     })()
 
+# --- Workspace: "Compatible with…" in the compression picker (#429) --------
+# Create DVD, target NetherSX2 (which sets the codecs to zlib), then zstd added
+# so the picker shows the warning for a codec the target isn't known to read.
+- url: http://127.0.0.1:8099/?s=compat-picker-light#/workspace/chdman
+  output: docs/screenshots/compat-picker-light.png
+  width: 1280
+  height: 900
+  wait: 1800
+  javascript: &js_compat_picker |
+    (async () => {
+      const theme = new URLSearchParams(location.search).get('s').endsWith('dark')
+        ? 'dark' : 'light';
+      localStorage.setItem('theme-preference', theme);
+      window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: theme }));
+      await new Promise(r => setTimeout(r, 400));
+      const choose = (select, value) => {
+        if (!select) return;
+        select.value = value;
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+      };
+      choose(document.querySelector('select[aria-label="Conversion mode"]'), 'createdvd');
+      await new Promise(r => setTimeout(r, 400));
+      const compat = [...document.querySelectorAll('label.select')]
+        .find(l => l.textContent.includes('Compatible with'));
+      choose(compat && compat.querySelector('select'), 'nethersx2');
+      await new Promise(r => setTimeout(r, 400));
+      const zstd = [...document.querySelectorAll('.picker .chip')]
+        .find(b => b.textContent.trim() === 'zstd');
+      if (zstd && zstd.getAttribute('aria-pressed') !== 'true') zstd.click();
+      await new Promise(r => setTimeout(r, 400));
+    })()
+- url: http://127.0.0.1:8099/?s=compat-picker-dark#/workspace/chdman
+  output: docs/screenshots/compat-picker-dark.png
+  width: 1280
+  height: 900
+  wait: 1800
+  javascript: *js_compat_picker
+
 # --- Workspace: Dolphin (GameCube volume selected) -------------------------
 - url: http://127.0.0.1:8099/?s=workspace-dolphin-light#/workspace/dolphin
   output: docs/screenshots/workspace-dolphin-light.png
