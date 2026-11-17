@@ -809,6 +809,79 @@ async def test_a_set_aside_that_fails_still_keeps_the_output_from_every_sweep(
     assert (platform / "Game.iso").read_bytes() == SOURCE_BYTES
 
 
+def test_a_keep_marker_written_while_the_sweep_takes_the_lock_still_keeps_the_slot(
+    vol, monkeypatch,
+):
+    """CodeRabbit 4594218526: the marker is written, and the lock let go,
+    between the sweep's first look and its lock. The sweep looks again under
+    the lock and keeps the slot."""
+    from services import partial_writes
+
+    stage = _platform(vol) / STAGE_DIR_NAME
+    slot = stage / "slot-abcd1234"
+    slot.mkdir(parents=True)
+    (slot / "Game.chd").write_bytes(OUTPUT_BYTES)
+    (stage / "slot-abcd1234.lock").write_bytes(b"")
+    hour_ago = time.time() - 3600
+    os.utime(slot, (hour_ago, hour_ago))
+    real_open = partial_writes._open_sidecar
+
+    def marked_meanwhile(stage_fd, lock_name):
+        (slot / partial_writes.KEEP_MARKER).write_bytes(b"")
+        return real_open(stage_fd, lock_name)
+
+    monkeypatch.setattr(partial_writes, "_open_sidecar", marked_meanwhile)
+    fd = os.open(stage, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        assert partial_writes.sweep_stage(fd, min_age=0) == 0
+    finally:
+        os.close(fd)
+    assert (slot / "Game.chd").read_bytes() == OUTPUT_BYTES
+
+
+@pytest.mark.asyncio
+async def test_a_set_aside_that_answers_after_the_bound_still_moves_the_records(
+    vol, romm, monkeypatch,
+):
+    """CodeRabbit 4594218526: setting the slot aside outlasts the job's bound.
+    The slot stays protected meanwhile (its lock held), and when the worker
+    answers, the records move to the ``park-`` path and the job is told the
+    real path."""
+    from services import staging
+    from services.romm import settings as romm_settings
+    from services.verification_store import verification_store
+
+    platform = _platform(vol)
+    await romm_settings.save({"swap_keep_rom_id": False})
+    real_set_aside = staging.StagedOutput.set_aside
+
+    def slow_set_aside(self):
+        time.sleep(0.6)
+        return real_set_aside(self)
+
+    async def checked_then_taken(tool, source_path, output_path, **_kw):
+        (platform / "Game.chd").write_bytes(b"someone else's")
+        return RoundTripOutcome(passed=True)
+
+    monkeypatch.setattr(staging.StagedOutput, "set_aside", slow_set_aside)
+    monkeypatch.setattr(job_manager_module, "SET_ASIDE_SECONDS", 0.2)
+    monkeypatch.setattr(job_manager_module, "round_trip", checked_then_taken)
+    job = await _convert(platform / "Game.iso")
+
+    assert str(platform / STAGE_DIR_NAME) in job.message
+    kept: list[Path] = []
+    for _ in range(60):
+        kept = list((platform / STAGE_DIR_NAME).glob("park-*/Game.chd"))
+        if kept and verification_store.get_record_blocking(str(kept[0])) and str(
+            kept[0],
+        ) in job.message:
+            break
+        await asyncio.sleep(0.05)
+    assert [p.read_bytes() for p in kept] == [OUTPUT_BYTES]
+    assert verification_store.get_record_blocking(str(kept[0])) is not None
+    assert str(kept[0]) in job.message
+
+
 @pytest.mark.asyncio
 async def test_a_failed_source_check_then_a_taken_name_keeps_everything(
     vol, romm, monkeypatch,

@@ -361,6 +361,10 @@ def _paths_collide(
 # submit and a healthy mount answers in microseconds; the point is only that a
 # mount which never answers cannot hold up job creation forever.
 _CANONICAL_PROBE_SECONDS = 20.0
+# How long the job waits for a checked output's slot to be set aside
+# (``StagedOutput.set_aside``) before it reports the stage folder instead;
+# a later answer still moves the records (``_set_aside_output``, #391).
+SET_ASIDE_SECONDS = _CANONICAL_PROBE_SECONDS
 
 
 class _Reservation(NamedTuple):
@@ -3150,51 +3154,65 @@ class JobManager:
         long as the process runs (``_held_slots``), so no sweep can take it.
         The job's message, warning, error (the Ledger's ``error`` for a
         failed job), its Ledger record and the log say where. The caller
-        never runs ``_close_stage`` on it. Never raises."""
-        names: list[str] = [os.path.basename(job.output_path)]
+        never runs ``_close_stage`` on it. Never raises.
+
+        Setting it aside runs under ``SET_ASIDE_SECONDS`` through
+        ``run_detached_undoable`` (CodeRabbit 4594218526). The slot is
+        protected throughout: ``set_aside`` holds its lock until the rename
+        or the keep marker is in place. One that answers after the bound gets
+        its records moved by its own worker (``late``), which logs the real
+        path and adds it to the job's message and warning; the job reports
+        the stage folder meanwhile."""
+        base = os.path.basename(job.output_path)
+        names: list[str] = [base]
         try:
             names = await run_detached_bounded(
-                self._place_names, job, slot.path_for(names[0]),
-                timeout=_CANONICAL_PROBE_SECONDS,
+                self._place_names, job, slot.path_for(base), timeout=_CANONICAL_PROBE_SECONDS,
             )
         except Exception:
             logger.warning("Could not list the outputs of %s", job.output_path, exc_info=True)
         before = slot.path
+
+        def late(kept: str) -> None:
+            # On the worker's thread, once nobody waits for it any more.
+            self._keep_records_blocking(job, names, before, kept)
+            note = (
+                "its slot was set aside after the job ended; "
+                f"it is kept at {os.path.join(kept, base)}"
+            )
+            logger.warning("Job %s: %s", job.id, note)
+            job.message = f"{job.message}; {note}" if job.message else note
+            job.warning = f"{job.warning}; {note}" if job.warning else note
+
+        kept: str | None
         try:
-            kept = await run_detached_bounded(slot.set_aside, timeout=_CANONICAL_PROBE_SECONDS)
+            kept = await run_detached_undoable(
+                slot.set_aside, timeout=SET_ASIDE_SECONDS, undo=late,
+            )
+        except DeadlineExpired:
+            kept = None  # still running, its lock held; ``late`` takes it from here
         except Exception:
             # Fail closed: the lock stays held, so no sweep removes it.
             logger.exception("Could not set aside the checked output of %s", job.output_path)
             self._held_slots.append(slot)
             kept = before
-        if kept != before:
-            for name in names:
-                for store in (verification_store, chd_metadata_store):
-                    try:
-                        await run_detached_bounded(
-                            store.move_blocking, os.path.join(before, name),
-                            os.path.join(kept, name), timeout=_CANONICAL_PROBE_SECONDS,
-                        )
-                    except Exception:
-                        logger.warning(
-                            "Could not carry the records of %s to %s", name, kept, exc_info=True,
-                        )
-        where = os.path.join(kept, os.path.basename(job.output_path))
-        if job.check_passed:
-            # Placing failed before the job wrote the output's check record
-            # (it does so once the output is placed): write it where it is.
+        if kept is None:
+            stage = os.path.dirname(before)
+            where = stage
+            note = (
+                f"the checked output was not placed; it is kept in {stage} "
+                "(its slot is still being set aside; the log names it once done)"
+            )
+        else:
             try:
-                if await run_detached_bounded(
-                    verification_store.get_record_blocking, where,
+                await run_detached_bounded(
+                    self._keep_records_blocking, job, names, before, kept,
                     timeout=_CANONICAL_PROBE_SECONDS,
-                ) is None:
-                    await verification_store.mark_verified(
-                        where, source_path=job.file_path,
-                        produced_meta=self._verifier_identity(job), check=job.check_passed,
-                    )
+                )
             except Exception:
-                logger.warning("Could not record the check of %s", where, exc_info=True)
-        note = f"the checked output was not placed; it is kept at {where}"
+                logger.warning("Could not carry the records to %s", kept, exc_info=True)
+            where = os.path.join(kept, base)
+            note = f"the checked output was not placed; it is kept at {where}"
         logger.warning("Job %s: %s", job.id, note)
         job.warning = f"{job.warning}; {note}" if job.warning else note
         job.message = f"{job.message}; {note}" if job.message else note
@@ -3206,6 +3224,34 @@ class JobManager:
             *job.referrers_updated,
             {"referrer": "staging", "target": where, "status": "kept", "reason": note},
         ]
+
+    def _keep_records_blocking(
+        self, job: ConversionJob, names: list[str], before: str, kept: str,
+    ) -> None:
+        """Carry a set-aside output's check and CHD records from its slot to
+        where it is kept (the store helpers placing uses), and write its check
+        record there when placing failed before the job wrote one. Blocking;
+        logged, never raised."""
+        if kept != before:
+            for name in names:
+                for store in (verification_store, chd_metadata_store):
+                    try:
+                        store.move_blocking(os.path.join(before, name), os.path.join(kept, name))
+                    except Exception:
+                        logger.warning(
+                            "Could not carry the records of %s to %s", name, kept, exc_info=True,
+                        )
+        if not job.check_passed:
+            return
+        where = os.path.join(kept, os.path.basename(job.output_path))
+        try:
+            if verification_store.get_record_blocking(where) is None:
+                verification_store.mark_verified_blocking(
+                    where, source_path=job.file_path,
+                    produced_meta=self._verifier_identity(job), check=job.check_passed,
+                )
+        except Exception:
+            logger.warning("Could not record the check of %s", where, exc_info=True)
 
     async def _close_stage(
         self, job: ConversionJob, slot: staging.StagedOutput | None,

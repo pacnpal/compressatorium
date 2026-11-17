@@ -167,6 +167,18 @@ class VerificationStore:
             self._mark_sync, chd_path, source_path, produced_meta, check,
         )
 
+    def mark_verified_blocking(
+        self,
+        chd_path: str,
+        *,
+        source_path: str | None = None,
+        produced_meta: dict | None = None,
+        check: str = "intact",
+    ) -> None:
+        """:meth:`mark_verified`, blocking, for a caller already off the
+        event loop (a set-aside output's late worker, #391)."""
+        self._mark_sync(chd_path, source_path, produced_meta, check)
+
     async def refresh_check(self, chd_path: str, *, check: str = "intact") -> None:
         """Record that ``chd_path`` passed a plain re-check (#306).
 
