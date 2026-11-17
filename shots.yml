@@ -368,6 +368,37 @@
   wait: 1800
   javascript: *js_dolphin_delete
 
+# --- Workspace: rom-converto, Xbox 360 ISO -> ZAR (#422) ------------------
+# Selects the Xbox 360 image so the convert panel shows the ZAR mode, and in
+# place of the delete option the line saying why the Source is always kept.
+- url: http://127.0.0.1:8099/?s=workspace-rom-converto-light#/workspace/rom_converto
+  output: docs/screenshots/workspace-rom-converto-light.png
+  width: 1280
+  height: 900
+  wait: 1800
+  javascript: &js_rom_converto |
+    (async () => {
+      const theme = new URLSearchParams(location.search).get('s').endsWith('dark')
+        ? 'dark' : 'light';
+      localStorage.setItem('theme-preference', theme);
+      window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: theme }));
+      await new Promise(r => setTimeout(r, 400));
+      const vol = [...document.querySelectorAll('button.item')].find(b => b.textContent.trim() === 'Xbox 360');
+      if (!vol) throw new Error('Xbox 360 volume not found');
+      vol.click();
+      await new Promise(r => setTimeout(r, 800));
+      const all = document.querySelector('thead input[type="checkbox"]');
+      if (all && !all.checked) all.click();
+      await new Promise(r => setTimeout(r, 500));
+      if (!document.querySelector('.source-kept')) throw new Error('source-kept line not shown');
+    })()
+- url: http://127.0.0.1:8099/?s=workspace-rom-converto-dark#/workspace/rom_converto
+  output: docs/screenshots/workspace-rom-converto-dark.png
+  width: 1280
+  height: 900
+  wait: 1800
+  javascript: *js_rom_converto
+
 # --- Workspace: 3DS (Nintendo 3DS volume selected) ------------------------
 - url: http://127.0.0.1:8099/?s=workspace-3ds-light#/workspace/z3ds
   output: docs/screenshots/workspace-3ds-light.png
@@ -694,7 +725,8 @@
             platform_formats: { ngc: 'rvz', psx: 'chd', xbox360: 'zar' },
             library_targets: { ngc: ['iso', 'rvz'], psx: ['chd'], xbox360: ['zar'],
               wii: ['iso', 'rvz', 'wbfs'] },
-            modes: { ngc: ['dolphin_rvz', 'nkit_to_rvz'], psx: ['createcd'], xbox360: [] } } },
+            modes: { ngc: ['dolphin_rvz', 'nkit_to_rvz'], psx: ['createcd'],
+              xbox360: ['zar_compress'] } } },
         '/api/romm/settings': { ...(await live('/api/romm/settings')),
           url: 'http://romm:8080', library_root: '/library', token_set: true },
         '/api/romm/platforms': [

@@ -59,6 +59,7 @@ class ConversionMode(str, Enum):
     NKIT_RESTORE = "nkit_restore"
     NKIT_TO_RVZ = "nkit_to_rvz"
     XISO_REWRITE = "xiso_rewrite"
+    ZAR_COMPRESS = "zar_compress"
     EXODOS_REPACK = "exodos_repack"
     METADATA_SCAN = "metadata_scan"
     DAT_MATCH = "dat_match"
@@ -487,6 +488,20 @@ class XisoInfo(BasicFileInfo):
     has_system_update: bool | None = None
     trimmed: bool | None = None          # already an XISO (no disc padding)
     optimized: bool | None = None        # written by extract-xiso
+
+
+class RomConvertoInfo(BasicFileInfo):
+    """Information about a file rom-converto writes (an Xbox 360 ZAR so far).
+
+    Read with ``rom-converto xenon info``: what the container holds, and
+    whether the boot executable Xenia mounts it by is at its root.
+    """
+    file_count: int | None = None
+    directory_count: int | None = None
+    logical_size: int | None = None      # the files' own bytes, uncompressed
+    logical_size_display: str | None = None
+    blocks: int | None = None
+    boot_executable: bool | None = None  # default.xex at the archive root
 
 
 class LayoutPreferences(BaseModel):

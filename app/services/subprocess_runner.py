@@ -1661,6 +1661,10 @@ SIZE_RATIOS: dict[str, float] = {
     # extract-xiso: full Xbox / 360 disc image -> XISO. Prints its own per-file
     # progress, so this only feeds savings estimates; real trims keep 60-80%.
     "xiso_rewrite": 0.75,
+    # rom-converto: Xbox 360 disc image -> ZAR. Only the game's files, each
+    # zstd-compressed, so the disc padding goes too. Prints no progress on a
+    # pipe, so this row is what gives its bar a percentage.
+    "zar_compress": 0.5,
 }
 
 
@@ -1707,6 +1711,36 @@ def output_size_progress(current: int, expected_size: int) -> int:
     """
     expected = expected_size if expected_size > 0 else 1
     return min(95, max(1, int(current / expected * 90) + 5))
+
+
+def files_in_folder(folder: str) -> Callable[[], list[str]]:
+    """An ``output_growth_paths`` probe over every file directly in *folder*.
+
+    For a tool that writes its product under a name of its own choosing and
+    renames it into place only when it is done (rom-converto writes
+    ``.Game.zar.<random>.tmp``). The output path does not exist until the very
+    end, so the default probe sees no growth for the whole run, the stall
+    watchdog kills a healthy job, and the bar never moves. Run such a tool into
+    a private work folder and pass this: the summed size of whatever is in the
+    folder is the growth signal, whatever the tool calls its files, and the
+    size-growth fallback reports bytes and rate from it as usual.
+
+    Regular files only, not followed into subfolders. A folder that does not
+    exist (yet) is no files. Called from the runner's probe thread, never on
+    the event loop.
+    """
+
+    def paths() -> list[str]:
+        try:
+            with os.scandir(folder) as entries:
+                return [
+                    entry.path for entry in entries
+                    if entry.is_file(follow_symlinks=False)
+                ]
+        except OSError:
+            return []
+
+    return paths
 
 
 class SubprocessRunner:

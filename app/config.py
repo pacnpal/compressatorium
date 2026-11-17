@@ -233,6 +233,13 @@ class Settings(BaseSettings):
     extract_xiso_path: str = Field(
         default="/usr/local/bin/extract-xiso", alias="EXTRACT_XISO_PATH",
     )
+    # rom-converto binary path (DevYukine/rom-converto, the converter RomM
+    # ships; Xbox 360 ISO -> ZAR so far). The image downloads the pinned
+    # release (v0.24.0, SHA-256 checked) to /usr/local/bin/rom-converto; set
+    # ROM_CONVERTO_PATH to relocate/override.
+    rom_converto_path: str = Field(
+        default="/usr/local/bin/rom-converto", alias="ROM_CONVERTO_PATH",
+    )
 
     # Extra free space (MB) a chained conversion (e.g. cso->iso->chd) keeps
     # beyond its estimated peak before starting. A chain holds source + full
@@ -562,6 +569,23 @@ class Settings(BaseSettings):
     )
     xiso_verify_timeout: int | None = Field(
         default=None, alias="COMPRESSATORIUM_XISO_VERIFY_TIMEOUT",
+    )
+    # rom-converto: one `xenon compress` per ZAR, `xenon verify` (every block
+    # decoded and re-hashed) and `xenon info`.
+    rom_converto_nice: int | None = Field(
+        default=None, alias="COMPRESSATORIUM_ROM_CONVERTO_NICE",
+    )
+    rom_converto_ioprio_class: int | None = Field(
+        default=None, alias="COMPRESSATORIUM_ROM_CONVERTO_IOPRIO_CLASS",
+    )
+    rom_converto_ioprio_level: int | None = Field(
+        default=None, alias="COMPRESSATORIUM_ROM_CONVERTO_IOPRIO_LEVEL",
+    )
+    rom_converto_info_timeout: int | None = Field(
+        default=None, alias="COMPRESSATORIUM_ROM_CONVERTO_INFO_TIMEOUT",
+    )
+    rom_converto_verify_timeout: int | None = Field(
+        default=None, alias="COMPRESSATORIUM_ROM_CONVERTO_VERIFY_TIMEOUT",
     )
 
     # Logging

@@ -501,8 +501,10 @@ def _validate_convert(args) -> None:
     key = args.to.strip().lower()
     modes = {spec.mode for spec in registry.mode_specs()}
     if key in modes:
-        if args.delete_source and not registry.spec(key).supports_delete_on_verify:
-            raise UsageError(f"{key} cannot delete its Source (--delete-source)")
+        spec = registry.spec(key)
+        if args.delete_source and not spec.supports_delete_on_verify:
+            why = f": {spec.source_kept_reason}" if spec.source_kept_reason else ""
+            raise UsageError(f"{key} cannot delete its Source (--delete-source){why}")
         return
     formats = target_formats(registry)
     if (key if key.startswith(".") else f".{key}") not in formats:
@@ -628,8 +630,12 @@ def _decide_deletes(items: list[Item], args) -> None:
     routed = [i for i in items if i.mode and not i.status]
     shared = get_disallowed_archive_paths([i.path for i in routed])
     for item in routed:
-        if not registry.spec(item.mode).supports_delete_on_verify:
-            item.reason = f"Source kept: {item.mode} cannot delete its Source"
+        spec = registry.spec(item.mode)
+        if not spec.supports_delete_on_verify:
+            item.reason = (
+                f"Source kept: {spec.source_kept_reason}" if spec.source_kept_reason
+                else f"Source kept: {item.mode} cannot delete its Source"
+            )
         elif "::" in item.path and item.path.split("::", 1)[0] in shared:
             item.reason = "Source kept: several Images come from this archive"
         elif kept := archive_kept_summary(item.path):

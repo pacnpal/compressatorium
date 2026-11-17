@@ -44,6 +44,7 @@ _COMPARED_FIELDS = (
     "supports_delete_on_verify",
     "supports_verify",
     "supports_round_trip",
+    "source_kept_reason",
     "allows_archive_input",
 )
 
@@ -109,6 +110,7 @@ def _frontend_rows(tmp_path: Path) -> dict[str, dict]:
         " supports_delete_on_verify: !!m.supportsDeleteOnVerify,"
         " supports_verify: !!m.supportsVerify,"
         " supports_round_trip: !!m.supportsRoundTrip,"
+        " source_kept_reason: m.sourceKeptReason ?? '',"
         " allows_archive_input: !!m.allowsArchiveInput,"
         "})));\n"
         "process.stdout.write(JSON.stringify(__rows));\n"
@@ -146,6 +148,7 @@ def _backend_rows() -> dict[str, dict]:
             "supports_delete_on_verify": spec.supports_delete_on_verify,
             "supports_verify": spec.supports_verify,
             "supports_round_trip": spec.supports_round_trip,
+            "source_kept_reason": spec.source_kept_reason,
             "allows_archive_input": spec.allows_archive_input,
         }
     return rows
