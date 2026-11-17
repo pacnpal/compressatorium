@@ -13,9 +13,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi import HTTPException
+from services import hasheous
 
 from app.routes import dat as dat_routes
-from services import hasheous
 
 SHARED_SHA1 = "ab" * 20
 

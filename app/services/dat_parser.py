@@ -31,7 +31,8 @@ def parse_dat(source: str) -> tuple[dict, list[dict]]:
 
     Returns:
         (header_info, entries) where header_info has name/description/version
-        (and homepage/url/author when the header carries them) and entries is a list of dicts with game_name, rom_name, size, sha1, md5.
+        (and homepage/url/author when the header carries them) and entries
+        is a list of dicts with game_name, rom_name, size, sha1, md5.
     """
     header: dict = {}
     entries: list[dict] = []

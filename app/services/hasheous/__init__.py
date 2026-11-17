@@ -35,6 +35,8 @@ import urllib.request
 from fastapi.concurrency import run_in_threadpool
 from logging_setup import get_logger
 
+from services.dat_ranking import dat_family
+
 # Re-exported so ``from services import hasheous`` keeps reaching the whole
 # surface after the split -- the module used to be one file, and both the
 # client below and the transport tests address these by that name.
@@ -52,7 +54,6 @@ from services.hasheous.transport import (  # noqa: F401
 )
 
 from config import settings
-from services.dat_ranking import dat_family
 
 __all__ = [
     "HasheousUnavailable",
