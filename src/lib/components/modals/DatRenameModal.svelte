@@ -33,7 +33,14 @@
   // Only the latest preview request may write it.
   let request = 0;
 
-  const job = $derived(jobId ? jobs.jobs.find((j) => j.id === jobId) ?? null : null);
+  // The job as last read from the API (`follow`), until it ended.
+  let followed = $state(null);
+  const job = $derived.by(() => {
+    if (!jobId) return null;
+    const live = jobs.jobs.find((j) => j.id === jobId) ?? null;
+    if (live && TERMINAL.has(live.status)) return live;
+    return followed?.id === jobId ? followed : live;
+  });
   const finished = $derived(!!job && TERMINAL.has(job.status));
   const items = $derived(Array.isArray(preview?.items) ? preview.items : []);
   const renames = $derived(items.filter((i) => i.status === 'rename'));
@@ -46,6 +53,7 @@
     error = '';
     starting = false;
     jobId = null;
+    followed = null;
     if (!asked?.length) return;
     const mine = ++request;
     api.datRenamePreview(asked).then(
@@ -73,10 +81,32 @@
         items.map((i) => ({ path: i.path, new_path: i.new_path ?? null })),
       );
       jobId = started?.job_id ?? null;
+      if (jobId) follow(jobId, request);
     } catch (e) {
       error = e?.message ?? 'Could not start the rename';
     } finally {
       starting = false;
+    }
+  }
+
+  /**
+   * Read the job from the API until it ends, adding it to the jobs list.
+   * The job stream subscribes to running jobs every 0.1 s, so a rename that
+   * ends sooner is never sent on it; this is what the dialog follows then.
+   * Stops when the dialog closes or opens on something else (*mine*).
+   */
+  async function follow(id, mine) {
+    while (mine === request) {
+      try {
+        const read = await api.getJob(id);
+        if (mine !== request) return;
+        followed = read;
+        jobs.adopt([read]);
+        if (TERMINAL.has(read?.status)) return;
+      } catch {
+        // A read that failed is tried again; the stream may still deliver it.
+      }
+      await new Promise((r) => setTimeout(r, 500));
     }
   }
 

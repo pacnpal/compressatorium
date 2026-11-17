@@ -37,6 +37,13 @@ def test_the_dialog_is_mounted_follows_its_job_and_blocks_background_refresh():
     modal = _MODAL.read_text()
     assert "jobs.jobs.find((j) => j.id === jobId)" in modal
     assert "job?.result?.results" in modal
+    # A rename can finish before the job stream subscribes to it (it adds
+    # running jobs every 0.1 s), so the dialog reads its job from the API
+    # until it ends rather than wait on the stream alone.
+    follow = modal.split("async function follow(", 1)[1].split("\n  }\n", 1)[0]
+    assert "api.getJob(id)" in follow
+    assert "jobs.adopt([" in follow
+    assert "TERMINAL.has(" in follow
     ui = _read("lib", "stores", "ui.svelte.js")
     assert "!!this.datRenamePaths" in ui
 
