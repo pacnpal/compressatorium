@@ -24,7 +24,8 @@ writes ``Name (Patched).7z`` beside the Image and never changes the Image:
    hidden staged archive beside the Image. It is read back and must hold the
    patched ROM exactly (the row's check is ``intact``), then placed under
    ``Name (Patched).7z`` without ever replacing a file: a taken name moves on
-   to ``Name (Patched) (2).7z`` and so on.
+   to ``Name (Patched) (2).7z`` and so on. Placing is never abandoned: a
+   cancel or stall during it waits for it, and the job records what landed.
 
 The job is external (``ConversionMode.PATCH``): it takes no conversion slot,
 and its Ledger row is written by the usual terminal listener.
@@ -38,7 +39,7 @@ import re
 import secrets
 import shutil
 import tempfile
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterable, Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
@@ -58,6 +59,7 @@ from services.subprocess_runner import (
     bounded_path_check,
     remove_partial_output,
     remove_partial_tree,
+    run_detached_to_end,
     run_detached_within_stall_bound,
 )
 from services.tools import registry
@@ -82,7 +84,6 @@ PATCH_EXTENSIONS = (".ips", ".bps")
 # not here: the MVP takes the two the 7z packer itself writes.
 ARCHIVE_EXTENSIONS = (".zip", ".7z")
 UPLOAD_FOLDER = "patches"
-_CHUNK = 1024 * 1024
 # The most numbered names tried before giving up on placing the output.
 _MAX_NUMBER = 999
 # An upload's id: its own random prefix, then the name it was sent with, made
@@ -157,18 +158,24 @@ def _upload_id(name: str, ext: str) -> str:
     return f"{secrets.token_hex(8)}-{stem}{ext.lower()}"
 
 
-async def save_upload(name: str, read: Callable[[int], Awaitable[bytes]]) -> dict:
+def max_patch_size() -> int:
+    """``CHD_PATCH_MAX_PATCH_SIZE`` in bytes; 0 for no limit."""
+    return _limit("patch_max_patch_size")
+
+
+async def save_upload(name: str, chunks: AsyncIterable[bytes]) -> dict:
     """Keep an uploaded patch in the data directory: ``{upload_id, name, size, sha1}``.
 
-    Read in chunks and given up at ``CHD_PATCH_MAX_PATCH_SIZE`` (413), so an
-    oversized upload never lands. Refused (400) unless it is named ``.ips`` or
-    ``.bps`` and its header says it is one.
+    *chunks* are the file's bytes as they arrive (``services.upload_stream``),
+    given up at ``CHD_PATCH_MAX_PATCH_SIZE`` (413), so an oversized upload
+    never lands. Refused (400) unless it is named ``.ips`` or ``.bps`` and its
+    header says it is one.
     """
     ext = match_extension(name, PATCH_EXTENSIONS)
     if ext is None:
         raise PatchRefused(400, "Upload an .ips or .bps patch")
     folder = uploads_dir()
-    cap = _limit("patch_max_patch_size")
+    cap = max_patch_size()
     await run_in_threadpool(folder.mkdir, parents=True, exist_ok=True)
     fd, staged = await run_in_threadpool(short_temp_file, str(folder), prefix=".upload-")
     digest = new_hasher("sha1")
@@ -176,7 +183,7 @@ async def save_upload(name: str, read: Callable[[int], Awaitable[bytes]]) -> dic
     size = 0
     try:
         with os.fdopen(fd, "wb") as out:
-            while chunk := await read(_CHUNK):
+            async for chunk in chunks:
                 size += len(chunk)
                 if cap and size > cap:
                     raise PatchRefused(
@@ -411,8 +418,9 @@ async def _patch(job_id: str, image: _Image, patch: _Patch) -> None:
     stem = PurePosixPath(rom_name).stem
     patched_name = f"{stem} (Patched){PurePosixPath(rom_name).suffix}"
     final = await _pack_and_place(job_id, image, patched_name, stem, result.target)
+    # Placed: recorded before anything else can fail, and whatever a cancel
+    # that came during the placement says. It came too late to stop it.
     job.output_path = final
-    job.output_size = await run_in_threadpool(os.path.getsize, final)
     job.check_passed = "intact"
     job.result = {
         "patch_kind": result.kind,
@@ -420,6 +428,9 @@ async def _patch(job_id: str, image: _Image, patch: _Patch) -> None:
         "output_path": final,
     }
     job.message = f"Wrote {os.path.basename(final)}"
+    if job_manager.is_cancelled(job_id):
+        job.message += " (the cancel came after it was placed)"
+    job.output_size = await run_in_threadpool(os.path.getsize, final)
 
 
 def _apply(source: bytes, patch_bytes: bytes, rom_cap: int):
@@ -591,7 +602,12 @@ async def _pack_and_place(
             what="reading the archive back",
         )
         _stop_if_cancelled(job_id)
-        return await _detached(job_id, _place, staged, folder, stem, what="placing the archive")
+        # Placing is irreversible: the link may be made however late the call
+        # returns. So it is never abandoned, not for a cancel and not for the
+        # stall bound, and the job learns where the archive landed
+        # (codex 4605274145). The steps before it may be abandoned: they only
+        # read, or write inside the work directory and the hidden staged name.
+        return await run_detached_to_end(_place, staged, folder, stem)
     finally:
         await remove_partial_output(staged, label="staged patch archive")
         await remove_partial_tree(work, label="patch work directory")

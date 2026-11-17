@@ -6,11 +6,9 @@ file: the job writes a new ``Name (Patched).7z`` beside the Image.
 
 from __future__ import annotations
 
-from typing import Annotated
-
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
-from services import patch_bench
+from services import patch_bench, upload_stream
 
 router = APIRouter()
 
@@ -23,13 +21,38 @@ class PatchRequest(BaseModel):
     upload_id: str | None = None
 
 
-@router.post("/patch/upload")
-async def upload_patch(file: Annotated[UploadFile, File()]) -> dict:
-    """Keep an IPS or BPS patch in the app's data directory; its ``upload_id``
-    names it in ``POST /patch``. Refused over ``CHD_PATCH_MAX_PATCH_SIZE``."""
+# The body is read by ``services.upload_stream``, not FastAPI's ``UploadFile``
+# (which spools it whole first), so this documents the form it takes.
+_UPLOAD_BODY = {
+    "requestBody": {
+        "required": True,
+        "content": {"multipart/form-data": {"schema": {
+            "type": "object",
+            "required": ["file"],
+            "properties": {"file": {"type": "string", "format": "binary"}},
+        }}},
+    },
+}
+
+
+@router.post("/patch/upload", openapi_extra=_UPLOAD_BODY)
+async def upload_patch(request: Request) -> dict:
+    """Keep an IPS or BPS patch (the multipart ``file``) in the app's data
+    directory; its ``upload_id`` names it in ``POST /patch``.
+
+    Refused (413) over ``CHD_PATCH_MAX_PATCH_SIZE`` while it arrives: by its
+    ``Content-Length`` before a byte is read, or the moment a body sent without
+    one passes the limit. Nothing oversized is spooled or kept.
+    """
     try:
-        return await patch_bench.save_upload(file.filename or "", file.read)
-    except patch_bench.PatchRefused as exc:
+        upload = await upload_stream.file_upload(
+            request, field="file", max_bytes=patch_bench.max_patch_size(),
+        )
+        try:
+            return await patch_bench.save_upload(upload.filename, upload.chunks)
+        finally:
+            await upload.chunks.aclose()
+    except (patch_bench.PatchRefused, upload_stream.UploadRefused) as exc:
         raise HTTPException(status_code=exc.status, detail=exc.message) from None
 
 

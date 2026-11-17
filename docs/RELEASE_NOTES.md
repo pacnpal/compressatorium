@@ -17,7 +17,10 @@
   Ledger view shows it under the Source. New settings
   `CHD_PATCH_MAX_PATCH_SIZE` (64 MiB) and `CHD_PATCH_MAX_ROM_SIZE` (512 MiB)
   cap what is read; archived ROMs are unpacked under the `CHD_ARCHIVE_MAX_*`
-  limits too.
+  limits too. An upload over the patch limit is refused as it arrives, so it
+  never fills the temp space first. A cancel that lands while the patched
+  archive is being put in place waits for it, and the job then names the
+  archive it wrote instead of saying nothing was written.
 
 - **Rename to DAT name renames a `.cue` or `.gdi` Image whole** (#426). The
   sheet takes the game's name, each track takes the file name the DAT lists

@@ -576,3 +576,136 @@ async def test_an_upload_that_isnt_ips_or_bps_is_refused(
     assert named.status_code == 400
     lying = await client.post("/api/patch/upload", files={"file": ("Fix.ips", b"not a patch")})
     assert lying.status_code == 400
+
+
+# The cap is held while the body arrives, not after it has been spooled
+# (codex 4605274134): a body of many times the cap is read only up to the cap
+# and a little multipart framing, whether it declares its length or not.
+_BOUNDARY = "patchboundary"
+_BIG = 8 * 1024 * 1024
+_SLICE = 64 * 1024
+
+
+class _Body:
+    """A multipart upload of *size* bytes, handed over a slice at a time;
+    ``sent`` is how much of it the server has pulled."""
+
+    def __init__(self, name: str, size: int) -> None:
+        self.head = (
+            f"--{_BOUNDARY}\r\n"
+            f'Content-Disposition: form-data; name="file"; filename="{name}"\r\n'
+            "Content-Type: application/octet-stream\r\n\r\n"
+        ).encode() + b"PATCH"
+        self.tail = f"\r\n--{_BOUNDARY}--\r\n".encode()
+        self.size = size
+        self.sent = 0
+
+    @property
+    def length(self) -> int:
+        return len(self.head) + self.size - 5 + len(self.tail)
+
+    async def __aiter__(self):
+        self.sent += len(self.head)
+        yield self.head
+        left = self.size - 5
+        while left > 0:
+            chunk = b"\x00" * min(_SLICE, left)
+            left -= len(chunk)
+            self.sent += len(chunk)
+            yield chunk
+        self.sent += len(self.tail)
+        yield self.tail
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("declared", [True, False], ids=["content-length", "chunked"])
+async def test_an_oversized_upload_is_cut_off_as_it_arrives(
+    env: Path, client: httpx.AsyncClient, monkeypatch, tmp_path: Path, declared: bool,
+) -> None:
+    from config import settings
+
+    monkeypatch.setattr(settings, "patch_max_patch_size", 1000)
+    spool = tmp_path / "spool"
+    spool.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(spool))
+    body = _Body("Big.ips", _BIG)
+    headers = {"Content-Type": f"multipart/form-data; boundary={_BOUNDARY}"}
+    if declared:
+        headers["Content-Length"] = str(body.length)
+
+    response = await client.post("/api/patch/upload", content=body, headers=headers)
+
+    assert response.status_code == 413, response.text
+    # Read no further than the cap and its framing: never the whole body.
+    assert body.sent <= 1000 + 128 * 1024
+    if declared:
+        assert body.sent == 0  # refused on its declared length alone
+    folder = Path(settings.data_dir) / "patches"
+    assert not folder.exists() or list(folder.iterdir()) == []
+    assert list(spool.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_an_upload_of_exactly_the_cap_is_kept(
+    env: Path, client: httpx.AsyncClient, monkeypatch,
+) -> None:
+    from config import settings
+
+    patch_bytes = _ips_fix()[0]
+    monkeypatch.setattr(settings, "patch_max_patch_size", len(patch_bytes))
+    uploaded = await client.post("/api/patch/upload", files={"file": ("Fix.ips", patch_bytes)})
+
+    assert uploaded.status_code == 200, uploaded.text
+    stored = Path(settings.data_dir) / "patches" / uploaded.json()["upload_id"]
+    assert stored.read_bytes() == patch_bytes
+
+
+# ----------------------------------------------------------------------
+# a cancel while the archive is being placed
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_during_placement_still_records_the_placed_archive(
+    env: Path, client: httpx.AsyncClient, monkeypatch,
+) -> None:
+    """Placing is irreversible, so a cancel that lands while the link is made
+    waits for it, and the job records what was placed (codex 4605274145)."""
+    import asyncio
+    import threading
+    import time
+
+    from services import patch_bench
+    from services.job_manager import job_manager
+
+    rom = _write(env / "roms" / "Game.sfc", ROM)
+    patch = _write(env / "Fix.ips", _ips_fix()[0])
+    loop = asyncio.get_running_loop()
+    started = threading.Event()
+    job_id: dict = {}
+    real_place = patch_bench._place
+
+    def slow_place(staged: str, folder: str, stem: str) -> str:
+        started.wait(5)
+        asyncio.run_coroutine_threadsafe(job_manager.cancel_job(job_id["id"]), loop).result(5)
+        time.sleep(0.3)  # the cancel is in before the link is made
+        return real_place(staged, folder, stem)
+
+    monkeypatch.setattr(patch_bench, "_place", slow_place)
+    response = await client.post(
+        "/api/patch", json={"image_path": str(rom), "patch_path": str(patch)},
+    )
+    assert response.status_code == 200, response.text
+    job_id["id"] = response.json()["job_id"]
+    started.set()
+    await patch_bench.drain()
+    job = job_manager.get_job_for_lookup(job_id["id"])
+
+    out = rom.parent / "Game (Patched).7z"
+    assert out.is_file()
+    assert job.status.value == "completed", job.message
+    assert job.output_path == str(out)
+    assert "nothing was written" not in (job.message or "")
+    row = await _ledger_row(job)
+    assert row["output_path"] == str(out)
+    assert row["output_bytes"] == out.stat().st_size

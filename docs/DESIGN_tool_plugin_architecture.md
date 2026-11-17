@@ -7138,11 +7138,26 @@ an external job's path). Then, every blocking step through
    must hold exactly that one member with exactly the patched bytes
    (`check_passed = "intact"`). `place_without_clobbering` then moves it to
    `<stem> (Patched).7z`, and on `FileExistsError` to `(2)`, `(3)`, … up to
-   999. The staged file and the work directory are always swept.
+   999. The staged file and the work directory are always swept. Placing is
+   the one irreversible step, so it runs through
+   `subprocess_runner.run_detached_to_end`, not the stall-bounded seam: a
+   cancel (or a stuck mount) never abandons it, because the link could land
+   after the job said "nothing was written". The job waits for it, then
+   records the archive in `output_path` and the Ledger, noting a cancel that
+   came too late. A cancel before placement still writes nothing.
 
-Uploads (`POST /api/patch/upload`, `patch_bench.save_upload`) stream into a
-hidden temp file in `<data dir>/patches/` and stop at
-`CHD_PATCH_MAX_PATCH_SIZE` (413, nothing kept). The header must say IPS or
+Uploads (`POST /api/patch/upload`, `patch_bench.save_upload`) are read by
+`services/upload_stream.file_upload`, not FastAPI's `UploadFile`, which
+spools the whole body to temp disk before the route runs. It feeds
+`request.stream()` to python-multipart's streaming `MultipartParser` and hands
+back the `file` part's name and its bytes as they arrive. The body is capped
+at the limit plus `MULTIPART_OVERHEAD` (64 KiB of framing): a
+`Content-Length` over that is refused (413) before a byte is read, and a body
+without one (chunked) is cut off the moment it passes it. Nothing is spooled.
+`save_upload` writes the bytes into a hidden temp file in
+`<data dir>/patches/` and stops at the exact
+`CHD_PATCH_MAX_PATCH_SIZE` (413, nothing kept). Any other upload route that
+must hold a size limit can use `file_upload` the same way. The header must say IPS or
 BPS. The file is kept as `<16 hex>-<safe name>`, the `upload_id`, so the
 Ledger's path stays valid; `POST /api/patch` accepts an `upload_id` only in
 that exact shape (no separator can appear) and reads it with `read_beneath`
