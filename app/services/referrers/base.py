@@ -40,6 +40,14 @@ onto the output's name before the output is there). The job then keeps the
 output staged and hands the hook a :class:`StagedPlacement`, which applies
 read with ``staged_placement()``. An apply may return :class:`Applied` naming
 Source files it removed itself.
+
+An Image rename (#425) runs the same hook with a :class:`StagedPlacement`
+whose ``rename`` is set: each new name's "staged" file is the Image's own file,
+still under its old name, and placing it is the rename. File Referrers treat
+it like any staged output; a Referrer that renames the file itself (RomM,
+whose ROM rename moves it) checks ``rename``. Planning for the rename preview
+sees the same placement (``planning``). ``rename_refused`` lets an opt-in
+Referrer that is off say why an Image must not be renamed without it.
 """
 
 from __future__ import annotations
@@ -154,6 +162,11 @@ class StagedPlacement:
     source_fingerprints: Mapping[str, Mapping[str, int]] = field(
         default_factory=dict, compare=False,
     )
+    # An Image renamed in place (#425), not a conversion: ``staged`` maps each
+    # new name to the Image's file still under its old name, ``place`` renames
+    # them all, and nothing is deleted. A Referrer that renames the file
+    # itself (RomM) leaves ``is_placed`` true; the caller places what is left.
+    rename: bool = False
 
 
 class Phase(IntEnum):
@@ -239,6 +252,12 @@ class Referrer(ABC):
         the hook runs (#391). Cheap: no I/O. False unless a Referrer says so."""
         return False
 
+    def rename_refused(self, library) -> str | None:
+        """Why an Image in *library* must not be renamed while this opt-in
+        Referrer is off there, or None (#425). The registry asks it only of
+        an opt-in Referrer the Library has off. Reads settings in memory."""
+        return None
+
 
 @dataclass
 class WriteGuard:
@@ -302,11 +321,29 @@ def hook_running() -> bool:
     return _guard.get() is not None
 
 
+# The placement a plan made outside the hook is for (the rename preview, #425).
+_planning: contextvars.ContextVar[StagedPlacement | None] = contextvars.ContextVar(
+    "referrer_planning_placement", default=None,
+)
+
+
+@contextmanager
+def planning(placement: StagedPlacement | None):
+    """Plan, outside the hook, for *placement* (an Image rename's preview,
+    #425): ``staged_placement`` answers it, as it will inside the hook."""
+    token = _planning.set(placement)
+    try:
+        yield
+    finally:
+        _planning.reset(token)
+
+
 def staged_placement() -> StagedPlacement | None:
     """The hook's staged outputs (``StagedPlacement``), or None when the job
-    placed its output before the hook, or outside the hook (#391)."""
+    placed its output before the hook (#391). Outside the hook, the placement
+    a plan is made for (``planning``), else None."""
     guard = _guard.get()
-    return guard.placement if guard is not None else None
+    return guard.placement if guard is not None else _planning.get()
 
 
 def staged_output(final: str) -> str | None:

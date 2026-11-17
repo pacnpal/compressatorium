@@ -6697,6 +6697,96 @@ failed row when there is none), so a raw ISO that failed is never read as
 "never checked" and never kept. A group whose every copy failed has no keeper
 and offers no delete.
 
+### 3.3.23 The Image rename and rename to DAT name (`services/image_rename.py`, `services/dat_rename.py`, #425)
+
+**The shared Image rename** (`image_rename.rename_image(image_path, renames,
+*, library, cancel_event)`) renames every file of an Image (`renames`: `{old:
+new}`, one entry per file) with its Referrers following, or nothing. It takes
+the Image and its map, never a single path, so a multi-file Image (#426: a
+sheet, its tracks, the cue's text, a folder named after it) extends the map and
+adds steps without a second operation. It runs the existing Referrer hook
+(`referrers.update_before_source_removal`) with a `StagedPlacement` whose
+`rename` is set (`image_rename.placement_for`):
+
+- `staged` maps each new name to the file still under its old name, so file
+  Referrers treat the rename exactly as a conversion's staged output: an entry
+  that reaches the old file is rewritten to the new name, checked with
+  `points_at` against the staged file, and the hook's `WriteGuard` watches the
+  old files. No Referrer code changed for this.
+- `place`/`place_blocking` rename each file still under its old name with
+  `place_without_clobbering` (never over another file), and skip one a
+  Referrer already moved; `is_placed` says whether every file is under its new
+  name. `source_fingerprints` is the snapshot each file was locked in.
+- A Referrer that renames the file itself checks `placement.rename`. The RomM
+  Referrer (`RommSwapReferrer._plan_rename`, `_RenameInPlace`) does: it asks
+  RomM to rename the ROM's file (`RommClient.rename_rom`, the swap's own call),
+  which moves the file and keeps the ROM id. No rehash and no journal: no file
+  is parked or deleted, the bytes don't change, and the answer is read back
+  (a 409 or any other answer changes nothing; a sanitized or misplaced name is
+  put back and refused; no answer is settled by the read-back). Archives are
+  not left out as they are for the swap: nothing is rehashed. Counted as a
+  running swap, so a RomM identity change waits for it.
+
+Order: every old path and every new one is locked first
+(`lock_manager.acquire_lock`, the new one with `allow_existing=False`), so no
+job reads or writes either meanwhile. Then the hook; then whatever is still
+under its old name is renamed here; then the check record, the cached `chdman
+info` and the DAT match move to the new path (`move_blocking`,
+`DATStore.move_match_blocking`). Each move runs on `run_detached_to_end`
+(`subprocess_runner`, promoted from the swap's `_mutate`): never abandoned, so
+a cancel waits for the step's outcome. Locks are let go through
+`ReferrerOutcome.outlive`, after any apply still cleaning up.
+
+All or nothing. A Referrer that fails stops the hook (a later phase never
+runs). Only file Referrers can have been updated before it, and RomM's own
+rename undoes itself, so the rename puts back each one updated: the files take
+the new names, the hook runs again with the renames reversed and `upto=
+Phase.FILE` (a new `update_before_source_removal` parameter), and the files go
+back. The outcome is "not renamed" with the failing Referrer's reason, plus
+what could not be put back. Files a Referrer left elsewhere (a RomM that
+renamed and then stopped answering) are never guessed at: the reason says the
+Image was left renamed or partly renamed.
+
+**Two additions to the Referrer contract.** `plan_changes(..., placement=)`
+plans as the hook will (`referrers.base.planning`: `staged_placement()`
+answers it outside the hook too), which is how the preview shows "RomM:
+rename ROM 12 to Ico (USA).iso". `Referrer.rename_refused(library)`: an opt-in
+Referrer that is off says why an Image in that Library must not be renamed
+without it (`ReferrerRegistry.rename_refused` asks each one). The RomM
+Referrer answers for a RomM Library: renamed under RomM's feet the file would
+get a new ROM, so the swap switch must be on.
+
+**One rule for names made from data** (`utils.path_utils.safe_file_name`):
+`< > : " / \ | ? *` and C0 control characters become `_`, leading and
+trailing spaces and trailing dots go, and a name that comes out empty, `.`,
+`..` or over 255 UTF-8 bytes is refused (None).
+
+**Rename to DAT name** (`dat_rename`, routes in `routes/dat_rename.py`). The
+name comes from `DATStore.ranked_match_for_image` (3.3.5.2): cache only, never
+hashing, looked up as listed and then along the real path. The new name is the
+top match's `game_name` plus the file's own extension, through
+`safe_file_name`. `plan_blocking` skips, with the reason: a path not confirmed
+inside the Volumes, a symlink, a playlist, a sheet or any Image with members
+(`image_sets.image_members`; #426), a track a sheet lists
+(`image_sets.owning_sheet`, fail closed on `SheetOwnerUnknown`), not
+Recognized, already named, a case-only difference, a new name that exists, or
+a Library the registry refuses. `preview` also skips a second Image the DAT
+gives a name another selected one already takes. A `conflict` (equally ranked
+DATs that disagree) skips the Image and records a `rename_conflict` Finding
+(keyed by the Image's path, its cause the disagreeing matches);
+`settle_conflicts` clears each one the ranking now resolves, run after the
+ranking is saved or reset and whenever the Findings are listed (database
+only).
+
+The run (`POST /api/files/dat-rename`, the rename confirmation header) is an
+external job (`ConversionMode.DAT_RENAME`, no Ledger row), one at a time, like
+the duplicate delete. It plans every Image again: one whose new name is not
+the one confirmed is skipped. Each confirmed Image goes through
+`rename_image`. The job's `result` lists every Image as `renamed`, `skipped`
+or `not_renamed` with its reason and Referrer records, and one
+`rename_finished` notification (a registered event) carries the counts and
+what wasn't renamed. The single-file `POST /api/files/rename` is unchanged.
+
 ### 3.4 `registry.py`
 
 ```python

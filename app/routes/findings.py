@@ -21,6 +21,7 @@ from logging_setup import get_logger
 from pydantic import BaseModel
 from routes.files import CONFIRM_DELETE_FILE, _require_action_confirmation
 from services import (
+    dat_rename,
     duplicate_cleanup,
     duplicates,
     findings,
@@ -122,6 +123,8 @@ async def _settle_started_by_hand() -> None:
 async def list_findings(include_dismissed: bool = False) -> dict:
     """Open Findings with their Library's name, by Library and Image."""
     await _settle_started_by_hand()
+    # A rename conflict the ranking now resolves clears (#425). Database only.
+    await run_in_threadpool(dat_rename.settle_conflicts)
     rows = await run_in_threadpool(
         lambda: findings.list_findings(include_dismissed=include_dismissed),
     )

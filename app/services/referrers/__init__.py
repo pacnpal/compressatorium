@@ -37,6 +37,7 @@ from .base import (
     WriteGuard,
     atomic_write_bytes,
     guarded_context,
+    planning,
     write_guard,
     write_new_bytes,
 )
@@ -100,6 +101,24 @@ class ReferrerRegistry:
             if not referrer.opt_in or self._enabled(referrer, library)
         ]
 
+    def rename_refused(self, library) -> str | None:
+        """Why an Image in *library* must not be renamed (#425), or None.
+
+        Asked of every opt-in Referrer the Library has off
+        (``Referrer.rename_refused``): RomM's, whose ROM would otherwise get
+        a new id. Raises ReferrerError when the settings can't be read, as
+        :meth:`active` does, and for an :class:`UndecidedLibrary`."""
+        if isinstance(library, UndecidedLibrary):
+            raise ReferrerError(library.target, library.reason, kept=UNDECIDED_LIBRARY_KEPT)
+        if library is None:
+            return None
+        for referrer in self._referrers.values():
+            if referrer.opt_in and not self._enabled(referrer, library):
+                reason = referrer.rename_refused(library)
+                if reason:
+                    return reason
+        return None
+
     @staticmethod
     def _bound(referrer: Referrer, library) -> Referrer:
         try:
@@ -156,17 +175,22 @@ def places_output(image_path: str, renames: Mapping[str, str], library=None) -> 
 
 def plan_changes(
     image_path: str, renames: Mapping[str, str], library=None,
+    placement: StagedPlacement | None = None,
 ) -> list[ReferrerChange]:
     """The planned change of every Referrer on for *library*, for *renames*,
     in phase order. Writes nothing.
+
+    *placement* is what the hook will be given (an Image rename's, #425):
+    each Referrer plans as it will then (``base.planning``).
 
     Raises ReferrerError when a Referrer can't tell what it would change, or
     the Library's settings can't be read.
     """
     changes: list[ReferrerChange] = []
-    for referrer in registry.active(library):
-        if _applies(referrer, image_path, renames):
-            changes.extend(referrer.plan(renames))
+    with planning(placement):
+        for referrer in registry.active(library):
+            if _applies(referrer, image_path, renames):
+                changes.extend(referrer.plan(renames))
     return changes
 
 
@@ -553,8 +577,12 @@ async def update_before_source_removal(
     cancel_event=None, bound: float | None = None,
     placement: StagedPlacement | None = None,
     unawaited: list[HandedOff] | None = None,
+    upto: Phase | None = None,
 ) -> ReferrerOutcome:
     """Run every Referrer that is on for an Image whose Source is about to be removed.
+
+    *upto*, when given, runs only the phases up to it: an Image rename
+    putting its file Referrers back (#425) runs ``Phase.FILE`` alone.
 
     *unawaited*, when given, receives each async apply still running when
     this awaiter itself is cancelled (a shutdown, #391): the caller hands it
@@ -585,7 +613,9 @@ async def update_before_source_removal(
     """
     outcome = ReferrerOutcome()
     try:
-        phases = _by_phase(registry.active(library))
+        phases = _by_phase([
+            r for r in registry.active(library) if upto is None or r.phase <= upto
+        ])
     except ReferrerError as exc:
         logger.warning("Referrer hook for %s: %s", image_path, exc)
         outcome._fail("library", exc, image_path)
@@ -664,15 +694,17 @@ async def _run_phases(
 
 async def plan_changes_bounded(
     image_path: str, renames: Mapping[str, str], library=None,
+    placement: StagedPlacement | None = None,
 ) -> list[ReferrerChange]:
     """``plan_changes`` for the delete confirmation, bounded like the job's
     hook: on a detached thread under the conversion's no-progress bound, so a
     playlist on a mount that stopped answering can't hang the confirmation.
-    *library* is the Image's Library, as the job's hook gets it. Raises
-    ReferrerError (target: the file phase's ``Phase.target``) on a timeout."""
+    *library* is the Image's Library, as the job's hook gets it; *placement*
+    as for ``plan_changes`` (the rename preview, #425). Raises ReferrerError
+    (target: the file phase's ``Phase.target``) on a timeout."""
     try:
         return await run_detached_within_stall_bound(
-            plan_changes, image_path, dict(renames), library,
+            plan_changes, image_path, dict(renames), library, placement,
             what=f"Reading {Phase.FILE.target}",
         )
     except ReferrerError:

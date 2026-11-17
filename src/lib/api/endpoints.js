@@ -187,6 +187,19 @@ export const api = {
     );
   },
 
+  // Rename to DAT name (#425): first the preview (each Image's new name and
+  // Referrer updates, or why it is skipped), then the run of exactly what it
+  // showed, with the rename confirmation header, which answers `{ job_id }`.
+  datRenamePreview: (paths) =>
+    jsonPost(`${API_BASE}/files/dat-rename/preview`, { paths }, {}, 'Could not preview the rename'),
+
+  datRename: (items) =>
+    jsonPost(
+      `${API_BASE}/files/dat-rename`, { items },
+      { headers: { 'X-CHD-Action-Confirm': CONFIRM.RENAME_FILE } },
+      'Could not start the rename',
+    ),
+
   deleteFile(path, { recursive = false } = {}) {
     const params = new URLSearchParams({ path });
     if (recursive) params.set('recursive', 'true');

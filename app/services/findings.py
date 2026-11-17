@@ -57,6 +57,12 @@ DUPLICATE = "duplicate"
 # ``romm-swap-<row id>``), written and cleared by
 # ``services.romm.swap_recovery`` alone, which settles it once the row is.
 ROMM_SWAP = "romm_swap"
+# Equally ranked DATs give an Image different names, so rename to DAT name
+# leaves it as it is (#425). Keyed by the Image's path; its cause lists the
+# disagreeing matches (``matches``). Written one Image at a time by the rename
+# preview, and cleared by ``services.dat_rename.settle_conflicts`` once the
+# ranking names it (or it is no longer matched).
+RENAME_CONFLICT = "rename_conflict"
 # A ``duplicate`` Finding's ``cause`` key: the copies, each ``{"image_key",
 # "path", "container", "size"}``.
 COPIES = "copies"
