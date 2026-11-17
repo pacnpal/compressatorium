@@ -153,6 +153,25 @@ _NAMES: dict[str, str] = {
 _CANONICAL: dict[str, str] = {
     alias: slug for slug, aliases in _ALIASES.items() for alias in (slug, *aliases)
 }
+# The system folder ES-DE names for a Platform, where it isn't RomM's slug
+# (the ``<name>`` of each system in ES-DE's ``resources/systems/*/es_systems.xml``).
+# Where to put a new Platform folder in an ES-DE/Batocera style Library (#430).
+# Each value is one of the Platform's names above, so an Image placed in it is
+# detected back as that Platform; tests/test_library_placement_430.py checks it.
+_ESDE_FOLDERS: dict[str, str] = {
+    "ngc": "gc",
+    "3ds": "n3ds",
+    "dc": "dreamcast",
+    "sms": "mastersystem",
+    "lynx": "atarilynx",
+    "turbografx-cd": "tg-cd",
+    "pc-fx": "pcfx",
+    "neo-geo-cd": "neogeocd",
+    "neo-geo-pocket": "ngp",
+    "neo-geo-pocket-color": "ngpc",
+    "wonderswan-color": "wonderswancolor",
+    "philips-cd-i": "cdimono1",
+}
 
 
 def canonical_slug(name: str | None) -> str | None:
@@ -187,6 +206,12 @@ def platforms() -> list[dict[str, str]]:
         ({"slug": slug, "name": platform_name(slug)} for slug in known_slugs()),
         key=lambda p: p["name"].lower(),
     )
+
+
+def esde_folder_name(slug: str) -> str:
+    """The folder ES-DE reads as *slug*'s system: its own name where it has
+    one, else RomM's slug (which ES-DE shares for most systems)."""
+    return _ESDE_FOLDERS.get(slug, slug)
 
 
 def known_slug(name: str | None) -> str | None:
@@ -379,6 +404,50 @@ def _place(
         if slug:
             return FOLDER, slug, str(parent), label
     return None
+
+
+def placed_platform(folder: str, *, mapped: dict[str, str] | None = None) -> str | None:
+    """The Platform the folder evidence names for an Image placed directly in
+    *folder* (#430), or None when no folder does.
+
+    The same walk :func:`detect_platform` makes (the user's mappings, then
+    Platform names, nearest folder first), so a Library can check that what it
+    places is detected back as the Platform it placed. *folder* need not
+    exist. *mapped* is a :func:`mapping_snapshot`; omitted, the mappings are
+    read here (and may raise ``MappingsUnavailable``). Blocking.
+    """
+    found = _place(
+        os.path.join(folder, "placed"), _folder_names(_default_tools()),
+        _mapped_folders() if mapped is None else mapped,
+    )
+    return found[1] if found else None
+
+
+def platform_folders(
+    parent: str, slug: str, *, mapped: dict[str, str] | None = None,
+) -> list[str]:
+    """The folders directly in *parent* that name *slug* themselves (#430):
+    by the user's mapping on the folder, else by its name, as detection reads
+    them. Spelled as listed. Empty when *parent* doesn't exist.
+
+    Raises OSError when *parent* can't be listed, and ``MappingsUnavailable``
+    as :func:`placed_platform` does. Blocking.
+    """
+    names = _folder_names(_default_tools())
+    mapped = _mapped_folders() if mapped is None else mapped
+    found: list[str] = []
+    try:
+        listing = os.scandir(parent)
+    except FileNotFoundError:
+        return found
+    with listing:
+        for entry in listing:
+            if not entry.is_dir():
+                continue
+            says = mapped.get(os.path.realpath(entry.path)) or names.get(entry.name.lower())
+            if says == slug:
+                found.append(entry.path)
+    return sorted(found)
 
 
 def _decide(path: str, tools: list, mapped: dict[str, str]) -> Detection:

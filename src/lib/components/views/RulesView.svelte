@@ -17,6 +17,7 @@
   import { fileBrowser } from '$lib/stores/fileBrowser.svelte.js';
   import { ui } from '$lib/stores/ui.svelte.js';
   import RuleEditor from '$lib/components/views/RuleEditor.svelte';
+  import LibraryPlacement from '$lib/components/views/LibraryPlacement.svelte';
   import BaseModal from '$lib/components/modals/BaseModal.svelte';
   import Button from '$lib/components/ui/Button.svelte';
   import Select from '$lib/components/ui/Select.svelte';
@@ -214,6 +215,10 @@
         </Button>
       </div>
     </section>
+  {/if}
+
+  {#if selected && (isFolder || romm.usable)}
+    <LibraryPlacement library={selected} />
   {/if}
 
   {#if source}

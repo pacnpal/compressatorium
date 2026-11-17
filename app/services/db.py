@@ -385,6 +385,9 @@ class FolderLibraryRecord(Base):
     # Its ES-DE gamelists folder (#387): resolved, inside a Volume; None keeps
     # the Platform folder lookup.
     gamelists_folder = Column(String, nullable=True)
+    # Where a Platform's Images go (#430): "esde" (<root>/<platform>, ES-DE
+    # and Batocera), "romm" (<root>/roms/<platform>) or "flat" (<root>).
+    layout = Column(String, nullable=False, default="esde", server_default=text("'esde'"))
 
 
 class PlatformMappingRecord(Base):

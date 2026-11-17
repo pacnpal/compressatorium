@@ -13,6 +13,8 @@ folder Library has no converted history, so a Rule asking for ``overwrite`` or
 from __future__ import annotations
 
 import asyncio
+import os
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException
 from fastapi.concurrency import run_in_threadpool
@@ -20,8 +22,9 @@ from pydantic import BaseModel, Field
 from routes import rules as shared_rule_routes
 from services import duplicates, libraries
 from services.libraries.folder import ListingInProgress
+from services.platform_detect import canonical_slug
 from services.rules import editor as rules_editor
-from services.rules.library import Library, LibraryUnreadable
+from services.rules.library import Library, LibraryUnreadable, PlacementUnknown
 from services.subprocess_runner import run_detached
 from services.tools import registry
 
@@ -54,6 +57,8 @@ class UpdateLibraryRequest(BaseModel):
     es_frontend: bool | None = None
     # Its ES-DE gamelists folder (#387): inside a Volume; "" clears it.
     gamelists_folder: str | None = None
+    # Where a Platform's Images go (#430): libraries.folder.LAYOUTS.
+    layout: Literal["esde", "romm", "flat"] | None = None
 
 
 class SweepRequest(BaseModel):
@@ -122,17 +127,18 @@ async def update_library(library_id: str, payload: UpdateLibraryRequest) -> dict
             folder = await libraries.admitted(
                 libraries.check_gamelists_folder, folder, what="The gamelists folder",
             )
+        library = await run_in_threadpool(
+            lambda: libraries.update(
+                library_id, name=payload.name,
+                schedule_enabled=payload.schedule_enabled,
+                max_per_sweep=payload.max_per_sweep,
+                es_frontend=payload.es_frontend,
+                gamelists_folder=folder,
+                layout=payload.layout,
+            ),
+        )
     except libraries.LibraryPathError as exc:
         raise HTTPException(status_code=exc.status, detail=str(exc)) from None
-    library = await run_in_threadpool(
-        lambda: libraries.update(
-            library_id, name=payload.name,
-            schedule_enabled=payload.schedule_enabled,
-            max_per_sweep=payload.max_per_sweep,
-            es_frontend=payload.es_frontend,
-            gamelists_folder=folder,
-        ),
-    )
     if library is None:
         raise HTTPException(status_code=404, detail="Library not found")
     return await run_in_threadpool(libraries.describe, library)
@@ -188,6 +194,52 @@ async def library_platforms(library_id: str) -> dict:
             spec.mode for spec in registry.mode_specs()
             if registry.mode_is_automatable(spec.mode)
         ),
+    }
+
+
+def _placements(library: Library) -> list[dict]:
+    """Where each of *library*'s Platforms' Images go (#430). Blocking."""
+    out = []
+    for platform in library.platforms():
+        slug = canonical_slug(platform.slug or platform.id)
+        row = {
+            "platform": slug, "name": platform.name,
+            "folder": None, "exists": None, "error": None,
+        }
+        try:
+            placed = library.placement(slug)
+        except PlacementUnknown as exc:
+            row["error"] = str(exc)
+        else:
+            rel = os.path.relpath(placed.folder, library.root)
+            row["folder"] = "" if rel == "." else rel.replace(os.sep, "/")
+            row["exists"] = placed.exists
+        out.append(row)
+    return sorted(out, key=lambda r: r["platform"] or "")
+
+
+@router.get("/libraries/{library_id}/placements")
+async def library_placements(library_id: str) -> dict:
+    """Where new Images of each of the Library's Platforms would land (#430):
+    the folder relative to the Library's root (``roms/ps2``), whether it
+    exists yet, or why it can't be told. Any kind of Library."""
+    library = _library(library_id)
+    try:
+        placements = await asyncio.wait_for(
+            run_detached(lambda: _placements(library)), _SCAN_SECONDS,
+        )
+    except ListingInProgress:
+        raise HTTPException(status_code=409, detail=LISTING_IN_PROGRESS) from None
+    except LibraryUnreadable as exc:
+        raise HTTPException(status_code=409, detail=f"Library unreadable: {exc}") from None
+    except (asyncio.TimeoutError, OSError):
+        raise HTTPException(
+            status_code=504, detail="The Library's folder did not answer in time",
+        ) from None
+    return {
+        "library_id": library.id,
+        "layout": libraries.describe(library)["layout"],
+        "placements": placements,
     }
 
 

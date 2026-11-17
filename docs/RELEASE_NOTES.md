@@ -4,6 +4,20 @@
 
 ### Added
 
+- **A Library says where a Platform's Images go** (#430). A folder Library
+  has a **Layout** in the Rules view: ES-DE / Batocera style
+  (`<root>/ps2`, the default and how existing Libraries were always read),
+  RomM style (`<root>/roms/ps2`) or flat (every Image in the root). Beside it,
+  **Where new Images go** lists the folder for each of the Library's
+  Platforms ("PlayStation 2 → roms/ps2"), and says "will be created" for one
+  that isn't there yet. Folder names are the ones Platform detection reads,
+  so an existing `GameCube` or mapped folder is used, and a new GameCube
+  folder is `gc`, as ES-DE names it. When it can't be told (two folders for
+  one Platform, or a RomM library whose folder structure isn't clear from
+  its folders) the row says why instead of picking one. A RomM Library lists
+  the same, following RomM's own folders. Nothing is moved or created yet:
+  the Inbox (#431) will place new Images this way. Database migration 0022
+  adds the layout.
 - **Unfinished RomM swaps are picked up after a restart** (#392). If the app
   stops part way through keeping a ROM's id, the next start settles the swap
   in the background, without holding up startup. What is safe to finish is
