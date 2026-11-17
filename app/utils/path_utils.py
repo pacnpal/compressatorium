@@ -1023,7 +1023,7 @@ def folder_has_entries(path: str) -> bool:
 
 
 def walk_tree(
-    top: str, progress: Callable[..., None],
+    top: str, progress: Callable[..., None], *, unlisted: list[str] | None = None,
 ) -> Iterator[tuple[str, list[str], list[str]]]:
     """``os.walk(top)`` that reports its progress, for a stall-bounded walk.
 
@@ -1034,6 +1034,11 @@ def walk_tree(
     ``subprocess_runner.run_detached_within_stall_bound`` gives up only on a
     listing that stopped answering (a frozen mount), never on a large tree
     that keeps moving, and its message names the folder (#361). Blocking.
+
+    *unlisted*, when given, collects what the walk could not see: each folder
+    it could not list and each entry it could not tell is a folder or not. A
+    caller that must not take "not seen" as "not there" (the duplicate
+    finder's record of sheet tracks, #389) passes it.
     """
     stack = [top]
     while stack:
@@ -1052,6 +1057,8 @@ def walk_tree(
                         is_dir = entry.is_dir()
                     except OSError:
                         is_dir = False
+                        if unlisted is not None:
+                            unlisted.append(entry.path)
                     if not is_dir:
                         files.append(entry.name)
                         continue
@@ -1063,6 +1070,8 @@ def walk_tree(
                     if not is_link:
                         walk_into.append(entry.path)
         except OSError:
+            if unlisted is not None:
+                unlisted.append(current)
             continue
         yield current, dirs, files
         stack.extend(reversed(walk_into))

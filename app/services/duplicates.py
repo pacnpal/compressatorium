@@ -45,7 +45,7 @@ from typing import Any
 from fastapi.concurrency import run_in_threadpool
 from logging_setup import get_logger
 from models import ConversionMode
-from services import content_keys, findings
+from services import content_keys, findings, image_sets
 from services import db as _db
 from services.content_keys import Identity, KeyUnavailable
 from services.job_manager import job_manager
@@ -61,6 +61,8 @@ from services.subprocess_runner import (
     run_detached_within_stall_bound,
 )
 from utils.path_utils import is_within_configured_volumes
+
+from config import settings
 
 logger = get_logger("duplicates")
 
@@ -213,7 +215,7 @@ async def _find(library: Library, job_id: str, current: Callable[[], bool]) -> d
             )
             for path in paths
         ]
-        candidates, in_use, unstatted = await run_detached_within_stall_bound(
+        inspected = await run_detached_within_stall_bound(
             _inspect, listed, active, what=f"looking at {library.name}",
             cancel_event=cancel_event, stall=content_keys.STALL_SECONDS,
             report_progress=True,
@@ -222,6 +224,27 @@ async def _find(library: Library, job_id: str, current: Callable[[], bool]) -> d
         raise _Stopped("Cancelled: no Findings were written") from None
     except (OSError, Stalled, ProgressAbandoned) as exc:
         raise LibraryUnreadable(f"the Library's files did not answer: {exc}") from exc
+    candidates, in_use, unstatted = inspected
+    # Every sheet in the Volumes and the tracks it owns, from the disk: the
+    # scope ``resolve_track`` accepts tracks in (Codex PRRT_kwDOQ9nULM64OXPI).
+    scope = volume_scope()
+    try:
+        sheet_tracks, sheet_problem = await run_detached_within_stall_bound(
+            image_sets.volume_sheet_tracks, scope, what="reading the Volumes' sheets",
+            cancel_event=cancel_event, stall=content_keys.STALL_SECONDS,
+            report_progress=True,
+        )
+    except ReadCancelled:
+        raise _Stopped("Cancelled: no Findings were written") from None
+    except (OSError, Stalled, ProgressAbandoned) as exc:
+        sheet_tracks, sheet_problem = None, f"the walk of the Volumes did not finish: {exc}"
+    # A listing that did not see the whole Library may have missed a sheet
+    # whose track links anywhere, whatever folders the groups' copies are in
+    # (Codex PRRT_kwDOQ9nULM64OGLk): the record is incomplete, from the same
+    # listing the summary's ``unlisted`` count comes from, so they agree.
+    partial = listing_problem(listing, getattr(library, "root", None))
+    if partial is not None:
+        sheet_tracks, sheet_problem = None, partial
     keys = await run_in_threadpool(
         content_keys.stored, {c.path: c.identity for c in candidates},
     )
@@ -338,6 +361,21 @@ async def _find(library: Library, job_id: str, current: Callable[[], bool]) -> d
         "unreadable": len(unseen),
         "unlisted": len(listing.unlisted),
         "held": len(held),
+        # Which groups: a held group is not proven by this run, so it is not
+        # offered for delete (#389).
+        "held_keys": sorted(held),
+        # Every sheet's track identities ((st_dev, st_ino), links followed),
+        # over every Volume: a copy that is any sheet's track is never
+        # deleted, wherever the sheet is (#389). None when a sheet's tracks could not be read, or
+        # the listing did not see the whole Library: then no delete is
+        # offered for this Library.
+        "sheet_tracks": None if sheet_tracks is None else sorted(
+            [dev, ino] for dev, ino in sheet_tracks
+        ),
+        # Why the record is incomplete, for the Findings view.
+        "sheet_tracks_problem": sheet_problem,
+        # The Volumes it covers: once they change, it is stale (no delete).
+        "sheet_tracks_scope": scope,
         "busy": len(in_use),
         "findings": counts,
     }
@@ -375,6 +413,36 @@ async def _list(
                 raise
         _stop_if_cancelled(job_id, current)
         await asyncio.sleep(_LIST_RETRY_SECONDS)
+
+
+def volume_scope() -> list[str]:
+    """The configured Volumes, as a run's record of sheet tracks covers them."""
+    return sorted(settings.volumes)
+
+
+def listing_problem(listing: ImageListing, root: str | None = None) -> str | None:
+    """What *listing* could not see of its Library, or None when it saw it all.
+
+    The folders it could not list and the files it found but could not read,
+    named relative to *root* (a folder Library's) when they are under it. A
+    Library that lists from its own records (RomM) reports neither, so this is
+    None for it: its listing is whatever its records hold.
+    """
+    def named(paths: Iterable[str], suffix: str) -> str:
+        shown = []
+        for path in sorted(paths):
+            if root and os.path.normpath(path).startswith(os.path.normpath(root) + os.sep):
+                path = os.path.relpath(path, root)
+            shown.append(path + suffix)
+        more = len(shown) - 3
+        return ", ".join(shown[:3]) + (f" and {more} more" if more > 0 else "")
+
+    parts = []
+    if listing.unlisted:
+        parts.append(f"{named(listing.unlisted, '/')} could not be listed")
+    if listing.unreadable:
+        parts.append(f"{named(listing.unreadable, '')} could not be read")
+    return "; ".join(parts) or None
 
 
 def _inspect(
@@ -419,7 +487,7 @@ def _inspect(
         if os.path.realpath(path) in in_use or lock_manager.is_locked(path):
             busy.append(path)
             continue
-        identity = Identity(size=int(st.st_size), mtime_ns=int(st.st_mtime_ns))
+        identity = Identity.of(st)
         out.append(Candidate(
             image_key=image_key, path=path, identity=identity,
             container=content_keys.container_of(path),
@@ -484,14 +552,21 @@ def _size(n: int) -> str:
 
 
 def finding_for(key: str, members: list[Candidate]) -> findings.Observed:
-    """The ``duplicate`` Finding for one group: every copy's path, container and size."""
-    copies = [
+    """The ``duplicate`` Finding for one group: every copy's path, container,
+    size and mtime. Size and mtime are the identity its key was read for: a
+    delete (#389) refuses a copy that no longer has them."""
+    return finding_from_copies(key, [
         {
-            "image_key": c.image_key, "path": c.path,
-            "container": c.container, "size": c.identity.size,
+            "image_key": c.image_key, "path": c.path, "container": c.container,
+            "size": c.identity.size, "mtime_ns": c.identity.mtime_ns,
         }
-        for c in sorted(members, key=lambda c: c.path)
-    ]
+        for c in members
+    ])
+
+
+def finding_from_copies(key: str, copies: list[dict]) -> findings.Observed:
+    """The ``duplicate`` Finding for *copies* as a Finding's cause lists them."""
+    copies = sorted((dict(c) for c in copies), key=lambda c: c["path"])
     containers = ", ".join(sorted({c["container"] for c in copies}))
     total = sum(c["size"] for c in copies)
     return findings.Observed(

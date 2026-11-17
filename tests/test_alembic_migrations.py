@@ -177,9 +177,9 @@ def test_0014_stacks_on_0013_and_walks_up_from_an_empty_database(fresh_db_path: 
     engine = _db.make_engine(fresh_db_path)
     cfg = _db._alembic_config(engine)
     script = ScriptDirectory.from_config(cfg)
-    # #386's 0016 sits on 0015, #388's 0017 on that and #387's 0018 on that;
-    # see their own tests below.
-    assert script.get_heads() == ["0018"]
+    # #386's 0016 sits on 0015, #388's 0017 on that, #387's 0018 on that and
+    # #389's 0019 on that; see their own tests below.
+    assert script.get_heads() == ["0019"]
     assert script.get_revision("0014").down_revision == "0013"
     assert script.get_revision("0013").down_revision == "0012"
     assert script.get_revision("0012").down_revision == "0011"
@@ -309,6 +309,32 @@ def test_0018_adds_the_gamelists_folder_unset(fresh_db_path: str):
             "SELECT gamelists_folder FROM folder_libraries",
         ).scalar() is None
     assert _current_rev(engine) == "0018"
+
+
+def test_0019_ties_a_content_key_to_its_file(fresh_db_path: str):
+    """#389's 0019, on #387's 0018: a content key's device and inode beside
+    its size and mtime, null on a row written before (such a key is read
+    again)."""
+    from alembic import command
+    from alembic.script import ScriptDirectory
+
+    engine = _db.make_engine(fresh_db_path)
+    cfg = _db._alembic_config(engine)
+    assert ScriptDirectory.from_config(cfg).get_revision("0019").down_revision == "0018"
+
+    command.upgrade(cfg, "0018")
+    with engine.begin() as conn:
+        conn.exec_driver_sql(
+            "INSERT INTO content_keys (path, size, mtime_ns, key, container, computed_at) "
+            "VALUES ('/v/Game.iso', 4, 1, 'raw:aa', '.iso', '2026-11-16T00:00:00Z')",
+        )
+    command.upgrade(cfg, "0019")
+
+    columns = {c["name"]: c for c in inspect(engine).get_columns("content_keys")}
+    assert columns["dev"]["nullable"] is True and columns["ino"]["nullable"] is True
+    with engine.connect() as conn:
+        assert conn.exec_driver_sql("SELECT dev, ino FROM content_keys").one() == (None, None)
+    assert _current_rev(engine) == "0019"
 
 
 # ---------------------------------------------------------------------------

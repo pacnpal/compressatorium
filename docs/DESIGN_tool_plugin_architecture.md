@@ -634,7 +634,9 @@ so a walk that is still moving stops instead of finishing for nobody.
 `utils.path_utils.walk_tree(top, progress)` is the walk to use with it:
 `os.walk(top)` semantics (top-down, a symlinked folder listed but never
 walked into, unreadable folders skipped) built on `os.scandir`, reporting each
-folder and each entry. Anything under the progress clock reads entries one at
+folder and each entry. A caller that must not take "skipped" as "not there"
+passes `unlisted=[]`, which collects every folder it could not list and every
+entry it could not classify (the duplicate finder's sheet walk, 3.3.22). Anything under the progress clock reads entries one at
 a time and reports each: `os.listdir` reads a whole folder before its caller
 sees an entry, so a huge folder on a slow but healthy mount would pass the
 bound while still reading. `utils.path_utils.list_folder(path, progress)` is
@@ -5632,7 +5634,7 @@ does not), and that an ISO, its RVZ and its DVD CHD group together.
 
 **CHD metadata freshness.** `chd_metadata_store.get_fresh_metadata` checks the
 file's identity, its size and integer `st_mtime_ns` (`chd_metadata.size` and
-`mtime_ns`, added by 0017), the same identity `content_keys` uses, so a
+`mtime_ns`, added by 0017), the size and mtime `content_keys` also ties to, so a
 replacement that kept the float mtime never hands back the old hashes, for
 every caller. One check (`CHDMetadataStore._describes`) answers it for
 `get_fresh_metadata`, `is_stale` and `cached_media_type_blocking`, so they
@@ -5642,8 +5644,11 @@ everywhere: the metadata scan and the info route read it again, after which
 
 **Stored per file, tied to its identity.** `content_keys` (migration 0017) holds
 `path`, `size`, `mtime_ns`, `key` (None for a format with no key) and
-`container`. `content_keys.stored(...)` returns only rows whose size and mtime
-still match, so a changed file loses its key. The DAT match cache is not read
+`container`, and (0019, #389) the file's `dev` and `ino`.
+`content_keys.stored(...)` returns only rows whose size, mtime, device and
+inode all still match (`content_keys.Identity`), so a changed file, or another
+file moved into its path with the same size and mtime, loses its key; a row
+from before 0019 has no device or inode and is read again. The DAT match cache is not read
 for this: its rows carry no size or mtime to tie a SHA1 to the file.
 
 **The run.** `duplicates.start(library)` creates an external job of
@@ -5794,6 +5799,221 @@ The RomM swap (#391) stages through the same helper.
 - **Hidden everywhere here too.** `STAGE_DIR_NAME` lives in `utils/junk.py`
   and is an ignored entry (`is_junk_entry`), so listings, search and every
   walk skip it.
+
+### 3.3.22 Deleting from a duplicate group (`services/duplicate_cleanup.py`, #389)
+
+A `duplicate` Finding (3.3.20) becomes a cleanup the user confirms. Nothing here
+deletes on its own.
+
+**Suggested keeper** (`duplicate_cleanup.annotate`, called by `GET
+/api/findings`). Database only, so listing the Findings touches no Volume:
+`verification_store.records_blocking` (each copy's stored check, passing or
+failed, looked up by the path as listed) and `dat_store.get_matches_batch`. A
+copy whose check failed is never a keeper. Order: Intact (the latest check
+passed and was made after the copy's mtime; the fingerprint a conversion
+recorded in `produced_meta.output` is not read, since a re-check keeps it as it
+was and it would bar a file that changed and then passed a check, Codex
+4593499342; a passed check outranks everything), then a
+copy whose key was computed from its whole content, then Recognized, then
+smallest, then path. `keeper_reason` names the rule that decided. Each copy in
+the Finding's cause now carries `mtime_ns` beside `size`: the identity its key
+was read for.
+
+**A proven keeper** (`keeper_problem`, Codex PRRT_kwDOQ9nULM64Lh-l). A copy may
+be kept for a delete only when it is proven to decode to the disc: a current
+passing check (fresh against its identity), or a key computed from its whole
+content (`content_keys.key_reads_whole_content`: an `.iso`/`.bin` hashed here,
+or a tool whose `raw_image_hash_rebuilds_content` is true, which Dolphin's
+rebuilt disc SHA1 is). A key read from a header (a CHD's data SHA1) is only
+what the file claims, so a damaged CHD is not trusted over a healthy ISO: the
+plan and the delete answer 409, "check it first". A copy that failed its check
+is refused outright. The row carries `keeper_problem` for the view.
+
+**What may be deleted from** (`not_deletable`): only a group whose key kind is
+in `HASH_EQUAL_KINDS` (`raw`), not one the last run held (`held_keys` in the
+run summary), and with two or more copies. No run recorded for the Library
+means "fully seen" is unknown, so no delete.
+
+**The plan** (`POST /api/findings/{id}/delete-plan`, `{fingerprint, keep}`):
+the Finding must still have the fingerprint the user saw (409 otherwise). On a
+detached thread, bounded by `KEPT_DELETE_PROBE_SECONDS`, every copy and the
+keeper are checked against the cause: inside the Volumes, present, the same
+size and mtime, and still holding the group's key in `content_keys` for that
+identity. For each copy but the keeper: the shared `build_delete_plan`
+(confined to the Volumes), a refusal when a `.cue`/`.gdi` beside it lists it as
+a track (`_sheet_problem`), and one when its plan would touch the keeper. The
+track check is the shared `image_sets.owning_sheet` (the other direction of
+`image_members`): a sheet may name a track in a subfolder (`Disc.cue` →
+`tracks/Track.bin`), so it looks in the copy's folder and every folder above
+it, up to and including the Volume boundary (`lock_boundary_root`), never
+above (Codex PRRT_kwDOQ9nULM64L3Le). It fails closed (Codex
+PRRT_kwDOQ9nULM64Lh-c): a folder on the way that cannot be listed, a sheet that
+cannot be read whole (`utils.sheet_text.sheet_is_readable`: unreadable, or over
+the size cap), a sheet whose tracks do not resolve as one set
+(`sheet_track_list` is None, as when one reference leaves its folder: Codex
+PRRT_kwDOQ9nULM64MWFq), or a copy with no Volume boundary blocks the copy,
+since "is it a track?" is unanswered. The same distinction holds for grouping:
+`image_members` no longer reads such a sheet as owning nothing; it keeps every
+track name that does resolve, so those tracks are never listed as Images of
+their own. The walk runs inside the plan's detached, bounded
+step, so a slow Volume answers 503 rather than an unchecked plan. The Referrer changes come
+from `referrers.plan_changes_bounded` with every delete path mapped to the
+keeper, as a conversion maps them to its output. The answer has the
+delete-plan route's item shape (`delete_paths`, `missing_paths`,
+`unsafe_paths`, `errors`, `referrer_changes`) and `blocked`.
+
+**The delete is a job** (`POST /api/findings/{id}/delete`, the `delete-file`
+confirmation header and `{fingerprint, keep, delete_paths}`). The keeper's
+full read makes it too long for a request, and its checks must not rest on
+snapshots taken before it, so the route only does the quick, database-only
+checks (`duplicate_cleanup._offered`: the Finding as shown, the keeper one of
+its copies, `not_deletable`; one delete per Finding at a time, 409 otherwise)
+and answers `{job_id}`. The job is an external job
+(`ConversionMode.DELETE_DUPLICATES`, `ExternalMode(in_ledger=False)`, as
+find-duplicates): progress and message through `update_external_job`, cancel
+through its cancel event, its outcome on the job's new `result` field
+(`{finding_id, keep, keeper_changed, results}`, also its `deleted_paths`,
+`warning` and message), and a refusal as a failed job whose `error_message`
+says why. `duplicate_cleanup.drain()` waits for the running ones. The UI keeps
+its in-flight lock per Finding with the job id, follows the job in the jobs
+store (`findings.noteFinishedDeletes`, from the Findings view), shows its
+progress in the dialog, and settles the dialog when the job ends (closed, the
+`keeper_changed` warning, or the failure's reason).
+
+In the job, before anything is deleted, the Volumes' sheets are read again
+(`image_sets.volume_sheet_tracks`, the same walk, stall bound and incomplete
+rules as the run's record, Codex PRRT_kwDOQ9nULM64OuXm), and that fresh set,
+not the run's, is what each copy is checked against: a sheet added since the
+run keeps its tracks. The run's record stays the gate for offering a delete at
+all. A walk that is incomplete or stalls fails the job with nothing deleted; a
+cancel ends it cancelled. Then the plan is made again, must not be blocked,
+and must list exactly the confirmed paths. Then
+`JobManager.delete_duplicate_copies` takes the keeper's lock
+(`_take_output`) and, under it and before any copy goes, proves the keeper by
+its bytes (`_keeper_problem`, Codex 4593004806): its size and mtime must still
+be the Finding's, then `content_keys.recompute` computes its key again from
+what it holds now, never the stored row and never a header alone, and it must
+be the group's key; its full fingerprint (size, mtime, inode, device) must be
+the same after that read as before. An `.iso`/`.bin` is hashed whole under the
+stall bound; any other format goes through the tool contract's
+`content_sha1`, a full pass bounded by `verify_timeout` and raced against the
+cancel (`BaseTool`'s default: a tool whose raw hash rebuilds the image, so
+Dolphin rebuilds the disc; `ChdmanTool`: `chdman verify` must pass, which
+recomputes the data SHA1 from every hunk, then the header read fresh). A format
+with no full-content key cannot be kept. A read that fails, stalls, is
+cancelled or gives another key refuses every copy and deletes nothing. The
+job's cancel event reaches that read and stops the batch before the next
+copy.
+
+The keeper is opened (`_open_keeper`, through `run_detached_undoable`: a
+descriptor delivered after the bound gave up is closed by the undo,
+`_close_opened`, Codex 4593499336) and held open from that read to the end of
+the batch; an image's hash is read through that descriptor
+(`content_keys.recompute(fd=...)`), and any other format's full pass reads it
+too (Codex 4593632748): the contract's `content_sha1(path, fd=...)` resolves,
+once in `BaseTool`, a path that names the held file (`held_file_path`:
+`/proc/<pid>/fd/<fd>`, checked by device and inode, which a tool's child can
+open and which keeps naming that inode whatever is renamed into the old name),
+and the tool's own pass (`_content_sha1(path, target)`) reads *target* while
+*path* only names the format. Where no such path exists (no `/proc`), the
+delete is refused for that keeper rather than reading the name. Before each copy, and once after the last
+delete, `_keeper_still_held` checks that the batch still holds the keeper's
+lock (`HeldLocks.holds`: a lingering Referrer operation may have taken it,
+CodeRabbit 4593240091) and that the path still names the held file, with the
+same device, inode, size and mtime (`_keeper_moved`, Codex 4593214751). Any
+change stops the batch and what is left stays; a change seen only after the
+last delete is reported (`keeper_changed`); the dialog then stays open with
+a warning naming the copy kept and asking for a check, and the view shows a
+warning, not a success (Codex 4593499350). This catches a rename swap. An
+in-place rewrite by a writer with write access to the keeper cannot be caught
+by any ordering here, since the same writer could corrupt it right after the
+cleanup: that is inherent to keeping one copy. The copies being deleted are
+not read in full (a decision, CodeRabbit 4593240082). Instead each must still
+be the very file its content key was read from (Codex PRRT_kwDOQ9nULM64OuXs):
+`content_keys` stores the file's device and inode beside its size and mtime
+when the key is set (`content_keys.Identity`, migration 0019; a row from
+before has none and matches no file, so it is read again), and under the
+copy's holds `_copy_under_holds` requires the copy's identity now to equal
+the stored key's and that key to be the group's. A file moved into the copy's
+place with the same size and mtime is a new inode, so it is kept with no
+re-hash. Only an in-place rewrite that puts the mtime back is not caught, and
+only something that can already write the copy, and so delete it, can do
+that.
+
+Then for each copy it runs
+the retried-delete pattern: `build_delete_snapshot` (the copy's own file must
+still have the Finding's identity), its delete paths taken exclusively without
+waiting (`_take_exclusively`: a copy a job holds is `reader`, kept), the
+snapshot again under the holds, then `copy_problem`
+(`duplicate_cleanup._copy_under_holds`): the content-key identity above, and
+the sheet check again (the walk up and the job's fresh set of sheet tracks: a
+sheet that names the copy since the plan keeps it, CodeRabbit 4593240099),
+then the shared delete
+step (`_delete_source_set`: per-path checks, the Referrer hook pointing
+playlists at the keeper, the unlinks as one mutation, the copy's check and
+metadata records cleared). Each copy's outcome is a `KeptDeleteRetry`.
+Afterwards `duplicate_cleanup._settle` rewrites the Finding with the copies
+left (`duplicates.finding_from_copies`), or resolves it once fewer than two
+are, and only when the stored Finding still has the fingerprint the delete was
+confirmed on (`findings.observe` / `resolve` with `fingerprint=`, checked under
+the store's write lock, CodeRabbit 4593240053): a run that wrote a newer cause
+meanwhile wins.
+
+A sheet can reach a track through a link in another folder (`disc/Disc.cue`
+names `disc/Track.bin`, a link to `shared/Track.bin`), which no walk up from the
+target finds (Codex PRRT_kwDOQ9nULM64NUn9), and that folder may be in another
+Library, or in none (Codex PRRT_kwDOQ9nULM64OXPI). `resolve_track` accepts a
+track anywhere inside the configured Volumes, so ownership is read over the
+same scope, from the disk, never from a Library's listing: the find-duplicates
+job walks every configured Volume (`image_sets.volume_sheet_tracks`, over the
+shared `walk_tree`, detached under the stall bound, cancellable), reads only
+the `.cue`/`.gdi` sheets, no hashing, and records each one's track identities,
+`(st_dev, st_ino)` with links followed (`image_sets.sheet_track_identities`,
+through the same `resolve_track`), as `sheet_tracks` in the run's summary on
+`duplicate_runs` (no migration), with the Volumes it walked as
+`sheet_tracks_scope`. Junk and RomM's `.romm_tmp_*` staging are skipped as
+every walk skips them; a linked folder is not walked into (its target is
+walked where it is, when it is in a Volume), and a Volume nested in another is
+walked once. The plan, and the check under each copy's locks
+(`_copy_sheet_problem`), block a copy whose identity is any recorded track,
+besides the walk up, which stays as a second guard.
+
+No delete is offered without a complete, current record. A run with no record
+(an older run) offers none. Nor does an incomplete one, stored as
+`sheet_tracks: None` with what was missed in `sheet_tracks_problem`: a Volume
+root that is not a folder, any folder (or entry) the walk could not see
+(`walk_tree(unlisted=...)` collects them), a sheet that cannot be read whole
+(unreadable, over the size cap, tracks that do not resolve as one set, a
+track it cannot stat: `sheet_track_identities` raises, Codex
+PRRT_kwDOQ9nULM64N2yy), or a walk that hit its stall bound. So does a run whose
+Library listing did not see the whole Library (Codex PRRT_kwDOQ9nULM64OGLk:
+any `ImageListing.unlisted` / `.unreadable`, named by
+`duplicates.listing_problem`), and `not_deletable` also refuses a run whose
+`unlisted` count is non-zero, so no flag says complete while another says
+partial. A record whose `sheet_tracks_scope` is not the current Volumes
+(`duplicates.volume_scope`, e.g. a Volume added since) is stale: no delete.
+Since the record no longer comes from a Library's listing, a RomM Library is
+covered the same way. The listing itself no longer shows a linked target as an
+Image: `group_images` also counts a member's resolved link target as owned.
+
+The rule throughout, so the class cannot recur: no helper that answers an
+ownership question returns an empty answer for "could not tell".
+`image_sets._named_tracks` returns None for a sheet it cannot read whole (`[]`
+only for a file that is not a sheet, or a sheet that names nothing);
+`sheet_track_identities` and `owning_sheet` raise `SheetOwnerUnknown`; every
+caller handles it. `image_members` keeps listing what it cannot name (it
+cannot hide files it cannot name) and says so; nothing that deletes relies on
+it.
+
+`owning_sheet` compares a sheet's tracks with the copy by file identity (device
+and inode), so a case-insensitive share's `track.bin` is `Track.bin`; a track
+that does not exist is compared by its case-folded real path, and any other
+stat failure leaves the owner unknown (CodeRabbit 4593240059).
+
+A first check that fails is recorded (`verification_store.mark_failed` adds a
+failed row when there is none), so a raw ISO that failed is never read as
+"never checked" and never kept. A group whose every copy failed has no keeper
+and offers no delete.
 
 ### 3.4 `registry.py`
 
@@ -6957,7 +7177,7 @@ Net: a smaller, flatter codebase where the cost of the *next* tool drops from
 `is_junk_entry(name)` is the one predicate for names no listing or walk should
 see: OS and NAS metadata, plus RomM's `.romm_tmp_*` converter staging (prefix
 match only) and this app's own `.compressatorium-stage` folder
-(`STAGE_DIR_NAME`, section 3.3.21). The file browser listing and search, `walk_tree` (DAT scan), the
+(`STAGE_DIR_NAME`, section 3.3.21). The file browser listing and search, `walk_tree` (DAT scan, the duplicate finder's sheet walk), the
 folder Library walk (which feeds sweeps, check Rules and the Platform walk) and
 the Switch key search all route through it. Add a new ignored name there, not in
 a caller.

@@ -182,9 +182,15 @@ class VerificationStore:
         normalized = self._normalize(chd_path)
         with self._session() as session:
             row = session.get(_db.Verification, normalized)
-            if row is not None:
+            if row is None:
+                # A first check that fails is recorded too (#389): "failed"
+                # must not read as "never checked" (a duplicate group's keeper).
+                session.add(_db.Verification(
+                    chd_path=normalized, verified_at=_utcnow_iso(), check_passed=FAILED,
+                ))
+            else:
                 row.check_passed = FAILED
-                session.commit()
+            session.commit()
 
     async def mark_failed(self, chd_path: str) -> None:
         """Record that ``chd_path`` failed a check (#305).
@@ -194,7 +200,8 @@ class VerificationStore:
         are kept, as :meth:`refresh_check` keeps them: a check that fails
         never erases what made the file, so the next check still goes to the
         tool that made it, and a later pass (:meth:`refresh_check`) restores
-        the record. A file with no record stays without one.
+        the record. A file with no record gets a failed one, with no
+        provenance, so a first failure is never read as "never checked".
         """
         await run_in_threadpool(self._mark_failed_sync, chd_path)
 
@@ -289,6 +296,31 @@ class VerificationStore:
         """:meth:`get_record`, blocking, for a caller that bounds it on its own
         detached thread (a retried delete, #329)."""
         return self._get_record_sync(chd_path)
+
+    def records_blocking(self, paths: list[str]) -> dict[str, dict]:
+        """The passing check records of *paths*, by path, in one query. Blocking.
+
+        Looked up by each path as given (normalized, not resolved): for a
+        caller that must not touch the disk (the Findings view, #389) and whose
+        paths are already the resolved ones a Library lists. A path with no
+        record is left out; a failed one is kept, ``check_passed`` ``failed``,
+        so a caller can tell "failed" from "never checked".
+        """
+        by_norm = {os.path.normpath(path): path for path in paths}
+        out: dict[str, dict] = {}
+        norms = list(by_norm)
+        with self._session() as session:
+            for start in range(0, len(norms), 900):
+                rows = session.query(_db.Verification).filter(
+                    _db.Verification.chd_path.in_(norms[start:start + 900]),
+                ).all()
+                for row in rows:
+                    out[by_norm[row.chd_path]] = {
+                        "verified_at": row.verified_at,
+                        "produced_meta": row.produced_meta,
+                        "check_passed": row.check_passed,
+                    }
+        return out
 
     def produced_meta_blocking(self, chd_path: str) -> dict | None:
         """What made ``chd_path``, passing or not: its ``produced_meta``. Blocking.

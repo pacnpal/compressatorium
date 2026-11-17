@@ -70,10 +70,21 @@ class KeyUnavailable(Exception):
 
 @dataclass(frozen=True)
 class Identity:
-    """What a stored key is tied to: the file's size and mtime."""
+    """What a stored key is tied to: the file it was read from, by its size,
+    mtime, device and inode (#389). Size and mtime alone would take another
+    file moved into the path with them for the one that was hashed."""
 
     size: int
     mtime_ns: int
+    dev: int
+    ino: int
+
+    @classmethod
+    def of(cls, st: os.stat_result) -> Identity:
+        return cls(
+            size=int(st.st_size), mtime_ns=int(st.st_mtime_ns),
+            dev=int(st.st_dev), ino=int(st.st_ino),
+        )
 
 
 @dataclass(frozen=True)
@@ -107,6 +118,20 @@ def is_raw_image(path: str) -> bool:
     return container_of(path) in RAW_IMAGE_EXTENSIONS
 
 
+def key_reads_whole_content(path: str) -> bool:
+    """Whether *path*'s key was computed from its whole content (#389).
+
+    An ``.iso``/``.bin`` is hashed here, every byte; a tool's raw hash counts
+    when the tool rebuilds the image to compute it
+    (``raw_image_hash_rebuilds_content``). A hash read from a header does not:
+    it is what the file claims, not what it decodes to. Names only, no disk.
+    """
+    if is_raw_image(path):
+        return True
+    tool = registry.tool_for_verify(path)
+    return bool(tool is not None and getattr(tool, "raw_image_hash_rebuilds_content", False))
+
+
 def _session():
     if _db.SessionLocal is None:
         raise RuntimeError("content_keys: db.init_engine() has not run")
@@ -118,16 +143,16 @@ def _norm(path: str) -> str:
 
 
 def identity_of(path: str) -> Identity:
-    """The file's size and mtime. Blocking; raises what ``os.stat`` raises."""
-    st = os.stat(path)
-    return Identity(size=int(st.st_size), mtime_ns=int(st.st_mtime_ns))
+    """The file's identity, links followed. Blocking; raises what ``os.stat`` raises."""
+    return Identity.of(os.stat(path))
 
 
 def stored(identities: dict[str, Identity]) -> dict[str, Stored]:
     """The stored keys that still describe their files, by path. Blocking.
 
-    A row for another size or mtime is left out: the file changed since its
-    key was read.
+    A row for another size, mtime, device or inode is left out: the file
+    changed since its key was read, or is another file now. A row with no
+    device and inode (written before 0019) matches no file.
     """
     if not identities:
         return {}
@@ -145,7 +170,9 @@ def stored(identities: dict[str, Identity]) -> dict[str, Stored]:
             for row in rows:
                 path = by_norm[row.path]
                 ident = identities[path]
-                if row.size == ident.size and row.mtime_ns == ident.mtime_ns:
+                if (row.size, row.mtime_ns, row.dev, row.ino) == (
+                    ident.size, ident.mtime_ns, ident.dev, ident.ino,
+                ):
                     out[path] = Stored(key=row.key, container=row.container)
     return out
 
@@ -156,6 +183,7 @@ def store(path: str, identity: Identity, key: str | None, container: str) -> Non
     values = {
         "size": identity.size, "mtime_ns": identity.mtime_ns, "key": key,
         "container": container, "computed_at": now,
+        "dev": identity.dev, "ino": identity.ino,
     }
     with _session() as session:
         session.execute(
@@ -227,6 +255,74 @@ async def build(path: str, *, cancel_event: asyncio.Event | None = None) -> str 
             raise
         raise KeyUnavailable(f"{tool.id} could not hash {name}: {exc}") from exc
     # A tool that ends early on a cancel answers with nothing: no verdict.
+    _raise_if_cancelled(cancel_event)
+    return raw_key(sha1) if sha1 else None
+
+
+def _sha1_of_fd(fd: int, *, progress: Callable[..., None]) -> str:
+    """The SHA1 of the file *fd* is open on, from its start, reporting every
+    read. Blocking: run stall-bounded. *fd* stays open (a duplicate is read)."""
+    hasher = new_hasher("sha1")
+    with open(os.dup(fd), "rb", buffering=0) as fh:
+        fh.seek(0)
+        while chunk := fh.read(READ_CHUNK):
+            progress()
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+
+async def recompute(
+    path: str, *, cancel_event: asyncio.Event | None = None, fd: int | None = None,
+) -> str | None:
+    """*path*'s content key from the bytes it holds now: never the stored row,
+    never a header alone (#389). ``None`` when its format has no full-content
+    key (a CD CHD, a CSO). Raises :class:`KeyUnavailable` when it could not be
+    read in full in time, and lets ``ReadCancelled`` and ``StorageAbandoned``
+    through.
+
+    An ``.iso``/``.bin`` is hashed whole, under the stall bound, as
+    :func:`build` reads it; through *fd* when given (the caller holds the file
+    open, so what is hashed is the file it then checks the path against). Any
+    other file goes through its tool's ``content_sha1`` (a full pass: a
+    rebuild or a verify), bounded by the tool's ``verify_timeout`` and raced
+    against *cancel_event*, and with *fd* it reads the held file, never the
+    name (Codex 4593632748).
+    """
+    name = os.path.basename(path)
+    if is_raw_image(path):
+        try:
+            if fd is None:
+                sha1 = await run_detached_within_stall_bound(
+                    _sha1_of, path, what=f"hashing {name}", cancel_event=cancel_event,
+                    stall=STALL_SECONDS, report_progress=True,
+                )
+            else:
+                sha1 = await run_detached_within_stall_bound(
+                    _sha1_of_fd, fd, what=f"hashing {name}", cancel_event=cancel_event,
+                    stall=STALL_SECONDS, report_progress=True,
+                )
+        except (OSError, Stalled, ProgressAbandoned) as exc:
+            raise KeyUnavailable(f"could not read {name}: {exc}") from exc
+        return raw_key(sha1)
+    tool = registry.tool_for_verify(path)
+    if tool is None:
+        return None
+    try:
+        bound = await until_cancelled(
+            tool.verify_timeout(path, cancel_event=cancel_event), cancel_event,
+        )
+        sha1 = await until_cancelled(
+            asyncio.wait_for(
+                tool.content_sha1(path, cancel_event=cancel_event, fd=fd),
+                timeout=bound or None,
+            ),
+            cancel_event,
+        )
+    except (EmbeddedHashUnavailable, OSError, RuntimeError, asyncio.TimeoutError) as exc:
+        _raise_if_cancelled(cancel_event)
+        if isinstance(exc, StorageAbandoned):
+            raise
+        raise KeyUnavailable(f"{tool.id} could not read {name} in full: {exc}") from exc
     _raise_if_cancelled(cancel_event)
     return raw_key(sha1) if sha1 else None
 

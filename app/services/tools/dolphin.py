@@ -173,6 +173,8 @@ class DolphinTool(BaseTool):
     # The rebuilt disc SHA1 is the raw disc image's SHA1, so a container's
     # duplicate-finder key matches the .iso it was made from (#388).
     raw_image_hash_labels = frozenset({"dolphin_disc_sha1"})
+    # `dolphin-tool verify` rebuilds the whole disc to hash it (#389).
+    raw_image_hash_rebuilds_content = True
 
     def __init__(self, binary_path: str) -> None:
         super().__init__(binary_path)

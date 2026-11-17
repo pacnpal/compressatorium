@@ -223,12 +223,14 @@ def _upsert(
 
 def observe(
     library_id: str, item: Observed, *, current: Callable[[], bool] | None = None,
-    now: str | None = None,
+    now: str | None = None, fingerprint: str | None = None,
 ) -> str | None:
     """Upsert one Finding, on the same terms as :func:`reconcile`. Blocking.
 
     For a producer that sees one Image at a time (a check Rule). Returns
     ``added``, ``changed`` or ``kept``; None when *current* answered False.
+    With *fingerprint* (the cause the caller read, #389), nothing is written
+    unless the stored row still has it: a newer cause written meanwhile wins.
     """
     with _write_lock, _session() as session:
         if current is not None and not current():
@@ -236,6 +238,8 @@ def observe(
         row = session.query(_db.FindingRecord).filter_by(
             library_id=library_id, image_key=item.image_key, kind=item.kind,
         ).first()
+        if fingerprint is not None and (row is None or row.fingerprint != fingerprint):
+            return None
         outcome = _upsert(session, library_id, row, item, now or _now())
         session.commit()
     return outcome
@@ -243,19 +247,23 @@ def observe(
 
 def resolve(
     library_id: str, image_key: str, kind: str, *,
-    current: Callable[[], bool] | None = None,
+    current: Callable[[], bool] | None = None, fingerprint: str | None = None,
 ) -> bool:
     """Clear one Finding: its cause went away (a later check passed). Blocking.
 
     Its dismissal is kept, as :func:`reconcile` keeps one for a row it drops.
-    True when a row was removed.
+    True when a row was removed. With *fingerprint*, only a row that still
+    has that cause is removed (#389).
     """
     with _write_lock, _session() as session:
         if current is not None and not current():
             return False
-        removed = session.query(_db.FindingRecord).filter_by(
+        query = session.query(_db.FindingRecord).filter_by(
             library_id=library_id, image_key=image_key, kind=kind,
-        ).delete()
+        )
+        if fingerprint is not None:
+            query = query.filter(_db.FindingRecord.fingerprint == fingerprint)
+        removed = query.delete()
         session.commit()
     return bool(removed)
 
@@ -401,6 +409,15 @@ def list_findings(*, include_dismissed: bool = False) -> list[dict[str, Any]]:
     if include_dismissed:
         return out
     return [row for row in out if not row["dismissed"]]
+
+
+def get_finding(finding_id: int) -> dict[str, Any] | None:
+    """One stored Finding as :func:`list_findings` describes it, or None. Blocking."""
+    with _session() as session:
+        row = session.get(_db.FindingRecord, finding_id)
+        if row is None:
+            return None
+        return _describe(row, _dismissed_keys(session))
 
 
 def count_dismissed() -> int:
