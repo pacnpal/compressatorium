@@ -425,8 +425,15 @@ def reopen_slot(path: str) -> StagedOutput:
         lock_fd = os.open(lock_name, _RELOCK_FLAGS, 0o600, dir_fd=stage_fd)
         try:
             fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BaseException:
+            # Not ours (Codex 4595373632): a live holder's lock file is left
+            # as it is, so no later opener can make a second one beside it.
+            os.close(lock_fd)
+            raise
+        try:
             slot_fd = os.open(slot_name, _DIR_FLAGS, dir_fd=stage_fd)
         except BaseException:
+            # Locked by this call, so its lock file is this call's to remove.
             _unlink_quietly(lock_name, stage_fd)
             os.close(lock_fd)
             raise

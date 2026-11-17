@@ -4275,9 +4275,23 @@ The only RomM write, the rehash, counts in `swap_referrer._active_swaps`, so
 `identity_change()` waits for it.
 
 Moves go through `_mutate` and reads through `_probe` or `_read_whole`, the
-same seams the swap uses. Slots are taken again with
+same seams the swap uses. Building a Finding looks at the Volume (the slots
+left), so it is built and written in one bounded detached call
+(`_leave_finding`), never on the event loop (Codex 4595373645). The job
+locks are taken through `run_detached_undoable` under `LOCK_SECONDS`, with
+`_unlock` as the undo. A worker that takes the locks after the bound gives
+them back, and a partial acquisition is rolled back (Codex 4595373643).
+Each destructive step is journaled before it runs, as in the swap:
+`rehashing`, then `restoring` or `deleting`. A stop after deleting the
+parked Source therefore leaves `deleting` with the Source gone, which the
+next pass ends `done` (Codex 4595373639). Slots are taken again with
 `staging.reopen_slot`, which has the same Volume and no-link guards as
-`open_slot` and takes the slot's flock. A slot is removed only once its own
+`open_slot` and takes the slot's flock. A failed flock closes the
+descriptor and leaves the lock file, which a live holder owns. Only a lock
+file this call locked is removed on a later failure, so no opener can make
+a second lock beside a holder (Codex 4595373632). The `O_EXCL` claims in
+`_claim` and `partial_writes.claim_temp` already remove only a lock file
+they created, and the sweeps never remove one they could not lock. A slot is removed only once its own
 listing is empty (a kept output's slot may still hold its keep marker,
 which is removed first). A pass that finds nothing new to do changes
 nothing.

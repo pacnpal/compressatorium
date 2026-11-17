@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
+import time
 from pathlib import Path
 
 import pytest
@@ -478,3 +479,132 @@ async def test_a_swap_records_its_instance_and_its_files_fingerprints(vol, romm)
     assert (row["source_size"], row["source_mtime_ns"]) == (st.st_size, st.st_mtime_ns)
     assert row["output_size"] == len(OUTPUT_BYTES)
     assert row["output_sha1"] == hashlib.sha1(OUTPUT_BYTES).hexdigest()
+
+
+# ---- review round (Codex on #410) ------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_slot_another_holds_is_never_taken_twice(vol, romm):
+    """Codex 4595373632: while one holder has a slot, every other
+    ``reopen_slot`` fails, and none removes the holder's lock file, so none
+    can make a second lock and run beside it."""
+    from services import staging
+
+    seed = Seed(vol, romm)
+    holder = staging.reopen_slot(str(seed.kept_slot))
+    lock = seed.platform / STAGE / "park-kept5678.lock"
+    try:
+        held = lock.stat().st_ino
+        for _ in range(2):
+            with pytest.raises(BlockingIOError):
+                staging.reopen_slot(str(seed.kept_slot))
+            assert lock.stat().st_ino == held
+    finally:
+        holder.keep()
+
+
+@pytest.mark.asyncio
+async def test_a_stalled_volume_while_writing_a_finding_never_holds_the_loop(
+    vol, romm, monkeypatch,
+):
+    """Codex 4595373645: the Finding names the slots left, which is a look at
+    the Volume. A Volume that stalls there stalls a detached thread, never
+    the event loop: other tasks keep running."""
+    seed = Seed(vol, romm)
+    seed.romm_renamed()
+    seed.row("parking")
+    real_isdir = os.path.isdir
+    stage = str(seed.platform / STAGE)
+
+    def stalled(path):
+        if str(path).startswith(stage):
+            time.sleep(0.6)
+        return real_isdir(path)
+
+    monkeypatch.setattr(os.path, "isdir", stalled)
+    gaps: list[float] = []
+
+    async def ticker():
+        last = time.monotonic()
+        while True:
+            await asyncio.sleep(0.02)
+            now = time.monotonic()
+            gaps.append(now - last)
+            last = now
+
+    ticking = asyncio.create_task(ticker())
+    try:
+        await _recover()
+    finally:
+        ticking.cancel()
+
+    assert len(_swap_findings()) == 1
+    assert max(gaps) < 0.4, max(gaps)
+
+
+@pytest.mark.asyncio
+async def test_a_crash_after_deleting_the_parked_source_settles_done_next_time(
+    vol, romm, monkeypatch,
+):
+    """Codex 4595373639: ``deleting`` is in the journal before the parked
+    Source goes, as in the swap. Stopped after the delete and before
+    ``done``, the next run sees ``deleting`` with the Source gone and ends
+    the row done, rather than leaving a Finding for good."""
+    from services.romm import swap_journal
+
+    seed = Seed(vol, romm)
+    seed.romm_renamed()
+    seed.park_source()
+    seed.place_output()
+    seed.row("placed")
+    real_step = swap_journal.step
+
+    def crash_on_done(row_id, state, **kwargs):
+        if state == "done":
+            raise RuntimeError("the app stopped")
+        return real_step(row_id, state, **kwargs)
+
+    monkeypatch.setattr(swap_journal, "step", crash_on_done)
+    await _recover()
+    assert _rows()[0]["state"] == "deleting"
+    assert not seed.parked.exists()
+
+    monkeypatch.setattr(swap_journal, "step", real_step)
+    await _recover()
+
+    assert _rows()[0]["state"] == "done"
+    assert _swap_findings() == []
+
+
+@pytest.mark.asyncio
+async def test_locks_taken_after_the_bound_are_let_go(vol, romm, monkeypatch):
+    """Codex 4595373643: taking the job locks outlives its bound; the pass
+    moves on, and the locks the late worker took are let go once it ends."""
+    from services.lock_manager import lock_manager
+    from services.romm import swap_recovery
+
+    seed = Seed(vol, romm)
+    seed.romm_renamed()
+    seed.park_source()
+    seed.place_output()
+    seed.row("placed")
+    real_acquire = lock_manager.acquire_lock
+
+    def slow(path, **kwargs):
+        time.sleep(0.4)
+        return real_acquire(path, **kwargs)
+
+    monkeypatch.setattr(lock_manager, "acquire_lock", slow)
+    monkeypatch.setattr(swap_recovery, "LOCK_SECONDS", 0.1)
+    await _recover()
+    for _ in range(100):
+        if not any(lock_manager.is_locked(str(p)) for p in (seed.source, seed.output)):
+            break
+        await asyncio.sleep(0.05)
+
+    assert not lock_manager.is_locked(str(seed.source))
+    assert not lock_manager.is_locked(str(seed.output))
+    assert _rows()[0]["state"] == "placed"
+    (finding,) = _swap_findings()
+    assert "locks" in finding["reason"]

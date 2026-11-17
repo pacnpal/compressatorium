@@ -95,6 +95,7 @@ from services.romm.swap_referrer import (
     _read_whole,
     _settle_repin,
 )
+from services.subprocess_runner import run_detached_undoable
 from utils.path_utils import file_identity
 
 logger = get_logger("romm_swap_recovery")
@@ -102,6 +103,8 @@ logger = get_logger("romm_swap_recovery")
 # How long the background run waits before trying the rows it couldn't settle
 # again.
 RETRY_SECONDS = 600.0
+# How long taking a row's job locks may take.
+LOCK_SECONDS = 20.0
 # The RomM Library's id (``RommLibrary.id``): the owner of these Findings.
 LIBRARY_ID = "romm"
 
@@ -403,10 +406,15 @@ class _Recovery:
             return "done"
         if facts.parked != SOURCE:
             raise _Left("the Source is not where the swap parked it")
+        await self._step("rehashing")
         problem = await self._rehash()
         if problem:
+            await self._step("restoring")
             await _mutate(_restore_parked, row)
             return "kept"
+        # Journal first (Codex 4595373639): stopped after the delete, the
+        # next run sees ``deleting`` with the Source gone, and ends it done.
+        await self._step("deleting")
         await _mutate(_delete_parked, row)
         await self._settle_repin()
         return "done"
@@ -414,6 +422,7 @@ class _Recovery:
     async def _source_beside_output(self) -> str:
         row, facts = self.row, self.facts
         if facts.parked == SOURCE and facts.source == ABSENT:
+            await self._step("restoring")
             await _mutate(_restore_parked, row)
         elif not (facts.source == SOURCE and facts.parked == ABSENT):
             raise _Left("the Source is neither parked nor back under its own name")
@@ -448,6 +457,15 @@ class _Recovery:
         )
         return _read_back_problem(rom, plan, row["output_size"], row["output_sha1"])
 
+    async def _step(self, state: str) -> None:
+        """Write *state* to the row before the step it names runs, as the
+        swap does: a stop part way leaves the step it was on."""
+        row_id = self.row["id"]
+        await _mutate(lambda: swap_journal.step(
+            row_id, state, detail="recovering at startup",
+        ))
+        self.row = {**self.row, "state": state}
+
     async def _settle_repin(self) -> None:
         try:
             await _probe(_settle_repin, self.row["output_path"], self.row["rom_id"])
@@ -456,14 +474,18 @@ class _Recovery:
 
 
 def _lock(paths: list[str]) -> list[str]:
-    """Take the job locks on *paths* (all or none); the ones taken. Blocking."""
+    """Take the job locks on *paths*, all or none: the ones taken. Blocking.
+    A refusal or an error lets go of any already taken."""
     taken: list[str] = []
-    for path in paths:
-        if not lock_manager.acquire_lock(path, allow_existing=True):
-            for held in taken:
-                lock_manager.release_lock(held)
-            return []
-        taken.append(path)
+    try:
+        for path in paths:
+            if not lock_manager.acquire_lock(path, allow_existing=True):
+                _unlock(taken)
+                return []
+            taken.append(path)
+    except BaseException:
+        _unlock(taken)
+        raise
     return taken
 
 
@@ -477,35 +499,63 @@ async def _recover_row(row: dict, binding: _Binding) -> bool:
     (but a cancel)."""
     recovery = _Recovery(row, binding)
     paths = [row["source_path"], row["output_path"]]
-    locked = await _probe(_lock, paths)
+    locked: list[str] = []
     try:
+        try:
+            # Under a bound; a worker that takes them after it gives them
+            # back (Codex 4595373643).
+            locked = await run_detached_undoable(
+                _lock, paths, timeout=LOCK_SECONDS, undo=_unlock,
+            )
+        except asyncio.TimeoutError as exc:
+            raise _Left(
+                "the job locks on its files couldn't be taken in time; tried again later",
+            ) from exc
         if not locked:
-            raise _Left("a job is using its files; tried again later")
+            raise _Left("a job is using its files (it holds their locks); tried again later")
         ending = await recovery.run()
+        if row.get("parked_path"):
+            # Settled: its park slot goes, once its own listing is empty.
+            await _mutate(_release, os.path.dirname(row["parked_path"]))
+        detail = f"recovered at startup from {row['state']}"
+        await _mutate(lambda: swap_journal.step(row["id"], ending, detail=detail))
     except _Left as exc:
         why = str(exc)
         logger.warning("Swap recovery: swap %s of ROM %s: %s", row["id"], row["rom_id"], why)
-        await _probe(
-            findings.observe, LIBRARY_ID, _finding(row, recovery.facts, why),
-        )
+        await _leave_finding(row, recovery.facts, why)
         return False
     except Exception as exc:
         logger.exception("Swap recovery: swap %s of ROM %s failed", row["id"], row["rom_id"])
-        await _probe(
-            findings.observe, LIBRARY_ID, _finding(row, recovery.facts, f"recovery failed ({exc})"),
-        )
+        await _leave_finding(row, recovery.facts, f"recovery failed ({exc})")
         return False
     finally:
         if locked:
-            await _probe(_unlock, locked)
-    if row.get("parked_path"):
-        # Settled: its park slot goes, once its own listing is empty.
-        await _mutate(_release, os.path.dirname(row["parked_path"]))
-    detail = f"recovered at startup from {row['state']}"
-    await _mutate(lambda: swap_journal.step(row["id"], ending, detail=detail))
-    await _probe(findings.resolve, LIBRARY_ID, _image_key(row), findings.ROMM_SWAP)
+            with contextlib.suppress(Exception):
+                await _probe(_unlock, locked)
+    try:
+        await _probe(findings.resolve, LIBRARY_ID, _image_key(row), findings.ROMM_SWAP)
+    except Exception:
+        logger.warning("Swap recovery: could not clear the Finding", exc_info=True)
     logger.info("Swap recovery: swap %s of ROM %s ended %s", row["id"], row["rom_id"], ending)
     return True
+
+
+def _observe_finding(row: dict, facts: _Facts | None, why: str) -> None:
+    """Build the row's Finding (which looks at the Volume for the slots
+    left) and write it. Blocking."""
+    findings.observe(LIBRARY_ID, _finding(row, facts, why))
+
+
+async def _leave_finding(row: dict, facts: _Facts | None, why: str) -> None:
+    """Write the row's Finding, built and written on one bounded detached
+    call, never on the event loop (Codex 4595373645). Never raises (but a
+    cancel)."""
+    try:
+        await _probe(_observe_finding, row, facts, why)
+    except Exception:
+        logger.warning(
+            "Swap recovery: could not write the Finding of swap %s", row["id"], exc_info=True,
+        )
 
 
 async def recover_once(*, started_before: str | None = None) -> dict:
