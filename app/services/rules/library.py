@@ -17,7 +17,7 @@ network or a mount. The engine calls them off the event loop.
 from __future__ import annotations
 
 import os
-from collections.abc import Callable, Hashable, Iterable, Mapping
+from collections.abc import Callable, Hashable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -151,11 +151,14 @@ class Platform:
     ``id`` is the Library's own id for it as a string (RomM's platform id,
     or a folder Library's folder slug). ``slug`` is the console slug the tool
     registry knows (``ngc``, ``ps2``), used to check a mode fits the Platform.
+    ``folder`` is the Library's own name for its folder on disk, where that
+    can differ from the slug (RomM's ``fs_slug``); None otherwise (#430).
     """
 
     id: str
     slug: str | None
     name: str
+    folder: str | None = None
 
 
 class Image:
@@ -244,6 +247,27 @@ class ImageListing:
     images: list[Image]
     unlisted: tuple[str, ...] = ()
     unreadable: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class Placement:
+    """Where a Library puts a Platform's Images (#430): ``Library.placement``.
+
+    ``folder`` is absolute and inside a Volume. ``exists`` is False for a
+    Platform folder that isn't there yet: whoever places an Image creates it.
+    """
+
+    platform: str
+    folder: str
+    exists: bool
+
+
+class PlacementUnknown(Exception):
+    """Where a Platform's Images go can't be told, so nothing may be placed.
+
+    The message says why (two folders for one Platform, a RomM folder
+    structure that can't be told, a folder outside every Volume).
+    """
 
 
 @dataclass(frozen=True)
@@ -349,6 +373,26 @@ class Library(Protocol):
         Blocking (lists a folder, resolves paths): off the loop.
         """
 
+    def placement(
+        self, platform: str, *, known: Sequence[Platform] | None = None,
+    ) -> Placement:
+        """Where Images of *platform* (a Platform slug, as detection names it)
+        go in this Library (#430): the inverse of :meth:`platform_folder`.
+
+        *known* is this Library's :meth:`platforms`, when the caller already
+        listed them (placing every Platform of a listing): a Library that
+        needs its own Platform records reads them from there instead of
+        listing again (Codex PRRT_kwDOQ9nULM64es7O). Omitted, it lists them
+        itself if it needs them.
+
+        A folder that isn't there yet comes back with ``exists`` False;
+        nothing here creates it. Detecting an Image placed there gives
+        *platform* back, or names no Platform (a flat Library, where the
+        header decides): never another one. Raises :class:`PlacementUnknown`
+        when it can't be told, and :class:`LibraryUnreadable` when the
+        Library can't be read. Blocking (lists folders, may ask RomM).
+        """
+
     def summary_fields(self) -> Mapping[str, Any]:
         """Extra keys every per-Platform summary starts with (and the result too)."""
 
@@ -360,6 +404,36 @@ class Library(Protocol):
 
     async def sweep_extras(self) -> Mapping[str, Any]:
         """Extra keys added to a sweep's result when it ends."""
+
+
+def placed_in(folder: str, platform: str, *, mapped: Mapping[str, str] | None = None) -> Placement:
+    """*folder* as the :class:`Placement` of *platform*'s Images, once it's
+    checked (#430). Every Library's ``placement`` ends here.
+
+    Fails closed with :class:`PlacementUnknown`: a folder that isn't inside a
+    Volume, or whose containment can't be told; a file where the folder would
+    go; a folder whose own name or mapping, or a nearer folder above it,
+    would make detection name another Platform for an Image placed in it.
+    *mapped* is the mapping snapshot the caller chose the folder from.
+    Blocking.
+    """
+    from services import platform_detect
+    from services.platform_mappings import MappingsUnavailable
+    from utils.path_utils import volume_containment
+
+    if volume_containment(folder) is not True:
+        raise PlacementUnknown(f"{folder} isn't inside a Volume, or that can't be told")
+    if os.path.lexists(folder) and not os.path.isdir(folder):
+        raise PlacementUnknown(f"{folder} is a file, not a folder")
+    try:
+        says = platform_detect.placed_platform(folder, mapped=mapped)
+    except MappingsUnavailable as exc:
+        raise PlacementUnknown(str(exc)) from exc
+    if says is not None and says != platform:
+        raise PlacementUnknown(
+            f"an Image in {folder} would be detected as {says}, not {platform}",
+        )
+    return Placement(platform=platform, folder=folder, exists=os.path.isdir(folder))
 
 
 class LibraryDefaults:
