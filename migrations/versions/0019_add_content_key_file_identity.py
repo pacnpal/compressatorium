@@ -6,10 +6,7 @@ mtime is not taken for the file that was hashed. Null on a row written
 before: such a key no longer matches its file, and the next find-duplicates
 run reads it again.
 
-Numbered 0020 by the coordinator (0019 is #391's, not yet on ``latest``); it
-sits on 0018 until 0019 lands.
-
-Revision ID: 0020
+Revision ID: 0019
 Revises: 0018
 Create Date: 2026-11-16 00:00:00
 """
@@ -21,7 +18,7 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = '0020'
+revision: str = '0019'
 down_revision: str | Sequence[str] | None = '0018'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None

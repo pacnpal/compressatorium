@@ -152,7 +152,7 @@ def stored(identities: dict[str, Identity]) -> dict[str, Stored]:
 
     A row for another size, mtime, device or inode is left out: the file
     changed since its key was read, or is another file now. A row with no
-    device and inode (written before 0020) matches no file.
+    device and inode (written before 0019) matches no file.
     """
     if not identities:
         return {}

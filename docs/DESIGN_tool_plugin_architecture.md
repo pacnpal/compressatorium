@@ -5644,11 +5644,11 @@ everywhere: the metadata scan and the info route read it again, after which
 
 **Stored per file, tied to its identity.** `content_keys` (migration 0017) holds
 `path`, `size`, `mtime_ns`, `key` (None for a format with no key) and
-`container`, and (0020, #389) the file's `dev` and `ino`.
+`container`, and (0019, #389) the file's `dev` and `ino`.
 `content_keys.stored(...)` returns only rows whose size, mtime, device and
 inode all still match (`content_keys.Identity`), so a changed file, or another
 file moved into its path with the same size and mtime, loses its key; a row
-from before 0020 has no device or inode and is read again. The DAT match cache is not read
+from before 0019 has no device or inode and is read again. The DAT match cache is not read
 for this: its rows carry no size or mtime to tie a SHA1 to the file.
 
 **The run.** `duplicates.start(library)` creates an external job of
@@ -5931,7 +5931,7 @@ cleanup: that is inherent to keeping one copy. The copies being deleted are
 not read in full (a decision, CodeRabbit 4593240082). Instead each must still
 be the very file its content key was read from (Codex PRRT_kwDOQ9nULM64OuXs):
 `content_keys` stores the file's device and inode beside its size and mtime
-when the key is set (`content_keys.Identity`, migration 0020; a row from
+when the key is set (`content_keys.Identity`, migration 0019; a row from
 before has none and matches no file, so it is read again), and under the
 copy's holds `_copy_under_holds` requires the copy's identity now to equal
 the stored key's and that key to be the group's. A file moved into the copy's

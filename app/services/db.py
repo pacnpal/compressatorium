@@ -424,11 +424,11 @@ class ContentKeyRecord(Base):
     """One file's content key for the duplicate finder (#388).
 
     Keyed by the file's path and tied to the file it was read from: its
-    ``size``, ``mtime_ns``, and its ``dev`` and ``ino`` (#389, 0020). A row
+    ``size``, ``mtime_ns``, and its ``dev`` and ``ino`` (#389, 0019). A row
     any of which no longer match the file says nothing about it, so a changed
     file, or another file moved into its place with the same size and mtime,
     loses its key and is read again. ``dev``/``ino`` are null on a row written
-    before 0020, which therefore matches no file. ``key`` is
+    before 0019, which therefore matches no file. ``key`` is
     ``raw:<sha1>`` (the SHA1 of the disc image the file holds), or None for a
     format with no content key yet; ``container`` is the file's extension, as
     the Findings view shows it. Not tied to a Library: one file has one key
