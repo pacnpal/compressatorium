@@ -120,6 +120,22 @@ class DATHash(Base):
     size = Column(Integer, nullable=False, default=0)
 
 
+class DATFile(Base):
+    """Every file each imported DAT lists for each game (#426), kept apart
+    from the hash index (``dat_hashes``), which keeps one row per hash and so
+    loses a file whose bytes another file of the DAT shares. What an Image
+    rename names a sheet's tracks after. Filled at import (migration 0025);
+    a DAT imported before it has none until it is imported again."""
+
+    __tablename__ = "dat_files"
+    dat_id = Column(
+        String(16), ForeignKey("dats.id", ondelete="CASCADE"), primary_key=True,
+    )
+    game_name = Column(String, primary_key=True)
+    rom_name = Column(String, primary_key=True)
+    size = Column(Integer, nullable=False, default=0)
+
+
 class DATMatch(Base):
     __tablename__ = "dat_matches"
     path = Column(String, primary_key=True)
@@ -322,9 +338,10 @@ class Verification(Base):
     # current request before completing as a no-op. See
     # docs/DESIGN_tool_plugin_architecture.md §3.3.6.
     produced_meta = Column(JSON, nullable=True)
-    # Which check this output passed: "intact" (its tool's container check) or
+    # Which check this output passed: "intact" (its tool's container check),
     # "round_tripped" (its content digest equalled the Source's at conversion
-    # time, #298). Rows from before migration 0010 were all container checks.
+    # time, #298) or "recognized" (its SHA-1 is in a DAT or Hasheous, #423).
+    # Rows from before migration 0010 were all container checks.
     check_passed = Column(
         String, nullable=False, default="intact", server_default="intact",
     )
@@ -350,8 +367,11 @@ class LedgerEntry(Base):
     output_bytes = Column(Integer, nullable=True)
     duration_s = Column(Float, nullable=True)
     status = Column(String, nullable=False)
-    # none | intact | round_tripped
+    # none | intact | round_tripped | recognized
     check_passed = Column(String, nullable=False, default="none")
+    # The DAT that Recognized the output (#423): a local DAT's name, or the
+    # source Hasheous names. None for every other check (migration 0024).
+    check_dat = Column(String, nullable=True)
     source_deleted = Column(Boolean, nullable=False, default=False)
     deleted_paths = Column(JSON, nullable=False, default=list)
     referrers_updated = Column(JSON, nullable=False, default=list)

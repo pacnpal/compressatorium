@@ -5,7 +5,9 @@
    * Opened on the selected files (`ui.datRenamePaths`). The backend's preview
    * lists each Image's old and new path and every Referrer update ("RomM:
    * rename ROM 12 to …", "games.m3u", "gamelist.xml, 2 entries"), and every
-   * Image it skips with the reason. Confirm starts a background job that
+   * Image it skips with the reason. A sheet's Image (#426) also lists each
+   * track it renames, the folder renamed with it and each reference the
+   * sheet's rewrite changes. Confirm starts a background job that
    * renames exactly what the preview showed; an Image that changed since is
    * skipped by it. The dialog follows the job and lists what it did; closing
    * it leaves the job running (it is in the jobs list).
@@ -59,6 +61,23 @@
     return p?.split(/[/\\]/).pop() ?? p ?? '';
   }
 
+  // Every other file of the Image (a sheet's tracks, #426), each with its
+  // new path: one the folder rename carries under the same name, and one
+  // that already has its DAT name, too.
+  function otherFiles(item) {
+    const files = Array.isArray(item?.files) ? item.files : [];
+    return files.filter((f) => f.path !== item.path);
+  }
+
+  // One preview item as confirmed: its new path and each file's (#426), so
+  // the job renames exactly what was shown.
+  function confirmed(i) {
+    return {
+      path: i.path, new_path: i.new_path ?? null,
+      files: Array.isArray(i.files) ? i.files.map((f) => ({ path: f.path, new_path: f.new_path })) : null,
+    };
+  }
+
   function changeText(change) {
     if (change.summary) return change.summary;
     const name = shortName(change.target);
@@ -73,9 +92,8 @@
     starting = true;
     error = '';
     try {
-      const started = await api.datRename(
-        items.map((i) => ({ path: i.path, new_path: i.new_path ?? null })),
-      );
+      // Every preview item goes back, skipped ones with no new path.
+      const started = await api.datRename(items.map(confirmed));
       const id = started?.job_id ?? null;
       // Tracked by the jobs store, whichever dialog is open, so the job
       // reaches the jobs list even if it ends before the stream sees it.
@@ -155,6 +173,21 @@
                 <span class="dr-arrow">→</span>
                 <code title={item.new_path}>{shortName(item.new_path)}</code>
               </span>
+              {#each otherFiles(item) as f (f.path)}
+                <span class="dr-row dr-sub">
+                  <code title={f.path}>{shortName(f.path)}</code>
+                  <span class="dr-arrow">→</span>
+                  <code title={f.new_path}>{shortName(f.new_path)}</code>
+                </span>
+              {/each}
+              {#if item.folder}
+                <span class="dr-extra" title={item.folder.path}>
+                  folder {shortName(item.folder.path)} → {shortName(item.folder.new_path)}
+                </span>
+              {/if}
+              {#each item.sheet_rewrite ?? [] as line (line.old)}
+                <span class="dr-extra">{shortName(item.path)}: “{line.old}” → “{line.new}”</span>
+              {/each}
               {#if item.dat?.dat_name}<span class="dr-extra">from {item.dat.dat_name}</span>{/if}
               {#each item.referrer_changes ?? [] as change (change.target)}
                 <span class="dr-extra" title={change.target}>{changeText(change)}</span>
@@ -204,6 +237,7 @@
   .dr-list code { font-size: var(--text-xs); overflow-wrap: anywhere; color: var(--text-1); }
   .dr-row { display: flex; gap: var(--space-1); align-items: center; flex-wrap: wrap; min-width: 0; }
   .dr-arrow { color: var(--text-3); font-size: var(--text-xs); }
+  .dr-sub { padding-left: var(--space-3); }
   .dr-extra { font-size: var(--text-xs); color: var(--text-3); font-family: var(--font-mono); overflow-wrap: anywhere; }
   .dr-skipped summary { cursor: pointer; font-size: var(--text-sm); color: var(--text-2); margin-bottom: var(--space-1); }
 </style>

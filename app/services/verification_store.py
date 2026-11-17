@@ -159,7 +159,8 @@ class VerificationStore:
 
         ``check`` names which one (#298): ``"intact"``, its tool's container
         check (every manual Verify), or ``"round_tripped"``, its content digest
-        equalled its Source's at conversion time. This is a conversion's
+        equalled its Source's at conversion time, or ``"recognized"``, its
+        SHA-1 is in a DAT or Hasheous (#423). This is a conversion's
         record: it replaces any stored provenance, ``None`` included. A plain
         re-check uses :meth:`refresh_check`.
         """

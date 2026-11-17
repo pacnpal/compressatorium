@@ -29,7 +29,8 @@ def test_the_run_sends_the_rename_confirmation_header_and_the_preview_as_shown()
     assert "/files/dat-rename/preview" in endpoints
     modal = _MODAL.read_text()
     # Every preview item goes back, skipped ones with no new path.
-    assert "items.map((i) => ({ path: i.path, new_path: i.new_path ?? null }))" in modal
+    assert "api.datRename(items.map(confirmed))" in modal
+    assert "path: i.path, new_path: i.new_path ?? null" in modal
 
 
 def test_the_dialog_is_mounted_follows_its_job_and_blocks_background_refresh():

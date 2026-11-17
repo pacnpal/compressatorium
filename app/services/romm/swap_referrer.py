@@ -266,6 +266,12 @@ RENAME_NEEDS_SWAP = (
     "RomM would give the renamed file a new ROM: turn on “Keep the ROM id "
     "when converting” in RomM's settings so RomM renames it"
 )
+# Why an Image of several files, or with its folder, isn't renamed in a RomM
+# Library (#426): RomM renames one file within its own folder.
+RENAME_ONE_FILE_ONLY = (
+    "RomM renames one file within its folder, so an Image of several files, or "
+    "its folder, isn't renamed in a RomM Library"
+)
 
 # What the job and the Ledger say when the swap couldn't run (CodeRabbit
 # 4593839018).
@@ -457,9 +463,16 @@ class RommSwapReferrer(Referrer):
 
     def _plan_rename(self, renames: Mapping[str, str]) -> list[ReferrerChange]:
         """An Image renamed in place (#425): RomM renames the ROM's file. A
-        file RomM doesn't know as a ROM of its own is renamed by the caller."""
+        file RomM doesn't know as a ROM of its own is renamed by the caller.
+
+        RomM renames one file within its own folder. An Image of several
+        files, or one whose folder is renamed with it (#426), is refused:
+        renaming its files under RomM would leave the ROM, and its saves, as
+        a ghost RomM can no longer find."""
         pair = _beside(renames, resolve=True)
-        found = self._lookup(pair[0]) if pair is not None else None
+        if pair is None:
+            raise ReferrerError("RomM", RENAME_ONE_FILE_ONLY)
+        found = self._lookup(pair[0])
         if found is None:
             return []
         (source, output), (rom, binding) = pair, found

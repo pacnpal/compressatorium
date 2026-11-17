@@ -109,6 +109,13 @@ const XISO_SOURCE_EXTS = [...XISO_COMPRESS_EXTS, ...XISO_VERIFY_EXTS];
 // filesystem probe (`contentRefined` below), so it is offered only on Xbox 360
 // images.
 const ZAR_COMPRESS_EXTS = ['.iso'];
+// PSP PBP -> ISO and 3DS CIA <-> CCI (#423), each offered only where the
+// backend's header probe matched (a PSP game PBP, a CIA, a CCI).
+const PBP_INPUT_EXTS = ['.pbp'];
+const CIA_INPUT_EXTS = ['.cia'];
+const CCI_INPUT_EXTS = ['.cci', '.3ds'];
+// Only the ZAR is a Verify row action; the ISO / CCI / CIA outputs are
+// checked inside the job that wrote them (RomConvertoTool.verifies_path).
 const ROM_CONVERTO_VERIFY_EXTS = ['.zar'];
 // eXoDOS repack: an eXoDOS game zip in, a DOSBox Pure zip (.dosz) out. `.zip`
 // is also romz's archive extension; the backend reads each zip's directory in
@@ -131,6 +138,8 @@ const EXODOS_VERIFY_EXTS = ['.dosz'];
  * @property {boolean} [supportsRoundTrip] delete-source compares content digests (Round-trip)
  * @property {string} [sourceKeptReason] why this mode always keeps its Source (mirrors
  *                                        ModeSpec.source_kept_reason); shown where the delete option would be
+ * @property {'round_trip'|'recognized'} [deleteProof] the check that lets a delete-source job
+ *                                        remove its Source (mirrors ModeSpec.delete_proof); omitted ⇒ 'round_trip'
  * @property {boolean} allowsArchiveInput
  * @property {boolean} [supportsSplit] makeps3iso -s 4 GB FAT32 split (opt-in)
  */
@@ -747,14 +756,15 @@ export const TOOLS = [
   {
     id: 'rom_converto',
     label: 'rom-converto',
-    hint: 'The converter RomM ships, for formats nothing else here writes. Xbox 360 ISO to ZAR for Xenia.',
+    hint: 'The converter RomM ships, for formats nothing else here writes: Xbox 360 ISO to ZAR, PSP PBP to ISO, and 3DS CIA to CCI and back.',
     verifyPrefix: 'rom-converto',
-    sourceExts: ZAR_COMPRESS_EXTS,
+    sourceExts: [...ZAR_COMPRESS_EXTS, ...PBP_INPUT_EXTS, ...CIA_INPUT_EXTS, ...CCI_INPUT_EXTS],
     verifyExts: ROM_CONVERTO_VERIFY_EXTS,
-    // Offered only on files the backend's Xbox 360 probe matched, as for xiso.
+    // Offered only on files the backend's probe matched (an Xbox 360 image, a
+    // PSP game PBP, a CIA, a CCI), as for xiso.
     contentRefined: true,
-    modeGroups: ['xenon'],
-    groups: { xenon: 'Xbox 360' },
+    modeGroups: ['xenon', 'psp', 'ctr'],
+    groups: { xenon: 'Xbox 360', psp: 'PSP', ctr: '3DS' },
     defaultMode: 'zar_compress',
     glyph: 'RC',
     accent: 'var(--badge-dvd)',
@@ -773,12 +783,32 @@ export const TOOLS = [
           + 'against the ISO. The Source ISO is always kept.',
         // Not from archives: the Xbox 360 probe needs the real file.
         allowsArchiveInput: false },
+      // PSP and 3DS (#423): deletable only on the Recognized proof, since
+      // their outputs can't be Round-tripped. Mirrors ModeSpec.delete_proof.
+      { mode: 'pbp_to_iso', kind: 'compress', label: 'PSP PBP → ISO', group: 'psp',
+        outputExt: '.iso', inputExtensions: PBP_INPUT_EXTS,
+        supportsCompression: false, supportsCompressionLevel: false,
+        supportsDeleteOnVerify: true, deleteProof: 'recognized',
+        allowsArchiveInput: false },
+      { mode: 'cia_to_cci', kind: 'compress', label: '3DS CIA → CCI', group: 'ctr',
+        outputExt: '.cci', inputExtensions: CIA_INPUT_EXTS,
+        supportsCompression: false, supportsCompressionLevel: false,
+        supportsDeleteOnVerify: true, deleteProof: 'recognized',
+        allowsArchiveInput: false },
+      { mode: 'cci_to_cia', kind: 'compress', label: '3DS CCI → CIA', group: 'ctr',
+        outputExt: '.cia', inputExtensions: CCI_INPUT_EXTS,
+        supportsCompression: false, supportsCompressionLevel: false,
+        supportsDeleteOnVerify: true, deleteProof: 'recognized',
+        allowsArchiveInput: false },
     ],
     getInfo: (path) => api.getRomConvertoInfo(path),
     verify: (path, opts) => api.verifyRomConverto(path, opts),
     verifyBatch: (paths, opts) => api.verifyBatchRomConverto(paths, opts),
-    // `Game.iso` / `Game.xiso.iso` -> `Game.zar`; a product maps to itself.
-    productPath: (path) => {
+    // Each mode's product beside its source; a ZAR maps to itself.
+    productPath: (path, mode = 'zar_compress') => {
+      if (mode === 'pbp_to_iso') return swapExt(path, '.iso');
+      if (mode === 'cia_to_cci') return swapExt(path, '.cci');
+      if (mode === 'cci_to_cia') return swapExt(path, '.cia');
       if (/\.zar$/i.test(path)) return path;
       if (/\.xiso\.iso$/i.test(path)) return path.replace(/\.xiso\.iso$/i, '.zar');
       if (/\.iso$/i.test(path)) return path.replace(/\.iso$/i, '.zar');

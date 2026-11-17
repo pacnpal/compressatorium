@@ -85,6 +85,9 @@
       conversion{items.length === 1 ? '' : 's'}, but only after each
       {#if conversion.deleteCheck === 'round_tripped'}
         output is Round-tripped (it decodes to the same content as its source).
+      {:else if conversion.deleteCheck === 'recognized'}
+        output is Recognized (its hash is in one of your DATs or in Hasheous). An
+        output nothing recognizes keeps its source.
       {:else}
         output is Intact (it passes its own container check; its content is
         not compared with the source).

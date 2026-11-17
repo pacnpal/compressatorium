@@ -46,6 +46,29 @@
       await new Promise(r => setTimeout(r, 500));
     })()
 
+# --- Compression picker: Compatible with... (#429) -------------------------
+# Picks NetherSX2 (zlib only), then adds zstd so the advisory warning shows.
+- url: http://127.0.0.1:8099/?s=compat-picker-light#/workspace/chdman
+  output: docs/screenshots/compat-picker-light.png
+  width: 1280
+  height: 900
+  wait: 1800
+  javascript: |
+    (async () => {
+      localStorage.setItem('theme-preference', 'light');
+      window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: 'light' }));
+      await new Promise(r => setTimeout(r, 400));
+      const sel = document.querySelector('select[aria-label="Compatible with"]');
+      if (sel) {
+        sel.value = 'nethersx2';
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+        await new Promise(r => setTimeout(r, 300));
+        const zstd = [...document.querySelectorAll('button.chip')].find(b => b.textContent.trim() === 'zstd');
+        if (zstd) zstd.click();
+        await new Promise(r => setTimeout(r, 400));
+      }
+    })()
+
 # --- Workspace: batch selection (all files ticked, convert panel armed) ----
 - url: http://127.0.0.1:8099/?s=workspace-batch-light#/workspace/chdman
   output: docs/screenshots/workspace-batch-light.png
@@ -398,6 +421,49 @@
   height: 900
   wait: 1800
   javascript: *js_rom_converto
+
+# --- Workspace: rom-converto, 3DS CIA -> CCI with the Recognized proof (#423)
+# Picks the CIA -> CCI mode, selects the fixture's synthetic CIA and ticks
+# delete-source, so the panel says the output must be Recognized and offers no
+# container-only box.
+- url: http://127.0.0.1:8099/?s=workspace-rom-converto-recognized-light#/workspace/rom_converto
+  output: docs/screenshots/workspace-rom-converto-recognized-light.png
+  width: 1280
+  height: 900
+  wait: 1800
+  javascript: &js_rom_converto_recognized |
+    (async () => {
+      const theme = new URLSearchParams(location.search).get('s').endsWith('dark')
+        ? 'dark' : 'light';
+      localStorage.setItem('theme-preference', theme);
+      window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: theme }));
+      await new Promise(r => setTimeout(r, 400));
+      const sel = document.querySelector('select[aria-label="Conversion mode"]');
+      if (!sel) throw new Error('mode select not found');
+      sel.value = 'cia_to_cci';
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+      await new Promise(r => setTimeout(r, 400));
+      const vol = [...document.querySelectorAll('button.item')].find(b => b.textContent.trim() === 'Nintendo 3DS');
+      if (!vol) throw new Error('Nintendo 3DS volume not found');
+      vol.click();
+      await new Promise(r => setTimeout(r, 800));
+      const all = document.querySelector('thead input[type="checkbox"]');
+      if (all && !all.checked) all.click();
+      await new Promise(r => setTimeout(r, 500));
+      const box = [...document.querySelectorAll('label.checkbox')]
+        .find(l => l.textContent.includes('Delete sources'));
+      const input = box && box.querySelector('input');
+      if (!input) throw new Error('delete option not shown');
+      if (!input.checked) input.click();
+      await new Promise(r => setTimeout(r, 400));
+      if (!box.textContent.includes('Recognized')) throw new Error('Recognized hint not shown');
+    })()
+- url: http://127.0.0.1:8099/?s=workspace-rom-converto-recognized-dark#/workspace/rom_converto
+  output: docs/screenshots/workspace-rom-converto-recognized-dark.png
+  width: 1280
+  height: 900
+  wait: 1800
+  javascript: *js_rom_converto_recognized
 
 # --- Workspace: 3DS (Nintendo 3DS volume selected) ------------------------
 - url: http://127.0.0.1:8099/?s=workspace-3ds-light#/workspace/z3ds
@@ -1618,3 +1684,72 @@
   height: 900
   wait: 1800
   javascript: *js_dat_rename
+# Rename to DAT name for a cue Image (#426). The fixture's
+# "ROM Library/roms/psx/star-trail/" holds a made-up two-track cue Image in a
+# folder named after it; a synthetic DAT (made-up name) names the sheet by its
+# SHA1 and lists both tracks by size. The sheet is ticked and the preview
+# shows every file, the folder and the two sheet references that change.
+# Preview only, so nothing on disk changes. Last in the file.
+- url: http://127.0.0.1:8099/?s=dat-rename-cue-light#/workspace/chdman
+  output: docs/screenshots/dat-rename-cue-light.png
+  width: 1280
+  height: 900
+  wait: 1800
+  javascript: &js_dat_rename_cue |
+    (async () => {
+      const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+      const theme = location.search.includes('-dark') ? 'dark' : 'light';
+      localStorage.setItem('theme-preference', theme);
+      window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: theme }));
+      const volumes = await (await fetch('/api/volumes')).json();
+      const volume = volumes.find(v => v.name === 'ROM Library');
+      if (!volume) throw new Error('ROM Library volume not found');
+      const sheet = volume.path + '/roms/psx/star-trail/star-trail.cue';
+      const game = 'Star Trail (Europe) (Homebrew)';
+      const have = (await (await fetch('/api/dat/ranking')).json()).dats.map(d => d.name);
+      if (!have.includes('Example Disc Set')) {
+        const xml = '<?xml version="1.0"?><datafile><header><name>Example Disc Set</name>' +
+          '<description>Example Disc Set</description><homepage>redump.org</homepage></header>' +
+          `<game name="${game}">` +
+          `<rom name="${game}.cue" size="161" sha1="5c6f877a9a24d5522c1762463ffd833b180587cd"/>` +
+          `<rom name="${game} (Track 1).bin" size="51" sha1="9946cc1b236d7c6b3ceefb8f16925445453ce127"/>` +
+          `<rom name="${game} (Track 2).bin" size="69" sha1="fabf3784b529e47275f99f08eab591bfed900499"/>` +
+          '</game></datafile>';
+        const form = new FormData();
+        form.append('file', new Blob([xml], { type: 'text/xml' }), 'disc.dat');
+        await fetch('/api/dat/import', { method: 'POST', body: form });
+      }
+      await fetch('/api/dat/match-batch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ paths: [sheet] }),
+      });
+      const vol = [...document.querySelectorAll('button.item')].find(b => b.textContent.trim() === 'ROM Library');
+      if (vol) vol.click();
+      await sleep(800);
+      for (const name of ['roms', 'psx', 'star-trail']) {
+        const row = [...document.querySelectorAll('tbody tr')]
+          .find(tr => tr.querySelector('.name-text')?.textContent.trim() === name);
+        row?.querySelector('.name-button')?.click();
+        await sleep(800);
+      }
+      const row = [...document.querySelectorAll('tbody tr')].find(tr => tr.textContent.includes('star-trail.cue'));
+      const pick = row?.querySelector('input[type="checkbox"]');
+      if (!pick) throw new Error('star-trail.cue not listed');
+      if (!pick.checked) pick.click();
+      await sleep(300);
+      const open = [...document.querySelectorAll('button')].find(b => b.textContent.includes('Rename to DAT name'));
+      if (!open) throw new Error('Rename to DAT name not offered');
+      open.click();
+      await sleep(1500);
+      const dialog = document.querySelector('[role="dialog"]');
+      if (!dialog || !dialog.textContent.includes(game + ' (Track 2).bin')) {
+        throw new Error('cue rename preview not shown');
+      }
+    })()
+- url: http://127.0.0.1:8099/?s=dat-rename-cue-dark#/workspace/chdman
+  output: docs/screenshots/dat-rename-cue-dark.png
+  width: 1280
+  height: 900
+  wait: 1800
+  javascript: *js_dat_rename_cue

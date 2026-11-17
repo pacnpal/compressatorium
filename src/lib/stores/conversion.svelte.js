@@ -194,11 +194,17 @@ class ConversionStore {
     return this.currentSpec?.sourceKeptReason ?? '';
   }
 
+  /** Which proof lets the current mode's Source go: 'round_trip' or 'recognized'. */
+  get deleteProof() {
+    return this.currentSpec?.deleteProof ?? 'round_trip';
+  }
+
   /** The check a delete-source job will pass before its sources go. */
   get deleteCheck() {
     return deleteCheckFor({
       supportsRoundTrip: this.supportsRoundTrip,
       containerOnly: this.containerOnly,
+      deleteProof: this.deleteProof,
     });
   }
 

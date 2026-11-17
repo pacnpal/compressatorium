@@ -85,8 +85,15 @@
       if (out?.path) found.push(verification.checkFor(out.path));
     }
     if (found.includes('round_tripped')) return 'round_tripped';
+    // Recognized (#423): Intact, and its hash is in a DAT or Hasheous.
+    if (found.includes('recognized')) return 'recognized';
     return found.includes('intact') ? 'intact' : null;
   });
+  const CHECK_BADGES = {
+    round_tripped: ['Round-tripped', 'Round-tripped: decoded to the same content as its source when converted'],
+    recognized: ['Recognized', 'Recognized: Intact, and its hash is in one of your DATs or in Hasheous'],
+    intact: ['Intact', 'Intact: passed its own container check'],
+  };
 
   // Shared file-type icon map (src/lib/util/fileIcon.js) so new formats only
   // need to be added in one place.
@@ -177,14 +184,9 @@
     {#if mediaType === 'dvd'}<Badge tone="dvd">DVD</Badge>{/if}
     {#if isArchive}<Badge tone="archive">ARC</Badge>{/if}
     {#if check}
-      <Badge
-        tone="verified"
-        title={check === 'round_tripped'
-          ? 'Round-tripped: decoded to the same content as its source when converted'
-          : 'Intact: passed its own container check'}
-      >
+      <Badge tone="verified" title={CHECK_BADGES[check][1]}>
         <CircleCheck size={11} aria-hidden="true" />
-        {check === 'round_tripped' ? 'Round-tripped' : 'Intact'}
+        {CHECK_BADGES[check][0]}
       </Badge>
     {/if}
     {#if datMatch && datMatch.matched}

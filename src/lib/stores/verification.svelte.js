@@ -21,7 +21,7 @@ function passedChecks(data) {
 
 class VerificationStore {
   statuses = new SvelteSet();
-  // path -> 'intact' | 'round_tripped': which check a stored output passed.
+  // path -> 'intact' | 'round_tripped' | 'recognized': which check a stored output passed.
   // A path in `statuses` with no entry here passed the container check.
   checks = new SvelteMap();
   progress = new SvelteMap();
@@ -85,7 +85,7 @@ class VerificationStore {
     return path ? this.statuses.has(path) : false;
   }
 
-  /** 'round_tripped' | 'intact' for a path that passed a check, else null. */
+  /** 'round_tripped' | 'recognized' | 'intact' for a path that passed a check, else null. */
   checkFor(path) {
     if (!this.isVerified(path)) return null;
     return this.checks.get(path) ?? 'intact';

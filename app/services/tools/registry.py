@@ -15,6 +15,8 @@ from logging_setup import get_logger
 from models import InputKind
 from utils.path_utils import match_extension, path_presence
 
+from .spec import DeleteProof
+
 if TYPE_CHECKING:
     from .base import ToolPlugin
     from .spec import ModeSpec
@@ -143,6 +145,17 @@ class ToolRegistry:
             return bool(self.spec(mode).supports_round_trip)
         except KeyError:
             return False
+
+    def mode_delete_proof(self, mode: str) -> DeleteProof:
+        """Which check lets a delete-source job in this mode remove its Source.
+
+        Unknown modes answer the default, Round-trip, whose own capability
+        check (:meth:`mode_supports_round_trip`) then keeps the container check.
+        """
+        try:
+            return DeleteProof(self.spec(mode).delete_proof)
+        except (KeyError, ValueError):
+            return DeleteProof.ROUND_TRIP
 
     def mode_is_automatable(self, mode: str) -> bool:
         """May an unattended rule run this mode repeatedly over a library?

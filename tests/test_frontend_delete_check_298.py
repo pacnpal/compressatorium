@@ -54,3 +54,39 @@ def test_the_promised_check_follows_mode_support_and_the_opt_out(tmp_path):
         "intact",          # mode without a digest
         "intact",          # opt-out on a mode without a digest is moot
     ]
+
+
+def test_a_recognized_mode_promises_the_recognized_check(tmp_path):
+    """#423: a mode whose proof is Recognized promises that check, and the
+    container-only opt-out (a Round-trip opt-out) changes nothing."""
+    node = _find_node()
+    if node is None:
+        pytest.skip("node not available")
+    script = tmp_path / "delete_check_recognized.mjs"
+    script.write_text(
+        f"import {{ deleteCheckFor, DELETE_CHECK_HINTS }} from {json.dumps(_HELPER.as_uri())};\n"
+        "const out = [false, true].map((c) => deleteCheckFor("
+        "{ supportsRoundTrip: false, containerOnly: c, deleteProof: 'recognized' }));\n"
+        "out.push(deleteCheckFor({ supportsRoundTrip: true, containerOnly: false,"
+        " deleteProof: 'round_trip' }));\n"
+        "out.push(Object.keys(DELETE_CHECK_HINTS).sort().join(','));\n"
+        "process.stdout.write(JSON.stringify(out));\n",
+        encoding="utf-8",
+    )
+    proc = subprocess.run(
+        [node, str(script)], capture_output=True, text=True, timeout=30, check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads(proc.stdout) == [
+        "recognized", "recognized", "round_tripped", "intact,recognized,round_tripped",
+    ]
+
+
+def test_the_panel_and_the_rule_editor_say_which_proof_each_mode_uses():
+    src = Path(__file__).resolve().parents[1] / "src" / "lib" / "components"
+    panel = (src / "panels" / "ConvertPanel.svelte").read_text(encoding="utf-8")
+    assert "DELETE_CHECK_HINTS[conversion.deleteCheck]" in panel
+    editor = (src / "views" / "RuleEditor.svelte").read_text(encoding="utf-8")
+    assert "DELETE_CHECK_HINTS[ruleDeleteCheck(spec, rule)]" in editor
+    modal = (src / "modals" / "DeletePlanModal.svelte").read_text(encoding="utf-8")
+    assert "conversion.deleteCheck === 'recognized'" in modal
