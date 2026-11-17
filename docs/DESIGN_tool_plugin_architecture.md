@@ -2602,6 +2602,10 @@ ended. The job carries what the row needs and the in-memory history would lose:
   starts, before anything can delete the Source, on a detached thread with the
   Source sizing's bound (`JobManager._detect_platform_bounded`). None when
   detection can't place it or does not answer in time.
+- `ConversionJob.extra_inputs` -- inputs besides the Source that shaped the
+  output, each `{"kind", "path", "sha1"}` (#428, migration `0026`, column
+  `extra_inputs`, `[]` for every older row). A patch job (3.3.24) lists its
+  patch file. The CSV writes each as `<path> (sha1 <hex>)`.
 
 `tool` comes from `registry.for_mode`; `platform` is the job's own, else the
 mode's when it serves exactly one Platform slug, else empty, which the savings
@@ -2857,7 +2861,7 @@ not change. `run_forever(libraries)` takes a callable returning the Libraries to
 sweep on each tick. `main.py` passes `services.libraries.all_libraries` (through
 `services.libraries.run_forever`), so RomM and every folder Library whose
 `schedule_enabled` is on are swept, then calls its `after_tick` once (the
-Inbox poll, §3.3.24; its failure is logged, and a failed Library listing
+Inbox poll, §3.3.25; its failure is logged, and a failed Library listing
 still polls). `compressatorium run-rules` (§3.3.17) sweeps
 the same `services.libraries.all_libraries()` list, so the server's scheduler
 and a cron pass always see the same Libraries.
@@ -7211,14 +7215,96 @@ failed reads tried again, a 404 ending it), independent of the dialog, since a
 rename can end before the job stream subscribes to it. The
 single-file `POST /api/files/rename` is unchanged.
 
-### 3.3.24 Inboxes (`services/inbox/`, #431)
+### 3.3.24 The patch engine and the Patch action (`services/patch_engine.py`, `services/patch_bench.py`, #428)
+
+**The engine** (`patch_engine.apply_patch(source, patch, *, max_target)`) is
+pure: bytes in, a `PatchResult(target, kind, checked)` out, no I/O, so it is
+tested on hand-built patches. The format comes from the patch's header
+(`patch_kind`), never its name. IPS: records (3-byte offset, 2-byte size,
+data), RLE records (size 0, a 2-byte run, one byte), a record past the end
+grows the ROM with zeros, and three bytes after `EOF` are the truncation
+length. `EOF` is also the offset `0x454F46`; only the end marker can be
+followed by nothing or by exactly three bytes, which tells them apart. BPS:
+varint sizes and metadata, then SourceRead, TargetRead, SourceCopy and
+TargetCopy (TargetCopy may read what it just wrote: a run), then the source,
+target and patch CRC32s. The patch CRC is checked first (`PatchFormatError`,
+"damaged"), the source size and CRC before applying (`SourceMismatch`), the
+target size and CRC after (`TargetMismatch`). Every action is bounds-checked
+against the source, the patch and the declared target. `max_target` bounds
+the output before it is allocated, so a header claiming a huge target or a
+record far past the end raises `PatchTooLarge`. `checked` is True for BPS
+only.
+
+**The action** (`patch_bench.start`, `POST /api/patch`) is an external job,
+`ConversionMode.PATCH`, declared in `EXTERNAL_JOB_MODES` with a Ledger row
+(`ExternalMode()`): it takes no conversion slot. The route does only the
+quick checks: one Image and exactly one patch, the patch named `.ips`/`.bps`,
+a disc Image refused by `registry.disc_extensions()` (on the file, or the
+named archive member), a RAR refused, the Image and a picked patch inside a
+Volume (`volume_containment(...) is True` under `bounded_path_check`;
+"couldn't tell" refuses), and the 7z packer present. The job's `file_path` is
+set to the Image, so the Ledger's Source is the Image (no in-use check reads
+an external job's path). Then, every blocking step through
+`run_detached_within_stall_bound` (the conversion stall bound):
+
+1. The patch is read with `read_beneath` from its resolved path's
+   `lock_boundary_root`, after containment is checked again on the resolved
+   path, so no symlink anywhere below the root is followed. Over
+   `CHD_PATCH_MAX_PATCH_SIZE` is refused. Its SHA1 goes in `extra_inputs`.
+2. The ROM: a loose one the same way, under `CHD_PATCH_MAX_ROM_SIZE`. An
+   archive's whole listing goes through `enforce_archive_limits` first; a
+   symlink or encrypted member refuses it; with no member named it must hold
+   exactly one non-junk file; the member must have a recorded size within the
+   ROM limit; then `ArchiveService.extract_file` unpacks it.
+3. The engine runs on its own detached thread. For an unchecked (IPS) result,
+   `_recognized` asks `dat_store.lookup_sha1` and then the cached match for
+   the Image; neither a hit nor a readable store means `job.warning`, not a
+   refusal.
+4. The patched ROM is written as `<stem> (Patched)<ext>` in a work directory
+   under `CHD_TEMP_DIR`, then packed by `romz_service.convert(..., mode=
+   "romz_7z")` into a hidden staged `.patch-*.7z` beside the Image (the same
+   filesystem as the target). The staged archive is read back with py7zr and
+   must hold exactly that one member with exactly the patched bytes
+   (`check_passed = "intact"`). `place_without_clobbering` then moves it to
+   `<stem> (Patched).7z`, and on `FileExistsError` to `(2)`, `(3)`, … up to
+   999. The staged file and the work directory are always swept. Placing is
+   the one irreversible step, so it runs through
+   `subprocess_runner.run_detached_to_end`, not the stall-bounded seam: a
+   cancel (or a stuck mount) never abandons it, because the link could land
+   after the job said "nothing was written". The job waits for it, then
+   records the archive in `output_path` and the Ledger, noting a cancel that
+   came too late. A cancel before placement still writes nothing.
+
+Uploads (`POST /api/patch/upload`, `patch_bench.save_upload`) are read by
+`services/upload_stream.file_upload`, not FastAPI's `UploadFile`, which
+spools the whole body to temp disk before the route runs. It feeds
+`request.stream()` to python-multipart's streaming `MultipartParser` and hands
+back the `file` part's name and its bytes as they arrive. The body is capped
+at the limit plus `MULTIPART_OVERHEAD` (64 KiB of framing): a
+`Content-Length` over that is refused (413) before a byte is read, and a body
+without one (chunked) is cut off the moment it passes it. Nothing is spooled.
+`save_upload` writes the bytes into a hidden temp file in
+`<data dir>/patches/` and stops at the exact
+`CHD_PATCH_MAX_PATCH_SIZE` (413, nothing kept). Any other upload route that
+must hold a size limit can use `file_upload` the same way. The header must say IPS or
+BPS. The file is kept as `<16 hex>-<safe name>`, the `upload_id`, so the
+Ledger's path stays valid; `POST /api/patch` accepts an `upload_id` only in
+that exact shape (no separator can appear) and reads it with `read_beneath`
+from the uploads folder.
+
+The frontend offers **Patch…** in `RowActionsMenu` when
+`util/patchDialog.canPatch` allows it (a file, a `.zip`/`.7z`, or a member of
+one, never a disc Image by `registry.discImages`), and `PatchModal` uploads or
+names the patch and starts the job.
+
+### 3.3.25 Inboxes (`services/inbox/`, #431)
 
 An Inbox is a folder that feeds one Library: what settles in it is placed in the
 Library and the original moved aside. Nothing here deletes anything.
 
 | Module | Holds |
 | --- | --- |
-| `inbox/__init__.py` | the `inboxes` rows (migration 0026), cached like the folder Libraries: `register`, `update`, `remove`, `note_processed`, `forget_library`, `describe` |
+| `inbox/__init__.py` | the `inboxes` rows (migration 0027), cached like the folder Libraries: `register`, `update`, `remove`, `note_processed`, `forget_library`, `describe` |
 | `inbox/intake.py` | one poll of an Inbox (`poll`, `poll_all`), its in-memory state, the copy job |
 
 **Saving** (`inbox.register`, blocking, run through `libraries.run_admitted`).

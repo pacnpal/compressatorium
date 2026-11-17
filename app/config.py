@@ -161,6 +161,16 @@ class Settings(BaseSettings):
         alias="CHD_ARCHIVE_MAX_TOTAL_SIZE",
     )
 
+    # The Patch action (#428). A patch file over this is refused (an upload
+    # stops reading at it), and so is a ROM, or a patched ROM, over the other.
+    # The engine holds the ROM, the patch and the output in memory at once.
+    patch_max_patch_size: int = Field(
+        default=64 * 1024 * 1024, alias="CHD_PATCH_MAX_PATCH_SIZE",
+    )
+    patch_max_rom_size: int = Field(
+        default=512 * 1024 * 1024, alias="CHD_PATCH_MAX_ROM_SIZE",
+    )
+
     # chdman binary path
     chdman_path: str = Field(default="/usr/bin/chdman", alias="CHDMAN_PATH")
 

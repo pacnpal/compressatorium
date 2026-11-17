@@ -32,6 +32,7 @@
   import DatRenameModal from '$lib/components/modals/DatRenameModal.svelte';
   import DeleteModal from '$lib/components/modals/DeleteModal.svelte';
   import RenameModal from '$lib/components/modals/RenameModal.svelte';
+  import PatchModal from '$lib/components/modals/PatchModal.svelte';
   import FileInfoModal from '$lib/components/modals/FileInfoModal.svelte';
   import CancelAllJobsModal from '$lib/components/modals/CancelAllJobsModal.svelte';
   import ClearDoneModal from '$lib/components/modals/ClearDoneModal.svelte';
@@ -175,6 +176,7 @@
 <DatRenameModal />
 <DeleteModal />
 <RenameModal />
+<PatchModal />
 <FileInfoModal />
 <CancelAllJobsModal />
 <ClearDoneModal />

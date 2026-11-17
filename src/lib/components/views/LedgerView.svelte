@@ -114,6 +114,8 @@
 
   // Intact and Round-tripped are the two checks; "none" shows nothing.
   const CHECK_LABEL = { intact: 'Intact', round_tripped: 'Round-tripped', recognized: 'Recognized' };
+  // Jobs with a Ledger row that no tool's mode describes.
+  const JOB_LABEL = { patch: 'Patch' };
 </script>
 
 <section class="view" aria-labelledby="ledger-title">
@@ -182,9 +184,15 @@
                 <td class="when">{when(row.finished_at)}</td>
                 <td class="path" title={row.source_path}>
                   <span class="file">{name(row.source_path)}</span>
+                  {#each row.extra_inputs ?? [] as input (input.path)}
+                    <!-- A patch job's patch file and its SHA1 (#428). -->
+                    <span class="extra" title={`${input.path}\nSHA1 ${input.sha1}`}>
+                      with {name(input.path)}
+                    </span>
+                  {/each}
                   {#if row.error}<span class="err" title={row.error}>{row.error}</span>{/if}
                 </td>
-                <td>{spec?.label ?? row.mode}</td>
+                <td>{spec?.label ?? JOB_LABEL[row.mode] ?? row.mode}</td>
                 <td><Badge tone={tone(row.status)} size="sm">{row.status}</Badge></td>
                 <td class="num">{formatSize(row.input_bytes)}</td>
                 <td class="num">{formatSize(row.output_bytes)}</td>
@@ -233,6 +241,7 @@
   .when { color: var(--text-2); white-space: nowrap; }
   .path { max-width: 320px; }
   .file { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .extra { display: block; color: var(--text-2); font-size: var(--text-xs); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .err { display: block; color: var(--error); font-size: var(--text-xs); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
   .foot { display: flex; justify-content: space-between; align-items: center; gap: var(--space-3); margin-top: var(--space-3); flex-wrap: wrap; }

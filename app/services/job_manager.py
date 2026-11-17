@@ -326,6 +326,9 @@ EXTERNAL_JOB_MODES: Dict[ConversionMode, ExternalMode] = {
     # A duplicate delete (#389): a person confirmed it; each copy's delete goes
     # through the job's own delete step, so it converts nothing to record.
     ConversionMode.DELETE_DUPLICATES: ExternalMode(in_ledger=False),
+    # A patch applied to a cartridge Image (#428): a person started it, and it
+    # writes an output, so it has a Ledger row naming the patch file.
+    ConversionMode.PATCH: ExternalMode(),
     # A rename to DAT names (#425): a person confirmed it; it renames, so it
     # converts nothing to record.
     ConversionMode.DAT_RENAME: ExternalMode(in_ledger=False),

@@ -4,6 +4,24 @@
 
 ### Added
 
+- **Patch a cartridge ROM with an IPS or BPS patch** (#428). The file list's
+  **⋯** menu has **Patch…** for a loose ROM, a `.zip` or `.7z` holding one, or
+  a ROM inside an archive. Pick the patch by its path in a Volume, or upload
+  it (it's kept in the data directory under `patches/`). The app writes
+  `Name (Patched).7z` beside the original, numbered if that name is taken, and
+  never changes the original. A BPS patch made for a different ROM is refused,
+  and its result must match the patch's own checksum. An IPS patch has no
+  checksums, so on a ROM that isn't Recognized the job warns that the patch
+  may not fit. Disc Images are refused for now. The Ledger row names the
+  patch file and its SHA1 (database migration 0026 adds that column), and the
+  Ledger view shows it under the Source. New settings
+  `CHD_PATCH_MAX_PATCH_SIZE` (64 MiB) and `CHD_PATCH_MAX_ROM_SIZE` (512 MiB)
+  cap what is read; archived ROMs are unpacked under the `CHD_ARCHIVE_MAX_*`
+  limits too. An upload over the patch limit is refused as it arrives, so it
+  never fills the temp space first. A cancel that lands while the patched
+  archive is being put in place waits for it, and the job then names the
+  archive it wrote instead of saying nothing was written.
+
 - **Unidentified in RomM** (#427). The RomM view's Library tab has an
   "Unidentified in RomM" filter that lists only the ROMs RomM couldn't
   identify, with a count of how many of them the app Recognizes from your own
@@ -102,7 +120,7 @@
   deleted. An Unsorted, conflicting or failed file stays where it is with a
   Finding saying why, and isn't tried again until it changes. Each Inbox shows
   its last poll and the files waiting, in progress, held and processed.
-  Database migration 0026 adds the Inboxes. Archives, DAT names and asking
+  Database migration 0027 adds the Inboxes. Archives, DAT names and asking
   RomM to scan come next (#432, #433).
 - **Xbox 360 disc images to ZAR, with rom-converto** (#422). A new tool,
   rom-converto (the converter RomM ships, at the version RomM pins, v0.24.0),
