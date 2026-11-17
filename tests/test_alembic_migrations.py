@@ -178,9 +178,10 @@ def test_0014_stacks_on_0013_and_walks_up_from_an_empty_database(fresh_db_path: 
     cfg = _db._alembic_config(engine)
     script = ScriptDirectory.from_config(cfg)
     # #386's 0016 sits on 0015, #388's 0017 on that, #387's 0018 on that and
-    # #389's 0019 on that, #391's 0020 on that and #392's 0021 on that; see
-    # their own tests below; #424's 0022 sits on 0021, and #428's 0023 on that.
-    assert script.get_heads() == ["0023"]
+    # #389's 0019 on that, #391's 0020 on that, #392's 0021 on that,
+    # #424's 0022 on that, #430's 0023 on that and #428's 0024 on that; see
+    # their own tests below.
+    assert script.get_heads() == ["0024"]
     assert script.get_revision("0014").down_revision == "0013"
     assert script.get_revision("0013").down_revision == "0012"
     assert script.get_revision("0012").down_revision == "0011"
@@ -425,10 +426,10 @@ def test_0022_keeps_every_dats_match_and_adds_families(fresh_db_path: str):
     assert _current_rev(engine) == "0022"
 
 
-def test_0023_gives_ledger_rows_their_extra_inputs(fresh_db_path: str):
-    """#428's 0023, on #424's 0022: the Ledger's list of inputs besides the
-    Source (a patch job's patch file, with its SHA1). A row written before it
-    keeps every value and reads as having none."""
+def test_0023_adds_the_folder_library_layout(fresh_db_path: str):
+    """#430's 0023, on #424's 0022: a folder Library's layout, ES-DE style
+    (a Platform folder directly under the root) for a Library registered
+    before it, as Platform folders were always read."""
     from alembic import command
     from alembic.script import ScriptDirectory
 
@@ -439,12 +440,38 @@ def test_0023_gives_ledger_rows_their_extra_inputs(fresh_db_path: str):
     command.upgrade(cfg, "0022")
     with engine.begin() as conn:
         conn.exec_driver_sql(
+            "INSERT INTO folder_libraries (root, name, schedule_enabled, max_per_sweep, "
+            "created_at) VALUES ('/roms', 'Roms', 0, 25, '2026-11-17T00:00:00Z')",
+        )
+    command.upgrade(cfg, "0023")
+
+    columns = {c["name"]: c for c in inspect(engine).get_columns("folder_libraries")}
+    assert columns["layout"]["nullable"] is False
+    with engine.connect() as conn:
+        assert conn.exec_driver_sql("SELECT layout FROM folder_libraries").scalar() == "esde"
+    assert _current_rev(engine) == "0023"
+
+
+def test_0024_gives_ledger_rows_their_extra_inputs(fresh_db_path: str):
+    """#428's 0024, on #430's 0023: the Ledger's list of inputs besides the
+    Source (a patch job's patch file, with its SHA1). A row written before it
+    keeps every value and reads as having none."""
+    from alembic import command
+    from alembic.script import ScriptDirectory
+
+    engine = _db.make_engine(fresh_db_path)
+    cfg = _db._alembic_config(engine)
+    assert ScriptDirectory.from_config(cfg).get_revision("0024").down_revision == "0023"
+
+    command.upgrade(cfg, "0023")
+    with engine.begin() as conn:
+        conn.exec_driver_sql(
             "INSERT INTO ledger (job_id, finished_at, mode, source_path, status,"
             " check_passed, source_deleted, deleted_paths, referrers_updated)"
             " VALUES ('old', '2026-01-01T00:00:00.000000Z', 'createcd', '/v/a.cue',"
             " 'completed', 'intact', 0, '[]', '[]')",
         )
-    command.upgrade(cfg, "0023")
+    command.upgrade(cfg, "0024")
     columns = {c["name"]: c for c in inspect(engine).get_columns("ledger")}
     assert columns["extra_inputs"]["nullable"] is False
     with engine.connect() as conn:
@@ -452,7 +479,7 @@ def test_0023_gives_ledger_rows_their_extra_inputs(fresh_db_path: str):
             "SELECT source_path, extra_inputs FROM ledger WHERE job_id = 'old'",
         ).one()
     assert row == ("/v/a.cue", "[]")
-    assert _current_rev(engine) == "0023"
+    assert _current_rev(engine) == "0024"
 
 
 # ---------------------------------------------------------------------------
