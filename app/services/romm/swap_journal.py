@@ -3,8 +3,11 @@
 A swap (``services.romm.swap_referrer``) renames a ROM's file in RomM, parks
 the Source RomM moved, places the output, rehashes the ROM and deletes the
 parked Source. Each of those steps is recorded here *before* it runs, so a
-crash leaves the step it was on, and the next run can tell what to finish or
-undo (#392).
+crash leaves the step it was on, and recovery can tell what to finish or
+undo. That recovery is #392: until it lands, nothing reads an unfinished row
+or acts on it (``unfinished`` has no caller yet), and a parked Source stays in
+``.compressatorium-stage/park-…`` beside its output for the user to move
+back by hand.
 
 States, in the order a swap moves through them:
 
@@ -32,7 +35,7 @@ name, which was put back), ``failed`` (RomM couldn't rename, nothing moved),
 on the output, and the Source was put back beside it). A row still on a step
 is unfinished: the step or its undo failed or the process died, and
 ``detail`` says why. Nothing sweeps a parked Source away, so it stays until
-the next run settles the row.
+recovery (#392) settles the row, or the user moves it back.
 
 Everything here is blocking: callers run it off the event loop.
 """
@@ -119,7 +122,10 @@ def rows() -> list[dict]:
 
 
 def unfinished() -> list[dict]:
-    """The rows still on a step, oldest first: what the next run must settle."""
+    """The rows still on a step, oldest first: what recovery must settle.
+
+    For #392 (startup recovery), which will call it; nothing does yet, so
+    until then such a row only records what happened."""
     with _session() as session:
         found = (
             session.query(_db.RommSwap)

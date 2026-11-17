@@ -804,16 +804,26 @@ already put in place, so a later retried delete can't rename RomM's record
 onto it. That delete goes the usual way, with the metadata re-pin queued, and
 says so: "the ROM did not keep its id: the swap can't run after the output
 was placed; re-pin queued". Cancelling during a swap undoes it within a few
-seconds: RomM gets the old name back and the source returns, with the output
-beside it. If that can't finish in time (or the app stops), the source stays
-set aside in the hidden staging folder, never deleted, and the swap is
-recorded with the step it reached. A checked output that can't be put in
-place (something took its name) is kept in that folder too, and the job says
-where.
+seconds, and what that leaves depends on how far it got:
 
-Every step is recorded before it runs. If one fails and can't be undone, the
-source stays set aside in the hidden staging folder, never deleted or swept
-away, and the record keeps the step it stopped at. The delete
+- *Before the output took the source's name:* RomM gets the old name back
+  and the source returns under it, with the output beside it.
+- *After:* the source returns under its own name beside the output, and
+  RomM keeps the output's name (and the ROM its id); RomM's next scan
+  refreshes its hashes.
+- *If the source had already been deleted* (the last step), the swap is
+  simply done.
+
+A checked output that can't be put in place (something took its name) is
+kept in the hidden staging folder, and the job says where.
+
+Every step is recorded before it runs. If one fails and can't be undone, or
+the undo can't finish in time, or the app stops, the source stays set aside
+in the hidden staging folder (`.compressatorium-stage/park-…` beside the
+output), never deleted or swept away, and the record keeps the step it
+stopped at. Picking such a swap up on the next start is a later change
+(#392); until then nothing acts on it, and you can move the source back by
+hand from that folder. The delete
 confirmation lists the rename ("RomM: rename ROM 1234 to Game.chd"), and the
 Ledger records that the ROM kept its id. Archives (`.zip`, `.7z`), multi-file
 games (`.cue`/`.bin`) and anything else keep the usual behaviour.

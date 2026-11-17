@@ -62,11 +62,19 @@ never runs with them gone. The output is held back from the job
 runs out of grace, or fails, or a process that dies, leaves the row on the
 step it reached for the next run (#392), with the reason, a parked Source
 still parked and the output still held: fail closed. At shutdown the job's
-task is cancelled, so the hook cancels this task and keeps it referenced
-(``_let_it_end``) without waiting: the undo runs as far as the event loop
-lets it before the process exits, each step journaled, and a parked Source
-is never removed. The parking slot is removed only when its own listing is
-empty, never on a flag's word.
+task is cancelled: the hook cancels this task too and hands it the job's
+holds on that path as well (``unawaited``), so they are let go only when the
+undo ends; the undo runs as far as the event loop lets it before the process
+exits, each step journaled, and a parked Source is never removed.
+
+The swap is bound to the RomM instance it planned against (``_Binding``):
+every RomM call goes to that URL with that token, and before each RomM write
+it checks RomM's settings still name it. If they don't, nothing more is
+changed on either instance and the row is left for the next run. A settings
+save that moves the instance waits for running swaps (``identity_change``).
+
+The parking slot is removed only when its own listing is empty, never on a
+flag's word.
 
 Which ROM: the Platform is the RomM Library's Platform folder holding the
 file (``platform_folder``, both RomM layouts and subfolders), and the record
@@ -93,6 +101,7 @@ A successful swap closes the output's pending re-pin row as done
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import contextvars
 import os
 import time
@@ -114,8 +123,14 @@ from services.referrers import (
     registry,
 )
 from services.referrers.base import check_write, hook_running, staged_placement
+from services.romm import settings as romm_settings
 from services.romm import swap_journal
-from services.romm.client import UNHASHED_PLATFORM_SLUGS, RommError, romm_client
+from services.romm.client import (
+    UNHASHED_PLATFORM_SLUGS,
+    RommClient,
+    RommError,
+    romm_client,
+)
 from services.subprocess_runner import (
     run_detached_bounded,
     run_detached_within_stall_bound,
@@ -144,6 +159,61 @@ _TASK_ENDED = frozenset({"finished", "failed", "stopped", "canceled", "cancelled
 
 
 @dataclass(frozen=True)
+class _Binding:
+    """The RomM instance a swap planned against (Codex 4594286722): its URL
+    and token, and RomM's identity generation then
+    (``romm_settings.identity_generation``, bumped by every save that moves
+    the instance or library root). Every call of the swap goes to this
+    instance, undo included, never through the settings-following client."""
+
+    base_url: str
+    token: str
+    generation: int
+
+    @classmethod
+    def now(cls) -> _Binding:
+        return cls(
+            base_url=romm_client.base_url,
+            token=romm_settings.token() or "",
+            generation=romm_settings.identity_generation(),
+        )
+
+    def client(self) -> RommClient:
+        return RommClient(base_url=self.base_url, token=self.token)
+
+    def still_live(self) -> bool:
+        """Whether RomM's settings still name this instance."""
+        return (
+            romm_settings.identity_generation() == self.generation
+            and romm_client.base_url == self.base_url
+        )
+
+
+# Swaps running now, and identity changes waiting for them (Codex 4594286722):
+# a settings save that moves RomM's instance or library root waits until no
+# swap runs, and no swap starts while one is waiting. Touched on the event
+# loop only.
+_active_swaps = 0
+_identity_changes = 0
+
+
+@contextlib.asynccontextmanager
+async def identity_change():
+    """Hold off RomM swaps while RomM's identity changes: no new one starts,
+    and this waits for those running (an undo outliving its hook included)
+    to end. The settings route takes it around the save that moves the
+    instance; it waits, as that route waits for sweeps and the settle pass."""
+    global _identity_changes
+    _identity_changes += 1
+    try:
+        while _active_swaps:
+            await asyncio.sleep(0.05)
+        yield
+    finally:
+        _identity_changes -= 1
+
+
+@dataclass(frozen=True)
 class _Plan:
     rom_id: int
     source: str
@@ -156,6 +226,7 @@ class _Plan:
     # today's path and the re-pin carries the metadata (``_fall_back``).
     fallback: bool = False
     rom: dict | None = field(default=None, compare=False, repr=False)
+    binding: _Binding | None = field(default=None, compare=False, repr=False)
 
 
 # What the job and the Ledger say when the swap couldn't run (CodeRabbit
@@ -261,10 +332,14 @@ class RommSwapReferrer(Referrer):
         # RomM can't rename onto a name that is taken.
         placement = staged_placement()
         fallback = hook_running() and (placement is None or output not in placement.staged)
+        # The instance the ROM is looked up on, which the swap then keeps to.
+        binding = _Binding.now()
         try:
             rom = _rom_for(source)
         except (RommError, OSError, ValueError) as exc:
             raise ReferrerError("RomM", f"couldn't look up the ROM ({exc})") from exc
+        if not binding.still_live():
+            raise ReferrerError("RomM", "the RomM instance changed while the ROM was looked up")
         if rom is None:
             return []
         rom_id = int(rom["id"])
@@ -272,7 +347,7 @@ class RommSwapReferrer(Referrer):
         plan = _Plan(
             rom_id=rom_id, source=source, output=output, old_name=old_name,
             new_name=new_name, platform_slug=rom.get("platform_slug"),
-            fallback=fallback, rom=rom,
+            fallback=fallback, rom=rom, binding=binding,
         )
         if fallback:
             return [ReferrerChange(
@@ -440,6 +515,12 @@ class _Stopped(ReferrerError):
     stopped the swap: its reason is what the row records."""
 
 
+class _Unbound(ReferrerError):
+    """RomM's settings no longer name the instance the swap planned against
+    (Codex 4594286722). Nothing more is changed on either instance: the row
+    is left for the next run."""
+
+
 class _Swap:
     """One swap's steps and their undo (see the module docstring).
 
@@ -465,7 +546,22 @@ class _Swap:
         self.park: staging.StagedOutput | None = None
         self.parked = False
         self.placed = False
+        # The parked Source was removed: set on the removal's own thread,
+        # so a cancel landing meanwhile still knows (CodeRabbit 4594326517).
+        self.removed = False
         self.source_identity: FileIdentity | None = None
+        self.binding = plan.binding or _Binding.now()
+        self.client = self.binding.client()
+
+    def _require_same_instance(self, before: str) -> None:
+        """Raise :class:`_Unbound` unless RomM's settings still name the
+        instance this swap planned against. Asked before every RomM write."""
+        if not self.binding.still_live():
+            raise _Unbound(
+                self.target,
+                f"the RomM instance changed before {before}; nothing more was "
+                f"changed on either instance, and it is {LEFT}",
+            )
 
     @property
     def parked_path(self) -> str:
@@ -478,6 +574,19 @@ class _Swap:
         return self.parked or self.placed or self.romm_name != self.plan.old_name
 
     async def run(self) -> Applied:
+        """The swap, counted as running (``identity_change`` waits for it)
+        until it, and any undo, has ended. Refused while RomM's identity is
+        being changed."""
+        global _active_swaps
+        if _identity_changes:
+            raise ReferrerError(self.target, "RomM's settings are being changed")
+        _active_swaps += 1
+        try:
+            return await self._run()
+        finally:
+            _active_swaps -= 1
+
+    async def _run(self) -> Applied:
         plan = self.plan
         try:
             self.source_identity = await _probe(file_identity, plan.source)
@@ -507,21 +616,30 @@ class _Swap:
             await self._rehash(size, sha1)
             await self._delete_parked()
         except Exception as exc:
-            try:
-                left = await self._undo(exc)
-            except asyncio.CancelledError:
-                # Cancelled during the undo: the step it was on is recorded.
-                await self._leave(f"{exc}; stopped during the undo; {LEFT}")
+            if not self.removed:
+                try:
+                    left = await self._undo(exc)
+                except asyncio.CancelledError:
+                    # Cancelled during the undo: the step it was on is recorded.
+                    await self._leave(f"{exc}; stopped during the undo; {LEFT}")
+                    raise
+                if left and isinstance(exc, ReferrerError):
+                    raise ReferrerError(
+                        exc.target, f"{exc.reason}; {left}", kept=exc.kept,
+                    ) from exc
                 raise
-            if left and isinstance(exc, ReferrerError):
-                raise ReferrerError(exc.target, f"{exc.reason}; {left}", kept=exc.kept) from exc
-            raise
+            # The parked Source was already removed (CodeRabbit 4594326517):
+            # the swap is done, whatever came after.
+            logger.warning("romm_swap: swap %s finished; then %s", self.row, exc)
         except BaseException as exc:
-            # A Cancel, a shutdown or the hook's bound, after the step it
-            # landed on recorded its outcome (``_mutate``): undo within
-            # the hook's grace.
-            await self._undo_within_grace(exc)
-            raise
+            if not self.removed:
+                # A Cancel, a shutdown or the hook's bound, after the step it
+                # landed on recorded its outcome (``_mutate``): undo within
+                # the hook's grace.
+                await self._undo_within_grace(exc)
+                raise
+            # It landed while the parked Source was removed, which finished
+            # first: the swap is done, and is reported so.
         finally:
             await self._release_park()
         try:
@@ -529,7 +647,14 @@ class _Swap:
         except Exception:
             # The swap is finished and the Source is gone: only the record lags.
             logger.warning("romm_swap: could not record swap %s as done", self.row, exc_info=True)
-        await _probe(_settle_repin, plan.output, plan.rom_id)
+        try:
+            await _probe(_settle_repin, plan.output, plan.rom_id)
+        except Exception:
+            # Bookkeeping after the Source is gone (CodeRabbit 4594326492): a
+            # timeout here never makes the applied swap look failed.
+            logger.warning(
+                "romm_swap: could not settle the re-pin of %s", plan.output, exc_info=True,
+            )
         logger.info(
             "romm_swap: ROM %s kept its id: %s -> %s", plan.rom_id, plan.old_name, plan.new_name,
         )
@@ -574,15 +699,16 @@ class _Swap:
         return ReferrerError(self.target, reason, kept=kept)
 
     async def _read_name(self) -> str | None:
-        rom = await _probe(romm_client.rom, self.plan.rom_id, seconds=ROMM_SECONDS)
+        rom = await _probe(self.client.rom, self.plan.rom_id, seconds=ROMM_SECONDS)
         return rom.get("fs_name")
 
     async def _rename(self) -> None:
         """Step 1 (the journal row was begun in ``renaming``)."""
         plan = self.plan
+        self._require_same_instance("the rename")
         self.romm_name = None
         try:
-            await _mutate(romm_client.rename_rom, plan.rom_id, plan.new_name)
+            await _mutate(self.client.rename_rom, plan.rom_id, plan.new_name)
         except RommError as exc:
             if exc.status is None:
                 # No answer: RomM may have renamed. The undo puts the old name
@@ -653,12 +779,13 @@ class _Swap:
     async def _rehash(self, size: int, sha1: str) -> None:
         """Step 4: RomM rehashes the ROM; the read-back must match the output."""
         await self._step("rehashing")
+        self._require_same_instance("the rehash")
         try:
-            task_id = await _mutate(romm_client.scan_rom_hashes, [self.plan.rom_id])
+            task_id = await _mutate(self.client.scan_rom_hashes, [self.plan.rom_id])
             status = await self._wait(task_id)
             if status != "finished":
                 raise self._fail(f"RomM's rehash ended {status}", kept=UNCONFIRMED)
-            rom = await _probe(romm_client.rom, self.plan.rom_id, seconds=ROMM_SECONDS)
+            rom = await _probe(self.client.rom, self.plan.rom_id, seconds=ROMM_SECONDS)
         except (RommError, OSError) as exc:
             raise self._fail(f"couldn't rehash the ROM ({exc})", kept=UNCONFIRMED) from exc
         problem = _read_back_problem(rom, self.plan, size, sha1)
@@ -668,7 +795,7 @@ class _Swap:
     async def _wait(self, task_id: str) -> str:
         deadline = time.monotonic() + REHASH_SECONDS
         while True:
-            task = await _probe(romm_client.task, task_id, seconds=ROMM_SECONDS)
+            task = await _probe(self.client.task, task_id, seconds=ROMM_SECONDS)
             status = str(task.get("status") or "")
             if status in _TASK_ENDED:
                 return status
@@ -687,6 +814,7 @@ class _Swap:
         def remove() -> None:
             self.park.remove(self.plan.new_name)
             self.parked = False
+            self.removed = True
 
         try:
             await _mutate(remove)
@@ -733,6 +861,13 @@ class _Swap:
         does."""
         reason = exc.reason if isinstance(exc, ReferrerError) else (str(exc) or type(exc).__name__)
         refusal = isinstance(exc, ReferrerError) and exc.kept == REFUSED
+        if isinstance(exc, _Unbound) or not self.binding.still_live():
+            # The instance moved: no undo, which would change one or the
+            # other. Everything stays as it is, for the next run.
+            await self._leave(reason if isinstance(exc, _Unbound) else (
+                f"{reason}; the RomM instance changed, so nothing was undone; {LEFT}"
+            ))
+            return LEFT
         try:
             if self.placed:
                 await self._restore_beside_output()
@@ -776,8 +911,9 @@ class _Swap:
             await _mutate(self._restore)
         if self.romm_name == plan.old_name:
             return
+        self._require_same_instance("putting the old name back")
         await self._step("reverting")
-        await _mutate(romm_client.rename_rom, plan.rom_id, plan.old_name)
+        await _mutate(self.client.rename_rom, plan.rom_id, plan.old_name)
         name = await self._read_name()
         if name != plan.old_name:
             raise RommError(f"RomM still names the file {name}")

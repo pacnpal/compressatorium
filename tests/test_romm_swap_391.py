@@ -519,6 +519,126 @@ async def test_a_slot_holding_the_source_is_never_removed_on_a_flags_word(
 
 
 @pytest.mark.asyncio
+async def test_a_romm_instance_change_mid_swap_renames_nothing_anywhere(
+    vol, romm, monkeypatch,
+):
+    """Codex 4594286722: the swap is bound to the RomM instance it planned
+    against. If the instance changes before the rename, nothing is renamed
+    on either, and the row is left for the next run."""
+    from services.romm import settings as romm_settings
+    from services.romm import swap_referrer
+
+    platform = _platform(vol)
+    other = FakeRomm(platforms=[PS2], library=vol / "romm").start()
+    other.add_rom(ROM_ID, PS2, "Game.iso")  # the other instance's ROM 12
+    loop = asyncio.get_running_loop()
+    real_hash = swap_referrer._size_and_sha1
+
+    def hash_while_the_instance_moves(path):
+        asyncio.run_coroutine_threadsafe(
+            romm_settings.save({"url": other.url}, cleanup_pending=True), loop,
+        ).result(5)
+        return real_hash(path)
+
+    monkeypatch.setattr(swap_referrer, "_size_and_sha1", hash_while_the_instance_moves)
+    try:
+        job = await _convert(platform / "Game.iso")
+    finally:
+        other.stop()
+
+    assert romm.renames == [] and other.renames == []
+    assert romm.scans == [] and other.scans == []
+    (row,) = _journal()
+    assert row["state"] == "renaming", row
+    assert "RomM instance changed" in row["detail"]
+    assert (platform / "Game.iso").read_bytes() == SOURCE_BYTES
+    assert job.deleted_paths == []
+
+
+@pytest.mark.asyncio
+async def test_a_romm_identity_change_waits_for_a_running_swap(vol, romm):
+    """Codex 4594286722: a settings save that moves RomM's identity waits for
+    a swap in flight to end, so the swap finishes on the instance it began."""
+    from routes import romm as romm_routes
+
+    platform = _platform(vol)
+    other = FakeRomm(platforms=[PS2], library=vol / "romm").start()
+    renaming = threading.Event()
+
+    def slow_rename(method, path):
+        if method == "PUT" and not renaming.is_set():
+            renaming.set()
+            time.sleep(0.8)
+
+    romm.on_request = slow_rename
+    job = await convert_routes.create_job(JobCreateRequest(
+        file_path=str(platform / "Game.iso"), mode=ConversionMode.CREATEDVD,
+        duplicate_action=DuplicateAction.SKIP, delete_on_verify=True,
+    ))
+    try:
+        running = asyncio.create_task(convert_routes.job_manager._process_job(job.id))
+        while not renaming.is_set():
+            await asyncio.sleep(0.02)
+        save = asyncio.create_task(romm_routes._save_settings({"url": other.url}))
+        await asyncio.sleep(0.4)
+        assert not save.done()
+        await running
+        await asyncio.wait_for(save, 10)
+    finally:
+        other.stop()
+
+    assert job.status == JobStatus.COMPLETED, job.error_message
+    assert romm.roms[ROM_ID]["fs_name"] == "Game.chd"
+    assert other.renames == []
+    assert [r["state"] for r in _journal()] == ["done"]
+
+
+@pytest.mark.asyncio
+async def test_cancelling_the_job_task_hands_its_holds_to_the_undo(vol, romm, monkeypatch):
+    """Codex 4594286704: a shutdown cancels the job's task mid-swap. The
+    undo outlives it, and the job's output lock and delete hold stay held
+    until the undo ends."""
+    from services import staging
+    from services.lock_manager import lock_manager
+
+    platform = _platform(vol)
+    real_take, real_restore = staging.StagedOutput.take, staging.StagedOutput.restore
+    job = await convert_routes.create_job(JobCreateRequest(
+        file_path=str(platform / "Game.iso"), mode=ConversionMode.CREATEDVD,
+        duplicate_action=DuplicateAction.SKIP, delete_on_verify=True,
+    ))
+    loop = asyncio.get_running_loop()
+    running = asyncio.create_task(convert_routes.job_manager._process_job(job.id))
+
+    def take_then_shut_down(self, name):
+        loop.call_soon_threadsafe(running.cancel)
+        time.sleep(0.2)
+        return real_take(self, name)
+
+    def slow_restore(self, name, as_name=None):
+        time.sleep(1.0)
+        return real_restore(self, name, as_name)
+
+    monkeypatch.setattr(staging.StagedOutput, "take", take_then_shut_down)
+    monkeypatch.setattr(staging.StagedOutput, "restore", slow_restore)
+    with pytest.raises(asyncio.CancelledError):
+        await running
+    source = os.path.realpath(platform / "Game.iso")
+
+    # The job's task is gone; the swap (its move, then its undo) still runs,
+    # and holds the Source.
+    assert _journal()[0]["state"] in ("parking", "parked", "restoring"), _journal()
+    assert lock_manager.is_locked(source)
+    for _ in range(100):
+        if _journal()[0]["state"] == "rolled_back" and not lock_manager.is_locked(source):
+            break
+        await asyncio.sleep(0.05)
+    assert _journal()[0]["state"] == "rolled_back"
+    assert not lock_manager.is_locked(source)
+    assert (platform / "Game.iso").read_bytes() == SOURCE_BYTES
+
+
+@pytest.mark.asyncio
 async def test_a_stalled_read_never_holds_a_shared_executor_thread(vol, romm, monkeypatch):
     """Codex PRRT_kwDOQ9nULM64NxU1: the swap's whole-file reads run on a
     detached thread, so a mount that stops answering strands that thread,
@@ -906,6 +1026,141 @@ async def test_a_failed_source_check_then_a_taken_name_keeps_everything(
     assert verification_store.get_record_blocking(str(kept)) is not None
     assert (platform / "Game.iso").read_bytes() == SOURCE_BYTES
     assert (platform / "Game.chd").read_bytes() == b"someone else's"
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_during_set_aside_still_releases_and_announces_the_job(
+    vol, romm, monkeypatch,
+):
+    """CodeRabbit 4594326475: a cancel while the job's ``finally`` sets the
+    checked output aside must not skip the terminal notice, the lock
+    releases or the concurrency slot."""
+    from services import staging
+    from services.concurrency_manager import concurrency_manager
+    from services.lock_manager import lock_manager
+    from services.romm import settings as romm_settings
+
+    platform = _platform(vol)
+    await romm_settings.save({"swap_keep_rom_id": False})
+    real_set_aside = staging.StagedOutput.set_aside
+    job = await convert_routes.create_job(JobCreateRequest(
+        file_path=str(platform / "Game.iso"), mode=ConversionMode.CREATEDVD,
+        duplicate_action=DuplicateAction.SKIP, delete_on_verify=True,
+    ))
+    loop = asyncio.get_running_loop()
+    running = asyncio.create_task(convert_routes.job_manager._process_job(job.id))
+
+    def cancelled_set_aside(self):
+        loop.call_soon_threadsafe(running.cancel)
+        time.sleep(0.3)
+        return real_set_aside(self)
+
+    async def checked_then_taken(tool, source_path, output_path, **_kw):
+        (platform / "Game.chd").write_bytes(b"someone else's")
+        return RoundTripOutcome(passed=True)
+
+    monkeypatch.setattr(staging.StagedOutput, "set_aside", cancelled_set_aside)
+    monkeypatch.setattr(job_manager_module, "round_trip", checked_then_taken)
+    with pytest.raises(asyncio.CancelledError):
+        await running
+
+    manager = convert_routes.job_manager
+    assert job.status in (JobStatus.FAILED, JobStatus.CANCELLED, JobStatus.COMPLETED)
+    assert job.id in manager._terminal_announced
+    for _ in range(40):
+        if not lock_manager.is_locked(str(platform / "Game.chd")):
+            break
+        await asyncio.sleep(0.05)
+    assert not lock_manager.is_locked(str(platform / "Game.chd"))
+    assert not lock_manager.is_locked(os.path.realpath(platform / "Game.iso"))
+    assert job.id not in concurrency_manager._lock_handles
+    # The output is kept all the same, once its slot is set aside.
+    for _ in range(40):
+        if list((platform / STAGE_DIR_NAME).glob("park-*/Game.chd")):
+            break
+        await asyncio.sleep(0.05)
+    assert [p.read_bytes() for p in (platform / STAGE_DIR_NAME).glob("park-*/Game.chd")] == [
+        OUTPUT_BYTES,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_while_the_parked_source_is_deleted_ends_done(vol, romm, monkeypatch):
+    """CodeRabbit 4594326517: the Cancel lands while the parked Source is
+    removed. The removal is recorded on its own thread, so the swap ends
+    ``done`` and the job records the Source as deleted, not kept."""
+    from services import staging
+
+    platform = _platform(vol)
+    real_remove = staging.StagedOutput.remove
+    job = await convert_routes.create_job(JobCreateRequest(
+        file_path=str(platform / "Game.iso"), mode=ConversionMode.CREATEDVD,
+        duplicate_action=DuplicateAction.SKIP, delete_on_verify=True,
+    ))
+    loop = asyncio.get_running_loop()
+
+    def cancelled_remove(self, name):
+        event = convert_routes.job_manager.get_cancel_event(job.id)
+        loop.call_soon_threadsafe(event.set)
+        time.sleep(0.3)
+        return real_remove(self, name)
+
+    monkeypatch.setattr(staging.StagedOutput, "remove", cancelled_remove)
+    await convert_routes.job_manager._process_job(job.id)
+
+    assert [r["state"] for r in _journal()] == ["done"]
+    assert romm.roms[ROM_ID]["fs_name"] == "Game.chd"
+    assert job.deleted_paths == [str(platform / "Game.iso")]
+    assert sorted(p.name for p in platform.iterdir()) == ["Game.chd"]
+
+
+@pytest.mark.asyncio
+async def test_a_re_pin_settle_that_times_out_still_reports_the_swap(vol, romm, monkeypatch):
+    """CodeRabbit 4594326492: settling the re-pin is bookkeeping. A timeout
+    there, after the Source is gone, still reports the swap as applied."""
+    from services.romm import swap_referrer
+    from services.subprocess_runner import DeadlineExpired
+
+    platform = _platform(vol)
+    real_probe = swap_referrer._probe
+
+    async def settle_times_out(func, *args, **kwargs):
+        if func is swap_referrer._settle_repin:
+            raise DeadlineExpired("no answer in 20s")
+        return await real_probe(func, *args, **kwargs)
+
+    monkeypatch.setattr(swap_referrer, "_probe", settle_times_out)
+    job = await _convert(platform / "Game.iso")
+
+    assert job.status == JobStatus.COMPLETED, job.error_message
+    assert job.warning is None, job.warning
+    assert job.deleted_paths == [str(platform / "Game.iso")]
+    assert [r["state"] for r in _journal()] == ["done"]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_referrer_is_recorded_even_when_placing_then_fails(
+    vol, romm, monkeypatch,
+):
+    """CodeRabbit 4594326468: a file Referrer fails, then placing the checked
+    output finds its name taken. The Referrer's failure stays in the job's
+    record (and so the Ledger's)."""
+    from services.romm import settings as romm_settings
+
+    platform = _platform(vol)
+    await romm_settings.save({"es_frontend": True})
+    (platform / "gamelist.xml").write_text("<gameList><game><path>./Game.iso", "utf-8")
+
+    async def checked_then_taken(tool, source_path, output_path, **_kw):
+        (platform / "Game.chd").write_bytes(b"someone else's")
+        return RoundTripOutcome(passed=True)
+
+    monkeypatch.setattr(job_manager_module, "round_trip", checked_then_taken)
+    job = await _convert(platform / "Game.iso")
+
+    failed = [r for r in job.referrers_updated if r.get("referrer") == "gamelist"]
+    assert failed and failed[0]["status"] == "failed", job.referrers_updated
+    assert (platform / "Game.iso").read_bytes() == SOURCE_BYTES
 
 
 def test_the_fake_lists_roms_a_page_at_a_time(vol, romm):

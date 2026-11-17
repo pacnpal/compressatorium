@@ -3665,8 +3665,13 @@ class JobManager:
         planned: Optional[List[str]] = None,
         handed_off: Optional[List[bool]] = None,
         placement: referrers.StagedPlacement | None = None,
+        hook_records: list[dict] | None = None,
     ) -> _SourceDelete:
         """The delete step, shared by a job and a retried delete (#329).
+
+        *hook_records* gets the Referrer hook's records as soon as it returns,
+        so a caller keeps them even when a later step raises (CodeRabbit
+        4594326468).
 
         *placement* is the job's output, still staged for a Referrer that
         places it itself (the RomM swap, #391). Whatever the hook did not
@@ -3718,14 +3723,29 @@ class JobManager:
         # Referrers (.m3u, ...) move to the output before the Source goes; if
         # any can't, the Source stays (#295). The Image's Library decides
         # which opt-in Referrers run (#383).
-        referrer_outcome = await referrers.update_before_source_removal(
-            source_for_delete,
-            {path: output_path for path in delete_order},
-            library=library,
-            cancel_event=cancel_event,
-            bound=probe_seconds,
-            placement=placement,
-        )
+        unawaited: list[asyncio.Task] = []
+        try:
+            referrer_outcome = await referrers.update_before_source_removal(
+                source_for_delete,
+                {path: output_path for path in delete_order},
+                library=library,
+                cancel_event=cancel_event,
+                bound=probe_seconds,
+                placement=placement,
+                unawaited=unawaited,
+            )
+        except asyncio.CancelledError:
+            # A shutdown cancelled this job mid-hook while an apply (the RomM
+            # swap's undo) still runs: it owns the holds from here, as an
+            # abandoned one does below (Codex 4594286704).
+            if unawaited:
+                self._hand_holds_to(
+                    referrers.ReferrerOutcome(lingering=unawaited), owner_id,
+                    travelling_locks,
+                )
+            raise
+        if hook_records is not None:
+            hook_records[:] = referrer_outcome.records
         if (
             placement is not None and not referrer_outcome.lingering
             and not placement.held.is_set()
@@ -3746,13 +3766,7 @@ class JobManager:
             # 4588646155): like a mutation's worker, it owns the delete holds
             # and the travelling locks from here, let go when it ends. The
             # outcome failed, so the Source is kept below.
-            held = [
-                *self._delete_holds.pop(owner_id, []),
-                *(travelling_locks.take() if travelling_locks is not None else []),
-            ]
-            referrer_outcome.outlive(
-                lambda: self._spawn_background(self._let_go_in_background(held)),
-            )
+            self._hand_holds_to(referrer_outcome, owner_id, travelling_locks)
         outcome = _SourceDelete(
             referrer_records=referrer_outcome.records, notes=list(referrer_outcome.notes),
         )
@@ -3802,6 +3816,19 @@ class JobManager:
         await self._release_delete_holds_in_background(owner_id, probe_seconds)
         await self._clear_source_records(file_path, probe_seconds)
         return outcome
+
+    def _hand_holds_to(
+        self, outcome: referrers.ReferrerOutcome, owner_id: str,
+        travelling_locks: Optional["HeldLocks"],
+    ) -> None:
+        """Hand *owner_id*'s delete holds and the travelling locks to the
+        applies still running in *outcome* (``lingering``): they are let go
+        only once the last one ends (``ReferrerOutcome.outlive``)."""
+        held = [
+            *self._delete_holds.pop(owner_id, []),
+            *(travelling_locks.take() if travelling_locks is not None else []),
+        ]
+        outcome.outlive(lambda: self._spawn_background(self._let_go_in_background(held)))
 
     async def _prepare_delete(
         self, owner_id: str, file_path: str, output_path: str,
@@ -5418,6 +5445,7 @@ class JobManager:
                                 planned=job_planned,
                                 handed_off=job_handed_off,
                                 placement=placement,
+                                hook_records=job.referrers_updated,
                             )
                         except asyncio.CancelledError:
                             # The task itself was cancelled once the unlinks
@@ -5534,13 +5562,20 @@ class JobManager:
             )
 
         finally:
+            # A cancel during the set-aside below is held until every release
+            # after it has run (CodeRabbit 4594326475).
+            set_aside_cancel: BaseException | None = None
             if placeable and slot is not None and not slot.placed:
                 # A checked output that could not be placed (its name was
                 # taken, a Referrer holds it) is kept, out of every sweep,
                 # with its records, and the job says where, before the Ledger
-                # hears of it. Its slot is never closed below.
-                await self._set_aside_output(job, slot)
-                slot = None
+                # hears of it. Its slot is never closed below, cancelled or
+                # not: a set-aside the cancel cut short finishes on its worker.
+                aside, slot = slot, None
+                try:
+                    await self._set_aside_output(job, aside)
+                except asyncio.CancelledError as exc:
+                    set_aside_cancel = exc
             # Before any cleanup: this is the one place every runner outcome
             # (completed, failed, cancelled mid-run) passes through, and a
             # listener that must record how the job ended has to hear about it
@@ -5581,6 +5616,8 @@ class JobManager:
                     await self._prune_jobs(exclude_id=job_id)
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug("Job %s finished status=%s", job_id, job.status.value)
+            if set_aside_cancel is not None:
+                raise set_aside_cancel
 
     def _forget_job_runtime(self, job_id: str) -> None:
         """Drop a finished job's in-memory runtime bookkeeping. Never raises."""

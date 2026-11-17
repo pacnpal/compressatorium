@@ -29,11 +29,15 @@
   whose ROM can't be told apart keeps its source. A source kept because
   another job was reading it is deleted later the usual way, with the re-pin
   queued, and the result says "the ROM did not keep its id". A Cancel during
-  a swap undoes it within a few seconds (RomM gets the old name back and the
-  source returns); if that can't finish, the source stays safely set aside
-  and the swap is recorded for later. A checked output that can't be put in
-  place (something took its name) is now kept in the hidden staging folder,
-  and the job says where, instead of being discarded.
+  a swap undoes it within a few seconds: before the output takes the
+  source's name, RomM gets the old name back and the source returns; after,
+  the source returns beside the output and RomM keeps the output's name (and
+  the ROM its id). If that can't finish, the source stays safely set aside
+  in `.compressatorium-stage/park-…` and the swap is recorded; picking it up
+  on the next start comes later (#392), and until then you can move the
+  source back by hand. A checked output that can't be put in place
+  (something took its name) is now kept in the hidden staging folder, and
+  the job says where, instead of being discarded.
 
 - **A "Keep the ROM id" switch for RomM** (#390). A new card on the RomM
   Settings tab holds a switch, off by default, that says a conversion should

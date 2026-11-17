@@ -4160,14 +4160,41 @@ carries RomM's own `detail` text.
   Source stays parked; and the output stays held, since the name it would
   take may hold, or be owed to, the Source (the job then sets the checked
   output aside, below). `swap_journal.unfinished()` lists the rows left for
-  the next run (#392: finish or show as a Finding).
-- At shutdown the job's task is cancelled, so the hook's awaiter is: as
-  `_await_bounded` always does then, it cancels the apply's task and keeps
-  it referenced (`_let_it_end`) without waiting for the grace, and the job
-  lets go of its holds as it unwinds (no `outlive` hand-off on this path).
-  The swap's undo runs as far as the event loop lets it before the process
-  exits, each step journaled; whatever it didn't reach is left for the next
-  run, and a parked Source is never removed.
+  the next run. Recovering them (finish, or show as a Finding) is #392:
+  until it lands nothing calls `unfinished()` or acts on such a row, and a
+  parked Source stays in `.compressatorium-stage/park-…` for the user to
+  move back by hand (CodeRabbit 4594326484).
+- At shutdown the job's task is cancelled, so the hook's awaiter is.
+  `_await_bounded` cancels the apply's task, keeps it referenced
+  (`_let_it_end`) and, if it is still running, puts it in the caller's
+  `unawaited` list (`update_before_source_removal(..., unawaited=...)`).
+  `_delete_source_set` catches that cancel and hands its delete holds and
+  output locks to those tasks (`_hand_holds_to`, the same transfer as the
+  `outlive` hand-off after the grace) before letting the cancel go on, so
+  they are let go only when the swap's undo ends (Codex 4594286704). The
+  undo runs as far as the event loop lets it before the process exits, each
+  step journaled; whatever it didn't reach is left for the next run, and a
+  parked Source is never removed.
+
+*Bound to one RomM instance* (Codex 4594286722). The settings-following
+client (`romm_client`) resolves the URL and token on every request, so a
+settings change mid-swap would send the rename, or its undo, to another
+instance, where ROM 12 is another game. `plan` captures a `_Binding`: the
+base URL and token, and `romm_settings.identity_generation()` (the counter
+every save that moves the instance or library root bumps, which the re-pin
+plan already checks), before it looks the ROM up, and refuses if it moved
+during the lookup. The swap makes every RomM call, undo included, through
+`binding.client()`, a `RommClient` with that URL and token. Before each RomM
+write (the rename, the rehash, putting the old name back) it asks
+`binding.still_live()`; if RomM's settings name another instance, it raises
+`_Unbound`: no undo, nothing more changed on either instance, and the row is
+left for the next run with the reason. The settings route serialises
+against swaps too: a save that moves the identity runs inside
+`swap_referrer.identity_change()`, which stops new swaps from starting (they
+keep the Source, "RomM's settings are being changed") and waits for those
+running, undo included, to end. It waits rather than refuses, as the same
+route waits for sweeps (`romm_auto.paused`) and the settle pass
+(`_settle_lock`); each swap is bounded by the conversion's stall bound.
 
 *A checked output is never discarded* (CodeRabbit 4593970363). The job
 marks its output `placeable` once its checks pass (or none was asked). If
@@ -4203,6 +4230,26 @@ is the only copy (CodeRabbit 4594086355):
   cleared), and its message, warning, error (the Ledger's `error` for a
   failed job), a `{"referrer": "staging", "status": "kept"}` entry in its
   Ledger record and the log all say where it is.
+
+The set-aside runs first in the job's `finally`, and a cancel during it is
+held until every release after it has run (the terminal notice, the output
+locks and delete holds, the input and folder locks, the concurrency slot,
+`_close_stage`, the temp folder, the pruning), then raised (CodeRabbit
+4594326475); the slot is taken out of the job's hands before the await, so
+a set-aside the cancel cut short finishes on its worker and is never closed.
+
+Three more edges of the swap (CodeRabbit review 5931463835):
+
+- The removal of the parked Source sets `removed` on its own thread. A
+  cancel or an error after that ends the swap `done` with
+  `Applied(removed=(source,))`, never `kept`; the hook takes the result of
+  an apply that finished despite its cancel (`_await_bounded` returns it).
+- Settling the re-pin after the Source is gone is bookkeeping: any error
+  there, a `DeadlineExpired` included, is logged and the swap still reports
+  applied.
+- `_delete_source_set(..., hook_records=job.referrers_updated)` fills the
+  job's records as soon as the hook returns, so a Referrer's failure stays
+  in the Ledger when placing the output then raises.
 
 `_close_stage` discards only an output the job never got to place: one
 rejected by its own checks, or a conversion that failed or was cancelled

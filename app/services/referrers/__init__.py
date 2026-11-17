@@ -388,6 +388,7 @@ def _log_its_end(referrer_id: str, target: str) -> Callable[[asyncio.Task], None
 async def _await_bounded(
     referrer: Referrer, change: ReferrerChange, *, guard: WriteGuard | None,
     cancel_event: asyncio.Event | None, bound: float | None,
+    unawaited: list[asyncio.Task] | None = None,
 ) -> object:
     """Await an async apply on the loop, bounded and raced against Cancel,
     and return what it returned.
@@ -423,6 +424,10 @@ async def _await_bounded(
     except asyncio.CancelledError:
         task.cancel()
         _let_it_end(task, referrer.id, change.target)
+        if not task.done() and unawaited is not None:
+            # This awaiter is cancelled (a shutdown) while the apply still
+            # cleans up: the caller hands it its holds, as ``outlive`` does.
+            unawaited.append(task)
         raise
     finally:
         if stop is not None:
@@ -432,6 +437,10 @@ async def _await_bounded(
         raise _Abandoned(
             change.target, f"{reason}; still cleaning up, so it was abandoned", task,
         )
+    if not task.cancelled() and task.exception() is None:
+        # It finished its work all the same (the RomM swap whose last step
+        # had already removed the Source, #391): what it did counts.
+        return task.result()
     _log_its_end(referrer.id, change.target)(task)
     raise ReferrerError(change.target, reason)
 
@@ -439,6 +448,7 @@ async def _await_bounded(
 async def _apply_pending(
     outcome: ReferrerOutcome, pending: list[tuple[Referrer, ReferrerChange]], *,
     guard: WriteGuard | None, cancel_event: asyncio.Event | None, bound: float | None,
+    unawaited: list[asyncio.Task] | None = None,
 ) -> None:
     """Apply a phase's async changes in order; the first failure stops it."""
     for referrer, change in pending:
@@ -448,6 +458,7 @@ async def _apply_pending(
         try:
             applied = await _await_bounded(
                 referrer, change, guard=guard, cancel_event=cancel_event, bound=bound,
+                unawaited=unawaited,
             )
         except _Abandoned as exc:
             logger.warning("Referrer %s: %s", referrer.id, exc)
@@ -490,8 +501,14 @@ async def update_before_source_removal(
     image_path: str, renames: Mapping[str, str], *, library=None,
     cancel_event=None, bound: float | None = None,
     placement: StagedPlacement | None = None,
+    unawaited: list[asyncio.Task] | None = None,
 ) -> ReferrerOutcome:
     """Run every Referrer that is on for an Image whose Source is about to be removed.
+
+    *unawaited*, when given, receives each async apply still running when
+    this awaiter itself is cancelled (a shutdown, #391): the caller hands it
+    its holds (``ReferrerOutcome(lingering=...).outlive``), so they are let
+    go only when it ends, as for an apply abandoned after the grace.
 
     *renames* maps each Source file that will be deleted to the output that
     replaces it. *library* is the Image's Library (None when it is in none);
@@ -527,6 +544,7 @@ async def update_before_source_removal(
         await _run_phases(
             outcome, phases, image_path, dict(renames), abandoned,
             cancel_event=cancel_event, bound=bound, placement=placement,
+            unawaited=unawaited,
         )
     except BaseException:
         # This awaiter was cancelled (or worse) mid-phase: the detached worker,
@@ -545,6 +563,7 @@ async def _run_phases(
     outcome: ReferrerOutcome, phases: list[list[Referrer]], image_path: str,
     renames: dict[str, str], abandoned: threading.Event, *,
     cancel_event, bound: float | None, placement: StagedPlacement | None = None,
+    unawaited: list[asyncio.Task] | None = None,
 ) -> None:
     """The hook's phase loop, filling *outcome*. Raises only on a cancel of
     the awaiter, after setting *abandoned*."""
@@ -581,7 +600,7 @@ async def _run_phases(
             outcome.notes.extend(stage.notes)
             await _apply_pending(
                 outcome, stage.pending, guard=stage.guard,
-                cancel_event=cancel_event, bound=bound,
+                cancel_event=cancel_event, bound=bound, unawaited=unawaited,
             )
             continue
         abandoned.set()
