@@ -2506,7 +2506,7 @@ Rules is shared; where the Images come from is behind a `Library`
 | `rules/schedule.py` | `_in_window` (weekday mask, time window, time zone), `_is_due` (interval) |
 | `rules/store.py` | the `rules` and `rules.state` preference rows, keyed `"<library id>:<platform id>"`, the legacy-key move, the one-time upgrade to Round-trip and the notice it leaves |
 | `rules/sweep.py` | `get_rules` / `set_rules` / `get_state` / `forget_converted`, the sweep, the converted history, `note_job_finished`, `run_forever` |
-| `rules/library.py` | `Library`, `Image`, `Platform`, `QueuedImage`, `LibraryUnreadable`, capability names, `duplicate_actions(library)` |
+| `rules/library.py` | `Library`, `Image`, `Platform`, `QueuedImage`, `LibraryUnreadable`, `Placement`, `PlacementUnknown`, `placed_in`, capability names, `duplicate_actions(library)` |
 
 **The interface.** A Library has an `id` (`"romm"`; a folder Library uses
 `"folder:<row id>"`, the row in `folder_libraries`, so a path with a `:` in it
@@ -2820,6 +2820,52 @@ and `automatable_modes`, as RomM's platform list carries),
 `GET/PUT /api/libraries/{id}/rules`, `POST .../rules/forget-converted`,
 `POST .../preview` and `POST .../run`. RomM's own `/api/romm/rules` and
 `/api/romm/auto-convert/*` are unchanged.
+`GET /api/libraries/{id}/placements` (any Library, #430) lists, for each of
+the Library's `platforms()` (one listing, passed to every row as `known`),
+the Platform's own `id` (the row's key: two RomM platforms can share a slug),
+its `placement` relative to the root, whether the folder exists, or the
+`PlacementUnknown` reason; the PATCH takes a folder Library's `layout`. The
+panel (`LibraryPlacement.svelte`) waits for the view's own Platform listing
+and drops a superseded answer (`src/lib/util/latestOnly.js`).
+
+**Placement** (#430). `Library.placement(platform, *, known=None) ->
+Placement` is the
+inverse of `platform_folder`: given a Platform slug (detection's vocabulary,
+so the Inbox can pass what `detect_platform` returned without asking which
+kind of Library it has), the folder its Images go in. `Placement` carries
+`platform`, `folder` (absolute) and `exists` (False: whoever places an Image
+creates the folder; `placement` never does). It raises `PlacementUnknown`
+when the answer can't be told, and `LibraryUnreadable` when the Library can't
+be read. Every implementation ends in `rules.library.placed_in(folder,
+platform, mapped=...)`, which fails closed: the folder must be inside a Volume
+(`volume_containment(...) is True`), not a file, and the folder evidence
+detection would read for an Image placed directly in it
+(`platform_detect.placed_platform`, the same mapping-then-name walk as
+`detect_platform`) must name this Platform or none, never another one.
+*known* is the Library's `platforms()` when the caller already listed them;
+a Library that needs its Platform records (RomM's folder names, carried as
+`Platform.folder`) reads them there instead of listing again.
+
+- `FolderLibrary` has a `layout` (`folder_libraries.layout`, migration 0023,
+  `"esde"` for existing rows): `esde` (`<root>/<platform>`), `romm`
+  (`<root>/roms/<platform>`) or `flat` (`<root>`, where the header decides).
+  For the first two it uses a folder already in the parent that names the
+  Platform by the user's mapping or by a name detection reads
+  (`platform_detect.platform_folders`, spelled as listed; two refuse), else a
+  new one named by `platform_detect.esde_folder_name(slug)` (ES-DE's system
+  name, `_ESDE_FOLDERS`, each value an alias of its slug) or the RomM slug.
+  The layout decides only where new Images go, and changing it moves
+  nothing: `platform_folder` finds the folder holding an existing Image
+  whatever the layout, directly under the root or, when that folder is the
+  root's `roms`, directly under `roms`.
+- `RommLibrary` names the folder by the RomM platform's `fs_slug` (`Platform.folder`; the slug
+  for a Platform RomM has no record of yet; two RomM platforms for one slug
+  refuse) and reads RomM's structure off the disk at the directory level, as
+  `RommClient.local_path` does: `<root>/roms/<name>` when `<root>/roms`
+  exists, `<root>/<name>/roms` when that exists, `<root>/<name>` when it
+  exists with neither `roms` nor `bios` in it (the root is RomM's `roms`
+  folder). Anything else refuses: RomM 5.3 declares the structure in a setting
+  this app doesn't read.
 
 **The Rules view** (`src/lib/components/views/RulesView.svelte`). A Library
 picker over `RuleEditor.svelte` (the former `RommAutomation.svelte`). The editor

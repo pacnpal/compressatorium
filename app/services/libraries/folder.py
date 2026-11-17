@@ -63,7 +63,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from typing import Any
 
 from logging_setup import get_logger
@@ -79,8 +79,12 @@ from services.rules.library import (
     ImageListing,
     LibraryDefaults,
     LibraryUnreadable,
+    Placement,
+    PlacementUnknown,
     Platform,
     QueuedImage,
+    folder_holding,
+    placed_in,
 )
 from services.tools import registry
 from utils.junk import is_junk_entry
@@ -93,6 +97,15 @@ from utils.path_utils import (
 logger = get_logger("folder_library")
 
 ID_PREFIX = "folder:"
+
+# A folder Library's layout (#430): where a Platform's Images go.
+# ES-DE and Batocera: <root>/<platform>, named as ES-DE names the system.
+ESDE = "esde"
+# RomM's standard structure: <root>/roms/<platform>, named by RomM's slug.
+ROMM = "romm"
+# Every Image in the root; the header decides its Platform.
+FLAT = "flat"
+LAYOUTS = (ESDE, ROMM, FLAT)
 
 # How long one walk serves later listings. Long enough to cover a sweep over
 # every ruled Platform; short enough that the Rules view is current.
@@ -216,6 +229,7 @@ class FolderLibrary(LibraryDefaults):
         self, *, record_id: int, root: str, name: str,
         schedule_enabled: bool = False, max_per_sweep: int = 25,
         es_frontend: bool = False, gamelists_folder: str | None = None,
+        layout: str | None = None,
     ) -> None:
         self.record_id = record_id
         self.id = f"{ID_PREFIX}{record_id}"
@@ -228,6 +242,8 @@ class FolderLibrary(LibraryDefaults):
         self._es_frontend = bool(es_frontend)
         # Its ES-DE gamelists folder (#387), or None.
         self._gamelists_folder = gamelists_folder or None
+        # Where a Platform's Images go (#430); one of LAYOUTS.
+        self.layout = layout if layout in LAYOUTS else ESDE
         # Held for a whole walk. Only ever acquired without blocking (`scan`).
         self._lock = threading.Lock()
         self._scan: Scan | None = None
@@ -264,7 +280,7 @@ class FolderLibrary(LibraryDefaults):
     def apply_settings(
         self, *, name: str | None = None, schedule_enabled: bool | None = None,
         max_per_sweep: int | None = None, es_frontend: bool | None = None,
-        gamelists_folder: str | None = None,
+        gamelists_folder: str | None = None, layout: str | None = None,
     ) -> None:
         """Change this Library's settings in place. Never waits for a walk.
         A *gamelists_folder* of ``""`` clears it."""
@@ -278,6 +294,8 @@ class FolderLibrary(LibraryDefaults):
             self._es_frontend = bool(es_frontend)
         if gamelists_folder is not None:
             self._gamelists_folder = gamelists_folder or None
+        if layout in LAYOUTS:
+            self.layout = layout
 
     def referrer_enabled(self, referrer_id: str) -> bool:
         """The gamelist.xml Referrer is on when the Library is used by an
@@ -289,6 +307,62 @@ class FolderLibrary(LibraryDefaults):
         if referrer_id == ES_FRONTEND_REFERRER and self._gamelists_folder:
             return {GAMELISTS_FOLDER: self._gamelists_folder}
         return {}
+
+    def _platforms_parent(self) -> str:
+        """The folder whose subfolders are the Platform folders, by layout."""
+        return os.path.join(self.root, "roms") if self.layout == ROMM else self.root
+
+    def platform_folder(self, path: str) -> str | None:
+        """The Platform folder holding *path* (#387): the folder directly under
+        the root that holds it, or, when that is the root's ``roms`` folder,
+        the one directly under ``roms`` (RomM style, #430).
+
+        Whatever the layout: the layout decides where new Images go, and
+        changing it moves nothing, so an Image already in ``<root>/ps2`` is
+        still in its Platform folder after a switch to RomM style (Codex
+        PRRT_kwDOQ9nULM64es7B). None for an Image directly in the root or in
+        ``roms``.
+        """
+        holding = folder_holding(self.root, path)
+        if holding is not None and os.path.basename(holding) == "roms":
+            return folder_holding(holding, path)
+        return holding
+
+    def placement(
+        self, platform: str, *, known: Sequence[Platform] | None = None,
+    ) -> Placement:
+        """Where *platform*'s Images go, by this Library's layout (#430).
+        *known* is unused: the folders themselves say where a Platform is.
+
+        Flat: the root. Otherwise a folder directly under the root (ES-DE
+        style) or under ``roms`` (RomM style) that already names the Platform,
+        by the user's mapping or a name detection reads, spelled as listed;
+        else a new one named as ES-DE (or RomM) names it. Two folders that
+        both name it refuse. Blocking (lists one folder).
+        """
+        slug = platform_detect.known_slug(platform)
+        if slug is None:
+            raise PlacementUnknown(f"{platform!r} is not a Platform")
+        try:
+            mapped = platform_detect.mapping_snapshot()
+        except MappingsUnavailable as exc:
+            raise PlacementUnknown(str(exc)) from exc
+        if self.layout == FLAT:
+            return placed_in(self.root, slug, mapped=mapped)
+        parent = self._platforms_parent()
+        try:
+            found = platform_detect.platform_folders(parent, slug, mapped=mapped)
+        except OSError as exc:
+            raise PlacementUnknown(f"{parent} can't be listed ({exc})") from exc
+        if len(found) > 1:
+            names = ", ".join(os.path.basename(f) for f in found)
+            raise PlacementUnknown(f"more than one folder is {slug} ({names})")
+        if found:
+            folder = found[0]
+        else:
+            name = slug if self.layout == ROMM else platform_detect.esde_folder_name(slug)
+            folder = os.path.join(parent, name)
+        return placed_in(folder, slug, mapped=mapped)
 
     def is_current(self) -> bool:
         """Still a registered Library (#303's token). Asked under the Findings store's lock."""
