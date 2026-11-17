@@ -2453,6 +2453,35 @@ API and the Rules view; the engine never reads those three), and:
   due and the next tick lists the new Images. The same rule for conversion and
   check Rules.
 
+**Where a Platform's Images go (#430).** `placement_folders(slugs)` is the
+inverse of `platform_folder(path)`: for each Platform slug, the absolute folder
+new Images of that Platform go in, under the root, which may not exist yet
+(whoever places an Image creates it). It takes several slugs because RomM
+answers them all from one read of its platform list; the Inbox asks for one.
+Every Library implements it, so a caller places output without asking what
+kind of Library it has.
+
+- A folder Library has a `layout` (`folder_libraries.layout`, migration 0024,
+  default `esde`; `PATCH /api/libraries/{id}` with `layout`):
+  `esde` puts a Platform in `<root>/<ES-DE folder>`
+  (`platform_detect.esde_folder`: `gc`, `megadrive`, `dreamcast`, ... and the
+  slug elsewhere), `romm` in `<root>/roms/<slug>` (RomM's slugs are the keys
+  of the detection table), and `flat` in the root itself. With `romm`,
+  `FolderLibrary.platform_folder` reads the Platform folders under
+  `<root>/roms` too, so the gamelist Referrer finds them.
+- `RommLibrary` uses RomM's structure: under `<root>/roms` when the root holds
+  one, else the root (the test `RommClient.local_path` makes), in the
+  platform's `fs_slug` when RomM already has it (an operator's folder binding
+  is kept), else the slug. A failed read of RomM raises `LibraryUnreadable`.
+- Every name is one of the Platform's aliases in `platform_detect._ALIASES`,
+  so an Image placed there is detected back as that Platform
+  (`tests/test_library_placement_430.py` checks every known slug in each
+  layout, and RomM's).
+- `libraries.placements(library)` (`GET /api/libraries/{id}/placements`,
+  bounded by `run_admitted`) lists every known Platform with its folder
+  relative to the root and `exists`; the Rules view shows a missing one as
+  "will be created". `describe()` carries `layout` (None for RomM).
+
 Capabilities (`RECOGNIZED_FILTER`, `CONVERTED_HISTORY`, `FAILED_HOLD`) say
 what a Library supports. Nothing in `rules/` asks what kind of Library it has.
 

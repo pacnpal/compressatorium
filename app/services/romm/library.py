@@ -12,11 +12,13 @@ batch is queued, and the re-pin backlog reported when the sweep ends.
 from __future__ import annotations
 
 import os
+from collections.abc import Iterable
 from types import MappingProxyType
 from typing import Any
 
 from fastapi.concurrency import run_in_threadpool
 from logging_setup import get_logger
+from services.platform_detect import canonical_slug
 from services.romm import RommError, romm_client
 from services.romm import repin as romm_repin
 from services.romm import settings as romm_settings
@@ -221,8 +223,38 @@ class RommLibrary(LibraryDefaults):
         root = self.root
         if not root:
             return None
+        return folder_holding(self._platforms_parent(root), path)
+
+    @staticmethod
+    def _platforms_parent(root: str) -> str:
+        """``<root>/roms`` when the root holds a ``roms`` folder, else the root:
+        the directory-level test ``RommClient.local_path`` makes. Stats the root."""
         roms = os.path.join(root, "roms")
-        return folder_holding(roms if os.path.isdir(roms) else root, path)
+        return roms if os.path.isdir(roms) else root
+
+    def placement_folders(self, slugs: Iterable[str]) -> dict[str, str]:
+        """Each Platform's folder in RomM's own structure (#430).
+
+        Under the folder :meth:`platform_folder` reads, named as RomM names
+        it: the platform's ``fs_slug`` when RomM already has the platform (an
+        operator's folder binding is kept), else the slug, which is RomM's own
+        (the detection table's keys are RomM's slugs). One read of RomM's
+        platform list for every slug. Blocking: asks RomM and stats the root.
+        """
+        root = self.root
+        if not root:
+            return {}
+        try:
+            catalog = romm_client.platforms()
+        except RommError as exc:
+            raise LibraryUnreadable(str(exc)) from exc
+        folders = {
+            canonical_slug(p.get("slug")): p["fs_slug"]
+            for p in catalog
+            if isinstance(p, dict) and p.get("slug") and p.get("fs_slug")
+        }
+        parent = self._platforms_parent(root)
+        return {slug: os.path.join(parent, folders.get(slug, slug)) for slug in slugs}
 
     def referrer_options(self, referrer_id: str) -> dict:
         """The gamelist Referrer's ES-DE gamelists folder from RomM's settings,

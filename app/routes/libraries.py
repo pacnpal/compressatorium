@@ -13,6 +13,7 @@ folder Library has no converted history, so a Rule asking for ``overwrite`` or
 from __future__ import annotations
 
 import asyncio
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException
 from fastapi.concurrency import run_in_threadpool
@@ -54,6 +55,8 @@ class UpdateLibraryRequest(BaseModel):
     es_frontend: bool | None = None
     # Its ES-DE gamelists folder (#387): inside a Volume; "" clears it.
     gamelists_folder: str | None = None
+    # Where each Platform's Images go (#430).
+    layout: Literal["esde", "romm", "flat"] | None = None
 
 
 class SweepRequest(BaseModel):
@@ -131,11 +134,32 @@ async def update_library(library_id: str, payload: UpdateLibraryRequest) -> dict
             max_per_sweep=payload.max_per_sweep,
             es_frontend=payload.es_frontend,
             gamelists_folder=folder,
+            layout=payload.layout,
         ),
     )
     if library is None:
         raise HTTPException(status_code=404, detail="Library not found")
     return await run_in_threadpool(libraries.describe, library)
+
+
+@router.get("/libraries/{library_id}/placements")
+async def library_placements(library_id: str) -> dict:
+    """Where new Images for each Platform would land in the Library (#430),
+    and which of those folders don't exist yet (they will be created)."""
+    library = _library(library_id)
+    try:
+        rows = await libraries.run_admitted(
+            libraries.placements, library, timeout=libraries.ROOT_CHECK_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        raise HTTPException(
+            status_code=504, detail="The Library's folder did not answer in time",
+        ) from None
+    except libraries.LibraryPathError as exc:
+        raise HTTPException(status_code=exc.status, detail=str(exc)) from None
+    except LibraryUnreadable as exc:
+        raise HTTPException(status_code=409, detail=f"Library unreadable: {exc}") from None
+    return {"library_id": library.id, "placements": rows}
 
 
 @router.delete("/libraries/{library_id}")

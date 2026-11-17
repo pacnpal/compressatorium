@@ -342,6 +342,19 @@ class Library(Protocol):
         Blocking (lists a folder, resolves paths): off the loop.
         """
 
+    def placement_folders(self, slugs: Iterable[str]) -> dict[str, str]:
+        """The folder each Platform's new Images go in, by Platform slug (#430).
+
+        The inverse of :meth:`platform_folder`: an absolute path under the
+        root, which may not exist yet (whoever places an Image creates it).
+        Named with the aliases detection reads, so an Image placed here is
+        detected back as the same Platform. Several slugs at once, because a
+        Library may need one lookup for all of them (RomM's platform list); the
+        Inbox asks for one. Empty when the Library has no root. Blocking (may
+        stat the root or ask RomM): off the loop. Raises
+        :class:`LibraryUnreadable` when the answer can't be read.
+        """
+
     def summary_fields(self) -> Mapping[str, Any]:
         """Extra keys every per-Platform summary starts with (and the result too)."""
 
