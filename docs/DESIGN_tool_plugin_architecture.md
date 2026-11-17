@@ -3599,17 +3599,54 @@ to the output that replaces it (a `.cue` and its `.bin` tracks all map to the
 `.chd`; an archive maps to the output extracted from it).
 
 **The Library, opt-in and phases (#383).** Both entry points take the Image's
-Library: `libraries.library_for(path)` resolves the path and returns the
-Library whose root holds it, or None, comparing canonical against canonical.
-Each root is resolved once (`_canonical_root`) and cached, so a symlinked
-`ROMM_LIBRARY_ROOT` still holds its Images and a lookup doesn't resolve every
-Library's mount; the cache is dropped whenever RomM's settings are saved
-(`romm.settings.save_generation()`), since its root, or where its symlink
-points, may have moved. With no database open only RomM is asked. Callers
-run it off the loop, bounded: the job through `JobManager._image_library` (a
-delete-step probe, so a lookup that times out or fails refuses the delete and
-removes nothing), the delete-plan route through `off_loop_bounded` (a failure
-becomes the item's "the source will be kept" warning).
+Library: `libraries.library_for(path)` returns the Library whose root holds
+the path, or None. Each root is resolved once (`_canonical_root`) and cached,
+so a lookup doesn't resolve every Library's mount; the cache is dropped
+whenever RomM's settings are saved (`romm.settings.save_generation()`), since
+its root, or where its symlink points, may have moved. With no database open
+only RomM is asked. Callers run it off the loop, bounded: the job through
+`JobManager._image_library` (a delete-step probe, so a lookup that times out
+or fails refuses the delete and removes nothing), the delete-plan route
+through `off_loop_bounded` (a failure becomes the item's "the source will be
+kept" warning).
+
+**Which Library: the path as listed (#413).** A folder Library's system folder
+can be a symlink that leads outside its root (`ROMs/psx -> ../esde_real/psx`).
+A file reached through the Library's folders is covered by the Referrers that
+Library opted into, wherever it lives, so `library_for` looks two ways:
+
+- *By listing:* the path as the caller was given it, made absolute with `.`
+  and `..` folded but never resolved, against each root as stored and as
+  resolved (so a path spelled through a symlinked `ROMM_LIBRARY_ROOT`, or
+  through its target, matches).
+- *By location:* the path resolved against each resolved root, as before
+  (codex 4588646131), so a file reached from outside every Library through a
+  link into one still belongs to that one.
+
+Both agree, or only one finds a Library: that Library. They name two
+different Libraries (`A/psx -> B/psx`): it raises `AmbiguousLibrary` rather
+than pick one. Callers pass the job's paths as the job was given them (the
+Source, the output, a Referrer target's folder), never resolved first. The
+rule is fail closed: a file a Referrer opted into on a Library would cover is
+never removed without that Referrer running. A lookup that can't tell keeps
+the Source: the job's `_image_library` and the delete plan's lookup turn
+`AmbiguousLibrary` into `referrers.UndecidedLibrary(target, reason)`, for which
+`registry.active` raises `ReferrerError` (kept wording "couldn't tell which
+Library holds it"), so the hook keeps the Source and the job completes with
+"converted, source kept: couldn't tell which Library holds it (...)", the
+confirmation says the Source will be kept, and `places_output` answers False.
+The staging check (`_needs_stage`) stages on it, and a Referrer's temp-file
+lookup (`base._hidden_slot`) fails its write. Finding the Library decides only
+which Referrers run, never what may be written: containment stays on resolved
+paths. A job whose Source leads out of every Volume is refused before it is
+queued (`_check_job_paths`), each Referrer checks its own targets
+(`volume_containment`, `rewrite_in_place`), and the Platform folder is still
+found on resolved paths (`folder_holding`), spelled as listed. A RomM ROM
+reached through such a link has no record `RommClient.local_path` maps inside
+RomM's root, so the swap finds no ROM and doesn't apply, as before. A chain of
+links that reaches a Library's folder from outside it and then leaves again
+(`links/psx -> ROMs/psx -> elsewhere/psx`, listed as `links/psx/...`) is in
+neither Library by listing or location; the frontend doesn't list it either.
 `registry.active(library)` picks the Referrers that run: every one with
 `opt_in = False`, and each `opt_in = True` one whose Library says
 `referrer_enabled(referrer_id)`. That method is on the `Library` contract
@@ -3730,7 +3767,8 @@ never half of one.
 **The temp file in a RomM Library (#404).** RomM indexes dot-prefixed files, so
 a scan between the temp file's write and its rename could list it. Both writers
 make their temp file through `base._temp_file(directory)`, which asks
-`libraries.library_for(directory)`: a Library declaring `HIDDEN_STAGING` (RomM)
+`libraries.library_for(directory)` (by listing, then location: #413; one it
+can't decide fails the write): a Library declaring `HIDDEN_STAGING` (RomM)
 gets a slot from the existing `staging.open_slot` (section 3.3.21) and the temp
 file is made in it, then renamed (or no-replace placed) into the Platform
 folder, which is one filesystem, so the rename stays atomic. The slot is closed
@@ -6309,7 +6347,8 @@ The RomM swap (#391) stages through the same helper.
   next time a job stages there. The name rules (`is_slot_name`,
   `slot_lock_name`) live in `partial_writes`, shared by writer and sweep.
 - **In the job pipeline (`JobManager._process_job`).** `_open_stage` asks
-  `libraries.library_for(output_path)` (detached, bounded): a Library with
+  `libraries.library_for(output_path)` (detached, bounded; the output path as
+  planned, never resolved, #413): a Library with
   `HIDDEN_STAGING` gets a slot, one without it (or no Library) writes in place
   exactly as before, and "can't tell" stages, since hiding the work is always
   safe. The slot opens with `make_folder=True` in the same bounded call,
