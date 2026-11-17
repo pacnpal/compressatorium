@@ -2428,6 +2428,92 @@ matches a ROM on one file's hash, so a part set has no digest to join on: the
 row is retired immediately with that as its reason rather than waiting out
 `repin_abandon_days` and reporting "output never appeared".
 
+#### Hasheous provider ids (#427)
+
+`hasheous._normalize` keeps each *Mapped* metadata entry's id as a named field
+in `provider_ids`, under RomM's own field names (`hasheous.PROVIDER_ID_FIELDS`
+maps a Hasheous source to a `METADATA_ID_FIELDS` name; the record's own id is
+`hasheous_id`). With the RomM Library's `hasheous_write_ids` switch on (off by
+default, and only while `repin_enabled` is on: `repin.hasheous_write_on`),
+every place that records a row also records the ids the source's cached
+Hasheous hit carries and the ROM lacks (`repin.hasheous_fills`, one cache read
+per batch, never a hash), under `metadata_ids[FILL_KEY]`. The rest of
+`metadata_ids` is RomM's own ids, as before. The three recorders share it: the
+plan route, the sweep's `after_queue` (which takes its plan generation before
+awaiting the lookup, so a manual plan recorded meanwhile stays the newer), and
+the swap Referrer's fallback re-pin (which does the bounded lookup before its
+never-abandoned record step, and records RomM's own ids alone on a timeout;
+it checks RomM's identity and binding again after that await, with none
+between the check and counting the swap, and records nothing if they moved).
+Those ids are recorded whatever the output format, a CHD
+included, since RomM never matched these ROMs; RomM's own ids are still
+carried only across a format that loses its match.
+
+At settle, `repin.ids_to_write(stored, rom)` is what reaches
+`update_rom_metadata`: the carried ids, and the fill ids only where RomM's
+record for the output has none (`fill_to_write`), so a match RomM made is
+never replaced, and none at all while the switch is off: a row recorded while
+it was on still settles, with RomM's carried ids only. A row expected to
+self-identify that did writes only the fill.
+`settle_swapped` keeps a row holding fill ids pending with only those, since
+they were never on the kept ROM; the next settle pass writes them there.
+`FILL_KEY` is not a provider field, so nothing that sends ids to RomM can pass
+it on, and no schema change was needed.
+
+The fill lookup resolves each source on its mount, so the plan route and
+`after_queue` call it through `repin.hasheous_fills`, which runs the blocking
+read on a detached thread under `FILL_LOOKUP_SECONDS` and records no ids when
+it doesn't answer in time. A row for a CHD or archive output (one only the
+Hasheous ids put there) is settled by the path join, as for a Platform RomM
+never hashes (`repin.joins_on_path`): RomM stores the digest of what is inside
+those files, so the output's own SHA-1 never finds its ROM.
+
+A Hasheous hit cached before the normaliser kept `provider_ids` has none to
+write. It still Recognizes its file everywhere, but while the ids are wanted
+and Hasheous is on, `routes.dat.cached_result_needs_refresh` has
+`/dat/match-batch/job` look it up again (the row is still served meanwhile).
+The rule is decided on read, like `is_unrankable_local_hit`; no row is dropped.
+
+#### The RomM ROM listing (#427)
+
+`GET /romm/roms` gains `unidentified` (only the ROMs `rom_identified` says
+RomM couldn't identify, decided before any ROM is stat'ed). Each row carries
+`romm_identified` and `dat_match`, the app's usable cached match
+(`cached_matches`, one read in the same worker as the stats), and the listing
+carries `romm` (`RommListingSummary`: `unidentified`, `recognized`,
+`recognized_unidentified`). It never hashes; "Recognize these" in the view
+posts the rows with no answer (on every page) to `/dat/match-batch/job`.
+Which rows count is `util/datMatchable.isDatMatchable`, the same rule the file
+list's match hydration uses: no folders, no folded split sets, no archives (a
+zip or 7z would be hashed as the container, which no DAT lists; RomM lists
+them as plain files, so the extension decides), and an extension the registry
+lets a user filter by. The view counts the archived rows apart and says they
+aren't recognized yet.
+
+In the browser the rows' matches are seeded into the DAT match store
+(`datMatching.seedListing`), only while the matching-policy generation is the
+one the listing was loaded under, and the views read the store alone, so a
+policy change clears them with every other badge. `startMatchJob` remembers
+each job's full path set and `hydrateFinishedJobs` (an effect in the RomM view,
+and once more right after "Recognize these" learns the job's id, in case it
+already ended) reads all of it back once the job ends, not only the rows on
+screen. The job stays tracked until that read answers; a failed read is
+retried a bounded number of times, and when every try fails the job stays
+tracked, with no loop of its own, for the next call to read again.
+
+Every read of the match cache, a lookup (`hydrate`) or a RomM listing, takes a
+place in one read order when it is requested (`_hydrateSeq`; a listing's comes
+from `beginListingRead`), and its answer writes a path only if no newer answer
+has written that path (`_claimPaths`, per path, never per map). A lookup
+reconciles every path it is the newest for: written when the answer has it,
+cleared when it doesn't. So a full job's read is not lost to a page's read
+that answered first, a refreshed listing's newer hit replaces a cached miss, a
+listing row with no match clears a stale one, and an older answer never undoes
+a newer one. `matchBatch` and `startMatchJob` take their place when they are
+asked, like a lookup. Which rows want a match is `util/datMatchable`:
+`needsDatMatch(match, wantsHasheousIds(settings))`, where wanting the ids
+needs re-pinning on too, as the backend's gate does.
+
 ### 3.3.9 Verify without delete (`ConversionJob.verify_after`)
 
 `delete_on_verify` verifies as a *precondition* for deleting the source. A
@@ -2550,7 +2636,8 @@ API and the Rules view; the engine never reads those three), and:
   `name` (file name, what name filters match), `title` (what the `name` order
   sorts by), `size`, `added_at` (any number that grows as Images are added;
   RomM uses the ROM id, so `newest` keeps its order), `recognized` (True,
-  False, or None when unknown; see below), `platform` (the console slug checked against
+  False, or None when unknown; see below), `identified` (the Library's own
+  verdict; defaults to `recognized`), `platform` (the console slug checked against
   `registry.mode_allows_platform`), `path`, and `record` (the Library's own
   record, for its hooks). `path` may be lazy: RomM passes `resolve_path`
   because mapping a record onto the mount stats it, and the sweep reads
@@ -2631,10 +2718,10 @@ removal mid-callback cannot recreate the Library's state. A real run drops holds
   turning it on for RomM is adding the capability.
 
 **Recognized filters.** `only_matched` takes Images whose `recognized` is
-True, `only_unmatched` those whose `recognized` is False. Unknown (None)
+True, `only_unmatched` those whose `identified` is False. Unknown (None)
 passes neither, so a Library that cannot say (nothing matched yet, or its
 match cache could not be read) never has an `only_unmatched` Rule convert
-everything. RomM always answers True or False, so its filters are unchanged.
+everything. RomM always answers True or False for both.
 
 **Bounded listing.** The sweep calls `library.images` through
 `subprocess_runner.run_detached` (a daemon thread under the process-wide probe
@@ -2652,18 +2739,30 @@ route pieces (422 mapping, the `platform_ids` reading where an empty list means
 none). RomM's forget route still calls `romm_auto.forget_converted`, which is
 the same engine call.
 
-**What `recognized` means.** It is the Library's own identification of the
-Image, and it is what the Rule filters `only_matched` / `only_unmatched` read.
-RomM fills it with RomM's "identified" status (`is_identified`, else any
-metadata-provider id), which is how `only_matched` has always behaved. That is
-a metadata match, often by file name, not Recognized in the glossary sense (a
-DAT or Hasheous hash match). The field is a stand-in until DAT-based
-recognition lands; code that needs a hash match must not read it as one. A
-folder Library fills it with Recognized proper: the cached `dat_matches` row
-for the file (one batched query per listing, `get_matches_batch`), True for a
-DAT or Hasheous hit, False for a miss still valid for the configured sources
-(`routes.dat.cached_result_usable`), None when nothing usable is cached.
-Listing never hashes.
+**What `recognized` and `identified` mean.** `recognized` says whether the
+Image is Recognized, and `only_matched` reads it; `identified` is the
+Library's own verdict, and `only_unmatched` reads it. Both come from the
+match cache through one shared read, `routes.dat.cached_matches(paths)`: the
+cached `dat_matches` row per path in one batched query (`get_matches_batch`),
+kept only when `cached_result_usable` says it is still valid for the
+configured sources. Listing never hashes.
+
+A folder Library fills `recognized` with that row: True for a DAT or Hasheous
+hit, False for a usable miss, None when nothing usable is cached; `identified`
+is the same value.
+
+RomM (#427) fills `identified` with RomM's "identified" status
+(`romm.library.rom_identified`: `is_identified`, else any metadata-provider
+id), a metadata match that is often by file name. `recognized` is True when
+RomM identified the ROM **or** the app's own cached match for its file is a
+hit (`romm.library.app_verdicts`), else False. So "only Recognized" includes
+the ROMs RomM couldn't identify that a DAT or Hasheous knows, while "only ROMs
+RomM could not identify" keeps reading RomM alone. `identified` needs no disk.
+For an unidentified ROM, `recognized` is lazy (`Image(resolve_recognized=...)`,
+like `resolve_path`): the first read maps the record onto the mount and reads
+the cache for that one path. `_passes_filters` reads it only for an Image its
+name and size filters kept, inside the bounded candidate probe, so a ROM those
+filters exclude never touches a stalled mount.
 
 **Storage.** Rules live in the `rules` preference row and run state in
 `rules.state`, one entry per `"<library id>:<platform id>"`. Callers read and

@@ -32,6 +32,7 @@ _SRC = Path(__file__).resolve().parents[1] / "src"
 _REGISTRY_JS = _SRC / "lib" / "tools" / "registry.js"
 _HELP_MODES_JS = _SRC / "lib" / "tools" / "helpModes.js"
 _FILE_ICON_JS = _SRC / "lib" / "util" / "fileIcon.js"
+_DAT_MATCHABLE_JS = _SRC / "lib" / "util" / "datMatchable.js"
 _FILE_BROWSER_JS = _SRC / "lib" / "stores" / "fileBrowser.svelte.js"
 
 
@@ -73,6 +74,8 @@ def _dump(tmp_path: Path) -> dict:
 
     # fileIcon.js imports registry (now in scope) + Lucide glyphs (unused here).
     file_icon_src = _strip_imports(_FILE_ICON_JS.read_text(encoding="utf-8"))
+    # datMatchable.js is pure; fileIcon.js takes its ARCHIVE_EXTS from it (#427).
+    matchable_src = _DAT_MATCHABLE_JS.read_text(encoding="utf-8")
     # helpModes.js is pure (no imports).
     help_modes_src = _strip_imports(_HELP_MODES_JS.read_text(encoding="utf-8"))
 
@@ -125,7 +128,7 @@ def _dump(tmp_path: Path) -> dict:
     )
 
     script = tmp_path / "derives_eval.mjs"
-    script.write_text(registry_src + "\n" + file_icon_src + "\n" + help_modes_src + dump)
+    script.write_text(registry_src + "\n" + matchable_src + "\n" + file_icon_src + "\n" + help_modes_src + dump)
     proc = subprocess.run([node, str(script)], capture_output=True, text=True, timeout=30)
     if proc.returncode != 0:
         pytest.fail(f"Could not evaluate the frontend registry modules via node:\n{proc.stderr}")

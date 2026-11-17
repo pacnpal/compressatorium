@@ -30,6 +30,9 @@ FILEENTRY_KEYS = {
     # the file (the RomM catalog view). Always None for a directory listing --
     # `name` stays the filename every filesystem action depends on.
     "display_name",
+    # RomM listings only (#427): RomM's own verdict and the app's cached match.
+    # Always None for a directory listing.
+    "romm_identified", "dat_match",
 }
 # On-disk search hits mirror the file schema minus the listing-only archive
 # summary / media / split fields, plus the ``in_archive`` marker.

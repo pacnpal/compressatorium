@@ -68,6 +68,7 @@ import os
 import re
 import threading
 import urllib.parse
+import zipfile
 from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -211,8 +212,17 @@ class FakeRomm:
         rom["full_path"] = f"{rom['fs_path']}/{fs_name}"
 
     def _rehash(self, rom: dict) -> None:
-        data = self.file_of(rom["id"]).read_bytes()
+        """Size and SHA-1 as RomM stores them. RomM 5.4.1 hashes a zip by its
+        decompressed contents, not the container (Codex on PR #442), so a zip
+        gets the SHA-1 of its largest member, which no hash of the zip file
+        itself can find."""
+        path = self.file_of(rom["id"])
+        data = path.read_bytes()
         rom["fs_size_bytes"] = len(data)
+        if path.suffix.lower() == ".zip":
+            with zipfile.ZipFile(path) as archive:
+                largest = max(archive.infolist(), key=lambda info: info.file_size)
+                data = archive.read(largest)
         rom["sha1_hash"] = hashlib.sha1(data).hexdigest()
 
     def _rename(self, rom_id: int, asked: str) -> tuple[int, Any]:
@@ -343,7 +353,12 @@ class FakeRomm:
                 }
                 if ids:
                     self.metadata_writes.append((rom["id"], ids))
-                    rom.update({name: int(value) for name, value in ids.items()})
+                    # RomM stores every provider id as an integer except
+                    # Flashpoint's, which is text.
+                    rom.update({
+                        name: value if name == "flashpoint_id" else int(value)
+                        for name, value in ids.items()
+                    })
                 return 200, dict(rom)
             return self._rename(int(rom_route.group(1)), field.group(1).decode())
         if method == "POST" and route == "/api/tasks/scan":

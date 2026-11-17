@@ -201,21 +201,19 @@ def _recognized(paths: list[str]) -> dict[str, bool | None]:
         return {}
     # The usability rule lives with the match routes that write these rows;
     # imported lazily, as dat_sync does, to keep the import graph one-way.
-    from routes.dat import cached_result_usable
-    from services.dat_store import dat_store
+    from routes.dat import cached_matches
 
     try:
-        cached = dat_store.get_matches_batch(paths)
+        cached = cached_matches(paths)
     except Exception:  # the match cache is a hint here, never a failure
         # Unknown, not "not Recognized": the engine's filters pass neither way
         # on None, so an only_unmatched Rule queues nothing rather than all.
         logger.warning("folder_library: could not read the match cache", exc_info=True)
         return dict.fromkeys(paths)
-    out: dict[str, bool | None] = {}
-    for path in paths:
-        row = cached.get(path)
-        out[path] = bool(row.get("matched")) if cached_result_usable(row) else None
-    return out
+    return {
+        path: None if cached.get(path) is None else bool(cached[path].get("matched"))
+        for path in paths
+    }
 
 
 class FolderLibrary(LibraryDefaults):

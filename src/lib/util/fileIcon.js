@@ -16,6 +16,8 @@ import Gamepad2 from '@lucide/svelte/icons/gamepad-2';
 import File from '@lucide/svelte/icons/file';
 
 import { registry } from '$lib/tools/registry.js';
+// One archive list, shared with the DAT matchable rule (#427).
+import { ARCHIVE_EXTS } from '$lib/util/datMatchable.js';
 
 // The registry (src/lib/tools/registry.js) owns *which* extensions each tool
 // handles. It has no notion of how a file should *look*, so this is the one
@@ -43,7 +45,6 @@ export const TOOL_MEDIA = {
 // plain file entry (a browsed archive already comes through as type 'archive',
 // handled before the extension check). These are the handheld-ROM packer's
 // outputs, and they win over the game bucket their tool would otherwise assign.
-export const ARCHIVE_EXTS = new Set(['.7z', '.zip']);
 
 // Build the disc / game extension sets from the registry so a new tool's inputs
 // and outputs are classified automatically from one `TOOL_MEDIA` entry. `.chd`
