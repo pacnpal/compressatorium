@@ -1615,6 +1615,28 @@ def cached_result_usable(payload: dict | None) -> bool:
     return payload.get("checked_remote") == stamp
 
 
+def cached_matches(paths: list[str]) -> dict[str, dict | None]:
+    """The usable cached match for each of *paths*, or None (#427).
+
+    The one read every "is this Image Recognized?" caller shares that must not
+    hash anything: a folder Library's Rule filters, the RomM Images and the
+    RomM ROM listing. Reads only the ``dat_matches`` cache, in one query, and
+    passes each row through :func:`cached_result_usable`, so a miss recorded
+    before a lookup source was switched on reads as unknown. A path whose row
+    is a hit is Recognized (``payload["matched"]``); ``DATStore``'s ranking is
+    already applied. Blocking; call it off the event loop. Raises when the
+    cache cannot be read: an unknown verdict, which the caller decides how to
+    treat.
+    """
+    if not paths:
+        return {}
+    cached = dat_store.get_matches_batch(list(paths))
+    return {
+        path: row if cached_result_usable(row) else None
+        for path, row in cached.items()
+    }
+
+
 async def drop_if_content_changed(path: str, result: dict) -> None:
     """Delete a cached match whose file demonstrably changed under it.
 

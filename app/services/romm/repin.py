@@ -65,6 +65,101 @@ def metadata_ids(rom: dict) -> dict:
     return {f: rom.get(f) for f in METADATA_ID_FIELDS if rom.get(f)}
 
 
+# ---- Hasheous provider ids (#427) ---------------------------------------------
+#
+# With the RomM Library's "write Hasheous ids" switch on, a row also holds the
+# provider ids the app's own Hasheous hit for the source carries, under this
+# key of ``metadata_ids``. They are written only where the ROM RomM ends up
+# with lacks them: once against the source ROM when recorded, again against the
+# output's ROM when settled. The rest of ``metadata_ids`` is RomM's own ids,
+# carried across and re-applied as before. No schema change: the key is not a
+# provider field, so nothing that sends ids to RomM can pass it on.
+FILL_KEY = "fill_if_missing"
+
+
+def hasheous_write_on() -> bool:
+    """Whether conversions write Hasheous provider ids onto RomM ROMs.
+
+    The per-Library switch, off by default. The ids travel through the re-pin
+    queue, so they are written only while re-pinning is on too.
+    """
+    from services.romm import settings as romm_settings
+
+    cfg = romm_settings.effective()
+    return bool(cfg.get("hasheous_write_ids")) and bool(cfg.get("repin_enabled", True))
+
+
+def hasheous_fills(sources: dict[str, dict]) -> dict[str, dict]:
+    """For each ``{source path: ROM record}``, the Hasheous ids the ROM lacks.
+
+    Read from the app's match cache for the source (never a hash): only a
+    Hasheous hit carries ``provider_ids``. An id the ROM already has is left
+    out, so a match RomM made is never replaced. A cache that can't be read
+    gives nothing to write. Blocking.
+    """
+    if not sources:
+        return {}
+    # Imported here, as the folder Library does: the usability rule lives with
+    # the match routes, and a service importing a route at load is backwards.
+    from routes.dat import cached_matches
+
+    keys = {path: os.path.realpath(path) for path in sources}
+    try:
+        matches = cached_matches(list(set(keys.values())))
+    except Exception:  # nothing written is the safe answer
+        logger.warning("romm_repin: could not read the match cache", exc_info=True)
+        return {}
+    out: dict[str, dict] = {}
+    for path, rom in sources.items():
+        match = matches.get(keys[path]) or {}
+        if not match.get("matched") or match.get("source") != "hasheous":
+            continue
+        fill = {
+            field: value for field, value in (match.get("provider_ids") or {}).items()
+            if field in METADATA_ID_FIELDS and value not in (None, "") and not rom.get(field)
+        }
+        if fill:
+            out[path] = fill
+    return out
+
+
+def row_ids(carried: dict, fill: dict) -> dict:
+    """What a row's ``metadata_ids`` holds: RomM's *carried* ids, and *fill*."""
+    return {**carried, FILL_KEY: dict(fill)} if fill else dict(carried)
+
+
+def ids_for(rom: dict, source_path: str | None, *, carry: bool = True) -> dict:
+    """The ``metadata_ids`` to record for converting *rom*'s file *source_path*.
+
+    RomM's own ids when *carry* (the format loses RomM's match), and the
+    Hasheous ids the ROM lacks when the switch is on. Empty when there is
+    nothing to write. Blocking.
+    """
+    carried = metadata_ids(rom) if carry else {}
+    fill = {}
+    if source_path and hasheous_write_on():
+        fill = hasheous_fills({source_path: rom}).get(source_path, {})
+    return row_ids(carried, fill)
+
+
+def carried_ids(stored: dict) -> dict:
+    """RomM's own ids in a row's ``metadata_ids``."""
+    return {k: v for k, v in (stored or {}).items() if k != FILL_KEY}
+
+
+def fill_to_write(stored: dict, rom: dict) -> dict:
+    """The row's Hasheous ids that *rom* (RomM's record) still lacks."""
+    return {
+        k: v for k, v in ((stored or {}).get(FILL_KEY) or {}).items() if not rom.get(k)
+    }
+
+
+def ids_to_write(stored: dict, rom: dict) -> dict:
+    """What the settle pass writes onto *rom*: RomM's carried ids, as before,
+    and the Hasheous ids *rom* doesn't already have."""
+    return {**fill_to_write(stored, rom), **carried_ids(stored)}
+
+
 def roms_by_local_path(
     paths: list[str], platform_id: int | None = None,
 ) -> dict[str, dict]:
@@ -719,22 +814,31 @@ def settle_swapped(output_path: str, rom_id: int) -> int:
     add a new ROM, so the provider ids never left it: there is nothing to
     re-apply. A row being settled right now is closed too; its settle then
     finds it closed and writes nothing. Returns how many rows were closed.
+
+    A pending row that also holds Hasheous ids (#427) is not closed: those were
+    never on the ROM. It keeps only them, and the settle pass writes them onto
+    the kept ROM once it finds the output there.
     """
+    closed = 0
     with _session() as session:
-        updated = session.query(_db.RommRepin).filter(
+        rows = session.query(_db.RommRepin).filter(
             _db.RommRepin.output_path == output_path,
             _db.RommRepin.source_rom_id == int(rom_id),
             _db.RommRepin.state.in_(("pending", SETTLING)),
-        ).update(
-            {
-                "state": "done",
-                "settled_at": utcnow_iso(),
-                "detail": f"RomM kept ROM {int(rom_id)}: its file was renamed to the output",
-            },
-            synchronize_session=False,
-        )
+        ).all()
+        for row in rows:
+            fill = (row.metadata_ids or {}).get(FILL_KEY)
+            if fill:
+                # One being settled right now writes onto whichever ROM holds
+                # the output, which is this kept one: left to finish.
+                row.metadata_ids = row_ids({}, fill)
+                continue
+            row.state = "done"
+            row.settled_at = utcnow_iso()
+            row.detail = f"RomM kept ROM {int(rom_id)}: its file was renamed to the output"
+            closed += 1
         session.commit()
-        return int(updated)
+    return closed
 
 
 class PendingRepin(NamedTuple):

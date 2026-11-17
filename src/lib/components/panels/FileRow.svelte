@@ -25,7 +25,14 @@
   // folder-input mode (makeps3iso) and only when the backend marked them
   // convertible. Drives the checkbox; the name button still navigates.
   const selectable = $derived(fileBrowser.isSelectable(entry));
-  const datMatch = $derived(datMatching.matchFor(path));
+  // The store's live answer, else the match a RomM listing shipped with the
+  // row (#427), so a cached match shows before any lookup comes back.
+  const datMatch = $derived(datMatching.matchFor(path) ?? entry?.dat_match ?? null);
+  // A RomM row RomM couldn't identify, that the app Recognizes: the name the
+  // DAT or Hasheous gives it goes beside RomM's own title (#427).
+  const appName = $derived(
+    entry?.romm_identified === false && datMatch?.matched ? datMatch.game_name : null,
+  );
   const chdMeta = $derived(chdMetadata.metadataFor(path));
 
   // A match resolved remotely (Hasheous) instead of from a locally imported
@@ -151,6 +158,11 @@
         {#if entry?.display_name}
           <span class="file-name" title={entry.name}>{entry.name}</span>
         {/if}
+        {#if appName}
+          <span class="app-name" title={matchTooltip}>
+            {remoteMatch ? 'Hasheous' : 'DAT'}: {appName}
+          </span>
+        {/if}
       </span>
       {#if isArchive}
         {@const summary = archiveItemSummary(entry)}
@@ -246,6 +258,14 @@
     min-width: 0;
   }
   .file-name {
+    color: var(--text-2);
+    font-size: var(--text-xs);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+  }
+  .app-name {
     color: var(--text-2);
     font-size: var(--text-xs);
     white-space: nowrap;

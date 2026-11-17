@@ -644,9 +644,13 @@ export const api = {
   getRommPlatforms: () =>
     fetchJson(`${API_BASE}/romm/platforms`, undefined, 'Failed to list RomM platforms'),
 
-  getRommRoms: (platformId) =>
+  // `unidentified`: only the ROMs RomM couldn't identify (#427).
+  getRommRoms: (platformId, { unidentified = false } = {}) =>
     fetchJson(
-      buildApiUrl('/romm/roms', { platform_id: platformId }),
+      buildApiUrl('/romm/roms', {
+        platform_id: platformId,
+        unidentified: unidentified ? 'true' : undefined,
+      }),
       undefined,
       'Failed to list RomM ROMs',
     ),

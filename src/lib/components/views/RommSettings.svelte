@@ -33,6 +33,7 @@
   let repinOnLoad = $state(true);
   let repinAbandonDays = $state(7);
   let swapKeepRomId = $state(false);
+  let hasheousWriteIds = $state(false);
   // Why the last attempt to turn the switch on was refused, kept on screen
   // (a toast is gone before anyone has read two permission names).
   let swapRefusal = $state('');
@@ -46,6 +47,7 @@
       repinOnLoad = s.repin_on_load !== false;
       repinAbandonDays = s.repin_abandon_days ?? 7;
       swapKeepRomId = s.swap_keep_rom_id === true;
+      hasheousWriteIds = s.hasheous_write_ids === true;
       loaded = true;
     }
   });
@@ -78,6 +80,7 @@
       repin_enabled: repinEnabled,
       repin_on_load: repinOnLoad,
       repin_abandon_days: Number(repinAbandonDays) || undefined,
+      hasheous_write_ids: hasheousWriteIds,
     };
   }
 
@@ -338,6 +341,12 @@
     <Checkbox
       bind:checked={repinOnLoad}
       label="Re-apply metadata automatically when this page loads"
+    />
+    <Checkbox
+      bind:checked={hasheousWriteIds}
+      disabled={!repinEnabled}
+      label="Write Hasheous ids onto converted ROMs"
+      description="When the app's Hasheous match knows a game RomM couldn't fully identify, write its provider ids (IGDB, TheGamesDB and others) onto the ROM in RomM after converting it, so RomM shows the cover and description. Only ids the ROM doesn't already have. Off by default; it needs the snapshot above, which carries them."
     />
     <label class="field">
       <span>Give up on a saved snapshot after</span>

@@ -25,8 +25,9 @@ from typing import Any, Protocol
 # Rules editor offers only what applies and the engine refuses the rest (see
 # `duplicate_actions`).
 #
-# Images carry the Library's own identification (``Image.recognized``), so a
-# Rule's only_matched / only_unmatched filters mean something.
+# Images say whether they are Recognized (``Image.recognized``) and carry the
+# Library's own verdict (``Image.identified``), so a Rule's only_matched /
+# only_unmatched filters mean something.
 RECOGNIZED_FILTER = "recognized_filter"
 # A Rule may use the ``overwrite`` and ``rename`` duplicate policies. Both need
 # the converted-history memory, keyed by Image key, to stay idempotent.
@@ -166,13 +167,17 @@ class Image:
     ``title`` what the ``name`` order sorts by. ``added_at`` is any number that
     grows as Images are added, newest largest.
 
-    ``recognized`` is the Library's own identification of the Image: True or
-    False when it knows, None when it cannot say. It is what a Rule's
-    ``only_matched`` / ``only_unmatched`` filters read. For RomM it is RomM's
-    "identified" status (a metadata-provider match, often by file name), not
-    Recognized in the glossary sense of a DAT or Hasheous hash match. It
-    stands in until DAT-based recognition lands; code that needs a hash match
-    must not read this field as one.
+    ``recognized`` says whether the Image is Recognized: True or False when the
+    Library knows, None when it cannot say. A Rule's ``only_matched`` filter
+    reads it. A folder Library reads its cached DAT or Hasheous match; RomM
+    counts an Image Recognized when RomM identified it (a metadata-provider
+    match, often by file name) or the app's own DAT or Hasheous match for its
+    file is a hit (#427).
+
+    ``identified`` is the Library's own verdict, which a Rule's
+    ``only_unmatched`` filter reads. It defaults to ``recognized``; RomM sets
+    it to RomM's "identified" status alone, so "only ROMs RomM could not
+    identify" keeps meaning exactly that once the app Recognizes some of them.
 
     ``path`` is the local path, or None when the Image has none here. A Library
     that can only work it out by touching the disk passes ``resolve_path``
@@ -183,8 +188,8 @@ class Image:
     """
 
     __slots__ = (
-        "_path", "_resolve_path", "added_at", "key", "name", "platform",
-        "recognized", "record", "size", "title",
+        "_path", "_resolve_path", "added_at", "identified", "key", "name",
+        "platform", "recognized", "record", "size", "title",
     )
 
     def __init__(
@@ -195,6 +200,7 @@ class Image:
         size: int = 0,
         added_at: float = 0,
         recognized: bool | None = None,
+        identified: bool | None = None,
         platform: str | None = None,
         title: str | None = None,
         path: str | None = None,
@@ -206,6 +212,7 @@ class Image:
         self.size = size
         self.added_at = added_at
         self.recognized = recognized
+        self.identified = recognized if identified is None else identified
         self.platform = platform
         self.title = title if title is not None else name
         self._path = path

@@ -125,6 +125,26 @@ class FileEntry(BaseModel):
     # ordinary single-file entry. The entry's ``path`` points at the ``.0`` part
     # (what RPCS3 mounts / verify reads) and ``size`` is the summed part size.
     split_parts: int | None = None
+    # RomM listings only (#427): whether RomM identified the ROM, and the app's
+    # own cached DAT or Hasheous match for its file (what ``/dat/matches/lookup``
+    # would return), None when the app has no usable one. Read from the match
+    # cache; listing never hashes. None for ordinary directory listings.
+    romm_identified: bool | None = None
+    dat_match: dict | None = None
+
+
+class RommListingSummary(BaseModel):
+    """Counts over the rows of one RomM listing (#427).
+
+    ``unidentified``: rows RomM couldn't identify. ``recognized``: rows that
+    are Recognized, by RomM or by the app's own cached DAT or Hasheous match.
+    ``recognized_unidentified``: rows RomM couldn't identify that the app
+    Recognizes, the ones still safe to convert on a DAT's word.
+    """
+
+    unidentified: int = 0
+    recognized: int = 0
+    recognized_unidentified: int = 0
 
 
 class RommDiagnostics(BaseModel):
@@ -145,6 +165,7 @@ class DirectoryListing(BaseModel):
     path: str
     entries: list[FileEntry]
     diagnostics: RommDiagnostics | None = None
+    romm: RommListingSummary | None = None
 
 
 class Volume(BaseModel):

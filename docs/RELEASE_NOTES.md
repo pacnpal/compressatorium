@@ -4,6 +4,21 @@
 
 ### Added
 
+- **Unidentified in RomM** (#427). The RomM view's Library tab has an
+  "Unidentified in RomM" filter that lists only the ROMs RomM couldn't
+  identify, with a count of how many of them the app Recognizes from your own
+  DATs or Hasheous, and the DAT or Hasheous name beside each one it does. The
+  list reads the matches the app already has and never hashes by itself;
+  "Recognize these" starts the usual match job for the rest. A ROM now counts
+  as Recognized when RomM identified it or the app's own match is a hit, so a
+  Rule set to "Only Recognized" converts these ROMs too, while "only ROMs RomM
+  could not identify" still means exactly that. A new switch in RomM Settings
+  → Metadata, off by default, writes the provider ids a Hasheous match carries
+  (IGDB, TheGamesDB and the rest RomM stores) onto the ROM in RomM after
+  converting it, through the same metadata update the re-pin uses and only
+  where the ROM has no id of that kind yet, so RomM shows the cover and
+  description. The RomM view also says that the app converts ROMs inside zip
+  and 7z archives, which RomM's converter can't.
 - **Every DAT's match is kept, and you choose which DAT names a file** (#424).
   A file whose hash is in two imported DATs used to keep only the later
   import's match; now both are kept. Each DAT shows its family (Redump,

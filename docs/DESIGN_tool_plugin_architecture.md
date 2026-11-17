@@ -2369,6 +2369,41 @@ matches a ROM on one file's hash, so a part set has no digest to join on: the
 row is retired immediately with that as its reason rather than waiting out
 `repin_abandon_days` and reporting "output never appeared".
 
+#### Hasheous provider ids (#427)
+
+`hasheous._normalize` keeps each *Mapped* metadata entry's id as a named field
+in `provider_ids`, under RomM's own field names (`hasheous.PROVIDER_ID_FIELDS`
+maps a Hasheous source to a `METADATA_ID_FIELDS` name; the record's own id is
+`hasheous_id`). With the RomM Library's `hasheous_write_ids` switch on (off by
+default, and only while `repin_enabled` is on: `repin.hasheous_write_on`),
+every place that records a row also records the ids the source's cached
+Hasheous hit carries and the ROM lacks (`repin.hasheous_fills`, one cache read
+per batch, never a hash), under `metadata_ids[FILL_KEY]`. The rest of
+`metadata_ids` is RomM's own ids, as before. The three recorders share it: the
+plan route, the sweep's `after_queue`, and the swap Referrer's fallback re-pin
+(`repin.ids_for`). Those ids are recorded whatever the output format, a CHD
+included, since RomM never matched these ROMs; RomM's own ids are still
+carried only across a format that loses its match.
+
+At settle, `repin.ids_to_write(stored, rom)` is what reaches
+`update_rom_metadata`: the carried ids, and the fill ids only where RomM's
+record for the output has none (`fill_to_write`), so a match RomM made is
+never replaced. A row expected to self-identify that did writes only the fill.
+`settle_swapped` keeps a row holding fill ids pending with only those, since
+they were never on the kept ROM; the next settle pass writes them there.
+`FILL_KEY` is not a provider field, so nothing that sends ids to RomM can pass
+it on, and no schema change was needed.
+
+#### The RomM ROM listing (#427)
+
+`GET /romm/roms` gains `unidentified` (only the ROMs `rom_identified` says
+RomM couldn't identify, decided before any ROM is stat'ed). Each row carries
+`romm_identified` and `dat_match`, the app's usable cached match
+(`cached_matches`, one read in the same worker as the stats), and the listing
+carries `romm` (`RommListingSummary`: `unidentified`, `recognized`,
+`recognized_unidentified`). It never hashes; "Recognize these" in the view
+posts the rows with no answer to `/dat/match-batch/job`.
+
 ### 3.3.9 Verify without delete (`ConversionJob.verify_after`)
 
 `delete_on_verify` verifies as a *precondition* for deleting the source. A
@@ -2470,7 +2505,8 @@ API and the Rules view; the engine never reads those three), and:
   `name` (file name, what name filters match), `title` (what the `name` order
   sorts by), `size`, `added_at` (any number that grows as Images are added;
   RomM uses the ROM id, so `newest` keeps its order), `recognized` (True,
-  False, or None when unknown; see below), `platform` (the console slug checked against
+  False, or None when unknown; see below), `identified` (the Library's own
+  verdict; defaults to `recognized`), `platform` (the console slug checked against
   `registry.mode_allows_platform`), `path`, and `record` (the Library's own
   record, for its hooks). `path` may be lazy: RomM passes `resolve_path`
   because mapping a record onto the mount stats it, and the sweep reads
@@ -2551,10 +2587,10 @@ removal mid-callback cannot recreate the Library's state. A real run drops holds
   turning it on for RomM is adding the capability.
 
 **Recognized filters.** `only_matched` takes Images whose `recognized` is
-True, `only_unmatched` those whose `recognized` is False. Unknown (None)
+True, `only_unmatched` those whose `identified` is False. Unknown (None)
 passes neither, so a Library that cannot say (nothing matched yet, or its
 match cache could not be read) never has an `only_unmatched` Rule convert
-everything. RomM always answers True or False, so its filters are unchanged.
+everything. RomM always answers True or False for both.
 
 **Bounded listing.** The sweep calls `library.images` through
 `subprocess_runner.run_detached` (a daemon thread under the process-wide probe
@@ -2572,18 +2608,27 @@ route pieces (422 mapping, the `platform_ids` reading where an empty list means
 none). RomM's forget route still calls `romm_auto.forget_converted`, which is
 the same engine call.
 
-**What `recognized` means.** It is the Library's own identification of the
-Image, and it is what the Rule filters `only_matched` / `only_unmatched` read.
-RomM fills it with RomM's "identified" status (`is_identified`, else any
-metadata-provider id), which is how `only_matched` has always behaved. That is
-a metadata match, often by file name, not Recognized in the glossary sense (a
-DAT or Hasheous hash match). The field is a stand-in until DAT-based
-recognition lands; code that needs a hash match must not read it as one. A
-folder Library fills it with Recognized proper: the cached `dat_matches` row
-for the file (one batched query per listing, `get_matches_batch`), True for a
-DAT or Hasheous hit, False for a miss still valid for the configured sources
-(`routes.dat.cached_result_usable`), None when nothing usable is cached.
-Listing never hashes.
+**What `recognized` and `identified` mean.** `recognized` says whether the
+Image is Recognized, and `only_matched` reads it; `identified` is the
+Library's own verdict, and `only_unmatched` reads it. Both come from the
+match cache through one shared read, `routes.dat.cached_matches(paths)`: the
+cached `dat_matches` row per path in one batched query (`get_matches_batch`),
+kept only when `cached_result_usable` says it is still valid for the
+configured sources. Listing never hashes.
+
+A folder Library fills `recognized` with that row: True for a DAT or Hasheous
+hit, False for a usable miss, None when nothing usable is cached; `identified`
+is the same value.
+
+RomM (#427) fills `identified` with RomM's "identified" status
+(`romm.library.rom_identified`: `is_identified`, else any metadata-provider
+id), a metadata match that is often by file name. `recognized` is True when
+RomM identified the ROM **or** the app's own cached match for its file is a
+hit (`romm.library.app_verdicts`), else False. So "only Recognized" includes
+the ROMs RomM couldn't identify that a DAT or Hasheous knows, while "only ROMs
+RomM could not identify" keeps reading RomM alone. `images()` maps only the
+unidentified ROMs onto their local paths for that read (every caller lists in
+a worker); an identified ROM keeps its lazy `resolve_path`.
 
 **Storage.** Rules live in the `rules` preference row and run state in
 `rules.state`, one entry per `"<library id>:<platform id>"`. Callers read and

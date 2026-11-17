@@ -544,7 +544,9 @@ def _queue_repin(plan: _Plan) -> bool:
     # Imported here: repin imports the job manager, which imports the hook.
     from services.romm import repin
 
-    ids = repin.metadata_ids(plan.rom or {})
+    # With the Hasheous switch on (#427), the ids the app's match found and
+    # the ROM lacks ride along.
+    ids = repin.ids_for(plan.rom or {}, plan.source)
     if not ids:
         return False
     # The output is in place already; "" says the path held nothing before
