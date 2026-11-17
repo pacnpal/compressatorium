@@ -456,7 +456,7 @@ app = FastAPI(
         "z3ds_compressor, nsz, maxcso, 7z (handheld ROM archives), "
         "makeps3iso (PS3 folder to ISO), nkit2iso (NKit to ISO), "
         "JWUDTool (Wii U WUD/WUX), extract-xiso (Xbox ISO to XISO), "
-        "and an eXoDOS repack for RomM"
+        "rom-converto (Xbox 360 ISO to ZAR), and an eXoDOS repack for RomM"
     ),
     version=get_version(),
     lifespan=lifespan,

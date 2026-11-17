@@ -447,6 +447,11 @@ export const api = {
     return fetchJson(buildApiUrl('/xiso-info', params), undefined, 'Failed to get Xbox image info');
   },
 
+  getRomConvertoInfo(path) {
+    const params = new URLSearchParams({ path });
+    return fetchJson(buildApiUrl('/rom-converto-info', params), undefined, 'Failed to get ZAR info');
+  },
+
   // Which tools the UI should show. Switch is reported unavailable when no
   // prod.keys are configured, so the sidebar can hide it entirely.
   getTools() {
@@ -542,6 +547,17 @@ export const api = {
     return fetchJson(buildApiUrl('/xiso-verify', params), undefined, 'Failed to verify XISO');
   },
 
+  verifyRomConverto(path, { onProgress } = {}) {
+    if (onProgress) {
+      const params = new URLSearchParams({ path });
+      return verifyEventSource(buildApiUrl('/rom-converto-verify/events', params), onProgress, {
+        failureFallback: 'ZAR verification failed',
+      });
+    }
+    const params = new URLSearchParams({ path });
+    return fetchJson(buildApiUrl('/rom-converto-verify', params), undefined, 'Failed to verify ZAR');
+  },
+
   verifyExodos(path, { onProgress } = {}) {
     const params = new URLSearchParams({ path });
     if (onProgress) {
@@ -598,6 +614,10 @@ export const api = {
 
   verifyBatchXiso(paths, opts) {
     return runBatchVerify(`${API_BASE}/xiso-verify-batch/events`, paths, opts);
+  },
+
+  verifyBatchRomConverto(paths, opts) {
+    return runBatchVerify(`${API_BASE}/rom-converto-verify-batch/events`, paths, opts);
   },
 
   verifyBatchExodos(paths, opts) {

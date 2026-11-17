@@ -21,6 +21,31 @@
   its last poll and the files waiting, in progress, held and processed.
   Database migration 0024 adds the Inboxes. Archives, DAT names and asking
   RomM to scan come next (#432, #433).
+- **Xbox 360 disc images to ZAR, with rom-converto** (#422). A new tool,
+  rom-converto (the converter RomM ships, at the version RomM pins, v0.24.0),
+  packs an Xbox 360 `.iso` into a `.zar`, the format Xenia mounts directly.
+  Pick an Xbox 360 image, choose **Xbox 360 ISO → ZAR**, and get `Game.zar`
+  beside it; it works from a Rule too, and the file inspector, Help and the
+  Rules editor show it like any other tool. Like the Xbox tool it looks inside
+  each `.iso` and is only offered on Xbox 360 images (an original Xbox image
+  can't become a ZAR). Verify has rom-converto decode every block and check its
+  hash. The source ISO is always kept: a ZAR holds the disc's files, not the
+  disc, and nothing turns a ZAR back into an ISO, so the output can't be
+  Round-tripped. The convert panel, the Rule editor, the API and the CLI say
+  so where the delete option would be. Auto still trims Xbox 360 to XISO; pick
+  ZAR by hand or in a Rule. The Docker image downloads the release for amd64
+  and arm64 and checks its SHA-256; `ROM_CONVERTO_PATH` points elsewhere, and a
+  missing or broken binary hides the tool with the reason while the rest of
+  the app keeps working. RomM's own converter targets `zar` for Xbox 360, so
+  the RomM view no longer marks Xbox 360 as a Platform only RomM converts, and
+  **Import RomM's targets as Rules** now creates a ZAR Rule for it. Whether a
+  ZAR made here boots in a current Xenia build hasn't been checked yet.
+- **Progress for tools that write under a temp name of their own** (#422).
+  The no-progress bound used to watch only the output file. A tool that writes
+  a hidden temp file and renames it at the end (rom-converto does) looked idle
+  for its whole run and would have been stopped for it. Such a tool now runs in
+  a private work folder whose growth counts as progress, and the job shows
+  bytes written and the rate as usual.
 - **A Library says where a Platform's Images go** (#430). A folder Library
   has a **Layout** in the Rules view: ES-DE / Batocera style
   (`<root>/ps2`, the default and how existing Libraries were always read),

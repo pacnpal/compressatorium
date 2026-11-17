@@ -127,6 +127,14 @@ def _cases():
         path.write_bytes(b"\0" * 0x10000 + b"MICROSOFT*XBOX*MEDIA" + b"\0" * 64)
         return str(path)
 
+    def xbox360(tmp_path: Path, name: str) -> str:
+        """A trimmed Xbox 360 image (default.xex at its root), as ZAR takes."""
+        from .test_xiso_service import build_image
+
+        path = tmp_path / name
+        build_image(path, layout="XISO", exe="default.xex")
+        return str(path)
+
     def exodos_game(tmp_path: Path, name: str) -> str:
         """An eXoDOS-shaped game zip plus its template in the fixture's tree."""
         template = tmp_path / "!dos" / "Abaron" / "dosbox.conf"
@@ -241,6 +249,13 @@ def _cases():
             "accept",
         ),
         (
+            "zar_compress_xbox360_iso_accept",
+            lambda t: xbox360(t, "game.iso"),
+            ConversionMode.ZAR_COMPRESS,
+            DuplicateAction.SKIP,
+            "accept",
+        ),
+        (
             "exodos_repack_game_zip_accept",
             lambda t: exodos_game(t, "Abaron (1995).zip"),
             ConversionMode.EXODOS_REPACK,
@@ -266,6 +281,22 @@ def _cases():
             "xiso_not_xbox_reject",  # XISO_NOT_XBOX_IMAGE: right suffix, no XDVDFS
             lambda t: write(t, "game.iso"),
             ConversionMode.XISO_REWRITE,
+            DuplicateAction.SKIP,
+            "reject",
+        ),
+        (
+            # ROM_CONVERTO_NOT_XBOX360_IMAGE: an XDVDFS volume, but no Xbox 360
+            # boot executable to say which console.
+            "zar_not_xbox360_reject",
+            lambda t: xbox(t, "game.iso"),
+            ConversionMode.ZAR_COMPRESS,
+            DuplicateAction.SKIP,
+            "reject",
+        ),
+        (
+            "zar_bad_ext_reject",  # ROM_CONVERTO_BAD_EXTENSION
+            lambda t: write(t, "game.wud"),
+            ConversionMode.ZAR_COMPRESS,
             DuplicateAction.SKIP,
             "reject",
         ),
@@ -1141,8 +1172,14 @@ async def test_cancelling_during_that_probe_returns_now(monkeypatch) -> None:
         # A file named .zip that is not an eXoDOS game zip.
         (("Bundle.zip",), ConversionMode.EXODOS_REPACK,
          convert_routes.SkipReason.EXODOS_NOT_REPACKABLE),
+        # An .iso that holds no Xbox 360 filesystem.
+        (("game.iso",), ConversionMode.ZAR_COMPRESS,
+         convert_routes.SkipReason.ROM_CONVERTO_NOT_XBOX360_IMAGE),
     ],
-    ids=["xiso_content_reason", "jwud_default_reason", "exodos_content_reason"],
+    ids=[
+        "xiso_content_reason", "jwud_default_reason", "exodos_content_reason",
+        "zar_content_reason",
+    ],
 )
 async def test_converts_path_rejection_names_the_tools_reason(
     parity_env, names, mode, reason,

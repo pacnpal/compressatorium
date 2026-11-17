@@ -60,6 +60,14 @@ _TOOLS = {
         "events": "verify_xiso_events",
         "batch": "verify_xiso_batch_events",
     },
+    # rom-converto's ZAR, checked by `xenon verify`.
+    "rom_converto": {
+        "ext": ".zar",
+        "service_attr": "rom_converto_service",
+        "sync": "verify_rom_converto",
+        "events": "verify_rom_converto_events",
+        "batch": "verify_rom_converto_batch_events",
+    },
     # The eXoDOS repack's product, checked in Python with no subprocess.
     "exodos": {
         "ext": ".dosz",
