@@ -50,3 +50,16 @@ def load_presets(path: Path = PRESETS_FILE) -> dict:
 def cached_presets() -> dict:
     """The shipped table, loaded once per process."""
     return load_presets()
+
+
+def served_presets() -> dict:
+    """The table plus ``implicit_codecs``: mode -> the codecs its tool uses when
+    none is chosen, read from the mode specs so no list is kept twice."""
+    from services.tools import registry
+
+    implicit = {
+        spec.mode: list(codecs)
+        for spec in registry.mode_specs()
+        if (codecs := getattr(spec, "implicit_codecs", ()))
+    }
+    return {**cached_presets(), "implicit_codecs": implicit}

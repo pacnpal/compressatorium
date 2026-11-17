@@ -9,4 +9,4 @@ router = APIRouter()
 @router.get("/compat-presets")
 async def get_compat_presets() -> dict:
     """The targets and the modes and codecs each reads, every entry sourced."""
-    return compat_presets.cached_presets()
+    return compat_presets.served_presets()

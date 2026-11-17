@@ -46,7 +46,12 @@
   const compatTargets = $derived(compat.targetsForMode(spec?.mode));
   const compatTarget = $derived(compatTargets.find((t) => t.id === compatId) ?? null);
   const compatNote = $derived(
-    compatWarning(compatTarget, spec?.mode, style === 'multi' ? selection : [singleCodec]),
+    compatWarning(
+      compatTarget,
+      spec?.mode,
+      style === 'multi' ? selection : [singleCodec],
+      compat.table?.implicit_codecs,
+    ),
   );
 
   onMount(() => {

@@ -8000,7 +8000,9 @@ once, and `tools/compat.js` holds the two pure rules both surfaces share
 entry for the current mode, set `preferred` on choosing one, and show the
 warning for a codec outside `codecs`. The warning is advisory: nothing is
 disabled and a Rule still saves and runs. A mode a target has no entry for gives
-no opinion. `tests/test_compat_presets_429.py` checks every mode and codec in
+no opinion. An empty selection is not "nothing": chdman then sends no `-c` and uses its own
+codecs, so `ModeSpec.implicit_codecs` names them once, `GET /api/compat-presets` serves them as
+`implicit_codecs`, and `compatWarning` checks those instead. `tests/test_compat_presets_429.py` checks every mode and codec in
 the file against the tool registry (backend `ModeSpec.codecs` and the
 frontend `registry.js` codec lists), so a rename breaks a test, not the picker.
 

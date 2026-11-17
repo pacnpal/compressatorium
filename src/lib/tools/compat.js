@@ -16,12 +16,23 @@ export function compatTargetsForMode(table, mode) {
  * The warning for codecs a target does not read, or null. Advisory only: a
  * caller never disables anything on it. "none" is never warned about, and a
  * mode the target has no entry for gives no opinion.
+ *
+ * An empty selection is not "nothing": the tool then uses its own codecs, which
+ * the server lists per mode in `implicit` (the table's `implicit_codecs`), so
+ * those are checked instead. This file keeps no list of its own.
  */
-export function compatWarning(target, mode, codecs) {
+export function compatWarning(target, mode, codecs, implicit) {
   const entry = compatEntry(target, mode);
   if (!entry) return null;
-  const unread = (codecs ?? []).filter((c) => c && c !== 'none' && !entry.codecs.includes(c));
+  const chosen = (codecs ?? []).filter(Boolean);
+  const fallback = chosen.length === 0 ? (implicit?.[mode] ?? []) : [];
+  const unread = (chosen.length ? chosen : fallback).filter(
+    (c) => c !== 'none' && !entry.codecs.includes(c),
+  );
   if (unread.length === 0) return null;
   const list = unread.join(', ');
-  return `${target.label} may not read ${list}. It reads ${entry.codecs.join(', ')}.`;
+  const lead = fallback.length
+    ? `With no codec chosen the tool uses ${fallback.join(', ')}, and ${target.label} may not read ${list}.`
+    : `${target.label} may not read ${list}.`;
+  return `${lead} It reads ${entry.codecs.join(', ')}.`;
 }

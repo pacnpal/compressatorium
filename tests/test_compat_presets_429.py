@@ -106,7 +106,7 @@ async def test_the_route_serves_the_table_and_is_mounted():
 
     body = await compat.get_compat_presets()
 
-    assert body == _table()
+    assert body["targets"] == _table()["targets"]
     assert "/api/compat-presets" in main.app.openapi()["paths"]
 
 
@@ -148,3 +148,52 @@ def test_the_warning_names_unread_codecs_and_ignores_none_and_unknown_modes(tmp_
 
     assert "zstd" in warn and "NetherSX2" in warn
     assert ok is None and none is None and other_mode is None and no_target is None
+
+
+def test_the_server_names_the_codecs_a_tool_uses_when_none_is_chosen():
+    """chdman sends no `-c` for an empty selection and uses its own defaults.
+    The mode declares them once; the served table carries them to the pickers."""
+    from services import compat_presets
+    from services.tools import registry
+
+    implicit = compat_presets.served_presets()["implicit_codecs"]
+
+    assert implicit["createcd"] == ["cdlz", "cdzl", "cdfl"]
+    assert implicit["createcd"] == list(registry.spec("createcd").implicit_codecs)
+    # Only modes that declare some are listed.
+    assert all(registry.spec(mode).implicit_codecs for mode in implicit)
+    assert "dolphin_rvz" not in implicit
+
+
+def test_an_empty_selection_is_checked_against_the_tools_implicit_codecs(tmp_path):
+    node = _find_node()
+    if node is None:
+        pytest.skip("node not available")
+    src = (Path(__file__).resolve().parents[1] / "src/lib/tools/compat.js").read_text("utf-8")
+    # The shared logic holds no list of its own.
+    assert "cdlz" not in src
+    script = tmp_path / "compat_empty_eval.mjs"
+    script.write_text(
+        src
+        + "\nconst t = {label: 'NetherSX2', entries: [{mode: 'createcd', codecs: ['zlib']}]};\n"
+        + "const implicit = {createcd: ['cdlz', 'cdzl', 'cdfl']};\n"
+        + "process.stdout.write(JSON.stringify([\n"
+        + "  compatWarning(t, 'createcd', [], implicit),\n"
+        + "  compatWarning(t, 'createcd', ['none'], implicit),\n"
+        + "  compatWarning(t, 'createcd', ['zlib'], implicit),\n"
+        + "  compatWarning(t, 'createcd', [], {}),\n"
+        + "]));\n",
+        encoding="utf-8",
+    )
+    proc = subprocess.run([node, str(script)], capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0, proc.stderr
+    empty, none, zlib, no_defaults = json.loads(proc.stdout)
+
+    assert "cdlz" in empty and "NetherSX2" in empty and "no codec" in empty.lower()
+    assert none is None and zlib is None and no_defaults is None
+
+
+def test_both_views_pass_the_served_implicit_codecs_to_the_warning():
+    src = Path(__file__).resolve().parents[1] / "src" / "lib"
+    for rel in ("components/panels/CompressionPicker.svelte", "components/views/RuleEditor.svelte"):
+        assert "implicit_codecs" in (src / rel).read_text(encoding="utf-8"), rel

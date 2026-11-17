@@ -53,6 +53,11 @@ class ModeSpec:
     # (dolphin-tool: zstd 1-22, bzip2/lzma/lzma2 1-9). A codec not listed
     # takes no level of its own. Read through :meth:`level_range`.
     codec_levels: tuple[tuple[str, int, int, int], ...] = ()
+    # The codecs the tool itself uses when a job chooses none (chdman sends no
+    # ``-c`` then and falls back to its own list). Empty when the tool names
+    # none or the mode has no codec choice. Served with the compatibility
+    # presets so the pickers can warn about an empty selection (#429).
+    implicit_codecs: tuple[str, ...] = ()
     # The block size this mode writes, for a tool that needs one (dolphin-tool
     # refuses GCZ, RVZ and WIA without `-b`); None when the mode takes none.
     block_size: int | None = None
