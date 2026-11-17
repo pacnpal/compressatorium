@@ -41,10 +41,11 @@
     not_intact: 'Not Intact',
     source_kept: 'Source kept',
     duplicate: 'Duplicate',
+    romm_swap: 'RomM swap unfinished',
   };
   const KIND_TONE = {
     platform_conflict: 'warning', not_intact: 'error', source_kept: 'warning',
-    duplicate: 'info',
+    duplicate: 'info', romm_swap: 'warning',
   };
   function bytes(n) {
     const size = Number(n) || 0;
@@ -304,10 +305,12 @@
             >
               Open folder
             </Button>
-            <!-- A check Rule's "not Intact" (#305) and a Source a Rule could
-                 not delete (#329) are about the file, not its Platform: Open
-                 folder reaches Verify, the backup and the file itself. -->
-            {#if row.kind !== 'not_intact' && row.kind !== 'source_kept' && row.kind !== 'duplicate'}
+            <!-- A check Rule's "not Intact" (#305), a Source a Rule could
+                 not delete (#329) and an unfinished RomM swap (#392) are about
+                 the file, not its Platform: Open folder reaches Verify, the
+                 backup and the file itself. -->
+            {#if row.kind !== 'not_intact' && row.kind !== 'source_kept' && row.kind !== 'duplicate'
+              && row.kind !== 'romm_swap'}
               <Button
                 variant="ghost" size="sm" icon={mapIcon}
                 ariaLabel={`Set the Platform of the folder holding ${findingName(row)}`}

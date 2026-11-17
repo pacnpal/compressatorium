@@ -3128,15 +3128,7 @@ class JobManager:
         moved; the records' carrying is logged, never raised."""
         if slot.placed:
             return
-        placed = slot.place(self._place_names(job, write_path))
-        for staged, final in placed:
-            for store in (verification_store, chd_metadata_store):
-                try:
-                    store.move_blocking(staged, final)
-                except Exception:
-                    logger.warning(
-                        "Could not carry the records of %s to %s", staged, final, exc_info=True,
-                    )
+        staging.carry_records_blocking(slot.place(self._place_names(job, write_path)))
 
     async def _place_staged(
         self, job: ConversionJob, slot: staging.StagedOutput | None, write_path: str,
@@ -3375,14 +3367,9 @@ class JobManager:
         record there when placing failed before the job wrote one. Blocking;
         logged, never raised."""
         if kept != before:
-            for name in names:
-                for store in (verification_store, chd_metadata_store):
-                    try:
-                        store.move_blocking(os.path.join(before, name), os.path.join(kept, name))
-                    except Exception:
-                        logger.warning(
-                            "Could not carry the records of %s to %s", name, kept, exc_info=True,
-                        )
+            staging.carry_records_blocking(
+                (os.path.join(before, name), os.path.join(kept, name)) for name in names
+            )
         if not job.check_passed:
             return
         where = os.path.join(kept, os.path.basename(job.output_path))

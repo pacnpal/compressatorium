@@ -329,6 +329,24 @@ class StagedOutput:
         return True  # anything else (a stat that failed) counts as there
 
 
+def carry_records_blocking(moves: Iterable[tuple[str, str]]) -> None:
+    """Carry each moved entry's store records (its check, its CHD metadata)
+    from where it was to where it is now: ``(old path, new path)`` pairs.
+    One helper for every move of a staged output: the job placing it or
+    setting it aside, and RomM swap recovery placing a kept one (#392).
+    Blocking; logged, never raised."""
+    # Imported here: both stores sit above this low-level module.
+    from services.chd_metadata_store import chd_metadata_store
+    from services.verification_store import verification_store
+
+    for old, new in moves:
+        for store in (verification_store, chd_metadata_store):
+            try:
+                store.move_blocking(old, new)
+            except Exception:
+                logger.warning("Could not carry the records of %s to %s", old, new, exc_info=True)
+
+
 def _unlink_quietly(name: str, dir_fd: int) -> None:
     try:
         os.unlink(name, dir_fd=dir_fd)
@@ -368,6 +386,16 @@ def _claim(
     slot_fd = -1
     try:
         fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BaseException:
+        _unlink_quietly(lock_name, stage_fd)  # made by this call (O_EXCL)
+        os.close(lock_fd)
+        raise
+    if not partial_writes.same_file(stage_fd, lock_name, os.fstat(lock_fd)):
+        # Unlinked between its creation and the flock: not this slot's lock
+        # any more, and not this call's to remove. Try another name.
+        os.close(lock_fd)
+        return None
+    try:
         try:
             os.mkdir(name, 0o700, dir_fd=stage_fd)
         except FileExistsError:
@@ -391,6 +419,77 @@ def _claim(
             pass
         _unlink_quietly(lock_name, stage_fd)
         os.close(lock_fd)
+        raise
+
+
+# Taking an existing slot's lock again: a lock file a crashed holder left is
+# reused, so only a live holder (its flock) refuses.
+_RELOCK_FLAGS = os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | _CLOEXEC
+
+
+def _relock(stage_fd: int, lock_name: str) -> int:
+    """Take an existing slot's lock: its descriptor, flocked. Raises
+    ``BlockingIOError`` while anyone else holds it.
+
+    A failed flock closes only the descriptor (Codex 4595373632): a live
+    holder's lock file is left as it is. A flock that succeeded counts only
+    while the name still points at the file locked
+    (``partial_writes.same_file``, as the sweeps check): a holder's ``keep``
+    may unlink it between the open and the flock, and another opener make
+    and lock a new one, so a lock on the unlinked file is let go and the
+    current one tried (Codex PRRT_kwDOQ9nULM64SAMh)."""
+    for _ in range(_CLAIM_ATTEMPTS):
+        lock_fd = os.open(lock_name, _RELOCK_FLAGS, 0o600, dir_fd=stage_fd)
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BaseException:
+            os.close(lock_fd)
+            raise
+        if partial_writes.same_file(stage_fd, lock_name, os.fstat(lock_fd)):
+            return lock_fd
+        os.close(lock_fd)
+    raise BlockingIOError(errno.EAGAIN, "The slot's lock keeps changing", lock_name)
+
+
+def reopen_slot(path: str) -> StagedOutput:
+    """A slot a run before this one left behind (a ``park-`` slot holding a
+    parked Source, or a kept output's slot), taken again by RomM swap
+    recovery (#392) to move what it holds and remove it once empty.
+
+    The same guards as :func:`open_slot`: the folder must be inside a
+    configured Volume, and the folder, the stage folder and the slot are
+    opened along their real path with no link followed. The slot's lock is
+    taken (``BlockingIOError`` while anyone else holds it). The slot is not
+    journaled: :meth:`StagedOutput.close` (only once :meth:`contents` is
+    empty) or :meth:`StagedOutput.keep` lets go of it. Raises ``OSError``;
+    ``ValueError`` when *path* is not a slot in a stage folder."""
+    slot_name = os.path.basename(path)
+    stage = os.path.dirname(path)
+    if os.path.basename(stage) != STAGE_DIR_NAME or not slot_name.startswith(
+        (PARK_PREFIX, partial_writes.SLOT_PREFIX),
+    ) or slot_name.endswith(partial_writes.LOCK_SUFFIX):
+        raise ValueError(f"Not a staging slot: {path}")
+    real, folder_fd = _open_folder(os.path.dirname(stage), make=False)
+    stage_fd = -1
+    try:
+        stage_fd = partial_writes.open_stage_folder(folder_fd, create=False)
+        lock_name = partial_writes.slot_lock_name(slot_name)
+        lock_fd = _relock(stage_fd, lock_name)
+        try:
+            slot_fd = os.open(slot_name, _DIR_FLAGS, dir_fd=stage_fd)
+        except BaseException:
+            # Locked by this call, so its lock file is this call's to remove.
+            _unlink_quietly(lock_name, stage_fd)
+            os.close(lock_fd)
+            raise
+        return StagedOutput(
+            folder=real, folder_fd=folder_fd, stage_fd=stage_fd, slot_name=slot_name,
+            slot_fd=slot_fd, lock_fd=lock_fd, marker=None,
+        )
+    except BaseException:
+        if stage_fd >= 0:
+            os.close(stage_fd)
+        os.close(folder_fd)
         raise
 
 

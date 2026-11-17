@@ -3,11 +3,11 @@
 A swap (``services.romm.swap_referrer``) renames a ROM's file in RomM, parks
 the Source RomM moved, places the output, rehashes the ROM and deletes the
 parked Source. Each of those steps is recorded here *before* it runs, so a
-crash leaves the step it was on, and recovery can tell what to finish or
-undo. That recovery is #392: until it lands, nothing reads an unfinished row
-or acts on it (``unfinished`` has no caller yet), and a parked Source stays in
-``.compressatorium-stage/park-…`` beside its output for the user to move
-back by hand.
+crash leaves the step it was on, and startup recovery
+(``services.romm.swap_recovery``, #392) can tell what to finish. Each row
+also records the RomM instance the swap ran against (``romm_url``,
+``library_root``) and the fingerprints that tell its files apart wherever
+they are: the Source's size and mtime, the output's size and SHA-1.
 
 States, in the order a swap moves through them:
 
@@ -35,7 +35,8 @@ name, which was put back), ``failed`` (RomM couldn't rename, nothing moved),
 on the output, and the Source was put back beside it). A row still on a step
 is unfinished: the step or its undo failed or the process died, and
 ``detail`` says why. Nothing sweeps a parked Source away, so it stays until
-recovery (#392) settles the row, or the user moves it back.
+recovery settles the row (finishes it, or the user does what its Finding
+says and the next recovery pass sees it done).
 
 Everything here is blocking: callers run it off the event loop.
 """
@@ -57,18 +58,32 @@ def _session():
     return _db.SessionLocal()
 
 
+# What startup recovery reads besides the paths and names (#392).
+RECOVERY_FIELDS = (
+    "romm_url", "library_root", "source_size", "source_mtime_ns",
+    "output_size", "output_sha1",
+)
+
+
 def begin(
     *, rom_id: int, source_path: str, output_path: str, staged_path: str | None,
-    old_name: str, new_name: str,
+    old_name: str, new_name: str, romm_url: str | None = None,
+    library_root: str | None = None, source_size: int | None = None,
+    source_mtime_ns: int | None = None, output_size: int | None = None,
+    output_sha1: str | None = None,
 ) -> int:
-    """Record a swap about to send its rename: a new row in ``renaming``.
-    Returns its id."""
+    """Record a swap about to send its rename: a new row in ``renaming``,
+    with the RomM instance and the fingerprints recovery needs. Returns its
+    id."""
     now = _db.utcnow_iso()
     with _session() as session:
         row = _db.RommSwap(
             rom_id=rom_id, source_path=source_path, output_path=output_path,
             staged_path=staged_path, old_name=old_name, new_name=new_name,
             state="renaming", created_at=now, updated_at=now,
+            romm_url=romm_url, library_root=library_root, source_size=source_size,
+            source_mtime_ns=source_mtime_ns, output_size=output_size,
+            output_sha1=output_sha1,
         )
         session.add(row)
         session.commit()
@@ -112,6 +127,7 @@ def _as_dict(row: _db.RommSwap) -> dict:
         "parked_path": row.parked_path, "old_name": row.old_name,
         "new_name": row.new_name, "state": row.state, "detail": row.detail,
         "created_at": row.created_at, "updated_at": row.updated_at,
+        **{name: getattr(row, name) for name in RECOVERY_FIELDS},
     }
 
 
@@ -122,10 +138,8 @@ def rows() -> list[dict]:
 
 
 def unfinished() -> list[dict]:
-    """The rows still on a step, oldest first: what recovery must settle.
-
-    For #392 (startup recovery), which will call it; nothing does yet, so
-    until then such a row only records what happened."""
+    """The rows still on a step, oldest first: what startup recovery
+    (``services.romm.swap_recovery``) settles."""
     with _session() as session:
         found = (
             session.query(_db.RommSwap)

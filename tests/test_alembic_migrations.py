@@ -178,8 +178,9 @@ def test_0014_stacks_on_0013_and_walks_up_from_an_empty_database(fresh_db_path: 
     cfg = _db._alembic_config(engine)
     script = ScriptDirectory.from_config(cfg)
     # #386's 0016 sits on 0015, #388's 0017 on that, #387's 0018 on that and
-    # #389's 0019 on that, and #391's 0020 on that; see their own tests below.
-    assert script.get_heads() == ["0020"]
+    # #389's 0019 on that, #391's 0020 on that and #392's 0021 on that; see
+    # their own tests below.
+    assert script.get_heads() == ["0021"]
     assert script.get_revision("0014").down_revision == "0013"
     assert script.get_revision("0013").down_revision == "0012"
     assert script.get_revision("0012").down_revision == "0011"
@@ -356,6 +357,28 @@ def test_0020_adds_the_romm_swap_journal(fresh_db_path: str):
     } <= set(columns)
     assert columns["parked_path"]["nullable"] is True
     assert _current_rev(engine) == "0020"
+
+
+def test_0021_records_each_swaps_instance_and_fingerprints(fresh_db_path: str):
+    """#392's 0021, on #391's 0020: what startup recovery needs from a swap's
+    row (its RomM instance, the Source's and the output's fingerprints). Rows
+    written before it have none of them, so each column is nullable."""
+    from alembic import command
+    from alembic.script import ScriptDirectory
+
+    engine = _db.make_engine(fresh_db_path)
+    cfg = _db._alembic_config(engine)
+    assert ScriptDirectory.from_config(cfg).get_revision("0021").down_revision == "0020"
+
+    command.upgrade(cfg, "0021")
+    columns = {c["name"]: c for c in inspect(engine).get_columns("romm_swaps")}
+    added = (
+        "romm_url", "library_root", "source_size", "source_mtime_ns",
+        "output_size", "output_sha1",
+    )
+    assert set(added) <= set(columns)
+    assert all(columns[name]["nullable"] is True for name in added)
+    assert _current_rev(engine) == "0021"
 
 
 # ---------------------------------------------------------------------------

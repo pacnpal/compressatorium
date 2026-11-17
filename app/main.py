@@ -393,6 +393,15 @@ async def _serve(app: FastAPI):
 
     romm_settle_task.add_done_callback(_log_romm_settle_error)
 
+    # RomM swaps the app stopped part way (#392): settled in the background,
+    # never holding up startup; what it can't settle is a Finding, tried
+    # again later until it can be.
+    from services.romm import swap_recovery
+
+    swap_recovery_task = asyncio.create_task(swap_recovery.run_forever())
+    app.state.background_tasks.add(swap_recovery_task)
+    swap_recovery_task.add_done_callback(app.state.background_tasks.discard)
+
     # Auto-sync MAMERedump DATs on startup.  Two independent triggers:
     #   1. MAMEREDUMP_AUTO_SYNC=true AND the store is empty  → fresh-install sync.
     #   2. Any DAT has file_count=0 (regardless of MAMEREDUMP_AUTO_SYNC) →
