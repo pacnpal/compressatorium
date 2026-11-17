@@ -18,9 +18,10 @@ references to the new names (``sheet_rewrite``: only those tokens change,
 every other byte is kept), atomically through its folder (a whole new sheet
 renamed over it), and records that write in the same ``WriteJournal`` as the
 Referrers' files, under the sheet's old path. Then each file is renamed, and
-last a :class:`Folder` that holds only the Image and carries its name. A step that fails puts back the files
-already renamed and raises, so the files are found under their old names
-and the journal puts the sheet's bytes and every Referrer back exactly.
+last a :class:`Folder` that holds only the Image and carries its name. A step
+that fails puts back the files already renamed and raises, so the files are
+found under their old names and the journal puts the sheet's bytes and every
+Referrer back exactly.
 
 **Bound to the folders it checked** (Codex 4602569670). Each file's folder
 is resolved, confirmed inside a Volume and opened beneath the Volume root
