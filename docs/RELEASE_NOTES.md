@@ -136,6 +136,14 @@
 
 ### Fixed
 
+- **Rules editor checkboxes save again** (#412). Ticking "Run automatically",
+  "Used by an EmulationStation frontend", a Platform's enable switch, the ID
+  filters, "Check the container only", the checking switch or a per-check
+  enable changed the box on screen but sent nothing, so a reload showed the
+  old value. The shared checkbox had no `onchange` to call. It has one now,
+  and a test fails if any component is given a prop its child does not
+  declare.
+
 - **RomM settings saves land in order** (#408). Two RomM settings saves made
   close together (a RomM Settings card save and the Rules editor's
   EmulationStation switch, say) could be answered out of order, leaving the

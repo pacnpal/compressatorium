@@ -5,14 +5,27 @@
    * @property {string} label
    * @property {string} [description]
    * @property {boolean} [disabled]
+   * @property {(checked: boolean) => void} [onchange] Called with the new value
+   *   when the user changes the box (not when the parent sets `checked`).
    */
 
   /** @type {Props} */
-  let { checked = $bindable(false), label, description, disabled = false } = $props();
+  let {
+    checked = $bindable(false),
+    label,
+    description,
+    disabled = false,
+    onchange,
+  } = $props();
 </script>
 
 <label class="checkbox" class:disabled>
-  <input type="checkbox" bind:checked {disabled} />
+  <input
+    type="checkbox"
+    bind:checked
+    {disabled}
+    onchange={(e) => onchange?.(e.currentTarget.checked)}
+  />
   <span class="box" aria-hidden="true"></span>
   <span class="text">
     <span class="title">{label}</span>
