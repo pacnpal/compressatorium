@@ -31,7 +31,7 @@ export const TOOL_MEDIA = {
   nkit: 'disc', // NKit-shrunk GameCube / Wii disc images
   jwud: 'disc', // Wii U disc images (.wud / .wux)
   xiso: 'disc', // Xbox / Xbox 360 disc images (.iso / .xiso.iso)
-  rom_converto: 'disc', // Xbox 360 disc images packed as ZAR (.zar)
+  rom_converto: 'disc', // Xbox 360 ZAR, PSP PBP/ISO and 3DS CIA/CCI (#423)
   dolphin: 'game', // GameCube / Wii disc images, shown as game media
   z3ds: 'game', // 3DS ROMs
   nsz: 'game', // Switch dumps

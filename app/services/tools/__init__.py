@@ -20,7 +20,7 @@ from .nsz import NszTool
 from .registry import ToolRegistry
 from .rom_converto import RomConvertoTool
 from .romz import RomzTool
-from .spec import ChainSpec, ChainStep, InputKind, ModeKind, ModeSpec
+from .spec import ChainSpec, ChainStep, DeleteProof, InputKind, ModeKind, ModeSpec
 from .xiso import XisoTool
 from .z3ds import Z3dsTool
 
@@ -46,6 +46,7 @@ __all__ = [
     "BaseTool",
     "ChainSpec",
     "ChainStep",
+    "DeleteProof",
     "InputKind",
     "ModeKind",
     "ModeSpec",

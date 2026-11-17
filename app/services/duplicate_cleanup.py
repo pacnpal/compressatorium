@@ -66,7 +66,8 @@ logger = get_logger("duplicate_cleanup")
 # Key kinds whose equal keys prove equal content. Only these groups offer a
 # delete; a group matched any looser way never does.
 HASH_EQUAL_KINDS = frozenset({content_keys.RAW})
-_INTACT_CHECKS = frozenset({"intact", "round_tripped"})
+# A Recognized output (#423) passed its container check too.
+_INTACT_CHECKS = frozenset({"intact", "round_tripped", "recognized"})
 
 
 class CleanupRefused(Exception):

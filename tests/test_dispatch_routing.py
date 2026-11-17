@@ -75,7 +75,7 @@ def _legacy_dispatch_id(mode: str) -> str:
         return "jwud"
     if mode.startswith("xiso_"):
         return "xiso"
-    if mode.startswith("zar_"):
+    if mode.startswith("zar_") or mode in ("pbp_to_iso", "cia_to_cci", "cci_to_cia"):
         return "rom_converto"
     if mode.startswith("exodos_"):
         return "exodos"

@@ -1,23 +1,30 @@
 """RomConvertoTool, thin plugin wrapper delegating to ``rom_converto_service``.
 
-One tool that will own several unrelated modes, because rom-converto is one
-binary that converts several unrelated formats (#420): Xbox 360 ISO -> ZAR
-now, PSP PBP -> ISO and 3DS CIA <-> CCI later. Each mode names its own
-Platform (``ModeSpec.platform_slugs``), so a mode is only offered on its own
-system; the tool's ``platform_slugs`` is their union.
+One tool that owns several unrelated modes, because rom-converto is one binary
+that converts several unrelated formats (#420): Xbox 360 ISO -> ZAR, PSP PBP
+-> ISO, and 3DS CIA -> CCI and CCI -> CIA. Each mode names its own Platform
+(``ModeSpec.platform_slugs``), so a mode is only offered on its own system;
+the tool's ``platform_slugs`` is their union.
 
-Xbox 360 ISO -> ZAR, the first mode:
-
-* **Content, not extension, decides the source**, as for the xiso tool: every
-  Xbox 360 image is an ``.iso``, so ``converts_path`` probes for an Xbox 360
-  XDVDFS volume (cached per path, size and mtime). An original Xbox image is
-  not offered: ZAR is what Xenia mounts.
-* **Verifiable, never deletable.** ``xenon verify`` decodes every block and
-  checks its hash, but a ZAR holds the disc's files, not the disc, and
-  nothing turns it back into an ISO, so there is no Round-trip against the
-  Source. The mode says so through ``ModeSpec.source_kept_reason``.
-* **Not an Auto default.** Auto keeps Xbox 360 on the XISO trim; ZAR is picked
-  by hand or by a Rule.
+* **Content, not extension, decides the source.** Every Xbox 360 image is an
+  ``.iso``, so ``converts_path`` probes for an Xbox 360 XDVDFS volume; a
+  ``.pbp`` must hold a PSP game (not a PS1 Classic), a ``.cia`` a CIA header
+  and a ``.cci``/``.3ds`` an NCSD header. Each probe is cached per path, size
+  and mtime.
+* **ZAR: verifiable, never deletable.** ``xenon verify`` decodes every block
+  and checks its hash, but a ZAR holds the disc's files, not the disc, and
+  nothing turns it back into an ISO. The mode says so through
+  ``ModeSpec.source_kept_reason``.
+* **PBP -> ISO and CIA <-> CCI: deletable on the Recognized proof (#423).**
+  Their outputs can't be Round-tripped either (a converted CIA is unsigned
+  with a zero title key), so ``ModeSpec.delete_proof`` is ``RECOGNIZED``: the
+  Source goes only when the output's SHA-1 is in a DAT or Hasheous. Their
+  container check reads the output's structure in Python. Only the ZAR's
+  check is a Verify row action in the listing (``verifies_path``); the others
+  run inside a job, and a later check goes back to this tool by the mode the
+  stored check names.
+* **Not an Auto default.** Auto keeps Xbox 360 on the XISO trim, PSP on CSO
+  and 3DS on Z3DS; these modes are picked by hand or by a Rule.
 """
 from __future__ import annotations
 
@@ -27,6 +34,13 @@ from collections.abc import AsyncGenerator
 from models import OutputStatus, RomConvertoInfo
 from services.lock_manager import lock_manager
 from services.rom_converto import (
+    CCI_INPUT_EXTENSIONS,
+    CCI_TO_CIA_MODE,
+    CIA_INPUT_EXTENSIONS,
+    CIA_TO_CCI_MODE,
+    PBP_INPUT_EXTENSIONS,
+    PBP_MODE,
+    VERIFY_EXTENSIONS,
     ZAR_INPUT_EXTENSIONS,
     ZAR_MODE,
     ZAR_OUTPUT_EXTENSION,
@@ -34,9 +48,34 @@ from services.rom_converto import (
     ZAR_VERIFY_EXTENSIONS,
     rom_converto_service,
 )
+from utils.path_utils import match_extension
 
 from .base import BaseTool
-from .spec import ModeKind, ModeSpec
+from .spec import DeleteProof, ModeKind, ModeSpec
+
+_3DS_SLUGS = frozenset({"3ds", "n3ds", "new-nintendo-3ds"})
+
+
+def _recognized_mode(
+    mode: str, label: str, group: str, output_ext: str,
+    inputs: frozenset[str], slugs: frozenset[str],
+) -> ModeSpec:
+    """A PSP or 3DS mode (#423): deletable only on the Recognized proof."""
+    return ModeSpec(
+        mode=mode,
+        tool_id="rom_converto",
+        kind=ModeKind.COMPRESS,
+        label=label,
+        group=group,
+        output_ext=output_ext,
+        input_extensions=inputs,
+        supports_delete_on_verify=True,
+        delete_proof=DeleteProof.RECOGNIZED,
+        # Not from archives: the content probe needs the real file.
+        allows_archive_input=False,
+        platform_slugs=slugs,
+        auto_target=False,
+    )
 
 
 class RomConvertoTool(BaseTool):
@@ -44,7 +83,7 @@ class RomConvertoTool(BaseTool):
     display_name = "rom-converto"
     policy_owner = "rom_converto"
     # The union of every mode's Platform; each mode names its own below.
-    platform_slugs = frozenset({"xbox360"})
+    platform_slugs = frozenset({"xbox360", "psp"}) | _3DS_SLUGS
     modes = (
         ModeSpec(
             mode=ZAR_MODE,
@@ -64,9 +103,21 @@ class RomConvertoTool(BaseTool):
             platform_slugs=frozenset({"xbox360"}),
             auto_target=False,
         ),
+        _recognized_mode(
+            PBP_MODE, "PSP PBP → ISO", "psp", ".iso", PBP_INPUT_EXTENSIONS,
+            frozenset({"psp"}),
+        ),
+        _recognized_mode(
+            CIA_TO_CCI_MODE, "3DS CIA → CCI", "ctr", ".cci", CIA_INPUT_EXTENSIONS,
+            _3DS_SLUGS,
+        ),
+        _recognized_mode(
+            CCI_TO_CIA_MODE, "3DS CCI → CIA", "ctr", ".cia", CCI_INPUT_EXTENSIONS,
+            _3DS_SLUGS,
+        ),
     )
-    output_extensions = frozenset(ZAR_VERIFY_EXTENSIONS)
-    verify_extensions = frozenset(ZAR_VERIFY_EXTENSIONS)
+    output_extensions = frozenset(ZAR_VERIFY_EXTENSIONS | {".iso", ".cci", ".cia"})
+    verify_extensions = frozenset(VERIFY_EXTENSIONS)
 
     def __init__(self, binary_path: str) -> None:
         super().__init__(binary_path)
@@ -87,14 +138,28 @@ class RomConvertoTool(BaseTool):
         return ready
 
     def converts_path(self, path: str) -> bool:
-        return self._service.is_zar_source(path)
+        return self._service.is_source(path)
+
+    def verifies_path(self, path: str) -> bool:
+        # The listing's Verify row action: a ZAR only. An ISO, CIA or CCI is
+        # checked inside the job that wrote it; offering this tool's structure
+        # check on every PS2 ISO and 3DS ROM in a listing would be noise.
+        return match_extension(path, ZAR_VERIFY_EXTENSIONS) is not None
 
     def detect_output(
         self, input_path: str, *, from_archive: bool = False,
     ) -> OutputStatus | None:
-        if from_archive or not self._service.is_zar_source(input_path):
+        if from_archive:
             return None
-        candidate = self._service.get_output_path(input_path)
+        if (
+            match_extension(input_path, ZAR_INPUT_EXTENSIONS) is not None
+            and not self._service.is_zar_source(input_path)
+        ):
+            # A PS2 or PSP `.iso` is not this tool's to badge.
+            return None
+        candidate = self._service.detect_output_path(input_path)
+        if candidate is None:
+            return None
         file_exists, is_converting = lock_manager.check_file_status(candidate)
         if not (file_exists or is_converting):
             return None

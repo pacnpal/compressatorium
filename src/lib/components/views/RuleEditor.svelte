@@ -24,6 +24,7 @@
   import { DAY_LABELS, ORDER_LABELS } from '$lib/stores/romm.svelte.js';
   import { ruleNotices } from '$lib/stores/ruleNotices.svelte.js';
   import { CHECK_LEVEL, CHECK_LEVEL_LABELS } from '$lib/util/checkLevels.js';
+  import { DELETE_CHECK_HINTS, deleteCheckFor } from '$lib/util/deleteCheck.js';
   import { checkSummary, newCheckRule } from '$lib/rules/checkRule.js';
   import { registry } from '$lib/tools/registry.js';
   import { clampLevel, fitLevel } from '$lib/tools/levels.js';
@@ -213,6 +214,17 @@
 
   function specFor(mode) {
     return mode ? registry.specFor(mode) : null;
+  }
+
+  // The check a delete-source job from this Rule passes before its Source goes
+  // (#302, #423): the helper the convert panel reads, so the two never differ.
+  // A Recognized mode ignores the stored container-only level.
+  function ruleDeleteCheck(spec, rule) {
+    return deleteCheckFor({
+      supportsRoundTrip: !!spec?.supportsRoundTrip,
+      containerOnly: rule.check_level === CHECK_LEVEL.containerOnly,
+      deleteProof: spec?.deleteProof,
+    });
   }
 
   function toolFor(mode) {
@@ -978,13 +990,12 @@
                     <Checkbox
                       checked={rule.delete_on_verify}
                       label="Delete the source after the new file verifies"
-                      description={spec?.supportsRoundTrip && rule.check_level !== CHECK_LEVEL.containerOnly
-                        ? 'The new file must be Round-tripped (it decodes to the same content as the source) first. The source is kept if it is not.'
-                        : 'The new file must be Intact (it passes its own container check) first. The source is kept if it is not.'}
+                      description={DELETE_CHECK_HINTS[ruleDeleteCheck(spec, rule)]}
                       onchange={(v) => update(platform.id, { delete_on_verify: v })}
                     />
                     <!-- The Rule's check level (#302). Shown where it decides
-                         something, as in the convert panel; the stored level
+                         something, as in the convert panel: a Round-trip mode
+                         only, never a Recognized one (#423). The stored level
                          is kept either way. -->
                     {#if rule.delete_on_verify && spec?.supportsRoundTrip}
                       <Checkbox
