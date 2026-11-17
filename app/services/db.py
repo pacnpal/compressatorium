@@ -120,6 +120,22 @@ class DATHash(Base):
     size = Column(Integer, nullable=False, default=0)
 
 
+class DATFile(Base):
+    """Every file each imported DAT lists for each game (#426), kept apart
+    from the hash index (``dat_hashes``), which keeps one row per hash and so
+    loses a file whose bytes another file of the DAT shares. What an Image
+    rename names a sheet's tracks after. Filled at import (migration 0025);
+    a DAT imported before it has none until it is imported again."""
+
+    __tablename__ = "dat_files"
+    dat_id = Column(
+        String(16), ForeignKey("dats.id", ondelete="CASCADE"), primary_key=True,
+    )
+    game_name = Column(String, primary_key=True)
+    rom_name = Column(String, primary_key=True)
+    size = Column(Integer, nullable=False, default=0)
+
+
 class DATMatch(Base):
     __tablename__ = "dat_matches"
     path = Column(String, primary_key=True)

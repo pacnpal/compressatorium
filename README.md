@@ -655,10 +655,22 @@ Characters some filesystems can't hold (`< > : " / \ | ? *`) become `_`.
   playlist, gamelist and RomM ROM the rename updates ("RomM: rename ROM 1234
   to Ico (USA).iso", "update games.m3u", "update gamelist.xml, 2 entries").
   Nothing changes until you confirm.
+- A `.cue` or `.gdi` Image is renamed whole: the sheet takes the game's name,
+  each track takes the file name the DAT lists for it (`Ape Escape (USA)
+  (Track 2).bin`), and the sheet's references to its tracks are rewritten to
+  the new names with every other byte left as it was. A folder that holds
+  only that Image and carries its old name (`game/game.cue`) is renamed too;
+  a folder holding anything else is left alone. The preview lists every file,
+  the folder and each line of the sheet that changes. Tracks pair with the
+  DAT's files by size, and in track order when two are the same size; an
+  Image whose tracks don't pair, or a track another sheet also names, is
+  skipped with the reason. Every file is renamed, or none is: if one fails,
+  the files already renamed, the sheet and every playlist are put back.
 - An Image is skipped, with the reason, when it isn't Recognized, already has
   its DAT name, or its new name is taken (by a file, or by another Image in
-  the same rename). Only single-file Images are renamed for now: a `.cue` and
-  its tracks are skipped, and so is a track on its own.
+  the same rename). A track on its own is skipped (it goes with its sheet),
+  and so is any other Image of several files. In a RomM Library only a
+  single file is renamed: RomM renames one file within its folder.
 - When two DATs your order puts level give an Image different names, it is
   left alone and the Findings view shows a **Rename conflict** naming both.
   Order the DATs and it clears.
@@ -1594,12 +1606,13 @@ Redump comes first for disc Images and No-Intro first for cartridge Images.
 
 #### Rename to DAT name
 
-The preview for a Recognized cartridge, then the finished job. See [Rename to DAT name](#rename-to-dat-name).
+The preview for a Recognized cartridge, then the finished job, then the preview for a two-track `.cue` Image in a folder named after it. See [Rename to DAT name](#rename-to-dat-name).
 
 | Light | Dark |
 |-------|------|
 | ![Rename to DAT name preview, light](docs/screenshots/dat-rename-preview-light.png) | ![Rename to DAT name preview, dark](docs/screenshots/dat-rename-preview-dark.png) |
 | ![Rename to DAT name finished, light](docs/screenshots/dat-rename-done-light.png) | ![Rename to DAT name finished, dark](docs/screenshots/dat-rename-done-dark.png) |
+| ![Rename to DAT name for a cue Image, light](docs/screenshots/dat-rename-cue-light.png) | ![Rename to DAT name for a cue Image, dark](docs/screenshots/dat-rename-cue-dark.png) |
 
 #### Settings
 

@@ -217,9 +217,20 @@ def volume_sheet_tracks(
     folder, a folder or entry the walk could not see, or a sheet that cannot
     be read whole makes the answer None, with what was missed.
     """
+    owners, problem = volume_sheet_owners(roots, progress=progress)
+    return (None, problem) if owners is None else (set(owners), None)
+
+
+def volume_sheet_owners(
+    roots: Iterable[str], *, progress: Callable[..., None],
+) -> tuple[dict[tuple[int, int], frozenset[tuple[int, int]]] | None, str | None]:
+    """:func:`volume_sheet_tracks` with, for each track identity, the
+    identities of every sheet that names it: what an Image rename (#426)
+    needs to know that a track belongs to its own sheet and to no other one.
+    The same walk, scope and "None, never partial" rule."""
     from utils.path_utils import walk_tree
 
-    tracks: set[tuple[int, int]] = set()
+    owners: dict[tuple[int, int], set[tuple[int, int]]] = {}
     missed: list[str] = []
     walked: list[str] = []
     for root in roots:
@@ -236,15 +247,23 @@ def volume_sheet_tracks(
             for name in files:
                 if not name.lower().endswith(SHEET_EXTENSIONS):
                     continue
+                sheet = os.path.join(folder, name)
                 try:
-                    tracks |= sheet_track_identities(os.path.join(folder, name))
+                    tracks = sheet_track_identities(sheet)
+                    st = os.stat(sheet)
                 except SheetOwnerUnknown as exc:
                     missed.append(f"{exc} (in {folder})")
+                    continue
+                except OSError as exc:
+                    missed.append(f"{name} could not be read ({exc.strerror or exc}) (in {folder})")
+                    continue
+                for track in tracks:
+                    owners.setdefault(track, set()).add((st.st_dev, st.st_ino))
         missed.extend(f"{path} could not be listed" for path in unlisted)
     if missed:
         more = len(missed) - 3
         return None, "; ".join(missed[:3]) + (f"; and {more} more" if more > 0 else "")
-    return tracks, None
+    return {track: frozenset(sheets) for track, sheets in owners.items()}, None
 
 
 def _is_track(own: os.stat_result, real: str, track: str) -> bool:

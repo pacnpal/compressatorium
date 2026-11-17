@@ -180,10 +180,10 @@ def test_0014_stacks_on_0013_and_walks_up_from_an_empty_database(fresh_db_path: 
     script = ScriptDirectory.from_config(cfg)
     # #386's 0016 sits on 0015, #388's 0017 on that, #387's 0018 on that and
     # #389's 0019 on that, #391's 0020 on that, #392's 0021 on that,
-    # #424's 0022 on that, #430's 0023 on that, #423's 0024 on that and #431's
-    # 0025 on that; see
+    # #424's 0022 on that, #430's 0023 on that, #423's 0024 on that, #426's
+    # 0025 on that and #431's 0026 on that; see
     # their own tests below.
-    assert script.get_heads() == ["0025"]
+    assert script.get_heads() == ["0026"]
     assert script.get_revision("0014").down_revision == "0013"
     assert script.get_revision("0013").down_revision == "0012"
     assert script.get_revision("0012").down_revision == "0011"
@@ -481,9 +481,9 @@ def test_0024_adds_the_ledgers_check_dat(fresh_db_path: str):
     assert _current_rev(engine) == "0024"
 
 
-def test_0025_adds_the_inboxes_table(fresh_db_path: str):
-    """#431's 0025, on #423's 0024: an Inbox's folder (one per folder), the
-    Library it feeds, its settle time and how many Images it placed."""
+def test_0025_adds_each_dats_file_list(fresh_db_path: str):
+    """#426's 0025, on #423's 0024: each DAT's file list, apart from the hash
+    index, empty until a DAT is imported again; a DAT's rows go with it."""
     from alembic import command
     from alembic.script import ScriptDirectory
 
@@ -492,8 +492,33 @@ def test_0025_adds_the_inboxes_table(fresh_db_path: str):
     assert ScriptDirectory.from_config(cfg).get_revision("0025").down_revision == "0024"
 
     command.upgrade(cfg, "0024")
-    assert "inboxes" not in inspect(engine).get_table_names()
+    assert "dat_files" not in inspect(engine).get_table_names()
     command.upgrade(cfg, "0025")
+
+    assert {c["name"] for c in inspect(engine).get_columns("dat_files")} == {
+        "dat_id", "game_name", "rom_name", "size",
+    }
+    assert inspect(engine).get_pk_constraint("dat_files")["constrained_columns"] == [
+        "dat_id", "game_name", "rom_name",
+    ]
+    with engine.connect() as conn:
+        assert conn.exec_driver_sql("SELECT COUNT(*) FROM dat_files").scalar() == 0
+    assert _current_rev(engine) == "0025"
+
+
+def test_0026_adds_the_inboxes_table(fresh_db_path: str):
+    """#431's 0026, on #426's 0025: an Inbox's folder (one per folder), the
+    Library it feeds, its settle time and how many Images it placed."""
+    from alembic import command
+    from alembic.script import ScriptDirectory
+
+    engine = _db.make_engine(fresh_db_path)
+    cfg = _db._alembic_config(engine)
+    assert ScriptDirectory.from_config(cfg).get_revision("0026").down_revision == "0025"
+
+    command.upgrade(cfg, "0025")
+    assert "inboxes" not in inspect(engine).get_table_names()
+    command.upgrade(cfg, "0026")
 
     columns = {c["name"] for c in inspect(engine).get_columns("inboxes")}
     assert {"folder", "library_id", "settle_seconds", "processed_count"} <= columns
@@ -507,7 +532,7 @@ def test_0025_adds_the_inboxes_table(fresh_db_path: str):
             "INSERT INTO inboxes (folder, library_id, settle_seconds, processed_count, "
             "created_at) VALUES ('/in', 'romm', 60, 0, '2026-11-17T00:00:00Z')",
         )
-    assert _current_rev(engine) == "0025"
+    assert _current_rev(engine) == "0026"
 
 
 # ---------------------------------------------------------------------------

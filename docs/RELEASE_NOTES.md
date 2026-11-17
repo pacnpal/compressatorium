@@ -4,6 +4,19 @@
 
 ### Added
 
+- **Rename to DAT name renames a `.cue` or `.gdi` Image whole** (#426). The
+  sheet takes the game's name, each track takes the file name the DAT lists
+  for it, and the sheet's track references are rewritten to the new names
+  with every other byte kept. A folder that holds only that Image and carries
+  its old name is renamed too. The preview lists every file, the folder and
+  each reference that changes. Every file is renamed or none is: a failure
+  part way puts back the files already renamed, the sheet's bytes and every
+  playlist and gamelist. An Image whose tracks don't pair with the DAT's
+  files by size, or a track another sheet also names, is skipped with the
+  reason, and so is a sheet's Image in a RomM Library (RomM renames one file
+  within its folder). Track names come from each DAT's file list, which the
+  app now keeps when a DAT is imported (a database upgrade adds it): import a
+  DAT again to give it one, so tracks that share their bytes are named too.
 - **"Compatible with…" in the compression picker and the Rule editor**
   (#429). Pick NetherSX2, PCSX2, DuckStation, a RetroArch core (Beetle PSX),
   MiSTer, PPSSPP or Dolphin and the codecs are set to the ones it reads. A
@@ -73,7 +86,7 @@
   deleted. An Unsorted, conflicting or failed file stays where it is with a
   Finding saying why, and isn't tried again until it changes. Each Inbox shows
   its last poll and the files waiting, in progress, held and processed.
-  Database migration 0025 adds the Inboxes. Archives, DAT names and asking
+  Database migration 0026 adds the Inboxes. Archives, DAT names and asking
   RomM to scan come next (#432, #433).
 - **Xbox 360 disc images to ZAR, with rom-converto** (#422). A new tool,
   rom-converto (the converter RomM ships, at the version RomM pins, v0.24.0),

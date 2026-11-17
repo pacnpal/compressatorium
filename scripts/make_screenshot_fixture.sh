@@ -159,4 +159,15 @@ mkdir -p "$root/ROM Library/downloads/ps2"
 placeholder "$root/ROM Library/downloads/ps2/shadow-colossus.iso" 1024
 placeholder "$root/ROM Library/downloads/unknown-disc.iso" 512
 
+# Rename to DAT name for a cue Image (#426): a made-up two-track disc in a
+# folder named after it. The shot's synthetic DAT names the sheet by its SHA1
+# and lists both tracks by size (in shots.yml).
+disc="$root/ROM Library/roms/psx/star-trail"
+mkdir -p "$disc"
+printf 'FILE "star-trail (Track 1).bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\nFILE "star-trail (Track 2).bin" BINARY\n  TRACK 02 AUDIO\n    INDEX 01 00:00:00\n' \
+  > "$disc/star-trail.cue"
+printf 'Compressatorium sample disc: a made-up data track.\n' > "$disc/star-trail (Track 1).bin"
+printf 'Compressatorium sample disc: a made-up audio track, a little longer.\n' \
+  > "$disc/star-trail (Track 2).bin"
+
 echo "Fixture volume created under: $root"
