@@ -4028,10 +4028,25 @@ can't be registered from `services/referrers/__init__.py`). It takes a
 `renames` of one file replaced by one output file beside it under another
 name, not an archive (`.zip`/`.7z`: RomM hashes an archive's largest member,
 so the read-back can't confirm one), and `plan` finds RomM's single-file ROM
-for that file (only the Platform whose `fs_slug` is the file's folder is
-listed). Anything else plans nothing and keeps today's behaviour, as does a
-RomM that doesn't know the file. A RomM that can't be read fails the plan, so
-the Source is kept. The change's `target` is `RomM ROM <id>`, its `summary`
+for that file. The Platform is the RomM Library's Platform folder holding the
+file (`RommLibrary.platform_folder`, #387: `<root>/roms/<platform>/...` or
+`<root>/<platform>/...`, `<root>/<platform>/roms/...` and subfolders
+included), never the file's parent folder; only the RomM Platform whose
+`fs_slug` (or `slug`) is that folder's name is listed, and the record must be
+the file itself (`local_path` equal to the Source's real path). The rule
+when the ROM isn't found:
+
+- *Not a ROM RomM knows on its own: today's behaviour* (the job deletes the
+  Source, the re-pin queue carries the metadata). The file is in no Platform
+  folder, RomM has no Platform for that folder, no record names the file, or
+  the record covering it is its folder (a multi-file ROM: the folder, and so
+  the record and its id, stays).
+- *Can't be told: fail closed* (`ReferrerError`, the Source is kept, so the
+  record is never orphaned). The Platform folder or RomM can't be read, two
+  Platform folders claim the file (`AmbiguousFolder`), two records are the
+  file, or the record that is the file says it has several.
+
+The change's `target` is `RomM ROM <id>`, its `summary`
 "RomM: rename ROM <id> to Game.chd", and its `record` `{rom_id, kept_rom_id:
 true}`, which lands in the Ledger's `referrers_updated` once it applied.
 
@@ -4068,7 +4083,9 @@ the swap plans nothing when the output is not staged (the job placed it).
 | --- | --- |
 | `renaming` | `RommClient.rename_rom` (`PUT /api/roms/{id}`, multipart `fs_name`). RomM moves the Source to the new name itself. The name is read back with `GET /api/roms/{id}`. |
 | `parking` | The file now at the new name must have the Source's size and mtime (a rename keeps them). It moves into a parking slot (`staging.open_slot(folder, parking=True)`). |
+| `parked` | Written by the move itself, once the Source is in the slot. |
 | `placing` | `placement.place()`: the staged output takes the name. |
+| `placed` | The output is in place, the Source still parked. |
 | `rehashing` | `RommClient.scan_rom_hashes([id])` (`POST /api/tasks/scan`, `{"type": "hashes", "roms_ids": [id], "apis": []}`), `RommClient.task` polled to an end (`REHASH_SECONDS`), then the ROM read back: its name, `fs_size_bytes` and `sha1_hash` must be the output's (the size only on a Platform RomM never hashes). The task's stats are never read: RomM's say `updated_roms: 0` even when it worked. |
 | `deleting` | The parked file must still be the Source; it is removed and the parking slot closed. |
 
@@ -4097,19 +4114,42 @@ carries RomM's own `detail` text.
   Source couldn't be deleted): the parked Source goes back under its own name
   beside the output (`restoring`), and the ROM keeps its id on the checked
   output; RomM's next scan refreshes its hashes. Ends `kept`.
-- An undo that fails, a cancel during one, or a process that dies leaves the
-  row on the step it reached, with the reason in `detail`, and a parked
-  Source stays parked. A parking slot (`park-XXXXXXXX`) is never swept (the
-  sweeps match `slot-` names only) and is not journaled in `partial_writes`;
-  `StagedOutput.keep()` lets go of it without removing it. So the Source is
-  never deleted unconfirmed. `swap_journal.unfinished()` lists those rows for
-  the next run (#392: finish or show as a Finding).
+- A Cancel, a shutdown or the hook's bound stops the swap where it is and
+  undoes nothing (an undo needs RomM and the mount, often what stalled). An
+  undo that fails, or a process that dies, is the same. The row is left on
+  the state reached (`parked`, `placed`, or the undo step that failed), with
+  the reason and "left for the next run" in `detail`; a parked Source stays
+  parked; and the output is held back from the job
+  (`StagedPlacement.held`, which `_delete_source_set` and the job's end-of-job
+  placing both honour), since the name it would take may hold, or be owed
+  to, the Source. A swap stopped before anything changed ends `failed`.
+  `swap_journal.unfinished()` lists the rows left for the next run (#392:
+  finish or show as a Finding).
 
-Blocking calls in `apply_async` go off the loop with `asyncio.to_thread`
-(which copies the guard's context). A call that changes something
-(`_mutate`) is shielded: a cancel waits for it to finish before the undo
-runs, so an undo never races a move or a rename still in flight, and the
-hook's grace and `lingering` hand-off cover one that outlasts it. The fake
+*What happened is recorded before anything acts on it* (Codex
+PRRT_kwDOQ9nULM64NxUt). Each step that moves something (opening the parking
+slot, `take`, the restore, the delete) is one function run on its thread by
+`_mutate` that does the move, sets its flag (`parked`) and, for `take`,
+writes `parked` to the journal; `_mutate` shields it, so a cancel waits for
+it to finish and then propagates with the flag already right. Placing reads
+`StagedPlacement.is_placed()` (the job's slot) when it ends any other way.
+Before the parking slot is let go, `_release_park` lists it
+(`StagedOutput.contents()`): it is closed (removed) only when empty. One
+that holds anything, or can't be listed, is kept (`StagedOutput.keep()`),
+never swept (the sweeps match `slot-` names only, and a parking slot is not
+journaled in `partial_writes`), and the row says so. So the Source is never
+deleted unconfirmed.
+
+*Off the loop, never on its shared executor* (Codex PRRT_kwDOQ9nULM64NxU1).
+Every read of a file or of RomM in the swap runs on a detached thread under
+a bound: a stat or a RomM call through `run_detached_bounded`
+(`PROBE_SECONDS`, `ROMM_SECONDS`), hashing the output through
+`run_detached_within_stall_bound`. Every move, journal write and RomM write
+runs through `start_detached` (`_mutate`). Each carries the caller's context
+(`contextvars.copy_context().run`), so `check_write` sees the hook's guard. A
+mount that stops answering strands a throwaway thread, never a worker every
+other offload needs; the hook's grace and `lingering` hand-off cover a move
+that outlasts it. The fake
 RomM (`tests/fake_romm.py`) holds ROMs backed by files and answers the
 rename, the scan, the task and the read-back the way RomM 5.4.1 does, with
 knobs for a refusal, a sanitized name, a scan that doesn't rehash and a task

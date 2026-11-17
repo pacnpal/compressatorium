@@ -129,11 +129,18 @@ class StagedPlacement:
     ROM's file onto the output's name before the output is there. ``staged``
     maps each output's final path to where it is staged; ``place`` moves them
     all into place (the job's own placing, which carries their records) and
-    does nothing once they are placed.
+    does nothing once they are placed; ``is_placed`` says whether they are,
+    from the slot itself.
+
+    ``held`` is set by a Referrer that stopped part way and left its work for
+    the next run (#391): the job then never places the output, since the
+    name it would take may hold, or be owed to, the Source.
     """
 
     staged: Mapping[str, str]
     place: Callable[[], Awaitable[None]]
+    is_placed: Callable[[], bool] = field(default=lambda: False, compare=False)
+    held: threading.Event = field(default_factory=threading.Event, compare=False)
 
 
 class Phase(IntEnum):

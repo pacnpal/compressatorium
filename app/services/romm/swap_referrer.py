@@ -51,9 +51,28 @@ would leave them, and the job says why:
   name beside the output (``restoring``), and the ROM keeps its id on the
   checked output; RomM's next scan refreshes its hashes. Ends ``kept``.
 
-If the undo itself fails, or the process dies, the row stays on the step it
-reached, with the reason, and a parked Source stays parked: fail closed, for
-the next run to finish or show as a Finding (#392).
+A Cancel, a shutdown or the hook's bound stops the swap where it is, with
+nothing undone (the undo needs RomM and the mount, often what stalled). If
+the undo itself fails, or the process dies, it is the same: the row stays on
+the step it reached, with the reason, a parked Source stays parked, and the
+output is held back from the job (``StagedPlacement.held``): fail closed, for
+the next run to finish or show as a Finding (#392). Each move sets its flag
+and writes its journal outcome on its own thread, so a cancel can't come
+between the move and its record; and the parking slot is removed only when
+its own listing is empty, never on a flag's word.
+
+Which ROM: the Platform is the RomM Library's Platform folder holding the
+file (``platform_folder``, both RomM layouts and subfolders), and the record
+must be the file itself. A file RomM doesn't know as a ROM of its own (no
+Platform folder, no RomM Platform for it, no record, or a record that is its
+folder) keeps today's behaviour. One whose ROM can't be told (the folder or
+RomM can't be read, or two Platform folders or records claim it) keeps the
+Source, so the record is never orphaned.
+
+Every read of a file or of RomM runs on a detached thread under a bound
+(``run_detached_bounded``, ``run_detached_within_stall_bound``), and every
+move on one never abandoned (``start_detached``), never on the event loop's
+shared executor.
 
 A successful swap closes the output's pending re-pin row as done
 (``repin.settle_swapped``): the provider ids never left the ROM.
@@ -62,9 +81,10 @@ A successful swap closes the output's pending re-pin row as done
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import os
 import time
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -77,11 +97,17 @@ from services.referrers import (
     Referrer,
     ReferrerChange,
     ReferrerError,
+    StagedPlacement,
     registry,
 )
 from services.referrers.base import check_write, hook_running, staged_placement
 from services.romm import swap_journal
 from services.romm.client import UNHASHED_PLATFORM_SLUGS, RommError, romm_client
+from services.subprocess_runner import (
+    run_detached_bounded,
+    run_detached_within_stall_bound,
+    start_detached,
+)
 from utils.path_utils import FileIdentity, file_identity
 
 logger = get_logger("romm_swap")
@@ -132,27 +158,57 @@ def _single(renames: Mapping[str, str], *, resolve: bool = False) -> tuple[str, 
 
 
 def _rom_for(source: str) -> dict | None:
-    """RomM's single-file ROM whose file is *source*, or None. Blocking.
+    """RomM's single-file ROM whose file is *source*, or None when the file is
+    not a ROM RomM knows on its own. Blocking.
 
-    Asks only the Platform whose folder holds the file (its ``fs_slug``), not
-    the whole catalog."""
-    folder = os.path.basename(os.path.dirname(source))
-    name = os.path.basename(source)
+    The Platform is the RomM Library's Platform folder holding the file
+    (``RommLibrary.platform_folder``: ``<root>/roms/<platform>/...`` or
+    ``<root>/<platform>/...``, ``<root>/<platform>/roms/...`` and subfolders
+    included), never the file's parent folder. Only that Platform's ROMs are
+    listed, and the record must be the file itself.
+
+    None (the swap doesn't apply, today's behaviour) when the file is in no
+    Platform folder, RomM has no Platform for that folder, no record covers
+    the file, or the record covering it is its folder (a multi-file ROM: the
+    folder, and so the record, stays). Raises ReferrerError (fail closed: the
+    Source is kept, so the record is never orphaned) when it can't be told:
+    the folder or RomM can't be read, more than one Platform folder or more
+    than one record claims the file, or the record that is the file says it
+    has several."""
+    # Imported here: services.romm.library imports this module.
+    from services.romm.library import romm_library
+    from services.rules.library import AmbiguousFolder
+
+    try:
+        folder = romm_library.platform_folder(source)
+    except (AmbiguousFolder, OSError) as exc:
+        raise ReferrerError("RomM", f"can't tell the ROM's Platform ({exc})") from exc
+    if folder is None:
+        return None
+    slug = os.path.basename(folder)
     real = os.path.realpath(source)
+    found: list[dict] = []
     for platform in romm_client.platforms():
         pid = platform.get("id")
-        if pid is None or folder not in (platform.get("fs_slug"), platform.get("slug")):
+        if pid is None or slug not in (platform.get("fs_slug"), platform.get("slug")):
             continue
-        for rom in romm_client.roms(int(pid), with_files=False):
-            if (
-                rom.get("id")
-                and not rom.get("missing_from_fs")
-                and not rom.get("has_multiple_files")
-                and rom.get("fs_name") == name
-                and romm_client.local_path(rom) == real
-            ):
-                return rom
-    return None
+        roms = romm_client.roms(int(pid), with_files=False)
+        found.extend(
+            rom for rom in roms
+            if rom.get("id") and not rom.get("missing_from_fs")
+            and rom.get("fs_name") == os.path.basename(source)
+            and romm_client.local_path(rom) == real
+        )
+    if len(found) > 1:
+        ids = ", ".join(str(rom["id"]) for rom in found)
+        raise ReferrerError("RomM", f"more than one ROM is {os.path.basename(source)} ({ids})")
+    if not found:
+        return None
+    if found[0].get("has_multiple_files"):
+        raise ReferrerError(
+            "RomM", f"ROM {found[0]['id']} is {os.path.basename(source)} but has several files",
+        )
+    return found[0]
 
 
 class RommSwapReferrer(Referrer):
@@ -209,6 +265,7 @@ class RommSwapReferrer(Referrer):
         it awaits :meth:`apply_async` on its own loop, bounded."""
         return asyncio.run(self.apply_async(change))
 
+
     async def apply_async(self, change: ReferrerChange) -> Applied:
         plan: _Plan = change.payload
         placement = staged_placement()
@@ -217,18 +274,43 @@ class RommSwapReferrer(Referrer):
             raise ReferrerError(
                 change.target, "the output is already in place, so RomM can't rename onto it",
             )
-        return await _Swap(plan, change.target, staged, placement.place).run()
+        return await _Swap(plan, change.target, staged, placement).run()
 
 
-async def _read(func: Callable[..., Any], *args: Any) -> Any:
-    """A blocking read off the loop. A cancel abandons it: nothing to undo."""
-    return await asyncio.to_thread(func, *args)
+# How long one short read may take: a stat of a file on a Volume (the job's
+# delete-step probes take the same), and one RomM call (its own HTTP timeout,
+# with a margin).
+PROBE_SECONDS = 20.0
+ROMM_SECONDS = 90.0
+
+
+async def _probe(func: Callable[..., Any], *args: Any, seconds: float = PROBE_SECONDS) -> Any:
+    """A short blocking read on a detached thread, bounded (``run_detached_bounded``).
+
+    Never the event loop's shared executor: a mount or a RomM that stops
+    answering strands this throwaway thread, not a worker every other
+    offload needs. Runs in the caller's context, so ``check_write`` sees the
+    hook's guard. Raises ``DeadlineExpired`` (a ``TimeoutError``) past the
+    bound."""
+    return await run_detached_bounded(
+        contextvars.copy_context().run, func, *args, timeout=seconds,
+    )
+
+
+async def _read_whole(func: Callable[..., Any], *args: Any, what: str) -> Any:
+    """A whole-file read on a detached thread, given up on after the
+    conversion's no-progress bound (``run_detached_within_stall_bound``)."""
+    return await run_detached_within_stall_bound(
+        contextvars.copy_context().run, func, *args, what=what,
+    )
 
 
 async def _mutate(func: Callable[..., Any], *args: Any) -> Any:
-    """A blocking step that changes something, off the loop. A cancel waits
-    for it to finish first, so an undo never races it."""
-    future = asyncio.ensure_future(asyncio.to_thread(func, *args))
+    """A step that changes something, on a detached thread (``start_detached``),
+    never abandoned. A cancel waits for it to finish before it goes on, and
+    *func* records its own outcome on its thread (a flag, the journal), so
+    what happened is known before anything acts on the cancel."""
+    future = start_detached(contextvars.copy_context().run, func, *args)
     try:
         return await asyncio.shield(future)
     except asyncio.CancelledError:
@@ -280,16 +362,25 @@ def _settle_repin(output: str, rom_id: int) -> None:
         logger.warning("romm_swap: could not settle the re-pin of %s", output, exc_info=True)
 
 
+LEFT = "left for the next run"
+
+
 class _Swap:
-    """One swap's steps and their undo (see the module docstring)."""
+    """One swap's steps and their undo (see the module docstring).
+
+    The flags (``romm_name``, ``parked``, ``placed``) say what has happened.
+    Each step that moves something sets its flag, and writes its outcome to
+    the journal, on the step's own thread, so a cancel can't come between the
+    move and the record of it. The parking slot is never removed on a flag's
+    word: :meth:`_release_park` lists it first."""
 
     def __init__(
-        self, plan: _Plan, target: str, staged: str, place: Callable[[], Awaitable[None]],
+        self, plan: _Plan, target: str, staged: str, placement: StagedPlacement,
     ) -> None:
         self.plan = plan
         self.target = target
         self.staged = staged
-        self.place = place
+        self.placement = placement
         self.folder = os.path.dirname(plan.output)
         self.row: int | None = None
         self.ended = False
@@ -306,44 +397,58 @@ class _Swap:
         assert self.park is not None
         return os.path.join(self.park.path, self.plan.new_name)
 
+    @property
+    def changed(self) -> bool:
+        """Whether anything was moved or renamed (or may have been)."""
+        return self.parked or self.placed or self.romm_name != self.plan.old_name
+
     async def run(self) -> Applied:
         plan = self.plan
-        self.source_identity = await _read(file_identity, plan.source)
+        try:
+            self.source_identity = await _probe(file_identity, plan.source)
+            size, sha1 = await _read_whole(
+                _size_and_sha1, self.staged, what=f"Hashing {plan.new_name}",
+            )
+            await _probe(check_write, self.target)
+        except (OSError, RuntimeError) as exc:
+            raise ReferrerError(self.target, f"couldn't read the output ({exc})") from exc
         if self.source_identity is None:
             raise ReferrerError(self.target, "the Source is gone")
-        try:
-            size, sha1 = await _read(_size_and_sha1, self.staged)
-        except OSError as exc:
-            raise ReferrerError(self.target, f"couldn't read the output ({exc})") from exc
-        await _read(check_write, self.target)
-        try:
-            self.row = await _mutate(
-                lambda: swap_journal.begin(
-                    rom_id=plan.rom_id, source_path=plan.source, output_path=plan.output,
-                    staged_path=self.staged, old_name=plan.old_name, new_name=plan.new_name,
-                ),
+
+        def begin() -> None:
+            self.row = swap_journal.begin(
+                rom_id=plan.rom_id, source_path=plan.source, output_path=plan.output,
+                staged_path=self.staged, old_name=plan.old_name, new_name=plan.new_name,
             )
+
+        try:
+            await _mutate(begin)
         except Exception as exc:
-            raise ReferrerError(
-                self.target, f"couldn't write the swap journal ({exc})",
-            ) from exc
+            raise ReferrerError(self.target, f"couldn't write the swap journal ({exc})") from exc
         try:
             await self._rename()
             await self._park_source()
             await self._place_output()
             await self._rehash(size, sha1)
             await self._delete_parked()
-        except BaseException as exc:
+        except Exception as exc:
             left = await self._undo(exc)
             if left and isinstance(exc, ReferrerError):
                 raise ReferrerError(exc.target, f"{exc.reason}; {left}", kept=exc.kept) from exc
             raise
+        except BaseException as exc:
+            # A Cancel, a shutdown or the hook's bound: stop here, undo
+            # nothing (that needs RomM and the mount, often what stalled).
+            await self._stop_here(type(exc).__name__)
+            raise
+        finally:
+            await self._release_park()
         try:
             await self._end("done")
         except Exception:
             # The swap is finished and the Source is gone: only the record lags.
             logger.warning("romm_swap: could not record swap %s as done", self.row, exc_info=True)
-        await _read(_settle_repin, plan.output, plan.rom_id)
+        await _probe(_settle_repin, plan.output, plan.rom_id)
         logger.info(
             "romm_swap: ROM %s kept its id: %s -> %s", plan.rom_id, plan.old_name, plan.new_name,
         )
@@ -358,13 +463,37 @@ class _Swap:
         await _mutate(lambda: swap_journal.step(self.row, state, detail=detail))
         self.ended = True
 
+    async def _leave(self, detail: str) -> None:
+        """Leave the row for the next run: on the state the flags say, with
+        *detail*. The output is held back from the job: the name it would
+        take may hold, or be owed to, the Source. Never raises."""
+        if not self.placed:
+            self.placement.held.set()
+
+        def note() -> None:
+            # An undo step keeps its name (the step it stopped at); a forward
+            # one is corrected to what the flags say was done.
+            current = swap_journal.current(self.row)
+            state = current
+            if current not in ("reverting", "restoring"):
+                state = (
+                    "placed" if self.placed and self.parked
+                    else "parked" if self.parked else current
+                )
+            swap_journal.step(self.row, state, detail=detail)
+
+        try:
+            await _mutate(note)
+        except BaseException:
+            logger.warning("romm_swap: could not note swap %s", self.row, exc_info=True)
+
     # ---- the steps -------------------------------------------------------
 
     def _fail(self, reason: str, kept: str | None = None) -> ReferrerError:
         return ReferrerError(self.target, reason, kept=kept)
 
     async def _read_name(self) -> str | None:
-        rom = await _read(romm_client.rom, self.plan.rom_id)
+        rom = await _probe(romm_client.rom, self.plan.rom_id, seconds=ROMM_SECONDS)
         return rom.get("fs_name")
 
     async def _rename(self) -> None:
@@ -389,7 +518,7 @@ class _Swap:
             raise self._fail(f"RomM couldn't rename the file: {reason}") from exc
         try:
             name = await self._read_name()
-        except RommError as exc:
+        except (RommError, OSError) as exc:
             raise self._fail(f"couldn't read the ROM back after the rename ({exc})") from exc
         self.romm_name = name
         if name == plan.new_name:
@@ -402,29 +531,43 @@ class _Swap:
     async def _park_source(self) -> None:
         """Step 2: the Source RomM moved to the output's name goes into a
         parking slot."""
-        final = os.path.join(self.folder, self.plan.new_name)
-        moved = await _read(file_identity, final)
+        name = self.plan.new_name
+        moved = await _probe(file_identity, os.path.join(self.folder, name))
         if not _same_file(moved, self.source_identity):
-            raise self._fail(f"{self.plan.new_name} is not the Source RomM moved there")
+            raise self._fail(f"{name} is not the Source RomM moved there")
+
+        def open_park() -> None:
+            self.park = staging.open_slot(self.folder, parking=True)
+
         try:
-            self.park = await _mutate(lambda: staging.open_slot(self.folder, parking=True))
+            await _mutate(open_park)
         except OSError as exc:
             raise self._fail(f"couldn't make a place to park the Source ({exc})") from exc
         await self._step("parking", parked_path=self.parked_path)
+
+        def take() -> None:
+            self.park.take(name)
+            self.parked = True
+            swap_journal.step(self.row, "parked", parked_path=self.parked_path)
+
         try:
-            await _mutate(self.park.take, self.plan.new_name)
+            await _mutate(take)
         except OSError as exc:
             raise self._fail(f"couldn't park the Source ({exc})") from exc
-        self.parked = True
 
     async def _place_output(self) -> None:
         """Step 3: the job's staged output takes the name."""
         await self._step("placing")
         try:
-            await self.place()
-        except Exception as exc:
-            raise self._fail(f"couldn't place the output ({exc})") from exc
+            await self.placement.place()
+        except BaseException as exc:
+            # Whether it moved, from the slot itself, not from how this ended.
+            self.placed = self.placement.is_placed()
+            if isinstance(exc, Exception):
+                raise self._fail(f"couldn't place the output ({exc})") from exc
+            raise
         self.placed = True
+        await self._step("placed")
 
     async def _rehash(self, size: int, sha1: str) -> None:
         """Step 4: RomM rehashes the ROM; the read-back must match the output."""
@@ -434,8 +577,8 @@ class _Swap:
             status = await self._wait(task_id)
             if status != "finished":
                 raise self._fail(f"RomM's rehash ended {status}", kept=UNCONFIRMED)
-            rom = await _read(romm_client.rom, self.plan.rom_id)
-        except RommError as exc:
+            rom = await _probe(romm_client.rom, self.plan.rom_id, seconds=ROMM_SECONDS)
+        except (RommError, OSError) as exc:
             raise self._fail(f"couldn't rehash the ROM ({exc})", kept=UNCONFIRMED) from exc
         problem = _read_back_problem(rom, self.plan, size, sha1)
         if problem:
@@ -444,7 +587,7 @@ class _Swap:
     async def _wait(self, task_id: str) -> str:
         deadline = time.monotonic() + REHASH_SECONDS
         while True:
-            task = await _read(romm_client.task, task_id)
+            task = await _probe(romm_client.task, task_id, seconds=ROMM_SECONDS)
             status = str(task.get("status") or "")
             if status in _TASK_ENDED:
                 return status
@@ -457,17 +600,31 @@ class _Swap:
     async def _delete_parked(self) -> None:
         """Step 5: the read-back passed; the parked Source goes."""
         await self._step("deleting")
-        if not _same_file(await _read(file_identity, self.parked_path), self.source_identity):
+        if not _same_file(await _probe(file_identity, self.parked_path), self.source_identity):
             raise self._fail("the parked Source changed, so it was not deleted")
+
+        def remove() -> None:
+            self.park.remove(self.plan.new_name)
+            self.parked = False
+
         try:
-            await _mutate(self.park.remove, self.plan.new_name)
+            await _mutate(remove)
         except OSError as exc:
             raise self._fail(f"couldn't delete the parked Source ({exc})") from exc
-        self.parked = False
-        await _mutate(self.park.close)
-        self.park = None
 
-    # ---- the undo --------------------------------------------------------
+    # ---- stopping, undoing, letting go -----------------------------------
+
+    async def _stop_here(self, why: str) -> None:
+        """Stopped by a Cancel, a shutdown or the hook's bound: nothing is
+        undone. If nothing had changed the row ends ``failed``; otherwise it
+        is left, on the state reached, for the next run. Never raises."""
+        if not self.changed:
+            try:
+                await self._end("failed", f"{why} before RomM renamed")
+            except BaseException:
+                logger.warning("romm_swap: could not end swap %s", self.row, exc_info=True)
+            return
+        await self._leave(f"stopped ({why}); {LEFT}")
 
     async def _undo(self, exc: BaseException) -> str | None:
         """Leave the files and RomM as a kept Source would (see the module
@@ -485,24 +642,19 @@ class _Swap:
                     await self._end("refused" if refusal else "rolled_back", reason)
             return None
         except BaseException as undo_exc:
-            # Fail closed: the row stays on the step that failed, and a
-            # parked Source stays parked, for the next run.
-            left = f"undoing it failed ({undo_exc}), so it is left for the next run"
+            # Fail closed: the row stays on the step reached, a parked Source
+            # stays parked, and the output is held back, for the next run.
+            left = f"undoing it failed ({undo_exc}), so it is {LEFT}"
             logger.exception(
-                "romm_swap: swap %s of ROM %s: %s; %s",
-                self.row, self.plan.rom_id, reason, left,
+                "romm_swap: swap %s of ROM %s: %s; %s", self.row, self.plan.rom_id, reason, left,
             )
-            try:
-                await _mutate(lambda: swap_journal.step(
-                    self.row, swap_journal.current(self.row), detail=f"{reason}; {left}",
-                ))
-            except BaseException:
-                logger.warning("romm_swap: could not note swap %s", self.row, exc_info=True)
+            await self._leave(f"{reason}; {left}")
             return left
-        finally:
-            if self.park is not None:
-                park, self.park = self.park, None
-                await _mutate(park.keep if self.parked else park.close)
+
+    def _restore(self, as_name: str | None = None) -> None:
+        """Move the parked Source out of the slot (on the step's thread)."""
+        self.park.restore(self.plan.new_name, as_name)
+        self.parked = False
 
     async def _restore_beside_output(self) -> None:
         """The output is in place and keeps the ROM's id: the parked Source
@@ -510,8 +662,7 @@ class _Swap:
         if not self.parked:
             return
         await self._step("restoring")
-        await _mutate(self.park.restore, self.plan.new_name, self.plan.old_name)
-        self.parked = False
+        await _mutate(self._restore, self.plan.old_name)
 
     async def _put_old_name_back(self) -> None:
         """The output is not in place: the Source goes back under the name
@@ -519,8 +670,7 @@ class _Swap:
         plan = self.plan
         if self.parked:
             await self._step("restoring")
-            await _mutate(self.park.restore, plan.new_name)
-            self.parked = False
+            await _mutate(self._restore)
         if self.romm_name == plan.old_name:
             return
         await self._step("reverting")
@@ -529,6 +679,32 @@ class _Swap:
         if name != plan.old_name:
             raise RommError(f"RomM still names the file {name}")
         self.romm_name = name
+
+    async def _release_park(self) -> None:
+        """Let go of the parking slot. It is removed only when its own
+        listing shows it empty; one that holds anything (a parked Source),
+        or can't be listed, is left in place, never swept, and the row says
+        so. Never raises."""
+        if self.park is None:
+            return
+        park, self.park = self.park, None
+        try:
+            held = await _mutate(park.contents)
+        except BaseException:
+            logger.warning("romm_swap: could not list %s", park.path, exc_info=True)
+            held = None
+        try:
+            if held == []:
+                await _mutate(park.close)
+                return
+            await _mutate(park.keep)
+        except BaseException:
+            logger.warning("romm_swap: could not let go of %s", park.path, exc_info=True)
+            return
+        if not self.parked:
+            # The flags missed it: the listing has the last word.
+            self.parked = True
+            await self._leave(f"{park.path} still holds {held or 'something'}; {LEFT}")
 
 
 registry.register(RommSwapReferrer())

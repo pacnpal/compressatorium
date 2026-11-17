@@ -17,8 +17,10 @@ post-convert and verify, and the Round-trip comparison, are stubbed.
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import os
+import threading
 import time
 from pathlib import Path
 
@@ -391,6 +393,194 @@ async def test_an_undo_that_fails_leaves_the_source_parked_for_the_next_run(vol,
 
     staging.open_slot(str(platform)).close()  # opening a slot sweeps the stage
     assert parked.read_bytes() == SOURCE_BYTES
+
+
+async def _convert_cancelling(source: Path, when: list[str]) -> object:
+    """Convert *source*, pressing the job's Cancel from a blocking step's
+    thread (*when* gets a callable to do it)."""
+    job = await convert_routes.create_job(JobCreateRequest(
+        file_path=str(source), mode=ConversionMode.CREATEDVD,
+        duplicate_action=DuplicateAction.SKIP, delete_on_verify=True,
+    ))
+    loop = asyncio.get_running_loop()
+
+    def cancel() -> None:
+        event = convert_routes.job_manager.get_cancel_event(job.id)
+        loop.call_soon_threadsafe(event.set)
+
+    when.append(cancel)
+    await convert_routes.job_manager._process_job(job.id)
+    return job
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_during_parking_keeps_the_parked_source(vol, romm, monkeypatch):
+    """Codex PRRT_kwDOQ9nULM64NxUt: a Cancel that lands while the Source is
+    moved into the parking slot must not lose it. The move finishes, is
+    recorded, and the slot holding the Source is never removed."""
+    from services import partial_writes, staging
+
+    platform = _platform(vol)
+    real_take = staging.StagedOutput.take
+    cancel: list = []
+
+    def slow_take(self, name):
+        cancel[0]()
+        time.sleep(0.5)  # the hook sees the Cancel while the move runs
+        return real_take(self, name)
+
+    monkeypatch.setattr(staging.StagedOutput, "take", slow_take)
+    job = await _convert_cancelling(platform / "Game.iso", cancel)
+
+    assert job.deleted_paths == []
+    (row,) = _journal()
+    assert row["state"] == "parked", row
+    assert "left for the next run" in row["detail"]
+    parked = Path(row["parked_path"])
+    assert parked.read_bytes() == SOURCE_BYTES
+    # The output was not placed over the name RomM now points at.
+    assert not (platform / "Game.chd").exists()
+    assert romm.roms[ROM_ID]["fs_name"] == "Game.chd"
+    hour_ago = time.time() - 3600
+    os.utime(parked.parent, (hour_ago, hour_ago))
+    partial_writes.sweep_recorded(min_age=0)
+    staging.open_slot(str(platform)).close()
+    assert parked.read_bytes() == SOURCE_BYTES
+
+
+@pytest.mark.asyncio
+async def test_a_slot_holding_the_source_is_never_removed_on_a_flags_word(
+    vol, romm, monkeypatch,
+):
+    """The parking slot is removed only when its own listing is empty: a move
+    that happened but reported a failure leaves the Source in the slot, kept,
+    and the row says so."""
+    from services import staging
+
+    platform = _platform(vol)
+    real_take = staging.StagedOutput.take
+
+    def take_then_fail(self, name):
+        real_take(self, name)
+        raise OSError("the mount reported an error after the move")
+
+    monkeypatch.setattr(staging.StagedOutput, "take", take_then_fail)
+    job = await _convert(platform / "Game.iso")
+
+    assert job.deleted_paths == []
+    (row,) = _journal()
+    assert "left for the next run" in row["detail"], row
+    parked = Path(row["parked_path"])
+    assert parked.read_bytes() == SOURCE_BYTES
+    assert not (platform / "Game.chd").exists()
+
+
+@pytest.mark.asyncio
+async def test_a_stalled_read_never_holds_a_shared_executor_thread(vol, romm, monkeypatch):
+    """Codex PRRT_kwDOQ9nULM64NxU1: the swap's whole-file reads run on a
+    detached thread, so a mount that stops answering strands that thread,
+    never one of the event loop's shared executor's."""
+    from services.romm import swap_referrer
+
+    platform = _platform(vol)
+    release = threading.Event()
+    seen: list[tuple[str, bool]] = []
+    cancel: list = []
+
+    def stalled_sha1(path):
+        seen.append((threading.current_thread().name, threading.current_thread().daemon))
+        cancel[0]()
+        release.wait(30)
+        raise OSError("the mount stopped answering")
+
+    monkeypatch.setattr(swap_referrer, "compute_file_sha1_sync", stalled_sha1)
+    try:
+        job = await asyncio.wait_for(_convert_cancelling(platform / "Game.iso", cancel), 20)
+    finally:
+        release.set()
+
+    assert seen, "the swap never hashed the output"
+    name, daemon = seen[0]
+    assert daemon and not name.startswith("asyncio_"), seen
+    assert (platform / "Game.iso").read_bytes() == SOURCE_BYTES
+    assert job.deleted_paths == []
+    assert romm.renames == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("layout", ["roms_root", "platform_roms", "subfolder"])
+async def test_the_swap_finds_the_rom_in_every_romm_layout(vol, romm, layout):
+    """Codex PRRT_kwDOQ9nULM64NxUy: the Platform is the Library's Platform
+    folder (``platform_folder``), not the Source's parent folder:
+    ``<root>/roms/<platform>/Game.iso``, ``<root>/<platform>/roms/Game.iso``
+    and a ROM in a subfolder of its Platform all keep their id."""
+    root = vol / "romm"
+    (root / "ps2" / "Game.iso").unlink()
+    romm.roms.clear()
+    folder, fs_path = {
+        "roms_root": (root / "roms" / "ps2", "roms/ps2"),
+        "platform_roms": (root / "ps2" / "roms", "ps2/roms"),
+        "subfolder": (root / "ps2" / "Disc 1", "roms/ps2/Disc 1"),
+    }[layout]
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "Game.iso").write_bytes(SOURCE_BYTES)
+    romm.add_rom(ROM_ID, PS2, "Game.iso", fs_path=fs_path)
+
+    job = await _convert(folder / "Game.iso")
+
+    assert job.status == JobStatus.COMPLETED, job.error_message
+    assert job.warning is None, job.warning
+    assert romm.renames == [(ROM_ID, "Game.chd")]
+    assert romm.roms[ROM_ID]["fs_name"] == "Game.chd"
+    assert sorted(p.name for p in folder.iterdir()) == ["Game.chd"]
+    assert [r["state"] for r in _journal()] == ["done"]
+
+
+@pytest.mark.asyncio
+async def test_a_rom_whose_record_is_its_folder_converts_as_before(vol, romm):
+    """A file in a subfolder RomM records as one ROM (the folder): the record
+    is the folder, which stays, so the swap doesn't apply."""
+    root = vol / "romm"
+    (root / "ps2" / "Game.iso").unlink()
+    romm.roms.clear()
+    folder = root / "ps2" / "Game"
+    folder.mkdir()
+    (folder / "Game.iso").write_bytes(SOURCE_BYTES)
+    (folder / "Game.sav").write_bytes(b"save")
+    romm.roms[ROM_ID] = {
+        "id": ROM_ID, "name": "Game", "platform_id": PS2["id"], "platform_slug": "ps2",
+        "fs_path": "roms/ps2", "fs_name": "Game", "full_path": "roms/ps2/Game",
+        "has_multiple_files": True, "missing_from_fs": False,
+    }
+
+    job = await _convert(folder / "Game.iso")
+
+    assert job.status == JobStatus.COMPLETED, job.error_message
+    assert job.warning is None, job.warning
+    assert romm.renames == []
+    assert sorted(p.name for p in folder.iterdir()) == ["Game.chd", "Game.sav"]
+    assert _journal() == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("unknowable", ["romm_unreadable", "two_records"])
+async def test_a_rom_that_cant_be_told_keeps_the_source(vol, romm, unknowable):
+    """With the swap on, a file in a RomM Platform folder whose ROM can't be
+    told (RomM can't be read, or two records claim it) keeps the Source
+    rather than delete it and orphan the record."""
+    platform = _platform(vol)
+    if unknowable == "romm_unreadable":
+        romm.probe_status = 500
+    else:
+        romm.roms[ROM_ID + 1] = {**romm.roms[ROM_ID], "id": ROM_ID + 1}
+
+    job = await _convert(platform / "Game.iso")
+
+    assert job.status == JobStatus.COMPLETED, job.error_message
+    assert job.warning.startswith("converted, source kept: "), job.warning
+    assert (platform / "Game.iso").read_bytes() == SOURCE_BYTES
+    assert romm.renames == []
+    assert job.deleted_paths == []
 
 
 def test_the_fake_never_moves_a_file_out_of_its_folder(vol, romm):

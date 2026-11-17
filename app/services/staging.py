@@ -183,6 +183,14 @@ class StagedOutput:
             )
             return os.path.join(self.folder, target)
 
+    def contents(self) -> list[str]:
+        """The names in the slot now, read through its descriptor. What a
+        caller checks before removing a slot that may hold something it must
+        keep (a parked Source). Raises ``OSError``."""
+        with self._mutex:
+            self._require_open()
+            return sorted(os.listdir(self._slot_fd))
+
     def remove(self, name: str) -> None:
         """Delete the file *name* in the slot, never following a link.
         Raises ``OSError``."""

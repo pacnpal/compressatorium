@@ -12,9 +12,11 @@ States, in the order a swap moves through them:
   or has been, sent. RomM may or may not have moved the Source.
 * ``parking``: RomM confirmed the new name; the Source (now under the
   output's name) is being moved into a ``park-`` slot.
-* ``placing``: the Source is parked; the output is being moved into place.
-* ``rehashing``: the output is in place; RomM is rehashing the ROM and the
-  read-back is being checked.
+* ``parked``: it is there (``parked_path``). Recorded by the move itself, on
+  its thread, so a cancel can't skip it.
+* ``placing``: the output is being moved into place.
+* ``placed``: it is there, the Source still parked.
+* ``rehashing``: RomM is rehashing the ROM and the read-back is being checked.
 * ``deleting``: the read-back passed; the parked Source is being deleted.
 
 And the two undo steps a failure takes:
@@ -39,7 +41,10 @@ from __future__ import annotations
 
 from services import db as _db
 
-STEPS = ("renaming", "parking", "placing", "rehashing", "deleting", "reverting", "restoring")
+STEPS = (
+    "renaming", "parking", "parked", "placing", "placed", "rehashing", "deleting",
+    "reverting", "restoring",
+)
 ENDINGS = ("done", "refused", "failed", "rolled_back", "kept")
 
 

@@ -3127,6 +3127,7 @@ class JobManager:
         return referrers.StagedPlacement(
             staged={job.output_path: write_path},
             place=lambda: self._place_staged(job, slot, write_path),
+            is_placed=lambda: slot.placed,
         )
 
     async def _close_stage(
@@ -3613,9 +3614,14 @@ class JobManager:
             bound=probe_seconds,
             placement=placement,
         )
-        if placement is not None and not referrer_outcome.lingering:
+        if (
+            placement is not None and not referrer_outcome.lingering
+            and not placement.held.is_set()
+        ):
             # The output is placed whatever the hook did (a kept Source keeps
-            # its output beside it), and before any unlink below.
+            # its output beside it), and before any unlink below. Not when a
+            # Referrer stopped part way and holds it (#391): the name may be
+            # the Source's.
             await placement.place()
         if referrer_outcome.removed:
             # A Referrer replaced the Source and removed it itself (#391).
@@ -4702,9 +4708,11 @@ class JobManager:
         # pass, when the output's Library needs one (#398); closed in the
         # `finally`, which discards whatever was never placed.
         slot: staging.StagedOutput | None = None
+        # The staged output, when a Referrer places it itself (#391).
+        placement: referrers.StagedPlacement | None = None
         try:
             try:
-                inputs_held = job.input_kind == InputKind.DIRECTORY or await run_in_threadpool(
+                inputs_held =job.input_kind == InputKind.DIRECTORY or await run_in_threadpool(
                     self._hold_inputs, job_id, job, self._begin_input_attempt(job_id),
                 )
             except Exception as exc:
@@ -5301,9 +5309,13 @@ class JobManager:
                         else:
                             source_deleted = True
 
-                if slot is not None and not slot.placed:
+                if (
+                    slot is not None and not slot.placed
+                    and not (placement is not None and placement.held.is_set())
+                ):
                     # No check was asked for: the output is placed once the
-                    # conversion has finished (#398).
+                    # conversion has finished (#398). Never when a Referrer
+                    # that stopped part way holds it (#391).
                     await self._place_staged(job, slot, write_path)
 
                 job.status = JobStatus.COMPLETED
