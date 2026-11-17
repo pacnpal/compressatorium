@@ -4464,6 +4464,12 @@ this, written by `swap_journal.begin`:
 - the Source's fingerprint (`source_size`, `source_mtime_ns`);
 - the output's fingerprint (`output_size`, `output_sha1`).
 
+A swap left for the same reason on each pass is logged once: a WARNING when
+the reason is new for that swap (`_last_reason`, in process, so a restart
+logs it once more), again when the reason changes, and at DEBUG when a pass
+repeats it. The Finding is written as before and the retry schedule is
+unchanged. A swap that settles is forgotten.
+
 Recovery takes these steps for each row:
 
 1. Take the job locks on the Source and output paths (`lock_manager`). If a
