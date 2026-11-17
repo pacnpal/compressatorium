@@ -108,6 +108,17 @@
 
 ### Fixed
 
+- **RomM settings saves land in order** (#408). Two RomM settings saves made
+  close together (a RomM Settings card save and the Rules editor's
+  EmulationStation switch, say) could be answered out of order, leaving the
+  screen showing older settings than the server had stored, and the next save
+  then started from that stale state. Saves now go out one at a time in click
+  order, the same way a folder Library's settings do, and only the latest
+  answer is shown. A save that fails still shows its error to whoever made
+  it, without overwriting newer settings; if the latest save fails, the
+  settings are read back from RomM. Changing the URL, library folder or token
+  still re-reads the status and platforms, even if a newer save fails, and
+  that re-read no longer holds later settings saves behind it.
 - **A playlist's temp file is hidden from RomM too** (#404). When a conversion
   rewrites an `.m3u` or `gamelist.xml` in RomM's library, the file is first
   written under a temporary name beside it, which a RomM scan landing in that

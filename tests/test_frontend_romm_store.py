@@ -24,6 +24,7 @@ import pytest
 _SRC = Path(__file__).resolve().parents[1] / "src"
 _ROMM_STORE_JS = _SRC / "lib" / "stores" / "romm.svelte.js"
 _RULES_SOURCE_JS = _SRC / "lib" / "rules" / "rulesSource.svelte.js"
+_SAVE_QUEUE_JS = _SRC / "lib" / "stores" / "latestSaveQueue.js"
 
 
 def _find_node() -> str | None:
@@ -46,7 +47,8 @@ def _plain_js() -> str:
     so that file goes first; it has no imports.
     """
     base = _RULES_SOURCE_JS.read_text(encoding="utf-8").replace("export class ", "class ")
-    src = base + "\n" + _ROMM_STORE_JS.read_text(encoding="utf-8")
+    queue = _SAVE_QUEUE_JS.read_text(encoding="utf-8").replace("export class ", "class ")
+    src = queue + "\n" + base + "\n" + _ROMM_STORE_JS.read_text(encoding="utf-8")
     kept = [
         line for line in src.splitlines()
         if not (line.strip().startswith("import ") and line.strip().endswith(";"))
@@ -74,7 +76,10 @@ const api = {
   getRommPlatforms: (...a) => { __reloads.push('platforms'); return __defer(...a); },
   saveRommRules: __defer,
   getRommStatus: (...a) => { __reloads.push('status'); return __defer(...a); },
-  saveRommSettings: async (patch) => ({ ...patch, saved: true }),
+  saveRommSettings: async (patch) => (
+    globalThis.__saveSettings ? globalThis.__saveSettings(patch) : { ...patch, saved: true }
+  ),
+  getRommSettings: (...a) => globalThis.__getSettings(...a),
 };
 const fileBrowser = { rommPlatformId: null, exitRomm() {}, async enterRomm(id) {
   this.rommPlatformId = id;
@@ -511,3 +516,201 @@ def test_import_saves_new_rules_through_the_rules_api_only_where_none_exists(tmp
     assert sent["7"]["enabled"] is False, sent
     # The Wii Rule the operator already had is left exactly as it was.
     assert sent["10"] == {"mode": "dolphin_wia", "enabled": True}, sent
+
+
+_SETTINGS_SAVES = """
+const sent = [];
+const answers = [];
+globalThis.__saveSettings = (patch) => new Promise((resolve, reject) => {
+  sent.push(patch);
+  answers.push({ resolve, reject });
+});
+globalThis.__getSettings = async () => ({
+  auto_convert: true, es_frontend: false, readBack: true,
+});
+const store = new RommStore();
+"""
+
+
+def test_overlapping_settings_saves_keep_the_newest_settings(tmp_path):
+    """Issue 408: the older save answering last must not win.
+
+    Two saves go out together. The second is not sent until the first has
+    answered (the backend applies them in click order), and the screen ends on
+    the second save's answer, however the answers are timed.
+    """
+    data = _run(tmp_path, _SETTINGS_SAVES + """
+const first = store.saveSettings({ auto_convert: true });
+await tick();
+const second = store.saveSettings({ es_frontend: true });
+await tick();
+const sentBeforeFirstAnswered = sent.length;
+answers[0].resolve({ auto_convert: true, es_frontend: false });
+await first;
+await tick();
+const afterFirst = JSON.stringify(store.settings);
+answers[1].resolve({ auto_convert: true, es_frontend: true });
+await second;
+process.stdout.write(JSON.stringify({
+  sentBeforeFirstAnswered, sent, afterFirst, settings: store.settings,
+  saving: store.settingsSaving,
+}));
+""")
+    assert data["sentBeforeFirstAnswered"] == 1, data
+    assert data["sent"] == [{"auto_convert": True}, {"es_frontend": True}], data
+    # The superseded first answer is not adopted while a newer save is queued.
+    assert data["afterFirst"] == "null", data
+    assert data["settings"] == {"auto_convert": True, "es_frontend": True}, data
+    assert data["saving"] is False, data
+
+
+def test_a_failing_earlier_settings_save_does_not_overwrite_a_later_success(tmp_path):
+    """The earlier save's error reaches its caller; the later save's answer stands."""
+    data = _run(tmp_path, _SETTINGS_SAVES + """
+const first = store.saveSettings({ auto_convert: true }).catch((e) => e.message);
+await tick();
+const second = store.saveSettings({ es_frontend: true });
+await tick();
+const sentBeforeFirstSettled = sent.length;
+answers[0].reject(new Error('first failed'));
+const error = await first;
+await tick();
+answers[1].resolve({ auto_convert: false, es_frontend: true });
+await second;
+process.stdout.write(JSON.stringify({
+  error, settings: store.settings, sent, sentBeforeFirstSettled,
+}));
+""")
+    assert data["sentBeforeFirstSettled"] == 1, data
+    assert data["error"] == "first failed", data
+    assert data["settings"] == {"auto_convert": False, "es_frontend": True}, data
+    assert len(data["sent"]) == 2, data
+
+
+def test_a_failed_latest_settings_save_reads_the_settings_back(tmp_path):
+    """An earlier save landed unadopted, so after the latest fails, the screen
+    shows what the server holds rather than the last answer it happened to see.
+    """
+    data = _run(tmp_path, _SETTINGS_SAVES + """
+const first = store.saveSettings({ auto_convert: true });
+await tick();
+const second = store.saveSettings({ es_frontend: true }).catch((e) => e.message);
+await tick();
+answers[0].resolve({ auto_convert: true, es_frontend: false });
+await first;
+await tick();
+answers[1].reject(new Error('second failed'));
+const error = await second;
+process.stdout.write(JSON.stringify({ error, settings: store.settings }));
+""")
+    assert data["error"] == "second failed", data
+    assert data["settings"] == {
+        "auto_convert": True, "es_frontend": False, "readBack": True,
+    }, data
+
+
+def test_a_connection_save_whose_newer_save_fails_still_refreshes(tmp_path):
+    """Codex PRRT_kwDOQ9nULM64RHI5: the backend already uses the new connection.
+
+    A url save lands while a newer save is queued, so it skips the refresh. The
+    newer save then fails; the status and platforms are still re-read, or they
+    would keep describing the old connection.
+    """
+    data = _run(tmp_path, _SETTINGS_SAVES + """
+const first = store.saveSettings({ url: 'http://new:8080' });
+await tick();
+const second = store.saveSettings({ es_frontend: true }).catch((e) => e.message);
+await tick();
+answers[0].resolve({ url: 'http://new:8080' });
+await first;
+await tick();
+const reloadsBefore = __reloads.length;
+answers[1].reject(new Error('second failed'));
+await tick();
+await tick();
+process.stdout.write(JSON.stringify({ reloadsBefore, reloads: __reloads }));
+""")
+    assert data["reloadsBefore"] == 0, data
+    assert "status" in data["reloads"], data
+
+
+def test_a_slow_catalog_refresh_does_not_hold_later_settings_saves(tmp_path):
+    """Codex PRRT_kwDOQ9nULM64RHI_: only the PUT and adopting it hold the queue."""
+    data = _run(tmp_path, _SETTINGS_SAVES + """
+const first = store.saveSettings({ url: 'http://new:8080' });
+await tick();
+answers[0].resolve({ url: 'http://new:8080' });
+await tick();
+await tick();
+const refreshing = __reloads.includes('status');
+const second = store.saveSettings({ auto_convert: false });
+await tick();
+await tick();
+process.stdout.write(JSON.stringify({ refreshing, sent }));
+""")
+    assert data["refreshing"] is True, data
+    # The second PUT went out while the status read was still waiting.
+    assert data["sent"] == [{"url": "http://new:8080"}, {"auto_convert": False}], data
+
+
+def test_a_refresh_superseded_by_a_newer_connection_change_is_dropped(tmp_path):
+    """Only the latest connection change's refresh applies its result."""
+    data = _run(tmp_path, _SETTINGS_SAVES + """
+const first = store.saveSettings({ url: 'http://one:8080' });
+await tick();
+answers[0].resolve({ url: 'http://one:8080' });
+await tick(); await tick();
+const second = store.saveSettings({ url: 'http://two:8080' });
+await tick();
+answers[1].resolve({ url: 'http://two:8080' });
+await tick(); await tick();
+const statusCalls = __reloads.filter((r) => r === 'status').length;
+// The older refresh's status answer arrives last and says "usable".
+const usable = { configured: true, connected: true, library_root_mounted: true };
+__calls[0].resolve(usable);
+await tick(); await tick();
+process.stdout.write(JSON.stringify({ statusCalls, reloads: __reloads }));
+""")
+    assert data["statusCalls"] == 2, data
+    # The superseded refresh never goes on to list platforms.
+    assert "platforms" not in data["reloads"], data
+
+
+_FAILING_REFRESH = _SETTINGS_SAVES + """
+// The refresh's cleanup throws once the status says nothing is usable.
+fileBrowser.exitRomm = () => { throw new Error('refresh blew up'); };
+const first = store.saveSettings({ url: 'http://new:8080' });
+await tick();
+"""
+
+
+def test_a_failed_save_keeps_its_own_error_when_the_refresh_also_fails(tmp_path):
+    """CodeRabbit 4595283279: the caller gets the save's error, not the refresh's."""
+    data = _run(tmp_path, _FAILING_REFRESH + """
+const second = store.saveSettings({ es_frontend: true }).catch((e) => e.message);
+await tick();
+answers[0].resolve({ url: 'http://new:8080' });
+await first;
+await tick();
+answers[1].reject(new Error('second failed'));
+await tick();
+__calls[0].resolve({ configured: true, connected: false });
+const error = await second;
+process.stdout.write(JSON.stringify({ error }));
+""")
+    assert data["error"] == "second failed", data
+
+
+def test_a_failing_refresh_is_reported_when_the_save_succeeded(tmp_path):
+    """With no save error to keep, the refresh's own error reaches the caller."""
+    data = _run(tmp_path, _FAILING_REFRESH + """
+const outcome = first.catch((e) => e.message);
+answers[0].resolve({ url: 'http://new:8080' });
+await tick();
+__calls[0].resolve({ configured: true, connected: false });
+const error = await outcome;
+process.stdout.write(JSON.stringify({ error, settings: store.settings }));
+""")
+    assert data["error"] == "refresh blew up", data
+    # The new settings were adopted before the refresh failed.
+    assert data["settings"] == {"url": "http://new:8080"}, data
