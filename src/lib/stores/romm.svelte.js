@@ -101,6 +101,8 @@ class RommStore extends RulesSource {
   // A save that changed the connection may have been superseded before it
   // could re-derive the status and platforms; the latest save does it for it.
   #identityDirty = false;
+  // Ticket for the connection refresh; only the latest applies its result.
+  #refreshTicket = 0;
   platformsError = $state(null);
   selectedPlatformId = $state(null);
 
@@ -345,18 +347,28 @@ class RommStore extends RulesSource {
    * screen. A superseded save still reports its own error to its caller
    * without touching the state. If the latest save fails, the settings are
    * read back, since an earlier save may have landed without being adopted.
+   *
+   * The queue is held only for the request and adopting its answer. The
+   * catalog refresh a connection change needs runs after the slot is released
+   * (it can take minutes), so later settings writes are not held behind it.
    */
   saveSettings(patch) {
     this.#pendingSaves += 1;
     this.settingsSaving = true;
     return this.#saveQueue
       .schedule('settings', (ticket) => this.#saveSettingsNow(patch, ticket))
+      .then(async ({ error, refresh }) => {
+        if (refresh) await this.#refreshConnection();
+        if (error) throw error;
+        return this.settings;
+      })
       .finally(() => {
         this.#pendingSaves -= 1;
         if (this.#pendingSaves === 0) this.settingsSaving = false;
       });
   }
 
+  /** The queue slot's work: never throws; `error` is rethrown to the caller. */
   async #saveSettingsNow(patch, ticket) {
     // Only an identity change invalidates what is on screen. Re-deriving
     // unconditionally meant that toggling automation, or saving a metadata
@@ -371,23 +383,42 @@ class RommStore extends RulesSource {
     // credential change is only ever visible here as a submitted field.
     const identityKeys = ['url', 'library_root', 'token', 'clear_token'];
     const changesIdentity = identityKeys.some((key) => key in (patch ?? {}));
+    const latest = () => this.#saveQueue.isLatest('settings', ticket);
     let saved;
     try {
       saved = await api.saveRommSettings(patch);
-    } catch (e) {
-      if (this.#saveQueue.isLatest('settings', ticket)) await this.loadSettings();
-      throw e;
+    } catch (error) {
+      if (!latest()) return { error, refresh: false };
+      await this.loadSettings();
+      // An earlier connection change skipped its refresh for this save; the
+      // backend already uses the new connection, so the refresh is still owed.
+      return { error, refresh: this.#takeIdentityRefresh() };
     }
     if (changesIdentity) this.#identityDirty = true;
-    if (!this.#saveQueue.isLatest('settings', ticket)) return this.settings;
+    if (!latest()) return { error: null, refresh: false };
     // Supersede any read still waiting on the previous connection before
     // adopting the answer: one of them landing afterwards would replace the
     // settings this save just installed with the ones it replaced.
     this.#settingsTicket += 1;
     this.settings = saved;
-    if (!this.#identityDirty) return this.settings;
+    return { error: null, refresh: this.#takeIdentityRefresh() };
+  }
+
+  #takeIdentityRefresh() {
+    const owed = this.#identityDirty;
     this.#identityDirty = false;
+    return owed;
+  }
+
+  /**
+   * Re-derive the status and catalog after a connection change. Only the
+   * latest refresh applies its result: an older one that was still waiting on
+   * the previous connection must not list or clear anything.
+   */
+  async #refreshConnection() {
+    const ticket = ++this.#refreshTicket;
     await this.loadStatus();
+    if (ticket !== this.#refreshTicket) return;
     if (this.usable) {
       await this.loadPlatforms({ force: true });
     } else {
@@ -400,7 +431,6 @@ class RommStore extends RulesSource {
       this.selectedPlatformId = null;
       fileBrowser.exitRomm();
     }
-    return this.settings;
   }
 
   async testConnection(patch = {}) {

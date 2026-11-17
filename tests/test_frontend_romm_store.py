@@ -607,3 +607,70 @@ process.stdout.write(JSON.stringify({ error, settings: store.settings }));
     assert data["settings"] == {
         "auto_convert": True, "es_frontend": False, "readBack": True,
     }, data
+
+
+def test_a_connection_save_whose_newer_save_fails_still_refreshes(tmp_path):
+    """Codex PRRT_kwDOQ9nULM64RHI5: the backend already uses the new connection.
+
+    A url save lands while a newer save is queued, so it skips the refresh. The
+    newer save then fails; the status and platforms are still re-read, or they
+    would keep describing the old connection.
+    """
+    data = _run(tmp_path, _SETTINGS_SAVES + """
+const first = store.saveSettings({ url: 'http://new:8080' });
+await tick();
+const second = store.saveSettings({ es_frontend: true }).catch((e) => e.message);
+await tick();
+answers[0].resolve({ url: 'http://new:8080' });
+await first;
+await tick();
+const reloadsBefore = __reloads.length;
+answers[1].reject(new Error('second failed'));
+await tick();
+await tick();
+process.stdout.write(JSON.stringify({ reloadsBefore, reloads: __reloads }));
+""")
+    assert data["reloadsBefore"] == 0, data
+    assert "status" in data["reloads"], data
+
+
+def test_a_slow_catalog_refresh_does_not_hold_later_settings_saves(tmp_path):
+    """Codex PRRT_kwDOQ9nULM64RHI_: only the PUT and adopting it hold the queue."""
+    data = _run(tmp_path, _SETTINGS_SAVES + """
+const first = store.saveSettings({ url: 'http://new:8080' });
+await tick();
+answers[0].resolve({ url: 'http://new:8080' });
+await tick();
+await tick();
+const refreshing = __reloads.includes('status');
+const second = store.saveSettings({ auto_convert: false });
+await tick();
+await tick();
+process.stdout.write(JSON.stringify({ refreshing, sent }));
+""")
+    assert data["refreshing"] is True, data
+    # The second PUT went out while the status read was still waiting.
+    assert data["sent"] == [{"url": "http://new:8080"}, {"auto_convert": False}], data
+
+
+def test_a_refresh_superseded_by_a_newer_connection_change_is_dropped(tmp_path):
+    """Only the latest connection change's refresh applies its result."""
+    data = _run(tmp_path, _SETTINGS_SAVES + """
+const first = store.saveSettings({ url: 'http://one:8080' });
+await tick();
+answers[0].resolve({ url: 'http://one:8080' });
+await tick(); await tick();
+const second = store.saveSettings({ url: 'http://two:8080' });
+await tick();
+answers[1].resolve({ url: 'http://two:8080' });
+await tick(); await tick();
+const statusCalls = __reloads.filter((r) => r === 'status').length;
+// The older refresh's status answer arrives last and says "usable".
+const usable = { configured: true, connected: true, library_root_mounted: true };
+__calls[0].resolve(usable);
+await tick(); await tick();
+process.stdout.write(JSON.stringify({ statusCalls, reloads: __reloads }));
+""")
+    assert data["statusCalls"] == 2, data
+    # The superseded refresh never goes on to list platforms.
+    assert "platforms" not in data["reloads"], data
