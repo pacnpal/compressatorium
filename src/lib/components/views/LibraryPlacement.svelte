@@ -15,7 +15,14 @@
   import Select from '$lib/components/ui/Select.svelte';
   import Spinner from '$lib/components/ui/Spinner.svelte';
 
-  let { library } = $props();
+  // `listing`: the view's own Platform listing is running. A folder Library
+  // is walked one listing at a time and a second one fails at once
+  // (`listing_in_progress`), so the placements (which list the Platforms too)
+  // wait for it, then load again whenever `platforms` changes.
+  let { library, listing = false, platforms = null } = $props();
+
+  // routes/libraries.py LISTING_IN_PROGRESS.
+  const LISTING_IN_PROGRESS = 'listing_in_progress';
 
   const LAYOUTS = [
     { value: 'esde', label: 'ES-DE / Batocera: <root>/<platform>' },
@@ -38,6 +45,9 @@
       placements = Array.isArray(data?.placements) ? data.placements : [];
     } catch (e) {
       if (library?.id !== id) return;
+      // Another listing of the folder is still running: a wait, not an
+      // error. The next change of `platforms` loads again.
+      if (e?.status === 409 && e?.message === LISTING_IN_PROGRESS) return;
       error = e?.message ?? 'Could not read where Images go';
       placements = [];
     } finally {
@@ -45,14 +55,24 @@
     }
   }
 
-  // Again whenever the Library or its layout changes. Primitives, so a fresh
+  // Again whenever the Library, its layout or its listed Platforms change,
+  // once the view's own listing is done. Primitives for the row, so a fresh
   // copy of the same row (adopted after another setting's save) reloads nothing.
+  // `listing` is read after the current flush (a zero timeout), not here: the
+  // view's effect that starts its listing may run after this one in the same
+  // flush, and the placements must not set off first.
   const libraryId = $derived(library?.id);
   const layout = $derived(library?.layout);
   $effect(() => {
     const id = libraryId;
     void layout;
-    if (id) untrack(() => load(id));
+    void listing;
+    void platforms;
+    if (!id) return;
+    const timer = setTimeout(() => {
+      if (!untrack(() => listing)) load(id);
+    }, 0);
+    return () => clearTimeout(timer);
   });
 
   async function setLayout(layout) {

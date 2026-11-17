@@ -218,7 +218,11 @@
   {/if}
 
   {#if selected && (isFolder || romm.usable)}
-    <LibraryPlacement library={selected} />
+    <LibraryPlacement
+      library={selected}
+      listing={source?.platformsLoading ?? false}
+      platforms={source?.platforms ?? null}
+    />
   {/if}
 
   {#if source}

@@ -475,3 +475,17 @@ def test_the_libraries_view_shows_the_layout_and_where_images_go():
     for theme in ("light", "dark"):
         assert f"output: docs/screenshots/rules-folder-layout-{theme}.png" in shots
         assert f"docs/screenshots/rules-folder-layout-{theme}.png" in readme
+
+
+def test_the_panel_waits_for_the_views_own_listing():
+    """A folder Library is walked one listing at a time: a second walk while
+    one runs fails at once (``listing_in_progress``). The panel's placements
+    list the Library's Platforms too, so it must not start while the view's
+    own Platform listing is running, or one of the two fails (the Rules view
+    then showed no Platform rows; the screenshots check caught it)."""
+    root = Path(__file__).resolve().parents[1]
+    view = (root / "src/lib/components/views/RulesView.svelte").read_text()
+    panel = (root / "src/lib/components/views/LibraryPlacement.svelte").read_text()
+    assert "listing={source?.platformsLoading" in view
+    assert "if (!untrack(() => listing)) load(id)" in panel
+    assert "listing_in_progress" in panel
