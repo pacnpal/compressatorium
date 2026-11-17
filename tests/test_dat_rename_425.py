@@ -634,6 +634,10 @@ async def test_a_cancel_mid_way_through_the_file_phase_puts_the_updated_playlist
     await dat_rename.drain()
 
     job = (await client.get(f"/api/jobs/{job_id}")).json()
+    # Cancelled during its only Image: the job ends cancelled, not completed
+    # (Codex 4603430454).
+    assert job["status"] == "cancelled", job
+    assert job["result"]["cancelled"] is True
     result = _result(job)[str(game)]
     assert result["status"] == "not_renamed", result
     assert game.exists() and not (ps2 / "Ico (USA).iso").exists()
@@ -864,13 +868,14 @@ async def test_a_cancel_while_romm_renames_settles_romm_before_the_rename_ends(
 async def test_a_stalled_conflict_settle_is_never_started_twice(
     db: Path, client: httpx.AsyncClient, monkeypatch,
 ) -> None:
-    """A settle stuck on a Volume keeps its worker; every Findings load while
-    it runs starts no other one, so stalled loads can't use up the shared
-    detached slots (CodeRabbit 4602978437)."""
+    """A settle stuck on a Volume keeps its worker; every Findings load and
+    every ranking save while it runs answers within the bound and starts no
+    other one, so stalled requests can't hang or use up the shared detached
+    slots (CodeRabbit 4602978437, Codex 4603430802). One settle, shared by
+    both routes."""
     import asyncio
     import threading
 
-    from routes import findings as findings_routes
     from services import dat_rename
 
     release = threading.Event()
@@ -882,19 +887,66 @@ async def test_a_stalled_conflict_settle_is_never_started_twice(
         return 0
 
     monkeypatch.setattr(dat_rename, "settle_conflicts", stuck)
-    monkeypatch.setattr(findings_routes, "_SETTLE_SECONDS", 0.1)
+    monkeypatch.setattr(dat_rename, "SETTLE_SECONDS", 0.1)
     try:
-        for _ in range(3):
+        for _ in range(2):
             assert (await client.get("/api/findings")).status_code == 200
+            saved = await asyncio.wait_for(client.put("/api/dat/ranking", json={"order": []}), 5)
+            assert saved.status_code == 200, saved.text
+            reset = await asyncio.wait_for(client.delete("/api/dat/ranking"), 5)
+            assert reset.status_code == 200, reset.text
         assert calls == [1]
     finally:
         release.set()
     for _ in range(50):
-        if not findings_routes._conflicts_settling.locked():
+        if not dat_rename.settling_conflicts():
             break
         await asyncio.sleep(0.02)
     assert (await client.get("/api/findings")).status_code == 200
     assert calls == [1, 1]
+
+
+@pytest.mark.asyncio
+async def test_a_folder_open_that_answers_late_closes_its_folders(
+    db: Path, client: httpx.AsyncClient, monkeypatch,
+) -> None:
+    """Opening the Image's folders outlasts its bound, so the rename stops
+    waiting; when the open answers later its folder descriptors are closed,
+    never leaked (Codex 4603430442)."""
+    import asyncio
+    import time
+
+    from services import image_rename
+
+    roms = db / "roms"
+    game = roms / "game.iso"
+    sha1 = _disc(game, b"ico")
+    await _import(client, _dat("Sony - PlayStation 2", {"Ico (USA)": sha1}, homepage="redump.org"))
+    await _match(client, game)
+    preview = await _preview(client, game)
+    opened: list = []
+    real_open = image_rename._Files.open_blocking
+
+    def slow(renames):
+        time.sleep(0.6)
+        files = real_open(renames)
+        opened.append((files, list(files._fds.values())))
+        return files
+
+    monkeypatch.setattr(image_rename._Files, "open_blocking", staticmethod(slow))
+    monkeypatch.setattr(image_rename, "OPEN_SECONDS", 0.2)
+    job = await _run(client, preview)
+
+    result = _result(job)[str(game)]
+    assert result["status"] == "not_renamed", result
+    assert game.exists()
+    for _ in range(100):
+        if opened:
+            break
+        await asyncio.sleep(0.02)
+    await asyncio.sleep(0.2)
+    ((files, fds),) = opened
+    assert fds and files._fds == {}
 
 
 @pytest.mark.asyncio

@@ -6860,7 +6860,8 @@ adds steps without a second operation. It runs the existing Referrer hook
 resolved, confirmed inside a Volume (`lock_boundary_root`,
 `volume_containment`) and opened beneath the Volume root with no symlink on
 the way (`open_dir_beneath`), and each file is fingerprinted through that
-descriptor. Every later look (`where_blocking`) and every move goes through
+descriptor. The open is bounded with `run_detached_undoable`, whose undo closes
+the descriptors of an open that answers after the rename stopped waiting. Every later look (`where_blocking`) and every move goes through
 the descriptors: `place_without_clobbering(old_name, new_name,
 src_dir_fd=..., dst_dir_fd=...)`, only while the file is still the one
 fingerprinted. A folder swapped for a link to somewhere else after the check
@@ -6941,15 +6942,17 @@ checked, or whose rename stops on an unexpected error, is skipped or reported
 not renamed on its own, never hiding the others. A `conflict` (equally ranked
 DATs that disagree) skips the Image and records a `rename_conflict` Finding
 (keyed by the Image's path, its cause the disagreeing matches);
-`settle_conflicts` clears each one the ranking now resolves, run after the
-ranking is saved or reset and whenever the Findings are listed (detached and
-bounded there, at most one in flight until its worker really ends; a settle
-that fails or stalls leaves the list as it is, and one that ends late only
-ever clears a row whose cause it read).
+`settle_conflicts` clears each one the ranking now resolves. Requests run it
+through one shared `settle_conflicts_bounded` (after the ranking is saved or
+reset, and whenever the Findings are listed): detached, bounded by
+`SETTLE_SECONDS`, at most one in flight until its worker really ends. A settle
+that fails or stalls leaves the Findings as they are, and one that ends late
+only ever clears a row whose cause it read.
 
 The run (`POST /api/files/dat-rename`, the rename confirmation header) is an
 external job (`ConversionMode.DAT_RENAME`, no Ledger row), one at a time, like
-the duplicate delete. It plans every Image again: one whose new name is not
+the duplicate delete. A Cancel stops it before the next Image and ends it
+cancelled, also when it came during the last one. It plans every Image again: one whose new name is not
 the one confirmed is skipped. Each confirmed Image goes through
 `rename_image`. The job's `result` lists every Image as `renamed`, `skipped`
 or `not_renamed` with its reason and Referrer records, and one

@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import threading
 from collections.abc import Iterable
 from typing import Any
 
@@ -48,6 +49,7 @@ from services.subprocess_runner import (
     ProgressAbandoned,
     ReadCancelled,
     Stalled,
+    run_detached,
     run_detached_bounded,
     run_detached_within_stall_bound,
 )
@@ -70,6 +72,12 @@ MAX_IMAGES = 2000
 PLAN_SECONDS = 60.0
 # The cap on Images listed by name in the notification.
 MAX_LISTED = 20
+
+# How long a request waits for the rename-conflict settle (#425).
+SETTLE_SECONDS = 5.0
+# Held by the rename-conflict settle that is running, across threads, until
+# its worker really ends: at most one in flight (CodeRabbit 4602978437).
+_conflicts_settling = threading.Lock()
 
 # The job running now, if any: one rename at a time.
 _running: str | None = None
@@ -315,6 +323,46 @@ def settle_conflicts() -> int:
     return cleared
 
 
+def _settle_conflicts_once() -> int:
+    """One settle of the rename conflicts, unless one is running."""
+    if not _conflicts_settling.acquire(blocking=False):
+        return 0
+    try:
+        return settle_conflicts()
+    finally:
+        _conflicts_settling.release()
+
+
+def settling_conflicts() -> bool:
+    """Whether a rename-conflict settle's worker is running now."""
+    return _conflicts_settling.locked()
+
+
+async def settle_conflicts_bounded() -> None:
+    """:func:`settle_conflicts` for a request: the Findings list, and saving
+    or resetting the DAT ranking (Codex 4603430802). Never raises (CodeRabbit
+    4602644770): one that fails or runs past ``SETTLE_SECONDS`` (it may
+    resolve a path on a Volume that stopped answering, CodeRabbit 4602644800)
+    leaves the Findings as they are, and the next request tries again.
+    Detached, and at most one in flight, held until its worker really ends
+    (CodeRabbit 4602978437): requests while one is stuck start none, so they
+    can't use up the detached slots.
+
+    A worker that finishes after the request stopped waiting may still clear
+    a Finding, which is harmless: it only ever deletes a row whose cause is
+    the one it read (``findings.resolve`` with that fingerprint) and whose
+    DATs the ranking now orders; it never adds or changes one."""
+    if settling_conflicts():
+        return
+    try:
+        await asyncio.wait_for(run_detached(_settle_conflicts_once), SETTLE_SECONDS)
+    except Exception:
+        logger.warning(
+            "dat_rename: settling the rename conflicts did not finish; the next request "
+            "tries again", exc_info=True,
+        )
+
+
 # ----------------------------------------------------------------------
 # the run
 # ----------------------------------------------------------------------
@@ -391,6 +439,9 @@ async def _rename_all(job_id: str, items: list[dict]) -> dict:
             # results (CodeRabbit 4602644812).
             logger.warning("dat_rename: renaming %s failed", path, exc_info=True)
             results.append(_result(path, new_path, "not_renamed", f"stopped on an error ({exc})"))
+    # A cancel that came during the last Image ends the job cancelled too
+    # (Codex 4603430454).
+    cancelled = cancelled or job_manager.is_cancelled(job_id)
     counts = {
         status: sum(1 for r in results if r["status"] == status)
         for status in ("renamed", "skipped", "not_renamed")

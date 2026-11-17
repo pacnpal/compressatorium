@@ -63,6 +63,7 @@ from services.subprocess_runner import (
     DeadlineExpired,
     run_detached_bounded,
     run_detached_to_end,
+    run_detached_undoable,
     start_detached_or_own_thread,
 )
 from utils.path_utils import (
@@ -77,6 +78,9 @@ logger = get_logger("image_rename")
 # How long a stat of a file on a Volume may take (the job's delete probes take
 # the same).
 PROBE_SECONDS = 20.0
+# How long opening the Image's folders may take. One that answers later is
+# closed then (``run_detached_undoable``), never leaked (Codex 4603430442).
+OPEN_SECONDS = PROBE_SECONDS
 # Recovery waits, with no bound, for every RomM request the hook handed off
 # and every Referrer worker it stopped waiting for (CodeRabbit 4602980637):
 # these are how often it says what it is still waiting for.
@@ -373,7 +377,9 @@ async def _rename_locked(
     """:func:`rename_image` under the locks: the hook, then settle, inspect,
     carry or compensate."""
     try:
-        files = await _probe(_Files.open_blocking, renames)
+        files = await run_detached_undoable(
+            _Files.open_blocking, renames, timeout=OPEN_SECONDS, undo=_Files.close,
+        )
     except (OSError, ValueError) as exc:  # DeadlineExpired is a TimeoutError
         return RenameOutcome(False, f"couldn't open its folder ({exc})")
     try:

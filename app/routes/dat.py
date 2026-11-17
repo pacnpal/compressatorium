@@ -227,7 +227,8 @@ async def put_dat_ranking(request: DatRankingRequest):
         ranking = await dat_store.set_ranking(request.order)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
-    await _settle_rename_conflicts()
+    # A rename conflict the new order resolves clears (#425), bounded.
+    await dat_rename.settle_conflicts_bounded()
     return ranking
 
 
@@ -235,18 +236,9 @@ async def put_dat_ranking(request: DatRankingRequest):
 async def delete_dat_ranking():
     """Forget the user's order: Redump first for discs, No-Intro for cartridges."""
     ranking = await dat_store.reset_ranking()
-    await _settle_rename_conflicts()
+    # A rename conflict the new order resolves clears (#425), bounded.
+    await dat_rename.settle_conflicts_bounded()
     return ranking
-
-
-async def _settle_rename_conflicts() -> None:
-    """A rename conflict the new order resolves clears now (#425). The order
-    is saved either way: one that can't be settled here clears when the
-    Findings are next listed."""
-    try:
-        await run_in_threadpool(dat_rename.settle_conflicts)
-    except Exception:
-        logger.warning("Could not settle the rename conflicts after a ranking", exc_info=True)
 
 
 @router.delete("/dat/{dat_id}")
