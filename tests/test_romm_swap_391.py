@@ -759,11 +759,80 @@ async def test_a_checked_output_whose_name_is_taken_is_kept_in_its_slot(
     assert [p.read_bytes() for p in kept] == [OUTPUT_BYTES], kept
     assert f"kept at {kept[0]}" in job.message
     assert any(r.get("status") == "kept" for r in job.referrers_updated)
+    # Its check record moved with it (CodeRabbit 4594086355).
+    from services.verification_store import verification_store
+
+    assert verification_store.get_record_blocking(str(kept[0])) is not None
     hour_ago = time.time() - 3600
     os.utime(kept[0].parent, (hour_ago, hour_ago))
     partial_writes.sweep_recorded(min_age=0)
     staging.open_slot(str(platform)).close()
     assert kept[0].read_bytes() == OUTPUT_BYTES
+
+
+@pytest.mark.asyncio
+async def test_a_set_aside_that_fails_still_keeps_the_output_from_every_sweep(
+    vol, romm, monkeypatch,
+):
+    """CodeRabbit 4594086355: if the slot can't be renamed to a ``park-``
+    slot, it is marked kept in place, so no sweep removes the only copy of
+    a checked output once the job lets go of its lock."""
+    from services import partial_writes, staging
+    from services.romm import settings as romm_settings
+
+    platform = _platform(vol)
+    await romm_settings.save({"swap_keep_rom_id": False})
+    real_place = staging.place_without_clobbering
+
+    def no_rename_to_park(src, dst, **kwargs):
+        if str(dst).startswith(staging.PARK_PREFIX):
+            raise OSError("the mount refused the rename")
+        return real_place(src, dst, **kwargs)
+
+    async def checked_then_taken(tool, source_path, output_path, **_kw):
+        (platform / "Game.chd").write_bytes(b"someone else's")
+        return RoundTripOutcome(passed=True)
+
+    monkeypatch.setattr(staging, "place_without_clobbering", no_rename_to_park)
+    monkeypatch.setattr(job_manager_module, "round_trip", checked_then_taken)
+    job = await _convert(platform / "Game.iso")
+
+    (kept,) = (platform / STAGE_DIR_NAME).glob("slot-*/Game.chd")
+    assert kept.read_bytes() == OUTPUT_BYTES
+    assert f"kept at {kept}" in job.message
+    hour_ago = time.time() - 3600
+    os.utime(kept.parent, (hour_ago, hour_ago))
+    partial_writes.sweep_recorded(min_age=0)
+    monkeypatch.setattr(staging, "place_without_clobbering", real_place)
+    staging.open_slot(str(platform)).close()  # opening a slot sweeps the stage
+    assert kept.read_bytes() == OUTPUT_BYTES
+    assert (platform / "Game.iso").read_bytes() == SOURCE_BYTES
+
+
+@pytest.mark.asyncio
+async def test_a_failed_source_check_then_a_taken_name_keeps_everything(
+    vol, romm, monkeypatch,
+):
+    """CodeRabbit 4594086355: the Source check fails before the hook, then
+    placing the checked output finds its name taken. The output is kept with
+    its check record, and the Source stays."""
+    from services.verification_store import verification_store
+
+    platform = _platform(vol)
+
+    async def refuse(self, *args, **kwargs):
+        (platform / "Game.chd").write_bytes(b"someone else's")
+        raise RuntimeError("Delete path fingerprint mismatch; refusing to delete")
+
+    monkeypatch.setattr(job_manager_module.JobManager, "_check_delete_paths", refuse)
+    job = await _convert(platform / "Game.iso")
+
+    assert "fingerprint mismatch" in (job.error_message or "")
+    (kept,) = (platform / STAGE_DIR_NAME).glob("park-*/Game.chd")
+    assert kept.read_bytes() == OUTPUT_BYTES
+    assert verification_store.get_record_blocking(str(kept)) is not None
+    assert (platform / "Game.iso").read_bytes() == SOURCE_BYTES
+    assert (platform / "Game.chd").read_bytes() == b"someone else's"
 
 
 def test_the_fake_lists_roms_a_page_at_a_time(vol, romm):

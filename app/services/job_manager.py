@@ -570,6 +570,10 @@ class JobManager:
         self._input_mutex = threading.Lock()
         # The delete paths a job holds exclusively while it unlinks them.
         self._delete_holds: Dict[str, List[str]] = {}
+        # Staging slots holding a checked output that could be neither placed
+        # nor set aside: kept open, their locks held, until the process ends,
+        # so no sweep removes the only copy (#391).
+        self._held_slots: list[staging.StagedOutput] = []
         # Jobs whose end has been announced to terminal listeners, so each is
         # announced exactly once (``_notify_terminal``).
         self._terminal_announced: Set[str] = set()
@@ -3137,20 +3141,59 @@ class JobManager:
         self, job: ConversionJob, slot: staging.StagedOutput,
     ) -> None:
         """Keep a checked output that was never placed (CodeRabbit
-        4593970363): its slot becomes a ``park-`` slot no sweep removes
-        (``StagedOutput.set_aside``), and the job's message, warning, error
-        (the Ledger's ``error`` for a failed job), its Ledger record and the
-        log say where. ``_close_stage`` then has nothing to discard. A slot
-        that can't be set aside is still never discarded here: it is let go
-        as it is (``keep``). Never raises."""
+        4593970363, 4594086355): the only copy, never sweepable.
+
+        ``StagedOutput.set_aside`` renames its slot to a ``park-`` slot no
+        sweep removes, or marks it kept in place when it can't be renamed;
+        its check and CHD records move with it (the store helpers placing
+        uses). If neither works, the slot is held open, its lock kept, for as
+        long as the process runs (``_held_slots``), so no sweep can take it.
+        The job's message, warning, error (the Ledger's ``error`` for a
+        failed job), its Ledger record and the log say where. The caller
+        never runs ``_close_stage`` on it. Never raises."""
+        names: list[str] = [os.path.basename(job.output_path)]
+        try:
+            names = await run_detached_bounded(
+                self._place_names, job, slot.path_for(names[0]),
+                timeout=_CANONICAL_PROBE_SECONDS,
+            )
+        except Exception:
+            logger.warning("Could not list the outputs of %s", job.output_path, exc_info=True)
+        before = slot.path
         try:
             kept = await run_detached_bounded(slot.set_aside, timeout=_CANONICAL_PROBE_SECONDS)
         except Exception:
+            # Fail closed: the lock stays held, so no sweep removes it.
             logger.exception("Could not set aside the checked output of %s", job.output_path)
-            with contextlib.suppress(Exception):
-                await run_detached_bounded(slot.keep, timeout=_CANONICAL_PROBE_SECONDS)
-            kept = slot.path
+            self._held_slots.append(slot)
+            kept = before
+        if kept != before:
+            for name in names:
+                for store in (verification_store, chd_metadata_store):
+                    try:
+                        await run_detached_bounded(
+                            store.move_blocking, os.path.join(before, name),
+                            os.path.join(kept, name), timeout=_CANONICAL_PROBE_SECONDS,
+                        )
+                    except Exception:
+                        logger.warning(
+                            "Could not carry the records of %s to %s", name, kept, exc_info=True,
+                        )
         where = os.path.join(kept, os.path.basename(job.output_path))
+        if job.check_passed:
+            # Placing failed before the job wrote the output's check record
+            # (it does so once the output is placed): write it where it is.
+            try:
+                if await run_detached_bounded(
+                    verification_store.get_record_blocking, where,
+                    timeout=_CANONICAL_PROBE_SECONDS,
+                ) is None:
+                    await verification_store.mark_verified(
+                        where, source_path=job.file_path,
+                        produced_meta=self._verifier_identity(job), check=job.check_passed,
+                    )
+            except Exception:
+                logger.warning("Could not record the check of %s", where, exc_info=True)
         note = f"the checked output was not placed; it is kept at {where}"
         logger.warning("Job %s: %s", job.id, note)
         job.warning = f"{job.warning}; {note}" if job.warning else note
@@ -5448,8 +5491,10 @@ class JobManager:
             if placeable and slot is not None and not slot.placed:
                 # A checked output that could not be placed (its name was
                 # taken, a Referrer holds it) is kept, out of every sweep,
-                # and the job says where, before the Ledger hears of it.
+                # with its records, and the job says where, before the Ledger
+                # hears of it. Its slot is never closed below.
                 await self._set_aside_output(job, slot)
+                slot = None
             # Before any cleanup: this is the one place every runner outcome
             # (completed, failed, cancelled mid-run) passes through, and a
             # listener that must record how the job ended has to hear about it

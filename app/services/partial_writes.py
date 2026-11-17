@@ -46,7 +46,9 @@ A process killed hard (SIGKILL, power loss) leaves that file: hidden, ending in
   that lock, the slot is older than ``MIN_AGE_SECONDS``, and the name still
   names the same real folder (never a link), then its lock file, then the
   stage folder once it is empty. Opening a slot sweeps the stage folder first,
-  so a slot whose record was lost goes too.
+  so a slot whose record was lost goes too. A slot carrying
+  :data:`KEEP_MARKER` (a checked output that could not be placed nor set
+  aside, #391) is never swept, nor one that can't be checked for it.
 """
 from __future__ import annotations
 
@@ -87,6 +89,10 @@ _SIDECAR = re.compile(r"\.partial-[0-9a-f]{16}\.lock")
 # ``.lock``.
 SLOT_PREFIX = "slot-"
 _SLOT = re.compile(r"slot-[a-z0-9_]{8}")
+# A file in a slot that no sweep removes it while it is there: the slot holds
+# a checked output that could not be placed, nor set aside as a ``park-``
+# slot (``staging.StagedOutput.set_aside``, #391).
+KEEP_MARKER = ".compressatorium-keep"
 _SLOT_LOCK = re.compile(r"slot-[a-z0-9_]{8}\.lock")
 _CLOEXEC = getattr(os, "O_CLOEXEC", 0)
 _READ_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | _CLOEXEC
@@ -493,6 +499,18 @@ def remove_stage_folder_if_empty(folder_fd: int) -> None:
         pass  # not empty (another job's slot), already gone, or can't
 
 
+def _marked_kept(stage_fd: int, name: str) -> bool:
+    """Whether the slot *name* carries :data:`KEEP_MARKER`, or can't be
+    checked for it (fail closed: kept)."""
+    try:
+        os.stat(f"{name}/{KEEP_MARKER}", dir_fd=stage_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
 def _sweep_slot(stage_fd: int, name: str, min_age: float, *, where: str) -> bool | None:
     """Remove one staging slot and its lock file from the stage folder
     ``stage_fd``. True removed, False kept on purpose (its writer holds the
@@ -507,6 +525,8 @@ def _sweep_slot(stage_fd: int, name: str, min_age: float, *, where: str) -> bool
         return None  # a link or a file named like a slot: never ours
     if time.time() - info.st_mtime < min_age:
         return False
+    if _marked_kept(stage_fd, name):
+        return False  # holds a checked output that is the only copy (#391)
     lock_name = slot_lock_name(name)
     lock_fd = _open_sidecar(stage_fd, lock_name)
     if lock_fd is None:
@@ -637,6 +657,7 @@ def sweep_recorded(*, min_age: float = MIN_AGE_SECONDS) -> int:
 
 
 __all__ = [
+    "KEEP_MARKER",
     "LOCK_SUFFIX",
     "MIN_AGE_SECONDS",
     "SLOT_PREFIX",

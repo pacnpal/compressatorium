@@ -45,7 +45,9 @@ it is not journaled in ``partial_writes``. The swap's own journal
 * :meth:`StagedOutput.keep` lets go of the slot and leaves it, and whatever
   is in it, where it is (a parked Source the swap could not put back).
 * :meth:`StagedOutput.set_aside` turns an ordinary slot holding a checked
-  output that could not be placed into a parking slot, so it is kept too.
+  output that could not be placed into a parking slot, so it is kept too;
+  when it can't be renamed, it marks it kept in place
+  (``partial_writes.KEEP_MARKER``), which every sweep honours.
 
 Each move is a no-replace rename on one filesystem, through the slot's
 descriptors.
@@ -78,6 +80,8 @@ _DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | _CLOEXEC
 # Read and write, never truncate: an exclusive flock needs a write open on NFS.
 _LOCK_FLAGS = os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | _CLOEXEC
 _CLAIM_ATTEMPTS = 100
+# Creating the keep marker in a slot: never over anything, never through a link.
+_KEEP_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | _CLOEXEC
 # A parking slot's name prefix (#391). Not ``partial_writes.SLOT_PREFIX``, so
 # no sweep ever matches it.
 PARK_PREFIX = "park-"
@@ -218,21 +222,36 @@ class StagedOutput:
 
     def set_aside(self) -> str:
         """Keep the slot, and the checked output in it, out of every sweep,
-        and let go of it: the slot is renamed to a ``park-`` slot (never
-        swept), its journal record dropped and its lock let go. For an output
-        that passed its checks but could not be placed: it is never
-        discarded. Returns the slot's new path. Raises ``OSError`` (the slot
-        is then still open)."""
+        and let go of it. For an output that passed its checks but could not
+        be placed: the only copy, never discarded.
+
+        The slot is renamed to a ``park-`` slot (never swept), its journal
+        record dropped. If it can't be renamed, it is marked kept where it is
+        (``partial_writes.KEEP_MARKER``, which every sweep honours) instead.
+        Only then is its lock let go. Returns the slot's path. Raises
+        ``OSError`` when neither works: the slot is then still open, its lock
+        held, and must stay so (never ``close`` it)."""
         with self._mutex:
             self._require_open()
             old = self._slot_name
             new = PARK_PREFIX + old[len(partial_writes.SLOT_PREFIX):]
-            place_without_clobbering(old, new, src_dir_fd=self._stage_fd, dst_dir_fd=self._stage_fd)
-            self._slot_name = new
-            self.path = os.path.join(self.folder, STAGE_DIR_NAME, new)
-            _unlink_quietly(partial_writes.slot_lock_name(old), self._stage_fd)
-            partial_writes.forget(self._marker)
-            self._marker = None
+            try:
+                place_without_clobbering(
+                    old, new, src_dir_fd=self._stage_fd, dst_dir_fd=self._stage_fd,
+                )
+            except OSError:
+                logger.warning(
+                    "Could not set aside %s; marking it kept in place", self.path, exc_info=True,
+                )
+                os.close(os.open(
+                    partial_writes.KEEP_MARKER, _KEEP_FLAGS, 0o600, dir_fd=self._slot_fd,
+                ))
+            else:
+                self._slot_name = new
+                self.path = os.path.join(self.folder, STAGE_DIR_NAME, new)
+                _unlink_quietly(partial_writes.slot_lock_name(old), self._stage_fd)
+                partial_writes.forget(self._marker)
+                self._marker = None
         self.keep()
         return self.path
 

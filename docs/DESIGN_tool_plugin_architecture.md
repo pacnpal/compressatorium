@@ -4172,15 +4172,30 @@ carries RomM's own `detail` text.
 *A checked output is never discarded* (CodeRabbit 4593970363). The job
 marks its output `placeable` once its checks pass (or none was asked). If
 it is still staged when the job ends (its name was taken, a Referrer holds
-it, placing failed), `_set_aside_output` turns its slot into a `park-` slot
-(`StagedOutput.set_aside`: renamed with no replace, its `partial_writes`
-record dropped, its lock let go), so no sweep removes it, and the job's
-message, warning, error (the Ledger's `error` for a failed job), a
-`{"referrer": "staging", "status": "kept"}` entry in its Ledger record and
-the log all say where it is. `_close_stage` then has nothing to discard; it
-discards only an output the job never got to place: one rejected by its own
-checks, or a conversion that failed or was cancelled before them. The Source
-is kept in every such case (nothing is deleted before the output is placed).
+it, placing failed), `_set_aside_output` keeps it, never sweepable while it
+is the only copy (CodeRabbit 4594086355):
+
+- `StagedOutput.set_aside` renames its slot to a `park-` slot (no replace;
+  its `partial_writes` record dropped) and only then lets go of its lock.
+  If the rename fails, it writes `partial_writes.KEEP_MARKER`
+  (`.compressatorium-keep`) into the slot instead, which every slot sweep
+  honours (`_sweep_slot` skips a slot carrying it, and one it can't check
+  for it), and only then lets go. If even that fails it raises with the
+  slot still open, and the job holds it, lock and all, in `_held_slots`
+  for as long as the process runs.
+- Its records go with it: the check and CHD-metadata records are moved from
+  the staged paths to the kept ones with the store helpers placing uses
+  (`move_blocking`), and when placing failed before the job wrote the check
+  record, it is written at the kept path from the job's `check_passed`.
+- The job never runs `_close_stage` on it (so its records are never
+  cleared), and its message, warning, error (the Ledger's `error` for a
+  failed job), a `{"referrer": "staging", "status": "kept"}` entry in its
+  Ledger record and the log all say where it is.
+
+`_close_stage` discards only an output the job never got to place: one
+rejected by its own checks, or a conversion that failed or was cancelled
+before them. The Source is kept in every such case (nothing is deleted
+before the output is placed).
 
 *What happened is recorded before anything acts on it* (Codex
 PRRT_kwDOQ9nULM64NxUt). Each step that moves something (opening the parking
