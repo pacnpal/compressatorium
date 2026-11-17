@@ -90,6 +90,7 @@ def row_from_job(job: ConversionJob) -> dict:
         "image_key": None,
         "platform": platform,
         "error": job.error_message,
+        "extra_inputs": [dict(item) for item in job.extra_inputs],
     }
 
 
@@ -280,7 +281,7 @@ CSV_COLUMNS = (
     "job_id", "finished_at", "tool", "mode", "source_path", "output_path",
     "input_bytes", "output_bytes", "duration_s", "status", "check_passed",
     "source_deleted", "deleted_paths", "referrers_updated", "library_id",
-    "image_key", "platform", "error",
+    "image_key", "platform", "error", "extra_inputs",
 )
 _CSV_PAGE = 500
 # Always exported so a scrape sees a zero, not a missing series.
@@ -351,6 +352,9 @@ async def facets() -> dict:
 
 
 def _csv_cell(value):
+    if isinstance(value, (list, tuple)) and value and isinstance(value[0], dict):
+        # extra_inputs: "<path> (sha1 <hex>)" for each.
+        value = [f"{v.get('path')} (sha1 {v.get('sha1')})" for v in value]
     if isinstance(value, (list, tuple)):
         value = "; ".join(str(v) for v in value)
     if value is None:

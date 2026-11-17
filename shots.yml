@@ -488,6 +488,63 @@
   wait: 1800
   javascript: *js_theme_dark
 
+# --- Patch dialog (#428) ----------------------------------------------------
+# Handheld ROM workspace, "ROM Library" volume, roms/gba: opens the row actions
+# of tiny-golf.zip (bits-ui opens its menu on pointerdown) and picks Patch…,
+# which only opens the dialog. Nothing is patched.
+- url: http://127.0.0.1:8099/?s=patch-light#/workspace/romz
+  output: docs/screenshots/patch-light.png
+  width: 1280
+  height: 900
+  wait: 1800
+  javascript: |
+    (async () => {
+      const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+      localStorage.setItem('theme-preference', 'light');
+      window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: 'light' }));
+      await sleep(400);
+      [...document.querySelectorAll('button.item')].find(b => b.textContent.trim() === 'ROM Library')?.click();
+      await sleep(900);
+      for (const dir of ['roms', 'gba']) {
+        const row = [...document.querySelectorAll('tbody tr')]
+          .find(tr => tr.querySelector('.name-button')?.textContent.trim() === dir);
+        row?.querySelector('.name-button')?.click();
+        await sleep(900);
+      }
+      const row = [...document.querySelectorAll('tbody tr')].find(tr => tr.textContent.includes('tiny-golf.zip'));
+      row?.querySelector('.actions-trigger')
+        ?.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, pointerType: 'mouse' }));
+      await sleep(400);
+      [...document.querySelectorAll('.row-actions-item')].find(i => i.textContent.includes('Patch'))?.click();
+      await sleep(700);
+    })()
+- url: http://127.0.0.1:8099/?s=patch-dark#/workspace/romz
+  output: docs/screenshots/patch-dark.png
+  width: 1280
+  height: 900
+  wait: 1800
+  javascript: |
+    (async () => {
+      const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+      localStorage.setItem('theme-preference', 'dark');
+      window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: 'dark' }));
+      await sleep(400);
+      [...document.querySelectorAll('button.item')].find(b => b.textContent.trim() === 'ROM Library')?.click();
+      await sleep(900);
+      for (const dir of ['roms', 'gba']) {
+        const row = [...document.querySelectorAll('tbody tr')]
+          .find(tr => tr.querySelector('.name-button')?.textContent.trim() === dir);
+        row?.querySelector('.name-button')?.click();
+        await sleep(900);
+      }
+      const row = [...document.querySelectorAll('tbody tr')].find(tr => tr.textContent.includes('tiny-golf.zip'));
+      row?.querySelector('.actions-trigger')
+        ?.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, pointerType: 'mouse' }));
+      await sleep(400);
+      [...document.querySelectorAll('.row-actions-item')].find(i => i.textContent.includes('Patch'))?.click();
+      await sleep(700);
+    })()
+
 # --- RomM library ---------------------------------------------------------
 # The screenshot environment has no RomM instance configured, so these capture
 # the first-run state. That is deliberate: the setup form is what a new user

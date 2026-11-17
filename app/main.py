@@ -16,6 +16,7 @@ from routes import findings as findings_routes
 from routes import ledger as ledger_routes
 from routes import notifications as notification_routes
 from routes import libraries as library_routes
+from routes import patch as patch_routes
 from routes import rules as rules_routes
 from services import ledger, notifications
 from services.job_manager import job_manager
@@ -480,6 +481,7 @@ app.include_router(notification_routes.router, prefix="/api", tags=["notificatio
 app.include_router(library_routes.router, prefix="/api", tags=["libraries"])
 app.include_router(rules_routes.router, prefix="/api", tags=["rules"])
 app.include_router(findings_routes.router, prefix="/api", tags=["findings"])
+app.include_router(patch_routes.router, prefix="/api", tags=["patch"])
 
 
 @app.get("/health")

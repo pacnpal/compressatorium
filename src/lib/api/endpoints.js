@@ -633,6 +633,23 @@ export const api = {
     );
   },
 
+  // ─── Patch bench (#428) ──────────────────────────────────────────────
+  // Keeps an .ips/.bps in the app's data directory; answers { upload_id, ... }.
+  uploadPatch(file) {
+    const formData = new FormData();
+    formData.append('file', file);
+    return fetchJson(
+      `${API_BASE}/patch/upload`,
+      { method: 'POST', body: formData },
+      'Failed to upload the patch',
+    );
+  },
+
+  // { image_path, patch_path | upload_id } -> { job_id }. Writes a new
+  // "Name (Patched).7z" beside the Image; the Image is never changed.
+  startPatch: (body) =>
+    jsonPost(`${API_BASE}/patch`, body, {}, 'Failed to start the patch'),
+
   // ─── RomM catalog overlay ─────────────────────────────────────────────
   // The ROM listing comes back as a DirectoryListing of FileEntry, the same
   // shape /files returns, so FileList/FileRow/ConvertPanel render it unchanged

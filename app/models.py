@@ -71,6 +71,9 @@ class ConversionMode(str, Enum):
     # A confirmed delete of a duplicate group's other copies (#389): reads
     # the keeper in full, then deletes each copy under its locks. External.
     DELETE_DUPLICATES = "delete_duplicates"
+    # A patch applied to a cartridge Image (#428): writes "Name (Patched).7z"
+    # beside it and never changes it. External, but it has a Ledger row.
+    PATCH = "patch"
 
 
 class DuplicateAction(str, Enum):
@@ -212,6 +215,10 @@ class ConversionJob(BaseModel):
     # delete's per-copy outcomes and whether the copy kept changed (#389).
     # None for every other job.
     result: dict | None = None
+    # Inputs besides the Source that shaped the output, for the Ledger: a
+    # patch job's patch file, {"kind": "patch", "path": ..., "sha1": ...}
+    # (#428). Empty for every other job.
+    extra_inputs: list[dict] = []
     # Who queued the job when it is not a person (a sweep passes its token), so a
     # terminal listener can tell the two apart from the first moment the job
     # exists. A private attribute: not a field, so it is in neither the API schema

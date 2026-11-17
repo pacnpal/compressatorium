@@ -1209,6 +1209,45 @@ The matching environment variables — `ROMM_URL`, `ROMM_TOKEN`,
 `ROMM_LIBRARY_ROOT`, `ROMM_AUTO_CONVERT` and friends — seed these on first run.
 See [docs/DOCKER-COMPOSE.md](docs/DOCKER-COMPOSE.md) for a full compose example.
 
+### Patching a ROM
+
+To play a translation or a fix, open a cartridge Image's **⋯** menu in the file
+list and pick **Patch…**. It works on a loose ROM, on a `.zip` or `.7z` that holds
+one ROM, and on a ROM you've browsed to inside an archive. Choose the patch: type
+the path of an `.ips` or `.bps` file in a Volume, or upload one from the device
+you're on (it's kept in the app's data directory, under `patches/`).
+
+The app writes `Name (Patched).7z` beside the Image, packed with the same `7z`
+the Handheld ROM tool uses, and never changes the original. If that name is
+taken it writes `Name (Patched) (2).7z`, and so on, so an earlier patched copy
+is never overwritten. The archive is read back before it's kept, and must hold
+exactly the patched ROM.
+
+- **BPS** patches carry checksums. A patch made for a different ROM is refused
+  before anything is written, and the patched ROM must match the checksum the
+  patch promises.
+- **IPS** patches carry none, so when the ROM isn't Recognized (no imported DAT
+  names its SHA1, and its last DAT or Hasheous match was no hit) the job
+  finishes with a warning that the patch may not fit it.
+- **Disc Images** (`.cue`, `.iso`, `.chd`, `.rvz`, `.cso` and the other disc
+  types the tools know) are refused for now.
+- An archived ROM is unpacked under the `CHD_ARCHIVE_MAX_*` limits. A patch
+  over `CHD_PATCH_MAX_PATCH_SIZE`, or a ROM over `CHD_PATCH_MAX_ROM_SIZE`, is
+  refused. A patch picked from a path must be inside a Volume.
+
+The job shows in the queue, and its Ledger row names the Image, the patch file
+and the patch's SHA1, and the output. The patched Image is like any other Image
+that isn't Recognized: Rules and the duplicate finder treat it that way. The app
+never downloads patches.
+
+| Light | Dark |
+| --- | --- |
+| ![Patch dialog, light](docs/screenshots/patch-light.png) | ![Patch dialog, dark](docs/screenshots/patch-dark.png) |
+
+`POST /api/patch` takes `{"image_path", "patch_path"}` or `{"image_path",
+"upload_id"}` and answers `{"job_id"}`; `POST /api/patch/upload` (multipart,
+field `file`) keeps a patch and answers its `upload_id`.
+
 ### Archives
 
 Browse straight into a ZIP, 7z, or RAR and convert a file from inside it — no need
@@ -2687,6 +2726,8 @@ The Web UI communicates with a REST API that can also be used directly. Interact
 | `CHD_ARCHIVE_MAX_ENTRIES` | `5000` | Max archive members to list (0 disables limit) |
 | `CHD_ARCHIVE_MAX_MEMBER_SIZE` | `0` | Max size in bytes per archive member (0 disables limit) |
 | `CHD_ARCHIVE_MAX_TOTAL_SIZE` | `0` | Max total size in bytes for archive listings/extractions (0 disables limit) |
+| `CHD_PATCH_MAX_PATCH_SIZE` | `67108864` | Max size in bytes of an IPS or BPS patch, picked or uploaded (64 MiB; 0 disables limit) |
+| `CHD_PATCH_MAX_ROM_SIZE` | `536870912` | Max size in bytes of a ROM to patch, and of the patched ROM (512 MiB; 0 disables limit). The patch is applied in memory. |
 | `LOGLEVEL` | `INFO` | Log verbosity level (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`) |
 | `LOG_PATH` | (none) | Path to log file (logs to stdout only if unset) |
 | `LOG_COLOR` | `always` | ANSI-color stdout logs by level. Values: `always` (default, colored `docker logs` out of the box), `auto` (TTY and no `NO_COLOR`), `never`. File logs are never colored. |
