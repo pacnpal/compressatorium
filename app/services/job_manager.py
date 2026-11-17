@@ -41,7 +41,8 @@ from services.concurrency_manager import concurrency_manager
 from services.lock_manager import LockFailed, lock_manager
 from services.mutation_guard import locked_for_mutation
 from services import referrers, staging
-from services.round_trip import round_trip, round_trip_applies
+from services.recognized import recognize
+from services.round_trip import RECOGNIZED, recognized_applies, round_trip, round_trip_applies
 from services.rules.library import HIDDEN_STAGING
 from services.subprocess_runner import (
     DeadlineExpired,
@@ -81,7 +82,9 @@ SOURCE_KEPT_FOR_READERS = "Source kept: it was being read by another job"
 
 # The glossary names (CONTEXT.md) for each stored check, used in job messages so
 # "verified" never stands in for which check an output passed.
-_CHECK_LABELS = {"intact": "Intact", "round_tripped": "Round-tripped"}
+_CHECK_LABELS = {
+    "intact": "Intact", "round_tripped": "Round-tripped", RECOGNIZED: "Recognized",
+}
 
 # What a retried delete of a kept Source found (``retry_kept_delete``, #329).
 KEPT_DELETED = "deleted"  # the Source is gone
@@ -155,11 +158,31 @@ class _SourceDelete:
     notes: list[str] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class _DeleteCheck:
+    """Which check an output passed, and whether its Source may go
+    (:meth:`JobManager._delete_check`).
+
+    ``fail_reason``: a check that ran said the output may not hold the
+    Source's content (a failed Round-trip); the job fails, keeping the Source.
+    ``keep_reason``: the output is fine but nothing vouches for it (not
+    Recognized, #423); the job completes, keeping the Source, and says why.
+    """
+
+    check: str
+    fail_reason: Optional[str] = None
+    keep_reason: Optional[str] = None
+    dat_name: Optional[str] = None
+
+
 def _check_satisfies(check_passed: Optional[str], required: Optional[str]) -> bool:
     """Whether a recorded check meets a required check level: Round-tripped
-    meets either level, Intact only ``container_only``."""
+    meets ``round_trip``, Recognized meets ``recognized``, and any passed
+    check meets ``container_only``."""
     if required == "round_trip":
         return check_passed == "round_tripped"
+    if required == RECOGNIZED:
+        return check_passed == RECOGNIZED
     return check_passed in _CHECK_LABELS
 
 
@@ -4352,6 +4375,18 @@ class JobManager:
             return KeptDeleteRetry(
                 KEPT_STALE, f"the output no longer passes its check ({exc})",
             )
+        if required_check == RECOGNIZED:
+            # The Recognized proof again (#423): the output's bytes, not its
+            # record, are what a DAT vouches for.
+            bound = await tool.verify_timeout(verify_path, cancel_event=cancel)
+            found = await recognize(verify_path, cancel_event=cancel, timeout=bound)
+            if found.passed:
+                return None
+            if found.timed_out or found.cancelled:
+                return KeptDeleteRetry(KEPT_KEPT, found.message or "the lookup did not finish")
+            return KeptDeleteRetry(
+                KEPT_STALE, f"the output is no longer Recognized ({found.message})",
+            )
         if required_check != "round_trip" or source_path is None:
             return None
         outcome = await round_trip(tool, source_path, verify_path, cancel_event=cancel)
@@ -4993,39 +5028,37 @@ class JobManager:
 
     async def _delete_check(
         self, job, tool, source_path: str, output_path: str, cancel_event,
-    ) -> tuple[str, str | None]:
-        """Which check the output passed, and why the Source must stay, if it must.
+    ) -> _DeleteCheck:
+        """Which check the output passed, and whether the Source may go.
 
-        Called once the container check has passed. Returns
-        ``(check_passed, keep_source_reason)``: ``("intact", None)`` when the
-        container check is all this job asks for, ``("round_tripped", None)``
-        when the output's content digest equalled the Source's, and
-        ``("intact", reason)`` when a Round-trip ran and did not pass.
+        Called once the container check has passed. The mode's delete proof
+        (``ModeSpec.delete_proof``) decides what runs next, through the shared
+        ``round_trip_applies`` / ``recognized_applies``, so no caller branches
+        on the tool:
 
-        The Round-trip runs only when it decides something: the Source is to be
-        deleted, the mode can round-trip, and the job did not take the
-        container-only opt-out. A job that keeps its Source reads nothing extra.
+        * Round-trip: ``intact`` when the container check is all this job asks
+          for, ``round_tripped`` when the output's content digest equalled the
+          Source's, and ``intact`` with a ``fail_reason`` when it ran and did
+          not pass.
+        * Recognized (#423): ``recognized`` with the DAT that knows the
+          output's SHA-1, or ``intact`` with a ``keep_reason`` on a miss.
+
+        Either runs only when it decides something: the Source is to be
+        deleted. A job that keeps its Source reads nothing extra.
         """
+        mode = job.mode.value
+        if recognized_applies(mode, delete_on_verify=job.delete_on_verify):
+            return await self._recognized_check(job, tool, output_path, cancel_event)
         if not round_trip_applies(
-            job.mode.value,
+            mode,
             delete_on_verify=job.delete_on_verify,
             container_only=job.container_only,
         ):
-            return "intact", None
+            return _DeleteCheck("intact")
         # The container check has passed. Record that now, so a Cancel during
         # the comparison (which raises before this returns) still leaves the
         # job and its Ledger row saying Intact; only a match upgrades it.
-        job.check_passed = "intact"
-        job.message = "Output is Intact. Comparing its content with the Source..."
-        await self._notify_subscribers(
-            job.id,
-            {
-                "type": "progress",
-                "job_id": job.id,
-                "progress": job.progress,
-                "message": job.message,
-            },
-        )
+        await self._say_intact(job, "Comparing its content with the Source...")
         # Reported as verifying, not stalled: it reads whole files and emits
         # no progress, exactly like the container check before it.
         self._verifying[job.id] = time.monotonic()
@@ -5042,8 +5075,44 @@ class JobManager:
         if outcome.cancelled:
             raise ConversionCancelled("Conversion cancelled")
         if outcome.passed:
-            return "round_tripped", None
-        return "intact", outcome.message
+            return _DeleteCheck("round_tripped")
+        return _DeleteCheck("intact", fail_reason=outcome.message)
+
+    async def _recognized_check(
+        self, job, tool, output_path: str, cancel_event,
+    ) -> _DeleteCheck:
+        """The Recognized proof of a job's output (#423), under the tool's
+        verify bound. A miss is a ``keep_reason``: the output is fine, nothing
+        vouches for it, so the Source stays and the job completes."""
+        await self._say_intact(job, "Looking its SHA-1 up in the DATs...")
+        self._verifying[job.id] = time.monotonic()
+        try:
+            bound = await tool.verify_timeout(output_path, cancel_event=cancel_event)
+            outcome = await recognize(
+                output_path, cancel_event=cancel_event, timeout=bound,
+            )
+        finally:
+            self._verifying.pop(job.id, None)
+        if outcome.cancelled:
+            raise ConversionCancelled("Conversion cancelled")
+        if outcome.passed:
+            return _DeleteCheck(RECOGNIZED, dat_name=outcome.dat_name)
+        return _DeleteCheck("intact", keep_reason=outcome.message)
+
+    async def _say_intact(self, job, then: str) -> None:
+        """Record and announce that the container check passed, before a
+        delete proof that reads the whole file runs (*then* says which)."""
+        job.check_passed = "intact"
+        job.message = f"Output is Intact. {then}"
+        await self._notify_subscribers(
+            job.id,
+            {
+                "type": "progress",
+                "job_id": job.id,
+                "progress": job.progress,
+                "message": job.message,
+            },
+        )
 
     async def _container_check(
         self, tool, output_path: str, mode: str, cancel_event: asyncio.Event,
@@ -5797,11 +5866,13 @@ class JobManager:
                     # passed, and, when it is not enough to delete the Source,
                     # why. The job (and so the Ledger row) records the check
                     # either way.
-                    check_passed, keep_source_reason = await self._delete_check(
+                    decided = await self._delete_check(
                         job, tool, input_path, verify_path, cancel_event,
                     )
+                    check_passed = decided.check
                     job.check_passed = check_passed
-                    if keep_source_reason:
+                    job.check_dat = decided.dat_name
+                    if decided.fail_reason:
                         # The Round-trip did not pass, so this output may not
                         # hold the Source's content. Store nothing that would
                         # present it as a checked result: no badge, no reuse
@@ -5817,7 +5888,7 @@ class JobManager:
                             produced_meta=self._verifier_identity(job),
                         )
                         await verification_store.mark_failed(write_path)
-                        raise RuntimeError(keep_source_reason)
+                        raise RuntimeError(decided.fail_reason)
                     # Both checks passed: only now does a staged output
                     # appear beside the Source (#398). Everything below
                     # works on the placed output, unless a Referrer places
@@ -5857,10 +5928,16 @@ class JobManager:
                     )
                     check_label = _CHECK_LABELS[check_passed]
 
-                    if not job.delete_on_verify:
+                    if not job.delete_on_verify or decided.keep_reason:
                         # verify_after only: the source is kept by design, so
                         # the job is finished the moment the output checks out.
+                        # Or the output is Intact but its delete proof found
+                        # nothing to vouch for it (not Recognized, #423): the
+                        # Source stays and the job completes, saying why.
                         job.message = f"Output is {check_label}."
+                        if decided.keep_reason:
+                            job.warning = decided.keep_reason
+                            job.message = f"Output is {check_label}, {decided.keep_reason}"
                         await self._notify_subscribers(
                             job_id,
                             {

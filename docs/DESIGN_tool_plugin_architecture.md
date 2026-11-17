@@ -139,6 +139,7 @@ class ModeSpec:
     supports_delete_on_verify: bool = False  # may this job delete its source?
     supports_verify: bool = False            # can its output be checked at all?
     source_kept_reason: str = ""               # why it never deletes its Source (see 3.3.9)
+    delete_proof: DeleteProof = DeleteProof.ROUND_TRIP  # or RECOGNIZED (see 3.3.12, #423)
     allows_archive_input: bool = False         # opt-in; set True on every mode that can take a member straight from an archive (chdman create + extract, dolphin, z3ds). Only chdman copy (.chd recompress round-trip) leaves it False
 ```
 
@@ -3303,6 +3304,52 @@ conversion, no check runs in that job, so `job.check_passed` stays unset. Its
 `complete` event still sends `check_passed` read from the stored record
 (`JobManager._stored_check`), so the UI keeps a Round-tripped badge rather than
 falling back to Intact.
+
+#### The Recognized proof (`ModeSpec.delete_proof`, `services/recognized.py`, #423)
+
+Some outputs can't be Round-tripped against their Source at all: rom-converto's
+PSP PBP -> ISO (nothing turns an ISO back into its PBP) and 3DS CIA <-> CCI (a
+converted CIA is unsigned with a zero title key, spike #421). For those a mode
+declares a different delete proof on the mode contract:
+
+- `ModeSpec.delete_proof` (and `ChainSpec.delete_proof`) is a `DeleteProof`:
+  `ROUND_TRIP`, the default for every mode, or `RECOGNIZED`. Read through
+  `ToolRegistry.mode_delete_proof(mode)`; an unknown mode answers `ROUND_TRIP`.
+  A `RECOGNIZED` mode sets `supports_delete_on_verify` and never
+  `supports_round_trip` (`tests/test_rom_converto_423.py` checks every mode).
+- `round_trip.delete_check_level(mode, delete_on_verify=, container_only=)` is
+  the one answer to "which check must pass before this job's Source goes":
+  `"recognized"`, `"round_trip"`, `"container_only"` or None for a job that
+  keeps its Source. `recognized_applies` and `round_trip_applies` are its two
+  halves; a Rule's `effective_check_level` (Preview, the delete decision
+  identity, a retried delete's required check) calls it, as the job does.
+- **The container-only opt-out is a Round-trip opt-out.** It never skips the
+  Recognized proof, whatever a request or a Rule stores, and the convert panel
+  and the Rule editor offer the box only for a mode with `supportsRoundTrip`.
+- `services/recognized.recognize(path, cancel_event=, timeout=)` hashes the
+  output with `stream_digest.hash_files` (SHA-1 on a detached thread a cancel
+  stops) under the tool's verify bound, looks the hash up with
+  `dat_store.lookup_sha1` (ranked by `with_current_ranking`, so the DAT the user
+  put first is the one named), then with `hasheous.lookup` when Hasheous is on,
+  and passes only on a hit. A miss, an unreachable Hasheous, a hash that did
+  not finish or DATs that could not be read all keep the Source.
+- `JobManager._delete_check` returns a `_DeleteCheck`: the check passed, plus a
+  `fail_reason` (a failed Round-trip: the job fails, as before) or a
+  `keep_reason` (not Recognized: the output is Intact and placed, its record
+  stored as `intact`, the Source kept, and the job **completes** with
+  `job.warning` and its message ending `converted, source kept: output not
+  Recognized`). On a hit, `job.check_passed` is `"recognized"` and
+  `job.check_dat` names the DAT (a local DAT's name, or the source Hasheous
+  names); the verification record stores `recognized` too.
+- The Ledger's `check_passed` gains `recognized`, and the new `check_dat`
+  column (migration 0024, appended last in the CSV) records the DAT. A retried
+  delete (#329) whose Rule's level is `recognized` needs a `recognized` record
+  and re-runs the proof on the output before removing anything
+  (`_recheck_output`).
+- The frontend mirrors it as `deleteProof` on the mode entry (compared by
+  `tests/test_frontend_parity_186.py`); `deleteCheckFor` and
+  `DELETE_CHECK_HINTS` in `src/lib/util/deleteCheck.js` are what the convert
+  panel, the delete confirmation and the Rule editor say.
 
 ### 3.3.13 Notifications (`services/notifications.py`)
 
@@ -8172,6 +8219,29 @@ at a time. Nothing here changes the wire API until Phase 9 (optional).
 
 Net: a smaller, flatter codebase where the cost of the *next* tool drops from
 ~20 files to ~5.
+
+## Compatibility presets (`app/data/compat_presets.yaml`)
+
+"Compatible with…" is data, not code. `app/data/compat_presets.yaml` maps each
+target emulator to `entries`: a `mode`, the `codecs` it reads for that mode,
+the `preferred` ones the picker selects, and a mandatory https `source` (the
+doc or source file the claim rests on; an entry that can't be cited is left
+out). `services/compat_presets.py` loads and validates it (a malformed file
+raises, it is never served half-read) and `GET /api/compat-presets` returns it
+unchanged. The frontend holds no copy: `stores/compat.svelte.js` fetches it
+once, and `tools/compat.js` holds the two pure rules both surfaces share
+(`compatTargetsForMode`, `compatWarning`). `CompressionPicker.svelte` and
+`RuleEditor.svelte` stay descriptor-driven; they offer only the targets with an
+entry for the current mode, set `preferred` on choosing one, and show the
+warning for a codec outside `codecs`. The warning is advisory: nothing is
+disabled and a Rule still saves and runs. A mode a target has no entry for gives
+no opinion. An empty selection is not "nothing": chdman then sends no `-c` and uses its own
+codecs, so `ModeSpec.implicit_codecs` names them once, `GET /api/compat-presets` serves them as
+`implicit_codecs`, and `compatWarning` checks those instead. A mode whose defaults follow the input (chdman's
+`copy`) sets `ModeSpec.implicit_codecs_unknown`; the warning then says compatibility can't be
+confirmed and suggests choosing codecs. A test fails if a multi-codec compressing mode declares neither. `tests/test_compat_presets_429.py` checks every mode and codec in
+the file against the tool registry (backend `ModeSpec.codecs` and the
+frontend `registry.js` codec lists), so a rename breaks a test, not the picker.
 
 ## Ignored entries (`utils/junk.py`)
 

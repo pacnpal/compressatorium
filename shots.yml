@@ -46,6 +46,29 @@
       await new Promise(r => setTimeout(r, 500));
     })()
 
+# --- Compression picker: Compatible with... (#429) -------------------------
+# Picks NetherSX2 (zlib only), then adds zstd so the advisory warning shows.
+- url: http://127.0.0.1:8099/?s=compat-picker-light#/workspace/chdman
+  output: docs/screenshots/compat-picker-light.png
+  width: 1280
+  height: 900
+  wait: 1800
+  javascript: |
+    (async () => {
+      localStorage.setItem('theme-preference', 'light');
+      window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: 'light' }));
+      await new Promise(r => setTimeout(r, 400));
+      const sel = document.querySelector('select[aria-label="Compatible with"]');
+      if (sel) {
+        sel.value = 'nethersx2';
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+        await new Promise(r => setTimeout(r, 300));
+        const zstd = [...document.querySelectorAll('button.chip')].find(b => b.textContent.trim() === 'zstd');
+        if (zstd) zstd.click();
+        await new Promise(r => setTimeout(r, 400));
+      }
+    })()
+
 # --- Workspace: batch selection (all files ticked, convert panel armed) ----
 - url: http://127.0.0.1:8099/?s=workspace-batch-light#/workspace/chdman
   output: docs/screenshots/workspace-batch-light.png
@@ -398,6 +421,49 @@
   height: 900
   wait: 1800
   javascript: *js_rom_converto
+
+# --- Workspace: rom-converto, 3DS CIA -> CCI with the Recognized proof (#423)
+# Picks the CIA -> CCI mode, selects the fixture's synthetic CIA and ticks
+# delete-source, so the panel says the output must be Recognized and offers no
+# container-only box.
+- url: http://127.0.0.1:8099/?s=workspace-rom-converto-recognized-light#/workspace/rom_converto
+  output: docs/screenshots/workspace-rom-converto-recognized-light.png
+  width: 1280
+  height: 900
+  wait: 1800
+  javascript: &js_rom_converto_recognized |
+    (async () => {
+      const theme = new URLSearchParams(location.search).get('s').endsWith('dark')
+        ? 'dark' : 'light';
+      localStorage.setItem('theme-preference', theme);
+      window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: theme }));
+      await new Promise(r => setTimeout(r, 400));
+      const sel = document.querySelector('select[aria-label="Conversion mode"]');
+      if (!sel) throw new Error('mode select not found');
+      sel.value = 'cia_to_cci';
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+      await new Promise(r => setTimeout(r, 400));
+      const vol = [...document.querySelectorAll('button.item')].find(b => b.textContent.trim() === 'Nintendo 3DS');
+      if (!vol) throw new Error('Nintendo 3DS volume not found');
+      vol.click();
+      await new Promise(r => setTimeout(r, 800));
+      const all = document.querySelector('thead input[type="checkbox"]');
+      if (all && !all.checked) all.click();
+      await new Promise(r => setTimeout(r, 500));
+      const box = [...document.querySelectorAll('label.checkbox')]
+        .find(l => l.textContent.includes('Delete sources'));
+      const input = box && box.querySelector('input');
+      if (!input) throw new Error('delete option not shown');
+      if (!input.checked) input.click();
+      await new Promise(r => setTimeout(r, 400));
+      if (!box.textContent.includes('Recognized')) throw new Error('Recognized hint not shown');
+    })()
+- url: http://127.0.0.1:8099/?s=workspace-rom-converto-recognized-dark#/workspace/rom_converto
+  output: docs/screenshots/workspace-rom-converto-recognized-dark.png
+  width: 1280
+  height: 900
+  wait: 1800
+  javascript: *js_rom_converto_recognized
 
 # --- Workspace: 3DS (Nintendo 3DS volume selected) ------------------------
 - url: http://127.0.0.1:8099/?s=workspace-3ds-light#/workspace/z3ds

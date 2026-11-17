@@ -33,9 +33,10 @@ def test_the_check_level_sits_next_to_delete_source():
         "check_level: v ? CHECK_LEVEL.containerOnly : CHECK_LEVEL.roundTrip" in body
     ), body
     # The description follows the box: no Round-trip promise once it is ticked.
-    assert (
-        "spec?.supportsRoundTrip && rule.check_level !== CHECK_LEVEL.containerOnly" in body
-    ), body
+    # It reads the convert panel's helper (deleteCheck.js), which also knows a
+    # Recognized mode (#423).
+    assert "DELETE_CHECK_HINTS[ruleDeleteCheck(spec, rule)]" in body, body
+    assert "containerOnly: rule.check_level === CHECK_LEVEL.containerOnly" in src
 
 
 def test_the_editor_names_no_level_string_itself():

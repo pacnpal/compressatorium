@@ -76,8 +76,8 @@
     {
       glyph: 'RC',
       name: 'rom-converto',
-      blurb: 'The converter RomM ships (rom-converto 0.24.0, the version RomM pins), used here only for formats nothing else in this app writes. Its first job is Xbox 360 disc images to ZAR, the ZArchive format Xenia mounts directly: the game\'s files, zstd-compressed, without the video partition and disc padding. Like the Xbox tool, it looks inside each .iso and is only offered on Xbox 360 images; an original Xbox disc can\'t become a ZAR. The result is Game.zar beside the source. The source ISO is always kept: a ZAR holds the disc\'s files, not the disc itself, and nothing turns a ZAR back into an ISO, so the output can\'t be Round-tripped against it, and there is no delete-after-verify option. Verify has rom-converto decode every block and check its hash. Info shows how many files the ZAR holds, their size, and whether default.xex (what Xenia boots) is at its root. rom-converto is downloaded into the image at a pinned version and checked against its SHA-256; outside the image, set ROM_CONVERTO_PATH, and the tool is hidden until the binary is there and runs.',
-      io: '.iso  →  .zar',
+      blurb: 'The converter RomM ships (rom-converto 0.24.0, the version RomM pins), used here only for formats nothing else in this app writes. Its first job is Xbox 360 disc images to ZAR, the ZArchive format Xenia mounts directly: the game\'s files, zstd-compressed, without the video partition and disc padding. Like the Xbox tool, it looks inside each .iso and is only offered on Xbox 360 images; an original Xbox disc can\'t become a ZAR. The result is Game.zar beside the source. The source ISO is always kept: a ZAR holds the disc\'s files, not the disc itself, and nothing turns a ZAR back into an ISO, so the output can\'t be Round-tripped against it, and there is no delete-after-verify option. Verify has rom-converto decode every block and check its hash. Info shows how many files the ZAR holds, their size, and whether default.xex (what Xenia boots) is at its root. It also turns a PSP game\'s EBOOT.PBP into the UMD ISO inside it, a 3DS CIA into a trimmed CCI (Game.cci), and a CCI (.cci or .3ds) into a CIA. A PS1 Classic PBP is not offered. rom-converto carries its own common keys; the app never downloads or ships keys or seeds, and an input that needs one fails with a message that says so. None of these can be Round-tripped (a converted CIA is unsigned with a zero title key), so with delete-source on the source goes only when the output is Recognized by one of your DATs or Hasheous; otherwise it is kept, and the job says so. rom-converto is downloaded into the image at a pinned version and checked against its SHA-256; outside the image, set ROM_CONVERTO_PATH, and the tool is hidden until the binary is there and runs.',
+      io: '.iso  →  .zar  ·  .pbp  →  .iso  ·  .cia  ↔  .cci',
     },
     {
       glyph: 'DOS',
@@ -310,6 +310,15 @@
       That is why XISO offers no delete-on-verify. A ZAR's check is a real one (every block is
       decoded and hash-checked), but a ZAR can't be turned back into the ISO it came from, so
       ZAR keeps its source too. Read a tool's own entry above before you delete a source by hand.
+    </p>
+    <p>
+      A few conversions can't be Round-tripped at all: PSP PBP to ISO, and 3DS CIA to CCI and
+      back. For those the proof is Recognized instead: the output's hash must be in one of your
+      DATs or in Hasheous before the source is deleted. If nothing recognizes it, the source is
+      kept and the job says "converted, source kept: output not Recognized". The container
+      check only box isn't offered for them, because it only skips a Round-trip. The convert
+      panel and the Rule editor say which proof each format uses, and the Ledger records the
+      DAT that recognized an output.
     </p>
     <p>
       Bulk Verify checks a whole selection at once across CHD, Dolphin, 3DS, Switch, and

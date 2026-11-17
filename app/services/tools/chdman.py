@@ -91,6 +91,18 @@ _CD_READS = frozenset({".cue", ".gdi", ".iso"})
 _SHEET_EXTS = frozenset({".cue", ".gdi"})
 _DVD_READS = frozenset({".iso"})
 _NONE: frozenset[str] = frozenset()
+# What chdman compresses with when a create job sends no ``-c`` (its default
+# compression lists in chdman.cpp): CD images use the CD codecs, hard disk,
+# raw and DVD use the general list, laserdisc A/V Huffman.
+_CD_DEFAULT_CODECS = ("cdlz", "cdzl", "cdfl")
+_GENERAL_DEFAULT_CODECS = ("lzma", "zlib", "huff", "flac")
+_IMPLICIT_CODECS = {
+    "createraw": _GENERAL_DEFAULT_CODECS,
+    "createhd": _GENERAL_DEFAULT_CODECS,
+    "createcd": _CD_DEFAULT_CODECS,
+    "createdvd": _GENERAL_DEFAULT_CODECS,
+    "createld": ("avhu",),
+}
 _CREATE_MODES = {
     "createraw": ("Create Raw", _HD_PLATFORMS, _NONE, False, _NONE),
     "createhd": ("Create HD", _HD_PLATFORMS, _NONE, False, _NONE),
@@ -164,6 +176,7 @@ def _build_modes() -> list[ModeSpec]:
             output_ext=".chd",
             input_extensions=frozenset(CHDMAN_CONVERTIBLE_EXTENSIONS),
             supports_compression=True,
+            implicit_codecs=_IMPLICIT_CODECS[mode],
             supports_delete_on_verify=mode not in _NO_DELETE_SOURCE_MODES,
             supports_round_trip=mode in _ROUND_TRIP_MODES,
             allows_archive_input=True,
@@ -204,6 +217,7 @@ def _build_modes() -> list[ModeSpec]:
             output_ext=".chd",
             input_extensions=_CHD,
             supports_compression=True,
+            implicit_codecs_unknown=True,
             supports_delete_on_verify=True,
             # Source and output are both CHDs, digested the same way.
             supports_round_trip=True,

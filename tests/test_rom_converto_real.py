@@ -73,3 +73,47 @@ async def test_real_binary_verify_fails_a_damaged_zar(tmp_path):
 
     check = await TOOL.verify(str(out))
     assert check["valid"] is False
+
+
+# --------------------------------------------------------------------------- #
+# PSP and 3DS (#423)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_real_binary_refuses_a_pbp_without_a_game_image(tmp_path):
+    """A PBP whose PSAR says NPUMDIMG but holds no game: rom-converto's own
+    refusal reaches the job, and nothing is left behind. A working PBP needs a
+    game's encrypted image, which can't be built here (spike #421)."""
+    from .rom_converto_fixtures import pbp_bytes
+
+    src = tmp_path / "Game.pbp"
+    src.write_bytes(pbp_bytes(payload=b"\0" * 4096))
+
+    with pytest.raises(RuntimeError, match="rom-converto"):
+        [_ async for _ in TOOL.convert(str(src), str(tmp_path / "Game.iso"), "pbp_to_iso")]
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["Game.pbp"]
+
+
+_HOMEBREW_CIA = os.environ.get("ROM_CONVERTO_TEST_CIA", "")
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    not os.path.isfile(_HOMEBREW_CIA),
+    reason="set ROM_CONVERTO_TEST_CIA to a homebrew CIA (FBI, MIT) to run this",
+)
+async def test_real_binary_converts_a_cia_to_cci_and_back(tmp_path):
+    src = tmp_path / "Game.cia"
+    shutil.copyfile(_HOMEBREW_CIA, src)
+    cci = tmp_path / "Game.cci"
+
+    [_ async for _ in TOOL.convert(str(src), str(cci), "cia_to_cci")]
+    assert (await TOOL.verify(str(cci)))["valid"]
+
+    back = tmp_path / "back" / "Game.cia"
+    back.parent.mkdir()
+    [_ async for _ in TOOL.convert(str(cci), str(back), "cci_to_cia")]
+    assert (await TOOL.verify(str(back)))["valid"]
+    # Not byte-equal to the original (unsigned, zero title key): no Round-trip.
+    assert back.read_bytes() != src.read_bytes()
