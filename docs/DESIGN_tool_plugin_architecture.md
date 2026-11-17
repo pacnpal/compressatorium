@@ -5867,7 +5867,14 @@ The keeper is opened (`_open_keeper`, through `run_detached_undoable`: a
 descriptor delivered after the bound gave up is closed by the undo,
 `_close_opened`, Codex 4593499336) and held open from that read to the end of
 the batch; an image's hash is read through that descriptor
-(`content_keys.recompute(fd=...)`). Before each copy, and once after the last
+(`content_keys.recompute(fd=...)`), and any other format's full pass reads it
+too (Codex 4593632748): the contract's `content_sha1(path, fd=...)` resolves,
+once in `BaseTool`, a path that names the held file (`held_file_path`:
+`/proc/<pid>/fd/<fd>`, checked by device and inode, which a tool's child can
+open and which keeps naming that inode whatever is renamed into the old name),
+and the tool's own pass (`_content_sha1(path, target)`) reads *target* while
+*path* only names the format. Where no such path exists (no `/proc`), the
+delete is refused for that keeper rather than reading the name. Before each copy, and once after the last
 delete, `_keeper_still_held` checks that the batch still holds the keeper's
 lock (`HeldLocks.holds`: a lingering Referrer operation may have taken it,
 CodeRabbit 4593240091) and that the path still names the held file, with the

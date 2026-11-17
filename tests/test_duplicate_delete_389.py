@@ -31,6 +31,36 @@ _client = d388._client
 CONFIRM = {"X-CHD-Action-Confirm": "delete-file"}
 
 
+@pytest.fixture(autouse=True)
+def _held_file_paths_in_process(monkeypatch):
+    """A path naming a held descriptor, for this process's stubbed tools.
+
+    Production resolves ``/proc/<pid>/fd/<fd>`` only, since a tool's child must
+    be able to open it (Linux). The tool stubs here run in this process, so on
+    a system without ``/proc`` (macOS) ``/dev/fd/<fd>`` serves them, checked by
+    file identity the same way.
+    """
+    from services.tools import base
+
+    real = base.held_file_path
+
+    def in_process(fd: int) -> str | None:
+        found = real(fd)
+        if found is not None:
+            return found
+        candidate = f"/dev/fd/{fd}"
+        try:
+            held, named = os.fstat(fd), os.stat(candidate)
+        except OSError:
+            return None
+        # macOS's devfs reports its own device for /dev/fd; the inode and
+        # size are the held file's.
+        same = (held.st_ino, held.st_size) == (named.st_ino, named.st_size)
+        return candidate if same else None
+
+    monkeypatch.setattr(base, "held_file_path", in_process)
+
+
 async def _group(client: httpx.AsyncClient) -> dict:
     found = await d388._duplicates(client)
     assert len(found) == 1, found
@@ -550,7 +580,8 @@ async def test_a_header_keyed_copy_that_passed_its_check_may_be_kept(
     passes: list[str] = []
 
     async def verify(path, *, cancel_event=None):
-        passes.append(os.path.basename(path))
+        # The pass reads the held file (Codex 4593632748), named by identity.
+        passes.append(os.stat(path).st_ino)
         return {"valid": True, "message": "ok"}
 
     async def info(path, *, cancel_event=None):
@@ -564,7 +595,7 @@ async def test_a_header_keyed_copy_that_passed_its_check_may_be_kept(
     assert plan["blocked"] is False
     done = await _delete(client, group, chd, _paths(plan))
     assert done.status_code == 200, done.text
-    assert passes == ["Game.chd"]
+    assert passes == [os.stat(roms / "Game.chd").st_ino]
     assert not (roms / "Game.iso").exists()
     assert (roms / "Game.chd").exists()
 
@@ -1184,3 +1215,84 @@ async def test_a_run_with_no_record_of_sheet_tracks_offers_no_delete(
     assert group["deletable"] is False
     assert "sheet" in group["not_deletable"]
     assert (await _plan(client, group, str(roms / "Game.iso"))).status_code == 409
+
+
+
+# ----------------------------------------------------------------------
+# a container keeper is read through its held descriptor (Codex 4593632748)
+# ----------------------------------------------------------------------
+
+
+async def _chd_keeper(client, roms: Path) -> tuple[dict, str, dict, bytes]:
+    """A CHD keeper whose bytes are corrupt but whose metadata claims the
+    group's key, checked as Intact, and the ISO it duplicates."""
+    from services.verification_store import verification_store
+
+    sha1 = d388._disc(roms / "Game.iso", b"game")
+    await d388._seed_chd(roms / "Game.chd", data_sha1=sha1, sha1="0" * 40)
+    await verification_store.mark_verified(str(roms / "Game.chd"))
+    library = await d388._register(client, roms)
+    await d388._find(client, library)
+    group = await _group(client)
+    chd = str(roms / "Game.chd")
+    plan = (await _plan(client, group, chd)).json()
+    assert plan["blocked"] is False, plan
+    return group, chd, plan, (roms / "Game.iso").read_bytes()
+
+
+@pytest.mark.asyncio
+async def test_a_keeper_swapped_by_name_during_its_full_pass_is_caught(
+    db: Path, client: httpx.AsyncClient, monkeypatch,
+) -> None:
+    """A healthy file renamed into the keeper's name for the length of the
+    pass, then the corrupt keeper put back: the pass reads the held file, not
+    the name, so it hashes the corrupt bytes and the delete is refused."""
+    import hashlib
+
+    from services.chdman import chdman_service
+    from services.tools import registry
+
+    roms = db / "roms"
+    group, chd, plan, healthy = await _chd_keeper(client, roms)
+    aside = roms / "aside.tmp"
+
+    async def verify(path, *, cancel_event=None):
+        os.rename(chd, aside)                 # the corrupt keeper, still held open
+        (roms / "Game.chd").write_bytes(healthy)
+        return {"valid": True, "message": "ok"}
+
+    async def info(path, *, cancel_event=None):
+        with open(path, "rb") as fh:
+            digest = hashlib.sha1(fh.read()).hexdigest()
+        os.replace(aside, chd)                # put the corrupt keeper back
+        return {"sha1": "0" * 40, "data_sha1": digest,
+                "raw_data": "Metadata: Tag='DVD '  Index=0\n"}
+
+    monkeypatch.setattr(registry.get("chdman"), "verify", verify)
+    monkeypatch.setattr(chdman_service, "info", info)
+    done = await _delete(client, group, chd, _paths(plan))
+
+    assert done.status_code == 200, done.text
+    assert all(r["status"] != "deleted" for r in done.json()["results"])
+    assert (roms / "Game.iso").exists()
+
+
+@pytest.mark.asyncio
+async def test_a_container_keeper_with_no_path_to_its_held_file_refuses(
+    db: Path, client: httpx.AsyncClient, monkeypatch,
+) -> None:
+    """Where no path names the held descriptor, the pass is never run on the
+    name: the delete is refused for that keeper."""
+    from services.tools import base
+
+    roms = db / "roms"
+    group, chd, plan, _healthy = await _chd_keeper(client, roms)
+    monkeypatch.setattr(base, "held_file_path", lambda fd: None)
+
+    done = await _delete(client, group, chd, _paths(plan))
+
+    assert done.status_code == 200, done.text
+    results = done.json()["results"]
+    assert all(r["status"] != "deleted" for r in results)
+    assert any("held" in (r["reason"] or "") for r in results), results
+    assert (roms / "Game.iso").exists()

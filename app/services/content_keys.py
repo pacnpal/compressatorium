@@ -271,7 +271,8 @@ async def recompute(
     open, so what is hashed is the file it then checks the path against). Any
     other file goes through its tool's ``content_sha1`` (a full pass: a
     rebuild or a verify), bounded by the tool's ``verify_timeout`` and raced
-    against *cancel_event*.
+    against *cancel_event*, and with *fd* it reads the held file, never the
+    name (Codex 4593632748).
     """
     name = os.path.basename(path)
     if is_raw_image(path):
@@ -298,7 +299,8 @@ async def recompute(
         )
         sha1 = await until_cancelled(
             asyncio.wait_for(
-                tool.content_sha1(path, cancel_event=cancel_event), timeout=bound or None,
+                tool.content_sha1(path, cancel_event=cancel_event, fd=fd),
+                timeout=bound or None,
             ),
             cancel_event,
         )

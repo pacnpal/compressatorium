@@ -9,6 +9,7 @@ out of the existing service singletons.
 from __future__ import annotations
 
 import asyncio
+import os
 from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -78,6 +79,25 @@ def block_size_problem(spec: ModeSpec, size: int) -> str | None:
         )
         return f"{spec.label} takes a block size of at least {minimum}, {rule}; {size} isn't"
     return None
+
+
+def held_file_path(fd: int) -> str | None:
+    """A path that names the file *fd* is open on, for a tool to read. Blocking.
+
+    ``/proc/<pid>/fd/<fd>`` (Linux, the app's container): it reopens the very
+    inode the descriptor holds, whatever is renamed into its old name, and a
+    tool's child process can open it too. Checked by file identity (device and
+    inode) against the descriptor. None where there is no such path: a caller
+    that must read the held file then refuses rather than read the name.
+    """
+    candidate = f"/proc/{os.getpid()}/fd/{fd}"
+    try:
+        held, named = os.fstat(fd), os.stat(candidate)
+    except OSError:
+        return None
+    if (held.st_dev, held.st_ino) != (named.st_dev, named.st_ino):
+        return None
+    return candidate
 
 
 class EmbeddedHashUnavailable(Exception):
@@ -459,6 +479,7 @@ class ToolPlugin(Protocol):
 
     async def content_sha1(
         self, path: str, *, cancel_event: asyncio.Event | None = None,
+        fd: int | None = None,
     ) -> str | None:
         """The raw image SHA1 of what ``path`` holds now, from a full pass (#389).
 
@@ -468,6 +489,12 @@ class ToolPlugin(Protocol):
         tool has no full-content hash for the file, which then cannot be the
         copy a duplicate delete keeps. Raises :class:`EmbeddedHashUnavailable`
         when the pass did not give one. The caller bounds the call.
+
+        With *fd* (the caller holds the file open), the pass reads that file,
+        through :func:`held_file_path`, never the name, so nothing renamed into
+        the name meanwhile is what gets hashed; with no such path it raises
+        :class:`EmbeddedHashUnavailable` rather than read the name. *path* still
+        decides the format (its extension).
         """
 
     async def content_digest(
@@ -875,12 +902,32 @@ class BaseTool:
 
     async def content_sha1(
         self, path: str, *, cancel_event: asyncio.Event | None = None,
+        fd: int | None = None,
     ) -> str | None:
-        # Default: a tool whose raw hash rebuilds the image computes it afresh
-        # on every call (no cache), so that is a full pass; any other has none.
+        # The binding to the held file lives here, once for every tool (Codex
+        # 4593632748): each tool's own pass (`_content_sha1`) reads *target*.
+        target = path
+        if fd is not None:
+            from services.subprocess_runner import run_detached_bounded
+
+            target = await run_detached_bounded(held_file_path, fd, timeout=30.0)
+            if target is None:
+                raise EmbeddedHashUnavailable(
+                    f"no path here names the held {Path(path).name}, so it cannot "
+                    "be read in full without reading its name instead",
+                )
+        return await self._content_sha1(path, target, cancel_event=cancel_event)
+
+    async def _content_sha1(
+        self, path: str, target: str, *, cancel_event: asyncio.Event | None = None,
+    ) -> str | None:
+        """:meth:`content_sha1`'s pass: *path* names the format, *target* is
+        what is read. Default: a tool whose raw hash rebuilds the image
+        computes it afresh on every call (no cache), so that is a full pass;
+        any other has none."""
         if not self.raw_image_hash_rebuilds_content:
             return None
-        return await self.raw_image_sha1(path, cancel_event=cancel_event)
+        return await self.raw_image_sha1(target, cancel_event=cancel_event)
 
     async def source_problem(
         self,
