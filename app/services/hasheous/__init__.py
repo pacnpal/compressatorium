@@ -320,6 +320,63 @@ def _text(value) -> str | None:
     return None
 
 
+#: Each Hasheous metadata source whose id RomM stores, keyed by the source name
+#: lower-cased with everything but letters and digits dropped, and named by the
+#: matching ``RommClient`` field (``services.romm.METADATA_ID_FIELDS``). A source
+#: RomM has no field for is left out. The record's own id is ``hasheous_id``.
+PROVIDER_ID_FIELDS: dict[str, str] = {
+    "igdb": "igdb_id",
+    "thegamesdb": "tgdb_id",
+    "retroachievements": "ra_id",
+    "mobygames": "moby_id",
+    "screenscraper": "ss_id",
+    "launchbox": "launchbox_id",
+    "howlongtobeat": "hltb_id",
+    "flashpoint": "flashpoint_id",
+}
+# RomM stores every one of these ids as an integer except Flashpoint's.
+_TEXT_ID_FIELDS = frozenset({"flashpoint_id"})
+
+
+def _provider_id(field: str, value) -> int | str | None:
+    """*value* as RomM stores *field*, or None when it can't be one."""
+    text = str(value).strip() if isinstance(value, (str, int)) else ""
+    if not text:
+        return None
+    if field in _TEXT_ID_FIELDS:
+        return text
+    # ASCII digits only: "²".isdigit() is True, and int() refuses it.
+    if not (text.isascii() and text.isdigit()):
+        return None
+    try:
+        return int(text)
+    except ValueError:
+        # Past Python's integer-string limit (4,300 digits): no real id.
+        return None
+
+
+def _provider_ids(data: dict) -> dict:
+    """The provider ids of the Mapped metadata entries, as RomM's fields (#427).
+
+    Kept as named fields, not only links, so a conversion can write them onto
+    the ROM in RomM. An entry Hasheous has not mapped carries no id worth
+    writing, and a source RomM has no field for is dropped.
+    """
+    ids: dict = {}
+    hasheous_id = _provider_id("hasheous_id", data.get("id"))
+    if hasheous_id is not None:
+        ids["hasheous_id"] = hasheous_id
+    for entry in data.get("metadata") or []:
+        if not isinstance(entry, dict) or entry.get("status") != "Mapped":
+            continue
+        source = re.sub(r"[^a-z0-9]", "", str(entry.get("source") or "").lower())
+        field = PROVIDER_ID_FIELDS.get(source)
+        value = _provider_id(field, entry.get("id")) if field else None
+        if value is not None:
+            ids.setdefault(field, value)
+    return ids
+
+
 def _normalize(data: dict) -> dict:
     """Map a Hasheous response onto the record shape ``dat_store`` returns.
 
@@ -363,6 +420,8 @@ def _normalize(data: dict) -> dict:
         "region": _text(rom.get("country")) or _text(game.get("country")),
         "hasheous_id": data.get("id"),
         "metadata_links": links,
+        # The same mapped entries' ids, under RomM's field names (#427).
+        "provider_ids": _provider_ids(data),
     }
 
 

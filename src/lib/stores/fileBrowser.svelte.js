@@ -7,6 +7,7 @@ import { STORAGE_KEYS, readString, writeString } from '$lib/util/localStorage.js
 import { jobs } from './jobs.svelte.js';
 import { conversion } from './conversion.svelte.js';
 import { ui } from './ui.svelte.js';
+import { datMatching } from './datMatching.svelte.js';
 
 const DEFAULT_PAGE_SIZE = 50;
 // Rows-per-page choices offered in the file list footer.
@@ -46,6 +47,10 @@ class FileBrowserStore {
   // FileRow, RowActionsMenu and ConvertPanel all work unchanged.
   rommPlatformId = $state(null);
   rommDiagnostics = $state(null);
+  // "Unidentified in RomM" (#427): list only the ROMs RomM couldn't identify,
+  // and the listing's counts of those and of the Recognized rows.
+  rommUnidentified = $state(false);
+  rommSummary = $state(null);
 
   // Entries
   entries = $state([]);
@@ -734,12 +739,26 @@ class FileBrowserStore {
     this.entries = [];
     this.entriesError = null;
     this.rommDiagnostics = null;
+    this.rommSummary = null;
     // Drop the memo of the last loaded directory so the refresh is not
     // collapsed as a duplicate of the listing we just discarded.
     this._loadedPath = null;
     if (this.currentPath) {
       this.refresh({ force: true });
     }
+  }
+
+  /** Show only the ROMs RomM couldn't identify, or every ROM again (#427).
+   *
+   * A different set of rows: the selection goes, as it does when the platform
+   * changes, so a convert never acts on rows the filter has hidden.
+   */
+  async setRommUnidentified(on) {
+    this.rommUnidentified = Boolean(on);
+    if (this.rommPlatformId === null) return;
+    this.clearSelection();
+    this.page = 1;
+    await this._loadRommEntries(this.rommPlatformId);
   }
 
   async _loadRommEntries(platformId) {
@@ -757,17 +776,25 @@ class FileBrowserStore {
     this.loading = true;
     this.entriesError = null;
     this.rommDiagnostics = null;
+    // Where the listing's cached matches sit in the read order, and the matching
+    // policy they belong to (#427).
+    const matchTicket = datMatching.beginListingRead();
     try {
-      const data = await api.getRommRoms(platformId);
+      const data = await api.getRommRoms(platformId, { unidentified: this.rommUnidentified });
       if (this._listingRequestSeq !== myReq || this.rommPlatformId !== platformId) return;
       this.entries = data?.entries ?? [];
+      // Into the match store, ordered per path against its other reads and
+      // cleared with it by a policy change, rather than kept beside it.
+      datMatching.seedListing(this.entries, matchTicket);
       this.rommDiagnostics = data?.diagnostics ?? null;
+      this.rommSummary = data?.romm ?? null;
       this._listingGeneration += 1;
     } catch (e) {
       if (this._listingRequestSeq !== myReq || this.rommPlatformId !== platformId) return;
       this.entriesError = e?.message ?? 'Failed to load RomM ROMs';
       this.entries = [];
       this.rommDiagnostics = null;
+      this.rommSummary = null;
     } finally {
       if (this._listingRequestSeq === myReq) this.loading = false;
       this._clampPage();

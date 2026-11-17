@@ -797,6 +797,114 @@
   wait: 1800
   javascript: *js_romm_converter
 
+# --- Unidentified in RomM (#427) --------------------------------------------
+# The Library tab with the "Unidentified in RomM" filter on: two ROMs RomM
+# couldn't identify, one of them Recognized by the app (its Hasheous name shown
+# beside RomM's title), the count, and "Recognize these" for the other. The
+# second pair is the Settings tab's Metadata card with the switch that writes
+# Hasheous ids onto converted ROMs. RomM's answers are canned in the page, as
+# in the shots above; the listing follows the `unidentified` query. The theme
+# comes from the `?s=` suffix and the surface from it too.
+- url: http://127.0.0.1:8099/?s=romm-unidentified-light#/romm
+  output: docs/screenshots/romm-unidentified-light.png
+  width: 1280
+  height: 900
+  wait: 1800
+  javascript: &js_romm_unidentified |
+    (async () => {
+      const theme = location.search.includes('-dark') ? 'dark' : 'light';
+      const settingsTab = location.search.includes('hasheous-ids');
+      localStorage.setItem('theme-preference', theme);
+      window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: theme }));
+      const real = window.fetch.bind(window);
+      const live = async (path) => (await real(path)).json();
+      const rom = (name, title, identified, match) => ({
+        name, display_name: title, path: `/library/roms/ngc/${name}`, type: 'file',
+        size: 1459978240, extension: '.iso', convertible_by: ['dolphin'], outputs: [],
+        verifiable_by: [], romm_identified: identified, dat_match: match,
+      });
+      const known = rom('Pikmin (USA).iso', 'Pikmin', true, null);
+      const homebrew = rom('swiss_r1788.iso', 'swiss_r1788', false, {
+        path: '/library/roms/ngc/swiss_r1788.iso', matched: true, source: 'hasheous',
+        dat_name: 'Redump', game_name: 'Swiss (World) (r1788)', platform: 'Nintendo GameCube',
+        provider_ids: { hasheous_id: 4242 },
+      });
+      const mystery = rom('disc2.iso', 'disc2', false, null);
+      const canned = {
+        '/api/romm/status': { ...(await live('/api/romm/status')), configured: true,
+          connected: true, version: '5.4.1', library_root: '/library',
+          library_root_mounted: true, token_set: true },
+        '/api/romm/settings': { ...(await live('/api/romm/settings')),
+          url: 'http://romm:8080', library_root: '/library', token_set: true,
+          repin_enabled: true, hasheous_write_ids: true },
+        '/api/romm/platforms': [{ id: 7, name: 'GameCube', slug: 'ngc', rom_count: 3,
+          tool_ids: ['dolphin'], mode_ids: ['dolphin_rvz'] }],
+        '/api/romm/rules': { ...(await live('/api/romm/rules')), state: {}, rules: {} },
+        // The canned paths are outside this fixture's Volume, so the match
+        // cache answers as it would for them in a real library: with the
+        // matches it holds. An empty answer means "no usable row", and the
+        // store then drops the match the listing seeded. Nothing is matched
+        // for real.
+        '/api/dat/matches/lookup': { results: { [homebrew.path]: homebrew.dat_match } },
+        '/api/dat/match-batch/job': {
+          status: 'idle', results: { [homebrew.path]: homebrew.dat_match },
+        },
+      };
+      const listing = (unidentified) => unidentified
+        ? { entries: [mystery, homebrew], diagnostics: null,
+            romm: { unidentified: 2, recognized: 1, recognized_unidentified: 1 } }
+        : { entries: [known, mystery, homebrew], diagnostics: null,
+            romm: { unidentified: 2, recognized: 2, recognized_unidentified: 1 } };
+      window.fetch = (input, init) => {
+        const url = new URL(typeof input === 'string' ? input : input.url, location.href);
+        const body = url.pathname === '/api/romm/roms'
+          ? listing(url.searchParams.get('unidentified') === 'true')
+          : canned[url.pathname];
+        if (body === undefined) return real(input, init);
+        return Promise.resolve(new Response(JSON.stringify(body),
+          { headers: { 'Content-Type': 'application/json' } }));
+      };
+      location.hash = '#/dashboard';
+      await new Promise(r => setTimeout(r, 300));
+      location.hash = '#/romm';
+      await new Promise(r => setTimeout(r, 900));
+      if (settingsTab) {
+        const tab = [...document.querySelectorAll('.tab')].find(b => b.textContent.trim() === 'Settings');
+        if (!tab) throw new Error('Settings tab not found');
+        tab.click();
+        await new Promise(r => setTimeout(r, 400));
+        const box = [...document.querySelectorAll('.checkbox')]
+          .find(l => l.textContent.includes('Write Hasheous ids'));
+        if (!box) throw new Error('Hasheous ids switch not found');
+        box.scrollIntoView({ block: 'center' });
+        await new Promise(r => setTimeout(r, 300));
+        return;
+      }
+      const filter = [...document.querySelectorAll('.unidentified .checkbox input')][0];
+      if (!filter) throw new Error('Unidentified in RomM filter not found');
+      filter.click();
+      await new Promise(r => setTimeout(r, 800));
+      if (!document.querySelector('.app-name')) throw new Error('Recognized name not shown');
+    })()
+- url: http://127.0.0.1:8099/?s=romm-unidentified-dark#/romm
+  output: docs/screenshots/romm-unidentified-dark.png
+  width: 1280
+  height: 900
+  wait: 1800
+  javascript: *js_romm_unidentified
+- url: http://127.0.0.1:8099/?s=romm-hasheous-ids-light#/romm
+  output: docs/screenshots/romm-hasheous-ids-light.png
+  width: 1280
+  height: 900
+  wait: 1800
+  javascript: *js_romm_unidentified
+- url: http://127.0.0.1:8099/?s=romm-hasheous-ids-dark#/romm
+  output: docs/screenshots/romm-hasheous-ids-dark.png
+  width: 1280
+  height: 900
+  wait: 1800
+  javascript: *js_romm_unidentified
+
 # --- Rules view on a folder Library (#303) --------------------------------
 # The fixture's "ROM Library/roms" folder is registered as a Library through the
 # API (a 409 on the second shot means it already is), given a PS2 Rule, and

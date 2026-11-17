@@ -232,7 +232,9 @@ class RommStore extends RulesSource {
   imageNouns = ['ROM', 'ROMs'];
   emptyTitle = 'No platforms yet';
   emptyHint = 'Connect RomM in Settings, then your platforms appear here.';
-  matchedLabel = 'Only ROMs RomM has identified';
+  // Recognized (#427): identified by RomM, or matched by the app's own DAT or
+  // Hasheous lookup. The other filter still reads RomM's verdict alone.
+  matchedLabel = 'Only Recognized ROMs (identified by RomM, or by a DAT or Hasheous)';
   unmatchedLabel = 'Only ROMs RomM could not identify';
 
   imageCount(platform) {

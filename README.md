@@ -782,7 +782,7 @@ hourly while PS2 converts to CHD overnight, ten at a time, largest first.
 | **Output folder** | Blank writes beside the source. |
 | **Smallest / largest ROM** | Size thresholds in MB. |
 | **Only names matching / Skip names matching** | Regex filters — convert only `(USA)`, skip `(Beta)`. |
-| **Only identified / unidentified** | Restrict to what RomM has (or hasn't) matched. Mutually exclusive. |
+| **Only Recognized / only unidentified** | "Only Recognized" takes ROMs RomM identified *and* ROMs the app Recognizes from its own DATs or Hasheous; "only ROMs RomM could not identify" still means exactly what RomM says. Mutually exclusive. See [Unidentified in RomM](#unidentified-in-romm). |
 | **If the output already exists** | Skip it, overwrite it, or write `Game_1.rvz` alongside. Overwrite and write-alongside also remember what the rule has converted, so each ROM is done once instead of every run — see below. |
 | **Compression / level** | The codec and level for modes that take them — the same registry-driven controls the convert panel uses, so chdman offers its codec chips and Dolphin/NSZ/CSO a codec plus level. |
 | **Split into 4 GB parts** | For FAT32 targets, where the mode supports it. |
@@ -835,6 +835,43 @@ has converted, and that memory is kept honest for you:
 
 The schedule clock and the conversion history are separate, so forgetting one
 never disturbs the other.
+
+#### Unidentified in RomM
+
+RomM won't convert a ROM it couldn't identify, and it identifies through
+network services that miss a lot. Many of those ROMs are clean dumps your own
+DATs or Hasheous know. Tick **Unidentified in RomM** on the Library tab to list
+only the ROMs RomM couldn't identify, with a count of how many of them the app
+Recognizes and, beside each one it does, the name its DAT or Hasheous gives it.
+The list reads the matches the app already has and never starts hashing by
+itself; **Recognize these** starts the usual match job for the rest (see the
+Jobs panel). ROMs stored as zip or 7z aren't recognized yet (the match would
+hash the archive, not the ROM inside), so they're left out of the count and
+the match, and the view says how many there are.
+
+A ROM is Recognized when RomM identified it **or** the app's own DAT or
+Hasheous match for its file is a hit, so a Rule set to **Only Recognized**
+converts these too. A Rule set to **only ROMs RomM could not identify** keeps
+reading RomM's verdict alone.
+
+Turn on **Write Hasheous ids onto converted ROMs** (RomM **Settings →
+Metadata**, off by default) and, after converting a ROM the app found through
+Hasheous, the provider ids Hasheous returned (IGDB, TheGamesDB and the rest
+RomM stores) are written onto the ROM in RomM, so it shows the cover and
+description. Only ids the ROM doesn't already have are written: a match RomM
+made is never replaced. They travel with the metadata snapshot, so they land
+once RomM knows the converted file (its next scan, or the rehash after keeping
+the ROM id), and it needs **Save metadata before converting** on. They are
+written for every output format, CHD and 7z included, since RomM never matched
+these ROMs in the first place.
+
+Unlike RomM's own converter, Compressatorium also converts ROMs stored inside
+zip and 7z archives, so an archived library isn't stuck.
+
+| Light | Dark |
+|-------|------|
+| ![Unidentified in RomM filter, light](docs/screenshots/romm-unidentified-light.png) | ![Unidentified in RomM filter, dark](docs/screenshots/romm-unidentified-dark.png) |
+| ![Write Hasheous ids switch, light](docs/screenshots/romm-hasheous-ids-light.png) | ![Write Hasheous ids switch, dark](docs/screenshots/romm-hasheous-ids-dark.png) |
 
 #### Keeping the ROM id
 

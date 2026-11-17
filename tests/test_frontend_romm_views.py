@@ -175,7 +175,10 @@ def test_saving_metadata_does_not_submit_the_connection_buffers(tmp_path):
 
     assert len(data["submitted"]) == 1, data
     sent = data["submitted"][0]
-    assert sorted(sent) == ["repin_abandon_days", "repin_enabled", "repin_on_load"], sent
+    # The Hasheous ids switch (#427) lives on the Metadata card too.
+    assert sorted(sent) == [
+        "hasheous_write_ids", "repin_abandon_days", "repin_enabled", "repin_on_load",
+    ], sent
     assert sent["repin_on_load"] is False, sent
     # The Connection card still owns those fields.
     assert "url" in data["connection_keys"], data
