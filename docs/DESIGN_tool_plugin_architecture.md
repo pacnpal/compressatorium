@@ -6875,8 +6875,11 @@ tick with a fake clock and real files. Each poll:
    it is taken once a later poll at least `settle_seconds` after that sees the
    same fingerprint. So it always takes two polls, even with a settle time of 0.
 4. Takes it (`_take`): `detect_platform`; not decided is held with
-   `inbox_unsorted` or `inbox_conflict`. Its tracks must sit beside it, so the
-   Image moves as one. `_plan` reads the Library's conversion Rules
+   `inbox_unsorted` or `inbox_conflict`. A track sheet is checked with
+   `delete_plan.sheet_reference_problems(within=[the Inbox])` first: a reference
+   the confined resolver refuses (`../tracks/Game.bin`), or a sheet that can't
+   be read, is dropped by `image_members`, so the Image would look trackless;
+   it is held instead. Its tracks must sit beside it, so the Image moves as one. `_plan` reads the Library's conversion Rules
    (`sweep.get_rules`) and finds the Platform's Rule (`canonical_platform_id`,
    or the Library's `platforms()` by slug for RomM's numeric ids, passed on as
    `known`), then `Library.placement(platform)` (§3.3.11). Each file's
@@ -6906,11 +6909,20 @@ raced against the wait and the copy. The copy goes into a fresh
 `staging.open_slot(folder, make_folder=True)` (§3.3.21), each file opened
 through the Inbox folder's descriptor with `O_NOFOLLOW` and refused unless its
 `fstat` identity is the one taken, then read back and compared
-(`stream_digest.new_hasher`); then, when
-`registry.check_tool(staged, platform)` names a tool, `check.verify_file` (the
-check Rule's Verify on the `verify` lane) must say Intact; only then
-`slot.place(names)`, which never replaces (a taken name holds the file). The
-slot is always closed, so nothing half-copied is left in sight.
+(`stream_digest.new_hasher`). Every source's identity is checked again once
+the last byte is read, and the whole Image (identities and fingerprint,
+`_still_taken`) again just before it is placed, and each open source's own
+`fstat` after its last read: a source rewritten in place
+mid-copy reads back as written yet is neither version, so the staged copy is
+discarded and the source left to settle again. When `registry.check_tool(staged,
+platform)` (on a bounded worker thread: it can open the file) names a tool,
+`check.verify_file` (the check Rule's Verify on the `verify` lane) must say
+Intact; only then `slot.place(names)`, which never replaces (a taken name holds
+the file). The slot is always closed, so nothing half-copied is left in sight.
+A copy is an external job with no output path, so `libraries.note_job_finished`
+can't see it: intake calls the Library's `note_paths_changed` with what it
+placed before the job is announced finished, so its kept walk is dropped. A
+conversion's output is already covered by `note_job_finished`.
 
 **Moving the original** (`_move_to_processed`). Only while the Image is still
 the one taken: its whole fingerprint is compared first, and a source replaced
@@ -6923,8 +6935,10 @@ and each file moves by `place_without_clobbering` between the two descriptors,
 so a folder swapped for a link after the conversion can't redirect it (Codex
 4603069915). A name already there uses `processed/.../<stem> (2)/` and so on.
 All or none: a failed move puts back the ones already moved, through the same
-descriptors. Then `processed_count` is incremented and the file's Findings
-cleared.
+descriptors. Then `processed_count` is incremented in one `UPDATE ... SET
+processed_count = processed_count + 1` (a copy and a conversion can finish at
+once; the cached total only grows to what the database answers) and the file's
+Findings cleared.
 
 **Holding.** A file that gets a Finding (`inbox_unsorted`, `inbox_conflict`,
 `inbox_failed`, in `findings.INBOX_KINDS`, under the Inbox's Library, keyed

@@ -76,6 +76,7 @@ from services.subprocess_runner import (
     run_detached_within_stall_bound,
 )
 from services.tools import registry
+from utils.delete_plan import sheet_reference_problems
 from utils.junk import is_junk_entry
 from utils.path_utils import (
     match_extension,
@@ -455,6 +456,20 @@ async def _take(
         return "held"
     platform = detection.platform
     files = [path, *members]
+    try:
+        sheet = await _step(sheet_reference_problems, path, within=[inbox.folder])
+    except (asyncio.TimeoutError, OSError):
+        return "retry"
+    if sheet:
+        # `image_members` drops a reference the confined resolver refuses
+        # (``../tracks/Game.bin``), so the Image would look trackless and be
+        # copied without its track. Held instead, saying which.
+        await _hold(
+            inbox, state, path, fingerprint, findings.INBOX_FAILED,
+            "Its track sheet can't be taken as it is: " + "; ".join(sheet[:3]),
+            {"sheet": sheet[:10]},
+        )
+        return "held"
     problem = _files_problem(inbox, path, members)
     if problem:
         await _hold(inbox, state, path, fingerprint, findings.INBOX_FAILED, problem)
@@ -734,6 +749,19 @@ def _identities(
         os.close(fd)
 
 
+def _still_taken(inbox: inbox_store.Inbox, path: str, flight: _Flight) -> None:
+    """Raise :class:`_SourceChanged` unless the Image at *path* is still the
+    one taken: each file's identity through the Inbox's own folder, and the
+    whole Image's fingerprint (its sheet, its tracks). Blocking."""
+    fd, _names = _folder_beneath(inbox, flight.files)
+    try:
+        _check_identities(fd, flight.identities)
+    finally:
+        os.close(fd)
+    if image_fingerprint(path) != flight.fingerprint:
+        raise _SourceChanged(errno.ESTALE, f"{os.path.basename(path)} changed since it was taken")
+
+
 def _check_identities(fd: int, identities: dict[str, tuple[int, int, int, int]]) -> None:
     """Raise :class:`_SourceChanged` unless every file in the folder *fd* is
     still the one that was taken."""
@@ -876,6 +904,10 @@ def _stage_copy(
                     progress(name)
                     wrote.update(chunk)
                     dst.write(chunk)
+                # The file read is still the one taken after its last read
+                # (written to in place meanwhile, its mtime moved).
+                if _identity(os.fstat(src.fileno())) != flight.identities.get(name):
+                    raise _SourceChanged(errno.ESTALE, f"{name} changed while it was copied")
                 dst.flush()
                 os.fsync(dst.fileno())
             read = new_hasher("sha1")
@@ -885,6 +917,10 @@ def _stage_copy(
                     read.update(chunk)
             if read.hexdigest() != wrote.hexdigest():
                 raise _CopyDiffers(f"the copy of {name} doesn't read back the same")
+        # A source rewritten in place while it was read gives a copy that reads
+        # back as written yet is neither version: only a source unchanged from
+        # before the first read to after the last is placed.
+        _check_identities(folder_fd, flight.identities)
         return slot, names
     except BaseException:
         if slot is not None:
@@ -943,7 +979,11 @@ async def _copy(
     finally:
         state.flights.pop(path, None)
     if outcome == "placed":
-        await _finish(inbox, state, path, flight, output)
+        # A copy is an external job: it has no output path for
+        # `libraries.note_job_finished`, so its Library is told here, before
+        # the job is announced finished, and drops its kept walk (#353).
+        _tell_library(inbox, output)
+        await _finish(inbox, state, path, flight, output[0])
         await job_manager.finish_external_job(job.id, success=True)
         return
     if outcome == "cancelled":
@@ -963,11 +1003,25 @@ async def _copy(
     await job_manager.finish_external_job(job.id, success=False, error_message=why)
 
 
+def _tell_library(inbox: inbox_store.Inbox, placed: list[str]) -> None:
+    """Tell the Inbox's Library what a copy placed. On the loop, never waits."""
+    from services import libraries
+
+    library = libraries.get(inbox.library_id)
+    if library is None:
+        return
+    try:
+        library.note_paths_changed(placed)
+    except Exception:
+        # Its walk then ages out (SCAN_TTL_SECONDS), as for a conversion.
+        logger.warning("inbox: %s could not drop its walk", library.id, exc_info=True)
+
+
 async def _copy_in(
     job_id: str, inbox: inbox_store.Inbox, path: str, flight: _Flight, folder: str,
     cancel: asyncio.Event | None,
-) -> tuple[str, str, str | None]:
-    """Stage, compare, check Intact and place: ``(outcome, why, output)``."""
+) -> tuple[str, str, list[str] | None]:
+    """Stage, compare, check Intact and place: ``(outcome, why, placed paths)``."""
     await job_manager.update_external_job(job_id, message=f"Copying into {folder}")
     try:
         slot, names = await run_detached_within_stall_bound(
@@ -982,7 +1036,9 @@ async def _copy_in(
         return "failed", str(exc), None
     try:
         staged = slot.path_for(names[0])
-        tool = registry.check_tool(staged, flight.platform)
+        # Choosing the checker can open the file (romz lists an archive's
+        # members), so it runs on a worker thread, bounded.
+        tool = await _step(registry.check_tool, staged, flight.platform)
         if tool is not None:
             await job_manager.update_external_job(job_id, message="Checking the copy is Intact")
             verdict, message = await checks.verify_file(staged, tool.id, cancel)
@@ -991,10 +1047,14 @@ async def _copy_in(
             if verdict != checks.INTACT:
                 return "failed", f"the copy isn't Intact ({message or verdict})", None
         try:
+            await _step(_still_taken, inbox, path, flight)
+        except _SourceChanged as exc:
+            return "changed", str(exc), None
+        try:
             await _step(slot.place, names)
         except FileExistsError:
             return "failed", f"{names[0]} is already in the Library ({folder})", None
-        return "placed", "", os.path.join(folder, names[0])
+        return "placed", "", [os.path.join(folder, name) for name in names]
     finally:
         try:
             await _step(slot.close)

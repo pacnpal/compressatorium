@@ -284,15 +284,28 @@ def update(inbox_id: int, *, settle_seconds: Any = None) -> Inbox | None:
 
 
 def note_processed(inbox_id: int, count: int = 1) -> None:
-    """Count *count* more Images placed by the Inbox. Blocking."""
+    """Count *count* more Images placed by the Inbox. Blocking.
+
+    One ``UPDATE ... SET processed_count = processed_count + n`` in the
+    database, never a read then a write, so two Images finishing at once (a
+    copy and a conversion) both count. The cached total only ever grows to
+    what the database answered, so a slower reader can't set it back.
+    """
+    column = _db.InboxRecord.processed_count
     with _session() as session:
-        row = session.get(_db.InboxRecord, inbox_id)
-        if row is None:
-            return
-        row.processed_count = int(row.processed_count) + count
+        updated = session.query(_db.InboxRecord).filter_by(id=inbox_id).update(
+            {column: column + count}, synchronize_session=False,
+        )
         session.commit()
-        total = int(row.processed_count)
-    _replace(inbox_id, processed_count=total)
+        if not updated:
+            return
+        total = session.query(column).filter(_db.InboxRecord.id == inbox_id).scalar()
+    if total is None:
+        return
+    with _lock:
+        cached = _cache.get(inbox_id) if _cache is not None else None
+        if cached is not None and int(total) > cached.processed_count:
+            _cache[inbox_id] = replace(cached, processed_count=int(total))
 
 
 def _replace(inbox_id: int, **changes: Any) -> Inbox | None:

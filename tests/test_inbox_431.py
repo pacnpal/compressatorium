@@ -783,3 +783,171 @@ async def test_a_mode_that_cant_verify_is_not_asked_to(vol, db, queue, monkeypat
 
     [job] = queue.submitted
     assert job["verify_after"] is False
+
+
+# ---- review round two (Codex on #443) --------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_the_copys_verifier_is_chosen_off_the_event_loop(vol, db, monkeypatch):
+    """Codex 4603362509: picking the tool that checks a staged copy can open
+    the file (romz lists an archive's members), so it runs on a worker thread."""
+    import threading
+
+    from services.tools import registry
+
+    seen_on = []
+    real = registry.check_tool
+
+    def check_tool(*args, **kwargs):
+        seen_on.append(threading.current_thread() is threading.main_thread())
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(registry, "check_tool", check_tool)
+    library = _library(vol)
+    box = _inbox(vol, library, settle=0)
+    _drop(vol / "Downloads" / "ps2" / "Game.iso")
+
+    await _poll(box, now=0)
+    await _poll(box, now=1)
+
+    assert seen_on == [False]
+    assert (vol / "ROMs" / "ps2" / "Game.iso").exists()
+
+
+@pytest.mark.asyncio
+async def test_a_source_changed_while_it_is_copied_is_not_placed(vol, db, monkeypatch):
+    """Codex 4603362517: a source rewritten in place mid-copy yields a copy
+    that reads back as written but is neither version; it's discarded and the
+    source left to settle again."""
+    from services import inbox
+    from services.inbox import intake
+
+    library = _library(vol)
+    box = _inbox(vol, library, settle=0)
+    game = _drop(vol / "Downloads" / "ps2" / "Game.iso", b"A" * 64)
+    monkeypatch.setattr(intake, "_CHUNK", 16)
+    real_hasher = intake.new_hasher
+    rewritten = []
+
+    def hasher(algorithm):
+        inner = real_hasher(algorithm)
+
+        class Rewrites:
+            def update(self, data):
+                if not rewritten:
+                    rewritten.append(True)
+                    with open(game, "r+b") as f:  # in place, same size
+                        f.seek(48)
+                        f.write(b"B" * 16)
+                    taken = game.stat()
+                    os.utime(game, ns=(taken.st_atime_ns, taken.st_mtime_ns + 10**9))
+                inner.update(data)
+
+            def hexdigest(self):
+                return inner.hexdigest()
+
+        return Rewrites()
+
+    monkeypatch.setattr(intake, "new_hasher", hasher)
+
+    await _poll(box, now=0)
+    await _poll(box, now=1)
+
+    assert rewritten
+    assert not (vol / "ROMs" / "ps2" / "Game.iso").exists()
+    assert game.read_bytes() == b"A" * 48 + b"B" * 16
+    assert not (vol / "Downloads" / "processed").exists()
+    assert inbox.get(box.id).processed_count == 0
+    assert _inbox_findings() == []
+
+
+@pytest.mark.asyncio
+async def test_a_copy_tells_its_library_before_the_job_ends(vol, db, monkeypatch):
+    """Codex 4603362547: a finished inbox_copy has no output path for
+    note_job_finished, so intake tells the Library itself, before the job is
+    announced finished: its walk is dropped and the new Image is listed."""
+    from models import ConversionMode, JobStatus
+    from services import libraries
+    from services.inbox import intake
+
+    library = libraries.get(_library(vol).id)
+    box = _inbox(vol, library, settle=0)
+    _drop(vol / "Downloads" / "ps2" / "Game.iso")
+    told = []
+    real = library.note_paths_changed
+
+    def note(paths):
+        copies = [
+            j for j in intake.job_manager.jobs.values() if j.mode == ConversionMode.INBOX_COPY
+        ]
+        told.append((list(paths), [j.status for j in copies]))
+        real(paths)
+
+    monkeypatch.setattr(library, "note_paths_changed", note)
+    before = library.walk_generation()
+
+    await _poll(box, now=0)
+    await _poll(box, now=1)
+
+    placed = str(vol / "ROMs" / "ps2" / "Game.iso")
+    assert told and told[-1][0] == [placed]
+    assert told[-1][1][-1] == JobStatus.PROCESSING
+    assert library.walk_generation() != before
+
+
+def test_two_finishes_at_once_both_count(vol, db):
+    """Codex 4603380513: two Images finishing together (a copy and a
+    conversion) both read the count before either wrote it; an atomic
+    increment keeps both."""
+    import threading
+
+    from services import inbox
+    from sqlalchemy import event
+
+    library = _library(vol)
+    box = _inbox(vol, library)
+    barrier = threading.Barrier(2)
+
+    def both_read_first(_session):
+        try:
+            barrier.wait(timeout=1)
+        except threading.BrokenBarrierError:
+            pass
+
+    event.listen(_db.SessionLocal, "before_commit", both_read_first)
+    try:
+        threads = [threading.Thread(target=inbox.note_processed, args=(box.id,)) for _ in "ab"]
+        for each in threads:
+            each.start()
+        for each in threads:
+            each.join()
+    finally:
+        event.remove(_db.SessionLocal, "before_commit", both_read_first)
+
+    assert inbox.get(box.id).processed_count == 2
+    inbox.reset_for_tests()
+    assert inbox.get(box.id).processed_count == 2
+
+
+@pytest.mark.asyncio
+async def test_a_sheet_naming_a_track_outside_its_folder_is_held(vol, db):
+    """Codex 4603380526: a cue whose track the confined resolver refuses
+    (``../tracks/Game.bin``) has no members it can name, so it would be copied
+    without its track; it's held with a Finding instead."""
+    library = _library(vol)
+    box = _inbox(vol, library, settle=0)
+    _drop(vol / "Downloads" / "tracks" / "Game.bin", b"track")
+    sheet = _drop(
+        vol / "Downloads" / "psx" / "Game.cue",
+        b'FILE "../tracks/Game.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n',
+    )
+
+    await _poll(box, now=0)
+    await _poll(box, now=1)
+
+    assert sheet.exists()
+    assert not (vol / "ROMs" / "psx" / "Game.cue").exists()
+    held = [f for f in _inbox_findings() if Path(f["path"]).name == "Game.cue"]
+    assert [f["kind"] for f in held] == [findings.INBOX_FAILED]
+    assert "track" in held[0]["reason"]
