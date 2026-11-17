@@ -376,25 +376,34 @@ def _list(
         images[path] = image_fingerprint(path)
     return (
         images, unlisted, _sharing(images, progress),
-        _behind_unreadable_sheets(images, progress),
+        _behind_unreadable_sheets(images, progress, within=folder),
     )
 
 
-def _behind_unreadable_sheets(images: dict[str, str], progress=None) -> dict[str, str]:
-    """Image -> the unreadable sheet (its path) that could name it, for every
-    loose track-type file in the folder of a sheet that can't be read whole
-    (unreadable, over the size cap) or in any folder below it (Codex
-    4606061269, 4607108018): a sheet may name ``tracks/Track.bin``. Such a
+def _behind_unreadable_sheets(
+    images: dict[str, str], progress=None, *, within: str | None = None,
+) -> dict[str, str]:
+    """Image -> the sheet of unknown ownership (its path) that could name it,
+    for every loose track-type file in that sheet's folder or any folder
+    below it (Codex 4606061269, 4607108018): a sheet may name
+    ``tracks/Track.bin``. A sheet's ownership is unknown when it can't be
+    read whole (unreadable, over the size cap) or its track list doesn't
+    fully resolve beneath *within* (``sheet_track_list`` is None: an
+    absolute, escaping or missing reference, anything ``image_members``
+    drops, Codex 4607280415), the test ``owning_sheet`` applies. Such a
     sheet owns nobody, so its tracks would be taken as Images of their own:
     they are held instead, failing closed. Blocking."""
     from services.image_sets import SHEET_EXTENSIONS, is_playlist
-    from utils.sheet_text import sheet_is_readable
+    from utils.sheet_text import sheet_is_readable, sheet_track_list
 
+    roots = [within] if within else None
     unreadable: dict[str, str] = {}
     for path in images:
         if progress is not None:
             progress(path)
-        if path.lower().endswith(SHEET_EXTENSIONS) and not sheet_is_readable(path):
+        if not path.lower().endswith(SHEET_EXTENSIONS):
+            continue
+        if not sheet_is_readable(path) or sheet_track_list(path, within=roots) is None:
             unreadable.setdefault(os.path.dirname(path), path)
 
     def holder(path: str) -> str | None:
@@ -588,8 +597,10 @@ async def poll(inbox: inbox_store.Inbox, *, now: float | None = None) -> dict[st
                 # sheet's tracks can't be told: it isn't taken on its own.
                 await _hold(
                     inbox, state, path, fingerprint, findings.INBOX_FAILED,
-                    f"The track sheet {blocked[path]} can't be read, so it may be one "
-                    "of that sheet's tracks: fix or remove the sheet first",
+                    f"The track sheet {blocked[path]} can't be read, or names a track "
+                    "it may not use (an absolute path, one outside its folder, or one "
+                    "that isn't there), so it may be one of that sheet's tracks: fix or "
+                    "remove the sheet first",
                     {"sheet": blocked[path]}, depends=depends,
                 )
                 result["held"] += 1

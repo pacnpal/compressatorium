@@ -2884,3 +2884,26 @@ async def test_a_slow_but_moving_listing_isnt_cut_off(vol, db, monkeypatch):
 
     assert result["error"] is None
     assert result["waiting"] == 6
+
+
+@pytest.mark.asyncio
+async def test_a_track_named_by_an_absolute_path_is_held_by_its_sheet(vol, db):
+    """Codex 4607280415, ruled: a readable sheet whose track list doesn't
+    fully resolve (here, an absolute reference to the track beside it, which
+    ``image_members`` drops) is an unknown owner, like an unreadable sheet:
+    the loose track stays put, held with a Finding naming the sheet."""
+    library = _library(vol)
+    box = _inbox(vol, library, settle=0)
+    track = _drop(vol / "Downloads" / "psx" / "Track.bin", b"track")
+    _drop(
+        vol / "Downloads" / "psx" / "Game.cue",
+        f'FILE "{track}" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n'.encode(),
+    )
+
+    for now in (0, 1):
+        await _poll(box, now=now)
+
+    assert track.read_bytes() == b"track"
+    assert not (vol / "ROMs" / "psx" / "Track.bin").exists()
+    held = {Path(f["path"]).name: f["reason"] for f in _inbox_findings()}
+    assert "Game.cue" in held["Track.bin"]

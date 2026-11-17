@@ -7387,11 +7387,16 @@ tick with a fake clock and real files. Each poll:
    Images all through the grouping, the fingerprinting and the ownership
    checks below as well as the walk, so the stall bound measures stalled
    storage, never how long a big pass takes (Codex 4607108046).
-3. Every loose track-type file in the folder of a track sheet that can't be
-   read whole (unreadable, over the size cap), or in any folder below it (a
-   sheet may name `tracks/Track.bin`, Codex 4607108018), is held with a
-   Finding naming the sheet (`_behind_unreadable_sheets`): the sheet owns
-   nobody, so its tracks would otherwise be taken as Images of their own.
+3. Every loose track-type file in the folder of a track sheet whose owner is
+   unknown, or in any folder below it (a sheet may name `tracks/Track.bin`,
+   Codex 4607108018), is held with a Finding naming the sheet
+   (`_behind_unreadable_sheets`). Unknown means what `owning_sheet` treats as
+   unknown: the sheet can't be read whole (unreadable, over the size cap), or
+   its track list doesn't fully resolve beneath the Inbox
+   (`sheet_track_list(within=[the Inbox])` is None: an absolute, escaping or
+   missing reference, anything `image_members` drops; Codex 4607280415). Such
+   a sheet owns nobody, so its tracks would otherwise be taken as Images of
+   their own.
    Images that share a file (two sheets naming one track, `_sharing`) are
    held, each with a Finding naming the others, once settled: taking one in
    would move a file the other still needs. None of them is taken. Each of
