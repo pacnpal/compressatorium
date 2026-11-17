@@ -6846,14 +6846,17 @@ Fails closed: the folder must be absolute and `volume_containment(...) is True`
 (`inbox.overlap_problem`, resolved both: its own Library would feed intake its
 own output, another's would have its Images moved to `processed/`), and not
 equal to, inside or around another Inbox. The overlap checks and the insert run
-under `libraries.registration_lock`, the lock a folder Library's registration
-and RomM's root save take, so an Inbox and a Library saved at once can't both
-pass (Codex 4603071815); `inboxes.folder` unique is the backstop. The other way
+under `libraries.registration_lock`, the lock a folder Library's registration,
+RomM's root save and a folder Library's removal take (removal holds it across
+its Inboxes' removal, the delete and the cache), so an Inbox and a Library saved
+or removed at once can't interleave (Codex 4603071815); `inboxes.folder` unique is the backstop. The other way
 round, `libraries.register` and `check_romm_root` refuse a Library root that
 is, holds or sits inside an Inbox (`inbox.holding`), and every poll checks its
 Library's root again before it lists anything (a RomM root saved elsewhere since). Removing an Inbox (or its folder Library, from `libraries._remove`)
 drops the row, its intake state and its Findings
-(`findings.forget_under(library_id, "inbox:<id>", INBOX_KINDS)`); no file.
+(`findings.forget_under(library_id, "inbox:<id>", INBOX_KINDS)`); no file. A
+settle-time change writes the row and publishes it to the cache under one
+mutation lock, so two saves publish in commit order.
 
 **The poll.** `rules.sweep.run_forever(libraries, after_tick=...)` calls
 `intake.poll_all()` once per tick, after the sweeps, so there is no loop of its
@@ -6903,9 +6906,15 @@ already in the target format), copies instead; one whose mode isn't for the
 Platform, or whose tool isn't ready, holds the file with a Finding.
 
 **Copying** (`ConversionMode.INBOX_COPY`, an `ExternalMode(in_ledger=False,
-started_by_hand=False)`: it converts nothing). One background task per Image,
-one copy at a time (a semaphore), each an external job whose cancel event is
-raced against the wait and the copy. The copy goes into a fresh
+started_by_hand=False, takes_slot=True)`: it converts nothing). One background
+task per Image, each an external job. Its file work runs in one of the same
+`max_concurrent` slots conversions take: `job_manager.hold_slot(job_id,
+cancel_event)` acquires the dispatcher's own semaphore (only for a mode that
+declares `takes_slot`), racing the job's cancel, and `release_slot` gives it
+back on every outcome. The job still never enters the queue, and keeps its
+external-job presentation. The #377 concurrency invariant now counts by
+`job_manager.slots_in_use()`: every PROCESSING conversion, plus every external
+job holding a slot (a check run or scan still holds none). The copy goes into a fresh
 `staging.open_slot(folder, make_folder=True)` (§3.3.21), each file opened
 through the Inbox folder's descriptor with `O_NOFOLLOW` and refused unless its
 `fstat` identity is the one taken, then read back and compared
@@ -6918,7 +6927,15 @@ discarded and the source left to settle again. When `registry.check_tool(staged,
 platform)` (on a bounded worker thread: it can open the file) names a tool,
 `check.verify_file` (the check Rule's Verify on the `verify` lane) must say
 Intact; only then `slot.place(names)`, which never replaces (a taken name holds
-the file). The slot is always closed, so nothing half-copied is left in sight.
+the file). Placing is a rename that can outlast any bound, so it runs through
+`run_detached_mutation` (`_PLACE_SECONDS`): past the bound, intake keeps waiting
+for the worker to report that it finished and reads `slot.placed`, rather than
+failing a copy that may still land. A verifier that returns #306's `stop` (a
+reader still on the storage) places nothing, and no copy opens another file
+until the next pass (`poll_all` clears `_storage_stop`); its Image settles
+again. `_stage_copy` reports progress once more before it returns, so a result
+that arrives after its awaiter gave up closes its own slot. The slot is always
+closed, so nothing half-copied is left in sight.
 A copy is an external job with no output path, so `libraries.note_job_finished`
 can't see it: intake calls the Library's `note_paths_changed` with what it
 placed before the job is announced finished, so its kept walk is dropped. A
@@ -6933,7 +6950,9 @@ with no link followed (`open_dir_beneath`, then `mkdirat`/`openat` with
 `O_NOFOLLOW`), every file's identity is checked through the source descriptor,
 and each file moves by `place_without_clobbering` between the two descriptors,
 so a folder swapped for a link after the conversion can't redirect it (Codex
-4603069915). A name already there uses `processed/.../<stem> (2)/` and so on.
+4603069915). The entry that landed in `processed/` is checked again: a file
+swapped in under the checked name meanwhile is moved back (never over another
+file) along with the rest, and the Image stays in the Inbox. A name already there uses `processed/.../<stem> (2)/` and so on.
 All or none: a failed move puts back the ones already moved, through the same
 descriptors. Then `processed_count` is incremented in one `UPDATE ... SET
 processed_count = processed_count + 1` (a copy and a conversion can finish at

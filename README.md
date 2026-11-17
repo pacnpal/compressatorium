@@ -1022,7 +1022,7 @@ long a file must stay unchanged before it's taken (60 seconds by default).
   counts toward the concurrency limit, gets a Ledger row and can be cancelled),
   and the output is checked Intact wherever its mode can check it. With no enabled Rule, or a file already in
   the Rule's format, it's copied as it is, as an **Inbox copy** job you can
-  cancel: the copy is read back and compared, checked Intact by its own tool
+  cancel, which also waits for a slot under the same concurrency limit: the copy is read back and compared, checked Intact by its own tool
   when one checks it, and only then appears in the Library.
 - The original then moves to `processed/` inside the Inbox, keeping its
   folder, if it is still the file that was taken (one replaced meanwhile

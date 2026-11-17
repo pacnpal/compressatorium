@@ -56,6 +56,10 @@ MAX_SETTLE_SECONDS = 7 * 24 * 3600
 # never held across disk or database access.
 _cache: dict[int, Inbox] | None = None
 _lock = threading.Lock()
+# Serialises a settings write with its publication to the cache, so a save
+# that committed first can't publish last over a later one. Held across
+# database I/O, so only ever taken in a worker thread; `_lock` stays short.
+_mutation_lock = threading.Lock()
 # How long a save waits for another registration (an Inbox's, a Library's or
 # RomM's root, which share `libraries.registration_lock`) to finish.
 _REGISTER_WAIT_SECONDS = 5.0
@@ -274,13 +278,14 @@ def update(inbox_id: int, *, settle_seconds: Any = None) -> Inbox | None:
     if settle_seconds is None:
         return inbox
     seconds = _settle(settle_seconds)
-    with _session() as session:
-        row = session.get(_db.InboxRecord, inbox_id)
-        if row is None:
-            return None
-        row.settle_seconds = seconds
-        session.commit()
-    return _replace(inbox_id, settle_seconds=seconds)
+    with _mutation_lock:
+        with _session() as session:
+            row = session.get(_db.InboxRecord, inbox_id)
+            if row is None:
+                return None
+            row.settle_seconds = seconds
+            session.commit()
+        return _replace(inbox_id, settle_seconds=seconds)
 
 
 def note_processed(inbox_id: int, count: int = 1) -> None:

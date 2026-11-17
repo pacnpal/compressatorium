@@ -29,7 +29,8 @@ NFS and SMB shares. Each poll of an Inbox:
      cancel: into a hidden staging slot beside the placement folder
      (``services.staging``), read back and compared byte for byte, checked
      Intact by its own tool where one checks it, then placed without
-     replacing anything. Copies run one at a time.
+     replacing anything. Each copy holds one of the same ``max_concurrent``
+     slots conversions run in (``job_manager.hold_slot``).
 
    Once the output is in the Library the original (and its tracks) moves to
    ``processed/``, keeping its path in the Inbox. A name already taken there
@@ -52,6 +53,7 @@ import asyncio
 import errno
 import os
 import stat
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -71,8 +73,11 @@ from services.rules.library import Library, LibraryUnreadable, PlacementUnknown
 from services.rules.rules import CONVERT
 from services.stream_digest import new_hasher
 from services.subprocess_runner import (
+    MutationInFlight,
+    MutationNotStarted,
     ReadCancelled,
     run_detached,
+    run_detached_mutation,
     run_detached_within_stall_bound,
 )
 from services.tools import registry
@@ -90,6 +95,10 @@ logger = get_logger("inbox")
 # How long one blocking step on a single file may take (a detection, a
 # placement, a move) before the poll gives up on it for this tick.
 _STEP_SECONDS = 60
+# How long placing a checked copy may run before intake stops waiting on it
+# with a bound and waits for its outcome instead: a rename can still land.
+_PLACE_SECONDS = _STEP_SECONDS
+_PLACE_POLL_SECONDS = 0.05
 # How long a listing may go without reading an entry before it is given up.
 _LIST_STALL_SECONDS = 120
 _CHUNK = 4 * 1024 * 1024
@@ -138,17 +147,16 @@ class _State:
 
 _states: dict[int, _State] = {}
 _tasks: set[asyncio.Task] = set()
-# One copy at a time, created on the loop that first needs it.
-_copy_gate: asyncio.Semaphore | None = None
-_copy_gate_loop: asyncio.AbstractEventLoop | None = None
+# Set when a copy's check had to stop with a reader still on the storage
+# (#306's stop): no copy opens another file until the next pass.
+_storage_stop = False
 
 
 def reset_for_tests() -> None:
-    global _copy_gate, _copy_gate_loop
+    global _storage_stop
     _states.clear()
     _tasks.clear()
-    _copy_gate = None
-    _copy_gate_loop = None
+    _storage_stop = False
 
 
 def forget(inbox_id: int) -> None:
@@ -311,7 +319,11 @@ async def _clear(inbox: inbox_store.Inbox, path: str) -> None:
 
 
 async def poll_all(*, now: float | None = None) -> list[dict[str, Any]]:
-    """One poll of every Inbox. Never raises; called from the scheduler's tick."""
+    """One poll of every Inbox: a pass. Never raises; called from the
+    scheduler's tick. A new pass may open files again after a check that had
+    to stop (``_storage_stop``)."""
+    global _storage_stop
+    _storage_stop = False
     try:
         inboxes = await run_in_threadpool(inbox_store.all_inboxes)
     except Exception:
@@ -844,6 +856,13 @@ def _move_to_processed(
                 for name in names:
                     place_without_clobbering(name, name, src_dir_fd=src, dst_dir_fd=dst)
                     moved.append(name)
+                    # The name was checked, not the entry: one swapped in
+                    # since the check is put back, and nothing is moved.
+                    st = os.stat(name, dir_fd=dst, follow_symlinks=False)
+                    if _identity(st) != identities.get(name):
+                        raise _SourceChanged(
+                            errno.ESTALE, f"{name} was replaced as it was moved",
+                        )
             except OSError:
                 # Back the way they came, through the same two folders.
                 for name in reversed(moved):
@@ -852,6 +871,8 @@ def _move_to_processed(
                             name, name, src_dir_fd=dst, dst_dir_fd=src,
                         )
                     except OSError:
+                        # Its name in the Inbox was taken again meanwhile:
+                        # nothing is replaced, it stays in processed/.
                         logger.error("inbox: could not put %s back in the Inbox", name)
                 raise
         finally:
@@ -921,6 +942,9 @@ def _stage_copy(
         # back as written yet is neither version: only a source unchanged from
         # before the first read to after the last is placed.
         _check_identities(folder_fd, flight.identities)
+        # An awaiter that gave up meanwhile makes this raise, so the slot is
+        # closed below instead of left open with nobody to close it.
+        progress()
         return slot, names
     except BaseException:
         if slot is not None:
@@ -928,29 +952,6 @@ def _stage_copy(
         raise
     finally:
         os.close(folder_fd)
-
-
-async def _gate_acquire(cancel_event: asyncio.Event | None) -> bool:
-    """The copy slot, or False when the job is cancelled first."""
-    global _copy_gate, _copy_gate_loop
-    loop = asyncio.get_running_loop()
-    if _copy_gate is None or _copy_gate_loop is not loop:
-        _copy_gate, _copy_gate_loop = asyncio.Semaphore(1), loop
-    gate = _copy_gate
-    if cancel_event is None:
-        await gate.acquire()
-        return True
-    acquire = asyncio.ensure_future(gate.acquire())
-    cancelled = asyncio.ensure_future(cancel_event.wait())
-    await asyncio.wait({acquire, cancelled}, return_when=asyncio.FIRST_COMPLETED)
-    cancelled.cancel()
-    if not acquire.done():
-        acquire.cancel()
-        return False
-    if cancel_event.is_set():
-        gate.release()
-        return False
-    return True
 
 
 async def _copy(
@@ -964,15 +965,20 @@ async def _copy(
     cancel = job_manager.get_cancel_event(job.id)
     outcome, why, output = "failed", "", None
     try:
-        if not await _gate_acquire(cancel):
+        # One of the same max_concurrent slots conversions run in (#431),
+        # given back on every outcome.
+        if not await job_manager.hold_slot(job.id, cancel):
             outcome = "cancelled"
         else:
             try:
-                outcome, why, output = await _copy_in(
-                    job.id, inbox, path, flight, folder, cancel,
-                )
+                if _storage_stop:
+                    outcome = "deferred"
+                else:
+                    outcome, why, output = await _copy_in(
+                        job.id, inbox, path, flight, folder, cancel,
+                    )
             finally:
-                _copy_gate.release()
+                job_manager.release_slot(job.id)
     except Exception as exc:
         logger.warning("inbox: copying %s failed", path, exc_info=True)
         outcome, why = "failed", str(exc)
@@ -991,9 +997,11 @@ async def _copy(
                     "Its intake was cancelled", {"platform": flight.platform})
         await job_manager.finish_external_job_cancelled(job.id, message="Cancelled")
         return
-    if outcome == "changed":
+    if outcome in ("changed", "deferred"):
         # Not a failure of the file: it is left to settle and be taken again.
         state.seen.pop(path, None)
+        if outcome == "deferred":
+            why = why or "the storage is still being read by an earlier check"
         await job_manager.finish_external_job(
             job.id, success=False, error_message=f"{why}; it is taken again once it settles",
         )
@@ -1017,11 +1025,32 @@ def _tell_library(inbox: inbox_store.Inbox, placed: list[str]) -> None:
         logger.warning("inbox: %s could not drop its walk", library.id, exc_info=True)
 
 
+async def _place(slot: Any, names: list[str]) -> None:
+    """Place a checked copy, keeping hold of the outcome.
+
+    A rename past ``_PLACE_SECONDS`` may still land, so it is never taken for
+    one that did nothing: intake stops waiting with a bound
+    (``run_detached_mutation``) and waits instead for the worker to say it
+    has finished, however long that takes. ``slot.placed`` then says whether
+    it landed. Its own failure (a name taken) propagates.
+    """
+    finished = threading.Event()
+    try:
+        await run_detached_mutation(
+            slot.place, names, timeout=_PLACE_SECONDS, hand_off=lambda: finished.set,
+        )
+    except MutationInFlight:
+        logger.warning("inbox: placing %s is slow; waiting for it to finish", names[0])
+        while not finished.is_set():
+            await asyncio.sleep(_PLACE_POLL_SECONDS)
+
+
 async def _copy_in(
     job_id: str, inbox: inbox_store.Inbox, path: str, flight: _Flight, folder: str,
     cancel: asyncio.Event | None,
 ) -> tuple[str, str, list[str] | None]:
     """Stage, compare, check Intact and place: ``(outcome, why, placed paths)``."""
+    global _storage_stop
     await job_manager.update_external_job(job_id, message=f"Copying into {folder}")
     try:
         slot, names = await run_detached_within_stall_bound(
@@ -1041,9 +1070,14 @@ async def _copy_in(
         tool = await _step(registry.check_tool, staged, flight.platform)
         if tool is not None:
             await job_manager.update_external_job(job_id, message="Checking the copy is Intact")
-            verdict, message = await checks.verify_file(staged, tool.id, cancel)
+            verdict, message, stop = await checks.verify_file(staged, tool.id, cancel)
             if verdict == checks.CANCELLED:
                 return "cancelled", "", None
+            if stop:
+                # A reader is still on the storage: place nothing, and open
+                # no other file this pass.
+                _storage_stop = True
+                return "deferred", "its check had to stop with the storage still busy", None
             if verdict != checks.INTACT:
                 return "failed", f"the copy isn't Intact ({message or verdict})", None
         try:
@@ -1051,9 +1085,13 @@ async def _copy_in(
         except _SourceChanged as exc:
             return "changed", str(exc), None
         try:
-            await _step(slot.place, names)
+            await _place(slot, names)
         except FileExistsError:
             return "failed", f"{names[0]} is already in the Library ({folder})", None
+        except MutationNotStarted as exc:
+            return "failed", f"couldn't place it: {exc}", None
+        if not slot.placed:
+            return "failed", "placing it in the Library failed", None
         return "placed", "", [os.path.join(folder, name) for name in names]
     finally:
         try:

@@ -60,16 +60,20 @@
 
   async function add(event) {
     event.preventDefault();
-    const path = folder.trim();
-    if (!path || !libraryId) return;
+    const submitted = folder;
+    const path = submitted.trim();
+    const id = libraryId;
+    if (!path || !id) return;
     saving = true;
     try {
-      await api.createInbox(libraryId, path, Number(settle) || 0);
+      await api.createInbox(id, path, Number(settle) || 0);
       toast.success('Inbox saved', {
         description: 'New files there are taken in on the next poll after they settle.',
       });
-      folder = '';
-      await load(libraryId);
+      // Only the draft that was saved: one typed while the save was out, or
+      // another Library picked meanwhile, keeps what's in the field.
+      if (libraryId === id && folder === submitted) folder = '';
+      if (libraryId === id) await load(id);
     } catch (e) {
       toast.error(e?.message ?? 'Could not save the Inbox');
     } finally {

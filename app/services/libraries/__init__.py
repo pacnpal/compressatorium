@@ -690,17 +690,21 @@ async def _remove(library: FolderLibrary, library_id: str, record_id: int) -> No
     def _delete() -> None:
         from services import inbox, library_records, platform_mappings
 
-        inbox.forget_library(library_id)
-        platform_mappings.forget_library(library_id)
-        library_records.forget(library_id)
-        with _session() as session:
-            row = session.get(_db.FolderLibraryRecord, record_id)
-            if row is not None:
-                session.delete(row)
-                session.commit()
-        with _lock:
-            if _cache is not None:
-                _cache.pop(record_id, None)
+        # Under the registration lock (#431): an Inbox saved for this Library
+        # between its Inboxes' removal and the delete would be left behind,
+        # feeding a Library that no longer exists.
+        with registration_lock():
+            inbox.forget_library(library_id)
+            platform_mappings.forget_library(library_id)
+            library_records.forget(library_id)
+            with _session() as session:
+                row = session.get(_db.FolderLibraryRecord, record_id)
+                if row is not None:
+                    session.delete(row)
+                    session.commit()
+            with _lock:
+                if _cache is not None:
+                    _cache.pop(record_id, None)
 
     await run_in_threadpool(_delete)
 

@@ -285,6 +285,10 @@ class ExternalMode:
     # Whether a failed job of this mode is "a job you started" (#293's
     # ``job_failed`` message). A check Rule's run is started by the scheduler.
     started_by_hand: bool = True
+    # Whether its file work holds one of the ``max_concurrent`` conversion
+    # slots (``JobManager.hold_slot``): an Inbox copy (#431) counts toward the
+    # same limit as conversions. It still never enters the queue.
+    takes_slot: bool = False
 
 
 EXTERNAL_JOB_MODES: Dict[ConversionMode, ExternalMode] = {
@@ -298,7 +302,9 @@ EXTERNAL_JOB_MODES: Dict[ConversionMode, ExternalMode] = {
     ConversionMode.DELETE_DUPLICATES: ExternalMode(in_ledger=False),
     # An Inbox's copy of an Image no Rule converts (#431): the scheduler starts
     # it, and it converts nothing, so it has no Ledger row.
-    ConversionMode.INBOX_COPY: ExternalMode(in_ledger=False, started_by_hand=False),
+    ConversionMode.INBOX_COPY: ExternalMode(
+        in_ledger=False, started_by_hand=False, takes_slot=True,
+    ),
 }
 _EXTERNAL_JOB_MODES = frozenset(EXTERNAL_JOB_MODES)
 
@@ -630,6 +636,8 @@ class JobManager:
         self._dispatcher_task: Optional[asyncio.Task] = None
         self._debug_task: Optional[asyncio.Task] = None
         self._semaphore = asyncio.Semaphore(self.max_concurrent)
+        # External jobs holding a conversion slot right now (`hold_slot`).
+        self._slot_holders: Set[str] = set()
         self._stuck_detected_at: Optional[float] = None
         self._last_stuck_recovery_at: float = 0
         self._create_lock = asyncio.Lock()
@@ -1402,6 +1410,56 @@ class JobManager:
         except RuntimeError:
             pass
         return job
+
+    async def hold_slot(
+        self, job_id: str, cancel_event: Optional[asyncio.Event] = None,
+    ) -> bool:
+        """Take one of the ``max_concurrent`` conversion slots for the external
+        job *job_id*, whose mode declares ``takes_slot`` (an Inbox copy, #431),
+        waiting as long as conversions hold them all. False when
+        *cancel_event* fires first (nothing is held then). The caller gives
+        it back with :meth:`release_slot` on every outcome.
+        """
+        job = self.jobs.get(job_id)
+        declared = EXTERNAL_JOB_MODES.get(job.mode) if job is not None else None
+        if declared is None or not declared.takes_slot:
+            raise ValueError(f"Job {job_id} does not take a conversion slot")
+        semaphore = self._semaphore
+        if cancel_event is None:
+            await semaphore.acquire()
+        else:
+            if cancel_event.is_set():
+                return False
+            acquire = asyncio.ensure_future(semaphore.acquire())
+            cancelled = asyncio.ensure_future(cancel_event.wait())
+            try:
+                await asyncio.wait({acquire, cancelled}, return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                cancelled.cancel()
+            if not acquire.done():
+                acquire.cancel()
+                return False
+            if cancel_event.is_set():
+                semaphore.release()
+                return False
+        self._slot_holders.add(job_id)
+        return True
+
+    def release_slot(self, job_id: str) -> None:
+        """Give back the slot :meth:`hold_slot` took for *job_id*. Idempotent."""
+        if job_id in self._slot_holders:
+            self._slot_holders.discard(job_id)
+            self._semaphore.release()
+
+    def slots_in_use(self) -> int:
+        """How many ``max_concurrent`` slots are held: every PROCESSING
+        conversion, and every external job holding one (`hold_slot`). What
+        the concurrency invariant counts (#377, #431)."""
+        return sum(
+            1 for job in self.jobs.values()
+            if job.status == JobStatus.PROCESSING
+            and (_is_conversion_job(job) or job.id in self._slot_holders)
+        )
 
     def get_cancel_event(self, job_id: str) -> Optional[asyncio.Event]:
         """Return the cancel event for *job_id*, if one is registered."""
@@ -2688,6 +2746,8 @@ class JobManager:
             await asyncio.gather(*list(self._background_tasks), return_exceptions=True)
         self._queue = asyncio.PriorityQueue()
         self._semaphore = asyncio.Semaphore(self.max_concurrent)
+        # A slot held on the old semaphore is not the new one's to give back.
+        self._slot_holders.clear()
         self._create_lock = asyncio.Lock()
 
     async def _handle_background_maintenance(self, cleanup_counter: int) -> int:
@@ -5436,11 +5496,9 @@ class JobManager:
             # otherwise be reported stalled the instant it started running.
             self._last_progress_at[job_id] = time.monotonic()
             # The jobs holding a conversion slot, by the dispatcher's own rule:
-            # a check run or scan beside this job is PROCESSING but holds none.
-            processing_now = sum(
-                1 for candidate in self.jobs.values()
-                if candidate.status == JobStatus.PROCESSING and _is_conversion_job(candidate)
-            )
+            # a check run or scan beside this job is PROCESSING but holds none;
+            # an Inbox copy holding one (`hold_slot`, #431) counts.
+            processing_now = self.slots_in_use()
             if processing_now > self.max_concurrent:
                 logger.error(
                     "Processing concurrency invariant violated: processing=%d max_concurrent=%d",

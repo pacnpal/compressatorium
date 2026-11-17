@@ -13,7 +13,8 @@
   Images go** says: converted under that Platform's enabled Rule as a normal
   job (queued, counted toward the concurrency limit, cancellable, in the
   Ledger, the output checked Intact), or copied as it is when there's no
-  enabled Rule (an **Inbox copy** job you can cancel; the copy is read back,
+  enabled Rule (an **Inbox copy** job you can cancel, under the same
+  concurrency limit; the copy is read back,
   compared and checked Intact before it appears). The original then moves to
   `processed/` inside the Inbox, which intake never reads. Nothing is ever
   deleted. An Unsorted, conflicting or failed file stays where it is with a

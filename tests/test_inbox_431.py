@@ -35,11 +35,17 @@ def _vol(tmp_path, monkeypatch):
 
 
 @pytest.fixture(name="db")
-def _db_fixture(tmp_path: Path):
+def _db_fixture(tmp_path: Path, monkeypatch):
+    import asyncio
+
     from services import inbox, libraries
     from services.inbox import intake
+    from services.job_manager import job_manager
     from services.romm import settings as romm_settings
 
+    # The conversion slots an Inbox copy shares, fresh for each test.
+    monkeypatch.setattr(job_manager, "max_concurrent", 1)
+    monkeypatch.setattr(job_manager, "_semaphore", asyncio.Semaphore(1))
     if _db.engine is not None:
         _db.engine.dispose()
     _db.init_engine(str(tmp_path / "compressatorium.db"), create_schema=True)
@@ -951,3 +957,246 @@ async def test_a_sheet_naming_a_track_outside_its_folder_is_held(vol, db):
     held = [f for f in _inbox_findings() if Path(f["path"]).name == "Game.cue"]
     assert [f["kind"] for f in held] == [findings.INBOX_FAILED]
     assert "track" in held[0]["reason"]
+
+
+# ---- review round three (CodeRabbit on #443) --------------------------------
+
+
+def test_settle_time_saves_publish_in_commit_order(vol, db, monkeypatch):
+    """CodeRabbit 4603498503: a save that committed first can't publish last
+    over a later one: the write and its publication are one step."""
+    import threading
+
+    from services import inbox
+
+    library = _library(vol)
+    box = _inbox(vol, library)
+    first_in, second_done = threading.Event(), threading.Event()
+    real = inbox._replace
+    calls = []
+
+    def replace(inbox_id, **changes):
+        calls.append(changes)
+        if len(calls) == 1:  # the first save, committed, not yet published
+            first_in.set()
+            second_done.wait(timeout=0.5)
+        return real(inbox_id, **changes)
+
+    monkeypatch.setattr(inbox, "_replace", replace)
+    first = threading.Thread(target=inbox.update, args=(box.id,), kwargs={"settle_seconds": 0})
+    first.start()
+    first_in.wait(timeout=5)
+    second = threading.Thread(
+        target=lambda: (inbox.update(box.id, settle_seconds=90), second_done.set()),
+    )
+    second.start()
+    first.join()
+    second.join()
+
+    stored = inbox.get(box.id).settle_seconds
+    inbox.reset_for_tests()
+    assert stored == inbox.get(box.id).settle_seconds == 90
+
+
+@pytest.mark.asyncio
+async def test_a_file_swapped_in_during_the_move_is_put_back(vol, db, queue, monkeypatch):
+    """CodeRabbit 4603498511: the entry actually moved must be the one
+    checked; a replacement that took its name meanwhile goes back."""
+    from services import inbox
+    from services.inbox import intake
+
+    library = _library(vol)
+    await _ps2_rule(library)
+    box = _inbox(vol, library)
+    game = await _converted(vol, queue, box)
+    real = intake._processed_folder
+
+    def swap_then_open(*args):
+        fresh = game.with_name("fresh.tmp")
+        fresh.write_bytes(DISC)  # the same size: only its inode differs
+        taken = game.stat()
+        os.utime(fresh, ns=(taken.st_atime_ns, taken.st_mtime_ns))
+        os.replace(fresh, game)
+        return real(*args)
+
+    monkeypatch.setattr(intake, "_processed_folder", swap_then_open)
+
+    await _poll(box, now=122)
+
+    assert game.exists()
+    assert not (vol / "Downloads" / "processed" / "ps2" / "Game.iso").exists()
+    assert inbox.get(box.id).processed_count == 0
+
+
+def test_a_late_staged_copy_closes_its_slot(vol, db):
+    """CodeRabbit 4603498531: a copy that finishes after its awaiter gave up
+    raises at its last progress report and closes its slot."""
+    from services import inbox
+    from services.inbox import intake
+    from services.subprocess_runner import ProgressAbandoned
+
+    library = _library(vol)
+    box = _inbox(vol, library)
+    game = _drop(vol / "Downloads" / "ps2" / "Game.iso")
+    flight = intake._Flight(
+        fingerprint="", files=[str(game.resolve())], platform="ps2",
+        identities=intake._identities(inbox.get(box.id), [str(game.resolve())]),
+    )
+    folder = vol / "ROMs" / "ps2"
+
+    def progress(*where):
+        if not where:  # given up on by the time the copy is done
+            raise ProgressAbandoned("the caller stopped waiting")
+
+    with pytest.raises(ProgressAbandoned):
+        intake._stage_copy(inbox.get(box.id), flight, str(folder), progress)
+
+    assert not any((folder / ".compressatorium-stage").glob("slot-*"))
+
+
+@pytest.mark.asyncio
+async def test_a_slow_placement_is_seen_through(vol, db, monkeypatch):
+    """CodeRabbit 4603498546: a placement past its bound may still land, so
+    intake keeps waiting for its outcome rather than failing the copy."""
+    import time as clock
+
+    from services import inbox, staging
+    from services.inbox import intake
+
+    monkeypatch.setattr(intake, "_PLACE_SECONDS", 0.05)
+    real = staging.StagedOutput.place
+
+    def slow_place(self, names):
+        clock.sleep(0.3)
+        return real(self, names)
+
+    monkeypatch.setattr(staging.StagedOutput, "place", slow_place)
+    library = _library(vol)
+    box = _inbox(vol, library, settle=0)
+    _drop(vol / "Downloads" / "ps2" / "Game.iso")
+
+    await _poll(box, now=0)
+    await _poll(box, now=1)
+
+    assert (vol / "ROMs" / "ps2" / "Game.iso").exists()
+    assert (vol / "Downloads" / "processed" / "ps2" / "Game.iso").exists()
+    assert inbox.get(box.id).processed_count == 1
+    assert _inbox_findings() == []
+
+
+@pytest.mark.asyncio
+async def test_a_copy_waits_for_a_shared_conversion_slot(vol, db):
+    """CodeRabbit 4603498566, ruled binding: an Inbox copy counts toward the
+    same max_concurrent as conversions. With the one slot taken (a conversion
+    running), the copy waits, then runs once it's free, and gives it back."""
+    import asyncio
+
+    from services.inbox import intake
+    from services.job_manager import job_manager
+
+    library = _library(vol)
+    box = _inbox(vol, library, settle=0)
+    _drop(vol / "Downloads" / "ps2" / "Game.iso")
+    await job_manager._semaphore.acquire()  # a conversion holds the slot
+
+    from services import inbox
+
+    await intake.poll(inbox.get(box.id), now=0)
+    await intake.poll(inbox.get(box.id), now=1)
+    await asyncio.sleep(0.2)
+    assert not (vol / "ROMs" / "ps2" / "Game.iso").exists()
+
+    job_manager._semaphore.release()  # the conversion ends
+    await intake.drain()
+
+    assert (vol / "ROMs" / "ps2" / "Game.iso").exists()
+    assert job_manager._semaphore._value == 1
+
+
+@pytest.mark.asyncio
+async def test_the_concurrency_invariant_counts_a_copy_holding_a_slot(vol, db):
+    """The #377 invariant counts what holds a max_concurrent slot: every
+    conversion, and now an Inbox copy holding one; a check run still none."""
+    from models import ConversionMode
+    from services.job_manager import job_manager
+
+    check = job_manager.create_external_job("Check run", ConversionMode.CHECK)
+    copy = job_manager.create_external_job("Game.iso", ConversionMode.INBOX_COPY)
+    try:
+        assert job_manager.slots_in_use() == 0
+        assert await job_manager.hold_slot(copy.id) is True
+        assert job_manager.slots_in_use() == 1
+        with pytest.raises(ValueError):
+            await job_manager.hold_slot(check.id)
+        job_manager.release_slot(copy.id)
+        job_manager.release_slot(copy.id)  # idempotent
+        assert job_manager.slots_in_use() == 0
+        assert job_manager._semaphore._value == 1
+    finally:
+        job_manager.jobs.pop(check.id, None)
+        job_manager.jobs.pop(copy.id, None)
+
+
+@pytest.mark.asyncio
+async def test_removing_a_library_waits_for_a_registration(vol, db):
+    """CodeRabbit 4603498581: removal takes the registration lock across its
+    Inbox cleanup and the delete, so an Inbox save can't slip in between."""
+    import asyncio
+
+    from services import libraries
+
+    library = _library(vol)
+    with libraries.registration_lock():
+        removing = asyncio.ensure_future(libraries.remove(library.id))
+        await asyncio.sleep(0.2)
+        assert libraries.get(library.id) is not None
+    assert await removing is True
+    assert libraries.get(library.id) is None
+
+
+@pytest.mark.asyncio
+async def test_a_verifier_that_must_stop_stops_the_pass(vol, db, monkeypatch):
+    """CodeRabbit 4603498597: a check whose verifier was abandoned with a
+    reader on the storage (stop) places nothing, and no further copy reads
+    in that pass; the next pass goes on."""
+    from services.inbox import intake
+    from services.rules import check as checks
+    from services.tools import registry
+
+    library = _library(vol)
+    _inbox(vol, library, settle=0)
+    _drop(vol / "Downloads" / "ps2" / "A.iso")
+    _drop(vol / "Downloads" / "ps2" / "B.iso")
+    monkeypatch.setattr(registry, "check_tool", lambda *_a, **_k: SimpleNamespace(id="fake"))
+    stop = [True]
+    verified = []
+
+    async def verify(check, cancel_event):
+        verified.append(check.path)
+        return checks.INTACT, "", stop[0]
+
+    monkeypatch.setattr(checks, "_verify", verify)
+
+    await intake.poll_all(now=0)
+    await intake.poll_all(now=1)
+    await intake.drain()
+
+    assert len(verified) == 1
+    assert not list((vol / "ROMs").rglob("*.iso"))
+    assert _inbox_findings() == []
+
+    stop[0] = False
+    for now in (2, 3, 4):
+        await intake.poll_all(now=now)
+        await intake.drain()
+    assert sorted(p.name for p in (vol / "ROMs" / "ps2").glob("*.iso")) == ["A.iso", "B.iso"]
+
+
+def test_a_save_keeps_a_draft_typed_while_it_was_out():
+    """CodeRabbit 4603498609: the folder field is cleared only when the
+    Library and the draft are still the ones that were saved."""
+    panel = (
+        Path(__file__).resolve().parents[1] / "src/lib/components/views/LibraryInboxes.svelte"
+    ).read_text()
+    assert "if (libraryId === id && folder === submitted) folder = '';" in panel
+    assert "\n      folder = '';\n" not in panel
