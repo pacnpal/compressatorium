@@ -44,6 +44,7 @@ from utils.path_utils import ensure_path_within_volumes, volume_containment
 logger = get_logger("libraries")
 
 __all__ = [
+    "AmbiguousLibrary",
     "FolderLibrary",
     "LibraryPathError",
     "check_gamelists_folder",
@@ -221,27 +222,78 @@ def get(library_id: str) -> Library | None:
     return None
 
 
-def library_for(path: str) -> Library | None:
-    """The Library whose root holds *path*, or None when no Library does (#383).
+class AmbiguousLibrary(Exception):
+    """A file is listed in one Library but lives in another (#413).
 
-    Canonical against canonical: *path* is resolved, and so is each root, once
+    Raised by :func:`library_for`. Which Library's opt-in Referrers cover it
+    can't be told, so every caller fails closed: the Referrer hook keeps the
+    Source, the staging check hides the output.
+    """
+
+    def __init__(self, path: str, listed: Library, lives: Library) -> None:
+        super().__init__(
+            f"{path} is listed in the Library {listed.name!r} but lives in the "
+            f"Library {lives.name!r}, so more than one Library could hold it"
+        )
+        self.listed = listed
+        self.lives = lives
+
+
+def library_for(path: str) -> Library | None:
+    """The Library that holds *path*, or None when no Library does (#383, #413).
+
+    Found from the path as listed first: a folder Library's system folder may
+    be a symlink pointing outside its root (``ROMs/psx -> ../elsewhere/psx``),
+    and a file reached through the Library's folders is covered by the
+    Library's Referrers wherever it lives. The listed path is only normalised
+    (made absolute, ``.`` and ``..`` folded), never resolved, and matched
+    against each root as stored and as resolved.
+
+    Then where it lives: *path* resolved against each root resolved, once
     (:func:`_canonical_root`, cached), so a root reached through a symlink (a
     symlinked ``ROMM_LIBRARY_ROOT``) still holds its Images (codex
-    4588646131). Roots never overlap, so at most one matches. With no
-    database open only RomM is asked (:func:`without_a_database`).
+    4588646131), and a file reached from outside every Library through a link
+    into one still belongs to it.
+
+    The two agree, or one of them finds nothing: that Library. When they name
+    two different Libraries it raises :class:`AmbiguousLibrary` rather than
+    pick one. Roots never overlap, so each lookup matches at most one.
+
+    Which Library holds a file decides only which Referrers run. It never
+    widens what may be written: containment stays on resolved paths (the job
+    refuses a Source outside every Volume before this is asked, and each
+    Referrer checks its own targets). With no database open only RomM is
+    asked (:func:`without_a_database`).
 
     Blocking (resolves *path*, a root the first time, reads the folder
     Libraries on first use); callers run it off the event loop, bounded. A
     failed read raises: the Referrer hook then can't tell which opt-in
     Referrers apply, and the caller keeps the Source.
     """
+    listed = os.path.normpath(os.path.abspath(os.path.expanduser(path)))
     target = _resolved(path)
     candidates = without_a_database() if _db.SessionLocal is None else all_libraries()
+    by_listing = by_location = None
     for library in candidates:
         root = library.root
-        if root and target.is_relative_to(_canonical_root(root)):
-            return library
-    return None
+        if not root:
+            continue
+        canonical = _canonical_root(root)
+        if by_listing is None and any(
+            _lexically_holds(spelling, listed) for spelling in (root, str(canonical))
+        ):
+            by_listing = library
+        if by_location is None and target.is_relative_to(canonical):
+            by_location = library
+    if by_listing is not None and by_location is not None and by_listing is not by_location:
+        raise AmbiguousLibrary(path, by_listing, by_location)
+    return by_listing or by_location
+
+
+def _lexically_holds(root: str, listed: str) -> bool:
+    """Whether the normalised path *listed* is *root* or spelled under it."""
+    spelling = os.path.normpath(os.path.abspath(os.path.expanduser(root)))
+    return listed == spelling or listed.startswith(spelling.rstrip(os.sep) + os.sep)
 
 
 # Each Library root as stored -> its canonical path, for `library_for`, so a

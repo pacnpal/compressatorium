@@ -884,12 +884,16 @@ def _renamed_output(mode: str, output_path: str, duplicate_action: DuplicateActi
 
 async def _image_library(image_path: str):
     """The Library holding *image_path* (None when none does), off the loop
-    and bounded. Raises ReferrerError when it can't tell, so the confirmation
-    says the Source will be kept, as the job would (#383)."""
+    and bounded, found from the path as listed (#413). Raises ReferrerError
+    when it can't tell, so the confirmation says the Source will be kept, as
+    the job would (#383); listed in one Library and living in another, it
+    answers ``referrers.UndecidedLibrary``, as the job's lookup does."""
     try:
         return await off_loop_bounded(libraries.library_for, image_path)
     except HTTPException as exc:
         raise ReferrerError("the Library", str(exc.detail)) from exc
+    except libraries.AmbiguousLibrary as exc:
+        return referrers.UndecidedLibrary(image_path, str(exc))
 
 
 async def _add_referrer_changes(
