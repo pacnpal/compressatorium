@@ -134,8 +134,8 @@ from services.romm.client import (
 )
 from services.subprocess_runner import (
     run_detached_bounded,
+    run_detached_to_end,
     run_detached_within_stall_bound,
-    start_detached_or_own_thread,
 )
 from utils.path_utils import FileIdentity, file_identity
 
@@ -248,6 +248,25 @@ class _Plan:
     binding: _Binding | None = field(default=None, compare=False, repr=False)
 
 
+@dataclass(frozen=True)
+class _RenamePlan:
+    """An Image renamed in place (#425): RomM renames the ROM's file, which
+    moves it, and the ROM keeps its id. No output, no rehash."""
+
+    rom_id: int
+    source: str
+    output: str
+    old_name: str
+    new_name: str
+    binding: _Binding = field(compare=False, repr=False)
+
+
+# Why an Image in a RomM Library isn't renamed while the swap is off (#425).
+RENAME_NEEDS_SWAP = (
+    "RomM would give the renamed file a new ROM: turn on “Keep the ROM id "
+    "when converting” in RomM's settings so RomM renames it"
+)
+
 # What the job and the Ledger say when the swap couldn't run (CodeRabbit
 # 4593839018).
 FALLBACK = "the ROM did not keep its id: the swap can't run after the output was placed"
@@ -257,11 +276,19 @@ def _single(renames: Mapping[str, str], *, resolve: bool = False) -> tuple[str, 
     """``(source, output)`` when *renames* is one file replaced by one output
     file beside it, under another name, that is not an archive. Compares the
     folders as written, or with *resolve* along their real paths (I/O)."""
+    pair = _beside(renames, resolve=resolve)
+    if pair is None or os.path.splitext(pair[1])[1].lower() in _NOT_SWAPPED:
+        return None
+    return pair
+
+
+def _beside(renames: Mapping[str, str], *, resolve: bool = False) -> tuple[str, str] | None:
+    """``(old, new)`` when *renames* is one file under another name in its own
+    folder (RomM renames a file within its folder). Any file, archives
+    included: an Image rename (#425) changes no bytes RomM must rehash."""
     if len(renames) != 1:
         return None
     ((source, output),) = renames.items()
-    if os.path.splitext(output)[1].lower() in _NOT_SWAPPED:
-        return None
     where = os.path.realpath if resolve else os.path.abspath
     if where(os.path.dirname(source)) != where(os.path.dirname(output)):
         return None  # RomM renames a file within its own folder
@@ -366,21 +393,17 @@ class RommSwapReferrer(Referrer):
     def places_output(self, image_path: str, renames: Mapping[str, str]) -> bool:
         return _single(renames) is not None
 
-    def plan(self, renames: Mapping[str, str]) -> list[ReferrerChange]:
-        pair = _single(renames, resolve=True)
-        if pair is None:
-            return []
-        source, output = pair
-        # In the hook with the output already in place (the job placed it
-        # before the hook: a retried delete after a reader held the Source),
-        # RomM can't rename onto a name that is taken.
-        placement = staged_placement()
-        fallback = hook_running() and (placement is None or output not in placement.staged)
-        if fallback and not _converted_from(source, output):
-            # The "output" was not made from this Source (#389's duplicate
-            # delete keeps another copy): no swap was owed, so none failed.
-            return []
-        # The instance the ROM is looked up on, which the swap then keeps to.
+    def rename_refused(self, library) -> str | None:
+        """A file renamed under RomM without it gets a new ROM, leaving a
+        ghost with the saves (#425): a RomM Library's Images are renamed only
+        with the swap on, through RomM."""
+        return RENAME_NEEDS_SWAP if getattr(library, "kind", None) == "romm" else None
+
+    @staticmethod
+    def _lookup(source: str) -> tuple[dict, _Binding] | None:
+        """RomM's ROM for *source* and the instance it was looked up on, which
+        the swap then keeps to; None when RomM doesn't know it as a ROM of
+        its own. Blocking."""
         binding = _Binding.now()
         try:
             rom = _rom_for(source)
@@ -388,8 +411,28 @@ class RommSwapReferrer(Referrer):
             raise ReferrerError("RomM", f"couldn't look up the ROM ({exc})") from exc
         if not binding.still_live():
             raise ReferrerError("RomM", "the RomM instance changed while the ROM was looked up")
-        if rom is None:
+        return None if rom is None else (rom, binding)
+
+    def plan(self, renames: Mapping[str, str]) -> list[ReferrerChange]:
+        placement = staged_placement()
+        if placement is not None and placement.rename:
+            return self._plan_rename(renames)
+        pair = _single(renames, resolve=True)
+        if pair is None:
             return []
+        source, output = pair
+        # In the hook with the output already in place (the job placed it
+        # before the hook: a retried delete after a reader held the Source),
+        # RomM can't rename onto a name that is taken.
+        fallback = hook_running() and (placement is None or output not in placement.staged)
+        if fallback and not _converted_from(source, output):
+            # The "output" was not made from this Source (#389's duplicate
+            # delete keeps another copy): no swap was owed, so none failed.
+            return []
+        found = self._lookup(source)
+        if found is None:
+            return []
+        rom, binding = found
         rom_id = int(rom["id"])
         old_name, new_name = os.path.basename(source), os.path.basename(output)
         plan = _Plan(
@@ -412,6 +455,23 @@ class RommSwapReferrer(Referrer):
             record={"rom_id": rom_id, "kept_rom_id": True},
         )]
 
+    def _plan_rename(self, renames: Mapping[str, str]) -> list[ReferrerChange]:
+        """An Image renamed in place (#425): RomM renames the ROM's file. A
+        file RomM doesn't know as a ROM of its own is renamed by the caller."""
+        pair = _beside(renames, resolve=True)
+        found = self._lookup(pair[0]) if pair is not None else None
+        if found is None:
+            return []
+        (source, output), (rom, binding) = pair, found
+        rom_id = int(rom["id"])
+        old_name, new_name = os.path.basename(source), os.path.basename(output)
+        return [ReferrerChange(
+            referrer=self.id, target=f"RomM ROM {rom_id}", edits=((old_name, new_name),),
+            payload=_RenamePlan(rom_id, source, output, old_name, new_name, binding),
+            summary=f"RomM: rename ROM {rom_id} to {new_name}",
+            record={"rom_id": rom_id, "kept_rom_id": True},
+        )]
+
     def apply(self, change: ReferrerChange) -> Applied:
         """The swap, for a caller off the event loop: it runs
         :meth:`apply_async` on a loop of its own. The hook never calls it:
@@ -421,6 +481,8 @@ class RommSwapReferrer(Referrer):
 
     async def apply_async(self, change: ReferrerChange) -> Applied:
         plan: _Plan = change.payload
+        if isinstance(plan, _RenamePlan):
+            return await _rename_in_place(plan, change.target)
         if plan.fallback:
             return await _fall_back(plan, change.target)
         placement = staged_placement()
@@ -462,22 +524,13 @@ async def _read_whole(func: Callable[..., Any], *args: Any, what: str) -> Any:
 
 async def _mutate(func: Callable[..., Any], *args: Any) -> Any:
     """A step that changes something, on a detached thread, or one of its own
-    when none is free (``start_detached_or_own_thread``: the step, and an
-    undo, always start), never abandoned. A cancel waits for it to finish
-    before it goes on, and *func* records its own outcome on its thread (a
-    flag, the journal), so what happened is known before anything acts on
-    the cancel."""
-    future = start_detached_or_own_thread(contextvars.copy_context().run, func, *args)
-    try:
-        return await asyncio.shield(future)
-    except asyncio.CancelledError as cancel:
-        # Every further cancel (a shutdown cancelling again during the
-        # hook's grace) waits too: the step ends before anything released
-        # after it can race it (CodeRabbit 4594841855).
-        while not future.done():
-            with contextlib.suppress(asyncio.CancelledError):
-                await asyncio.wait({future})
-        raise cancel
+    when none is free, never abandoned (``run_detached_to_end``). A cancel
+    waits for it to finish before it goes on, and *func* records its own
+    outcome on its thread (a flag, the journal), so what happened is known
+    before anything acts on the cancel. Every further cancel (a shutdown
+    cancelling again during the hook's grace) waits too: the step ends before
+    anything released after it can race it (CodeRabbit 4594841855)."""
+    return await run_detached_to_end(func, *args)
 
 
 def _size_and_sha1(path: str) -> tuple[int, str]:
@@ -589,6 +642,174 @@ async def _fall_back(plan: _Plan, target: str) -> Applied:
     note = f"{FALLBACK}; {what} ({target})"
     logger.warning("romm_swap: %s", note)
     return Applied(note=note)
+
+
+async def _rename_in_place(plan: _RenamePlan, target: str) -> Applied:
+    """RomM renames the ROM's file for an Image rename (#425), which moves it.
+
+    Counted as a running swap, so a RomM identity change waits for it, and
+    refused while one is being made. See :class:`_RenameInPlace`."""
+    global _active_swaps
+    if _identity_changes:
+        raise ReferrerError(target, "RomM's settings are being changed")
+    _active_swaps += 1
+    try:
+        return await _RenameInPlace(plan, target).run()
+    finally:
+        _active_swaps -= 1
+
+
+class _RenameInPlace:
+    """One ROM rename for an Image rename (#425).
+
+    The file must still be the one the rename began with
+    (``StagedPlacement.source_fingerprints``) and the new name free. RomM's
+    answer is read back: a refusal (409) or any other answer from RomM changes
+    nothing; a name other than the one asked for (RomM sanitizes names
+    silently), or a file that isn't where RomM says, gets the old name back
+    and is refused. No answer is settled by the read-back. Nothing is
+    journaled: no file is parked or deleted, and a rename cut short leaves
+    RomM's record and the file agreeing on one of the two names.
+    """
+
+    def __init__(self, plan: _RenamePlan, target: str) -> None:
+        self.plan = plan
+        self.target = target
+        self.client = plan.binding.client()
+        placement = staged_placement()
+        fingerprints = placement.source_fingerprints if placement is not None else {}
+        self.snapshot = fingerprints.get(plan.source) or fingerprints.get(
+            os.path.realpath(plan.source),
+        )
+
+    def _live(self, before: str) -> None:
+        if not self.plan.binding.still_live():
+            raise ReferrerError(
+                self.target, f"the RomM instance changed before {before}; nothing was renamed",
+            )
+
+    async def _read_name(self) -> str | None:
+        rom = await _probe(self.client.rom, self.plan.rom_id, seconds=ROMM_SECONDS)
+        return rom.get("fs_name")
+
+    async def run(self) -> Applied:
+        plan = self.plan
+        try:
+            source = await _probe(file_identity, plan.source)
+            taken = await _probe(os.path.lexists, plan.output)
+            await _probe(check_write, self.target)
+        except OSError as exc:
+            raise ReferrerError(self.target, f"couldn't read the file ({exc})") from exc
+        if not _is_snapshot(source, self.snapshot):
+            raise ReferrerError(self.target, f"{plan.old_name} changed since the rename began")
+        if taken:
+            raise ReferrerError(self.target, f"{plan.new_name} already exists", kept=REFUSED)
+        self._live("the rename")
+        unanswered: RommError | None = None
+        try:
+            await _mutate(self.client.rename_rom, plan.rom_id, plan.new_name)
+        except asyncio.CancelledError:
+            # The request has ended (``_mutate`` waits for it): settle what it
+            # did before the cancel goes on (CodeRabbit 4602644910).
+            await self._settle_after_cancel()
+            raise
+        except RommError as exc:
+            if exc.status is not None:
+                # RomM answered: nothing changed (the spike's 409 and 500).
+                reason = exc.detail or str(exc)
+                if exc.status == 409:
+                    raise ReferrerError(self.target, reason, kept=REFUSED) from exc
+                raise ReferrerError(
+                    self.target, f"RomM couldn't rename the file: {reason}",
+                ) from exc
+            unanswered = exc
+        try:
+            name = await self._read_name()
+        except (RommError, OSError) as exc:
+            raise ReferrerError(
+                self.target,
+                f"couldn't read ROM {plan.rom_id} back after the rename, so it may "
+                f"name {plan.new_name} now ({exc})",
+            ) from exc
+        if name == plan.old_name:
+            if unanswered is not None:
+                raise ReferrerError(self.target, f"RomM didn't answer the rename ({unanswered})")
+            raise ReferrerError(self.target, f"RomM kept the name {name}", kept=REFUSED)
+        if name == plan.new_name:
+            if _is_snapshot(await _probe(file_identity, plan.output), self.snapshot):
+                logger.info(
+                    "romm_swap: ROM %s renamed in place: %s -> %s",
+                    plan.rom_id, plan.old_name, plan.new_name,
+                )
+                return Applied()
+            problem = f"RomM names the file {name}, but that isn't the file renamed"
+        else:
+            problem = f"RomM named the file {name}, not {plan.new_name}"
+        await self._put_old_name_back(problem)
+        raise ReferrerError(self.target, problem, kept=REFUSED)
+
+    async def _settle_after_cancel(self) -> None:
+        """Cancelled while RomM renamed: read RomM back, and put the old name
+        back when it wrote one that is neither (a sanitized name), so RomM and
+        the file agree on the old name or the new one. The caller (an Image
+        rename) then sees where the file is and carries or compensates.
+        Never raises; what can't be settled is logged."""
+        plan = self.plan
+        try:
+            name = await self._read_name()
+            if name in (plan.old_name, plan.new_name):
+                return
+            await self._put_old_name_back(f"RomM named the file {name} as it was cancelled")
+        except Exception:
+            logger.warning(
+                "romm_swap: couldn't settle ROM %s after a cancelled rename", plan.rom_id,
+                exc_info=True,
+            )
+
+    async def _verify_after_cancel(self, problem: str) -> None:
+        """Read RomM back after a cancelled put-back. A name other than the
+        old one is logged with what to do by hand; the Image rename then sees
+        where the file is. Never raises."""
+        plan = self.plan
+        try:
+            name = await self._read_name()
+        except Exception:
+            logger.warning(
+                "romm_swap: couldn't read ROM %s back after a cancelled put-back",
+                plan.rom_id, exc_info=True,
+            )
+            return
+        if name != plan.old_name:
+            logger.warning(
+                "romm_swap: %s; the put-back was cancelled and RomM names the file %s: "
+                "rename ROM %s back to %s by hand", problem, name, plan.rom_id, plan.old_name,
+            )
+
+    async def _put_old_name_back(self, problem: str) -> None:
+        """RomM wrote a name it shouldn't have: ask for the old one back
+        (RomM moves the file back). One that fails says so: by hand."""
+        plan = self.plan
+        try:
+            self._live("putting the old name back")
+            try:
+                await _mutate(self.client.rename_rom, plan.rom_id, plan.old_name)
+            except asyncio.CancelledError:
+                # The request has ended (``_mutate`` waits for it): read RomM
+                # back so its result is known, not guessed from the file's
+                # path, before the cancel goes on (CodeRabbit 4602987587).
+                await self._verify_after_cancel(problem)
+                raise
+            name = await self._read_name()
+        except (RommError, OSError, ReferrerError) as exc:
+            name, why = None, str(exc)
+        else:
+            why = f"RomM still names it {name}"
+        if name != plan.old_name:
+            raise ReferrerError(
+                self.target,
+                f"{problem}; putting the old name back failed ({why}): rename ROM "
+                f"{plan.rom_id} back to {plan.old_name} by hand",
+            )
 
 
 LEFT = "left for the next run"

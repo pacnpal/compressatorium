@@ -42,10 +42,11 @@
     source_kept: 'Source kept',
     duplicate: 'Duplicate',
     romm_swap: 'RomM swap unfinished',
+    rename_conflict: 'Rename conflict',
   };
   const KIND_TONE = {
     platform_conflict: 'warning', not_intact: 'error', source_kept: 'warning',
-    duplicate: 'info', romm_swap: 'warning',
+    duplicate: 'info', romm_swap: 'warning', rename_conflict: 'warning',
   };
   function bytes(n) {
     const size = Number(n) || 0;
@@ -310,7 +311,7 @@
                  the file, not its Platform: Open folder reaches Verify, the
                  backup and the file itself. -->
             {#if row.kind !== 'not_intact' && row.kind !== 'source_kept' && row.kind !== 'duplicate'
-              && row.kind !== 'romm_swap'}
+              && row.kind !== 'romm_swap' && row.kind !== 'rename_conflict'}
               <Button
                 variant="ghost" size="sm" icon={mapIcon}
                 ariaLabel={`Set the Platform of the folder holding ${findingName(row)}`}
