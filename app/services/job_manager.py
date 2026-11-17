@@ -2687,6 +2687,10 @@ class JobManager:
             if not pending:
                 return
             await asyncio.gather(*pending, return_exceptions=True)
+            # Drop the finished tasks here: their done callbacks need a loop
+            # turn, and awaiting finished tasks may not yield (#450).
+            self._job_tasks.difference_update(t for t in pending if t.done())
+            self._requeue_tasks.difference_update(t for t in pending if t.done())
 
     async def shutdown(self) -> None:
         """Stop processing and finish the work listeners started.
@@ -2708,7 +2712,11 @@ class JobManager:
         self._dispatcher_task = None
         self._debug_task = None
         while self._background_tasks:
-            await asyncio.gather(*list(self._background_tasks), return_exceptions=True)
+            snapshot = list(self._background_tasks)
+            await asyncio.gather(*snapshot, return_exceptions=True)
+            # Remove the finished tasks directly: their done callbacks need a
+            # loop turn, and awaiting finished tasks may not yield (#450).
+            self._background_tasks.difference_update(t for t in snapshot if t.done())
         self._queue = asyncio.PriorityQueue()
         self._semaphore = asyncio.Semaphore(self.max_concurrent)
         self._create_lock = asyncio.Lock()
