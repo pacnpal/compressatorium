@@ -35,6 +35,8 @@ import urllib.request
 from fastapi.concurrency import run_in_threadpool
 from logging_setup import get_logger
 
+from services.dat_ranking import dat_family
+
 # Re-exported so ``from services import hasheous`` keeps reaching the whole
 # surface after the split -- the module used to be one file, and both the
 # client below and the transport tests address these by that name.
@@ -347,6 +349,8 @@ def _normalize(data: dict) -> dict:
         # No-Intro, TOSEC, MAMERedump, ...). Shown where a local match shows
         # its DAT name.
         "dat_name": _text(rom.get("signatureSource")) or "Hasheous",
+        # The DAT family that source belongs to, as for a local DAT (#424).
+        "family": dat_family(_text(rom.get("signatureSource"))),
         "game_name": _text(data.get("name")) or _text(game.get("name")),
         "rom_name": _text(rom.get("name")),
         "source": "hasheous",

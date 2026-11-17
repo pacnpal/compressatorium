@@ -94,18 +94,25 @@ class DAT(Base):
     version = Column(String, nullable=False, default="")
     imported_at = Column(String, nullable=False, default="")
     file_count = Column(Integer, nullable=False, default=0)
+    # Redump / No-Intro / TOSEC / MAME / other, read from the header at import
+    # (services.dat_ranking.dat_family).
+    family = Column(String, nullable=False, default="other", server_default="other")
+    # The user's place for this DAT in the one ranked list (0 is first); NULL
+    # until they rank it, when its family's default order applies (#424).
+    rank = Column(Integer, nullable=True)
 
 
 class DATHash(Base):
     __tablename__ = "dat_hashes"
     # Composite PK lets the same hex value live under both "sha1" and
-    # "md5" types without collision.
+    # "md5" types without collision, and once per DAT: a hash two DATs know
+    # keeps both matches (#424).
     hash = Column(String(64), primary_key=True)
     hash_type = Column(String(8), primary_key=True)  # 'sha1' | 'md5'
     dat_id = Column(
         String(16),
         ForeignKey("dats.id", ondelete="CASCADE"),
-        nullable=False,
+        primary_key=True,
         index=True,
     )
     game_name = Column(String, nullable=False, default="")
