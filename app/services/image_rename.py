@@ -15,8 +15,8 @@ its id); whatever is still under its old name afterwards is renamed here.
 **A sheet's Image** (#426). When the Image is a ``.cue`` or ``.gdi`` and the
 map holds its tracks, the placing step first rewrites the sheet's track
 references to the new names (``sheet_rewrite``: only those tokens change,
-every other byte is kept), in place through its folder, and records that
-write in the same ``WriteJournal`` as the Referrers' files, under the sheet's
+every other byte is kept), atomically through its folder (a whole new sheet
+renamed over it), and records that write in the same ``WriteJournal`` as the Referrers' files, under the sheet's
 old path. Then each file is renamed, and last a :class:`Folder` that holds
 only the Image and carries its name. A step that fails puts back the files
 already renamed and raises, so the files are found under their old names
@@ -54,6 +54,7 @@ files are now; then carry or compensate; then let go of its locks.
 from __future__ import annotations
 
 import asyncio
+import errno
 import os
 import stat
 from collections.abc import Awaitable, Callable, Mapping
@@ -80,6 +81,7 @@ from utils.path_utils import (
     lock_boundary_root,
     open_dir_beneath,
     place_without_clobbering,
+    short_temp_name,
     volume_containment,
 )
 from utils.sheet_text import (
@@ -90,6 +92,10 @@ from utils.sheet_text import (
 )
 
 logger = get_logger("image_rename")
+
+# The sheet rewrite's writes and sync (#426), named so a test can fail them.
+_write = os.write
+_fsync = os.fsync
 
 # How long a stat of a file on a Volume may take (the job's delete probes take
 # the same).
@@ -396,34 +402,59 @@ class _Files:
     def _rewrite_sheet_blocking(self) -> None:
         """Point the sheet's track references at the tracks' new names,
         every other byte kept (``sheet_rewrite``), through its checked folder
-        and only while it is the file fingerprinted (#426). Written in place,
-        so the sheet keeps its owner and mode. Journaled under the sheet's
-        old path (``WriteJournal``): a rename that doesn't go ahead puts its
-        exact bytes back, as it does a Referrer's file."""
+        and only while it is the file fingerprinted (#426).
+
+        Atomic (Codex 4604210916, 4604210926): the new sheet is written
+        whole to a hidden file beside it (every byte, a short write written
+        on), synced, given the sheet's mode and group, and only then renamed
+        over the sheet, which is checked once more just before. Any failure
+        before that rename leaves the sheet exactly as it was and removes the
+        hidden file; the rename itself is all or nothing. Once it landed, the
+        write is journaled under the sheet's old path (``WriteJournal``) and
+        the new file is fingerprinted, so a rename that doesn't go ahead puts
+        the sheet's exact bytes back, as it does a Referrer's file."""
         if self.sheet is None:
             return
         move = next(m for m in self.moves if m.old == self.sheet)
+        before, original = self._read_own_sheet(move)
+        after = sheet_rewrite(self.sheet, before, {m.old: m.new for m in self.moves})
+        if after is None:
+            raise OSError(f"{move.old_name}'s track references can't be rewritten exactly")
+        if after == before:
+            return
+        temp = short_temp_name()
         fd = os.open(
-            move.old_name, os.O_RDWR | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
+            temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+            | getattr(os, "O_CLOEXEC", 0), 0o600, dir_fd=move.src,
+        )
+        placed = False
+        try:
+            _write_all(fd, after)
+            _keep_mode_and_group(fd, original)
+            _fsync(fd)
+            written = _snapshot(os.fstat(fd))
+            if not self._is_ours(move, _stat_at(move.old_name, move.src)):
+                raise OSError(f"{move.old_name} changed since the rename began")
+            os.replace(temp, move.old_name, src_dir_fd=move.src, dst_dir_fd=move.src)
+            placed = True
+            if self.journal is not None:
+                self.journal.record(self.sheet, before, after)
+            self.fingerprints[move.old] = written
+        finally:
+            os.close(fd)
+            if not placed:
+                _remove_quietly(temp, move.src)
+
+    def _read_own_sheet(self, move: _Move) -> tuple[bytes, os.stat_result]:
+        fd = os.open(
+            move.old_name, os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
             dir_fd=move.src,
         )
         try:
-            if not self._is_ours(move, os.fstat(fd)):
+            st = os.fstat(fd)
+            if not self._is_ours(move, st):
                 raise OSError(f"{move.old_name} changed since the rename began")
-            before = _read_sheet(fd)
-            after = sheet_rewrite(
-                self.sheet, before, {m.old: m.new for m in self.moves},
-            )
-            if after is None:
-                raise OSError(f"{move.old_name}'s track references can't be rewritten exactly")
-            if after == before:
-                return
-            os.pwrite(fd, after, 0)
-            os.ftruncate(fd, len(after))
-            os.fsync(fd)
-            if self.journal is not None:
-                self.journal.record(self.sheet, before, after)
-            self.fingerprints[move.old] = _snapshot(os.fstat(fd))
+            return _read_sheet(fd), st
         finally:
             os.close(fd)
 
@@ -470,6 +501,35 @@ class _Files:
 def _stays(move: _Move) -> bool:
     """Whether *move* keeps its file's name (it moves only with its folder)."""
     return move.old_name == move.new_name and move.src == move.dst
+
+
+def _write_all(fd: int, data: bytes) -> None:
+    """Write every byte of *data* to *fd*, writing on after a short write;
+    one that accepts nothing raises."""
+    view = memoryview(data)
+    while view:
+        count = _write(fd, view)
+        if not count or count < 0:
+            raise OSError(errno.EIO, "the disk stopped accepting the new sheet")
+        view = view[count:]
+
+
+def _keep_mode_and_group(fd: int, original: os.stat_result) -> None:
+    """Give the new sheet the old one's mode, and its group (and owner when
+    running as root), as a Referrer's atomic write keeps them. One that
+    can't be kept stops the rewrite: the sheet stays as it was."""
+    os.fchmod(fd, stat.S_IMODE(original.st_mode))
+    uid = original.st_uid if os.geteuid() == 0 else -1
+    current = os.fstat(fd)
+    if current.st_gid != original.st_gid or uid not in (-1, current.st_uid):
+        os.fchown(fd, uid, original.st_gid)
+
+
+def _remove_quietly(name: str, folder: int) -> None:
+    try:
+        os.unlink(name, dir_fd=folder)
+    except OSError:
+        logger.warning("image_rename: couldn't remove the unused %s", name, exc_info=True)
 
 
 def _read_sheet(fd: int) -> bytes:

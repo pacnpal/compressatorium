@@ -293,6 +293,74 @@ async def test_a_failure_on_the_last_track_puts_every_file_the_sheet_and_the_pla
     assert dat_store.get_match(str(image["sheet"]))["game_name"] == GAME
 
 
+async def _assert_untouched(client, db: Path, monkeypatch, seam: str, broken) -> None:
+    """Break the sheet rewrite's *seam* with *broken*: the Image is not
+    renamed, and the sheet, its tracks, the folder and the playlist end
+    exactly as they were (Codex 4604210916, 4604210926)."""
+    from services import image_rename
+
+    psx = db / "roms" / "psx"
+    image = await _cue_image(client, psx / "game")
+    tracks = {image["one"]: image["one"].read_bytes(), image["two"]: image["two"].read_bytes()}
+    playlist = psx / "games.m3u"
+    playlist.write_text("game/game.cue\n")
+    await _register(client, db / "roms")
+    preview = await _preview(client, image["sheet"])
+    monkeypatch.setattr(image_rename, seam, broken)
+
+    job = await _run(client, preview)
+
+    result = _result(job)[str(image["sheet"])]
+    assert result["status"] == "not_renamed", result
+    assert sorted(p.name for p in psx.iterdir()) == ["game", "games.m3u", "games.m3u.bak"]
+    assert sorted(p.name for p in (psx / "game").iterdir()) == sorted([
+        "game.cue", "game (Track 1).bin", "game (Track 2).bin",
+    ])
+    assert image["sheet"].read_bytes() == CUE.encode()
+    assert all(track.read_bytes() == data for track, data in tracks.items())
+    assert playlist.read_text() == "game/game.cue\n"
+
+
+@pytest.mark.asyncio
+async def test_a_write_the_disk_stops_accepting_leaves_everything_as_it_was(
+    db: Path, client: httpx.AsyncClient, monkeypatch,
+) -> None:
+    def accepts_nothing(fd, data):
+        return 0
+
+    await _assert_untouched(client, db, monkeypatch, "_write", accepts_nothing)
+
+
+@pytest.mark.asyncio
+async def test_an_fsync_that_fails_leaves_everything_as_it_was(
+    db: Path, client: httpx.AsyncClient, monkeypatch,
+) -> None:
+    def fails(fd):
+        raise OSError(5, "Input/output error")
+
+    await _assert_untouched(client, db, monkeypatch, "_fsync", fails)
+
+
+@pytest.mark.asyncio
+async def test_short_writes_are_written_on_until_the_whole_sheet_is(
+    db: Path, client: httpx.AsyncClient, monkeypatch,
+) -> None:
+    import os
+
+    from services import image_rename
+
+    psx = db / "roms" / "psx"
+    image = await _cue_image(client, psx)
+    await _register(client, db / "roms")
+    preview = await _preview(client, image["sheet"])
+    monkeypatch.setattr(image_rename, "_write", lambda fd, data: os.write(fd, bytes(data[:7])))
+
+    job = await _run(client, preview)
+
+    assert _result(job)[str(image["sheet"])]["status"] == "renamed"
+    assert (psx / f"{GAME}.cue").read_bytes() == RENAMED_CUE.encode()
+
+
 @pytest.mark.asyncio
 async def test_tracks_that_dont_pair_with_the_dat_files_leave_the_image_alone(
     db: Path, client: httpx.AsyncClient,

@@ -6917,9 +6917,13 @@ order, all through the checked folder descriptors:
    quoting it had (double quotes when the new name needs them), reading the
    sheet as chdman does (native spelling, `chd_tokens`). Every other byte is
    kept, and the result must read back as the old references with the changes
-   applied, or the rename stops. The sheet is written in place (it keeps its
-   inode, owner and mode) only while it is the file fingerprinted, its new
-   fingerprint is taken, and the write is recorded in the rename's
+   applied, or the rename stops. The write is atomic: the whole new sheet
+   goes to a hidden file beside it (written on after a short write; one that
+   accepts nothing fails), given the sheet's mode and group, synced, and
+   only then renamed over the sheet, which must still be the file
+   fingerprinted. A failure before that rename leaves the sheet exactly as
+   it was and removes the hidden file. Once it lands, the new file's
+   fingerprint is taken and the write is recorded in the rename's
    `WriteJournal` under the sheet's old path, like a Referrer's file.
 2. *Rename each file* within its folder, as for a single file.
 3. *Rename the folder* (`folder=Folder(old, new)`), last: only while it still
