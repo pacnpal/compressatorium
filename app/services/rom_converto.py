@@ -358,9 +358,12 @@ class RomConvertoService:
         errors: list[str] = []
 
         def parse_progress(line: str) -> int | None:
-            if line.strip().startswith(_ERROR_PREFIX) and not errors:
-                errors.append(line.strip())
-            return None
+            # Records rom-converto's first Error: line. It prints no
+            # percentage, so this never returns one (None): the runner's
+            # growth fallback drives the bar.
+            stripped = line.strip()
+            if stripped.startswith(_ERROR_PREFIX) and not errors:
+                errors.append(stripped)
 
         try:
             await run_detached_within_stall_bound(
