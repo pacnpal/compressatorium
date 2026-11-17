@@ -3133,6 +3133,37 @@ class JobManager:
             is_placed=lambda: slot.placed,
         )
 
+    async def _set_aside_output(
+        self, job: ConversionJob, slot: staging.StagedOutput,
+    ) -> None:
+        """Keep a checked output that was never placed (CodeRabbit
+        4593970363): its slot becomes a ``park-`` slot no sweep removes
+        (``StagedOutput.set_aside``), and the job's message, warning, error
+        (the Ledger's ``error`` for a failed job), its Ledger record and the
+        log say where. ``_close_stage`` then has nothing to discard. A slot
+        that can't be set aside is still never discarded here: it is let go
+        as it is (``keep``). Never raises."""
+        try:
+            kept = await run_detached_bounded(slot.set_aside, timeout=_CANONICAL_PROBE_SECONDS)
+        except Exception:
+            logger.exception("Could not set aside the checked output of %s", job.output_path)
+            with contextlib.suppress(Exception):
+                await run_detached_bounded(slot.keep, timeout=_CANONICAL_PROBE_SECONDS)
+            kept = slot.path
+        where = os.path.join(kept, os.path.basename(job.output_path))
+        note = f"the checked output was not placed; it is kept at {where}"
+        logger.warning("Job %s: %s", job.id, note)
+        job.warning = f"{job.warning}; {note}" if job.warning else note
+        job.message = f"{job.message}; {note}" if job.message else note
+        if job.status == JobStatus.FAILED:
+            job.error_message = (
+                f"{job.error_message}; {note}" if job.error_message else note
+            )
+        job.referrers_updated = [
+            *job.referrers_updated,
+            {"referrer": "staging", "target": where, "status": "kept", "reason": note},
+        ]
+
     async def _close_stage(
         self, job: ConversionJob, slot: staging.StagedOutput | None,
     ) -> None:
@@ -4749,6 +4780,10 @@ class JobManager:
         slot: staging.StagedOutput | None = None
         # The staged output, when a Referrer places it itself (#391).
         placement: referrers.StagedPlacement | None = None
+        # Set once the output is to be placed (its checks passed, or none was
+        # asked): from then on a staged output that is not placed is kept,
+        # never discarded (CodeRabbit 4593970363).
+        placeable = False
         try:
             try:
                 inputs_held =job.input_kind == InputKind.DIRECTORY or await run_in_threadpool(
@@ -5166,6 +5201,7 @@ class JobManager:
                     # it itself (the RomM swap, #391): it then stays staged
                     # until the Referrer hook, and its records are written
                     # where it is staged and carried along when it moves.
+                    placeable = True
                     placement = await self._staged_placement(job, slot, write_path)
                     if placement is None:
                         await self._place_staged(job, slot, write_path)
@@ -5352,6 +5388,7 @@ class JobManager:
                                 job.warning = "; ".join(removal.notes)
                                 job.message = f"Output is {check_label}. {job.warning}"
 
+                placeable = True
                 if (
                     slot is not None and not slot.placed
                     and not (placement is not None and placement.held.is_set())
@@ -5408,6 +5445,11 @@ class JobManager:
             )
 
         finally:
+            if placeable and slot is not None and not slot.placed:
+                # A checked output that could not be placed (its name was
+                # taken, a Referrer holds it) is kept, out of every sweep,
+                # and the job says where, before the Ledger hears of it.
+                await self._set_aside_output(job, slot)
             # Before any cleanup: this is the one place every runner outcome
             # (completed, failed, cancelled mid-run) passes through, and a
             # listener that must record how the job ended has to hear about it

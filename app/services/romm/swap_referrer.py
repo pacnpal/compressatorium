@@ -51,15 +51,22 @@ would leave them, and the job says why:
   name beside the output (``restoring``), and the ROM keeps its id on the
   checked output; RomM's next scan refreshes its hashes. Ends ``kept``.
 
-A Cancel, a shutdown or the hook's bound stops the swap where it is, with
-nothing undone (the undo needs RomM and the mount, often what stalled). If
-the undo itself fails, or the process dies, it is the same: the row stays on
-the step it reached, with the reason, a parked Source stays parked, and the
-output is held back from the job (``StagedPlacement.held``): fail closed, for
-the next run to finish or show as a Finding (#392). Each move sets its flag
-and writes its journal outcome on its own thread, so a cancel can't come
-between the move and its record; and the parking slot is removed only when
-its own listing is empty, never on a flag's word.
+A Cancel or the hook's bound stops the forward step it lands on once that
+step's outcome is recorded (each move sets its flag and writes its journal
+outcome on its own thread, so a cancel can't come between the move and its
+record). Then the same undo runs, each step journaled, within the hook's
+``CANCEL_GRACE_SECONDS`` (#383); past the grace the hook stops waiting and
+hands this task the job's holds (``ReferrerOutcome.outlive``), so the undo
+never runs with them gone. The output is held back from the job
+(``StagedPlacement.held``) until the undo has finished. Only an undo that
+runs out of grace, or fails, or a process that dies, leaves the row on the
+step it reached for the next run (#392), with the reason, a parked Source
+still parked and the output still held: fail closed. At shutdown the job's
+task is cancelled, so the hook cancels this task and keeps it referenced
+(``_let_it_end``) without waiting: the undo runs as far as the event loop
+lets it before the process exits, each step journaled, and a parked Source
+is never removed. The parking slot is removed only when its own listing is
+empty, never on a flag's word.
 
 Which ROM: the Platform is the RomM Library's Platform folder holding the
 file (``platform_folder``, both RomM layouts and subfolders), and the record
@@ -94,6 +101,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from logging_setup import get_logger
+from services import referrers as referrers_module
 from services import staging
 from services.file_hasher import compute_file_sha1_sync
 from services.referrers import (
@@ -415,7 +423,9 @@ async def _fall_back(plan: _Plan, target: str) -> Applied:
     try:
         queued = await _mutate(_queue_repin, plan)
     except Exception as exc:
-        raise ReferrerError(target, f"{FALLBACK}, and the re-pin couldn't be queued ({exc})") from exc
+        raise ReferrerError(
+            target, f"{FALLBACK}, and the re-pin couldn't be queued ({exc})",
+        ) from exc
     what = "re-pin queued" if queued else "RomM had no metadata ids to re-pin"
     note = f"{FALLBACK}; {what} ({target})"
     logger.warning("romm_swap: %s", note)
@@ -423,6 +433,11 @@ async def _fall_back(plan: _Plan, target: str) -> Applied:
 
 
 LEFT = "left for the next run"
+
+
+class _Stopped(ReferrerError):
+    """What the undo is given when a Cancel, a shutdown or the hook's bound
+    stopped the swap: its reason is what the row records."""
 
 
 class _Swap:
@@ -492,14 +507,20 @@ class _Swap:
             await self._rehash(size, sha1)
             await self._delete_parked()
         except Exception as exc:
-            left = await self._undo(exc)
+            try:
+                left = await self._undo(exc)
+            except asyncio.CancelledError:
+                # Cancelled during the undo: the step it was on is recorded.
+                await self._leave(f"{exc}; stopped during the undo; {LEFT}")
+                raise
             if left and isinstance(exc, ReferrerError):
                 raise ReferrerError(exc.target, f"{exc.reason}; {left}", kept=exc.kept) from exc
             raise
         except BaseException as exc:
-            # A Cancel, a shutdown or the hook's bound: stop here, undo
-            # nothing (that needs RomM and the mount, often what stalled).
-            await self._stop_here(type(exc).__name__)
+            # A Cancel, a shutdown or the hook's bound, after the step it
+            # landed on recorded its outcome (``_mutate``): undo within
+            # the hook's grace.
+            await self._undo_within_grace(exc)
             raise
         finally:
             await self._release_park()
@@ -674,22 +695,42 @@ class _Swap:
 
     # ---- stopping, undoing, letting go -----------------------------------
 
-    async def _stop_here(self, why: str) -> None:
-        """Stopped by a Cancel, a shutdown or the hook's bound: nothing is
-        undone. If nothing had changed the row ends ``failed``; otherwise it
-        is left, on the state reached, for the next run. Never raises."""
+    async def _undo_within_grace(self, exc: BaseException) -> None:
+        """A Cancel, a shutdown or the hook's bound stopped a forward step,
+        after it recorded its outcome. Run the normal undo, each step
+        journaled, within the hook's ``CANCEL_GRACE_SECONDS`` (#383): past
+        it, the hook stops waiting and hands this task the job's holds
+        (``ReferrerOutcome.outlive``), so it never undoes with them gone. The
+        output is held back from the job until the undo has finished, so the
+        job can't place it over a name that may hold, or be owed to, the
+        Source. Only an undo that runs out of grace, or fails, leaves the row
+        for the next run, with a parked Source kept in its slot and the output
+        still held. Never raises."""
+        why = f"stopped ({'cancelled' if isinstance(exc, asyncio.CancelledError) else exc})"
         if not self.changed:
             try:
                 await self._end("failed", f"{why} before RomM renamed")
             except BaseException:
                 logger.warning("romm_swap: could not end swap %s", self.row, exc_info=True)
             return
-        await self._leave(f"stopped ({why}); {LEFT}")
+        self.placement.held.set()
+        # Read here, not imported: the hook's value at the time (tests set it).
+        grace = referrers_module.CANCEL_GRACE_SECONDS
+        try:
+            left = await asyncio.wait_for(self._undo(_Stopped(self.target, why)), grace)
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            # Each step the undo finished is journaled; the one it was on
+            # finished too (``_mutate``) before this.
+            await self._leave(f"{why}; the undo didn't finish within {grace:g}s; {LEFT}")
+            return
+        if left is None:
+            self.placement.held.clear()
 
     async def _undo(self, exc: BaseException) -> str | None:
         """Leave the files and RomM as a kept Source would (see the module
-        docstring). Returns what was left for the next run, or None. Never
-        raises."""
+        docstring). Returns what was left for the next run, or None. A
+        cancel during it propagates (the caller leaves the row); nothing else
+        does."""
         reason = exc.reason if isinstance(exc, ReferrerError) else (str(exc) or type(exc).__name__)
         refusal = isinstance(exc, ReferrerError) and exc.kept == REFUSED
         try:
@@ -701,7 +742,9 @@ class _Swap:
                 if not self.ended:
                     await self._end("refused" if refusal else "rolled_back", reason)
             return None
-        except BaseException as undo_exc:
+        except asyncio.CancelledError:
+            raise
+        except Exception as undo_exc:
             # Fail closed: the row stays on the step reached, a parked Source
             # stays parked, and the output is held back, for the next run.
             left = f"undoing it failed ({undo_exc}), so it is {LEFT}"

@@ -414,11 +414,13 @@ async def _convert_cancelling(source: Path, when: list[str]) -> object:
 
 
 @pytest.mark.asyncio
-async def test_a_cancel_during_parking_keeps_the_parked_source(vol, romm, monkeypatch):
+async def test_a_cancel_during_parking_is_undone_within_the_grace(vol, romm, monkeypatch):
     """Codex PRRT_kwDOQ9nULM64NxUt: a Cancel that lands while the Source is
-    moved into the parking slot must not lose it. The move finishes, is
-    recorded, and the slot holding the Source is never removed."""
-    from services import partial_writes, staging
+    moved into the parking slot must not lose it. The move finishes and is
+    recorded, then the swap's own undo runs within ``CANCEL_GRACE_SECONDS``
+    (#383's grace): the Source goes back, RomM takes the old name back, and
+    the row ends ``rolled_back``. The output is placed beside the Source."""
+    from services import staging
 
     platform = _platform(vol)
     real_take = staging.StagedOutput.take
@@ -434,13 +436,54 @@ async def test_a_cancel_during_parking_keeps_the_parked_source(vol, romm, monkey
 
     assert job.deleted_paths == []
     (row,) = _journal()
-    assert row["state"] == "parked", row
-    assert "left for the next run" in row["detail"]
+    assert row["state"] == "rolled_back", row
+    assert romm.roms[ROM_ID]["fs_name"] == "Game.iso"
+    assert romm.renames == [(ROM_ID, "Game.chd"), (ROM_ID, "Game.iso")]
+    assert (platform / "Game.iso").read_bytes() == SOURCE_BYTES
+    assert (platform / "Game.chd").read_bytes() == OUTPUT_BYTES
+    assert _left_in_stage(vol) == []
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_whose_undo_outlasts_the_grace_leaves_the_source_parked(
+    vol, romm, monkeypatch,
+):
+    """The undo after a Cancel gets ``CANCEL_GRACE_SECONDS``. One that stalls
+    past it (here: putting the Source back hangs, then fails) leaves the row
+    for the next run, the Source in its slot, never removed, and the output
+    held back."""
+    from services import partial_writes, referrers, staging
+
+    platform = _platform(vol)
+    monkeypatch.setattr(referrers, "CANCEL_GRACE_SECONDS", 0.5)
+    real_take = staging.StagedOutput.take
+    cancel: list = []
+
+    def slow_take(self, name):
+        cancel[0]()
+        time.sleep(0.3)
+        return real_take(self, name)
+
+    def stalled_restore(self, name, as_name=None):
+        time.sleep(1.5)
+        raise OSError("the mount stopped answering")
+
+    monkeypatch.setattr(staging.StagedOutput, "take", slow_take)
+    monkeypatch.setattr(staging.StagedOutput, "restore", stalled_restore)
+    job = await _convert_cancelling(platform / "Game.iso", cancel)
+    # The undo outlives the hook's grace (``outlive``): wait for it to note.
+    for _ in range(100):
+        (row,) = _journal()
+        if row["detail"] and "left for the next run" in row["detail"]:
+            break
+        await asyncio.sleep(0.05)
+
+    assert job.deleted_paths == []
+    assert row["state"] == "restoring", row
+    assert "didn't finish within 0.5s" in row["detail"], row
     parked = Path(row["parked_path"])
     assert parked.read_bytes() == SOURCE_BYTES
-    # The output was not placed over the name RomM now points at.
     assert not (platform / "Game.chd").exists()
-    assert romm.roms[ROM_ID]["fs_name"] == "Game.chd"
     hour_ago = time.time() - 3600
     os.utime(parked.parent, (hour_ago, hour_ago))
     partial_writes.sweep_recorded(min_age=0)
@@ -686,6 +729,41 @@ def test_the_read_back_compares_the_sha1_wherever_romm_reports_one(slug, reporte
            "platform_slug": slug, "sha1_hash": reported}
 
     assert (_read_back_problem(rom, plan, 10, "f" * 40) is None) is ok
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("swap", [True, False])
+async def test_a_checked_output_whose_name_is_taken_is_kept_in_its_slot(
+    vol, romm, monkeypatch, swap,
+):
+    """CodeRabbit 4593970363: a file appears at the output's name after the
+    checks, so the checked output can't be placed. It is kept in its slot,
+    out of every sweep, the Source stays, and the job says where."""
+    from services import partial_writes, staging
+    from services.romm import settings as romm_settings
+
+    platform = _platform(vol)
+    await romm_settings.save({"swap_keep_rom_id": swap})
+
+    async def checked_then_taken(tool, source_path, output_path, **_kw):
+        (platform / "Game.chd").write_bytes(b"someone else's")
+        return RoundTripOutcome(passed=True)
+
+    monkeypatch.setattr(job_manager_module, "round_trip", checked_then_taken)
+    job = await _convert(platform / "Game.iso")
+
+    assert (platform / "Game.iso").read_bytes() == SOURCE_BYTES
+    assert (platform / "Game.chd").read_bytes() == b"someone else's"
+    assert job.deleted_paths == []
+    kept = [p for p in (platform / STAGE_DIR_NAME).rglob("Game.chd")]
+    assert [p.read_bytes() for p in kept] == [OUTPUT_BYTES], kept
+    assert f"kept at {kept[0]}" in job.message
+    assert any(r.get("status") == "kept" for r in job.referrers_updated)
+    hour_ago = time.time() - 3600
+    os.utime(kept[0].parent, (hour_ago, hour_ago))
+    partial_writes.sweep_recorded(min_age=0)
+    staging.open_slot(str(platform)).close()
+    assert kept[0].read_bytes() == OUTPUT_BYTES
 
 
 def test_the_fake_lists_roms_a_page_at_a_time(vol, romm):

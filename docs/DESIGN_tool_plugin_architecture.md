@@ -4141,17 +4141,46 @@ carries RomM's own `detail` text.
   Source couldn't be deleted): the parked Source goes back under its own name
   beside the output (`restoring`), and the ROM keeps its id on the checked
   output; RomM's next scan refreshes its hashes. Ends `kept`.
-- A Cancel, a shutdown or the hook's bound stops the swap where it is and
-  undoes nothing (an undo needs RomM and the mount, often what stalled). An
-  undo that fails, or a process that dies, is the same. The row is left on
-  the state reached (`parked`, `placed`, or the undo step that failed), with
-  the reason and "left for the next run" in `detail`; a parked Source stays
-  parked; and the output is held back from the job
-  (`StagedPlacement.held`, which `_delete_source_set` and the job's end-of-job
-  placing both honour), since the name it would take may hold, or be owed
-  to, the Source. A swap stopped before anything changed ends `failed`.
-  `swap_journal.unfinished()` lists the rows left for the next run (#392:
-  finish or show as a Finding).
+- A Cancel or the hook's bound (`_undo_within_grace`): the forward step it
+  lands on finishes and records its outcome first (`_mutate`, below), then
+  the same undo runs, each step journaled, under
+  `asyncio.wait_for(..., referrers.CANCEL_GRACE_SECONDS)` (#383's grace,
+  read when it runs). The hook waits that long for the cancelled task; if
+  the undo outlasts it, the hook treats the task as lingering and hands it
+  the job's delete holds and output locks (`ReferrerOutcome.outlive`), which
+  are let go only when it ends. While the undo runs the output is held back
+  from the job (`StagedPlacement.held`, which `_delete_source_set` and the
+  job's end-of-job placing both honour); an undo that finishes clears it,
+  so the job places the output beside the Source (the row ends
+  `rolled_back`, or `kept` once the output was in place). A swap stopped
+  before anything changed ends `failed`.
+- An undo that runs out of grace or fails, or a process that dies, leaves
+  the row on the state reached (`parked`, `placed`, or the undo step it was
+  on), with the reason and "left for the next run" in `detail`; a parked
+  Source stays parked; and the output stays held, since the name it would
+  take may hold, or be owed to, the Source (the job then sets the checked
+  output aside, below). `swap_journal.unfinished()` lists the rows left for
+  the next run (#392: finish or show as a Finding).
+- At shutdown the job's task is cancelled, so the hook's awaiter is: as
+  `_await_bounded` always does then, it cancels the apply's task and keeps
+  it referenced (`_let_it_end`) without waiting for the grace, and the job
+  lets go of its holds as it unwinds (no `outlive` hand-off on this path).
+  The swap's undo runs as far as the event loop lets it before the process
+  exits, each step journaled; whatever it didn't reach is left for the next
+  run, and a parked Source is never removed.
+
+*A checked output is never discarded* (CodeRabbit 4593970363). The job
+marks its output `placeable` once its checks pass (or none was asked). If
+it is still staged when the job ends (its name was taken, a Referrer holds
+it, placing failed), `_set_aside_output` turns its slot into a `park-` slot
+(`StagedOutput.set_aside`: renamed with no replace, its `partial_writes`
+record dropped, its lock let go), so no sweep removes it, and the job's
+message, warning, error (the Ledger's `error` for a failed job), a
+`{"referrer": "staging", "status": "kept"}` entry in its Ledger record and
+the log all say where it is. `_close_stage` then has nothing to discard; it
+discards only an output the job never got to place: one rejected by its own
+checks, or a conversion that failed or was cancelled before them. The Source
+is kept in every such case (nothing is deleted before the output is placed).
 
 *What happened is recorded before anything acts on it* (Codex
 PRRT_kwDOQ9nULM64NxUt). Each step that moves something (opening the parking

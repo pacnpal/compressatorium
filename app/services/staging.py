@@ -44,6 +44,8 @@ it is not journaled in ``partial_writes``. The swap's own journal
 * :meth:`StagedOutput.remove` deletes a file in the slot,
 * :meth:`StagedOutput.keep` lets go of the slot and leaves it, and whatever
   is in it, where it is (a parked Source the swap could not put back).
+* :meth:`StagedOutput.set_aside` turns an ordinary slot holding a checked
+  output that could not be placed into a parking slot, so it is kept too.
 
 Each move is a no-replace rename on one filesystem, through the slot's
 descriptors.
@@ -213,6 +215,26 @@ class StagedOutput:
             os.close(self._lock_fd)
             os.close(self._stage_fd)
             os.close(self._folder_fd)
+
+    def set_aside(self) -> str:
+        """Keep the slot, and the checked output in it, out of every sweep,
+        and let go of it: the slot is renamed to a ``park-`` slot (never
+        swept), its journal record dropped and its lock let go. For an output
+        that passed its checks but could not be placed: it is never
+        discarded. Returns the slot's new path. Raises ``OSError`` (the slot
+        is then still open)."""
+        with self._mutex:
+            self._require_open()
+            old = self._slot_name
+            new = PARK_PREFIX + old[len(partial_writes.SLOT_PREFIX):]
+            place_without_clobbering(old, new, src_dir_fd=self._stage_fd, dst_dir_fd=self._stage_fd)
+            self._slot_name = new
+            self.path = os.path.join(self.folder, STAGE_DIR_NAME, new)
+            _unlink_quietly(partial_writes.slot_lock_name(old), self._stage_fd)
+            partial_writes.forget(self._marker)
+            self._marker = None
+        self.keep()
+        return self.path
 
     def _require_open(self) -> None:
         if self._closed:

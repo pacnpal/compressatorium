@@ -803,9 +803,13 @@ If the source was kept because another job was reading it, the output was
 already put in place, so a later retried delete can't rename RomM's record
 onto it. That delete goes the usual way, with the metadata re-pin queued, and
 says so: "the ROM did not keep its id: the swap can't run after the output
-was placed; re-pin queued". Cancelling, or stopping the app, during a swap
-stops it where it is, undoes nothing, and leaves it recorded with the source
-safe.
+was placed; re-pin queued". Cancelling during a swap undoes it within a few
+seconds: RomM gets the old name back and the source returns, with the output
+beside it. If that can't finish in time (or the app stops), the source stays
+set aside in the hidden staging folder, never deleted, and the swap is
+recorded with the step it reached. A checked output that can't be put in
+place (something took its name) is kept in that folder too, and the job says
+where.
 
 Every step is recorded before it runs. If one fails and can't be undone, the
 source stays set aside in the hidden staging folder, never deleted or swept
