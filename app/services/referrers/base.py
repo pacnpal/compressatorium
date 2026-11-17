@@ -320,11 +320,37 @@ def _keep_owner(tmp: str, original: os.stat_result) -> None:
         ) from exc
 
 
-def _temp_file(directory: str) -> tuple[int, str]:
-    """A new hidden temp file in *directory*. Its name is short and fixed-length
-    (``.tmp-`` plus random characters), never built from the target's name, so a
-    target near the 255-byte file name limit can still be written."""
-    return short_temp_file(directory, prefix=".tmp-")
+def _hidden_slot(directory: str):
+    """A staging slot (#398) beside *directory*'s files when its Library hides
+    in-progress files from its own scanner (``HIDDEN_STAGING``, RomM), else
+    None. A Library that can't be found, or has no such scanner, keeps the
+    temp file beside the target as before. A slot that can't be made raises:
+    the write never falls back to a temp file RomM could index."""
+    from services import libraries, staging
+    from services.rules.library import HIDDEN_STAGING
+
+    library = libraries.library_for(directory)
+    if library is None or HIDDEN_STAGING not in library.capabilities:
+        return None
+    return staging.open_slot(directory)
+
+
+@contextmanager
+def _temp_file(directory: str):
+    """A new hidden temp file for a write into *directory*: ``(fd, path)``.
+
+    Its name is short and fixed-length (``.tmp-`` plus random characters),
+    never built from the target's name, so a target near the 255-byte file
+    name limit can still be written. It sits beside the target, except in a
+    Library whose scanner indexes dot-prefixed files (RomM): there it is made
+    in the hidden staging slot (a dot-prefixed folder on the same filesystem,
+    so the rename stays atomic), which goes with the write."""
+    slot = _hidden_slot(directory)
+    try:
+        yield short_temp_file(slot.path if slot is not None else directory, prefix=".tmp-")
+    finally:
+        if slot is not None:
+            slot.close()
 
 
 def atomic_write_bytes(
@@ -344,7 +370,14 @@ def atomic_write_bytes(
     while its caller gave up must not land afterwards).
     """
     directory = os.path.dirname(path) or "."
-    fd, tmp = _temp_file(directory)
+    with _temp_file(directory) as (fd, tmp):
+        _write_replacing(fd, tmp, path, data, like, guard)
+
+
+def _write_replacing(
+    fd: int, tmp: str, path: str, data: bytes, like: str | None,
+    guard: Callable[[], None] | None,
+) -> None:
     try:
         with os.fdopen(fd, "wb") as f:
             f.write(data)
@@ -387,16 +420,16 @@ def write_new_bytes(
     raises nothing is published.
     """
     directory = os.path.dirname(path) or "."
-    fd, tmp = _temp_file(directory)
-    try:
-        with os.fdopen(fd, "wb") as f:
-            f.write(data)
-            f.flush()
-            os.fsync(f.fileno())
-        os.chmod(tmp, 0o644)
-        if guard is not None:
-            guard()
-        place_without_clobbering(tmp, path)
-    finally:
-        with suppress(OSError):
-            os.unlink(tmp)
+    with _temp_file(directory) as (fd, tmp):
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(data)
+                f.flush()
+                os.fsync(f.fileno())
+            os.chmod(tmp, 0o644)
+            if guard is not None:
+                guard()
+            place_without_clobbering(tmp, path)
+        finally:
+            with suppress(OSError):
+                os.unlink(tmp)

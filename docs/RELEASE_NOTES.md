@@ -58,6 +58,12 @@
 
 ### Fixed
 
+- **A playlist's temp file is hidden from RomM too** (#404). When a conversion
+  rewrites an `.m3u` or `gamelist.xml` in RomM's library, the file is first
+  written under a temporary name beside it, which a RomM scan landing in that
+  moment could index. It is now written in the hidden `.compressatorium-stage`
+  folder and renamed into place. Folder Libraries behave as before.
+
 - **A RomM scan during a conversion no longer makes a duplicate game** (#398).
   RomM indexes every file in a Platform folder, even hidden ones, so a scan
   that ran while a conversion was writing could add the half-written output

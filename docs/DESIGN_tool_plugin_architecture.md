@@ -3724,6 +3724,18 @@ be set on the temp file aborts the write (`PermissionError` "can't keep its
 group"), which keeps the Source. A crash leaves the old file or the new one,
 never half of one.
 
+**The temp file in a RomM Library (#404).** RomM indexes dot-prefixed files, so
+a scan between the temp file's write and its rename could list it. Both writers
+make their temp file through `base._temp_file(directory)`, which asks
+`libraries.library_for(directory)`: a Library declaring `HIDDEN_STAGING` (RomM)
+gets a slot from the existing `staging.open_slot` (section 3.3.21) and the temp
+file is made in it, then renamed (or no-replace placed) into the Platform
+folder, which is one filesystem, so the rename stays atomic. The slot is closed
+with the write, success or not. A Folder Library, or a path in no Library, keeps
+the temp file beside the target as before, and a slot that can't be made fails
+the write rather than falling back to a visible temp file. The `.bak` copy goes
+through the same writer, so it is hidden too; the one-time rule is unchanged.
+
 `write_new_bytes(path, data)` is its no-overwrite sibling: the same temp file
 and fsync, then `utils.path_utils.place_without_clobbering` (a hard link or a
 no-replace rename), so "is the name free" and "create it" are one atomic step and
