@@ -27,7 +27,7 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
 from logging_setup import get_logger
 from config import settings
-from models import DirectoryListing, FileEntry, RommDiagnostics
+from models import DirectoryListing, FileEntry, RommDiagnostics, RommListingSummary
 from pydantic import BaseModel, Field
 from routes import rules as shared_rule_routes
 from routes.files import (
@@ -72,7 +72,7 @@ from services.romm import (
 from services.romm import (
     swap_referrer as romm_swap_referrer,
 )
-from services.romm.library import romm_library
+from services.romm.library import app_verdicts, rom_identified, romm_library
 from services.rules import editor as rules_editor
 from services.rules import sweep as rules_sweep
 from services.subprocess_runner import (
@@ -476,6 +476,9 @@ async def romm_platforms() -> list[dict]:
 @router.get("/romm/roms", response_model=DirectoryListing)
 async def romm_roms(
     platform_id: int = Query(..., description="RomM platform id"),
+    unidentified: bool = Query(
+        False, description="Only the ROMs RomM couldn't identify (#427)",
+    ),
 ) -> DirectoryListing:
     """List a RomM platform's ROMs as a directory listing.
 
@@ -487,12 +490,22 @@ async def romm_roms(
     configured volume — a RomM library that is not mounted here, a ROM whose
     file is missing, or a path trying to escape the library root. Offering a
     row we cannot convert would only produce a job that fails.
+
+    Each row carries whether RomM identified it and the app's own cached DAT
+    or Hasheous match for its file, and ``romm`` counts the rows RomM couldn't
+    identify and the Recognized ones (#427). The match is read from the cache
+    only: listing never hashes, and "Recognize these" is the match job
+    (``POST /dat/match-batch/job``). ``unidentified`` lists only the ROMs RomM
+    couldn't identify.
     """
     _require_configured()
     try:
         roms = await run_in_threadpool(romm_client.roms, platform_id)
     except RommError as exc:
         raise _romm_call(exc, context="listing roms") from exc
+    if unidentified:
+        # Decided from RomM's own records, before any ROM is stat'ed.
+        roms = [rom for rom in roms if not rom_identified(rom)]
 
     # RomM stamps the platform on every ROM record, so the slug that narrows
     # the tool list costs no extra request. `platform_slug` is the canonical
@@ -515,8 +528,8 @@ async def romm_roms(
         _CATALOG_SCAN_BASE_S + _CATALOG_SCAN_PER_ROM_S * len(roms),
     )
     try:
-        entries, diag = await asyncio.wait_for(
-            run_detached(_build_entries, roms, slug), budget,
+        entries, diag, summary = await asyncio.wait_for(
+            run_detached(_list_entries, roms, slug), budget,
         )
     except (asyncio.TimeoutError, OSError) as exc:
         logger.warning("romm: listing platform %s timed out", platform_id)
@@ -529,8 +542,17 @@ async def romm_roms(
         ) from exc
     return DirectoryListing(
         volume="RomM", path=f"romm://platform/{platform_id}", entries=entries,
-        diagnostics=diag,
+        diagnostics=diag, romm=summary,
     )
+
+
+def _list_entries(
+    roms: list[dict], platform_slug: str | None,
+) -> tuple[list[FileEntry], RommDiagnostics, RommListingSummary]:
+    """The rows, the diagnostics and the counts, in one worker. Runs off the
+    event loop."""
+    entries, diag = _build_entries(roms, platform_slug)
+    return entries, diag, _match_rows(entries)
 
 
 def _build_entries(
@@ -616,6 +638,7 @@ def _build_entries(
                 convertible_by=convertible_by,
                 outputs=outputs,
                 verifiable_by=verifiable,
+                romm_identified=rom_identified(rom),
             ),
         )
     # Deterministic ordering, independent of RomM's paging. Sorts on the title
@@ -631,6 +654,24 @@ def _build_entries(
             diag.not_found, diag.not_readable, diag.not_regular,
         )
     return entries, diag
+
+
+def _match_rows(entries: list[FileEntry]) -> RommListingSummary:
+    """Attach the app's cached match to each row and count them (#427).
+
+    One read of the match cache for the whole listing, never a hash. A row is
+    Recognized when RomM identified it or the app's match is a hit.
+    """
+    matches = app_verdicts([e.path for e in entries])
+    summary = RommListingSummary()
+    for entry in entries:
+        entry.dat_match = matches.get(entry.path)
+        app_hit = bool(entry.dat_match and entry.dat_match.get("matched"))
+        if not entry.romm_identified:
+            summary.unidentified += 1
+            summary.recognized_unidentified += app_hit
+        summary.recognized += bool(entry.romm_identified or app_hit)
+    return summary
 
 
 # ----------------------------------------------------------------------
@@ -702,7 +743,12 @@ async def romm_repin_plan(payload: RepinPlanRequest) -> dict:
             "generation": plan_generation,
         }
 
-    if not romm_repin.mode_needs_repin(spec.output_ext):
+    # RomM's own ids are carried only across a format that loses its match.
+    # The Hasheous ids (#427) are written whatever the format: RomM never
+    # matched these ROMs, so a CHD it re-matches by hash is no better off.
+    carry = romm_repin.mode_needs_repin(spec.output_ext)
+    write_hasheous = romm_repin.hasheous_write_on()
+    if not carry and not write_hasheous:
         return {
             "recorded": 0, "skipped": len(payload.paths), "reason": "dat_safe",
             "generation": plan_generation,
@@ -804,6 +850,11 @@ async def romm_repin_plan(payload: RepinPlanRequest) -> dict:
             "recording only the ones that answered (a volume is not answering)",
             len(payload.paths),
         )
+    # The Hasheous ids each ROM lacks, from the match cache in one read.
+    fills = await romm_repin.hasheous_fills({
+        key: platform_roms[key] for key in resolved_keys.values()
+        if key is not None and platform_roms.get(key)
+    }) if write_hasheous else {}
     for path in payload.paths:
         # Same canonical key the index was built with (see roms_by_local_path).
         key = resolved_keys.get(path)
@@ -814,9 +865,11 @@ async def romm_repin_plan(payload: RepinPlanRequest) -> dict:
         if not rom:
             skipped += 1
             continue
-        ids = romm_repin.metadata_ids(rom)
+        ids = romm_repin.row_ids(
+            romm_repin.metadata_ids(rom) if carry else {}, fills.get(key, {}),
+        )
         if not ids:
-            # Unidentified in RomM already — nothing to carry across.
+            # Nothing to carry across, and no Hasheous ids to add.
             skipped += 1
             continue
         # Resolve the destination exactly as the batch will. Recording against
@@ -1261,10 +1314,14 @@ async def _settle_one_repin(
         except RommError as exc:
             logger.warning("romm: could not read source ROM %s: %s", rom_id, exc)
             return _Outcome.UPSTREAM_ERROR
-    if platform_id is not None and platform_slug in UNHASHED_PLATFORM_SLUGS:
+    if platform_id is not None and (
+        platform_slug in UNHASHED_PLATFORM_SLUGS or romm_repin.joins_on_path(output_path)
+    ):
         # RomM never hashes this platform, so there is no digest to join on and
-        # hashing the output would be minutes of I/O for nothing. The file is
-        # exactly where the conversion wrote it, so join on that.
+        # hashing the output would be minutes of I/O for nothing. Nor does the
+        # output's own SHA-1 find a CHD or an archive (a row for one carries
+        # only Hasheous ids, #427): RomM stores the digest of what is inside.
+        # The file is exactly where the conversion wrote it, so join on that.
         return await _match_and_settle(
             row_id, _by_path(output_path, platform_id, catalogs, deadline), ids,
             output_path, created_at, kept_by=kept_by,
@@ -1440,12 +1497,19 @@ async def _match_and_settle(
                 return _Outcome.ABANDONED
             return _Outcome.WAITING
 
-        if kept_by is not None and romm_repin.self_identified(match, kept_by, ids):
-            if await run_in_threadpool(
-                romm_repin.settle, row_id, "done", romm_repin.SELF_IDENTIFIED,
-            ):
-                return _Outcome.REIDENTIFIED
-            return _Outcome.FAILED
+        # RomM's carried ids, and the Hasheous ids (#427) only where this ROM
+        # doesn't already have them.
+        write = romm_repin.ids_to_write(ids, match)
+        if kept_by is not None and romm_repin.self_identified(
+            match, kept_by, romm_repin.carried_ids(ids),
+        ):
+            write = romm_repin.fill_to_write(ids, match)
+            if not write:
+                if await run_in_threadpool(
+                    romm_repin.settle, row_id, "done", romm_repin.SELF_IDENTIFIED,
+                ):
+                    return _Outcome.REIDENTIFIED
+                return _Outcome.FAILED
 
         # Claim the row before the outbound write, in one conditional update.
         # Hashing the output above can take minutes, and a conversion
@@ -1464,7 +1528,7 @@ async def _match_and_settle(
 
         try:
             await run_in_threadpool(
-                romm_client.update_rom_metadata, match["id"], ids,
+                romm_client.update_rom_metadata, match["id"], write,
             )
         except BaseException:
             # Nothing was written, so the claim must not outlive the attempt --
@@ -1712,6 +1776,8 @@ class RommSettingsPatch(BaseModel):
     es_frontend: bool | None = None
     # ES-DE gamelists folder (#387): inside a Volume; "" clears it.
     gamelists_folder: str | None = None
+    # Write Hasheous provider ids onto converted ROMs (#427). Off by default.
+    hasheous_write_ids: bool | None = None
 
 
 @router.get("/romm/settings")

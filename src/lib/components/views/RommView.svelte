@@ -25,7 +25,13 @@
   import Splitter from '$lib/components/ui/Splitter.svelte';
   import Select from '$lib/components/ui/Select.svelte';
   import Button from '$lib/components/ui/Button.svelte';
+  import Checkbox from '$lib/components/ui/Checkbox.svelte';
   import Badge from '$lib/components/ui/Badge.svelte';
+  import { datMatching } from '$lib/stores/datMatching.svelte.js';
+  import { jobs } from '$lib/stores/jobs.svelte.js';
+  import {
+    ARCHIVE_EXTS, isDatMatchable, needsDatMatch, wantsHasheousIds,
+  } from '$lib/util/datMatchable.js';
   import Spinner from '$lib/components/ui/Spinner.svelte';
   import EmptyState from '$lib/components/ui/EmptyState.svelte';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
@@ -180,6 +186,66 @@
    */
   const summaryCoversOutputs = $derived(!conversion.outputDir);
 
+  /**
+   * "Unidentified in RomM" (#427): the rows RomM couldn't identify, and how
+   * many of those the app Recognizes from its own DAT or Hasheous match.
+   *
+   * Read from the match store, which the listing seeds and a match job
+   * updates, so the count moves as "Recognize these" runs without reloading
+   * the platform, and a policy change clears it with every other badge.
+   */
+  const allUnidentified = $derived(entries.filter((e) => e.romm_identified === false));
+  // Only what the matcher can identify, by the file list's own rule: an
+  // archived ROM's match would hash the compressed bytes and record a miss
+  // (Codex on PR #442), so those are counted apart and never submitted.
+  const matchableExts = registry.allFilterableExts();
+  const unidentifiedRows = $derived(
+    allUnidentified.filter((e) => isDatMatchable(e, matchableExts)),
+  );
+  const archivedUnidentified = $derived(
+    allUnidentified.filter((e) => ARCHIVE_EXTS.has((e.extension ?? '').toLowerCase())).length,
+  );
+  const recognizedUnidentified = $derived(
+    unidentifiedRows.filter((e) => datMatching.matchFor(e.path)?.matched).length,
+  );
+  // With the Hasheous ids switch on, a Hasheous hit cached before the ids were
+  // kept has none to write; the match job looks it up again (Codex on PR #442).
+  // The same gate as the backend's: the switch and re-pinning both on.
+  const wantsIds = $derived(wantsHasheousIds(romm.settings));
+  // What "Recognize these" hands the match job: the files among those rows,
+  // on every page, the app has no verdict for yet (or no Hasheous ids for,
+  // when they are wanted). A cached miss is not asked again.
+  const toRecognize = $derived(
+    unidentifiedRows
+      .filter((e) => needsDatMatch(datMatching.matchFor(e.path), wantsIds))
+      .map((e) => e.path),
+  );
+  // The file list re-reads only the rows on screen when a match job ends; the
+  // job "Recognize these" started covers every page, so all of it is read back.
+  $effect(() => {
+    datMatching.hydrateFinishedJobs(jobs.jobs);
+  });
+  let recognizing = $state(false);
+
+  async function handleRecognize() {
+    recognizing = true;
+    try {
+      const response = await datMatching.startMatchJob(toRecognize);
+      // The jobs list may already show this job ended, and the effect below
+      // runs only when that list changes: read it back once now as well.
+      datMatching.hydrateFinishedJobs(jobs.jobs);
+      if (response?.status === 'started') {
+        toast.info(`Matching ${toRecognize.length} ROM${toRecognize.length === 1 ? '' : 's'} — see Jobs`);
+      } else {
+        toast.info('Nothing new to match: these already have an answer');
+      }
+    } catch (e) {
+      toast.error(e?.message ?? 'Could not start the match job');
+    } finally {
+      recognizing = false;
+    }
+  }
+
   onMount(() => {
     // The async init below outlives a fast navigation away, and its tail
     // calls enterRomm() — which would replace the ordinary workspace's
@@ -273,6 +339,10 @@
       <p class="hint">
         Convert your RomM library in place. Game names and platforms come from
         RomM; the files are read from the mounted library.
+      </p>
+      <p class="hint">
+        Unlike RomM's own converter, Compressatorium also converts ROMs stored
+        inside zip and 7z archives.
       </p>
     </div>
     <div class="header-right">
@@ -389,6 +459,38 @@
       {/if}
     </div>
 
+    {#if romm.selectedPlatformId !== null}
+      <div class="unidentified" aria-live="polite">
+        <Checkbox
+          checked={fileBrowser.rommUnidentified}
+          label={fileBrowser.rommUnidentified || fileBrowser.rommSummary == null
+            ? 'Unidentified in RomM'
+            : `Unidentified in RomM (${fileBrowser.rommSummary.unidentified})`}
+          onchange={(v) => fileBrowser.setRommUnidentified(v)}
+        />
+        {#if fileBrowser.rommUnidentified && !fileBrowser.loading}
+          <span class="muted">
+            The app Recognizes <strong>{recognizedUnidentified}</strong> of
+            {unidentifiedRows.length} from its own DATs or Hasheous, so a Rule
+            set to "only Recognized" converts them too.
+          </span>
+          {#if archivedUnidentified > 0}
+            <span class="muted">
+              Archived ROMs (zip, 7z) aren't recognized yet, so
+              {archivedUnidentified === 1 ? 'the 1 here is' : `the ${archivedUnidentified} here are`}
+              left out of the count and the match.
+            </span>
+          {/if}
+          {#if toRecognize.length > 0}
+            <Button
+              size="sm" variant="secondary" loading={recognizing}
+              onclick={handleRecognize}
+            >Recognize these ({toRecognize.length})</Button>
+          {/if}
+        {/if}
+      </div>
+    {/if}
+
     {#if losesMatch}
       <div class="notice warn">
         <TriangleAlert size={16} />
@@ -431,6 +533,12 @@
             <TriangleAlert size={16} />
             <span>{fileBrowser.entriesError}</span>
           </div>
+        {:else if !fileBrowser.loading && entries.length === 0
+          && fileBrowser.rommUnidentified && (fileBrowser.rommDiagnostics?.total ?? 0) === 0}
+          <EmptyState
+            title="RomM identified every ROM here"
+            description="Nothing on this platform is unidentified in RomM. Clear the filter to see every ROM."
+          />
         {:else if !fileBrowser.loading && entries.length === 0 && romm.selectedPlatformId !== null}
           {@const diag = fileBrowser.rommDiagnostics}
           {#if diag && diag.total > 0}
@@ -615,6 +723,13 @@
     color: var(--text-2);
   }
   .summary strong { color: var(--text-1); }
+  .unidentified {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    flex-wrap: wrap;
+  }
+  .unidentified strong { color: var(--text-1); }
   .saving { color: var(--accent); font-weight: var(--weight-medium); }
   .muted { color: var(--text-2); }
   .error-text { color: var(--danger-text, var(--text-1)); }

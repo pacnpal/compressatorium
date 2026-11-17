@@ -615,14 +615,17 @@ def _passes_filters(image: Image, rule: dict) -> bool:
         return False
     if rule["exclude_pattern"] and re.search(rule["exclude_pattern"], name, re.IGNORECASE):
         return False
-    # The Library's own identification (`Image.recognized`; for RomM, its
-    # "identified" status, always True or False). Unknown (None) passes
+    # only_matched reads whether the Image is Recognized (`Image.recognized`;
+    # for RomM, identified by RomM or matched by the app's DAT or Hasheous
+    # lookup, #427). only_unmatched reads the Library's own verdict
+    # (`Image.identified`; for RomM, its "identified" status alone), so "only
+    # ROMs RomM could not identify" keeps its meaning. Unknown (None) passes
     # neither filter: a Library that cannot say, because nothing matched the
     # Image yet or its match cache could not be read, must not have an
     # only_unmatched Rule convert everything (fail closed).
     if rule["only_matched"] and image.recognized is not True:
         return False
-    return not (rule["only_unmatched"] and image.recognized is not False)
+    return not (rule["only_unmatched"] and image.identified is not False)
 
 
 def _resolve_source(path: str) -> str | None:

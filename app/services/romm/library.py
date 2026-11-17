@@ -11,6 +11,7 @@ batch is queued, and the re-pin backlog reported when the sweep ends.
 
 from __future__ import annotations
 
+import functools
 import os
 from collections.abc import Sequence
 from types import MappingProxyType
@@ -53,6 +54,37 @@ LEGACY_STATE_KEY = "romm.auto_state"
 logger = get_logger("romm_auto")
 
 
+def rom_identified(rom: dict) -> bool:
+    """Whether RomM identified this ROM record.
+
+    RomM reports it two ways depending on version; either is authoritative.
+    Without ``is_identified``, any provider id counts -- every provider, not a
+    hand-picked subset: a ROM matched only through RetroAchievements or
+    Hasheous is still identified, and checking three of the nine fields made
+    ``only_matched`` skip it.
+    """
+    identified = rom.get("is_identified")
+    if identified is None:
+        identified = bool(romm_repin.metadata_ids(rom))
+    return bool(identified)
+
+
+def app_verdicts(paths: list[str]) -> dict[str, dict | None]:
+    """The app's own cached DAT or Hasheous match for each local path (#427).
+
+    Reads the match cache and never hashes (``routes.dat.cached_matches``);
+    None for a path with no usable row. A cache that can't be read gives None
+    for every path: unknown, never "not Recognized". Blocking.
+    """
+    from routes.dat import cached_matches
+
+    try:
+        return cached_matches(paths)
+    except Exception:  # the match cache is a hint here, never a failure
+        logger.warning("romm: could not read the match cache", exc_info=True)
+        return dict.fromkeys(paths)
+
+
 def image_from_rom(rom: dict) -> Image:
     """One RomM ROM record as an Image.
 
@@ -60,32 +92,42 @@ def image_from_rom(rom: dict) -> Image:
     ``name`` the file name (what the name filters match). RomM numbers ROMs as
     it adds them, so the ROM id is its added order.
 
-    ``recognized`` carries RomM's own "identified" status, which is what the
-    ``only_matched`` filter has always read. It is a stand-in: RomM identifies
-    by metadata provider, often by file name, while Recognized in the glossary
-    means a DAT or Hasheous hash match. See ``Image``.
+    ``identified`` is RomM's own "identified" status, which the
+    ``only_unmatched`` filter reads; it needs no disk. ``recognized`` is True
+    when RomM identified the ROM or the app's own cached match for its file is
+    a hit (#427): what the ``only_matched`` filter reads. RomM always gives a
+    verdict, so it is never unknown: no hit from either reads as not
+    Recognized. For a ROM RomM did not identify it is worked out the first
+    time it is read, since that maps the record onto the mount: the sweep reads
+    it only for a ROM its name and size filters kept, inside the bounded
+    candidate probe, so a ROM those filters exclude costs no disk at all
+    (Codex on PR #442). The path is lazy for the same reason.
     """
-    # RomM reports identification two ways depending on version; treat either
-    # as authoritative and fall back to "unknown" rather than filtering blind.
-    identified = rom.get("is_identified")
-    if identified is None:
-        # Every provider, not a hand-picked subset: a ROM matched only through
-        # RetroAchievements or Hasheous is still identified, and checking three
-        # of the nine fields made `only_matched` skip it.
-        identified = bool(romm_repin.metadata_ids(rom))
-    return Image(
+    identified = rom_identified(rom)
+
+    def recognized_by_app() -> bool:
+        path = image.path
+        if not path:
+            return False
+        match = app_verdicts([path]).get(path)
+        return bool(match and match.get("matched"))
+
+    image = Image(
         key=rom.get("id"),
         name=rom.get("fs_name") or rom.get("name") or "",
         title=rom.get("name") or rom.get("fs_name") or "",
         size=rom.get("fs_size_bytes") or 0,
         added_at=rom.get("id") or 0,
-        recognized=bool(identified),
+        recognized=True if identified else None,
+        resolve_recognized=None if identified else recognized_by_app,
+        identified=identified,
         platform=rom.get("platform_slug"),
         # Mapping the record onto the mount stats it, so it waits until the
         # sweep reads `path` off the event loop.
         resolve_path=lambda: romm_client.local_path(rom),
         record=rom,
     )
+    return image
 
 
 class RommLibrary(LibraryDefaults):
@@ -311,16 +353,28 @@ class RommLibrary(LibraryDefaults):
         # keeps RomM's DAT match is a property of the mode. Honours the same
         # `repin_enabled` switch the manual path reads.
         cfg = romm_settings.effective()
-        if not (
-            bool(cfg.get("repin_enabled", True))
-            and romm_repin.mode_needs_repin(spec.output_ext)
-        ):
+        # RomM's own ids only across a format that loses its match; the
+        # Hasheous ids the ROM lacks (#427) whatever the format, when that
+        # switch is on. Both go through the same row.
+        carry = romm_repin.mode_needs_repin(spec.output_ext)
+        write_hasheous = romm_repin.hasheous_write_on()
+        if not (bool(cfg.get("repin_enabled", True)) and (carry or write_hasheous)):
             summary["repins_recorded"] = 0
             return
+        # This batch's age, fixed before the lookup is awaited: a manual plan
+        # recorded for one of these destinations meanwhile is newer, and
+        # `record()` must not let this one supersede it (CodeRabbit on PR #442).
+        generation = await run_in_threadpool(romm_repin.plan_generation, None)
+        fills = await romm_repin.hasheous_fills({
+            item.source: item.image.record for item in queued if item.image.record
+        }) if write_hasheous else {}
         repin_count = 0
         for item in queued:
             rom = item.image.record
-            ids = romm_repin.metadata_ids(rom) if rom else {}
+            ids = romm_repin.row_ids(
+                romm_repin.metadata_ids(rom) if rom and carry else {},
+                fills.get(item.source, {}),
+            )
             if not ids:
                 continue
             try:
@@ -332,8 +386,10 @@ class RommLibrary(LibraryDefaults):
                 # change and abandons the row, losing exactly the metadata this
                 # exists to protect.
                 if await run_in_threadpool(
-                    romm_repin.record, rom, item.destination, ids,
-                    rule["mode"], item.pre, item.source,
+                    functools.partial(
+                        romm_repin.record, rom, item.destination, ids,
+                        rule["mode"], item.pre, item.source, generation=generation,
+                    ),
                 ):
                     repin_count += 1
             except Exception:  # bookkeeping only; see below

@@ -86,6 +86,11 @@ _FIELDS: dict[str, tuple[str, Any, str]] = {
     # Volume (checked when saved through the API); "" keeps the Platform
     # folder lookup.
     "gamelists_folder": ("ROMM_GAMELISTS_FOLDER", "", "str"),
+    # Write the provider ids the app's Hasheous match found onto the ROM in
+    # RomM after converting it (#427), only where the ROM has none, so RomM
+    # shows the cover and description. Off by default: it changes RomM's own
+    # records. Goes through the re-pin queue, so re-pinning must be on too.
+    "hasheous_write_ids": ("ROMM_HASHEOUS_WRITE_IDS", False, "bool"),
 }
 
 _INT_BOUNDS = {
