@@ -277,6 +277,34 @@ async def test_a_failed_rehash_keeps_the_source_where_it_was(vol, romm, failure)
 
 
 @pytest.mark.asyncio
+async def test_the_source_is_parked_under_its_own_name(vol, romm):
+    """#415: RomM's rename moves the Source to the output's name, but it is
+    parked under its original name, so a parked file never carries the
+    output's name. The journal records that path, and the undo (here, a
+    rehash RomM doesn't confirm) puts it back under its own name."""
+    platform = _platform(vol)
+    romm.scan_updates = False
+    parked_while: list[str] = []
+
+    def observe(method, path):
+        rows = _journal()
+        if rows and rows[-1]["parked_path"] and rows[-1]["state"] == "rehashing":
+            parked = Path(rows[-1]["parked_path"])
+            parked_while.append(parked.name if parked.exists() else "")
+
+    romm.on_request = observe
+    job = await _convert(platform / "Game.iso")
+
+    assert job.status == JobStatus.COMPLETED, job.error_message
+    (row,) = _journal()
+    assert Path(row["parked_path"]).name == "Game.iso"
+    assert parked_while and set(parked_while) == {"Game.iso"}
+    assert (platform / "Game.iso").read_bytes() == SOURCE_BYTES
+    assert (platform / "Game.chd").read_bytes() == OUTPUT_BYTES
+    assert row["state"] == "kept"
+
+
+@pytest.mark.asyncio
 async def test_a_gamelist_rewrite_and_the_swap_share_the_stage_folder(vol, romm):
     """#404's Referrer temp file is written in a staging slot of its own
     beside the job's output slot; the swap then parks the Source in a third.
@@ -427,10 +455,10 @@ async def test_a_cancel_during_parking_is_undone_within_the_grace(vol, romm, mon
     real_take = staging.StagedOutput.take
     cancel: list = []
 
-    def slow_take(self, name):
+    def slow_take(self, name, as_name=None):
         cancel[0]()
         time.sleep(0.5)  # the hook sees the Cancel while the move runs
-        return real_take(self, name)
+        return real_take(self, name, as_name)
 
     monkeypatch.setattr(staging.StagedOutput, "take", slow_take)
     job = await _convert_cancelling(platform / "Game.iso", cancel)
@@ -460,10 +488,10 @@ async def test_a_cancel_whose_undo_outlasts_the_grace_leaves_the_source_parked(
     real_take = staging.StagedOutput.take
     cancel: list = []
 
-    def slow_take(self, name):
+    def slow_take(self, name, as_name=None):
         cancel[0]()
         time.sleep(0.3)
-        return real_take(self, name)
+        return real_take(self, name, as_name)
 
     def stalled_restore(self, name, as_name=None):
         time.sleep(1.5)
@@ -562,8 +590,8 @@ async def test_a_slot_holding_the_source_is_never_removed_on_a_flags_word(
     platform = _platform(vol)
     real_take = staging.StagedOutput.take
 
-    def take_then_fail(self, name):
-        real_take(self, name)
+    def take_then_fail(self, name, as_name=None):
+        real_take(self, name, as_name)
         raise OSError("the mount reported an error after the move")
 
     monkeypatch.setattr(staging.StagedOutput, "take", take_then_fail)
@@ -919,10 +947,10 @@ async def test_cancelling_the_job_task_hands_its_holds_to_the_undo(vol, romm, mo
     loop = asyncio.get_running_loop()
     running = asyncio.create_task(convert_routes.job_manager._process_job(job.id))
 
-    def take_then_shut_down(self, name):
+    def take_then_shut_down(self, name, as_name=None):
         loop.call_soon_threadsafe(running.cancel)
         time.sleep(0.2)
-        return real_take(self, name)
+        return real_take(self, name, as_name)
 
     def slow_restore(self, name, as_name=None):
         time.sleep(1.0)
@@ -1673,10 +1701,10 @@ async def test_a_lingering_swap_keeps_the_job_from_placing_the_output(
     ))
     loop = asyncio.get_running_loop()
 
-    def cancelled_take(self, name):
+    def cancelled_take(self, name, as_name=None):
         event = convert_routes.job_manager.get_cancel_event(job.id)
         loop.call_soon_threadsafe(event.set)
-        return real_take(self, name)
+        return real_take(self, name, as_name)
 
     def slow_parked(row_id, state, **kwargs):
         if state == "parked":

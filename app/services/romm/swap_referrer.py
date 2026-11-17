@@ -27,7 +27,8 @@ name a file already has. Then, each step written to the swap journal
    refusal; any other answer from RomM means nothing changed.
 2. ``parking``: the Source, now under the output's name, is moved into a
    parking slot in the hidden staging folder (``staging.open_slot(...,
-   parking=True)``), which no sweep removes.
+   parking=True)``), which no sweep removes, under its original name
+   (#415), so no parked file carries the output's name.
 3. ``placing``: the job's staged output is moved to that name.
 4. ``rehashing``: a ``hashes`` scan of that one ROM (``apis: []``), then the
    ROM is read back. Success is judged by the read-back (name, size and
@@ -658,8 +659,12 @@ class _Swap:
 
     @property
     def parked_path(self) -> str:
+        """Where the Source is parked: under its original name (#415), so a
+        parked file never carries the output's name. The journal records it;
+        recovery reads the name from there (a row written before parked it
+        under the output's name)."""
         assert self.park is not None
-        return os.path.join(self.park.path, self.plan.new_name)
+        return os.path.join(self.park.path, self.plan.old_name)
 
     @property
     def changed(self) -> bool:
@@ -893,7 +898,7 @@ class _Swap:
         await self._step("parking", parked_path=self.parked_path)
 
         def take() -> None:
-            self.park.take(name)
+            self.park.take(name, self.plan.old_name)
             self.parked = True
             swap_journal.step(self.row, "parked", parked_path=self.parked_path)
 
@@ -963,7 +968,7 @@ class _Swap:
             raise self._fail("the parked Source changed, so it was not deleted")
 
         def remove() -> None:
-            self.park.remove(self.plan.new_name)
+            self.park.remove(self.plan.old_name)
             self.parked = False
             self.removed = True
 
@@ -1038,9 +1043,10 @@ class _Swap:
             await self._leave(f"{reason}; {left}")
             return left
 
-    def _restore(self, as_name: str | None = None) -> None:
-        """Move the parked Source out of the slot (on the step's thread)."""
-        self.park.restore(self.plan.new_name, as_name)
+    def _restore(self, as_name: str) -> None:
+        """Move the parked Source out of the slot as *as_name* (on the step's
+        thread)."""
+        self.park.restore(self.plan.old_name, as_name)
         self.parked = False
 
     async def _restore_beside_output(self) -> None:
@@ -1057,7 +1063,9 @@ class _Swap:
         plan = self.plan
         if self.parked:
             await self._step("restoring")
-            await _mutate(self._restore)
+            # Back under the name RomM gave it (it was parked only once RomM
+            # had renamed): RomM's rename back moves it from there.
+            await _mutate(self._restore, plan.new_name)
         if self.romm_name == plan.old_name:
             return
         self._require_same_instance("putting the old name back")

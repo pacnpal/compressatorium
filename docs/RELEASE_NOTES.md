@@ -139,6 +139,14 @@
 
 ### Fixed
 
+- **A set-aside RomM source keeps its own name** (#415). While a swap keeps a
+  ROM's id, the source it sets aside in `.compressatorium-stage/park-…/` is
+  now named as it was (`Game.iso`), not with the converted file's name, so
+  the hidden copy and the converted file never share a name. A "RomM swap
+  unfinished" Finding now lists its steps by hand in order, for keeping the
+  conversion or undoing it, and the undo first moves the converted file
+  aside to a named path, so no step puts a file where another one is. Swaps
+  set aside before this update are still recovered.
 - **Rules editor checkboxes save again** (#412). Ticking "Run automatically",
   "Used by an EmulationStation frontend", a Platform's enable switch, the ID
   filters, "Check the container only", the checking switch or a per-check
@@ -146,7 +154,6 @@
   old value. The shared checkbox had no `onchange` to call. It has one now,
   and a test fails if any component is given a prop its child does not
   declare.
-
 - **A symlinked system folder keeps its ES-DE gamelist entry** (#413). In a
   Library used by an EmulationStation frontend, a system folder that is a
   symlink to somewhere outside the Library (`ROMs/psx -> /elsewhere/psx`) was
