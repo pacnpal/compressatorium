@@ -157,6 +157,11 @@ class FindingsStore {
     }
   }
 
+  /** Whether the open dialog is the one for Finding *id*. */
+  #showing(id) {
+    return this.cleanup?.row?.id === id;
+  }
+
   closeCleanup() {
     this.#planRequest += 1;
     this.cleanup = null;
@@ -176,16 +181,15 @@ class FindingsStore {
     this.cleanup = { ...open, deleting: true };
     // The answer belongs to this Finding: it writes only to a dialog open on
     // it now (reopened meanwhile included), never to one for another Finding.
-    const showing = () => this.cleanup?.row?.id === id;
     try {
       const result = await api.deleteDuplicates(id, open.row.fingerprint, open.keep, paths);
       this.#inflight.delete(id);
       this.#superseded();
-      if (showing()) this.cleanup = null;
+      if (this.#showing(id)) this.cleanup = null;
       return result;
     } catch (e) {
       this.#inflight.delete(id);
-      if (showing()) {
+      if (this.#showing(id)) {
         this.cleanup = { ...this.cleanup, deleting: false, error: e?.message ?? 'Could not delete the copies' };
       }
       throw e;
