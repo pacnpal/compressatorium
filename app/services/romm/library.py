@@ -84,7 +84,7 @@ def app_verdicts(paths: list[str]) -> dict[str, dict | None]:
         return dict.fromkeys(paths)
 
 
-def image_from_rom(rom: dict, *, path: str | None = None, match: dict | None = None) -> Image:
+def image_from_rom(rom: dict) -> Image:
     """One RomM ROM record as an Image.
 
     ``title`` is RomM's display name (what the ``name`` order sorts by), and
@@ -92,31 +92,41 @@ def image_from_rom(rom: dict, *, path: str | None = None, match: dict | None = N
     it adds them, so the ROM id is its added order.
 
     ``identified`` is RomM's own "identified" status, which the
-    ``only_unmatched`` filter reads. ``recognized`` is True when RomM
-    identified it or *match*, the app's own cached match for *path*, is a hit
-    (#427): what the ``only_matched`` filter reads. RomM always gives a
+    ``only_unmatched`` filter reads; it needs no disk. ``recognized`` is True
+    when RomM identified the ROM or the app's own cached match for its file is
+    a hit (#427): what the ``only_matched`` filter reads. RomM always gives a
     verdict, so it is never unknown: no hit from either reads as not
-    Recognized. *path* is the record's local path when the caller already
-    mapped it; otherwise it is mapped the first time the sweep reads it, off
-    the event loop.
+    Recognized. For a ROM RomM did not identify it is worked out the first
+    time it is read, since that maps the record onto the mount: the sweep reads
+    it only for a ROM its name and size filters kept, inside the bounded
+    candidate probe, so a ROM those filters exclude costs no disk at all
+    (Codex on PR #442). The path is lazy for the same reason.
     """
     identified = rom_identified(rom)
-    recognized = identified or bool(match and match.get("matched"))
-    return Image(
+
+    def recognized_by_app() -> bool:
+        path = image.path
+        if not path:
+            return False
+        match = app_verdicts([path]).get(path)
+        return bool(match and match.get("matched"))
+
+    image = Image(
         key=rom.get("id"),
         name=rom.get("fs_name") or rom.get("name") or "",
         title=rom.get("name") or rom.get("fs_name") or "",
         size=rom.get("fs_size_bytes") or 0,
         added_at=rom.get("id") or 0,
-        recognized=recognized,
+        recognized=True if identified else None,
+        resolve_recognized=None if identified else recognized_by_app,
         identified=identified,
         platform=rom.get("platform_slug"),
-        path=path,
         # Mapping the record onto the mount stats it, so it waits until the
         # sweep reads `path` off the event loop.
-        resolve_path=None if path is not None else (lambda: romm_client.local_path(rom)),
+        resolve_path=lambda: romm_client.local_path(rom),
         record=rom,
     )
+    return image
 
 
 class RommLibrary(LibraryDefaults):
@@ -169,27 +179,11 @@ class RommLibrary(LibraryDefaults):
         ]
 
     def images(self, platform_id: str) -> list[Image]:
-        """The Platform's ROMs as Images. A ROM RomM did not identify is
-        mapped onto its local path here (every caller lists off the event
-        loop) so the app's own cached match can say whether it is Recognized;
-        an identified one is Recognized already and keeps its lazy path."""
         try:
             roms = romm_client.roms(int(platform_id))
         except RommError as exc:
             raise LibraryUnreadable(str(exc)) from exc
-        paths = {
-            id(rom): romm_client.local_path(rom)
-            for rom in roms if not rom_identified(rom)
-        }
-        matches = app_verdicts([p for p in paths.values() if p])
-        out = []
-        for rom in roms:
-            path = paths.get(id(rom))
-            if path is None:
-                out.append(image_from_rom(rom))
-            else:
-                out.append(image_from_rom(rom, path=path, match=matches.get(path)))
-        return out
+        return [image_from_rom(rom) for rom in roms]
 
     def rule_defaults(self) -> dict[str, Any]:
         cfg = romm_settings.effective()

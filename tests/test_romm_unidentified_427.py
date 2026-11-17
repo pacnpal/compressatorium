@@ -252,6 +252,44 @@ async def test_only_recognized_includes_what_the_app_recognizes(client):
 
 
 @pytest.mark.asyncio
+async def test_a_filtered_out_rom_is_never_mapped_onto_the_mount(client, romm, vol, monkeypatch):
+    """Codex on PR #442: listing mapped every unidentified ROM onto its path to
+    read the match cache, so one ROM on a stalled mount held the whole
+    Platform even when the Rule's name filter excludes it. Whether a ROM is
+    Recognized is now worked out only when a filter asks, after the name and
+    size filters."""
+    import threading
+    import time
+
+    from services.romm import romm_client
+
+    _iso(vol, "Skip.iso")
+    romm.add_rom(4, NGC, "Skip.iso")
+    mapped: list[str] = []
+    stalled = threading.Event()
+    real = romm_client.local_path
+
+    def local_path(rom):
+        mapped.append(rom.get("fs_name"))
+        if rom.get("fs_name") == "Skip.iso":
+            stalled.wait(5)  # a mount that stopped answering
+        return real(rom)
+
+    monkeypatch.setattr(romm_client, "local_path", local_path)
+    started = time.monotonic()
+    try:
+        candidates = await _candidates(
+            client, {"only_matched": True, "exclude_pattern": "^Skip"},
+        )
+    finally:
+        stalled.set()
+
+    assert candidates == ["Homebrew.iso", "Known.iso"]
+    assert "Skip.iso" not in mapped
+    assert time.monotonic() - started < 4
+
+
+@pytest.mark.asyncio
 async def test_only_unidentified_keeps_meaning_what_romm_could_not_identify(client):
     assert await _candidates(client, {"only_unmatched": True}) == [
         "Homebrew.iso", "Mystery.iso",

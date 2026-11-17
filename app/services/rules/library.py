@@ -185,14 +185,18 @@ class Image:
     ``path`` is the local path, or None when the Image has none here. A Library
     that can only work it out by touching the disk passes ``resolve_path``
     instead, and the first read of ``path`` calls it once. That read can block,
-    so the engine makes it off the event loop.
+    so the engine makes it off the event loop. ``recognized`` can be lazy the
+    same way (``resolve_recognized``): the sweep reads it only for an Image the
+    name and size filters kept, inside the bounded candidate probe, so an
+    Image those filters exclude never touches the disk for it (Codex on PR
+    #442). ``identified`` is never lazy; pass it when ``recognized`` is.
 
     ``record`` is the Library's own record for the Image, for its hooks.
     """
 
     __slots__ = (
-        "_path", "_resolve_path", "added_at", "identified", "key", "name",
-        "platform", "recognized", "record", "size", "title",
+        "_path", "_recognized", "_resolve_path", "_resolve_recognized", "added_at",
+        "identified", "key", "name", "platform", "record", "size", "title",
     )
 
     def __init__(
@@ -208,13 +212,15 @@ class Image:
         title: str | None = None,
         path: str | None = None,
         resolve_path: Callable[[], str | None] | None = None,
+        resolve_recognized: Callable[[], bool | None] | None = None,
         record: Any = None,
     ) -> None:
         self.key = key
         self.name = name
         self.size = size
         self.added_at = added_at
-        self.recognized = recognized
+        self._recognized = recognized
+        self._resolve_recognized = resolve_recognized
         self.identified = recognized if identified is None else identified
         self.platform = platform
         self.title = title if title is not None else name
@@ -228,6 +234,13 @@ class Image:
             self._path = self._resolve_path()
             self._resolve_path = None
         return self._path
+
+    @property
+    def recognized(self) -> bool | None:
+        if self._resolve_recognized is not None:
+            self._recognized = self._resolve_recognized()
+            self._resolve_recognized = None
+        return self._recognized
 
     def __repr__(self) -> str:
         return f"Image(key={self.key!r}, name={self.name!r})"

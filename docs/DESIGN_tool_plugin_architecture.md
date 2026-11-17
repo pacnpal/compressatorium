@@ -2742,9 +2742,12 @@ id), a metadata match that is often by file name. `recognized` is True when
 RomM identified the ROM **or** the app's own cached match for its file is a
 hit (`romm.library.app_verdicts`), else False. So "only Recognized" includes
 the ROMs RomM couldn't identify that a DAT or Hasheous knows, while "only ROMs
-RomM could not identify" keeps reading RomM alone. `images()` maps only the
-unidentified ROMs onto their local paths for that read (every caller lists in
-a worker); an identified ROM keeps its lazy `resolve_path`.
+RomM could not identify" keeps reading RomM alone. `identified` needs no disk.
+For an unidentified ROM, `recognized` is lazy (`Image(resolve_recognized=...)`,
+like `resolve_path`): the first read maps the record onto the mount and reads
+the cache for that one path. `_passes_filters` reads it only for an Image its
+name and size filters kept, inside the bounded candidate probe, so a ROM those
+filters exclude never touches a stalled mount.
 
 **Storage.** Rules live in the `rules` preference row and run state in
 `rules.state`, one entry per `"<library id>:<platform id>"`. Callers read and
