@@ -1,0 +1,139 @@
+# "Compatible with..." presets for the compression picker and the Rule editor.
+#
+# Each target lists the modes whose output it reads and, where the mode takes a
+# codec, the codecs it can decode. `preferred` is what choosing the target sets
+# the picker to (optional: without it the current choice is kept, and warned
+# about if the target doesn't list it). Every entry cites `sources`: the
+# upstream docs, source code or release notes the claim rests on. A target or
+# mode with no citable source is left out rather than guessed; an absent mode
+# means "not documented here", not "can't read it".
+#
+# Served as-is by GET /api/compat-targets. tests/test_compat_targets.py checks
+# every mode and codec against the tool registry. Mode values are ModeSpec.mode,
+# codec values are the picker's codec values.
+#
+# The CHD readers below are libchdr builds whose decoder switch handles every
+# chdman codec the picker offers except lzma2 and avhu (libchdr has no avhu
+# decoder, and lzma2 is not a CHD codec): zlib, zstd, lzma, huff, flac and the
+# CD variants cdzl, cdzs, cdlz, cdfl. `preferred` there is chdman's own default
+# for the command (docs.mamedev.org/tools/chdman.html).
+
+targets:
+  - id: nethersx2
+    label: NetherSX2 / AetherSX2
+    entries:
+      - modes: [createdvd]
+        codecs: [zlib]
+        preferred: [zlib]
+        note: createdvd CHDs load only when made with zlib alone (-c zlib).
+        sources:
+          - https://github.com/Trixarian/NetherSX2-patch/releases/tag/2.0
+          - https://github.com/Trixarian/NetherSX2-patch/issues/37
+      - modes: [createcd]
+        codecs: [cdlz, cdzl, cdfl]
+        preferred: [cdlz, cdzl, cdfl]
+        note: >-
+          createcd CHDs made with chdman's default codecs load; the release
+          notes suggest them as the smaller option.
+        sources:
+          - https://github.com/Trixarian/NetherSX2-patch/releases/tag/2.0
+          - https://docs.mamedev.org/tools/chdman.html
+
+  - id: pcsx2
+    label: PCSX2
+    entries:
+      - modes: [createdvd]
+        codecs: [lzma, zlib, huff, flac, zstd]
+        preferred: [lzma, zlib, huff, flac]
+        sources:
+          - https://github.com/PCSX2/pcsx2/blob/master/3rdparty/libchdr/src/libchdr_chd.c
+          - https://github.com/PCSX2/pcsx2/issues/10823
+      - modes: [createcd]
+        codecs: [cdlz, cdzl, cdfl, cdzs, lzma, zlib, huff, flac, zstd]
+        preferred: [cdlz, cdzl, cdfl]
+        sources:
+          - https://github.com/PCSX2/pcsx2/blob/master/3rdparty/libchdr/src/libchdr_chd.c
+      - modes: [cso_compress, zso_compress]
+        note: CSO v1 and ZSO; the CSO reader refuses a header version above 1, so not CSO v2.
+        sources:
+          - https://github.com/PCSX2/pcsx2/blob/master/pcsx2-qt/MainWindow.cpp
+          - https://github.com/PCSX2/pcsx2/blob/master/pcsx2/CDVD/CsoFileReader.cpp
+
+  - id: duckstation
+    label: DuckStation
+    entries:
+      - modes: [createcd]
+        codecs: [cdlz, cdzl, cdfl, cdzs, lzma, zlib, huff, flac, zstd]
+        preferred: [cdlz, cdzl, cdfl]
+        sources:
+          - https://github.com/stenzek/duckstation#features
+          - https://github.com/stenzek/duckstation/blob/master/dep/libchdr/src/libchdr_chd.c
+
+  - id: ppsspp
+    label: PPSSPP
+    entries:
+      - modes: [createdvd]
+        codecs: [lzma, zlib, huff, flac, zstd]
+        preferred: [lzma, zlib, huff, flac]
+        note: >-
+          CHD needs PPSSPP 1.17 and zstd 1.17.1. PPSSPP's guide asks for
+          createdvd, not createcd.
+        sources:
+          - https://www.ppsspp.org/docs/getting-started/dumping-games/
+          - https://github.com/hrydgard/ppsspp/pull/18824
+      - modes: [cso_compress]
+        note: CSO v1 only; ZSO and CSO v2 are not supported.
+        sources:
+          - https://www.ppsspp.org/docs/getting-started/dumping-games/
+          - https://github.com/hrydgard/ppsspp/issues/20890
+
+  - id: dolphin
+    label: Dolphin
+    entries:
+      - modes: [dolphin_rvz]
+        codecs: [zstd, bzip2, lzma, lzma2, none]
+        preferred: [zstd]
+        sources:
+          - https://github.com/dolphin-emu/dolphin/blob/master/Source/Core/DiscIO/WIABlob.cpp
+          - https://github.com/dolphin-emu/dolphin/blob/master/docs/WiaAndRvz.md
+      - modes: [dolphin_wia]
+        codecs: [none, bzip2, lzma, lzma2]
+        sources:
+          - https://github.com/dolphin-emu/dolphin/blob/master/Source/Core/DiscIO/WIABlob.cpp
+          - https://github.com/dolphin-emu/dolphin/blob/master/docs/WiaAndRvz.md
+      - modes: [dolphin_gcz]
+        sources:
+          - https://github.com/dolphin-emu/dolphin/blob/master/Source/Core/DiscIO/CompressedBlob.cpp
+
+  - id: retroarch-pcsx-rearmed
+    label: "RetroArch: PCSX ReARMed"
+    entries:
+      - modes: [createcd]
+        codecs: [cdlz, cdzl, cdfl, cdzs, lzma, zlib, huff, flac, zstd]
+        preferred: [cdlz, cdzl, cdfl]
+        sources:
+          - https://github.com/libretro/libretro-super/blob/master/dist/info/pcsx_rearmed_libretro.info
+          - https://github.com/libretro/pcsx_rearmed/blob/master/deps/libchdr/src/libchdr_chd.c
+          - https://github.com/libretro/pcsx_rearmed/blob/master/Makefile
+
+  - id: retroarch-swanstation
+    label: "RetroArch: SwanStation"
+    entries:
+      - modes: [createcd]
+        codecs: [cdlz, cdzl, cdfl, cdzs, lzma, zlib, huff, flac, zstd]
+        preferred: [cdlz, cdzl, cdfl]
+        sources:
+          - https://github.com/libretro/libretro-super/blob/master/dist/info/swanstation_libretro.info
+          - https://github.com/libretro/swanstation/blob/main/dep/libchdr/src/libchdr_chd.c
+
+  - id: mister
+    label: MiSTer (CD cores)
+    entries:
+      - modes: [createcd]
+        codecs: [cdlz, cdzl, cdfl, cdzs, lzma, zlib, huff, flac, zstd]
+        preferred: [cdlz, cdzl, cdfl]
+        note: zstd needs a Main_MiSTer build from March 2024 or later.
+        sources:
+          - https://mister-devel.github.io/MkDocs_MiSTer/basics/cd/
+          - https://github.com/MiSTer-devel/Main_MiSTer/commit/40501a87751e2f39f6631ac3aef40df4223451d3
+          - https://github.com/MiSTer-devel/Main_MiSTer/blob/master/lib/libchdr/libchdr_chd.c

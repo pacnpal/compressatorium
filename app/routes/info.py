@@ -29,6 +29,7 @@ from models import (
 from services.archive import ARCHIVE_EXTENSIONS
 from services.chd_metadata_store import chd_metadata_store
 from services.chdman import chdman_service
+from services.compat_targets import compat_targets
 from services.disc_id import (
     DiscIdStorageAbandoned,
     extract_from_chd as disc_id_extract_from_chd,
@@ -769,6 +770,12 @@ async def get_app_version() -> dict:
         "version": main_module.get_version(),
         "search_auto_return_to_file_list": settings.search_auto_return_to_file_list,
     }
+
+
+@router.get("/compat-targets")
+async def get_compat_targets() -> dict:
+    """The "Compatible with..." table: each target's modes, codecs and sources (#429)."""
+    return {"targets": compat_targets()}
 
 
 # ============ Z3DS endpoints ============

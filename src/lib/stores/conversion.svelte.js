@@ -92,6 +92,9 @@ class ConversionStore {
   mode = $state(defaultModeFor(INITIAL_TOOL));
   compressionSelection = $state(defaultCompressionFor(INITIAL_TOOL));
   compressionLevel = $state(defaultLevelFor(INITIAL_TOOL));
+  // The picker's "Compatible with…" target id (#429); '' for none. Advisory
+  // only: it sets codecs when chosen and warns, and is never sent to a job.
+  compatTarget = $state('');
   outputDir = $state('');
   deleteOnVerify = $state(false);
   // The named opt-out from the Round-trip check: delete on the container

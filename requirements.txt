@@ -8,6 +8,9 @@ defusedxml>=0.7.1
 python-multipart>=0.0.32
 SQLAlchemy>=2.0.51,<3.0
 alembic>=1.18.5
+# PyYAML: reads the "Compatible with..." table (app/services/compat_targets.yml).
+# uvicorn[standard] already pulls it in; named here because the app imports it.
+PyYAML>=6.0.2
 # nsz: Nintendo Switch NSP/XCI <-> NSZ/XCZ (de)compressor. Pulls zstandard +
 # pycryptodome itself. Ships NO keys; the operator supplies their own prod.keys.
 nsz>=4.6.1

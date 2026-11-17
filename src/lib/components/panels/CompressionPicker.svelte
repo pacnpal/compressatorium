@@ -13,6 +13,7 @@
   import { conversion } from '$lib/stores/conversion.svelte.js';
   import { registry } from '$lib/tools/registry.js';
   import { toast } from 'svelte-sonner';
+  import CompatTargetSelect from './CompatTargetSelect.svelte';
   import Check from '@lucide/svelte/icons/check';
   import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
 
@@ -36,6 +37,21 @@
   // disable the Reset button so it's not a silent no-op.
   const atDefault = $derived(conversion.isCompressionDefault);
 
+  // What the job runs with, for the "Compatible with…" warning: the one codec
+  // of a single-codec mode, else the chip list (null when empty, which leaves
+  // chdman on its own default).
+  const runCodecs = $derived.by(() => {
+    if (style !== 'multi') return [singleCodec];
+    const chips = selection.filter((c) => c && c !== 'none');
+    if (chips.length) return chips;
+    return selection.includes('none') ? ['none'] : null;
+  });
+
+  function applyCompat(preferred) {
+    if (style === 'multi') conversion.setCompression(preferred);
+    else conversion.setSingleCodec(preferred[0]);
+  }
+
   function isSelected(value) {
     return selection.includes(value);
   }
@@ -49,6 +65,13 @@
 {#if supports && codecs.length > 0}
   <fieldset class="picker">
     <legend class="legend">Compression</legend>
+
+    <CompatTargetSelect
+      mode={spec?.mode}
+      codecs={runCodecs}
+      bind:target={conversion.compatTarget}
+      onpick={applyCompat}
+    />
 
     {#if style === 'multi'}
       {@const max = conversion.CHDMAN_MAX_CODECS ?? 4}

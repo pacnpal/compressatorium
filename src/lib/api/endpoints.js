@@ -64,6 +64,10 @@ export const api = {
   // ─── Version ──────────────────────────────────────────────────────────
   getVersion: () => fetchJson(`${API_BASE}/version`, undefined, 'Failed to fetch version'),
 
+  // ─── "Compatible with…" table (#429): targets, the modes and codecs they read
+  getCompatTargets: () =>
+    fetchJson(`${API_BASE}/compat-targets`, undefined, 'Failed to load compatibility targets'),
+
   // ─── Notifications (webhook / Apprise destinations) ─────────────────────
   // The server never returns a saved URL; edits that omit `url` keep it.
   getNotifications: () =>
