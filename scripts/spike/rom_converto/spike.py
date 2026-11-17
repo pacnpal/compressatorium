@@ -13,15 +13,17 @@ It never downloads a commercial game image, a key or seeddb.bin. See README.md.
 
 import argparse
 import hashlib
+import http.client
 import importlib.util
 import json
 import os
 import platform
 import shutil
+import stat
 import struct
-import subprocess
 import sys
-import urllib.request
+import tempfile
+import urllib.parse
 
 _SPEC = importlib.util.spec_from_file_location(
     "fixtures", os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures.py")
@@ -70,10 +72,32 @@ def sha256(path):
     return h.hexdigest()
 
 
+def download(url, dest, hops=5):
+    """GET an https URL into `dest`, following redirects. Other schemes are refused."""
+    for _ in range(hops):
+        parts = urllib.parse.urlsplit(url)
+        if parts.scheme != "https" or not parts.hostname:
+            sys.exit(f"refusing non-https URL: {url}")
+        conn = http.client.HTTPSConnection(parts.hostname, timeout=120)
+        target = parts.path + ("?" + parts.query if parts.query else "")
+        conn.request("GET", target)
+        resp = conn.getresponse()
+        if resp.status in (301, 302, 303, 307, 308):
+            url = urllib.parse.urljoin(url, resp.getheader("Location", ""))
+            conn.close()
+            continue
+        if resp.status != 200:
+            sys.exit(f"download failed ({resp.status}): {url}")
+        with open(dest, "wb") as f:
+            shutil.copyfileobj(resp, f)
+        conn.close()
+        return
+    sys.exit(f"too many redirects: {url}")
+
+
 def fetch(url, dest, want):
     if not (os.path.isfile(dest) and sha256(dest) == want):
-        with urllib.request.urlopen(url, timeout=120) as r, open(dest, "wb") as f:
-            shutil.copyfileobj(r, f)
+        download(url, dest)
     got = sha256(dest)
     if got != want:
         os.remove(dest)
@@ -85,7 +109,7 @@ def prepare_work(work):
     if os.path.exists(work) and os.listdir(work) and not os.path.isfile(os.path.join(work, MARKER)):
         sys.exit(f"{work} is not empty and is not a spike folder; pass a new or empty one")
     os.makedirs(work, exist_ok=True)
-    with open(os.path.join(work, MARKER), "w") as f:
+    with open(os.path.join(work, MARKER), "w", encoding="utf-8") as f:
         f.write("rom-converto spike\n")
     return work
 
@@ -108,22 +132,22 @@ class Runner:
             self.asset, self.platform = TARGETS[target]
         self.binary = os.path.join(self.bin_dir, self.asset)
         fetch(f"{RELEASE_URL}/{self.asset}", self.binary, ASSETS[self.asset])
-        os.chmod(self.binary, 0o755)
+        os.chmod(self.binary, stat.S_IRWXU)
         self.run_dir = os.path.join(work, "run-" + target)
         shutil.rmtree(self.run_dir, ignore_errors=True)
         os.makedirs(os.path.join(self.run_dir, "home"))
 
-    def run(self, *args, network=True, update_check=False, timeout=300):
+    def run(self, *args, network=True, update_check=False):
         """Run one command in the run folder. Returns (rc, combined output)."""
-        proc = self._run(args, network, update_check, timeout)
+        proc = self._run(args, network, update_check)
         return proc.returncode, (proc.stdout + proc.stderr).strip()
 
     def run_split(self, *args):
         """Run one command and return (stdout, stderr)."""
-        proc = self._run(args, True, False, 300)
+        proc = self._run(args, True, False)
         return proc.stdout.strip(), proc.stderr.strip()
 
-    def _run(self, args, network, update_check, timeout):
+    def _run(self, args, network, update_check):
         base = [] if update_check else ["--no-update-check"]
         if self.target == "native":
             cmd = [self.binary, *base, *args]
@@ -132,15 +156,7 @@ class Runner:
                 "HOME": os.path.join(self.run_dir, "home"),
                 "NO_COLOR": "1",
             }
-            proc = subprocess.run(
-                cmd,
-                cwd=self.run_dir,
-                env=env,
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-            )
+            proc = spawn(cmd, self.run_dir, env)
         else:
             cmd = ["docker", "run", "--rm", "--platform", self.platform]
             cmd += ["--user", f"{os.getuid()}:{os.getgid()}"]
@@ -157,7 +173,7 @@ class Runner:
                 "/w",
             ]
             cmd += ["-v", f"{self.bin_dir}:/b:ro", DOCKER_IMAGE, "/b/" + self.asset, *base, *args]
-            proc = subprocess.run(cmd, check=False, capture_output=True, text=True, timeout=timeout)
+            proc = spawn(cmd, self.run_dir, dict(os.environ))
         return proc
 
     def path(self, name):
@@ -176,6 +192,34 @@ class Report:
     def note(self, key, detail):
         self.rows.append({"check": key, "ok": None, "detail": detail})
         print(f"[NOTE] {key}  ({detail})")
+
+
+class Result:
+    def __init__(self, returncode, stdout, stderr):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+def spawn(argv, cwd, env):
+    """Run argv in cwd with stdout and stderr captured apart. Returns a Result."""
+    with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+        actions = [
+            (os.POSIX_SPAWN_DUP2, out.fileno(), 1),
+            (os.POSIX_SPAWN_DUP2, err.fileno(), 2),
+        ]
+        here = os.getcwd()
+        os.chdir(cwd)
+        try:
+            pid = os.posix_spawnp(argv[0], argv, env, file_actions=actions)
+        finally:
+            os.chdir(here)
+        _, status = os.waitpid(pid, 0)
+        texts = []
+        for f in (out, err):
+            f.seek(0)
+            texts.append(f.read().decode("utf-8", "replace"))
+    return Result(os.waitstatus_to_exitcode(status), texts[0], texts[1])
 
 
 def tree(root):
@@ -451,7 +495,7 @@ def main():
     psp_checks(r, rep)
     ctr_checks(r, rep, homebrew)
 
-    with open(os.path.join(work, f"results-{args.target}.json"), "w") as f:
+    with open(os.path.join(work, f"results-{args.target}.json"), "w", encoding="utf-8") as f:
         json.dump(rep.rows, f, indent=2)
     failed = [x for x in rep.rows if x["ok"] is False]
     print(f"\n{len(failed)} failed; results in {work}/results-{args.target}.json")

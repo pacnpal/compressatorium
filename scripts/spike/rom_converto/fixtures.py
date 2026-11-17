@@ -4,7 +4,7 @@ Everything here is built from seeded random bytes or hand-made headers. Nothing
 is a commercial game image, and no key or seed is used or shipped.
 """
 
-import random
+import hashlib
 import struct
 
 SECTOR = 2048
@@ -16,7 +16,13 @@ BASE_XGD3 = 0x02080000
 
 
 def rand_bytes(size, seed):
-    return random.Random(seed).randbytes(size)
+    """Deterministic filler: a SHA-256 counter stream, so runs are repeatable."""
+    out = bytearray()
+    counter = 0
+    while len(out) < size:
+        out += hashlib.sha256(f"{seed}:{counter}".encode()).digest()
+        counter += 1
+    return bytes(out[:size])
 
 
 def _entry_size(name):
