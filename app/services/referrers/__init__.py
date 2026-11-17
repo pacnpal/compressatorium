@@ -174,6 +174,8 @@ class ReferrerOutcome:
     reason: str | None = None
     kept: str | None = None
     removed: list[str] = field(default_factory=list)
+    # What a Referrer that applied wants the job to say (``Applied.note``).
+    notes: list[str] = field(default_factory=list)
     # The async applies a phase's thread left for the event loop, in order.
     pending: list[tuple[Referrer, ReferrerChange]] = field(
         default_factory=list, repr=False, compare=False,
@@ -236,6 +238,9 @@ class ReferrerOutcome:
             self.records[-1].setdefault(key, value)
         if isinstance(applied, Applied):
             self.removed.extend(applied.removed)
+            if applied.note:
+                self.records[-1].setdefault("note", applied.note)
+                self.notes.append(applied.note)
 
     def _fail(self, referrer: str, exc: Exception, fallback_target: str) -> None:
         if isinstance(exc, ReferrerError):
@@ -309,7 +314,7 @@ def _plan_and_apply(
             outcome.pending.append((referrer, change))
             continue
         try:
-            referrer.apply(change)
+            applied = referrer.apply(change)
         except Exception as exc:
             # Any failure keeps the Source, so the catch is deliberately broad.
             logger.warning(
@@ -317,7 +322,8 @@ def _plan_and_apply(
             )
             outcome._fail(referrer.id, exc, change.target)
             continue
-        outcome._updated(referrer.id, change)
+        # What it returned (``Applied``) counts as an async apply's does.
+        outcome._updated(referrer.id, change, applied)
     return outcome
 
 
@@ -570,6 +576,9 @@ async def _run_phases(
             outcome.records.extend(stage.records)
             outcome.failed, outcome.reason = stage.failed, stage.reason
             outcome.kept = stage.kept
+            # What the phase's plain applies removed or noted (``Applied``).
+            outcome.removed.extend(stage.removed)
+            outcome.notes.extend(stage.notes)
             await _apply_pending(
                 outcome, stage.pending, guard=stage.guard,
                 cancel_event=cancel_event, bound=bound,

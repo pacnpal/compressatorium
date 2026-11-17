@@ -118,6 +118,9 @@ class Applied:
     """
 
     removed: tuple[str, ...] = ()
+    # One line the job, and the Ledger's record of the change, says: what
+    # the user should know about how it was applied (#391).
+    note: str | None = None
 
 
 @dataclass(frozen=True)

@@ -147,6 +147,9 @@ class _SourceDelete:
     kept_reason: Optional[str] = None
     cancelled: bool = False  # a cancel seen at the last look, before any unlink
     referrer_records: List[dict] = field(default_factory=list)
+    # What a Referrer that applied wants said (``Applied.note``): the RomM
+    # swap that couldn't run after the output was placed (#391).
+    notes: list[str] = field(default_factory=list)
 
 
 def _check_satisfies(check_passed: Optional[str], required: Optional[str]) -> bool:
@@ -3580,32 +3583,21 @@ class JobManager:
         its worker, which releases them once the unlink has finished, and
         :class:`MutationInFlight` (or the cancel) propagates.
         """
-        expected_set = set(expected_paths)
-        current_plan = await self._bounded_delete_probe(
-            build_delete_plan, file_path, seconds=probe_seconds,
-        )
-        if (
-            current_plan.get("errors")
-            or current_plan.get("unsafe_paths")
-            or current_plan.get("missing_paths")
-        ):
-            raise RuntimeError("Delete plan no longer safe; refusing to delete")
-        if set(current_plan.get("delete_paths", [])) != expected_set:
-            raise RuntimeError("Delete plan changed; refusing to delete")
-
-        output_real, source_for_delete, delete_order = await self._bounded_delete_probe(
-            self._delete_order, file_path, output_path, list(expected_paths),
-            seconds=probe_seconds,
-        )
-
-        await self._check_delete_paths(
-            owner_id, expected_paths, fingerprints, output_real, probe_seconds,
-        )
+        try:
+            output_real, source_for_delete, delete_order, library = await self._prepare_delete(
+                owner_id, file_path, output_path, expected_paths, fingerprints, probe_seconds,
+            )
+        except BaseException:
+            # Refused before the Referrer hook took the staged output: it was
+            # checked, so it is placed, never discarded with its slot because
+            # the Source side failed (CodeRabbit 4593839025).
+            if placement is not None:
+                await self._place_checked_output(placement)
+            raise
 
         # Referrers (.m3u, ...) move to the output before the Source goes; if
         # any can't, the Source stays (#295). The Image's Library decides
         # which opt-in Referrers run (#383).
-        library = await self._image_library(source_for_delete, probe_seconds)
         referrer_outcome = await referrers.update_before_source_removal(
             source_for_delete,
             {path: output_path for path in delete_order},
@@ -3641,7 +3633,9 @@ class JobManager:
             referrer_outcome.outlive(
                 lambda: self._spawn_background(self._let_go_in_background(held)),
             )
-        outcome = _SourceDelete(referrer_records=referrer_outcome.records)
+        outcome = _SourceDelete(
+            referrer_records=referrer_outcome.records, notes=list(referrer_outcome.notes),
+        )
         if referrer_outcome.removed and not delete_order:
             # Nothing is left to remove: the Source is gone, so a late cancel
             # changes nothing.
@@ -3688,6 +3682,47 @@ class JobManager:
         await self._release_delete_holds_in_background(owner_id, probe_seconds)
         await self._clear_source_records(file_path, probe_seconds)
         return outcome
+
+    async def _prepare_delete(
+        self, owner_id: str, file_path: str, output_path: str,
+        expected_paths: list[str], fingerprints: dict, probe_seconds: float | None,
+    ) -> tuple[str, str, list[str], object]:
+        """The delete step up to the Referrer hook: the plan rebuilt and
+        compared, the removal order, every path checked, and the Image's
+        Library. ``(output realpath, the Source named to Referrers, removal
+        order, Library)``. Raises RuntimeError when any of it no longer holds:
+        nothing is removed."""
+        current_plan = await self._bounded_delete_probe(
+            build_delete_plan, file_path, seconds=probe_seconds,
+        )
+        if (
+            current_plan.get("errors")
+            or current_plan.get("unsafe_paths")
+            or current_plan.get("missing_paths")
+        ):
+            raise RuntimeError("Delete plan no longer safe; refusing to delete")
+        if set(current_plan.get("delete_paths", [])) != set(expected_paths):
+            raise RuntimeError("Delete plan changed; refusing to delete")
+
+        output_real, source_for_delete, delete_order = await self._bounded_delete_probe(
+            self._delete_order, file_path, output_path, list(expected_paths),
+            seconds=probe_seconds,
+        )
+        await self._check_delete_paths(
+            owner_id, expected_paths, fingerprints, output_real, probe_seconds,
+        )
+        library = await self._image_library(source_for_delete, probe_seconds)
+        return output_real, source_for_delete, delete_order, library
+
+    @staticmethod
+    async def _place_checked_output(placement: referrers.StagedPlacement) -> None:
+        """Place a checked output still staged, when the delete step stopped
+        before a Referrer could. Logged, never raised: the step's own error
+        is the one that counts."""
+        try:
+            await placement.place()
+        except Exception:
+            logger.warning("Could not place the checked output", exc_info=True)
 
     async def _clear_source_records(
         self, file_path: str, probe_seconds: Optional[float],
@@ -4111,7 +4146,11 @@ class JobManager:
                 return KeptDeleteRetry(KEPT_STOPPED, "stopped before the unlinks")
             if removal.kept_reason:
                 return KeptDeleteRetry(KEPT_KEPT, removal.kept_reason)
-            return KeptDeleteRetry(KEPT_DELETED, None, tuple(deleted))
+            # What a Referrer had to say (the RomM swap that couldn't run
+            # after the output was placed, #391) is the outcome's reason.
+            return KeptDeleteRetry(
+                KEPT_DELETED, "; ".join(removal.notes) or None, tuple(deleted),
+            )
 
         run.set_delete(delete)
         return None
@@ -5308,6 +5347,10 @@ class JobManager:
                             )
                         else:
                             source_deleted = True
+                            if removal.notes:
+                                # Said, never left to look like a swap (#391).
+                                job.warning = "; ".join(removal.notes)
+                                job.message = f"Output is {check_label}. {job.warning}"
 
                 if (
                     slot is not None and not slot.placed

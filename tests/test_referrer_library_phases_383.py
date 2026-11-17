@@ -279,7 +279,7 @@ async def test_apply_async_defaults_to_the_sync_apply_off_the_loop(tmp_path):
     plain = _Fake("plain", log)
     seen: list[int] = []
     plain.apply = lambda change: seen.append(threading.get_ident())
-    image, renames = _renames(tmp_path)
+    _image, renames = _renames(tmp_path)
     change = plain.plan(renames)[0]
 
     assert not inspect.iscoroutinefunction(Referrer.apply)
@@ -288,6 +288,30 @@ async def test_apply_async_defaults_to_the_sync_apply_off_the_loop(tmp_path):
     assert seen and seen[0] != threading.get_ident()
     for referrer in referrers.registry.all():
         assert not inspect.iscoroutinefunction(referrer.apply), referrer.id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", [Phase.FILE, Phase.NETWORK])
+async def test_a_sync_applys_removed_source_reaches_the_outcome(tmp_path, fakes, phase):
+    """CodeRabbit review 5930768363: what a synchronous ``apply`` returns
+    (``Applied``) is kept through its phase and into the hook's outcome, as
+    an async one's is."""
+    from services.referrers import Applied
+
+    log: list = []
+    image, renames = _renames(tmp_path)
+
+    class _Removing(_Fake):
+        def apply(self, change):
+            super().apply(change)
+            return Applied(removed=(image,))
+
+    fakes.register(_Removing("removing", log, phase=phase))
+
+    outcome = await referrers.update_before_source_removal(image, renames)
+
+    assert outcome.ok
+    assert outcome.removed == [image]
 
 
 @pytest.mark.asyncio

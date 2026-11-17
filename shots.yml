@@ -213,7 +213,8 @@
         if (url.pathname !== '/api/jobs/delete-plan' || !response.ok) return response;
         const plan = await response.json();
         for (const item of plan.items ?? []) {
-          const name = (item.file_path ?? '').split('/').pop();
+          const name = (item.source_path ?? '').split('/').pop();
+          if (!name) throw new Error('delete plan item has no source_path');
           const output = name.replace(/\.[^.]+$/, '.chd');
           item.referrer_changes = [...(item.referrer_changes ?? []), {
             referrer: 'romm_swap', target: 'RomM ROM 1234', entries: 1,

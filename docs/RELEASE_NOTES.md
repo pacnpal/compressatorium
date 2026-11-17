@@ -22,6 +22,14 @@
   the Ledger records that the ROM kept its id, and the ROM's metadata re-pin
   is marked done. Workspace conversions and Rule sweeps both do it. Archives,
   multi-file games and everything with the switch off convert as before.
+  On the Platforms RomM never hashes (Switch, Wii U, PS3 and the others in
+  RomM's own list), RomM reports no SHA-1, so its name and size alone
+  confirm the new file there; a SHA-1 it does report is always compared. The
+  ROM is found in either RomM folder layout, subfolders included, and a game
+  whose ROM can't be told apart keeps its source. A source kept because
+  another job was reading it is deleted later the usual way, with the re-pin
+  queued, and the result says "the ROM did not keep its id". A Cancel during
+  a swap stops it with the source kept safe.
 
 - **A "Keep the ROM id" switch for RomM** (#390). A new card on the RomM
   Settings tab holds a switch, off by default, that says a conversion should

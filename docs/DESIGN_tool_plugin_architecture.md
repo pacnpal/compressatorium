@@ -3585,6 +3585,7 @@ class ReferrerError(Exception):               # target, reason, kept=None (#391)
 @dataclass(frozen=True)
 class Applied:                                # an apply's return (#391)
     removed: tuple[str, ...]                  # Source files it removed itself
+    note: str | None                          # what the job and the Ledger say
 @dataclass(frozen=True)
 class StagedPlacement:                        # the job's still-staged output (#391)
     staged: Mapping[str, str]                 # {final output path: staged path}
@@ -4086,7 +4087,7 @@ the swap plans nothing when the output is not staged (the job placed it).
 | `parked` | Written by the move itself, once the Source is in the slot. |
 | `placing` | `placement.place()`: the staged output takes the name. |
 | `placed` | The output is in place, the Source still parked. |
-| `rehashing` | `RommClient.scan_rom_hashes([id])` (`POST /api/tasks/scan`, `{"type": "hashes", "roms_ids": [id], "apis": []}`), `RommClient.task` polled to an end (`REHASH_SECONDS`), then the ROM read back: its name, `fs_size_bytes` and `sha1_hash` must be the output's (the size only on a Platform RomM never hashes). The task's stats are never read: RomM's say `updated_roms: 0` even when it worked. |
+| `rehashing` | `RommClient.scan_rom_hashes([id])` (`POST /api/tasks/scan`, `{"type": "hashes", "roms_ids": [id], "apis": []}`), `RommClient.task` polled to an end (`REHASH_SECONDS`), then the ROM read back: its name, `fs_size_bytes` and `sha1_hash` must be the output's. The one exception: on a Platform RomM never hashes (`UNHASHED_PLATFORM_SLUGS`, RomM's own `NON_HASHABLE_PLATFORMS`: Switch, Switch 2, Wii U, PS3 to PS5, Xbox 360, Xbox One, PC and others) and only when RomM reports no SHA-1, the name and size are all RomM has, so they alone confirm it; a SHA-1 RomM reports is always compared (CodeRabbit 4593839047). The task's stats are never read: RomM's say `updated_roms: 0` even when it worked. |
 | `deleting` | The parked file must still be the Source; it is removed and the parking slot closed. |
 
 A success ends `done`, returns `Applied(removed=(source,))` (the job records
@@ -4094,6 +4095,32 @@ the Source as deleted and unlinks nothing), and closes the output's pending
 re-pin row as done (`repin.settle_swapped`): the provider ids never left the
 ROM. With the switch off, or when the swap doesn't apply, the re-pin queue
 works exactly as before.
+
+*When the output is already in place* (CodeRabbit 4593839018). A job whose
+Source a reader held places its output and keeps the Source; the later
+retried delete (`retry_kept_delete`, `finish_kept_delete`) and any job that
+placed its output before the hook run the hook with no `StagedPlacement`.
+RomM can't rename onto a name that is taken (409), so the swap doesn't try:
+`plan` returns a fallback change (`summary` "RomM: ROM <id> can't keep its
+id", `record` `{rom_id, kept_rom_id: false}`) whose apply queues the re-pin
+the switch-off path relies on (`repin.record`, `pre_fingerprint=""`, the
+ROM's provider ids) and returns `Applied(note=...)`: "the ROM did not keep
+its id: the swap can't run after the output was placed; re-pin queued (RomM
+ROM <id>)". The job deletes the Source as today. The note reaches the
+Ledger's record (`note`), the job's message and warning
+(`_SourceDelete.notes`), and a retried delete's outcome reason, which the
+sweep logs and lists under `kept_sources_notes`; a retried delete writes no
+Ledger row of its own. A re-pin that can't be queued keeps the Source. A
+plain `apply`'s `Applied` result now counts like an async one's: the hook
+keeps it (`_plan_and_apply`) and carries each phase's `removed` and `notes`
+into the outcome (CodeRabbit review 5930768363).
+
+*A Source check that fails before the hook* (CodeRabbit 4593839025).
+`_delete_source_set` runs its pre-hook part in `_prepare_delete` (the plan
+rebuilt, the order, the path checks, the Library). If that raises while the
+output is still staged, `_place_checked_output` places it before the error
+goes on, so the job's cleanup never discards a checked output because the
+Source side failed.
 
 *Failures, and what each journal state leaves.* `ReferrerError.kept` sets the
 job's wording (`ReferrerOutcome.kept_message`): "converted, source kept:

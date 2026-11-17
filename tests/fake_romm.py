@@ -25,7 +25,8 @@ source at ``eb10d95``:
 * The swap's calls (#391), on the ROMs the fake holds (:meth:`add_rom`),
   whose files live under ``library`` (RomM's library root as mounted here):
 
-  - ``GET /api/roms?platform_ids=N`` lists a Platform's ROMs, and
+  - ``GET /api/roms?platform_ids=N`` lists a Platform's ROMs a page at a time
+    (``limit``, ``offset``; ``total`` counts every match), and
     ``GET /api/roms/{id}`` reads one back.
   - ``PUT /api/roms/{id}`` with a multipart ``fs_name`` renames the record and
     moves its file on disk, as RomM 5.4.1 does (spike #382): a name with a
@@ -293,12 +294,16 @@ class FakeRomm:
             status, reply = self._gated("roms.read", 200)
             if status != 200:
                 return status, reply
-            wanted = urllib.parse.parse_qs(query).get("platform_ids")
+            params = urllib.parse.parse_qs(query)
+            wanted = params.get("platform_ids")
             items = [
                 dict(rom) for rom in self.roms.values()
                 if not wanted or str(rom["platform_id"]) in wanted
             ]
-            return 200, {"items": items, "total": len(items)}
+            # One page, as RomM pages it: `total` counts every match.
+            offset = int(params.get("offset", ["0"])[0])
+            limit = int(params.get("limit", [str(len(items))])[0])
+            return 200, {"items": items[offset:offset + limit], "total": len(items)}
         rom_route = re.fullmatch(r"/api/roms/(\d+)", route)
         if rom_route and method == "GET":
             rom = self.roms.get(int(rom_route.group(1)))

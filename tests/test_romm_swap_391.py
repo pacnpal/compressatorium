@@ -583,6 +583,127 @@ async def test_a_rom_that_cant_be_told_keeps_the_source(vol, romm, unknowable):
     assert job.deleted_paths == []
 
 
+FALLBACK = (
+    "the ROM did not keep its id: the swap can't run after the output was placed; "
+    "re-pin queued"
+)
+
+
+@pytest.mark.asyncio
+async def test_a_retried_delete_falls_back_to_the_re_pin_and_says_so(vol, romm, monkeypatch):
+    """CodeRabbit 4593839018: a reader held the Source, so the job placed the
+    output beside it and kept the Source. RomM can't rename onto a name that
+    is taken, so the retried delete takes today's path, deleting the Source
+    and queueing the re-pin, and says the ROM did not keep its id."""
+    from services import db as db_module
+
+    platform = _platform(vol)
+
+    async def a_reader_holds_it(self, job_id, cancel_event):
+        return False
+
+    monkeypatch.setattr(
+        job_manager_module.JobManager, "_hold_delete_paths_waiting", a_reader_holds_it,
+    )
+    job = await _convert(platform / "Game.iso")
+    assert job.warning == job_manager_module.SOURCE_KEPT_FOR_READERS
+    assert (platform / "Game.chd").read_bytes() == OUTPUT_BYTES
+
+    outcome = await convert_routes.job_manager.retry_kept_delete(
+        source_path=str(platform / "Game.iso"), output_path=str(platform / "Game.chd"),
+    )
+
+    assert outcome.status == job_manager_module.KEPT_DELETED, outcome
+    assert FALLBACK in outcome.reason
+    assert not (platform / "Game.iso").exists()
+    assert romm.renames == []
+    assert _journal() == []
+    with db_module.SessionLocal() as session:
+        rows = session.query(db_module.RommRepin).filter_by(state="pending").all()
+    assert [(r.source_rom_id, r.output_path, r.metadata_ids) for r in rows] == [
+        (ROM_ID, str(platform / "Game.chd"), {"igdb_id": 4242}),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_job_that_placed_its_output_first_says_the_rom_did_not_keep_its_id(
+    vol, romm, monkeypatch,
+):
+    """The same fallback in a job whose output was placed before the hook:
+    the Source is deleted, the re-pin queued, and the job's message and its
+    Ledger record say the ROM did not keep its id."""
+    platform = _platform(vol)
+
+    async def no_staging(self, job, slot, write_path):
+        return None
+
+    monkeypatch.setattr(job_manager_module.JobManager, "_staged_placement", no_staging)
+    job = await _convert(platform / "Game.iso")
+
+    assert job.status == JobStatus.COMPLETED, job.error_message
+    assert FALLBACK in job.warning and FALLBACK in job.message
+    assert job.deleted_paths == [str(platform / "Game.iso")]
+    assert romm.renames == []
+    (record,) = [r for r in job.referrers_updated if r["referrer"] == "romm_swap"]
+    assert record["kept_rom_id"] is False
+    assert FALLBACK in record["note"]
+
+
+@pytest.mark.asyncio
+async def test_a_delete_check_that_fails_before_the_hook_keeps_the_output(
+    vol, romm, monkeypatch,
+):
+    """CodeRabbit 4593839025: the output is still staged when the delete step
+    starts; a Source check that fails before the Referrer hook must not let
+    the job's cleanup discard the checked output."""
+    platform = _platform(vol)
+
+    async def refuse(self, *args, **kwargs):
+        raise RuntimeError("Delete path fingerprint mismatch; refusing to delete")
+
+    monkeypatch.setattr(job_manager_module.JobManager, "_check_delete_paths", refuse)
+    job = await _convert(platform / "Game.iso")
+
+    assert "fingerprint mismatch" in (job.error_message or job.warning or "")
+    assert (platform / "Game.chd").read_bytes() == OUTPUT_BYTES
+    assert (platform / "Game.iso").read_bytes() == SOURCE_BYTES
+    assert romm.renames == []
+
+
+@pytest.mark.parametrize(("slug", "reported", "ok"), [
+    ("ps2", "", False),            # a hashed Platform must report the SHA-1
+    ("ps2", "0" * 40, False),
+    ("switch", "", True),          # RomM never hashes Switch: size only
+    ("switch", "0" * 40, False),   # but a SHA-1 it reports is compared
+])
+def test_the_read_back_compares_the_sha1_wherever_romm_reports_one(slug, reported, ok):
+    """CodeRabbit 4593839047: size alone confirms a swap only on a Platform
+    RomM never hashes, and only when it reports no SHA-1."""
+    from services.romm.swap_referrer import _Plan, _read_back_problem
+
+    plan = _Plan(ROM_ID, "/l/Game.iso", "/l/Game.chd", "Game.iso", "Game.chd", slug)
+    rom = {"id": ROM_ID, "fs_name": "Game.chd", "fs_size_bytes": 10,
+           "platform_slug": slug, "sha1_hash": reported}
+
+    assert (_read_back_problem(rom, plan, 10, "f" * 40) is None) is ok
+
+
+def test_the_fake_lists_roms_a_page_at_a_time(vol, romm):
+    """CodeRabbit 4593839062: like RomM, the listing honours ``limit`` and
+    ``offset``, and ``total`` counts every ROM the filter matches."""
+    from services.romm import RommClient
+
+    romm.add_rom(ROM_ID + 1, PS2, "Game.iso")
+    client = RommClient(base_url=romm.url, token="rmm_x")
+
+    page = client._request(
+        "GET", "/api/roms", params={"platform_ids": PS2["id"], "limit": 1, "offset": 1},
+    )
+
+    assert [rom["id"] for rom in page["items"]] == [ROM_ID + 1]
+    assert page["total"] == 2
+
+
 def test_the_fake_never_moves_a_file_out_of_its_folder(vol, romm):
     """RomM never moves a ROM's file out of its Platform folder: a name with a
     path in it is sanitized to its last part (spike #382), and a name that

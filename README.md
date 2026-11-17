@@ -787,7 +787,25 @@ source is deleted after its check, from the Workspace or a Rule:
    takes its name, and RomM rehashes that one ROM.
 4. Only when RomM reads back the output's size and SHA-1 is the source deleted.
    If it doesn't, the source goes back under its own name beside the output,
-   and the job says why.
+   and the job says why. One exception: RomM never hashes some Platforms
+   (Switch, Switch 2, Wii U, PS3, PS4, PS5, Xbox 360, Xbox One, PC and a few
+   others, RomM's own `NON_HASHABLE_PLATFORMS`). There, when RomM reports no
+   SHA-1, its name and size are what it has, so they alone confirm the new
+   file. A SHA-1 RomM does report is always compared.
+
+The ROM is found by the RomM Platform folder holding the file, in either RomM
+layout (`roms/<platform>/` or `<platform>/roms/`), subfolders included. A
+file RomM doesn't know as a ROM of its own (not in a Platform folder, or one
+RomM records as part of a folder ROM) converts as usual. One whose ROM can't
+be told (RomM can't be read, or two records claim it) keeps its source.
+
+If the source was kept because another job was reading it, the output was
+already put in place, so a later retried delete can't rename RomM's record
+onto it. That delete goes the usual way, with the metadata re-pin queued, and
+says so: "the ROM did not keep its id: the swap can't run after the output
+was placed; re-pin queued". Cancelling, or stopping the app, during a swap
+stops it where it is, undoes nothing, and leaves it recorded with the source
+safe.
 
 Every step is recorded before it runs. If one fails and can't be undone, the
 source stays set aside in the hidden staging folder, never deleted or swept

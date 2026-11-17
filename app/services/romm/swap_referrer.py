@@ -69,6 +69,11 @@ folder) keeps today's behaviour. One whose ROM can't be told (the folder or
 RomM can't be read, or two Platform folders or records claim it) keeps the
 Source, so the record is never orphaned.
 
+With the output already in place when the hook runs (a retried delete after
+a reader held the Source), RomM can't rename onto it: the delete takes
+today's path, the re-pin is queued, and the job and the Ledger say the ROM
+did not keep its id (``_fall_back``).
+
 Every read of a file or of RomM runs on a detached thread under a bound
 (``run_detached_bounded``, ``run_detached_within_stall_bound``), and every
 move on one never abandoned (``start_detached``), never on the event loop's
@@ -85,7 +90,7 @@ import contextvars
 import os
 import time
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from logging_setup import get_logger
@@ -138,6 +143,16 @@ class _Plan:
     old_name: str
     new_name: str
     platform_slug: str | None
+    # The output was placed before the hook (a retried delete after a reader
+    # held the Source): RomM can't rename onto it, so the delete takes
+    # today's path and the re-pin carries the metadata (``_fall_back``).
+    fallback: bool = False
+    rom: dict | None = field(default=None, compare=False, repr=False)
+
+
+# What the job and the Ledger say when the swap couldn't run (CodeRabbit
+# 4593839018).
+FALLBACK = "the ROM did not keep its id: the swap can't run after the output was placed"
 
 
 def _single(renames: Mapping[str, str], *, resolve: bool = False) -> tuple[str, str] | None:
@@ -233,12 +248,11 @@ class RommSwapReferrer(Referrer):
         if pair is None:
             return []
         source, output = pair
-        if hook_running():
-            placement = staged_placement()
-            if placement is None or output not in placement.staged:
-                # The job placed its output before the hook: RomM can't rename
-                # onto a name that is taken, so today's behaviour applies.
-                return []
+        # In the hook with the output already in place (the job placed it
+        # before the hook: a retried delete after a reader held the Source),
+        # RomM can't rename onto a name that is taken.
+        placement = staged_placement()
+        fallback = hook_running() and (placement is None or output not in placement.staged)
         try:
             rom = _rom_for(source)
         except (RommError, OSError, ValueError) as exc:
@@ -247,14 +261,22 @@ class RommSwapReferrer(Referrer):
             return []
         rom_id = int(rom["id"])
         old_name, new_name = os.path.basename(source), os.path.basename(output)
+        plan = _Plan(
+            rom_id=rom_id, source=source, output=output, old_name=old_name,
+            new_name=new_name, platform_slug=rom.get("platform_slug"),
+            fallback=fallback, rom=rom,
+        )
+        if fallback:
+            return [ReferrerChange(
+                referrer=self.id, target=f"RomM ROM {rom_id}", edits=((old_name, new_name),),
+                payload=plan, summary=f"RomM: ROM {rom_id} can't keep its id ({FALLBACK})",
+                record={"rom_id": rom_id, "kept_rom_id": False},
+            )]
         return [ReferrerChange(
             referrer=self.id,
             target=f"RomM ROM {rom_id}",
             edits=((old_name, new_name),),
-            payload=_Plan(
-                rom_id=rom_id, source=source, output=output, old_name=old_name,
-                new_name=new_name, platform_slug=rom.get("platform_slug"),
-            ),
+            payload=plan,
             summary=f"RomM: rename ROM {rom_id} to {new_name}",
             record={"rom_id": rom_id, "kept_rom_id": True},
         )]
@@ -268,6 +290,8 @@ class RommSwapReferrer(Referrer):
 
     async def apply_async(self, change: ReferrerChange) -> Applied:
         plan: _Plan = change.payload
+        if plan.fallback:
+            return await _fall_back(plan, change.target)
         placement = staged_placement()
         staged = placement.staged.get(plan.output) if placement is not None else None
         if placement is None or staged is None:
@@ -341,10 +365,14 @@ def _read_back_problem(rom: dict, plan: _Plan, size: int, sha1: str) -> str | No
         return f"ROM {rom_id} names {rom.get('fs_name')}, not {plan.new_name}"
     if rom.get("fs_size_bytes") != size:
         return f"ROM {rom_id} reports {rom.get('fs_size_bytes')} bytes, the output has {size}"
+    reported = str(rom.get("sha1_hash") or "").lower()
     slug = rom.get("platform_slug") or plan.platform_slug
-    if slug in UNHASHED_PLATFORM_SLUGS:
-        return None  # RomM never hashes this Platform: the size is all it has
-    if str(rom.get("sha1_hash") or "").lower() != sha1:
+    if not reported and slug in UNHASHED_PLATFORM_SLUGS:
+        # RomM never hashes this Platform (its NON_HASHABLE_PLATFORMS: Switch,
+        # Wii U, PS3, ...): with no SHA-1 to compare, the size is all it has.
+        # A SHA-1 it does report is always compared.
+        return None
+    if reported != sha1:
         return f"ROM {rom_id}'s SHA-1 is not the output's"
     return None
 
@@ -360,6 +388,38 @@ def _settle_repin(output: str, rom_id: int) -> None:
         # Bookkeeping only: a row left pending re-applies the ids the ROM
         # already has, which changes nothing.
         logger.warning("romm_swap: could not settle the re-pin of %s", output, exc_info=True)
+
+
+def _queue_repin(plan: _Plan) -> bool:
+    """Queue the re-pin a conversion gets with the swap off: RomM's provider
+    ids, re-applied to the ROM RomM adds for the output. False when the ROM
+    has none to carry. Blocking."""
+    # Imported here: repin imports the job manager, which imports the hook.
+    from services.romm import repin
+
+    ids = repin.metadata_ids(plan.rom or {})
+    if not ids:
+        return False
+    # The output is in place already; "" says the path held nothing before
+    # this conversion, so the re-pin waits on nothing but RomM's next scan.
+    return bool(repin.record(
+        plan.rom, plan.output, ids, None, pre_fingerprint="", source_path=plan.source,
+    ))
+
+
+async def _fall_back(plan: _Plan, target: str) -> Applied:
+    """The swap can't run (the output is in place): take today's path. The
+    Source is deleted by the job as with the switch off, the re-pin carries
+    the metadata, and the job and the Ledger say the ROM did not keep its id
+    (CodeRabbit 4593839018). A re-pin that can't be queued keeps the Source."""
+    try:
+        queued = await _mutate(_queue_repin, plan)
+    except Exception as exc:
+        raise ReferrerError(target, f"{FALLBACK}, and the re-pin couldn't be queued ({exc})") from exc
+    what = "re-pin queued" if queued else "RomM had no metadata ids to re-pin"
+    note = f"{FALLBACK}; {what} ({target})"
+    logger.warning("romm_swap: %s", note)
+    return Applied(note=note)
 
 
 LEFT = "left for the next run"
