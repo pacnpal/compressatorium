@@ -7387,6 +7387,21 @@ tick with a fake clock and real files. Each poll:
    Images all through the grouping, the fingerprinting and the ownership
    checks below as well as the walk, so the stall bound measures stalled
    storage, never how long a big pass takes (Codex 4607108046).
+   An archive Image (`.zip`, `.7z`, `.rar`) is checked before it is taken
+   (`ArchiveService.check_inbox_archive`, Codex 4607318277), reading its
+   listing only: anyone who can write the Inbox can drop a compression bomb,
+   and `7z t` would decompress all of it in a conversion slot. Its declared
+   uncompressed size, per member and in all, may be at most
+   `CHD_ARCHIVE_MAX_MEMBER_SIZE` / `CHD_ARCHIVE_MAX_TOTAL_SIZE` where set, else
+   `CHD_ARCHIVE_INBOX_MAX_TOTAL_SIZE` (32 GiB); it may expand at most
+   `CHD_ARCHIVE_INBOX_MAX_RATIO` (200:1) per member (its declared compressed
+   size, `ArchiveMember.compressed`) and in all (against the archive's size);
+   a member with no declared size, a link or an absolute or `..` path is
+   refused too. One over any of them is held with an `inbox_failed` Finding
+   naming the limit, never checked or copied. romz's Verify sizes its bound by
+   the members' declared sizes (`capture_verify(size=...)`, through
+   `resolve_verify_timeout` and `compute_size_scaled_timeout`), never the
+   archive's own size, and keeps its stall bound.
 3. Every loose track-type file in the folder of a track sheet whose owner is
    unknown, or in any folder below it (a sheet may name `tracks/Track.bin`,
    Codex 4607108018), is held with a Finding naming the sheet

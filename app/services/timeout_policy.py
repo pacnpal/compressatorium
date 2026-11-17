@@ -7,6 +7,7 @@ def compute_size_scaled_timeout(
     base_timeout: int,
     timeout_per_gib: int,
     timeout_cap: int,
+    size: int | None = None,
 ) -> int:
     """Compute a timeout as ``baseline + per-GiB allowance``, capped.
 
@@ -32,10 +33,15 @@ def compute_size_scaled_timeout(
     if per_gib <= 0:
         return min(baseline, cap) if cap > 0 else baseline
 
-    try:
-        size = max(0, int(os.path.getsize(path)))
-    except OSError:
-        size = 0
+    if size is not None:
+        # The size the work reads, when it isn't the file's (an archive's
+        # declared uncompressed size, #431).
+        size = max(0, int(size))
+    else:
+        try:
+            size = max(0, int(os.path.getsize(path)))
+        except OSError:
+            size = 0
 
     gib = size / float(1024 ** 3)
     adaptive = baseline + int(gib * per_gib)

@@ -124,6 +124,13 @@
   matters, download elsewhere and move finished files into the Inbox. A file
   that changes while it is being converted fails its job with nothing put in
   the Library, and stays in the Inbox.
+  An archive dropped in an Inbox is checked against limits before anything
+  reads it whole: by default its declared contents may be at most 32 GiB
+  (`CHD_ARCHIVE_INBOX_MAX_TOTAL_SIZE`; your `CHD_ARCHIVE_MAX_MEMBER_SIZE` /
+  `CHD_ARCHIVE_MAX_TOTAL_SIZE` win when set) and expand at most 200 to 1
+  (`CHD_ARCHIVE_INBOX_MAX_RATIO`); one over either stays with a Finding naming
+  the limit. A ROM archive's Verify is now bounded by its declared contents'
+  size, not the archive's own.
   Removing a Library while another Library or Inbox is being saved answers
   "try again shortly" with nothing removed.
   Database migration 0027 adds the Inboxes. Archives, DAT names and asking

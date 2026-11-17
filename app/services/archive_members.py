@@ -65,6 +65,9 @@ class ArchiveMember(NamedTuple):
     # Its content needs a password (zip flag bit 0, an encrypted 7z, a RAR
     # member that asks for one). The listing itself still reads.
     is_encrypted: bool = False
+    # Its compressed size, as the archive declares it; None when the format
+    # doesn't say per member (a solid 7z block).
+    compressed: int | None = None
 
 
 # Module-global so the cache is shared across every consumer and threadpool
@@ -269,7 +272,7 @@ def _read_zip(
             members.append(
                 ArchiveMember(
                     info.filename, int(info.file_size), info.is_dir(), is_symlink,
-                    bool(info.flag_bits & 0x1),
+                    bool(info.flag_bits & 0x1), int(info.compress_size),
                 ),
             )
     return members
@@ -288,6 +291,7 @@ def _read_7z(
         encrypted = bool(zf.needs_password())
         for entry in zf.list():
             size = entry.uncompressed
+            packed = getattr(entry, "compressed", None)
             members.append(
                 ArchiveMember(
                     entry.filename,
@@ -295,6 +299,7 @@ def _read_7z(
                     entry.is_directory,
                     bool(entry.is_symlink),
                     encrypted and not entry.is_directory,
+                    int(packed) if packed else None,
                 ),
             )
     return members
@@ -336,6 +341,7 @@ def _read_rar(
                 ArchiveMember(
                     info.filename, int(info.file_size), info.is_dir(), is_symlink,
                     bool(needs_password()) if callable(needs_password) else False,
+                    int(getattr(info, "compress_size", 0) or 0) or None,
                 ),
             )
     return members

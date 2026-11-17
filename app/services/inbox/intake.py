@@ -64,6 +64,7 @@ from fastapi.concurrency import run_in_threadpool
 from logging_setup import get_logger
 from models import ConversionMode, JobStatus
 from services import findings, platform_detect, staging
+from services.archive import ArchiveSafetyRefused, archive_service
 from services import inbox as inbox_store
 from services.image_sets import group_images, image_fingerprint, image_members
 from services.job_manager import OutputClaimedError, QueueBackpressureError, job_manager
@@ -717,6 +718,28 @@ async def _take(
     if problem:
         await _hold(inbox, state, path, fingerprint, findings.INBOX_FAILED, problem)
         return "held"
+    if archive_service.is_archive(path):
+        # Anyone who can write the Inbox can drop one: an archive past the
+        # Inbox's size and expansion caps is never checked (`7z t` would
+        # decompress all of it) nor copied (Codex 4607318277).
+        try:
+            await _step(archive_service.check_inbox_archive, path)
+        except ArchiveSafetyRefused as exc:
+            await _hold(
+                inbox, state, path, fingerprint, findings.INBOX_FAILED,
+                f"It's an archive the Inbox doesn't take: {exc.rule}. It wasn't checked "
+                "or copied; extract it, or raise the limit if you trust it",
+                {"limit": exc.rule},
+            )
+            return "held"
+        except asyncio.TimeoutError:
+            return "retry"
+        except Exception as exc:
+            await _hold(
+                inbox, state, path, fingerprint, findings.INBOX_FAILED,
+                f"It couldn't be read as an archive ({exc}), so it wasn't checked or copied",
+            )
+            return "held"
     try:
         identities = await _step(_identities, inbox, files)
     except asyncio.TimeoutError:

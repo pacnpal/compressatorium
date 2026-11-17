@@ -160,6 +160,20 @@ class Settings(BaseSettings):
         default=0,
         alias="CHD_ARCHIVE_MAX_TOTAL_SIZE",
     )
+    # An archive an Inbox takes in (#431, Codex 4607318277): anyone who can
+    # write the Inbox can drop one, so it is never checked past these. The
+    # declared uncompressed size, per member and in all, where
+    # CHD_ARCHIVE_MAX_MEMBER_SIZE / CHD_ARCHIVE_MAX_TOTAL_SIZE are unlimited
+    # (either one set wins); and how far it may expand, uncompressed to
+    # compressed, per member and in all. 0 turns either off.
+    archive_inbox_max_total_size: int = Field(
+        default=32 * 1024 ** 3,
+        alias="CHD_ARCHIVE_INBOX_MAX_TOTAL_SIZE",
+    )
+    archive_inbox_max_ratio: int = Field(
+        default=200,
+        alias="CHD_ARCHIVE_INBOX_MAX_RATIO",
+    )
 
     # The Patch action (#428). A patch file over this is refused (an upload
     # stops reading at it), and so is a ROM, or a patched ROM, over the other.

@@ -608,12 +608,15 @@ def verify_stall_timeout(owner: str | None = None) -> int:
     return max(0, int(_resolve_policy("verify_progress_timeout", owner) or 0))
 
 
-def _verify_timeout_sync(path: str, owner: str | None = None) -> int:
+def _verify_timeout_sync(
+    path: str, owner: str | None = None, size: int | None = None,
+) -> int:
     return compute_size_scaled_timeout(
         path=path,
         base_timeout=verify_timeout(owner),
         timeout_per_gib=_resolve_policy("verify_timeout_per_gib", owner),
         timeout_cap=_resolve_policy("verify_timeout_cap", owner),
+        size=size,
     )
 
 
@@ -622,6 +625,7 @@ async def resolve_verify_timeout(
     owner: str | None = None,
     *,
     cancel_event: asyncio.Event | None = None,
+    size: int | None = None,
 ) -> int:
     """Effective wall-clock bound for verifying ``path`` (0 disables).
 
@@ -644,10 +648,16 @@ async def resolve_verify_timeout(
     "Cancelling..." for the full probe bound. A cancelled sizing falls back to
     the flat baseline too: the caller is about to be told the run was cancelled,
     so the number only has to exist.
+
+    *size*, when given, is what the verify reads instead of the file's own
+    size: an archive's declared uncompressed size (romz's ``7z t``, #431).
     """
     try:
         return await asyncio.wait_for(
-            run_detached(_verify_timeout_sync, path, owner, cancel_event=cancel_event),
+            run_detached(
+                _verify_timeout_sync, path, owner,
+                *(() if size is None else (size,)), cancel_event=cancel_event,
+            ),
             timeout=_STAT_TIMEOUT,
         )
     except (asyncio.TimeoutError, ReadCancelled):
@@ -2187,6 +2197,7 @@ class SubprocessRunner:
         env: Mapping[str, str] | None = None,
         start_message: str = "Verifying integrity...",
         on_success_output: Callable[[bytes], None] | None = None,
+        size: int | None = None,
     ) -> AsyncGenerator[dict, None]:
         """Run a one-shot verifier, yielding this tool's verify events.
 
@@ -2210,8 +2221,11 @@ class SubprocessRunner:
         if problem is not None:
             yield problem
             return
+        # *size*: what the verifier reads, when it isn't the file's own size
+        # (an archive's declared contents, #431).
+        sized = {"size": size} if size is not None else {}
         timeout = await resolve_verify_timeout(
-            path, self._owner, cancel_event=cancel_event,
+            path, self._owner, cancel_event=cancel_event, **sized,
         )
         if cancel_event is not None and cancel_event.is_set():
             # Same re-check as run_verify: resolving the bound above can take

@@ -2907,3 +2907,131 @@ async def test_a_track_named_by_an_absolute_path_is_held_by_its_sheet(vol, db):
     assert not (vol / "ROMs" / "psx" / "Track.bin").exists()
     held = {Path(f["path"]).name: f["reason"] for f in _inbox_findings()}
     assert "Game.cue" in held["Track.bin"]
+
+
+def _rom_zip(path: Path, data: bytes, *, compression: int) -> Path:
+    import zipfile
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(path, "w", compression=compression) as zf:
+        zf.writestr("Game.gba", data)
+    return path
+
+
+def _verifies(monkeypatch) -> list[str]:
+    """Every Verify intake runs, recorded and answered Intact (7z never runs)."""
+    from services.rules import check as checks
+    from services.tools import registry
+
+    monkeypatch.setattr(registry, "check_tool", lambda *_a, **_k: SimpleNamespace(id="fake"))
+    verified: list[str] = []
+
+    async def verify(check, cancel_event):
+        verified.append(check.path)
+        return checks.INTACT, "", False
+
+    monkeypatch.setattr(checks, "_verify", verify)
+    return verified
+
+
+@pytest.mark.asyncio
+async def test_an_archive_declaring_more_than_the_cap_is_held_unverified(
+    vol, db, monkeypatch,
+):
+    """Codex 4607318277 (P1), ruled: an archive whose declared uncompressed
+    size is over the Inbox cap is held with a Finding naming the limit, and is
+    neither verified nor copied."""
+    import zipfile
+
+    verified = _verifies(monkeypatch)
+    monkeypatch.setattr(settings, "archive_max_total_size", 0)
+    monkeypatch.setattr(settings, "archive_inbox_max_total_size", 1024)
+    library = _library(vol)
+    box = _inbox(vol, library, settle=0)
+    bomb = _rom_zip(
+        vol / "Downloads" / "gba" / "Game.zip", os.urandom(4096),
+        compression=zipfile.ZIP_STORED,
+    )
+
+    for now in (0, 1):
+        await _poll(box, now=now)
+
+    assert verified == []
+    assert bomb.exists()
+    assert not (vol / "ROMs" / "gba").exists()
+    [finding] = _inbox_findings()
+    assert "CHD_ARCHIVE_INBOX_MAX_TOTAL_SIZE" in finding["reason"]
+
+
+@pytest.mark.asyncio
+async def test_an_archive_over_the_ratio_cap_is_held(vol, db, monkeypatch):
+    """Codex 4607318277: an archive that expands more than the Inbox ratio cap
+    (200:1 by default) is held, naming the limit."""
+    import zipfile
+
+    verified = _verifies(monkeypatch)
+    library = _library(vol)
+    box = _inbox(vol, library, settle=0)
+    bomb = _rom_zip(
+        vol / "Downloads" / "gba" / "Game.zip", b"\0" * (4 * 1024 * 1024),
+        compression=zipfile.ZIP_DEFLATED,
+    )
+
+    for now in (0, 1):
+        await _poll(box, now=now)
+
+    assert verified == []
+    assert bomb.exists()
+    [finding] = _inbox_findings()
+    assert "CHD_ARCHIVE_INBOX_MAX_RATIO" in finding["reason"]
+
+
+@pytest.mark.asyncio
+async def test_a_normal_rom_zip_is_still_verified_and_taken(vol, db, monkeypatch):
+    """Codex 4607318277: an ordinary ROM zip is within every cap: verified and
+    copied in, the original moved to processed/."""
+    import zipfile
+
+    verified = _verifies(monkeypatch)
+    library = _library(vol)
+    box = _inbox(vol, library, settle=0)
+    rom = _rom_zip(
+        vol / "Downloads" / "gba" / "Game.zip", os.urandom(64 * 1024),
+        compression=zipfile.ZIP_DEFLATED,
+    )
+
+    for now in (0, 1):
+        await _poll(box, now=now)
+
+    assert len(verified) == 1
+    assert (vol / "ROMs" / "gba" / "Game.zip").exists()
+    assert not rom.exists()
+    assert _inbox_findings() == []
+
+
+@pytest.mark.asyncio
+async def test_an_archives_verify_bound_comes_from_its_declared_size(vol, monkeypatch):
+    """Codex 4607318277, ruled: `7z t`'s bound is sized by what it
+    decompresses, the members' declared sizes, never the archive's own
+    (small) size."""
+    import zipfile
+
+    from services.romz import romz_service
+
+    archive = _rom_zip(
+        vol / "Downloads" / "gba" / "Game.zip", b"\0" * (256 * 1024),
+        compression=zipfile.ZIP_DEFLATED,
+    )
+    sized = {}
+
+    async def capture(cmd, *, path, size=None, **kwargs):
+        sized["size"] = size
+        yield {"type": "complete", "valid": True, "message": "File is Intact"}
+
+    monkeypatch.setattr(romz_service._runner, "capture_verify", capture)
+
+    async for _event in romz_service.verify_stream(str(archive)):
+        pass
+
+    assert sized["size"] == 256 * 1024
+    assert archive.stat().st_size < 256 * 1024

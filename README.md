@@ -1125,7 +1125,13 @@ long a file must stay unchanged before it's taken (60 seconds by default).
   and the output is checked Intact wherever its mode can check it. With no enabled Rule, or a file already in
   the Rule's format, it's copied as it is, as an **Inbox copy** job you can
   cancel, which also waits for a slot under the same concurrency limit: the copy is read back and compared, checked Intact by its own tool
-  when one checks it, and only then appears in the Library.
+  when one checks it, and only then appears in the Library. An archive
+  (`.zip`, `.7z`, `.rar`) is checked against limits first, since anyone who can
+  write the Inbox can drop one: by default its declared contents may be at most
+  32 GiB (`CHD_ARCHIVE_INBOX_MAX_TOTAL_SIZE`, or your `CHD_ARCHIVE_MAX_*` when
+  set) and expand at most 200 to 1 (`CHD_ARCHIVE_INBOX_MAX_RATIO`). One over
+  either stays in the Inbox with a Finding naming the limit, never checked or
+  copied.
 - The original then moves to `processed/` inside the Inbox, keeping its
   folder, if it is still the file that was taken (one replaced meanwhile
   stays in the Inbox to settle again). Intake never reads `processed/`. **Nothing is ever deleted**: clear
@@ -3027,6 +3033,8 @@ The Web UI communicates with a REST API that can also be used directly. Interact
 | `CHD_ARCHIVE_MAX_ENTRIES` | `5000` | Max archive members to list (0 disables limit) |
 | `CHD_ARCHIVE_MAX_MEMBER_SIZE` | `0` | Max size in bytes per archive member (0 disables limit) |
 | `CHD_ARCHIVE_MAX_TOTAL_SIZE` | `0` | Max total size in bytes for archive listings/extractions (0 disables limit) |
+| `CHD_ARCHIVE_INBOX_MAX_TOTAL_SIZE` | `34359738368` | For an archive an Inbox takes in: max declared uncompressed size in bytes, per member and in all, where `CHD_ARCHIVE_MAX_MEMBER_SIZE` / `CHD_ARCHIVE_MAX_TOTAL_SIZE` are 0 (either one set wins; 32 GiB; 0 disables limit) |
+| `CHD_ARCHIVE_INBOX_MAX_RATIO` | `200` | For an archive an Inbox takes in: max uncompressed-to-compressed ratio, per member and in all (0 disables limit) |
 | `CHD_PATCH_MAX_PATCH_SIZE` | `67108864` | Max size in bytes of an IPS or BPS patch, picked or uploaded (64 MiB; 0 disables limit) |
 | `CHD_PATCH_MAX_ROM_SIZE` | `536870912` | Max size in bytes of a ROM to patch, and of the patched ROM (512 MiB; 0 disables limit). The patch is applied in memory. |
 | `LOGLEVEL` | `INFO` | Log verbosity level (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`) |
