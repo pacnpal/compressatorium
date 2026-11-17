@@ -4255,6 +4255,17 @@ It finishes only three cases:
   gone, the row ends `done`.
 - **The undo was at `restoring` beside the placed output.** The restore is
   finished and the row ends `kept`.
+- **The row was finished by hand, as its Finding says.** RomM has the new
+  name, the output is in place and the Source is gone, at whatever step
+  the row is on. The same rehash and read-back confirm it, and only then
+  does the row end `done` and the Finding clear. If RomM doesn't confirm
+  it, the Finding stays (Codex PRRT_kwDOQ9nULM64SAMo). A settled row's
+  kept-output slots are removed too, once each is empty.
+
+A kept output is placed the way the job places one: `StagedOutput.place`,
+then `staging.carry_records_blocking`. That is the helper
+`_place_staged_blocking` and `_keep_records_blocking` now share, so the
+output's check and CHD records move with it (Codex PRRT_kwDOQ9nULM64SAMu).
 
 Recovery never renames a ROM: the rename back to the old `fs_name` was not
 proven in the spike. Every other combination raises `_Left` and becomes a
@@ -4289,7 +4300,13 @@ next pass ends `done` (Codex 4595373639). Slots are taken again with
 `open_slot` and takes the slot's flock. A failed flock closes the
 descriptor and leaves the lock file, which a live holder owns. Only a lock
 file this call locked is removed on a later failure, so no opener can make
-a second lock beside a holder (Codex 4595373632). The `O_EXCL` claims in
+a second lock beside a holder (Codex 4595373632). A flock that succeeds
+counts only while the name still points at the locked file
+(`partial_writes.same_file`, the check the sweeps make). A holder's `keep`
+may unlink the lock file between the open and the flock, so a lock on the
+unlinked file is let go and the current file tried, within a bounded
+number of attempts (`staging._relock`). `_claim` makes the same check
+after its flock (Codex PRRT_kwDOQ9nULM64SAMh). The `O_EXCL` claims in
 `_claim` and `partial_writes.claim_temp` already remove only a lock file
 they created, and the sweeps never remove one they could not lock. A slot is removed only once its own
 listing is empty (a kept output's slot may still hold its keep marker,

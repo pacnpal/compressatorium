@@ -229,12 +229,16 @@ def _release(slot_path: str, *, marker: bool = False) -> None:
 
 def _place_kept(row: dict, kept: str) -> None:
     """Move the job's set-aside output to the output's path, never over
-    anything, then remove its slot once empty. Blocking."""
+    anything, with its check and CHD records (the placing the job does:
+    ``StagedOutput.place``, then ``staging.carry_records_blocking``, Codex
+    PRRT_kwDOQ9nULM64SAMu), then remove its slot once empty. Blocking."""
     slot = staging.reopen_slot(os.path.dirname(kept))
     try:
         if _what_is(kept, row, hashed=False) != OUTPUT:
             raise _Left(f"{kept} is no longer the converted output")
-        slot.restore(os.path.basename(kept), os.path.basename(row["output_path"]))
+        if os.path.basename(kept) != os.path.basename(row["output_path"]):
+            raise _Left(f"{kept} is not named as the output")
+        staging.carry_records_blocking(slot.place([os.path.basename(kept)]))
     finally:
         slot.keep()
     _release(os.path.dirname(kept), marker=True)
@@ -404,6 +408,17 @@ class _Recovery:
             # The read-back passed before the delete was recorded.
             await self._settle_repin()
             return "done"
+        if facts.parked == ABSENT and facts.source == ABSENT:
+            # Finished by hand, as the Finding says (Codex
+            # PRRT_kwDOQ9nULM64SAMo): the output in place and the Source
+            # gone. Done only once RomM's rehash confirms it; until then the
+            # Finding stays.
+            await self._step("rehashing")
+            problem = await self._rehash()
+            if problem:
+                raise _Left(f"the output is in place and the Source gone, but {problem}")
+            await self._settle_repin()
+            return "done"
         if facts.parked != SOURCE:
             raise _Left("the Source is not where the swap parked it")
         await self._step("rehashing")
@@ -517,6 +532,9 @@ async def _recover_row(row: dict, binding: _Binding) -> bool:
         if row.get("parked_path"):
             # Settled: its park slot goes, once its own listing is empty.
             await _mutate(_release, os.path.dirname(row["parked_path"]))
+        for slot in _kept_slots(row):
+            # And the job's kept-output slot, once empty (emptied by hand).
+            await _mutate(lambda kept=slot: _release(kept, marker=True))
         detail = f"recovered at startup from {row['state']}"
         await _mutate(lambda: swap_journal.step(row["id"], ending, detail=detail))
     except _Left as exc:

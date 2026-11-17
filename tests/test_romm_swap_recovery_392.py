@@ -608,3 +608,99 @@ async def test_locks_taken_after_the_bound_are_let_go(vol, romm, monkeypatch):
     assert _rows()[0]["state"] == "placed"
     (finding,) = _swap_findings()
     assert "locks" in finding["reason"]
+
+
+# ---- second review round (Codex on #410 at ece0764e) ------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_lock_file_replaced_before_its_flock_never_gives_two_owners(
+    vol, romm, monkeypatch,
+):
+    """Codex PRRT_kwDOQ9nULM64SAMh: between our open of the slot's lock file
+    and our flock, a holder lets go (unlinking it) and another opener makes
+    and locks a new one. Our flock then succeeds on the dead file: it must
+    not count, so only the other opener owns the slot."""
+    import fcntl
+
+    from services import staging
+
+    seed = Seed(vol, romm)
+    real_flock = fcntl.flock
+    other: list = []
+
+    def racing_flock(fd, op):
+        if not other:
+            other.append(None)
+            lock = seed.platform / STAGE / "park-kept5678.lock"
+            lock.unlink()
+            other[0] = staging.reopen_slot(str(seed.kept_slot))
+        return real_flock(fd, op)
+
+    monkeypatch.setattr(staging.fcntl, "flock", racing_flock)
+    try:
+        with pytest.raises(BlockingIOError):
+            staging.reopen_slot(str(seed.kept_slot))
+    finally:
+        monkeypatch.setattr(staging.fcntl, "flock", real_flock)
+        if other and other[0] is not None:
+            other[0].keep()
+    assert other and other[0] is not None
+
+
+@pytest.mark.asyncio
+async def test_a_finding_settled_by_hand_is_confirmed_and_cleared(vol, romm):
+    """Codex PRRT_kwDOQ9nULM64SAMo: a Finding at ``parked``; the user does
+    what it says (puts the output in place and deletes the Source). The next
+    pass confirms it with RomM's rehash and read-back, ends the row done and
+    clears the Finding."""
+    seed = Seed(vol, romm)
+    seed.romm_renamed()
+    seed.park_source()
+    seed.row("parked")
+    await _recover()
+    assert len(_swap_findings()) == 1
+
+    os.rename(seed.kept, seed.output)
+    seed.parked.unlink()
+    await _recover()
+
+    assert _rows()[0]["state"] == "done"
+    assert romm.scans == [SCAN]
+    assert _swap_findings() == []
+    assert _files(seed.platform) == ["Game.chd"]
+
+
+@pytest.mark.asyncio
+async def test_a_finding_settled_by_hand_that_romm_does_not_confirm_stays(vol, romm):
+    seed = Seed(vol, romm)
+    seed.romm_renamed()
+    seed.park_source()
+    seed.row("parked")
+    os.rename(seed.kept, seed.output)
+    seed.parked.unlink()
+    romm.scan_updates = False
+
+    await _recover()
+
+    assert _rows()[0]["state"] != "done"
+    assert len(_swap_findings()) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_placed_kept_output_keeps_its_check_record(vol, romm):
+    """Codex PRRT_kwDOQ9nULM64SAMu: the output the job set aside carries its
+    passing check; placed by recovery, its records move with it."""
+    from services.verification_store import verification_store
+
+    seed = Seed(vol, romm)
+    verification_store.mark_verified_blocking(
+        str(seed.kept), source_path=str(seed.source), check="intact",
+    )
+    seed.row("renaming")
+
+    await _recover()
+
+    assert seed.output.read_bytes() == OUTPUT_BYTES
+    assert verification_store.get_record_blocking(str(seed.output)) is not None
+    assert verification_store.get_record_blocking(str(seed.kept)) is None

@@ -290,7 +290,12 @@ def _open_folder(directory: str) -> int | None:
         return None
 
 
-def _same_file(dir_fd: int, name: str, info: os.stat_result) -> bool:
+def same_file(dir_fd: int, name: str, info: os.stat_result) -> bool:
+    """Whether *name* in *dir_fd* is still the file *info* describes (same
+    device and inode, no link followed). Shared with ``staging``: a lock
+    taken by flock counts only while its file is still the one the name
+    points at, since a holder may unlink it between an open and the
+    flock."""
     try:
         current = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
     except OSError:
@@ -350,7 +355,7 @@ def _sweep_one(dir_fd: int, name: str, min_age: float, *, where: str) -> bool | 
             os.close(lock_fd)
             return None
         try:
-            if not _same_file(dir_fd, name, info) or not _same_file(
+            if not same_file(dir_fd, name, info) or not same_file(
                 dir_fd, lock_name, os.fstat(lock_fd)
             ):
                 return None  # a name now points at something else
@@ -400,7 +405,7 @@ def _sweep_orphan_sidecar(
         return False
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        if temp_exists() or not _same_file(dir_fd, lock_name, os.fstat(fd)):
+        if temp_exists() or not same_file(dir_fd, lock_name, os.fstat(fd)):
             return False
         os.unlink(lock_name, dir_fd=dir_fd)
         return True
@@ -540,7 +545,7 @@ def _sweep_slot(stage_fd: int, name: str, min_age: float, *, where: str) -> bool
         os.close(lock_fd)
         return None
     try:
-        if not _same_file(stage_fd, name, info) or not _same_file(
+        if not same_file(stage_fd, name, info) or not same_file(
             stage_fd, lock_name, os.fstat(lock_fd)
         ):
             return None  # a name now points at something else
