@@ -6875,14 +6875,13 @@ failed row when there is none), so a raw ISO that failed is never read as
 "never checked" and never kept. A group whose every copy failed has no keeper
 and offers no delete.
 
-### 3.3.23 The Image rename and rename to DAT name (`services/image_rename.py`, `services/dat_rename.py`, #425)
+### 3.3.23 The Image rename and rename to DAT name (`services/image_rename.py`, `services/dat_rename.py`, #425, #426)
 
 **The shared Image rename** (`image_rename.rename_image(image_path, renames,
-*, library, cancel_event)`) renames every file of an Image (`renames`: `{old:
-new}`, one entry per file) with its Referrers following, or nothing. It takes
-the Image and its map, never a single path, so a multi-file Image (#426: a
-sheet, its tracks, the cue's text, a folder named after it) extends the map and
-adds steps without a second operation. It runs the existing Referrer hook
+*, folder, library, cancel_event)`) renames every file of an Image (`renames`:
+`{old: new}`, one entry per file) with its Referrers following, or nothing. It
+takes the Image and its map, never a single path, so a multi-file Image (#426)
+is the same call with a longer map. It runs the existing Referrer hook
 (`referrers.update_before_source_removal`) with a `StagedPlacement` whose
 `rename` is set:
 
@@ -6902,6 +6901,53 @@ adds steps without a second operation. It runs the existing Referrer hook
   before the cancel goes on, so RomM and the file agree on one of the two
   names. Archives are not left out as they are for the swap: nothing is
   rehashed. Counted as a running swap, so a RomM identity change waits for it.
+  RomM renames one file within its folder, so `_plan_rename` refuses (a
+  `ReferrerError`, which skips the Image in the preview) a map of several
+  files or one that moves a file to another folder (#426): renamed under
+  RomM, they would leave the ROM and its saves as a ghost.
+
+**A sheet's Image and its folder (#426).** When `image_path` is a `.cue` or
+`.gdi` (`is_sheet`) and `renames` holds its tracks, the placing step
+(`_Files.move_blocking`, which the hook's placement runs) does three things in
+order, all through the checked folder descriptors:
+
+1. *Rewrite the sheet's track references.* `sheet_reference_changes` maps each
+   reference as written (its folder part kept) to the track's new name. A
+   reference is resolved through every spelling of the sheet in order
+   (`sheet_text.sheet_spellings_of`, the same readings `sheet_track_list`
+   picks from), so a Windows-1252 `café` whose file is spelled in UTF-8 is
+   found; the native token is the one changed, and every renamed track must
+   be reached by a reference or the rename stops. Then
+   `utils.sheet_text.rewrite_track_names` changes only that token, in the
+   quoting it had (double quotes when the new name needs them), reading the
+   sheet as chdman does (native spelling, `chd_tokens`). Every other byte is
+   kept, and the result must read back as the old references with the changes
+   applied, or the rename stops. The write is atomic: the whole new sheet
+   goes to a hidden file beside it (written on after a short write; one that
+   accepts nothing fails), given the sheet's mode and group, synced, and
+   only then renamed over the sheet, which must still be the file
+   fingerprinted. A failure before that rename leaves the sheet exactly as
+   it was and removes the hidden file. Once it lands, the new file's
+   fingerprint is taken and the write is recorded in the rename's
+   `WriteJournal` under the sheet's old path, like a Referrer's file.
+2. *Rename each file* within its folder, as for a single file.
+3. *Rename the folder* (`folder=Folder(old, new)`), last: only while it still
+   holds exactly the Image's files, under their new names, and is the folder
+   that was opened (device and inode through its parent's descriptor), with
+   `place_without_clobbering` (a folder takes the no-replace rename). With a
+   folder, `renames` names each file under the folder's new name, which is
+   what the Referrers see; `inner_renames` gives the in-folder step. The
+   folder itself is in the Referrers' map too (`referrer_renames`, for the
+   preview and the hook), so an entry naming the folder (an ES-DE
+   `<folder><path>./game</path>`) follows it like a file's entry. The locks
+   cover the old files, their new paths in both folders, and the new folder.
+
+A step that fails puts back the files it already renamed, newest first and
+each only while it is still the file it moved, then raises. The files are then
+found under their old names, so the usual compensation restores the sheet's
+bytes and every Referrer from the journal. `where_blocking` counts the folder
+too, and a file whose name doesn't change (it moves only with its folder) is
+looked for under its one name.
 
 **Bound to the folders it checked.** After the locks, each file's folder is
 resolved, confirmed inside a Volume (`lock_boundary_root`,
@@ -6975,16 +7021,42 @@ taken on any exit, `LockFailed` included.
 name comes from `DATStore.ranked_match_for_image` (3.3.5.2): cache only, never
 hashing, looked up as listed and then along the real path. The new name is the
 top match's `game_name` plus `registry.extension_of`, through
-`safe_file_name`. Each preview and each run first reads every sheet's track
-identities over the Volumes (`image_sets.volume_sheet_tracks`, as the
-duplicate delete does): a walk that doesn't finish skips every Image (fail
+`safe_file_name`. Each preview and each run first reads every sheet's tracks
+over the Volumes, each with the sheets that name it
+(`image_sets.volume_sheet_owners`, the walk `volume_sheet_tracks` and the
+duplicate delete use): a walk that doesn't finish skips every Image (fail
 closed). `plan_blocking` skips, with the reason: a path not confirmed inside
-the Volumes, a symlink, a playlist, a sheet or any Image with members
-(`image_sets.image_members`; #426), a track a sheet lists (the sheet above it
-by `owning_sheet`, or any sheet in the Volumes by the walk, through a link
-too), not Recognized, already named, a case-only difference, a new name that
-exists, or a Library the registry refuses. `preview` also skips a second Image
-given a name another selected one already takes. One Image that can't be
+the Volumes, a symlink, a playlist, an Image with members that isn't a sheet
+(`image_sets.image_members`), a track a sheet lists (the sheet above it by
+`owning_sheet`, or any sheet in the Volumes by the walk, through a link too),
+not Recognized, already named, a case-only difference, a new name that exists,
+or a Library the registry refuses. `preview` also skips a second Image given a
+path (a file's or the folder's) another selected one already takes.
+
+A sheet's Image (#426) is planned whole. Its tracks are the sheet's own
+(`sheet_track_list`): each a regular file, not a link, named by this sheet and
+no other one (the owners map), and no member beyond them. Their names come
+from the file names the DAT that named the sheet lists for its game
+(`DATStore.game_files(dat_id, game_name)`, sheets left out). They are read
+from each DAT's file list (`dat_files`, migration 0025, filled at import),
+kept apart from the hash index, which keeps one row per hash and so loses a
+track whose bytes another file shares (two silent tracks); a DAT imported
+before 0025 has no list until it is imported again, and its hash index is
+read meanwhile. A track pairs
+with the DAT file of its size, and tracks of one size pair in the sheet's
+order with those files in natural name order (`Track 2` before `Track 10`);
+nothing is hashed. The count must match and every track must pair, or the
+Image is skipped; so is one named only by Hasheous, which lists no tracks. The
+DAT's name is taken whole unless its extension differs from the track's, which
+is kept. The folder (`_folder_for`) is renamed only when it holds exactly the
+Image's files, its name is the Image's file name without the extension, and it
+is no Volume root, Library root or Platform folder; a new folder name that
+exists skips the Image. A preview item carries `files` (every file, old and
+new path), `sheet_rewrite` (each reference, old and new) and `folder`;
+`renames_of(item)` turns it into `rename_image`'s map and folder, and the run
+skips an Image whose `files` differ from the confirmed ones, and an Image of
+several files confirmed without `files` (one confirmed path never renames
+several files; only a single-file plan may come without them). One Image that can't be
 checked, or whose rename stops on an unexpected error, is skipped or reported
 not renamed on its own, never hiding the others. A `conflict` (equally ranked
 DATs that disagree) skips the Image and records a `rename_conflict` Finding

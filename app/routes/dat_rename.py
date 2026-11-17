@@ -22,11 +22,19 @@ class DatRenamePreviewRequest(BaseModel):
     paths: list[str] = Field(min_length=1, max_length=dat_rename.MAX_IMAGES)
 
 
+class DatRenameFile(BaseModel):
+    path: str
+    new_path: str | None = None
+
+
 class DatRenameItem(BaseModel):
-    """One Image as the preview showed it: its new path, or None when skipped."""
+    """One Image as the preview showed it: its new path, or None when skipped,
+    and, for an Image of several files (#426), each file's new path. A
+    re-plan that differs from what was confirmed skips the Image."""
 
     path: str
     new_path: str | None = None
+    files: list[DatRenameFile] | None = Field(default=None, max_length=1000)
 
 
 class DatRenameRunRequest(BaseModel):
