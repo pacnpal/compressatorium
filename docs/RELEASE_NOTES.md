@@ -136,6 +136,14 @@
 
 ### Fixed
 
+- **A set-aside RomM source keeps its own name** (#415). While a swap keeps a
+  ROM's id, the source it sets aside in `.compressatorium-stage/park-…/` is
+  now named as it was (`Game.iso`), not with the converted file's name, so
+  the hidden copy and the converted file never share a name. A "RomM swap
+  unfinished" Finding now lists its steps by hand in order, for keeping the
+  conversion or undoing it, and the undo first moves the converted file
+  aside to a named path, so no step puts a file where another one is. Swaps
+  set aside before this update are still recovered.
 - **RomM settings saves land in order** (#408). Two RomM settings saves made
   close together (a RomM Settings card save and the Rules editor's
   EmulationStation switch, say) could be answered out of order, leaving the

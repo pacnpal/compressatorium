@@ -50,7 +50,7 @@ def _swap_findings() -> list[dict]:
 class Seed:
     """What a stopped swap left: the files, RomM's record and the row."""
 
-    def __init__(self, vol: Path, romm: FakeRomm) -> None:
+    def __init__(self, vol: Path, romm: FakeRomm, *, original: bool = False) -> None:
         self.platform = _platform(vol)
         self.romm = romm
         self.source = self.platform / "Game.iso"
@@ -58,7 +58,9 @@ class Seed:
         st = self.source.stat()
         self.source_size, self.source_mtime_ns = st.st_size, st.st_mtime_ns
         self.park = self.platform / STAGE / "park-abcd1234"
-        self.parked = self.park / "Game.chd"
+        # Parked under its original name (#415), or, in a row written before
+        # that, under the output's name RomM gave it.
+        self.parked = self.park / ("Game.iso" if original else "Game.chd")
         # The job set its checked output aside when the swap held it.
         self.kept_slot = self.platform / STAGE / "park-kept5678"
         self.kept = self.kept_slot / "Game.chd"
@@ -704,3 +706,68 @@ async def test_a_placed_kept_output_keeps_its_check_record(vol, romm):
     assert seed.output.read_bytes() == OUTPUT_BYTES
     assert verification_store.get_record_blocking(str(seed.output)) is not None
     assert verification_store.get_record_blocking(str(seed.kept)) is None
+
+
+# ---- #415: the Source is parked under its original name ---------------------
+
+
+@pytest.mark.asyncio
+async def test_a_source_parked_under_its_own_name_is_finished(vol, romm):
+    seed = Seed(vol, romm, original=True)
+    seed.romm_renamed()
+    seed.park_source()
+    seed.place_output()
+    seed.row("placed")
+
+    await _recover()
+
+    assert _rows()[0]["state"] == "done"
+    assert _files(seed.platform) == ["Game.chd"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("original", [True, False])
+async def test_a_restored_source_gets_its_original_name_back(vol, romm, original):
+    """Parked under its own name (#415), or under the output's in a row
+    written before: put back beside the output, it is ``Game.iso`` again."""
+    seed = Seed(vol, romm, original=original)
+    seed.romm_renamed()
+    seed.park_source()
+    seed.place_output()
+    seed.row("restoring")
+
+    await _recover()
+
+    assert _rows()[0]["state"] == "kept"
+    assert seed.source.read_bytes() == SOURCE_BYTES
+    assert _files(seed.platform) == ["Game.chd", "Game.iso"]
+
+
+@pytest.mark.asyncio
+async def test_the_findings_steps_never_put_two_files_on_one_path(vol, romm):
+    """#415: the manual steps are in order, name the parked Source by its
+    own name, and the undo first moves the output aside to a named path, so
+    no step puts a file where another one is."""
+    seed = Seed(vol, romm, original=True)
+    seed.romm_renamed()
+    seed.park_source()
+    seed.place_output()
+    seed.row("placed", romm_url="elsewhere")
+
+    await _recover()
+
+    (finding,) = _swap_findings()
+    reason = finding["reason"]
+    aside = str(seed.platform / STAGE / "aside-Game.chd")
+    keep, undo = reason.split("To undo it", 1)
+    # Keep: the output is in place already; delete the parked Source, rescan.
+    assert f"delete the Source at {seed.parked}" in keep
+    assert "rescan" in keep
+    assert f"move the output from {seed.output}" not in keep
+    # Undo: the output aside first, then the Source to the name RomM has,
+    # then RomM renames it back.
+    first = undo.index(f"move the converted output from {seed.output} to {aside}")
+    second = undo.index(f"move the Source from {seed.parked} to {seed.output}")
+    third = undo.index("rename the ROM's file to Game.iso")
+    assert first < second < third
+    assert "Game.chd" not in str(seed.parked)

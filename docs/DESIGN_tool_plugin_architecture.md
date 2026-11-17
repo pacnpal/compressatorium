@@ -4085,7 +4085,7 @@ the swap plans nothing when the output is not staged (the job placed it).
 | State | Step |
 | --- | --- |
 | `renaming` | `RommClient.rename_rom` (`PUT /api/roms/{id}`, multipart `fs_name`). RomM moves the Source to the new name itself. The name is read back with `GET /api/roms/{id}`. |
-| `parking` | The file now at the new name must have the Source's size and mtime (a rename keeps them). It moves into a parking slot (`staging.open_slot(folder, parking=True)`). |
+| `parking` | The file now at the new name must have the Source's size and mtime (a rename keeps them). It moves into a parking slot (`staging.open_slot(folder, parking=True)`) under its original name (`StagedOutput.take(name, as_name)`, #415), so a parked file never carries the output's name. The journal's `parked_path` records that path; the delete and both undo branches use it, and the restore beside the output puts it back under its original name. |
 | `parked` | Written by the move itself, once the Source is in the slot. |
 | `placing` | `placement.place_blocking()` (the job's `_place_staged_blocking`), run like every other move through `_mutate`: never abandoned, so a cancel waits for its real outcome before the undo picks its branch, and with no hand-off of the job's holds to a placing worker (the swap and its undo keep them, and past the hook's grace `outlive` hands them to the swap's task; Codex 4594650576). The staged output takes the name. |
 | `placed` | The output is in place, the Source still parked. |
@@ -4274,6 +4274,28 @@ proven in the spike. Every other combination raises `_Left` and becomes a
 Source and the output are, the slots left (`cause["slots"]`) and the manual
 steps. A pass that can't settle the row writes the same Finding again, and a
 pass that settles it resolves the Finding.
+
+The manual steps (`_manual_steps`, #415) are two numbered lists built from
+where the files are. They never put two files on one path:
+
+- **Keep the conversion.** The output goes to the output path, after the
+  Source is deleted when RomM had moved the Source to that name. The Source
+  is deleted at its exact path, then the ROM is rescanned.
+- **Undo.** A placed output is first moved aside to
+  `.compressatorium-stage/aside-<new name>` (hidden, never indexed). Then
+  the Source moves to the name RomM has for it. Then the ROM is renamed back
+  to the old name in RomM, which moves the file itself. Then the ROM is
+  rescanned.
+
+When RomM already has the old name, the Source just goes back to its own
+path. The undo puts the Source at RomM's current name rather than its
+original one, because RomM's rename moves the file from that name. The
+spike's fake answers 500 when the file isn't there.
+
+Rows written before #415 parked the Source under the output's name. Recovery
+reads the parked file's name from the row's `parked_path`, so it handles
+both layouts, and its restore puts the Source back under the original name
+either way.
 
 These cases also become Findings, and nothing is sent to RomM:
 

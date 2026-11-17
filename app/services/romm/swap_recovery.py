@@ -96,6 +96,7 @@ from services.romm.swap_referrer import (
     _settle_repin,
 )
 from services.subprocess_runner import run_detached_undoable
+from utils.junk import STAGE_DIR_NAME
 from utils.path_utils import file_identity
 
 logger = get_logger("romm_swap_recovery")
@@ -286,6 +287,63 @@ def _where(facts: _Facts, row: dict, what: str) -> str:
     return "not found at the paths the swap recorded"
 
 
+def _numbered(steps: list[str]) -> str:
+    return " ".join(f"{n}) {step};" for n, step in enumerate(steps, 1)).rstrip(";") + "."
+
+
+def _manual_steps(row: dict, facts: _Facts | None, folder: str) -> str:
+    """The Finding's steps by hand, in order, built from where the files are
+    now, so no step puts a file on a path another file is on (#415): the
+    keep deletes the Source before the output takes a name it holds, and
+    the undo moves the output aside to a named path (in the hidden stage
+    folder, which RomM never indexes) before the Source takes the name RomM
+    has for it."""
+    old, new = row["old_name"], row["new_name"]
+    output, source = row["output_path"], row["source_path"]
+    aside = os.path.join(folder, STAGE_DIR_NAME, f"aside-{new}")
+    spots = [] if facts is None else [
+        (facts.source, source), (facts.output, output),
+        (facts.parked, row.get("parked_path")),
+    ]
+    source_at = next((path for kind, path in spots if kind == SOURCE and path), None)
+    output_placed = facts is not None and facts.output == OUTPUT
+    output_from = facts.kept if facts is not None else None
+    the_source = f"the Source at {source_at}" if source_at else "the Source (wherever it is)"
+    source_from = f"from {source_at}" if source_at else "(wherever it is)"
+    the_output = f"from {output_from}" if output_from else "(wherever it is)"
+
+    keep: list[str] = []
+    if source_at == output:
+        keep.append(f"delete {the_source}")
+    if not output_placed:
+        keep.append(f"move the output {the_output} to {output}")
+    if source_at != output:
+        keep.append(f"delete {the_source}")
+    keep.append("rescan the ROM in RomM")
+
+    undo: list[str] = []
+    if output_placed:
+        undo.append(f"move the converted output from {output} to {aside}")
+    elif output_from:
+        undo.append(f"leave the converted output at {output_from}")
+    romm_has_old = facts is not None and facts.romm_name == old
+    if romm_has_old:
+        if source_at != source:
+            undo.append(f"move the Source {source_from} to {source}")
+    else:
+        if source_at != output:
+            undo.append(f"move the Source {source_from} to {output}")
+        undo.append(
+            f"in RomM, if it still names the file {new}, rename the ROM's file to {old} "
+            f"(RomM moves it from {output} to {source})",
+        )
+    undo.append("rescan the ROM in RomM")
+    return (
+        "Settle it by hand in one of two ways. To keep the conversion: "
+        f"{_numbered(keep)} To undo it: {_numbered(undo)}"
+    )
+
+
 def _finding(row: dict, facts: _Facts | None, why: str) -> findings.Observed:
     """The Finding for a row that can't be settled now."""
     old, new = row["old_name"], row["new_name"]
@@ -301,13 +359,8 @@ def _finding(row: dict, facts: _Facts | None, why: str) -> findings.Observed:
     slots = _slots_left(row)
     if slots:
         parts.append(f"Left in the stage folder: {', '.join(slots)}.")
-    parts.append(
-        "To settle it by hand, either keep the conversion (put the output at "
-        f"{row['output_path']}, delete the Source, and rescan the ROM in RomM) or undo it "
-        f"(put the Source at {os.path.join(folder, new)}, rename the ROM's file back to {old} "
-        "in RomM so RomM moves it, and keep the output aside). The next recovery pass settles "
-        "the row once the files and RomM agree.",
-    )
+    parts.append(_manual_steps(row, facts, folder))
+    parts.append("The next recovery pass settles the row once the files and RomM agree.")
     cause = {
         "rom_id": row["rom_id"], "row": row["id"], "state": row["state"], "why": why,
         "romm_name": facts.romm_name if facts else None,

@@ -165,16 +165,18 @@ class StagedOutput:
                 for name in present
             ]
 
-    def take(self, name: str) -> str:
-        """Move the entry *name* of the output folder into the slot, same
-        name, never over anything: its path in the slot. Raises ``OSError``
-        (``FileNotFoundError`` when it is not there)."""
+    def take(self, name: str, as_name: str | None = None) -> str:
+        """Move the entry *name* of the output folder into the slot, as
+        *as_name* (default: the same name), never over anything: its path in
+        the slot. Raises ``OSError`` (``FileNotFoundError`` when it is not
+        there)."""
+        target = as_name or name
         with self._mutex:
             self._require_open()
             place_without_clobbering(
-                name, name, src_dir_fd=self._folder_fd, dst_dir_fd=self._slot_fd,
+                name, target, src_dir_fd=self._folder_fd, dst_dir_fd=self._slot_fd,
             )
-            return os.path.join(self.path, name)
+            return os.path.join(self.path, target)
 
     def restore(self, name: str, as_name: str | None = None) -> str:
         """Move the entry *name* out of the slot into the output folder, as

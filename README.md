@@ -789,8 +789,9 @@ source is deleted after its check, from the Workspace or a Rule:
    there itself). The app reads the name back: if RomM refused, or wrote
    another name, the old name is put back, both files are kept, and the job
    says "converted, source kept: RomM refused the rename" with RomM's reason.
-3. The source RomM moved is set aside in the hidden staging folder, the output
-   takes its name, and RomM rehashes that one ROM.
+3. The source RomM moved is set aside in the hidden staging folder, under
+   its own original name (`Game.iso`, never the output's), the output takes
+   the new name, and RomM rehashes that one ROM.
 4. Only when RomM reads back the output's size and SHA-1 is the source deleted.
    If it doesn't, the source goes back under its own name beside the output,
    and the job says why. One exception: RomM never hashes some Platforms
@@ -832,8 +833,8 @@ time, or the app stops, where the source is depends on how far the swap got:
 - *Before the source was set aside:* it is still where it was (under its old
   name, or under the new one if RomM had already renamed it).
 - *While it was set aside:* it is in the hidden staging folder
-  (`.compressatorium-stage/park-…` beside the output), never deleted or swept
-  away.
+  (`.compressatorium-stage/park-…/` beside the output, under its original
+  name), never deleted or swept away.
 - *After it was deleted* (the last step): the swap had in fact finished, and
   the output is under RomM's new name, with the ROM's id.
 
@@ -853,10 +854,15 @@ never holds up startup) and finishes what is safe to finish:
 
 Anything else becomes a **Finding** ("RomM swap unfinished") that names the
 ROM, the step it stopped at, where the source and the output are, what is
-left in the staging folder, and what to do by hand: keep the conversion
-(put the output under the new name, delete the source and rescan the ROM in
-RomM), or undo it (put the source under the new name, rename the ROM's file
-back to the old name in RomM and keep the output aside). The app never
+left in the staging folder, and what to do by hand, as numbered steps
+built from where the files are, so no step puts a file where another one is.
+To keep the conversion: the output goes in place under the new name (after
+the source is deleted, if RomM had moved the source to that name), the
+source is deleted at its exact path, and the ROM is rescanned in RomM. To
+undo it: the converted output is first moved aside to
+`.compressatorium-stage/aside-<new name>`, then the source goes to the name
+RomM has for it, then the ROM's file is renamed back to the old name in RomM
+(which moves the file itself), then the ROM is rescanned. The app never
 renames a ROM back by itself: that was not proven safe against RomM. It also
 never touches a RomM instance other than the one the swap ran against: if
 RomM's settings now name another instance or library root, the swap is a
