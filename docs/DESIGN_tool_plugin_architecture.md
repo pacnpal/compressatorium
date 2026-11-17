@@ -780,7 +780,7 @@ whose name someone else may reuse at any moment, passes `identity_sensitive=True
 and, where there is no atomic no-replace rename (Linux CIFS, older NFS), takes
 `_move_by_quarantine` instead (#431): (1) `link(src, dst)`, which fails if `dst`
 exists; (2) `rename(src, <private>/<name>)` into a fresh folder of its own beside
-`src` (`_private_folder`: `mkdir` mode 0700 on the same filesystem, never an
+`src` (`_private_folder`: `tempfile.mkdtemp`, mode 0700 on the same filesystem, never an
 existing name), so no name in the shared folder is involved and the quarantined
 entry is reachable only inside a folder only the app's user can enter; (3) if the
 quarantined entry is the inode linked, unlink it inside the private folder and

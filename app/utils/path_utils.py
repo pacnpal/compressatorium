@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import contextlib
 import ctypes
 import errno
+import fcntl
 import functools
 import hashlib
 import io
@@ -10,6 +12,7 @@ import os
 import secrets
 import stat
 import sys
+import tempfile
 import threading
 import time
 from collections.abc import Callable, Iterable, Iterator, Sequence
@@ -163,21 +166,30 @@ def _link_no_clobber(src: str, dst: str, src_dir_fd: int | None, dst_dir_fd: int
         ) from exc
 
 
+def _fd_path(fd: int) -> str:
+    """The path the open folder *fd* has now (``F_GETPATH``; ``/proc``)."""
+    get_path = getattr(fcntl, "F_GETPATH", None)
+    if get_path is not None:
+        return os.fsdecode(fcntl.fcntl(fd, get_path, bytes(1024)).rstrip(b"\0"))
+    return os.readlink(f"/proc/self/fd/{fd}")
+
+
 def _private_folder(parent: int, *, prefix: str = ".compressatorium-q-") -> tuple[str, int]:
-    """A fresh folder in the open folder *parent* (same filesystem), mode 0700
-    so only this app's user can enter it, and its descriptor, opened with no
-    link followed. Made with ``mkdir``, which never takes an existing name: a
-    colliding random name is tried again, never reused."""
-    for _ in range(100):
-        name = short_temp_name(prefix=prefix)
-        try:
-            os.mkdir(name, 0o700, dir_fd=parent)
-        except FileExistsError:
-            continue
+    """A fresh folder in the open folder *parent* (same filesystem) that only
+    this app's user can enter, and its descriptor, opened with no link
+    followed. ``tempfile.mkdtemp`` makes it: mode 0700, and never an existing
+    name (a colliding random name is tried again, never reused). It is then
+    opened through *parent* itself, so a folder that isn't where *parent* is
+    (its path changed meanwhile) is removed and refused."""
+    made = tempfile.mkdtemp(prefix=prefix, dir=_fd_path(parent))
+    name = os.path.basename(made)
+    try:
         fd = os.open(name, _BENEATH_DIR_FLAGS, dir_fd=parent)
-        os.fchmod(fd, 0o700)  # whatever the umask left
-        return name, fd
-    raise OSError(errno.EEXIST, "No free name for a quarantine folder")
+    except OSError:
+        with contextlib.suppress(OSError):
+            os.rmdir(made)
+        raise
+    return name, fd
 
 
 def _move_by_quarantine(

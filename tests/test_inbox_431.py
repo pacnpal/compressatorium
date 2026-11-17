@@ -1860,8 +1860,12 @@ def test_the_quarantine_is_a_private_folder_no_name_can_collide_with(tmp_path, m
     a, b = _two_folders(tmp_path)
     taken = a / ".compressatorium-q-taken"
     taken.write_bytes(b"someone else's")
-    names = iter([".compressatorium-q-taken", ".compressatorium-q-fresh"])
-    monkeypatch.setattr(path_utils, "short_temp_name", lambda **_k: next(names))
+    # The private folder is `tempfile.mkdtemp`'s (0700, never an existing
+    # name): its first candidate name collides with an entry already there.
+    import tempfile
+
+    names = iter(["taken", "fresh"])
+    monkeypatch.setattr(tempfile, "_get_candidate_names", lambda: names)
     real_rename = os.rename
     seen = {}
 
