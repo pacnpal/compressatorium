@@ -223,3 +223,69 @@ async def test_a_bind_copy_that_stalls_fails_and_leaves_nothing(env, monkeypatch
             break
         await asyncio.sleep(0.05)
     assert not list(inbox.glob(".compressatorium-bind-*"))
+
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_during_the_identity_preflight_releases_everything(
+    env, monkeypatch, tmp_path,
+) -> None:
+    """CodeRabbit 4606147979, ruled: the identity check and the bind run inside
+    the job's full finalization region, so a cancel there lets go of the
+    output locks and the cross-process slot, not just the Source's."""
+    import asyncio
+
+    from models import JobStatus
+    from services import job_manager as job_manager_module
+    from services.concurrency_manager import ConcurrencyManager
+    from services.job_manager import job_manager
+    from services.lock_manager import lock_manager
+
+    shared = ConcurrencyManager(1, str(tmp_path / "locks"))
+    monkeypatch.setattr(job_manager_module, "concurrency_manager", shared)
+    inbox = env["tmp"] / "Downloads"
+    game = _gamecube(inbox / "gc" / "Game.iso")
+    job = await _queue(env, game, inbox)
+    entered = asyncio.Event()
+
+    async def hangs(_job):
+        entered.set()
+        await asyncio.sleep(30)
+
+    monkeypatch.setattr(job_manager, "_source_identity_problem_bounded", hangs)
+    run = asyncio.ensure_future(job_manager._process_job(job.id))
+    await asyncio.wait_for(entered.wait(), 5)
+    run.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await run
+
+    assert job_manager.jobs[job.id].status == JobStatus.CANCELLED
+    assert not lock_manager.is_locked(job_manager.jobs[job.id].output_path)
+    other = ConcurrencyManager(1, str(tmp_path / "locks"))
+    assert await asyncio.wait_for(other.acquire("next"), 5)  # the slot is free
+    other.release("next")
+
+
+def test_unbinding_never_follows_a_swapped_folder(tmp_path, monkeypatch) -> None:
+    """Outside-diff note on bind cleanup: the bound folder is cleaned through
+    the descriptors kept from bind time, and removed from its parent only
+    while it is still that folder; a folder swapped in under its name keeps
+    everything in it."""
+    from config import settings
+    from utils import path_utils
+
+    monkeypatch.setattr(settings, "chd_volumes", str(tmp_path))
+    inbox = tmp_path / "Downloads"
+    game = Path(_gamecube(inbox / "gc" / "Game.iso"))
+    identity = path_utils.source_identity(str(game), str(inbox))
+    bound = path_utils.bind_source(str(game), identity)
+    os.rename(bound.path, tmp_path / "moved-bind")
+    impostor = Path(bound.path)
+    impostor.mkdir()
+    (impostor / "keep.txt").write_bytes(b"not the bind's")
+
+    bound.close()
+
+    assert (impostor / "keep.txt").read_bytes() == b"not the bind's"
+    assert not list((tmp_path / "moved-bind").iterdir())
+    assert game.exists()

@@ -88,6 +88,7 @@ from utils.delete_plan import sheet_reference_problems
 from utils.junk import is_junk_entry
 from utils.path_utils import (
     MoveRollbackFailed,
+    PlacementCommitted,
     file_snapshot,
     match_extension,
     move_anchored,
@@ -155,6 +156,9 @@ class _State:
     waiting: int = 0
     error: str | None = None
     polling: bool = False
+    # Set when the Inbox is removed (`forget`): a poll or copy still holding
+    # this state admits nothing new (CodeRabbit 4606147955).
+    revoked: bool = False
 
 
 _states: dict[int, _State] = {}
@@ -232,8 +236,11 @@ def reset_for_tests() -> None:
 
 
 def forget(inbox_id: int) -> None:
-    """Drop a removed Inbox's intake state. A copy still running finishes."""
-    _states.pop(inbox_id, None)
+    """Drop a removed Inbox's intake state, revoking it: a poll still running
+    on it starts no copy or conversion. A copy already running finishes."""
+    state = _states.pop(inbox_id, None)
+    if state is not None:
+        state.revoked = True
 
 
 def _state(inbox_id: int) -> _State:
@@ -482,10 +489,15 @@ async def poll(inbox: inbox_store.Inbox, *, now: float | None = None) -> dict[st
             logger.warning("inbox: listing %s failed", inbox.folder, exc_info=True)
             state.error = result["error"] = f"The Inbox couldn't be listed: {exc}"
             return result
+        if state.revoked:
+            result["error"] = "inbox_removed"
+            return result
         state.error = None
         await _forget_gone(inbox, state, listing, unlisted)
         stop = False
         for path, fingerprint in listing.items():
+            if state.revoked:
+                break  # removed meanwhile: nothing more is taken
             if path in state.flights or state.held.get(path) == fingerprint:
                 continue
             state.held.pop(path, None)
@@ -754,6 +766,8 @@ async def _convert(
         destination, decision = await _step(_destination, path, rule, plan.folder)
     except (asyncio.TimeoutError, OSError):
         return "retry"
+    if state.revoked:
+        return "retry"  # the Inbox was removed meanwhile
     if destination is None:
         reason = (
             f"Its output is already in the Library ({plan.folder})"
@@ -815,8 +829,11 @@ async def _settle_flights(inbox: inbox_store.Inbox, state: _State) -> None:
             )
             continue
         if job.status == JobStatus.COMPLETED:
-            state.flights.pop(path, None)
-            await _finish(inbox, state, path, flight, job.output_path)
+            # Moving the original to processed/ is its own tracked flight
+            # (CodeRabbit 4606147968): a slow move never holds up this poll,
+            # and the Image stays in flight, not taken again, until it ends.
+            flight.job_id = None
+            _track(state, path, flight, _finish(inbox, state, path, flight, job.output_path))
         elif job.status == JobStatus.FAILED:
             state.flights.pop(path, None)
             await _hold(
@@ -1003,6 +1020,9 @@ def _move_to_processed(
                     # landed checked again (one swapped in is moved back).
                     try:
                         move_anchored(name, src, dst, identities[name])
+                    except PlacementCommitted:
+                        moved.append(name)  # it landed: put back with the rest
+                        raise
                     except MoveRollbackFailed:
                         raise  # reported as it is, never as a changed file
                     except OSError as exc:
@@ -1042,12 +1062,28 @@ def _move_to_processed(
 def _start_copy(
     inbox: inbox_store.Inbox, state: _State, path: str, flight: _Flight, folder: str,
 ) -> str:
-    task = asyncio.ensure_future(_copy(inbox, state, path, flight, folder))
+    if state.revoked:
+        return "retry"  # the Inbox was removed meanwhile: no copy starts
+    _track(state, path, flight, _copy(inbox, state, path, flight, folder))
+    return "copying"
+
+
+def _track(state: _State, path: str, flight: _Flight, work: Any) -> None:
+    """Run *work* (a copy, or the move after a conversion) as *flight*'s
+    task, *path* in flight until it ends; :func:`drain` waits for it."""
+
+    async def run() -> None:
+        try:
+            await work
+        finally:
+            if state.flights.get(path) is flight:
+                state.flights.pop(path, None)
+
+    task = asyncio.ensure_future(run())
     flight.task = task
     state.flights[path] = flight
     _tasks.add(task)
     task.add_done_callback(_tasks.discard)
-    return "copying"
 
 
 class _CopyDiffers(Exception):
@@ -1145,8 +1181,8 @@ async def _copy(
     except Exception as exc:
         logger.warning("inbox: copying %s failed", path, exc_info=True)
         outcome, why = "failed", str(exc)
-    finally:
-        state.flights.pop(path, None)
+    # The Image stays in flight until this ends (`_track`), its move to
+    # processed/ included.
     if outcome == "placed":
         # A copy is an external job: it has no output path for
         # `libraries.note_job_finished`, so its Library is told here, before

@@ -3,7 +3,6 @@ from __future__ import annotations
 import contextlib
 import ctypes
 import errno
-import fcntl
 import functools
 import hashlib
 import io
@@ -12,7 +11,6 @@ import os
 import secrets
 import stat
 import sys
-import tempfile
 import threading
 import time
 from collections.abc import Callable, Iterable, Iterator, Sequence
@@ -166,30 +164,37 @@ def _link_no_clobber(src: str, dst: str, src_dir_fd: int | None, dst_dir_fd: int
         ) from exc
 
 
-def _fd_path(fd: int) -> str:
-    """The path the open folder *fd* has now (``F_GETPATH``; ``/proc``)."""
-    get_path = getattr(fcntl, "F_GETPATH", None)
-    if get_path is not None:
-        return os.fsdecode(fcntl.fcntl(fd, get_path, bytes(1024)).rstrip(b"\0"))
-    return os.readlink(f"/proc/self/fd/{fd}")
-
-
 def _private_folder(parent: int, *, prefix: str = ".compressatorium-q-") -> tuple[str, int]:
     """A fresh folder in the open folder *parent* (same filesystem) that only
     this app's user can enter, and its descriptor, opened with no link
-    followed. ``tempfile.mkdtemp`` makes it: mode 0700, and never an existing
-    name (a colliding random name is tried again, never reused). It is then
-    opened through *parent* itself, so a folder that isn't where *parent* is
-    (its path changed meanwhile) is removed and refused."""
-    made = tempfile.mkdtemp(prefix=prefix, dir=_fd_path(parent))
-    name = os.path.basename(made)
-    try:
-        fd = os.open(name, _BENEATH_DIR_FLAGS, dir_fd=parent)
-    except OSError:
-        with contextlib.suppress(OSError):
-            os.rmdir(made)
-        raise
-    return name, fd
+    followed. Made through *parent* itself (``mkdir`` with ``dir_fd``), so a
+    parent path swapped for a link can't redirect it; owner-only
+    (``S_IRWXU``); a random name already taken is tried again, never reused
+    (``mkdir`` never takes an existing name)."""
+    for _ in range(100):
+        name = short_temp_name(prefix=prefix)
+        try:
+            os.mkdir(name, stat.S_IRWXU, dir_fd=parent)
+        except FileExistsError:
+            continue
+        try:
+            fd = os.open(name, _BENEATH_DIR_FLAGS, dir_fd=parent)
+        except OSError:
+            with contextlib.suppress(OSError):
+                os.rmdir(name, dir_fd=parent)
+            raise
+        return name, fd
+    raise OSError(errno.EEXIST, "No free name for a private folder")
+
+
+class PlacementCommitted(OSError):
+    """:func:`place_without_clobbering` failed after the file reached its
+    destination: it is there, and its old name is gone (#431). A caller that
+    rolls back treats it as moved."""
+
+
+def _same_inode(a: os.stat_result | None, b: os.stat_result | None) -> bool:
+    return a is not None and b is not None and (a.st_dev, a.st_ino) == (b.st_dev, b.st_ino)
 
 
 def _move_by_quarantine(
@@ -198,12 +203,13 @@ def _move_by_quarantine(
     """The fallback for moving a user's file with no delete race (#431), where
     there is no atomic no-replace rename:
 
+    0. A fresh private folder beside ``src`` (:func:`_private_folder`: owner
+       only, same filesystem) is made first, so nothing is published if it
+       can't be.
     1. ``link(src, dst)``: no clobber, ``dst`` taken raises.
-    2. ``rename(src, <private>/<name>)``: into a fresh folder of its own beside
-       ``src`` (:func:`_private_folder`: 0700, same filesystem), atomic. No
-       name in the shared folder is involved, so none can collide, and the
-       quarantined entry is reachable only inside the private folder, which
-       only this app's user can enter.
+    2. ``rename(src, <private>/<name>)``: atomic, and no name in the shared
+       folder is involved, so none can collide; the quarantined entry is
+       reachable only inside the private folder.
     3. The quarantined entry is the inode linked: unlink it inside the private
        folder, then remove that folder. Done, and a file put at ``src`` after
        step 2 is never touched. It isn't (``src`` was replaced between steps 1
@@ -212,6 +218,11 @@ def _move_by_quarantine(
        ``src`` (``link``, which fails if ``src`` was made again meanwhile) and
        the private folder removed. If it can't be put back it stays in the
        private folder, and :class:`MoveRollbackFailed` names it.
+
+    A failure between the link and the quarantine rename (the file still at
+    ``src``) unlinks ``dst`` again, once it is checked to be that same inode,
+    and raises: nothing was moved. A failure after the rename raises
+    :class:`PlacementCommitted`: the file is at ``dst`` and its old name gone.
 
     Nothing is ever deleted that a name doesn't also keep: each unlink removes
     a second name of an inode another name still holds.
@@ -222,38 +233,70 @@ def _move_by_quarantine(
         parent = src_dir_fd
     name = os.path.basename(src) if src_dir_fd is None else src
     try:
-        _link_no_clobber(src, dst, src_dir_fd, dst_dir_fd)
-        linked = os.stat(dst, dir_fd=dst_dir_fd, follow_symlinks=False)
         private, private_fd = _private_folder(parent)
         try:
-            try:
-                os.rename(name, name, src_dir_fd=parent, dst_dir_fd=private_fd)
-            except FileNotFoundError:
-                os.rmdir(private, dir_fd=parent)
-                return  # the src name is gone already: the file is at dst
-            held = os.stat(name, dir_fd=private_fd, follow_symlinks=False)
-            if (held.st_dev, held.st_ino) != (linked.st_dev, linked.st_ino):
-                # Replaced between the link and the quarantine: put it back.
-                try:
-                    _link_no_clobber(name, name, private_fd, parent)
-                except OSError as exc:
-                    logger.error(
-                        "place_without_clobbering: %s was replaced while it was moved "
-                        "and the replacement couldn't be put back; it is kept in %s: %s",
-                        src, private, exc,
-                    )
-                    raise MoveRollbackFailed(
-                        exc.errno or errno.EIO,
-                        f"{src} was replaced while it was moved, and the replacement "
-                        f"couldn't be put back: it is kept in {private} beside it ({exc})",
-                    ) from exc
-            os.unlink(name, dir_fd=private_fd)
+            _quarantine_move(src, dst, src_dir_fd, dst_dir_fd, parent, name, private, private_fd)
         finally:
             os.close(private_fd)
-        os.rmdir(private, dir_fd=parent)
+            with contextlib.suppress(OSError):
+                os.rmdir(private, dir_fd=parent)  # gone unless something is kept in it
     finally:
         if src_dir_fd is None:
             os.close(parent)
+
+
+def _quarantine_move(
+    src: str, dst: str, src_dir_fd: int | None, dst_dir_fd: int | None,
+    parent: int, name: str, private: str, private_fd: int,
+) -> None:
+    """Steps 1 to 3 of :func:`_move_by_quarantine`, the private folder made."""
+    _link_no_clobber(src, dst, src_dir_fd, dst_dir_fd)
+    try:
+        linked = os.stat(dst, dir_fd=dst_dir_fd, follow_symlinks=False)
+        os.rename(name, name, src_dir_fd=parent, dst_dir_fd=private_fd)
+    except FileNotFoundError:
+        return  # the src name is gone already: the file is at dst
+    except BaseException:
+        # Nothing has moved yet: the file is still at src. The name published
+        # at dst goes again, only while it is that same file.
+        here = _stat_or_none(name, parent)
+        there = _stat_or_none(dst, dst_dir_fd)
+        if _same_inode(here, there):
+            with contextlib.suppress(OSError):
+                os.unlink(dst, dir_fd=dst_dir_fd)
+        raise
+    try:
+        held = os.stat(name, dir_fd=private_fd, follow_symlinks=False)
+        if not _same_inode(held, linked):
+            # Replaced between the link and the quarantine: put it back.
+            try:
+                _link_no_clobber(name, name, private_fd, parent)
+            except OSError as exc:
+                logger.error(
+                    "place_without_clobbering: %s was replaced while it was moved "
+                    "and the replacement couldn't be put back; it is kept in %s: %s",
+                    src, private, exc,
+                )
+                raise MoveRollbackFailed(
+                    exc.errno or errno.EIO,
+                    f"{src} was replaced while it was moved, and the replacement "
+                    f"couldn't be put back: it is kept in {private} beside it ({exc})",
+                ) from exc
+        os.unlink(name, dir_fd=private_fd)
+    except MoveRollbackFailed:
+        raise
+    except OSError as exc:
+        raise PlacementCommitted(
+            exc.errno or errno.EIO,
+            f"{src} reached {dst}, but finishing the move failed ({exc})",
+        ) from exc
+
+
+def _stat_or_none(name: str, folder: int | None) -> os.stat_result | None:
+    try:
+        return os.stat(name, dir_fd=folder, follow_symlinks=False)
+    except OSError:
+        return None
 
 
 # errnos meaning "this kernel/filesystem has no no-replace rename", as opposed
@@ -1536,31 +1579,79 @@ def _copy_checked(
         os.close(src)
 
 
-def bind_source(path: str, identity: dict, progress=None) -> tuple[str, str]:
-    """Bind a queued conversion's Source before anything reads it (#431):
-    ``(private folder, the Source's path in it)``.
+class BoundSource:
+    """A Source bound by :func:`bind_source`: ``path`` (the private folder),
+    ``read_path`` (the Source in it), and the descriptors kept from bind time,
+    which :meth:`close` removes it through, never by its path."""
 
-    A fresh folder (mode 0700, same filesystem) is made in the identity's
-    root, and the Source and each of its members (``identity["members"]``, a
-    sheet's tracks) are hard-linked into it through descriptors opened beneath
-    the root with no link followed, each checked to be the inode that was
-    validated (or, where links can't be made, copied through a checked
-    descriptor). Everything the job then does reads these, a path no Inbox
-    writer can redirect. Raises OSError, leaving nothing behind. Blocking.
-    :func:`unbind_source` removes the folder.
+    def __init__(self, path: str, read_path: str, root_fd: int, name: str, fd: int) -> None:
+        self.path = path
+        self.read_path = read_path
+        self._root_fd = root_fd
+        self._name = name
+        self._fd = fd
+        self._closed = False
+        self._lock = threading.Lock()
+
+    def close(self) -> None:
+        """Remove the bound folder: its own names (links to the Inbox's files,
+        or copies it made) through its kept descriptor, then the folder from
+        its parent, only while that name is still this folder. Idempotent;
+        never raises. Blocking."""
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+        try:
+            for entry in os.listdir(self._fd):
+                try:
+                    os.unlink(entry, dir_fd=self._fd)
+                except OSError:
+                    logger.warning("bind: couldn't remove %s in %s", entry, self.path)
+            own = os.fstat(self._fd)
+            there = _stat_or_none(self._name, self._root_fd)
+            if _same_inode(own, there):
+                os.rmdir(self._name, dir_fd=self._root_fd)
+            else:
+                logger.warning("bind: %s isn't the bound folder any more; left alone", self.path)
+        except OSError:
+            logger.warning("bind: couldn't remove %s", self.path, exc_info=True)
+        finally:
+            for fd in (self._fd, self._root_fd):
+                with contextlib.suppress(OSError):
+                    os.close(fd)
+
+
+def bind_source(path: str, identity: dict, progress=None) -> BoundSource:
+    """Bind a queued conversion's Source before anything reads it (#431).
+
+    A fresh owner-only folder (same filesystem) is made in the identity's
+    root through its descriptor, and the Source and each of its members
+    (``identity["members"]``, a sheet's tracks) are hard-linked into it
+    through descriptors opened beneath the root with no link followed, each
+    checked to be the inode that was validated (or, where links can't be
+    made, copied through a checked descriptor). Everything the job then does
+    reads these, a path no Inbox writer can redirect. Raises OSError, leaving
+    nothing behind. Blocking. :meth:`BoundSource.close` removes the folder
+    through the descriptors kept from here.
 
     *progress* (a ``subprocess_runner.Progress``) is called after every chunk
     a copy reads, and once more before returning, so a stall-bounded caller
     gives up only on a copy that stopped moving, and one it gave up on stops
     at its next report and removes what it made."""
-    root = identity["root"]
+    root = os.path.abspath(identity["root"])
     folder_fd, name = _folder_beneath_root(path, root)
     try:
-        root_fd = open_dir_beneath(os.path.abspath(root))
+        root_fd = open_dir_beneath(root)
         try:
             private, bound_fd = _private_folder(root_fd, prefix=BIND_PREFIX)
-        finally:
+        except BaseException:
             os.close(root_fd)
+            raise
+        bound = BoundSource(
+            os.path.join(root, private), os.path.join(root, private, name),
+            root_fd, private, bound_fd,
+        )
         try:
             files = {name: identity["snapshot"], **identity.get("members", {})}
             for each, expected in files.items():
@@ -1568,36 +1659,11 @@ def bind_source(path: str, identity: dict, progress=None) -> tuple[str, str]:
             if progress is not None:
                 progress()  # a caller that gave up makes this raise: cleaned below
         except BaseException:
-            os.close(bound_fd)
-            unbind_source(os.path.join(os.path.abspath(root), private))
+            bound.close()
             raise
-        os.close(bound_fd)
     finally:
         os.close(folder_fd)
-    bound = os.path.join(os.path.abspath(root), private)
-    return bound, os.path.join(bound, name)
-
-
-def unbind_source(bound: str) -> None:
-    """Remove a folder :func:`bind_source` made: its own names (links to the
-    Inbox's files, or copies it made) and itself. Opened with no link
-    followed. Never raises. Blocking."""
-    try:
-        fd = os.open(bound, _BENEATH_DIR_FLAGS)
-    except OSError:
-        return
-    try:
-        for entry in os.listdir(fd):
-            try:
-                os.unlink(entry, dir_fd=fd)
-            except OSError:
-                logger.warning("unbind_source: couldn't remove %s in %s", entry, bound)
-    finally:
-        os.close(fd)
-    try:
-        os.rmdir(bound)
-    except OSError:
-        logger.warning("unbind_source: couldn't remove %s", bound)
+    return bound
 
 
 def read_beneath(root: str, relative: str, *, max_bytes: int) -> bytes:

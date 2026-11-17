@@ -1110,7 +1110,10 @@ long a file must stay unchanged before it's taken (60 seconds by default).
 - The Inbox is polled once a minute, on the same tick as the Rules, so it works
   on NFS and SMB shares where change notifications don't. A file is taken only
   once its size and modified time are the same across two polls at least the
-  settle time apart: a download still in progress is never touched. A sheet
+  settle time apart. That is an inactivity check, not proof a download
+  finished: a download that pauses for longer than the settle time looks
+  settled. When that matters, download somewhere else and move finished files
+  into the Inbox (a move within one filesystem lands whole at once). A sheet
   and its tracks, or a split `Game.iso.0`, `.1`, ..., are one Image, and wait
   for every file.
 - Its Platform is worked out the same way a folder Library does it: the header

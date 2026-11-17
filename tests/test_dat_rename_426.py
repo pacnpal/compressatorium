@@ -608,3 +608,34 @@ def test_the_sheet_rewrite_changes_only_the_track_names() -> None:
     )
     # A name that can't be written back as one token is refused, never guessed.
     assert rewrite_track_names(cue, ".cue", {"game.bin": 'a"b.bin'}) is None
+
+
+
+@pytest.mark.asyncio
+async def test_a_committed_placement_is_rolled_back_with_the_rest(
+    db: Path, client: httpx.AsyncClient, monkeypatch,
+) -> None:
+    """CodeRabbit 4606148011: a move that raises PlacementCommitted (the file
+    is at its new name) counts as moved, so the rollback puts it back too."""
+    from services import image_rename
+    from utils.path_utils import PlacementCommitted
+
+    psx = db / "roms" / "psx"
+    image = await _cue_image(client, psx / "game")
+    await _register(client, db / "roms")
+    preview = await _preview(client, image["sheet"])
+    real_move = image_rename.move_anchored
+
+    def committed_on_the_last_track(name, src, dst, expected, **kwargs):
+        real_move(name, src, dst, expected, **kwargs)
+        if name == image["two"].name:
+            raise PlacementCommitted(5, "Input/output error after the move")
+
+    monkeypatch.setattr(image_rename, "move_anchored", committed_on_the_last_track)
+    job = await _run(client, preview)
+
+    result = _result(job)[str(image["sheet"])]
+    assert result["status"] == "not_renamed", result
+    assert sorted(p.name for p in (psx / "game").iterdir()) == sorted([
+        "game.cue", "game (Track 1).bin", "game (Track 2).bin",
+    ])

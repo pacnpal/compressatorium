@@ -471,6 +471,20 @@ async def run_admitted(func, *args, timeout: float, **kwargs):
             _worker_slots.release()
 
 
+async def _claim_registration() -> None:
+    """Take the registration lock from the event loop, waiting at most
+    ``REGISTER_WAIT_SECONDS`` and polling rather than parking a thread, so a
+    cancelled request never leaves it taken. Not free in time: a retryable
+    409 (:class:`LibraryPathError`). The caller releases it."""
+    deadline = time.monotonic() + REGISTER_WAIT_SECONDS
+    while not _register_lock.acquire(blocking=False):
+        if time.monotonic() >= deadline:
+            raise LibraryPathError(
+                409, "A Library registration is still running; try again shortly",
+            )
+        await asyncio.sleep(0.05)
+
+
 @asynccontextmanager
 async def romm_root_claim(path: str | None):
     """Hold the registration lock while RomM's library root is checked and saved.
@@ -486,13 +500,7 @@ async def romm_root_claim(path: str | None):
     with 503 and the lock released, rather than holding it for good. Callers
     take this before any lock of their own, so a hung check holds nothing else.
     """
-    deadline = time.monotonic() + REGISTER_WAIT_SECONDS
-    while not _register_lock.acquire(blocking=False):
-        if time.monotonic() >= deadline:
-            raise LibraryPathError(
-                409, "A Library registration is still running; try again shortly",
-            )
-        await asyncio.sleep(0.05)
+    await _claim_registration()
     try:
         if path:
             await run_in_threadpool(_loaded)
@@ -685,28 +693,41 @@ async def remove(library_id: str) -> bool:
 async def _remove(library: FolderLibrary, library_id: str, record_id: int) -> None:
     from services.rules import sweep as rules_sweep
 
-    await rules_sweep.forget_library(library)
+    # Under the registration lock (#431): an Inbox saved for this Library
+    # between its Inboxes' removal and the delete would be left behind,
+    # feeding a Library that no longer exists. Taken before anything is
+    # cleaned up, and bounded (CodeRabbit 4606147989): a registration that
+    # won't end answers a retryable 409 with the Library untouched.
+    await _claim_registration()
+    handed_off = False
+    try:
+        await rules_sweep.forget_library(library)
 
-    def _delete() -> None:
-        from services import inbox, library_records, platform_mappings
+        def _delete() -> None:
+            from services import inbox, library_records, platform_mappings
 
-        # Under the registration lock (#431): an Inbox saved for this Library
-        # between its Inboxes' removal and the delete would be left behind,
-        # feeding a Library that no longer exists.
-        with registration_lock():
-            inbox.forget_library(library_id)
-            platform_mappings.forget_library(library_id)
-            library_records.forget(library_id)
-            with _session() as session:
-                row = session.get(_db.FolderLibraryRecord, record_id)
-                if row is not None:
-                    session.delete(row)
-                    session.commit()
-            with _lock:
-                if _cache is not None:
-                    _cache.pop(record_id, None)
+            try:
+                inbox.forget_library(library_id)
+                platform_mappings.forget_library(library_id)
+                library_records.forget(library_id)
+                with _session() as session:
+                    row = session.get(_db.FolderLibraryRecord, record_id)
+                    if row is not None:
+                        session.delete(row)
+                        session.commit()
+                with _lock:
+                    if _cache is not None:
+                        _cache.pop(record_id, None)
+            finally:
+                _register_lock.release()
 
-    await run_in_threadpool(_delete)
+        # The worker always runs `_delete` once handed it, and lets go of the
+        # lock when it ends, however this request ends.
+        handed_off = True
+        await run_in_threadpool(_delete)
+    finally:
+        if not handed_off:
+            _register_lock.release()
 
 
 def describe(library: Library) -> dict[str, Any]:

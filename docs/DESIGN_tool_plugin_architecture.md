@@ -778,20 +778,28 @@ with `OSError(ENOTSUP)` rather than falling back to a check-then-rename.
 That check still leaves a window before the unlink, so a move of a user's file,
 whose name someone else may reuse at any moment, passes `identity_sensitive=True`
 and, where there is no atomic no-replace rename (Linux CIFS, older NFS), takes
-`_move_by_quarantine` instead (#431): (1) `link(src, dst)`, which fails if `dst`
-exists; (2) `rename(src, <private>/<name>)` into a fresh folder of its own beside
-`src` (`_private_folder`: `tempfile.mkdtemp`, mode 0700 on the same filesystem, never an
-existing name), so no name in the shared folder is involved and the quarantined
-entry is reachable only inside a folder only the app's user can enter; (3) if the
+`_move_by_quarantine` instead (#431): (0) a fresh folder of its own beside `src`
+is made first, so nothing is published if it can't be (`_private_folder`:
+`mkdir(dir_fd=parent)` through the open parent, mode `stat.S_IRWXU`, a random
+name tried again on `EEXIST`, then opened through the parent with `O_NOFOLLOW`;
+CodeRabbit 4606147997, 4606148011); (1) `link(src, dst)`, which fails if `dst`
+exists; (2) `rename(src, <private>/<name>)`, so no name in the shared folder is
+involved and the quarantined entry is reachable only inside a folder only the
+app's user can enter; (3) if the
 quarantined entry is the inode linked, unlink it inside the private folder and
 remove the folder, so a file put at `src` after step 2 is never touched. If it
 isn't (`src` was replaced between steps 1 and 2), the file moved is the one that
 was there at step 1, now held by `dst` alone, and stays there; the replacement
 goes back to `src` by `link` (which fails if `src` was made again) and its
 private folder is removed. If it can't go back, it stays in the private folder
-and `MoveRollbackFailed` names it, which intake turns into a Finding. Each
-unlink removes a second name of an inode another name still holds, so nothing
-is ever deleted. The identity-sensitive callers are `move_anchored` (the Image
+and `MoveRollbackFailed` names it, which intake turns into a Finding. A
+failure between steps 1 and 2 (the file still at `src`) unlinks `dst` again,
+once it is checked to be the same inode, and raises: nothing moved. A failure
+after step 2 raises `PlacementCommitted` (an `OSError`): the file is at `dst`
+and its old name gone, so a caller that rolls back counts it as moved (the
+Image rename and `_move_to_processed` put it back with the rest;
+`StagedOutput.take` / `restore` answer it as moved). Each unlink removes a
+second name of an inode another name still holds, so nothing is ever deleted. The identity-sensitive callers are `move_anchored` (the Image
 rename and an Inbox's originals), intake's put-back, and `StagedOutput.take` /
 `restore` (a RomM swap parking its Source, #391). The plain fallback stays for
 the app's own files, whose names nobody else writes: a staging slot's placed
@@ -7314,13 +7322,17 @@ Fails closed: the folder must be absolute and `volume_containment(...) is True`
 own output, another's would have its Images moved to `processed/`), and not
 equal to, inside or around another Inbox. The overlap checks and the insert run
 under `libraries.registration_lock`, the lock a folder Library's registration,
-RomM's root save and a folder Library's removal take (removal holds it across
-its Inboxes' removal, the delete and the cache), so an Inbox and a Library saved
+RomM's root save and a folder Library's removal take (removal takes it before
+anything is cleaned up, its Rules' run state included, waiting at most
+`REGISTER_WAIT_SECONDS` and answering a retryable 409 with the Library untouched
+when it isn't free, CodeRabbit 4606147989, and holds it across its Inboxes'
+removal, the delete and the cache), so an Inbox and a Library saved
 or removed at once can't interleave (Codex 4603071815); `inboxes.folder` unique is the backstop. The other way
 round, `libraries.register` and `check_romm_root` refuse a Library root that
 is, holds or sits inside an Inbox (`inbox.holding`), and every poll checks its
 Library's root again before it lists anything (a RomM root saved elsewhere since). Removing an Inbox (or its folder Library, from `libraries._remove`)
-drops the row, its intake state and its Findings
+drops the row, its intake state (revoked: a poll still running on it starts
+no copy or conversion, CodeRabbit 4606147955) and its Findings
 (`findings.forget_under(library_id, "inbox:<id>", INBOX_KINDS)`); no file. A
 settle-time change writes the row and publishes it to the cache under one
 mutation lock, so two saves publish in commit order.
@@ -7382,8 +7394,12 @@ refuses the job (`source_identity_problem`: outside the Volumes, reached through
 a link, gone, or another file) with the reason. A folder swapped for a link
 while the job waits converts nothing from outside the Inbox. A job queued
 without one (a Rule sweep, a hand-started job) is not re-checked this way when
-it runs. A job that passes is then bound before anything else reads its Source
-(`path_utils.bind_source`, Codex 4605281757): a fresh 0700 folder in the Inbox
+it runs. Both checks, and the bind below, run inside the job's full
+finalization region (CodeRabbit 4606147979): a cancel while either waits ends
+the job CANCELLED and lets go of its output locks and its cross-process slot,
+and a refusal raises `SourceRefused`, ending it FAILED ("Not converted: ...")
+with nothing written or removed. A job that passes is then bound before anything else reads its Source
+(`path_utils.bind_source`, Codex 4605281757): a fresh owner-only folder in the Inbox
 root (same filesystem, `.compressatorium-bind-*`, which intake never lists)
 gets a hard link of the Source and of each member it carries
 (`identity["members"]`, a sheet's tracks), made through descriptors opened
@@ -7394,7 +7410,12 @@ file is copied through a descriptor checked before and after; the bind runs unde
 stall limit by default), each copied chunk reporting progress, so a slow copy
 that keeps moving finishes and only a real stall fails the job. A bind given up
 on stops at its next report and removes its folder; one that answers after its
-awaiter left is removed too. The metadata probes keep their fixed bound. Sizing,
+awaiter left is removed too. `bind_source` returns a `BoundSource` (`path`,
+`read_path`, `close()`) that keeps the root's and the bound folder's
+descriptors from bind time: `close()` unlinks the bound names through the
+folder's own descriptor and removes the folder from the root only while that
+name is still the same inode, so a folder swapped in under its name keeps
+everything in it (CodeRabbit outside-diff note on the bind cleanup). The metadata probes keep their fixed bound. Sizing,
 detection, the companion checks and `run_convert` read `job._read_path`, never
 the Inbox name, and `_cleanup_temp_dir` removes the folder on every ending. The
 move to `processed/` still acts on the Inbox names, with its own inode check. So the job is a conversion in every sense the
@@ -7496,7 +7517,11 @@ was left in `processed/`, never the quiet "changed, settle again". A name alread
 All or none: a failed move puts back the ones already moved, through the same
 descriptors. The move runs like a copy's placement (`_owned`: past
 `_MOVE_SECONDS` its worker's outcome is still waited for), so a move that lands
-late is counted and reported, never lost behind a Finding. Then
+late is counted and reported, never lost behind a Finding. After a conversion
+it is its own tracked flight (`_track`, CodeRabbit 4606147968): the poll that
+saw the job complete starts it and goes on, the Image stays in flight (never
+taken again) until the move ends, and its real outcome is reconciled then. A
+copy's flight likewise lasts until its own move has ended. Then
 `processed_count` is incremented in one `UPDATE ... SET
 processed_count = processed_count + 1` (a copy and a conversion can finish at
 once; the cached total only grows to what the database answers) and the file's

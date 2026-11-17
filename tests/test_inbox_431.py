@@ -1860,12 +1860,10 @@ def test_the_quarantine_is_a_private_folder_no_name_can_collide_with(tmp_path, m
     a, b = _two_folders(tmp_path)
     taken = a / ".compressatorium-q-taken"
     taken.write_bytes(b"someone else's")
-    # The private folder is `tempfile.mkdtemp`'s (0700, never an existing
-    # name): its first candidate name collides with an entry already there.
-    import tempfile
-
-    names = iter(["taken", "fresh"])
-    monkeypatch.setattr(tempfile, "_get_candidate_names", lambda: names)
+    # The private folder is made through the parent's descriptor (0700, never
+    # an existing name): its first random name collides with an entry there.
+    names = iter([".compressatorium-q-taken", ".compressatorium-q-fresh"])
+    monkeypatch.setattr(path_utils, "short_temp_name", lambda **_k: next(names))
     real_rename = os.rename
     seen = {}
 
@@ -2049,3 +2047,197 @@ async def test_tracks_beside_a_sheet_that_cant_be_read_are_held(vol, db):
     held = {Path(f["path"]).name: f["reason"] for f in _inbox_findings()}
     assert "Track.bin" in held
     assert "Game.cue" in held["Track.bin"]
+
+
+
+# ---- review round nine (CodeRabbit on #443) ---------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_poll_whose_inbox_is_removed_meanwhile_starts_no_copy(vol, db, monkeypatch):
+    """CodeRabbit 4606147955, ruled: removing the Inbox while a poll awaits
+    its listing revokes that poll's state; it admits no new copy."""
+    from models import ConversionMode
+    from services import inbox
+    from services.inbox import intake
+
+    library = _library(vol)
+    box = _inbox(vol, library, settle=0)
+    _drop(vol / "Downloads" / "ps2" / "Game.iso")
+    await _poll(box, now=0)
+    real_list = intake._list
+
+    def removed_while_listing(*args, **kwargs):
+        listing = real_list(*args, **kwargs)
+        intake.forget(box.id)  # the Inbox is removed meanwhile
+        return listing
+
+    monkeypatch.setattr(intake, "_list", removed_while_listing)
+    before = [j.id for j in intake.job_manager.jobs.values() if j.mode == ConversionMode.INBOX_COPY]
+
+    await intake.poll(inbox.get(box.id), now=1)
+    await intake.drain()
+
+    after = [j.id for j in intake.job_manager.jobs.values() if j.mode == ConversionMode.INBOX_COPY]
+    assert after == before
+    assert not (vol / "ROMs" / "ps2" / "Game.iso").exists()
+    assert (vol / "Downloads" / "ps2" / "Game.iso").exists()
+
+
+@pytest.mark.asyncio
+async def test_a_slow_move_after_a_conversion_never_holds_up_the_poll(vol, db, queue, monkeypatch):
+    """CodeRabbit 4606147968, ruled: moving a converted original to
+    processed/ is a tracked flight the poll doesn't wait on; its real outcome
+    is reconciled when it finishes."""
+    import time as clock
+
+    from services import inbox
+    from services.inbox import intake
+
+    monkeypatch.setattr(intake, "_MOVE_SECONDS", 0.05)
+    real = intake._move_to_processed
+
+    def slow_move(*args):
+        clock.sleep(0.6)
+        return real(*args)
+
+    monkeypatch.setattr(intake, "_move_to_processed", slow_move)
+    library = _library(vol)
+    await _ps2_rule(library)
+    box = _inbox(vol, library)
+    game = await _converted(vol, queue, box)
+
+    started = clock.monotonic()
+    await intake.poll(inbox.get(box.id), now=122)
+    took = clock.monotonic() - started
+    await intake.drain()
+
+    assert took < 0.4
+    assert not game.exists()
+    assert (vol / "Downloads" / "processed" / "ps2" / "Game.iso").exists()
+    assert inbox.get(box.id).processed_count == 1
+
+
+@pytest.mark.asyncio
+async def test_removing_a_library_gives_up_on_a_registration_that_wont_end(vol, db, monkeypatch):
+    """CodeRabbit 4606147989, ruled: removal waits a bounded time for the
+    registration lock, then answers a retryable 409 with nothing cleaned up."""
+    from services import inbox, libraries
+
+    library = _library(vol)
+    _inbox(vol, library)
+    monkeypatch.setattr(libraries, "REGISTER_WAIT_SECONDS", 0.1)
+
+    with libraries.registration_lock():
+        with pytest.raises(libraries.LibraryPathError) as busy:
+            await libraries.remove(library.id)
+
+    assert busy.value.status == 409
+    assert libraries.get(library.id) is not None
+    assert len(inbox.for_library(library.id)) == 1
+
+
+def test_the_quarantine_is_set_up_before_anything_is_published(tmp_path, monkeypatch):
+    """CodeRabbit 4606148011, ruled: the private folder is made before the
+    destination is linked, so a failure making it publishes nothing."""
+    import errno
+
+    from utils import path_utils
+
+    monkeypatch.setattr(path_utils, "_rename_noreplace_at", lambda *_a: False)
+    a, b = _two_folders(tmp_path)
+
+    def no_space(*_a, **_k):
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(path_utils, "_private_folder", no_space)
+    src_fd, dst_fd = os.open(a, os.O_RDONLY), os.open(b, os.O_RDONLY)
+    try:
+        with pytest.raises(OSError):
+            path_utils.place_without_clobbering(
+                "Game.iso", "Game.iso", src_dir_fd=src_fd, dst_dir_fd=dst_fd,
+                identity_sensitive=True,
+            )
+    finally:
+        os.close(src_fd)
+        os.close(dst_fd)
+
+    assert not (b / "Game.iso").exists()
+    assert (a / "Game.iso").read_bytes() == b"original"
+
+
+def test_a_failure_after_the_link_unpublishes_the_destination(tmp_path, monkeypatch):
+    """A step after the link that fails while the source is still in place
+    (its quarantine rename) unlinks the destination it published, after
+    checking it is that inode, and raises."""
+    import errno
+
+    from utils import path_utils
+
+    monkeypatch.setattr(path_utils, "_rename_noreplace_at", lambda *_a: False)
+    a, b = _two_folders(tmp_path)
+
+    def eio(*_a, **_k):
+        raise OSError(errno.EIO, "Input/output error")
+
+    monkeypatch.setattr(path_utils.os, "rename", eio)
+    src_fd, dst_fd = os.open(a, os.O_RDONLY), os.open(b, os.O_RDONLY)
+    try:
+        with pytest.raises(OSError) as failed:
+            path_utils.place_without_clobbering(
+                "Game.iso", "Game.iso", src_dir_fd=src_fd, dst_dir_fd=dst_fd,
+                identity_sensitive=True,
+            )
+    finally:
+        os.close(src_fd)
+        os.close(dst_fd)
+
+    assert not isinstance(failed.value, path_utils.PlacementCommitted)
+    assert not (b / "Game.iso").exists()
+    assert (a / "Game.iso").read_bytes() == b"original"
+    assert _quarantined(a) == []
+
+
+def test_a_failure_once_the_file_has_moved_says_the_placement_was_committed(
+    tmp_path, monkeypatch,
+):
+    """A step that fails after the source is in quarantine raises
+    PlacementCommitted: the file is at the destination, and the caller
+    (the Image rename's rollback) must treat it as moved."""
+    import errno
+
+    from utils import path_utils
+
+    monkeypatch.setattr(path_utils, "_rename_noreplace_at", lambda *_a: False)
+    a, b = _two_folders(tmp_path)
+    real_stat = os.stat
+    calls = []
+
+    def stat_fails_in_quarantine(path, *args, **kwargs):
+        calls.append(path)
+        if path == "Game.iso" and kwargs.get("dir_fd") is not None and len(calls) > 1:
+            raise OSError(errno.EIO, "Input/output error")
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(path_utils.os, "stat", stat_fails_in_quarantine)
+    src_fd, dst_fd = os.open(a, os.O_RDONLY), os.open(b, os.O_RDONLY)
+    try:
+        with pytest.raises(path_utils.PlacementCommitted):
+            path_utils.place_without_clobbering(
+                "Game.iso", "Game.iso", src_dir_fd=src_fd, dst_dir_fd=dst_fd,
+                identity_sensitive=True,
+            )
+    finally:
+        os.close(src_fd)
+        os.close(dst_fd)
+
+    assert (b / "Game.iso").read_bytes() == b"original"
+
+
+def test_the_inbox_screenshot_requires_its_own_inbox():
+    """CodeRabbit 4606148050: after a 409 the shot lists the Library's
+    Inboxes and requires the expected folder, and waits for its row."""
+    shots = (Path(__file__).resolve().parents[1] / "shots.yml").read_text()
+    block = shots[shots.index("rules-inboxes-light"):shots.index("rules-inboxes-dark")]
+    assert "/inboxes`" in block and "listed.inboxes" in block
+    assert "downloads" in block and "status row" in block

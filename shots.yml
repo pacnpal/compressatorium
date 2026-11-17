@@ -1238,10 +1238,27 @@
         body: JSON.stringify({ folder: volume.path + '/downloads', settle_seconds: 60 }),
       });
       if (!saved.ok && saved.status !== 409) throw new Error('could not save the Inbox');
+      // A 409 is only fine when it is this Library's downloads Inbox already:
+      // a folder taken by anything else must fail the shot, not capture it.
+      const folder = volume.path + '/downloads';
+      const listed = await (await fetch(`/api/libraries/${id}/inboxes`)).json();
+      // (Matched by its end: the saved folder is the resolved path.)
+      const ours = f => f === folder || (f || '').endsWith('/downloads');
+      if (!(listed.inboxes || []).some(b => ours(b.folder))) {
+        throw new Error('the downloads Inbox is not this Library\'s');
+      }
       location.hash = `#/rules/${id}`;
-      await new Promise(r => setTimeout(r, 1500));
-      const panel = document.querySelector('.inboxes');
-      if (!panel) throw new Error('Inboxes panel not shown');
+      // Wait for that Inbox's status row, not a fixed delay.
+      let panel = null;
+      for (let i = 0; i < 50; i++) {
+        panel = document.querySelector('.inboxes');
+        const row = panel && [...panel.querySelectorAll('.rows li')]
+          .find(li => ours(li.querySelector('.where code')?.textContent));
+        if (row && row.querySelector('.status')) break;
+        panel = null;
+        await new Promise(r => setTimeout(r, 100));
+      }
+      if (!panel) throw new Error('the downloads Inbox status row not shown');
       panel.scrollIntoView({ block: 'center' });
       await new Promise(r => setTimeout(r, 300));
     })()

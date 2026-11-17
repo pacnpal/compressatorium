@@ -267,9 +267,10 @@ class ConversionJob(BaseModel):
     # the job's Source lock right before the tool runs.
     _source_identity: dict | None = PrivateAttr(default=None)
     # Where a job with a ``_source_identity`` reads its Source once bound
-    # (``utils.path_utils.bind_source``): a private folder of links, and the
+    # (``utils.path_utils.bind_source``): the ``BoundSource`` (a private
+    # folder of links, removed through its kept descriptors), and the
     # Source's path in it. None until bound, and for every other job.
-    _bound_dir: str | None = PrivateAttr(default=None)
+    _bound: object | None = PrivateAttr(default=None)
     _read_path: str | None = PrivateAttr(default=None)
 
 

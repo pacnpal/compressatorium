@@ -80,6 +80,7 @@ from services.subprocess_runner import (
 )
 from utils.path_utils import (
     AnchoredFolders,
+    PlacementCommitted,
     file_snapshot,
     move_anchored,
     place_without_clobbering,
@@ -361,10 +362,16 @@ class _Files:
                 # fingerprinted, never over anything, the entry that landed
                 # checked again, and no delete race on a share without an
                 # atomic no-replace rename.
-                move_anchored(
-                    move.old_name, move.src, move.dst, self.fingerprints[move.old],
-                    new_name=move.new_name,
-                )
+                try:
+                    move_anchored(
+                        move.old_name, move.src, move.dst, self.fingerprints[move.old],
+                        new_name=move.new_name,
+                    )
+                except PlacementCommitted:
+                    # It landed, and its old name is gone: put back with
+                    # the rest (CodeRabbit 4606148011).
+                    done.append(move)
+                    raise
                 done.append(move)
             self._move_folder_blocking()
         except BaseException:

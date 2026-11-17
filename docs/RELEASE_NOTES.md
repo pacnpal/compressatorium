@@ -120,6 +120,10 @@
   deleted. An Unsorted, conflicting or failed file stays where it is with a
   Finding saying why, and isn't tried again until it changes. Each Inbox shows
   its last poll and the files waiting, in progress, held and processed.
+  Settling is an inactivity check, not proof a download finished: when that
+  matters, download elsewhere and move finished files into the Inbox.
+  Removing a Library while another Library or Inbox is being saved answers
+  "try again shortly" with nothing removed.
   Database migration 0027 adds the Inboxes. Archives, DAT names and asking
   RomM to scan come next (#432, #433).
 - **Xbox 360 disc images to ZAR, with rom-converto** (#422). A new tool,

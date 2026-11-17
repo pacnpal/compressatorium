@@ -68,7 +68,6 @@ from utils.path_utils import (
     bind_source,
     is_within_configured_volumes,
     source_identity_problem,
-    unbind_source,
     source_companions_are_safe,
     strip_archive_path,
 )
@@ -589,6 +588,12 @@ class QueueBackpressureError(RuntimeError):
 
 class ExternalJobCancelled(Exception):
     """Raised inside an external-job loop when cancel_job() has been requested."""
+
+
+class SourceRefused(Exception):
+    """A queued conversion's Source isn't the file it was queued for, or
+    couldn't be bound (#431): the job ends FAILED with this message, its
+    run's own cleanup letting go of everything it holds."""
 
 
 class JobManager:
@@ -1948,11 +1953,11 @@ class JobManager:
                 if not state["abandoned"]:
                     state["result"] = result
                     return result
-            unbind_source(result[0])  # nobody is waiting for it any more
+            result.close()  # nobody is waiting for it any more
             return result
 
         try:
-            bound, read_path = await run_detached_within_stall_bound(
+            bound = await run_detached_within_stall_bound(
                 bind, what="Binding the Source", stall=_BIND_STALL_SECONDS,
                 report_progress=True,
             )
@@ -1963,11 +1968,11 @@ class JobManager:
             if late is not None:
                 # Answered, but the answer never reached here: removed on a
                 # thread of its own (it touches the disk).
-                threading.Thread(target=unbind_source, args=(late[0],), daemon=True).start()
+                threading.Thread(target=late.close, daemon=True).start()
             if isinstance(exc, (OSError, RuntimeError, asyncio.TimeoutError)):
                 return f"the Source couldn't be bound for reading ({exc})"
             raise
-        job._bound_dir, job._read_path = bound, read_path
+        job._bound, job._read_path = bound, bound.read_path
         return None
 
     async def _fail_before_start(
@@ -2795,11 +2800,11 @@ class JobManager:
                 pass
 
     async def _cleanup_temp_dir(self, job: ConversionJob):
-        if job._bound_dir:
-            bound, job._bound_dir = job._bound_dir, None
+        if job._bound is not None:
+            bound, job._bound = job._bound, None
             try:
                 await asyncio.wait_for(
-                    run_detached(unbind_source, bound), _CANONICAL_PROBE_SECONDS,
+                    run_detached(bound.close), _CANONICAL_PROBE_SECONDS,
                 )
             except (asyncio.TimeoutError, OSError):
                 logger.warning("Could not remove the bound Source folder %s", bound)
@@ -5769,17 +5774,6 @@ class JobManager:
                     message="Waiting for another job using this Source or its folder...",
                 )
                 return
-            # The Source is still the file the job was queued for, read beneath
-            # the folder it must stay under with no link followed (#431), now
-            # that its lock is held and before anything reads it.
-            problem = await self._source_identity_problem_bounded(job)
-            if problem is None:
-                problem = await self._bind_source_bounded(job)
-            if problem is not None:
-                await self._fail_before_start(
-                    job_id, job, f"Not converted: {problem}", dir_lock_held=dir_lock_acquired,
-                )
-                return
 
             job.status = JobStatus.PROCESSING
             job.started_at = datetime.now(timezone.utc)
@@ -5816,6 +5810,17 @@ class JobManager:
             raise
 
         try:
+            # The Source is still the file the job was queued for, read beneath
+            # the folder it must stay under with no link followed (#431), now
+            # that its lock is held and before anything reads it. Inside this
+            # region (CodeRabbit 4606147979): a cancel while either waits lets
+            # go of the output locks and the slot too. A refusal ends the job
+            # FAILED with nothing written or removed: no output exists yet.
+            problem = await self._source_identity_problem_bounded(job)
+            if problem is None:
+                problem = await self._bind_source_bounded(job)
+            if problem is not None:
+                raise SourceRefused(f"Not converted: {problem}")
             # Ledger bookkeeping (#292): size the Source set before anything can
             # delete it. Inside the cleanup-protected region, on a detached
             # thread, bounded and cancellable like the verify-target probe: a

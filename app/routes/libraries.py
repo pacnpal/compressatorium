@@ -161,7 +161,12 @@ async def remove_library(library_id: str) -> dict:
     """Remove a folder Library with its Rules and run state. No file is touched."""
     if _library(library_id).kind != "folder":
         raise HTTPException(status_code=400, detail="RomM cannot be removed")
-    if not await libraries.remove(library_id):
+    try:
+        removed = await libraries.remove(library_id)
+    except libraries.LibraryPathError as exc:
+        # A registration still running: retryable, nothing removed.
+        raise HTTPException(status_code=exc.status, detail=str(exc)) from None
+    if not removed:
         raise HTTPException(status_code=404, detail="Library not found")
     return {"removed": library_id}
 

@@ -67,6 +67,7 @@ from logging_setup import get_logger
 from services import partial_writes
 from utils.junk import STAGE_DIR_NAME
 from utils.path_utils import (
+    PlacementCommitted,
     open_dir_beneath,
     place_without_clobbering,
     short_temp_name,
@@ -87,6 +88,21 @@ _KEEP_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | _CLOEXEC
 PARK_PREFIX = "park-"
 
 __all__ = ["PARK_PREFIX", "STAGE_DIR_NAME", "StagedOutput", "open_slot"]
+
+
+def _move_committed(name: str, target: str, *, src_dir_fd: int, dst_dir_fd: int) -> None:
+    """Move a user's file between the slot and its folder, never over
+    anything and with no delete race (``identity_sensitive``). One that
+    reached *target* but whose cleanup failed (:class:`PlacementCommitted`)
+    has moved: answered as moved, never as a failure a caller would undo by
+    discarding the slot it is now in (#431)."""
+    try:
+        place_without_clobbering(
+            name, target, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd,
+            identity_sensitive=True,
+        )
+    except PlacementCommitted as exc:
+        logger.warning("staging: %s moved, but its cleanup failed: %s", name, exc)
 
 
 class StagedOutput:
@@ -175,9 +191,8 @@ class StagedOutput:
             self._require_open()
             # A user's file (a RomM swap parks its Source): moved with no
             # delete race where there is no no-replace rename (#431).
-            place_without_clobbering(
+            _move_committed(
                 name, target, src_dir_fd=self._folder_fd, dst_dir_fd=self._slot_fd,
-                identity_sensitive=True,
             )
             return os.path.join(self.path, target)
 
@@ -189,9 +204,8 @@ class StagedOutput:
         target = as_name or name
         with self._mutex:
             self._require_open()
-            place_without_clobbering(
+            _move_committed(
                 name, target, src_dir_fd=self._slot_fd, dst_dir_fd=self._folder_fd,
-                identity_sensitive=True,
             )
             return os.path.join(self.folder, target)
 
