@@ -98,10 +98,11 @@ CCI_TO_CIA_MODE = "cci_to_cia"
 PBP_INPUT_EXTENSIONS = formats.PBP_EXTENSIONS
 CIA_INPUT_EXTENSIONS = formats.CIA_EXTENSIONS
 CCI_INPUT_EXTENSIONS = formats.CCI_EXTENSIONS
-# The extensions each output is checked under: ISO for PBP, CIA, and CCI as
-# this app writes it (`.cci`, the extension RomM's `cci` target writes) and as
-# rom-converto writes it (`.3ds`).
-CONTAINER_VERIFY_EXTENSIONS = frozenset({".iso", ".cia", ".cci", ".3ds"})
+# The extensions this app writes the outputs under, and checks them as: ISO for
+# PBP, CIA, and CCI as `.cci` (what RomM's `cci` target writes). Never `.3ds`:
+# that is only rom-converto's name in the work folder, and claiming it would
+# make every `.3ds` ROM look like an output with a check record to clear.
+CONTAINER_VERIFY_EXTENSIONS = frozenset({".iso", ".cia", ".cci"})
 VERIFY_EXTENSIONS = ZAR_VERIFY_EXTENSIONS | CONTAINER_VERIFY_EXTENSIONS
 
 

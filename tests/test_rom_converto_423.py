@@ -353,7 +353,6 @@ async def test_convert_refuses_a_file_that_is_not_its_source(tmp_path, stub):
     [
         ("Game.iso", fx.iso_bytes()),
         ("Game.cci", fx.cci_bytes()),
-        ("Game.3ds", fx.cci_bytes()),
         ("Game.cia", fx.cia_bytes()),
     ],
 )

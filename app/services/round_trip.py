@@ -38,7 +38,7 @@ def round_trip_applies(mode: str, *, delete_on_verify: bool, container_only: boo
     return (
         delete_on_verify
         and not container_only
-        and registry.mode_delete_proof(mode) is DeleteProof.ROUND_TRIP
+        and registry.mode_delete_proof(mode) == DeleteProof.ROUND_TRIP
         and registry.mode_supports_round_trip(mode)
     )
 
@@ -50,7 +50,7 @@ def recognized_applies(mode: str, *, delete_on_verify: bool) -> bool:
     container-only opt-out is a Round-trip opt-out and never skips it: without
     the proof such a mode has nothing to say its output holds the game.
     """
-    return delete_on_verify and registry.mode_delete_proof(mode) is DeleteProof.RECOGNIZED
+    return delete_on_verify and registry.mode_delete_proof(mode) == DeleteProof.RECOGNIZED
 
 
 def delete_check_level(
