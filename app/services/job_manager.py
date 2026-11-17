@@ -557,6 +557,9 @@ class JobManager:
         # `add_terminal_listener` for why anything caring about *how* a job
         # ended has to be told rather than ask later.
         self._terminal_listeners: List[Callable[[ConversionJob], object]] = []
+        # Called when a job's recorded outcome changes after it was announced
+        # terminal; see `add_amend_listener`.
+        self._amend_listeners: List[Callable[[ConversionJob], object]] = []
         self.max_concurrent = max(1, max_concurrent)
         self.max_job_history = max(0, max_job_history)
         self._queue: asyncio.PriorityQueue = asyncio.PriorityQueue()
@@ -1269,6 +1272,31 @@ class JobManager:
         """Stop calling *callback*; a no-op when it is not registered."""
         if callback in self._terminal_listeners:
             self._terminal_listeners.remove(callback)
+
+    def add_amend_listener(self, callback: Callable[[ConversionJob], object]) -> None:
+        """Call *callback* when a job's deleted files or Referrer records change
+        after it may already have been announced terminal: an apply handed
+        off at shutdown that ends later (#391, CodeRabbit 4594978832). Sync
+        or async, like a terminal listener; for a consumer that persisted
+        the job when it ended (the Ledger) to update what it wrote."""
+        if callback not in self._amend_listeners:
+            self._amend_listeners.append(callback)
+
+    def remove_amend_listener(self, callback: Callable[[ConversionJob], object]) -> None:
+        """Stop calling *callback*; a no-op when it is not registered."""
+        if callback in self._amend_listeners:
+            self._amend_listeners.remove(callback)
+
+    def _notify_amended(self, job: ConversionJob) -> None:
+        """Tell every amend listener that *job*'s outcome changed. Never
+        raises; on the loop."""
+        for callback in list(self._amend_listeners):
+            try:
+                result = callback(job)
+                if inspect.isawaitable(result):
+                    self._spawn_background(result)
+            except Exception:
+                logger.warning("Amend listener failed for %s", job.id, exc_info=True)
 
     def _notify_terminal(self, job: ConversionJob) -> None:
         """Tell every listener that *job* is finished, once. Never raises.
@@ -3227,20 +3255,36 @@ class JobManager:
         # with none free, one of its own (CodeRabbit 4594613612), so the slot
         # is renamed or marked kept whatever happens to this await. An answer
         # nobody waits for any more goes to ``late``, once.
+        def mark_kept_later() -> None:
+            # On its own thread once one can start: the keep marker, then the
+            # slot's lock goes. Until then (or if it fails) the slot is held,
+            # its lock kept, which no sweep passes while the process lives.
+            try:
+                slot.mark_kept()
+            except (OSError, ValueError):
+                logger.exception("Could not mark %s kept; holding its slot", slot.path)
+                return
+            with contextlib.suppress(ValueError):
+                self._held_slots.remove(slot)
+            note = "its keep marker is written; its preservation is durable"
+            logger.warning("Job %s: %s", job.id, note)
+            job.message = f"{job.message}; {note}" if job.message else note
+            job.warning = f"{job.warning}; {note}" if job.warning else note
+
         future: asyncio.Future | None
+        durable = True
         try:
             future = start_detached_or_own_thread(slot.set_aside)
         except NoThreadAvailable:
-            # The OS thread limit (CodeRabbit 4594745731): the last resort is
-            # inline, one small create through the slot's descriptor, so the
-            # slot is marked kept before anything else; if even that fails,
-            # its lock stays held for the life of the process.
+            # The OS thread limit (CodeRabbit 4594745731): the slot is held,
+            # its lock kept, so no sweep takes it while the process lives, and
+            # the keep marker is written off the loop once a thread starts,
+            # never on it: its create can block on a dead Volume (CodeRabbit
+            # 4594981268).
             future = None
-            try:
-                slot.mark_kept()
-            except OSError:
-                logger.exception("Could not mark %s kept; holding its slot", slot.path)
-                self._held_slots.append(slot)
+            durable = False
+            self._held_slots.append(slot)
+            start_detached_eventually(mark_kept_later)
         state = {"waiting": True}
 
         def answered(done: asyncio.Future) -> None:
@@ -3267,7 +3311,7 @@ class JobManager:
                     "Could not list the outputs of %s", job.output_path, exc_info=True,
                 )
             if future is None:
-                kept = before  # marked kept in place (or held) above
+                kept = before  # held above, its marker written when a thread starts
             else:
                 kept = await asyncio.wait_for(asyncio.shield(future), SET_ASIDE_SECONDS)
         except asyncio.TimeoutError:
@@ -3306,6 +3350,11 @@ class JobManager:
                 logger.warning("Could not carry the records to %s", kept, exc_info=True)
             where = os.path.join(kept, base)
             note = f"the checked output was not placed; it is kept at {where}"
+            if not durable:
+                note = (
+                    f"{note} (its slot is held while the app runs; preservation is "
+                    "not yet durable until its keep marker is written)"
+                )
         logger.warning("Job %s: %s", job.id, note)
         job.warning = f"{job.warning}; {note}" if job.warning else note
         job.message = f"{job.message}; {note}" if job.message else note
@@ -3838,9 +3887,9 @@ class JobManager:
                 # Source the swap removed is recorded as deleted, with its
                 # record (CodeRabbit 4594841860).
                 for handed in unawaited:
-                    handed.task.add_done_callback(
-                        self._take_late_outcome(handed, deleted, hook_records),
-                    )
+                    handed.task.add_done_callback(self._take_late_outcome(
+                        handed, deleted, hook_records, owner_id,
+                    ))
             raise
         if hook_records is not None:
             hook_records[:] = referrer_outcome.records
@@ -3863,8 +3912,15 @@ class JobManager:
             # An async apply was cancelled and is still cleaning up (codex
             # 4588646155): like a mutation's worker, it owns the delete holds
             # and the travelling locks from here, let go when it ends. The
-            # outcome failed, so the Source is kept below.
+            # outcome failed, so the Source is kept below, unless the apply
+            # then finishes: what it did is taken when it ends (the RomM
+            # swap's delete of the parked Source, Codex 4595004160), into
+            # the records this job keeps.
             self._hand_holds_to(referrer_outcome, owner_id, travelling_locks)
+            for handed in referrer_outcome.handed_off:
+                handed.task.add_done_callback(self._take_late_outcome(
+                    handed, deleted, referrer_outcome.records, owner_id,
+                ))
         outcome = _SourceDelete(
             referrer_records=referrer_outcome.records, notes=list(referrer_outcome.notes),
         )
@@ -3893,6 +3949,14 @@ class JobManager:
             # That check awaited too; a Cancel there still wins.
             if outcome.kept_reason is None and cancel_event.is_set():
                 outcome.kept_reason = skipped
+        if outcome.kept_reason and referrer_outcome.handed_off:
+            # Not "definitely kept" while a handed-off apply may still remove
+            # it (Codex 4595004160): the job is updated when it ends.
+            names = ", ".join(sorted({h.referrer_id for h in referrer_outcome.handed_off}))
+            outcome.kept_reason = (
+                f"{outcome.kept_reason}; {names} is still finishing, so the source "
+                "may yet be removed (this job is updated when it ends)"
+            )
         if outcome.kept_reason:
             await self._release_delete_holds_in_background(owner_id, probe_seconds)
             return outcome
@@ -3915,13 +3979,15 @@ class JobManager:
         await self._clear_source_records(file_path, probe_seconds)
         return outcome
 
-    @staticmethod
     def _take_late_outcome(
-        handed: referrers.HandedOff, deleted: list[str], records: list[dict] | None,
+        self, handed: referrers.HandedOff, deleted: list[str],
+        records: list[dict] | None, job_id: str,
     ) -> Callable[[asyncio.Future], None]:
         """A done callback that records what an apply handed off at shutdown
         did once it ends: the Source files it removed go to *deleted*, its
-        Ledger record to *records*. Runs on the loop; never raises."""
+        Ledger record to *records*, and the amend listeners are told, so a
+        Ledger row written when the job ended is updated too (CodeRabbit
+        4594978832). Runs on the loop; never raises."""
 
         def ended(_task: asyncio.Future) -> None:
             outcome = handed.outcome()
@@ -3929,11 +3995,31 @@ class JobManager:
                 return
             deleted.extend(p for p in outcome.removed if p not in deleted)
             if records is not None:
-                records.extend(outcome.records)
+                for record in outcome.records:
+                    # It replaces the "abandoned" record the hook wrote for
+                    # it, if any.
+                    at = next((
+                        i for i, old in enumerate(records)
+                        if old.get("status") == "abandoned"
+                        and old.get("referrer") == record.get("referrer")
+                        and old.get("target") == record.get("target")
+                    ), None)
+                    if at is None:
+                        records.append(record)
+                    else:
+                        records[at] = record
             logger.info(
                 "A %s update handed off at shutdown ended: %s", handed.referrer_id,
                 ", ".join(outcome.removed) or "nothing removed",
             )
+            # Still listed, or already archived (a retry's owner is no job).
+            job = self.jobs.get(job_id) or (self._archived_jobs.get(job_id) or (None,))[0]
+            if job is None:
+                return
+            if outcome.removed:
+                note = f"{handed.referrer_id} finished after all and removed the source"
+                job.message = f"{job.message}; {note}" if job.message else note
+            self._notify_amended(job)
 
         return ended
 

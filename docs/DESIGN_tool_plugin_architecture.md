@@ -4168,7 +4168,16 @@ carries RomM's own `detail` text.
   ends anywhere but a row left for the next run, so the job places the
   output beside the Source when it still can (the row ends `rolled_back`,
   or `kept` once the output was in place), and otherwise sets it aside. A
-  swap stopped before anything changed ends `failed`.
+  swap stopped before anything changed ends `failed`. The lingering task's
+  result is still taken when it ends (Codex 4595004160): the hook puts a
+  `referrers.HandedOff` per lingering apply in `ReferrerOutcome.handed_off`,
+  and `_delete_source_set` gives each the same `_take_late_outcome`
+  callback the shutdown hand-off uses. That callback adds what the apply
+  removed to the job's deleted list, puts its `updated` record in place of
+  the hook's `abandoned` one, adds a note to the job's message and tells
+  the amend listeners, so the Ledger row is amended too. Until then, the
+  job's kept reason does not say the Source is definitely kept: it adds
+  that the Referrer "is still finishing, so the source may yet be removed".
 - An undo that runs out of grace or fails, or a process that dies, leaves
   the row on the state reached (`parked`, `placed`, or the undo step it was
   on), with the reason and "left for the next run" in `detail`; a parked
@@ -4192,7 +4201,21 @@ carries RomM's own `detail` text.
   (`JobManager._take_late_outcome`) that, when the task ends with a result,
   adds the Source files it removed to the job's deleted list and its Ledger
   record to the job's records, so a swap that finishes after the cancel is
-  not reported as nothing done (CodeRabbit 4594841860). The
+  not reported as nothing done (CodeRabbit 4594841860). An apply already
+  done when the cancel reaches the awaiter (it finished in that instant) is
+  handed off the same way, so its result, removed paths and records are
+  taken at once and its holds let go through the same hand-off (CodeRabbit
+  4594978832). The job's Ledger row may be written (it is announced
+  terminal) before a handed-off apply ends, so the late result also
+  amends the persisted row rather than deferring the terminal write: the
+  callback tells `JobManager`'s amend listeners (`add_amend_listener`,
+  sync or async like a terminal listener), and `ledger.amend` updates that
+  row's `source_deleted`, `deleted_paths` and `referrers_updated`. Writing a
+  row (`ledger.record`, which now builds the row from the job in the
+  thread) and amending it share `ledger._write_lock`, so an amend either
+  finds the row written or runs before it is built, and the row then
+  carries the amended values. `main.py` and the CLI register
+  `ledger.amend` beside `ledger.record`. The
   undo runs as far as the event loop lets it before the process exits, each
   step journaled; whatever it didn't reach is left for the next run, and a
   parked Source is never removed.
@@ -4255,10 +4278,16 @@ is the only copy (CodeRabbit 4594086355):
   `_close_stage` and `_let_go_in_background` take, now shared as
   `subprocess_runner.start_detached_or_own_thread`; CodeRabbit 4594613612),
   so it always starts. If even that thread can't start (the OS thread
-  limit), the helper raises `NoThreadAvailable` and the job marks the slot
-  kept inline (`StagedOutput.mark_kept`: one small create through the
-  slot's descriptor, then the lock goes), or holds the slot if that fails
-  too (CodeRabbit 4594745731). A free detached slot whose thread the OS
+  limit), the helper raises `NoThreadAvailable`, and the job holds the
+  slot, lock and all, in `_held_slots`, which no sweep passes while the
+  process lives (CodeRabbit 4594745731). It hands the keep marker
+  (`StagedOutput.mark_kept`: one small create through the slot's
+  descriptor, then the lock goes) to `start_detached_eventually`, so the
+  marker is written off the loop once a thread starts, never on it, because
+  the create can block on a dead Volume (CodeRabbit 4594981268). Until the
+  marker is written, the job's note says preservation is "not yet durable".
+  Once it is written, the slot leaves `_held_slots` and a note says it is
+  durable. If writing the marker fails, the slot stays held. A free detached slot whose thread the OS
   refuses is given back and reported as `ProbeCapacityExceeded`
   (`_probe_in_daemon_thread`), so it takes the same fallback rather than
   raising a bare `RuntimeError` with the slot lost. Cleanup the caller no

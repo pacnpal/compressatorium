@@ -17,7 +17,9 @@
   "converted, source kept: RomM refused the rename" with RomM's reason. If the
   rehash doesn't confirm the new file, the source goes back under its own name
   beside the output. Each step is recorded before it runs, and a source that
-  couldn't be put back stays hidden in the staging folder, never deleted. The
+  couldn't be put back is never deleted: it stays hidden in the staging
+  folder once it was set aside, or beside the output under RomM's new name
+  if the swap stopped before that (see below). The
   delete confirmation lists the rename ("RomM: rename ROM 1234 to Game.chd"),
   the Ledger records that the ROM kept its id, and the ROM's metadata re-pin
   is marked done. Workspace conversions and Rule sweeps both do it. Archives,
@@ -43,9 +45,15 @@
   RomM's settings change stops from being queued. Saving RomM settings that
   move to another instance waits up to 30 seconds for a running swap, then
   answers "try again once it has finished" with nothing saved. When the
-  system runs out of threads, locks are let go as soon as one frees up. A checked output that can't be put in place
+  system runs out of threads, locks are let go as soon as one frees up. A
+  swap that finishes after a Cancel's few seconds, or while the app shuts
+  down, still counts: the job and its Ledger row record the source as
+  deleted, and until then the job says the swap is still finishing rather
+  than that the source was kept. A checked output that can't be put in place
   (something took its name) is now kept in the hidden staging folder, and
-  the job says where, instead of being discarded.
+  the job says where, instead of being discarded. If no thread can start
+  to keep it, its folder is held while the app runs, and the job says
+  keeping it is not yet durable until the keep marker is written.
 
 - **Clean up a duplicate group** (#389). Each group of duplicates in Findings
   now suggests which copy to keep (one that passed its check first, then one

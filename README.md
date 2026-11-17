@@ -663,11 +663,13 @@ extension-matching, so a new console never leaves you with an unconvertible row.
 #### Setting it up
 
 1. In RomM, go to **Administration → Client API Tokens** and create one. Grant
-   `platforms.read` and `roms.read`, plus `roms.write` if you want Compressatorium
-   to restore metadata after conversion (recommended — see below). To keep the
-   ROM id when converting (see [Keeping the ROM id](#keeping-the-rom-id)), also
-   grant `tasks.run`. RomM hands out `roms.write` and `tasks.run` only to an
-   admin user (or a user in a group that has them), so create the token as one.
+   `platforms.read` and `roms.read`. Add `roms.write` if you want Compressatorium
+   to restore metadata after conversion (recommended — see below). Keeping the
+   ROM id when converting (see [Keeping the ROM id](#keeping-the-rom-id)) needs
+   **both** `roms.write` (the rename) and `tasks.run` (the rehash), whether or
+   not you use metadata restoration. RomM hands out `roms.write` and `tasks.run`
+   only to an admin user (or a user in a group that has them), so create the
+   token as one.
 2. Mount RomM's library folder into the Compressatorium container, and make sure
    it's inside a configured Compressatorium volume.
 3. Open **RomM → Settings**, paste the URL, token and library path, and press
@@ -774,7 +776,8 @@ never disturbs the other.
 Converting a game and deleting its source normally leaves RomM a new file and a
 missing one: RomM adds a new game, and the old one keeps your saves, states,
 notes, collections and play history. Turn on **Keep the ROM id when converting**
-on the RomM **Settings** tab and a conversion renames RomM's record to the new
+on the RomM **Settings** tab (the token needs `roms.read`, `roms.write` and
+`tasks.run`; turning it on checks) and a conversion renames RomM's record to the new
 file instead, so the game keeps its id and everything on it. It works for a
 single-file game (an `.iso`, say) converted to one file beside it, when the
 source is deleted after its check, from the Workspace or a Rule:

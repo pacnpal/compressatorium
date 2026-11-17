@@ -183,6 +183,9 @@ class ReferrerOutcome:
     # The phase's write guard, carried into its async applies' tasks.
     guard: WriteGuard | None = field(default=None, repr=False, compare=False)
     lingering: list[asyncio.Task] = field(default_factory=list, repr=False, compare=False)
+    # The same applies with what each was doing, for the caller to take
+    # their results when they end (Codex 4595004160).
+    handed_off: list[HandedOff] = field(default_factory=list, repr=False, compare=False)
 
     def outlive(self, release: Callable[[], object]) -> None:
         """Call *release* once every lingering apply has ended: at once when
@@ -445,10 +448,13 @@ async def _await_bounded(
     except asyncio.CancelledError:
         task.cancel()
         _let_it_end(task, referrer.id, change.target)
-        if not task.done() and unawaited is not None:
+        if unawaited is not None:
             # This awaiter is cancelled (a shutdown) while the apply still
-            # cleans up: the caller hands it its holds, as ``outlive`` does,
-            # and takes its result when it ends (CodeRabbit 4594841860).
+            # cleans up, or just after it finished: the caller hands it its
+            # holds, as ``outlive`` does, and takes its result when it ends
+            # (CodeRabbit 4594841860), at once for one already done, so a
+            # result that beat the cancel is never lost (CodeRabbit
+            # 4594978832).
             unawaited.append(HandedOff(referrer.id, change, task))
         raise
     finally:
@@ -487,6 +493,7 @@ async def _apply_pending(
             outcome._record(referrer.id, exc.target, "abandoned", exc.reason)
             outcome.failed, outcome.reason = exc.target, exc.reason
             outcome.lingering.append(exc.task)
+            outcome.handed_off.append(HandedOff(referrer.id, change, exc.task))
             continue
         except Exception as exc:
             # Any failure keeps the Source, so the catch is deliberately broad.

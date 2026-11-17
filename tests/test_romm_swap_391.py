@@ -493,6 +493,64 @@ async def test_a_cancel_whose_undo_outlasts_the_grace_leaves_the_source_parked(
 
 
 @pytest.mark.asyncio
+async def test_a_removal_that_outlasts_the_grace_still_reaches_the_job_and_ledger(
+    vol, romm, monkeypatch,
+):
+    """Codex 4595004160: a Cancel lands while the parked Source is being
+    deleted, and the delete outlasts ``CANCEL_GRACE_SECONDS``, so the hook
+    returns with the swap still running. When the delete then succeeds, the
+    job records the Source as deleted, the swap's record says updated (not
+    abandoned), and the Ledger row written meanwhile is amended."""
+    from services import db as db_module
+    from services import ledger, referrers, staging
+
+    manager = convert_routes.job_manager
+    platform = _platform(vol)
+    monkeypatch.setattr(referrers, "CANCEL_GRACE_SECONDS", 0.3)
+    real_remove = staging.StagedOutput.remove
+    cancel: list = []
+    calls: list[str] = []
+
+    def slow_remove(self, name):
+        calls.append(name)
+        if len(calls) == 1:
+            cancel[0]()
+            time.sleep(0.8)
+        return real_remove(self, name)
+
+    monkeypatch.setattr(staging.StagedOutput, "remove", slow_remove)
+    manager.add_terminal_listener(ledger.record)
+    manager.add_amend_listener(ledger.amend)
+    try:
+        job = await _convert_cancelling(platform / "Game.iso", cancel)
+        # Never "definitely kept" while the delete may still finish.
+        ended_with = job.message
+        for _ in range(100):
+            if job.deleted_paths:
+                break
+            await asyncio.sleep(0.05)
+        for _ in range(100):
+            with db_module.SessionLocal() as session:
+                entry = session.query(db_module.LedgerEntry).filter_by(job_id=job.id).first()
+                persisted = None if entry is None else list(entry.deleted_paths)
+            if persisted:
+                break
+            await asyncio.sleep(0.05)
+    finally:
+        manager.remove_terminal_listener(ledger.record)
+        manager.remove_amend_listener(ledger.amend)
+
+    assert not (platform / "Game.iso").exists()
+    assert job.deleted_paths == [str(platform / "Game.iso")]
+    assert [r["status"] for r in job.referrers_updated if r["referrer"] == "romm_swap"] == [
+        "updated",
+    ]
+    assert persisted == [str(platform / "Game.iso")]
+    assert "still finishing" in (ended_with or ""), ended_with
+    assert "finished after all and removed the source" in job.message
+
+
+@pytest.mark.asyncio
 async def test_a_slot_holding_the_source_is_never_removed_on_a_flags_word(
     vol, romm, monkeypatch,
 ):
@@ -688,6 +746,113 @@ async def test_a_removal_handed_off_at_shutdown_still_reaches_the_job(
         "updated",
     ]
     assert not (platform / "Game.iso").exists()
+
+
+@pytest.mark.asyncio
+async def test_an_apply_done_just_before_the_cancel_keeps_its_result():
+    """CodeRabbit 4594978832 (a): the apply finishes in the instant the
+    awaiter is cancelled. It is already done, so nothing still runs, but its
+    result is handed off all the same, as a normal completion would record
+    it."""
+    from services import referrers
+    from services.referrers.base import Applied, Phase, Referrer, ReferrerChange
+
+    awaiter: asyncio.Task | None = None
+
+    class Quick(Referrer):
+        id = "quick"
+        label = "Quick"
+        phase = Phase.NETWORK
+
+        def detect(self, image_path):
+            return True
+
+        def plan(self, renames):
+            return []
+
+        def apply(self, change):
+            raise AssertionError("the async apply runs")
+
+        async def apply_async(self, change):
+            assert awaiter is not None
+            awaiter.cancel()
+            return Applied(removed=("/vol/Game.iso",))
+
+    change = ReferrerChange(referrer="quick", target="ROM 1", edits=())
+    handed: list[referrers.HandedOff] = []
+    awaiter = asyncio.create_task(referrers._await_bounded(
+        Quick(), change, guard=None, cancel_event=None, bound=5, unawaited=handed,
+    ))
+    with pytest.raises(asyncio.CancelledError):
+        await awaiter
+
+    assert [h.referrer_id for h in handed] == ["quick"]
+    outcome = handed[0].outcome()
+    assert outcome is not None and outcome.removed == ["/vol/Game.iso"]
+
+
+@pytest.mark.asyncio
+async def test_a_late_removal_updates_the_ledger_row_already_written(
+    vol, romm, monkeypatch,
+):
+    """CodeRabbit 4594978832 (b): the job's Ledger row is written when it is
+    announced, before the swap handed off at shutdown has ended. Its result
+    still reaches the persisted row (read back from the database)."""
+    from services import db as db_module
+    from services import ledger
+    from services.romm import swap_referrer
+
+    manager = convert_routes.job_manager
+    platform = _platform(vol)
+    job = await convert_routes.create_job(JobCreateRequest(
+        file_path=str(platform / "Game.iso"), mode=ConversionMode.CREATEDVD,
+        duplicate_action=DuplicateAction.SKIP, delete_on_verify=True,
+    ))
+
+    def row() -> dict | None:
+        with db_module.SessionLocal() as session:
+            entry = session.query(db_module.LedgerEntry).filter_by(job_id=job.id).first()
+            return None if entry is None else {
+                "deleted_paths": entry.deleted_paths,
+                "source_deleted": entry.source_deleted,
+                "referrers_updated": entry.referrers_updated,
+            }
+
+    loop = asyncio.get_running_loop()
+    running = asyncio.create_task(manager._process_job(job.id))
+    real_settle = swap_referrer._settle_repin
+    written_first: list[bool] = []
+
+    def shut_down_then_settle(output, rom_id):
+        loop.call_soon_threadsafe(running.cancel)
+        for _ in range(200):
+            if row() is not None:
+                written_first.append(True)
+                break
+            time.sleep(0.02)
+        return real_settle(output, rom_id)
+
+    monkeypatch.setattr(swap_referrer, "_settle_repin", shut_down_then_settle)
+    manager.add_terminal_listener(ledger.record)
+    manager.add_amend_listener(ledger.amend)
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await running
+        for _ in range(100):
+            written = await asyncio.to_thread(row)
+            if written and written["deleted_paths"]:
+                break
+            await asyncio.sleep(0.05)
+    finally:
+        manager.remove_terminal_listener(ledger.record)
+        manager.remove_amend_listener(ledger.amend)
+
+    assert written_first == [True], "the row was written before the swap ended"
+    assert written is not None
+    assert written["deleted_paths"] == [str(platform / "Game.iso")]
+    assert written["source_deleted"] is True
+    assert [r["status"] for r in written["referrers_updated"]
+            if r["referrer"] == "romm_swap"] == ["updated"]
 
 
 @pytest.mark.asyncio
@@ -1257,17 +1422,23 @@ async def test_a_cancel_during_set_aside_still_releases_and_announces_the_job(
 async def test_a_set_aside_with_no_thread_at_all_marks_the_slot_and_ends_the_job(
     vol, romm, monkeypatch,
 ):
-    """CodeRabbit 4594745731: no detached thread is free and a thread of its
-    own can't start either (the OS thread limit). The slot is still marked
-    kept, inline, and the job still announces its end and lets go of every
-    lock."""
-    from services import partial_writes, subprocess_runner
+    """CodeRabbit 4594745731, 4594981268: no detached thread is free and a
+    thread of its own can't start either (the OS thread limit). The slot's
+    lock stays held (no sweep takes it) and the keep marker is written off
+    the loop once a thread starts, never on it, even when writing it blocks
+    (a dead Volume). Meanwhile the job ends, announces it, lets go of every
+    other lock, says preservation is not yet durable, and other loop tasks
+    run."""
+    from services import partial_writes, staging, subprocess_runner
     from services.lock_manager import lock_manager
     from services.romm import settings as romm_settings
 
     platform = _platform(vol)
     await romm_settings.save({"swap_keep_rom_id": False})
     real_start = threading.Thread.start
+    real_mark = staging.StagedOutput.mark_kept
+    unblock = threading.Event()
+    marking: list[bool] = []
 
     def no_slot_free(*_args, **_kwargs):
         raise subprocess_runner.ProbeCapacityExceeded("no detached thread free")
@@ -1279,35 +1450,72 @@ async def test_a_set_aside_with_no_thread_at_all_marks_the_slot_and_ends_the_job
             raise RuntimeError("can't start new thread")
         return real_start(self)
 
+    def blocking_mark(self):
+        on_loop = threading.current_thread() is threading.main_thread()
+        marking.append(on_loop)
+        if not on_loop:
+            unblock.wait(10)
+        return real_mark(self)
+
     async def checked_then_taken(tool, source_path, output_path, **_kw):
         (platform / "Game.chd").write_bytes(b"someone else's")
         return RoundTripOutcome(passed=True)
 
+    ticks = 0
+
+    async def ticker():
+        nonlocal ticks
+        while True:
+            ticks += 1
+            await asyncio.sleep(0.01)
+
     monkeypatch.setattr(subprocess_runner, "start_detached", no_slot_free)
     monkeypatch.setattr(threading.Thread, "start", thread_limit)
+    monkeypatch.setattr(staging.StagedOutput, "mark_kept", blocking_mark)
     monkeypatch.setattr(job_manager_module, "round_trip", checked_then_taken)
     job = await convert_routes.create_job(JobCreateRequest(
         file_path=str(platform / "Game.iso"), mode=ConversionMode.CREATEDVD,
         duplicate_action=DuplicateAction.SKIP, delete_on_verify=True,
     ))
     monkeypatch.setattr(subprocess_runner, "NO_THREAD_RETRY_SECONDS", 0.01)
-    with contextlib.suppress(Exception):
-        await convert_routes.job_manager._process_job(job.id)
+    ticking = asyncio.create_task(ticker())
+    try:
+        with contextlib.suppress(Exception):
+            await convert_routes.job_manager._process_job(job.id)
 
-    assert job.id in convert_routes.job_manager._terminal_announced
-    # The locks are let go once a thread can start again (CodeRabbit
-    # 4594855525): never dropped while none can.
-    monkeypatch.setattr(threading.Thread, "start", real_start)
-    held = (str(platform / "Game.chd"), os.path.realpath(platform / "Game.iso"))
-    for _ in range(300):
-        if not any(lock_manager.is_locked(path) for path in held):
-            break
-        await asyncio.sleep(0.01)
-    assert not any(lock_manager.is_locked(path) for path in held)
-    (kept,) = (platform / STAGE_DIR_NAME).glob("slot-*/Game.chd")
+        assert job.id in convert_routes.job_manager._terminal_announced
+        assert marking == []  # never on the loop, and no thread could start
+        assert "not yet durable" in job.message
+        (kept,) = (platform / STAGE_DIR_NAME).glob("slot-*/Game.chd")
+        assert not (kept.parent / partial_writes.KEEP_MARKER).exists()
+        # The thread limit lifts; the marker write starts on its own thread
+        # and blocks there, and the loop goes on.
+        monkeypatch.setattr(threading.Thread, "start", real_start)
+        held = (str(platform / "Game.chd"), os.path.realpath(platform / "Game.iso"))
+        for _ in range(300):
+            if marking and not any(lock_manager.is_locked(path) for path in held):
+                break
+            await asyncio.sleep(0.01)
+        assert marking == [False]
+        before = ticks
+        await asyncio.sleep(0.1)
+        assert ticks > before
+        assert not any(lock_manager.is_locked(path) for path in held)
+        unblock.set()
+        for _ in range(300):
+            if (kept.parent / partial_writes.KEEP_MARKER).exists() and "durable" in (
+                job.message.rsplit(";", 1)[-1]
+            ):
+                break
+            await asyncio.sleep(0.01)
+    finally:
+        unblock.set()
+        ticking.cancel()
+
     assert kept.read_bytes() == OUTPUT_BYTES
     assert (kept.parent / partial_writes.KEEP_MARKER).exists()
     assert f"kept at {kept}" in job.message
+    assert "its keep marker is written" in job.message
 
 
 @pytest.mark.asyncio
