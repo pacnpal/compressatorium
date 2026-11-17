@@ -179,8 +179,8 @@ def test_0014_stacks_on_0013_and_walks_up_from_an_empty_database(fresh_db_path: 
     script = ScriptDirectory.from_config(cfg)
     # #386's 0016 sits on 0015, #388's 0017 on that, #387's 0018 on that and
     # #389's 0019 on that, #391's 0020 on that, #392's 0021 on that and
-    # #424's 0022 on that; see their own tests below.
-    assert script.get_heads() == ["0022"]
+    # #424's 0022 on that and #430's 0024 on that; see their own tests below.
+    assert script.get_heads() == ["0024"]
     assert script.get_revision("0014").down_revision == "0013"
     assert script.get_revision("0013").down_revision == "0012"
     assert script.get_revision("0012").down_revision == "0011"
@@ -410,6 +410,28 @@ def test_0022_keys_dat_hashes_per_dat_and_classifies_existing_dats(fresh_db_path
         ))
         assert conn.execute(text("SELECT count(*) FROM dat_hashes")).scalar() == 2
     assert _current_rev(engine) == "0022"
+
+
+def test_0024_adds_a_folder_librarys_layout(fresh_db_path: str):
+    """#430's 0024: a folder Library's layout, "esde" for a Library added
+    before it (its Platform folders were always read directly under the root)."""
+    from alembic import command
+    from alembic.script import ScriptDirectory
+
+    engine = _db.make_engine(fresh_db_path)
+    cfg = _db._alembic_config(engine)
+    assert ScriptDirectory.from_config(cfg).get_revision("0024").down_revision == "0022"
+
+    command.upgrade(cfg, "0022")
+    with engine.begin() as conn:
+        conn.exec_driver_sql(
+            "INSERT INTO folder_libraries (root, name, schedule_enabled, max_per_sweep, "
+            "created_at) VALUES ('/v/roms', 'roms', 0, 25, '2026-11-17T00:00:00Z')",
+        )
+    command.upgrade(cfg, "0024")
+    with engine.connect() as conn:
+        assert conn.exec_driver_sql("SELECT layout FROM folder_libraries").scalar() == "esde"
+    assert _current_rev(engine) == "0024"
 
 
 # ---------------------------------------------------------------------------

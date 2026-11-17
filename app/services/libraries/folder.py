@@ -81,6 +81,7 @@ from services.rules.library import (
     LibraryUnreadable,
     Platform,
     QueuedImage,
+    folder_holding,
 )
 from services.tools import registry
 from utils.junk import is_junk_entry
@@ -97,6 +98,15 @@ ID_PREFIX = "folder:"
 # How long one walk serves later listings. Long enough to cover a sweep over
 # every ruled Platform; short enough that the Rules view is current.
 SCAN_TTL_SECONDS = 30.0
+
+# Where a folder Library puts each Platform's Images (#430): ES-DE/Batocera
+# style (``<root>/ps2``, ES-DE's folder names), RomM style (``<root>/roms/ps2``,
+# RomM's slugs), or flat (everything in the root). The first is the default:
+# it is how a folder Library's Platform folders were always read.
+LAYOUT_ESDE = "esde"
+LAYOUT_ROMM = "romm"
+LAYOUT_FLAT = "flat"
+LAYOUTS = (LAYOUT_ESDE, LAYOUT_ROMM, LAYOUT_FLAT)
 
 
 class ListingInProgress(LibraryUnreadable):
@@ -216,6 +226,7 @@ class FolderLibrary(LibraryDefaults):
         self, *, record_id: int, root: str, name: str,
         schedule_enabled: bool = False, max_per_sweep: int = 25,
         es_frontend: bool = False, gamelists_folder: str | None = None,
+        layout: str = LAYOUT_ESDE,
     ) -> None:
         self.record_id = record_id
         self.id = f"{ID_PREFIX}{record_id}"
@@ -228,6 +239,8 @@ class FolderLibrary(LibraryDefaults):
         self._es_frontend = bool(es_frontend)
         # Its ES-DE gamelists folder (#387), or None.
         self._gamelists_folder = gamelists_folder or None
+        # Where each Platform's Images go (#430), one of LAYOUTS.
+        self.layout = layout if layout in LAYOUTS else LAYOUT_ESDE
         # Held for a whole walk. Only ever acquired without blocking (`scan`).
         self._lock = threading.Lock()
         self._scan: Scan | None = None
@@ -264,10 +277,12 @@ class FolderLibrary(LibraryDefaults):
     def apply_settings(
         self, *, name: str | None = None, schedule_enabled: bool | None = None,
         max_per_sweep: int | None = None, es_frontend: bool | None = None,
-        gamelists_folder: str | None = None,
+        gamelists_folder: str | None = None, layout: str | None = None,
     ) -> None:
         """Change this Library's settings in place. Never waits for a walk.
         A *gamelists_folder* of ``""`` clears it."""
+        if layout in LAYOUTS:
+            self.layout = layout
         if name is not None:
             self.name = name
         if schedule_enabled is not None:
@@ -289,6 +304,23 @@ class FolderLibrary(LibraryDefaults):
         if referrer_id == ES_FRONTEND_REFERRER and self._gamelists_folder:
             return {GAMELISTS_FOLDER: self._gamelists_folder}
         return {}
+
+    def _platforms_parent(self) -> str:
+        """The folder the Platform folders sit in: ``<root>/roms`` in the RomM
+        layout, else the root."""
+        return os.path.join(self.root, "roms") if self.layout == LAYOUT_ROMM else self.root
+
+    def platform_folder(self, path: str) -> str | None:
+        """The folder holding *path* directly under the Platform folders'
+        parent (#387): ``<root>/roms`` in the RomM layout (#430), else the root."""
+        return folder_holding(self._platforms_parent(), path)
+
+    def placement_folders(self, slugs: Iterable[str]) -> dict[str, str]:
+        """Each Platform's folder in this Library's layout (#430). Touches no disk."""
+        if self.layout == LAYOUT_FLAT:
+            return dict.fromkeys(slugs, self.root)
+        name = platform_detect.esde_folder if self.layout == LAYOUT_ESDE else str
+        return {slug: os.path.join(self._platforms_parent(), name(slug)) for slug in slugs}
 
     def is_current(self) -> bool:
         """Still a registered Library (#303's token). Asked under the Findings store's lock."""

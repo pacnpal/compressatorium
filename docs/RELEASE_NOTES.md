@@ -17,6 +17,17 @@
   it different names. Saving a new order updates the names already shown
   without hashing anything again. A local DAT is still preferred over
   Hasheous, as before (database migration 0022).
+- **A Library says where each Platform's Images go** (#430). A folder
+  Library now has a layout in the Rules view: ES-DE / Batocera style
+  (`ps2`, `gc`, `megadrive`, ... directly in the Library folder, the
+  default), RomM style (`roms/ps2`, `roms/ngc`, ...) or flat (everything in
+  the Library folder). "Folder for each Platform" lists where new Images for
+  each Platform would land ("PlayStation 2 → roms/ps2"), and marks a folder
+  that isn't there yet as one that will be created. RomM's Library shows
+  RomM's own folder structure, using RomM's folder for a platform it already
+  has. The folder names are the ones Platform detection reads, so an Image
+  placed there is found under the same Platform again. This is what the
+  Inbox will use to place its output (database migration 0024).
 - **Unfinished RomM swaps are picked up after a restart** (#392). If the app
   stops part way through keeping a ROM's id, the next start settles the swap
   in the background, without holding up startup. What is safe to finish is

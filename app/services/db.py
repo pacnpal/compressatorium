@@ -391,6 +391,9 @@ class FolderLibraryRecord(Base):
     # Its ES-DE gamelists folder (#387): resolved, inside a Volume; None keeps
     # the Platform folder lookup.
     gamelists_folder = Column(String, nullable=True)
+    # Where each Platform's Images go (#430): "esde" (<root>/ps2), "romm"
+    # (<root>/roms/ps2) or "flat" (the root). See services.libraries.folder.
+    layout = Column(String, nullable=False, default="esde", server_default=text("'esde'"))
 
 
 class PlatformMappingRecord(Base):

@@ -758,6 +758,14 @@ export const api = {
       'Failed to list the Library',
     ),
 
+  // Where new Images for each Platform would land (#430).
+  getLibraryPlacements: (id) =>
+    fetchJson(
+      `${API_BASE}/libraries/${encodeURIComponent(id)}/placements`,
+      undefined,
+      'Failed to list where Images go',
+    ),
+
   getLibraryRules: (id) =>
     fetchJson(
       `${API_BASE}/libraries/${encodeURIComponent(id)}/rules`,

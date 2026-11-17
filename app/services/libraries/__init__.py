@@ -53,6 +53,7 @@ __all__ = [
     "folder_libraries",
     "get",
     "library_for",
+    "placements",
     "register",
     "remove",
     "run_forever",
@@ -118,6 +119,7 @@ def _from_row(row: _db.FolderLibraryRecord) -> FolderLibrary:
         max_per_sweep=int(row.max_per_sweep),
         es_frontend=bool(row.es_frontend),
         gamelists_folder=row.gamelists_folder,
+        layout=row.layout,
     )
 
 
@@ -569,6 +571,7 @@ def update(
     library_id: str, *, name: str | None = None,
     schedule_enabled: bool | None = None, max_per_sweep: int | None = None,
     es_frontend: bool | None = None, gamelists_folder: str | None = None,
+    layout: str | None = None,
 ) -> FolderLibrary | None:
     """Change a folder Library's name or settings. None when there is no such Library.
 
@@ -608,10 +611,12 @@ def update(
                 row.es_frontend = bool(es_frontend)
             if folder is not None:
                 row.gamelists_folder = folder or None
+            if layout is not None:
+                row.layout = layout
             session.commit()
         library.apply_settings(
             name=label, schedule_enabled=schedule_enabled, max_per_sweep=max_per_sweep,
-            es_frontend=es_frontend, gamelists_folder=folder,
+            es_frontend=es_frontend, gamelists_folder=folder, layout=layout,
         )
     return library
 
@@ -673,4 +678,34 @@ def describe(library: Library) -> dict[str, Any]:
         "gamelists_folder": (
             library.referrer_options(ES_FRONTEND_REFERRER).get(GAMELISTS_FOLDER) or None
         ),
+        # Where each Platform's Images go (#430); None for a Library whose
+        # structure is its own (RomM's).
+        "layout": getattr(library, "layout", None),
     }
+
+
+def placements(library: Library) -> list[dict[str, Any]]:
+    """Where new Images for every known Platform would land in *library* (#430).
+
+    One row per Platform, sorted by name: the folder as the Library's
+    :meth:`~services.rules.library.Library.placement_folders` answers, relative
+    to the root, and whether it exists yet (``False``: it will be created).
+    Blocking (stats each folder, may ask RomM); run it bounded, off the loop.
+    Raises :class:`~services.rules.library.LibraryUnreadable`.
+    """
+    from services.platform_detect import platforms
+
+    known = platforms()
+    folders = library.placement_folders(p["slug"] for p in known)
+    root = library.root or ""
+    out = []
+    for platform in known:
+        path = folders.get(platform["slug"])
+        if path is None:
+            continue
+        rel = Path(os.path.relpath(path, root)).as_posix() if root else path
+        out.append({
+            "slug": platform["slug"], "name": platform["name"], "path": path,
+            "folder": "" if rel == "." else rel, "exists": os.path.isdir(path),
+        })
+    return out

@@ -153,6 +153,32 @@ _NAMES: dict[str, str] = {
 _CANONICAL: dict[str, str] = {
     alias: slug for slug, aliases in _ALIASES.items() for alias in (slug, *aliases)
 }
+# The folder ES-DE (es_systems.xml) gives a Platform where it isn't the slug
+# itself (#430): where a folder Library laid out ES-DE/Batocera style puts the
+# Platform's Images. Each is one of the slug's aliases above, so a folder
+# placed under this name is detected back as the same Platform
+# (tests/test_library_placement_430.py). Batocera differs on two (``lynx``,
+# ``pcenginecd``); both are aliases too, so its folders are still detected.
+_ESDE_FOLDERS: dict[str, str] = {
+    "ngc": "gc",
+    "3ds": "n3ds",
+    "dc": "dreamcast",
+    "genesis": "megadrive",
+    "sms": "mastersystem",
+    "turbografx-cd": "tg-cd",
+    "pc-fx": "pcfx",
+    "neo-geo-cd": "neogeocd",
+    "neo-geo-pocket": "ngp",
+    "neo-geo-pocket-color": "ngpc",
+    "wonderswan-color": "wonderswancolor",
+    "lynx": "atarilynx",
+    "philips-cd-i": "cdimono1",
+}
+
+
+def esde_folder(slug: str) -> str:
+    """The folder name ES-DE and Batocera use for the Platform *slug* (#430)."""
+    return _ESDE_FOLDERS.get(slug, slug)
 
 
 def canonical_slug(name: str | None) -> str | None:

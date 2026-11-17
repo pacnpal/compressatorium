@@ -1436,6 +1436,14 @@ The ES-DE gamelists folder field under the switch, with a folder typed in and re
 |-------|------|
 | ![ES-DE gamelists folder, light](docs/screenshots/rules-esde-gamelists-light.png) | ![ES-DE gamelists folder, dark](docs/screenshots/rules-esde-gamelists-dark.png) |
 
+#### Library layout
+
+A folder Library laid out RomM style, with the folder each Platform's new Images would go in. A folder that isn't there yet is marked "will be created".
+
+| Light | Dark |
+|-------|------|
+| ![Library layout, light](docs/screenshots/rules-library-layout-light.png) | ![Library layout, dark](docs/screenshots/rules-library-layout-dark.png) |
+
 #### Check Rule
 
 A PS2 Platform with a conversion Rule and a check Rule: 50 GB a night between 01:00 and 05:00. See [Check Rules](#check-rules).
