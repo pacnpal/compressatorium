@@ -1,13 +1,17 @@
-"""Skip the metadata re-pin where RomM re-identifies a format itself (#393).
+"""The re-pin where RomM re-identifies a format by itself (#393).
 
 Spike #382 found that RomM 5.4.1, with title-id extraction on, moves a
 missing ROM onto its converted file by title id for PS2 CHD, PSP CHD, PSP CSO
 and GameCube RVZ, keeping the id and every piece of user data. It doesn't for
 PS2 CSO/ZSO, PSP ZSO or GameCube WIA/GCZ. With the swap switch off, a
 conversion whose (Platform, output format) is on that list for the connected
-RomM's version skips its re-pin, and the job and the Ledger say why. With the
-swap on, the swap runs as before; an unknown version, a format not on the
-list, or a heartbeat that can't be read keeps today's re-pin.
+RomM's version marks its re-pin as expected to self-identify, and the job and
+the Ledger say the re-pin is expected to be unnecessary. The settle pass then
+confirms it: the output's ROM is the source ROM with its provider ids, so the
+row closes with no write; anything else (a new ROM beside a ghost) is
+re-pinned. With the swap on, the swap runs as before; an unknown version, a
+format not on the list, or a heartbeat that can't be read leaves the row
+unmarked.
 
 The jobs run the real pipeline (convert route -> planner -> job manager) on a
 temp Volume against :class:`tests.fake_romm.FakeRomm`; only the tool's convert,
@@ -71,7 +75,7 @@ def _vol(tmp_path: Path, monkeypatch):
 async def _romm(vol, monkeypatch):
     """A RomM 5.4.1 with title-id extraction on, holding ROM 21 for
     ``psp/Game.iso`` and ROM 22 for ``ps2/Game.iso``, with the swap off; the
-    job manager's terminal listeners as the server registers them."""
+    Ledger's terminal listener as the server registers it."""
     from services import ledger, libraries
     from services.romm import settings as romm_settings
 
@@ -92,9 +96,6 @@ async def _romm(vol, monkeypatch):
     yield fake
     manager.remove_terminal_listener(ledger.record)
     manager.remove_terminal_listener(libraries.note_job_finished)
-    from services.romm import reidentify
-
-    manager.remove_terminal_listener(reidentify.note_job_finished)
     fake.stop()
 
 
@@ -141,7 +142,7 @@ async def _convert(source: Path, mode=ConversionMode.CSO_COMPRESS, *, delete=Tru
     ))
     manager = convert_routes.job_manager
     await manager._process_job(job.id)
-    # The terminal listeners' work (the Ledger write, the re-pin settle).
+    # The terminal listeners' work (the Ledger write).
     for _ in range(3):
         await asyncio.gather(*list(manager._background_tasks), return_exceptions=True)
     return job
@@ -163,11 +164,31 @@ def _row(row_id: int):
         return row.state, row.detail
 
 
-# ---- skipped -----------------------------------------------------------------
+# ---- expected to self-identify ------------------------------------------------
+
+
+def _expected(detail: str | None) -> bool:
+    from services.romm import repin as romm_repin
+
+    return romm_repin.expects_self_identify(detail)
+
+
+async def _settle() -> dict:
+    from app.routes import romm as romm_routes
+
+    return await romm_routes.settle_romm_repins()
+
+
+def _romm_moves_the_rom_onto(romm: FakeRomm, rom_id: int, fs_name: str) -> None:
+    """RomM's library scan re-identifying the output by title id: the
+    missing ROM takes the new file, keeping its id and provider ids."""
+    rom = romm.roms[rom_id]
+    FakeRomm._set_name(rom, fs_name)
+    romm._rehash(rom)
 
 
 @pytest.mark.asyncio
-async def test_psp_cso_with_the_swap_off_skips_the_re_pin_and_says_why(vol, romm):
+async def test_psp_cso_with_the_swap_off_marks_the_re_pin_and_says_why(vol, romm):
     source = vol / "romm" / "psp" / "Game.iso"
     row_id = _record_repin(romm, ROM_ID, source, ConversionMode.CSO_COMPRESS)
 
@@ -178,18 +199,92 @@ async def test_psp_cso_with_the_swap_off_skips_the_re_pin_and_says_why(vol, romm
     assert (source.parent / "Game.cso").read_bytes() == OUTPUT_BYTES
     # RomM wasn't asked to rename anything: the swap is off.
     assert romm.renames == []
-    # The re-pin is closed, with the reason.
+    # The re-pin stays pending, marked with the reason, for the settle pass.
     state, detail = _row(row_id)
-    assert state == "done"
+    assert state == "pending"
+    assert _expected(detail)
     assert "RomM 5.4.1" in detail and "title id" in detail
-    # The job and the Ledger say why.
-    assert "RomM 5.4.1" in job.message and "re-pin" in job.message, job.message
+    # The job and the Ledger say it is expected, and will be confirmed.
+    assert "expected to be unnecessary" in job.message, job.message
+    assert "confirm" in job.message, job.message
     (record,) = _reidentify_records(job)
     assert record["status"] == "updated"
     assert record["rom_id"] == ROM_ID
-    assert "RomM 5.4.1" in record["note"]
+    assert "expected to be unnecessary" in record["note"]
     (persisted,) = _ledger_records(job)
     assert persisted["note"] == record["note"]
+
+
+@pytest.mark.asyncio
+async def test_a_re_identified_output_closes_with_no_write(vol, romm):
+    from services.romm import repin as romm_repin
+
+    source = vol / "romm" / "psp" / "Game.iso"
+    row_id = _record_repin(romm, ROM_ID, source, ConversionMode.CSO_COMPRESS)
+    job = await _convert(source)
+    assert job.status == JobStatus.COMPLETED, job.error_message
+
+    _romm_moves_the_rom_onto(romm, ROM_ID, "Game.cso")
+    result = await _settle()
+
+    assert result["reidentified"] == 1, result
+    assert result["repinned"] == 0, result
+    assert romm.metadata_writes == []
+    assert _row(row_id) == ("done", romm_repin.SELF_IDENTIFIED)
+
+
+@pytest.mark.asyncio
+async def test_a_new_rom_beside_a_ghost_still_re_pins(vol, romm):
+    """A RomM scan saw the output beside the Source: RomM added a new ROM
+    for it and left the old one missing. The marked row re-pins."""
+    source = vol / "romm" / "psp" / "Game.iso"
+    row_id = _record_repin(romm, ROM_ID, source, ConversionMode.CSO_COMPRESS)
+    job = await _convert(source)
+    assert job.status == JobStatus.COMPLETED, job.error_message
+
+    romm.roms[ROM_ID]["missing_from_fs"] = True
+    romm.add_rom(99, PSP, "Game.cso")
+    result = await _settle()
+
+    assert result["repinned"] == 1, result
+    assert result["reidentified"] == 0, result
+    assert romm.metadata_writes == [(99, {"igdb_id": "4242"})]
+    assert _row(row_id) == ("done", "Re-pinned to RomM rom 99")
+
+
+@pytest.mark.asyncio
+async def test_the_source_rom_without_its_ids_still_re_pins(vol, romm):
+    """RomM kept the id but the captured provider id is gone: re-pinned."""
+    source = vol / "romm" / "psp" / "Game.iso"
+    row_id = _record_repin(romm, ROM_ID, source, ConversionMode.CSO_COMPRESS)
+    job = await _convert(source)
+    assert job.status == JobStatus.COMPLETED, job.error_message
+
+    _romm_moves_the_rom_onto(romm, ROM_ID, "Game.cso")
+    romm.roms[ROM_ID]["igdb_id"] = None
+    result = await _settle()
+
+    assert result["repinned"] == 1, result
+    assert romm.metadata_writes == [(ROM_ID, {"igdb_id": "4242"})]
+    assert _row(row_id) == ("done", f"Re-pinned to RomM rom {ROM_ID}")
+
+
+@pytest.mark.asyncio
+async def test_an_unmarked_row_re_pins_even_onto_the_same_rom(vol, romm):
+    """Without the mark (here: an unknown RomM version) the settle pass
+    re-pins as it always has, whatever RomM did."""
+    romm.version = "5.5.0"
+    source = vol / "romm" / "psp" / "Game.iso"
+    row_id = _record_repin(romm, ROM_ID, source, ConversionMode.CSO_COMPRESS)
+    job = await _convert(source)
+    assert job.status == JobStatus.COMPLETED, job.error_message
+
+    _romm_moves_the_rom_onto(romm, ROM_ID, "Game.cso")
+    result = await _settle()
+
+    assert result["repinned"] == 1, result
+    assert romm.metadata_writes == [(ROM_ID, {"igdb_id": "4242"})]
+    assert _row(row_id)[0] == "done"
 
 
 # ---- not skipped -------------------------------------------------------------
@@ -205,6 +300,7 @@ async def test_ps2_cso_with_the_swap_off_still_re_pins(vol, romm):
     assert job.status == JobStatus.COMPLETED, job.error_message
     assert not source.exists()
     assert _row(row_id)[0] == "pending"
+    assert not _expected(_row(row_id)[1])
     assert _reidentify_records(job) == []
     assert job.warning is None, job.warning
     assert _ledger_records(job) == []
@@ -226,7 +322,7 @@ async def test_with_the_swap_on_psp_cso_still_swaps(vol, romm):
     assert _reidentify_records(job) == []
     (swap,) = [r for r in job.referrers_updated if r["referrer"] == "romm_swap"]
     assert swap["kept_rom_id"] is True
-    # Settled by the swap, not by the skip.
+    # Settled by the swap, not marked.
     state, detail = _row(row_id)
     assert state == "done"
     assert "renamed" in detail
@@ -243,6 +339,7 @@ async def test_an_unknown_romm_version_re_pins(vol, romm):
     assert job.status == JobStatus.COMPLETED, job.error_message
     assert not source.exists()
     assert _row(row_id)[0] == "pending"
+    assert not _expected(_row(row_id)[1])
     assert _reidentify_records(job) == []
     assert job.warning is None, job.warning
 
@@ -258,6 +355,7 @@ async def test_a_heartbeat_that_cant_be_read_re_pins(vol, romm):
     assert job.status == JobStatus.COMPLETED, job.error_message
     assert not source.exists()
     assert _row(row_id)[0] == "pending"
+    assert not _expected(_row(row_id)[1])
     assert _reidentify_records(job) == []
 
 
@@ -271,6 +369,7 @@ async def test_title_id_extraction_off_re_pins(vol, romm):
 
     assert job.status == JobStatus.COMPLETED, job.error_message
     assert _row(row_id)[0] == "pending"
+    assert not _expected(_row(row_id)[1])
     assert _reidentify_records(job) == []
 
 
@@ -286,6 +385,7 @@ async def test_a_kept_source_re_pins(vol, romm):
     assert job.status == JobStatus.COMPLETED, job.error_message
     assert source.exists()
     assert _row(row_id)[0] == "pending"
+    assert not _expected(_row(row_id)[1])
     assert _reidentify_records(job) == []
 
 
@@ -335,3 +435,16 @@ def test_the_decision(beat, slug, mode, output, skipped):
     from services.romm import reidentify
 
     assert (reidentify.reason(beat, slug, mode, output) is not None) is skipped
+
+
+@pytest.mark.parametrize(("rom", "skipped"), [
+    ({"id": 21, "igdb_id": 4242, "moby_id": 7}, True),
+    ({"id": 21, "igdb_id": "4242", "moby_id": "7"}, True),
+    ({"id": 99, "igdb_id": 4242, "moby_id": 7}, False),
+    ({"id": 21, "igdb_id": 4242}, False),
+    ({"id": 21, "igdb_id": 1, "moby_id": 7}, False),
+])
+def test_self_identified_needs_the_source_rom_with_every_id(rom, skipped):
+    from services.romm import repin as romm_repin
+
+    assert romm_repin.self_identified(rom, 21, {"igdb_id": 4242, "moby_id": 7}) is skipped

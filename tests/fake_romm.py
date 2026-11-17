@@ -51,6 +51,11 @@ source at ``eb10d95``:
   ``on_request`` is called with the method and path before each answer, so a
   test can look at the app's state at the moment RomM is asked.
 
+* The re-pin settle pass's calls (#393): ``GET /api/roms/by-hash?sha1_hash=``
+  answers the ROM whose SHA-1 that is (404 when none), and a
+  ``PUT /api/roms/{id}`` carrying provider ids (``igdb_id`` and the rest, no
+  ``fs_name``) writes them and is recorded in ``metadata_writes``.
+
 ``converter=False`` is a RomM from before the converter: neither ``CONVERTO``
 key is served.
 """
@@ -132,6 +137,8 @@ class FakeRomm:
         self.on_request: Callable[[str, str], None] | None = None
         # What the app asked: each rename's (ROM id, name) and each scan's body.
         self.renames: list[tuple[int, str]] = []
+        # Each metadata write's (ROM id, {field: value}) (#393).
+        self.metadata_writes: list[tuple[int, dict[str, str]]] = []
         self.scans: list[dict[str, Any]] = []
         self._tasks: dict[str, dict[str, Any]] = {}
         self._lock = threading.Lock()
@@ -313,6 +320,12 @@ class FakeRomm:
             offset = int(params.get("offset", ["0"])[0])
             limit = int(params.get("limit", [str(len(items))])[0])
             return 200, {"items": items[offset:offset + limit], "total": len(items)}
+        if method == "GET" and route == "/api/roms/by-hash":
+            wanted = (urllib.parse.parse_qs(query).get("sha1_hash") or [""])[0].lower()
+            found = next(
+                (rom for rom in self.roms.values() if rom.get("sha1_hash") == wanted), None,
+            )
+            return (200, dict(found)) if found else (404, {"detail": "Rom not found"})
         rom_route = re.fullmatch(r"/api/roms/(\d+)", route)
         if rom_route and method == "GET":
             rom = self.roms.get(int(rom_route.group(1)))
@@ -321,7 +334,17 @@ class FakeRomm:
             field = re.search(rb'name="fs_name"\r\n\r\n(.*?)\r\n', body, re.DOTALL)
             if field is None:
                 rom = self.roms.get(int(rom_route.group(1)))
-                return (200, dict(rom)) if rom else (404, {"detail": "Rom not found"})
+                if rom is None:
+                    return 404, {"detail": "Rom not found"}
+                ids = {
+                    name.decode(): value.decode() for name, value in re.findall(
+                        rb'name="(\w+_id)"\r\n\r\n(.*?)\r\n', body, re.DOTALL,
+                    )
+                }
+                if ids:
+                    self.metadata_writes.append((rom["id"], ids))
+                    rom.update({name: int(value) for name, value in ids.items()})
+                return 200, dict(rom)
             return self._rename(int(rom_route.group(1)), field.group(1).decode())
         if method == "POST" and route == "/api/tasks/scan":
             return self._scan(json.loads(body or b"{}"))

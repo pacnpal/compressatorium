@@ -1,4 +1,5 @@
-"""Formats RomM re-identifies by itself, so their re-pin is skipped (#393).
+"""Formats RomM re-identifies by itself: their re-pin is expected to be
+unnecessary, and the settle pass confirms it (#393).
 
 Spike #382 (``docs/ROMM_INTEGRATION_ROADMAP.md``, "3.0 spike findings") found
 that RomM 5.4.1, with title-id extraction on, moves a missing ROM onto its
@@ -12,15 +13,20 @@ It matters only with the swap switch off. With it on, the swap
 (``services.romm.swap_referrer``) keeps the id for every single-file format,
 and this Referrer is not on (``RommLibrary.referrer_enabled``). With it off,
 the re-pin row is still written before the conversion (the provider ids are
-readable only then, ``services.romm.repin``), and the skip is decided here, at
-the delete step, the one place that knows the Source is about to go: RomM
-re-identifies only when it never sees the output beside the Source. The
-Referrer's change tells the job and the Ledger why (``Applied.note``), and
-:func:`note_job_finished` closes the row only once the job has completed with
-its Source deleted. Anything less leaves the row pending, so the re-pin runs
-as today: an unknown version, a heartbeat that can't be read or doesn't say
-title-id extraction is on, a format not on the list, a mode whose output the
-registry doesn't know, a Source that is kept.
+readable only then, ``services.romm.repin``). At the delete step this
+Referrer finds that row and, when the conversion is on the list, marks it as
+expected to self-identify (``repin.mark_expected``) and has the job and the
+Ledger say so (``Applied.note``). Nothing is skipped on that word alone: RomM
+keeps the id only if it never sees the output beside the Source, and a RomM
+scan between the output being placed and the Source being deleted breaks
+that. So the settle pass still finds the output's ROM, and closes the row
+with no write only when it is the source ROM with every captured provider id
+(``repin.self_identified``); anything else is re-pinned as usual.
+
+A question this can't answer leaves the row unmarked, so it re-pins as today:
+an unknown version, a heartbeat that can't be read or doesn't say title-id
+extraction is on, a format not on the list, a mode whose output the registry
+doesn't know. The Referrer never keeps a Source.
 
 The format is the output's extension, taken only when the registry says the
 row's mode writes it (``registry.mode_output_extensions``), never from the
@@ -35,9 +41,7 @@ from collections.abc import Mapping
 from types import MappingProxyType
 from typing import Any
 
-from fastapi.concurrency import run_in_threadpool
 from logging_setup import get_logger
-from models import JobStatus
 from services.referrers import Applied, Phase, Referrer, ReferrerChange, registry
 from services.romm.client import heartbeat_version, romm_client
 from services.tools import registry as tools
@@ -83,9 +87,10 @@ def reason(
     heartbeat: Mapping[str, Any], platform_slug: str | None, mode: str | None,
     output_path: str,
 ) -> str | None:
-    """Why RomM needs no re-pin for this conversion, or None (re-pin as
-    today). *heartbeat* is RomM's ``GET /api/heartbeat``; *platform_slug* is
-    RomM's slug for the source ROM's Platform; *mode* is the conversion's."""
+    """Why RomM is expected to re-identify this conversion's output by
+    itself, or None (re-pin as today). *heartbeat* is RomM's
+    ``GET /api/heartbeat``; *platform_slug* is RomM's slug for the source
+    ROM's Platform; *mode* is the conversion's."""
     raw = heartbeat_version(dict(heartbeat)) if isinstance(heartbeat, Mapping) else None
     version = str(raw).strip().removeprefix("v") if raw else ""
     pairs = REIDENTIFIED.get(version)
@@ -96,7 +101,15 @@ def reason(
         return None
     return (
         f"RomM {version} re-identifies {platform_slug.upper()} {fmt[1:].upper()} "
-        "by its title id at its next library scan, so no metadata re-pin is needed"
+        "by its title id at its next library scan"
+    )
+
+
+def note(why: str) -> str:
+    """What the job and the Ledger say for a conversion :func:`reason` answered."""
+    return (
+        f"{why}, so the metadata re-pin is expected to be unnecessary; "
+        "the next re-pin pass will confirm it"
     )
 
 
@@ -112,9 +125,10 @@ def _one_beside(renames: Mapping[str, str]) -> tuple[str, str] | None:
 
 
 class RommReidentifyReferrer(Referrer):
-    """RomM's ROM, when RomM keeps it by itself: no change to RomM, only the
-    re-pin it no longer needs (see the module docstring). Never fails: a
-    question it can't answer means the re-pin runs as today."""
+    """RomM's ROM, when RomM is expected to keep it by itself: no change to
+    RomM, only a mark on the re-pin for the settle pass to check (see the
+    module docstring). Never fails: a question it can't answer means the
+    re-pin runs as today."""
 
     id = REIDENTIFY_REFERRER
     label = "RomM"
@@ -150,43 +164,26 @@ class RommReidentifyReferrer(Referrer):
             referrer=self.id,
             target=f"RomM ROM {row.rom_id}",
             edits=(),
-            payload=why,
-            summary=why,
+            payload=(row.row_id, why),
+            summary=note(why),
             record={"rom_id": row.rom_id, "repin_id": row.row_id},
         )]
 
     def apply(self, change: ReferrerChange) -> Applied:
-        # Nothing to write: the row is closed once the Source is gone
-        # (`note_job_finished`).
-        return Applied(note=change.payload)
+        """Mark the row; the settle pass checks before it closes it. A mark
+        that can't be written says nothing: the row re-pins as today."""
+        from services.romm import repin
 
-
-async def note_job_finished(job) -> None:
-    """Close the re-pins this Referrer skipped, once *job* completed with its
-    Source deleted. Terminal listener (``libraries.attach``). A job that
-    failed, was cancelled or kept its Source leaves them pending."""
-    if getattr(job, "status", None) != JobStatus.COMPLETED:
-        return
-    if not getattr(job, "deleted_paths", None):
-        return  # the Source was kept: RomM sees both files, so the re-pin is owed
-    skipped = [
-        (record["repin_id"], record.get("note"))
-        for record in getattr(job, "referrers_updated", None) or []
-        if record.get("referrer") == REIDENTIFY_REFERRER
-        and record.get("status") == "updated" and record.get("repin_id")
-    ]
-    if not skipped:
-        return
-    from services.romm import repin
-
-    for row_id, note in skipped:
+        row_id, why = change.payload
         try:
-            await run_in_threadpool(repin.settle, int(row_id), "done", note)
+            marked = repin.mark_expected(row_id, why)
         except Exception:
-            # Left pending: the re-pin runs as today, which changes nothing.
             logger.warning(
-                "romm_reidentify: could not close re-pin %s", row_id, exc_info=True,
+                "romm_reidentify: could not mark re-pin %s; it re-pins as usual",
+                row_id, exc_info=True,
             )
+            marked = False
+        return Applied(note=note(why) if marked else None)
 
 
 registry.register(RommReidentifyReferrer())

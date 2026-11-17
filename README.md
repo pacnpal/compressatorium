@@ -850,21 +850,30 @@ games (`.cue`/`.bin`) and anything else keep the usual behaviour.
 
 #### Formats RomM re-identifies by itself
 
-With **Keep the ROM id when converting** off, some conversions don't need the
-metadata re-pin: RomM finds the game again on its own. RomM 5.4.1, with
-title-id extraction on (its default), moves a missing ROM onto its converted
-file by the game's title id at its next library scan, keeping the ROM id and
-everything on it, for **PS2 CHD, PSP CHD, PSP CSO and GameCube RVZ**. It
-doesn't for PS2 CSO or ZSO, PSP ZSO, or GameCube WIA or GCZ, which keep the
-re-pin. For a conversion on that list whose source is deleted, the re-pin is
-closed once the job finishes, and the job and the Ledger say why ("RomM 5.4.1
-re-identifies PSP CSO by its title id at its next library scan, so no
-metadata re-pin is needed"). The list is kept per RomM version: another
-version, a RomM whose heartbeat can't be read or doesn't report title-id
-extraction on, or a kept source, gets the re-pin as before. With the switch
-on, the swap above keeps the id for every single-file format. RomM keeps the
-id only when it never sees the output and the source together, and only when
-no other missing ROM on the Platform has the same title id.
+With **Keep the ROM id when converting** off, some conversions shouldn't
+need the metadata re-pin: RomM finds the game again on its own. RomM 5.4.1,
+with title-id extraction on (its default), moves a missing ROM onto its
+converted file by the game's title id at its next library scan, keeping the
+ROM id and everything on it, for **PS2 CHD, PSP CHD, PSP CSO and GameCube
+RVZ**. It doesn't for PS2 CSO or ZSO, PSP ZSO, or GameCube WIA or GCZ.
+
+For a conversion on that list whose source is deleted, the job and the Ledger
+say the re-pin is expected to be unnecessary and will be confirmed ("RomM
+5.4.1 re-identifies PSP CSO by its title id at its next library scan, so the
+metadata re-pin is expected to be unnecessary; the next re-pin pass will
+confirm it"). The re-pin stays queued. When it next runs, it finds RomM's
+record for the output: if that is the original ROM with every provider id
+it had, it closes as "RomM re-identified it on its own" and writes nothing;
+otherwise it re-pins as usual. It checks because RomM keeps the id only when
+it never sees the output beside the source: the output is put in place just
+before the source is deleted, and a RomM scan in that moment adds a new game
+for the output and leaves the old one missing. RomM also keeps the id only
+when no other missing ROM on the Platform has the same title id.
+
+The list is kept per RomM version: another version, a RomM whose heartbeat
+can't be read or doesn't report title-id extraction on, or a format not on
+the list re-pins as before. With the switch on, the swap above keeps the id
+for every single-file format.
 
 #### RomM's own converter
 

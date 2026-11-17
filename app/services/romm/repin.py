@@ -531,10 +531,11 @@ def pending_rows(limit: int, *, after_id: int = 0) -> list[tuple]:
             .all()
         )
         # Detach into plain tuples: the session closes before the caller awaits.
+        # The last field: whether the row is expected to self-identify (#393).
         return [
             (r.output_path, r.output_sha1, r.source_rom_id, dict(r.metadata_ids or {}),
              r.created_at, r.id, r.pre_fingerprint or "", r.mode or "",
-             r.platform_id, r.platform_slug)
+             r.platform_id, r.platform_slug, expects_self_identify(r.detail))
             for r in rows
         ]
 
@@ -761,6 +762,48 @@ def pending_for(output_path: str, source_path: str) -> PendingRepin | None:
         if row is None or not row.source_path or row.source_path != _canonical(source_path):
             return None
         return PendingRepin(int(row.id), int(row.source_rom_id), row.platform_slug, row.mode)
+
+
+# A pending row's ``detail`` when RomM is expected to re-identify its output by
+# itself (#393, ``services.romm.reidentify``): the settle pass then checks
+# before it writes. Kept in ``detail`` (unused while a row is pending), so no
+# schema change; any settle overwrites it.
+EXPECTED_SELF_IDENTIFY = "Expected to self-identify: "
+# What a row closed that way says.
+SELF_IDENTIFIED = "RomM re-identified it on its own"
+
+
+def expects_self_identify(detail: str | None) -> bool:
+    """Whether a pending row's *detail* is the mark :func:`mark_expected` wrote."""
+    return bool(detail) and detail.startswith(EXPECTED_SELF_IDENTIFY)
+
+
+def mark_expected(row_id: int, reason: str) -> bool:
+    """Mark pending row *row_id* as expected to self-identify, with *reason*.
+
+    Nothing is skipped here: the settle pass still finds the output's ROM, and
+    closes the row without a write only when that ROM is the one the row came
+    from and carries every provider id it captured (:func:`self_identified`).
+    Returns whether a pending row was marked.
+    """
+    with _session() as session:
+        updated = session.query(_db.RommRepin).filter(
+            _db.RommRepin.id == int(row_id), _db.RommRepin.state == "pending",
+        ).update(
+            {"detail": f"{EXPECTED_SELF_IDENTIFY}{reason}"}, synchronize_session=False,
+        )
+        session.commit()
+        return bool(updated)
+
+
+def self_identified(rom: dict, source_rom_id: int, ids: dict) -> bool:
+    """Whether *rom*, RomM's record for the output, is the source ROM itself
+    with every provider id in *ids* still on it: RomM moved the ROM onto the
+    output by itself (#393). A new ROM (a duplicate beside a ghost), another
+    match, or one missing an id is not."""
+    if not ids or rom.get("id") != source_rom_id:
+        return False
+    return all(str(rom.get(field)) == str(value) for field, value in ids.items())
 
 
 def is_pending(row_id: int) -> bool:
