@@ -1015,6 +1015,35 @@ and the create/batch routes apply queue-depth backpressure (HTTP 429) *before*
 planning when the queue is already full — so a doomed submit never pays for the
 tree walk.
 
+### Placing a product from a work folder (`services/output_placement.py`, #422)
+
+A service whose tool writes into a private work folder (extract-xiso, and
+rom-converto through `files_in_folder`) ends with one move: the product onto the
+output path. That move runs after the child's stall watchdog has stopped, can
+block on a stuck mount, and can complete long after the job gave up. Both
+services do it through one helper, `OutputPlacement(output_path, label=...)`:
+
+- `place(produced)` (blocking; run it through `run_detached_within_stall_bound`)
+  records the product's identity (device and inode), then
+  `place_without_clobbering`: a file already at the output path is not this
+  job's, so it is refused, never replaced. Errors name the format from `label`
+  ("... appeared while the XISO was being written; not overwriting it",
+  "Could not place the ZAR output: ...").
+- `abandon()` marks the job as having given up and returns the product's
+  identity only if the move had completed. The two are synchronized under a
+  lock held for a couple of assignments, never across I/O.
+- `abandon_and_sweep()` is what the service's failure and cancel path awaits:
+  a completed move's product is removed (bounded, through
+  `remove_partial_output`) only while the path is still that file. A move not
+  yet complete leaves the output path untouched, and when it lands later,
+  `place` sees the job gave up and removes its own product, again only while it
+  is still the same file.
+
+So a cancel or a stall never deletes a file this job didn't put there, and a
+late move never leaves one behind. `tests/test_output_placement.py` pins the
+helper, including the late-landing cancellation path; the xiso suite's
+placement tests pin extract-xiso on it unchanged.
+
 ### Cleaning up partial output is bounded too (issue #267)
 
 Every tool that writes its output in place sweeps the partial away when a run

@@ -2288,7 +2288,8 @@ which. The rest of the app keeps working.
   service runs it into a private work folder and passes
   `files_in_folder(work_folder)` as `output_growth_paths` (DESIGN, "A tool that
   names its own temp file"), then moves the product into place with
-  `place_without_clobbering`.
+  `services.output_placement.OutputPlacement` (shared with extract-xiso: never
+  over a file, and a move that lands after a cancel removes its own product).
 - **Flags on every call**: `--no-update-check` (never the network),
   `--no-cache` (verify must decode, not read a cache), `NO_COLOR=1`. The first
   `Error:` line is the failure message; a `[WARN]` line is marked

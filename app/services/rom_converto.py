@@ -42,6 +42,7 @@ from pathlib import Path
 
 from logging_setup import get_logger
 from services.extract_xiso import XISO_VERIFY_EXTENSIONS, probe_console
+from services.output_placement import OutputPlacement
 from services.subprocess_runner import (
     ConversionCancelled,
     ReadCancelled,
@@ -51,7 +52,6 @@ from services.subprocess_runner import (
     info_timeout,
     ioprio_prefix,
     nice_prefix,
-    remove_partial_output,
     remove_partial_tree,
     run_detached,
     run_detached_within_stall_bound,
@@ -59,10 +59,7 @@ from services.subprocess_runner import (
     verify_preflight,
 )
 from utils.path_utils import (
-    is_same_file,
     match_extension,
-    place_without_clobbering,
-    remove_if_same_file,
 )
 
 from config import settings
@@ -127,45 +124,6 @@ def _probe_xbox360(path: str, size: int, mtime_ns: int) -> bool:
     "not an Xbox 360 image".
     """
     return probe_console(path) == "Xbox 360"
-
-
-class _Placement:
-    """The final move of the product onto the output path, safe to give up on.
-
-    Only a move that has *completed* makes the output path this job's to
-    remove. If the job gives up while the move is stuck on the mount, the move
-    removes its own product once it lands, so nothing is left behind either way.
-    """
-
-    def __init__(self, output_path: str) -> None:
-        self._output_path = output_path
-        self._lock = threading.Lock()
-        self._done = False
-        self._abandoned = False
-        self._ours: os.stat_result | None = None
-
-    def place(self, produced: str) -> None:
-        ours = os.stat(produced)
-        try:
-            place_without_clobbering(produced, self._output_path)
-        except FileExistsError as exc:
-            raise RuntimeError(
-                f"{self._output_path} appeared while the ZAR was being written; "
-                "not overwriting it",
-            ) from exc
-        except OSError as exc:
-            raise RuntimeError(f"Could not place the ZAR output: {exc}") from exc
-        with self._lock:
-            self._done, self._ours = True, ours
-            abandoned_first = self._abandoned
-        if abandoned_first:
-            remove_if_same_file(self._output_path, ours)
-
-    def abandon(self) -> os.stat_result | None:
-        """Give up; the placed product's identity when the move completed."""
-        with self._lock:
-            self._abandoned = True
-            return self._ours if self._done else None
 
 
 class RomConvertoService:
@@ -244,9 +202,11 @@ class RomConvertoService:
 
     async def _probe_version(self, resolved: str) -> tuple[bool, str]:
         try:
+            # nice_via_wrapper: no preexec_fn, which can deadlock the child
+            # before exec in this threaded process (and before the timeout runs).
             returncode, stdout, _ = await self._runner.run_capture(
                 [resolved, "--version"], timeout=_VERSION_TIMEOUT,
-                stderr_to_stdout=True, env=_env(),
+                stderr_to_stdout=True, nice_via_wrapper=True, env=_env(),
             )
         except OSError as exc:
             return False, f"rom-converto at {resolved} did not run: {exc}"
@@ -354,7 +314,8 @@ class RomConvertoService:
         work_dir = os.path.join(out_dir, f".rom-converto-{uuid.uuid4().hex[:12]}")
         produced = os.path.join(work_dir, os.path.basename(output_path))
         abandoned = threading.Event()
-        placement = _Placement(output_path)
+        # The final move, safe to give up on (services.output_placement).
+        placement = OutputPlacement(output_path, label="ZAR")
         errors: list[str] = []
 
         def parse_progress(line: str) -> int | None:
@@ -409,14 +370,8 @@ class RomConvertoService:
             ConversionCancelled, ReadCancelled, RuntimeError,
             asyncio.CancelledError, GeneratorExit,
         ) as exc:
-            ours = placement.abandon()
-            if ours is not None:
-                await remove_partial_output(
-                    discover=lambda: (
-                        [output_path] if is_same_file(output_path, ours) else []
-                    ),
-                    label=f"ZAR output {output_path}",
-                )
+            # Swept only if the move completed and the path is still its file.
+            await placement.abandon_and_sweep()
             if isinstance(exc, ReadCancelled):
                 raise ConversionCancelled("Conversion cancelled") from exc
             raise
