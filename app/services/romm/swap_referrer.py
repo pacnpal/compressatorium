@@ -764,13 +764,39 @@ class _RenameInPlace:
                 exc_info=True,
             )
 
+    async def _verify_after_cancel(self, problem: str) -> None:
+        """Read RomM back after a cancelled put-back. A name other than the
+        old one is logged with what to do by hand; the Image rename then sees
+        where the file is. Never raises."""
+        plan = self.plan
+        try:
+            name = await self._read_name()
+        except Exception:
+            logger.warning(
+                "romm_swap: couldn't read ROM %s back after a cancelled put-back",
+                plan.rom_id, exc_info=True,
+            )
+            return
+        if name != plan.old_name:
+            logger.warning(
+                "romm_swap: %s; the put-back was cancelled and RomM names the file %s: "
+                "rename ROM %s back to %s by hand", problem, name, plan.rom_id, plan.old_name,
+            )
+
     async def _put_old_name_back(self, problem: str) -> None:
         """RomM wrote a name it shouldn't have: ask for the old one back
         (RomM moves the file back). One that fails says so: by hand."""
         plan = self.plan
         try:
             self._live("putting the old name back")
-            await _mutate(self.client.rename_rom, plan.rom_id, plan.old_name)
+            try:
+                await _mutate(self.client.rename_rom, plan.rom_id, plan.old_name)
+            except asyncio.CancelledError:
+                # The request has ended (``_mutate`` waits for it): read RomM
+                # back so its result is known, not guessed from the file's
+                # path, before the cancel goes on (CodeRabbit 4602987587).
+                await self._verify_after_cancel(problem)
+                raise
             name = await self._read_name()
         except (RommError, OSError, ReferrerError) as exc:
             name, why = None, str(exc)

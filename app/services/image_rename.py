@@ -46,7 +46,7 @@ from __future__ import annotations
 import asyncio
 import os
 import stat
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 
 from fastapi.concurrency import run_in_threadpool
@@ -77,10 +77,11 @@ logger = get_logger("image_rename")
 # How long a stat of a file on a Volume may take (the job's delete probes take
 # the same).
 PROBE_SECONDS = 20.0
-# How long recovery waits for a Referrer worker the hook stopped waiting for,
-# and for a RomM request it handed off, before it looks at the files anyway.
+# Recovery waits, with no bound, for every RomM request the hook handed off
+# and every Referrer worker it stopped waiting for (CodeRabbit 4602980637):
+# these are how often it says what it is still waiting for.
 SETTLE_SECONDS = 30.0
-HANDED_OFF_SECONDS = 300.0
+HANDED_OFF_SECONDS = 30.0
 
 # Renames running now, kept referenced until they end (the loop holds only
 # weak references to tasks).
@@ -311,8 +312,12 @@ async def _probe(func, *args):
     return await run_detached_bounded(func, *args, timeout=PROBE_SECONDS)
 
 
+Waiting = Callable[[str], Awaitable[None]]
+
+
 async def rename_image(
     image_path: str, renames: Mapping[str, str], *, library=None, cancel_event=None,
+    on_wait: Waiting | None = None,
 ) -> RenameOutcome:
     """Rename every file of the Image at *image_path* (*renames*: ``{old:
     new}``) with its Referrers following, or nothing. *library* is the
@@ -321,8 +326,12 @@ async def rename_image(
     outcome says why (see the module docstring).
 
     The rename is a task of its own: a cancel of the caller (a shutdown)
-    leaves it to settle, compensate and let go of its locks itself."""
-    work = asyncio.ensure_future(_rename(image_path, dict(renames), library, cancel_event))
+    leaves it to settle, compensate and let go of its locks itself. Settling
+    has no bound: *on_wait* is told what it is still waiting for, every
+    ``HANDED_OFF_SECONDS`` or ``SETTLE_SECONDS`` (the job shows it)."""
+    work = asyncio.ensure_future(
+        _rename(image_path, dict(renames), library, cancel_event, on_wait),
+    )
     _running.add(work)
     work.add_done_callback(_running.discard)
     return await asyncio.shield(work)
@@ -330,6 +339,7 @@ async def rename_image(
 
 async def _rename(
     image_path: str, renames: dict[str, str], library, cancel_event,
+    on_wait: Waiting | None,
 ) -> RenameOutcome:
     try:
         problem = await _probe(_problem_blocking, renames)
@@ -338,15 +348,14 @@ async def _rename(
     if problem:
         return RenameOutcome(False, problem)
     held: list[str] = []
-    still_running: list[asyncio.Task] = []
     try:
         problem = await run_detached_to_end(_lock_blocking, renames, held)
         if problem:
             return RenameOutcome(False, problem)
-        return await _rename_locked(image_path, renames, library, cancel_event, still_running)
+        return await _rename_locked(image_path, renames, library, cancel_event, on_wait)
     finally:
-        # A RomM request still running keeps the locks until it ends.
-        ReferrerOutcome(lingering=still_running).outlive(_releaser(held))
+        # Only once everything the rename started has ended (``_settle``).
+        _releaser(held)()
 
 
 def _releaser(held: list[str]):
@@ -359,7 +368,7 @@ def _releaser(held: list[str]):
 
 async def _rename_locked(
     image_path: str, renames: dict[str, str], library, cancel_event,
-    still_running: list[asyncio.Task],
+    on_wait: Waiting | None,
 ) -> RenameOutcome:
     """:func:`rename_image` under the locks: the hook, then settle, inspect,
     carry or compensate."""
@@ -374,7 +383,7 @@ async def _rename_locked(
             image_path, renames, library=library, cancel_event=cancel_event,
             placement=files.placement(), unawaited=handed, journal=journal,
         )
-        unsettled = await _settle(hook, handed, journal, still_running)
+        await _settle(hook, handed, journal, on_wait)
         reason = None if hook.ok else _failure(hook)
         if hook.ok:
             try:
@@ -385,34 +394,47 @@ async def _rename_locked(
             where = await _probe(files.where_blocking)
         except OSError:
             where = "unknown"
-        return await _finish(
-            renames, files.real_renames(), hook, journal, where, _with(reason, unsettled),
-        )
+        return await _finish(renames, files.real_renames(), hook, journal, where, reason)
     finally:
         files.close()
 
 
 async def _settle(
     hook: ReferrerOutcome, handed: list[HandedOff], journal: WriteJournal,
-    still_running: list[asyncio.Task],
-) -> str | None:
-    """Wait for whatever the hook left running: a RomM request it handed off
-    or abandoned, and a Referrer worker it stopped waiting for (whose writes
-    are refused from then on). None when everything ended, else what still
-    runs (recovery goes on regardless; the locks wait for it)."""
-    tasks = {h.task for h in [*handed, *hook.handed_off]} | set(hook.lingering)
-    if tasks:
-        _, pending = await asyncio.wait(tasks, timeout=HANDED_OFF_SECONDS)
-        still_running.extend(pending)
+    on_wait: Waiting | None,
+) -> None:
+    """Wait until whatever the hook left running has ended: a RomM request it
+    handed off or abandoned, and a Referrer worker it stopped waiting for
+    (whose writes are refused from then on). No bound (CodeRabbit
+    4602980637): deciding while one still runs could undo a rename it then
+    completes, or restore a playlist it then writes. A RomM request ends at
+    its client's timeout; a worker stuck on a Volume that stopped answering
+    keeps the rename waiting, its locks held, and *on_wait* says so every
+    ``HANDED_OFF_SECONDS`` / ``SETTLE_SECONDS``."""
+    pending = {h.task for h in [*handed, *hook.handed_off]} | set(hook.lingering)
+    while pending:
+        _, pending = await asyncio.wait(pending, timeout=HANDED_OFF_SECONDS)
         if pending:
-            return "a RomM request it made is still running"
-    try:
-        idle = await run_detached_bounded(
-            journal.wait_idle, SETTLE_SECONDS, timeout=SETTLE_SECONDS + PROBE_SECONDS,
-        )
-    except OSError:
-        idle = False
-    return None if idle else "a Referrer update it stopped waiting for hadn't ended"
+            await _tell(on_wait, "waiting for a RomM request to end before deciding")
+    while True:
+        try:
+            idle = await run_detached_bounded(
+                journal.wait_idle, SETTLE_SECONDS, timeout=SETTLE_SECONDS + PROBE_SECONDS,
+            )
+        except OSError:
+            idle = False
+        if idle:
+            return
+        await _tell(on_wait, "waiting for a playlist or gamelist update to end before deciding")
+
+
+async def _tell(on_wait: Waiting | None, what: str) -> None:
+    logger.warning("image_rename: %s", what)
+    if on_wait is not None:
+        try:
+            await on_wait(what)
+        except Exception:
+            logger.warning("image_rename: couldn't report the wait", exc_info=True)
 
 
 async def _finish(

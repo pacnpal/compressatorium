@@ -6868,7 +6868,13 @@ caller (a shutdown) never cuts it short; a Cancel reaches it through
 1. *Settle.* Every RomM request the hook handed off or abandoned
    (`HandedOff`, `lingering`) is awaited, and every Referrer worker the hook
    stopped waiting for is waited on (`WriteJournal.wait_idle`); such a worker
-   writes nothing more once abandoned (`check_write`).
+   writes nothing more once abandoned (`check_write`). There is no bound:
+   deciding while one still runs could undo a rename it then completes. A
+   RomM request ends at its client's timeout; a worker stuck on a Volume that
+   stopped answering keeps the rename waiting with its locks held, and the job's
+   message says what it waits for (`on_wait`, every `HANDED_OFF_SECONDS` /
+   `SETTLE_SECONDS`). A cancel during the RomM put-back also reads RomM back
+   before the cancel goes on.
 2. *Inspect* where the files are, through the descriptors.
 3. *Carry or compensate.* Every file under its new name: renamed, whatever the
    hook reported (RomM may have finished after the hook gave up). What the app
@@ -6877,8 +6883,7 @@ caller (a shutdown) never cuts it short; a Cancel reaches it through
    path and the real path the folders had when they were opened. Every file
    under its old name: not renamed, and each Referrer file the hook wrote is
    put back. Anything else is never guessed at; the reason says so.
-4. *Release* the locks (`lock_manager.acquire_all` took them all or none), after
-   any RomM request still running (`ReferrerOutcome.outlive`).
+4. *Release* the locks (`lock_manager.acquire_all` took them all or none).
 
 **Putting Referrers back** uses the hook's new `WriteJournal`
 (`update_before_source_removal(..., journal=)`, carried on the `WriteGuard`):
@@ -6932,7 +6937,9 @@ DATs that disagree) skips the Image and records a `rename_conflict` Finding
 (keyed by the Image's path, its cause the disagreeing matches);
 `settle_conflicts` clears each one the ranking now resolves, run after the
 ranking is saved or reset and whenever the Findings are listed (detached and
-bounded there; a settle that fails or stalls leaves the list as it is).
+bounded there, at most one in flight until its worker really ends; a settle
+that fails or stalls leaves the list as it is, and one that ends late only
+ever clears a row whose cause it read).
 
 The run (`POST /api/files/dat-rename`, the rename confirmation header) is an
 external job (`ConversionMode.DAT_RENAME`, no Ledger row), one at a time, like
@@ -6941,8 +6948,10 @@ the one confirmed is skipped. Each confirmed Image goes through
 `rename_image`. The job's `result` lists every Image as `renamed`, `skipped`
 or `not_renamed` with its reason and Referrer records, and one
 `rename_finished` notification (a registered event) carries the counts and
-what wasn't renamed. The dialog follows the job by reading it from the API
-until it ends (a rename can end before the job stream subscribes to it). The
+what wasn't renamed. The dialog has the jobs store track the job
+(`jobs.track`: read from the API until it ends, each read added to the list,
+failed reads tried again, a 404 ending it), independent of the dialog, since a
+rename can end before the job stream subscribes to it. The
 single-file `POST /api/files/rename` is unchanged.
 
 ### 3.4 `registry.py`

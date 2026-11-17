@@ -421,9 +421,15 @@ async def _rename_one(
             else f"its DAT name changed since the preview (now {now})"
         )
         return _result(path, confirmed, "skipped", why)
+    async def waiting(what: str) -> None:
+        # The rename settles before it decides, however long that takes.
+        await job_manager.update_external_job(
+            job_id, message=f"{os.path.basename(path)}: {what}",
+        )
+
     outcome = await image_rename.rename_image(
         path, {path: item["new_path"]}, library=library,
-        cancel_event=job_manager.get_cancel_event(job_id),
+        cancel_event=job_manager.get_cancel_event(job_id), on_wait=waiting,
     )
     if outcome.renamed:
         note = "; ".join(outcome.notes) or None

@@ -38,18 +38,15 @@ def test_the_dialog_is_mounted_follows_its_job_and_blocks_background_refresh():
     assert "jobs.jobs.find((j) => j.id === jobId)" in modal
     assert "job?.result?.results" in modal
     # A rename can finish before the job stream subscribes to it (it adds
-    # running jobs every 0.1 s), so the dialog reads its job from the API
-    # until it ends rather than wait on the stream alone.
-    follow = modal.split("async function follow(", 1)[1].split("\n  }\n", 1)[0]
-    assert "api.getJob(id)" in follow
-    assert "jobs.adopt([" in follow
-    assert "TERMINAL.has(" in follow
-    # The read is added to the jobs list before the dialog-session check, so
-    # a closed dialog still lands the job in the list (CodeRabbit 4602644957).
-    assert follow.index("jobs.adopt([") < follow.index("if (mine !== request)")
-    # A job the server no longer has stops the loop with an error, rather
-    # than polling forever (CodeRabbit 4602644995).
-    assert "e?.status === 404" in follow
+    # running jobs every 0.1 s), so the job is tracked through the API by the
+    # jobs store (``jobs.track``, its runtime test is in
+    # test_frontend_jobs_store), independent of the dialog: it lands in the
+    # list whether the dialog is still open or not (CodeRabbit 4602644957,
+    # 4602984524), and a job the server no longer has shows an error
+    # (CodeRabbit 4602644995).
+    assert "async function follow(" not in modal
+    assert "jobs.track(id)" in modal
+    assert "The rename job is no longer known" in modal
 
 
 def test_the_start_answer_stays_in_the_dialog_session_that_asked():
@@ -61,8 +58,8 @@ def test_the_start_answer_stays_in_the_dialog_session_that_asked():
     assert confirm.index("const mine = request;") < confirm.index("await api.datRename(")
     after = confirm.split("await api.datRename(", 1)[1]
     assert "if (mine !== request)" in after
-    # The job is still followed (and listed) whichever dialog is open.
-    assert "follow(id, mine)" in after
+    # The job is still tracked (and listed) whichever dialog is open.
+    assert after.index("jobs.track(id)") < after.index("if (mine !== request)")
     ui = _read("lib", "stores", "ui.svelte.js")
     assert "!!this.datRenamePaths" in ui
 

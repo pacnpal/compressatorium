@@ -46,6 +46,8 @@ _MAPPING_SECONDS = 60
 _SETTLE_SECONDS = 5
 # Held by the settle that is running (`_settle_blocking`), across threads.
 _settle_running = threading.Lock()
+# Held by the rename-conflict settle that is running (#425), likewise.
+_conflicts_settling = threading.Lock()
 
 
 class FindingRef(BaseModel):
@@ -119,14 +121,34 @@ async def _settle_started_by_hand() -> None:
         )
 
 
+def _settle_conflicts_blocking() -> int:
+    """One settle of the rename conflicts, unless one is running."""
+    if not _conflicts_settling.acquire(blocking=False):
+        return 0
+    try:
+        return dat_rename.settle_conflicts()
+    finally:
+        _conflicts_settling.release()
+
+
 async def _settle_rename_conflicts() -> None:
     """Clear the rename conflicts the ranking now resolves (#425). Never
     raises (CodeRabbit 4602644770): a settle that fails or runs past its
     bound (it may resolve a path on a Volume that stopped answering,
     CodeRabbit 4602644800) leaves them listed as they are, and the next load
-    tries again. Detached and bounded, as the hand-started settle is."""
+    tries again. Detached and bounded, as the hand-started settle is, and at
+    most one in flight, held until its worker really ends (CodeRabbit
+    4602978437): loads while one is stuck start none, so they can't use up
+    the detached slots.
+
+    A worker that finishes after the load stopped waiting may still clear a
+    Finding, which is harmless: it only ever deletes a row whose cause is the
+    one it read (``findings.resolve`` with that fingerprint) and whose DATs
+    the ranking now orders; it never adds or changes one."""
+    if _conflicts_settling.locked():
+        return
     try:
-        await asyncio.wait_for(run_detached(dat_rename.settle_conflicts), _SETTLE_SECONDS)
+        await asyncio.wait_for(run_detached(_settle_conflicts_blocking), _SETTLE_SECONDS)
     except Exception:
         logger.warning(
             "Findings: settling the rename conflicts did not finish; the next load tries again",

@@ -853,3 +853,138 @@ async def test_a_cancel_while_romm_renames_settles_romm_before_the_rename_ends(
     assert romm.roms[ROM_ID]["fs_name"] == "game.iso"
     assert game.exists()
     assert (platform / "games.m3u").read_text() == "game.iso\n"
+
+
+# ----------------------------------------------------------------------
+# second review round (CodeRabbit follow-ups on #441)
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_stalled_conflict_settle_is_never_started_twice(
+    db: Path, client: httpx.AsyncClient, monkeypatch,
+) -> None:
+    """A settle stuck on a Volume keeps its worker; every Findings load while
+    it runs starts no other one, so stalled loads can't use up the shared
+    detached slots (CodeRabbit 4602978437)."""
+    import asyncio
+    import threading
+
+    from routes import findings as findings_routes
+    from services import dat_rename
+
+    release = threading.Event()
+    calls: list[int] = []
+
+    def stuck() -> int:
+        calls.append(1)
+        release.wait(10)
+        return 0
+
+    monkeypatch.setattr(dat_rename, "settle_conflicts", stuck)
+    monkeypatch.setattr(findings_routes, "_SETTLE_SECONDS", 0.1)
+    try:
+        for _ in range(3):
+            assert (await client.get("/api/findings")).status_code == 200
+        assert calls == [1]
+    finally:
+        release.set()
+    for _ in range(50):
+        if not findings_routes._conflicts_settling.locked():
+            break
+        await asyncio.sleep(0.02)
+    assert (await client.get("/api/findings")).status_code == 200
+    assert calls == [1, 1]
+
+
+@pytest.mark.asyncio
+async def test_a_romm_request_still_running_after_the_wait_is_settled_before_deciding(
+    db: Path, client: httpx.AsyncClient, romm: FakeRomm, monkeypatch,
+) -> None:
+    """The job is cancelled while RomM's rename is held, and the hook gives
+    up on it. RomM then renames after the rename's own wait for handed-off
+    requests has passed. Nothing is decided until the request has ended: the
+    file, RomM and the playlist all end on the new name, and the records
+    follow (CodeRabbit 4602980637)."""
+    import asyncio
+    import threading
+
+    from services import dat_rename, image_rename
+    from services import referrers as referrers_module
+    from services.dat_store import dat_store
+
+    game = await _romm_game(client, db)
+    platform = game.parent
+    preview = await _preview(client, game)
+    monkeypatch.setattr(referrers_module, "CANCEL_GRACE_SECONDS", 0.2)
+    monkeypatch.setattr(image_rename, "HANDED_OFF_SECONDS", 0.2)
+    entered, release = threading.Event(), threading.Event()
+
+    def hold_the_rename(method, path):
+        if method == "PUT" and not entered.is_set():
+            entered.set()
+            release.wait(10)
+
+    romm.on_request = hold_the_rename
+    items = [{"path": i["path"], "new_path": i["new_path"]} for i in preview["items"]]
+    started = await client.post("/api/files/dat-rename", json={"items": items}, headers=CONFIRM)
+    job_id = started.json()["job_id"]
+    assert await asyncio.to_thread(entered.wait, 10)
+    await client.delete(f"/api/jobs/{job_id}")
+    # Past the hook's grace and the rename's own wait, then RomM answers.
+    threading.Timer(1.0, release.set).start()
+    await dat_rename.drain()
+
+    job = (await client.get(f"/api/jobs/{job_id}")).json()
+    result = _result(job)[str(game)]
+    assert result["status"] == "renamed", result
+    assert romm.roms[ROM_ID]["fs_name"] == "Ico (USA).iso"
+    assert (platform / "Ico (USA).iso").exists() and not game.exists()
+    assert (platform / "games.m3u").read_text() == "Ico (USA).iso\n"
+    assert dat_store.get_match(str(platform / "Ico (USA).iso"))["game_name"] == "Ico (USA)"
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_while_romm_puts_the_old_name_back_reads_romm_back(
+    db: Path, client: httpx.AsyncClient, romm: FakeRomm,
+) -> None:
+    """RomM writes a sanitized name, the swap asks for the old one back, and
+    the job is cancelled while that request is in flight. The swap still
+    reads RomM back once it has answered (CodeRabbit 4602987587)."""
+    import asyncio
+    import threading
+
+    from services import dat_rename
+
+    game = await _romm_game(client, db)
+    platform = game.parent
+    preview = await _preview(client, game)
+    entered, release = threading.Event(), threading.Event()
+    puts: list[int] = []
+
+    def hold_the_put_back(method, path):
+        if method == "PUT":
+            puts.append(1)
+            if len(puts) == 2:
+                entered.set()
+                release.wait(10)
+
+    romm.on_request = hold_the_put_back
+    romm.rename_as = "Ico_(USA).iso"
+    items = [{"path": i["path"], "new_path": i["new_path"]} for i in preview["items"]]
+    started = await client.post("/api/files/dat-rename", json={"items": items}, headers=CONFIRM)
+    job_id = started.json()["job_id"]
+    assert await asyncio.to_thread(entered.wait, 10)
+    await client.delete(f"/api/jobs/{job_id}")
+    release.set()
+    await dat_rename.drain()
+
+    job = (await client.get(f"/api/jobs/{job_id}")).json()
+    result = _result(job)[str(game)]
+    assert result["status"] == "not_renamed", result
+    assert romm.roms[ROM_ID]["fs_name"] == "game.iso"
+    assert (platform / "games.m3u").read_text() == "game.iso\n"
+    # After the second rename (the put-back), RomM was read back.
+    calls = [(m, p.split("?", 1)[0]) for m, p in romm.requests]
+    second_put = [i for i, c in enumerate(calls) if c[0] == "PUT"][1]
+    assert ("GET", f"/api/roms/{ROM_ID}") in calls[second_put + 1:], calls

@@ -13,9 +13,11 @@
   whose new name is taken. Confirming starts a job you can follow; `.m3u`
   playlists, ES-DE gamelists and RomM follow each rename, and in a RomM
   Library RomM renames the file itself so the ROM keeps its id (this needs
-  **Keep the ROM id when converting** on). If any of them can't be updated
-  the Image isn't renamed, and the job tries to put back anything already
-  updated, naming whatever it couldn't. When two
+  **Keep the ROM id when converting** on). If any of them can't be updated,
+  the job waits for anything still running, then reports the Image by where
+  its file is: not renamed (and it tries to put back anything already
+  updated, naming whatever it couldn't), renamed after all (with a note), or
+  left for you to check. When two
   DATs your order puts level name an Image differently it is left alone with
   a **Rename conflict** Finding, which clears once you order them. A summary
   goes to your notification destinations. The single-file rename is

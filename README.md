@@ -663,12 +663,20 @@ Characters some filesystems can't hold (`< > : " / \ | ? *`) become `_`.
   In a RomM Library RomM renames the file itself, so the ROM keeps its id,
   saves and collections; this needs **Keep the ROM id when converting** on in
   RomM's settings, and without it a RomM Library's Images are skipped.
-- If any of them can't be updated, or the job is cancelled part way, that
-  Image isn't renamed: the file stays where it was, and the job tries to put
-  back every playlist or gamelist it already updated, exactly as it was. A
-  file changed meanwhile is left alone, and anything it can't put back is
-  named in the job's result. The job lists every change and every skip, and
-  a summary goes to your notification destinations.
+- If any of them can't be updated, or the job is cancelled part way, the job
+  first waits for anything still running (a RomM request, a playlist write),
+  then looks at where the file actually is:
+  - still under its old name: the Image is reported **not renamed**, and the
+    job tries to put back every playlist or gamelist it already updated,
+    exactly as it was (a file changed meanwhile is left alone, and anything
+    it can't put back is named in the result);
+  - under its new name (RomM finished the rename after all): the Image is
+    reported **renamed**, with a note saying what went wrong on the way;
+  - anywhere else: the result says the Image was left partly renamed, or
+    that where it is couldn't be told, and to check it by hand.
+
+  The job lists every change and every skip, and a summary goes to your
+  notification destinations.
 
 ### RomM integration
 
