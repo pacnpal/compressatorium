@@ -29,6 +29,8 @@ class PatchError(ValueError):
 
 # A cartridge ROM is never this big; the same ceiling the bench reads Images under.
 MAX_TARGET_BYTES = 1024 * 1024 * 1024
+# No size, offset or length in a real patch comes near this.
+_MAX_VARINT = 1 << 64
 
 
 def patch_format(patch: bytes) -> str | None:
@@ -115,6 +117,10 @@ def apply_bps(source: bytes, patch: bytes) -> bytes:
                 return value
             shift <<= 7
             value += shift
+            if value > _MAX_VARINT:
+                # Refuse it here: a run of continuation bytes would otherwise
+                # build an ever-larger integer, quadratic in its length.
+                raise PatchError("The BPS patch has a number too large to be real")
 
     source_size, target_size, metadata_size = varint(), varint(), varint()
     pos += metadata_size

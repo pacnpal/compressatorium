@@ -178,3 +178,10 @@ def test_bps_target_over_the_limit_is_refused_before_allocating() -> None:
     )
     with pytest.raises(PatchError, match="limit"):
         apply_bps(source, body + _crc(body))
+
+
+def test_bps_endless_number_is_refused_early() -> None:
+    """A size field of continuation bytes is refused, not parsed to the end."""
+    body = b"BPS1" + b"\x00" * 100_000 + b"\x80" + _crc(b"") + _crc(b"")
+    with pytest.raises(PatchError, match="too large"):
+        apply_bps(b"", body + _crc(body))

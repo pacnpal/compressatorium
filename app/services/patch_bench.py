@@ -179,9 +179,12 @@ def _free_name(folder: str, stem: str) -> str:
     return _name(stem, n)
 
 
-def _write_rom(target: bytes, name: str) -> str:
+def _workspace() -> str:
     os.makedirs(settings.temp_dir, exist_ok=True)
-    work = tempfile.mkdtemp(prefix="patch-", dir=settings.temp_dir)
+    return tempfile.mkdtemp(prefix="patch-", dir=settings.temp_dir)
+
+
+def _write_rom(work: str, target: bytes, name: str) -> str:
     path = os.path.join(work, name)
     Path(path).write_bytes(target)
     return path
@@ -257,8 +260,12 @@ async def _run(job_id: str, plan: dict) -> None:
         stem, ext = os.path.splitext(plan["rom_name"])
         folder = os.path.dirname(plan["archive"])
         name = await _step(_free_name, folder, stem, what="naming the output", job_id=job_id)
-        rom = await _step(_write_rom, target, name + ext, what="writing the ROM", job_id=job_id)
-        rom_dir = os.path.dirname(rom)
+        # The workspace is owned before the write starts, so a write that is
+        # abandoned (cancel, stall) is still removed by the finally below.
+        rom_dir = await _step(_workspace, what="making a workspace", job_id=job_id)
+        rom = await _step(
+            _write_rom, rom_dir, target, name + ext, what="writing the ROM", job_id=job_id,
+        )
         await job_manager.update_external_job(job_id, progress=60, message="Packing the 7z")
         packed = os.path.join(folder, f".{name}.{uuid.uuid4().hex[:8]}.partial.7z")
         async for _ in romz_service.convert(

@@ -334,3 +334,24 @@ def test_a_failed_publish_removes_its_claim(tmp_path, monkeypatch) -> None:
     with pytest.raises(OSError, match="I/O error"):
         patch_bench._publish(str(packed), str(tmp_path), "Game", "Game (Patched)")
     assert not (tmp_path / "Game (Patched).7z").exists()
+
+
+@pytest.mark.asyncio
+async def test_an_abandoned_rom_write_still_has_its_workspace_removed(
+    db: Path, client, tmp_path, monkeypatch,
+) -> None:
+    """A write that fails part way (as a cancel or stall would leave it) leaves no workspace."""
+    from services import patch_bench
+
+    def failing_write(work: str, target: bytes, name: str) -> str:
+        (Path(work) / name).write_bytes(target[:10])
+        raise OSError("disk full")
+
+    monkeypatch.setattr(patch_bench, "_write_rom", failing_write)
+    rom = db / "gba" / "Game.gba"
+    rom.parent.mkdir()
+    rom.write_bytes(ROM)
+    job = await _patch(client, str(rom), _bps_patch(db / "fix.bps"))
+    assert job["status"] == "failed", job
+    temp = Path(app_settings.temp_dir)
+    assert not any(temp.glob("patch-*")), list(temp.iterdir())
