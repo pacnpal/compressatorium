@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import os
 import time
 from pathlib import Path
@@ -33,6 +34,15 @@ from .test_romm_swap_391 import (
 STAGE = ".compressatorium-stage"
 # The #391 fixtures this module runs on (``vol``, ``romm``), by name.
 FIXTURES = (_vol, _romm)
+
+
+@pytest.fixture(autouse=True)
+def _forget_reasons():
+    from services.romm import swap_recovery
+
+    swap_recovery._last_reason.clear()
+    yield
+    swap_recovery._last_reason.clear()
 
 
 def _rows() -> list[dict]:
@@ -771,3 +781,59 @@ async def test_the_findings_steps_never_put_two_files_on_one_path(vol, romm):
     third = undo.index("rename the ROM's file to Game.iso")
     assert first < second < third
     assert "Game.chd" not in str(seed.parked)
+
+
+# ---- one warning per reason (#445) -----------------------------------------
+
+
+def _swap_warnings(caplog) -> list[str]:
+    return [
+        r.getMessage() for r in caplog.records
+        if r.levelno == logging.WARNING and "Swap recovery: swap" in r.getMessage()
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_swap_left_for_the_same_reason_warns_once_then_again_on_a_new_one(
+    vol, romm, monkeypatch, caplog,
+):
+    """Passes that leave a swap for the same reason log the warning once (the
+    repeats at DEBUG); a different reason warns again; settling forgets it."""
+    from services.romm import swap_recovery
+    from services.romm.client import RommClient, RommError
+
+    seed = Seed(vol, romm)
+    seed.romm_renamed()
+    seed.park_source()
+    seed.place_output()
+    seed.row("rehashing")
+    real_rom = RommClient.rom
+    caplog.set_level(logging.DEBUG, logger="compressatorium.romm_swap_recovery")
+
+    def down(message):
+        def fail(self, rom_id):
+            raise RommError(message)
+        return fail
+
+    monkeypatch.setattr(RommClient, "rom", down("connection refused"))
+    await swap_recovery.recover_once()
+    await swap_recovery.recover_once()
+    assert len(_swap_warnings(caplog)) == 1
+    assert any(
+        r.levelno == logging.DEBUG and "Swap recovery: swap" in r.getMessage()
+        for r in caplog.records
+    )
+    (finding,) = _swap_findings()
+    assert "couldn't be reached" in finding["reason"]
+
+    monkeypatch.setattr(RommClient, "rom", down("timed out"))
+    await swap_recovery.recover_once()
+    await swap_recovery.recover_once()
+    warnings = _swap_warnings(caplog)
+    assert len(warnings) == 2
+    assert "timed out" in warnings[1]
+
+    monkeypatch.setattr(RommClient, "rom", real_rom)
+    await swap_recovery.recover_once()
+    assert _rows()[0]["state"] == "done"
+    assert _swap_findings() == []
