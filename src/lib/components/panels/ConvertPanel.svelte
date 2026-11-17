@@ -32,6 +32,7 @@
   const auto = $derived(conversion.auto);
   const supportsDeleteOnVerify = $derived(!auto && conversion.supportsDeleteOnVerify);
   const supportsRoundTrip = $derived(!auto && conversion.supportsRoundTrip);
+  const sourceKeptReason = $derived(auto ? '' : conversion.sourceKeptReason);
   const supportsSplit = $derived(!auto && conversion.supportsSplit);
   const converting = $derived(conversion.converting);
 
@@ -266,6 +267,10 @@
             description="Skips the content comparison and deletes once the output is Intact. It proves the file reads back cleanly, not that it holds the same disc."
           />
         {/if}
+      {:else if sourceKeptReason}
+        <!-- A mode that keeps its Source on principle says why, where the
+             delete option would otherwise be (ModeSpec.source_kept_reason). -->
+        <p class="hint source-kept">Sources are kept. {sourceKeptReason}</p>
       {/if}
 
       {#if supportsSplit}
@@ -364,6 +369,9 @@
   .hint {
     color: var(--text-3);
     font-size: var(--text-xs);
+  }
+  .source-kept {
+    margin: 0;
   }
 
   .warning {

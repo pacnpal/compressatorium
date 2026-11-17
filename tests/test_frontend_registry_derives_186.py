@@ -106,6 +106,7 @@ def _dump(tmp_path: Path) -> dict:
         " info_rows: Object.fromEntries(["
         "   ['dosz', 'Abaron (1995).dosz', ['exodos'], false],"
         "   ['xiso', 'Halo.xiso.iso', ['xiso'], false],"
+        "   ['zar', 'Halo.zar', ['rom_converto'], false],"
         "   ['source3ds', 'Game.3ds', [], false],"
         "   ['zip_archive', 'Bundle.zip', [], true],"
         " ].map(([k, p, by, arch]) => [k,"
@@ -114,6 +115,7 @@ def _dump(tmp_path: Path) -> dict:
         "   .flatMap((t) => t.modes.flatMap((m) => m.inputExtensions ?? [])),"
         " content_claims: Object.fromEntries(["
         "   ['xbox', ['chdman', 'xiso', 'dolphin']], ['psp', ['chdman', 'cso']],"
+        "   ['xbox360', ['chdman', 'xiso', 'rom_converto', 'dolphin']],"
         "   ['empty', []], ['missing', undefined]"
         " ].map(([k, by]) => [k, (registry.contentClaimsFor("
         "   by === undefined ? { path: 'g.iso' } : { path: 'g.iso', convertible_by: by }"
@@ -307,8 +309,9 @@ def test_content_claims_read_only_the_backend_probe(tmp_path):
     dump = _dump(tmp_path)
     claims = dump["content_claims"]
 
-    assert dump["content_refined"] == ["xiso"]
+    assert dump["content_refined"] == ["xiso", "rom_converto"]
     assert claims["xbox"] == ["xiso"]
+    assert claims["xbox360"] == ["xiso", "rom_converto"]
     assert claims["psp"] == []
     assert claims["empty"] == []
     assert claims["missing"] is None
@@ -353,6 +356,8 @@ def test_row_info_only_lands_on_a_tool_with_info(tmp_path):
     assert rows == {
         "dosz": None,
         "xiso": "xiso",
+        # A ZAR: rom-converto's product, described by xenon info.
+        "zar": "rom_converto",
         "source3ds": "z3ds",
         "zip_archive": None,
     }

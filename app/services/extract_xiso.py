@@ -299,12 +299,14 @@ def walk_image(
     return stats
 
 
-def detect_console(path: str) -> str | None:
+def probe_console(path: str) -> str | None:
     """``"Xbox"`` or ``"Xbox 360"`` for an Xbox disc image, else None.
 
     The layout names the console for a full disc image. A trimmed XISO has no
-    layout to go on, so its boot executable decides (``walk_image``). Never
-    raises: a file that is not an Xbox image, or cannot be read, is None.
+    layout to go on, so its boot executable decides (``walk_image``). A file
+    that is not an Xbox image is None; one that cannot be read raises
+    ``OSError``, so a caller that caches the verdict (rom-converto's ZAR source
+    check) never remembers an outage as "not an Xbox image".
     """
     try:
         _offset, _layout, console = detect_layout(path)
@@ -314,7 +316,15 @@ def detect_console(path: str) -> str | None:
             path, max_table=_PROBE_MAX_DIR_TABLE, max_total=_PROBE_MAX_TABLE_BYTES,
             root_only=True,
         )["console"]
-    except (XisoImageError, OSError):
+    except XisoImageError:
+        return None
+
+
+def detect_console(path: str) -> str | None:
+    """:func:`probe_console` that never raises: an unreadable file is None."""
+    try:
+        return probe_console(path)
+    except OSError:
         return None
 
 

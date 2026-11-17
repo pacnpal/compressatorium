@@ -22,6 +22,7 @@ from models import (
     MetadataBatchRequest,
     NkitInfo,
     NszInfo,
+    RomConvertoInfo,
     RomzInfo,
     XisoInfo,
     Z3DSInfo,
@@ -48,6 +49,11 @@ from services.jwudtool import (
     JWUD_COMPRESS_EXTENSIONS,
     JWUD_DECOMPRESS_EXTENSIONS,
     jwudtool_service,
+)
+from services.rom_converto import (
+    ZAR_VERIFY_EXTENSIONS,
+    RomConvertoError,
+    rom_converto_service,
 )
 from services.tools import registry
 from services.tools.base import ToolPlugin
@@ -833,6 +839,12 @@ def _is_xiso_info_file(path: str) -> bool:
     ) is not None
 
 
+# rom-converto's products only (a ZAR so far): its sources are plain disc images
+# the xiso tool (and the others) already describe.
+def _is_rom_converto_info_file(path: str) -> bool:
+    return match_extension(path, ZAR_VERIFY_EXTENSIONS) is not None
+
+
 @router.get("/info", response_model=CHDInfo)
 async def get_chd_info(path: str = Query(..., description="Path to CHD file")):
     """Get information about a CHD file (cached with mtime-based invalidation)."""
@@ -1292,6 +1304,44 @@ async def get_xiso_info(
     return registry.get("xiso").info_model(info, path)
 
 
+@router.get("/rom-converto-info", response_model=RomConvertoInfo)
+async def get_rom_converto_info(
+    path: str = Query(..., description="Path to a file rom-converto wrote (.zar)"),
+):
+    """Describe a ZAR with ``rom-converto xenon info``: how many files it holds,
+    their uncompressed size, and whether ``default.xex`` (what Xenia boots) is at
+    its root."""
+    if not await run_in_threadpool(
+        is_within_configured_volumes, path, treat_archives=False,
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied: path outside configured volumes",
+        )
+    if not await run_in_threadpool(os.path.isfile, path):
+        raise HTTPException(status_code=404, detail="File not found")
+    if not _is_rom_converto_info_file(path):
+        raise HTTPException(status_code=400, detail="Not a ZAR (.zar)")
+    if not await registry.tool_is_ready(registry.get("rom_converto")):
+        raise HTTPException(
+            status_code=503,
+            detail=f"rom-converto isn't ready: {registry.get('rom_converto').not_ready_reason}",
+        )
+
+    try:
+        info = await rom_converto_service.info(path)
+    except RomConvertoError as e:
+        # rom-converto refused the file itself: a client error about the file.
+        raise HTTPException(status_code=422, detail=str(e)) from None
+    except Exception as e:
+        logger.exception("Failed to read ZAR info for %s", path)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to read ZAR info: {e!s}",
+        ) from None
+    return registry.get("rom_converto").info_model(info, path)
+
+
 @router.get("/cso-info", response_model=CsoInfo)
 async def get_cso_info(
     path: str = Query(..., description="Path to PSP/PS2 ISO/CSO/ZSO/DAX file"),
@@ -1572,6 +1622,15 @@ _VERIFY_CONFIG: dict[str, _VerifyRouteConfig] = {
         batch_name="verify_xiso_batch_events",
         bad_ext_detail="Not an XISO produced by this tool (.xiso.iso)",
         verify_error_prefix="Failed to verify XISO",
+    ),
+    "rom_converto": _VerifyRouteConfig(
+        url_prefix="rom-converto-",
+        service=lambda: rom_converto_service,
+        sync_name="verify_rom_converto",
+        events_name="verify_rom_converto_events",
+        batch_name="verify_rom_converto_batch_events",
+        bad_ext_detail="Not a ZAR (.zar)",
+        verify_error_prefix="Failed to verify ZAR",
     ),
     "exodos": _VerifyRouteConfig(
         url_prefix="exodos-",
@@ -2229,6 +2288,9 @@ verify_jwud, verify_jwud_events, verify_jwud_batch_events = register_verify_rout
 )
 verify_xiso, verify_xiso_events, verify_xiso_batch_events = register_verify_routes(
     router, registry.get("xiso"),
+)
+verify_rom_converto, verify_rom_converto_events, verify_rom_converto_batch_events = (
+    register_verify_routes(router, registry.get("rom_converto"))
 )
 verify_exodos, verify_exodos_events, verify_exodos_batch_events = register_verify_routes(
     router, registry.get("exodos"),

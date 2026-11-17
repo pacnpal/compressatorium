@@ -107,6 +107,13 @@ jobs:
           # screenshot run never starts a job, so a no-op executable is enough to
           # keep the tool visible for the capture.
           export JWUDTOOL_PATH=/bin/true
+          # rom-converto hides itself unless its binary answers --version
+          # (RomConvertoTool.is_ready); the same kind of stand-in keeps it
+          # visible. No job runs, so nothing else is asked of it.
+          mkdir -p "$RUNNER_TEMP/bin"
+          printf '#!/bin/sh\necho "rom-converto 0.24.0"\n' > "$RUNNER_TEMP/bin/rom-converto"
+          chmod +x "$RUNNER_TEMP/bin/rom-converto"
+          export ROM_CONVERTO_PATH="$RUNNER_TEMP/bin/rom-converto"
           # The eXoDOS tool hides itself without a template tree; the fixture
           # ships a synthetic one.
           export EXODOS_DOS_DIR="$RUNNER_TEMP/fixture/eXoDOS/!dos"
