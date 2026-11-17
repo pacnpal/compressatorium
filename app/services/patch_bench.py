@@ -184,17 +184,23 @@ def _read_image(plan: dict) -> bytes:
         return _read_confined(
             plan["archive"], max_bytes=MAX_IMAGE_BYTES, too_big_message=_IMAGE_TOO_BIG,
         )
+    # The archive is read once, without following a symlink, into a private
+    # copy, and the member is extracted from that copy: nothing on the Volume
+    # is opened by path after the check, so a swap can't redirect the read.
     archive = plan["archive"]
-    # ponytail: the archive is re-checked, then opened by path by the extractor;
-    # a swap in between is a narrow window. Extract through an fd if it matters.
-    if os.path.islink(archive) or not is_within_configured_volumes(archive):
-        raise patch_engine.PatchError(f"{os.path.basename(archive)} is no longer on a Volume")
-    path, temp_dir = archive_service.extract_file(archive, plan["member"])
+    data = _read_confined(archive, max_bytes=MAX_IMAGE_BYTES, too_big_message=_IMAGE_TOO_BIG)
+    work = _workspace()
+    temp_dir = None
     try:
+        copy = os.path.join(work, os.path.basename(archive))
+        Path(copy).write_bytes(data)
+        del data
+        path, temp_dir = archive_service.extract_file(copy, plan["member"])
         return _read_bounded(path)
     finally:
         if temp_dir is not None:
             shutil.rmtree(temp_dir, ignore_errors=True)
+        shutil.rmtree(work, ignore_errors=True)
 
 
 def _recognized(image: str, source: bytes) -> bool:

@@ -355,3 +355,48 @@ async def test_an_abandoned_rom_write_still_has_its_workspace_removed(
     assert job["status"] == "failed", job
     temp = Path(app_settings.temp_dir)
     assert not any(temp.glob("patch-*")), list(temp.iterdir())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("archived", [False, True])
+async def test_an_input_swapped_for_a_symlink_while_waiting_is_not_read(
+    db: Path, client, tmp_path, monkeypatch, archived: bool,
+) -> None:
+    """The Image is checked when the request arrives; swapped for a symlink to a
+    file outside the Volume while the job waits for a slot, it is not read."""
+    import asyncio
+
+    from services import patch_bench
+    from services.concurrency_manager import ConcurrencyManager
+
+    manager = ConcurrencyManager(1, str(tmp_path / "locks"))
+    monkeypatch.setattr(patch_bench, "concurrency_manager", manager)
+    assert await manager.acquire("a-conversion")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    if archived:
+        image = db / "Game.zip"
+        with zipfile.ZipFile(image, "w") as z:
+            z.writestr("Game.gba", ROM)
+        with zipfile.ZipFile(outside / "Game.zip", "w") as z:
+            z.writestr("Game.gba", b"SECRET" * 4096)
+        request = f"{image}::Game.gba"
+    else:
+        image = db / "Game.gba"
+        image.write_bytes(ROM)
+        (outside / "Game.gba").write_bytes(b"SECRET" * 4096)
+        request = str(image)
+    started = await client.post(
+        "/api/patch", json={"image_path": request, "patch_path": _ips_patch(db / "fix.ips")},
+    )
+    assert started.status_code == 200, started.text
+    await asyncio.sleep(0.3)
+    image.unlink()
+    image.symlink_to(outside / image.name)
+    manager.release("a-conversion")
+    await patch_bench.drain()
+
+    from services.job_manager import job_manager
+    job = job_manager.get_job(started.json()["job_id"])
+    assert job.status.value == "failed", job.status
+    assert not list(db.glob("*Patched*"))
