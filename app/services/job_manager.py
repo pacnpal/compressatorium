@@ -359,6 +359,19 @@ def is_external_mode(mode) -> bool:
     return mode in _EXTERNAL_JOB_MODES
 
 
+def _trusted_roots(job) -> list[str] | None:
+    """The folders a job's Source (and the files its sheet names) may be read
+    from when it isn't in a Volume: an archive member's extraction dir
+    (``temp_dir``), or a bound Source's folder in the work area (#431). None
+    for a Source in a Volume, which stays confined to the Volumes."""
+    if getattr(job, "temp_dir", None):
+        return [job.temp_dir]
+    bound = getattr(job, "_bound", None)
+    if bound is not None:
+        return [bound.path]
+    return None
+
+
 def _reads(job) -> str:
     """The path a job reads its Source from: the bound link once its Source
     was bound (#431, ``_bind_source_bounded``), else its own path."""
@@ -5385,12 +5398,12 @@ class JobManager:
         # no progress, exactly like the container check before it.
         self._verifying[job.id] = time.monotonic()
         try:
-            # An archive-member Source (and any sheet it names) lives in the
-            # job's extraction folder, outside the Volumes; the tool may read
-            # it there. Anything else stays confined to the Volumes (None).
+            # An archive-member or bound Source (and any sheet it names)
+            # lives in the job's own folder outside the Volumes; the tool may
+            # read it there. Anything else stays confined to the Volumes.
             outcome = await round_trip(
                 tool, source_path, output_path, cancel_event=cancel_event,
-                within=[job.temp_dir] if job.temp_dir else None,
+                within=_trusted_roots(job),
             )
         finally:
             self._verifying.pop(job.id, None)
@@ -5916,13 +5929,15 @@ class JobManager:
                 )
                 return
 
-            # A bound Source (#431) is read from its private folder of links.
+            # A bound Source (#431) is read from its folder in the work area.
             input_path = _reads(job)
-            # The trusted root(s) an extracted source's track sheet may name
-            # files under (utils.sheet_text.resolve_track's ``within``). None
-            # for a source in a Volume; the extraction dir for an archive
-            # member. Built once here and handed to every consumer.
-            within: list[str] | None = None
+            # The trusted root(s) a source's track sheet may name files under
+            # (utils.sheet_text.resolve_track's ``within``): None for a source
+            # in a Volume; the folder it is read from for one outside them,
+            # a bound Source's (Codex 4606794168) or, set below, an archive
+            # member's extraction dir. Built once here (`_trusted_roots`) and
+            # handed to every consumer.
+            within = _trusted_roots(job)
             if "::" in job.file_path:
                 extract_start = time.monotonic()
                 archive_path, internal_path = job.file_path.split("::", 1)
@@ -5950,7 +5965,7 @@ class JobManager:
                 except asyncio.CancelledError:
                     pass
                 job.temp_dir = temp_dir
-                within = [temp_dir]
+                within = _trusted_roots(job)
                 await run_in_threadpool(
                     archive_service.extract_related_files,
                     archive_path,

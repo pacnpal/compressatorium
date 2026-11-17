@@ -7392,7 +7392,10 @@ file (`sweep._accepts_source`, on a bounded worker thread: it can read a
 header), with its tool ready, queues through
 `job_manager.create_batch_jobs`, the call a Rule sweep makes: the placement
 folder (made if missing) as `output_dir`, the destination resolved with the
-`skip` policy (`resolve_destination`; taken holds it), the Rule's compression
+`skip` policy (`resolve_destination`: an output on disk, `SKIP_EXISTING`,
+holds it; a name another job only holds, `SKIP_LOCKED` from
+`output_conflicts.output_status`, is a retry with no Finding, so the next poll
+queues it once the lock is gone, Codex 4606794174), the Rule's compression
 (`sweep._compression_arg`) and `split`, `verify_after` wherever
 `registry.mode_supports_verify` says the mode can check its output (the Intact
 check; a `jwud_decompress` WUD can't be), and never `delete_on_verify`. It also passes `source_identities`: the Source's `file_snapshot` and the Inbox
@@ -7443,7 +7446,11 @@ stages its output (`_needs_stage`), whichever Library holds it. The
 `models.RUNTIME_ONLY_PRIVATES`, without touching the live job (Codex
 4606539536). The metadata probes keep their fixed bound. Sizing,
 detection, the companion checks and `run_convert` read `job._read_path`, never
-the Inbox name, and `_cleanup_temp_dir` removes the folder on every ending. The
+the Inbox name. The bound folder is the job's trusted root (`_trusted_roots`,
+the same `within` an archive member's extraction dir gets): the companion check,
+the post-conversion checks and the Round-trip take its sheet's tracks there,
+outside every Volume, and still refuse one that leaves it (Codex 4606794168).
+`_cleanup_temp_dir` removes the folder on every ending. The
 move to `processed/` still acts on the Inbox names, with its own inode check. So the job is a conversion in every sense the
 queue has: it takes a `max_concurrent` slot, gets its Ledger row and its
 Cancel. A Rule that is disabled, or whose mode doesn't take the file (it is

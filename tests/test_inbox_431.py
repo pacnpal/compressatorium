@@ -2455,3 +2455,65 @@ def test_a_cleanup_that_cant_stat_the_destination_says_it_is_committed(
     assert "rename" in str(committed.value.__cause__)
     assert "stat" in str(committed.value.__context__)
     assert (b / "Game.iso").read_bytes() == b"original"
+
+
+def _rule_output(vol, library) -> str:
+    """Where the ps2 Rule's conversion of Downloads/ps2/Game.iso writes."""
+    from services.tools import registry
+
+    tool = registry.for_mode("cso_compress")
+    return tool.output_path(
+        "cso_compress", str(vol / "Downloads" / "ps2" / "Game.iso"), str(vol / "ROMs" / "ps2"),
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_destination_only_locked_by_another_job_is_tried_again(vol, db, queue):
+    """Codex 4606794174, ruled: a destination name another job holds right
+    now, with nothing on disk, is a retry: no Finding, the file isn't marked
+    done, and the next poll queues it once the lock is gone."""
+    from services.lock_manager import lock_manager
+
+    library = _library(vol)
+    await _ps2_rule(library)
+    box = _inbox(vol, library)
+    (vol / "ROMs" / "ps2").mkdir(parents=True)
+    output = _rule_output(vol, library)
+    _drop(vol / "Downloads" / "ps2" / "Game.iso")
+    assert lock_manager.acquire_lock(output)
+    try:
+        await _poll(box, now=0)
+        busy = await _poll(box, now=61)
+    finally:
+        lock_manager.release_lock(output)
+
+    assert busy["queued"] == busy["held"] == 0
+    assert _inbox_findings() == []
+    assert not os.path.exists(output)
+
+    again = await _poll(box, now=62)
+
+    assert again["queued"] == 1
+    assert queue.submitted[0]["output_paths"] == {
+        str(vol / "Downloads" / "ps2" / "Game.iso"): output,
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_destination_already_on_disk_stays_taken(vol, db, queue):
+    """Codex 4606794174: only a real output on disk is already taken: held
+    with a Finding, never queued."""
+    library = _library(vol)
+    await _ps2_rule(library)
+    box = _inbox(vol, library)
+    output = _rule_output(vol, library)
+    _drop(Path(output), b"the Library's own")
+    _drop(vol / "Downloads" / "ps2" / "Game.iso")
+
+    await _poll(box, now=0)
+    result = await _poll(box, now=61)
+
+    assert result["held"] == 1 and result["queued"] == 0
+    [finding] = _inbox_findings()
+    assert "already in the Library" in finding["reason"]
+    assert Path(output).read_bytes() == b"the Library's own"

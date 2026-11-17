@@ -68,7 +68,7 @@ from services import inbox as inbox_store
 from services.image_sets import group_images, image_fingerprint, image_members
 from services.job_manager import OutputClaimedError, QueueBackpressureError, job_manager
 from services.lock_manager import LockFailed, lock_manager
-from services.output_conflicts import QUEUE, resolve_destination
+from services.output_conflicts import QUEUE, SKIP_LOCKED, resolve_destination
 from services.rules import check as checks
 from services.rules.library import Library, LibraryUnreadable, PlacementUnknown
 from services.rules.rules import CONVERT
@@ -754,6 +754,10 @@ def _destination(path: str, rule: dict, folder: str) -> tuple[str | None, str]:
     os.makedirs(folder, exist_ok=True)
     tool = registry.for_mode(rule["mode"])
     destination, decision = resolve_destination(tool, path, rule["mode"], folder, "skip")
+    if decision == SKIP_LOCKED:
+        # Another job holds the name, nothing is on disk: busy for now, never
+        # a Finding (Codex 4606794174).
+        return None, "busy"
     if decision != QUEUE or not destination:
         return None, "already_taken"
     return destination, QUEUE
@@ -773,6 +777,8 @@ async def _convert(
         return "retry"
     if state.revoked:
         return "retry"  # the Inbox was removed meanwhile
+    if decision == "busy":
+        return "retry"  # taken again next poll, its fingerprint not held
     if destination is None:
         reason = (
             f"Its output is already in the Library ({plan.folder})"
