@@ -36,7 +36,13 @@ from utils.path_utils import (
     volume_containment,
 )
 
-from .base import ReferrerError, atomic_write_bytes, check_write, staged_output
+from .base import (
+    ReferrerError,
+    atomic_write_bytes,
+    check_write,
+    record_write,
+    staged_output,
+)
 
 BACKUP_SUFFIX = ".bak"
 
@@ -251,3 +257,30 @@ def _rewrite_locked(
         atomic_write_bytes(path, updated, guard=publish_ok)
     except OSError as exc:
         raise ReferrerError(path, exc.strerror or str(exc)) from exc
+    # Landed: what an Image rename puts back if it doesn't go ahead (#425).
+    record_write(path, original, updated)
+
+
+def restore_in_place(path: str, before: bytes, after: bytes, *, wait: float) -> None:
+    """Put *before* back in the Referrer file at *path*, which the hook
+    rewrote to *after* (an Image rename that didn't go ahead, #425).
+
+    The same checks and locks as :func:`rewrite_in_place`. Only a file that
+    still holds exactly *after* is written: one changed since (by a person,
+    or another job) is left as it is and ReferrerError says so. Exact bytes,
+    never a re-plan, so nothing the rename didn't change is touched."""
+    if os.path.islink(path):
+        raise ReferrerError(path, "is a symlink")
+    if volume_containment(path, treat_archives=False) is not True:
+        raise ReferrerError(path, "isn't confirmed inside the configured Volumes")
+    with target_lock(path):
+        try:
+            with lock_manager.referrer_lock(path, wait=wait):
+                if read_target(path) != after:
+                    raise ReferrerError(path, "changed since the rename updated it")
+                try:
+                    atomic_write_bytes(path, before)
+                except OSError as exc:
+                    raise ReferrerError(path, exc.strerror or str(exc)) from exc
+        except LockWaitTimeout as exc:
+            raise ReferrerError(path, "is being updated by another job") from exc

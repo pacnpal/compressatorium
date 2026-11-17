@@ -31,6 +31,24 @@
   Ledger's check column says Recognized, with the DAT that matched (a new
   `check_dat` column, also last in the CSV export), and a converted file's
   badge says Recognized.
+- **Rename to DAT name** (#425). Tick Images in the file browser and press
+  **Rename to DAT name**: each Recognized single-file Image takes the name the
+  top-ranked DAT gives it, keeping its own extension, with characters a
+  filesystem can't hold replaced by `_`. A preview lists each old and new name
+  and every playlist, gamelist and RomM ROM the rename updates, and skips,
+  with the reason, an Image that isn't Recognized, already has its name, or
+  whose new name is taken. Confirming starts a job you can follow; `.m3u`
+  playlists, ES-DE gamelists and RomM follow each rename, and in a RomM
+  Library RomM renames the file itself so the ROM keeps its id (this needs
+  **Keep the ROM id when converting** on). If any of them can't be updated,
+  the job waits for anything still running, then reports the Image by where
+  its file is: not renamed (and it tries to put back anything already
+  updated, naming whatever it couldn't), renamed after all (with a note), or
+  left for you to check. When two
+  DATs your order puts level name an Image differently it is left alone with
+  a **Rename conflict** Finding, which clears once you order them. A summary
+  goes to your notification destinations. The single-file rename is
+  unchanged.
 - **Xbox 360 disc images to ZAR, with rom-converto** (#422). A new tool,
   rom-converto (the converter RomM ships, at the version RomM pins, v0.24.0),
   packs an Xbox 360 `.iso` into a `.zar`, the format Xenia mounts directly.

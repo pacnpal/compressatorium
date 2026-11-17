@@ -28,4 +28,6 @@ export const EXTERNAL_MODE_LABELS = Object.freeze({
   find_duplicates: 'Find duplicates',
   // A confirmed delete of a duplicate group's other copies (#389).
   delete_duplicates: 'Delete duplicates',
+  // A confirmed rename of Images to their DAT names (#425).
+  dat_rename: 'Rename to DAT name',
 });

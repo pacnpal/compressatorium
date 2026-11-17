@@ -621,6 +621,21 @@ class ToolRegistry:
             set().union(*(t.output_extensions for t in self._tools.values()))
         ))
 
+    def extension_of(self, name: str) -> str:
+        """*name*'s extension as the tools know it: the longest registered
+        input, output or verify extension it ends with (``.nkit.iso``, not
+        ``.iso``; ``match_extension``), else its last suffix. Keeps a
+        compound extension whole when a name is rebuilt around it (#425)."""
+        known = {
+            *self.convertible_extensions(), *self.output_extensions(),
+            *self.verify_extensions(),
+        }
+        found = match_extension(name, known)
+        if found is None:
+            return os.path.splitext(name)[1]
+        # The name's own spelling of it (case kept).
+        return name[len(name) - len(found):]
+
     def disc_extensions(self) -> tuple[str, ...]:
         """Union of every registered tool's disc_extensions.
 

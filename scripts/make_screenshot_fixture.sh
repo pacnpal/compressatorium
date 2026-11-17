@@ -148,4 +148,10 @@ PY
 { printf 'PK\003\004'; dd if=/dev/zero bs=1 count=60 2>/dev/null; } \
   > "$root/ROM Library/roms/gba/pocket-racer.zip"
 
+# Rename to DAT name (#425): a made-up cartridge whose one line of text is
+# named by the synthetic DAT the shot imports (its SHA1 is in shots.yml).
+mkdir -p "$root/ROM Library/roms/snes"
+printf 'Compressatorium sample cartridge: a made-up homebrew placeholder.\n' \
+  > "$root/ROM Library/roms/snes/castle-quest.sfc"
+
 echo "Fixture volume created under: $root"
