@@ -185,3 +185,25 @@ def test_bps_endless_number_is_refused_early() -> None:
     body = b"BPS1" + b"\x00" * 100_000 + b"\x80" + _crc(b"") + _crc(b"")
     with pytest.raises(PatchError, match="too large"):
         apply_bps(b"", body + _crc(body))
+
+
+def test_bps_metadata_longer_than_the_patch_is_refused() -> None:
+    source = b"A"
+    body = (
+        b"BPS1" + _varint(1) + _varint(0) + _varint(127) + _crc(source) + _crc(b"")
+    )
+    with pytest.raises(PatchError, match="metadata"):
+        apply_bps(source, body + _crc(body))
+
+
+def test_bps_long_target_copy_run_is_built_in_bulk() -> None:
+    """One byte, then a 4 MiB TargetCopy of it: fast, and byte-exact."""
+    import time
+
+    size = 4 * 1024 * 1024
+    target = b"\x00" * size
+    actions = _action(1, 1, b"\x00") + _action(3, size - 1, _delta(0))
+    patch = _bps(b"", target, actions)
+    started = time.monotonic()
+    assert apply_bps(b"", patch) == target
+    assert time.monotonic() - started < 1.0

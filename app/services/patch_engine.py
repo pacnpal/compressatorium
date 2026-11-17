@@ -123,6 +123,8 @@ def apply_bps(source: bytes, patch: bytes) -> bytes:
                 raise PatchError("The BPS patch has a number too large to be real")
 
     source_size, target_size, metadata_size = varint(), varint(), varint()
+    if metadata_size > footer - pos:
+        raise PatchError("The BPS patch ends part way through its metadata")
     pos += metadata_size
     if len(source) != source_size:
         raise PatchError(
@@ -164,17 +166,17 @@ def apply_bps(source: bytes, patch: bytes) -> bytes:
                     raise PatchError("The BPS patch copies from outside its source")
                 target[out:out + length] = source[source_rel:source_rel + length]
                 source_rel += length
-            else:  # TargetCopy: may overlap the bytes it writes, so copy in steps
+            else:  # TargetCopy: may overlap the bytes it writes
                 target_rel += delta
                 if target_rel < 0 or target_rel >= out:
                     raise PatchError("The BPS patch copies from outside its target")
-                left, write = length, out
-                while left:
-                    step = min(left, write - target_rel)
-                    target[write:write + step] = target[target_rel:target_rel + step]
-                    write += step
-                    target_rel += step
-                    left -= step
+                # An overlapping copy repeats the `out - target_rel` bytes before
+                # the cursor, so build the run in one go rather than a byte loop.
+                run = target[target_rel:out]
+                if len(run) < length:
+                    run = run * -(-length // len(run))
+                target[out:out + length] = run[:length]
+                target_rel += length
         out += length
     if out != target_size:
         raise PatchError("The BPS patch ends before its target is complete")

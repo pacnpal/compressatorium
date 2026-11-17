@@ -51,7 +51,11 @@ from services.subprocess_runner import (
 )
 from services.tools import registry
 from utils.junk import is_junk_path
-from utils.path_utils import is_within_configured_volumes
+from utils.path_utils import (
+    is_within_configured_volumes,
+    platform_boundary_root,
+    read_beneath,
+)
 
 from config import settings
 
@@ -62,6 +66,7 @@ _ARCHIVES = (".zip", ".7z")
 # ponytail: the Image is read whole; 1 GiB covers every cartridge. Stream it
 # if a bigger one ever needs patching.
 MAX_IMAGE_BYTES = patch_engine.MAX_TARGET_BYTES
+_IMAGE_TOO_BIG = "The Image is over 1 GiB; too big to patch"
 
 _tasks: set[asyncio.Task] = set()
 
@@ -138,22 +143,55 @@ async def drain() -> None:
         await asyncio.gather(*list(_tasks), return_exceptions=True)
 
 
+def _read_confined(path: str, *, max_bytes: int, too_big_message: str) -> bytes:
+    """Read *path* again at run time, inside its Volume (or the upload folder),
+    without following a symlink and never past *max_bytes*.
+
+    The request was checked when it arrived, but the job may wait for a slot;
+    a file swapped for a symlink meanwhile must not be read through it.
+    """
+    root = os.path.realpath(uploads_dir()) if _in_uploads(path) else None
+    if root is None:
+        held = platform_boundary_root(path)
+        if held is None or not is_within_configured_volumes(path, treat_archives=False):
+            raise patch_engine.PatchError(f"{os.path.basename(path)} is no longer on a Volume")
+        root = str(held)
+    real_dir = os.path.realpath(os.path.dirname(path))
+    relative = os.path.relpath(os.path.join(real_dir, os.path.basename(path)), root)
+    if relative.startswith(".."):
+        raise patch_engine.PatchError(f"{os.path.basename(path)} is no longer on a Volume")
+    try:
+        return read_beneath(root, relative.replace(os.sep, "/"), max_bytes=max_bytes)
+    except ValueError as exc:
+        raise patch_engine.PatchError(too_big_message) from exc
+
+
 def _read_patch(path: str) -> bytes:
+    return _read_confined(path, max_bytes=settings.patch_max_size, too_big_message=too_big())
+
+
+def _read_bounded(path: str) -> bytes:
+    """A private extracted file: one open, at most MAX_IMAGE_BYTES + 1 read."""
     with open(path, "rb") as fh:
-        data = fh.read(settings.patch_max_size + 1)
-    if len(data) > settings.patch_max_size:
-        raise patch_engine.PatchError(too_big())
+        data = fh.read(MAX_IMAGE_BYTES + 1)
+    if len(data) > MAX_IMAGE_BYTES:
+        raise patch_engine.PatchError(_IMAGE_TOO_BIG)
     return data
 
 
 def _read_image(plan: dict) -> bytes:
-    path, temp_dir = plan["archive"], None
-    if plan["member"] is not None:
-        path, temp_dir = archive_service.extract_file(plan["archive"], plan["member"])
+    if plan["member"] is None:
+        return _read_confined(
+            plan["archive"], max_bytes=MAX_IMAGE_BYTES, too_big_message=_IMAGE_TOO_BIG,
+        )
+    archive = plan["archive"]
+    # ponytail: the archive is re-checked, then opened by path by the extractor;
+    # a swap in between is a narrow window. Extract through an fd if it matters.
+    if os.path.islink(archive) or not is_within_configured_volumes(archive):
+        raise patch_engine.PatchError(f"{os.path.basename(archive)} is no longer on a Volume")
+    path, temp_dir = archive_service.extract_file(archive, plan["member"])
     try:
-        if os.path.getsize(path) > MAX_IMAGE_BYTES:
-            raise patch_engine.PatchError("The Image is over 1 GiB; too big to patch")
-        return Path(path).read_bytes()
+        return _read_bounded(path)
     finally:
         if temp_dir is not None:
             shutil.rmtree(temp_dir, ignore_errors=True)

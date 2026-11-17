@@ -35,6 +35,7 @@
     const mine = ++request;
     loading = true;
     error = null;
+    rows = []; // not the previous layout's folders while this one loads
     try {
       const data = await api.getLibraryPlacements(id);
       if (mine !== request) return;

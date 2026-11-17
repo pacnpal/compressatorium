@@ -49,7 +49,7 @@
     {/if}
     {#if entry}
       <p class="hint">
-        {#if entry.note}{entry.note} {/if}Source{entry.sources.length > 1 ? 's' : ''}:
+        {#if entry.note}{`${entry.note} `}{/if}Source{entry.sources.length > 1 ? 's' : ''}:
         {#each entry.sources as url, i (url)}{#if i}, {/if}<a href={url} target="_blank" rel="noopener noreferrer">{i + 1}</a>{/each}
       </p>
     {/if}

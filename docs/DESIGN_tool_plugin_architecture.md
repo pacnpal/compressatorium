@@ -2549,10 +2549,11 @@ kind of Library it has.
   one, else the root (the test `RommClient.local_path` makes), in the
   platform's `fs_slug` when RomM already has it (an operator's folder binding
   is kept), else the slug. A failed read of RomM raises `LibraryUnreadable`.
-- Every name is one of the Platform's aliases in `platform_detect._ALIASES`,
-  so an Image placed there is detected back as that Platform
-  (`tests/test_library_placement_430.py` checks every known slug in each
-  layout, and RomM's).
+- In the `esde` and `romm` layouts every name is one of the Platform's
+  aliases in `platform_detect._ALIASES`, so an Image placed there is detected
+  back as that Platform (`tests/test_library_placement_430.py` checks every
+  known slug in both layouts, and RomM's Library). The `flat` layout puts
+  every Platform in the root, so its folder says nothing about the Platform.
 - `libraries.placements(library)` (`GET /api/libraries/{id}/placements`,
   bounded by `run_admitted`) lists every known Platform with its folder
   relative to the root and `exists`; the Rules view shows a missing one as

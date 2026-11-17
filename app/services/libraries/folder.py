@@ -305,10 +305,11 @@ class FolderLibrary(LibraryDefaults):
             return {GAMELISTS_FOLDER: self._gamelists_folder}
         return {}
 
-    def _platforms_parent(self) -> str:
+    def _platforms_parent(self, layout: str | None = None) -> str:
         """The folder the Platform folders sit in: ``<root>/roms`` in the RomM
-        layout, else the root."""
-        return os.path.join(self.root, "roms") if self.layout == LAYOUT_ROMM else self.root
+        layout, else the root. *layout* defaults to the Library's current one."""
+        layout = self.layout if layout is None else layout
+        return os.path.join(self.root, "roms") if layout == LAYOUT_ROMM else self.root
 
     def platform_folder(self, path: str) -> str | None:
         """The folder holding *path* directly under the Platform folders'
@@ -317,10 +318,12 @@ class FolderLibrary(LibraryDefaults):
 
     def placement_folders(self, slugs: Iterable[str]) -> dict[str, str]:
         """Each Platform's folder in this Library's layout (#430). Touches no disk."""
-        if self.layout == LAYOUT_FLAT:
+        layout = self.layout  # one snapshot, so a concurrent change can't mix two
+        if layout == LAYOUT_FLAT:
             return dict.fromkeys(slugs, self.root)
-        name = platform_detect.esde_folder if self.layout == LAYOUT_ESDE else str
-        return {slug: os.path.join(self._platforms_parent(), name(slug)) for slug in slugs}
+        name = platform_detect.esde_folder if layout == LAYOUT_ESDE else str
+        parent = self._platforms_parent(layout)
+        return {slug: os.path.join(parent, name(slug)) for slug in slugs}
 
     def is_current(self) -> bool:
         """Still a registered Library (#303's token). Asked under the Findings store's lock."""
