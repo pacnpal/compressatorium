@@ -84,6 +84,7 @@ from services.tools import registry
 from utils.delete_plan import sheet_reference_problems
 from utils.junk import is_junk_entry
 from utils.path_utils import (
+    MoveRollbackFailed,
     file_snapshot,
     match_extension,
     move_anchored,
@@ -151,15 +152,29 @@ class _State:
 _states: dict[int, _State] = {}
 _tasks: set[asyncio.Task] = set()
 # Set when a copy's check had to stop with a reader still on the storage
-# (#306's stop): no copy opens another file until the next pass.
+# (#306's stop): no copy opens another file until the next pass. Read and set
+# under `_check_lock`, which every copy's check-and-place runs under, so a
+# copy running beside the one that stops (max_concurrent > 1) sees it.
 _storage_stop = False
+_check_lock: asyncio.Lock | None = None
+_check_lock_loop: asyncio.AbstractEventLoop | None = None
+
+
+def _checking() -> asyncio.Lock:
+    """The check-and-place lock, made on the loop that first needs it."""
+    global _check_lock, _check_lock_loop
+    loop = asyncio.get_running_loop()
+    if _check_lock is None or _check_lock_loop is not loop:
+        _check_lock, _check_lock_loop = asyncio.Lock(), loop
+    return _check_lock
 
 
 def reset_for_tests() -> None:
-    global _storage_stop
+    global _storage_stop, _check_lock, _check_lock_loop
     _states.clear()
     _tasks.clear()
     _storage_stop = False
+    _check_lock = _check_lock_loop = None
 
 
 def forget(inbox_id: int) -> None:
@@ -855,22 +870,32 @@ def _move_to_processed(
                     # landed checked again (one swapped in is moved back).
                     try:
                         move_anchored(name, src, dst, identities[name])
+                    except MoveRollbackFailed:
+                        raise  # reported as it is, never as a changed file
                     except OSError as exc:
                         if exc.errno == errno.ESTALE:
                             raise _SourceChanged(errno.ESTALE, str(exc)) from exc
                         raise
                     moved.append(name)
-            except OSError:
+            except OSError as failure:
                 # Back the way they came, through the same two folders.
+                stuck = []
                 for name in reversed(moved):
                     try:
                         place_without_clobbering(
                             name, name, src_dir_fd=dst, dst_dir_fd=src,
                         )
-                    except OSError:
+                    except OSError as exc:
                         # Its name in the Inbox was taken again meanwhile:
                         # nothing is replaced, it stays in processed/.
-                        logger.error("inbox: could not put %s back in the Inbox", name)
+                        logger.error("inbox: could not put %s back in the Inbox: %s", name, exc)
+                        stuck.append(name)
+                if stuck:
+                    raise MoveRollbackFailed(
+                        errno.EIO,
+                        f"moving it to processed/ failed ({failure}), and "
+                        f"{', '.join(stuck)} couldn't be put back (left in processed/)",
+                    ) from failure
                 raise
         finally:
             os.close(dst)
@@ -1042,54 +1067,116 @@ async def _place(slot: Any, names: list[str]) -> None:
             await asyncio.sleep(_PLACE_POLL_SECONDS)
 
 
+async def _check_and_place(
+    job_id: str, inbox: inbox_store.Inbox, path: str, flight: _Flight, folder: str,
+    cancel: asyncio.Event | None, slot: Any, names: list[str],
+) -> tuple[str, str, list[str] | None]:
+    """Check the staged copy Intact and place it. Under ``_checking()``: the
+    stop is read and set under it, so a copy beside one whose check stopped
+    neither checks nor places."""
+    global _storage_stop
+    if _storage_stop:
+        return "deferred", "the storage is still being read by an earlier check", None
+    staged = slot.path_for(names[0])
+    # Choosing the checker can open the file (romz lists an archive's
+    # members), so it runs on a worker thread, bounded.
+    tool = await _step(registry.check_tool, staged, flight.platform)
+    if tool is not None:
+        await job_manager.update_external_job(job_id, message="Checking the copy is Intact")
+        verdict, message, stop = await checks.verify_file(staged, tool.id, cancel)
+        # A stop first, whatever the verdict (a cancelled read can leave a
+        # reader on the storage too): place nothing, open nothing more.
+        if stop:
+            _storage_stop = True
+            return "deferred", "its check had to stop with the storage still busy", None
+        if verdict == checks.CANCELLED:
+            return "cancelled", "", None
+        if verdict != checks.INTACT:
+            return "failed", f"the copy isn't Intact ({message or verdict})", None
+    try:
+        await _step(_still_taken, inbox, path, flight)
+    except _SourceChanged as exc:
+        return "changed", str(exc), None
+    try:
+        await _place(slot, names)
+    except FileExistsError:
+        return "failed", f"{names[0]} is already in the Library ({folder})", None
+    except MutationNotStarted as exc:
+        return "failed", f"couldn't place it: {exc}", None
+    if not slot.placed:
+        return "failed", "placing it in the Library failed", None
+    return "placed", "", [os.path.join(folder, name) for name in names]
+
+
+class _SlotHandoff:
+    """Hands a staged copy's slot from its worker to the awaiter, or closes it.
+
+    The worker (``stage``) and the awaiter (``taken`` / ``abandon``) settle,
+    under one lock, who owns the slot: the awaiter once it took the result;
+    otherwise whoever comes second closes it. So a slot delivered after its
+    awaiter gave up (a cancel after the last progress report) is never left
+    open.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._result: tuple[Any, list[str]] | None = None
+        self._abandoned = False
+        self._taken = False
+
+    def stage(self, *args: Any, **kwargs: Any) -> tuple[Any, list[str]]:
+        result = _stage_copy(*args, **kwargs)
+        with self._lock:
+            if not self._abandoned:
+                self._result = result
+                return result
+        result[0].close()  # nobody is waiting for it any more
+        return result
+
+    def taken(self) -> None:
+        with self._lock:
+            self._taken = True
+            self._result = None
+
+    def abandon(self) -> None:
+        with self._lock:
+            self._abandoned = True
+            delivered, self._result = self._result, None
+        if delivered is not None:
+            # Delivered, but the answer never reached the awaiter. Closed on
+            # a thread of its own: closing touches the disk.
+            threading.Thread(target=delivered[0].close, daemon=True).start()
+
+
 async def _copy_in(
     job_id: str, inbox: inbox_store.Inbox, path: str, flight: _Flight, folder: str,
     cancel: asyncio.Event | None,
 ) -> tuple[str, str, list[str] | None]:
     """Stage, compare, check Intact and place: ``(outcome, why, placed paths)``."""
-    global _storage_stop
     await job_manager.update_external_job(job_id, message=f"Copying into {folder}")
+    handoff = _SlotHandoff()
     try:
         slot, names = await run_detached_within_stall_bound(
-            _stage_copy, inbox, flight, folder, what=f"Copying {os.path.basename(path)}",
+            handoff.stage, inbox, flight, folder, what=f"Copying {os.path.basename(path)}",
             cancel_event=cancel, report_progress=True,
         )
-    except ReadCancelled:
-        return "cancelled", "", None
-    except _SourceChanged as exc:
-        return "changed", str(exc), None
-    except _CopyDiffers as exc:
-        return "failed", str(exc), None
-    try:
-        staged = slot.path_for(names[0])
-        # Choosing the checker can open the file (romz lists an archive's
-        # members), so it runs on a worker thread, bounded.
-        tool = await _step(registry.check_tool, staged, flight.platform)
-        if tool is not None:
-            await job_manager.update_external_job(job_id, message="Checking the copy is Intact")
-            verdict, message, stop = await checks.verify_file(staged, tool.id, cancel)
-            if verdict == checks.CANCELLED:
-                return "cancelled", "", None
-            if stop:
-                # A reader is still on the storage: place nothing, and open
-                # no other file this pass.
-                _storage_stop = True
-                return "deferred", "its check had to stop with the storage still busy", None
-            if verdict != checks.INTACT:
-                return "failed", f"the copy isn't Intact ({message or verdict})", None
-        try:
-            await _step(_still_taken, inbox, path, flight)
-        except _SourceChanged as exc:
+    except BaseException as exc:
+        # Given up on (a cancel, the stall bound, or the task's own cancel):
+        # a slot the worker delivers now, or already did, is closed.
+        handoff.abandon()
+        if isinstance(exc, ReadCancelled):
+            return "cancelled", "", None
+        if isinstance(exc, _SourceChanged):
             return "changed", str(exc), None
-        try:
-            await _place(slot, names)
-        except FileExistsError:
-            return "failed", f"{names[0]} is already in the Library ({folder})", None
-        except MutationNotStarted as exc:
-            return "failed", f"couldn't place it: {exc}", None
-        if not slot.placed:
-            return "failed", "placing it in the Library failed", None
-        return "placed", "", [os.path.join(folder, name) for name in names]
+        if isinstance(exc, _CopyDiffers):
+            return "failed", str(exc), None
+        raise
+    handoff.taken()
+    try:
+        async with _checking():
+            return await _check_and_place(
+                job_id, inbox, path, flight, folder, cancel, slot, names,
+            )
     finally:
         try:
             await _step(slot.close)

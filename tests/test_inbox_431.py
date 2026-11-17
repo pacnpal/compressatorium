@@ -12,6 +12,7 @@ The tick is called directly, with a fake clock and real files.
 
 from __future__ import annotations
 
+import errno
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -1200,3 +1201,263 @@ def test_a_save_keeps_a_draft_typed_while_it_was_out():
     ).read_text()
     assert "if (libraryId === id && folder === submitted) folder = '';" in panel
     assert "\n      folder = '';\n" not in panel
+
+
+# ---- review round four (CodeRabbit follow-ups on #443) ----------------------
+
+
+def _slots(folder: Path) -> list[Path]:
+    return list((folder / ".compressatorium-stage").glob("slot-*"))
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_after_the_last_report_still_closes_the_slot(vol, db, monkeypatch):
+    """CodeRabbit 4603871234: a cancel that lands after the copy's final
+    progress report, before its awaiter takes the slot, never leaks it."""
+    import asyncio
+    import time as clock
+
+    from models import ConversionMode
+    from services.inbox import intake
+
+    loop = asyncio.get_running_loop()
+    real = intake._stage_copy
+
+    def cancel_then_return(*args, **kwargs):
+        result = real(*args, **kwargs)
+        [job] = [
+            j for j in intake.job_manager.jobs.values()
+            if j.mode == ConversionMode.INBOX_COPY and j.status == "processing"
+        ]
+        loop.call_soon_threadsafe(intake.job_manager.get_cancel_event(job.id).set)
+        clock.sleep(0.3)  # the awaiter gives up meanwhile
+        return result
+
+    monkeypatch.setattr(intake, "_stage_copy", cancel_then_return)
+    library = _library(vol)
+    box = _inbox(vol, library, settle=0)
+    _drop(vol / "Downloads" / "ps2" / "Game.iso")
+
+    await _poll(box, now=0)
+    await _poll(box, now=1)
+    for _ in range(50):
+        if not _slots(vol / "ROMs" / "ps2"):
+            break
+        await asyncio.sleep(0.05)
+
+    assert not _slots(vol / "ROMs" / "ps2")
+    assert not (vol / "ROMs" / "ps2" / "Game.iso").exists()
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_check_that_must_stop_still_stops_the_pass(vol, db, monkeypatch):
+    """CodeRabbit 4603876241 (a): a cancelled verdict with a reader still on
+    the storage stops the pass as any stop does."""
+    from services.inbox import intake
+    from services.rules import check as checks
+    from services.tools import registry
+
+    library = _library(vol)
+    _inbox(vol, library, settle=0)
+    _drop(vol / "Downloads" / "ps2" / "A.iso")
+    _drop(vol / "Downloads" / "ps2" / "B.iso")
+    monkeypatch.setattr(registry, "check_tool", lambda *_a, **_k: SimpleNamespace(id="fake"))
+    verified = []
+
+    async def verify(check, cancel_event):
+        verified.append(check.path)
+        return checks.CANCELLED, "", True
+
+    monkeypatch.setattr(checks, "_verify", verify)
+
+    await intake.poll_all(now=0)
+    await intake.poll_all(now=1)
+    await intake.drain()
+
+    assert len(verified) == 1
+    assert intake._storage_stop is True
+
+
+@pytest.mark.asyncio
+async def test_a_stop_reaches_a_copy_already_running_beside_it(vol, db, monkeypatch):
+    """CodeRabbit 4603876241 (b): with two slots, a copy staged beside the one
+    whose check stops is checked against the stop under the same lock, so it
+    neither verifies nor places."""
+    import asyncio
+    import threading
+
+    from services.inbox import intake
+    from services.job_manager import job_manager
+    from services.rules import check as checks
+    from services.tools import registry
+
+    monkeypatch.setattr(job_manager, "max_concurrent", 2)
+    monkeypatch.setattr(job_manager, "_semaphore", asyncio.Semaphore(2))
+    library = _library(vol)
+    _inbox(vol, library, settle=0)
+    _drop(vol / "Downloads" / "ps2" / "A.iso")
+    _drop(vol / "Downloads" / "ps2" / "B.iso")
+    monkeypatch.setattr(registry, "check_tool", lambda *_a, **_k: SimpleNamespace(id="fake"))
+    staged = threading.Event()
+    real_stage = intake._stage_copy
+
+    def stage(inbox, flight, folder, progress):
+        result = real_stage(inbox, flight, folder, progress)
+        if os.path.basename(flight.files[0]) == "B.iso":
+            staged.set()
+        return result
+
+    monkeypatch.setattr(intake, "_stage_copy", stage)
+    verified = []
+
+    async def verify(check, cancel_event):
+        verified.append(os.path.basename(check.path))
+        for _ in range(100):  # the other copy finishes staging meanwhile
+            if staged.is_set():
+                break
+            await asyncio.sleep(0.02)
+        return checks.INTACT, "", True
+
+    monkeypatch.setattr(checks, "_verify", verify)
+
+    await intake.poll_all(now=0)
+    await intake.poll_all(now=1)
+    await intake.drain()
+
+    assert staged.is_set()
+    assert len(verified) == 1
+    assert not list((vol / "ROMs").rglob("*.iso"))
+
+
+@pytest.mark.asyncio
+async def test_cancelling_a_slot_wait_never_leaks_the_slot(vol, db):
+    """CodeRabbit 4603877228: a hold_slot cancelled while the slot is taken
+    leaves no acquisition behind to take it later."""
+    import asyncio
+
+    from models import ConversionMode
+    from services.job_manager import job_manager
+
+    copy = job_manager.create_external_job("Game.iso", ConversionMode.INBOX_COPY)
+    try:
+        await job_manager._semaphore.acquire()  # a conversion holds the slot
+        waiting = asyncio.ensure_future(job_manager.hold_slot(copy.id, asyncio.Event()))
+        await asyncio.sleep(0.05)
+        waiting.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiting
+        job_manager._semaphore.release()  # the conversion ends
+        await asyncio.sleep(0.05)
+
+        assert job_manager._semaphore._value == 1
+        assert job_manager.slots_in_use() == 0
+    finally:
+        job_manager.jobs.pop(copy.id, None)
+
+
+def test_a_name_replaced_between_link_and_unlink_is_never_deleted(tmp_path, monkeypatch):
+    """CodeRabbit 4603878576: the link fallback removes the source name only
+    while it is still the file it linked; a replacement there stays."""
+    from utils import path_utils
+
+    monkeypatch.setattr(path_utils, "_rename_noreplace", lambda *_a: False)
+    src, dst = tmp_path / "src.iso", tmp_path / "dst.iso"
+    src.write_bytes(b"original")
+    real_link = os.link
+
+    def link_then_replace(a, b, **kwargs):
+        real_link(a, b, **kwargs)
+        replacement = tmp_path / "new.tmp"
+        replacement.write_bytes(b"a replacement")
+        os.replace(replacement, src)
+
+    monkeypatch.setattr(path_utils.os, "link", link_then_replace)
+
+    path_utils.place_without_clobbering(str(src), str(dst))
+
+    assert dst.read_bytes() == b"original"
+    assert src.read_bytes() == b"a replacement"
+
+
+def test_the_no_replace_rename_is_preferred_over_link_and_unlink(tmp_path, monkeypatch):
+    """Where the kernel has one, the move is one atomic no-replace rename."""
+    from utils import path_utils
+
+    if path_utils._noreplace_rename_call() is None:
+        pytest.skip("no no-replace rename on this platform")
+
+    def no_link(*_a, **_k):
+        raise AssertionError("linked instead of renaming")
+
+    monkeypatch.setattr(path_utils.os, "link", no_link)
+    src, dst = tmp_path / "src.iso", tmp_path / "dst.iso"
+    src.write_bytes(b"original")
+
+    path_utils.place_without_clobbering(str(src), str(dst))
+
+    assert dst.read_bytes() == b"original"
+    assert not src.exists()
+    taken = tmp_path / "taken.iso"
+    taken.write_bytes(b"there first")
+    src.write_bytes(b"again")
+    with pytest.raises(FileExistsError):
+        path_utils.place_without_clobbering(str(src), str(taken))
+    assert taken.read_bytes() == b"there first"
+
+
+def test_a_put_back_that_fails_is_reported(tmp_path, monkeypatch, caplog):
+    """CodeRabbit 4603878576: move_anchored no longer swallows a failed put
+    back: it is logged and raised as MoveRollbackFailed."""
+    import logging
+
+    from utils import path_utils
+
+    a, b = tmp_path / "a", tmp_path / "b"
+    a.mkdir()
+    b.mkdir()
+    (a / "Game.iso").write_bytes(b"checked")
+    expected = path_utils.file_snapshot((a / "Game.iso").stat())
+    real = path_utils.place_without_clobbering
+    calls = []
+
+    def swap_then_refuse(src, dst, **kwargs):
+        calls.append(src)
+        if len(calls) == 1:
+            real(src, dst, **kwargs)
+            (b / "Game.iso").unlink()
+            (b / "Game.iso").write_bytes(b"swapped in")  # a different inode
+            return
+        raise PermissionError("can't put it back")
+
+    monkeypatch.setattr(path_utils, "place_without_clobbering", swap_then_refuse)
+    src_fd, dst_fd = os.open(a, os.O_RDONLY), os.open(b, os.O_RDONLY)
+    try:
+        with caplog.at_level(logging.ERROR), pytest.raises(path_utils.MoveRollbackFailed):
+            path_utils.move_anchored("Game.iso", src_fd, dst_fd, expected)
+    finally:
+        os.close(src_fd)
+        os.close(dst_fd)
+    assert any("couldn't be put back" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_a_failed_put_back_in_processed_is_held_with_a_finding(vol, db, queue, monkeypatch):
+    """A move to processed/ whose put-back failed is reported on the Image,
+    not taken as a quietly changed file."""
+    from services.inbox import intake
+    from utils import path_utils
+
+    library = _library(vol)
+    await _ps2_rule(library)
+    box = _inbox(vol, library)
+    await _converted(vol, queue, box)
+
+    def refuse(*_a, **_k):
+        raise path_utils.MoveRollbackFailed(errno.EIO, "Game.iso couldn't be put back")
+
+    monkeypatch.setattr(intake, "move_anchored", refuse)
+
+    await _poll(box, now=122)
+
+    [finding] = _inbox_findings()
+    assert "couldn't be put back" in finding["reason"]

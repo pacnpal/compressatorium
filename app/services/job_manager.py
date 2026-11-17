@@ -1460,16 +1460,34 @@ class JobManager:
             cancelled = asyncio.ensure_future(cancel_event.wait())
             try:
                 await asyncio.wait({acquire, cancelled}, return_when=asyncio.FIRST_COMPLETED)
+            except BaseException:
+                # The caller itself was cancelled: the acquisition goes too,
+                # and a slot it already took is given back, never left held.
+                self._drop_acquisition(semaphore, acquire)
+                raise
             finally:
                 cancelled.cancel()
-            if not acquire.done():
-                acquire.cancel()
-                return False
-            if cancel_event.is_set():
-                semaphore.release()
+            if not acquire.done() or cancel_event.is_set():
+                self._drop_acquisition(semaphore, acquire)
                 return False
         self._slot_holders.add(job_id)
         return True
+
+    @staticmethod
+    def _drop_acquisition(semaphore: asyncio.Semaphore, acquire: asyncio.Future) -> None:
+        """Abandon a pending ``semaphore.acquire()``: cancel it if it is still
+        waiting, or give back the slot it already took (now, or once its
+        result lands, when it is done but not yet seen)."""
+        def release_if_taken(future: asyncio.Future) -> None:
+            if not future.cancelled() and future.exception() is None:
+                semaphore.release()
+
+        if acquire.done():
+            release_if_taken(acquire)
+        else:
+            acquire.cancel()
+            # A cancel can lose to an acquisition that already succeeded.
+            acquire.add_done_callback(release_if_taken)
 
     def release_slot(self, job_id: str) -> None:
         """Give back the slot :meth:`hold_slot` took for *job_id*. Idempotent."""

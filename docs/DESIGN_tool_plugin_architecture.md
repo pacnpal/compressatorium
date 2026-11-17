@@ -759,18 +759,21 @@ so taking it on the event loop can't block.
 
 The placement itself must not overwrite anything either, because a move that
 lands late replaces whatever is at the destination by then.
-`utils.path_utils.place_without_clobbering(src, dst)` places the file with a
-hard link. That's atomic and never replaces anything (`FileExistsError` if
-`dst` exists), and it creates nothing at `dst` before it succeeds, so there's
-no placeholder to leave behind or for anyone to swap out. It then removes
-`src`, and a source the caller's cleanup already swept doesn't count as a
-failure.
+`utils.path_utils.place_without_clobbering(src, dst)` first uses the kernel's
+atomic no-replace rename: `renameat2(RENAME_NOREPLACE)` on Linux,
+`renamex_np(RENAME_EXCL)` (or `renameatx_np` with folder descriptors) on macOS,
+called through `ctypes` with a feature check. It is one step, never replaces
+anything (`FileExistsError` if `dst` exists), and creates nothing at `dst`
+before it succeeds, so there's no placeholder to leave behind or for anyone to
+swap out.
 
-On a filesystem without hard links (FAT/exFAT), it uses the kernel's own
-atomic no-replace rename instead: `renameat2(RENAME_NOREPLACE)` on Linux, which
-vfat and exfat support, or `renamex_np(RENAME_EXCL)` on macOS. Both are called
-through `ctypes`. Where neither is available, it refuses with
-`OSError(ENOTSUP)` rather than falling back to a check-then-rename. A
+Where the kernel or filesystem has none, it falls back to a hard link, which is
+atomic and no-replace too, then removes the `src` name, and a source the
+caller's cleanup already swept doesn't count as a failure. That name is removed
+only while it is still the inode just linked (`stat` through the same folder
+descriptor, #431): a file put under the `src` name between the link and the
+unlink is someone else's and stays. Where neither is available, it refuses
+with `OSError(ENOTSUP)` rather than falling back to a check-then-rename. A
 claim-then-rename can overwrite a file another writer swapped in for the claim,
 so it is deliberately not used. The worker of an abandoned job removes its late
 product only while `output_path` is still that inode (`remove_if_same_file`),
@@ -6322,8 +6325,8 @@ way to produce an edited copy of a zip. The first user is the eXoDOS repack
   goes, and the journal entry goes only if the temp file is known to be gone
   (`TempClaim.release(temp_gone=...)`). `temp_gone` comes only from an
   observed absence (no-follow `lstat`) or a successful unlink, never assumed:
-  `place_without_clobbering` ignores a failed unlink of the temp name after
-  linking the output, so `rewrite_zip` checks the name afterwards and tries
+  `place_without_clobbering` (on its link fallback) ignores a failed unlink of
+  the temp name after linking the output, so `rewrite_zip` checks the name afterwards and tries
   once more. A temp name still there keeps the entry for the next sweep (the
   output is published, so the rewrite still succeeds), and a failed rewrite
   whose cleanup could not remove it logs that, re-raises the original error,
@@ -6597,9 +6600,10 @@ The RomM swap (#391) stages through the same helper.
   output's own name inside the slot, so a `.cue` naming its `.bin` is still
   right once moved. `place(names)` moves the named entries (files or
   folders) into the folder with `utils.path_utils.place_without_clobbering`
-  given both folder descriptors (`src_dir_fd` / `dst_dir_fd`): a `linkat`
-  then removing the staged name, or for a folder (or a filesystem without
-  hard links) `renameat2(RENAME_NOREPLACE)` / `renameatx_np(RENAME_EXCL)`.
+  given both folder descriptors (`src_dir_fd` / `dst_dir_fd`):
+  `renameat2(RENAME_NOREPLACE)` / `renameatx_np(RENAME_EXCL)`, or where the
+  filesystem has neither, a `linkat` then removing the staged name while it is
+  still the linked inode.
   Each move is atomic and no-replace, so an entry another process creates at
   the destination at any moment raises `FileExistsError` and is never
   touched; the existence check before the moves is only a fast path. All or
@@ -7093,7 +7097,9 @@ task per Image, each an external job. Its file work runs in one of the same
 `max_concurrent` slots conversions take: `job_manager.hold_slot(job_id,
 cancel_event)` acquires the dispatcher's own semaphore (only for a mode that
 declares `takes_slot`), racing the job's cancel, and `release_slot` gives it
-back on every outcome. The job still never enters the queue, and keeps its
+back on every outcome. A `hold_slot` whose own task is cancelled while it
+waits cancels its pending acquisition, and gives back a slot that acquisition
+took anyway, so a cancelled wait never leaks one. The job still never enters the queue, and keeps its
 external-job presentation. The #377 concurrency invariant now counts by
 `job_manager.slots_in_use()`: every PROCESSING conversion, plus every external
 job holding a slot (a check run or scan still holds none). The copy goes into a fresh
@@ -7109,7 +7115,15 @@ discarded and the source left to settle again. When `registry.check_tool(staged,
 platform)` (on a bounded worker thread: it can open the file) names a tool,
 `check.verify_file` (the check Rule's Verify on the `verify` lane) must say
 Intact; only then `slot.place(names)`, which never replaces (a taken name holds
-the file). Placing is a rename that can outlast any bound, so it runs through
+the file). The check and the placement run under one asyncio lock
+(`_checking()`), and `_storage_stop` is read and set under it: a copy staged
+beside one whose check stopped (`max_concurrent` > 1) neither checks nor places.
+A stop is honoured before the verdict, so a cancelled read that left a reader on
+the storage stops the pass too. The staged slot is handed from its worker to
+the awaiter by `_SlotHandoff`, under one lock: once the awaiter has taken it,
+it owns it; a slot delivered after the awaiter gave up (a cancel after the last
+progress report) is closed by whichever side comes second, never left open.
+Placing is a rename that can outlast any bound, so it runs through
 `run_detached_mutation` (`_PLACE_SECONDS`): past the bound, intake keeps waiting
 for the worker to report that it finished and reads `slot.placed`, rather than
 failing a copy that may still land. A verifier that returns #306's `stop` (a
@@ -7136,7 +7150,11 @@ so a folder swapped for a link after the conversion can't redirect it (Codex
 the Image rename (§3.3.23) uses too, with its `file_snapshot`, `stat_at` and
 `AnchoredFolders`: the entry that landed in `processed/` is checked again, and
 a file swapped in under the checked name meanwhile is moved back (never over
-another file) along with the rest, and the Image stays in the Inbox. A name already there uses `processed/.../<stem> (2)/` and so on.
+another file) along with the rest, and the Image stays in the Inbox. A put-back
+that fails is never swallowed: `move_anchored` logs it and raises
+`MoveRollbackFailed` (an `OSError`), and so does intake's own rollback of the
+files already moved, so the Image gets an `inbox_failed` Finding naming what
+was left in `processed/`, never the quiet "changed, settle again". A name already there uses `processed/.../<stem> (2)/` and so on.
 All or none: a failed move puts back the ones already moved, through the same
 descriptors. Then `processed_count` is incremented in one `UPDATE ... SET
 processed_count = processed_count + 1` (a copy and a conversion can finish at

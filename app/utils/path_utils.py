@@ -5,6 +5,7 @@ import errno
 import functools
 import hashlib
 import io
+import logging
 import os
 import secrets
 import stat
@@ -17,6 +18,8 @@ from typing import NamedTuple, Optional
 
 from config import settings
 from utils.junk import is_junk_entry
+
+logger = logging.getLogger("compressatorium.path_utils")
 
 
 def strip_archive_path(path: str) -> str:
@@ -59,10 +62,12 @@ def place_without_clobbering(
     file at ``dst`` raises ``FileExistsError`` and is never touched, however
     late the move lands, and nothing is created at ``dst`` before it succeeds:
 
-    1. A hard link, then removing ``src``. Most filesystems.
-    2. Without hard links (FAT/exFAT), the kernel's no-replace rename:
+    1. The kernel's no-replace rename, one atomic step:
        ``renameat2(RENAME_NOREPLACE)`` on Linux, ``renamex_np(RENAME_EXCL)``
        on macOS.
+    2. Where the kernel or filesystem has none, a hard link, then removing the
+       ``src`` name, only while it is still the file just linked (#431): a
+       file put under that name in between is never deleted.
     3. Neither available: refuse with ``OSError(ENOTSUP)`` rather than fall
        back to a check-then-rename that could overwrite another file.
 
@@ -73,11 +78,17 @@ def place_without_clobbering(
     ``renameat2`` / ``renameatx_np``), so a folder swapped for a link after
     the caller opened it can't redirect the move, and a link at ``src`` is
     moved as the link, never followed. A folder entry (no hard links to
-    folders) takes the no-replace rename. Placing a staged output (#398).
+    folders) needs the no-replace rename. Placing a staged output (#398).
     """
     at = src_dir_fd is not None or dst_dir_fd is not None
     if at and (src_dir_fd is None or dst_dir_fd is None):
         raise ValueError("Pass both src_dir_fd and dst_dir_fd, or neither")
+    if at:
+        renamed = _rename_noreplace_at(src_dir_fd, src, dst_dir_fd, dst)
+    else:
+        renamed = _rename_noreplace(src, dst)
+    if renamed:
+        return
     try:
         if at:
             os.link(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd,
@@ -89,12 +100,6 @@ def place_without_clobbering(
     except OSError as exc:
         if exc.errno not in _NO_HARDLINK_ERRNOS:
             raise
-        if at:
-            renamed = _rename_noreplace_at(src_dir_fd, src, dst_dir_fd, dst)
-        else:
-            renamed = _rename_noreplace(src, dst)
-        if renamed:
-            return
         raise OSError(
             errno.ENOTSUP,
             "the output filesystem supports neither hard links nor an atomic "
@@ -107,6 +112,19 @@ def place_without_clobbering(
     # I/O error) must not be reported as a failed placement: the product is at
     # dst, and a caller told otherwise would leave it orphaned there. A stray
     # source sits in the caller's work dir, which the caller sweeps anyway.
+    # The source name is removed only while it is still the file just linked:
+    # one put there in between is someone else's, and stays.
+    try:
+        linked = os.stat(dst, dir_fd=dst_dir_fd, follow_symlinks=False)
+        here = os.stat(src, dir_fd=src_dir_fd, follow_symlinks=False)
+    except OSError:
+        return
+    if (here.st_dev, here.st_ino) != (linked.st_dev, linked.st_ino):
+        logger.warning(
+            "place_without_clobbering: %s was replaced while it was moved; "
+            "the replacement is left where it is", src,
+        )
+        return
     try:
         os.unlink(src, dir_fd=src_dir_fd)
     except OSError:
@@ -1236,6 +1254,12 @@ class AnchoredFolders:
         self._fds.clear()
 
 
+class MoveRollbackFailed(OSError):
+    """:func:`move_anchored` moved a file that wasn't the one expected and
+    couldn't move it back: it is still at the destination. The caller reports
+    it; it is never quietly taken as a file that merely changed."""
+
+
 def move_anchored(
     name: str, src: int, dst: int, expected: dict[str, int], *, new_name: str | None = None,
 ) -> None:
@@ -1245,7 +1269,8 @@ def move_anchored(
     descriptors). The entry that landed is checked again: one swapped in under
     the name between the check and the move is moved back (never over another
     file either) and nothing stays moved. Raises ``OSError(ESTALE)`` when the
-    file isn't the one expected, and whatever the move raises."""
+    file isn't the one expected, :class:`MoveRollbackFailed` when such a file
+    couldn't be moved back (logged too), and whatever the move raises."""
     target = new_name or name
     st = stat_at(name, src)
     if st is None or not stat.S_ISREG(st.st_mode) or file_snapshot(st) != expected:
@@ -1256,10 +1281,18 @@ def move_anchored(
         return
     try:
         place_without_clobbering(target, name, src_dir_fd=dst, dst_dir_fd=src)
-    except OSError:
-        # Its old name was taken again meanwhile: nothing is replaced, and the
-        # caller hears the file changed either way.
-        pass
+    except OSError as exc:
+        # Its old name taken again meanwhile, or the folder failing: nothing
+        # is replaced, and the caller is told where the file was left.
+        logger.error(
+            "move_anchored: %s was replaced as it was moved and couldn't be put "
+            "back (it is still at %s): %s", name, target, exc,
+        )
+        raise MoveRollbackFailed(
+            exc.errno or errno.EIO,
+            f"{name} was replaced as it was moved and couldn't be put back "
+            f"(it is still at {target}): {exc}",
+        ) from exc
     raise OSError(errno.ESTALE, f"{name} was replaced as it was moved")
 
 
