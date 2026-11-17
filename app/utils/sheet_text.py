@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import os
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -531,3 +531,98 @@ def pick_existing(
         if chosen is not None or fallback is not None:
             tracks.append(chosen or fallback)
     return tracks
+
+
+def _chd_spans(line: str) -> list[tuple[int, int]]:
+    """Where each ``chd_tokens`` token of ``line`` starts and ends, its
+    quotes included: the same scan, keeping positions instead of text."""
+    spans: list[tuple[int, int]] = []
+    i, end = 0, len(line)
+    while True:
+        while i < end and line[i] in _C_SPACE:
+            i += 1
+        if i >= end:
+            return spans
+        start = i
+        single = double = False
+        while i < end:
+            char = line[i]
+            if not single and char == '"':
+                double = not double
+            elif not double and char == "'":
+                single = not single
+            elif not single and not double and char in _C_SPACE:
+                break
+            i += 1
+        spans.append((start, i))
+        if single or double:
+            return spans
+
+
+def _track_token_lines(lines: Sequence[str], gdi: bool) -> dict[int, int]:
+    """``{line index: token index}`` of every line naming a track, as
+    ``cue_tracks`` / ``gdi_tracks`` read them."""
+    found: dict[int, int] = {}
+    first = True
+    for index, line in enumerate(lines):
+        tokens = chd_tokens(line)
+        if not tokens:
+            continue
+        if gdi:
+            if first and _is_number(tokens[0]):
+                first = False
+                continue
+            first = False
+            if len(tokens) >= 5 and tokens[4]:
+                found[index] = 4
+        elif cue_file_name(tokens) is not None:
+            found[index] = 1
+    return found
+
+
+def _written_token(old: str, new: str) -> str | None:
+    """*new* written as one token in the quoting *old* used, or quoted when
+    it needs it. None when no quoting reads back as *new*."""
+    if old[:1] in ("'", '"') and old[-1:] == old[:1] and len(old) >= 2 and old[0] not in new:
+        return f"{old[0]}{new}{old[0]}"
+    if new and not any(ch in _C_SPACE or ch in "\"'" for ch in new):
+        return new
+    return f'"{new}"' if '"' not in new else None
+
+
+def rewrite_track_names(raw: bytes, suffix: str, names: Mapping[str, str]) -> bytes | None:
+    """The sheet *raw* (a ``.cue`` or ``.gdi`` by *suffix*) with each track
+    reference in *names* (``{as written: new}``) replaced, and every other
+    byte kept (an Image renamed to its DAT name, #426).
+
+    Read as chdman reads it (the native spelling, ``chd_tokens``): only the
+    reference's own token changes, in the quoting it had, or in double
+    quotes when the new name needs them. None when that can't be done
+    exactly: the sheet isn't one chdman reads whole, a new name can't be
+    written as one token, or the result doesn't read back as the old
+    references with *names* applied."""
+    gdi = suffix.lower() == ".gdi"
+    parse = gdi_track_names if gdi else cue_tracks
+    if len(raw) > MAX_SHEET_BYTES or not _chd_framing_ok(raw):
+        return None
+    text = os.fsdecode(raw)
+    lines = _sheet_lines(text)
+    for index, position in _track_token_lines(lines, gdi).items():
+        line = lines[index]
+        tokens = chd_tokens(line)
+        new = names.get(tokens[position])
+        if new is None:
+            continue
+        spans = _chd_spans(line)
+        if len(spans) != len(tokens):
+            return None
+        start, end = spans[position]
+        token = _written_token(line[start:end], new)
+        if token is None:
+            return None
+        lines[index] = line[:start] + token + line[end:]
+    rewritten = "\n".join(lines)
+    if parse(rewritten) != [names.get(ref, ref) for ref in parse(text)]:
+        return None
+    out = os.fsencode(rewritten)
+    return out if _chd_framing_ok(out) else None

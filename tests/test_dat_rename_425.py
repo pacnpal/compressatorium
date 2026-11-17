@@ -314,9 +314,12 @@ async def test_two_images_the_dat_gives_one_name_are_not_both_renamed_to_it(
 
 
 @pytest.mark.asyncio
-async def test_a_multi_file_image_and_its_tracks_are_left_for_later(
+async def test_a_track_is_never_renamed_alone(
     db: Path, client: httpx.AsyncClient,
 ) -> None:
+    """A track the DAT recognizes is still its sheet's: it is renamed with
+    the sheet (#426), never on its own. The sheet, unmatched here, is not
+    Recognized."""
     roms = db / "roms"
     track = roms / "game.bin"
     sha1 = _disc(track, b"track")
@@ -329,7 +332,7 @@ async def test_a_multi_file_image_and_its_tracks_are_left_for_later(
     items = _by_path(await _preview(client, sheet, track))
 
     assert items[str(sheet)]["status"] == "skip"
-    assert "more than one file" in items[str(sheet)]["reason"]
+    assert "not Recognized" in items[str(sheet)]["reason"]
     assert items[str(track)]["status"] == "skip"
     assert "track of game.cue" in items[str(track)]["reason"]
 
@@ -927,9 +930,9 @@ async def test_a_folder_open_that_answers_late_closes_its_folders(
     opened: list = []
     real_open = image_rename._Files.open_blocking
 
-    def slow(renames):
+    def slow(renames, **kwargs):
         time.sleep(0.6)
-        files = real_open(renames)
+        files = real_open(renames, **kwargs)
         opened.append((files, list(files._fds.values())))
         return files
 

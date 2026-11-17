@@ -4,6 +4,17 @@
 
 ### Added
 
+- **Rename to DAT name renames a `.cue` or `.gdi` Image whole** (#426). The
+  sheet takes the game's name, each track takes the file name the DAT lists
+  for it, and the sheet's track references are rewritten to the new names
+  with every other byte kept. A folder that holds only that Image and carries
+  its old name is renamed too. The preview lists every file, the folder and
+  each reference that changes. Every file is renamed or none is: a failure
+  part way puts back the files already renamed, the sheet's bytes and every
+  playlist and gamelist. An Image whose tracks don't pair with the DAT's
+  files by size, or a track another sheet also names, is skipped with the
+  reason, and so is a sheet's Image in a RomM Library (RomM renames one file
+  within its folder).
 - **Rename to DAT name** (#425). Tick Images in the file browser and press
   **Rename to DAT name**: each Recognized single-file Image takes the name the
   top-ranked DAT gives it, keeping its own extension, with characters a

@@ -386,6 +386,22 @@ class DATStore:
             ]
             return {**matches[0], "matches": matches}
 
+    def game_files(self, dat_id: str, game_name: str) -> list[dict]:
+        """Every file the DAT *dat_id* lists for *game_name*: ``{rom_name,
+        size}``, once per name, in name order. What an Image rename (#426)
+        names a sheet's tracks after. Only files the DAT gives a hash for are
+        indexed, so a caller compares the count with what it has."""
+        with self._session() as session:
+            rows = session.execute(
+                select(_db.DATHash.rom_name, _db.DATHash.size)
+                .where(_db.DATHash.dat_id == dat_id, _db.DATHash.game_name == game_name)
+                .distinct()
+            ).all()
+        files: dict[str, int] = {}
+        for rom_name, size in rows:
+            files.setdefault(rom_name, size)
+        return [{"rom_name": name, "size": files[name]} for name in sorted(files)]
+
     def lookup_sha1(self, sha1: str) -> dict | None:
         return self._lookup_hash(sha1, "sha1")
 
