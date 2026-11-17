@@ -18,8 +18,12 @@ from dataclasses import dataclass
 from logging_setup import get_logger
 from services.tools import registry
 from services.tools.base import ContentDigest, ContentDigestUnavailable, ToolPlugin
+from services.tools.spec import DeleteProof
 
 logger = get_logger("round_trip")
+
+# The check level a Recognized mode's delete-source job passes (#423).
+RECOGNIZED = DeleteProof.RECOGNIZED.value
 
 
 def round_trip_applies(mode: str, *, delete_on_verify: bool, container_only: bool) -> bool:
@@ -34,8 +38,37 @@ def round_trip_applies(mode: str, *, delete_on_verify: bool, container_only: boo
     return (
         delete_on_verify
         and not container_only
+        and registry.mode_delete_proof(mode) == DeleteProof.ROUND_TRIP
         and registry.mode_supports_round_trip(mode)
     )
+
+
+def recognized_applies(mode: str, *, delete_on_verify: bool) -> bool:
+    """Whether a job with these settings runs the Recognized proof (#423).
+
+    Every delete-source job in a mode whose proof is Recognized. The
+    container-only opt-out is a Round-trip opt-out and never skips it: without
+    the proof such a mode has nothing to say its output holds the game.
+    """
+    return delete_on_verify and registry.mode_delete_proof(mode) == DeleteProof.RECOGNIZED
+
+
+def delete_check_level(
+    mode: str, *, delete_on_verify: bool, container_only: bool,
+) -> str | None:
+    """The check a delete-source job must pass before its Source goes.
+
+    ``"recognized"``, ``"round_trip"`` or ``"container_only"`` (the Intact
+    check alone), and None for a job that keeps its Source. The one answer
+    for the job pipeline, a Rule's Preview and a retried delete.
+    """
+    if not delete_on_verify:
+        return None
+    if recognized_applies(mode, delete_on_verify=True):
+        return RECOGNIZED
+    if round_trip_applies(mode, delete_on_verify=True, container_only=container_only):
+        return "round_trip"
+    return "container_only"
 
 
 @dataclass(frozen=True)

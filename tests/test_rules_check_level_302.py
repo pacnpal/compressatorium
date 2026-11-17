@@ -205,7 +205,7 @@ async def test_the_job_path_asks_the_same_helper() -> None:
     with patch.object(jm, "round_trip_applies", return_value=False) as applies, \
             patch.object(jm, "round_trip", AsyncMock()) as ran:
         got = await jm.job_manager._delete_check(job, tool, "/s.iso", "/o.rvz", None)
-    assert got == ("intact", None)
+    assert (got.check, got.fail_reason, got.keep_reason) == ("intact", None, None)
     applies.assert_called_once_with(
         "dolphin_rvz", delete_on_verify=True, container_only=False,
     )

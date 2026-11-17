@@ -17,6 +17,23 @@ from enum import Enum
 from models import InputKind
 
 
+class DeleteProof(str, Enum):
+    """The check that lets a delete-source job remove its Source (#423).
+
+    ``ROUND_TRIP``, the default: the container check, then the Round-trip when
+    the mode supports it (``supports_round_trip``) and the job did not take the
+    container-only opt-out. ``RECOGNIZED``, for a mode whose output can't be
+    Round-tripped against its Source (PBP -> ISO, CIA <-> CCI): the container
+    check, then the output's SHA-1 must be in a local DAT or Hasheous. A miss
+    keeps the Source and the job still completes. The container-only opt-out
+    never applies to it. Read through ``ToolRegistry.mode_delete_proof`` and
+    ``round_trip.delete_check_level``, never by branching on the tool.
+    """
+
+    ROUND_TRIP = "round_trip"
+    RECOGNIZED = "recognized"
+
+
 class ModeKind(str, Enum):
     CREATE = "create"      # source -> compressed container
     EXTRACT = "extract"    # compressed container -> source
@@ -91,6 +108,10 @@ class ModeSpec:
     # panel, the Rule editor, the refusing 400 and the CLI all show it, so the
     # user learns why the option isn't there. Empty says nothing.
     source_kept_reason: str = ""
+    # Which check lets a delete-source job in this mode remove its Source
+    # (:class:`DeleteProof`). Only meaningful with ``supports_delete_on_verify``.
+    # A RECOGNIZED mode never sets ``supports_round_trip``.
+    delete_proof: DeleteProof = DeleteProof.ROUND_TRIP
     allows_archive_input: bool = False         # chdman create modes only
     # Sibling outputs this mode writes beside its primary output_path, expressed
     # as suffix swaps off the primary (e.g. extractcd's ``.cue`` -> ``.bin``
@@ -218,8 +239,9 @@ class ChainSpec:
     # Structural parity with ModeSpec. A chain that sets it compares the first
     # step's decoded Source with the final output (ChainTool.content_digest).
     supports_round_trip: bool = False
-    # Structural parity with ModeSpec.source_kept_reason.
+    # Structural parity with ModeSpec.source_kept_reason / delete_proof.
     source_kept_reason: str = ""
+    delete_proof: DeleteProof = DeleteProof.ROUND_TRIP
     allows_archive_input: bool = True        # == step 1's
     input_kinds: frozenset[InputKind] = field(
         default_factory=lambda: frozenset({InputKind.FILE})

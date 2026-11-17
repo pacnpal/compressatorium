@@ -323,6 +323,9 @@ class SkipReason(Enum):
     XISO_NOT_XBOX_IMAGE = "xiso_not_xbox_image"
     ROM_CONVERTO_BAD_EXTENSION = "rom_converto_bad_extension"
     ROM_CONVERTO_NOT_XBOX360_IMAGE = "rom_converto_not_xbox360_image"
+    ROM_CONVERTO_NOT_PSP_PBP = "rom_converto_not_psp_pbp"
+    ROM_CONVERTO_NOT_CIA = "rom_converto_not_cia"
+    ROM_CONVERTO_NOT_CCI = "rom_converto_not_cci"
     EXODOS_BAD_EXTENSION = "exodos_bad_extension"
     EXODOS_NOT_REPACKABLE = "exodos_not_repackable"
     SOURCE_NOT_INDEPENDENTLY_CONVERTIBLE = "source_not_independently_convertible"
@@ -427,12 +430,26 @@ _SKIP_HTTP: dict[SkipReason, tuple[int, str]] = {
     ),
     SkipReason.ROM_CONVERTO_BAD_EXTENSION: (
         400,
-        "zar_compress requires an Xbox 360 disc image (.iso)",
+        "rom-converto's modes take an Xbox 360 disc image (.iso) for ZAR, a PSP "
+        ".pbp for ISO, a 3DS .cia for CCI, or a 3DS .cci/.3ds for CIA",
     ),
     SkipReason.ROM_CONVERTO_NOT_XBOX360_IMAGE: (
         400,
         "File is not an Xbox 360 disc image (no Xbox 360 XDVDFS volume was "
         "found; an original Xbox image can't become a ZAR)",
+    ),
+    SkipReason.ROM_CONVERTO_NOT_PSP_PBP: (
+        400,
+        "File is not a PSP game PBP (no PBP header, or its DATA.PSAR holds no "
+        "UMD image: a PS1 Classic or an update can't become an ISO)",
+    ),
+    SkipReason.ROM_CONVERTO_NOT_CIA: (
+        400,
+        "File is not a 3DS CIA (no CIA archive header was found)",
+    ),
+    SkipReason.ROM_CONVERTO_NOT_CCI: (
+        400,
+        "File is not a 3DS CCI (no NCSD header was found)",
     ),
     SkipReason.EXODOS_BAD_EXTENSION: (
         400,
@@ -514,6 +531,22 @@ _NOT_CONVERTIBLE_REASON: dict[str, SkipReason] = {
     "rom_converto": SkipReason.ROM_CONVERTO_NOT_XBOX360_IMAGE,
     "exodos": SkipReason.EXODOS_NOT_REPACKABLE,
 }
+
+# The same, for a tool whose modes read unrelated formats: each mode names its
+# own reason, and wins over its tool's (rom-converto's PSP and 3DS modes, #423).
+_NOT_CONVERTIBLE_MODE_REASON: dict[str, SkipReason] = {
+    "pbp_to_iso": SkipReason.ROM_CONVERTO_NOT_PSP_PBP,
+    "cia_to_cci": SkipReason.ROM_CONVERTO_NOT_CIA,
+    "cci_to_cia": SkipReason.ROM_CONVERTO_NOT_CCI,
+}
+
+
+def _not_convertible_reason(mode: str, tool_id: str) -> SkipReason:
+    """Why ``converts_path`` rejected a file for *mode*: the mode's own reason,
+    else its tool's, else the multi-file-source default."""
+    return _NOT_CONVERTIBLE_MODE_REASON.get(mode) or _NOT_CONVERTIBLE_REASON.get(
+        tool_id, SkipReason.SOURCE_NOT_INDEPENDENTLY_CONVERTIBLE,
+    )
 
 
 # Dolphin modes that take no compression input, with their specific advisory
@@ -750,9 +783,7 @@ async def plan_job(
         if not await run_in_threadpool(
             registry.for_mode(mode).converts_path, file_path,
         ):
-            raise SkipFile(_NOT_CONVERTIBLE_REASON.get(
-                spec.tool_id, SkipReason.SOURCE_NOT_INDEPENDENTLY_CONVERTIBLE,
-            ))
+            raise SkipFile(_not_convertible_reason(mode, spec.tool_id))
 
     # A multi-file source drags in siblings the request never named, and the
     # converter opens them itself — JNUSLib enumerates a split set's parts from

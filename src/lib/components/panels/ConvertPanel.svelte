@@ -12,6 +12,7 @@
   import DuplicateModal from '$lib/components/modals/DuplicateModal.svelte';
   import DeletePlanModal from '$lib/components/modals/DeletePlanModal.svelte';
   import AutoPlanModal from '$lib/components/modals/AutoPlanModal.svelte';
+  import { DELETE_CHECK_HINTS } from '$lib/util/deleteCheck.js';
   import Settings2 from '@lucide/svelte/icons/settings-2';
   import Play from '@lucide/svelte/icons/play';
   import Loader from '@lucide/svelte/icons/loader-circle';
@@ -256,10 +257,10 @@
         <Checkbox
           bind:checked={conversion.deleteOnVerify}
           label="Delete sources once the output checks out"
-          description={conversion.deleteCheck === 'round_tripped'
-            ? 'The output must be Round-tripped (it decodes to the same content as the source) before sources are deleted. Sources are kept if it is not.'
-            : 'The output must be Intact (it passes its own container check) before sources are deleted. Sources are kept if it is not.'}
+          description={DELETE_CHECK_HINTS[conversion.deleteCheck]}
         />
+        <!-- The container-only opt-out is a Round-trip opt-out: offered only
+             where a Round-trip runs, never for a Recognized mode (#423). -->
         {#if conversion.deleteOnVerify && supportsRoundTrip}
           <Checkbox
             bind:checked={conversion.containerOnly}
