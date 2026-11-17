@@ -198,12 +198,19 @@ def _validate_request_compression(
         raise HTTPException(status_code=400, detail=problem)
 
 
+def _delete_on_verify_unsupported_detail(spec) -> str:
+    """Why this mode can't delete its Source: its own reason when it gives one
+    (``ModeSpec.source_kept_reason``), else the general list. *spec* may be None
+    for a mode no tool owns."""
+    return getattr(spec, "source_kept_reason", "") or _DELETE_ON_VERIFY_UNSUPPORTED_DETAIL
+
+
 def _validate_delete_on_verify(spec, delete_on_verify: bool) -> None:
     """Reject delete-on-verify on a mode that doesn't support it (single + batch)."""
     if delete_on_verify and not spec.supports_delete_on_verify:
         raise HTTPException(
             status_code=400,
-            detail=_DELETE_ON_VERIFY_UNSUPPORTED_DETAIL,
+            detail=_delete_on_verify_unsupported_detail(spec),
         )
 
 
@@ -314,6 +321,8 @@ class SkipReason(Enum):
     JWUD_BAD_EXTENSION = "jwud_bad_extension"
     XISO_BAD_EXTENSION = "xiso_bad_extension"
     XISO_NOT_XBOX_IMAGE = "xiso_not_xbox_image"
+    ROM_CONVERTO_BAD_EXTENSION = "rom_converto_bad_extension"
+    ROM_CONVERTO_NOT_XBOX360_IMAGE = "rom_converto_not_xbox360_image"
     EXODOS_BAD_EXTENSION = "exodos_bad_extension"
     EXODOS_NOT_REPACKABLE = "exodos_not_repackable"
     SOURCE_NOT_INDEPENDENTLY_CONVERTIBLE = "source_not_independently_convertible"
@@ -416,6 +425,15 @@ _SKIP_HTTP: dict[SkipReason, tuple[int, str]] = {
         "File is not an untrimmed Xbox / Xbox 360 disc image (no XDVDFS volume "
         "was found, or it is already an optimized XISO)",
     ),
+    SkipReason.ROM_CONVERTO_BAD_EXTENSION: (
+        400,
+        "zar_compress requires an Xbox 360 disc image (.iso)",
+    ),
+    SkipReason.ROM_CONVERTO_NOT_XBOX360_IMAGE: (
+        400,
+        "File is not an Xbox 360 disc image (no Xbox 360 XDVDFS volume was "
+        "found; an original Xbox image can't become a ZAR)",
+    ),
     SkipReason.EXODOS_BAD_EXTENSION: (
         400,
         "exodos_repack requires an eXoDOS game zip (.zip)",
@@ -483,6 +501,7 @@ _BAD_EXTENSION_REASON: dict[str, SkipReason] = {
     "nkit": SkipReason.NKIT_BAD_EXTENSION,
     "jwud": SkipReason.JWUD_BAD_EXTENSION,
     "xiso": SkipReason.XISO_BAD_EXTENSION,
+    "rom_converto": SkipReason.ROM_CONVERTO_BAD_EXTENSION,
     "exodos": SkipReason.EXODOS_BAD_EXTENSION,
 }
 
@@ -492,6 +511,7 @@ _BAD_EXTENSION_REASON: dict[str, SkipReason] = {
 # names its own reason, so the user is told what is actually wrong.
 _NOT_CONVERTIBLE_REASON: dict[str, SkipReason] = {
     "xiso": SkipReason.XISO_NOT_XBOX_IMAGE,
+    "rom_converto": SkipReason.ROM_CONVERTO_NOT_XBOX360_IMAGE,
     "exodos": SkipReason.EXODOS_NOT_REPACKABLE,
 }
 
@@ -957,9 +977,13 @@ async def delete_plan(request: DeletePlanRequest) -> dict:
 
     mode = request.mode.value
     if not supports_delete_on_verify(mode):
+        try:
+            spec = registry.spec(mode)
+        except KeyError:
+            spec = None
         raise HTTPException(
             status_code=400,
-            detail=_DELETE_ON_VERIFY_UNSUPPORTED_DETAIL,
+            detail=_delete_on_verify_unsupported_detail(spec),
         )
 
     output_dir = normalize_output_dir(request.output_dir)

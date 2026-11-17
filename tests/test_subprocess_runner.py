@@ -866,6 +866,80 @@ def test_stall_timeout_is_clamped_to_the_sampling_floor(tmp_path, monkeypatch):
     assert not runner.active_pids()
 
 
+# A child that writes its product under a temp name of its own choosing (as
+# rom-converto does: ``.Game.zar.k0NJ5b.tmp``), silent on stdout, then renames
+# it into place at the very end. The output path itself does not exist until
+# then, so a probe on it sees no growth at all.
+_TEMP_NAME_WRITER = (
+    "import os, sys, time\n"
+    "folder, final = sys.argv[1], sys.argv[2]\n"
+    "temp = os.path.join(folder, '.' + os.path.basename(final) + '.Xq3z.tmp')\n"
+    "with open(temp, 'wb') as f:\n"
+    "    for _ in range(50):\n"
+    "        f.write(b'x' * 4096); f.flush()\n"
+    "        time.sleep(0.1)\n"
+    "os.replace(temp, final)\n"
+)
+
+
+def _run_temp_name_writer(tmp_path, monkeypatch, **kwargs):
+    monkeypatch.setattr(runner_module, "_MIN_STALL_TIMEOUT", 3)
+    monkeypatch.setattr(
+        runner_module, "compute_progress_stall_timeout", lambda **_: 3,
+    )
+    work = tmp_path / "work"
+    work.mkdir()
+    out = work / "Game.zar"
+    src = tmp_path / "in.bin"
+    src.write_bytes(b"s" * 2000)
+    runner = SubprocessRunner(owner="test")
+    updates = asyncio.run(
+        _drain(
+            runner.run(
+                [sys.executable, "-u", "-c", _TEMP_NAME_WRITER, str(work), str(out)],
+                input_path=str(src),
+                output_path=str(out),
+                parse_progress=lambda _line: None,
+                fail_label="testproc",
+                **kwargs,
+            )
+        )
+    )
+    return runner, out, updates
+
+
+def test_a_temp_named_product_stalls_out_on_the_output_path_probe(tmp_path, monkeypatch):
+    """The gap the folder probe closes: watching only the output path, a tool
+    that writes under its own temp name looks dead for its whole run."""
+    with pytest.raises(RuntimeError, match="Conversion stalled"):
+        _run_temp_name_writer(tmp_path, monkeypatch)
+
+
+def test_files_in_folder_follows_a_temp_named_product(tmp_path, monkeypatch):
+    """``files_in_folder`` sums every file in a private work folder, so the
+    growing temp file is progress and the job is not killed for a quiet stdout."""
+    runner, out, updates = _run_temp_name_writer(
+        tmp_path, monkeypatch,
+        output_growth_paths=runner_module.files_in_folder(str(tmp_path / "work")),
+    )
+
+    assert updates[-1]["progress"] == 100
+    assert any(u.get("activity") and "MB" in u["message"] for u in updates[:-1])
+    assert out.stat().st_size == 50 * 4096
+    assert not runner.active_pids()
+
+
+def test_files_in_folder_lists_files_only_and_tolerates_a_missing_folder(tmp_path):
+    folder = tmp_path / "work"
+    probe = runner_module.files_in_folder(str(folder))
+    assert probe() == []
+    folder.mkdir()
+    (folder / "a.tmp").write_bytes(b"1")
+    (folder / "sub").mkdir()
+    (folder / "sub" / "deeper.bin").write_bytes(b"2")
+    assert probe() == [str(folder / "a.tmp")]
+
+
 # --------------------------------------------------------------------------- #
 # Bounded partial-output cleanup (issue #267)
 # --------------------------------------------------------------------------- #

@@ -37,6 +37,7 @@ from pathlib import Path
 
 from config import settings
 from logging_setup import get_logger
+from services.output_placement import OutputPlacement
 from services.subprocess_runner import (
     ConversionCancelled,
     ReadCancelled,
@@ -44,19 +45,13 @@ from services.subprocess_runner import (
     collect_verify,
     ioprio_prefix,
     nice_prefix,
-    remove_partial_output,
     remove_partial_tree,
     run_detached,
     run_detached_within_stall_bound,
     verify_preflight,
     verify_exception_event,
 )
-from utils.path_utils import (
-    is_same_file,
-    match_extension,
-    place_without_clobbering,
-    remove_if_same_file,
-)
+from utils.path_utils import match_extension
 
 _OWNER = "xiso"
 # The scratch link dir and the hidden work dir hold paths into the user's
@@ -299,12 +294,14 @@ def walk_image(
     return stats
 
 
-def detect_console(path: str) -> str | None:
+def probe_console(path: str) -> str | None:
     """``"Xbox"`` or ``"Xbox 360"`` for an Xbox disc image, else None.
 
     The layout names the console for a full disc image. A trimmed XISO has no
-    layout to go on, so its boot executable decides (``walk_image``). Never
-    raises: a file that is not an Xbox image, or cannot be read, is None.
+    layout to go on, so its boot executable decides (``walk_image``). A file
+    that is not an Xbox image is None; one that cannot be read raises
+    ``OSError``, so a caller that caches the verdict (rom-converto's ZAR source
+    check) never remembers an outage as "not an Xbox image".
     """
     try:
         _offset, _layout, console = detect_layout(path)
@@ -314,7 +311,15 @@ def detect_console(path: str) -> str | None:
             path, max_table=_PROBE_MAX_DIR_TABLE, max_total=_PROBE_MAX_TABLE_BYTES,
             root_only=True,
         )["console"]
-    except (XisoImageError, OSError):
+    except XisoImageError:
+        return None
+
+
+def detect_console(path: str) -> str | None:
+    """:func:`probe_console` that never raises: an unreadable file is None."""
+    try:
+        return probe_console(path)
+    except OSError:
         return None
 
 
@@ -576,40 +581,11 @@ class ExtractXisoService:
 
         link_dir, out_dir = self._workspace_paths(output_path)
         abandoned = threading.Event()
-        # The final rename's outcome, shared with its worker thread under a
-        # lock. Only a rename that has *completed* makes output_path this
-        # job's to remove: before that, whatever is there was not written by
-        # this job, even if the rename has started and is stuck on the mount.
-        # If the job gives up first, the worker removes its own product once
-        # the rename finally lands, so nothing is left behind either way.
-        placement_lock = threading.Lock()
-        placement: dict = {"done": False, "abandoned": False, "ours": None}
+        # The final rename, safe to give up on (services.output_placement):
+        # never over an existing file, and a rename that lands after the job
+        # gave up removes its own product.
+        placement = OutputPlacement(output_path, label="XISO")
         written = 0
-
-        def place_output(src: str) -> None:
-            # Never os.replace onto an existing file: an overwrite job's old
-            # output was removed before conversion, and a non-overwrite job's
-            # destination was free when planned, so anything there now is not
-            # this job's. Refusing it also covers a rename that lands long
-            # after the job gave up.
-            ours = os.stat(src)
-            placement["ours"] = ours
-            try:
-                place_without_clobbering(src, output_path)
-            except FileExistsError as exc:
-                raise RuntimeError(
-                    f"{output_path} appeared while the XISO was being written; "
-                    "not overwriting it",
-                ) from exc
-            except OSError as exc:
-                raise RuntimeError(f"Could not place the XISO output: {exc}") from exc
-            with placement_lock:
-                placement["done"] = True
-                abandoned_first = placement["abandoned"]
-            if abandoned_first:
-                # Only while it is still our product: never a file someone else
-                # has put at the same name since.
-                remove_if_same_file(output_path, ours)
 
         def parse_progress(line: str) -> int | None:
             nonlocal written
@@ -651,7 +627,7 @@ class ExtractXisoService:
             # so its stall watchdog no longer covers this step, and the output
             # volume is the one most likely to have just failed.
             await run_detached_within_stall_bound(
-                place_output, rewritten,
+                placement.place, rewritten,
                 what="Placing the XISO output", cancel_event=cancel_event,
             )
         except (
@@ -659,25 +635,10 @@ class ExtractXisoService:
             asyncio.CancelledError, GeneratorExit,
         ) as exc:
             # The rewrite only ever writes inside out_dir; output_path is touched
-            # by the final rename alone. Sweep it only if that rename completed.
-            # If it hasn't (not started, or stuck mid-call), anything at
-            # output_path is not this job's to delete, and the worker removes
-            # its own product should the rename land later. The lock is held by
-            # the worker only for two assignments, never across I/O.
-            # The source is never written at all.
-            with placement_lock:
-                placement["abandoned"] = True
-                placed = placement["done"]
-                ours = placement["ours"]
-            if placed:
-                # Bounded like any partial-output sweep, and only while the path
-                # is still the file this job placed (checked inside the worker).
-                await remove_partial_output(
-                    discover=lambda: (
-                        [output_path] if is_same_file(output_path, ours) else []
-                    ),
-                    label=f"xiso output {output_path}",
-                )
+            # by the final rename alone, and is swept only if that rename
+            # completed and the path is still the file it placed. The source is
+            # never written at all.
+            await placement.abandon_and_sweep()
             if isinstance(exc, ReadCancelled):
                 raise ConversionCancelled("Conversion cancelled") from exc
             if isinstance(exc, RuntimeError) and _ALREADY_OPTIMIZED in str(exc):

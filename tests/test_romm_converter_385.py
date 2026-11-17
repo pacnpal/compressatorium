@@ -30,8 +30,11 @@ PLATFORMS = [
     {"id": 9, "slug": "xbox360", "display_name": "Xbox 360", "rom_count": 1},
     {"id": 10, "slug": "wii", "display_name": "Wii", "rom_count": 2},
     {"id": 11, "slug": "gba", "display_name": "Game Boy Advance", "rom_count": 9},
+    {"id": 12, "slug": "ps2", "display_name": "PlayStation 2", "rom_count": 4},
 ]
-FORMATS = {"ngc": "rvz", "psx": "chd", "xbox360": "zar", "wii": "rvz"}
+FORMATS = {
+    "ngc": "rvz", "psx": "chd", "xbox360": "zar", "wii": "rvz", "ps2": "iso",
+}
 
 
 @pytest.fixture(name="fake")
@@ -144,8 +147,9 @@ def test_romm_targets_map_onto_this_apps_modes() -> None:
     assert converter.modes_for_target("ps2", "zso") == ["zso_compress"]
     assert converter.modes_for_target("switch", "nsz") == ["nsz_compress"]
     assert converter.modes_for_target("3ds", "z3ds") == ["z3ds_compress"]
-    # Nothing here writes Xbox 360 ZAR, or a WBFS.
-    assert converter.modes_for_target("xbox360", "zar") == []
+    # rom-converto writes Xbox 360 ZAR here too (#422). Nothing writes a WBFS.
+    assert converter.modes_for_target("xbox360", "zar") == ["zar_compress"]
+    assert converter.modes_for_target("ps2", "iso") == []
     assert converter.modes_for_target("wii", "wbfs") == []
     # A mode that cannot run unattended is never offered (CHDMAN copy).
     assert "copy" not in converter.modes_for_target("psx", "chd")
@@ -169,7 +173,8 @@ async def test_status_reports_romms_converter_when_it_is_on(romm_env) -> None:
     # This app's modes for each RomM target, the import's pick first.
     assert converter["modes"]["ngc"][0] == "dolphin_rvz"
     assert converter["modes"]["psx"] == ["createcd"]
-    assert converter["modes"]["xbox360"] == []
+    assert converter["modes"]["xbox360"] == ["zar_compress"]
+    assert converter["modes"]["ps2"] == []
     assert converter["error"] is None
     # One heartbeat, shared by the version and the converter.
     assert romm_env.paths().count("/api/heartbeat") == 1
@@ -243,10 +248,11 @@ async def test_import_plan_covers_only_platforms_with_no_rule(romm_env) -> None:
     assert plan["rules"] == {
         "7": {"mode": "dolphin_rvz", "target": "rvz"},
         "8": {"mode": "createcd", "target": "chd"},
+        "9": {"mode": "zar_compress", "target": "zar"},
     }
-    # Xbox 360 has a RomM target nothing here writes: skipped, and said so.
+    # PS2 to ISO is a RomM target nothing here writes: skipped, and said so.
     assert plan["skipped"] == [
-        {"platform_id": "9", "name": "Xbox 360", "slug": "xbox360", "target": "zar"},
+        {"platform_id": "12", "name": "PlayStation 2", "slug": "ps2", "target": "iso"},
     ]
     # Wii already has a Rule, so it is left as it is.
     assert plan["existing"] == ["10"]
@@ -266,7 +272,8 @@ async def test_importing_through_the_rules_api_creates_the_planned_rules(romm_en
     assert saved["rules"]["8"]["mode"] == "createcd"
     assert saved["rules"]["7"]["enabled"] is False
     assert saved["rules"]["10"]["mode"] == "dolphin_wia"
-    assert "9" not in saved["rules"]
+    assert saved["rules"]["9"]["mode"] == "zar_compress"
+    assert "12" not in saved["rules"]
 
 
 @pytest.mark.asyncio

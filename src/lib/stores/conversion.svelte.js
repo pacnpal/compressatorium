@@ -189,6 +189,11 @@ class ConversionStore {
     return !!this.currentSpec?.supportsRoundTrip;
   }
 
+  /** Why the current mode always keeps its Source ('' when it doesn't say). */
+  get sourceKeptReason() {
+    return this.currentSpec?.sourceKeptReason ?? '';
+  }
+
   /** The check a delete-source job will pass before its sources go. */
   get deleteCheck() {
     return deleteCheckFor({

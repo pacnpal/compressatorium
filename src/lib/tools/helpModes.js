@@ -92,6 +92,14 @@ export const MODE_BLURBS = {
     + 'Usually 20-40% smaller. Writes Game.xiso.iso beside the source and never '
     + 'modifies or deletes the original. Offered only on images that really hold '
     + 'an Xbox filesystem.',
+  // rom-converto
+  zar_compress:
+    'Pack an Xbox 360 disc image into a ZAR (ZArchive), the format Xenia mounts '
+    + 'directly: the game\'s files, zstd-compressed, without the video partition '
+    + 'and disc padding. Uses rom-converto, the converter RomM ships. Writes '
+    + 'Game.zar beside the source and always keeps the source: a ZAR holds the '
+    + 'files, not the disc, and nothing turns it back into an ISO. Verify decodes '
+    + 'every block and checks its hash. Offered only on Xbox 360 images.',
   // eXoDOS
   exodos_repack:
     'Repack an eXoDOS game zip for RomM\'s in-browser DOS player (DOSBox Pure): '

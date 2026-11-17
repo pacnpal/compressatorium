@@ -1016,7 +1016,7 @@
                       label="Verify each converted file"
                       description={spec?.supportsDeleteOnVerify
                         ? 'Deleting the source already verifies first.'
-                        : 'This format is checked after conversion; its source is never deleted.'}
+                        : `This format is checked after conversion; its source is never deleted.${spec?.sourceKeptReason ? ` ${spec.sourceKeptReason}` : ''}`}
                       onchange={(v) => update(platform.id, { verify_after: v })}
                     />
                   {/if}
