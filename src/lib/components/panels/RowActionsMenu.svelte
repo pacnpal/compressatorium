@@ -21,6 +21,8 @@
   import Trash2 from '@lucide/svelte/icons/trash-2';
   import FolderCog from '@lucide/svelte/icons/folder-cog';
   import FolderPen from '@lucide/svelte/icons/folder-pen';
+  import Bandage from '@lucide/svelte/icons/bandage';
+  import { canPatch } from '$lib/util/patchDialog.js';
 
   /** @type {{ entry: any }} */
   let { entry } = $props();
@@ -169,6 +171,16 @@
     ui.renameTarget = entry;
   }
 
+  // Patch (#428): a cartridge Image, loose or in a .zip/.7z. Disc Images by
+  // the registry's discExts, the mirror of the backend's disc_extensions().
+  const patchable = $derived(
+    canPatch(entry, (p) => registry.discImages([p]).length > 0),
+  );
+
+  function handlePatch() {
+    ui.patchTarget = entry;
+  }
+
   function handleDelete() {
     ui.deleteTarget = entry;
   }
@@ -213,6 +225,12 @@
         >
           <FolderPen size={14} aria-hidden="true" />
           <span>Set Platform…</span>
+        </DropdownMenu.Item>
+      {/if}
+      {#if patchable}
+        <DropdownMenu.Item class="row-actions-item" onSelect={handlePatch}>
+          <Bandage size={14} aria-hidden="true" />
+          <span>Patch…</span>
         </DropdownMenu.Item>
       {/if}
       <DropdownMenu.Separator class="row-actions-sep" />

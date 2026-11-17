@@ -380,8 +380,9 @@ def test_migrations_have_a_single_head():
     # recovery needs) on that, and #424's 0022 (every DAT's match) on that,
     # and #430's 0023 (a folder Library's layout) on that, and #423's 0024
     # (the DAT that Recognized an output) on that, and #426's 0025 (each
-    # DAT's file list) on that.
-    assert heads == ["0025"]
+    # DAT's file list) on that, and #428's 0026 (the Ledger's extra inputs)
+    # on that.
+    assert heads == ["0026"]
 
 
 def test_upgrade_from_0010_seeds_totals_from_populated_ledger(tmp_path):

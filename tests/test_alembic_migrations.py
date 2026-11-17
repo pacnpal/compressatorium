@@ -180,9 +180,8 @@ def test_0014_stacks_on_0013_and_walks_up_from_an_empty_database(fresh_db_path: 
     # #386's 0016 sits on 0015, #388's 0017 on that, #387's 0018 on that and
     # #389's 0019 on that, #391's 0020 on that, #392's 0021 on that,
     # #424's 0022 on that, #430's 0023 on that, #423's 0024 on that and
-    # #426's 0025 on that; see
-    # their own tests below.
-    assert script.get_heads() == ["0025"]
+    # #426's 0025 on that and #428's 0026 on that; see their own tests below.
+    assert script.get_heads() == ["0026"]
     assert script.get_revision("0014").down_revision == "0013"
     assert script.get_revision("0013").down_revision == "0012"
     assert script.get_revision("0012").down_revision == "0011"
@@ -503,6 +502,36 @@ def test_0025_adds_each_dats_file_list(fresh_db_path: str):
     with engine.connect() as conn:
         assert conn.exec_driver_sql("SELECT COUNT(*) FROM dat_files").scalar() == 0
     assert _current_rev(engine) == "0025"
+
+
+def test_0026_gives_ledger_rows_their_extra_inputs(fresh_db_path: str):
+    """#428's 0026, on #426's 0025: the Ledger's list of inputs besides the
+    Source (a patch job's patch file, with its SHA1). A row written before it
+    keeps every value and reads as having none."""
+    from alembic import command
+    from alembic.script import ScriptDirectory
+
+    engine = _db.make_engine(fresh_db_path)
+    cfg = _db._alembic_config(engine)
+    assert ScriptDirectory.from_config(cfg).get_revision("0026").down_revision == "0025"
+
+    command.upgrade(cfg, "0025")
+    with engine.begin() as conn:
+        conn.exec_driver_sql(
+            "INSERT INTO ledger (job_id, finished_at, mode, source_path, status,"
+            " check_passed, source_deleted, deleted_paths, referrers_updated)"
+            " VALUES ('old', '2026-01-01T00:00:00.000000Z', 'createcd', '/v/a.cue',"
+            " 'completed', 'intact', 0, '[]', '[]')",
+        )
+    command.upgrade(cfg, "0026")
+    columns = {c["name"]: c for c in inspect(engine).get_columns("ledger")}
+    assert columns["extra_inputs"]["nullable"] is False
+    with engine.connect() as conn:
+        row = conn.exec_driver_sql(
+            "SELECT source_path, extra_inputs FROM ledger WHERE job_id = 'old'",
+        ).one()
+    assert row == ("/v/a.cue", "[]")
+    assert _current_rev(engine) == "0026"
 
 
 # ---------------------------------------------------------------------------
