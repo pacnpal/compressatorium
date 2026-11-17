@@ -2414,3 +2414,44 @@ def test_the_inbox_shot_refuses_another_inbox_named_downloads():
 
     captured = _run_inbox_shot(["/real/other/downloads", "/real/vol/downloads"])
     assert captured.stdout.strip() == "captured", captured.stdout + captured.stderr
+
+
+def test_a_cleanup_that_cant_stat_the_destination_says_it_is_committed(
+    tmp_path, monkeypatch,
+):
+    """CodeRabbit 4606738359, ruled: when the quarantine rename fails and the
+    cleanup can't stat the destination (anything but ENOENT), it can't tell
+    whether dst is still published: PlacementCommitted, both failures
+    chained, so a caller rolls it back."""
+    from utils import path_utils
+
+    monkeypatch.setattr(path_utils, "_rename_noreplace_at", lambda *_a: False)
+    a, b = _two_folders(tmp_path)
+    real_stat = os.stat
+    renamed = []
+
+    def rename_fails(*_a, **_k):
+        renamed.append(True)
+        raise OSError(errno.EIO, "Input/output error (rename)")
+
+    def stat_fails_after(path, *args, **kwargs):
+        if renamed:
+            raise OSError(errno.EIO, "Input/output error (stat)")
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(path_utils.os, "rename", rename_fails)
+    monkeypatch.setattr(path_utils.os, "stat", stat_fails_after)
+    src_fd, dst_fd = os.open(a, os.O_RDONLY), os.open(b, os.O_RDONLY)
+    try:
+        with pytest.raises(path_utils.PlacementCommitted) as committed:
+            path_utils.place_without_clobbering(
+                "Game.iso", "Game.iso", src_dir_fd=src_fd, dst_dir_fd=dst_fd,
+                identity_sensitive=True,
+            )
+    finally:
+        os.close(src_fd)
+        os.close(dst_fd)
+
+    assert "rename" in str(committed.value.__cause__)
+    assert "stat" in str(committed.value.__context__)
+    assert (b / "Game.iso").read_bytes() == b"original"

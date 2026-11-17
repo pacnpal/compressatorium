@@ -265,8 +265,21 @@ def _quarantine_move(
         # stays published beside src: answered PlacementCommitted, the first
         # failure chained, so a caller rolls it back as moved
         # (CodeRabbit 4606441954).
-        here = _stat_or_none(name, parent)
-        there = _stat_or_none(dst, dst_dir_fd)
+        try:
+            here = _stat_unless_gone(name, parent)
+            there = _stat_unless_gone(dst, dst_dir_fd)
+        except OSError as exc:
+            # Only ENOENT says dst is gone; any other error means it can't be
+            # told, so dst may still be published (CodeRabbit 4606738359).
+            logger.error(
+                "place_without_clobbering: moving %s failed (%s) and %s couldn't be "
+                "checked: %s", src, failure, dst, exc,
+            )
+            raise PlacementCommitted(
+                exc.errno or errno.EIO,
+                f"{src} was linked at {dst}, moving it failed ({failure}), and "
+                f"{dst} couldn't be checked ({exc})",
+            ) from failure
         if _same_inode(here, there):
             try:
                 os.unlink(dst, dir_fd=dst_dir_fd)
@@ -306,6 +319,15 @@ def _quarantine_move(
             exc.errno or errno.EIO,
             f"{src} reached {dst}, but finishing the move failed ({exc})",
         ) from exc
+
+
+def _stat_unless_gone(name: str, folder: int | None) -> os.stat_result | None:
+    """*name*'s stat through *folder* (no link followed), None only when it is
+    gone (ENOENT). Any other error is raised: it can't be told."""
+    try:
+        return os.stat(name, dir_fd=folder, follow_symlinks=False)
+    except FileNotFoundError:
+        return None
 
 
 def _stat_or_none(name: str, folder: int | None) -> os.stat_result | None:

@@ -797,7 +797,9 @@ failure between steps 1 and 2 (the file still at `src`) unlinks `dst` again,
 once it is checked to be the same inode, and raises: nothing moved. If that
 unlink fails too, `dst` stays published beside `src` and it raises
 `PlacementCommitted` with the first failure chained (CodeRabbit 4606441954),
-never swallowing it. A failure
+never swallowing it. The same when that check can't stat either name for any
+reason but `ENOENT` (CodeRabbit 4606738359): only "gone" says `dst` isn't
+published, anything else means it may be. A failure
 after step 2 raises `PlacementCommitted` (an `OSError`): the file is at `dst`
 and its old name gone, so a caller that rolls back counts it as moved (the
 Image rename and `_move_to_processed` put it back with the rest;
