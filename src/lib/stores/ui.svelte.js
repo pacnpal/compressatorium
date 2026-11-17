@@ -46,6 +46,8 @@ class UIStore {
   // Modal targets, one at a time
   infoTarget = $state(null);
   renameTarget = $state(null);
+  // The cartridge Image the Patch dialog is open for (#428).
+  patchTarget = $state(null);
   deleteTarget = $state(null);
   bulkDeleteEntries = $state(null);
   bulkVerifyItems = $state(null);
@@ -79,6 +81,7 @@ class UIStore {
     return (
       !!this.infoTarget ||
       !!this.renameTarget ||
+      !!this.patchTarget ||
       !!this.deleteTarget ||
       !!this.bulkDeleteEntries ||
       !!this.bulkVerifyItems ||

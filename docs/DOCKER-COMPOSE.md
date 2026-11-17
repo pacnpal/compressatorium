@@ -244,6 +244,7 @@ Volume behavior:
 | `CHD_ARCHIVE_MAX_ENTRIES` | `5000` | Max archive members to list (0 disables limit) |
 | `CHD_ARCHIVE_MAX_MEMBER_SIZE` | `0` | Max size in bytes per archive member (0 disables limit) |
 | `CHD_ARCHIVE_MAX_TOTAL_SIZE` | `0` | Max total size in bytes for archive listings/extractions (0 disables) |
+| `CHD_PATCH_MAX_SIZE` | `33554432` | Largest IPS or BPS file in bytes the Patch action reads (32 MiB) |
 | `LOGLEVEL` | `INFO` | Log verbosity level (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`) |
 | `LOG_PATH` | (none) | Path to log file (stdout only if unset) |
 | `CHD_DEBUG_HEARTBEAT` | `30` | Maintenance loop interval (seconds) |

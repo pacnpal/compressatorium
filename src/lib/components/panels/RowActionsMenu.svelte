@@ -21,6 +21,7 @@
   import Trash2 from '@lucide/svelte/icons/trash-2';
   import FolderCog from '@lucide/svelte/icons/folder-cog';
   import FolderPen from '@lucide/svelte/icons/folder-pen';
+  import FileDiff from '@lucide/svelte/icons/file-diff';
 
   /** @type {{ entry: any }} */
   let { entry } = $props();
@@ -80,6 +81,14 @@
   // renamed or deleted in-place, so disable them inside archive views.
   const canRename = $derived(!inArchive && !isSplitSet);
   const canDelete = $derived(!inArchive && !isSplitSet);
+
+  // Patch (#428): a file, loose or in an archive, that isn't a disc Image.
+  // The backend decides by its own disc extensions; this only hides the
+  // obvious refusals.
+  const canPatch = $derived(
+    !!path && entry?.type !== 'directory' && !isSplitSet
+      && registry.discImages([path]).length === 0,
+  );
 
   async function handleVerify() {
     if (!verifyTool || !verifyPath) return;
@@ -201,6 +210,12 @@
         <ShieldCheck size={14} aria-hidden="true" />
         <span>Verify</span>
       </DropdownMenu.Item>
+      {#if canPatch}
+        <DropdownMenu.Item class="row-actions-item" onSelect={() => (ui.patchTarget = entry)}>
+          <FileDiff size={14} aria-hidden="true" />
+          <span>Patch…</span>
+        </DropdownMenu.Item>
+      {/if}
       {#if canRegister}
         <DropdownMenu.Item class="row-actions-item" onSelect={handleRegister}>
           <FolderCog size={14} aria-hidden="true" />

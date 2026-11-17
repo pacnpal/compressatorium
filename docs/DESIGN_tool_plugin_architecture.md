@@ -2337,6 +2337,10 @@ ended. The job carries what the row needs and the in-memory history would lose:
   starts, before anything can delete the Source, on a detached thread with the
   Source sizing's bound (`JobManager._detect_platform_bounded`). None when
   detection can't place it or does not answer in time.
+- `ConversionJob.extra_inputs` -- inputs the job read besides its Source, each
+  `{"path", "sha1"}`: a patch job's patch file (#428, §3.3.23). Stored in the
+  `extra_inputs` JSON column (migration `0023`; older rows read `[]`) and
+  exported as a CSV column.
 
 `tool` comes from `registry.for_mode`; `platform` is the job's own, else the
 mode's when it serves exactly one Platform slug, else empty, which the savings
@@ -6624,6 +6628,44 @@ A first check that fails is recorded (`verification_store.mark_failed` adds a
 failed row when there is none), so a raw ISO that failed is never read as
 "never checked" and never kept. A group whose every copy failed has no keeper
 and offers no delete.
+
+### 3.3.23 The patch bench (`services/patch_engine.py`, `services/patch_bench.py`, #428)
+
+Two layers, so the format code never touches a file:
+
+- **`patch_engine`** is pure: `apply_patch(source, patch) -> target` on bytes,
+  picking IPS or BPS by the patch's magic (`patch_format`). IPS applies its
+  records, RLE records and optional truncation size; it has no checksum. BPS
+  checks its own patch CRC32 first, then the source size and CRC32 (a patch
+  for another ROM raises `PatchError` before anything is built), runs the four
+  actions (SourceRead, TargetRead, SourceCopy, TargetCopy; an overlapping
+  TargetCopy is copied in steps no longer than its distance), and checks the
+  target size and CRC32. Every out-of-range read or write is a `PatchError`.
+- **`patch_bench`** is the action. `check_request` (run from the route through
+  `volume_guard.off_loop_bounded`) refuses an Image outside the Volumes, a disc
+  Image by `registry.disc_extensions()` (no list of its own), an archive that
+  holds more than one non-junk file, and a patch that isn't `.ips`/`.bps`, is
+  outside both the Volumes and the upload folder (`<data_dir>/patches`, filled
+  by `POST /api/patch/upload`, one random subfolder per upload), or is over
+  `CHD_PATCH_MAX_SIZE`. `start` creates an external job of mode
+  `ConversionMode.PATCH`, declared in `EXTERNAL_JOB_MODES` with a Ledger row.
+
+The job runs every blocking step (read the patch, read the Image, look it up,
+apply, write, publish) through `run_detached_within_stall_bound`, so a frozen
+mount ends at the conversion stall bound and Cancel returns at once. An
+archived Image is read through `ArchiveService.extract_file`, so the archive
+limits apply exactly as for a conversion's extract. The Image is read whole
+(capped at 1 GiB). For IPS, "Recognized" is the cached DAT/Hasheous match for
+the path or a local DAT hit on the bytes' SHA1 (`dat_store.lookup_sha1`); a
+miss sets `job.warning`, never a failure. The target is written to a work
+folder under `CHD_TEMP_DIR` as `Name (Patched).<ext>` and packed with
+`romz_service.convert(..., "romz_7z")` into a hidden `.partial.7z` beside the
+original, which `_publish` then hard-links to the first free
+`Name (Patched)[ (N)].7z` (`FileExistsError` moves to the next number, so an
+existing file is never replaced; a filesystem without hard links gets a
+check-then-rename). The job sets `extra_inputs` (the patch file and its SHA1)
+and `file_path` (the Image, in place of the external-job sentinel) before it
+finishes, so `ledger.record` writes a `patch` row like any other.
 
 ### 3.4 `registry.py`
 

@@ -86,6 +86,7 @@ def row_from_job(job: ConversionJob) -> dict:
         "source_deleted": bool(job.deleted_paths),
         "deleted_paths": list(job.deleted_paths),
         "referrers_updated": list(job.referrers_updated),
+        "extra_inputs": list(job.extra_inputs),
         "library_id": None,
         "image_key": None,
         "platform": platform,
@@ -280,7 +281,7 @@ CSV_COLUMNS = (
     "job_id", "finished_at", "tool", "mode", "source_path", "output_path",
     "input_bytes", "output_bytes", "duration_s", "status", "check_passed",
     "source_deleted", "deleted_paths", "referrers_updated", "library_id",
-    "image_key", "platform", "error",
+    "image_key", "platform", "error", "extra_inputs",
 )
 _CSV_PAGE = 500
 # Always exported so a scrape sees a zero, not a missing series.

@@ -4,6 +4,19 @@
 
 ### Added
 
+- **Patch a cartridge Image with IPS or BPS** (#428). **Patch…** in a file's
+  row menu takes a loose ROM, a ROM inside a `.zip` or `.7z`, or a `.zip`/`.7z`
+  holding one ROM, and a patch file from a Volume or uploaded (kept in
+  `<CHD_DATA_DIR>/patches`). It writes `Name (Patched).7z` beside the original
+  with the ROM 7z packer, or `Name (Patched) (2).7z` when that name is taken,
+  and never changes the original. A BPS patch made for another ROM is refused
+  by its source size and CRC32, and the result must match its target CRC32.
+  An IPS patch, which has no checksum, finishes with a warning when the Image
+  isn't Recognized. Archived ROMs are unpacked under the usual archive limits,
+  patch files are capped by the new `CHD_PATCH_MAX_SIZE` (32 MiB), and disc
+  Images are refused with the reason. The job is a **Patch** job, and its
+  Ledger row lists the patch file and its SHA1 in the new **extra inputs**
+  field (database migration 0023, also a Ledger CSV column).
 - **Unfinished RomM swaps are picked up after a restart** (#392). If the app
   stops part way through keeping a ROM's id, the next start settles the swap
   in the background, without holding up startup. What is safe to finish is

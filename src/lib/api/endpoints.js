@@ -622,6 +622,25 @@ export const api = {
   getScanStatus: () =>
     fetchJson(`${API_BASE}/chd-metadata/scan/status`, undefined, 'Failed to get scan status'),
 
+  // ─── Patch bench (#428) ───────────────────────────────────────────────
+  startPatch: (imagePath, patchPath) =>
+    jsonPost(
+      `${API_BASE}/patch`,
+      { image_path: imagePath, patch_path: patchPath },
+      {},
+      'Could not start the patch',
+    ),
+
+  uploadPatch(file) {
+    const formData = new FormData();
+    formData.append('file', file);
+    return fetchJson(
+      `${API_BASE}/patch/upload`,
+      { method: 'POST', body: formData },
+      'Could not upload the patch',
+    );
+  },
+
   // ─── DAT library ──────────────────────────────────────────────────────
   importDAT(file) {
     const formData = new FormData();

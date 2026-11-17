@@ -296,6 +296,8 @@ EXTERNAL_JOB_MODES: Dict[ConversionMode, ExternalMode] = {
     # A duplicate delete (#389): a person confirmed it; each copy's delete goes
     # through the job's own delete step, so it converts nothing to record.
     ConversionMode.DELETE_DUPLICATES: ExternalMode(in_ledger=False),
+    # A patch (#428): a person starts it, and its row records the patch file.
+    ConversionMode.PATCH: ExternalMode(),
 }
 _EXTERNAL_JOB_MODES = frozenset(EXTERNAL_JOB_MODES)
 

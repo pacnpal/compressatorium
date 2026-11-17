@@ -160,6 +160,10 @@ class Settings(BaseSettings):
         default=0,
         alias="CHD_ARCHIVE_MAX_TOTAL_SIZE",
     )
+    # Largest IPS/BPS file the patch bench reads (#428); patches are read whole.
+    patch_max_size: int = Field(
+        default=32 * 1024 * 1024, alias="CHD_PATCH_MAX_SIZE",
+    )
 
     # chdman binary path
     chdman_path: str = Field(default="/usr/bin/chdman", alias="CHDMAN_PATH")
