@@ -524,6 +524,9 @@ ROLLBACK_WAIT_CAP_SECONDS = 30.0
 # the event loop, every request. The abandoned thread may linger until the
 # mount answers; it holds no shared pool worker (`run_detached`).
 VOLUME_PROBE_TIMEOUT_SECONDS = 30.0
+# How long binding a Source may go without progress (#431): None is the
+# conversion's own "no progress for this long" limit.
+_BIND_STALL_SECONDS: Optional[float] = None
 
 
 class DestinationUnresolvableError(RuntimeError):
@@ -676,6 +679,9 @@ class JobManager:
         self._semaphore = asyncio.Semaphore(self.max_concurrent)
         # External jobs holding a conversion slot right now (`hold_slot`).
         self._slot_holders: Set[str] = set()
+        # External jobs queued for a slot (`hold_slot`), by id: the dispatcher
+        # hands each its local slot when its ticket comes up.
+        self._slot_waiters: Dict[str, asyncio.Future] = {}
         self._stuck_detected_at: Optional[float] = None
         self._last_stuck_recovery_at: float = 0
         self._create_lock = asyncio.Lock()
@@ -1461,6 +1467,21 @@ class JobManager:
             pass
         return job
 
+    async def _hand_slot(self, job_id: str, waiter: asyncio.Future) -> None:
+        """Give the local slot to the external job *job_id* waiting on
+        *waiter*, once one is free. One that stopped waiting meanwhile (a
+        cancel) gets none, and a slot taken for it goes back."""
+        try:
+            if waiter.done():
+                return
+            await self._semaphore.acquire()
+            if waiter.done():
+                self._semaphore.release()
+                return
+            waiter.set_result(True)
+        finally:
+            self._slot_waiters.pop(job_id, None)
+
     async def hold_slot(
         self, job_id: str, cancel_event: Optional[asyncio.Event] = None,
     ) -> bool:
@@ -1471,13 +1492,24 @@ class JobManager:
         a CLI process converting holds the copy back as well. False when
         *cancel_event* fires first (nothing is held then). The caller gives
         both back with :meth:`release_slot` on every outcome.
+
+        With the dispatcher running it joins the conversions' FIFO (Codex
+        4606061259): it reserves its ticket now, as a queued conversion does,
+        and the dispatcher hands it the local slot when that ticket comes up
+        (:meth:`_hand_slot`). So it never holds the local slot while an older
+        conversion waits for it, and with one slot it can't deadlock behind
+        one. Without the dispatcher (a process that only runs jobs it was
+        given) the local slot is taken directly.
         """
         job = self.jobs.get(job_id)
         declared = EXTERNAL_JOB_MODES.get(job.mode) if job is not None else None
         if declared is None or not declared.takes_slot:
             raise ValueError(f"Job {job_id} does not take a conversion slot")
         semaphore = self._semaphore
-        if cancel_event is None:
+        if self._running:
+            if not await self._queued_for_slot(job_id, cancel_event):
+                return False
+        elif cancel_event is None:
             await semaphore.acquire()
         else:
             if cancel_event.is_set():
@@ -1510,6 +1542,44 @@ class JobManager:
             return False
         self._slot_holders.add(job_id)
         return True
+
+    async def _queued_for_slot(
+        self, job_id: str, cancel_event: Optional[asyncio.Event],
+    ) -> bool:
+        """Queue *job_id* for the local slot in ticket order and wait for the
+        dispatcher to hand it over. False on a cancel (no slot is held then,
+        and the ticket is dropped)."""
+        ticket = concurrency_manager.reserve_ticket(job_id)
+        waiter = asyncio.get_running_loop().create_future()
+        self._slot_waiters[job_id] = waiter
+        self._queue.put_nowait((ticket, job_id))
+        waits = {waiter}
+        cancelled = (
+            asyncio.ensure_future(cancel_event.wait()) if cancel_event is not None else None
+        )
+        if cancelled is not None:
+            waits.add(cancelled)
+        try:
+            await asyncio.wait(waits, return_when=asyncio.FIRST_COMPLETED)
+        except BaseException:
+            self._give_up_slot_wait(job_id, waiter)
+            raise
+        finally:
+            if cancelled is not None:
+                cancelled.cancel()
+        if not waiter.done() or (cancel_event is not None and cancel_event.is_set()):
+            self._give_up_slot_wait(job_id, waiter)
+            return False
+        return True
+
+    def _give_up_slot_wait(self, job_id: str, waiter: asyncio.Future) -> None:
+        """Stop waiting for the local slot: one already handed over goes back,
+        a pending hand-over never happens, and the ticket is dropped."""
+        if waiter.done() and not waiter.cancelled():
+            self._semaphore.release()
+        else:
+            waiter.cancel()
+        concurrency_manager.release(job_id)
 
     @staticmethod
     def _drop_acquisition(semaphore: asyncio.Semaphore, acquire: asyncio.Future) -> None:
@@ -1867,14 +1937,36 @@ class JobManager:
         identity = job._source_identity
         if not identity or job.input_kind == InputKind.DIRECTORY:
             return None
+        # A copy fallback (no hard links on a NAS) takes as long as the Image:
+        # bounded by its progress, not a fixed deadline (Codex 4606061281).
+        guard = threading.Lock()
+        state: Dict[str, object] = {"abandoned": False, "result": None}
+
+        def bind(progress):
+            result = bind_source(job.file_path, identity, progress=progress)
+            with guard:
+                if not state["abandoned"]:
+                    state["result"] = result
+                    return result
+            unbind_source(result[0])  # nobody is waiting for it any more
+            return result
+
         try:
-            bound, read_path = await run_detached_undoable(
-                bind_source, job.file_path, identity,
-                timeout=_CANONICAL_PROBE_SECONDS,
-                undo=lambda answer: unbind_source(answer[0]),
+            bound, read_path = await run_detached_within_stall_bound(
+                bind, what="Binding the Source", stall=_BIND_STALL_SECONDS,
+                report_progress=True,
             )
-        except (DeadlineExpired, OSError) as exc:
-            return f"the Source couldn't be bound for reading ({exc})"
+        except BaseException as exc:
+            with guard:
+                state["abandoned"] = True
+                late = state["result"]
+            if late is not None:
+                # Answered, but the answer never reached here: removed on a
+                # thread of its own (it touches the disk).
+                threading.Thread(target=unbind_source, args=(late[0],), daemon=True).start()
+            if isinstance(exc, (OSError, RuntimeError, asyncio.TimeoutError)):
+                return f"the Source couldn't be bound for reading ({exc})"
+            raise
         job._bound_dir, job._read_path = bound, read_path
         return None
 
@@ -3189,6 +3281,13 @@ class JobManager:
             try:
                 job = self.jobs.get(job_id)
                 if not job:
+                    continue
+                waiter = self._slot_waiters.get(job_id)
+                if waiter is not None:
+                    # An external job queued for a slot (an Inbox copy, #431):
+                    # its turn has come, so it gets the local slot, in the same
+                    # FIFO order as every conversion.
+                    await self._hand_slot(job_id, waiter)
                     continue
                 if job_id in self._cancelled or job.status == JobStatus.CANCELLED:
                     self._cancelled.discard(job_id)

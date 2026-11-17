@@ -141,3 +141,85 @@ async def test_a_folder_swapped_after_the_check_still_converts_the_bound_source(
     assert not os.path.exists(read["path"])  # the binding is gone afterwards
     assert not list(inbox.glob(".compressatorium-bind-*"))
     assert (inbox / "gc-moved" / "Game.iso").read_bytes() == original
+
+
+
+def _no_links(monkeypatch):
+    """A filesystem without hard links: the bind falls back to a copy."""
+    import errno
+
+    from utils import path_utils
+
+    def refuse(*_a, **_k):
+        raise OSError(errno.EXDEV, "Cross-device link")
+
+    monkeypatch.setattr(path_utils.os, "link", refuse)
+
+
+@pytest.mark.asyncio
+async def test_a_slow_bind_copy_that_keeps_moving_finishes(env, monkeypatch) -> None:
+    """Codex 4606061281, ruled: the bind's copy fallback is bounded by its
+    progress, not a fixed deadline: a copy slower overall than the bound but
+    never stalled finishes and converts."""
+    import time as clock
+
+    from models import JobStatus
+    from services import job_manager as job_manager_module
+    from services.job_manager import job_manager
+    from utils import path_utils
+
+    inbox = env["tmp"] / "Downloads"
+    game = _gamecube(inbox / "gc" / "Game.iso")
+    job = await _queue(env, game, inbox)
+    _no_links(monkeypatch)
+    monkeypatch.setattr(job_manager_module, "_BIND_STALL_SECONDS", 0.3)
+    monkeypatch.setattr(path_utils, "_BIND_CHUNK", 128)
+    real_read = path_utils._read_chunk
+
+    def slow(fd, size):
+        clock.sleep(0.05)  # 0x440 bytes in 128-byte chunks: ~0.5s in all
+        return real_read(fd, size)
+
+    monkeypatch.setattr(path_utils, "_read_chunk", slow)
+
+    await job_manager._process_job(job.id)
+
+    assert job_manager.jobs[job.id].status == JobStatus.COMPLETED, job.error_message
+    assert len(env["commands"]) == 1
+    assert not list(inbox.glob(".compressatorium-bind-*"))
+
+
+@pytest.mark.asyncio
+async def test_a_bind_copy_that_stalls_fails_and_leaves_nothing(env, monkeypatch) -> None:
+    import asyncio
+    import time as clock
+
+    from models import JobStatus
+    from services import job_manager as job_manager_module
+    from services.job_manager import job_manager
+    from utils import path_utils
+
+    inbox = env["tmp"] / "Downloads"
+    game = _gamecube(inbox / "gc" / "Game.iso")
+    job = await _queue(env, game, inbox)
+    _no_links(monkeypatch)
+    monkeypatch.setattr(job_manager_module, "_BIND_STALL_SECONDS", 0.3)
+    real_read = path_utils._read_chunk
+
+    def stalls(fd, size):
+        clock.sleep(1.0)
+        return real_read(fd, size)
+
+    monkeypatch.setattr(path_utils, "_read_chunk", stalls)
+
+    await job_manager._process_job(job.id)
+
+    ended = job_manager.jobs[job.id]
+    assert ended.status == JobStatus.FAILED
+    assert "bound" in (ended.error_message or "")
+    assert env["commands"] == []
+    for _ in range(60):  # the abandoned copy stops at its next chunk
+        if not list(inbox.glob(".compressatorium-bind-*")):
+            break
+        await asyncio.sleep(0.05)
+    assert not list(inbox.glob(".compressatorium-bind-*"))

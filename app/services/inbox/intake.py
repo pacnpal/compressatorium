@@ -282,7 +282,7 @@ def _image_extensions() -> tuple[str, ...]:
 
 def _list(
     folder: str, library: Library, progress,
-) -> tuple[dict[str, str], list[str], dict[str, list[str]]]:
+) -> tuple[dict[str, str], list[str], dict[str, list[str]], dict[str, str]]:
     """Every Image in the Inbox at *folder* (path -> fingerprint), and the
     folders the walk couldn't list. Blocking.
 
@@ -343,7 +343,28 @@ def _list(
                 ):
                     files.append(entry.path)
     images = {path: image_fingerprint(path) for path in group_images(sorted(files))}
-    return images, unlisted, _sharing(images)
+    return images, unlisted, _sharing(images), _behind_unreadable_sheets(images)
+
+
+def _behind_unreadable_sheets(images: dict[str, str]) -> dict[str, str]:
+    """Image -> the unreadable sheet beside it, for every file a sheet that
+    can't be read whole (unreadable, over the size cap) could name (Codex
+    4606061269). Such a sheet owns nobody, so its tracks would be taken as
+    Images of their own: they are held instead, failing closed. Blocking."""
+    from services.image_sets import SHEET_EXTENSIONS, is_playlist
+    from utils.sheet_text import sheet_is_readable
+
+    unreadable: dict[str, str] = {}
+    for path in images:
+        if path.lower().endswith(SHEET_EXTENSIONS) and not sheet_is_readable(path):
+            unreadable.setdefault(os.path.dirname(path), os.path.basename(path))
+    return {
+        path: unreadable[os.path.dirname(path)]
+        for path in images
+        if os.path.dirname(path) in unreadable
+        and not path.lower().endswith(SHEET_EXTENSIONS)
+        and not is_playlist(path)
+    }
 
 
 def _sharing(images: dict[str, str]) -> dict[str, list[str]]:
@@ -450,7 +471,7 @@ async def poll(inbox: inbox_store.Inbox, *, now: float | None = None) -> dict[st
             state.error = result["error"] = "library_missing"
             return result
         try:
-            listing, unlisted, sharing = await run_detached_within_stall_bound(
+            listing, unlisted, sharing, blocked = await run_detached_within_stall_bound(
                 _list, inbox.folder, library, what=f"The Inbox {inbox.folder}",
                 stall=_LIST_STALL_SECONDS, report_progress=True,
             )
@@ -475,6 +496,17 @@ async def poll(inbox: inbox_store.Inbox, *, now: float | None = None) -> dict[st
                 continue
             if stop or now - seen.since < inbox.settle_seconds:
                 result["waiting"] += 1
+                continue
+            if path in blocked:
+                # A sheet beside it can't be read, so whether it is one of that
+                # sheet's tracks can't be told: it isn't taken on its own.
+                await _hold(
+                    inbox, state, path, fingerprint, findings.INBOX_FAILED,
+                    f"The track sheet beside it, {blocked[path]}, can't be read, so it "
+                    "may be one of that sheet's tracks: fix or remove the sheet first",
+                    {"sheet": blocked[path]},
+                )
+                result["held"] += 1
                 continue
             if path in sharing:
                 # Images that share a file are left alone, all of them:

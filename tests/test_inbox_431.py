@@ -2018,3 +2018,34 @@ async def test_a_copy_waits_for_the_global_slot_another_process_holds(
         other.release("cli-job-2")
     finally:
         job_manager.jobs.pop(copy.id, None)
+
+
+
+# ---- review round eight (Codex on #443) -------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_tracks_beside_a_sheet_that_cant_be_read_are_held(vol, db):
+    """Codex 4606061269, ruled: a sheet that can't be read whole (here, over
+    the size cap) owns nobody, so the files beside it that it could name are
+    held with a Finding naming it, and none is taken."""
+    from utils.sheet_text import MAX_SHEET_BYTES
+
+    library = _library(vol)
+    box = _inbox(vol, library, settle=0)
+    sheet = (
+        b'FILE "Track.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n'
+        + b"REM " + b"x" * MAX_SHEET_BYTES + b"\n"
+    )
+    cue = _drop(vol / "Downloads" / "psx" / "Game.cue", sheet)
+    track = _drop(vol / "Downloads" / "psx" / "Track.bin", b"track")
+
+    await _poll(box, now=0)
+    await _poll(box, now=1)
+    await _poll(box, now=2)
+
+    assert cue.exists() and track.exists()
+    assert not (vol / "ROMs" / "psx").exists()
+    held = {Path(f["path"]).name: f["reason"] for f in _inbox_findings()}
+    assert "Track.bin" in held
+    assert "Game.cue" in held["Track.bin"]

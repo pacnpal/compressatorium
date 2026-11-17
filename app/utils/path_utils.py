@@ -1478,6 +1478,12 @@ def source_identity_problem(path: str, identity: dict) -> str | None:
 
 # A bound Source's private folder, beside the files it was bound from.
 BIND_PREFIX = ".compressatorium-bind-"
+# How much a bind's copy fallback reads at a time; each chunk reports progress.
+_BIND_CHUNK = 4 * 1024 * 1024
+
+
+def _read_chunk(fd: int, size: int) -> bytes:
+    return os.read(fd, size)
 _NOFOLLOW_FLAG = getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
 # Linking can't be done here (another filesystem, a NAS that refuses links):
 # the bound copy is made through a descriptor that was checked instead.
@@ -1486,7 +1492,9 @@ _NO_LINK_ERRNOS = frozenset({
 })
 
 
-def _bind_one(name: str, folder_fd: int, bound_fd: int, expected: dict) -> None:
+def _bind_one(
+    name: str, folder_fd: int, bound_fd: int, expected: dict, progress=None,
+) -> None:
     """Put *name* (in *folder_fd*) into the private folder *bound_fd*: a hard
     link, checked to be the inode *expected*; or, where links can't be made, a
     copy read through a descriptor opened with no link followed and checked
@@ -1496,7 +1504,7 @@ def _bind_one(name: str, folder_fd: int, bound_fd: int, expected: dict) -> None:
     except OSError as exc:
         if exc.errno not in _NO_LINK_ERRNOS:
             raise
-        _copy_checked(name, folder_fd, bound_fd, expected)
+        _copy_checked(name, folder_fd, bound_fd, expected, progress)
         return
     fd = os.open(name, os.O_RDONLY | _NOFOLLOW_FLAG, dir_fd=bound_fd)
     try:
@@ -1506,7 +1514,9 @@ def _bind_one(name: str, folder_fd: int, bound_fd: int, expected: dict) -> None:
         os.close(fd)
 
 
-def _copy_checked(name: str, folder_fd: int, bound_fd: int, expected: dict) -> None:
+def _copy_checked(
+    name: str, folder_fd: int, bound_fd: int, expected: dict, progress=None,
+) -> None:
     src = os.open(name, os.O_RDONLY | _NOFOLLOW_FLAG, dir_fd=folder_fd)
     try:
         if file_snapshot(os.fstat(src)) != expected:
@@ -1516,15 +1526,17 @@ def _copy_checked(name: str, folder_fd: int, bound_fd: int, expected: dict) -> N
             dir_fd=bound_fd,
         )
         with os.fdopen(dst, "wb") as out:
-            while chunk := os.read(src, 4 * 1024 * 1024):
+            while chunk := _read_chunk(src, _BIND_CHUNK):
                 out.write(chunk)
+                if progress is not None:
+                    progress(name)
         if file_snapshot(os.fstat(src)) != expected:
             raise OSError(errno.ESTALE, f"{name} changed while it was copied")
     finally:
         os.close(src)
 
 
-def bind_source(path: str, identity: dict) -> tuple[str, str]:
+def bind_source(path: str, identity: dict, progress=None) -> tuple[str, str]:
     """Bind a queued conversion's Source before anything reads it (#431):
     ``(private folder, the Source's path in it)``.
 
@@ -1535,7 +1547,12 @@ def bind_source(path: str, identity: dict) -> tuple[str, str]:
     validated (or, where links can't be made, copied through a checked
     descriptor). Everything the job then does reads these, a path no Inbox
     writer can redirect. Raises OSError, leaving nothing behind. Blocking.
-    :func:`unbind_source` removes the folder."""
+    :func:`unbind_source` removes the folder.
+
+    *progress* (a ``subprocess_runner.Progress``) is called after every chunk
+    a copy reads, and once more before returning, so a stall-bounded caller
+    gives up only on a copy that stopped moving, and one it gave up on stops
+    at its next report and removes what it made."""
     root = identity["root"]
     folder_fd, name = _folder_beneath_root(path, root)
     try:
@@ -1547,7 +1564,9 @@ def bind_source(path: str, identity: dict) -> tuple[str, str]:
         try:
             files = {name: identity["snapshot"], **identity.get("members", {})}
             for each, expected in files.items():
-                _bind_one(each, folder_fd, bound_fd, expected)
+                _bind_one(each, folder_fd, bound_fd, expected, progress)
+            if progress is not None:
+                progress()  # a caller that gave up makes this raise: cleaned below
         except BaseException:
             os.close(bound_fd)
             unbind_source(os.path.join(os.path.abspath(root), private))

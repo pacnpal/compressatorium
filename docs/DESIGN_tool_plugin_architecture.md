@@ -7341,7 +7341,11 @@ tick with a fake clock and real files. Each poll:
    by `image_sets.group_images` and fingerprinted by `image_fingerprint`
    (every file's size and mtime). The folder must still be inside a Volume
    and still clear of its Library's root.
-3. Images that share a file (two sheets naming one track, `_sharing`) are held,
+3. Every file beside a track sheet that can't be read whole (unreadable, over
+   the size cap) is held with a Finding naming the sheet
+   (`_behind_unreadable_sheets`): the sheet owns nobody, so its tracks would
+   otherwise be taken as Images of their own. Images that share a file (two
+   sheets naming one track, `_sharing`) are held,
    each with a Finding naming the others, once settled: taking one in would
    move a file the other still needs. None of them is taken.
 4. Settles each Image: first seen (or changed) records `(fingerprint, now)`;
@@ -7385,7 +7389,12 @@ gets a hard link of the Source and of each member it carries
 (`identity["members"]`, a sheet's tracks), made through descriptors opened
 beneath the root with no link followed and each `fstat`ed against the identity
 validated. Where links can't be made (`EXDEV`, `ENOTSUP`, `EPERM` on a NAS) the
-file is copied through a descriptor checked before and after. Sizing,
+file is copied through a descriptor checked before and after; the bind runs under
+`run_detached_within_stall_bound` (`_BIND_STALL_SECONDS`, the conversion's own
+stall limit by default), each copied chunk reporting progress, so a slow copy
+that keeps moving finishes and only a real stall fails the job. A bind given up
+on stops at its next report and removes its folder; one that answers after its
+awaiter left is removed too. The metadata probes keep their fixed bound. Sizing,
 detection, the companion checks and `run_convert` read `job._read_path`, never
 the Inbox name, and `_cleanup_temp_dir` removes the folder on every ending. The
 move to `processed/` still acts on the Inbox names, with its own inode check. So the job is a conversion in every sense the
@@ -7400,7 +7409,13 @@ task per Image, each an external job. Its file work runs in one of the same
 `max_concurrent` slots conversions take: `job_manager.hold_slot(job_id,
 cancel_event)` acquires the dispatcher's own semaphore and then the
 cross-process slot `_process_job` takes (`concurrency_manager.acquire`), so a
-CLI process converting holds a copy back too (only for a mode that
+CLI process converting holds a copy back too. With the dispatcher running a copy
+joins the conversions' FIFO (Codex 4606061259): it reserves its ticket when it
+asks, its id goes on the dispatcher's queue under that ticket, and the
+dispatcher hands it the local slot when the ticket comes up (`_hand_slot`), so
+nothing holds the local slot while waiting behind someone else and one slot
+can't deadlock; a cancel drops the ticket and gives back a slot already handed
+over (only for a mode that
 declares `takes_slot`), racing the job's cancel, and `release_slot` gives it
 back on every outcome. A `hold_slot` whose own task is cancelled while it
 waits cancels its pending acquisition, and gives back a slot that acquisition
