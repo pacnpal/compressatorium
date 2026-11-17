@@ -46,6 +46,29 @@
       await new Promise(r => setTimeout(r, 500));
     })()
 
+# --- Compression picker: Compatible with... (#429) -------------------------
+# Picks NetherSX2 (zlib only), then adds zstd so the advisory warning shows.
+- url: http://127.0.0.1:8099/?s=compat-picker-light#/workspace/chdman
+  output: docs/screenshots/compat-picker-light.png
+  width: 1280
+  height: 900
+  wait: 1800
+  javascript: |
+    (async () => {
+      localStorage.setItem('theme-preference', 'light');
+      window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: 'light' }));
+      await new Promise(r => setTimeout(r, 400));
+      const sel = document.querySelector('select[aria-label="Compatible with"]');
+      if (sel) {
+        sel.value = 'nethersx2';
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+        await new Promise(r => setTimeout(r, 300));
+        const zstd = [...document.querySelectorAll('button.chip')].find(b => b.textContent.trim() === 'zstd');
+        if (zstd) zstd.click();
+        await new Promise(r => setTimeout(r, 400));
+      }
+    })()
+
 # --- Workspace: batch selection (all files ticked, convert panel armed) ----
 - url: http://127.0.0.1:8099/?s=workspace-batch-light#/workspace/chdman
   output: docs/screenshots/workspace-batch-light.png
