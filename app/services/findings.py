@@ -57,6 +57,16 @@ DUPLICATE = "duplicate"
 # ``romm-swap-<row id>``), written and cleared by
 # ``services.romm.swap_recovery`` alone, which settles it once the row is.
 ROMM_SWAP = "romm_swap"
+# A file an Inbox could not take into its Library (#431), each kind saying
+# why: its Platform couldn't be worked out, its header and folder disagree,
+# or intake failed (no placement folder, a failed conversion or copy, an
+# output name already taken). Owned by the Inbox's Library, keyed
+# ``inbox:<id>/<path in the Inbox>``. Written one file at a time by
+# ``services.inbox.intake`` and cleared when the file is taken or gone.
+INBOX_UNSORTED = "inbox_unsorted"
+INBOX_CONFLICT = "inbox_conflict"
+INBOX_FAILED = "inbox_failed"
+INBOX_KINDS = (INBOX_UNSORTED, INBOX_CONFLICT, INBOX_FAILED)
 # A ``duplicate`` Finding's ``cause`` key: the copies, each ``{"image_key",
 # "path", "container", "size"}``.
 COPIES = "copies"
@@ -371,6 +381,22 @@ def forget_kind(library_id: str, kind: str) -> None:
         session.query(_db.FindingDismissalRecord).filter_by(
             library_id=library_id, kind=kind,
         ).delete()
+        session.commit()
+
+
+def forget_under(library_id: str, prefix: str, kinds: Iterable[str]) -> None:
+    """Drop *library_id*'s Findings of *kinds* keyed under *prefix* (``prefix/...``),
+    and their dismissals. Blocking. For a removed Inbox (#431), whose Findings
+    live under its Library."""
+    kinds = tuple(kinds)
+    pattern = f"{prefix}/%"
+    with _write_lock, _session() as session:
+        for model in (_db.FindingRecord, _db.FindingDismissalRecord):
+            session.query(model).filter(
+                model.library_id == library_id,
+                model.kind.in_(kinds),
+                model.image_key.like(pattern),
+            ).delete(synchronize_session=False)
         session.commit()
 
 

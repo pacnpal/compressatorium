@@ -2650,7 +2650,9 @@ RomM routes and `main.py` call (`get_rules()`, `set_rules(raw)`, `sweep(...)`,
 not change. `run_forever(libraries)` takes a callable returning the Libraries to
 sweep on each tick. `main.py` passes `services.libraries.all_libraries` (through
 `services.libraries.run_forever`), so RomM and every folder Library whose
-`schedule_enabled` is on are swept. `compressatorium run-rules` (§3.3.17) sweeps
+`schedule_enabled` is on are swept, then calls its `after_tick` once (the
+Inbox poll, §3.3.23; its failure is logged, and a failed Library listing
+still polls). `compressatorium run-rules` (§3.3.17) sweeps
 the same `services.libraries.all_libraries()` list, so the server's scheduler
 and a cron pass always see the same Libraries.
 
@@ -6742,6 +6744,103 @@ A first check that fails is recorded (`verification_store.mark_failed` adds a
 failed row when there is none), so a raw ISO that failed is never read as
 "never checked" and never kept. A group whose every copy failed has no keeper
 and offers no delete.
+
+### 3.3.23 Inboxes (`services/inbox/`, #431)
+
+An Inbox is a folder that feeds one Library: what settles in it is placed in the
+Library and the original moved aside. Nothing here deletes anything.
+
+| Module | Holds |
+| --- | --- |
+| `inbox/__init__.py` | the `inboxes` rows (migration 0024), cached like the folder Libraries: `register`, `update`, `remove`, `note_processed`, `forget_library`, `describe` |
+| `inbox/intake.py` | one poll of an Inbox (`poll`, `poll_all`), its in-memory state, the copy job |
+
+**Saving** (`inbox.register`, blocking, run through `libraries.run_admitted`).
+Fails closed: the folder must be absolute and `volume_containment(...) is True`
+(None is 503), a real folder, not inside any Library's root nor holding one
+(`inbox.overlap_problem`, resolved both: its own Library would feed intake its
+own output, another's would have its Images moved to `processed/`), and not
+equal to, inside or around another Inbox. The overlap check and the insert run
+under one lock, with `inboxes.folder` unique as the backstop. The other way
+round, `libraries.register` and `check_romm_root` refuse a Library root that
+is, holds or sits inside an Inbox (`inbox.holding`), and every poll checks its
+Library's root again before it lists anything (a RomM root saved elsewhere since). Removing an Inbox (or its folder Library, from `libraries._remove`)
+drops the row, its intake state and its Findings
+(`findings.forget_under(library_id, "inbox:<id>", INBOX_KINDS)`); no file.
+
+**The poll.** `rules.sweep.run_forever(libraries, after_tick=...)` calls
+`intake.poll_all()` once per tick, after the sweeps, so there is no loop of its
+own. `poll(inbox, now=...)` takes the clock as an argument, so a test runs one
+tick with a fake clock and real files. Each poll:
+
+1. Settles the conversions it queued (`job_manager.get_job_for_lookup`):
+   completed moves the original; failed or cancelled holds it with a Finding.
+2. Lists the Inbox on a stall-bounded detached thread
+   (`run_detached_within_stall_bound(report_progress=True)`): regular files
+   with an extension a tool reads or writes, never the top-level `processed/`,
+   a dot-entry (a staging folder), a junk entry or a link, grouped into Images
+   by `image_sets.group_images` and fingerprinted by `image_fingerprint`
+   (every file's size and mtime). The folder must still be inside a Volume
+   and still clear of its Library's root.
+3. Settles each Image: first seen (or changed) records `(fingerprint, now)`;
+   it is taken once a later poll at least `settle_seconds` after that sees the
+   same fingerprint. So it always takes two polls, even with a settle time of 0.
+4. Takes it (`_take`): `detect_platform`; not decided is held with
+   `inbox_unsorted` or `inbox_conflict`. Its tracks must sit beside it, so the
+   Image moves as one. `_plan` reads the Library's conversion Rules
+   (`sweep.get_rules`) and finds the Platform's Rule (`canonical_platform_id`,
+   or the Library's `platforms()` by slug for RomM's numeric ids, passed on as
+   `known`), then `Library.placement(platform)` (§3.3.11).
+   `PlacementUnknown` holds it; `LibraryUnreadable` or a timeout retries next
+   poll.
+
+**Converting.** An enabled Rule whose mode is for the Platform and takes the
+file (`sweep._accepts_source`), with its tool ready, queues through
+`job_manager.create_batch_jobs`, the call a Rule sweep makes: the placement
+folder (made if missing) as `output_dir`, the destination resolved with the
+`skip` policy (`resolve_destination`; taken holds it), the Rule's compression
+(`sweep._compression_arg`) and `split`, `verify_after=True` (the Intact check)
+and never `delete_on_verify`. So the job is a conversion in every sense the
+queue has: it takes a `max_concurrent` slot, gets its Ledger row and its
+Cancel. A Rule that is disabled, or whose mode doesn't take the file (it is
+already in the target format), copies instead; one whose mode isn't for the
+Platform, or whose tool isn't ready, holds the file with a Finding.
+
+**Copying** (`ConversionMode.INBOX_COPY`, an `ExternalMode(in_ledger=False,
+started_by_hand=False)`: it converts nothing). One background task per Image,
+one copy at a time (a semaphore), each an external job whose cancel event is
+raced against the wait and the copy. The copy goes into a fresh
+`staging.open_slot(folder, make_folder=True)` (§3.3.21), read with
+`O_NOFOLLOW`, then read back and compared by SHA-1; then, when
+`registry.check_tool(staged, platform)` names a tool, `check.verify_file` (the
+check Rule's Verify on the `verify` lane) must say Intact; only then
+`slot.place(names)`, which never replaces (a taken name holds the file). The
+slot is always closed, so nothing half-copied is left in sight.
+
+**Moving the original** (`_move_to_processed`). Every file of the Image into
+`processed/<its folder in the Inbox>/`, by `place_without_clobbering`; a name
+already there uses `processed/.../<stem> (2)/` and so on. All or none: a failed
+move puts back the ones already moved. Then `processed_count` is incremented
+and the file's Findings cleared.
+
+**Holding.** A file that gets a Finding (`inbox_unsorted`, `inbox_conflict`,
+`inbox_failed`, in `findings.INBOX_KINDS`, under the Inbox's Library, keyed
+`inbox:<id>/<path in the Inbox>`) is remembered with its fingerprint and not
+taken again until it changes; a held file that leaves the Inbox has its
+Findings cleared. So a second poll over the same files changes nothing. The
+state (seen, held, in flight) lives in memory: after a restart every file
+settles again, and a held one gets its Finding again.
+
+**Status and API.** `GET/POST /api/libraries/{id}/inboxes`, `PATCH/DELETE
+.../inboxes/{inbox_id}`. `inbox.describe` adds `intake.status`: last poll,
+waiting, in progress, held, and the error a poll hit (the folder gone or
+outside a Volume). `LibraryInboxes.svelte` in the Rules view lists and adds
+them.
+
+**Seams.** Unpacking an archive, Recognizing and naming from a DAT, and a taken
+name's handling (#432) go in `_take` before `_plan`. Each poll returns
+`placed` (`{"path", "platform", "output"}` for every Image placed since the
+last poll), which the RomM scan and the intake notification (#433) read.
 
 ### 3.4 `registry.py`
 

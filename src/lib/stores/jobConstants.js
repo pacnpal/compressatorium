@@ -28,4 +28,6 @@ export const EXTERNAL_MODE_LABELS = Object.freeze({
   find_duplicates: 'Find duplicates',
   // A confirmed delete of a duplicate group's other copies (#389).
   delete_duplicates: 'Delete duplicates',
+  // An Inbox copying an Image into its Library as it is (#431).
+  inbox_copy: 'Inbox copy',
 });

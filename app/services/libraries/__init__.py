@@ -210,10 +210,15 @@ def without_a_database() -> list[Library]:
 
 
 async def run_forever() -> None:
-    """The scheduler: every Library whose switch is on, on its own Rules' clocks."""
+    """The scheduler: every Library whose switch is on, on its own Rules' clocks,
+    then one poll of every Inbox (#431) on the same tick."""
+    from services.inbox import intake
     from services.rules import sweep as rules_sweep
 
-    await rules_sweep.run_forever(all_libraries)
+    async def poll_inboxes() -> None:
+        await intake.poll_all()
+
+    await rules_sweep.run_forever(all_libraries, after_tick=poll_inboxes)
 
 
 def get(library_id: str) -> Library | None:
@@ -371,6 +376,18 @@ def _romm_root() -> Path | None:
     return _resolved(romm_library.root)
 
 
+def _refuse_inbox(root: Path, *, what: str = "A Library") -> None:
+    """Refuse a Library root that is, holds or sits inside an Inbox (#431):
+    intake would take the Library's own Images. 409. Blocking (first read)."""
+    from services import inbox
+
+    found = inbox.holding(root)
+    if found is not None:
+        raise LibraryPathError(
+            409, f"{what} can't overlap the Inbox at {found.folder}; remove that Inbox first",
+        )
+
+
 def check_romm_root(path: str) -> None:
     """Refuse RomM's library root at *path* if it overlaps a folder Library.
 
@@ -378,6 +395,7 @@ def check_romm_root(path: str) -> None:
     (resolves the path); the caller holds the registration lock.
     """
     root = _resolved(path)
+    _refuse_inbox(root, what="RomM's library folder")
     others = [(lib.name, Path(lib.root)) for lib in folder_libraries()]
     hit = find_overlap(root, others)
     if hit is not None:
@@ -494,6 +512,7 @@ def register(path: str, name: str | None = None) -> FolderLibrary:
         romm_root = _romm_root()
         if romm_root is not None:
             others.append((romm_library.name, romm_root))
+        _refuse_inbox(root)
         hit = find_overlap(root, others)
         if hit is not None:
             other_name, other_root = hit
@@ -649,8 +668,9 @@ async def _remove(library: FolderLibrary, library_id: str, record_id: int) -> No
     await rules_sweep.forget_library(library)
 
     def _delete() -> None:
-        from services import library_records, platform_mappings
+        from services import inbox, library_records, platform_mappings
 
+        inbox.forget_library(library_id)
         platform_mappings.forget_library(library_id)
         library_records.forget(library_id)
         with _session() as session:

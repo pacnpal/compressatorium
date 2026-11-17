@@ -71,6 +71,9 @@ class ConversionMode(str, Enum):
     # A confirmed delete of a duplicate group's other copies (#389): reads
     # the keeper in full, then deletes each copy under its locks. External.
     DELETE_DUPLICATES = "delete_duplicates"
+    # An Inbox copying an Image into its Library as it is (#431): no Rule
+    # converts it. External: it converts nothing.
+    INBOX_COPY = "inbox_copy"
 
 
 class DuplicateAction(str, Enum):

@@ -20,7 +20,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 from routes import rules as shared_rule_routes
-from services import duplicates, libraries
+from services import duplicates, inbox, libraries
 from services.libraries.folder import ListingInProgress
 from services.platform_detect import canonical_slug
 from services.rules import editor as rules_editor
@@ -59,6 +59,18 @@ class UpdateLibraryRequest(BaseModel):
     gamelists_folder: str | None = None
     # Where a Platform's Images go (#430): libraries.folder.LAYOUTS.
     layout: Literal["esde", "romm", "flat"] | None = None
+
+
+class InboxRequest(BaseModel):
+    """An Inbox for the Library (#431): its folder, inside a Volume, and how
+    long a file must stay unchanged before it is taken."""
+
+    folder: str
+    settle_seconds: int = Field(default=inbox.DEFAULT_SETTLE_SECONDS, ge=0)
+
+
+class UpdateInboxRequest(BaseModel):
+    settle_seconds: int | None = Field(default=None, ge=0)
 
 
 class SweepRequest(BaseModel):
@@ -279,6 +291,67 @@ async def find_duplicates(library_id: str) -> dict:
             },
         ) from None
     return {"job_id": job.id, "library_id": library.id}
+
+
+def _inbox_of(library: Library, inbox_id: int) -> inbox.Inbox:
+    found = inbox.get(inbox_id)
+    if found is None or found.library_id != library.id:
+        raise HTTPException(status_code=404, detail="Inbox not found")
+    return found
+
+
+@router.get("/libraries/{library_id}/inboxes")
+async def list_inboxes(library_id: str) -> dict:
+    """The Library's Inboxes (#431), each with its last poll, the files
+    waiting to settle, those in progress or held with a Finding, and how many
+    it has placed."""
+    library = _library(library_id)
+    found = await run_in_threadpool(inbox.for_library, library.id)
+    return {"library_id": library.id, "inboxes": [inbox.describe(i) for i in found]}
+
+
+@router.post("/libraries/{library_id}/inboxes")
+async def create_inbox(library_id: str, payload: InboxRequest) -> dict:
+    """Save a folder as an Inbox for the Library. Refused outside a Volume
+    (403), inside or holding the Library (409), or on a folder that already
+    is or overlaps an Inbox (409)."""
+    library = _library(library_id)
+    try:
+        saved = await libraries.run_admitted(
+            inbox.register, payload.folder, library.id, payload.settle_seconds,
+            timeout=_REGISTER_SECONDS,
+        )
+    except (inbox.InboxError, libraries.LibraryPathError) as exc:
+        raise HTTPException(status_code=exc.status, detail=str(exc)) from None
+    except asyncio.TimeoutError:
+        raise HTTPException(
+            status_code=504,
+            detail="The folder did not answer in time; list the Inboxes before retrying",
+        ) from None
+    return inbox.describe(saved)
+
+
+@router.patch("/libraries/{library_id}/inboxes/{inbox_id}")
+async def update_inbox(library_id: str, inbox_id: int, payload: UpdateInboxRequest) -> dict:
+    """Change an Inbox's settle time."""
+    found = _inbox_of(_library(library_id), inbox_id)
+    try:
+        saved = await run_in_threadpool(
+            lambda: inbox.update(found.id, settle_seconds=payload.settle_seconds),
+        )
+    except inbox.InboxError as exc:
+        raise HTTPException(status_code=exc.status, detail=str(exc)) from None
+    if saved is None:
+        raise HTTPException(status_code=404, detail="Inbox not found")
+    return inbox.describe(saved)
+
+
+@router.delete("/libraries/{library_id}/inboxes/{inbox_id}")
+async def delete_inbox(library_id: str, inbox_id: int) -> dict:
+    """Stop using a folder as an Inbox. No file is touched."""
+    found = _inbox_of(_library(library_id), inbox_id)
+    await run_in_threadpool(inbox.remove, found.id)
+    return {"removed": found.id}
 
 
 @router.get("/libraries/{library_id}/rules")

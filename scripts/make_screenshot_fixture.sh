@@ -113,4 +113,10 @@ PY
 { printf 'PK\003\004'; dd if=/dev/zero bs=1 count=60 2>/dev/null; } \
   > "$root/ROM Library/roms/gba/pocket-racer.zip"
 
+# An Inbox (#431) beside the Library, not inside it: a download waiting to
+# settle in a Platform folder, and one with no Platform that will be held.
+mkdir -p "$root/ROM Library/downloads/ps2"
+placeholder "$root/ROM Library/downloads/ps2/shadow-colossus.iso" 1024
+placeholder "$root/ROM Library/downloads/unknown-disc.iso" 512
+
 echo "Fixture volume created under: $root"

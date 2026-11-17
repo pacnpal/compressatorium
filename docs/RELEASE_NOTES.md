@@ -4,6 +4,23 @@
 
 ### Added
 
+- **Inboxes: new files are taken into a Library** (#431). In the Rules view,
+  give a Library an Inbox (a folder inside a Volume, not inside a Library or
+  holding one) and a settle time (60 seconds by default). Once a minute, on
+  the Rules' own tick, each file that has stopped growing (its size and
+  modified time unchanged across two polls at least the settle time apart)
+  gets its Platform from the header or its folder, and goes where **Where new
+  Images go** says: converted under that Platform's enabled Rule as a normal
+  job (queued, counted toward the concurrency limit, cancellable, in the
+  Ledger, the output checked Intact), or copied as it is when there's no
+  enabled Rule (an **Inbox copy** job you can cancel; the copy is read back,
+  compared and checked Intact before it appears). The original then moves to
+  `processed/` inside the Inbox, which intake never reads. Nothing is ever
+  deleted. An Unsorted, conflicting or failed file stays where it is with a
+  Finding saying why, and isn't tried again until it changes. Each Inbox shows
+  its last poll and the files waiting, in progress, held and processed.
+  Database migration 0024 adds the Inboxes. Archives, DAT names and asking
+  RomM to scan come next (#432, #433).
 - **A Library says where a Platform's Images go** (#430). A folder Library
   has a **Layout** in the Rules view: ES-DE / Batocera style
   (`<root>/ps2`, the default and how existing Libraries were always read),

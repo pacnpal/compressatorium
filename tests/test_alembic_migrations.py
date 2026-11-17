@@ -23,6 +23,7 @@ from pathlib import Path
 
 import pytest
 from sqlalchemy import inspect, text
+from sqlalchemy.exc import IntegrityError
 
 from app.services import db as _db
 
@@ -179,8 +180,9 @@ def test_0014_stacks_on_0013_and_walks_up_from_an_empty_database(fresh_db_path: 
     script = ScriptDirectory.from_config(cfg)
     # #386's 0016 sits on 0015, #388's 0017 on that, #387's 0018 on that and
     # #389's 0019 on that, #391's 0020 on that, #392's 0021 on that,
-    # #424's 0022 on that and #430's 0023 on that; see their own tests below.
-    assert script.get_heads() == ["0023"]
+    # #424's 0022 on that, #430's 0023 on that and #431's 0024 on that; see
+    # their own tests below.
+    assert script.get_heads() == ["0024"]
     assert script.get_revision("0014").down_revision == "0013"
     assert script.get_revision("0013").down_revision == "0012"
     assert script.get_revision("0012").down_revision == "0011"
@@ -449,6 +451,35 @@ def test_0023_adds_the_folder_library_layout(fresh_db_path: str):
     with engine.connect() as conn:
         assert conn.exec_driver_sql("SELECT layout FROM folder_libraries").scalar() == "esde"
     assert _current_rev(engine) == "0023"
+
+
+def test_0024_adds_the_inboxes_table(fresh_db_path: str):
+    """#431's 0024, on #430's 0023: an Inbox's folder (one per folder), the
+    Library it feeds, its settle time and how many Images it placed."""
+    from alembic import command
+    from alembic.script import ScriptDirectory
+
+    engine = _db.make_engine(fresh_db_path)
+    cfg = _db._alembic_config(engine)
+    assert ScriptDirectory.from_config(cfg).get_revision("0024").down_revision == "0023"
+
+    command.upgrade(cfg, "0023")
+    assert "inboxes" not in inspect(engine).get_table_names()
+    command.upgrade(cfg, "0024")
+
+    columns = {c["name"] for c in inspect(engine).get_columns("inboxes")}
+    assert {"folder", "library_id", "settle_seconds", "processed_count"} <= columns
+    with engine.begin() as conn:
+        conn.exec_driver_sql(
+            "INSERT INTO inboxes (folder, library_id, settle_seconds, processed_count, "
+            "created_at) VALUES ('/in', 'folder:1', 60, 0, '2026-11-17T00:00:00Z')",
+        )
+    with pytest.raises(IntegrityError), engine.begin() as conn:
+        conn.exec_driver_sql(
+            "INSERT INTO inboxes (folder, library_id, settle_seconds, processed_count, "
+            "created_at) VALUES ('/in', 'romm', 60, 0, '2026-11-17T00:00:00Z')",
+        )
+    assert _current_rev(engine) == "0024"
 
 
 # ---------------------------------------------------------------------------

@@ -32,7 +32,7 @@ import asyncio
 import functools
 import os
 import re
-from collections.abc import Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -2772,13 +2772,19 @@ async def _sweep_check(
     return False
 
 
-async def run_forever(libraries: Callable[[], Iterable[Library]]) -> None:
+async def run_forever(
+    libraries: Callable[[], Iterable[Library]],
+    *,
+    after_tick: Callable[[], Awaitable[None]] | None = None,
+) -> None:
     """Background scheduler. Ticks once a minute; each platform runs on its own
     cadence, so per-platform intervals and windows are honoured without a
     timer per rule.
 
     *libraries* is asked on every tick, so a Library added or removed while
-    the app runs is picked up without a restart."""
+    the app runs is picked up without a restart. *after_tick* runs once each
+    tick after the sweeps (the Inbox poll, #431); its failure is logged and
+    the next tick tries again."""
     logger.info("romm_auto: scheduler started")
     while True:
         await asyncio.sleep(60)
@@ -2786,7 +2792,7 @@ async def run_forever(libraries: Callable[[], Iterable[Library]]) -> None:
             due = list(libraries())
         except Exception:
             logger.warning("romm_auto: could not list the Libraries", exc_info=True)
-            continue
+            due = []
         for library in due:
             try:
                 # Re-read every tick: the master switch is editable in the app,
@@ -2805,3 +2811,8 @@ async def run_forever(libraries: Callable[[], Iterable[Library]]) -> None:
                 # still stops it: CancelledError derives from BaseException,
                 # so it passes straight through this handler.
                 logger.warning("romm_auto: sweep failed", exc_info=True)
+        if after_tick is not None:
+            try:
+                await after_tick()
+            except Exception:
+                logger.warning("romm_auto: the tick's follow-up failed", exc_info=True)

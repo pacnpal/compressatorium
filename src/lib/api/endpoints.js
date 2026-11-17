@@ -766,6 +766,29 @@ export const api = {
       'Failed to read where Images go',
     ),
 
+  // A Library's Inboxes (#431): folders whose new files are taken into it.
+  listInboxes: (id) =>
+    fetchJson(
+      `${API_BASE}/libraries/${encodeURIComponent(id)}/inboxes`,
+      undefined,
+      'Failed to list the Inboxes',
+    ),
+
+  createInbox: (id, folder, settleSeconds) =>
+    jsonPost(
+      `${API_BASE}/libraries/${encodeURIComponent(id)}/inboxes`,
+      { folder, settle_seconds: settleSeconds },
+      {},
+      'Failed to save the Inbox',
+    ),
+
+  removeInbox: (id, inboxId) =>
+    fetchJson(
+      `${API_BASE}/libraries/${encodeURIComponent(id)}/inboxes/${encodeURIComponent(inboxId)}`,
+      { method: 'DELETE' },
+      'Failed to remove the Inbox',
+    ),
+
   getLibraryRules: (id) =>
     fetchJson(
       `${API_BASE}/libraries/${encodeURIComponent(id)}/rules`,

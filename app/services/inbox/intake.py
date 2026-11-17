@@ -1,0 +1,806 @@
+"""Intake: one poll of an Inbox (#431).
+
+The Rule scheduler's tick (``rules.sweep.run_forever``) calls :func:`poll_all`
+once a minute, after the Library sweeps. Polled, never watched, so it works on
+NFS and SMB shares. Each poll of an Inbox:
+
+1. **Settles what finished.** A conversion intake queued that has ended:
+   completed, its original goes to ``processed/``; failed or cancelled, the
+   file stays with a Finding.
+2. **Lists the Inbox**, stall-bounded: every Image file below its folder, a
+   sheet with its tracks as one Image (``image_sets.group_images``). Never
+   ``processed/``, a dot-entry (a staging folder), a link, or a file no tool
+   reads or writes.
+3. **Waits for each to settle.** An Image is taken once the size and mtime of
+   every one of its files (``image_fingerprint``) are the same across two
+   polls at least the Inbox's settle time apart. A download still growing is
+   never touched.
+4. **Takes what settled.** Its Platform comes from ``detect_platform``.
+   Unsorted or conflicting, it stays with a Finding saying why. Otherwise the
+   Library says where that Platform's Images go (``Library.placement``) and:
+
+   * with an enabled conversion Rule for that Platform whose mode takes the
+     file, a conversion is queued through the same job path a Rule sweep
+     uses (``job_manager.create_batch_jobs``), into the placement folder, with
+     ``verify_after`` so the output gets the Intact check. Its Ledger row,
+     its slot in the concurrency limit and its Cancel are the queue's own.
+     Nothing is ever deleted: ``delete_on_verify`` is never set;
+   * with none, the Image is copied as it is, as an ``inbox_copy`` job you can
+     cancel: into a hidden staging slot beside the placement folder
+     (``services.staging``), read back and compared byte for byte, checked
+     Intact by its own tool where one checks it, then placed without
+     replacing anything. Copies run one at a time.
+
+   Once the output is in the Library the original (and its tracks) moves to
+   ``processed/``, keeping its path in the Inbox. A name already taken there
+   gets a numbered folder; nothing is replaced.
+
+A file that got a Finding is held: it is not tried again until one of its
+files changes, so a second poll changes nothing. Findings are written one file
+at a time, under the Inbox's Library, keyed ``inbox:<id>/<path>``, and cleared
+when the file is taken or gone.
+
+What comes later builds on this: unpacking archives, Recognizing and naming
+from a DAT, and a taken name's handling (#432) all happen in :func:`_take`
+before the plan; asking RomM to scan and the intake notification (#433) read
+what a poll reports as ``placed``.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import errno
+import hashlib
+import os
+import time
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from fastapi.concurrency import run_in_threadpool
+from logging_setup import get_logger
+from models import ConversionMode, JobStatus
+from services import findings, platform_detect, staging
+from services import inbox as inbox_store
+from services.image_sets import group_images, image_fingerprint, image_members
+from services.job_manager import OutputClaimedError, QueueBackpressureError, job_manager
+from services.output_conflicts import QUEUE, resolve_destination
+from services.rules import check as checks
+from services.rules.library import Library, LibraryUnreadable, PlacementUnknown
+from services.rules.rules import CONVERT
+from services.subprocess_runner import (
+    ReadCancelled,
+    run_detached,
+    run_detached_within_stall_bound,
+)
+from services.tools import registry
+from utils.junk import is_junk_entry
+from utils.path_utils import (
+    match_extension,
+    place_without_clobbering,
+    volume_containment,
+)
+
+logger = get_logger("inbox")
+
+# How long one blocking step on a single file may take (a detection, a
+# placement, a move) before the poll gives up on it for this tick.
+_STEP_SECONDS = 60
+# How long a listing may go without reading an entry before it is given up.
+_LIST_STALL_SECONDS = 120
+_CHUNK = 4 * 1024 * 1024
+_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+
+
+@dataclass
+class _Seen:
+    fingerprint: str
+    since: float
+
+
+@dataclass
+class _Flight:
+    """An Image intake has started on: a queued conversion or a running copy."""
+
+    fingerprint: str
+    files: list[str]
+    platform: str
+    job_id: str | None = None
+    task: asyncio.Task | None = None
+
+
+@dataclass
+class _State:
+    seen: dict[str, _Seen] = field(default_factory=dict)
+    # Path -> the fingerprint it got a Finding (or a cancel) at. Not tried
+    # again until it changes.
+    held: dict[str, str] = field(default_factory=dict)
+    flights: dict[str, _Flight] = field(default_factory=dict)
+    # What was placed since the last poll reported it: ``{"path", "platform",
+    # "output"}``, for what runs after a pass (#433).
+    placed: list[dict[str, Any]] = field(default_factory=list)
+    last_poll: float | None = None
+    waiting: int = 0
+    error: str | None = None
+    polling: bool = False
+
+
+_states: dict[int, _State] = {}
+_tasks: set[asyncio.Task] = set()
+# One copy at a time, created on the loop that first needs it.
+_copy_gate: asyncio.Semaphore | None = None
+_copy_gate_loop: asyncio.AbstractEventLoop | None = None
+
+
+def reset_for_tests() -> None:
+    global _copy_gate, _copy_gate_loop
+    _states.clear()
+    _tasks.clear()
+    _copy_gate = None
+    _copy_gate_loop = None
+
+
+def forget(inbox_id: int) -> None:
+    """Drop a removed Inbox's intake state. A copy still running finishes."""
+    _states.pop(inbox_id, None)
+
+
+def _state(inbox_id: int) -> _State:
+    return _states.setdefault(inbox_id, _State())
+
+
+def status(inbox_id: int) -> dict[str, Any]:
+    """An Inbox's intake as the Libraries view shows it."""
+    state = _states.get(inbox_id) or _State()
+    last = state.last_poll
+    return {
+        "last_poll": (
+            datetime.fromtimestamp(last, timezone.utc).isoformat().replace("+00:00", "Z")
+            if last is not None else None
+        ),
+        "waiting": state.waiting,
+        "in_progress": len(state.flights),
+        "held": len(state.held),
+        "error": state.error,
+    }
+
+
+async def drain() -> None:
+    """Wait for every copy intake started. For tests and shutdown."""
+    while _tasks:
+        await asyncio.gather(*list(_tasks), return_exceptions=True)
+
+
+async def _step(func, *args, **kwargs):
+    """One blocking step, on a disposable thread, bounded."""
+    return await asyncio.wait_for(run_detached(func, *args, **kwargs), _STEP_SECONDS)
+
+
+# ---- listing -------------------------------------------------------------
+
+
+class InboxUnavailable(Exception):
+    """The Inbox folder isn't there, or can't be confirmed inside a Volume."""
+
+
+def _image_extensions() -> tuple[str, ...]:
+    from services.libraries.folder import _image_extensions as extensions
+
+    return extensions()
+
+
+def _list(folder: str, library: Library, progress) -> dict[str, str]:
+    """Every Image in the Inbox at *folder*: path -> fingerprint. Blocking.
+
+    Skips ``processed/``, dot-entries, links and files no tool reads or
+    writes; walks no link. Raises :class:`InboxUnavailable` when the folder
+    isn't there, isn't confirmed inside a Volume, or now overlaps its
+    Library (its root moved since the Inbox was saved): intake would read
+    its own output.
+    """
+    if volume_containment(folder, treat_archives=False) is not True:
+        raise InboxUnavailable(f"{folder} isn't confirmed inside a Volume")
+    if not os.path.isdir(folder):
+        raise InboxUnavailable(f"{folder} isn't there")
+    if not library.root:
+        raise InboxUnavailable(f"The Library {library.name!r} has no folder here")
+    problem = inbox_store.overlap_problem(
+        Path(folder).resolve(), Path(library.root).resolve(), library.name, own=True,
+    )
+    if problem:
+        raise InboxUnavailable(problem)
+    extensions = _image_extensions()
+    files: list[str] = []
+    stack = [folder]
+    while stack:
+        current = stack.pop()
+        progress(current)
+        try:
+            listing = os.scandir(current)
+        except OSError:
+            continue
+        with listing:
+            for entry in listing:
+                progress()
+                name = entry.name
+                if name.startswith(".") or is_junk_entry(name):
+                    continue
+                if current == folder and name == inbox_store.PROCESSED:
+                    continue
+                try:
+                    if entry.is_symlink():
+                        continue
+                    if entry.is_dir(follow_symlinks=False):
+                        stack.append(entry.path)
+                        continue
+                    if not entry.is_file(follow_symlinks=False):
+                        continue
+                except OSError:
+                    continue
+                if match_extension(name, extensions) is not None:
+                    files.append(entry.path)
+    return {path: image_fingerprint(path) for path in group_images(sorted(files))}
+
+
+# ---- Findings ------------------------------------------------------------
+
+
+async def _hold(
+    inbox: inbox_store.Inbox, state: _State, path: str, fingerprint: str,
+    kind: str, reason: str, cause: dict[str, Any] | None = None,
+) -> None:
+    """Leave the file where it is with a Finding saying why, until it changes."""
+    state.held[path] = fingerprint
+    state.seen.pop(path, None)
+    item = findings.Observed(
+        kind=kind, image_key=inbox.image_key(path), path=path, reason=reason,
+        cause={"inbox": inbox.id, "fingerprint": fingerprint, **(cause or {})},
+    )
+    others = [k for k in findings.INBOX_KINDS if k != kind]
+
+    def write() -> None:
+        def current() -> bool:
+            return inbox_store.get(inbox.id) is not None
+
+        for other in others:
+            findings.resolve(inbox.library_id, item.image_key, other, current=current)
+        findings.observe(inbox.library_id, item, current=current)
+
+    try:
+        await _step(write)
+    except Exception:
+        logger.warning("inbox: could not record a Finding for %s", path, exc_info=True)
+
+
+async def _clear(inbox: inbox_store.Inbox, path: str) -> None:
+    key = inbox.image_key(path)
+
+    def clear() -> None:
+        for kind in findings.INBOX_KINDS:
+            findings.resolve(inbox.library_id, key, kind)
+
+    try:
+        await _step(clear)
+    except Exception:
+        logger.warning("inbox: could not clear the Findings of %s", path, exc_info=True)
+
+
+# ---- the poll ------------------------------------------------------------
+
+
+async def poll_all(*, now: float | None = None) -> list[dict[str, Any]]:
+    """One poll of every Inbox. Never raises; called from the scheduler's tick."""
+    try:
+        inboxes = await run_in_threadpool(inbox_store.all_inboxes)
+    except Exception:
+        logger.warning("inbox: could not list the Inboxes", exc_info=True)
+        return []
+    results = []
+    for inbox in inboxes:
+        try:
+            results.append(await poll(inbox, now=now))
+        except Exception:
+            logger.warning("inbox: polling %s failed", inbox.folder, exc_info=True)
+    return results
+
+
+async def poll(inbox: inbox_store.Inbox, *, now: float | None = None) -> dict[str, Any]:
+    """One poll of *inbox* at *now* (seconds; the wall clock by default)."""
+    from services import libraries
+
+    now = time.time() if now is None else now
+    state = _state(inbox.id)
+    result: dict[str, Any] = {
+        "inbox_id": inbox.id, "library_id": inbox.library_id,
+        "queued": 0, "copying": 0, "held": 0, "waiting": 0,
+        "placed": [], "error": None,
+    }
+    if state.polling:
+        result["error"] = "poll_running"
+        return result
+    state.polling = True
+    try:
+        await _settle_flights(inbox, state)
+        library = libraries.get(inbox.library_id)
+        if library is None:
+            state.error = result["error"] = "library_missing"
+            return result
+        try:
+            listing = await run_detached_within_stall_bound(
+                _list, inbox.folder, library, what=f"The Inbox {inbox.folder}",
+                stall=_LIST_STALL_SECONDS, report_progress=True,
+            )
+        except InboxUnavailable as exc:
+            state.error = result["error"] = str(exc)
+            return result
+        except Exception as exc:
+            logger.warning("inbox: listing %s failed", inbox.folder, exc_info=True)
+            state.error = result["error"] = f"The Inbox couldn't be listed: {exc}"
+            return result
+        state.error = None
+        await _forget_gone(inbox, state, listing)
+        stop = False
+        for path, fingerprint in listing.items():
+            if path in state.flights or state.held.get(path) == fingerprint:
+                continue
+            state.held.pop(path, None)
+            seen = state.seen.get(path)
+            if seen is None or seen.fingerprint != fingerprint:
+                state.seen[path] = _Seen(fingerprint, now)
+                result["waiting"] += 1
+                continue
+            if stop or now - seen.since < inbox.settle_seconds:
+                result["waiting"] += 1
+                continue
+            outcome = await _take(inbox, library, state, path, fingerprint)
+            if outcome == "queue_full":
+                stop = True
+                result["waiting"] += 1
+            elif outcome in ("queued", "copying", "held"):
+                result[outcome] += 1
+            else:
+                result["waiting"] += 1
+        state.waiting = result["waiting"]
+        return result
+    finally:
+        state.last_poll = now
+        result["placed"], state.placed = state.placed, []
+        state.polling = False
+
+
+async def _forget_gone(inbox: inbox_store.Inbox, state: _State, listing: dict) -> None:
+    """Forget files no longer in the Inbox, and clear the Findings of held ones."""
+    for path in [p for p in state.seen if p not in listing]:
+        state.seen.pop(path, None)
+    for path in [p for p in state.held if p not in listing]:
+        state.held.pop(path, None)
+        await _clear(inbox, path)
+
+
+# ---- taking one Image ----------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _Plan:
+    folder: str
+    rule: dict | None
+    reason: str = ""
+
+
+async def _take(
+    inbox: inbox_store.Inbox, library: Library, state: _State, path: str, fingerprint: str,
+) -> str:
+    """Start intake for one settled Image: ``queued``, ``copying``, ``held``,
+    ``queue_full`` or ``retry`` (something transient; the next poll tries again)."""
+    try:
+        detection = await _step(platform_detect.detect_platform, path)
+        members = await _step(image_members, path)
+    except (asyncio.TimeoutError, OSError):
+        return "retry"
+    if not detection.decided:
+        conflict = detection.how == platform_detect.CONFLICT
+        kind = findings.INBOX_CONFLICT if conflict else findings.INBOX_UNSORTED
+        what = "Its Platform is in doubt" if conflict else "Couldn't tell its Platform"
+        await _hold(
+            inbox, state, path, fingerprint, kind,
+            f"{what}: {detection.reason}. Move it into a folder named after its "
+            "Platform inside the Inbox.",
+            {"how": detection.how, "header": detection.header, "folder": detection.folder},
+        )
+        return "held"
+    platform = detection.platform
+    files = [path, *members]
+    problem = _files_problem(inbox, path, members)
+    if problem:
+        await _hold(inbox, state, path, fingerprint, findings.INBOX_FAILED, problem)
+        return "held"
+    try:
+        plan = await _plan(library, platform, path)
+    except PlacementUnknown as exc:
+        await _hold(
+            inbox, state, path, fingerprint, findings.INBOX_FAILED,
+            f"Couldn't tell where {platform} Images go in {library.name}: {exc}",
+            {"platform": platform},
+        )
+        return "held"
+    except (LibraryUnreadable, asyncio.TimeoutError, OSError) as exc:
+        logger.info("inbox: %s can't be placed now (%s); trying again later", path, exc)
+        return "retry"
+    if plan.reason:
+        await _hold(
+            inbox, state, path, fingerprint, findings.INBOX_FAILED, plan.reason,
+            {"platform": platform},
+        )
+        return "held"
+    if plan.rule is not None:
+        return await _convert(inbox, state, path, fingerprint, files, platform, plan)
+    try:
+        taken = await _step(_taken, plan.folder, files)
+    except (asyncio.TimeoutError, OSError):
+        return "retry"
+    if taken:
+        await _hold(
+            inbox, state, path, fingerprint, findings.INBOX_FAILED,
+            f"{taken} is already in the Library ({plan.folder})", {"platform": platform},
+        )
+        return "held"
+    return _start_copy(inbox, state, path, fingerprint, files, platform, plan.folder)
+
+
+def _taken(folder: str, files: list[str]) -> str | None:
+    """The first of *files*' names already in *folder*, or None. Blocking.
+    Checked before a copy starts, so a taken name costs no copy; the
+    placement itself never replaces either."""
+    for name in (os.path.basename(f) for f in files):
+        if os.path.lexists(os.path.join(folder, name)):
+            return name
+    return None
+
+
+def _files_problem(inbox: inbox_store.Inbox, path: str, members: list[str]) -> str | None:
+    """Why the Image's files can't be moved together, or None. Its tracks must
+    sit beside it in the Inbox, never in ``processed/``."""
+    folder = os.path.dirname(path)
+    for member in members:
+        if os.path.dirname(os.path.normpath(member)) != folder:
+            return (
+                f"{os.path.basename(member)}, a file of this Image, isn't in the same "
+                "folder, so the Image can't be moved as one"
+            )
+    return None
+
+
+async def _plan(library: Library, platform: str, path: str) -> _Plan:
+    """Where *platform*'s Images go in *library*, and the enabled Rule that
+    converts *path* there, if any. Raises PlacementUnknown or LibraryUnreadable."""
+    from services.rules import sweep
+
+    rules = await sweep.get_rules(library, CONVERT)
+    listed = None
+    platform_id = library.canonical_platform_id(platform)
+    rule = rules.get(platform_id) if platform_id is not None else None
+    if platform_id is None and rules:
+        # The Library names Platforms its own way (RomM's ids): find the one
+        # with this slug among its Platforms.
+        listed = await _step(library.platforms)
+        for each in listed:
+            slug = platform_detect.canonical_slug(each.slug or each.id)
+            if slug == platform and each.id in rules:
+                rule = rules[each.id]
+                break
+    placement = await _step(library.placement, platform, known=listed)
+    if rule is None or not rule.get("enabled"):
+        return _Plan(folder=placement.folder, rule=None)
+    try:
+        spec = registry.spec(rule["mode"])
+        tool = registry.for_mode(rule["mode"])
+    except KeyError:
+        return _Plan(placement.folder, None, f"The {platform} Rule's mode {rule['mode']} is gone")
+    if not registry.mode_allows_platform(rule["mode"], platform):
+        return _Plan(
+            placement.folder, None,
+            f"The {platform} Rule converts with {rule['mode']}, which isn't for {platform}",
+        )
+    if not sweep._accepts_source(tool, spec, path):
+        # Already in a form the Rule doesn't convert (the target format):
+        # it goes in as it is.
+        return _Plan(folder=placement.folder, rule=None)
+    if not await registry.tool_is_ready(tool):
+        return _Plan(placement.folder, None, f"{spec.tool_id} isn't ready, so the Rule can't run")
+    return _Plan(folder=placement.folder, rule=rule)
+
+
+def _destination(path: str, rule: dict, folder: str) -> tuple[str | None, str]:
+    """The conversion's output in *folder*, made if it isn't there yet, and
+    whether it's free. Blocking."""
+    if volume_containment(folder) is not True:
+        return None, "the placement folder isn't confirmed inside a Volume"
+    os.makedirs(folder, exist_ok=True)
+    tool = registry.for_mode(rule["mode"])
+    destination, decision = resolve_destination(tool, path, rule["mode"], folder, "skip")
+    if decision != QUEUE or not destination:
+        return None, "already_taken"
+    return destination, QUEUE
+
+
+async def _convert(
+    inbox: inbox_store.Inbox, state: _State, path: str, fingerprint: str,
+    files: list[str], platform: str, plan: _Plan,
+) -> str:
+    """Queue the Rule's conversion into the placement folder."""
+    from services.rules import sweep
+
+    rule = plan.rule
+    try:
+        destination, decision = await _step(_destination, path, rule, plan.folder)
+    except (asyncio.TimeoutError, OSError):
+        return "retry"
+    if destination is None:
+        reason = (
+            f"Its output is already in the Library ({plan.folder})"
+            if decision == "already_taken" else f"Can't convert it: {decision}"
+        )
+        await _hold(inbox, state, path, fingerprint, findings.INBOX_FAILED, reason,
+                    {"platform": platform})
+        return "held"
+    try:
+        jobs = await job_manager.create_batch_jobs(
+            [path], ConversionMode(rule["mode"]),
+            output_dir=plan.folder, compression=sweep._compression_arg(rule),
+            split=rule["split"], verify_after=True,
+            output_paths={path: destination},
+        )
+    except QueueBackpressureError:
+        return "queue_full"
+    except OutputClaimedError:
+        return "retry"
+    except Exception as exc:
+        logger.warning("inbox: could not queue %s", path, exc_info=True)
+        await _hold(inbox, state, path, fingerprint, findings.INBOX_FAILED,
+                    f"Couldn't queue its conversion: {exc}", {"platform": platform})
+        return "held"
+    job = jobs[0]
+    job.platform = platform
+    state.flights[path] = _Flight(
+        fingerprint=fingerprint, files=files, platform=platform, job_id=job.id,
+    )
+    return "queued"
+
+
+async def _settle_flights(inbox: inbox_store.Inbox, state: _State) -> None:
+    """Finish the conversions intake queued that have ended."""
+    for path, flight in list(state.flights.items()):
+        if flight.job_id is None:
+            continue  # a copy, which finishes itself
+        job = job_manager.get_job_for_lookup(flight.job_id)
+        if job is None:
+            state.flights.pop(path, None)
+            await _hold(
+                inbox, state, path, flight.fingerprint, findings.INBOX_FAILED,
+                "Lost track of its conversion; check the Library before taking it again",
+                {"platform": flight.platform},
+            )
+            continue
+        if job.status == JobStatus.COMPLETED:
+            state.flights.pop(path, None)
+            await _finish(inbox, state, path, flight, job.output_path)
+        elif job.status == JobStatus.FAILED:
+            state.flights.pop(path, None)
+            await _hold(
+                inbox, state, path, flight.fingerprint, findings.INBOX_FAILED,
+                f"Its conversion failed: {job.error_message or 'see the job'}",
+                {"platform": flight.platform},
+            )
+        elif job.status == JobStatus.CANCELLED:
+            state.flights.pop(path, None)
+            await _hold(
+                inbox, state, path, flight.fingerprint, findings.INBOX_FAILED,
+                "Its intake was cancelled", {"platform": flight.platform},
+            )
+
+
+async def _finish(
+    inbox: inbox_store.Inbox, state: _State, path: str, flight: _Flight, output: str | None,
+) -> None:
+    """The output is in the Library: move the original to ``processed/``."""
+    try:
+        await _step(_move_to_processed, inbox, flight.files)
+    except (OSError, asyncio.TimeoutError) as exc:
+        await _hold(
+            inbox, state, path, flight.fingerprint, findings.INBOX_FAILED,
+            f"It's in the Library, but couldn't be moved to processed/: {exc}",
+            {"platform": flight.platform},
+        )
+        return
+    state.seen.pop(path, None)
+    state.held.pop(path, None)
+    state.placed.append({"path": path, "platform": flight.platform, "output": output})
+    try:
+        await _step(inbox_store.note_processed, inbox.id)
+    except Exception:
+        logger.warning("inbox: could not count %s as processed", path, exc_info=True)
+    await _clear(inbox, path)
+
+
+def _move_to_processed(inbox: inbox_store.Inbox, files: list[str]) -> str:
+    """Move an Image's *files* into ``processed/``, keeping their path in the
+    Inbox. A name already there gets ``<name> (2)/`` and so on. All or none:
+    a move that fails puts back the ones already moved. Blocking."""
+    owner = files[0]
+    rel = os.path.relpath(os.path.dirname(owner), inbox.folder)
+    base = os.path.normpath(os.path.join(inbox.processed_folder, rel))
+    if volume_containment(base) is not True:
+        raise OSError(errno.EACCES, "processed/ isn't confirmed inside a Volume")
+    stem = os.path.splitext(os.path.basename(owner))[0]
+    names = [os.path.basename(f) for f in files]
+    target = base
+    for n in range(2, 1000):
+        if not any(os.path.lexists(os.path.join(target, name)) for name in names):
+            break
+        target = os.path.join(base, f"{stem} ({n})")
+    else:
+        raise OSError(errno.EEXIST, "No free name in processed/")
+    os.makedirs(target, exist_ok=True)
+    moved: list[tuple[str, str]] = []
+    try:
+        for f in files:
+            dst = os.path.join(target, os.path.basename(f))
+            place_without_clobbering(f, dst)
+            moved.append((f, dst))
+    except OSError:
+        for src, dst in reversed(moved):
+            try:
+                place_without_clobbering(dst, src)
+            except OSError:
+                logger.error("inbox: could not put %s back at %s", dst, src)
+        raise
+    return target
+
+
+# ---- copying an Image in as it is ----------------------------------------
+
+
+def _start_copy(
+    inbox: inbox_store.Inbox, state: _State, path: str, fingerprint: str,
+    files: list[str], platform: str, folder: str,
+) -> str:
+    flight = _Flight(fingerprint=fingerprint, files=files, platform=platform)
+    task = asyncio.ensure_future(_copy(inbox, state, path, flight, folder))
+    flight.task = task
+    state.flights[path] = flight
+    _tasks.add(task)
+    task.add_done_callback(_tasks.discard)
+    return "copying"
+
+
+class _CopyDiffers(Exception):
+    pass
+
+
+def _stage_copy(files: list[str], folder: str, progress) -> tuple[Any, list[str]]:
+    """Copy *files* into a fresh staging slot beside *folder*'s files, each
+    read back and compared. Returns the open slot and the names. Blocking."""
+    slot = staging.open_slot(folder, make_folder=True)
+    try:
+        names = []
+        for source in files:
+            name = os.path.basename(source)
+            target = slot.path_for(name)
+            wrote = hashlib.sha1()
+            fd = os.open(source, os.O_RDONLY | _NOFOLLOW)
+            with os.fdopen(fd, "rb") as src, open(target, "xb") as dst:
+                while chunk := src.read(_CHUNK):
+                    progress(source)
+                    wrote.update(chunk)
+                    dst.write(chunk)
+                dst.flush()
+                os.fsync(dst.fileno())
+            read = hashlib.sha1()
+            with open(target, "rb") as back:
+                while chunk := back.read(_CHUNK):
+                    progress(target)
+                    read.update(chunk)
+            if read.digest() != wrote.digest():
+                raise _CopyDiffers(f"the copy of {name} doesn't read back the same")
+            names.append(name)
+        return slot, names
+    except BaseException:
+        slot.close()
+        raise
+
+
+async def _gate_acquire(cancel_event: asyncio.Event | None) -> bool:
+    """The copy slot, or False when the job is cancelled first."""
+    global _copy_gate, _copy_gate_loop
+    loop = asyncio.get_running_loop()
+    if _copy_gate is None or _copy_gate_loop is not loop:
+        _copy_gate, _copy_gate_loop = asyncio.Semaphore(1), loop
+    gate = _copy_gate
+    if cancel_event is None:
+        await gate.acquire()
+        return True
+    acquire = asyncio.ensure_future(gate.acquire())
+    cancelled = asyncio.ensure_future(cancel_event.wait())
+    await asyncio.wait({acquire, cancelled}, return_when=asyncio.FIRST_COMPLETED)
+    cancelled.cancel()
+    if not acquire.done():
+        acquire.cancel()
+        return False
+    if cancel_event.is_set():
+        gate.release()
+        return False
+    return True
+
+
+async def _copy(
+    inbox: inbox_store.Inbox, state: _State, path: str, flight: _Flight, folder: str,
+) -> None:
+    """Copy one Image into the Library as it is, as a job you can cancel."""
+    job = job_manager.create_external_job(
+        os.path.basename(path), ConversionMode.INBOX_COPY,
+        message=f"Waiting to copy into {folder}",
+    )
+    cancel = job_manager.get_cancel_event(job.id)
+    outcome, why, output = "failed", "", None
+    try:
+        if not await _gate_acquire(cancel):
+            outcome = "cancelled"
+        else:
+            try:
+                outcome, why, output = await _copy_in(job.id, path, flight, folder, cancel)
+            finally:
+                _copy_gate.release()
+    except Exception as exc:
+        logger.warning("inbox: copying %s failed", path, exc_info=True)
+        outcome, why = "failed", str(exc)
+    finally:
+        state.flights.pop(path, None)
+    if outcome == "placed":
+        await _finish(inbox, state, path, flight, output)
+        await job_manager.finish_external_job(job.id, success=True)
+        return
+    if outcome == "cancelled":
+        await _hold(inbox, state, path, flight.fingerprint, findings.INBOX_FAILED,
+                    "Its intake was cancelled", {"platform": flight.platform})
+        await job_manager.finish_external_job_cancelled(job.id, message="Cancelled")
+        return
+    await _hold(inbox, state, path, flight.fingerprint, findings.INBOX_FAILED,
+                f"Copying it into the Library failed: {why}", {"platform": flight.platform})
+    await job_manager.finish_external_job(job.id, success=False, error_message=why)
+
+
+async def _copy_in(
+    job_id: str, path: str, flight: _Flight, folder: str, cancel: asyncio.Event | None,
+) -> tuple[str, str, str | None]:
+    """Stage, compare, check Intact and place: ``(outcome, why, output)``."""
+    await job_manager.update_external_job(job_id, message=f"Copying into {folder}")
+    try:
+        slot, names = await run_detached_within_stall_bound(
+            _stage_copy, flight.files, folder, what=f"Copying {os.path.basename(path)}",
+            cancel_event=cancel, report_progress=True,
+        )
+    except ReadCancelled:
+        return "cancelled", "", None
+    except _CopyDiffers as exc:
+        return "failed", str(exc), None
+    try:
+        staged = slot.path_for(names[0])
+        tool = registry.check_tool(staged, flight.platform)
+        if tool is not None:
+            await job_manager.update_external_job(job_id, message="Checking the copy is Intact")
+            verdict, message = await checks.verify_file(staged, tool.id, cancel)
+            if verdict == checks.CANCELLED:
+                return "cancelled", "", None
+            if verdict != checks.INTACT:
+                return "failed", f"the copy isn't Intact ({message or verdict})", None
+        try:
+            await _step(slot.place, names)
+        except FileExistsError:
+            return "failed", f"{names[0]} is already in the Library ({folder})", None
+        return "placed", "", os.path.join(folder, names[0])
+    finally:
+        try:
+            await _step(slot.close)
+        except (OSError, asyncio.TimeoutError):
+            logger.warning("inbox: could not close the staging slot for %s", path, exc_info=True)

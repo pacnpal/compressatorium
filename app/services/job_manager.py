@@ -296,6 +296,9 @@ EXTERNAL_JOB_MODES: Dict[ConversionMode, ExternalMode] = {
     # A duplicate delete (#389): a person confirmed it; each copy's delete goes
     # through the job's own delete step, so it converts nothing to record.
     ConversionMode.DELETE_DUPLICATES: ExternalMode(in_ledger=False),
+    # An Inbox's copy of an Image no Rule converts (#431): the scheduler starts
+    # it, and it converts nothing, so it has no Ledger row.
+    ConversionMode.INBOX_COPY: ExternalMode(in_ledger=False, started_by_hand=False),
 }
 _EXTERNAL_JOB_MODES = frozenset(EXTERNAL_JOB_MODES)
 
