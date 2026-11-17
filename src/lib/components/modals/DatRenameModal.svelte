@@ -74,18 +74,24 @@
 
   async function confirm() {
     if (!renames.length || starting || jobId) return;
+    // The dialog session this start belongs to: an answer that comes after
+    // it closed (and maybe opened on another selection) writes nothing here.
+    const mine = request;
     starting = true;
     error = '';
     try {
       const started = await api.datRename(
         items.map((i) => ({ path: i.path, new_path: i.new_path ?? null })),
       );
-      jobId = started?.job_id ?? null;
-      if (jobId) follow(jobId, request);
+      const id = started?.job_id ?? null;
+      // Followed whichever dialog is open, so the job reaches the jobs list.
+      if (id) follow(id, mine);
+      if (mine !== request) return;
+      jobId = id;
     } catch (e) {
-      error = e?.message ?? 'Could not start the rename';
+      if (mine === request) error = e?.message ?? 'Could not start the rename';
     } finally {
-      starting = false;
+      if (mine === request) starting = false;
     }
   }
 
@@ -93,19 +99,26 @@
    * Read the job from the API until it ends, adding it to the jobs list.
    * The job stream subscribes to running jobs every 0.1 s, so a rename that
    * ends sooner is never sent on it; this is what the dialog follows then.
-   * Stops when the dialog closes or opens on something else (*mine*).
+   * Each read joins the jobs list first; the dialog shows it only while it is
+   * still the session that started it (*mine*), and the loop stops then too.
+   * A job the server no longer has (404) stops it with an error; any other
+   * failed read is tried again.
    */
   async function follow(id, mine) {
-    while (mine === request) {
+    for (;;) {
       try {
         const read = await api.getJob(id);
+        jobs.adopt([read]);
         if (mine !== request) return;
         followed = read;
-        jobs.adopt([read]);
         if (TERMINAL.has(read?.status)) return;
-      } catch {
-        // A read that failed is tried again; the stream may still deliver it.
+      } catch (e) {
+        if (e?.status === 404) {
+          if (mine === request) error = 'The rename job is no longer known; see the jobs list';
+          return;
+        }
       }
+      if (mine !== request) return;
       await new Promise((r) => setTimeout(r, 500));
     }
   }

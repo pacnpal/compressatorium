@@ -119,12 +119,26 @@ async def _settle_started_by_hand() -> None:
         )
 
 
+async def _settle_rename_conflicts() -> None:
+    """Clear the rename conflicts the ranking now resolves (#425). Never
+    raises (CodeRabbit 4602644770): a settle that fails or runs past its
+    bound (it may resolve a path on a Volume that stopped answering,
+    CodeRabbit 4602644800) leaves them listed as they are, and the next load
+    tries again. Detached and bounded, as the hand-started settle is."""
+    try:
+        await asyncio.wait_for(run_detached(dat_rename.settle_conflicts), _SETTLE_SECONDS)
+    except Exception:
+        logger.warning(
+            "Findings: settling the rename conflicts did not finish; the next load tries again",
+            exc_info=True,
+        )
+
+
 @router.get("/findings")
 async def list_findings(include_dismissed: bool = False) -> dict:
     """Open Findings with their Library's name, by Library and Image."""
     await _settle_started_by_hand()
-    # A rename conflict the ranking now resolves clears (#425). Database only.
-    await run_in_threadpool(dat_rename.settle_conflicts)
+    await _settle_rename_conflicts()
     rows = await run_in_threadpool(
         lambda: findings.list_findings(include_dismissed=include_dismissed),
     )

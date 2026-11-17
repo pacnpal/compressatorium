@@ -259,6 +259,53 @@ class Referrer(ABC):
         return None
 
 
+class WriteJournal:
+    """Every Referrer file the hook rewrote, with its bytes before and after
+    (#425): what an Image rename puts back when it doesn't go ahead.
+
+    Kept apart from the hook's outcome on purpose: a phase the hook stops
+    waiting for (a Cancel, its bound) returns no records, but its worker may
+    already have written, and goes on recording here until it ends (Codex
+    4602538922). Its writes are refused from the moment it is abandoned
+    (``check_write``), so once every worker has ended (:meth:`wait_idle`)
+    the journal is complete. Restoring writes back exactly the bytes that
+    were there, never a re-plan, so an entry the rename didn't change is never
+    touched (Codex 4602560232). Thread-safe.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._entries: list[tuple[str, bytes, bytes]] = []
+        self._running = 0
+        self._idle = threading.Event()
+        self._idle.set()
+
+    def record(self, path: str, before: bytes, after: bytes) -> None:
+        with self._lock:
+            self._entries.append((path, before, after))
+
+    def worker_started(self) -> None:
+        with self._lock:
+            self._running += 1
+            self._idle.clear()
+
+    def worker_ended(self) -> None:
+        with self._lock:
+            self._running -= 1
+            if self._running <= 0:
+                self._idle.set()
+
+    def wait_idle(self, timeout: float) -> bool:
+        """Block until no worker that records here is running, up to
+        *timeout* seconds; whether none is."""
+        return self._idle.wait(timeout)
+
+    def written(self) -> list[tuple[str, bytes, bytes]]:
+        """``(path, before, after)`` for each write, in the order written."""
+        with self._lock:
+            return list(self._entries)
+
+
 @dataclass
 class WriteGuard:
     """What must still hold when a Referrer writes, checked under its lock.
@@ -277,6 +324,9 @@ class WriteGuard:
     # hidden for a Referrer that places them (#391). ``outputs`` then holds
     # their staged paths.
     placement: StagedPlacement | None = None
+    # Where each file a Referrer rewrites is recorded, for a caller that may
+    # put it back (an Image rename, #425). None: nothing is recorded.
+    journal: WriteJournal | None = None
 
     def check(self, target: str) -> None:
         if self.abandoned.is_set():
@@ -370,6 +420,15 @@ def check_write(target: str) -> None:
     guard = _guard.get()
     if guard is not None:
         guard.check(target)
+
+
+def record_write(target: str, before: bytes, after: bytes) -> None:
+    """Note that *target* now holds *after* where it held *before*, in the
+    hook's journal when it keeps one (``WriteGuard.journal``). Called right
+    after the write landed, under the target's lock. A no-op otherwise."""
+    guard = _guard.get()
+    if guard is not None and guard.journal is not None:
+        guard.journal.record(target, before, after)
 
 
 def _keep_owner(tmp: str, original: os.stat_result) -> None:

@@ -6831,46 +6831,66 @@ the Image and its map, never a single path, so a multi-file Image (#426: a
 sheet, its tracks, the cue's text, a folder named after it) extends the map and
 adds steps without a second operation. It runs the existing Referrer hook
 (`referrers.update_before_source_removal`) with a `StagedPlacement` whose
-`rename` is set (`image_rename.placement_for`):
+`rename` is set:
 
 - `staged` maps each new name to the file still under its old name, so file
   Referrers treat the rename exactly as a conversion's staged output: an entry
   that reaches the old file is rewritten to the new name, checked with
   `points_at` against the staged file, and the hook's `WriteGuard` watches the
-  old files. No Referrer code changed for this.
-- `place`/`place_blocking` rename each file still under its old name with
-  `place_without_clobbering` (never over another file), and skip one a
-  Referrer already moved; `is_placed` says whether every file is under its new
-  name. `source_fingerprints` is the snapshot each file was locked in.
+  old files. No Referrer's planning changed for this.
 - A Referrer that renames the file itself checks `placement.rename`. The RomM
   Referrer (`RommSwapReferrer._plan_rename`, `_RenameInPlace`) does: it asks
   RomM to rename the ROM's file (`RommClient.rename_rom`, the swap's own call),
-  which moves the file and keeps the ROM id. No rehash and no journal: no file
-  is parked or deleted, the bytes don't change, and the answer is read back
-  (a 409 or any other answer changes nothing; a sanitized or misplaced name is
-  put back and refused; no answer is settled by the read-back). Archives are
-  not left out as they are for the swap: nothing is rehashed. Counted as a
-  running swap, so a RomM identity change waits for it.
+  which moves the file and keeps the ROM id. No rehash and no journal row: no
+  file is parked or deleted and the bytes don't change. The answer is read
+  back: a 409 or any other answer changes nothing; a sanitized or misplaced
+  name is put back and refused; no answer is settled by the read-back; and a
+  cancel during the request reads RomM back and puts a sanitized name back
+  before the cancel goes on, so RomM and the file agree on one of the two
+  names. Archives are not left out as they are for the swap: nothing is
+  rehashed. Counted as a running swap, so a RomM identity change waits for it.
 
-Order: every old path and every new one is locked first
-(`lock_manager.acquire_lock`, the new one with `allow_existing=False`), so no
-job reads or writes either meanwhile. Then the hook; then whatever is still
-under its old name is renamed here; then the check record, the cached `chdman
-info` and the DAT match move to the new path (`move_blocking`,
-`DATStore.move_match_blocking`). Each move runs on `run_detached_to_end`
-(`subprocess_runner`, promoted from the swap's `_mutate`): never abandoned, so
-a cancel waits for the step's outcome. Locks are let go through
-`ReferrerOutcome.outlive`, after any apply still cleaning up.
+**Bound to the folders it checked.** After the locks, each file's folder is
+resolved, confirmed inside a Volume (`lock_boundary_root`,
+`volume_containment`) and opened beneath the Volume root with no symlink on
+the way (`open_dir_beneath`), and each file is fingerprinted through that
+descriptor. Every later look (`where_blocking`) and every move goes through
+the descriptors: `place_without_clobbering(old_name, new_name,
+src_dir_fd=..., dst_dir_fd=...)`, only while the file is still the one
+fingerprinted. A folder swapped for a link to somewhere else after the check
+can't redirect a move. Nothing is ever moved over another file.
 
-All or nothing. A Referrer that fails stops the hook (a later phase never
-runs). Only file Referrers can have been updated before it, and RomM's own
-rename undoes itself, so the rename puts back each one updated: the files take
-the new names, the hook runs again with the renames reversed and `upto=
-Phase.FILE` (a new `update_before_source_removal` parameter), and the files go
-back. The outcome is "not renamed" with the failing Referrer's reason, plus
-what could not be put back. Files a Referrer left elsewhere (a RomM that
-renamed and then stopped answering) are never guessed at: the reason says the
-Image was left renamed or partly renamed.
+**One rule for every ending: settle, inspect, carry or compensate, release.**
+The rename runs as a task of its own (`asyncio.shield`), so a cancel of its
+caller (a shutdown) never cuts it short; a Cancel reaches it through
+*cancel_event*, which stops the hook. Then:
+
+1. *Settle.* Every RomM request the hook handed off or abandoned
+   (`HandedOff`, `lingering`) is awaited, and every Referrer worker the hook
+   stopped waiting for is waited on (`WriteJournal.wait_idle`); such a worker
+   writes nothing more once abandoned (`check_write`).
+2. *Inspect* where the files are, through the descriptors.
+3. *Carry or compensate.* Every file under its new name: renamed, whatever the
+   hook reported (RomM may have finished after the hook gave up). What the app
+   knows about each file follows it: the check record, the cached `chdman
+   info` and the DAT match (`DATStore.move_match_blocking`), under the listed
+   path and the real path the folders had when they were opened. Every file
+   under its old name: not renamed, and each Referrer file the hook wrote is
+   put back. Anything else is never guessed at; the reason says so.
+4. *Release* the locks (`lock_manager.acquire_all` took them all or none), after
+   any RomM request still running (`ReferrerOutcome.outlive`).
+
+**Putting Referrers back** uses the hook's new `WriteJournal`
+(`update_before_source_removal(..., journal=)`, carried on the `WriteGuard`):
+`files.rewrite_in_place` records each file's bytes before and after once the
+write lands (`record_write`), including a write made by a phase worker the hook
+stopped waiting for. `referrers.restore_written` then puts each one back,
+newest first, with `files.restore_in_place`: under the same locks, and only
+when the file still holds exactly the bytes the hook wrote. The bytes it held
+are written back, never a re-plan, so an entry the rename never changed (a
+playlist line that already named the new name) is left as it is, and no file
+moves, so a new name someone else took meanwhile is never touched. A file
+changed since is left alone and named in the reason.
 
 **Two additions to the Referrer contract.** `plan_changes(..., placement=)`
 plans as the hook will (`referrers.base.planning`: `staged_placement()`
@@ -6881,27 +6901,38 @@ without it (`ReferrerRegistry.rename_refused` asks each one). The RomM
 Referrer answers for a RomM Library: renamed under RomM's feet the file would
 get a new ROM, so the swap switch must be on.
 
-**One rule for names made from data** (`utils.path_utils.safe_file_name`):
-`< > : " / \ | ? *` and C0 control characters become `_`, leading and
-trailing spaces and trailing dots go, and a name that comes out empty, `.`,
-`..` or over 255 UTF-8 bytes is refused (None).
+**Shared helpers.** `utils.path_utils.safe_file_name` is the one rule for names
+made from data: `< > : " / \ | ? *` and C0 control characters become `_`,
+leading and trailing spaces and trailing dots go, and a name that comes out
+empty, `.`, `..` or over 255 UTF-8 bytes is refused (None).
+`registry.extension_of(name)` is a name's extension as the tools know it, the
+longest registered one (`game.nkit.iso` keeps `.nkit.iso`).
+`subprocess_runner.run_detached_to_end` (promoted from the swap's `_mutate`)
+runs a step that changes something to its end, never abandoned.
+`LockManager.acquire_all` takes several locks or none, letting go of those
+taken on any exit, `LockFailed` included.
 
 **Rename to DAT name** (`dat_rename`, routes in `routes/dat_rename.py`). The
 name comes from `DATStore.ranked_match_for_image` (3.3.5.2): cache only, never
 hashing, looked up as listed and then along the real path. The new name is the
-top match's `game_name` plus the file's own extension, through
-`safe_file_name`. `plan_blocking` skips, with the reason: a path not confirmed
-inside the Volumes, a symlink, a playlist, a sheet or any Image with members
-(`image_sets.image_members`; #426), a track a sheet lists
-(`image_sets.owning_sheet`, fail closed on `SheetOwnerUnknown`), not
-Recognized, already named, a case-only difference, a new name that exists, or
-a Library the registry refuses. `preview` also skips a second Image the DAT
-gives a name another selected one already takes. A `conflict` (equally ranked
+top match's `game_name` plus `registry.extension_of`, through
+`safe_file_name`. Each preview and each run first reads every sheet's track
+identities over the Volumes (`image_sets.volume_sheet_tracks`, as the
+duplicate delete does): a walk that doesn't finish skips every Image (fail
+closed). `plan_blocking` skips, with the reason: a path not confirmed inside
+the Volumes, a symlink, a playlist, a sheet or any Image with members
+(`image_sets.image_members`; #426), a track a sheet lists (the sheet above it
+by `owning_sheet`, or any sheet in the Volumes by the walk, through a link
+too), not Recognized, already named, a case-only difference, a new name that
+exists, or a Library the registry refuses. `preview` also skips a second Image
+given a name another selected one already takes. One Image that can't be
+checked, or whose rename stops on an unexpected error, is skipped or reported
+not renamed on its own, never hiding the others. A `conflict` (equally ranked
 DATs that disagree) skips the Image and records a `rename_conflict` Finding
 (keyed by the Image's path, its cause the disagreeing matches);
 `settle_conflicts` clears each one the ranking now resolves, run after the
-ranking is saved or reset and whenever the Findings are listed (database
-only).
+ranking is saved or reset and whenever the Findings are listed (detached and
+bounded there; a settle that fails or stalls leaves the list as it is).
 
 The run (`POST /api/files/dat-rename`, the rename confirmation header) is an
 external job (`ConversionMode.DAT_RENAME`, no Ledger row), one at a time, like
@@ -6910,7 +6941,9 @@ the one confirmed is skipped. Each confirmed Image goes through
 `rename_image`. The job's `result` lists every Image as `renamed`, `skipped`
 or `not_renamed` with its reason and Referrer records, and one
 `rename_finished` notification (a registered event) carries the counts and
-what wasn't renamed. The single-file `POST /api/files/rename` is unchanged.
+what wasn't renamed. The dialog follows the job by reading it from the API
+until it ends (a rename can end before the job stream subscribes to it). The
+single-file `POST /api/files/rename` is unchanged.
 
 ### 3.4 `registry.py`
 

@@ -44,6 +44,25 @@ def test_the_dialog_is_mounted_follows_its_job_and_blocks_background_refresh():
     assert "api.getJob(id)" in follow
     assert "jobs.adopt([" in follow
     assert "TERMINAL.has(" in follow
+    # The read is added to the jobs list before the dialog-session check, so
+    # a closed dialog still lands the job in the list (CodeRabbit 4602644957).
+    assert follow.index("jobs.adopt([") < follow.index("if (mine !== request)")
+    # A job the server no longer has stops the loop with an error, rather
+    # than polling forever (CodeRabbit 4602644995).
+    assert "e?.status === 404" in follow
+
+
+def test_the_start_answer_stays_in_the_dialog_session_that_asked():
+    """A start answered after the dialog closed and reopened on another
+    selection never lands in the new one (CodeRabbit 4602644943)."""
+    modal = _MODAL.read_text()
+    confirm = modal.split("async function confirm()", 1)[1].split("\n  }\n", 1)[0]
+    assert "const mine = request;" in confirm
+    assert confirm.index("const mine = request;") < confirm.index("await api.datRename(")
+    after = confirm.split("await api.datRename(", 1)[1]
+    assert "if (mine !== request)" in after
+    # The job is still followed (and listed) whichever dialog is open.
+    assert "follow(id, mine)" in after
     ui = _read("lib", "stores", "ui.svelte.js")
     assert "!!this.datRenamePaths" in ui
 

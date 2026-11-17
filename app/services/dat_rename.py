@@ -43,7 +43,15 @@ from services import (
 from services.dat_store import dat_store
 from services.job_manager import job_manager
 from services.referrers import ReferrerError
-from services.subprocess_runner import DeadlineExpired, run_detached_bounded
+from services.subprocess_runner import (
+    DeadlineExpired,
+    ProgressAbandoned,
+    ReadCancelled,
+    Stalled,
+    run_detached_bounded,
+    run_detached_within_stall_bound,
+)
+from services.tools import registry as tools
 from utils.path_utils import (
     lock_boundary_root,
     safe_file_name,
@@ -133,8 +141,9 @@ def _note_conflict(path: str, library, conflict) -> None:
         logger.warning("dat_rename: could not record the conflict of %s", path, exc_info=True)
 
 
-def _sheet_problem(path: str) -> str | None:
-    """Why *path* isn't a single-file Image of its own, or None."""
+def _sheet_problem(path: str, tracks: frozenset[tuple[int, int]]) -> str | None:
+    """Why *path* isn't a single-file Image of its own, or None. *tracks* is
+    every sheet's track identities over the Volumes (:func:`sheet_tracks`)."""
     if image_sets.is_playlist(path):
         return "a playlist, not an Image"
     if path.lower().endswith(image_sets.SHEET_EXTENSIONS) or image_sets.image_members(path):
@@ -148,6 +157,11 @@ def _sheet_problem(path: str) -> str | None:
         return f"can't tell whether a sheet lists it as a track ({exc})"
     if sheet is not None:
         return f"a track of {os.path.basename(sheet)}: it is renamed with its sheet"
+    # A sheet anywhere in the Volumes may reach it through a link (Codex
+    # 4602560262): the Volume-wide walk the duplicate delete uses decides.
+    st = os.stat(path)
+    if (st.st_dev, st.st_ino) in tracks:
+        return "a track a .cue or .gdi elsewhere lists: it is renamed with its sheet"
     return None
 
 
@@ -156,9 +170,13 @@ def _skip(item: dict, reason: str) -> dict:
     return item
 
 
-def plan_blocking(path: str) -> tuple[dict, Any]:
+def plan_blocking(
+    path: str, tracks: frozenset[tuple[int, int]] | None,
+) -> tuple[dict, Any]:
     """One Image's preview item (without its Referrer changes) and its
-    Library. Blocking: reads the disk and the database."""
+    Library. *tracks*: :func:`sheet_tracks`'s answer, None when it couldn't
+    be told (then nothing is renamed). Blocking: reads the disk and the
+    database."""
     item: dict = {
         "path": path, "new_path": None, "status": SKIP, "reason": None,
         "dat": None, "referrer_changes": [],
@@ -170,7 +188,9 @@ def plan_blocking(path: str) -> tuple[dict, Any]:
         return _skip(item, f"{name} is a symlink"), None
     if not os.path.isfile(path):
         return _skip(item, f"{name} is gone"), None
-    problem = _sheet_problem(path)
+    if tracks is None:
+        return _skip(item, "which files are sheets' tracks couldn't be told"), None
+    problem = _sheet_problem(path, tracks)
     if problem:
         return _skip(item, problem), None
     try:
@@ -187,7 +207,9 @@ def plan_blocking(path: str) -> tuple[dict, Any]:
     if ranked.top is None:
         return _skip(item, "not Recognized: no DAT or Hasheous match is known for it"), library
     item["dat"] = _dat_of(ranked.top)
-    new_name = safe_file_name(f"{ranked.top.get('game_name') or ''}{os.path.splitext(name)[1]}")
+    # The file's own extension, compound ones whole (Codex 4602560251).
+    extension = tools.extension_of(name)
+    new_name = safe_file_name(f"{ranked.top.get('game_name') or ''}{extension}")
     if new_name is None:
         return _skip(item, "its DAT name can't be made a file name"), library
     if new_name == name:
@@ -207,12 +229,36 @@ def plan_blocking(path: str) -> tuple[dict, Any]:
     return item, library
 
 
-async def _plan(path: str) -> tuple[dict, Any]:
+async def sheet_tracks(cancel_event=None) -> tuple[frozenset[tuple[int, int]] | None, str]:
+    """Every sheet's track identities over the Volumes, read once per preview
+    and per run (``image_sets.volume_sheet_tracks``, as the duplicate delete
+    reads them), or None and why when the walk didn't finish: fail closed."""
+    from services import content_keys, duplicates
+
     try:
-        return await run_detached_bounded(plan_blocking, path, timeout=PLAN_SECONDS)
+        tracks, problem = await run_detached_within_stall_bound(
+            image_sets.volume_sheet_tracks, duplicates.volume_scope(),
+            what="reading the Volumes' sheets", cancel_event=cancel_event,
+            stall=content_keys.STALL_SECONDS, report_progress=True,
+        )
+    except (OSError, Stalled, ProgressAbandoned, ReadCancelled) as exc:
+        return None, str(exc) or type(exc).__name__
+    return (frozenset(tracks), "") if tracks is not None else (None, str(problem))
+
+
+async def _plan(path: str, tracks, why: str = "") -> tuple[dict, Any]:
+    item = {"path": path, "dat": None, "referrer_changes": []}
+    if tracks is None:
+        return _skip(item, f"which files are sheets' tracks couldn't be told ({why})"), None
+    try:
+        return await run_detached_bounded(plan_blocking, path, tracks, timeout=PLAN_SECONDS)
     except DeadlineExpired:
-        item = {"path": path, "dat": None, "referrer_changes": []}
         return _skip(item, "its Volume didn't answer in time"), None
+    except Exception as exc:
+        # One Image that can't be checked never hides the others (CodeRabbit
+        # 4602644812): it is skipped with the reason.
+        logger.warning("dat_rename: couldn't check %s", path, exc_info=True)
+        return _skip(item, f"couldn't be checked ({exc})"), None
 
 
 async def _with_referrer_changes(item: dict, library) -> dict:
@@ -225,8 +271,10 @@ async def _with_referrer_changes(item: dict, library) -> dict:
         changes = await referrers.plan_changes_bounded(
             item["path"], renames, library, image_rename.placement_for(renames),
         )
-    except (ReferrerError, OSError, RuntimeError, ValueError, asyncio.TimeoutError) as exc:
-        reason = f"{exc.target}: {exc.reason}" if isinstance(exc, ReferrerError) else str(exc)
+    except Exception as exc:
+        # Anything that keeps the changes from being told skips the Image.
+        logger.warning("dat_rename: couldn't plan the Referrers of %s", item["path"], exc_info=True)
+        reason =f"{exc.target}: {exc.reason}" if isinstance(exc, ReferrerError) else str(exc)
         return _skip(item, f"couldn't tell what points at it ({reason})")
     item["referrer_changes"] = [change.to_dict() for change in changes]
     return item
@@ -237,8 +285,9 @@ async def preview(paths: list[str]) -> dict:
     items = []
     # Each new name to the Image that takes it: the first one asked for wins.
     taken: dict[str, str] = {}
+    tracks, why = await sheet_tracks()
     for path in dict.fromkeys(paths):
-        item, library = await _plan(path)
+        item, library = await _plan(path, tracks, why)
         new_path = item["new_path"]
         if new_path is not None and new_path in taken:
             other = os.path.basename(taken[new_path])
@@ -323,6 +372,7 @@ async def _rename_all(job_id: str, items: list[dict]) -> dict:
     results: list[dict] = []
     cancelled = False
     total = len(items)
+    tracks, why = await sheet_tracks(job_manager.get_cancel_event(job_id))
     for index, confirmed in enumerate(items):
         path = str(confirmed.get("path") or "")
         if job_manager.is_cancelled(job_id):
@@ -333,7 +383,14 @@ async def _rename_all(job_id: str, items: list[dict]) -> dict:
             job_id, progress=int(100 * index / total) if total else 0,
             message=f"[{index + 1}/{total}] {os.path.basename(path)}",
         )
-        results.append(await _rename_one(job_id, path, confirmed.get("new_path")))
+        new_path = confirmed.get("new_path")
+        try:
+            results.append(await _rename_one(job_id, path, new_path, tracks, why))
+        except Exception as exc:
+            # One Image that fails unexpectedly never hides the others'
+            # results (CodeRabbit 4602644812).
+            logger.warning("dat_rename: renaming %s failed", path, exc_info=True)
+            results.append(_result(path, new_path, "not_renamed", f"stopped on an error ({exc})"))
     counts = {
         status: sum(1 for r in results if r["status"] == status)
         for status in ("renamed", "skipped", "not_renamed")
@@ -351,8 +408,10 @@ def _result(
     }
 
 
-async def _rename_one(job_id: str, path: str, confirmed: str | None) -> dict:
-    item, library = await _plan(path)
+async def _rename_one(
+    job_id: str, path: str, confirmed: str | None, tracks, why: str,
+) -> dict:
+    item, library = await _plan(path, tracks, why)
     if item["status"] != RENAME:
         return _result(path, confirmed, "skipped", item["reason"])
     if confirmed != item["new_path"]:
@@ -367,7 +426,8 @@ async def _rename_one(job_id: str, path: str, confirmed: str | None) -> dict:
         cancel_event=job_manager.get_cancel_event(job_id),
     )
     if outcome.renamed:
-        return _result(path, item["new_path"], "renamed", None, outcome.records)
+        note = "; ".join(outcome.notes) or None
+        return _result(path, item["new_path"], "renamed", note, outcome.records)
     return _result(path, item["new_path"], "not_renamed", outcome.reason, outcome.records)
 
 

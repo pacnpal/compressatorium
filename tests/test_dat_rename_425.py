@@ -417,34 +417,77 @@ async def test_the_job_skips_an_image_whose_new_name_was_taken_since_the_preview
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(_IS_ROOT, reason="root writes a read-only file anyway")
 async def test_a_failing_referrer_puts_the_file_and_every_updated_referrer_back(
-    db: Path, client: httpx.AsyncClient,
+    db: Path, client: httpx.AsyncClient, monkeypatch,
 ) -> None:
+    """The playlist is updated (observed), then the gamelist fails. The
+    playlist goes back to exactly what it held: its dangling entry that
+    already named the new name is not touched (Codex 4602560232)."""
+    from services.referrers import ReferrerError
+    from services.referrers.gamelist import GamelistReferrer
+
     ps2 = db / "roms" / "ps2"
     game = ps2 / "game.iso"
     sha1 = _disc(game, b"ico")
-    (ps2 / "games.m3u").write_text("game.iso\n")
+    playlist = ps2 / "games.m3u"
+    playlist.write_text("game.iso\nIco (USA).iso\n")
     gamelist = ps2 / "gamelist.xml"
     gamelist.write_text(ES_GAMELIST)
     await _register(client, db / "roms", es_frontend=True)
     await _import(client, _dat("Sony - PlayStation 2", {"Ico (USA)": sha1}, homepage="redump.org"))
     await _match(client, game)
     preview = await _preview(client, game)
-    # The playlist is updated first; then the gamelist can't be written.
-    os.chmod(gamelist, 0o444)
-    try:
-        job = await _run(client, preview)
-    finally:
-        os.chmod(gamelist, 0o644)
+    seen: list[str] = []
 
+    def fails_after_the_playlist(self, change):
+        seen.append(playlist.read_text())
+        raise ReferrerError(change.target, "is read-only")
+
+    monkeypatch.setattr(GamelistReferrer, "apply", fails_after_the_playlist)
+    job = await _run(client, preview)
+
+    assert seen == ["Ico (USA).iso\nIco (USA).iso\n"], seen
     assert job["status"] == "completed", job
     result = _result(job)[str(game)]
     assert result["status"] == "not_renamed", result
     assert "read-only" in result["reason"]
     assert game.exists() and not (ps2 / "Ico (USA).iso").exists()
-    assert (ps2 / "games.m3u").read_text() == "game.iso\n"
+    assert playlist.read_text() == "game.iso\nIco (USA).iso\n"
     assert gamelist.read_text() == ES_GAMELIST
+
+
+@pytest.mark.asyncio
+async def test_a_destination_taken_during_the_hook_leaves_it_alone_and_puts_referrers_back(
+    db: Path, client: httpx.AsyncClient, monkeypatch,
+) -> None:
+    """Another file takes the new name while the hook runs: the rename can't
+    place the Image, the newcomer is untouched, and the playlist goes back
+    without the Image ever being moved onto it (CodeRabbit 4602644886)."""
+    from services import image_rename
+
+    roms = db / "roms"
+    game = roms / "game.iso"
+    sha1 = _disc(game, b"ico")
+    (roms / "games.m3u").write_text("game.iso\n")
+    await _register(client, roms)
+    await _import(client, _dat("Sony - PlayStation 2", {"Ico (USA)": sha1}, homepage="redump.org"))
+    await _match(client, game)
+    preview = await _preview(client, game)
+    real_hook = image_rename.referrers.update_before_source_removal
+
+    async def then_taken(*args, **kwargs):
+        outcome = await real_hook(*args, **kwargs)
+        (roms / "Ico (USA).iso").write_bytes(b"someone else's")
+        return outcome
+
+    monkeypatch.setattr(image_rename.referrers, "update_before_source_removal", then_taken)
+    job = await _run(client, preview)
+
+    result = _result(job)[str(game)]
+    assert result["status"] == "not_renamed", result
+    assert game.exists()
+    assert (roms / "Ico (USA).iso").read_bytes() == b"someone else's"
+    assert (roms / "games.m3u").read_text() == "game.iso\n"
 
 
 # ----------------------------------------------------------------------
@@ -542,3 +585,271 @@ async def test_a_romm_library_without_keep_the_rom_id_is_not_renamed(
     assert item["status"] == "skip"
     assert "Keep the ROM id" in item["reason"]
     assert romm.renames == []
+
+
+# ----------------------------------------------------------------------
+# review findings (Codex on #441)
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_mid_way_through_the_file_phase_puts_the_updated_playlist_back(
+    db: Path, client: httpx.AsyncClient, monkeypatch,
+) -> None:
+    """The playlist is updated, then the gamelist write stalls and the job is
+    cancelled. The phase's worker is settled and its completed update rolled
+    back, so the playlist never names a file the Image never became."""
+    import asyncio
+    import threading
+
+    from services import dat_rename
+    from services.referrers.base import check_write
+    from services.referrers.gamelist import GamelistReferrer
+
+    ps2 = db / "roms" / "ps2"
+    game = ps2 / "game.iso"
+    sha1 = _disc(game, b"ico")
+    (ps2 / "games.m3u").write_text("game.iso\n")
+    (ps2 / "gamelist.xml").write_text(ES_GAMELIST)
+    await _register(client, db / "roms", es_frontend=True)
+    await _import(client, _dat("Sony - PlayStation 2", {"Ico (USA)": sha1}, homepage="redump.org"))
+    await _match(client, game)
+    preview = await _preview(client, game)
+    entered, release = threading.Event(), threading.Event()
+
+    def stalled(self, change):
+        entered.set()
+        release.wait(10)
+        check_write(change.target)  # the job stopped waiting: nothing is written
+
+    monkeypatch.setattr(GamelistReferrer, "apply", stalled)
+    items = [{"path": i["path"], "new_path": i["new_path"]} for i in preview["items"]]
+    started = await client.post("/api/files/dat-rename", json={"items": items}, headers=CONFIRM)
+    job_id = started.json()["job_id"]
+    assert await asyncio.to_thread(entered.wait, 10)
+    assert (ps2 / "games.m3u").read_text() == "Ico (USA).iso\n"
+    cancelled = await client.delete(f"/api/jobs/{job_id}")
+    assert cancelled.status_code == 200, cancelled.text
+    threading.Timer(0.3, release.set).start()
+    await dat_rename.drain()
+
+    job = (await client.get(f"/api/jobs/{job_id}")).json()
+    result = _result(job)[str(game)]
+    assert result["status"] == "not_renamed", result
+    assert game.exists() and not (ps2 / "Ico (USA).iso").exists()
+    assert (ps2 / "games.m3u").read_text() == "game.iso\n"
+    assert (ps2 / "gamelist.xml").read_text() == ES_GAMELIST
+
+
+@pytest.mark.asyncio
+async def test_an_image_reached_through_a_symlinked_folder_keeps_its_dat_match(
+    db: Path, client: httpx.AsyncClient,
+) -> None:
+    from services.dat_store import dat_store
+
+    discs = db / "roms" / "discs"
+    sha1 = _disc(discs / "game.iso", b"ico")
+    (db / "roms" / "alias").symlink_to(discs, target_is_directory=True)
+    listed = db / "roms" / "alias" / "game.iso"
+    await _import(client, _dat("Sony - PlayStation 2", {"Ico (USA)": sha1}, homepage="redump.org"))
+    # Matched the way the file browser does, which caches it under the real path.
+    await _match(client, listed)
+
+    job = await _run(client, await _preview(client, listed))
+
+    assert _result(job)[str(listed)]["status"] == "renamed", job
+    assert (discs / "Ico (USA).iso").exists()
+    assert dat_store.get_match(str(discs / "Ico (USA).iso"))["game_name"] == "Ico (USA)"
+    assert dat_store.get_match(str(discs / "game.iso")) is None
+
+
+@pytest.mark.asyncio
+async def test_a_lock_that_fails_releases_the_locks_already_taken(
+    db: Path, client: httpx.AsyncClient, monkeypatch,
+) -> None:
+    from services.lock_manager import LockFailed, lock_manager
+
+    roms = db / "roms"
+    game = roms / "game.iso"
+    sha1 = _disc(game, b"ico")
+    await _register(client, roms)
+    await _import(client, _dat("Sony - PlayStation 2", {"Ico (USA)": sha1}, homepage="redump.org"))
+    await _match(client, game)
+    preview = await _preview(client, game)
+    real_acquire = lock_manager.acquire_lock
+
+    def failing(path, *, allow_existing=False):
+        if path.endswith("Ico (USA).iso"):
+            raise LockFailed(path, OSError(13, "Permission denied"))
+        return real_acquire(path, allow_existing=allow_existing)
+
+    monkeypatch.setattr(lock_manager, "acquire_lock", failing)
+    job = await _run(client, preview)
+
+    result = _result(job)[str(game)]
+    assert result["status"] == "not_renamed", result
+    assert "Could not lock" in result["reason"]
+    assert game.exists()
+    assert not lock_manager.is_locked(str(game))
+
+
+@pytest.mark.asyncio
+async def test_a_compound_extension_is_kept_whole(db: Path, client: httpx.AsyncClient) -> None:
+    roms = db / "roms"
+    game = roms / "metroid.nkit.iso"
+    sha1 = _disc(game, b"metroid")
+    await _import(client, _dat("Nintendo - GameCube", {"Metroid Prime (USA)": sha1}, homepage="redump.org"))
+    await _match(client, game)
+
+    item = _by_path(await _preview(client, game))[str(game)]
+
+    assert item["new_path"] == str(roms / "Metroid Prime (USA).nkit.iso"), item
+
+
+@pytest.mark.asyncio
+async def test_a_track_a_sheet_reaches_through_a_link_elsewhere_is_not_renamed_alone(
+    db: Path, client: httpx.AsyncClient,
+) -> None:
+    """No sheet beside or above the track lists it, but one in another folder
+    reaches it through a symlink: the Volume-wide sheet walk finds it."""
+    tracks = db / "roms" / "tracks"
+    track = tracks / "game.bin"
+    sha1 = _disc(track, b"track")
+    sheets = db / "sheets"
+    sheets.mkdir()
+    (sheets / "link").symlink_to(tracks, target_is_directory=True)
+    (sheets / "game.cue").write_text(
+        'FILE "link/game.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n',
+    )
+    await _import(client, _dat("Sony - PlayStation", {"Game (USA)": sha1}, homepage="redump.org"))
+    await _match(client, track)
+
+    item = _by_path(await _preview(client, track))[str(track)]
+
+    assert item["status"] == "skip", item
+    assert "track" in item["reason"]
+
+
+@pytest.mark.asyncio
+async def test_a_parent_swapped_for_a_link_after_the_check_never_moves_a_file_outside(
+    db: Path, client: httpx.AsyncClient, monkeypatch, tmp_path: Path,
+) -> None:
+    """The Image's folder is swapped for a symlink to a folder outside every
+    Volume after it was checked. The move is bound to the folder that was
+    checked, so the file outside is never touched (Codex 4602569670)."""
+    from services import image_rename
+
+    ps2 = db / "roms" / "ps2"
+    game = ps2 / "game.iso"
+    sha1 = _disc(game, b"ico")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "game.iso").write_bytes(b"not in a Volume")
+    await _import(client, _dat("Sony - PlayStation 2", {"Ico (USA)": sha1}, homepage="redump.org"))
+    await _match(client, game)
+    preview = await _preview(client, game)
+    real_hook = image_rename.referrers.update_before_source_removal
+
+    async def swapped(*args, **kwargs):
+        outcome = await real_hook(*args, **kwargs)
+        ps2.rename(db / "roms" / "ps2-real")
+        ps2.symlink_to(outside, target_is_directory=True)
+        return outcome
+
+    monkeypatch.setattr(image_rename.referrers, "update_before_source_removal", swapped)
+    await _run(client, preview)
+
+    assert sorted(p.name for p in outside.iterdir()) == ["game.iso"]
+    assert (outside / "game.iso").read_bytes() == b"not in a Volume"
+
+
+@pytest.mark.asyncio
+async def test_one_image_that_fails_unexpectedly_doesnt_hide_the_others(
+    db: Path, client: httpx.AsyncClient, monkeypatch,
+) -> None:
+    from services import image_sets
+
+    roms = db / "roms"
+    good, bad = roms / "good.iso", roms / "bad.iso"
+    ico = _disc(good, b"ico")
+    other = _disc(bad, b"other")
+    await _import(client, _dat(
+        "Sony - PlayStation 2", {"Ico (USA)": ico, "Other (USA)": other}, homepage="redump.org",
+    ))
+    await _match(client, good, bad)
+    real_members = image_sets.image_members
+
+    def members(path):
+        if path.endswith("bad.iso"):
+            raise OSError(5, "Input/output error")
+        return real_members(path)
+
+    monkeypatch.setattr(image_sets, "image_members", members)
+    preview = await _preview(client, good, bad)
+    items = _by_path(preview)
+    assert items[str(good)]["status"] == "rename"
+    assert items[str(bad)]["status"] == "skip" and "Input/output error" in items[str(bad)]["reason"]
+
+    job = await _run(client, preview)
+
+    assert job["status"] == "completed", job
+    results = _result(job)
+    assert results[str(good)]["status"] == "renamed"
+    assert results[str(bad)]["status"] == "skipped"
+
+
+@pytest.mark.asyncio
+async def test_a_failing_conflict_settle_never_breaks_the_findings_list(
+    db: Path, client: httpx.AsyncClient, monkeypatch,
+) -> None:
+    from services import dat_rename
+
+    def broken() -> int:
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(dat_rename, "settle_conflicts", broken)
+
+    response = await client.get("/api/findings")
+
+    assert response.status_code == 200, response.text
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_while_romm_renames_settles_romm_before_the_rename_ends(
+    db: Path, client: httpx.AsyncClient, romm: FakeRomm,
+) -> None:
+    """The job is cancelled while RomM's rename request is in flight, and
+    RomM writes a sanitized name. The swap still reads RomM back and puts the
+    old name back, so the rename ends with the Image, RomM and the playlist
+    as they were (CodeRabbit 4602644910)."""
+    import asyncio
+    import threading
+
+    from services import dat_rename
+
+    game = await _romm_game(client, db)
+    platform = game.parent
+    preview = await _preview(client, game)
+    entered, release = threading.Event(), threading.Event()
+
+    def hold_the_rename(method, path):
+        if method == "PUT" and not entered.is_set():
+            entered.set()
+            release.wait(10)
+
+    romm.on_request = hold_the_rename
+    romm.rename_as = "Ico_(USA).iso"
+    items = [{"path": i["path"], "new_path": i["new_path"]} for i in preview["items"]]
+    started = await client.post("/api/files/dat-rename", json={"items": items}, headers=CONFIRM)
+    job_id = started.json()["job_id"]
+    assert await asyncio.to_thread(entered.wait, 10)
+    await client.delete(f"/api/jobs/{job_id}")
+    release.set()
+    await dat_rename.drain()
+
+    job = (await client.get(f"/api/jobs/{job_id}")).json()
+    result = _result(job)[str(game)]
+    assert result["status"] == "not_renamed", result
+    assert romm.roms[ROM_ID]["fs_name"] == "game.iso"
+    assert game.exists()
+    assert (platform / "games.m3u").read_text() == "game.iso\n"

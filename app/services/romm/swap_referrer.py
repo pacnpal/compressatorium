@@ -706,6 +706,11 @@ class _RenameInPlace:
         unanswered: RommError | None = None
         try:
             await _mutate(self.client.rename_rom, plan.rom_id, plan.new_name)
+        except asyncio.CancelledError:
+            # The request has ended (``_mutate`` waits for it): settle what it
+            # did before the cancel goes on (CodeRabbit 4602644910).
+            await self._settle_after_cancel()
+            raise
         except RommError as exc:
             if exc.status is not None:
                 # RomM answered: nothing changed (the spike's 409 and 500).
@@ -740,6 +745,24 @@ class _RenameInPlace:
             problem = f"RomM named the file {name}, not {plan.new_name}"
         await self._put_old_name_back(problem)
         raise ReferrerError(self.target, problem, kept=REFUSED)
+
+    async def _settle_after_cancel(self) -> None:
+        """Cancelled while RomM renamed: read RomM back, and put the old name
+        back when it wrote one that is neither (a sanitized name), so RomM and
+        the file agree on the old name or the new one. The caller (an Image
+        rename) then sees where the file is and carries or compensates.
+        Never raises; what can't be settled is logged."""
+        plan = self.plan
+        try:
+            name = await self._read_name()
+            if name in (plan.old_name, plan.new_name):
+                return
+            await self._put_old_name_back(f"RomM named the file {name} as it was cancelled")
+        except Exception:
+            logger.warning(
+                "romm_swap: couldn't settle ROM %s after a cancelled rename", plan.rom_id,
+                exc_info=True,
+            )
 
     async def _put_old_name_back(self, problem: str) -> None:
         """RomM wrote a name it shouldn't have: ask for the old one back
