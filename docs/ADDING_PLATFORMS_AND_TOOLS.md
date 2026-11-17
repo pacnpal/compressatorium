@@ -22,7 +22,7 @@ plus one synthetic pipeline tool already wired up:
 | **`nkit`** | built from source, Go (`/usr/local/bin/nkit2iso`) | `app/services/nkit2iso.py` | `app/services/tools/nkit2iso.py` | NKit-shrunk GameCube/Wii `.nkit.iso`/`.nkit.gcz` restored to `.iso` — **compound extensions**, info route but no verify |
 | **`jwud`** | JWUDTool release jar + JRE (`/usr/local/bin/jwudtool`) | `app/services/jwudtool.py` | `app/services/tools/jwud.py` | Wii U disc images `.wud` to/from `.wux` — **multi-file source** (a split dump) |
 | **`xiso`** | built from source (`/usr/local/bin/extract-xiso`) | `app/services/extract_xiso.py` | `app/services/tools/xiso.py` | Xbox / Xbox 360 `.iso` trimmed to `.xiso.iso` — **content-refined source** on a shared extension |
-| **`rom_converto`** | pinned release binary, SHA-256 checked (`/usr/local/bin/rom-converto`) | `app/services/rom_converto.py` | `app/services/tools/rom_converto.py` | Xbox 360 `.iso` to `.zar` so far — **one tool, several unrelated modes** (§20), and a mode that keeps its Source and says why |
+| **`rom_converto`** | pinned release binary, SHA-256 checked (`/usr/local/bin/rom-converto`) | `app/services/rom_converto.py` | `app/services/tools/rom_converto.py` | Xbox 360 `.iso` to `.zar`, PSP `.pbp` to `.iso`, 3DS `.cia` ↔ `.cci` — **one tool, several unrelated modes** (§20), a mode that keeps its Source and says why, and modes deleted on the Recognized proof |
 | **`chain`** | *(none — drives the tools above)* | *(none)* | `app/services/tools/chain.py` | Composite `cso_to_chd` (`.cso/.zso/.dax` → `.iso` → `.chd`) and `nkit_to_rvz` (`.nkit.iso/.nkit.gcz` → `.iso` → `.rvz`), each one job |
 
 Note the **tool id is not always the binary name**: maxcso registers as `cso`,
@@ -237,6 +237,7 @@ A plugin subclasses `BaseTool` and provides:
 | `converts_path(path)` | optional per-file refinement of `input_extensions` — the input-side mirror of `verifies_path`. Default is the plain extension match; override when your source is really a *set* of files so only the primary is offered (`jwud` hides the secondary members of a split `game_part1.wud` … `game_part12.wud` dump, which stay listed but non-convertible). Drives `FileEntry.convertible_by`. May do disk I/O — it runs inside the threadpool scan. |
 | `header_platform(path)` | optional. The Platform your tool reads from the file's own header (a few bytes), or `None`. Default `None`. Platform detection (`services/platform_detect.py`) asks every tool whose `input_extensions` match, maps the answer onto a RomM slug, and uses it for the convert panel's Auto choice. Override it when your consoles can be told apart from the bytes (chdman: `SYSTEM.CNF` / `PARAM.SFO` / sector-0 ids; dolphin: GC/Wii magic; xiso: XDVDFS layout). Never guess: answer `None` when unsure. Add your Platform's folder names to `_ALIASES` and its display name to `_NAMES` in `platform_detect.py`, keyed by RomM's slug (tests fail until you do). If a mode cannot read every input it accepts by hand, set `ModeSpec.reads_extensions`; set `auto_target=False` on a mode that should never be an Auto default, and `auto_platform_slugs` for a Platform a mode should serve in Auto but not by hand. Add your rows to `tests/test_auto_routing_table.py`. If the probe reads other files (a sheet's tracks), list them from `header_reads(path)` so the cache sees them change. If `is_ready()` can be False, set `not_ready_reason` to say why. See design doc §3.3.14. |
 | `ModeSpec.source_kept_reason` | optional. For a mode whose `supports_delete_on_verify` is False on principle (deleting would lose what nothing can rebuild), the reason in the user's words. The refusing 400, the CLI, the convert panel and the Rule editor show it. Mirror it as `sourceKeptReason` in `registry.js` (the parity test compares them). rom-converto's ZAR mode is the example (§20). |
+| `ModeSpec.delete_proof` | optional. The check that lets a delete-source job remove its Source: `DeleteProof.ROUND_TRIP` (the default: the container check, then the Round-trip where `supports_round_trip`) or `DeleteProof.RECOGNIZED`, for a mode whose output can't be Round-tripped but may still free its Source when the output's SHA-1 is in a DAT or Hasheous. A miss keeps the Source and the job completes saying so. The shared delete path reads it (`round_trip.delete_check_level`); never branch on the tool. A `RECOGNIZED` mode sets `supports_delete_on_verify` and never `supports_round_trip`. Mirror it as `deleteProof` in `registry.js` (the parity test compares them). rom-converto's PBP and CIA/CCI modes are the example (§20, design doc §3.3.12). |
 | `delete_on_verify_is_safe(mode, compression)` | optional per-job guard on delete-on-verify. `ModeSpec.supports_delete_on_verify` says the *mode* offers it; this says the *job* may, given its settings. Default `True` (your `verify()` reads the whole output). Override when a job setting can weaken the guarantee — `jwud` returns `False` for `-noVerify`, because its verify is a structural WUX walk backed by JWUDTool's conversion-time byte-for-byte comparison. `routes/convert.py` rejects the combination for single and batch alike. |
 | `scannable_path(path)` | optional per-file veto on the library metadata / DAT-match walk. `scannable_extensions` selects it by *type*; this drops an individual path. Default `True`; override only when a name matching a produced extension provably is not a standalone artifact (`jwud` vetoes `game_partN.wud` — twelve 2 GiB slices of one disc image that no DAT can match, so hashing them is ~25 GB of pure waste per set). Any tool answering `False` drops the path. May do *bounded* disk I/O — jwud's veto is on membership of a real set, not on the name, so a lone `game_part1.wud` stays scannable and the same path stops being scannable once its siblings appear — but it runs once per candidate across the whole library, so keep it to a stat or two, never a read. It runs inside the threadpool scan walk, never on the event loop. |
 | `source_companions(path)` | optional sibling *input* files this source also consumes, never including `path` — the input-side mirror of `companion_outputs`. Default `[]`. `utils/delete_plan.build_delete_plan` adds them, so delete-on-verify removes a multi-file source whole instead of orphaning the parts the job didn't name. (`.cue`/`.gdi` tracks are still parsed from file *contents* in `delete_plan.py` rather than routed through this hook — see the design doc.) |
@@ -2247,8 +2248,11 @@ rom-converto is one binary that converts formats with nothing in common: Xbox 36
 ISO to ZAR, PSP PBP to ISO, 3DS CIA to and from CCI. It is one plugin
 (`RomConvertoTool`) that owns all of those modes, not one plugin per format,
 because the binary, its path setting, its readiness, its Docker stage and its
-runner policy are one thing. Xbox 360 ISO to ZAR (#422) is the first mode; the
-others (#420) are added as more `ModeSpec` rows on the same tool.
+runner policy are one thing. Xbox 360 ISO to ZAR (#422) was the first mode; PSP
+PBP to ISO and 3DS CIA to CCI and back (#423) are more `ModeSpec` rows on the
+same tool, and a table in the service (`_CALLS`: subcommand, input extensions,
+output extension, the name rom-converto writes in the work folder) runs all
+four through one `convert`.
 
 ### 20.1 Each mode names its own Platform
 
@@ -2266,9 +2270,19 @@ per-mode answer.
 tool dispatches on the file and the mode inside its service, never on its own id
 elsewhere. ZAR's source is any Xbox 360 `.iso` (content-refined, §19, through
 `extract_xiso.probe_console`, which raises on a read error so the cached verdict
-never remembers an outage). When a later mode claims a different extension
-(`.pbp`), `converts_path` answers per extension: keep each mode's check in the
-service, keyed by the input's extension.
+never remembers an outage). The later modes claim different extensions, so
+`converts_path` answers per extension: a `.pbp` must hold a PSP game
+(`NPUMDIMG`, not a PS1 Classic), a `.cia` a CIA header, a `.cci`/`.3ds` an NCSD
+header (`services/rom_converto_formats.source_problem`, cached per path, size
+and mtime). `plan_job` names each mode's own refusal through
+`_NOT_CONVERTIBLE_MODE_REASON`, which wins over the tool's.
+
+The PSP and 3DS outputs have no rom-converto check, so the service reads their
+structure in Python (`rom_converto_formats.output_problem`: an ISO's volume, a
+CCI's partitions, a CIA's sections). `verify_extensions` lists them, as the
+delete-on-verify contract test requires, while `verifies_path` keeps the
+listing's Verify row action on `.zar` only. They can't be Round-tripped, so
+their `delete_proof` is `RECOGNIZED` (design doc §3.3.12).
 
 ### 20.3 The binary: a pinned release per arch
 
@@ -2310,3 +2324,7 @@ which. The rest of the app keeps working.
 - `tests/test_rom_converto_real.py` runs the real binary on the xiso suite's
   synthetic XDVDFS images when `ROM_CONVERTO_PATH` points at one, and skips
   otherwise.
+- `tests/test_rom_converto_423.py` drives the PSP and 3DS modes with a stub
+  that writes the synthetic containers in `tests/rom_converto_fixtures.py`, and
+  runs whole jobs through the convert route for both outcomes of the Recognized
+  proof: a DAT hit deletes the Source, a miss keeps it with the reason.

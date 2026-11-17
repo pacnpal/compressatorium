@@ -1152,10 +1152,17 @@ def test_the_route_refuses_delete_source_for_them(mode):
 
 
 def test_every_mode_with_delete_source_round_trips():
-    """After #301 no mode deletes its Source on the container check alone."""
+    """After #301 no mode deletes its Source on the container check alone.
+
+    A mode whose output can't be Round-tripped deletes on the Recognized proof
+    instead (#423), never on the container check.
+    """
+    from services.tools.spec import DeleteProof
+
     left = {
         s.mode for s in registry.mode_specs()
         if s.supports_delete_on_verify and not s.supports_round_trip
+        and s.delete_proof is not DeleteProof.RECOGNIZED
     }
     assert left == set()
 

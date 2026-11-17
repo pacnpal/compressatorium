@@ -4,6 +4,33 @@
 
 ### Added
 
+- **PSP PBP to ISO, and 3DS CIA to CCI and back, with rom-converto** (#423).
+  Three more rom-converto modes: **PSP PBP → ISO** turns a PSP game's
+  `EBOOT.PBP` back into the UMD ISO inside it, **3DS CIA → CCI** writes a
+  trimmed `Game.cci`, and **3DS CCI → CIA** reads a `.cci` or `.3ds`. Each is
+  offered only on a file whose header says it is one (a PS1 Classic PBP is
+  not), works from the convert panel and from a Rule, and is checked after
+  conversion by reading the output's structure, so a cut-off file fails.
+  rom-converto carries its own 3DS common keys; the app never downloads or
+  ships keys or seeds, and an input that needs one fails with a message that
+  says so. Auto still picks CSO for PSP and Z3DS for 3DS. RomM's converter
+  targets `iso` for PSP and `cci`/`cia` for 3DS, so the RomM view stops
+  marking those as Platforms only RomM converts, and **Import RomM's targets
+  as Rules** maps them onto these modes.
+- **A second delete proof: Recognized** (#423). These outputs can't be
+  Round-tripped against their source (an ISO can't be turned back into its
+  PBP, and a converted CIA is unsigned with a zero title key), so with
+  delete-source on, the output's SHA-1 is looked up in your DATs, then in
+  Hasheous if it's on, and the source is deleted only on a hit. Otherwise the
+  source is kept, the output stays, and the job completes saying
+  "converted, source kept: output not Recognized". A PSN PBP or a converted
+  CIA will usually not be Recognized, so expect those sources to stay. The
+  convert panel, the delete confirmation and the Rule editor say which proof
+  each format uses, Preview says "Recognized ... before deleting the source",
+  and **Container check only** is offered only where a Round-trip runs. The
+  Ledger's check column says Recognized, with the DAT that matched (a new
+  `check_dat` column, also last in the CSV export), and a converted file's
+  badge says Recognized.
 - **Rename to DAT name** (#425). Tick Images in the file browser and press
   **Rename to DAT name**: each Recognized single-file Image takes the name the
   top-ranked DAT gives it, keeping its own extension, with characters a

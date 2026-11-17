@@ -32,7 +32,13 @@ from app.services.jwudtool import (
     JWUD_DECOMPRESS_EXTENSIONS,
     jwudtool_service,
 )
-from app.services.rom_converto import ZAR_INPUT_EXTENSIONS, rom_converto_service
+from app.services.rom_converto import (
+    CCI_INPUT_EXTENSIONS,
+    CIA_INPUT_EXTENSIONS,
+    PBP_INPUT_EXTENSIONS,
+    ZAR_INPUT_EXTENSIONS,
+    rom_converto_service,
+)
 from app.services.tools import registry
 from app.services.tools.registry import ToolRegistry
 from app.services.tools.spec import ModeKind, ModeSpec
@@ -97,7 +103,7 @@ def _legacy_tool_for_mode(mode: str) -> str:
         return "jwud"
     if mode.startswith("xiso_"):
         return "xiso"
-    if mode.startswith("zar_"):
+    if mode.startswith("zar_") or mode in ("pbp_to_iso", "cia_to_cci", "cci_to_cia"):
         return "rom_converto"
     if mode.startswith("exodos_"):
         return "exodos"
@@ -106,7 +112,7 @@ def _legacy_tool_for_mode(mode: str) -> str:
 
 def test_every_conversion_mode_resolves_to_exactly_one_tool():
     resolved = {m.value: registry.for_mode(m.value).id for m in CONVERSION_MODES}
-    assert len(resolved) == 36
+    assert len(resolved) == 39
     # Each registered mode is owned by exactly one tool (no duplicates).
     assert sorted(s.mode for s in registry.mode_specs()) == sorted(resolved)
 
@@ -226,6 +232,7 @@ def test_convertible_extensions_match_service_constants():
         | set(JWUD_DECOMPRESS_EXTENSIONS)
         | set(XISO_CONVERTIBLE_EXTENSIONS)
         | set(ZAR_INPUT_EXTENSIONS)
+        | set(PBP_INPUT_EXTENSIONS) | set(CIA_INPUT_EXTENSIONS) | set(CCI_INPUT_EXTENSIONS)
         | set(EXODOS_INPUT_EXTENSIONS)
     )
     assert set(registry.convertible_extensions()) == expected
@@ -241,7 +248,8 @@ def test_tools_for_input_representative():
         "rom_converto",
         "xiso",
     ]
-    assert [t.id for t in registry.tools_for_input("rom.3ds")] == ["z3ds"]
+    # rom-converto reads a CCI as `.3ds` too (cci_to_cia, #423).
+    assert [t.id for t in registry.tools_for_input("rom.3ds")] == ["z3ds", "rom_converto"]
     assert [t.id for t in registry.tools_for_input("game.nsp")] == ["nsz"]
     assert [t.id for t in registry.tools_for_input("game.nsz")] == ["nsz"]
     assert [t.id for t in registry.tools_for_input("disc.gdi")] == ["chdman"]

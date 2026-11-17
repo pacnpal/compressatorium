@@ -1059,8 +1059,9 @@ async def get_scan_status():
 async def list_verified() -> dict:
     """List outputs that passed a check, and which check each passed.
 
-    ``checks`` maps each path to ``"intact"`` or ``"round_tripped"`` (#298) so
-    the UI names the check instead of calling the file "verified".
+    ``checks`` maps each path to ``"intact"``, ``"round_tripped"`` (#298) or
+    ``"recognized"`` (#423) so the UI names the check instead of calling the
+    file "verified".
 
     Prunes the records whose output is confirmed gone first. Every record is
     checked in one pass on a detached thread under the no-progress bound
