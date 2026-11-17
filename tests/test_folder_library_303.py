@@ -1851,9 +1851,9 @@ def test_the_folder_libraries_migration_stacks_on_the_ledger_totals_one(tmp_path
     cfg = _db._alembic_config(engine)
     script = ScriptDirectory.from_config(cfg)
     # #304's 0013 stacks on this 0012, #305's 0014 on that, #337's 0015 on
-    # that, #386's 0016 on that, #388's 0017 on that and #387's 0018 on
-    # that: one head, 0018.
-    assert script.get_heads() == ["0018"]
+    # that, #386's 0016 on that, #388's 0017 on that, #387's 0018 on that
+    # and #389's 0020 on that: one head, 0020.
+    assert script.get_heads() == ["0020"]
     assert script.get_revision("0012").down_revision == "0011"
     assert script.get_revision("0011").down_revision == "0010"
 

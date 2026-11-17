@@ -26,4 +26,6 @@ export const EXTERNAL_MODE_LABELS = Object.freeze({
   check: 'Check',
   // A Library's find-duplicates run (#388), started from the Rules view.
   find_duplicates: 'Find duplicates',
+  // A confirmed delete of a duplicate group's other copies (#389).
+  delete_duplicates: 'Delete duplicates',
 });

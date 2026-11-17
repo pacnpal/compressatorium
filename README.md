@@ -947,14 +947,22 @@ Finding duplicates deletes nothing by itself. To clean a group up:
   Nothing is deleted until you confirm.
 - A delete is offered only when every copy is proven to hold the same disc
   (equal content hashes), and not for a group the last run could not fully
-  see. A `.bin` that a `.cue` lists, beside it or in a folder above it, is
-  never deleted on its own, and when a sheet there can't be read, or a folder
-  on the way can't be listed, it isn't deleted either.
-- When you confirm, every copy and the copy kept are checked again against
-  what the Finding showed: one that is gone, changed or unreadable stops the
-  delete. The copy kept is then read in full (a CHD through `chdman verify`)
-  and must still hold the same disc, or nothing is deleted. Each copy then goes through the same delete step, locks and checks
-  as a conversion's delete-on-verify; a copy a job is using is kept, and the
+  see. A track that any `.cue`/`.gdi` in your Volumes lists, beside it, in a
+  folder above it, or elsewhere through a link, is never deleted on its own.
+  When a sheet can't be read, or a folder in the Volumes can't be listed, no
+  delete is offered; run Find duplicates again once it can. The same goes
+  after the Volumes change.
+- Confirming starts a **Delete duplicates** job: the dialog shows its
+  progress, and you can close it and follow the job in the jobs list (or
+  cancel it there). The job reads the sheets in your Volumes again, so a
+  sheet added since the run still keeps its tracks, then checks every copy
+  and the copy kept again against what the Finding showed: one that is gone,
+  changed or unreadable stops the delete. The copy kept is then read in full
+  (a CHD through `chdman verify`) and must still hold the same disc, or
+  nothing is deleted. Each copy then goes through the same delete step, locks
+  and checks as a conversion's delete-on-verify, and must still be the very
+  file whose content was hashed (another file moved into its place is kept,
+  even with the same size and date); a copy a job is using is kept, and the
   rest still go.
 - Afterwards the group lists what is left, or goes away once one copy is.
 

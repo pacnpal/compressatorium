@@ -68,6 +68,9 @@ class ConversionMode(str, Enum):
     # A Library's find-duplicates run (#388): reads content keys and groups
     # the Images that hold one disc. External, never a conversion.
     FIND_DUPLICATES = "find_duplicates"
+    # A confirmed delete of a duplicate group's other copies (#389): reads
+    # the keeper in full, then deletes each copy under its locks. External.
+    DELETE_DUPLICATES = "delete_duplicates"
 
 
 class DuplicateAction(str, Enum):
@@ -205,6 +208,10 @@ class ConversionJob(BaseModel):
     # {"referrer": id, "target": file, "status": "updated" | "failed" |
     # "skipped", "reason": why, for failed and skipped}.
     referrers_updated: list[dict] = []
+    # What an external job came to, for whoever started it: a duplicate
+    # delete's per-copy outcomes and whether the copy kept changed (#389).
+    # None for every other job.
+    result: dict | None = None
     # Who queued the job when it is not a person (a sweep passes its token), so a
     # terminal listener can tell the two apart from the first moment the job
     # exists. A private attribute: not a field, so it is in neither the API schema

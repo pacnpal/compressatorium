@@ -9,8 +9,9 @@
    * "not Intact" row for an Image that failed its check, in any Library.
    * A Library's find-duplicates run (#388) adds one "Duplicate" row per group
    * of Images holding the same disc, with each copy's path, container and
-   * size, and says which formats it could not check. Read-only: deleting a
-   * copy is left to the file browser.
+   * size, and says which formats it could not check. Delete others (#389)
+   * deletes the other copies of a group whose key proves them equal, as a
+   * background job, after the user confirms its plan.
    * Dismiss hides a row until its cause changes. The app never moves or
    * deletes an Image over a Finding.
    */
@@ -84,6 +85,28 @@
   $effect(() => {
     const ids = finishedRuns ? finishedRuns.split(',') : [];
     untrack(() => findings.noteFinishedRuns(ids));
+  });
+
+  // A duplicate delete this page started (#389) runs as a job: when the jobs
+  // store sees it end, its dialog settles, the list is read again, and a
+  // toast says what went.
+  const finishedDeletes = $derived(
+    jobs.jobs.filter(
+      (j) => j.mode === 'delete_duplicates' && TERMINAL_STATUSES.has(j.status)
+        && findings.runningDeletes.includes(j.id),
+    ),
+  );
+
+  $effect(() => {
+    const ended = finishedDeletes;
+    if (!ended.length) return;
+    untrack(() => {
+      for (const { job, result } of findings.noteFinishedDeletes(ended)) {
+        if (job.status === 'completed') cleaned(result);
+        else if (job.status === 'cancelled') toast.warning(job.message || 'The delete was cancelled');
+        else toast.error(job.error_message || 'The delete did not finish');
+      }
+    });
   });
 
   // Whether any folder Library exists, for the empty state.
@@ -326,7 +349,7 @@
   {/if}
 </div>
 
-<DuplicateDeleteModal onDone={cleaned} />
+<DuplicateDeleteModal />
 
 {#snippet refreshIcon()}<RefreshCw size={14} />{/snippet}
 {#snippet deleteIcon()}<Trash2 size={14} />{/snippet}

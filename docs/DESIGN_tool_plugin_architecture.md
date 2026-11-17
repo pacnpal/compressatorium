@@ -5634,7 +5634,7 @@ does not), and that an ISO, its RVZ and its DVD CHD group together.
 
 **CHD metadata freshness.** `chd_metadata_store.get_fresh_metadata` checks the
 file's identity, its size and integer `st_mtime_ns` (`chd_metadata.size` and
-`mtime_ns`, added by 0017), the same identity `content_keys` uses, so a
+`mtime_ns`, added by 0017), the size and mtime `content_keys` also ties to, so a
 replacement that kept the float mtime never hands back the old hashes, for
 every caller. One check (`CHDMetadataStore._describes`) answers it for
 `get_fresh_metadata`, `is_stale` and `cached_media_type_blocking`, so they
@@ -5644,8 +5644,11 @@ everywhere: the metadata scan and the info route read it again, after which
 
 **Stored per file, tied to its identity.** `content_keys` (migration 0017) holds
 `path`, `size`, `mtime_ns`, `key` (None for a format with no key) and
-`container`. `content_keys.stored(...)` returns only rows whose size and mtime
-still match, so a changed file loses its key. The DAT match cache is not read
+`container`, and (0020, #389) the file's `dev` and `ino`.
+`content_keys.stored(...)` returns only rows whose size, mtime, device and
+inode all still match (`content_keys.Identity`), so a changed file, or another
+file moved into its path with the same size and mtime, loses its key; a row
+from before 0020 has no device or inode and is read again. The DAT match cache is not read
 for this: its rows carry no size or mtime to tie a SHA1 to the file.
 
 **The run.** `duplicates.start(library)` creates an external job of
@@ -5859,10 +5862,33 @@ keeper, as a conversion maps them to its output. The answer has the
 delete-plan route's item shape (`delete_paths`, `missing_paths`,
 `unsafe_paths`, `errors`, `referrer_changes`) and `blocked`.
 
-**The delete** (`POST /api/findings/{id}/delete`, the `delete-file`
-confirmation header and `{fingerprint, keep, delete_paths}`): the plan is made
-again, must not be blocked, and must list exactly the confirmed paths (409
-otherwise). Then `JobManager.delete_duplicate_copies` takes the keeper's lock
+**The delete is a job** (`POST /api/findings/{id}/delete`, the `delete-file`
+confirmation header and `{fingerprint, keep, delete_paths}`). The keeper's
+full read makes it too long for a request, and its checks must not rest on
+snapshots taken before it, so the route only does the quick, database-only
+checks (`duplicate_cleanup._offered`: the Finding as shown, the keeper one of
+its copies, `not_deletable`; one delete per Finding at a time, 409 otherwise)
+and answers `{job_id}`. The job is an external job
+(`ConversionMode.DELETE_DUPLICATES`, `ExternalMode(in_ledger=False)`, as
+find-duplicates): progress and message through `update_external_job`, cancel
+through its cancel event, its outcome on the job's new `result` field
+(`{finding_id, keep, keeper_changed, results}`, also its `deleted_paths`,
+`warning` and message), and a refusal as a failed job whose `error_message`
+says why. `duplicate_cleanup.drain()` waits for the running ones. The UI keeps
+its in-flight lock per Finding with the job id, follows the job in the jobs
+store (`findings.noteFinishedDeletes`, from the Findings view), shows its
+progress in the dialog, and settles the dialog when the job ends (closed, the
+`keeper_changed` warning, or the failure's reason).
+
+In the job, before anything is deleted, the Volumes' sheets are read again
+(`image_sets.volume_sheet_tracks`, the same walk, stall bound and incomplete
+rules as the run's record, Codex PRRT_kwDOQ9nULM64OuXm), and that fresh set,
+not the run's, is what each copy is checked against: a sheet added since the
+run keeps its tracks. The run's record stays the gate for offering a delete at
+all. A walk that is incomplete or stalls fails the job with nothing deleted; a
+cancel ends it cancelled. Then the plan is made again, must not be blocked,
+and must list exactly the confirmed paths. Then
+`JobManager.delete_duplicate_copies` takes the keeper's lock
 (`_take_output`) and, under it and before any copy goes, proves the keeper by
 its bytes (`_keeper_problem`, Codex 4593004806): its size and mtime must still
 be the Finding's, then `content_keys.recompute` computes its key again from
@@ -5875,7 +5901,9 @@ cancel (`BaseTool`'s default: a tool whose raw hash rebuilds the image, so
 Dolphin rebuilds the disc; `ChdmanTool`: `chdman verify` must pass, which
 recomputes the data SHA1 from every hunk, then the header read fresh). A format
 with no full-content key cannot be kept. A read that fails, stalls, is
-cancelled or gives another key refuses every copy and deletes nothing.
+cancelled or gives another key refuses every copy and deletes nothing. The
+job's cancel event reaches that read and stops the batch before the next
+copy.
 
 The keeper is opened (`_open_keeper`, through `run_detached_undoable`: a
 descriptor delivered after the bound gave up is closed by the undo,
@@ -5900,18 +5928,27 @@ warning, not a success (Codex 4593499350). This catches a rename swap. An
 in-place rewrite by a writer with write access to the keeper cannot be caught
 by any ordering here, since the same writer could corrupt it right after the
 cleanup: that is inherent to keeping one copy. The copies being deleted are
-not read in full (a decision, CodeRabbit 4593240082): a copy swapped for other
-bytes with its size and mtime put back can only be swapped by something that
-can already write, and so delete, it; each keeps its full fingerprint check
-(size, mtime, inode, device) under its holds.
+not read in full (a decision, CodeRabbit 4593240082). Instead each must still
+be the very file its content key was read from (Codex PRRT_kwDOQ9nULM64OuXs):
+`content_keys` stores the file's device and inode beside its size and mtime
+when the key is set (`content_keys.Identity`, migration 0020; a row from
+before has none and matches no file, so it is read again), and under the
+copy's holds `_copy_under_holds` requires the copy's identity now to equal
+the stored key's and that key to be the group's. A file moved into the copy's
+place with the same size and mtime is a new inode, so it is kept with no
+re-hash. Only an in-place rewrite that puts the mtime back is not caught, and
+only something that can already write the copy, and so delete it, can do
+that.
 
 Then for each copy it runs
 the retried-delete pattern: `build_delete_snapshot` (the copy's own file must
 still have the Finding's identity), its delete paths taken exclusively without
 waiting (`_take_exclusively`: a copy a job holds is `reader`, kept), the
-snapshot again under the holds, the sheet check again under them
-(`copy_problem`, `duplicate_cleanup._sheet_problem`: a sheet that names the
-copy since the plan keeps it, CodeRabbit 4593240099), then the shared delete
+snapshot again under the holds, then `copy_problem`
+(`duplicate_cleanup._copy_under_holds`): the content-key identity above, and
+the sheet check again (the walk up and the job's fresh set of sheet tracks: a
+sheet that names the copy since the plan keeps it, CodeRabbit 4593240099),
+then the shared delete
 step (`_delete_source_set`: per-path checks, the Referrer hook pointing
 playlists at the keeper, the unlinks as one mutation, the copy's check and
 metadata records cleared). Each copy's outcome is a `KeptDeleteRetry`.

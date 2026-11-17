@@ -5,11 +5,14 @@
    * Opened on a group with its suggested keeper picked. The backend's plan
    * lists every file each other copy's delete would remove (a sheet's tracks,
    * a split set's parts) and the playlists that would be pointed at the copy
-   * kept. Picking another keeper plans again. Confirm deletes exactly what the
-   * list shows; a copy that changed since, or a plan that no longer matches,
-   * is refused by the backend and nothing of it is deleted.
+   * kept. Picking another keeper plans again. Confirm starts a background job
+   * that deletes exactly what the list shows; a copy that changed since, or a
+   * plan that no longer matches, is refused by it and nothing of it is
+   * deleted. The dialog shows the job's progress; closing it leaves the job
+   * running (it is in the jobs list), and the view settles it when it ends.
    */
   import { findings, findingName } from '$lib/stores/findings.svelte.js';
+  import { jobs } from '$lib/stores/jobs.svelte.js';
   import { summarizeMessages } from '$lib/util/messages.js';
   import BaseModal from './BaseModal.svelte';
   import Button from '$lib/components/ui/Button.svelte';
@@ -18,10 +21,9 @@
   import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
   import Trash2 from '@lucide/svelte/icons/trash-2';
 
-  /** @type {{ onDone: (result: object | null) => void }} */
-  let { onDone } = $props();
-
   const open = $derived(findings.cleanup);
+  // The delete job this dialog's Finding is running, once the backend named it.
+  const job = $derived(open?.jobId ? jobs.jobs.find((j) => j.id === open.jobId) ?? null : null);
   const plan = $derived(open?.plan ?? null);
   const items = $derived(Array.isArray(plan?.items) ? plan.items : []);
   const copies = $derived(open?.row?.cause?.copies ?? []);
@@ -48,7 +50,7 @@
 
   async function confirm() {
     try {
-      onDone(await findings.confirmCleanup());
+      await findings.confirmCleanup();
     } catch {
       // The dialog shows the error and stays open; the list was read again.
     }
@@ -86,8 +88,13 @@
         </div>
       {/if}
       {#if open.deleting}
-        <!-- The copy to keep is read in full under its lock first (#389). -->
-        <p class="dd-note"><Spinner /> Checking the copy to keep (reading it in full), then deleting…</p>
+        <!-- A background job: the copy to keep is read in full under its
+             lock first (#389). Closing the dialog leaves it running. -->
+        <p class="dd-note">
+          <Spinner />
+          {job?.message || 'Starting the delete…'}{#if job?.progress}&nbsp;({job.progress}%){/if}
+        </p>
+        <p class="dd-note">It runs as a job: you can close this dialog and follow it in the jobs list.</p>
       {/if}
       {#if open.error}
         <div class="dd-block" role="alert">

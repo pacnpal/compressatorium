@@ -215,16 +215,18 @@ async def duplicate_delete_plan(finding_id: int, payload: DuplicateKeep) -> dict
 
 @router.post("/findings/{finding_id}/delete")
 async def duplicate_delete(finding_id: int, payload: DuplicateDelete, request: Request) -> dict:
-    """Delete every copy but *keep*, after the user confirmed the plan (#389).
+    """Start deleting every copy but *keep*, after the user confirmed the plan (#389).
 
-    Needs the delete confirmation header and the very paths the plan listed;
-    the plan is made again and every copy checked again first. Each copy then
-    goes through the job's own delete step, under its locks. The Finding
-    lists what is left, or clears.
+    Needs the delete confirmation header and the very paths the plan listed.
+    Answers ``{job_id}`` at once: the delete is a background job (reading the
+    Volumes' sheets again, making the plan again and checking every copy, the
+    keeper's full read, then each copy through the job's own delete step under
+    its locks), with progress, cancel and its outcome in ``result``. 409 when
+    the group offers no delete or a delete of it is already running.
     """
     _require_action_confirmation(request, CONFIRM_DELETE_FILE, "delete action")
     try:
-        return await duplicate_cleanup.delete(
+        return await duplicate_cleanup.start_delete(
             finding_id, payload.fingerprint, payload.keep, payload.delete_paths,
         )
     except duplicate_cleanup.CleanupRefused as exc:

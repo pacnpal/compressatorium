@@ -829,8 +829,9 @@ export const api = {
 
   // A duplicate group's delete (#389): first the plan (the confirmation
   // list), then the delete of exactly what it listed, with the confirmation
-  // header. The Finding's fingerprint goes with both: a group that changed
-  // since it was shown answers 409.
+  // header, which answers `{ job_id }`: the delete runs as a background job.
+  // The Finding's fingerprint goes with both: a group that changed since it
+  // was shown answers 409.
   duplicateDeletePlan: (id, fingerprint, keep) =>
     jsonPost(
       `${API_BASE}/findings/${encodeURIComponent(id)}/delete-plan`, { fingerprint, keep }, {},

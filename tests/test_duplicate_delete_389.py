@@ -15,6 +15,7 @@ Driven through the Findings routes, as #388's tests are.
 from __future__ import annotations
 
 import asyncio
+import functools
 import os
 import threading
 from pathlib import Path
@@ -74,7 +75,21 @@ async def _plan(client: httpx.AsyncClient, group: dict, keep: str) -> httpx.Resp
     )
 
 
-async def _delete(
+class _Finished:
+    """What a confirmed delete came to: the route's answer when it refused to
+    start, else the finished delete job's. A job that completed is 200 with
+    its result; one that refused the delete before deleting anything (blocked,
+    changed, cancelled) is 409 with its reason."""
+
+    def __init__(self, status_code: int, body: dict) -> None:
+        self.status_code, self._body = status_code, body
+        self.text = str(body)
+
+    def json(self) -> dict:
+        return self._body
+
+
+async def _start_delete(
     client: httpx.AsyncClient, group: dict, keep: str, delete_paths: list[str],
     *, headers: dict | None = CONFIRM,
 ) -> httpx.Response:
@@ -83,6 +98,28 @@ async def _delete(
         json={"fingerprint": group["fingerprint"], "keep": keep, "delete_paths": delete_paths},
         headers=headers or {},
     )
+
+
+async def _finished_job(client: httpx.AsyncClient, job_id: str) -> dict:
+    from services import duplicate_cleanup
+
+    await duplicate_cleanup.drain()
+    response = await client.get(f"/api/jobs/{job_id}")
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+async def _delete(
+    client: httpx.AsyncClient, group: dict, keep: str, delete_paths: list[str],
+    *, headers: dict | None = CONFIRM,
+) -> _Finished:
+    started = await _start_delete(client, group, keep, delete_paths, headers=headers)
+    if started.status_code != 200:
+        return _Finished(started.status_code, started.json())
+    job = await _finished_job(client, started.json()["job_id"])
+    if job["status"] == "completed":
+        return _Finished(200, job["result"])
+    return _Finished(409, {"detail": job["error_message"] or job["message"], "job": job})
 
 
 def _paths(plan: dict) -> list[str]:
@@ -1512,3 +1549,255 @@ async def test_a_sheet_romm_does_not_list_still_blocks_its_track(
 
     await _blocked_for(client, group, str(roms / "Game.iso"), "a sheet in the Volumes")
     assert target.exists()
+
+
+
+# ----------------------------------------------------------------------
+# the confirmed delete is a background job
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_the_confirmed_delete_runs_as_a_job(
+    db: Path, client: httpx.AsyncClient,
+) -> None:
+    """The route only starts it: its id comes back at once, and the job's
+    progress, outcome and per-copy results are the job's."""
+    roms = db / "roms"
+    d388._disc(roms / "Game.iso", b"game")
+    d388._copy(roms / "Game.iso", roms / "Copy.iso")
+    library = await d388._register(client, roms)
+    await d388._find(client, library)
+    group = await _group(client)
+    keep = str(roms / "Game.iso")
+    plan = (await _plan(client, group, keep)).json()
+
+    started = await _start_delete(client, group, keep, _paths(plan))
+    assert started.status_code == 200, started.text
+    assert set(started.json()) == {"job_id"}
+    job = await _finished_job(client, started.json()["job_id"])
+
+    assert job["mode"] == "delete_duplicates", job
+    assert job["status"] == "completed", job
+    assert job["result"]["keep"] == keep
+    assert [r["status"] for r in job["result"]["results"]] == ["deleted"]
+    assert job["result"]["keeper_changed"] is None
+    assert not (roms / "Copy.iso").exists()
+    assert await d388._duplicates(client) == []
+
+
+@pytest.mark.asyncio
+async def test_a_second_delete_of_the_same_group_waits_for_the_first(
+    db: Path, client: httpx.AsyncClient, monkeypatch,
+) -> None:
+    from services import duplicate_cleanup
+
+    roms = db / "roms"
+    d388._disc(roms / "Game.iso", b"game")
+    d388._copy(roms / "Game.iso", roms / "Copy.iso")
+    library = await d388._register(client, roms)
+    await d388._find(client, library)
+    group = await _group(client)
+    keep = str(roms / "Game.iso")
+    plan = (await _plan(client, group, keep)).json()
+    gate = asyncio.Event()
+    real = duplicate_cleanup._delete
+
+    async def held(*args, **kwargs):
+        await gate.wait()
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(duplicate_cleanup, "_delete", held)
+    first = await _start_delete(client, group, keep, _paths(plan))
+    second = await _start_delete(client, group, keep, _paths(plan))
+    gate.set()
+    await duplicate_cleanup.drain()
+
+    assert first.status_code == 200, first.text
+    assert second.status_code == 409, second.text
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_delete_job_deletes_nothing(
+    db: Path, client: httpx.AsyncClient, monkeypatch,
+) -> None:
+    from services import duplicate_cleanup, image_sets
+    from services.job_manager import job_manager
+
+    roms = db / "roms"
+    d388._disc(roms / "Game.iso", b"game")
+    d388._copy(roms / "Game.iso", roms / "Copy.iso")
+    library = await d388._register(client, roms)
+    await d388._find(client, library)
+    group = await _group(client)
+    keep = str(roms / "Game.iso")
+    plan = (await _plan(client, group, keep)).json()
+    real = image_sets.volume_sheet_tracks
+    started_id: list[str] = []
+
+    def cancelled_during_the_walk(roots, *, progress):
+        job_manager._cancelled.add(started_id[0])
+        event = job_manager.get_cancel_event(started_id[0])
+        if event is not None:
+            event.set()
+        return real(roots, progress=progress)
+
+    monkeypatch.setattr(image_sets, "volume_sheet_tracks", cancelled_during_the_walk)
+    gate = asyncio.Event()
+    run = duplicate_cleanup._delete
+
+    async def after_the_id(*args, **kwargs):
+        await gate.wait()
+        return await run(*args, **kwargs)
+
+    monkeypatch.setattr(duplicate_cleanup, "_delete", after_the_id)
+    started = await _start_delete(client, group, keep, _paths(plan))
+    started_id.append(started.json()["job_id"])
+    gate.set()
+    job = await _finished_job(client, started_id[0])
+
+    assert job["status"] == "cancelled", job
+    assert (roms / "Copy.iso").exists()
+
+
+# ----------------------------------------------------------------------
+# sheets added after the run (Codex PRRT_kwDOQ9nULM64OuXm)
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_sheet_added_after_the_run_keeps_its_track(
+    db: Path, client: httpx.AsyncClient,
+) -> None:
+    """The run saw no sheet; ``disc/Disc.cue`` linking to ``shared/Track.bin``
+    is added after it, before the delete is confirmed. The delete job reads
+    the Volumes' sheets again, so the BIN is kept."""
+    roms = db / "roms"
+    d388._disc(roms / "Game.iso", b"game")
+    d388._copy(roms / "Game.iso", roms / "shared" / "Track.bin")
+    library = await d388._register(client, roms)
+    await d388._find(client, library)
+    group = await _group(client)
+    assert d388._names(group) == ["Game.iso", "Track.bin"]
+    keep = str(roms / "Game.iso")
+    plan = (await _plan(client, group, keep)).json()
+    assert plan["blocked"] is False, plan
+
+    (roms / "disc").mkdir()
+    os.symlink(roms / "shared" / "Track.bin", roms / "disc" / "Track.bin")
+    _cue(roms / "disc" / "Disc.cue", "Track.bin")
+    done = await _delete(client, group, keep, _paths(plan))
+
+    assert done.status_code == 409, done.text
+    assert "a sheet in the Volumes" in done.json()["detail"], done.json()
+    assert (roms / "shared" / "Track.bin").exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(folder_library_303._IS_ROOT, reason="root lists every folder")
+async def test_a_volume_walk_that_cannot_finish_at_delete_time_deletes_nothing(
+    db: Path, client: httpx.AsyncClient,
+) -> None:
+    roms, locked = db / "roms", db / "elsewhere"
+    d388._disc(roms / "Game.iso", b"game")
+    d388._copy(roms / "Game.iso", roms / "Copy.iso")
+    locked.mkdir()
+    library = await d388._register(client, roms)
+    await d388._find(client, library)
+    group = await _group(client)
+    keep = str(roms / "Game.iso")
+    plan = (await _plan(client, group, keep)).json()
+
+    locked.chmod(0)
+    try:
+        done = await _delete(client, group, keep, _paths(plan))
+    finally:
+        locked.chmod(0o755)
+
+    assert done.status_code == 409, done.text
+    assert "elsewhere" in done.json()["detail"], done.json()
+    assert (roms / "Copy.iso").exists()
+
+
+# ----------------------------------------------------------------------
+# a copy replaced since its key was set (Codex PRRT_kwDOQ9nULM64OuXs)
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_copy_replaced_with_the_same_size_and_mtime_is_not_deleted(
+    db: Path, client: httpx.AsyncClient,
+) -> None:
+    """Different bytes of the same size, moved into place (a new file), with
+    the old mtime put back: size and mtime match, the file is not the one
+    that was hashed."""
+    roms = db / "roms"
+    d388._disc(roms / "Game.iso", b"game")
+    d388._copy(roms / "Game.iso", roms / "Copy.iso")
+    library = await d388._register(client, roms)
+    await d388._find(client, library)
+    group = await _group(client)
+    keep = str(roms / "Game.iso")
+    plan = (await _plan(client, group, keep)).json()
+
+    copy = roms / "Copy.iso"
+    before = os.stat(copy)
+    data = bytearray(copy.read_bytes())
+    data[-1] ^= 0xFF
+    other = roms / "other.tmp"
+    other.write_bytes(bytes(data))
+    os.replace(other, copy)
+    os.utime(copy, ns=(before.st_atime_ns, before.st_mtime_ns))
+    assert (os.stat(copy).st_size, os.stat(copy).st_mtime_ns) == (
+        before.st_size, before.st_mtime_ns,
+    )
+
+    done = await _delete(client, group, keep, _paths(plan))
+    if done.status_code == 200:
+        statuses = {r["status"] for r in done.json()["results"]}
+        assert statuses == {"stale"}, done.json()
+    assert copy.exists()
+    assert copy.read_bytes() == bytes(data)
+
+
+def test_a_key_is_tied_to_the_file_it_was_read_from(db: Path, tmp_path: Path) -> None:
+    """The stored identity is the file's device and inode as well as its size
+    and mtime: a new file in its place no longer has the key."""
+    from services import content_keys
+
+    path = db / "roms" / "Disc.iso"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"x" * 64)
+    identity = content_keys.identity_of(str(path))
+    content_keys.store(str(path), identity, "raw:aa", ".iso")
+    assert content_keys.stored({str(path): identity})[str(path)].key == "raw:aa"
+
+    before = os.stat(path)
+    other = path.with_suffix(".tmp")
+    other.write_bytes(b"y" * 64)
+    os.replace(other, path)
+    os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+    assert content_keys.stored({str(path): content_keys.identity_of(str(path))}) == {}
+
+
+def test_a_copy_moved_into_place_is_refused_under_its_holds(db: Path) -> None:
+    """The check the delete step asks under each copy's holds: the copy must
+    be the very file its key was read from, not one with the same size and
+    mtime moved into its place."""
+    from services import content_keys, duplicate_cleanup
+
+    path = db / "roms" / "Copy.iso"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"x" * 64)
+    content_keys.store(str(path), content_keys.identity_of(str(path)), "raw:aa", ".iso")
+    check = functools.partial(
+        duplicate_cleanup._copy_under_holds, key="raw:aa", tracks=frozenset(),
+    )
+    assert check(str(path)) is None
+
+    before = os.stat(path)
+    other = path.with_suffix(".tmp")
+    other.write_bytes(b"y" * 64)
+    os.replace(other, path)
+    os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+    assert "no longer the file its content key was read from" in check(str(path))

@@ -70,10 +70,21 @@ class KeyUnavailable(Exception):
 
 @dataclass(frozen=True)
 class Identity:
-    """What a stored key is tied to: the file's size and mtime."""
+    """What a stored key is tied to: the file it was read from, by its size,
+    mtime, device and inode (#389). Size and mtime alone would take another
+    file moved into the path with them for the one that was hashed."""
 
     size: int
     mtime_ns: int
+    dev: int
+    ino: int
+
+    @classmethod
+    def of(cls, st: os.stat_result) -> Identity:
+        return cls(
+            size=int(st.st_size), mtime_ns=int(st.st_mtime_ns),
+            dev=int(st.st_dev), ino=int(st.st_ino),
+        )
 
 
 @dataclass(frozen=True)
@@ -132,16 +143,16 @@ def _norm(path: str) -> str:
 
 
 def identity_of(path: str) -> Identity:
-    """The file's size and mtime. Blocking; raises what ``os.stat`` raises."""
-    st = os.stat(path)
-    return Identity(size=int(st.st_size), mtime_ns=int(st.st_mtime_ns))
+    """The file's identity, links followed. Blocking; raises what ``os.stat`` raises."""
+    return Identity.of(os.stat(path))
 
 
 def stored(identities: dict[str, Identity]) -> dict[str, Stored]:
     """The stored keys that still describe their files, by path. Blocking.
 
-    A row for another size or mtime is left out: the file changed since its
-    key was read.
+    A row for another size, mtime, device or inode is left out: the file
+    changed since its key was read, or is another file now. A row with no
+    device and inode (written before 0020) matches no file.
     """
     if not identities:
         return {}
@@ -159,7 +170,9 @@ def stored(identities: dict[str, Identity]) -> dict[str, Stored]:
             for row in rows:
                 path = by_norm[row.path]
                 ident = identities[path]
-                if row.size == ident.size and row.mtime_ns == ident.mtime_ns:
+                if (row.size, row.mtime_ns, row.dev, row.ino) == (
+                    ident.size, ident.mtime_ns, ident.dev, ident.ino,
+                ):
                     out[path] = Stored(key=row.key, container=row.container)
     return out
 
@@ -170,6 +183,7 @@ def store(path: str, identity: Identity, key: str | None, container: str) -> Non
     values = {
         "size": identity.size, "mtime_ns": identity.mtime_ns, "key": key,
         "container": container, "computed_at": now,
+        "dev": identity.dev, "ino": identity.ino,
     }
     with _session() as session:
         session.execute(

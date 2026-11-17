@@ -133,10 +133,13 @@ class FindingsStore {
   cleanup = $state(null);
   // Only the latest plan request may write it (a keeper picked twice fast).
   #planRequest = 0;
-  // Deletes still running, by Finding id: `{ keep, plan }`. Kept apart from
-  // the dialog, so closing it stops nothing and reopening that Finding shows
-  // the delete as running, its keeper fixed, until the request settles.
+  // Deletes still running, by Finding id: `{ keep, plan, jobId }`. Kept apart
+  // from the dialog, so closing it stops nothing and reopening that Finding
+  // shows the delete as running, its keeper fixed, until its job ends.
   #inflight = new Map();
+  // The delete jobs (#389) this page started and has not seen end, by job id:
+  // the view settles them from the jobs store (`noteFinishedDeletes`).
+  runningDeletes = $state([]);
 
   /** Open the delete dialog on a duplicate group, keeping *keep*. */
   async openCleanup(row, keep = row?.keeper) {
@@ -146,7 +149,10 @@ class FindingsStore {
     if (running) {
       if (this.cleanup?.row?.id !== row.id) {
         this.#planRequest += 1;
-        this.cleanup = { row, keep: running.keep, plan: running.plan, error: null, deleting: true };
+        this.cleanup = {
+          row, keep: running.keep, plan: running.plan, error: null, deleting: true,
+          jobId: running.jobId,
+        };
       }
       return;
     }
@@ -174,8 +180,11 @@ class FindingsStore {
   }
 
   /**
-   * Delete exactly what the open plan listed. Returns the backend's results;
-   * the list is read again either way, so the group shows what is left.
+   * Start deleting exactly what the open plan listed (#389). The backend
+   * answers `{ job_id }` at once and deletes in a background job; the dialog
+   * stays "deleting", its keeper fixed, until the view reports that job's end
+   * (`noteFinishedDeletes`). Returns the backend's answer, or null when there
+   * is nothing to confirm.
    */
   async confirmCleanup() {
     const open = this.cleanup;
@@ -183,32 +192,59 @@ class FindingsStore {
     if (!plan || plan.blocked || open.deleting || this.#inflight.has(open.row.id)) return null;
     const id = open.row.id;
     const paths = plan.items.flatMap((item) => item.delete_paths ?? []);
-    this.#inflight.set(id, { keep: open.keep, plan });
+    this.#inflight.set(id, { keep: open.keep, plan, jobId: null });
     this.cleanup = { ...open, deleting: true };
     // The answer belongs to this Finding: it writes only to a dialog open on
     // it now (reopened meanwhile included), never to one for another Finding.
     try {
-      const result = await api.deleteDuplicates(id, open.row.fingerprint, open.keep, paths);
-      this.#inflight.delete(id);
-      this.#superseded();
-      if (this.#showing(id)) {
-        // The copy kept no longer looked like the file that was hashed once
-        // the last delete was done (Codex 4593499350): the dialog stays, done,
-        // and says to check it, rather than closing as a plain success.
-        this.cleanup = result?.keeper_changed
-          ? { ...this.cleanup, deleting: false, done: true, warning: keeperWarning(open.keep) }
-          : null;
-      }
-      return result;
+      const started = await api.deleteDuplicates(id, open.row.fingerprint, open.keep, paths);
+      const jobId = started?.job_id ?? null;
+      this.#inflight.set(id, { keep: open.keep, plan, jobId });
+      if (jobId) this.runningDeletes = [...this.runningDeletes, jobId];
+      if (this.#showing(id)) this.cleanup = { ...this.cleanup, jobId };
+      return started;
     } catch (e) {
       this.#inflight.delete(id);
       if (this.#showing(id)) {
         this.cleanup = { ...this.cleanup, deleting: false, error: e?.message ?? 'Could not delete the copies' };
       }
-      throw e;
-    } finally {
       await this.load();
+      throw e;
     }
+  }
+
+  /**
+   * The view's finished delete jobs (#389). Each one this page started
+   * settles its Finding's delete: a dialog open on that Finding closes on a
+   * plain success, stays done with a warning when the copy kept changed
+   * meanwhile (Codex 4593499350), or shows why the job failed or was
+   * cancelled. Lists again when any settled. Returns `[{ job, result }]` for
+   * those it settled; a job it did not start, or already settled, is ignored.
+   */
+  noteFinishedDeletes(jobs) {
+    const settled = [];
+    for (const job of jobs ?? []) {
+      const entry = [...this.#inflight].find(([, running]) => running.jobId === job?.id);
+      if (!entry) continue;
+      const [id, running] = entry;
+      this.#inflight.delete(id);
+      settled.push({ job, result: job.result ?? null });
+      if (!this.#showing(id)) continue;
+      if (job.status === 'completed') {
+        this.cleanup = job.result?.keeper_changed
+          ? { ...this.cleanup, deleting: false, done: true, warning: keeperWarning(running.keep) }
+          : null;
+      } else {
+        const why = job.error_message || job.message || 'The delete did not finish';
+        this.cleanup = { ...this.cleanup, deleting: false, error: why };
+      }
+    }
+    if (!settled.length) return settled;
+    const ended = new Set(settled.map((s) => s.job.id));
+    this.runningDeletes = this.runningDeletes.filter((jobId) => !ended.has(jobId));
+    this.#superseded();
+    this.load();
+    return settled;
   }
 
   /** Walk every folder Library now, then list what it found. */

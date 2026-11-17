@@ -288,6 +288,9 @@ EXTERNAL_JOB_MODES: Dict[ConversionMode, ExternalMode] = {
     ConversionMode.CHECK: ExternalMode(in_ledger=False, started_by_hand=False),
     # A find-duplicates run (#388) reads and converts nothing; a person starts it.
     ConversionMode.FIND_DUPLICATES: ExternalMode(in_ledger=False),
+    # A duplicate delete (#389): a person confirmed it; each copy's delete goes
+    # through the job's own delete step, so it converts nothing to record.
+    ConversionMode.DELETE_DUPLICATES: ExternalMode(in_ledger=False),
 }
 _EXTERNAL_JOB_MODES = frozenset(EXTERNAL_JOB_MODES)
 
@@ -4154,7 +4157,7 @@ class JobManager:
 
     async def _keeper_problem(
         self, keeper: str, keeper_identity: Tuple[int, int], keeper_key: str, fd: int,
-        snapshot: Tuple[int, int, int, int],
+        snapshot: Tuple[int, int, int, int], *, cancel_event: Optional[asyncio.Event] = None,
     ) -> Optional[str]:
         """Why *keeper* may not be kept now, or None. Called under its lock (#389).
 
@@ -4171,7 +4174,7 @@ class JobManager:
         if (snapshot[2], snapshot[3]) != tuple(keeper_identity):
             return "the copy to keep changed since the Finding was recorded"
         try:
-            key = await content_keys.recompute(keeper, fd=fd)
+            key = await content_keys.recompute(keeper, fd=fd, cancel_event=cancel_event)
         except content_keys.KeyUnavailable as exc:
             return f"the copy to keep could not be read in full ({exc})"
         except (ReadCancelled, StorageAbandoned) as exc:
@@ -4194,6 +4197,7 @@ class JobManager:
         self, *, keeper: str, keeper_identity: Tuple[int, int], keeper_key: str,
         copies: List[Tuple[str, List[str], Tuple[int, int]]],
         copy_problem: Optional[Callable[[str], Optional[str]]] = None,
+        cancel_event: Optional[asyncio.Event] = None,
     ) -> Tuple[List[Tuple[str, "KeptDeleteRetry"]], Optional[str]]:
         """Delete the duplicate copies of a group, keeping *keeper* (#389).
 
@@ -4212,6 +4216,9 @@ class JobManager:
         that names it since the plan), the per-path checks, the Referrer hook
         (a playlist naming the copy is pointed at the keeper), then the unlinks
         as one mutation.
+
+        *cancel_event* (the delete job's) stops the keeper's read, and keeps
+        every copy not yet started.
 
         Returns each copy's outcome (:class:`KeptDeleteRetry`; a refusal
         deletes nothing of that copy) and, when the keeper no longer looked
@@ -4240,13 +4247,16 @@ class JobManager:
             if refused is None:
                 problem = await self._keeper_problem(
                     keeper, keeper_identity, keeper_key, fd, snapshot,
+                    cancel_event=cancel_event,
                 )
                 if problem:
                     refused = KeptDeleteRetry(KEPT_STALE, problem)
             if refused is not None:
                 return [(path, refused) for path, _paths, _identity in copies], None
-            for index, (path, expected, identity) in enumerate(copies):
+            for path, expected, identity in copies:
                 stop = await self._keeper_still_held(keeper, fd, snapshot, travelling)
+                if stop is None and cancel_event is not None and cancel_event.is_set():
+                    stop = "the delete was cancelled"
                 if stop is None:
                     outcome = await self._delete_copy(
                         path, keeper, expected, identity, travelling, copy_problem,

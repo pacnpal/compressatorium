@@ -18,11 +18,17 @@ turns it into a cleanup, and never more than the user confirms:
   changed, unreadable, or no longer holding the group's key), when a copy is a
   track a ``.cue``/``.gdi`` beside it lists, or when a delete would touch the
   keeper. The disk is read on a detached thread, bounded.
-* **The delete** (:func:`delete`): the plan is made again and must be the one
-  the user confirmed, path for path; then the job manager's own delete step
-  runs for each copy under its locks
-  (``JobManager.delete_duplicate_copies``). The Finding then lists what is
-  left, or clears once one copy is.
+* **The delete** (:func:`start_delete`): a background job
+  (``ConversionMode.DELETE_DUPLICATES``), since the keeper is read in full
+  first. The route only checks the group still offers a delete and answers
+  the job id. The job reads the Volumes' sheets again
+  (``image_sets.volume_sheet_tracks``: a sheet added since the run keeps its
+  tracks), makes the plan again, which must be the one the user confirmed,
+  path for path, then runs the job manager's own delete step for each copy
+  under its locks (``JobManager.delete_duplicate_copies``), where each copy
+  must still be the file its content key was read from
+  (:func:`_copy_under_holds`). The Finding then lists what is left, or clears
+  once one copy is; the job's ``result`` holds each copy's outcome.
 """
 
 from __future__ import annotations
@@ -35,6 +41,7 @@ from typing import Any
 
 from fastapi.concurrency import run_in_threadpool
 from logging_setup import get_logger
+from models import ConversionMode
 from services import content_keys, findings, image_sets, libraries, referrers
 from services.content_keys import Identity
 from services.job_manager import (
@@ -45,8 +52,11 @@ from services.job_manager import (
 from services.referrers import ReferrerError
 from services.subprocess_runner import (
     DeadlineExpired,
+    ProgressAbandoned,
     ReadCancelled,
+    Stalled,
     run_detached_bounded,
+    run_detached_within_stall_bound,
 )
 from utils.delete_plan import build_delete_plan
 from utils.path_utils import is_within_configured_volumes, lock_boundary_root
@@ -66,6 +76,15 @@ class CleanupRefused(Exception):
         super().__init__(message)
         self.status = status
         self.message = message
+
+
+class _Cancelled(Exception):
+    """The delete job was cancelled before it deleted anything more."""
+
+
+# Finding id -> the job id of its running delete: one at a time per group.
+_running: dict[int, str] = {}
+_tasks: set[asyncio.Task] = set()
 
 
 # ----------------------------------------------------------------------
@@ -294,7 +313,7 @@ def _copy_problem(copy: dict, key: str) -> str | None:
         return "is gone"
     except OSError as exc:
         return f"could not be read ({exc.strerror or exc})"
-    identity = Identity(size=int(st.st_size), mtime_ns=int(st.st_mtime_ns))
+    identity = Identity.of(st)
     if (identity.size, identity.mtime_ns) != (copy.get("size"), copy.get("mtime_ns")):
         return "changed since the Finding was recorded"
     stored = content_keys.stored({path: identity}).get(path)
@@ -354,6 +373,35 @@ def _copy_sheet_problem(
     return None
 
 
+def _copy_under_holds(
+    path: str, *, key: str, tracks: frozenset[tuple[int, int]],
+) -> str | None:
+    """Why *path* may not be deleted now, asked under its delete holds. Blocking.
+
+    It must still be the very file its content key was read from: its device,
+    inode, size and mtime all equal to the stored key's
+    (``content_keys.stored``), and that key the group's (Codex
+    PRRT_kwDOQ9nULM64OuXs). A file moved into its place, even with the same
+    size and mtime, is a new inode and is kept, with no re-hash. Then
+    :func:`_copy_sheet_problem` against *tracks*, the delete job's fresh read
+    of the Volumes' sheets.
+    """
+    name = os.path.basename(path)
+    try:
+        identity = content_keys.identity_of(path)
+    except OSError as exc:
+        return f"{name} could not be read ({exc.strerror or exc})"
+    stored = content_keys.stored({path: identity}).get(path)
+    if stored is None:
+        return (
+            f"{name} is no longer the file its content key was read from "
+            "(replaced or changed since); it is kept"
+        )
+    if stored.key != key:
+        return f"{name} no longer holds this group's content key; it is kept"
+    return _copy_sheet_problem(path, tracks)
+
+
 def _plan_blocking(row: dict, keep: str, recorded: frozenset = frozenset()) -> dict:
     """The plan, from the disk. Blocking: run detached and bounded."""
     cause = row.get("cause") or {}
@@ -385,14 +433,12 @@ def _plan_blocking(row: dict, keep: str, recorded: frozenset = frozenset()) -> d
 
 async def plan(finding_id: int, fingerprint: str, keep: str) -> dict:
     """What deleting every copy but *keep* would remove, for the user to confirm."""
-    shown, _recorded = await _plan(finding_id, fingerprint, keep)
-    return shown
+    return await _plan(finding_id, fingerprint, keep)
 
 
-async def _plan(
-    finding_id: int, fingerprint: str, keep: str,
-) -> tuple[dict, frozenset[tuple[int, int]]]:
-    """:func:`plan`, and the run's record of sheet tracks it was checked against."""
+async def _offered(finding_id: int, fingerprint: str, keep: str) -> tuple[dict, dict]:
+    """The Finding as shown, and its Library's last run, when the group still
+    offers a delete keeping *keep*; refused otherwise. Database only."""
     row = await run_in_threadpool(_shown, finding_id, fingerprint)
     copies = (row.get("cause") or {}).get(findings.COPIES) or []
     if keep not in {c["path"] for c in copies}:
@@ -401,7 +447,19 @@ async def _plan(
     reason = not_deletable(row, run)
     if reason:
         raise CleanupRefused(409, f"No delete is offered for this group: {reason}")
-    recorded = _recorded_tracks(run)
+    return row, run
+
+
+async def _plan(
+    finding_id: int, fingerprint: str, keep: str,
+    tracks: frozenset[tuple[int, int]] | None = None,
+) -> dict:
+    """:func:`plan`, checked against *tracks* (the delete job's fresh read of
+    the Volumes' sheets), or the last run's record when None. The run's
+    record is the gate for offering a delete at all, either way."""
+    row, run = await _offered(finding_id, fingerprint, keep)
+    copies = (row.get("cause") or {}).get(findings.COPIES) or []
+    recorded = _recorded_tracks(run) if tracks is None else tracks
     problem = await run_in_threadpool(_keeper_problem, keep, copies)
     if problem:
         raise CleanupRefused(409, problem)
@@ -426,7 +484,7 @@ async def _plan(
         "key": str((row.get("cause") or {}).get("key") or ""),
         "keeper_identity": found["keeper_identity"],
         "items": found["items"], "blocked": blocked, "total_delete_count": total,
-    }, recorded
+    }
 
 
 async def _add_referrer_changes(item: dict, keep: str, library: Any) -> None:
@@ -454,11 +512,127 @@ async def _add_referrer_changes(item: dict, keep: str, library: Any) -> None:
 # ----------------------------------------------------------------------
 
 
-async def delete(
+async def start_delete(
     finding_id: int, fingerprint: str, keep: str, confirmed: list[str],
 ) -> dict:
-    """Delete every copy but *keep*, as the confirmed plan listed them."""
-    shown, recorded = await _plan(finding_id, fingerprint, keep)
+    """Start deleting every copy but *keep* as a background job; ``{job_id}``.
+
+    Only the quick checks here (the Finding as shown, the keeper one of its
+    copies, the group still offering a delete, no delete of it running);
+    everything that reads the disk runs in the job (:func:`_delete`).
+    """
+    if finding_id in _running:
+        raise CleanupRefused(
+            409, f"A delete of this group is already running ({_running[finding_id]})",
+        )
+    await _offered(finding_id, fingerprint, keep)
+    # Asked again after the await: a second request may have started one.
+    if finding_id in _running:
+        raise CleanupRefused(
+            409, f"A delete of this group is already running ({_running[finding_id]})",
+        )
+    job = job_manager.create_external_job(
+        f"Delete duplicates of {os.path.basename(keep)}", ConversionMode.DELETE_DUPLICATES,
+        message="Reading the Volumes' sheets",
+    )
+    _running[finding_id] = job.id
+    task = asyncio.get_running_loop().create_task(
+        _run_delete(job.id, finding_id, fingerprint, keep, list(confirmed)),
+    )
+    _tasks.add(task)
+    task.add_done_callback(_tasks.discard)
+    return {"job_id": job.id}
+
+
+async def drain() -> None:
+    """Wait for every running delete job (tests, shutdown)."""
+    while _tasks:
+        await asyncio.gather(*list(_tasks), return_exceptions=True)
+
+
+async def _run_delete(
+    job_id: str, finding_id: int, fingerprint: str, keep: str, confirmed: list[str],
+) -> None:
+    try:
+        result = await _delete(job_id, finding_id, fingerprint, keep, confirmed)
+    except _Cancelled as stop:
+        await job_manager.finish_external_job_cancelled(job_id, message=str(stop))
+    except CleanupRefused as exc:
+        await job_manager.finish_external_job(
+            job_id, success=False, error_message=exc.message,
+        )
+    except Exception:
+        logger.warning("duplicate_cleanup: the delete job %s failed", job_id, exc_info=True)
+        await job_manager.finish_external_job(
+            job_id, success=False, error_message="The delete stopped on an error",
+        )
+    else:
+        job = job_manager.get_job(job_id)
+        if job is not None:
+            job.result = result
+            job.deleted_paths = [p for r in result["results"] for p in r["deleted"]]
+            job.warning = result["keeper_changed"]
+            job.message = _describe(result)
+        await job_manager.finish_external_job(job_id, success=True)
+    finally:
+        if _running.get(finding_id) == job_id:
+            _running.pop(finding_id, None)
+
+
+def _describe(result: dict) -> str:
+    gone = sum(1 for r in result["results"] if r["status"] == KEPT_DELETED)
+    kept = len(result["results"]) - gone
+    text = f"Deleted {gone} cop{'y' if gone == 1 else 'ies'}"
+    if kept:
+        text += f"; kept {kept}"
+    if result["keeper_changed"]:
+        text += f"; the copy kept changed meanwhile ({result['keeper_changed']})"
+    return text
+
+
+def _stop_if_cancelled(job_id: str) -> None:
+    if job_manager.is_cancelled(job_id):
+        raise _Cancelled("Cancelled: nothing was deleted")
+
+
+async def _fresh_tracks(job_id: str) -> frozenset[tuple[int, int]]:
+    """Every sheet's track identities over the Volumes now (Codex
+    PRRT_kwDOQ9nULM64OuXm): a sheet added since the run keeps its tracks.
+
+    The same walk, bounds and rules as the run's record: a walk that is
+    incomplete, stalls or fails refuses the whole delete, nothing deleted.
+    """
+    from services import duplicates
+
+    try:
+        tracks, problem = await run_detached_within_stall_bound(
+            image_sets.volume_sheet_tracks, duplicates.volume_scope(),
+            what="reading the Volumes' sheets",
+            cancel_event=job_manager.get_cancel_event(job_id),
+            stall=content_keys.STALL_SECONDS, report_progress=True,
+        )
+    except ReadCancelled:
+        raise _Cancelled("Cancelled: nothing was deleted") from None
+    except (OSError, Stalled, ProgressAbandoned) as exc:
+        raise CleanupRefused(
+            409, f"Nothing was deleted: the walk of the Volumes' sheets did not finish ({exc})",
+        ) from exc
+    if tracks is None:
+        raise CleanupRefused(
+            409,
+            f"Nothing was deleted: which files are sheets' tracks could not be told ({problem})",
+        )
+    return frozenset(tracks)
+
+
+async def _delete(
+    job_id: str, finding_id: int, fingerprint: str, keep: str, confirmed: list[str],
+) -> dict:
+    """The delete job: every copy but *keep*, as the confirmed plan listed them."""
+    tracks = await _fresh_tracks(job_id)
+    _stop_if_cancelled(job_id)
+    await job_manager.update_external_job(job_id, progress=10, message="Checking every copy")
+    shown = await _plan(finding_id, fingerprint, keep, tracks)
     if shown["blocked"]:
         reasons = [e for item in shown["items"] for e in item.get("errors") or []]
         detail = "; ".join(reasons or ["see the plan"])
@@ -466,18 +640,27 @@ async def delete(
     planned = sorted(p for item in shown["items"] for p in item.get("delete_paths") or [])
     if planned != sorted(confirmed):
         raise CleanupRefused(409, "The delete plan changed since it was shown; review it again")
+    _stop_if_cancelled(job_id)
+    await job_manager.update_external_job(
+        job_id, progress=20,
+        message="Reading the copy to keep in full, then deleting the others",
+    )
     outcomes, keeper_changed = await job_manager.delete_duplicate_copies(
         keeper=keep, keeper_identity=tuple(shown["keeper_identity"]),
         keeper_key=shown["key"],
-        copy_problem=functools.partial(_copy_sheet_problem, recorded=recorded),
+        copy_problem=functools.partial(_copy_under_holds, key=shown["key"], tracks=tracks),
         copies=[
             (item["source_path"], list(item["delete_paths"]), tuple(item["identity"]))
             for item in shown["items"]
         ],
+        cancel_event=job_manager.get_cancel_event(job_id),
     )
     gone = {path for path, outcome in outcomes if outcome.status == KEPT_DELETED}
     await run_in_threadpool(_settle, finding_id, gone, fingerprint)
+    if not gone and job_manager.is_cancelled(job_id):
+        raise _Cancelled("Cancelled: nothing was deleted")
     return {
+        "finding_id": finding_id,
         "keep": keep,
         # Set when the copy kept no longer looked like the file that was
         # hashed once the last delete was done: the user should check it.

@@ -14,6 +14,11 @@ _VIEW = _SRC / "lib" / "components" / "views" / "FindingsView.svelte"
 _MODAL = _SRC / "lib" / "components" / "modals" / "DuplicateDeleteModal.svelte"
 _ENDPOINTS = _SRC / "lib" / "api" / "endpoints.js"
 
+# The delete job's terminal state as the jobs store holds it.
+_DONE = """{ id: 'j1', mode: 'delete_duplicates', status: 'completed',
+  result: { keep: '/v/Game.iso', keeper_changed: null,
+    results: [{ path: '/v/Copy.iso', status: 'deleted' }] } }"""
+
 _ROW = """{ id: 7, kind: 'duplicate', library_id: 'folder:1', fingerprint: 'f7',
   image_key: 'raw:aa', keeper: '/v/Game.iso', keeper_reason: 'the smallest copy',
   deletable: true,
@@ -45,20 +50,30 @@ __answers.duplicateDeletePlan = {{ items: [
   {{ source_path: '/v/Copy.iso', delete_paths: ['/v/Copy.iso'] }},
   {{ source_path: '/v/Disc.cue', delete_paths: ['/v/Disc.cue', '/v/Disc.bin'] }},
 ], blocked: false, total_delete_count: 3 }};
-__answers.deleteDuplicates = {{ results: [] }};
+__answers.deleteDuplicates = {{ job_id: 'j1' }};
 await findings.openCleanup({_ROW});
-await findings.confirmCleanup();
+const started = await findings.confirmCleanup();
+const running = {{ deleting: findings.cleanup.deleting, jobId: findings.cleanup.jobId,
+  jobs: [...findings.runningDeletes] }};
+const settled = findings.noteFinishedDeletes([{_DONE}]);
+await Promise.resolve();
 process.stdout.write(JSON.stringify({{
-  call: __log.find((c) => c[0] === 'deleteDuplicates'),
-  open: findings.cleanup, listed: __log.filter((c) => c[0] === 'listFindings').length,
+  call: __log.find((c) => c[0] === 'deleteDuplicates'), started, running,
+  settled: settled.map((s) => s.result.results.length), open: findings.cleanup,
+  left: findings.runningDeletes,
+  listed: __log.filter((c) => c[0] === 'listFindings').length,
 }}));
 """)
     assert data["call"] == [
         "deleteDuplicates", 7, "f7", "/v/Game.iso",
         ["/v/Copy.iso", "/v/Disc.cue", "/v/Disc.bin"],
     ], data
-    assert data["open"] is None
-    # The Finding is read again: it shrinks or clears.
+    # The route only starts the job: the dialog follows it until it ends.
+    assert data["started"] == {"job_id": "j1"}, data
+    assert data["running"] == {"deleting": True, "jobId": "j1", "jobs": ["j1"]}, data
+    assert data["settled"] == [1], data
+    assert data["open"] is None and data["left"] == [], data
+    # The Finding is read again once the job ended: it shrinks or clears.
     assert data["listed"] == 1
 
 
@@ -109,7 +124,7 @@ await findings.openCleanup({_ROW});
 const running = findings.confirmCleanup();
 await findings.openCleanup({_ROW}, '/v/Copy.iso');
 const during = {{ keep: findings.cleanup.keep, deleting: findings.cleanup.deleting }};
-finish({{ results: [] }});
+finish({{ job_id: 'j1' }});
 await running;
 process.stdout.write(JSON.stringify({{
   during, plans: __log.filter((c) => c[0] === 'duplicateDeletePlan').length,
@@ -175,10 +190,12 @@ const reopened = {{ keep: findings.cleanup.keep, deleting: findings.cleanup.dele
 await findings.openCleanup({_ROW}, '/v/Copy.iso');
 const picked = findings.cleanup.keep;
 const again = await findings.confirmCleanup();
-finish({{ results: [] }});
+finish({{ job_id: 'j1' }});
 await running;
+const stillRunning = findings.cleanup?.deleting;
+findings.noteFinishedDeletes([{_DONE}]);
 process.stdout.write(JSON.stringify({{
-  reopened, picked, again, open: findings.cleanup,
+  reopened, picked, again, stillRunning, open: findings.cleanup,
   plans: __log.filter((c) => c[0] === 'duplicateDeletePlan').length,
   deletes: __log.filter((c) => c[0] === 'deleteDuplicates').length,
 }}));
@@ -187,6 +204,8 @@ process.stdout.write(JSON.stringify({{
     assert data["picked"] == "/v/Game.iso", data
     assert data["again"] is None, data
     assert data["plans"] == 1 and data["deletes"] == 1, data
+    # Started, not finished: the job runs on until the jobs store sees it end.
+    assert data["stillRunning"] is True, data
     # Settled: the reopened dialog for that Finding closes.
     assert data["open"] is None, data
     modal = _MODAL.read_text(encoding="utf-8")
@@ -205,10 +224,13 @@ api.deleteDuplicates = __call('deleteDuplicates');
 __answers.listFindings = {{ findings: [], dismissed: 0 }};
 __answers.duplicateDeletePlan = {{ items: [{{ source_path: '/v/Copy.iso',
   delete_paths: ['/v/Copy.iso'] }}], blocked: false, total_delete_count: 1 }};
-__answers.deleteDuplicates = {{ results: [{{ path: '/v/Copy.iso', status: 'deleted' }}],
-  keeper_changed: 'the copy to keep was replaced or changed' }};
+__answers.deleteDuplicates = {{ job_id: 'j1' }};
 await findings.openCleanup({_ROW});
-const result = await findings.confirmCleanup();
+await findings.confirmCleanup();
+const [{{ result }}] = findings.noteFinishedDeletes([{{ id: 'j1', mode: 'delete_duplicates',
+  status: 'completed', result: {{ keep: '/v/Game.iso',
+    results: [{{ path: '/v/Copy.iso', status: 'deleted' }}],
+    keeper_changed: 'the copy to keep was replaced or changed' }} }}]);
 process.stdout.write(JSON.stringify({{
   changed: result.keeper_changed, open: !!findings.cleanup,
   warning: findings.cleanup?.warning ?? null, deleting: findings.cleanup?.deleting,
@@ -221,3 +243,43 @@ process.stdout.write(JSON.stringify({{
     assert "result?.keeper_changed" in view
     modal = _MODAL.read_text(encoding="utf-8")
     assert "open.warning" in modal
+
+
+
+def test_a_failed_delete_job_shows_why_and_others_are_ignored(tmp_path):
+    """The job refused the delete (a sheet added since the run, a copy
+    replaced): the dialog shows its reason. A delete job this page did not
+    start settles nothing."""
+    data = _run(tmp_path, f"""
+api.duplicateDeletePlan = __call('duplicateDeletePlan');
+api.deleteDuplicates = __call('deleteDuplicates');
+__answers.listFindings = {{ findings: [], dismissed: 0 }};
+__answers.duplicateDeletePlan = {{ items: [{{ source_path: '/v/Copy.iso',
+  delete_paths: ['/v/Copy.iso'] }}], blocked: false, total_delete_count: 1 }};
+__answers.deleteDuplicates = {{ job_id: 'j1' }};
+await findings.openCleanup({_ROW});
+await findings.confirmCleanup();
+const foreign = findings.noteFinishedDeletes([{{ id: 'other', mode: 'delete_duplicates',
+  status: 'completed', result: {{ results: [] }} }}]);
+const settled = findings.noteFinishedDeletes([{{ id: 'j1', mode: 'delete_duplicates',
+  status: 'failed', error_message: 'The delete is blocked: Track.bin is a track' }}]);
+process.stdout.write(JSON.stringify({{
+  foreign: foreign.length, settled: settled.length,
+  error: findings.cleanup?.error ?? null, deleting: findings.cleanup?.deleting,
+}}));
+""")
+    assert data == {
+        "foreign": 0, "settled": 1,
+        "error": "The delete is blocked: Track.bin is a track", "deleting": False,
+    }, data
+
+
+def test_the_view_follows_the_delete_job() -> None:
+    view = _VIEW.read_text(encoding="utf-8")
+    assert "j.mode === 'delete_duplicates'" in view
+    assert "findings.noteFinishedDeletes(ended)" in view
+    modal = _MODAL.read_text(encoding="utf-8")
+    # The dialog shows the job's progress while it runs.
+    assert "job?.message" in modal and "job.progress" in modal
+    constants = (_SRC / "lib" / "stores" / "jobConstants.js").read_text(encoding="utf-8")
+    assert "delete_duplicates: 'Delete duplicates'" in constants

@@ -487,7 +487,7 @@ def _inspect(
         if os.path.realpath(path) in in_use or lock_manager.is_locked(path):
             busy.append(path)
             continue
-        identity = Identity(size=int(st.st_size), mtime_ns=int(st.st_mtime_ns))
+        identity = Identity.of(st)
         out.append(Candidate(
             image_key=image_key, path=path, identity=identity,
             container=content_keys.container_of(path),
