@@ -121,7 +121,9 @@
   Finding saying why, and isn't tried again until it changes. Each Inbox shows
   its last poll and the files waiting, in progress, held and processed.
   Settling is an inactivity check, not proof a download finished: when that
-  matters, download elsewhere and move finished files into the Inbox.
+  matters, download elsewhere and move finished files into the Inbox. A file
+  that changes while it is being converted fails its job with nothing put in
+  the Library, and stays in the Inbox.
   Removing a Library while another Library or Inbox is being saved answers
   "try again shortly" with nothing removed.
   Database migration 0027 adds the Inboxes. Archives, DAT names and asking

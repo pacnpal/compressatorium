@@ -1535,8 +1535,8 @@ def source_identity_problem(path: str, identity: dict) -> str | None:
     return None
 
 
-# A bound Source's private folder, beside the files it was bound from.
-BIND_PREFIX = ".compressatorium-bind-"
+# A bound Source's folder in the app's work area (``bind_source``'s *into*).
+BIND_PREFIX = "bind_"
 # How much a bind's copy fallback reads at a time; each chunk reports progress.
 _BIND_CHUNK = 4 * 1024 * 1024
 
@@ -1553,24 +1553,26 @@ _NO_LINK_ERRNOS = frozenset({
 
 def _bind_one(
     name: str, folder_fd: int, bound_fd: int, expected: dict, progress=None,
-) -> None:
+) -> bool:
     """Put *name* (in *folder_fd*) into the private folder *bound_fd*: a hard
     link, checked to be the inode *expected*; or, where links can't be made, a
     copy read through a descriptor opened with no link followed and checked
-    the same way before and after. Raises OSError (ESTALE: not the file)."""
+    the same way before and after. True for a link, False for a copy.
+    Raises OSError (ESTALE: not the file)."""
     try:
         os.link(name, name, src_dir_fd=folder_fd, dst_dir_fd=bound_fd, follow_symlinks=False)
     except OSError as exc:
         if exc.errno not in _NO_LINK_ERRNOS:
             raise
         _copy_checked(name, folder_fd, bound_fd, expected, progress)
-        return
+        return False
     fd = os.open(name, os.O_RDONLY | _NOFOLLOW_FLAG, dir_fd=bound_fd)
     try:
         if file_snapshot(os.fstat(fd)) != expected:
             raise OSError(errno.ESTALE, f"{name} isn't the file that was checked")
     finally:
         os.close(fd)
+    return True
 
 
 def _copy_checked(
@@ -1595,29 +1597,63 @@ def _copy_checked(
         os.close(src)
 
 
-class BoundSource:
-    """A Source bound by :func:`bind_source`: ``path`` (the private folder),
-    ``read_path`` (the Source in it), and the descriptors kept from bind time,
-    which :meth:`close` removes it through, never by its path."""
+def _held(st: os.stat_result) -> tuple[int, int, int]:
+    """What a bound file must keep while its job runs: size, mtime, ctime
+    (nanoseconds). An in-place write through another name of a linked
+    inode moves at least one of them."""
+    return (st.st_size, st.st_mtime_ns, st.st_ctime_ns)
 
-    def __init__(self, path: str, read_path: str, root_fd: int, name: str, fd: int) -> None:
+
+class BoundSource:
+    """A Source bound by :func:`bind_source` into a folder of the app's own
+    work area: ``path`` (that folder), ``read_path`` (the Source in it).
+
+    It keeps the descriptors from bind time: the folder's and its parent's,
+    which :meth:`close` removes it through, never by its path, and one per
+    bound file, which :meth:`changed` checks."""
+
+    def __init__(self, path: str, read_path: str, parent_fd: int, name: str, fd: int) -> None:
         self.path = path
         self.read_path = read_path
-        self._root_fd = root_fd
+        self._parent_fd = parent_fd
         self._name = name
         self._fd = fd
+        # Bound name -> (its open descriptor, :func:`_held` at bind time).
+        self._files: dict[str, tuple[int, tuple[int, int, int]]] = {}
         self._closed = False
         self._lock = threading.Lock()
 
+    def _hold(self, name: str, expected: dict | None) -> None:
+        """Open the bound *name* (no link followed) and keep it, with what it
+        is now; a link must still be the file *expected* (a copy, None, is
+        the app's own). Called by :func:`bind_source`. Raises OSError."""
+        fd = os.open(name, os.O_RDONLY | _NOFOLLOW_FLAG, dir_fd=self._fd)
+        st = os.fstat(fd)
+        self._files[name] = (fd, _held(st))
+        if expected is not None and file_snapshot(st) != expected:
+            raise OSError(errno.ESTALE, f"{name} changed as it was bound")
+
+    def changed(self) -> str | None:
+        """The first bound file whose size, mtime or ctime is no longer what it
+        was at bind time, read through its own descriptor, or None. A hard
+        link shares its inode with the Inbox's file, so a resumed download
+        writing that file in place shows here (Codex 4606539513). Blocking."""
+        for name, (fd, then) in self._files.items():
+            if _held(os.fstat(fd)) != then:
+                return name
+        return None
+
     def close(self) -> None:
-        """Remove the bound folder: its own names (links to the Inbox's files,
-        or copies it made) through its kept descriptor, then the folder from
-        its parent, only while that name is still this folder. Idempotent;
-        never raises. Blocking."""
+        """Remove the bound folder: its own names through its kept descriptor,
+        then the folder from its parent, only while that name is still this
+        folder. Idempotent; never raises. Blocking."""
         with self._lock:
             if self._closed:
                 return
             self._closed = True
+        for fd, _then in self._files.values():
+            with contextlib.suppress(OSError):
+                os.close(fd)
         try:
             for entry in os.listdir(self._fd):
                 try:
@@ -1625,53 +1661,61 @@ class BoundSource:
                 except OSError:
                     logger.warning("bind: couldn't remove %s in %s", entry, self.path)
             own = os.fstat(self._fd)
-            there = _stat_or_none(self._name, self._root_fd)
+            there = _stat_or_none(self._name, self._parent_fd)
             if _same_inode(own, there):
-                os.rmdir(self._name, dir_fd=self._root_fd)
+                os.rmdir(self._name, dir_fd=self._parent_fd)
             else:
                 logger.warning("bind: %s isn't the bound folder any more; left alone", self.path)
         except OSError:
             logger.warning("bind: couldn't remove %s", self.path, exc_info=True)
         finally:
-            for fd in (self._fd, self._root_fd):
+            for fd in (self._fd, self._parent_fd):
                 with contextlib.suppress(OSError):
                     os.close(fd)
 
-
-def bind_source(path: str, identity: dict, progress=None) -> BoundSource:
+def bind_source(path: str, identity: dict, into: str, progress=None) -> BoundSource:
     """Bind a queued conversion's Source before anything reads it (#431).
 
-    A fresh owner-only folder (same filesystem) is made in the identity's
-    root through its descriptor, and the Source and each of its members
-    (``identity["members"]``, a sheet's tracks) are hard-linked into it
-    through descriptors opened beneath the root with no link followed, each
-    checked to be the inode that was validated (or, where links can't be
-    made, copied through a checked descriptor). Everything the job then does
-    reads these, a path no Inbox writer can redirect. Raises OSError, leaving
-    nothing behind. Blocking. :meth:`BoundSource.close` removes the folder
+    *into* is an empty folder the job made in the app's own work area
+    (``disk.create_scratch_dir``), never in the Inbox: no Inbox writer has
+    any right on its parent chain, so it can't be renamed or swapped for a
+    link (Codex 4606562350). The Source and each of its members
+    (``identity["members"]``, a sheet's tracks) are put in it through
+    descriptors opened beneath the identity's root with no link followed,
+    each checked to be the inode that was validated: a hard link where *into*
+    is on the Inbox's filesystem, else a copy read through a checked
+    descriptor. Everything the job then does reads these. Raises OSError,
+    leaving *into* removed. Blocking. :meth:`BoundSource.close` removes it
     through the descriptors kept from here.
 
     *progress* (a ``subprocess_runner.Progress``) is called after every chunk
     a copy reads, and once more before returning, so a stall-bounded caller
-    gives up only on a copy that stopped moving, and one it gave up on stops
-    at its next report and removes what it made."""
+    gives up only on a copy that stopped moving, and a caller that gave up or
+    was cancelled stops it at its next report, removing what it made."""
     root = os.path.abspath(identity["root"])
-    folder_fd, name = _folder_beneath_root(path, root)
+    into = os.path.abspath(into)
+    parent, private = os.path.split(into)
     try:
-        root_fd = open_dir_beneath(root)
+        folder_fd, name = _folder_beneath_root(path, root)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.rmdir(into)
+        raise
+    try:
+        parent_fd = os.open(parent, _BENEATH_DIR_FLAGS)
         try:
-            private, bound_fd = _private_folder(root_fd, prefix=BIND_PREFIX)
+            bound_fd = os.open(private, _BENEATH_DIR_FLAGS, dir_fd=parent_fd)
         except BaseException:
-            os.close(root_fd)
+            os.close(parent_fd)
+            with contextlib.suppress(OSError):
+                os.rmdir(into)
             raise
-        bound = BoundSource(
-            os.path.join(root, private), os.path.join(root, private, name),
-            root_fd, private, bound_fd,
-        )
+        bound = BoundSource(into, os.path.join(into, name), parent_fd, private, bound_fd)
         try:
             files = {name: identity["snapshot"], **identity.get("members", {})}
             for each, expected in files.items():
-                _bind_one(each, folder_fd, bound_fd, expected, progress)
+                linked = _bind_one(each, folder_fd, bound_fd, expected, progress)
+                bound._hold(each, expected if linked else None)
             if progress is not None:
                 progress()  # a caller that gave up makes this raise: cleaned below
         except BaseException:

@@ -41,6 +41,7 @@ from services.concurrency_manager import concurrency_manager
 from services.lock_manager import LockFailed, lock_manager
 from services.mutation_guard import locked_for_mutation
 from services import referrers, staging
+from services.disk import create_scratch_dir
 from services.recognized import recognize
 from services.round_trip import RECOGNIZED, recognized_applies, round_trip, round_trip_applies
 from services.rules.library import HIDDEN_STAGING
@@ -64,6 +65,7 @@ from services.tools import ModeKind, registry
 from services.verification_store import check_verdict, verification_store
 from utils.delete_plan import build_delete_plan, build_delete_snapshot
 from utils.path_utils import (
+    BIND_PREFIX,
     is_safe_directory_tree,
     bind_source,
     is_within_configured_volumes,
@@ -588,6 +590,11 @@ class QueueBackpressureError(RuntimeError):
 
 class ExternalJobCancelled(Exception):
     """Raised inside an external-job loop when cancel_job() has been requested."""
+
+
+class SourceChanged(RuntimeError):
+    """A bound Source changed while its job ran (Codex 4606539513): its
+    output is discarded, never published, and the Source is left alone."""
 
 
 class SourceRefused(Exception):
@@ -1420,7 +1427,9 @@ class JobManager:
             self._archived_jobs.pop(oldest_job_id, None)
 
     def _archive_job_for_lookup(self, job: ConversionJob) -> None:
-        archived = job.model_copy(deep=True)
+        # Without its runtime-only state (descriptors, locks), which can't be
+        # deep-copied and means nothing in a snapshot (Codex 4606539536).
+        archived = job.archived_copy()
         self._archived_jobs[archived.id] = (archived, time.monotonic())
         self._prune_archived_jobs()
 
@@ -1933,12 +1942,17 @@ class JobManager:
         except (asyncio.TimeoutError, OSError) as exc:
             return f"the Source couldn't be checked ({exc or 'no answer'})"
 
-    async def _bind_source_bounded(self, job: ConversionJob) -> Optional[str]:
+    async def _bind_source_bounded(
+        self, job: ConversionJob, cancel_event: asyncio.Event | None = None,
+    ) -> Optional[str]:
         """Bind a job's checked Source before anything else reads it (#431):
         every later step (sizing, detection, the companion checks, the
-        converter) reads ``job._read_path``, a link in a private folder no
-        Inbox writer can redirect. None when bound (or nothing to bind), else
-        why it couldn't be. Bounded; a late answer's folder is removed."""
+        converter) reads ``job._read_path``, in a folder of the job's own in
+        the app's work area (``disk.create_scratch_dir``), where no Inbox
+        writer has any right on the parent chain (Codex 4606562350). None when
+        bound (or nothing to bind), else why it couldn't be. Bounded by its
+        progress; a cancel (*cancel_event*) stops it and ends the job
+        CANCELLED (Codex 4606539525); a late answer's folder is removed."""
         identity = job._source_identity
         if not identity or job.input_kind == InputKind.DIRECTORY:
             return None
@@ -1948,7 +1962,8 @@ class JobManager:
         state: Dict[str, object] = {"abandoned": False, "result": None}
 
         def bind(progress):
-            result = bind_source(job.file_path, identity, progress=progress)
+            into = create_scratch_dir(f"{BIND_PREFIX}{job.id}_")
+            result = bind_source(job.file_path, identity, into, progress=progress)
             with guard:
                 if not state["abandoned"]:
                     state["result"] = result
@@ -1959,7 +1974,7 @@ class JobManager:
         try:
             bound = await run_detached_within_stall_bound(
                 bind, what="Binding the Source", stall=_BIND_STALL_SECONDS,
-                report_progress=True,
+                report_progress=True, cancel_event=cancel_event,
             )
         except BaseException as exc:
             with guard:
@@ -1969,11 +1984,37 @@ class JobManager:
                 # Answered, but the answer never reached here: removed on a
                 # thread of its own (it touches the disk).
                 threading.Thread(target=late.close, daemon=True).start()
+            if isinstance(exc, ReadCancelled):
+                raise ConversionCancelled("Conversion cancelled") from exc
             if isinstance(exc, (OSError, RuntimeError, asyncio.TimeoutError)):
                 return f"the Source couldn't be bound for reading ({exc})"
             raise
         job._bound, job._read_path = bound, bound.read_path
         return None
+
+    async def _require_bound_unchanged(self, job: ConversionJob) -> None:
+        """Before any output is published: every bound file, read through the
+        descriptor kept from bind time, still has the size, mtime and ctime it
+        had then (Codex 4606539513). A hard link shares its inode with the
+        Inbox's file, so a resumed download writing it in place shows here.
+        Raises :class:`SourceChanged` (the job fails, its staged output is
+        discarded and the Source left alone), or when it can't be told."""
+        bound = job._bound
+        if bound is None:
+            return
+        try:
+            changed = await run_detached_bounded(
+                bound.changed, timeout=_CANONICAL_PROBE_SECONDS,
+            )
+        except (OSError, DeadlineExpired, ProbeCapacityExceeded) as exc:
+            raise SourceChanged(
+                f"the source changed while it was being converted (couldn't tell: {exc})"
+            ) from exc
+        if changed is not None:
+            raise SourceChanged(
+                f"the source changed while it was being converted ({changed}); "
+                "nothing was published"
+            )
 
     async def _fail_before_start(
         self, job_id: str, job: ConversionJob, message: str, *, dir_lock_held: bool,
@@ -3377,6 +3418,11 @@ class JobManager:
         # Imported here: services.libraries imports this module.
         from services import libraries
 
+        if job._source_identity:
+            # A bound Source (#431) may change under its job: its output is
+            # staged, so one made from a changed Source is never published
+            # (Codex 4606539513).
+            return True
         try:
             library = await run_detached_bounded(
                 libraries.library_for, job.output_path, timeout=_CANONICAL_PROBE_SECONDS,
@@ -5818,7 +5864,7 @@ class JobManager:
             # FAILED with nothing written or removed: no output exists yet.
             problem = await self._source_identity_problem_bounded(job)
             if problem is None:
-                problem = await self._bind_source_bounded(job)
+                problem = await self._bind_source_bounded(job, cancel_event)
             if problem is not None:
                 raise SourceRefused(f"Not converted: {problem}")
             # Ledger bookkeeping (#292): size the Source set before anything can
@@ -6183,6 +6229,8 @@ class JobManager:
                     # it itself (the RomM swap, #391): it then stays staged
                     # until the Referrer hook, and its records are written
                     # where it is staged and carried along when it moves.
+                    # Not from a bound Source that changed meanwhile.
+                    await self._require_bound_unchanged(job)
                     placeable = True
                     placement = await self._staged_placement(job, slot, write_path)
                     if placement is None:
@@ -6377,6 +6425,9 @@ class JobManager:
                                 job.warning = "; ".join(removal.notes)
                                 job.message = f"Output is {check_label}. {job.warning}"
 
+                if slot is not None and not slot.placed:
+                    # Not from a bound Source that changed meanwhile.
+                    await self._require_bound_unchanged(job)
                 placeable = True
                 if (
                     slot is not None and not slot.placed

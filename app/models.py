@@ -267,11 +267,29 @@ class ConversionJob(BaseModel):
     # the job's Source lock right before the tool runs.
     _source_identity: dict | None = PrivateAttr(default=None)
     # Where a job with a ``_source_identity`` reads its Source once bound
-    # (``utils.path_utils.bind_source``): the ``BoundSource`` (a private
-    # folder of links, removed through its kept descriptors), and the
-    # Source's path in it. None until bound, and for every other job.
+    # (``utils.path_utils.bind_source``): the ``BoundSource`` (a folder of
+    # the job's own in the app's work area, removed through its kept
+    # descriptors), and the Source's path in it. None until bound, and for
+    # every other job. Runtime-only (``RUNTIME_ONLY_PRIVATES``).
     _bound: object | None = PrivateAttr(default=None)
     _read_path: str | None = PrivateAttr(default=None)
+
+    def archived_copy(self) -> "ConversionJob":
+        """A deep copy for the archive of finished jobs, without the
+        runtime-only private state (``RUNTIME_ONLY_PRIVATES``: open handles,
+        locks), which can't be copied and means nothing once archived. The
+        live job is never touched (Codex 4606539536)."""
+        shallow = self.model_copy()
+        shallow.__pydantic_private__ = dict(shallow.__pydantic_private__ or {})
+        for name in RUNTIME_ONLY_PRIVATES:
+            shallow.__pydantic_private__[name] = None
+        return shallow.model_copy(deep=True)
+
+
+# A job's private attributes that hold runtime handles (the bound Source's
+# descriptors and lock, #431): left out of every archived copy. Add any new
+# private that holds a handle, a lock or a thread here.
+RUNTIME_ONLY_PRIVATES: tuple[str, ...] = ("_bound",)
 
 
 class JobCreateRequest(BaseModel):

@@ -7407,23 +7407,39 @@ finalization region (CodeRabbit 4606147979): a cancel while either waits ends
 the job CANCELLED and lets go of its output locks and its cross-process slot,
 and a refusal raises `SourceRefused`, ending it FAILED ("Not converted: ...")
 with nothing written or removed. A job that passes is then bound before anything else reads its Source
-(`path_utils.bind_source`, Codex 4605281757): a fresh owner-only folder in the Inbox
-root (same filesystem, `.compressatorium-bind-*`, which intake never lists)
-gets a hard link of the Source and of each member it carries
-(`identity["members"]`, a sheet's tracks), made through descriptors opened
-beneath the root with no link followed and each `fstat`ed against the identity
-validated. Where links can't be made (`EXDEV`, `ENOTSUP`, `EPERM` on a NAS) the
-file is copied through a descriptor checked before and after; the bind runs under
-`run_detached_within_stall_bound` (`_BIND_STALL_SECONDS`, the conversion's own
-stall limit by default), each copied chunk reporting progress, so a slow copy
-that keeps moving finishes and only a real stall fails the job. A bind given up
-on stops at its next report and removes its folder; one that answers after its
-awaiter left is removed too. `bind_source` returns a `BoundSource` (`path`,
-`read_path`, `close()`) that keeps the root's and the bound folder's
-descriptors from bind time: `close()` unlinks the bound names through the
-folder's own descriptor and removes the folder from the root only while that
-name is still the same inode, so a folder swapped in under its name keeps
-everything in it (CodeRabbit outside-diff note on the bind cleanup). The metadata probes keep their fixed bound. Sizing,
+(`path_utils.bind_source`, Codex 4605281757). **Where binding lives** (Codex
+4606562350): in a folder of the job's own in the app's work area
+(`disk.create_scratch_dir("bind_<job>_")`, under `CHD_TEMP_DIR` or the data
+folder's `temp/`, mode 0700), never in the Inbox, so no Inbox writer has any
+right on its parent chain and none can rename it or swap it for a link. The
+Source and each member it carries (`identity["members"]`, a sheet's tracks) are
+put there through descriptors opened beneath the Inbox root with no link
+followed, each `fstat`ed against the identity validated: a hard link where the
+work area is on the Inbox's filesystem, else (`EXDEV`, or `ENOTSUP`/`EPERM` on a
+NAS or under protected hard links) a copy read through a descriptor checked
+before and after. The bind runs under `run_detached_within_stall_bound`
+(`_BIND_STALL_SECONDS`, the conversion's own stall limit by default) with the
+job's cancel event (Codex 4606539525): each copied chunk reports progress, so a
+slow copy that keeps moving finishes, only a real stall fails the job, and a
+Cancel stops it at its next chunk and ends the job CANCELLED (`ReadCancelled`
+becomes the job's own cancel). A bind given up on or cancelled removes its
+folder; one that answers after its awaiter left is removed too. `bind_source`
+returns a `BoundSource` (`path`, `read_path`, `changed()`, `close()`) that keeps
+descriptors from bind time: the folder's and its parent's, which `close()`
+removes it through (the folder taken from its parent only while that name is
+still the same inode), and one per bound file with its size, mtime and ctime
+then. A hard link shares its inode with the Inbox's file, so a resumed download
+writing it in place would reach the converter: before any output is published
+(both placement points in `_process_job`), `_require_bound_unchanged` `fstat`s
+every bound file through its descriptor, and one that changed raises
+`SourceChanged` ("the source changed while it was being converted"), so the job
+fails, its staged output is discarded, nothing is published and the Source is
+left alone (Codex 4606539513). For that, every job that reads a bound Source
+stages its output (`_needs_stage`), whichever Library holds it. The
+`BoundSource` is runtime-only: an archived snapshot of a finished job
+(`ConversionJob.archived_copy`) leaves out every private in
+`models.RUNTIME_ONLY_PRIVATES`, without touching the live job (Codex
+4606539536). The metadata probes keep their fixed bound. Sizing,
 detection, the companion checks and `run_convert` read `job._read_path`, never
 the Inbox name, and `_cleanup_temp_dir` removes the folder on every ending. The
 move to `processed/` still acts on the Inbox names, with its own inode check. So the job is a conversion in every sense the
