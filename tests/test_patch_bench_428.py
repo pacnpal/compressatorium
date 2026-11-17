@@ -286,3 +286,51 @@ def test_publish_without_hard_links_never_replaces_a_taken_name(tmp_path, monkey
     assert taken.read_bytes() == b"first job"
     assert Path(final).read_bytes() == b"second job"
     assert not packed.exists()
+
+
+@pytest.mark.asyncio
+async def test_a_patch_waits_for_a_conversion_slot(db: Path, client, tmp_path, monkeypatch) -> None:
+    """A patch takes a slot like a conversion, so MAX_CONCURRENT_JOBS=1 holds it back."""
+    import asyncio
+
+    from services import patch_bench
+    from services.concurrency_manager import ConcurrencyManager
+
+    manager = ConcurrencyManager(1, str(tmp_path / "locks"))
+    monkeypatch.setattr(patch_bench, "concurrency_manager", manager)
+    assert await manager.acquire("a-conversion")
+    rom = db / "gba" / "Game.gba"
+    rom.parent.mkdir()
+    rom.write_bytes(ROM)
+    started = await client.post(
+        "/api/patch", json={"image_path": str(rom), "patch_path": _bps_patch(db / "fix.bps")},
+    )
+    assert started.status_code == 200, started.text
+    await asyncio.sleep(0.5)
+    out = db / "gba" / "Game (Patched).7z"
+    assert not out.exists()
+
+    manager.release("a-conversion")
+    await patch_bench.drain()
+    assert _members(out) == {"Game (Patched).gba": _target()}
+
+
+def test_a_failed_publish_removes_its_claim(tmp_path, monkeypatch) -> None:
+    """Without hard links, a replace that fails leaves no empty archive behind."""
+    import os
+
+    from services import patch_bench
+
+    def no_links(*_a, **_k):
+        raise OSError("hard links not supported")
+
+    def broken_replace(*_a, **_k):
+        raise OSError("I/O error")
+
+    monkeypatch.setattr(os, "link", no_links)
+    monkeypatch.setattr(os, "replace", broken_replace)
+    packed = tmp_path / ".partial"
+    packed.write_bytes(b"job")
+    with pytest.raises(OSError, match="I/O error"):
+        patch_bench._publish(str(packed), str(tmp_path), "Game", "Game (Patched)")
+    assert not (tmp_path / "Game (Patched).7z").exists()

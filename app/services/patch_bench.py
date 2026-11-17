@@ -25,6 +25,7 @@ touches the original. Nothing here downloads a patch or runs unattended.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import os
 import shutil
@@ -37,6 +38,7 @@ from models import ConversionMode
 from services import patch_engine
 from services.archive import archive_service
 from services.archive_members import read_archive_members
+from services.concurrency_manager import concurrency_manager
 from services.dat_store import dat_store
 from services.job_manager import job_manager
 from services.romz import romz_service
@@ -203,7 +205,13 @@ def _publish(packed: str, folder: str, stem: str, first: str) -> str:
             except FileExistsError:
                 name = _free_name(folder, stem)
                 continue
-            os.replace(packed, final)
+            try:
+                os.replace(packed, final)
+            except OSError:
+                # Don't leave the empty claim looking like a published archive.
+                with contextlib.suppress(OSError):
+                    os.unlink(final)
+                raise
             return final
         os.unlink(packed)
         return final
@@ -219,6 +227,13 @@ async def _run(job_id: str, plan: dict) -> None:
     job = job_manager.get_job(job_id)
     rom_dir = packed = None
     try:
+        # A patch reads a whole ROM and runs 7z, so it takes a conversion slot
+        # like any conversion and honours MAX_CONCURRENT_JOBS.
+        await job_manager.update_external_job(job_id, progress=0, message="Waiting for a slot")
+        if not await concurrency_manager.acquire(
+            job_id, cancel_event=job_manager.get_cancel_event(job_id),
+        ):
+            raise ConversionCancelled()
         patch = await _step(_read_patch, plan["patch"], what="reading the patch", job_id=job_id)
         kind = patch_engine.patch_format(patch)
         if kind is None:
@@ -277,6 +292,7 @@ async def _run(job_id: str, plan: dict) -> None:
             job_id, success=False, error_message="The patch stopped on an error",
         )
     finally:
+        concurrency_manager.release(job_id)
         if rom_dir is not None:
             await remove_partial_tree(rom_dir, label="patched ROM")
         if packed is not None and job.output_path is None:
