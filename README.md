@@ -1468,6 +1468,13 @@ Notification destinations for finished sweeps and failed jobs.
 |-------|------|
 | ![Settings, light](docs/screenshots/settings-light.png) | ![Settings, dark](docs/screenshots/settings-dark.png) |
 
+The DAT ranking: which imported DAT names an Image, ordered separately for disc
+and cartridge Images.
+
+| Light | Dark |
+|-------|------|
+| ![DAT ranking, light](docs/screenshots/settings-dat-ranking-light.png) | ![DAT ranking, dark](docs/screenshots/settings-dat-ranking-dark.png) |
+
 #### Help
 
 In-app reference for tools, formats, compression, and verification.

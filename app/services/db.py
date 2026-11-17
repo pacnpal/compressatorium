@@ -52,6 +52,8 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 from sqlalchemy.pool import NullPool, StaticPool
 
+from services.dat_parser import dat_family
+
 logger = get_logger("db")
 
 
@@ -94,18 +96,22 @@ class DAT(Base):
     version = Column(String, nullable=False, default="")
     imported_at = Column(String, nullable=False, default="")
     file_count = Column(Integer, nullable=False, default=0)
+    # Redump / No-Intro / TOSEC / MAME / other, read from the header (#424);
+    # what the default DAT ranking orders by. See dat_parser.dat_family.
+    family = Column(String, nullable=False, default="other", server_default="other")
 
 
 class DATHash(Base):
     __tablename__ = "dat_hashes"
     # Composite PK lets the same hex value live under both "sha1" and
-    # "md5" types without collision.
+    # "md5" types without collision, and in every DAT that lists it (#424):
+    # a hash two DATs share keeps both matches, and the ranking picks one.
     hash = Column(String(64), primary_key=True)
     hash_type = Column(String(8), primary_key=True)  # 'sha1' | 'md5'
     dat_id = Column(
         String(16),
         ForeignKey("dats.id", ondelete="CASCADE"),
-        nullable=False,
+        primary_key=True,
         index=True,
     )
     game_name = Column(String, nullable=False, default="")
@@ -993,6 +999,7 @@ def _migrate_dat_store(engine: Engine, path: Path) -> None:
                     "version": info.get("version", "") or "",
                     "imported_at": info.get("imported_at", "") or "",
                     "file_count": int(info.get("file_count", 0) or 0),
+                    "family": dat_family(info.get("name"), info.get("description")),
                 }
                 for dat_id, info in dats_json.items()
                 if isinstance(info, dict)

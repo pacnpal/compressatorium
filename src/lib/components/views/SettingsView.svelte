@@ -1,13 +1,18 @@
 <script>
   import NotificationSettings from '$lib/components/views/NotificationSettings.svelte';
+  import DatRankingSettings from '$lib/components/views/DatRankingSettings.svelte';
 </script>
 
 <section class="view" aria-labelledby="settings-title">
   <header class="header">
     <h1 id="settings-title">Settings</h1>
-    <p class="hint">Where Compressatorium sends messages. Nothing is sent until you add a destination.</p>
+    <p class="hint">
+      Where Compressatorium sends messages, and which DAT names an Image. Nothing is
+      sent until you add a destination.
+    </p>
   </header>
   <NotificationSettings />
+  <DatRankingSettings />
 </section>
 
 <style>

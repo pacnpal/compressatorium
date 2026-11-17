@@ -4,6 +4,19 @@
 
 ### Added
 
+- **Every DAT's match is kept, and you rank your DATs** (#424). A hash that
+  two imported DATs both list now keeps both matches; before, the later
+  import replaced the earlier one. Each DAT gets a family read from its
+  header (Redump, No-Intro, TOSEC, MAME or other), and a Hasheous hit uses
+  its signature source as its family. A new **DAT ranking** card in Settings
+  lists your DATs twice, once for disc Images and once for cartridge Images,
+  and lets you reorder each; until you do, Redump comes first for discs and
+  No-Intro first for cartridges. Whether an Image is a disc comes from the
+  tools' own disc formats. A match now names the Image after the top-ranked
+  DAT that knows it, and says so when two DATs the ranking doesn't order give
+  it different names. Saving a new order updates the names already shown
+  without hashing anything again. A local DAT is still preferred over
+  Hasheous, as before (database migration 0022).
 - **Unfinished RomM swaps are picked up after a restart** (#392). If the app
   stops part way through keeping a ROM's id, the next start settles the swap
   in the background, without holding up startup. What is safe to finish is

@@ -24,7 +24,7 @@ from services.tools import registry
 from services.tools.base import EmbeddedHashUnavailable
 from services.workload_limiter import workload_limiter
 from routes.volume_guard import off_loop_until_stalled
-from utils.path_utils import is_within_configured_volumes
+from utils.path_utils import is_within_configured_volumes, match_extension
 
 router = APIRouter()
 logger = get_logger("dat")
@@ -99,6 +99,13 @@ class MatchBatchRequest(BaseModel):
 class SyncRequest(BaseModel):
     tag: str | None = None
     force: bool = False
+
+
+class DATRankingRequest(BaseModel):
+    """The user's DAT order per Image kind, best first (#424)."""
+
+    disc: list[str] = []
+    cartridge: list[str] = []
 
 
 class HasheousSettingsRequest(BaseModel):
@@ -210,6 +217,36 @@ async def delete_dat(dat_id: str):
     if not deleted:
         raise HTTPException(status_code=404, detail="DAT not found")
     return {"deleted": True, "id": dat_id}
+
+
+def is_disc_image(path: str) -> bool:
+    """Whether *path* is a disc Image, by the tool registry's disc extensions.
+
+    Picks which DAT ranking names the file (#424): Redump first for discs,
+    No-Intro first for cartridges, until the user reorders them.
+    """
+    return match_extension(path, registry.disc_extensions()) is not None
+
+
+@router.get("/dat/ranking")
+async def get_dat_ranking():
+    """Every imported DAT per Image kind (disc / cartridge), best first.
+
+    Entries sharing a ``rank`` are DATs the ranking doesn't order; a hash they
+    both know under different names is reported as a ``conflict``.
+    """
+    return await run_in_threadpool(dat_store.get_ranking)
+
+
+@router.put("/dat/ranking")
+async def put_dat_ranking(request: DATRankingRequest):
+    """Save the DAT order, then re-pick the DAT of every cached local hit."""
+    await run_in_threadpool(
+        dat_store.set_ranking,
+        {"disc": request.disc, "cartridge": request.cartridge},
+    )
+    await run_in_threadpool(dat_store.rerank_matches, is_disc_image)
+    return await run_in_threadpool(dat_store.get_ranking)
 
 
 @router.get("/dat/stats")
@@ -1295,19 +1332,26 @@ def matching_available(has_dats: bool) -> bool:
     return bool(has_dats) or hasheous.enabled()
 
 
-async def _local_dat_record(sha1: str) -> dict | None:
-    """Look ``sha1`` up in the imported DATs; ``None`` when absent."""
-    record = await run_in_threadpool(dat_store.lookup_sha1, sha1)
+async def _local_dat_record(sha1: str, *, disc: bool = False) -> dict | None:
+    """The top-ranked imported DAT's record for ``sha1``; ``None`` when absent.
+
+    *disc* picks the disc or cartridge ranking. A ``conflict`` (two DATs the
+    ranking doesn't order, naming the file differently) is passed through.
+    """
+    record = await run_in_threadpool(lambda: dat_store.lookup_sha1(sha1, disc=disc))
     if not record:
         return None
-    dat_name = await run_in_threadpool(dat_store.get_dat_name, record.get("dat_id", ""))
-    return {
+    result = {
         "dat_id": record.get("dat_id"),
-        "dat_name": dat_name,
+        "dat_name": record.get("dat_name"),
+        "family": record.get("family"),
         "game_name": record.get("game_name"),
         "rom_name": record.get("rom_name"),
         "source": "dat",
     }
+    if record.get("conflict"):
+        result["conflict"] = record["conflict"]
+    return result
 
 
 def _match_result(file_path: str, sha1: str, match_type: str, record: dict) -> dict:
@@ -1376,8 +1420,9 @@ async def _local_lookup_match(
     several content hashes for one file (a CHD carries a header SHA1 and a data
     SHA1) and the file-level fallback supplies one more.
     """
+    disc = is_disc_image(file_path)
     for sha1, match_type in candidates:
-        record = await _local_dat_record(sha1)
+        record = await _local_dat_record(sha1, disc=disc)
         if record is not None:
             return _match_result(file_path, sha1, match_type, record)
     return None
