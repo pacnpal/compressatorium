@@ -4,6 +4,14 @@
 
 ### Added
 
+- **"Compatible with…" in the compression picker and the Rule editor**
+  (#429). Pick NetherSX2, PCSX2, DuckStation, a RetroArch core (Beetle PSX),
+  MiSTer, PPSSPP or Dolphin and the codecs are set to the ones it reads. A
+  codec the emulator doesn't read shows a warning in both places and is never
+  blocked. The table is one file, `app/data/compat_presets.yaml`, served at
+  `GET /api/compat-presets`; every entry cites its source, and a test checks
+  each mode and codec in it against the tool registry. Adds PyYAML as a
+  declared dependency.
 - **PSP PBP to ISO, and 3DS CIA to CCI and back, with rom-converto** (#423).
   Three more rom-converto modes: **PSP PBP → ISO** turns a PSP game's
   `EBOOT.PBP` back into the UMD ISO inside it, **3DS CIA → CCI** writes a

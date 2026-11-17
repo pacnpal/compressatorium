@@ -8339,6 +8339,29 @@ at a time. Nothing here changes the wire API until Phase 9 (optional).
 Net: a smaller, flatter codebase where the cost of the *next* tool drops from
 ~20 files to ~5.
 
+## Compatibility presets (`app/data/compat_presets.yaml`)
+
+"Compatible with…" is data, not code. `app/data/compat_presets.yaml` maps each
+target emulator to `entries`: a `mode`, the `codecs` it reads for that mode,
+the `preferred` ones the picker selects, and a mandatory https `source` (the
+doc or source file the claim rests on; an entry that can't be cited is left
+out). `services/compat_presets.py` loads and validates it (a malformed file
+raises, it is never served half-read) and `GET /api/compat-presets` returns it
+unchanged. The frontend holds no copy: `stores/compat.svelte.js` fetches it
+once, and `tools/compat.js` holds the two pure rules both surfaces share
+(`compatTargetsForMode`, `compatWarning`). `CompressionPicker.svelte` and
+`RuleEditor.svelte` stay descriptor-driven; they offer only the targets with an
+entry for the current mode, set `preferred` on choosing one, and show the
+warning for a codec outside `codecs`. The warning is advisory: nothing is
+disabled and a Rule still saves and runs. A mode a target has no entry for gives
+no opinion. An empty selection is not "nothing": chdman then sends no `-c` and uses its own
+codecs, so `ModeSpec.implicit_codecs` names them once, `GET /api/compat-presets` serves them as
+`implicit_codecs`, and `compatWarning` checks those instead. A mode whose defaults follow the input (chdman's
+`copy`) sets `ModeSpec.implicit_codecs_unknown`; the warning then says compatibility can't be
+confirmed and suggests choosing codecs. A test fails if a multi-codec compressing mode declares neither. `tests/test_compat_presets_429.py` checks every mode and codec in
+the file against the tool registry (backend `ModeSpec.codecs` and the
+frontend `registry.js` codec lists), so a rename breaks a test, not the picker.
+
 ## Ignored entries (`utils/junk.py`)
 
 `is_junk_entry(name)` is the one predicate for names no listing or walk should
