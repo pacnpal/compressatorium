@@ -28,6 +28,7 @@ turns it into a cleanup, and never more than the user confirms:
 from __future__ import annotations
 
 import asyncio
+import functools
 import os
 from datetime import datetime
 from typing import Any
@@ -158,33 +159,44 @@ def suggest_keeper(
     return path, "every copy is alike; the first by path"
 
 
-def not_deletable(row: dict, held: set[str] | None) -> str | None:
+def not_deletable(row: dict, run: dict | None) -> str | None:
     """Why a duplicate group offers no delete, or None when it does.
 
-    *held* is the last run's held keys, None when no run is recorded for the
-    Library: then whether this group was fully seen is unknown, so no delete.
+    *run* is the Library's last find-duplicates run, None when none is
+    recorded: then whether this group was fully seen is unknown, so no delete.
+    Nor without the run's record of every sheet's tracks (``sheet_tracks``):
+    a copy a sheet elsewhere reaches through a link could not be ruled out.
     """
     cause = row.get("cause") or {}
     key = str(cause.get("key") or row.get("image_key") or "")
     if _key_kind(key) not in HASH_EQUAL_KINDS:
         return "its copies are not proven equal by a content hash"
-    if held is None:
+    if run is None:
         return "no find-duplicates run is recorded for its Library; run one first"
-    if key in held:
+    if run.get("sheet_tracks") is None:
+        return (
+            "the last run has no record of which files are sheets' tracks; "
+            "run Find duplicates again"
+        )
+    if key in set(run.get("held_keys") or ()):
         return "the last run could not see every copy; run Find duplicates again"
     if len(cause.get(findings.COPIES) or []) < 2:
         return "fewer than two copies are left"
     return None
 
 
-def _held_keys(library_id: str) -> set[str] | None:
-    """The last run's held keys for *library_id*, None when no run is recorded."""
+def _last_run(library_id: str) -> dict | None:
+    """*library_id*'s last find-duplicates run, None when none is recorded. Blocking."""
     from services import duplicates
 
     for run in duplicates.list_runs():
         if run.get("library_id") == library_id:
-            return set(run.get("held_keys") or ())
+            return run
     return None
+
+
+def _recorded_tracks(run: dict) -> frozenset[tuple[int, int]]:
+    return frozenset((int(dev), int(ino)) for dev, ino in run.get("sheet_tracks") or ())
 
 
 def annotate(rows: list[dict]) -> None:
@@ -207,7 +219,7 @@ def annotate(rows: list[dict]) -> None:
     except Exception:  # a hint for the suggestion only, never a failure
         logger.warning("duplicate_cleanup: could not read the match cache", exc_info=True)
         matches = {}
-    held = {run["library_id"]: set(run.get("held_keys") or ()) for run in duplicates.list_runs()}
+    runs = {run["library_id"]: run for run in duplicates.list_runs()}
     for row in groups:
         copies = list((row.get("cause") or {}).get(findings.COPIES) or [])
         intact = {c["path"] for c in copies if _is_intact(c, records.get(c["path"]))}
@@ -225,7 +237,7 @@ def annotate(rows: list[dict]) -> None:
             if keeper else row["keeper_reason"]
         )
         row["not_deletable"] = (
-            not_deletable(row, held.get(row["library_id"]))
+            not_deletable(row, runs.get(row["library_id"]))
             if row["keeper"] else row["keeper_reason"] or "no copy can be kept"
         )
         row["deletable"] = row["not_deletable"] is None
@@ -298,7 +310,32 @@ def _sheet_problem(path: str) -> str | None:
     )
 
 
-def _plan_blocking(row: dict, keep: str) -> dict:
+def _copy_sheet_problem(
+    path: str, recorded: frozenset[tuple[int, int]] = frozenset(),
+) -> str | None:
+    """Why *path* may be a sheet's track, or None. Blocking.
+
+    The walk up from it (:func:`_sheet_problem`), and the last run's record of
+    every sheet's track identities in the Library: a sheet in another folder
+    that reaches this file through a linked track (Codex PRRT_kwDOQ9nULM64NUn9).
+    """
+    problem = _sheet_problem(path)
+    if problem:
+        return problem
+    name = os.path.basename(path)
+    try:
+        st = os.stat(path)
+    except OSError as exc:
+        return f"{name} could not be read ({exc.strerror or exc})"
+    if (st.st_dev, st.st_ino) in recorded:
+        return (
+            f"{name} is a track a sheet in this Library names (through a link); "
+            "it is never deleted on its own"
+        )
+    return None
+
+
+def _plan_blocking(row: dict, keep: str, recorded: frozenset = frozenset()) -> dict:
     """The plan, from the disk. Blocking: run detached and bounded."""
     cause = row.get("cause") or {}
     key = str(cause.get("key") or "")
@@ -317,7 +354,7 @@ def _plan_blocking(row: dict, keep: str) -> dict:
         problem = _copy_problem(copy, key)
         if problem:
             item["errors"].append(f"{os.path.basename(copy['path'])} {problem}")
-        sheet = _sheet_problem(copy["path"])
+        sheet = _copy_sheet_problem(copy["path"], recorded)
         if sheet:
             item["errors"].append(sheet)
         if keep_real in {os.path.realpath(p) for p in item.get("delete_paths") or []}:
@@ -329,13 +366,23 @@ def _plan_blocking(row: dict, keep: str) -> dict:
 
 async def plan(finding_id: int, fingerprint: str, keep: str) -> dict:
     """What deleting every copy but *keep* would remove, for the user to confirm."""
+    shown, _recorded = await _plan(finding_id, fingerprint, keep)
+    return shown
+
+
+async def _plan(
+    finding_id: int, fingerprint: str, keep: str,
+) -> tuple[dict, frozenset[tuple[int, int]]]:
+    """:func:`plan`, and the run's record of sheet tracks it was checked against."""
     row = await run_in_threadpool(_shown, finding_id, fingerprint)
     copies = (row.get("cause") or {}).get(findings.COPIES) or []
     if keep not in {c["path"] for c in copies}:
         raise CleanupRefused(400, "The copy to keep is not one of this group's copies")
-    reason = not_deletable(row, await run_in_threadpool(_held_keys, row["library_id"]))
+    run = await run_in_threadpool(_last_run, row["library_id"])
+    reason = not_deletable(row, run)
     if reason:
         raise CleanupRefused(409, f"No delete is offered for this group: {reason}")
+    recorded = _recorded_tracks(run)
     problem = await run_in_threadpool(_keeper_problem, keep, copies)
     if problem:
         raise CleanupRefused(409, problem)
@@ -344,7 +391,7 @@ async def plan(finding_id: int, fingerprint: str, keep: str) -> dict:
         raise CleanupRefused(409, "This Finding's Library is gone")
     try:
         found = await run_detached_bounded(
-            _plan_blocking, row, keep, timeout=KEPT_DELETE_PROBE_SECONDS,
+            _plan_blocking, row, keep, recorded, timeout=KEPT_DELETE_PROBE_SECONDS,
         )
     except (DeadlineExpired, ReadCancelled):
         raise CleanupRefused(503, "The copies' Volume did not answer in time") from None
@@ -360,7 +407,7 @@ async def plan(finding_id: int, fingerprint: str, keep: str) -> dict:
         "key": str((row.get("cause") or {}).get("key") or ""),
         "keeper_identity": found["keeper_identity"],
         "items": found["items"], "blocked": blocked, "total_delete_count": total,
-    }
+    }, recorded
 
 
 async def _add_referrer_changes(item: dict, keep: str, library: Any) -> None:
@@ -392,7 +439,7 @@ async def delete(
     finding_id: int, fingerprint: str, keep: str, confirmed: list[str],
 ) -> dict:
     """Delete every copy but *keep*, as the confirmed plan listed them."""
-    shown = await plan(finding_id, fingerprint, keep)
+    shown, recorded = await _plan(finding_id, fingerprint, keep)
     if shown["blocked"]:
         reasons = [e for item in shown["items"] for e in item.get("errors") or []]
         detail = "; ".join(reasons or ["see the plan"])
@@ -402,7 +449,8 @@ async def delete(
         raise CleanupRefused(409, "The delete plan changed since it was shown; review it again")
     outcomes, keeper_changed = await job_manager.delete_duplicate_copies(
         keeper=keep, keeper_identity=tuple(shown["keeper_identity"]),
-        keeper_key=shown["key"], copy_problem=_sheet_problem,
+        keeper_key=shown["key"],
+        copy_problem=functools.partial(_copy_sheet_problem, recorded=recorded),
         copies=[
             (item["source_path"], list(item["delete_paths"]), tuple(item["identity"]))
             for item in shown["items"]

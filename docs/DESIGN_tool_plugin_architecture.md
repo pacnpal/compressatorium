@@ -5901,6 +5901,19 @@ confirmed on (`findings.observe` / `resolve` with `fingerprint=`, checked under
 the store's write lock, CodeRabbit 4593240053): a run that wrote a newer cause
 meanwhile wins.
 
+A sheet can reach a track through a link in another folder (`disc/Disc.cue`
+names `disc/Track.bin`, a link to `shared/Track.bin`), which no walk up from the
+target finds (Codex PRRT_kwDOQ9nULM64NUn9). The find-duplicates run already
+lists the whole Library, so it records every listed sheet's track identities,
+`(st_dev, st_ino)` with links followed (`image_sets.sheet_track_identities`,
+through the same `resolve_track`), as `sheet_tracks` in the run's summary on
+`duplicate_runs` (no migration). The plan, and the check under each copy's
+locks (`_copy_sheet_problem`), block a copy whose identity is any recorded
+track, besides the walk up. A run with no such record (an older run, or a
+sheet whose tracks could not be stat'ed, stored as None) offers no delete. The
+listing itself no longer shows such a target as an Image: `group_images` also
+counts a member's resolved link target as owned.
+
 `owning_sheet` compares a sheet's tracks with the copy by file identity (device
 and inode), so a case-insensitive share's `track.bin` is `Track.bin`; a track
 that does not exist is compared by its case-folded real path, and any other

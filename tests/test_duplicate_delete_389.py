@@ -1108,3 +1108,79 @@ async def test_a_produced_chd_is_kept_only_while_its_latest_check_is_current(
     _time.sleep(0.01)
     os.utime(chd, None)                              # changed again
     assert await plan_status() == 409
+
+
+
+# ----------------------------------------------------------------------
+# a track reached through a link in another folder (Codex PRRT_kwDOQ9nULM64NUn9)
+# ----------------------------------------------------------------------
+
+
+def _linked_track(roms: Path) -> Path:
+    """``disc/Disc.cue`` names ``disc/Track.bin``, a link to
+    ``shared/Track.bin``, which holds the same disc as ``Game.iso``."""
+    d388._disc(roms / "Game.iso", b"game")
+    d388._copy(roms / "Game.iso", roms / "shared" / "Track.bin")
+    (roms / "disc").mkdir(parents=True, exist_ok=True)
+    os.symlink(roms / "shared" / "Track.bin", roms / "disc" / "Track.bin")
+    _cue(roms / "disc" / "Disc.cue", "Track.bin")
+    return roms / "shared" / "Track.bin"
+
+
+@pytest.mark.asyncio
+async def test_a_track_a_sheet_reaches_through_a_link_is_never_deleted(
+    db: Path, client: httpx.AsyncClient, monkeypatch,
+) -> None:
+    """Walking up from the target cannot find the sheet; the run's record of
+    every sheet's track identities can."""
+    roms = db / "romm"
+    target = _linked_track(roms)
+    release = threading.Event()
+    release.set()
+    d388._romm_images_resolving(
+        monkeypatch, release, [roms / "Game.iso", target, roms / "disc" / "Disc.cue"],
+    )
+    await d388._find(client, "romm")
+    group = await _group(client)
+    assert d388._names(group) == ["Game.iso", "Track.bin"]
+
+    await _blocked_for(client, group, str(roms / "Game.iso"), "a sheet in this Library")
+    assert target.exists()
+
+
+@pytest.mark.asyncio
+async def test_a_folder_library_never_lists_a_linked_track_as_an_image(
+    db: Path, client: httpx.AsyncClient,
+) -> None:
+    """The listing itself: a target a sheet reaches through its linked track
+    is that sheet's, not an Image of its own, so it is never grouped."""
+    roms = db / "roms"
+    _linked_track(roms)
+    library = await d388._register(client, roms)
+    await d388._find(client, library)
+
+    assert await d388._duplicates(client) == []
+
+
+@pytest.mark.asyncio
+async def test_a_run_with_no_record_of_sheet_tracks_offers_no_delete(
+    db: Path, client: httpx.AsyncClient,
+) -> None:
+    from services import db as _db
+
+    roms = db / "roms"
+    d388._disc(roms / "Game.iso", b"game")
+    d388._copy(roms / "Game.iso", roms / "Copy.iso")
+    library = await d388._register(client, roms)
+    await d388._find(client, library)
+    with _db.SessionLocal() as session:
+        row = session.get(_db.DuplicateRunRecord, library)
+        summary = dict(row.summary)
+        summary.pop("sheet_tracks", None)
+        row.summary = summary
+        session.commit()
+
+    group = await _group(client)
+    assert group["deletable"] is False
+    assert "sheet" in group["not_deletable"]
+    assert (await _plan(client, group, str(roms / "Game.iso"))).status_code == 409

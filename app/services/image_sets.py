@@ -146,6 +146,30 @@ def owning_sheet(
         folder = parent
 
 
+def sheet_track_identities(sheet: str) -> set[tuple[int, int]]:
+    """``(st_dev, st_ino)`` of every track *sheet* names, links followed. Blocking.
+
+    The track names are :func:`image_members`' (``_named_tracks``: the same
+    ``resolve_track`` every sheet reader uses), and each is stat'ed through its
+    links, so a sheet that reaches a file in another folder through a linked
+    track names that file (Codex PRRT_kwDOQ9nULM64NUn9). A track that does not
+    exist names nothing. Raises :class:`SheetOwnerUnknown` when one that may
+    exist cannot be stat'ed.
+    """
+    out: set[tuple[int, int]] = set()
+    for track in _named_tracks(sheet):
+        try:
+            st = os.stat(track)
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise SheetOwnerUnknown(
+                f"{track} could not be read ({exc.strerror or exc})",
+            ) from exc
+        out.add((st.st_dev, st.st_ino))
+    return out
+
+
 def _is_track(own: os.stat_result, real: str, track: str) -> bool:
     """Whether *track* (a sheet's spelling) is the file *own* is a stat of.
 
@@ -194,6 +218,13 @@ def group_images(
             key = os.path.normpath(member)
             owned.add(key)
             owned_folded.setdefault(key.casefold(), key)
+            # A linked member (`disc/Track.bin` -> `shared/Track.bin`) owns
+            # its target too: that file is the sheet's, never an Image of its
+            # own (Codex PRRT_kwDOQ9nULM64NUn9).
+            target = os.path.normpath(os.path.realpath(member))
+            if target != key:
+                owned.add(target)
+                owned_folded.setdefault(target.casefold(), target)
 
     def is_owned(path: str) -> bool:
         key = os.path.normpath(path)
