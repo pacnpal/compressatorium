@@ -15,6 +15,7 @@ The one piece of state here is the metadata re-pin queue.  See
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import stat as stat_module
 import time
@@ -67,6 +68,9 @@ from services.romm import (
 )
 from services.romm import (
     swap as romm_swap,
+)
+from services.romm import (
+    swap_referrer as romm_swap_referrer,
 )
 from services.romm.library import romm_library
 from services.rules import editor as rules_editor
@@ -1789,8 +1793,21 @@ async def _save_settings(submitted: dict) -> dict:
         # row, so neither half can commit alone: whichever is interrupted, the
         # marker survives and `_run_identity_cleanup` replays the other. Both
         # halves of the cleanup are idempotent, so replaying costs nothing.
-        values = await romm_settings.save(submitted, cleanup_pending=changed)
-        cleared = await _run_identity_cleanup() if owed else 0
+        # A move of the instance waits for every RomM swap in flight to end,
+        # its undo included, and starts none meanwhile: a swap renames a ROM
+        # by id, which the new instance reuses for another game (Codex
+        # 4594286722). It waits, as this route waits for sweeps and the
+        # settle pass, but only so long: a swap stuck on a mount that stopped
+        # answering gets a 409 to try again, with nothing saved (CodeRabbit
+        # 4594841850).
+        try:
+            async with (
+                romm_swap_referrer.identity_change() if changed else contextlib.nullcontext()
+            ):
+                values = await romm_settings.save(submitted, cleanup_pending=changed)
+                cleared = await _run_identity_cleanup() if owed else 0
+        except romm_swap_referrer.SwapsStillRunning as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         if cleared:
             logger.info(
                 "romm: RomM instance or library changed; cleared the conversion "

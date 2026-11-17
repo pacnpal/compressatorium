@@ -102,9 +102,14 @@ class RommError(RuntimeError):
     RomM's response body and is for the log, not for an API response.
     """
 
-    def __init__(self, message: str, *, status: int | None = None) -> None:
+    def __init__(
+        self, message: str, *, status: int | None = None, detail: str | None = None,
+    ) -> None:
         super().__init__(message)
         self.status = status
+        # RomM's own reason, the ``detail`` of its JSON error body, when it
+        # sent one: "Can't rename: Game.chd already exists" (#391).
+        self.detail = detail
 
 
 class RommNotConfigured(RommError):
@@ -288,6 +293,7 @@ class RommClient:
                 f"RomM {method} {path} failed: HTTP {exc.code}"
                 + (f" — {detail}" if detail else ""),
                 status=exc.code,
+                detail=_error_detail(detail),
             ) from exc
         except urllib.error.URLError as exc:
             raise RommError(f"RomM {method} {path} failed: {exc.reason}") from exc
@@ -462,6 +468,49 @@ class RommClient:
         self._request(
             "PUT", f"/api/roms/{int(rom_id)}", data=body, content_type=content_type,
         )
+
+    def rename_rom(self, rom_id: int, fs_name: str) -> dict:
+        """Rename ROM *rom_id*'s file to *fs_name* (#391): the record keeps its
+        id, and RomM moves the file on disk itself (spike #382, RomM 5.4.1).
+
+        ``PUT /api/roms/{id}`` with one multipart field, ``fs_name``. RomM
+        answers 409 when a file already has that name and 500 when the
+        record's file is gone (both raised as :class:`RommError` with RomM's
+        ``detail``), a 200 no-op for the name it already has, and silently
+        sanitizes a name with a path in it: the caller reads the name back.
+        Returns RomM's answer (the record), ``{}`` when it sent none.
+        """
+        body, content_type = _encode_multipart({"fs_name": fs_name})
+        result = self._request(
+            "PUT", f"/api/roms/{int(rom_id)}", data=body, content_type=content_type,
+        )
+        return result if isinstance(result, dict) else {}
+
+    def scan_rom_hashes(self, rom_ids: list[int]) -> str:
+        """Ask RomM to rehash *rom_ids* and nothing else; the task's id (#391).
+
+        ``POST /api/tasks/scan`` with ``{"type": "hashes", "roms_ids": [...],
+        "apis": []}``: the scan the swap spike proved refreshes a swapped
+        file's size and hashes (#382). No metadata APIs, so a hash lookup
+        can't clear a previous match. Needs ``tasks.run``. Raises
+        :class:`RommError` when RomM queues no task.
+        """
+        payload = {"type": "hashes", "roms_ids": [int(i) for i in rom_ids], "apis": []}
+        result = self._request(
+            "POST", "/api/tasks/scan", data=json.dumps(payload).encode(),
+            content_type="application/json",
+        )
+        task_id = result.get("task_id") if isinstance(result, dict) else None
+        if not task_id:
+            raise RommError("RomM queued no scan task")
+        return str(task_id)
+
+    def task(self, task_id: str) -> dict:
+        """RomM's task *task_id*: its ``status`` (``queued``, ``started``,
+        ``finished``, ``failed``, ``stopped``, ``canceled``) and result."""
+        quoted = urllib.parse.quote(str(task_id), safe="")
+        result = self._request("GET", f"/api/tasks/{quoted}")
+        return result if isinstance(result, dict) else {}
 
     def token_permissions(self) -> dict[str, bool]:
         """Which of the swap's scopes the token holds, by asking RomM.
@@ -651,6 +700,17 @@ def _record_relpath(rom: dict) -> str:
     if not fs_name:
         return ""
     return f"{fs_path}/{fs_name}" if fs_path else fs_name
+
+
+def _error_detail(body: str) -> str | None:
+    """RomM's ``detail`` from an error body (FastAPI's ``{"detail": "..."}``),
+    or None when the body is not that."""
+    try:
+        parsed = json.loads(body) if body else None
+    except ValueError:
+        return None
+    detail = parsed.get("detail") if isinstance(parsed, dict) else None
+    return detail.strip() if isinstance(detail, str) and detail.strip() else None
 
 
 def _encode_multipart(fields: dict) -> tuple[bytes, str]:

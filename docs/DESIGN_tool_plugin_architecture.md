@@ -3547,8 +3547,8 @@ its values were tool ids, so a value left from it still loads as a tab.
 ### 3.3.15 Referrers (`services/referrers/`)
 
 A Referrer is anything that points at an Image by its path: an `.m3u`
-playlist, an EmulationStation frontend's `gamelist.xml` (#386), and the RomM
-in-place swap later. When
+playlist, an EmulationStation frontend's `gamelist.xml` (#386), and RomM's
+ROM (the swap, #391). When
 delete-on-verify replaces a Source, every Referrer is moved to the output
 **before** the Source is removed. What is guaranteed: every reference a
 registered Referrer finds is either rewritten to the output before the Source
@@ -3566,8 +3566,11 @@ class Referrer(ABC):                          # services/referrers/base.py
     phase: Phase                              # Phase.FILE or Phase.NETWORK (#383)
     def detect(self, image_path) -> bool      # could it point at this Image?
     def plan(self, renames) -> list[ReferrerChange]   # writes nothing
-    def apply(self, change) -> None           # atomic, one-time backup; raises ReferrerError
-                                              # (may be `async def`, see below)
+    def apply(self, change) -> Applied | None # atomic, one-time backup; raises ReferrerError
+                                              # always synchronous
+    async def apply_async(self, change) -> Applied | None  # the async form (#391);
+                                              # default: apply() on a worker thread
+    def places_output(self, image_path, renames) -> bool  # default False (#391)
 
 @dataclass(frozen=True)
 class ReferrerChange:
@@ -3575,7 +3578,20 @@ class ReferrerChange:
     target: str                               # the file/record rewritten
     edits: tuple[tuple[str, str], ...]        # (old, new) as shown to the user
     payload: Any                              # Referrer-private, never serialized
-    # to_dict() adds "entries": len(edits), for "gamelist.xml, 3 entries" (#386)
+    summary: str | None                       # one line for the confirmation (#391)
+    record: Mapping | None                    # extra fields for its Ledger record (#391)
+    # to_dict() adds "entries": len(edits), for "gamelist.xml, 3 entries" (#386),
+    # and "summary" when set
+
+class ReferrerError(Exception):               # target, reason, kept=None (#391)
+@dataclass(frozen=True)
+class Applied:                                # an apply's return (#391)
+    removed: tuple[str, ...]                  # Source files it removed itself
+    note: str | None                          # what the job and the Ledger say
+@dataclass(frozen=True)
+class StagedPlacement:                        # the job's still-staged output (#391)
+    staged: Mapping[str, str]                 # {final output path: staged path}
+    place: Callable[[], Awaitable[None]]      # the job's _place_staged
 ```
 
 `renames` is `{old_path: new_path}`: every file the delete will remove, mapped
@@ -3607,9 +3623,13 @@ registration order within a phase. `Phase.FILE` (`.m3u`,
 `gamelist.xml`) runs before `Phase.NETWORK` (the RomM swap): the hook runs one
 phase at a time, and a later phase runs only when every Referrer of the
 earlier ones succeeded. Its Referrers are not even planned; each gets a
-`skipped` record. `apply` may be `async def` (detected with
-`inspect.iscoroutinefunction`). A phase's plans and plain applies run on the
-detached thread as before. Its async applies wait in `ReferrerOutcome.pending`
+`skipped` record. `apply` is always synchronous, on every Referrer. A network
+Referrer also overrides `apply_async` (#391), the contract's async form,
+whose default runs `apply` on a worker thread (`asyncio.to_thread`, so the
+caller's context and its guard come along). `Referrer.applies_async()` says
+whether a Referrer overrides it, and the hook asks that, never the
+signature. A phase's plans and its other applies run on the detached thread
+as before. Its async applies (`apply_async`) wait in `ReferrerOutcome.pending`
 and run after the thread returns, on the event loop, one at a time
 (`_await_bounded`): each is raced against the job's `cancel_event` and
 bounded by the hook's bound (`bound`, else `conversion_stall_bound()`). Past
@@ -3623,8 +3643,10 @@ exception included, logged), and the job hands it its delete holds and
 travelling locks through `ReferrerOutcome.outlive(release)`, which lets them
 go from the last lingering task's done callback, never earlier. A network
 Referrer therefore never holds
-the loop: its blocking work goes in `plan` or a plain `apply` (the thread), and
-its network calls in an async `apply` (the loop).
+the loop: its blocking work goes in `plan` or `apply` (the thread), and its
+network calls in `apply_async` (the loop). Its own `apply` stays a working
+synchronous form for a caller off the loop: the RomM swap's runs
+`apply_async` on a loop of its own (`asyncio.run`).
 
 The package exposes the registry and two entry points:
 
@@ -3999,6 +4021,374 @@ Knulli, muOS) key each game's artwork, favourite flag and play count on its
   be edited in place (CDATA, a comment or child element inside `<path>`, a
   file whose encoding isn't ASCII-compatible such as UTF-16) raises
   `ReferrerError` naming the gamelist: the Source and the output are kept.
+
+**The RomM swap (#391, `services/romm/swap_referrer.py`).** RomM's ROM as a
+Referrer: `id = "romm_swap"`, `opt_in = True`, `Phase.NETWORK`, with its own
+`apply_async` (and a synchronous `apply` that runs it). `RommLibrary.referrer_enabled` turns it on with the
+`swap_keep_rom_id` setting (#390). It is registered when
+`services.romm.library` is imported (it imports the job manager's hook, so it
+can't be registered from `services/referrers/__init__.py`). It takes a
+`renames` of one file replaced by one output file beside it under another
+name, not an archive (`.zip`/`.7z`: RomM hashes an archive's largest member,
+so the read-back can't confirm one), and `plan` finds RomM's single-file ROM
+for that file. The Platform is the RomM Library's Platform folder holding the
+file (`RommLibrary.platform_folder`, #387: `<root>/roms/<platform>/...` or
+`<root>/<platform>/...`, `<root>/<platform>/roms/...` and subfolders
+included), never the file's parent folder; only the RomM Platform whose
+`fs_slug` (or `slug`) is that folder's name is listed, and the record must be
+the file itself (`local_path` equal to the Source's real path). The rule
+when the ROM isn't found:
+
+- *Not a ROM RomM knows on its own: today's behaviour* (the job deletes the
+  Source, the re-pin queue carries the metadata). The file is in no Platform
+  folder, RomM has no Platform for that folder, no record names the file, or
+  the record covering it is its folder (a multi-file ROM: the folder, and so
+  the record and its id, stays).
+- *Can't be told: fail closed* (`ReferrerError`, the Source is kept, so the
+  record is never orphaned). The Platform folder or RomM can't be read, two
+  Platform folders claim the file (`AmbiguousFolder`), two records are the
+  file, or the record that is the file says it has several.
+
+The change's `target` is `RomM ROM <id>`, its `summary`
+"RomM: rename ROM <id> to Game.chd", and its `record` `{rom_id, kept_rom_id:
+true}`, which lands in the Ledger's `referrers_updated` once it applied.
+
+*Why the output stays staged.* RomM refuses a rename onto a name a file
+already has (409), and a RomM scan that sees the output beside the Source
+makes a duplicate ROM. So the job keeps the checked output in its hidden
+staging slot (3.3.21) until the hook: `JobManager._staged_placement` asks
+`referrers.places_output(source, renames, library)`, which is True when a
+Referrer on for the Library says `places_output` (no I/O; the swap answers
+for one file beside the Source). Only for a delete-on-verify job whose output
+is one file in a slot, not an archive member. The job then writes the
+verified record and the reuse snapshot at the staged path (a rename keeps the
+fingerprint; `_place_staged` carries the records along) and hands
+`_delete_source_set` a `StagedPlacement`. The hook carries it in the
+`WriteGuard` (`base.staged_placement()`, `base.hook_running()`), which also
+watches the staged path instead of the final one, so the file Referrers'
+writes still check the output's identity. `files.points_at`, which the
+`.m3u` and gamelist Referrers use to confirm a rewritten entry reaches the
+output, asks `base.staged_output(final)` too: while the output is staged,
+the entry must resolve to its final path and the staged output must exist.
+A file Referrer's own temp file (#404) lives in a `slot-` slot of its own,
+opened and closed per write; the job's output slot is locked and the swap's
+`park-` slot is never swept, so the three never touch each other's slot or
+lock. Right after the hook,
+`_delete_source_set` calls `placement.place()` (a no-op once placed), so a
+kept Source keeps its output beside it and nothing is unlinked before the
+output is in place; a lingering apply is left to place it itself. In the hook
+the swap plans nothing when the output is not staged (the job placed it).
+
+*The steps*, each written to the swap journal before it runs
+(`services/romm/swap_journal.py`, table `romm_swaps`, migration 0020):
+
+| State | Step |
+| --- | --- |
+| `renaming` | `RommClient.rename_rom` (`PUT /api/roms/{id}`, multipart `fs_name`). RomM moves the Source to the new name itself. The name is read back with `GET /api/roms/{id}`. |
+| `parking` | The file now at the new name must have the Source's size and mtime (a rename keeps them). It moves into a parking slot (`staging.open_slot(folder, parking=True)`). |
+| `parked` | Written by the move itself, once the Source is in the slot. |
+| `placing` | `placement.place_blocking()` (the job's `_place_staged_blocking`), run like every other move through `_mutate`: never abandoned, so a cancel waits for its real outcome before the undo picks its branch, and with no hand-off of the job's holds to a placing worker (the swap and its undo keep them, and past the hook's grace `outlive` hands them to the swap's task; Codex 4594650576). The staged output takes the name. |
+| `placed` | The output is in place, the Source still parked. |
+| `rehashing` | `RommClient.scan_rom_hashes([id])` (`POST /api/tasks/scan`, `{"type": "hashes", "roms_ids": [id], "apis": []}`), `RommClient.task` polled to an end (`REHASH_SECONDS`), then the ROM read back: its name, `fs_size_bytes` and `sha1_hash` must be the output's. The one exception: on a Platform RomM never hashes (`UNHASHED_PLATFORM_SLUGS`, RomM's own `NON_HASHABLE_PLATFORMS`: Switch, Switch 2, Wii U, PS3 to PS5, Xbox 360, Xbox One, PC and others) and only when RomM reports no SHA-1, the name and size are all RomM has, so they alone confirm it; a SHA-1 RomM reports is always compared (CodeRabbit 4593839047). The task's stats are never read: RomM's say `updated_roms: 0` even when it worked. |
+| `deleting` | The parked file must still be the Source; it is removed and the parking slot closed. |
+
+A success ends `done`, returns `Applied(removed=(source,))` (the job records
+the Source as deleted and unlinks nothing), and closes the output's pending
+re-pin row as done (`repin.settle_swapped`): the provider ids never left the
+ROM. With the switch off, or when the swap doesn't apply, the re-pin queue
+works exactly as before.
+
+*When the output is already in place* (CodeRabbit 4593839018). A job whose
+Source a reader held places its output and keeps the Source; the later
+retried delete (`retry_kept_delete`, `finish_kept_delete`) and any job that
+placed its output before the hook run the hook with no `StagedPlacement`.
+The fallback applies only when the output's check record says it was
+converted from this Source (`_converted_from`): #389's duplicate delete runs
+the same delete step with the copy it keeps as the "output", which was never
+converted from the copy deleted, so no swap was owed there and none is
+reported. Otherwise RomM can't rename onto a name that is taken (409), so the
+swap doesn't try:
+`plan` returns a fallback change (`summary` "RomM: ROM <id> can't keep its
+id", `record` `{rom_id, kept_rom_id: false}`) whose apply queues the re-pin
+the switch-off path relies on (`repin.record`, `pre_fingerprint=""`, the
+ROM's provider ids) and returns `Applied(note=...)`: "the ROM did not keep
+its id: the swap can't run after the output was placed; re-pin queued (RomM
+ROM <id>)". The job deletes the Source as today. The note reaches the
+Ledger's record (`note`), the job's message and warning
+(`_SourceDelete.notes`), and a retried delete's outcome reason, which the
+sweep logs and lists under `kept_sources_notes`; a retried delete writes no
+Ledger row of its own. A re-pin that can't be queued keeps the Source, and
+so does one `repin.record` refuses (it returns 0; CodeRabbit 4594841873).
+The fallback is refused, keeping the Source, while RomM's identity is being
+changed or once the settings no longer name the instance `plan` bound to,
+and counts itself in `_active_swaps` while it writes the re-pin, so
+`identity_change()` waits for it (CodeRabbit 4594841887). A
+plain `apply`'s `Applied` result now counts like an async one's: the hook
+keeps it (`_plan_and_apply`) and carries each phase's `removed` and `notes`
+into the outcome (CodeRabbit review 5930768363).
+
+*A Source check that fails before the hook* (CodeRabbit 4593839025).
+`_delete_source_set` runs its pre-hook part in `_prepare_delete` (the plan
+rebuilt, the order, the path checks, the Library). If that raises while the
+output is still staged, `_place_checked_output` places it before the error
+goes on, so the job's cleanup never discards a checked output because the
+Source side failed.
+
+*Failures, and what each journal state leaves.* `ReferrerError.kept` sets the
+job's wording (`ReferrerOutcome.kept_message`): "converted, source kept:
+RomM refused the rename (<RomM's detail>)" for a refusal, "RomM didn't
+confirm the new file (...)" for a rehash that failed or didn't match, and the
+default "couldn't update RomM ROM <id> (...)" otherwise. `RommError.detail`
+carries RomM's own `detail` text.
+
+- Before RomM renamed: a 409 ends `refused`; any other HTTP answer (the 500
+  "file is gone", a 403) means nothing changed and ends `failed`. Nothing to
+  undo.
+- RomM renamed (or wrote another name, which counts as a refusal, or didn't
+  answer at all) and the output is not in place: a parked Source goes back
+  under the new name (`restoring`), then RomM is asked for the old name
+  (`reverting`; a no-op when it never renamed) and it is read back. Ends
+  `refused` or `rolled_back`; the job places the output beside the Source.
+- The output is in place (the rehash failed or didn't match, or the parked
+  Source couldn't be deleted): the parked Source goes back under its own name
+  beside the output (`restoring`), and the ROM keeps its id on the checked
+  output; RomM's next scan refreshes its hashes. Ends `kept`.
+- A Cancel or the hook's bound (`_undo_within_grace`): the forward step it
+  lands on finishes and records its outcome first (`_mutate`, below), then
+  the same undo runs, each step journaled, under
+  `asyncio.wait_for(..., referrers.CANCEL_GRACE_SECONDS)` (#383's grace,
+  read when it runs). The hook waits that long for the cancelled task; if
+  the undo outlasts it, the hook treats the task as lingering and hands it
+  the job's delete holds and output locks (`ReferrerOutcome.outlive`), which
+  are let go only when it ends. From the swap's first move until it ends,
+  the output is held back from the job (`StagedPlacement.held`, which
+  `_delete_source_set` and the job's end-of-job placing both honour), so a
+  lingering swap is never overtaken by the job placing the output over the
+  Source's way back (Codex 4594772381). `run` releases it when the swap
+  ends anywhere but a row left for the next run, so the job places the
+  output beside the Source when it still can (the row ends `rolled_back`,
+  or `kept` once the output was in place), and otherwise sets it aside. A
+  swap stopped before anything changed ends `failed`. The lingering task's
+  result is still taken when it ends (Codex 4595004160): the hook puts a
+  `referrers.HandedOff` per lingering apply in `ReferrerOutcome.handed_off`,
+  and `_delete_source_set` gives each the same `_take_late_outcome`
+  callback the shutdown hand-off uses. That callback adds what the apply
+  removed to the job's deleted list, puts its `updated` record in place of
+  the hook's `abandoned` one, adds a note to the job's message and tells
+  the amend listeners, so the Ledger row is amended too. Until then, the
+  job's kept reason does not say the Source is definitely kept: it adds
+  that the Referrer "is still finishing, so the source may yet be removed".
+- An undo that runs out of grace or fails, or a process that dies, leaves
+  the row on the state reached (`parked`, `placed`, or the undo step it was
+  on), with the reason and "left for the next run" in `detail`; a parked
+  Source stays parked; and the output stays held, since the name it would
+  take may hold, or be owed to, the Source (the job then sets the checked
+  output aside, below). `swap_journal.unfinished()` lists the rows left for
+  the next run. Recovering them (finish, or show as a Finding) is #392:
+  until it lands nothing calls `unfinished()` or acts on such a row, and a
+  parked Source stays in `.compressatorium-stage/park-…` for the user to
+  move back by hand (CodeRabbit 4594326484).
+- At shutdown the job's task is cancelled, so the hook's awaiter is.
+  `_await_bounded` cancels the apply's task, keeps it referenced
+  (`_let_it_end`) and, if it is still running, puts it in the caller's
+  `unawaited` list (`update_before_source_removal(..., unawaited=...)`).
+  `_delete_source_set` catches that cancel and hands its delete holds and
+  output locks to those tasks (`_hand_holds_to`, the same transfer as the
+  `outlive` hand-off after the grace) before letting the cancel go on, so
+  they are let go only when the swap's undo ends (Codex 4594286704). Each
+  `unawaited` entry is a `referrers.HandedOff` (the Referrer, its change and
+  the task), not a bare task: the job adds a done callback per entry
+  (`JobManager._take_late_outcome`) that, when the task ends with a result,
+  adds the Source files it removed to the job's deleted list and its Ledger
+  record to the job's records, so a swap that finishes after the cancel is
+  not reported as nothing done (CodeRabbit 4594841860). An apply already
+  done when the cancel reaches the awaiter (it finished in that instant) is
+  handed off the same way, so its result, removed paths and records are
+  taken at once and its holds let go through the same hand-off (CodeRabbit
+  4594978832). The job's Ledger row may be written (it is announced
+  terminal) before a handed-off apply ends, so the late result also
+  amends the persisted row rather than deferring the terminal write: the
+  callback tells `JobManager`'s amend listeners (`add_amend_listener`,
+  sync or async like a terminal listener), and `ledger.amend` updates that
+  row's `source_deleted`, `deleted_paths` and `referrers_updated`. Writing a
+  row (`ledger.record`, which now builds the row from the job in the
+  thread) and amending it share `ledger._write_lock`, so an amend either
+  finds the row written or runs before it is built, and the row then
+  carries the amended values. `main.py` and the CLI register
+  `ledger.amend` beside `ledger.record`. The
+  undo runs as far as the event loop lets it before the process exits, each
+  step journaled; whatever it didn't reach is left for the next run, and a
+  parked Source is never removed.
+
+*Bound to one RomM instance* (Codex 4594286722). The settings-following
+client (`romm_client`) resolves the URL and token on every request, so a
+settings change mid-swap would send the rename, or its undo, to another
+instance, where ROM 12 is another game. `plan` captures a `_Binding`: the
+base URL and token, and `romm_settings.identity_generation()` (the counter
+every save that moves the instance or library root bumps, which the re-pin
+plan already checks), before it looks the ROM up, and refuses if it moved
+during the lookup. The swap makes every RomM call, undo included, through
+`binding.client()`, a `RommClient` with that URL and token. Before each RomM
+write (the rename, the rehash, putting the old name back) it asks
+`binding.still_live()`; if RomM's settings name another instance, it raises
+`_Unbound`: no undo, nothing more changed on either instance, and the row is
+left for the next run with the reason. The settings route serialises
+against swaps too: a save that moves the identity runs inside
+`swap_referrer.identity_change()`, which stops new swaps from starting (they
+keep the Source, "RomM's settings are being changed") and waits for those
+running, undo included, to end. It waits rather than refuses, as the same
+route waits for sweeps (`romm_auto.paused`) and the settle pass
+(`_settle_lock`); each swap is bounded by the conversion's stall bound. The
+wait is bounded too (`IDENTITY_CHANGE_WAIT_SECONDS`): a swap still running
+then raises `SwapsStillRunning`, which the route answers with 409 and
+nothing saved (CodeRabbit 4594841850). A step on its thread (`_mutate`) is
+waited for through every cancel, not just the first, so a second cancel
+never leaves a rename or a move unrecorded (CodeRabbit 4594841855).
+
+*A record RomM marks missing* (CodeRabbit 4594841868). `_rom_for` keeps
+records with `missing_from_fs`: when the record that is the file says it is
+missing while the file is there, RomM's scan state can't be trusted, so the
+swap raises `ReferrerError` and the Source is kept, rather than treating
+the file as one RomM doesn't know.
+
+*A checked output is never discarded* (CodeRabbit 4593970363). The job
+marks its output `placeable` once its checks pass (or none was asked). If
+it is still staged when the job ends (its name was taken, a Referrer holds
+it, placing failed), `_set_aside_output` keeps it, never sweepable while it
+is the only copy (CodeRabbit 4594086355):
+
+- `StagedOutput.set_aside` renames its slot to a `park-` slot (no replace;
+  its `partial_writes` record dropped) and only then lets go of its lock.
+  If the rename fails, it writes `partial_writes.KEEP_MARKER`
+  (`.compressatorium-keep`) into the slot instead, which every slot sweep
+  honours (`_sweep_slot` skips a slot carrying it, and one it can't check
+  for it), and only then lets go. If even that fails it raises with the
+  slot still open, and the job holds it, lock and all, in `_held_slots`
+  for as long as the process runs. `_sweep_slot` looks for the marker once
+  before taking the slot's lock and again under it, after checking the name
+  still names the same slot, so a marker written (and the lock let go)
+  between the two looks still keeps it (CodeRabbit 4594218526). The other
+  sweeps (`_sweep_one`, `_sweep_orphan_sidecar`) already make their last
+  check under the lock.
+- `set_aside` is started first, with `start_detached_or_own_thread`, before
+  anything in `_set_aside_output` that a cancel could interrupt (listing the
+  output's names comes after; CodeRabbit 4594495308), so the slot is renamed
+  or marked kept whatever happens to the job's task. With every detached
+  thread in use it gets a daemon thread of its own (the fallback
+  `_close_stage` and `_let_go_in_background` take, now shared as
+  `subprocess_runner.start_detached_or_own_thread`; CodeRabbit 4594613612),
+  so it always starts. If even that thread can't start (the OS thread
+  limit), the helper raises `NoThreadAvailable`, and the job holds the
+  slot, lock and all, in `_held_slots`, which no sweep passes while the
+  process lives (CodeRabbit 4594745731). It hands the keep marker
+  (`StagedOutput.mark_kept`: one small create through the slot's
+  descriptor, then the lock goes) to `start_detached_eventually`, so the
+  marker is written off the loop once a thread starts, never on it, because
+  the create can block on a dead Volume (CodeRabbit 4594981268). Until the
+  marker is written, the job's note says preservation is "not yet durable".
+  Once it is written, the slot leaves `_held_slots` and a note says it is
+  durable. If writing the marker fails, the slot stays held. A free detached slot whose thread the OS
+  refuses is given back and reported as `ProbeCapacityExceeded`
+  (`_probe_in_daemon_thread`), so it takes the same fallback rather than
+  raising a bare `RuntimeError` with the slot lost. Cleanup the caller no
+  longer owns (letting go of locks in `_let_go_in_background`, closing a
+  slot in `_close_stage`, the late set-aside answer) starts through
+  `subprocess_runner.start_detached_eventually`: the same helper, and when
+  no thread can start at all, the same again on the loop every
+  `NO_THREAD_RETRY_SECONDS` until one does, so the locks are let go once a
+  thread frees up rather than dropped (CodeRabbit 4594855525). The job's `finally` holds back anything the
+  set-aside raises, a cancel or an error, until every release and the
+  terminal notice have run. In the swap, `_mutate` raising
+  `NoThreadAvailable` means the step never ran: the swap treats it as that
+  step failing (undo, or the row left for the next run). The slot stays protected
+  all along (its lock is held until the rename or the marker is in place).
+  The job waits `SET_ASIDE_SECONDS` for it (shielded). An answer that comes
+  after the bound, or after a cancel, goes once to `late` on a thread of its
+  own, which moves the records (`_keep_records_blocking`), logs the real path
+  and adds it to the job's message and warning; the job has reported the
+  stage folder meanwhile (and the Ledger row, already written, keeps it).
+- Its records go with it: the check and CHD-metadata records are moved from
+  the staged paths to the kept ones with the store helpers placing uses
+  (`move_blocking`), and when placing failed before the job wrote the check
+  record, it is written at the kept path from the job's `check_passed`.
+- The job never runs `_close_stage` on it (so its records are never
+  cleared), and its message, warning, error (the Ledger's `error` for a
+  failed job), a `{"referrer": "staging", "status": "kept"}` entry in its
+  Ledger record and the log all say where it is.
+
+The set-aside runs first in the job's `finally`, and a cancel during it is
+held until every release after it has run (the terminal notice, the output
+locks and delete holds, the input and folder locks, the concurrency slot,
+`_close_stage`, the temp folder, the pruning), then raised (CodeRabbit
+4594326475); the slot is taken out of the job's hands before the await, so
+a set-aside the cancel cut short finishes on its worker and is never closed.
+
+*The Source the swap touches is the one converted* (Codex 4594537162). The
+job puts the Source's pre-conversion fingerprint, the delete snapshot the
+normal delete path checks (size, `mtime_ns`, inode, device, by path), in
+`StagedPlacement.source_fingerprints`. The swap compares the Source against
+it (`_is_snapshot`, the job's own rule) under the Source's hold right before
+the RomM rename, the file RomM moved before parking it, and the parked file
+right before deleting it. A swap with no fingerprint doesn't start; a
+mismatch before the rename ends the row `failed` with nothing changed, and a
+later one rolls back as any failure does. The Source is kept, with the
+reason.
+
+*After the Source is deleted the result is never lost* (Codex 4594537178).
+Recording `done` and settling the re-pin run as a task of their own
+(`_finish`), awaited shielded: a cancel landing there leaves it running
+(referenced in `_after_swaps`) and the swap still returns
+`Applied(removed=(source,))`, which the hook takes, so the job records the
+Source as deleted.
+
+Three more edges of the swap (CodeRabbit review 5931463835):
+
+- The removal of the parked Source sets `removed` on its own thread. A
+  cancel or an error after that ends the swap `done` with
+  `Applied(removed=(source,))`, never `kept`; the hook takes the result of
+  an apply that finished despite its cancel (`_await_bounded` returns it).
+- Settling the re-pin after the Source is gone is bookkeeping: any error
+  there, a `DeadlineExpired` included, is logged and the swap still reports
+  applied.
+- `_delete_source_set(..., hook_records=job.referrers_updated)` fills the
+  job's records as soon as the hook returns, so a Referrer's failure stays
+  in the Ledger when placing the output then raises.
+
+`_close_stage` discards only an output the job never got to place: one
+rejected by its own checks, or a conversion that failed or was cancelled
+before them. The Source is kept in every such case (nothing is deleted
+before the output is placed).
+
+*What happened is recorded before anything acts on it* (Codex
+PRRT_kwDOQ9nULM64NxUt). Each step that moves something (opening the parking
+slot, `take`, the restore, the delete) is one function run on its thread by
+`_mutate` that does the move, sets its flag (`parked`) and, for `take`,
+writes `parked` to the journal; `_mutate` shields it, so a cancel waits for
+it to finish and then propagates with the flag already right. Placing reads
+`StagedPlacement.is_placed()` (the job's slot) when it ends any other way.
+Before the parking slot is let go, `_release_park` lists it
+(`StagedOutput.contents()`): it is closed (removed) only when empty. One
+that holds anything, or can't be listed, is kept (`StagedOutput.keep()`),
+never swept (the sweeps match `slot-` names only, and a parking slot is not
+journaled in `partial_writes`), and the row says so. So the Source is never
+deleted unconfirmed.
+
+*Off the loop, never on its shared executor* (Codex PRRT_kwDOQ9nULM64NxU1).
+Every read of a file or of RomM in the swap runs on a detached thread under
+a bound: a stat or a RomM call through `run_detached_bounded`
+(`PROBE_SECONDS`, `ROMM_SECONDS`), hashing the output through
+`run_detached_within_stall_bound`. Every move, journal write and RomM write
+runs through `start_detached_or_own_thread` (`_mutate`: a detached thread,
+or one of its own when none is free, so a step, or its undo, always starts).
+Each carries the caller's context
+(`contextvars.copy_context().run`), so `check_write` sees the hook's guard. A
+mount that stops answering strands a throwaway thread, never a worker every
+other offload needs; the hook's grace and `lingering` hand-off cover a move
+that outlasts it. The fake
+RomM (`tests/fake_romm.py`) holds ROMs backed by files and answers the
+rename, the scan, the task and the read-back the way RomM 5.4.1 does, with
+knobs for a refusal, a sanitized name, a scan that doesn't rehash and a task
+that fails.
 
 To add a Referrer: subclass `Referrer` in `services/referrers/`, give it a new
 `id`, declare `opt_in` and `phase`, and `registry.register(...)` it in
@@ -5799,6 +6189,15 @@ The RomM swap (#391) stages through the same helper.
 - **Hidden everywhere here too.** `STAGE_DIR_NAME` lives in `utils/junk.py`
   and is an ignored entry (`is_junk_entry`), so listings, search and every
   walk skip it.
+- **Parking slots (#391).** `open_slot(folder, parking=True)` makes a
+  `park-XXXXXXXX/` slot for the RomM swap's Source while the output takes its
+  name. It is never swept (the sweeps match `slot-` names only) and not
+  journaled in `partial_writes`; the swap journal records it. `take(name)`
+  moves an entry of the folder into the slot, `restore(name, as_name=None)`
+  moves it back out, both no-replace renames through the slot's descriptors;
+  `remove(name)` deletes a file in it; `keep()` lets go and leaves the slot
+  and its content in place. A job whose output a Referrer places itself keeps
+  it staged until the Referrer hook (`StagedPlacement`, 3.3.15).
 
 ### 3.3.22 Deleting from a duplicate group (`services/duplicate_cleanup.py`, #389)
 
@@ -6222,8 +6621,8 @@ does.
 
 `swap_keep_rom_id` is a RomM setting (`services/romm/settings.py`, env
 `ROMM_SWAP_KEEP_ROM_ID`, off by default), stored with the rest of the RomM
-settings and returned by `GET /api/romm/settings`. Nothing reads it yet except
-the status block: the swap itself (#391) will.
+settings and returned by `GET /api/romm/settings`. It turns on the RomM swap
+Referrer (#391, 3.3.15) through `RommLibrary.referrer_enabled`.
 
 The swap needs `roms.read` (the read-back), `roms.write` (renaming the record)
 and `tasks.run` (the rescan). RomM has no endpoint that lists a token's scopes,

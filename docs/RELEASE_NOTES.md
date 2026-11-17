@@ -4,6 +4,57 @@
 
 ### Added
 
+- **Converting a RomM game keeps its ROM id** (#391). With **Keep the ROM id
+  when converting** on, a single-file game (an `.iso`, say) converted to one
+  file beside it, with its source deleted after the check, no longer turns
+  into a new game in RomM plus a missing one holding your saves, states,
+  notes, collections and play history. The output stays hidden until its
+  checks pass and every playlist and gamelist is updated; then RomM renames
+  the ROM's file to the output's name, the output takes that name, and RomM
+  rehashes that one ROM. The source is deleted only once RomM reads back the
+  output's size and SHA-1. If RomM refuses the rename (or quietly writes
+  another name), the old name is put back, both files stay, and the job says
+  "converted, source kept: RomM refused the rename" with RomM's reason. If the
+  rehash doesn't confirm the new file, the source goes back under its own name
+  beside the output. Each step is recorded before it runs, and a source that
+  couldn't be put back is never deleted: it stays hidden in the staging
+  folder once it was set aside, or beside the output under RomM's new name
+  if the swap stopped before that (see below). The
+  delete confirmation lists the rename ("RomM: rename ROM 1234 to Game.chd"),
+  the Ledger records that the ROM kept its id, and the ROM's metadata re-pin
+  is marked done. Workspace conversions and Rule sweeps both do it. Archives,
+  multi-file games and everything with the switch off convert as before.
+  On the Platforms RomM never hashes (Switch, Wii U, PS3 and the others in
+  RomM's own list), RomM reports no SHA-1, so its name and size alone
+  confirm the new file there; a SHA-1 it does report is always compared. The
+  ROM is found in either RomM folder layout, subfolders included, and a game
+  whose ROM can't be told apart keeps its source. A source kept because
+  another job was reading it is deleted later the usual way, with the re-pin
+  queued, and the result says "the ROM did not keep its id". A Cancel during
+  a swap undoes it within a few seconds: before the output takes the
+  source's name, RomM gets the old name back and the source returns; after,
+  the source returns beside the output and RomM keeps the output's name (and
+  the ROM its id); and once the source has been deleted (the last step), the
+  swap is simply complete. If that can't finish, the swap is recorded and
+  the source is kept: set aside in `.compressatorium-stage/park-…` once it was
+  parked, or, when the swap stopped after RomM's rename and before parking,
+  still beside the output under RomM's new name. Picking it up on the next
+  start comes later (#392); until then you can move the source back by hand
+  from whichever of the two it is in. A ROM RomM marks missing while its
+  file is there keeps its source, and so does a delete whose metadata re-pin
+  RomM's settings change stops from being queued. Saving RomM settings that
+  move to another instance waits up to 30 seconds for a running swap, then
+  answers "try again once it has finished" with nothing saved. When the
+  system runs out of threads, locks are let go as soon as one frees up. A
+  swap that finishes after a Cancel's few seconds, or while the app shuts
+  down, still counts: the job and its Ledger row record the source as
+  deleted, and until then the job says the swap is still finishing rather
+  than that the source was kept. A checked output that can't be put in place
+  (something took its name) is now kept in the hidden staging folder, and
+  the job says where, instead of being discarded. If no thread can start
+  to keep it, its folder is held while the app runs, and the job says
+  keeping it is not yet durable until the keep marker is written.
+
 - **Clean up a duplicate group** (#389). Each group of duplicates in Findings
   now suggests which copy to keep (one that passed its check first, then one
   whose whole content was hashed, then one a DAT recognizes, then the
@@ -21,6 +72,7 @@
   the sheet is (beside it, above it, or reaching it through a link, in any
   Library), including a sheet added after the last run. No delete is offered
   when a sheet or a folder in the Volumes can't be read.
+
 - **A "Keep the ROM id" switch for RomM** (#390). A new card on the RomM
   Settings tab holds a switch, off by default, that says a conversion should
   keep RomM's ROM id (and the saves, notes and collections on it) rather than

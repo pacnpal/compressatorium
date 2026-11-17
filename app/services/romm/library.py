@@ -20,6 +20,9 @@ from logging_setup import get_logger
 from services.romm import RommError, romm_client
 from services.romm import repin as romm_repin
 from services.romm import settings as romm_settings
+
+# Importing it registers the RomM swap Referrer (#391).
+from services.romm.swap_referrer import SWAP_REFERRER
 from services.rules.library import (
     CONVERTED_HISTORY,
     ES_FRONTEND_REFERRER,
@@ -193,11 +196,14 @@ class RommLibrary(LibraryDefaults):
 
     def referrer_enabled(self, referrer_id: str) -> bool:
         """The gamelist.xml Referrer is on when RomM's settings say the library
-        is used by an EmulationStation frontend (#386); every other opt-in one
-        is off. Reads the settings in memory."""
-        return referrer_id == ES_FRONTEND_REFERRER and bool(
-            romm_settings.effective().get("es_frontend"),
-        )
+        is used by an EmulationStation frontend (#386), and the RomM swap when
+        the "keep the ROM id" switch is on (#390, #391); every other opt-in
+        one is off. Reads the settings in memory."""
+        setting = {
+            ES_FRONTEND_REFERRER: "es_frontend",
+            SWAP_REFERRER: "swap_keep_rom_id",
+        }.get(referrer_id)
+        return setting is not None and bool(romm_settings.effective().get(setting))
 
     def platform_folder(self, path: str) -> str | None:
         """The Platform folder holding *path* in either RomM layout (#387):

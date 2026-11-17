@@ -32,6 +32,26 @@ as a ``.partial`` leftover (#331): its lock must be free and it must be older
 than ``partial_writes.MIN_AGE_SECONDS``. Opening a slot sweeps its stage folder
 first, so a slot whose record was lost goes too.
 
+**Parking slots (#391).** ``open_slot(folder, parking=True)`` makes a
+``park-XXXXXXXX/`` slot instead. The RomM swap parks the Source in one while
+the output takes its name, so what it holds is a Source, never a leftover: no
+sweep ever removes a parking slot (the sweeps match ``slot-`` names only) and
+it is not journaled in ``partial_writes``. The swap's own journal
+(``services.romm.swap_journal``) records it instead. On a slot:
+
+* :meth:`StagedOutput.take` moves an entry of the folder into the slot,
+* :meth:`StagedOutput.restore` moves it back out, under a name of choice,
+* :meth:`StagedOutput.remove` deletes a file in the slot,
+* :meth:`StagedOutput.keep` lets go of the slot and leaves it, and whatever
+  is in it, where it is (a parked Source the swap could not put back).
+* :meth:`StagedOutput.set_aside` turns an ordinary slot holding a checked
+  output that could not be placed into a parking slot, so it is kept too;
+  when it can't be renamed, it marks it kept in place
+  (``partial_writes.KEEP_MARKER``), which every sweep honours.
+
+Each move is a no-replace rename on one filesystem, through the slot's
+descriptors.
+
 Everything here is blocking: callers run it off the event loop, bounded.
 """
 from __future__ import annotations
@@ -60,8 +80,13 @@ _DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | _CLOEXEC
 # Read and write, never truncate: an exclusive flock needs a write open on NFS.
 _LOCK_FLAGS = os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | _CLOEXEC
 _CLAIM_ATTEMPTS = 100
+# Creating the keep marker in a slot: never over anything, never through a link.
+_KEEP_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | _CLOEXEC
+# A parking slot's name prefix (#391). Not ``partial_writes.SLOT_PREFIX``, so
+# no sweep ever matches it.
+PARK_PREFIX = "park-"
 
-__all__ = ["STAGE_DIR_NAME", "StagedOutput", "open_slot"]
+__all__ = ["PARK_PREFIX", "STAGE_DIR_NAME", "StagedOutput", "open_slot"]
 
 
 class StagedOutput:
@@ -139,6 +164,112 @@ class StagedOutput:
                 (os.path.join(self.path, name), os.path.join(self.folder, name))
                 for name in present
             ]
+
+    def take(self, name: str) -> str:
+        """Move the entry *name* of the output folder into the slot, same
+        name, never over anything: its path in the slot. Raises ``OSError``
+        (``FileNotFoundError`` when it is not there)."""
+        with self._mutex:
+            self._require_open()
+            place_without_clobbering(
+                name, name, src_dir_fd=self._folder_fd, dst_dir_fd=self._slot_fd,
+            )
+            return os.path.join(self.path, name)
+
+    def restore(self, name: str, as_name: str | None = None) -> str:
+        """Move the entry *name* out of the slot into the output folder, as
+        *as_name* (default: the same name), never over anything: its final
+        path. Raises ``OSError`` (``FileExistsError`` when the name is
+        taken)."""
+        target = as_name or name
+        with self._mutex:
+            self._require_open()
+            place_without_clobbering(
+                name, target, src_dir_fd=self._slot_fd, dst_dir_fd=self._folder_fd,
+            )
+            return os.path.join(self.folder, target)
+
+    def contents(self) -> list[str]:
+        """The names in the slot now, read through its descriptor. What a
+        caller checks before removing a slot that may hold something it must
+        keep (a parked Source). Raises ``OSError``."""
+        with self._mutex:
+            self._require_open()
+            return sorted(os.listdir(self._slot_fd))
+
+    def remove(self, name: str) -> None:
+        """Delete the file *name* in the slot, never following a link.
+        Raises ``OSError``."""
+        with self._mutex:
+            self._require_open()
+            os.unlink(name, dir_fd=self._slot_fd)
+
+    def keep(self) -> None:
+        """Let go of the slot and leave it, and whatever is in it, in place:
+        the descriptors close and the lock goes, the folder stays. Only for a
+        parking slot, which no sweep removes: a parked Source the swap could
+        not put back stays parked for the next run. Idempotent; never
+        raises."""
+        with self._mutex:
+            if self._closed:
+                return
+            self._closed = True
+            os.close(self._slot_fd)
+            _unlink_quietly(partial_writes.slot_lock_name(self._slot_name), self._stage_fd)
+            os.close(self._lock_fd)
+            os.close(self._stage_fd)
+            os.close(self._folder_fd)
+
+    def set_aside(self) -> str:
+        """Keep the slot, and the checked output in it, out of every sweep,
+        and let go of it. For an output that passed its checks but could not
+        be placed: the only copy, never discarded.
+
+        The slot is renamed to a ``park-`` slot (never swept), its journal
+        record dropped. If it can't be renamed, it is marked kept where it is
+        (``partial_writes.KEEP_MARKER``, which every sweep honours) instead.
+        Only then is its lock let go. Returns the slot's path. Raises
+        ``OSError`` when neither works: the slot is then still open, its lock
+        held, and must stay so (never ``close`` it)."""
+        with self._mutex:
+            self._require_open()
+            old = self._slot_name
+            new = PARK_PREFIX + old[len(partial_writes.SLOT_PREFIX):]
+            try:
+                place_without_clobbering(
+                    old, new, src_dir_fd=self._stage_fd, dst_dir_fd=self._stage_fd,
+                )
+            except OSError:
+                logger.warning(
+                    "Could not set aside %s; marking it kept in place", self.path, exc_info=True,
+                )
+                os.close(os.open(
+                    partial_writes.KEEP_MARKER, _KEEP_FLAGS, 0o600, dir_fd=self._slot_fd,
+                ))
+            else:
+                self._slot_name = new
+                self.path = os.path.join(self.folder, STAGE_DIR_NAME, new)
+                _unlink_quietly(partial_writes.slot_lock_name(old), self._stage_fd)
+                partial_writes.forget(self._marker)
+                self._marker = None
+        self.keep()
+        return self.path
+
+    def mark_kept(self) -> str:
+        """Mark the slot kept where it is (``partial_writes.KEEP_MARKER``,
+        which every sweep honours), then let go of it. The last resort for a
+        checked output when no thread can run :meth:`set_aside`: one small
+        create through the slot's descriptor. Returns the slot's path.
+        Raises ``OSError`` (the slot is then still open, its lock held)."""
+        with self._mutex:
+            self._require_open()
+            os.close(os.open(partial_writes.KEEP_MARKER, _KEEP_FLAGS, 0o600, dir_fd=self._slot_fd))
+        self.keep()
+        return self.path
+
+    def _require_open(self) -> None:
+        if self._closed:
+            raise ValueError("The staging slot is closed")
 
     def close(self) -> None:
         """Remove what is left in the slot, the slot and its lock, then the
@@ -223,10 +354,12 @@ def _open_folder(folder: str, *, make: bool) -> tuple[str, int]:
         raise OSError(errno.EINVAL, str(exc), folder) from exc
 
 
-def _claim(folder: str, folder_fd: int, stage_fd: int) -> StagedOutput | None:
+def _claim(
+    folder: str, folder_fd: int, stage_fd: int, *, parking: bool = False,
+) -> StagedOutput | None:
     """One attempt at a fresh slot in the open stage folder; None when the
-    name was taken (try another)."""
-    name = short_temp_name(partial_writes.SLOT_PREFIX)
+    name was taken (try another). A parking slot is not journaled."""
+    name = short_temp_name(PARK_PREFIX if parking else partial_writes.SLOT_PREFIX)
     lock_name = partial_writes.slot_lock_name(name)
     try:
         lock_fd = os.open(lock_name, _LOCK_FLAGS, 0o600, dir_fd=stage_fd)
@@ -242,7 +375,9 @@ def _claim(folder: str, folder_fd: int, stage_fd: int) -> StagedOutput | None:
             os.close(lock_fd)
             return None
         slot_fd = os.open(name, _DIR_FLAGS, dir_fd=stage_fd)
-        marker = partial_writes.record(os.path.join(folder, STAGE_DIR_NAME, name))
+        marker = None if parking else partial_writes.record(
+            os.path.join(folder, STAGE_DIR_NAME, name),
+        )
         return StagedOutput(
             folder=folder, folder_fd=folder_fd, stage_fd=stage_fd, slot_name=name,
             slot_fd=slot_fd, lock_fd=lock_fd, marker=marker,
@@ -259,13 +394,16 @@ def _claim(folder: str, folder_fd: int, stage_fd: int) -> StagedOutput | None:
         raise
 
 
-def open_slot(folder: str, *, make_folder: bool = False) -> StagedOutput:
+def open_slot(
+    folder: str, *, make_folder: bool = False, parking: bool = False,
+) -> StagedOutput:
     """A fresh staging slot beside *folder*'s files: the hidden stage folder
     is made if need be, swept of stale slots, then the slot is made, locked
     and journaled. With *make_folder*, a missing *folder* is made first, as a
     tool's runner would make its output folder (a conversion into a new
-    subfolder). Raises ``OSError`` (``PermissionError`` outside the Volumes)
-    and leaves no slot behind when it does."""
+    subfolder). With *parking*, a parking slot (see the module docstring):
+    never swept, never journaled here. Raises ``OSError`` (``PermissionError``
+    outside the Volumes) and leaves no slot behind when it does."""
     real, folder_fd = _open_folder(folder, make=make_folder)
     try:
         for _ in range(_CLAIM_ATTEMPTS):
@@ -274,7 +412,7 @@ def open_slot(folder: str, *, make_folder: bool = False) -> StagedOutput:
                 partial_writes.sweep_stage(
                     stage_fd, where=os.path.join(real, STAGE_DIR_NAME),
                 )
-                slot = _claim(real, folder_fd, stage_fd)
+                slot = _claim(real, folder_fd, stage_fd, parking=parking)
             except FileNotFoundError:
                 # A sweep elsewhere removed the empty stage folder between our
                 # open and our claim: open it again.

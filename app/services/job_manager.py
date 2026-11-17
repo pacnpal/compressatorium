@@ -55,7 +55,9 @@ from services.subprocess_runner import (
     run_detached_mutation,
     run_detached_undoable,
     run_detached_within_stall_bound,
-    start_detached,
+    NoThreadAvailable,
+    start_detached_eventually,
+    start_detached_or_own_thread,
 )
 from services.tools import ModeKind, registry
 from services.verification_store import check_verdict, verification_store
@@ -148,6 +150,9 @@ class _SourceDelete:
     kept_reason: Optional[str] = None
     cancelled: bool = False  # a cancel seen at the last look, before any unlink
     referrer_records: List[dict] = field(default_factory=list)
+    # What a Referrer that applied wants said (``Applied.note``): the RomM
+    # swap that couldn't run after the output was placed (#391).
+    notes: list[str] = field(default_factory=list)
 
 
 def _check_satisfies(check_passed: Optional[str], required: Optional[str]) -> bool:
@@ -376,6 +381,10 @@ def _paths_collide(
 # submit and a healthy mount answers in microseconds; the point is only that a
 # mount which never answers cannot hold up job creation forever.
 _CANONICAL_PROBE_SECONDS = 20.0
+# How long the job waits for a checked output's slot to be set aside
+# (``StagedOutput.set_aside``) before it reports the stage folder instead;
+# a later answer still moves the records (``_set_aside_output``, #391).
+SET_ASIDE_SECONDS = _CANONICAL_PROBE_SECONDS
 
 
 class _Reservation(NamedTuple):
@@ -548,6 +557,9 @@ class JobManager:
         # `add_terminal_listener` for why anything caring about *how* a job
         # ended has to be told rather than ask later.
         self._terminal_listeners: List[Callable[[ConversionJob], object]] = []
+        # Called when a job's recorded outcome changes after it was announced
+        # terminal; see `add_amend_listener`.
+        self._amend_listeners: List[Callable[[ConversionJob], object]] = []
         self.max_concurrent = max(1, max_concurrent)
         self.max_job_history = max(0, max_job_history)
         self._queue: asyncio.PriorityQueue = asyncio.PriorityQueue()
@@ -585,6 +597,10 @@ class JobManager:
         self._input_mutex = threading.Lock()
         # The delete paths a job holds exclusively while it unlinks them.
         self._delete_holds: Dict[str, List[str]] = {}
+        # Staging slots holding a checked output that could be neither placed
+        # nor set aside: kept open, their locks held, until the process ends,
+        # so no sweep removes the only copy (#391).
+        self._held_slots: list[staging.StagedOutput] = []
         # Jobs whose end has been announced to terminal listeners, so each is
         # announced exactly once (``_notify_terminal``).
         self._terminal_announced: Set[str] = set()
@@ -1256,6 +1272,31 @@ class JobManager:
         """Stop calling *callback*; a no-op when it is not registered."""
         if callback in self._terminal_listeners:
             self._terminal_listeners.remove(callback)
+
+    def add_amend_listener(self, callback: Callable[[ConversionJob], object]) -> None:
+        """Call *callback* when a job's deleted files or Referrer records change
+        after it may already have been announced terminal: an apply handed
+        off at shutdown that ends later (#391, CodeRabbit 4594978832). Sync
+        or async, like a terminal listener; for a consumer that persisted
+        the job when it ended (the Ledger) to update what it wrote."""
+        if callback not in self._amend_listeners:
+            self._amend_listeners.append(callback)
+
+    def remove_amend_listener(self, callback: Callable[[ConversionJob], object]) -> None:
+        """Stop calling *callback*; a no-op when it is not registered."""
+        if callback in self._amend_listeners:
+            self._amend_listeners.remove(callback)
+
+    def _notify_amended(self, job: ConversionJob) -> None:
+        """Tell every amend listener that *job*'s outcome changed. Never
+        raises; on the loop."""
+        for callback in list(self._amend_listeners):
+            try:
+                result = callback(job)
+                if inspect.isawaitable(result):
+                    self._spawn_background(result)
+            except Exception:
+                logger.warning("Amend listener failed for %s", job.id, exc_info=True)
 
     def _notify_terminal(self, job: ConversionJob) -> None:
         """Tell every listener that *job* is finished, once. Never raises.
@@ -3077,6 +3118,26 @@ class JobManager:
         )
         return [os.path.basename(p) for p in [write_path, *companions]]
 
+    def _place_staged_blocking(
+        self, job: ConversionJob, slot: staging.StagedOutput, write_path: str,
+    ) -> None:
+        """The placing :meth:`_place_staged` does, blocking, with no lock
+        hand-off: for a caller that owns the job's holds and locks and always
+        waits for the outcome itself (the RomM swap's ``_mutate``, Codex
+        4594650576). A no-op once placed. Raises ``OSError`` when nothing
+        moved; the records' carrying is logged, never raised."""
+        if slot.placed:
+            return
+        placed = slot.place(self._place_names(job, write_path))
+        for staged, final in placed:
+            for store in (verification_store, chd_metadata_store):
+                try:
+                    store.move_blocking(staged, final)
+                except Exception:
+                    logger.warning(
+                        "Could not carry the records of %s to %s", staged, final, exc_info=True,
+                    )
+
     async def _place_staged(
         self, job: ConversionJob, slot: staging.StagedOutput | None, write_path: str,
     ) -> None:
@@ -3110,6 +3171,230 @@ class JobManager:
                         exc_info=True,
                     )
 
+    async def _staged_placement(
+        self, job: ConversionJob, slot: staging.StagedOutput | None, write_path: str,
+    ) -> referrers.StagedPlacement | None:
+        """The staged output, for a Referrer that places it itself (#391), or
+        None when the job places it now, as before.
+
+        Only for a job that will delete its Source, whose one output file is
+        staged (no companions) and whose Image's Library turns on a Referrer
+        that places the output (``referrers.places_output``: the RomM swap,
+        which must rename the ROM's file onto the output's name before the
+        output is there). When any of that can't be told, the job places the
+        output now, and a Referrer that needed it staged doesn't run."""
+        if slot is None or not job.delete_on_verify or "::" in job.file_path:
+            return None
+        paths = list((self._delete_plans.get(job.id) or {}).get("paths") or [])
+        if not paths:
+            return None
+        try:
+            names = await run_detached_bounded(
+                self._place_names, job, write_path, timeout=_CANONICAL_PROBE_SECONDS,
+            )
+            library = await self._image_library(job.file_path, None)
+        except Exception:
+            logger.warning(
+                "Couldn't tell whether a Referrer places %s; placing it now",
+                job.output_path, exc_info=True,
+            )
+            return None
+        if len(names) != 1 or not referrers.places_output(
+            job.file_path, {path: job.output_path for path in paths}, library,
+        ):
+            return None
+        return referrers.StagedPlacement(
+            staged={job.output_path: write_path},
+            place=lambda: self._place_staged(job, slot, write_path),
+            place_blocking=lambda: self._place_staged_blocking(job, slot, write_path),
+            is_placed=lambda: slot.placed,
+            source_fingerprints=dict(
+                (self._delete_plans.get(job.id) or {}).get("fingerprints") or {},
+            ),
+        )
+
+    async def _set_aside_output(
+        self, job: ConversionJob, slot: staging.StagedOutput,
+    ) -> None:
+        """Keep a checked output that was never placed (CodeRabbit
+        4593970363, 4594086355): the only copy, never sweepable.
+
+        ``StagedOutput.set_aside`` renames its slot to a ``park-`` slot no
+        sweep removes, or marks it kept in place when it can't be renamed;
+        its check and CHD records move with it (the store helpers placing
+        uses). If neither works, the slot is held open, its lock kept, for as
+        long as the process runs (``_held_slots``), so no sweep can take it.
+        The job's message, warning, error (the Ledger's ``error`` for a
+        failed job), its Ledger record and the log say where. The caller
+        never runs ``_close_stage`` on it. Never raises.
+
+        Setting it aside runs under ``SET_ASIDE_SECONDS`` through
+        ``run_detached_undoable`` (CodeRabbit 4594218526). The slot is
+        protected throughout: ``set_aside`` holds its lock until the rename
+        or the keep marker is in place. One that answers after the bound gets
+        its records moved by its own worker (``late``), which logs the real
+        path and adds it to the job's message and warning; the job reports
+        the stage folder meanwhile."""
+        base = os.path.basename(job.output_path)
+        names: list[str] = [base]
+        before = slot.path
+
+        def late(kept: str) -> None:
+            # On its own thread, once nobody waits for the set-aside any more.
+            self._keep_records_blocking(job, names, before, kept)
+            note = (
+                "its slot was set aside after the job ended; "
+                f"it is kept at {os.path.join(kept, base)}"
+            )
+            logger.warning("Job %s: %s", job.id, note)
+            job.message = f"{job.message}; {note}" if job.message else note
+            job.warning = f"{job.warning}; {note}" if job.warning else note
+
+        # The set-aside starts before anything a cancel can interrupt
+        # (CodeRabbit 4594495308): its thread starts now, a detached one or,
+        # with none free, one of its own (CodeRabbit 4594613612), so the slot
+        # is renamed or marked kept whatever happens to this await. An answer
+        # nobody waits for any more goes to ``late``, once.
+        def mark_kept_later() -> None:
+            # On its own thread once one can start: the keep marker, then the
+            # slot's lock goes. Until then (or if it fails) the slot is held,
+            # its lock kept, which no sweep passes while the process lives.
+            try:
+                slot.mark_kept()
+            except (OSError, ValueError):
+                logger.exception("Could not mark %s kept; holding its slot", slot.path)
+                return
+            with contextlib.suppress(ValueError):
+                self._held_slots.remove(slot)
+            note = "its keep marker is written; its preservation is durable"
+            logger.warning("Job %s: %s", job.id, note)
+            job.message = f"{job.message}; {note}" if job.message else note
+            job.warning = f"{job.warning}; {note}" if job.warning else note
+
+        future: asyncio.Future | None
+        durable = True
+        try:
+            future = start_detached_or_own_thread(slot.set_aside)
+        except NoThreadAvailable:
+            # The OS thread limit (CodeRabbit 4594745731): the slot is held,
+            # its lock kept, so no sweep takes it while the process lives, and
+            # the keep marker is written off the loop once a thread starts,
+            # never on it: its create can block on a dead Volume (CodeRabbit
+            # 4594981268).
+            future = None
+            durable = False
+            self._held_slots.append(slot)
+            start_detached_eventually(mark_kept_later)
+        state = {"waiting": True}
+
+        def answered(done: asyncio.Future) -> None:
+            if state["waiting"] or done.cancelled() or done.exception() is not None:
+                return
+            start_detached_eventually(late, done.result())
+
+        def stop_waiting() -> None:
+            state["waiting"] = False
+            if future is not None and future.done():
+                answered(future)
+
+        if future is not None:
+            future.add_done_callback(answered)
+        kept: str | None
+        try:
+            try:
+                names = await run_detached_bounded(
+                    self._place_names, job, slot.path_for(base),
+                    timeout=_CANONICAL_PROBE_SECONDS,
+                )
+            except Exception:
+                logger.warning(
+                    "Could not list the outputs of %s", job.output_path, exc_info=True,
+                )
+            if future is None:
+                kept = before  # held above, its marker written when a thread starts
+            else:
+                kept = await asyncio.wait_for(asyncio.shield(future), SET_ASIDE_SECONDS)
+        except asyncio.TimeoutError:
+            if (
+                future is None
+                or (future.done() and not future.cancelled() and future.exception() is not None)
+            ):
+                kept = before  # its own timeout, not the bound's: it failed
+                self._held_slots.append(slot)
+            else:
+                kept = None  # still running, its lock held; ``late`` takes it from here
+                stop_waiting()
+        except asyncio.CancelledError:
+            stop_waiting()
+            raise
+        except Exception:
+            # Fail closed: the slot stays open, its lock held, so no sweep
+            # removes it.
+            logger.exception("Could not set aside the checked output of %s", job.output_path)
+            self._held_slots.append(slot)
+            kept = before
+        if kept is None:
+            stage = os.path.dirname(before)
+            where = stage
+            note = (
+                f"the checked output was not placed; it is kept in {stage} "
+                "(its slot is still being set aside; the log names it once done)"
+            )
+        else:
+            try:
+                await run_detached_bounded(
+                    self._keep_records_blocking, job, names, before, kept,
+                    timeout=_CANONICAL_PROBE_SECONDS,
+                )
+            except Exception:
+                logger.warning("Could not carry the records to %s", kept, exc_info=True)
+            where = os.path.join(kept, base)
+            note = f"the checked output was not placed; it is kept at {where}"
+            if not durable:
+                note = (
+                    f"{note} (its slot is held while the app runs; preservation is "
+                    "not yet durable until its keep marker is written)"
+                )
+        logger.warning("Job %s: %s", job.id, note)
+        job.warning = f"{job.warning}; {note}" if job.warning else note
+        job.message = f"{job.message}; {note}" if job.message else note
+        if job.status == JobStatus.FAILED:
+            job.error_message = (
+                f"{job.error_message}; {note}" if job.error_message else note
+            )
+        job.referrers_updated = [
+            *job.referrers_updated,
+            {"referrer": "staging", "target": where, "status": "kept", "reason": note},
+        ]
+
+    def _keep_records_blocking(
+        self, job: ConversionJob, names: list[str], before: str, kept: str,
+    ) -> None:
+        """Carry a set-aside output's check and CHD records from its slot to
+        where it is kept (the store helpers placing uses), and write its check
+        record there when placing failed before the job wrote one. Blocking;
+        logged, never raised."""
+        if kept != before:
+            for name in names:
+                for store in (verification_store, chd_metadata_store):
+                    try:
+                        store.move_blocking(os.path.join(before, name), os.path.join(kept, name))
+                    except Exception:
+                        logger.warning(
+                            "Could not carry the records of %s to %s", name, kept, exc_info=True,
+                        )
+        if not job.check_passed:
+            return
+        where = os.path.join(kept, os.path.basename(job.output_path))
+        try:
+            if verification_store.get_record_blocking(where) is None:
+                verification_store.mark_verified_blocking(
+                    where, source_path=job.file_path,
+                    produced_meta=self._verifier_identity(job), check=job.check_passed,
+                )
+        except Exception:
+            logger.warning("Could not record the check of %s", where, exc_info=True)
+
     async def _close_stage(
         self, job: ConversionJob, slot: staging.StagedOutput | None,
     ) -> None:
@@ -3131,10 +3416,8 @@ class JobManager:
             finally:
                 slot.close()
 
-        try:
-            worker = start_detached(discard)
-        except ProbeCapacityExceeded:
-            threading.Thread(target=discard, daemon=True).start()
+        worker = start_detached_eventually(discard)
+        if worker is None:
             return
         try:
             await asyncio.wait_for(asyncio.shield(worker), _CANONICAL_PROBE_SECONDS)
@@ -3217,10 +3500,15 @@ class JobManager:
             "device": int(getattr(st, "st_dev", 0) or 0),
         }
 
-    def _build_produced_meta(self, job: ConversionJob) -> Optional[Dict[str, object]]:
+    def _build_produced_meta(
+        self, job: ConversionJob, output_path: str | None = None,
+    ) -> Optional[Dict[str, object]]:
         """Snapshot of what produced this verified artifact, for the re-run fast
         path: the mode + output-shaping settings and stat fingerprints of the
         complete source set and the output.
+
+        *output_path* is where the output is now: its staged path while a
+        Referrer is still to place it (#391). A rename keeps the fingerprint.
 
         The source fingerprint is the **pre-conversion** delete snapshot
         (captured when the job was planned, before the converter read the
@@ -3244,10 +3532,12 @@ class JobManager:
         source_fp = self._norm_fps(pre.get("fingerprints"))
         if not source_fp or self._source_fingerprint(job.file_path) != source_fp:
             return None
-        output_fp = self._output_fingerprint(job.output_path)
+        output_fp = self._output_fingerprint(output_path or job.output_path)
         if not output_fp:
             return None
-        companions = self._companion_fingerprints(job.output_path, job.mode.value)
+        companions = self._companion_fingerprints(
+            output_path or job.output_path, job.mode.value,
+        )
         if companions is None:
             return None
         return {
@@ -3514,8 +3804,21 @@ class JobManager:
         travelling_locks: Optional["HeldLocks"] = None,
         planned: Optional[List[str]] = None,
         handed_off: Optional[List[bool]] = None,
+        placement: referrers.StagedPlacement | None = None,
+        hook_records: list[dict] | None = None,
     ) -> _SourceDelete:
         """The delete step, shared by a job and a retried delete (#329).
+
+        *hook_records* gets the Referrer hook's records as soon as it returns,
+        so a caller keeps them even when a later step raises (CodeRabbit
+        4594326468).
+
+        *placement* is the job's output, still staged for a Referrer that
+        places it itself (the RomM swap, #391). Whatever the hook did not
+        place is placed right after it, before anything is removed (a raise
+        there removes nothing). Source files a Referrer removed itself
+        (``ReferrerOutcome.removed``) are recorded as deleted and not removed
+        again.
 
         *handed_off* gets ``True`` appended when the unlinks were handed to
         their worker while still running: the outcome is then unknown, and
@@ -3545,52 +3848,90 @@ class JobManager:
         its worker, which releases them once the unlink has finished, and
         :class:`MutationInFlight` (or the cancel) propagates.
         """
-        expected_set = set(expected_paths)
-        current_plan = await self._bounded_delete_probe(
-            build_delete_plan, file_path, seconds=probe_seconds,
-        )
-        if (
-            current_plan.get("errors")
-            or current_plan.get("unsafe_paths")
-            or current_plan.get("missing_paths")
-        ):
-            raise RuntimeError("Delete plan no longer safe; refusing to delete")
-        if set(current_plan.get("delete_paths", [])) != expected_set:
-            raise RuntimeError("Delete plan changed; refusing to delete")
-
-        output_real, source_for_delete, delete_order = await self._bounded_delete_probe(
-            self._delete_order, file_path, output_path, list(expected_paths),
-            seconds=probe_seconds,
-        )
-
-        await self._check_delete_paths(
-            owner_id, expected_paths, fingerprints, output_real, probe_seconds,
-        )
+        try:
+            output_real, source_for_delete, delete_order, library = await self._prepare_delete(
+                owner_id, file_path, output_path, expected_paths, fingerprints, probe_seconds,
+            )
+        except BaseException:
+            # Refused before the Referrer hook took the staged output: it was
+            # checked, so it is placed, never discarded with its slot because
+            # the Source side failed (CodeRabbit 4593839025).
+            if placement is not None:
+                await self._place_checked_output(placement)
+            raise
 
         # Referrers (.m3u, ...) move to the output before the Source goes; if
         # any can't, the Source stays (#295). The Image's Library decides
         # which opt-in Referrers run (#383).
-        library = await self._image_library(source_for_delete, probe_seconds)
-        referrer_outcome = await referrers.update_before_source_removal(
-            source_for_delete,
-            {path: output_path for path in delete_order},
-            library=library,
-            cancel_event=cancel_event,
-            bound=probe_seconds,
-        )
+        unawaited: list[referrers.HandedOff] = []
+        try:
+            referrer_outcome = await referrers.update_before_source_removal(
+                source_for_delete,
+                {path: output_path for path in delete_order},
+                library=library,
+                cancel_event=cancel_event,
+                bound=probe_seconds,
+                placement=placement,
+                unawaited=unawaited,
+            )
+        except asyncio.CancelledError:
+            # A shutdown cancelled this job mid-hook while an apply (the RomM
+            # swap's undo) still runs: it owns the holds from here, as an
+            # abandoned one does below (Codex 4594286704).
+            if unawaited:
+                self._hand_holds_to(
+                    referrers.ReferrerOutcome(lingering=[h.task for h in unawaited]),
+                    owner_id, travelling_locks,
+                )
+                # What each one did, when it ends, still reaches the job: a
+                # Source the swap removed is recorded as deleted, with its
+                # record (CodeRabbit 4594841860).
+                for handed in unawaited:
+                    handed.task.add_done_callback(self._take_late_outcome(
+                        handed, deleted, hook_records, owner_id,
+                    ))
+            raise
+        if hook_records is not None:
+            hook_records[:] = referrer_outcome.records
+        if (
+            placement is not None and not referrer_outcome.lingering
+            and not placement.held.is_set()
+        ):
+            # The output is placed whatever the hook did (a kept Source keeps
+            # its output beside it), and before any unlink below. Not when a
+            # Referrer stopped part way and holds it (#391): the name may be
+            # the Source's.
+            await placement.place()
+        if referrer_outcome.removed:
+            # A Referrer replaced the Source and removed it itself (#391).
+            removed = set(referrer_outcome.removed)
+            deleted.extend(p for p in delete_order if p in removed)
+            expected_paths = [p for p in expected_paths if p not in removed]
+            delete_order = [p for p in delete_order if p not in removed]
         if referrer_outcome.lingering:
             # An async apply was cancelled and is still cleaning up (codex
             # 4588646155): like a mutation's worker, it owns the delete holds
             # and the travelling locks from here, let go when it ends. The
-            # outcome failed, so the Source is kept below.
-            held = [
-                *self._delete_holds.pop(owner_id, []),
-                *(travelling_locks.take() if travelling_locks is not None else []),
-            ]
-            referrer_outcome.outlive(
-                lambda: self._spawn_background(self._let_go_in_background(held)),
-            )
-        outcome = _SourceDelete(referrer_records=referrer_outcome.records)
+            # outcome failed, so the Source is kept below, unless the apply
+            # then finishes: what it did is taken when it ends (the RomM
+            # swap's delete of the parked Source, Codex 4595004160), into
+            # the records this job keeps.
+            self._hand_holds_to(referrer_outcome, owner_id, travelling_locks)
+            for handed in referrer_outcome.handed_off:
+                handed.task.add_done_callback(self._take_late_outcome(
+                    handed, deleted, referrer_outcome.records, owner_id,
+                ))
+        outcome = _SourceDelete(
+            referrer_records=referrer_outcome.records, notes=list(referrer_outcome.notes),
+        )
+        if referrer_outcome.removed and not delete_order:
+            # Nothing is left to remove: the Source is gone, so a late cancel
+            # changes nothing.
+            if planned is not None:
+                planned[:] = list(deleted)
+            await self._release_delete_holds_in_background(owner_id, probe_seconds)
+            await self._clear_source_records(file_path, probe_seconds)
+            return outcome
         # The hook awaited a worker thread: re-ask cancel and every per-path
         # identity check before removing.
         skipped = f"Output is {check_label}. Delete skipped (cancelled)."
@@ -3608,6 +3949,14 @@ class JobManager:
             # That check awaited too; a Cancel there still wins.
             if outcome.kept_reason is None and cancel_event.is_set():
                 outcome.kept_reason = skipped
+        if outcome.kept_reason and referrer_outcome.handed_off:
+            # Not "definitely kept" while a handed-off apply may still remove
+            # it (Codex 4595004160): the job is updated when it ends.
+            names = ", ".join(sorted({h.referrer_id for h in referrer_outcome.handed_off}))
+            outcome.kept_reason = (
+                f"{outcome.kept_reason}; {names} is still finishing, so the source "
+                "may yet be removed (this job is updated when it ends)"
+            )
         if outcome.kept_reason:
             await self._release_delete_holds_in_background(owner_id, probe_seconds)
             return outcome
@@ -3629,6 +3978,104 @@ class JobManager:
         await self._release_delete_holds_in_background(owner_id, probe_seconds)
         await self._clear_source_records(file_path, probe_seconds)
         return outcome
+
+    def _take_late_outcome(
+        self, handed: referrers.HandedOff, deleted: list[str],
+        records: list[dict] | None, job_id: str,
+    ) -> Callable[[asyncio.Future], None]:
+        """A done callback that records what an apply handed off at shutdown
+        did once it ends: the Source files it removed go to *deleted*, its
+        Ledger record to *records*, and the amend listeners are told, so a
+        Ledger row written when the job ended is updated too (CodeRabbit
+        4594978832). Runs on the loop; never raises."""
+
+        def ended(_task: asyncio.Future) -> None:
+            outcome = handed.outcome()
+            if outcome is None:
+                return
+            deleted.extend(p for p in outcome.removed if p not in deleted)
+            if records is not None:
+                for record in outcome.records:
+                    # It replaces the "abandoned" record the hook wrote for
+                    # it, if any.
+                    at = next((
+                        i for i, old in enumerate(records)
+                        if old.get("status") == "abandoned"
+                        and old.get("referrer") == record.get("referrer")
+                        and old.get("target") == record.get("target")
+                    ), None)
+                    if at is None:
+                        records.append(record)
+                    else:
+                        records[at] = record
+            logger.info(
+                "A %s update handed off at shutdown ended: %s", handed.referrer_id,
+                ", ".join(outcome.removed) or "nothing removed",
+            )
+            # Still listed, or already archived (a retry's owner is no job).
+            job = self.jobs.get(job_id) or (self._archived_jobs.get(job_id) or (None,))[0]
+            if job is None:
+                return
+            if outcome.removed:
+                note = f"{handed.referrer_id} finished after all and removed the source"
+                job.message = f"{job.message}; {note}" if job.message else note
+            self._notify_amended(job)
+
+        return ended
+
+    def _hand_holds_to(
+        self, outcome: referrers.ReferrerOutcome, owner_id: str,
+        travelling_locks: Optional["HeldLocks"],
+    ) -> None:
+        """Hand *owner_id*'s delete holds and the travelling locks to the
+        applies still running in *outcome* (``lingering``): they are let go
+        only once the last one ends (``ReferrerOutcome.outlive``)."""
+        held = [
+            *self._delete_holds.pop(owner_id, []),
+            *(travelling_locks.take() if travelling_locks is not None else []),
+        ]
+        outcome.outlive(lambda: self._spawn_background(self._let_go_in_background(held)))
+
+    async def _prepare_delete(
+        self, owner_id: str, file_path: str, output_path: str,
+        expected_paths: list[str], fingerprints: dict, probe_seconds: float | None,
+    ) -> tuple[str, str, list[str], object]:
+        """The delete step up to the Referrer hook: the plan rebuilt and
+        compared, the removal order, every path checked, and the Image's
+        Library. ``(output realpath, the Source named to Referrers, removal
+        order, Library)``. Raises RuntimeError when any of it no longer holds:
+        nothing is removed."""
+        current_plan = await self._bounded_delete_probe(
+            build_delete_plan, file_path, seconds=probe_seconds,
+        )
+        if (
+            current_plan.get("errors")
+            or current_plan.get("unsafe_paths")
+            or current_plan.get("missing_paths")
+        ):
+            raise RuntimeError("Delete plan no longer safe; refusing to delete")
+        if set(current_plan.get("delete_paths", [])) != set(expected_paths):
+            raise RuntimeError("Delete plan changed; refusing to delete")
+
+        output_real, source_for_delete, delete_order = await self._bounded_delete_probe(
+            self._delete_order, file_path, output_path, list(expected_paths),
+            seconds=probe_seconds,
+        )
+        await self._check_delete_paths(
+            owner_id, expected_paths, fingerprints, output_real, probe_seconds,
+        )
+        library = await self._image_library(source_for_delete, probe_seconds)
+        return output_real, source_for_delete, delete_order, library
+
+    @staticmethod
+    async def _place_checked_output(placement: referrers.StagedPlacement) -> None:
+        """Place a checked output still staged, when the delete step stopped
+        before a Referrer could. Logged, never raised: the step's own error
+        is the one that counts."""
+        try:
+            await placement.place()
+        except Exception:
+            logger.warning("Could not place the checked output", exc_info=True)
 
     async def _clear_source_records(
         self, file_path: str, probe_seconds: Optional[float],
@@ -3679,11 +4126,11 @@ class JobManager:
         if not paths:
             return
         bound = KEPT_DELETE_PROBE_SECONDS if seconds is None else seconds
-        try:
-            worker = start_detached(_let_go, paths)
-        except ProbeCapacityExceeded:
-            # No detached slot: a thread of its own, still never the pool.
-            threading.Thread(target=_let_go, args=(paths,), daemon=True).start()
+        # No detached slot: a thread of its own, still never the pool; no
+        # thread at all: tried again until one starts, so the locks are never
+        # left held (CodeRabbit 4594855525).
+        worker = start_detached_eventually(_let_go, paths)
+        if worker is None:
             return
         try:
             await asyncio.wait_for(asyncio.shield(worker), bound)
@@ -4052,7 +4499,11 @@ class JobManager:
                 return KeptDeleteRetry(KEPT_STOPPED, "stopped before the unlinks")
             if removal.kept_reason:
                 return KeptDeleteRetry(KEPT_KEPT, removal.kept_reason)
-            return KeptDeleteRetry(KEPT_DELETED, None, tuple(deleted))
+            # What a Referrer had to say (the RomM swap that couldn't run
+            # after the output was placed, #391) is the outcome's reason.
+            return KeptDeleteRetry(
+                KEPT_DELETED, "; ".join(removal.notes) or None, tuple(deleted),
+            )
 
         run.set_delete(delete)
         return None
@@ -4953,9 +5404,15 @@ class JobManager:
         # pass, when the output's Library needs one (#398); closed in the
         # `finally`, which discards whatever was never placed.
         slot: staging.StagedOutput | None = None
+        # The staged output, when a Referrer places it itself (#391).
+        placement: referrers.StagedPlacement | None = None
+        # Set once the output is to be placed (its checks passed, or none was
+        # asked): from then on a staged output that is not placed is kept,
+        # never discarded (CodeRabbit 4593970363).
+        placeable = False
         try:
             try:
-                inputs_held = job.input_kind == InputKind.DIRECTORY or await run_in_threadpool(
+                inputs_held =job.input_kind == InputKind.DIRECTORY or await run_in_threadpool(
                     self._hold_inputs, job_id, job, self._begin_input_attempt(job_id),
                 )
             except Exception as exc:
@@ -5366,8 +5823,15 @@ class JobManager:
                         raise RuntimeError(keep_source_reason)
                     # Both checks passed: only now does a staged output
                     # appear beside the Source (#398). Everything below
-                    # works on the placed output.
-                    await self._place_staged(job, slot, write_path)
+                    # works on the placed output, unless a Referrer places
+                    # it itself (the RomM swap, #391): it then stays staged
+                    # until the Referrer hook, and its records are written
+                    # where it is staged and carried along when it moves.
+                    placeable = True
+                    placement = await self._staged_placement(job, slot, write_path)
+                    if placement is None:
+                        await self._place_staged(job, slot, write_path)
+                    checked_path = write_path if placement is not None else job.output_path
                     # Snapshot what produced this verified artifact (mode +
                     # output shaping + source/output fingerprints) so a later
                     # re-queue can recognize prior success and complete as a
@@ -5377,7 +5841,7 @@ class JobManager:
                     # Bounded like the output size (#352): it stats the
                     # output and the Source on the same storage.
                     snapshot_meta = await run_detached_within_stall_bound(
-                        self._build_produced_meta, job,
+                        self._build_produced_meta, job, checked_path,
                         what=f"Fingerprinting {os.path.basename(job.output_path)}",
                     )
                     # The verifier identity (the mode and tool that made the
@@ -5389,7 +5853,7 @@ class JobManager:
                         **self._verifier_identity(job), **(snapshot_meta or {}),
                     }
                     await verification_store.mark_verified(
-                        job.output_path,
+                        checked_path,
                         source_path=job.file_path,
                         produced_meta=produced_meta,
                         check=check_passed,
@@ -5490,6 +5954,8 @@ class JobManager:
                                 travelling_locks=self._output_locks.get(job_id),
                                 planned=job_planned,
                                 handed_off=job_handed_off,
+                                placement=placement,
+                                hook_records=job.referrers_updated,
                             )
                         except asyncio.CancelledError:
                             # The task itself was cancelled once the unlinks
@@ -5544,10 +6010,19 @@ class JobManager:
                             )
                         else:
                             source_deleted = True
+                            if removal.notes:
+                                # Said, never left to look like a swap (#391).
+                                job.warning = "; ".join(removal.notes)
+                                job.message = f"Output is {check_label}. {job.warning}"
 
-                if slot is not None and not slot.placed:
+                placeable = True
+                if (
+                    slot is not None and not slot.placed
+                    and not (placement is not None and placement.held.is_set())
+                ):
                     # No check was asked for: the output is placed once the
-                    # conversion has finished (#398).
+                    # conversion has finished (#398). Never when a Referrer
+                    # that stopped part way holds it (#391).
                     await self._place_staged(job, slot, write_path)
 
                 job.status = JobStatus.COMPLETED
@@ -5597,6 +6072,25 @@ class JobManager:
             )
 
         finally:
+            # Whatever the set-aside below raises, a cancel or any error, is
+            # held until every release after it has run, then raised
+            # (CodeRabbit 4594326475, 4594745731).
+            set_aside_cancel: BaseException | None = None
+            if placeable and slot is not None and not slot.placed:
+                # A checked output that could not be placed (its name was
+                # taken, a Referrer holds it) is kept, out of every sweep,
+                # with its records, and the job says where, before the Ledger
+                # hears of it. Its slot is never closed below, cancelled or
+                # not: a set-aside the cancel cut short finishes on its worker.
+                aside, slot = slot, None
+                try:
+                    await self._set_aside_output(job, aside)
+                except BaseException as exc:
+                    # Raised again once every release below has run.
+                    logger.warning(
+                        "Job %s: setting its output aside ended early", job.id, exc_info=True,
+                    )
+                    set_aside_cancel = exc
             # Before any cleanup: this is the one place every runner outcome
             # (completed, failed, cancelled mid-run) passes through, and a
             # listener that must record how the job ended has to hear about it
@@ -5637,6 +6131,8 @@ class JobManager:
                     await self._prune_jobs(exclude_id=job_id)
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug("Job %s finished status=%s", job_id, job.status.value)
+            if set_aside_cancel is not None:
+                raise set_aside_cancel
 
     def _forget_job_runtime(self, job_id: str) -> None:
         """Drop a finished job's in-memory runtime bookkeeping. Never raises."""

@@ -14,9 +14,12 @@ event loop, on the hook's detached thread:
   needs, one ``ReferrerChange`` per file or record. Planning writes nothing,
   so the delete confirmation can show the result.
 - ``apply(change)``: write one planned change atomically, keeping a one-time
-  backup. Raises ``ReferrerError`` when it can't. A plain ``def`` runs on the
-  detached thread; an ``async def`` (a network Referrer) is awaited on the
-  event loop under the hook's bound and its Cancel, so it must never block.
+  backup. Raises ``ReferrerError`` when it can't. Always synchronous; the
+  hook runs it on the detached thread.
+- ``apply_async(change)``: the async form. A network Referrer overrides it
+  (#391); the hook then awaits it on the event loop under the hook's bound
+  and its Cancel, so it must never block. By default it runs ``apply`` on a
+  worker thread.
 
 A Referrer that reads its Library's settings (the gamelist Referrer's ES-DE
 gamelists folder, #387) overrides ``for_library(library)``, which the
@@ -30,15 +33,23 @@ Two declarations (#383), checked when the Referrer is registered:
   (``Library.referrer_enabled``).
 - ``phase``: a :class:`Phase`. File Referrers run first; a later phase runs
   only when every Referrer of the earlier phases succeeded.
+
+And one optional answer (#391): ``places_output`` says the Referrer moves the
+job's staged output into place itself (the RomM swap renames the ROM's file
+onto the output's name before the output is there). The job then keeps the
+output staged and hands the hook a :class:`StagedPlacement`, which applies
+read with ``staged_placement()``. An apply may return :class:`Applied` naming
+Source files it removed itself.
 """
 
 from __future__ import annotations
 
+import asyncio
 import contextvars
 import os
 import threading
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from enum import IntEnum
@@ -54,12 +65,17 @@ from utils.path_utils import (
 
 
 class ReferrerError(Exception):
-    """A Referrer could not be planned or applied. ``target`` names what failed."""
+    """A Referrer could not be planned or applied. ``target`` names what failed.
 
-    def __init__(self, target: str, reason: str):
+    ``kept`` is what the job says when this keeps the Source, in place of
+    "couldn't update <target>": "RomM refused the rename" (#391).
+    """
+
+    def __init__(self, target: str, reason: str, *, kept: str | None = None):
         super().__init__(f"{target}: {reason}")
         self.target = target
         self.reason = reason
+        self.kept = kept
 
 
 @dataclass(frozen=True)
@@ -72,15 +88,72 @@ class ReferrerChange:
     edits: tuple[tuple[str, str], ...]
     # Whatever the Referrer needs to apply the change; never sent to clients.
     payload: Any = field(default=None, compare=False, repr=False)
+    # One line the delete confirmation shows for it, when the edits alone
+    # don't say it: "RomM: rename ROM 12 to Game.chd" (#391).
+    summary: str | None = None
+    # Fields the Ledger's record of an applied change carries besides its
+    # target and entry count: the RomM swap's ``rom_id`` (#391).
+    record: Mapping[str, Any] | None = field(default=None, compare=False)
 
     def to_dict(self) -> dict:
-        return {
+        out = {
             "referrer": self.referrer,
             "target": self.target,
             # How many entries change, for "gamelist.xml, 3 entries" (#386).
             "entries": len(self.edits),
             "edits": [{"old": old, "new": new} for old, new in self.edits],
         }
+        if self.summary:
+            out["summary"] = self.summary
+        return out
+
+
+@dataclass(frozen=True)
+class Applied:
+    """What an apply did beyond its target, when it returns one (#391).
+
+    ``removed``: Source files the apply has already removed itself (the RomM
+    swap deletes the Source RomM moved, once the rehash is confirmed). The job
+    records them as deleted and does not try to delete them again.
+    """
+
+    removed: tuple[str, ...] = ()
+    # One line the job, and the Ledger's record of the change, says: what
+    # the user should know about how it was applied (#391).
+    note: str | None = None
+
+
+@dataclass(frozen=True)
+class StagedPlacement:
+    """The job's outputs, still hidden in a staging slot while the hook runs (#391).
+
+    A job whose output a Referrer places itself (``Referrer.places_output``)
+    keeps it staged until the Referrer hook: the RomM swap must rename the
+    ROM's file onto the output's name before the output is there. ``staged``
+    maps each output's final path to where it is staged; ``place`` moves them
+    all into place (the job's own placing, which carries their records) and
+    does nothing once they are placed; ``is_placed`` says whether they are,
+    from the slot itself.
+
+    ``held`` is set by a Referrer that stopped part way and left its work for
+    the next run (#391): the job then never places the output, since the
+    name it would take may hold, or be owed to, the Source.
+    """
+
+    staged: Mapping[str, str]
+    place: Callable[[], Awaitable[None]]
+    is_placed: Callable[[], bool] = field(default=lambda: False, compare=False)
+    # The same placing, blocking and with no hand-off of the job's locks, for
+    # a Referrer that runs it as a step of its own it always waits for (the
+    # RomM swap, Codex 4594650576). None: only ``place`` is offered.
+    place_blocking: Callable[[], None] | None = field(default=None, compare=False)
+    held: threading.Event = field(default_factory=threading.Event, compare=False)
+    # The Sources' fingerprints from before the conversion (the delete
+    # snapshot: size, mtime_ns, inode, device, by path): what a Referrer that
+    # moves a Source checks it against before it does (Codex 4594537162).
+    source_fingerprints: Mapping[str, Mapping[str, int]] = field(
+        default_factory=dict, compare=False,
+    )
 
 
 class Phase(IntEnum):
@@ -133,12 +206,38 @@ class Referrer(ABC):
         return self
 
     @abstractmethod
-    def apply(self, change: ReferrerChange) -> None:
+    def apply(self, change: ReferrerChange) -> Applied | None:
         """Write *change* atomically with a one-time backup, or raise ReferrerError.
 
-        May be ``async def``: the hook then awaits it on the event loop,
-        bounded and cancellable, instead of calling it on its thread.
+        Always synchronous. The hook calls it on its detached thread, unless
+        the Referrer overrides :meth:`apply_async`. May return
+        :class:`Applied` naming Source files it removed itself.
         """
+
+    async def apply_async(self, change: ReferrerChange) -> Applied | None:
+        """The async form of :meth:`apply`, for a Referrer whose apply waits
+        on the network (the RomM swap, #391).
+
+        A Referrer that overrides it is applied on the event loop: the hook
+        awaits this, bounded by its bound and raced against Cancel (#383),
+        instead of calling :meth:`apply` on its thread. It must never block
+        the loop. By default it runs the synchronous :meth:`apply` on a worker
+        thread, carrying the caller's context (so ``check_write`` sees the
+        hook's guard).
+        """
+        return await asyncio.to_thread(self.apply, change)
+
+    @classmethod
+    def applies_async(cls) -> bool:
+        """Whether this Referrer overrides :meth:`apply_async`, so the hook
+        applies it on the event loop."""
+        return cls.apply_async is not Referrer.apply_async
+
+    def places_output(self, image_path: str, renames: Mapping[str, str]) -> bool:
+        """Whether this Referrer, when on, moves a staged output into place
+        itself (``StagedPlacement``), so the job keeps the output hidden until
+        the hook runs (#391). Cheap: no I/O. False unless a Referrer says so."""
+        return False
 
 
 @dataclass
@@ -155,6 +254,10 @@ class WriteGuard:
 
     abandoned: threading.Event
     outputs: dict[str, FileIdentity | None]
+    # The outputs still staged while the hook runs, when the job kept them
+    # hidden for a Referrer that places them (#391). ``outputs`` then holds
+    # their staged paths.
+    placement: StagedPlacement | None = None
 
     def check(self, target: str) -> None:
         if self.abandoned.is_set():
@@ -191,6 +294,33 @@ def guarded_context(guard: WriteGuard) -> contextvars.Context:
     context = contextvars.copy_context()
     context.run(_guard.set, guard)
     return context
+
+
+def hook_running() -> bool:
+    """Whether this runs inside the Referrer hook (planning or applying for a
+    job), rather than for the delete confirmation."""
+    return _guard.get() is not None
+
+
+def staged_placement() -> StagedPlacement | None:
+    """The hook's staged outputs (``StagedPlacement``), or None when the job
+    placed its output before the hook, or outside the hook (#391)."""
+    guard = _guard.get()
+    return guard.placement if guard is not None else None
+
+
+def staged_output(final: str) -> str | None:
+    """Where the output whose final path is *final* is still staged during
+    the hook (``StagedPlacement``, #391), or None when it is in place, or
+    outside the hook. *final* may be the resolved path. Blocking (it
+    resolves paths): call it off the loop."""
+    placement = staged_placement()
+    if placement is None:
+        return None
+    for output, staged in placement.staged.items():
+        if output == final or os.path.realpath(output) == final:
+            return staged
+    return None
 
 
 def check_write(target: str) -> None:

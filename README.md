@@ -663,8 +663,13 @@ extension-matching, so a new console never leaves you with an unconvertible row.
 #### Setting it up
 
 1. In RomM, go to **Administration → Client API Tokens** and create one. Grant
-   `platforms.read` and `roms.read`, plus `roms.write` if you want Compressatorium
-   to restore metadata after conversion (recommended — see below).
+   `platforms.read` and `roms.read`. Add `roms.write` if you want Compressatorium
+   to restore metadata after conversion (recommended — see below). Keeping the
+   ROM id when converting (see [Keeping the ROM id](#keeping-the-rom-id)) needs
+   **both** `roms.write` (the rename) and `tasks.run` (the rehash), whether or
+   not you use metadata restoration. RomM hands out `roms.write` and `tasks.run`
+   only to an admin user (or a user in a group that has them), so create the
+   token as one.
 2. Mount RomM's library folder into the Compressatorium container, and make sure
    it's inside a configured Compressatorium volume.
 3. Open **RomM → Settings**, paste the URL, token and library path, and press
@@ -765,6 +770,83 @@ has converted, and that memory is kept honest for you:
 
 The schedule clock and the conversion history are separate, so forgetting one
 never disturbs the other.
+
+#### Keeping the ROM id
+
+Converting a game and deleting its source normally leaves RomM a new file and a
+missing one: RomM adds a new game, and the old one keeps your saves, states,
+notes, collections and play history. Turn on **Keep the ROM id when converting**
+on the RomM **Settings** tab (the token needs `roms.read`, `roms.write` and
+`tasks.run`; turning it on checks) and a conversion renames RomM's record to the new
+file instead, so the game keeps its id and everything on it. It works for a
+single-file game (an `.iso`, say) converted to one file beside it, when the
+source is deleted after its check, from the Workspace or a Rule:
+
+1. The output is checked while it is still hidden in the staging folder, and
+   `.m3u` playlists and gamelists are updated. If one can't be, RomM is not
+   touched.
+2. RomM renames the ROM's file to the output's name (it moves the source
+   there itself). The app reads the name back: if RomM refused, or wrote
+   another name, the old name is put back, both files are kept, and the job
+   says "converted, source kept: RomM refused the rename" with RomM's reason.
+3. The source RomM moved is set aside in the hidden staging folder, the output
+   takes its name, and RomM rehashes that one ROM.
+4. Only when RomM reads back the output's size and SHA-1 is the source deleted.
+   If it doesn't, the source goes back under its own name beside the output,
+   and the job says why. One exception: RomM never hashes some Platforms
+   (Switch, Switch 2, Wii U, PS3, PS4, PS5, Xbox 360, Xbox One, PC and a few
+   others, RomM's own `NON_HASHABLE_PLATFORMS`). There, when RomM reports no
+   SHA-1, its name and size are what it has, so they alone confirm the new
+   file. A SHA-1 RomM does report is always compared.
+
+The ROM is found by the RomM Platform folder holding the file, in either RomM
+layout (`roms/<platform>/` or `<platform>/roms/`), subfolders included. A
+file RomM doesn't know as a ROM of its own (not in a Platform folder, or one
+RomM records as part of a folder ROM) converts as usual. One whose ROM can't
+be told keeps its source: RomM can't be read, two records claim it, the record
+that is the file says it has several files, or RomM marks that record missing
+while the file is there.
+
+If the source was kept because another job was reading it, the output was
+already put in place, so a later retried delete can't rename RomM's record
+onto it. That delete goes the usual way, with the metadata re-pin queued, and
+says so: "the ROM did not keep its id: the swap can't run after the output
+was placed; re-pin queued". Cancelling during a swap undoes it within a few
+seconds, and what that leaves depends on how far it got:
+
+- *Before the output took the source's name:* RomM gets the old name back
+  and the source returns under it, with the output beside it.
+- *After:* the source returns under its own name beside the output, and
+  RomM keeps the output's name (and the ROM its id); RomM's next scan
+  refreshes its hashes.
+- *If the source had already been deleted* (the last step), the swap is
+  simply done.
+
+A checked output that can't be put in place (something took its name) is
+kept in the hidden staging folder, and the job says where.
+
+Every step is recorded before it runs, and the record keeps the step a swap
+stopped at. If a step fails and can't be undone, the undo can't finish in
+time, or the app stops, where the source is depends on how far the swap got:
+
+- *Before the source was set aside:* it is still where it was (under its old
+  name, or under the new one if RomM had already renamed it).
+- *While it was set aside:* it is in the hidden staging folder
+  (`.compressatorium-stage/park-…` beside the output), never deleted or swept
+  away.
+- *After it was deleted* (the last step): the swap had in fact finished, and
+  the output is under RomM's new name, with the ROM's id.
+
+Picking such a swap up on the next start is a later change (#392); until
+then nothing acts on it, and you can move a set-aside source back by hand
+from that folder. The delete
+confirmation lists the rename ("RomM: rename ROM 1234 to Game.chd"), and the
+Ledger records that the ROM kept its id. Archives (`.zip`, `.7z`), multi-file
+games (`.cue`/`.bin`) and anything else keep the usual behaviour.
+
+| Light | Dark |
+|-------|------|
+| ![Delete confirmation listing the RomM rename, light](docs/screenshots/delete-plan-romm-light.png) | ![Delete confirmation listing the RomM rename, dark](docs/screenshots/delete-plan-romm-dark.png) |
 
 #### RomM's own converter
 

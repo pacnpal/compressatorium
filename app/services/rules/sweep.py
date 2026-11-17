@@ -1179,6 +1179,15 @@ async def _kept_outcome(
     planned = [str(path) for path in pending.get("planned") or []]
     if outcome.status == KEPT_DELETED:
         result["kept_sources_deleted"] = result.get("kept_sources_deleted", 0) + 1
+        if outcome.reason:
+            # What a Referrer said of it: a RomM ROM that could not keep its
+            # id, its re-pin queued instead (#391). Never silent.
+            logger.warning(
+                "rules: deleted the kept Source %s: %s", pending.get("source"), outcome.reason,
+            )
+            result.setdefault("kept_sources_notes", []).append(
+                {"source": pending.get("source"), "note": outcome.reason},
+            )
         return None
     if outcome.status in (KEPT_UNKNOWN, KEPT_STARTED):
         # The delete started: the unlinks outlived the wait (the worker

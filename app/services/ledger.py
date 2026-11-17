@@ -15,6 +15,7 @@ from __future__ import annotations
 import csv
 import io
 import os
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -25,7 +26,7 @@ from models import ConversionJob, JobStatus
 from services import db as _db
 from services.preferences_store import preferences_store
 from services.tools import registry
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 logger = get_logger("ledger")
@@ -129,6 +130,18 @@ def _bump_totals(session, row: dict) -> None:
     )
 
 
+# Serialises writing a job's row with amending it (CodeRabbit 4594978832):
+# the row is built from the job under this lock, so an amend either finds the
+# row already written or runs before it is built (and the row then carries
+# the amended values).
+_write_lock = threading.Lock()
+
+
+def _insert_job_sync(job: ConversionJob, retention_days: int | None) -> None:
+    with _write_lock:
+        _insert_sync(row_from_job(job), retention_days)
+
+
 def _insert_sync(row: dict, retention_days: int | None) -> None:
     with _session() as session:
         # A job can be announced terminal more than once (a queued cancel is
@@ -168,9 +181,41 @@ async def record(job: ConversionJob) -> None:
     if not in_ledger(job.mode):
         return
     try:
-        await run_in_threadpool(_insert_sync, row_from_job(job), await retention_days())
+        await run_in_threadpool(_insert_job_sync, job, await retention_days())
     except Exception:
         logger.warning("Failed to write Ledger row for job %s", job.id, exc_info=True)
+
+
+# What an amend may change: what the job removed and its Referrer records.
+_AMENDABLE = ("source_deleted", "deleted_paths", "referrers_updated")
+
+
+def _amend_sync(job: ConversionJob) -> int:
+    with _write_lock:
+        row = row_from_job(job)
+        with _session() as session:
+            changed = session.execute(
+                update(_db.LedgerEntry)
+                .where(
+                    _db.LedgerEntry.job_id == row["job_id"],
+                    _db.LedgerEntry.finished_at == row["finished_at"],
+                )
+                .values(**{key: row[key] for key in _AMENDABLE})
+            ).rowcount
+            session.commit()
+            return changed
+
+
+async def amend(job: ConversionJob) -> None:
+    """Amend listener (``JobManager.add_amend_listener``): update *job*'s row,
+    if it was written, with what the job removed and its Referrer records,
+    which an apply handed off at shutdown can change after the job ended
+    (#391, CodeRabbit 4594978832). A row not yet written is left to
+    :func:`record`, which then writes the amended values. Never raises."""
+    try:
+        await run_in_threadpool(_amend_sync, job)
+    except Exception:
+        logger.warning("Failed to amend the Ledger row of job %s", job.id, exc_info=True)
 
 
 def _entry_dict(e: _db.LedgerEntry) -> dict:

@@ -776,6 +776,7 @@ async def _job_runner(state: RunState, *listeners):
     from services.job_manager import job_manager
 
     job_manager.add_terminal_listener(ledger.record)
+    job_manager.add_amend_listener(ledger.amend)
     notifications.attach(job_manager)  # the server's own listener, so a pass reports too
     libraries.attach(job_manager)  # a finished job drops out-of-date walks (#353)
     for listener in listeners:

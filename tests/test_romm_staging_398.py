@@ -240,7 +240,9 @@ async def test_an_existing_file_at_the_destination_is_never_overwritten_by_placi
     vol, monkeypatch,
 ):
     """Something took the output's name while the job converted: the placing
-    refuses, keeps that file, and the staged output goes."""
+    refuses and keeps that file. The checked output is never discarded for
+    it (CodeRabbit 4593970363, #391): it stays in its slot, set aside out of
+    every sweep, and the job says where."""
     platform = vol / "romm" / "ps2"
     tools = _Tools(platform)
     tools.install(monkeypatch)
@@ -259,7 +261,9 @@ async def test_an_existing_file_at_the_destination_is_never_overwritten_by_placi
     assert "Game.chd" in (job.error_message or "")
     assert (platform / "Game.chd").read_bytes() == b"someone else's"
     assert (platform / "Game.iso").exists()
-    assert not (platform / STAGE_DIR_NAME).exists()
+    (kept,) = (platform / STAGE_DIR_NAME).glob("park-*/Game.chd")
+    assert kept.read_bytes() == b"CHD"
+    assert str(kept) in job.error_message
 
 
 # ---- outside RomM: today's behaviour ----------------------------------------

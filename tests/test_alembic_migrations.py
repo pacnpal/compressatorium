@@ -178,8 +178,8 @@ def test_0014_stacks_on_0013_and_walks_up_from_an_empty_database(fresh_db_path: 
     cfg = _db._alembic_config(engine)
     script = ScriptDirectory.from_config(cfg)
     # #386's 0016 sits on 0015, #388's 0017 on that, #387's 0018 on that and
-    # #389's 0019 on that; see their own tests below.
-    assert script.get_heads() == ["0019"]
+    # #389's 0019 on that, and #391's 0020 on that; see their own tests below.
+    assert script.get_heads() == ["0020"]
     assert script.get_revision("0014").down_revision == "0013"
     assert script.get_revision("0013").down_revision == "0012"
     assert script.get_revision("0012").down_revision == "0011"
@@ -335,6 +335,27 @@ def test_0019_ties_a_content_key_to_its_file(fresh_db_path: str):
     with engine.connect() as conn:
         assert conn.exec_driver_sql("SELECT dev, ino FROM content_keys").one() == (None, None)
     assert _current_rev(engine) == "0019"
+
+
+def test_0020_adds_the_romm_swap_journal(fresh_db_path: str):
+    """#391's 0020, on #389's 0019: the RomM swap journal."""
+    from alembic import command
+    from alembic.script import ScriptDirectory
+
+    engine = _db.make_engine(fresh_db_path)
+    cfg = _db._alembic_config(engine)
+    assert ScriptDirectory.from_config(cfg).get_revision("0020").down_revision == "0019"
+
+    command.upgrade(cfg, "0019")
+    assert "romm_swaps" not in set(inspect(engine).get_table_names())
+    command.upgrade(cfg, "0020")
+    columns = {c["name"]: c for c in inspect(engine).get_columns("romm_swaps")}
+    assert {
+        "rom_id", "source_path", "output_path", "staged_path", "parked_path",
+        "old_name", "new_name", "state", "detail",
+    } <= set(columns)
+    assert columns["parked_path"]["nullable"] is True
+    assert _current_rev(engine) == "0020"
 
 
 # ---------------------------------------------------------------------------

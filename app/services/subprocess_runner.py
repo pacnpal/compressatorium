@@ -226,7 +226,14 @@ def _probe_in_daemon_thread(func: Callable[[], object]) -> asyncio.Future:
             # reflects probes that are *stuck*, not probes that were started.
             _probe_slots.release()
 
-    threading.Thread(target=_worker, daemon=True, name="fs-probe").start()
+    try:
+        threading.Thread(target=_worker, daemon=True, name="fs-probe").start()
+    except RuntimeError as exc:
+        # The OS thread limit: nothing started, so the slot is given back and
+        # the caller hears what it hears when no slot is free (CodeRabbit
+        # 4594855525).
+        _probe_slots.release()
+        raise ProbeCapacityExceeded(f"no filesystem probe thread could start: {exc}") from exc
     return future
 
 
@@ -747,6 +754,95 @@ def start_detached(func: Callable, *args: object, **kwargs: object) -> asyncio.F
     future = _probe_in_daemon_thread(functools.partial(func, *args, **kwargs))
     future.add_done_callback(lambda done: done.cancelled() or done.exception())
     return future
+
+
+def start_detached_or_own_thread(
+    func: Callable, *args: object, **kwargs: object,
+) -> asyncio.Future:
+    """:func:`start_detached`, or, when no detached slot is free, a daemon
+    thread of its own (the fallback ``_close_stage`` and
+    ``_let_go_in_background`` take): either way the call starts now, before
+    the caller's next await, and the future settles with it. For work that
+    must start whatever happens next, such as keeping the only copy of a
+    checked output out of every sweep (#391). Must be called on the event
+    loop."""
+    try:
+        return start_detached(func, *args, **kwargs)
+    except ProbeCapacityExceeded:
+        pass
+    loop = asyncio.get_running_loop()
+    future: asyncio.Future = loop.create_future()
+
+    def settle(result: object, error: BaseException | None) -> None:
+        if future.done():
+            return
+        if error is not None:
+            future.set_exception(error)
+        else:
+            future.set_result(result)
+
+    def run() -> None:
+        try:
+            result = func(*args, **kwargs)
+        except BaseException as exc:
+            # Relayed to whoever awaits the future, which acts on it.
+            _cleanup_logger.debug("A call on its own thread raised; relaying it", exc_info=True)
+            answer: tuple[object, BaseException | None] = (None, exc)
+        else:
+            answer = (result, None)
+        try:
+            loop.call_soon_threadsafe(settle, *answer)
+        except RuntimeError:
+            pass  # the loop is closed: nobody is waiting any more
+
+    try:
+        threading.Thread(target=run, daemon=True).start()
+    except RuntimeError as exc:
+        # The OS thread limit: nothing started, so nothing will settle the
+        # future. Said plainly, for the caller to fall back on.
+        raise NoThreadAvailable(f"no thread could start: {exc}") from exc
+    future.add_done_callback(lambda done: done.cancelled() or done.exception())
+    return future
+
+
+class NoThreadAvailable(RuntimeError):
+    """No thread could start for :func:`start_detached_or_own_thread`: every
+    detached slot is in use and the OS refused a thread of its own. The call
+    never ran."""
+
+
+# How long :func:`start_detached_eventually` waits between attempts while no
+# thread can start at all.
+NO_THREAD_RETRY_SECONDS = 1.0
+
+
+def start_detached_eventually(
+    func: Callable, *args: object, **kwargs: object,
+) -> asyncio.Future | None:
+    """:func:`start_detached_or_own_thread`, or, when no thread can start at
+    all (the OS thread limit), the same again on the loop every
+    :data:`NO_THREAD_RETRY_SECONDS` until one does. For cleanup that must
+    happen and that the caller no longer owns, such as letting go of locks
+    (CodeRabbit 4594855525). Returns the started call's future, or None when
+    it was left to the retries. Never raises :class:`NoThreadAvailable`.
+    Must be called on the event loop."""
+    try:
+        return start_detached_or_own_thread(func, *args, **kwargs)
+    except NoThreadAvailable:
+        _cleanup_logger.warning(
+            "No thread could start for %s; trying again every %gs",
+            getattr(func, "__name__", func), NO_THREAD_RETRY_SECONDS,
+        )
+    loop = asyncio.get_running_loop()
+
+    def again() -> None:
+        try:
+            start_detached_or_own_thread(func, *args, **kwargs)
+        except NoThreadAvailable:
+            loop.call_later(NO_THREAD_RETRY_SECONDS, again)
+
+    loop.call_later(NO_THREAD_RETRY_SECONDS, again)
+    return None
 
 
 async def run_detached(

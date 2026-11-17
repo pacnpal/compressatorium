@@ -349,6 +349,7 @@ async def _serve(app: FastAPI):
     job_manager.add_terminal_listener(romm_auto.note_job_finished)
     # Every terminal job also lands in the permanent Ledger (#292).
     job_manager.add_terminal_listener(ledger.record)
+    job_manager.add_amend_listener(ledger.amend)
     # A failed manual job and a finished sweep each send one message, if any
     # destination is configured (#293).
     notifications.attach(job_manager)

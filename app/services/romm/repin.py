@@ -710,6 +710,31 @@ def settle(
         return bool(updated)
 
 
+def settle_swapped(output_path: str, rom_id: int) -> int:
+    """Close *output_path*'s pending re-pin for ROM *rom_id* as done (#391).
+
+    A RomM swap renamed that ROM's file to the output instead of letting RomM
+    add a new ROM, so the provider ids never left it: there is nothing to
+    re-apply. A row being settled right now is closed too; its settle then
+    finds it closed and writes nothing. Returns how many rows were closed.
+    """
+    with _session() as session:
+        updated = session.query(_db.RommRepin).filter(
+            _db.RommRepin.output_path == output_path,
+            _db.RommRepin.source_rom_id == int(rom_id),
+            _db.RommRepin.state.in_(("pending", SETTLING)),
+        ).update(
+            {
+                "state": "done",
+                "settled_at": utcnow_iso(),
+                "detail": f"RomM kept ROM {int(rom_id)}: its file was renamed to the output",
+            },
+            synchronize_session=False,
+        )
+        session.commit()
+        return int(updated)
+
+
 def is_pending(row_id: int) -> bool:
     """Whether this re-pin attempt is still the live one for its output.
 

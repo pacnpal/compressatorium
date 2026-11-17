@@ -238,6 +238,40 @@ class RommRepin(Base):
     settled_at = Column(String, nullable=True)
 
 
+class RommSwap(Base):
+    """One RomM swap (#391): a conversion that kept its ROM's id by renaming
+    the ROM's file in RomM instead of letting RomM add a new ROM.
+
+    Written before each step runs (``services.romm.swap_journal``), so a crash
+    leaves the step the swap was on. ``state`` is that step (``renaming``,
+    ``parking``, ``placing``, ``rehashing``, ``deleting``, ``reverting``,
+    ``restoring``), or how it ended (``done``, ``refused``, ``failed``,
+    ``rolled_back``, ``kept``). A row still on a step needs the next run to
+    finish it or show it as a Finding (#392); ``detail`` says why it stopped.
+
+    ``parked_path`` is where the Source sits while the output takes its name:
+    a ``park-`` slot in the hidden staging folder, which no sweep removes.
+    """
+
+    __tablename__ = "romm_swaps"
+    __table_args__ = (Index("ix_romm_swaps_state", "state"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    rom_id = Column(Integer, nullable=False)
+    # The Source, the output's final path and where the job staged it.
+    source_path = Column(String, nullable=False)
+    output_path = Column(String, nullable=False)
+    staged_path = Column(String, nullable=True)
+    parked_path = Column(String, nullable=True)
+    # RomM's fs_name before the swap and the one it is asked to take.
+    old_name = Column(String, nullable=False)
+    new_name = Column(String, nullable=False)
+    state = Column(String, nullable=False)
+    detail = Column(String, nullable=True)
+    created_at = Column(String, nullable=False, default=utcnow_iso)
+    updated_at = Column(String, nullable=False, default=utcnow_iso)
+
+
 class CHDMetadata(Base):
     __tablename__ = "chd_metadata"
     chd_path = Column(String, primary_key=True)
