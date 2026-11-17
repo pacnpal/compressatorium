@@ -54,10 +54,11 @@ REIDENTIFY_REFERRER = "romm_reidentify"
 # RomM version -> the (RomM Platform slug, output extension) pairs it moves a
 # missing ROM onto by title id, keeping its id. From spike #382; not listed
 # for 5.4.1 (no title id read): PS2 CSO and ZSO, PSP ZSO, GameCube WIA and GCZ.
+# DAT-safe outputs (`.chd`, `.zip`, `.7z`, see `DAT_SAFE_OUTPUT_EXTS`) never
+# belong here: they keep RomM's match, so no re-pin row is recorded and this
+# list is never asked about them (#414).
 REIDENTIFIED: Mapping[str, frozenset[tuple[str, str]]] = MappingProxyType({
     "5.4.1": frozenset({
-        ("ps2", ".chd"),
-        ("psp", ".chd"),
         ("psp", ".cso"),
         ("ngc", ".rvz"),
     }),

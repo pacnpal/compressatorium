@@ -1,8 +1,9 @@
 """The re-pin where RomM re-identifies a format by itself (#393).
 
 Spike #382 found that RomM 5.4.1, with title-id extraction on, moves a
-missing ROM onto its converted file by title id for PS2 CHD, PSP CHD, PSP CSO
-and GameCube RVZ, keeping the id and every piece of user data. It doesn't for
+missing ROM onto its converted file by title id for PSP CSO and GameCube RVZ
+(PS2 and PSP CHD never reach the list: CHD is DAT-safe, so no re-pin is
+recorded, #414), keeping the id and every piece of user data. It doesn't for
 PS2 CSO/ZSO, PSP ZSO or GameCube WIA/GCZ. With the swap switch off, a
 conversion whose (Platform, output format) is on that list for the connected
 RomM's version marks its re-pin as expected to self-identify, and the job and
@@ -30,6 +31,7 @@ from services.round_trip import RoundTripOutcome
 
 from app.models import ConversionMode, DuplicateAction, JobCreateRequest, JobStatus
 from app.routes import convert as convert_routes
+from app.routes import romm as romm_routes
 
 from .fake_romm import FakeRomm
 
@@ -396,8 +398,62 @@ def test_the_list_holds_the_spikes_findings_for_romm_5_4_1():
     from services.romm import reidentify
 
     assert reidentify.REIDENTIFIED["5.4.1"] == frozenset({
-        ("ps2", ".chd"), ("psp", ".chd"), ("psp", ".cso"), ("ngc", ".rvz"),
+        ("psp", ".cso"), ("ngc", ".rvz"),
     })
+
+
+def test_the_list_holds_no_dat_safe_extension():
+    """A DAT-safe output never records a re-pin row, so an entry for one could
+    never be reached (#414)."""
+    from services.romm import DAT_SAFE_OUTPUT_EXTS, reidentify
+
+    for pairs in reidentify.REIDENTIFIED.values():
+        for _platform, ext in pairs:
+            assert ext not in DAT_SAFE_OUTPUT_EXTS, ext
+
+
+@pytest.mark.asyncio
+async def test_ps2_chd_records_no_re_pin_and_says_nothing_about_one(vol, romm):
+    """CHD keeps RomM's match, so the plan records no row and the job and the
+    Ledger carry no "expected" wording (#414)."""
+    from services.romm import repin as romm_repin
+
+    source = vol / "romm" / "ps2" / "Game.iso"
+    plan = await romm_routes.romm_repin_plan(romm_routes.RepinPlanRequest(
+        paths=[str(source)], mode=ConversionMode.CREATEDVD.value, platform_id=PS2["id"],
+    ))
+    assert plan["recorded"] == 0
+    assert plan["reason"] == "dat_safe"
+    assert romm_repin.count_pending() == 0
+
+    job = await _convert(source, ConversionMode.CREATEDVD)
+
+    assert job.status == JobStatus.COMPLETED, job.error_message
+    with _db.SessionLocal() as session:
+        assert session.query(_db.RommRepin).count() == 0
+    assert "expected" not in (job.message or ""), job.message
+    assert "re-pin" not in (job.message or ""), job.message
+    assert _reidentify_records(job) == []
+    assert _ledger_records(job) == []
+
+
+@pytest.mark.asyncio
+async def test_a_stray_ps2_chd_row_is_not_marked_expected(vol, romm):
+    """Even a row that exists for a CHD output (written by hand here) is not
+    marked: the list no longer holds CHD (#414)."""
+    from services.romm import repin as romm_repin
+
+    source = vol / "romm" / "ps2" / "Game.iso"
+    row_id = romm_repin.record(
+        romm.roms[ROM_ID + 1], str(source.with_suffix(".chd")), {"igdb_id": 4343},
+        ConversionMode.CREATEDVD.value, source_path=str(source),
+    )
+
+    job = await _convert(source, ConversionMode.CREATEDVD)
+
+    assert not _expected(_row(row_id)[1])
+    assert _reidentify_records(job) == []
+    assert "expected" not in (job.message or ""), job.message
 
 
 def test_every_listed_format_is_one_a_registered_mode_writes():
