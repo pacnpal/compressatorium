@@ -406,16 +406,18 @@ class DATStore:
         }
 
     @staticmethod
-    def _ranked(payload: dict, path: str, ranks) -> dict:
+    def _ranked(payload: dict, path: str, ranks) -> dict | None:
         if not payload.get("matches"):
             return payload  # nothing to rank; skip the registry lookup
         return apply_ranking(payload, kind=image_kind(path), ranks=ranks)
 
-    def with_current_ranking(self, payload: dict, path: str) -> dict:
+    def with_current_ranking(self, payload: dict, path: str) -> dict | None:
         """*payload* (a match result for *path*) ranked by the current order.
 
         Applied when a result is computed and again whenever a cached one is
         read, so reordering DATs takes effect without re-hashing anything.
+        ``None`` when every DAT the payload names is gone: there is no local
+        hit any more.
         """
         if not payload.get("matches"):
             return payload  # nothing to rank (a miss, a remote hit)

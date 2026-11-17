@@ -140,11 +140,12 @@ def record_of(match: Mapping) -> dict:
 
 def apply_ranking(
     payload: dict, *, kind: str, ranks: Mapping[str, tuple[int | None, str]],
-) -> dict:
+) -> dict | None:
     """*payload* (a match result) with the current ranking applied.
 
     Only a local DAT hit carrying ``matches`` is re-ranked; any other payload
-    (a miss, a Hasheous hit, a row cached before #424) is returned unchanged.
+    (a miss, a Hasheous hit, a row cached before #424) is returned unchanged,
+    and one whose every DAT is gone comes back ``None`` (treat it as uncached).
     The top-level identity fields name the winner; on a conflict they name the
     first of the tied matches (so an existing badge still reads something) and
     ``conflict`` lists them all. Callers that act on the name must use
@@ -154,7 +155,10 @@ def apply_ranking(
         return payload
     ranked = rank_matches(payload["matches"], kind=kind, ranks=ranks)
     if not ranked.matches:
-        return payload
+        # Every DAT it names is gone (one deleted between the lookup and the
+        # cache write, say). Serving the payload would name a deleted DAT, so
+        # the row is treated as uncached and the file is matched again.
+        return None
     out = dict(payload)
     out["matches"] = [record_of(m) for m in ranked.matches]
     shown = ranked.top or ranked.conflict[0]

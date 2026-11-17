@@ -4,6 +4,7 @@
 import { untrack } from 'svelte';
 import { SvelteMap } from 'svelte/reactivity';
 import { api } from '$lib/api/endpoints.js';
+import { LatestSaveQueue } from '$lib/stores/latestSaveQueue.js';
 
 // How long a match attempt suppresses a retry for the same path. Must exceed
 // the backend's Hasheous cooldown (60s) so the retry lands after the service
@@ -37,6 +38,13 @@ class DATMatchingStore {
   datsError = $state(null);
   /** True once the user has saved a DAT order (false: family defaults apply). */
   datsRankingCustom = $state(false);
+  // The DAT order's generation, bumped when a load starts and when a save
+  // starts and lands (the LibrariesStore settings-generation pattern). A load
+  // adopts its answer only if nothing began since, so a load older than a save
+  // (or than another load) never puts the old order back.
+  #orderGeneration = 0;
+  // DAT order saves, one at a time in click order; only the latest is adopted.
+  #orderSaves = new LatestSaveQueue();
   stats = $state(null);
 
   // Paths we've already kicked a match-job for, mapped to WHEN. The backend
@@ -262,13 +270,17 @@ class DATMatchingStore {
   }
 
   async loadDATs() {
+    // A later load or a save makes this read too old to adopt.
+    this.#orderGeneration += 1;
+    const readAt = this.#orderGeneration;
     this.datsLoading = true;
     this.datsError = null;
     try {
       // /api/dat/ranking (app/services/dat_store.py:get_ranking) lists every
       // DAT in ranked order: { custom, dats: [{ id, name, description,
       // version, imported_at, file_count, family, rank }] }.
-      this._applyRanking(await api.getDATRanking());
+      const data = await api.getDATRanking();
+      if (readAt === this.#orderGeneration) this._applyRanking(data);
       await this.refreshMatchingAvailability();
     } catch (e) {
       this.datsError = e?.message ?? 'Failed to load DATs';
@@ -583,9 +595,25 @@ class DATMatchingStore {
    * defaults. The backend ranks matches when it serves them, so the cached
    * badges here may now name a different DAT: drop them, as deleteDAT does.
    */
-  async setDATRanking(order) {
-    const data = order === null ? await api.resetDATRanking() : await api.setDATRanking(order);
-    this._applyRanking(data);
+  setDATRanking(order) {
+    // Loads that set off from here on are older than this save.
+    this.#orderGeneration += 1;
+    return this.#orderSaves.schedule('order', (ticket) => this.#saveOrderNow(order, ticket));
+  }
+
+  async #saveOrderNow(order, ticket) {
+    this.#orderGeneration += 1;
+    let data;
+    try {
+      data = order === null ? await api.resetDATRanking() : await api.setDATRanking(order);
+    } catch (e) {
+      // An earlier save may have landed without being adopted: read it back.
+      if (this.#orderSaves.isLatest('order', ticket)) await this.loadDATs();
+      throw e;
+    } finally {
+      this.#orderGeneration += 1;
+    }
+    if (this.#orderSaves.isLatest('order', ticket)) this._applyRanking(data);
     this._generation += 1;
     this.matches.clear();
     this._resetAttempts();

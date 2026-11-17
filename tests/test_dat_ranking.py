@@ -255,6 +255,26 @@ async def test_a_reimported_dat_keeps_its_place_in_the_ranking(store):
     ]
 
 
+@pytest.mark.asyncio
+async def test_a_cached_match_whose_dats_are_all_gone_is_not_served(store, tmp_path):
+    """A DAT deleted between the lookup and the cache write leaves a row whose
+    every match names a DAT that no longer exists (CodeRabbit, PR #435). It
+    must read as uncached, so the file is matched again, never as that DAT."""
+    dat = await _import(_dat_xml("Set A", "Game A"))
+    path = _file(tmp_path, "game.gb")
+    real = os.path.realpath(path)
+    result = await _match(path)
+    assert result["dat_id"] == dat["id"]
+
+    await dat_routes.delete_dat(dat["id"])
+    await store.set_match(real, result)  # the write that lost the race
+
+    assert store.get_match(real) is None
+    assert store.get_matches_batch([real]) == {real: None}
+    ranked = store.ranked_match_for_image(real)
+    assert ranked.top is None and not ranked.conflict
+
+
 # ---------------------------------------------------------------------------
 # Different DATs knowing different hashes of the same Image (Codex, PR #435)
 # ---------------------------------------------------------------------------

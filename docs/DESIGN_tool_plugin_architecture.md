@@ -1860,8 +1860,10 @@ ranking and sets the top-level `dat_id` / `dat_name` / `family` /
 `get_matches_batch` apply it to every cached row, and `_local_lookup_match` to
 every fresh hit (`DATStore.with_current_ranking`), so a new order shows on the
 next lookup without re-hashing anything. A payload with no `matches` (a miss,
-a Hasheous hit, a row cached before #424) passes through unchanged, and
-local-first is untouched: Hasheous is still asked only when no local DAT
+a Hasheous hit, a row cached before #424) passes through unchanged. A row
+whose every DAT is gone (one deleted between the lookup and the cache write)
+reads as uncached (`None`), so the file is matched again rather than named by
+a deleted DAT. Local-first is untouched: Hasheous is still asked only when no local DAT
 knows any candidate hash.
 
 **Conflicts.** When the best rank is shared by matches that give different
