@@ -14,6 +14,7 @@ Driven through the Findings routes, as #388's tests are.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import threading
 from pathlib import Path
@@ -1011,3 +1012,99 @@ async def test_a_missing_track_named_in_another_case_still_owns_the_copy(
 
     monkeypatch.setattr(os, "stat", missing)
     await _blocked_for(client, group, str(roms / "Game.iso"), "is a track of Disc.cue")
+
+
+
+# ----------------------------------------------------------------------
+# review round 7
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_keeper_opened_after_the_bound_is_closed_again(
+    db: Path, client: httpx.AsyncClient, monkeypatch,
+) -> None:
+    """Codex 4593499336: an open of the keeper that answers after the bound
+    gave up hands its descriptor to an undo, which closes it."""
+    import time as _time
+
+    from services import job_manager as jm
+
+    roms = db / "roms"
+    group, keep, plan = await _iso_pair(client, roms)
+    opened: list[int] = []
+    real_open = jm.JobManager._open_keeper
+
+    def slow_open(path):
+        _time.sleep(0.6)
+        fd, snapshot = real_open(path)
+        opened.append(fd)
+        return fd, snapshot
+
+    monkeypatch.setattr(jm.JobManager, "_open_keeper", staticmethod(slow_open))
+    monkeypatch.setattr(jm, "KEPT_DELETE_PROBE_SECONDS", 0.2)
+    done = await _delete(client, group, keep, _paths(plan))
+
+    assert done.status_code == 200, done.text
+    assert all(r["status"] != "deleted" for r in done.json()["results"])
+    assert (roms / "Copy.iso").exists()
+    for _ in range(100):
+        if opened:
+            break
+        await asyncio.sleep(0.02)
+    await asyncio.sleep(0.1)
+    assert opened, "the slow open never finished"
+    keeper_inode = os.stat(keep).st_ino
+    try:
+        still = os.fstat(opened[0]).st_ino == keeper_inode
+    except OSError:
+        still = False
+    assert not still, "the keeper's descriptor was left open"
+
+
+@pytest.mark.asyncio
+async def test_a_produced_chd_is_kept_only_while_its_latest_check_is_current(
+    db: Path, client: httpx.AsyncClient, monkeypatch,
+) -> None:
+    """Codex 4593499342: the latest check decides, not the fingerprint the
+    conversion recorded. Touched after it, the CHD is blocked; a Verify that
+    passes makes it eligible again; changed after that, blocked again."""
+    import time as _time
+
+    from services.chdman import chdman_service
+    from services.verification_store import verification_store
+
+    roms = db / "roms"
+    sha1 = d388._disc(roms / "Game.iso", b"game")
+    chd = roms / "Game.chd"
+    await d388._seed_chd(chd, data_sha1=sha1, sha1="0" * 40)
+    st = chd.stat()
+    await verification_store.mark_verified(str(chd), produced_meta={
+        "mode": "createdvd", "output": {"size": st.st_size, "mtime_ns": st.st_mtime_ns},
+    })
+
+    async def info(path, *, cancel_event=None):
+        return {"sha1": "0" * 40, "data_sha1": sha1,
+                "raw_data": "Metadata: Tag='DVD '  Index=0\n"}
+
+    monkeypatch.setattr(chdman_service, "info", info)
+    library = await d388._register(client, roms)
+
+    async def plan_status() -> int:
+        await d388._find(client, library)
+        group = await _group(client)
+        return (await _plan(client, group, str(chd))).status_code
+
+    assert await plan_status() == 200
+
+    _time.sleep(0.01)
+    os.utime(chd, None)                              # touched after its check
+    assert await plan_status() == 409
+
+    _time.sleep(0.01)
+    await verification_store.refresh_check(str(chd))  # a Verify that passes
+    assert await plan_status() == 200
+
+    _time.sleep(0.01)
+    os.utime(chd, None)                              # changed again
+    assert await plan_status() == 409

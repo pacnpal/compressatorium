@@ -5792,9 +5792,11 @@ deletes on its own.
 /api/findings`). Database only, so listing the Findings touches no Volume:
 `verification_store.records_blocking` (each copy's stored check, passing or
 failed, looked up by the path as listed) and `dat_store.get_matches_batch`. A
-copy whose check failed is never a keeper. Order: Intact (a passing check
-whose recorded output fingerprint is the copy's size and mtime, or, with none,
-one made after the copy's mtime; a passed check outranks everything), then a
+copy whose check failed is never a keeper. Order: Intact (the latest check
+passed and was made after the copy's mtime; the fingerprint a conversion
+recorded in `produced_meta.output` is not read, since a re-check keeps it as it
+was and it would bar a file that changed and then passed a check, Codex
+4593499342; a passed check outranks everything), then a
 copy whose key was computed from its whole content, then Recognized, then
 smallest, then path. `keeper_reason` names the rule that decided. Each copy in
 the Finding's cause now carries `mtime_ns` beside `size`: the identity its key
@@ -5861,15 +5863,19 @@ recomputes the data SHA1 from every hunk, then the header read fresh). A format
 with no full-content key cannot be kept. A read that fails, stalls, is
 cancelled or gives another key refuses every copy and deletes nothing.
 
-The keeper is opened (`_open_keeper`) and held open from that read to the end
-of the batch; an image's hash is read through that descriptor
+The keeper is opened (`_open_keeper`, through `run_detached_undoable`: a
+descriptor delivered after the bound gave up is closed by the undo,
+`_close_opened`, Codex 4593499336) and held open from that read to the end of
+the batch; an image's hash is read through that descriptor
 (`content_keys.recompute(fd=...)`). Before each copy, and once after the last
 delete, `_keeper_still_held` checks that the batch still holds the keeper's
 lock (`HeldLocks.holds`: a lingering Referrer operation may have taken it,
 CodeRabbit 4593240091) and that the path still names the held file, with the
 same device, inode, size and mtime (`_keeper_moved`, Codex 4593214751). Any
 change stops the batch and what is left stays; a change seen only after the
-last delete is reported (`keeper_changed`). This catches a rename swap. An
+last delete is reported (`keeper_changed`); the dialog then stays open with
+a warning naming the copy kept and asking for a check, and the view shows a
+warning, not a success (Codex 4593499350). This catches a rename swap. An
 in-place rewrite by a writer with write access to the keeper cannot be caught
 by any ordering here, since the same writer could corrupt it right after the
 cleanup: that is inherent to keeping one copy. The copies being deleted are

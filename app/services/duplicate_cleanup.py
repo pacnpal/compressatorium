@@ -85,15 +85,17 @@ def _stamp_ns(stamp: str | None) -> int | None:
 
 
 def _is_intact(copy: dict, record: dict | None) -> bool:
-    """A passing check that still describes the copy: one its recorded output
-    fingerprint matches, or, with none, one made after the copy last changed."""
+    """Whether the copy's latest check passed and still describes it: the
+    check was made after the copy last changed (Codex 4593499342).
+
+    The latest check decides, so a Verify that passes after a change makes the
+    copy eligible again. The fingerprint a conversion recorded
+    (``produced_meta.output``) is not read here: a re-check keeps it as it was,
+    so it would bar a file that changed and then passed a check. The delete
+    reads the keeper in full anyway, so this is the gate, not the proof.
+    """
     if not record or record.get("check_passed") not in _INTACT_CHECKS:
         return False
-    output = (record.get("produced_meta") or {}).get("output")
-    if isinstance(output, dict):
-        return (output.get("size"), output.get("mtime_ns")) == (
-            copy.get("size"), copy.get("mtime_ns"),
-        )
     checked = _stamp_ns(record.get("verified_at"))
     return checked is not None and copy.get("mtime_ns") is not None and (
         checked >= int(copy["mtime_ns"])

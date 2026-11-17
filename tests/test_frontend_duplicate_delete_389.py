@@ -88,7 +88,7 @@ def test_the_view_offers_the_delete_only_where_the_backend_does() -> None:
     assert "<DuplicateDeleteModal" in view
     modal = _MODAL.read_text(encoding="utf-8")
     # Confirm is off until there is a plan, and while it is blocked.
-    assert "disabled={!plan || blocked || !!open?.error || !!open?.deleting}" in modal
+    assert "disabled={!plan || blocked || !!open?.error || !!open?.deleting || !!open?.done}" in modal
     endpoints = _ENDPOINTS.read_text(encoding="utf-8")
     assert "/delete-plan`" in endpoints
     assert "'X-CHD-Action-Confirm': CONFIRM.DELETE_FILE" in endpoints
@@ -191,4 +191,33 @@ process.stdout.write(JSON.stringify({{
     assert data["open"] is None, data
     modal = _MODAL.read_text(encoding="utf-8")
     # Closing does not stop the delete, and the button says so.
-    assert "open?.deleting ? 'Close' : 'Cancel'" in modal
+    assert "open?.deleting || open?.done ? 'Close' : 'Cancel'" in modal
+
+
+
+def test_a_keeper_changed_during_the_delete_leaves_a_warning(tmp_path):
+    """Codex 4593499350: the backend says the copy kept no longer looked like
+    the file it hashed once the last delete was done. The dialog stays open
+    and says so, instead of closing as a plain success."""
+    data = _run(tmp_path, f"""
+api.duplicateDeletePlan = __call('duplicateDeletePlan');
+api.deleteDuplicates = __call('deleteDuplicates');
+__answers.listFindings = {{ findings: [], dismissed: 0 }};
+__answers.duplicateDeletePlan = {{ items: [{{ source_path: '/v/Copy.iso',
+  delete_paths: ['/v/Copy.iso'] }}], blocked: false, total_delete_count: 1 }};
+__answers.deleteDuplicates = {{ results: [{{ path: '/v/Copy.iso', status: 'deleted' }}],
+  keeper_changed: 'the copy to keep was replaced or changed' }};
+await findings.openCleanup({_ROW});
+const result = await findings.confirmCleanup();
+process.stdout.write(JSON.stringify({{
+  changed: result.keeper_changed, open: !!findings.cleanup,
+  warning: findings.cleanup?.warning ?? null, deleting: findings.cleanup?.deleting,
+}}));
+""")
+    assert data["changed"] == "the copy to keep was replaced or changed", data
+    assert data["open"] is True and data["deleting"] is False, data
+    assert "Game.iso" in data["warning"] and "check it" in data["warning"], data
+    view = _VIEW.read_text(encoding="utf-8")
+    assert "result?.keeper_changed" in view
+    modal = _MODAL.read_text(encoding="utf-8")
+    assert "open.warning" in modal

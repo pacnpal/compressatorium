@@ -79,6 +79,12 @@
         <p class="dd-note">Suggested: {open.row.keeper_reason}.</p>
       {/if}
 
+      {#if open.warning}
+        <div class="dd-block" role="alert">
+          <TriangleAlert size={14} aria-hidden="true" />
+          <div>{open.warning}</div>
+        </div>
+      {/if}
       {#if open.deleting}
         <!-- The copy to keep is read in full under its lock first (#389). -->
         <p class="dd-note"><Spinner /> Checking the copy to keep (reading it in full), then deleting…</p>
@@ -88,6 +94,8 @@
           <TriangleAlert size={14} aria-hidden="true" />
           <div>{open.error}</div>
         </div>
+      {:else if open.done}
+        <!-- The delete ran; only its warning above is left to read. -->
       {:else if !plan}
         <p class="dd-note"><Spinner /> Checking every copy…</p>
       {:else}
@@ -130,11 +138,11 @@
   {#snippet footer()}
     <!-- Closing never stops a delete already sent: say Close, not Cancel. -->
     <Button variant="secondary" onclick={() => findings.closeCleanup()}>
-      {open?.deleting ? 'Close' : 'Cancel'}
+      {open?.deleting || open?.done ? 'Close' : 'Cancel'}
     </Button>
     <Button
       variant="destructive"
-      disabled={!plan || blocked || !!open?.error || !!open?.deleting}
+      disabled={!plan || blocked || !!open?.error || !!open?.deleting || !!open?.done}
       loading={!!open?.deleting}
       onclick={confirm}
     >

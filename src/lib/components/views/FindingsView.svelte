@@ -16,7 +16,7 @@
    */
   import { untrack } from 'svelte';
   import { toast } from 'svelte-sonner';
-  import { findings, findingName } from '$lib/stores/findings.svelte.js';
+  import { findings, findingName, keeperWarning } from '$lib/stores/findings.svelte.js';
   import { fileBrowser } from '$lib/stores/fileBrowser.svelte.js';
   import { libraries } from '$lib/stores/libraries.svelte.js';
   import { jobs } from '$lib/stores/jobs.svelte.js';
@@ -132,7 +132,12 @@
     const results = result?.results ?? [];
     const gone = results.filter((r) => r.status === 'deleted').length;
     const kept = results.filter((r) => r.status !== 'deleted');
-    if (gone) toast.success(`Deleted ${gone} cop${gone === 1 ? 'y' : 'ies'}`);
+    if (result?.keeper_changed) {
+      // Not a plain success: the copy kept changed during the delete.
+      toast.warning(keeperWarning(result.keep), {
+        description: `Deleted ${gone} cop${gone === 1 ? 'y' : 'ies'}. ${result.keeper_changed}.`,
+      });
+    } else if (gone) toast.success(`Deleted ${gone} cop${gone === 1 ? 'y' : 'ies'}`);
     if (kept.length) {
       toast.warning(`${kept.length} cop${kept.length === 1 ? 'y was' : 'ies were'} kept`, {
         description: kept.map((r) => `${r.path.split(/[/\\]/).pop()}: ${r.reason ?? r.status}`).join('; '),

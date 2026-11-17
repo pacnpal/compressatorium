@@ -15,6 +15,12 @@ import { api } from '$lib/api/endpoints.js';
  * and 2 other copies"), never by its `raw:<sha1>` key; any other Finding by
  * its Image key.
  */
+/** What to tell the user when the copy kept changed during its delete. */
+export function keeperWarning(keep) {
+  const name = keep?.split(/[/\\]/).filter(Boolean).pop() ?? 'The copy kept';
+  return `${name}, the copy kept, changed while the other copies were deleted: check it (Verify) before relying on it.`;
+}
+
 export function findingName(row) {
   if (row?.kind !== 'duplicate') return row?.image_key ?? '';
   const copies = row.cause?.copies ?? [];
@@ -185,7 +191,14 @@ class FindingsStore {
       const result = await api.deleteDuplicates(id, open.row.fingerprint, open.keep, paths);
       this.#inflight.delete(id);
       this.#superseded();
-      if (this.#showing(id)) this.cleanup = null;
+      if (this.#showing(id)) {
+        // The copy kept no longer looked like the file that was hashed once
+        // the last delete was done (Codex 4593499350): the dialog stays, done,
+        // and says to check it, rather than closing as a plain success.
+        this.cleanup = result?.keeper_changed
+          ? { ...this.cleanup, deleting: false, done: true, warning: keeperWarning(open.keep) }
+          : null;
+      }
       return result;
     } catch (e) {
       this.#inflight.delete(id);

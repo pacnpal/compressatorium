@@ -223,6 +223,15 @@ def _remove_in_order(paths: Iterable[str], removed: List[str]) -> None:
         removed.append(path)
 
 
+def _close_opened(opened: object) -> None:
+    """The undo of a keeper open (``JobManager._open_keeper``) delivered after
+    its caller stopped waiting: close the descriptor nobody will use."""
+    fd = opened[0] if isinstance(opened, tuple) and opened else None
+    if isinstance(fd, int):
+        with contextlib.suppress(OSError):
+            os.close(fd)
+
+
 def _let_go(paths: Optional[Iterable[str]]) -> None:
     """Release the exclusive locks :meth:`JobManager._take_exclusively` took."""
     for path in paths or ():
@@ -4216,8 +4225,11 @@ class JobManager:
             snapshot: Tuple[int, int, int, int] = (0, 0, 0, 0)
             if refused is None:
                 try:
-                    fd, snapshot = await run_detached_bounded(
+                    # A descriptor that arrives after the bound gave up is
+                    # closed by the undo, never left open (Codex 4593499336).
+                    fd, snapshot = await run_detached_undoable(
                         self._open_keeper, keeper, timeout=KEPT_DELETE_PROBE_SECONDS,
+                        undo=_close_opened,
                     )
                 except (DeadlineExpired, ReadCancelled):
                     refused = KeptDeleteRetry(KEPT_KEPT, "the copy to keep did not answer")
