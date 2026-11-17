@@ -164,8 +164,10 @@ def not_deletable(row: dict, run: dict | None) -> str | None:
 
     *run* is the Library's last find-duplicates run, None when none is
     recorded: then whether this group was fully seen is unknown, so no delete.
-    Nor without the run's record of every sheet's tracks (``sheet_tracks``):
-    a copy a sheet elsewhere reaches through a link could not be ruled out.
+    Nor without the run's complete record of every sheet's tracks over the
+    Volumes it walked (``sheet_tracks``, ``sheet_tracks_scope``), nor once the
+    Volumes have changed since: a copy a sheet anywhere in them reaches
+    through a link could not be ruled out.
     """
     cause = row.get("cause") or {}
     key = str(cause.get("key") or row.get("image_key") or "")
@@ -182,6 +184,13 @@ def not_deletable(row: dict, run: dict | None) -> str | None:
         return (
             "the last run has no record of which files are sheets' tracks; "
             "run Find duplicates again"
+        )
+    from services import duplicates
+
+    if run.get("sheet_tracks_scope") != duplicates.volume_scope():
+        return (
+            "the Volumes changed since the last run, so its record of sheets' "
+            "tracks is stale; run Find duplicates again"
         )
     if run.get("unlisted"):
         # A run that also kept a sheet-track record (one from before the
@@ -325,8 +334,9 @@ def _copy_sheet_problem(
     """Why *path* may be a sheet's track, or None. Blocking.
 
     The walk up from it (:func:`_sheet_problem`), and the last run's record of
-    every sheet's track identities in the Library: a sheet in another folder
-    that reaches this file through a linked track (Codex PRRT_kwDOQ9nULM64NUn9).
+    every sheet's track identities over the Volumes: a sheet in another folder,
+    or another Library, that reaches this file through a linked track (Codex
+    PRRT_kwDOQ9nULM64NUn9, PRRT_kwDOQ9nULM64OXPI).
     """
     problem = _sheet_problem(path)
     if problem:
@@ -338,7 +348,7 @@ def _copy_sheet_problem(
         return f"{name} could not be read ({exc.strerror or exc})"
     if (st.st_dev, st.st_ino) in recorded:
         return (
-            f"{name} is a track a sheet in this Library names (through a link); "
+            f"{name} is a track a sheet in the Volumes names (through a link); "
             "it is never deleted on its own"
         )
     return None

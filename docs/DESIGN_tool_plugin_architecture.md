@@ -634,7 +634,9 @@ so a walk that is still moving stops instead of finishing for nobody.
 `utils.path_utils.walk_tree(top, progress)` is the walk to use with it:
 `os.walk(top)` semantics (top-down, a symlinked folder listed but never
 walked into, unreadable folders skipped) built on `os.scandir`, reporting each
-folder and each entry. Anything under the progress clock reads entries one at
+folder and each entry. A caller that must not take "skipped" as "not there"
+passes `unlisted=[]`, which collects every folder it could not list and every
+entry it could not classify (the duplicate finder's sheet walk, 3.3.22). Anything under the progress clock reads entries one at
 a time and reports each: `os.listdir` reads a whole folder before its caller
 sees an entry, so a huge folder on a slow but healthy mount would pass the
 bound while still reading. `utils.path_utils.list_folder(path, progress)` is
@@ -5922,30 +5924,40 @@ meanwhile wins.
 
 A sheet can reach a track through a link in another folder (`disc/Disc.cue`
 names `disc/Track.bin`, a link to `shared/Track.bin`), which no walk up from the
-target finds (Codex PRRT_kwDOQ9nULM64NUn9). The find-duplicates run already
-lists the whole Library, so it records every listed sheet's track identities,
+target finds (Codex PRRT_kwDOQ9nULM64NUn9), and that folder may be in another
+Library, or in none (Codex PRRT_kwDOQ9nULM64OXPI). `resolve_track` accepts a
+track anywhere inside the configured Volumes, so ownership is read over the
+same scope, from the disk, never from a Library's listing: the find-duplicates
+job walks every configured Volume (`image_sets.volume_sheet_tracks`, over the
+shared `walk_tree`, detached under the stall bound, cancellable), reads only
+the `.cue`/`.gdi` sheets, no hashing, and records each one's track identities,
 `(st_dev, st_ino)` with links followed (`image_sets.sheet_track_identities`,
 through the same `resolve_track`), as `sheet_tracks` in the run's summary on
-`duplicate_runs` (no migration). The plan, and the check under each copy's
-locks (`_copy_sheet_problem`), block a copy whose identity is any recorded
-track, besides the walk up. A run with no such record (an older run) offers no
-delete, and neither does an incomplete one (Codex PRRT_kwDOQ9nULM64N2yy):
-`sheet_track_identities` raises for a sheet that cannot be read whole
-(unreadable, or over the size cap), one whose tracks do not resolve as one set
-(`sheet_track_list` is None) or a track it cannot stat, and the run then stores
-`sheet_tracks: None` with the reason in `sheet_tracks_problem`. So does a run
-whose listing did not see the whole Library (Codex PRRT_kwDOQ9nULM64OGLk): a
-sheet in a folder it could not list may own a linked track anywhere, so any
-unlisted folder or unreadable file (`ImageListing.unlisted` / `.unreadable`,
-named by `duplicates.listing_problem`) makes the record incomplete, wherever
-the groups' copies are, not only for a group with a copy inside it. The record
-and the summary's `unlisted` count come from the same listing, and
-`not_deletable` also refuses a run whose `unlisted` is non-zero, so a run
-recorded before this rule cannot read as complete. A RomM Library lists from
-its own records and reports neither, so this signal does not exist for it; a
-sheet RomM does not record is not seen. The listing
-itself no longer shows a linked target as an Image: `group_images` also counts
-a member's resolved link target as owned.
+`duplicate_runs` (no migration), with the Volumes it walked as
+`sheet_tracks_scope`. Junk and RomM's `.romm_tmp_*` staging are skipped as
+every walk skips them; a linked folder is not walked into (its target is
+walked where it is, when it is in a Volume), and a Volume nested in another is
+walked once. The plan, and the check under each copy's locks
+(`_copy_sheet_problem`), block a copy whose identity is any recorded track,
+besides the walk up, which stays as a second guard.
+
+No delete is offered without a complete, current record. A run with no record
+(an older run) offers none. Nor does an incomplete one, stored as
+`sheet_tracks: None` with what was missed in `sheet_tracks_problem`: a Volume
+root that is not a folder, any folder (or entry) the walk could not see
+(`walk_tree(unlisted=...)` collects them), a sheet that cannot be read whole
+(unreadable, over the size cap, tracks that do not resolve as one set, a
+track it cannot stat: `sheet_track_identities` raises, Codex
+PRRT_kwDOQ9nULM64N2yy), or a walk that hit its stall bound. So does a run whose
+Library listing did not see the whole Library (Codex PRRT_kwDOQ9nULM64OGLk:
+any `ImageListing.unlisted` / `.unreadable`, named by
+`duplicates.listing_problem`), and `not_deletable` also refuses a run whose
+`unlisted` count is non-zero, so no flag says complete while another says
+partial. A record whose `sheet_tracks_scope` is not the current Volumes
+(`duplicates.volume_scope`, e.g. a Volume added since) is stale: no delete.
+Since the record no longer comes from a Library's listing, a RomM Library is
+covered the same way. The listing itself no longer shows a linked target as an
+Image: `group_images` also counts a member's resolved link target as owned.
 
 The rule throughout, so the class cannot recur: no helper that answers an
 ownership question returns an empty answer for "could not tell".
@@ -7128,7 +7140,7 @@ Net: a smaller, flatter codebase where the cost of the *next* tool drops from
 `is_junk_entry(name)` is the one predicate for names no listing or walk should
 see: OS and NAS metadata, plus RomM's `.romm_tmp_*` converter staging (prefix
 match only) and this app's own `.compressatorium-stage` folder
-(`STAGE_DIR_NAME`, section 3.3.21). The file browser listing and search, `walk_tree` (DAT scan), the
+(`STAGE_DIR_NAME`, section 3.3.21). The file browser listing and search, `walk_tree` (DAT scan, the duplicate finder's sheet walk), the
 folder Library walk (which feeds sweeps, check Rules and the Platform walk) and
 the Switch key search all route through it. Add a new ignored name there, not in
 a caller.

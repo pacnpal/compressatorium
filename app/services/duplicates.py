@@ -62,6 +62,8 @@ from services.subprocess_runner import (
 )
 from utils.path_utils import is_within_configured_volumes
 
+from config import settings
+
 logger = get_logger("duplicates")
 
 # How long listing the Library may take, a walk that is already running
@@ -222,7 +224,20 @@ async def _find(library: Library, job_id: str, current: Callable[[], bool]) -> d
         raise _Stopped("Cancelled: no Findings were written") from None
     except (OSError, Stalled, ProgressAbandoned) as exc:
         raise LibraryUnreadable(f"the Library's files did not answer: {exc}") from exc
-    candidates, in_use, unstatted, (sheet_tracks, sheet_problem) = inspected
+    candidates, in_use, unstatted = inspected
+    # Every sheet in the Volumes and the tracks it owns, from the disk: the
+    # scope ``resolve_track`` accepts tracks in (Codex PRRT_kwDOQ9nULM64OXPI).
+    scope = volume_scope()
+    try:
+        sheet_tracks, sheet_problem = await run_detached_within_stall_bound(
+            image_sets.volume_sheet_tracks, scope, what="reading the Volumes' sheets",
+            cancel_event=cancel_event, stall=content_keys.STALL_SECONDS,
+            report_progress=True,
+        )
+    except ReadCancelled:
+        raise _Stopped("Cancelled: no Findings were written") from None
+    except (OSError, Stalled, ProgressAbandoned) as exc:
+        sheet_tracks, sheet_problem = None, f"the walk of the Volumes did not finish: {exc}"
     # A listing that did not see the whole Library may have missed a sheet
     # whose track links anywhere, whatever folders the groups' copies are in
     # (Codex PRRT_kwDOQ9nULM64OGLk): the record is incomplete, from the same
@@ -349,9 +364,9 @@ async def _find(library: Library, job_id: str, current: Callable[[], bool]) -> d
         # Which groups: a held group is not proven by this run, so it is not
         # offered for delete (#389).
         "held_keys": sorted(held),
-        # Every sheet's track identities ((st_dev, st_ino), links followed):
-        # a copy that is any sheet's track is never deleted, wherever the
-        # sheet is (#389). None when a sheet's tracks could not be read, or
+        # Every sheet's track identities ((st_dev, st_ino), links followed),
+        # over every Volume: a copy that is any sheet's track is never
+        # deleted, wherever the sheet is (#389). None when a sheet's tracks could not be read, or
         # the listing did not see the whole Library: then no delete is
         # offered for this Library.
         "sheet_tracks": None if sheet_tracks is None else sorted(
@@ -359,6 +374,8 @@ async def _find(library: Library, job_id: str, current: Callable[[], bool]) -> d
         ),
         # Why the record is incomplete, for the Findings view.
         "sheet_tracks_problem": sheet_problem,
+        # The Volumes it covers: once they change, it is stale (no delete).
+        "sheet_tracks_scope": scope,
         "busy": len(in_use),
         "findings": counts,
     }
@@ -398,6 +415,11 @@ async def _list(
         await asyncio.sleep(_LIST_RETRY_SECONDS)
 
 
+def volume_scope() -> list[str]:
+    """The configured Volumes, as a run's record of sheet tracks covers them."""
+    return sorted(settings.volumes)
+
+
 def listing_problem(listing: ImageListing, root: str | None = None) -> str | None:
     """What *listing* could not see of its Library, or None when it saw it all.
 
@@ -425,10 +447,9 @@ def listing_problem(listing: ImageListing, root: str | None = None) -> str | Non
 
 def _inspect(
     listed: list[Image], active: list[str], *, progress: Callable[..., None],
-) -> tuple[list[Candidate], list[str], list[str], set[tuple[int, int]] | None]:
-    """The Images the run may group, the ones in use, the ones it could not
-    stat, and every listed sheet's track identities (None when one sheet's
-    tracks could not be read). Blocking: run detached under the stall bound.
+) -> tuple[list[Candidate], list[str], list[str]]:
+    """The Images the run may group, the ones in use, and the ones it could
+    not stat. Blocking: run detached under the stall bound.
 
     Each Image's path is read here, never on the loop: a Library may resolve
     it lazily on its mount (RomM's ``local_path``), and a mount that stops
@@ -443,8 +464,6 @@ def _inspect(
     out: list[Candidate] = []
     busy: list[str] = []
     unstatted: list[str] = []
-    sheet_tracks: set[tuple[int, int]] | None = set()
-    sheet_problem: str | None = None
     for image in listed:
         progress(str(image.key))
         path = image.path
@@ -452,13 +471,6 @@ def _inspect(
             continue
         image_key = str(image.key)
         progress(path)
-        if sheet_tracks is not None and path.lower().endswith(image_sets.SHEET_EXTENSIONS):
-            try:
-                sheet_tracks |= image_sets.sheet_track_identities(path)
-            except image_sets.SheetOwnerUnknown as exc:
-                # Incomplete: no delete is offered while it stays so.
-                sheet_tracks = None
-                sheet_problem = str(exc)
         if not is_within_configured_volumes(path):
             continue
         # Only a file confirmed missing drops a copy. Any other stat failure (a
@@ -480,7 +492,7 @@ def _inspect(
             image_key=image_key, path=path, identity=identity,
             container=content_keys.container_of(path),
         ))
-    return out, busy, unstatted, (sheet_tracks, sheet_problem)
+    return out, busy, unstatted
 
 
 def _held(library_id: str, unseen: set[str], unlisted: Iterable[str]) -> set[str]:

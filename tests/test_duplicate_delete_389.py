@@ -1175,7 +1175,7 @@ async def test_a_track_a_sheet_reaches_through_a_link_is_never_deleted(
     group = await _group(client)
     assert d388._names(group) == ["Game.iso", "Track.bin"]
 
-    await _blocked_for(client, group, str(roms / "Game.iso"), "a sheet in this Library")
+    await _blocked_for(client, group, str(roms / "Game.iso"), "a sheet in the Volumes")
     assert target.exists()
 
 
@@ -1413,3 +1413,102 @@ async def test_a_run_that_did_not_list_every_folder_offers_no_delete(
     group = await _group(client)
     assert group["deletable"] is False, group
     assert "list" in group["not_deletable"], group
+
+
+
+# ----------------------------------------------------------------------
+# sheets anywhere in the Volumes (Codex PRRT_kwDOQ9nULM64OXPI)
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_sheet_in_another_library_owning_a_track_blocks_the_delete(
+    db: Path, client: httpx.AsyncClient,
+) -> None:
+    """``other/Disc.cue`` (not this Library) names ``other/Track.bin``, a link
+    to this Library's ``roms/Track.bin``. ``resolve_track`` accepts targets
+    anywhere in the Volumes, so ownership is recorded over the Volumes."""
+    roms, other = db / "roms", db / "other"
+    d388._disc(roms / "Game.iso", b"game")
+    d388._copy(roms / "Game.iso", roms / "Track.bin")
+    other.mkdir()
+    os.symlink(roms / "Track.bin", other / "Track.bin")
+    _cue(other / "Disc.cue", "Track.bin")
+    library = await d388._register(client, roms)
+    await d388._find(client, library)
+    group = await _group(client)
+    assert d388._names(group) == ["Game.iso", "Track.bin"]
+
+    await _blocked_for(client, group, str(roms / "Game.iso"), "a sheet in the Volumes")
+    assert (roms / "Track.bin").exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(folder_library_303._IS_ROOT, reason="root lists every folder")
+async def test_an_unlistable_folder_outside_the_library_offers_no_delete(
+    db: Path, client: httpx.AsyncClient,
+) -> None:
+    """A folder in the Volumes but outside the Library may hold a sheet that
+    owns one of its copies: not listed means not ruled out."""
+    roms, locked = db / "roms", db / "elsewhere" / "locked"
+    d388._disc(roms / "Game.iso", b"game")
+    d388._copy(roms / "Game.iso", roms / "Copy.iso")
+    locked.mkdir(parents=True)
+    library = await d388._register(client, roms)
+    locked.chmod(0)
+    try:
+        await d388._find(client, library)
+        group = await _group(client)
+        plan = await _plan(client, group, str(roms / "Game.iso"))
+    finally:
+        locked.chmod(0o755)
+
+    assert group["deletable"] is False, group
+    assert "locked" in group["not_deletable"], group
+    assert plan.status_code == 409
+    assert (roms / "Copy.iso").exists()
+
+
+@pytest.mark.asyncio
+async def test_a_volume_added_after_the_run_makes_its_record_stale(
+    db: Path, client: httpx.AsyncClient, monkeypatch,
+) -> None:
+    """The record covers the Volumes it walked: a Volume added since may
+    hold a sheet it never read."""
+    from config import settings as app_settings
+
+    roms = db / "roms"
+    d388._disc(roms / "Game.iso", b"game")
+    d388._copy(roms / "Game.iso", roms / "Copy.iso")
+    library = await d388._register(client, roms)
+    await d388._find(client, library)
+    assert (await _group(client))["deletable"] is True
+
+    added = db.parent / "vol2"
+    added.mkdir()
+    monkeypatch.setattr(app_settings, "chd_volumes", f"{db},{added}")
+    group = await _group(client)
+    assert group["deletable"] is False, group
+    assert "Volumes" in group["not_deletable"], group
+    assert (await _plan(client, group, str(roms / "Game.iso"))).status_code == 409
+
+
+
+@pytest.mark.asyncio
+async def test_a_sheet_romm_does_not_list_still_blocks_its_track(
+    db: Path, client: httpx.AsyncClient, monkeypatch,
+) -> None:
+    """Codex 4594076949: RomM lists ``shared/Track.bin`` and ``Game.iso`` but
+    not ``disc/Disc.cue``, whose linked track is that file. Ownership comes
+    from the on-disk walk of the Volumes, not RomM's records."""
+    roms = db / "romm"
+    target = _linked_track(roms)
+    release = threading.Event()
+    release.set()
+    d388._romm_images_resolving(monkeypatch, release, [roms / "Game.iso", target])
+    await d388._find(client, "romm")
+    group = await _group(client)
+    assert d388._names(group) == ["Game.iso", "Track.bin"]
+
+    await _blocked_for(client, group, str(roms / "Game.iso"), "a sheet in the Volumes")
+    assert target.exists()

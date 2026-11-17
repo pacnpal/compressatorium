@@ -200,6 +200,53 @@ def sheet_track_identities(sheet: str) -> set[tuple[int, int]]:
     return out
 
 
+def volume_sheet_tracks(
+    roots: Iterable[str], *, progress: Callable[..., None],
+) -> tuple[set[tuple[int, int]] | None, str | None]:
+    """Every ``.cue``/``.gdi``'s track identities over *roots* (the configured
+    Volumes), and None, or None and what was missed. Blocking: run detached
+    under the stall bound (``walk_tree`` reports every step).
+
+    ``resolve_track`` accepts a track anywhere in the Volumes, so a sheet
+    anywhere in them, in any Library or none, may own a file through a link
+    (Codex PRRT_kwDOQ9nULM64OXPI): ownership is read over the same scope, from
+    the disk, never from a Library's listing. Sheets only, no hashing. Junk and
+    RomM's ``.romm_tmp_*`` staging are skipped as every walk skips them, and a
+    linked folder is not walked into (its target is walked where it is, if in
+    a Volume). Never an empty set for "could not tell": a root that is not a
+    folder, a folder or entry the walk could not see, or a sheet that cannot
+    be read whole makes the answer None, with what was missed.
+    """
+    from utils.path_utils import walk_tree
+
+    tracks: set[tuple[int, int]] = set()
+    missed: list[str] = []
+    walked: list[str] = []
+    for root in roots:
+        progress(root)
+        real = os.path.realpath(root)
+        if any(real == done or real.startswith(done + os.sep) for done in walked):
+            continue
+        walked.append(real)
+        if not os.path.isdir(root):
+            missed.append(f"{root} is not a folder")
+            continue
+        unlisted: list[str] = []
+        for folder, _dirs, files in walk_tree(root, progress, unlisted=unlisted):
+            for name in files:
+                if not name.lower().endswith(SHEET_EXTENSIONS):
+                    continue
+                try:
+                    tracks |= sheet_track_identities(os.path.join(folder, name))
+                except SheetOwnerUnknown as exc:
+                    missed.append(f"{exc} (in {folder})")
+        missed.extend(f"{path} could not be listed" for path in unlisted)
+    if missed:
+        more = len(missed) - 3
+        return None, "; ".join(missed[:3]) + (f"; and {more} more" if more > 0 else "")
+    return tracks, None
+
+
 def _is_track(own: os.stat_result, real: str, track: str) -> bool:
     """Whether *track* (a sheet's spelling) is the file *own* is a stat of.
 
