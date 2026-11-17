@@ -251,6 +251,24 @@ def _single(renames: Mapping[str, str], *, resolve: bool = False) -> tuple[str, 
     return source, output
 
 
+def _converted_from(source: str, output: str) -> bool:
+    """Whether *output*'s check record says it was converted from *source*:
+    what a delete with the output already in place must show before the
+    swap's fallback applies (a retried delete, or a job that placed its
+    output first). Blocking (a database read, two path resolutions). False
+    when it can't be told."""
+    # Imported here: the store imports the job pipeline's helpers.
+    from services.verification_store import verification_store
+
+    try:
+        record = verification_store.get_record_blocking(output)
+    except Exception:
+        logger.warning("romm_swap: could not read the check record of %s", output, exc_info=True)
+        return False
+    recorded = (record or {}).get("source_path")
+    return bool(recorded) and os.path.realpath(recorded) == os.path.realpath(source)
+
+
 def _rom_for(source: str) -> dict | None:
     """RomM's single-file ROM whose file is *source*, or None when the file is
     not a ROM RomM knows on its own. Blocking.
@@ -332,6 +350,10 @@ class RommSwapReferrer(Referrer):
         # RomM can't rename onto a name that is taken.
         placement = staged_placement()
         fallback = hook_running() and (placement is None or output not in placement.staged)
+        if fallback and not _converted_from(source, output):
+            # The "output" was not made from this Source (#389's duplicate
+            # delete keeps another copy): no swap was owed, so none failed.
+            return []
         # The instance the ROM is looked up on, which the swap then keeps to.
         binding = _Binding.now()
         try:

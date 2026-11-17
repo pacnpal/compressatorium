@@ -49,6 +49,7 @@ from services.subprocess_runner import (
     MutationNotStarted,
     ProbeCapacityExceeded,
     ReadCancelled,
+    StorageAbandoned,
     run_detached,
     run_detached_bounded,
     run_detached_mutation,
@@ -179,6 +180,11 @@ class HeldLocks:
         with self._mutex:
             self._paths.append(path)
 
+    def holds(self, path: str) -> bool:
+        """Whether *path*'s lock is still held here (not taken by a hand-off)."""
+        with self._mutex:
+            return path in self._paths
+
     def take(self) -> List[str]:
         """Every lock still held here, now no longer the owner's to release."""
         with self._mutex:
@@ -218,6 +224,15 @@ def _remove_in_order(paths: Iterable[str], removed: List[str]) -> None:
     for path in paths:
         os.remove(path)
         removed.append(path)
+
+
+def _close_opened(opened: object) -> None:
+    """The undo of a keeper open (``JobManager._open_keeper``) delivered after
+    its caller stopped waiting: close the descriptor nobody will use."""
+    fd = opened[0] if isinstance(opened, tuple) and opened else None
+    if isinstance(fd, int):
+        with contextlib.suppress(OSError):
+            os.close(fd)
 
 
 def _let_go(paths: Optional[Iterable[str]]) -> None:
@@ -276,6 +291,9 @@ EXTERNAL_JOB_MODES: Dict[ConversionMode, ExternalMode] = {
     ConversionMode.CHECK: ExternalMode(in_ledger=False, started_by_hand=False),
     # A find-duplicates run (#388) reads and converts nothing; a person starts it.
     ConversionMode.FIND_DUPLICATES: ExternalMode(in_ledger=False),
+    # A duplicate delete (#389): a person confirmed it; each copy's delete goes
+    # through the job's own delete step, so it converts nothing to record.
+    ConversionMode.DELETE_DUPLICATES: ExternalMode(in_ledger=False),
 }
 _EXTERNAL_JOB_MODES = frozenset(EXTERNAL_JOB_MODES)
 
@@ -4301,6 +4319,310 @@ class JobManager:
 
         run.set_delete(delete)
         return None
+
+    # ------------------------------------------------------------------
+    # Deleting duplicate copies (#389)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _copy_snapshot(path: str, identity: Tuple[int, int]) -> Union[Dict[str, object], str]:
+        """*path*'s delete snapshot, or why it may not be deleted. Blocking.
+
+        The shared delete plan and its fingerprints (``build_delete_snapshot``),
+        and the copy's own file must still be the one the Finding showed: its
+        size and mtime (*identity*). Anything else is a reason to refuse.
+        """
+        try:
+            snapshot = build_delete_snapshot(path)
+        except (OSError, ValueError) as exc:
+            return f"it can no longer be planned for deletion: {exc}"
+        own = (snapshot.get("fingerprints") or {}).get(os.path.realpath(path)) or {}
+        if (own.get("size"), own.get("mtime_ns")) != tuple(identity):
+            return "it changed since the Finding was recorded"
+        return snapshot
+
+    async def _copy_snapshot_bounded(
+        self, path: str, identity: Tuple[int, int],
+    ) -> Union[Dict[str, object], str]:
+        try:
+            return await run_detached_bounded(
+                self._copy_snapshot, path, identity, timeout=KEPT_DELETE_PROBE_SECONDS,
+            )
+        except (DeadlineExpired, ReadCancelled):
+            return KEPT_DELETE_UNANSWERED
+
+    @staticmethod
+    def _identity_problem(path: str, identity: Tuple[int, int]) -> Optional[str]:
+        """Why *path* is not the file of *identity* (size, mtime) now. Blocking."""
+        try:
+            st = os.stat(path)
+        except FileNotFoundError:
+            return "is gone"
+        except OSError as exc:
+            return f"could not be read ({exc})"
+        if (st.st_size, st.st_mtime_ns) != tuple(identity):
+            return "changed since the Finding was recorded"
+        return None
+
+    @staticmethod
+    def _open_keeper(path: str) -> Tuple[int, Tuple[int, int, int, int]]:
+        """Open *path* to read, and its ``(device, inode, size, mtime_ns)``
+        through that descriptor. Blocking. The caller closes the descriptor."""
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
+        try:
+            st = os.fstat(fd)
+        except BaseException:
+            os.close(fd)
+            raise
+        return fd, (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
+
+    @staticmethod
+    def _keeper_moved(path: str, fd: int, snapshot: Tuple[int, int, int, int]) -> bool:
+        """Whether *path* no longer names the file *fd* was opened on, as it
+        was then (device, inode, size, mtime). Blocking. Unreadable is moved."""
+        try:
+            held = os.fstat(fd)
+            now = os.stat(path)
+        except OSError:
+            return True
+        for st in (held, now):
+            if (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns) != snapshot:
+                return True
+        return False
+
+    async def _keeper_still_held(
+        self, keeper: str, fd: int, snapshot: Tuple[int, int, int, int],
+        travelling: HeldLocks,
+    ) -> Optional[str]:
+        """Why the batch must stop before its next delete, or None (#389).
+
+        The keeper's lock must still be this batch's (a lingering Referrer
+        operation may have taken it), and its path must still name the file
+        that was hashed (held open as *fd*): same device, inode, size and
+        mtime. That catches a rename swap; an in-place rewrite by a writer
+        with write access to the keeper cannot be caught by any ordering here,
+        since the same writer could corrupt it right after the cleanup.
+        """
+        if not travelling.holds(keeper):
+            return (
+                "the copy to keep's lock went with an unfinished playlist or "
+                "gamelist update; nothing more is deleted"
+            )
+        try:
+            moved = await run_detached_bounded(
+                self._keeper_moved, keeper, fd, snapshot, timeout=KEPT_DELETE_PROBE_SECONDS,
+            )
+        except (DeadlineExpired, ReadCancelled):
+            return "the copy to keep did not answer; nothing more is deleted"
+        if moved:
+            return "the copy to keep was replaced or changed; nothing more is deleted"
+        return None
+
+    async def _keeper_problem(
+        self, keeper: str, keeper_identity: Tuple[int, int], keeper_key: str, fd: int,
+        snapshot: Tuple[int, int, int, int], *, cancel_event: Optional[asyncio.Event] = None,
+    ) -> Optional[str]:
+        """Why *keeper* may not be kept now, or None. Called under its lock (#389).
+
+        Its size and mtime must still be the Finding's (*snapshot*, taken
+        through *fd* when it was opened), and then its content key is computed
+        again from the bytes it holds now (``content_keys.recompute``: an image
+        hashed whole through *fd*, or its tool's full pass), never the stored
+        key, and must be the group's: size and mtime say nothing about bytes
+        written back with them. The path must still name *fd*'s file, unchanged,
+        after that read. Any read that fails, stalls or is cancelled refuses.
+        """
+        from services import content_keys
+
+        if (snapshot[2], snapshot[3]) != tuple(keeper_identity):
+            return "the copy to keep changed since the Finding was recorded"
+        try:
+            key = await content_keys.recompute(keeper, fd=fd, cancel_event=cancel_event)
+        except content_keys.KeyUnavailable as exc:
+            return f"the copy to keep could not be read in full ({exc})"
+        except (ReadCancelled, StorageAbandoned) as exc:
+            return f"the copy to keep could not be read in full ({exc})"
+        if key is None:
+            return "the copy to keep has no content hash that can be read in full"
+        if key != keeper_key:
+            return "the copy to keep no longer holds this disc (its bytes changed)"
+        try:
+            moved = await run_detached_bounded(
+                self._keeper_moved, keeper, fd, snapshot, timeout=KEPT_DELETE_PROBE_SECONDS,
+            )
+        except (DeadlineExpired, ReadCancelled):
+            return "the copy to keep did not answer"
+        if moved:
+            return "the copy to keep changed while it was read"
+        return None
+
+    async def delete_duplicate_copies(
+        self, *, keeper: str, keeper_identity: Tuple[int, int], keeper_key: str,
+        copies: List[Tuple[str, List[str], Tuple[int, int]]],
+        copy_problem: Optional[Callable[[str], Optional[str]]] = None,
+        cancel_event: Optional[asyncio.Event] = None,
+    ) -> Tuple[List[Tuple[str, "KeptDeleteRetry"]], Optional[str]]:
+        """Delete the duplicate copies of a group, keeping *keeper* (#389).
+
+        Each copy is ``(path, the delete paths the user confirmed, the
+        identity the Finding showed)``. The keeper's lock is taken first and
+        held throughout, so nothing in the app writes it while its copies go;
+        it is opened and held open to the end, and must still be the file the
+        Finding showed, holding *keeper_key* by its bytes read now through that
+        descriptor (:meth:`_keeper_problem`). Before each copy, the lock must
+        still be this batch's and the path must still name the held file
+        (:meth:`_keeper_still_held`); any change stops the batch, and what is
+        left stays. Then each copy goes through the job's own delete step
+        (:meth:`_delete_source_set`), as a retried delete does: its delete
+        paths taken exclusively without waiting, its snapshot taken again
+        under them and compared, *copy_problem* asked again under them (a sheet
+        that names it since the plan), the per-path checks, the Referrer hook
+        (a playlist naming the copy is pointed at the keeper), then the unlinks
+        as one mutation.
+
+        *cancel_event* (the delete job's) stops the keeper's read, and keeps
+        every copy not yet started.
+
+        Returns each copy's outcome (:class:`KeptDeleteRetry`; a refusal
+        deletes nothing of that copy) and, when the keeper no longer looked
+        like the file that was hashed once the last delete was done, why.
+        """
+        travelling = HeldLocks()
+        results: List[Tuple[str, KeptDeleteRetry]] = []
+        fd: Optional[int] = None
+        try:
+            refused = await self._take_output(keeper, travelling)
+            snapshot: Tuple[int, int, int, int] = (0, 0, 0, 0)
+            if refused is None:
+                try:
+                    # A descriptor that arrives after the bound gave up is
+                    # closed by the undo, never left open (Codex 4593499336).
+                    fd, snapshot = await run_detached_undoable(
+                        self._open_keeper, keeper, timeout=KEPT_DELETE_PROBE_SECONDS,
+                        undo=_close_opened,
+                    )
+                except (DeadlineExpired, ReadCancelled):
+                    refused = KeptDeleteRetry(KEPT_KEPT, "the copy to keep did not answer")
+                except OSError as exc:
+                    refused = KeptDeleteRetry(
+                        KEPT_STALE, f"the copy to keep could not be opened ({exc.strerror or exc})",
+                    )
+            if refused is None:
+                problem = await self._keeper_problem(
+                    keeper, keeper_identity, keeper_key, fd, snapshot,
+                    cancel_event=cancel_event,
+                )
+                if problem:
+                    refused = KeptDeleteRetry(KEPT_STALE, problem)
+            if refused is not None:
+                return [(path, refused) for path, _paths, _identity in copies], None
+            for path, expected, identity in copies:
+                stop = await self._keeper_still_held(keeper, fd, snapshot, travelling)
+                if stop is None and cancel_event is not None and cancel_event.is_set():
+                    stop = "the delete was cancelled"
+                if stop is None:
+                    outcome = await self._delete_copy(
+                        path, keeper, expected, identity, travelling, copy_problem,
+                    )
+                    results.append((path, outcome))
+                    if outcome.status != KEPT_UNKNOWN:
+                        continue
+                    # An unlink outlived the wait and took the locks with it,
+                    # the keeper's included: no further copy goes without them.
+                    stop = "an earlier delete was still running"
+                for rest_path, _paths, _identity in copies[len(results):]:
+                    results.append((rest_path, KeptDeleteRetry(KEPT_KEPT, stop)))
+                break
+            after = None
+            if results and any(o.status == KEPT_DELETED for _p, o in results):
+                after = await self._keeper_still_held(keeper, fd, snapshot, travelling)
+                if after:
+                    logger.warning(
+                        "duplicate delete: the copy to keep %s changed during the batch: %s",
+                        keeper, after,
+                    )
+            return results, after
+        finally:
+            if fd is not None:
+                held_fd = fd
+                try:
+                    await run_detached_bounded(
+                        os.close, held_fd, timeout=KEPT_DELETE_PROBE_SECONDS,
+                    )
+                except (DeadlineExpired, ReadCancelled, OSError):
+                    logger.warning("duplicate delete: closing %s did not finish", keeper)
+            await self._let_go_in_background(travelling.take())
+
+    async def _delete_copy(
+        self, path: str, keeper: str, expected: List[str], identity: Tuple[int, int],
+        travelling: HeldLocks,
+        copy_problem: Optional[Callable[[str], Optional[str]]] = None,
+    ) -> "KeptDeleteRetry":
+        """One copy of :meth:`delete_duplicate_copies`, under its own holds."""
+        owner_id = f"duplicate-delete:{uuid.uuid4().hex}"
+        try:
+            snapshot = await self._copy_snapshot_bounded(path, identity)
+            if isinstance(snapshot, str):
+                status = KEPT_KEPT if snapshot == KEPT_DELETE_UNANSWERED else KEPT_STALE
+                return KeptDeleteRetry(status, snapshot)
+            paths = list(snapshot["paths"])
+            if sorted(paths) != sorted(expected):
+                return KeptDeleteRetry(KEPT_STALE, "its delete plan changed since it was shown")
+            try:
+                taken = await run_detached_undoable(
+                    self._take_exclusively, paths,
+                    timeout=KEPT_DELETE_PROBE_SECONDS, undo=_let_go,
+                )
+            except DeadlineExpired:
+                return KeptDeleteRetry(KEPT_KEPT, KEPT_DELETE_UNANSWERED)
+            except (LockFailed, OSError) as exc:
+                return KeptDeleteRetry(KEPT_KEPT, str(exc))
+            if taken is None:
+                return KeptDeleteRetry(KEPT_READER, "it is in use by a job")
+            self._delete_holds[owner_id] = list(taken)
+            # Once more under the holds: nothing in the app can change it now.
+            again = await self._copy_snapshot_bounded(path, identity)
+            if isinstance(again, str) or self._norm_fps(again.get("fingerprints")) != (
+                self._norm_fps(snapshot.get("fingerprints"))
+            ):
+                return KeptDeleteRetry(KEPT_STALE, "it changed while it was being deleted")
+            if copy_problem is not None:
+                # Asked again under the holds, right before the delete: a sheet
+                # that names the copy since the plan keeps it (#389).
+                try:
+                    problem = await run_detached_bounded(
+                        copy_problem, path, timeout=KEPT_DELETE_PROBE_SECONDS,
+                    )
+                except (DeadlineExpired, ReadCancelled):
+                    return KeptDeleteRetry(KEPT_KEPT, KEPT_DELETE_UNANSWERED)
+                if problem:
+                    return KeptDeleteRetry(KEPT_STALE, problem)
+            deleted: List[str] = []
+            planned: List[str] = []
+            handed_off: List[bool] = []
+            try:
+                removal = await self._delete_source_set(
+                    owner_id, file_path=path, output_path=keeper, expected_paths=paths,
+                    fingerprints=snapshot.get("fingerprints") or {}, check_label="kept",
+                    cancel_event=asyncio.Event(), cancelled=lambda: False,
+                    deleted=deleted, probe_seconds=KEPT_DELETE_PROBE_SECONDS,
+                    travelling_locks=travelling, planned=planned, handed_off=handed_off,
+                )
+            except MutationInFlight as exc:
+                rest = unfinished_delete(planned, deleted, in_flight=True)
+                return KeptDeleteRetry(
+                    KEPT_UNKNOWN, str(exc), tuple(deleted), tuple(rest or planned),
+                )
+            except (RuntimeError, OSError) as exc:
+                rest = unfinished_delete(planned, deleted)
+                if rest:
+                    return KeptDeleteRetry(KEPT_STARTED, str(exc), tuple(deleted), tuple(rest))
+                return KeptDeleteRetry(KEPT_KEPT, str(exc), tuple(deleted))
+            if removal.kept_reason:
+                return KeptDeleteRetry(KEPT_KEPT, removal.kept_reason)
+            return KeptDeleteRetry(KEPT_DELETED, None, tuple(deleted))
+        finally:
+            await self._let_go_in_background(self._delete_holds.pop(owner_id, []))
 
     def _finish_problem(
         self, source_path: str, output_path: str, meta: dict, recorded_source: str,

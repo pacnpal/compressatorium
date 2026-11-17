@@ -9,14 +9,15 @@
    * "not Intact" row for an Image that failed its check, in any Library.
    * A Library's find-duplicates run (#388) adds one "Duplicate" row per group
    * of Images holding the same disc, with each copy's path, container and
-   * size, and says which formats it could not check. Read-only: deleting a
-   * copy is left to the file browser.
+   * size, and says which formats it could not check. Delete others (#389)
+   * deletes the other copies of a group whose key proves them equal, as a
+   * background job, after the user confirms its plan.
    * Dismiss hides a row until its cause changes. The app never moves or
    * deletes an Image over a Finding.
    */
   import { untrack } from 'svelte';
   import { toast } from 'svelte-sonner';
-  import { findings, findingName } from '$lib/stores/findings.svelte.js';
+  import { findings, findingName, keeperWarning } from '$lib/stores/findings.svelte.js';
   import { fileBrowser } from '$lib/stores/fileBrowser.svelte.js';
   import { libraries } from '$lib/stores/libraries.svelte.js';
   import { jobs } from '$lib/stores/jobs.svelte.js';
@@ -31,6 +32,8 @@
   import EyeOff from '@lucide/svelte/icons/eye-off';
   import Eye from '@lucide/svelte/icons/eye';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
+  import Trash2 from '@lucide/svelte/icons/trash-2';
+  import DuplicateDeleteModal from '$lib/components/modals/DuplicateDeleteModal.svelte';
 
   const KIND_LABEL = {
     platform_conflict: 'Platform conflict',
@@ -84,6 +87,28 @@
     untrack(() => findings.noteFinishedRuns(ids));
   });
 
+  // A duplicate delete this page started (#389) runs as a job: when the jobs
+  // store sees it end, its dialog settles, the list is read again, and a
+  // toast says what went.
+  const finishedDeletes = $derived(
+    jobs.jobs.filter(
+      (j) => j.mode === 'delete_duplicates' && TERMINAL_STATUSES.has(j.status)
+        && findings.runningDeletes.includes(j.id),
+    ),
+  );
+
+  $effect(() => {
+    const ended = finishedDeletes;
+    if (!ended.length) return;
+    untrack(() => {
+      for (const { job, result } of findings.noteFinishedDeletes(ended)) {
+        if (job.status === 'completed') cleaned(result);
+        else if (job.status === 'cancelled') toast.warning(job.message || 'The delete was cancelled');
+        else toast.error(job.error_message || 'The delete did not finish');
+      }
+    });
+  });
+
   // Whether any folder Library exists, for the empty state.
   $effect(() => {
     untrack(() => {
@@ -122,6 +147,24 @@
       }
     } catch (e) {
       toast.error(e?.message ?? 'Could not check the Libraries');
+    }
+  }
+
+  // A duplicate delete finished (#389): say what went and what was kept.
+  function cleaned(result) {
+    const results = result?.results ?? [];
+    const gone = results.filter((r) => r.status === 'deleted').length;
+    const kept = results.filter((r) => r.status !== 'deleted');
+    if (result?.keeper_changed) {
+      // Not a plain success: the copy kept changed during the delete.
+      toast.warning(keeperWarning(result.keep), {
+        description: `Deleted ${gone} cop${gone === 1 ? 'y' : 'ies'}. ${result.keeper_changed}.`,
+      });
+    } else if (gone) toast.success(`Deleted ${gone} cop${gone === 1 ? 'y' : 'ies'}`);
+    if (kept.length) {
+      toast.warning(`${kept.length} cop${kept.length === 1 ? 'y was' : 'ies were'} kept`, {
+        description: kept.map((r) => `${r.path.split(/[/\\]/).pop()}: ${r.reason ?? r.status}`).join('; '),
+      });
     }
   }
 
@@ -224,9 +267,22 @@
                   <li>
                     <code>{copy.path}</code>
                     <span class="muted small">{copy.container} · {bytes(copy.size)}</span>
+                    {#if copy.path === row.keeper}
+                      <Badge tone="success">Keep</Badge>
+                    {/if}
                   </li>
                 {/each}
               </ul>
+              {#if row.keeper_reason}
+                <span class="muted small">Suggested keeper: {row.keeper_reason}.</span>
+              {/if}
+              {#if row.deletable && row.keeper_problem}
+                <!-- Not yet proven to decode to the disc (#389): what to do first. -->
+                <span class="muted small">Before deleting: {row.keeper_problem}.</span>
+              {/if}
+              {#if !row.deletable && row.not_deletable}
+                <span class="muted small">No delete offered: {row.not_deletable}.</span>
+              {/if}
             {:else}
               <code>{row.image_key}</code>
               <span class="muted reason">{row.reason}</span>
@@ -260,6 +316,15 @@
                 Set Platform
               </Button>
             {/if}
+            {#if row.kind === 'duplicate' && row.deletable && row.keeper}
+              <Button
+                variant="ghost" size="sm" icon={deleteIcon}
+                ariaLabel={`Delete the other copies of ${findingName(row)}`}
+                onclick={() => findings.openCleanup(row)}
+              >
+                Delete others…
+              </Button>
+            {/if}
             {#if row.dismissed}
               <Button
                 variant="ghost" size="sm" icon={showIcon}
@@ -284,7 +349,10 @@
   {/if}
 </div>
 
+<DuplicateDeleteModal />
+
 {#snippet refreshIcon()}<RefreshCw size={14} />{/snippet}
+{#snippet deleteIcon()}<Trash2 size={14} />{/snippet}
 {#snippet openIcon()}<FolderOpen size={14} />{/snippet}
 {#snippet mapIcon()}<FolderPen size={14} />{/snippet}
 {#snippet dismissIcon()}<EyeOff size={14} />{/snippet}

@@ -131,3 +131,40 @@ def test_image_fingerprint_covers_the_tracks(tmp_path: Path) -> None:
         fh.write(b"\0" * 64)
 
     assert image_fingerprint(files["multi_cue"]) != before
+
+
+def test_a_sheet_with_a_refused_reference_still_owns_the_tracks_it_names(tmp_path: Path) -> None:
+    """Codex PRRT_kwDOQ9nULM64MWFq: one reference the sheet may not use (it
+    leaves the sheet's folder) makes its track set unknown, never empty. The
+    tracks it names that do resolve stay its own, so none is listed (and so
+    converted or deleted) as an Image of its own."""
+    disc = tmp_path / "Disc"
+    cue = _write(
+        disc / "Disc.cue",
+        'FILE "Track 1.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n'
+        'FILE "../Audio.bin" BINARY\n  TRACK 02 AUDIO\n    INDEX 01 00:00:00\n',
+    )
+    track = _write(disc / "Track 1.bin")
+
+    assert group_images([cue, track]) == [cue]
+    assert track in image_members(cue)
+
+
+
+def test_a_sheet_that_cannot_be_read_names_no_track_set(tmp_path: Path) -> None:
+    """Codex PRRT_kwDOQ9nULM64N2yy: "could not tell" is never an empty list.
+    An oversized sheet gives None from the track helper, and its identities
+    are unknown, never an empty set."""
+    import pytest as _pytest
+    from services import image_sets
+    from utils.sheet_text import MAX_SHEET_BYTES
+
+    cue = _write(
+        tmp_path / "Disc" / "Disc.cue",
+        'FILE "Track 1.bin" BINARY\n' + "REM x\n" * (MAX_SHEET_BYTES // 6 + 1),
+    )
+    _write(tmp_path / "Disc" / "Track 1.bin")
+
+    assert image_sets._named_tracks(cue) is None
+    with _pytest.raises(image_sets.SheetOwnerUnknown):
+        image_sets.sheet_track_identities(cue)

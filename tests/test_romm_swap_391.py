@@ -813,6 +813,31 @@ async def test_a_job_that_placed_its_output_first_says_the_rom_did_not_keep_its_
 
 
 @pytest.mark.asyncio
+async def test_a_duplicate_delete_is_not_a_failed_swap(vol, romm):
+    """#389's duplicate delete runs the same delete step, the copy kept as
+    its "output". That copy was not converted from the one deleted, so the
+    swap stays out of it: no fallback note, no re-pin queued."""
+    from services import db as db_module
+    from services import referrers
+    from services.romm.library import romm_library
+
+    platform = _platform(vol)
+    keeper = platform / "Game.chd"
+    keeper.write_bytes(OUTPUT_BYTES)  # another copy, not converted from it
+    source = str(platform / "Game.iso")
+
+    outcome = await referrers.update_before_source_removal(
+        source, {source: str(keeper)}, library=romm_library,
+    )
+
+    assert outcome.ok, outcome
+    assert outcome.notes == []
+    assert not [r for r in outcome.records if r["referrer"] == "romm_swap"]
+    with db_module.SessionLocal() as session:
+        assert session.query(db_module.RommRepin).count() == 0
+
+
+@pytest.mark.asyncio
 async def test_a_delete_check_that_fails_before_the_hook_keeps_the_output(
     vol, romm, monkeypatch,
 ):

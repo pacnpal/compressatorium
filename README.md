@@ -997,8 +997,44 @@ one disc.
   and size. It goes away once only one copy is left (at the next listing or
   run).
 
-Finding duplicates never deletes anything: open the folder to remove a copy
-yourself.
+Finding duplicates deletes nothing by itself. To clean a group up:
+
+- Each group names a **suggested keeper**, with the reason: an **Intact** copy
+  first (one whose check passed since it last changed), then one whose content
+  hash was read from the whole file, then a **Recognized** one (a DAT or
+  Hasheous names it), then the **smallest**. A copy that failed its check is
+  never kept.
+- The copy kept must be proven to hold the disc. A CHD's hash comes from its
+  header, so a CHD is kept only once its check has passed; until then the
+  Findings view says to check it first.
+- **Delete others…** opens the confirmation list: every file each other copy's
+  delete would remove (a `.cue`'s tracks, a split set's parts) and any playlist
+  that would be pointed at the copy kept. You can pick another copy to keep.
+  Nothing is deleted until you confirm.
+- A delete is offered only when every copy is proven to hold the same disc
+  (equal content hashes), and not for a group the last run could not fully
+  see. A track that any `.cue`/`.gdi` in your Volumes lists, beside it, in a
+  folder above it, or elsewhere through a link, is never deleted on its own.
+  When a sheet can't be read, or a folder in the Volumes can't be listed, no
+  delete is offered; run Find duplicates again once it can. The same goes
+  after the Volumes change.
+- Confirming starts a **Delete duplicates** job: the dialog shows its
+  progress, and you can close it and follow the job in the jobs list (or
+  cancel it there). The job reads the sheets in your Volumes again, so a
+  sheet added since the run still keeps its tracks, then checks every copy
+  and the copy kept again against what the Finding showed: one that is gone,
+  changed or unreadable stops the delete. The copy kept is then read in full
+  (a CHD through `chdman verify`) and must still hold the same disc, or
+  nothing is deleted. Each copy then goes through the same delete step, locks
+  and checks as a conversion's delete-on-verify, and must still be the very
+  file whose content was hashed (another file moved into its place is kept,
+  even with the same size and date); a copy a job is using is kept, and the
+  rest still go.
+- Afterwards the group lists what is left, or goes away once one copy is.
+
+| Light | Dark |
+|-------|------|
+| ![Deleting the other copies of a group, light](docs/screenshots/findings-duplicate-delete-light.png) | ![Deleting the other copies of a group, dark](docs/screenshots/findings-duplicate-delete-dark.png) |
 
 | Light | Dark |
 |-------|------|

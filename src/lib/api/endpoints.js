@@ -827,6 +827,25 @@ export const api = {
   checkFindings: () =>
     jsonPost(`${API_BASE}/findings/check`, {}, {}, 'Failed to check the Libraries'),
 
+  // A duplicate group's delete (#389): first the plan (the confirmation
+  // list), then the delete of exactly what it listed, with the confirmation
+  // header, which answers `{ job_id }`: the delete runs as a background job.
+  // The Finding's fingerprint goes with both: a group that changed since it
+  // was shown answers 409.
+  duplicateDeletePlan: (id, fingerprint, keep) =>
+    jsonPost(
+      `${API_BASE}/findings/${encodeURIComponent(id)}/delete-plan`, { fingerprint, keep }, {},
+      'Could not plan the delete',
+    ),
+
+  deleteDuplicates: (id, fingerprint, keep, deletePaths) =>
+    jsonPost(
+      `${API_BASE}/findings/${encodeURIComponent(id)}/delete`,
+      { fingerprint, keep, delete_paths: deletePaths },
+      { headers: { 'X-CHD-Action-Confirm': CONFIRM.DELETE_FILE } },
+      'Could not delete the copies',
+    ),
+
   listPlatforms: () =>
     fetchJson(`${API_BASE}/platforms`, undefined, 'Failed to list the Platforms'),
 
