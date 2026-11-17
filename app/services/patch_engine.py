@@ -27,6 +27,10 @@ class PatchError(ValueError):
     """The patch is damaged, of an unknown kind, or doesn't fit the source."""
 
 
+# A cartridge ROM is never this big; the same ceiling the bench reads Images under.
+MAX_TARGET_BYTES = 1024 * 1024 * 1024
+
+
 def patch_format(patch: bytes) -> str | None:
     """``"ips"`` or ``"bps"`` by the patch's own magic, else None."""
     if patch.startswith(BPS_MAGIC):
@@ -123,6 +127,11 @@ def apply_bps(source: bytes, patch: bytes) -> bytes:
         raise PatchError(
             f"This BPS patch is for another ROM: it expects CRC32 {want_source:08x}, "
             f"this one is {_crc(source):08x}",
+        )
+    if target_size > MAX_TARGET_BYTES:
+        raise PatchError(
+            f"This BPS patch makes a {target_size}-byte ROM, over the "
+            f"{MAX_TARGET_BYTES}-byte limit",
         )
     target = bytearray(target_size)
     out = source_rel = target_rel = 0

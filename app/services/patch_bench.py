@@ -59,7 +59,7 @@ PATCH_EXTENSIONS = (".ips", ".bps")
 _ARCHIVES = (".zip", ".7z")
 # ponytail: the Image is read whole; 1 GiB covers every cartridge. Stream it
 # if a bigger one ever needs patching.
-MAX_IMAGE_BYTES = 1024 * 1024 * 1024
+MAX_IMAGE_BYTES = patch_engine.MAX_TARGET_BYTES
 
 _tasks: set[asyncio.Task] = set()
 
@@ -196,11 +196,14 @@ def _publish(packed: str, folder: str, stem: str, first: str) -> str:
             name = _free_name(folder, stem)
             continue
         except OSError:
-            # A filesystem without hard links: checked, then renamed.
-            if os.path.lexists(final):
+            # A filesystem without hard links: claim the name with an exclusive
+            # create, so a concurrent job can't take it, then move onto our claim.
+            try:
+                os.close(os.open(final, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644))
+            except FileExistsError:
                 name = _free_name(folder, stem)
                 continue
-            os.rename(packed, final)
+            os.replace(packed, final)
             return final
         os.unlink(packed)
         return final

@@ -265,3 +265,24 @@ async def test_a_patch_outside_the_volumes_is_refused(db: Path, client, tmp_path
         json={"image_path": str(rom), "patch_path": _ips_patch(tmp_path / "elsewhere.ips")},
     )
     assert response.status_code == 404
+
+
+def test_publish_without_hard_links_never_replaces_a_taken_name(tmp_path, monkeypatch) -> None:
+    """With no hard links, a name another job claimed first is skipped, not replaced."""
+    import os
+
+    from services import patch_bench
+
+    def no_links(*_a, **_k):
+        raise OSError("hard links not supported")
+
+    monkeypatch.setattr(os, "link", no_links)
+    taken = tmp_path / "Game (Patched).7z"
+    taken.write_bytes(b"first job")
+    packed = tmp_path / ".partial"
+    packed.write_bytes(b"second job")
+    final = patch_bench._publish(str(packed), str(tmp_path), "Game", "Game (Patched)")
+    assert final != str(taken)
+    assert taken.read_bytes() == b"first job"
+    assert Path(final).read_bytes() == b"second job"
+    assert not packed.exists()

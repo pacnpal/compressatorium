@@ -165,3 +165,16 @@ def test_bps_reads_outside_bounds_are_refused() -> None:
         apply_bps(b"abc", _bps(b"abc", b"ab", _action(3, 2, _delta(0))))
     with pytest.raises(PatchError, match="before its target is complete"):
         apply_bps(b"abc", _bps(b"abc", b"abcd", _action(0, 3)))
+
+
+def test_bps_target_over_the_limit_is_refused_before_allocating() -> None:
+    """A tiny patch can declare a huge target; refuse it before the bytearray."""
+    import services.patch_engine as engine
+
+    source = b"\x00"
+    body = (
+        b"BPS1" + _varint(len(source)) + _varint(engine.MAX_TARGET_BYTES + 1)
+        + _varint(0) + _crc(source) + _crc(b"")
+    )
+    with pytest.raises(PatchError, match="limit"):
+        apply_bps(source, body + _crc(body))
