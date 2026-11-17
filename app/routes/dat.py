@@ -203,6 +203,37 @@ async def list_dats():
     return await run_in_threadpool(dat_store.list_dats)
 
 
+class DatRankingRequest(BaseModel):
+    #: DAT ids, first wins. A DAT left out is unranked (its family default).
+    order: list[str]
+
+
+# Declared before /dat/{dat_id} so DELETE /dat/ranking is not read as a DAT id.
+@router.get("/dat/ranking")
+async def get_dat_ranking():
+    """The imported DATs in ranked order, and whether the user set it (#424)."""
+    return await run_in_threadpool(dat_store.get_ranking)
+
+
+@router.put("/dat/ranking")
+async def put_dat_ranking(request: DatRankingRequest):
+    """Save the user's DAT order. An unknown or repeated id saves nothing (400).
+
+    Matches are ranked when read, so the new order shows on the next lookup
+    without re-hashing a file.
+    """
+    try:
+        return await dat_store.set_ranking(request.order)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+
+
+@router.delete("/dat/ranking")
+async def delete_dat_ranking():
+    """Forget the user's order: Redump first for discs, No-Intro for cartridges."""
+    return await dat_store.reset_ranking()
+
+
 @router.delete("/dat/{dat_id}")
 async def delete_dat(dat_id: str):
     """Delete an imported DAT."""
@@ -1296,18 +1327,28 @@ def matching_available(has_dats: bool) -> bool:
 
 
 async def _local_dat_record(sha1: str) -> dict | None:
-    """Look ``sha1`` up in the imported DATs; ``None`` when absent."""
+    """Look ``sha1`` up in the imported DATs; ``None`` when absent.
+
+    Carries every DAT's match (``matches``); :func:`_local_lookup_match` ranks
+    them for the file once the result is built.
+    """
     record = await run_in_threadpool(dat_store.lookup_sha1, sha1)
     if not record:
         return None
-    dat_name = await run_in_threadpool(dat_store.get_dat_name, record.get("dat_id", ""))
-    return {
+    dat_name = record.get("dat_name") or await run_in_threadpool(
+        dat_store.get_dat_name, record.get("dat_id", ""),
+    )
+    local = {
         "dat_id": record.get("dat_id"),
         "dat_name": dat_name,
+        "family": record.get("family"),
         "game_name": record.get("game_name"),
         "rom_name": record.get("rom_name"),
         "source": "dat",
     }
+    if record.get("matches"):
+        local["matches"] = record["matches"]
+    return local
 
 
 def _match_result(file_path: str, sha1: str, match_type: str, record: dict) -> dict:
@@ -1379,7 +1420,13 @@ async def _local_lookup_match(
     for sha1, match_type in candidates:
         record = await _local_dat_record(sha1)
         if record is not None:
-            return _match_result(file_path, sha1, match_type, record)
+            # Which of the DATs that know this hash names the file: the top-
+            # ranked one, or a conflict (services.dat_ranking).
+            return await run_in_threadpool(
+                dat_store.with_current_ranking,
+                _match_result(file_path, sha1, match_type, record),
+                file_path,
+            )
     return None
 
 

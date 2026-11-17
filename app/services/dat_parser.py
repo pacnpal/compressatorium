@@ -14,6 +14,9 @@ logger = get_logger("dat_parser")
 
 _SHA1_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 _MD5_RE = re.compile(r"^[0-9a-fA-F]{32}$")
+# Header texts kept beside name/description. homepage, url and author are what
+# tell a No-Intro set from a Redump one (services.dat_ranking.dat_family).
+_HEADER_TEXT = ("version", "homepage", "url", "author")
 
 
 def parse_dat(source: str) -> tuple[dict, list[dict]]:
@@ -28,7 +31,7 @@ def parse_dat(source: str) -> tuple[dict, list[dict]]:
 
     Returns:
         (header_info, entries) where header_info has name/description/version
-        and entries is a list of dicts with game_name, rom_name, size, sha1, md5.
+        (and homepage/url/author when the header carries them) and entries is a list of dicts with game_name, rom_name, size, sha1, md5.
     """
     header: dict = {}
     entries: list[dict] = []
@@ -53,8 +56,8 @@ def parse_dat(source: str) -> tuple[dict, list[dict]]:
                         header["name"] = child.text.strip()
                     elif child_tag == "description" and child.text:
                         header["description"] = child.text.strip()
-                    elif child_tag == "version" and child.text:
-                        header["version"] = child.text.strip()
+                    elif child_tag in _HEADER_TEXT and child.text:
+                        header[child_tag] = child.text.strip()
                 elem.clear()
 
             elif tag in ("game", "machine", "software"):

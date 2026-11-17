@@ -35,6 +35,8 @@ class DATMatchingStore {
   dats = $state([]);
   datsLoading = $state(false);
   datsError = $state(null);
+  /** True once the user has saved a DAT order (false: family defaults apply). */
+  datsRankingCustom = $state(false);
   stats = $state(null);
 
   // Paths we've already kicked a match-job for, mapped to WHEN. The backend
@@ -263,11 +265,10 @@ class DATMatchingStore {
     this.datsLoading = true;
     this.datsError = null;
     try {
-      // /api/dat/list returns a bare array of DAT records
-      // (app/services/dat_store.py:list_dats), not an envelope. Each
-      // record: { id, name, description, version, imported_at, file_count }.
-      const data = await api.listDATs();
-      this.dats = Array.isArray(data) ? data : (Array.isArray(data?.dats) ? data.dats : []);
+      // /api/dat/ranking (app/services/dat_store.py:get_ranking) lists every
+      // DAT in ranked order: { custom, dats: [{ id, name, description,
+      // version, imported_at, file_count, family, rank }] }.
+      this._applyRanking(await api.getDATRanking());
       await this.refreshMatchingAvailability();
     } catch (e) {
       this.datsError = e?.message ?? 'Failed to load DATs';
@@ -570,6 +571,25 @@ class DATMatchingStore {
       }
     }
     return response;
+  }
+
+  _applyRanking(data) {
+    this.dats = Array.isArray(data?.dats) ? data.dats : [];
+    this.datsRankingCustom = Boolean(data?.custom);
+  }
+
+  /**
+   * Save a DAT order (ids, first wins) or, with `null`, go back to the family
+   * defaults. The backend ranks matches when it serves them, so the cached
+   * badges here may now name a different DAT: drop them, as deleteDAT does.
+   */
+  async setDATRanking(order) {
+    const data = order === null ? await api.resetDATRanking() : await api.setDATRanking(order);
+    this._applyRanking(data);
+    this._generation += 1;
+    this.matches.clear();
+    this._resetAttempts();
+    return data;
   }
 
   async deleteDAT(datId) {

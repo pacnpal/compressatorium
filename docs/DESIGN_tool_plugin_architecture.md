@@ -1814,6 +1814,64 @@ a misconfigured or hostile server bounce a lookup to `http://` and put the file'
 SHA1 on the wire in the clear. Extra fields ride in the existing
 `dat_matches.payload` JSON column, so no migration is involved.
 
+### 3.3.5.2 Every DAT's match, DAT families and the ranking (`services/dat_ranking.py`, #424)
+
+**The store keeps every match.** `dat_hashes` is unique on
+`(hash, hash_type, dat_id)` (migration 0022), so a hash two DATs know keeps
+both rows; it used to be `(hash, hash_type)`, and the later import overwrote
+the earlier one. Both import paths (`/dat/import` and the MAMERedump sync's
+staged `persist()`) go through one `DATStore._insert_dat`. `lookup_sha1` /
+`lookup_md5` return every DAT's record under `matches` (each with `dat_id`,
+`dat_name`, `family`, `game_name`, `rom_name`), and `_local_dat_record` carries
+them into the match result, so the cached `dat_matches.payload` stores the
+facts, not a verdict.
+
+**Families.** Each DAT has a `family`: Redump, No-Intro, TOSEC, MAME or other.
+`dat_ranking.dat_family()` reads it at import from the header's name,
+description, homepage, url and author (a No-Intro and a Redump DAT share the
+"Company - System" name shape, so the name alone often can't tell). A Hasheous
+hit gets the family of its `signatureSource` from the same function. A DAT
+imported before 0022 kept only its name and description, so the migration
+reads its family from those.
+
+**The ranking** is one ordered list of DATs, stored as the nullable `dats.rank`
+(0 first). A DAT the user hasn't placed sorts after every placed one, by its
+family's place in `DEFAULT_FAMILY_ORDER`, which has separate orders for disc
+and cartridge Images: Redump first for discs, No-Intro first for cartridges.
+Whether an Image is a disc is `dat_ranking.image_kind(path)`, which asks
+`registry.disc_extensions()`; there is no list of its own. A DAT imported under
+the same name and family as a ranked one takes its rank, which is what keeps
+the user's order across the MAMERedump sync (it replaces every DAT with a new
+id). `GET/PUT/DELETE /dat/ranking` read, save and forget the order; a `PUT`
+naming an unknown or repeated id is refused (400) and saves nothing.
+
+**The verdict is computed when a match is read**, not stored.
+`dat_ranking.apply_ranking()` orders a payload's `matches` by the current
+ranking and sets the top-level `dat_id` / `dat_name` / `family` /
+`game_name` / `rom_name` to the winner. `DATStore.get_match` and
+`get_matches_batch` apply it to every cached row, and `_local_lookup_match` to
+every fresh hit (`DATStore.with_current_ranking`), so a new order shows on the
+next lookup without re-hashing anything. A payload with no `matches` (a miss,
+a Hasheous hit, a row cached before #424) passes through unchanged, and
+local-first is untouched: Hasheous is still asked only when no local DAT
+knows any candidate hash.
+
+**Conflicts.** When the best rank is shared by matches that give different
+game names, nothing names the Image. The payload keeps `matched: true` and
+shows the first tied match in the top-level fields (an existing badge still
+reads something), and adds `conflict`, the list of every disagreeing match.
+Equal ranks that agree on the name are not a conflict.
+
+**The shared answer: `DATStore.ranked_match_for_image(path) -> RankedMatch`.**
+This is the one function a caller asks "what is this Image called?" (rename to
+DAT name, the Inbox, the RomM view). It reads the match the app already has
+for the path, applies the current ranking and never hashes. `top` is the
+record that names the Image, or `None` when there is no match or there is a
+conflict; `conflict` lists the disagreeing matches (each with its DAT's id and
+name); `matches` lists every match, best first. Code that acts on a name must
+use this, never the payload's top-level fields, which are only a display
+choice on a conflict. Blocking, so call it off the event loop.
+
 ### 3.3.6 Re-run fast path (`JobManager._output_already_verified`)
 
 `_process_job` recognizes a prior success before it re-spawns the converter: a

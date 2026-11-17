@@ -52,6 +52,7 @@ from services.hasheous.transport import (  # noqa: F401
 )
 
 from config import settings
+from services.dat_ranking import dat_family
 
 __all__ = [
     "HasheousUnavailable",
@@ -347,6 +348,8 @@ def _normalize(data: dict) -> dict:
         # No-Intro, TOSEC, MAMERedump, ...). Shown where a local match shows
         # its DAT name.
         "dat_name": _text(rom.get("signatureSource")) or "Hasheous",
+        # The DAT family that source belongs to, as for a local DAT (#424).
+        "family": dat_family(_text(rom.get("signatureSource"))),
         "game_name": _text(data.get("name")) or _text(game.get("name")),
         "rom_name": _text(rom.get("name")),
         "source": "hasheous",
