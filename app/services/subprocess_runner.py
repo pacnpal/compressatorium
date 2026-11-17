@@ -811,6 +811,26 @@ class NoThreadAvailable(RuntimeError):
     never ran."""
 
 
+async def run_detached_to_end(func: Callable, *args: object) -> object:
+    """A step that changes something, run to its end and never abandoned.
+
+    On a detached thread, or one of its own when none is free
+    (:func:`start_detached_or_own_thread`: the step always starts), in the
+    caller's context. A cancel waits for the step to finish before it
+    propagates, every further cancel too, so what the step did is known
+    before anything acts on the cancel (the RomM swap's moves, #391; an Image
+    rename's moves, #425). *func* should record its own outcome on its thread
+    (a flag, a journal row)."""
+    future = start_detached_or_own_thread(contextvars.copy_context().run, func, *args)
+    try:
+        return await asyncio.shield(future)
+    except asyncio.CancelledError:
+        while not future.done():
+            with contextlib.suppress(asyncio.CancelledError):
+                await asyncio.wait({future})
+        raise
+
+
 # How long :func:`start_detached_eventually` waits between attempts while no
 # thread can start at all.
 NO_THREAD_RETRY_SECONDS = 1.0

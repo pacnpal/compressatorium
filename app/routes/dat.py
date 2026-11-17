@@ -13,7 +13,7 @@ from pydantic import BaseModel
 
 from config import settings
 from models import ConversionMode
-from services import hasheous
+from services import dat_rename, hasheous
 from services.dat_ranking import record_of
 from services.dat_store import CANDIDATE_HASHES_KEY, dat_store
 from services.file_hasher import compute_file_sha1
@@ -224,15 +224,21 @@ async def put_dat_ranking(request: DatRankingRequest):
     without re-hashing a file.
     """
     try:
-        return await dat_store.set_ranking(request.order)
+        ranking = await dat_store.set_ranking(request.order)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
+    # A rename conflict the new order resolves clears (#425), bounded.
+    await dat_rename.settle_conflicts_bounded()
+    return ranking
 
 
 @router.delete("/dat/ranking")
 async def delete_dat_ranking():
     """Forget the user's order: Redump first for discs, No-Intro for cartridges."""
-    return await dat_store.reset_ranking()
+    ranking = await dat_store.reset_ranking()
+    # A rename conflict the new order resolves clears (#425), bounded.
+    await dat_rename.settle_conflicts_bounded()
+    return ranking
 
 
 @router.delete("/dat/{dat_id}")

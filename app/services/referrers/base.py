@@ -40,6 +40,14 @@ onto the output's name before the output is there). The job then keeps the
 output staged and hands the hook a :class:`StagedPlacement`, which applies
 read with ``staged_placement()``. An apply may return :class:`Applied` naming
 Source files it removed itself.
+
+An Image rename (#425) runs the same hook with a :class:`StagedPlacement`
+whose ``rename`` is set: each new name's "staged" file is the Image's own file,
+still under its old name, and placing it is the rename. File Referrers treat
+it like any staged output; a Referrer that renames the file itself (RomM,
+whose ROM rename moves it) checks ``rename``. Planning for the rename preview
+sees the same placement (``planning``). ``rename_refused`` lets an opt-in
+Referrer that is off say why an Image must not be renamed without it.
 """
 
 from __future__ import annotations
@@ -154,6 +162,11 @@ class StagedPlacement:
     source_fingerprints: Mapping[str, Mapping[str, int]] = field(
         default_factory=dict, compare=False,
     )
+    # An Image renamed in place (#425), not a conversion: ``staged`` maps each
+    # new name to the Image's file still under its old name, ``place`` renames
+    # them all, and nothing is deleted. A Referrer that renames the file
+    # itself (RomM) leaves ``is_placed`` true; the caller places what is left.
+    rename: bool = False
 
 
 class Phase(IntEnum):
@@ -239,6 +252,59 @@ class Referrer(ABC):
         the hook runs (#391). Cheap: no I/O. False unless a Referrer says so."""
         return False
 
+    def rename_refused(self, library) -> str | None:
+        """Why an Image in *library* must not be renamed while this opt-in
+        Referrer is off there, or None (#425). The registry asks it only of
+        an opt-in Referrer the Library has off. Reads settings in memory."""
+        return None
+
+
+class WriteJournal:
+    """Every Referrer file the hook rewrote, with its bytes before and after
+    (#425): what an Image rename puts back when it doesn't go ahead.
+
+    Kept apart from the hook's outcome on purpose: a phase the hook stops
+    waiting for (a Cancel, its bound) returns no records, but its worker may
+    already have written, and goes on recording here until it ends (Codex
+    4602538922). Its writes are refused from the moment it is abandoned
+    (``check_write``), so once every worker has ended (:meth:`wait_idle`)
+    the journal is complete. Restoring writes back exactly the bytes that
+    were there, never a re-plan, so an entry the rename didn't change is never
+    touched (Codex 4602560232). Thread-safe.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._entries: list[tuple[str, bytes, bytes]] = []
+        self._running = 0
+        self._idle = threading.Event()
+        self._idle.set()
+
+    def record(self, path: str, before: bytes, after: bytes) -> None:
+        with self._lock:
+            self._entries.append((path, before, after))
+
+    def worker_started(self) -> None:
+        with self._lock:
+            self._running += 1
+            self._idle.clear()
+
+    def worker_ended(self) -> None:
+        with self._lock:
+            self._running -= 1
+            if self._running <= 0:
+                self._idle.set()
+
+    def wait_idle(self, timeout: float) -> bool:
+        """Block until no worker that records here is running, up to
+        *timeout* seconds; whether none is."""
+        return self._idle.wait(timeout)
+
+    def written(self) -> list[tuple[str, bytes, bytes]]:
+        """``(path, before, after)`` for each write, in the order written."""
+        with self._lock:
+            return list(self._entries)
+
 
 @dataclass
 class WriteGuard:
@@ -258,6 +324,9 @@ class WriteGuard:
     # hidden for a Referrer that places them (#391). ``outputs`` then holds
     # their staged paths.
     placement: StagedPlacement | None = None
+    # Where each file a Referrer rewrites is recorded, for a caller that may
+    # put it back (an Image rename, #425). None: nothing is recorded.
+    journal: WriteJournal | None = None
 
     def check(self, target: str) -> None:
         if self.abandoned.is_set():
@@ -302,11 +371,29 @@ def hook_running() -> bool:
     return _guard.get() is not None
 
 
+# The placement a plan made outside the hook is for (the rename preview, #425).
+_planning: contextvars.ContextVar[StagedPlacement | None] = contextvars.ContextVar(
+    "referrer_planning_placement", default=None,
+)
+
+
+@contextmanager
+def planning(placement: StagedPlacement | None):
+    """Plan, outside the hook, for *placement* (an Image rename's preview,
+    #425): ``staged_placement`` answers it, as it will inside the hook."""
+    token = _planning.set(placement)
+    try:
+        yield
+    finally:
+        _planning.reset(token)
+
+
 def staged_placement() -> StagedPlacement | None:
     """The hook's staged outputs (``StagedPlacement``), or None when the job
-    placed its output before the hook, or outside the hook (#391)."""
+    placed its output before the hook (#391). Outside the hook, the placement
+    a plan is made for (``planning``), else None."""
     guard = _guard.get()
-    return guard.placement if guard is not None else None
+    return guard.placement if guard is not None else _planning.get()
 
 
 def staged_output(final: str) -> str | None:
@@ -333,6 +420,15 @@ def check_write(target: str) -> None:
     guard = _guard.get()
     if guard is not None:
         guard.check(target)
+
+
+def record_write(target: str, before: bytes, after: bytes) -> None:
+    """Note that *target* now holds *after* where it held *before*, in the
+    hook's journal when it keeps one (``WriteGuard.journal``). Called right
+    after the write landed, under the target's lock. A no-op otherwise."""
+    guard = _guard.get()
+    if guard is not None and guard.journal is not None:
+        guard.journal.record(target, before, after)
 
 
 def _keep_owner(tmp: str, original: os.stat_result) -> None:
