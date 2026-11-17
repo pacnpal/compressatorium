@@ -7037,7 +7037,12 @@ A sheet's Image (#426) is planned whole. Its tracks are the sheet's own
 (`sheet_track_list`): each a regular file, not a link, named by this sheet and
 no other one (the owners map), and no member beyond them. Their names come
 from the file names the DAT that named the sheet lists for its game
-(`DATStore.game_files(dat_id, game_name)`, sheets left out): a track pairs
+(`DATStore.game_files(dat_id, game_name)`, sheets left out). They are read
+from each DAT's file list (`dat_files`, migration 0025, filled at import),
+kept apart from the hash index, which keeps one row per hash and so loses a
+track whose bytes another file shares (two silent tracks); a DAT imported
+before 0025 has no list until it is imported again, and its hash index is
+read meanwhile. A track pairs
 with the DAT file of its size, and tracks of one size pair in the sheet's
 order with those files in natural name order (`Track 2` before `Track 10`);
 nothing is hashed. The count must match and every track must pair, or the
@@ -7049,7 +7054,9 @@ is no Volume root, Library root or Platform folder; a new folder name that
 exists skips the Image. A preview item carries `files` (every file, old and
 new path), `sheet_rewrite` (each reference, old and new) and `folder`;
 `renames_of(item)` turns it into `rename_image`'s map and folder, and the run
-skips an Image whose `files` differ from the confirmed ones. One Image that can't be
+skips an Image whose `files` differ from the confirmed ones, and an Image of
+several files confirmed without `files` (one confirmed path never renames
+several files; only a single-file plan may come without them). One Image that can't be
 checked, or whose rename stops on an unexpected error, is skipped or reported
 not renamed on its own, never hiding the others. A `conflict` (equally ranked
 DATs that disagree) skips the Image and records a `rename_conflict` Finding

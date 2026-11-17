@@ -14,7 +14,9 @@
   playlist and gamelist. An Image whose tracks don't pair with the DAT's
   files by size, or a track another sheet also names, is skipped with the
   reason, and so is a sheet's Image in a RomM Library (RomM renames one file
-  within its folder).
+  within its folder). Track names come from each DAT's file list, which the
+  app now keeps when a DAT is imported (a database upgrade adds it): import a
+  DAT again to give it one, so tracks that share their bytes are named too.
 - **"Compatible with…" in the compression picker and the Rule editor**
   (#429). Pick NetherSX2, PCSX2, DuckStation, a RetroArch core (Beetle PSX),
   MiSTer, PPSSPP or Dolphin and the codecs are set to the ones it reads. A

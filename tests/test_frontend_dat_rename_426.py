@@ -15,6 +15,11 @@ def test_the_preview_lists_every_file_the_folder_and_the_sheet_rewrite():
     assert "otherFiles(item)" in modal
     assert "item.folder" in modal
     assert "item.sheet_rewrite" in modal
+    # Every file the plan moves, one the folder rename moves under the same
+    # name included (CodeRabbit 4604333215).
+    other = modal.split("function otherFiles(item)", 1)[1].split("\n  }\n", 1)[0]
+    assert "f.new_path !== f.path" in other
+    assert "shortName(f.path) !== shortName(f.new_path)" not in other
 
 
 def test_the_run_sends_each_files_new_name_as_the_preview_showed_it():

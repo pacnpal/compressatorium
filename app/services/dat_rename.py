@@ -681,6 +681,13 @@ async def _rename_one(
         )
         return _result(path, confirmed, "skipped", why)
     files = _files_of(confirmed_files)
+    if files is None and len(item["files"]) > 1:
+        # One path confirmed is never several files renamed (CodeRabbit
+        # 4604333160): only a single-file plan may come without ``files``.
+        return _result(
+            path, confirmed, "skipped",
+            "it is renamed with several files, and they weren't confirmed",
+        )
     if files is not None and files != _files_of(item["files"]):
         # A sheet's tracks are renamed as the preview showed them, or not at
         # all (#426).

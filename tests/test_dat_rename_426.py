@@ -29,9 +29,37 @@ _import = rename_425._import
 _match = rename_425._match
 _preview = rename_425._preview
 _register = rename_425._register
-_run = rename_425._run
 _result = rename_425._result
 _xml = rename_425._xml
+CONFIRM = rename_425.CONFIRM
+
+
+def _confirmed(preview: dict) -> list[dict]:
+    """Each preview item as the dialog confirms it: its new path and each
+    file's (CodeRabbit 4604333228)."""
+    return [
+        {
+            "path": i["path"], "new_path": i["new_path"],
+            "files": [{"path": f["path"], "new_path": f["new_path"]} for f in i["files"]],
+        }
+        for i in preview["items"]
+    ]
+
+
+async def _run_items(client: httpx.AsyncClient, items: list[dict]) -> dict:
+    """Confirm *items* and wait for the job; the finished job."""
+    from services import dat_rename
+
+    started = await client.post("/api/files/dat-rename", json={"items": items}, headers=CONFIRM)
+    assert started.status_code == 200, started.text
+    await dat_rename.drain()
+    job = await client.get(f"/api/jobs/{started.json()['job_id']}")
+    assert job.status_code == 200, job.text
+    return job.json()
+
+
+async def _run(client: httpx.AsyncClient, preview: dict) -> dict:
+    return await _run_items(client, _confirmed(preview))
 
 GAME = "Ape Escape (USA)"
 CUE = (
@@ -291,6 +319,88 @@ async def test_a_failure_on_the_last_track_puts_every_file_the_sheet_and_the_pla
     assert image["sheet"].read_text(newline="") == CUE
     assert playlist.read_text() == "game/game.cue\n"
     assert dat_store.get_match(str(image["sheet"]))["game_name"] == GAME
+
+
+@pytest.mark.asyncio
+async def test_a_run_whose_files_differ_from_the_plan_renames_nothing(
+    db: Path, client: httpx.AsyncClient,
+) -> None:
+    """CodeRabbit 4604333228: one track's confirmed new name isn't the
+    plan's, so the Image is skipped and no file changes."""
+    psx = db / "roms" / "psx"
+    image = await _cue_image(client, psx)
+    await _register(client, db / "roms")
+    items = _confirmed(await _preview(client, image["sheet"]))
+    items[0]["files"][-1]["new_path"] = str(psx / "Something Else.bin")
+
+    job = await _run_items(client, items)
+
+    result = _result(job)[str(image["sheet"])]
+    assert result["status"] == "skipped", result
+    assert "files' new names changed" in result["reason"]
+    assert sorted(p.name for p in psx.iterdir()) == sorted([
+        "game.cue", "game (Track 1).bin", "game (Track 2).bin",
+    ])
+
+
+@pytest.mark.asyncio
+async def test_a_run_that_confirms_only_the_sheets_path_renames_nothing(
+    db: Path, client: httpx.AsyncClient,
+) -> None:
+    """CodeRabbit 4604333160: a client that sends no ``files`` confirmed one
+    path; an Image of several files needs every file confirmed."""
+    psx = db / "roms" / "psx"
+    image = await _cue_image(client, psx)
+    await _register(client, db / "roms")
+    preview = await _preview(client, image["sheet"])
+
+    job = await _run_items(client, [
+        {"path": i["path"], "new_path": i["new_path"]} for i in preview["items"]
+    ])
+
+    result = _result(job)[str(image["sheet"])]
+    assert result["status"] == "skipped", result
+    assert sorted(p.name for p in psx.iterdir()) == sorted([
+        "game.cue", "game (Track 1).bin", "game (Track 2).bin",
+    ])
+
+
+@pytest.mark.asyncio
+async def test_tracks_whose_bytes_are_the_same_are_each_named_from_the_dat(
+    db: Path, client: httpx.AsyncClient,
+) -> None:
+    """CodeRabbit 4604333173: two silent tracks share their bytes, so the
+    hash index keeps one row for both; the DAT's file list keeps both."""
+    psx = db / "roms" / "psx"
+    sheet = psx / "game.cue"
+    text = CUE + 'FILE "game (Track 3).bin" BINARY\r\n  TRACK 03 AUDIO\r\n    INDEX 01 00:00:00\r\n'
+    roms = {
+        f"{GAME}.cue": _sheet(sheet, text),
+        f"{GAME} (Track 1).bin": _track(psx / "game (Track 1).bin", b"data", 4704),
+        f"{GAME} (Track 2).bin": _track(psx / "game (Track 2).bin", b"silence", 2352),
+        f"{GAME} (Track 3).bin": _track(psx / "game (Track 3).bin", b"silence", 2352),
+    }
+    await _import(client, _dat("Sony - PlayStation", GAME, roms))
+    await _match(client, sheet)
+    await _register(client, db / "roms")
+
+    job = await _run(client, await _preview(client, sheet))
+
+    assert _result(job)[str(sheet)]["status"] == "renamed"
+    assert sorted(p.name for p in psx.iterdir()) == sorted(roms)
+
+
+@pytest.mark.asyncio
+async def test_a_dats_file_list_goes_with_it(db: Path, client: httpx.AsyncClient) -> None:
+    from services.dat_store import dat_store
+
+    roms = {f"{GAME}.cue": ("a" * 40, 10), f"{GAME} (Track 1).bin": ("b" * 40, 20)}
+    dat_id = await _import(client, _dat("Sony - PlayStation", GAME, roms))
+    assert [f["rom_name"] for f in dat_store.game_files(dat_id, GAME)] == sorted(roms)
+
+    assert (await client.delete(f"/api/dat/{dat_id}")).status_code == 200
+
+    assert dat_store.game_files(dat_id, GAME) == []
 
 
 @pytest.mark.asyncio

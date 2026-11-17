@@ -241,6 +241,20 @@ class DATStore:
                 },
             )
             session.execute(stmt)
+        # The DAT's file list (#426), apart from the hash index: a file
+        # whose bytes another file shares keeps its own row here.
+        files = {
+            (row["game_name"], row["rom_name"]): row["size"] for row in hash_rows
+        }
+        file_rows = [
+            {"dat_id": dat_info["id"], "game_name": game, "rom_name": rom, "size": size}
+            for (game, rom), size in files.items()
+        ]
+        for i in range(0, len(file_rows), chunk_size):
+            session.execute(
+                sqlite_insert(_db.DATFile).values(file_rows[i:i + chunk_size])
+                .on_conflict_do_nothing(),
+            )
 
     async def import_dat(self, source: str) -> dict:
         """Parse and import a DAT file (path or XML string)."""
@@ -389,14 +403,28 @@ class DATStore:
     def game_files(self, dat_id: str, game_name: str) -> list[dict]:
         """Every file the DAT *dat_id* lists for *game_name*: ``{rom_name,
         size}``, once per name, in name order. What an Image rename (#426)
-        names a sheet's tracks after. Only files the DAT gives a hash for are
-        indexed, so a caller compares the count with what it has."""
+        names a sheet's tracks after.
+
+        Read from the DAT's file list (``dat_files``, CodeRabbit 4604333173),
+        which keeps a file whose bytes another file shares. A DAT imported
+        before that list existed has none until it is imported again: its
+        hash index is read instead, which may miss such a file, so a caller
+        compares the count with what it has. Only files the DAT gives a hash
+        for are listed."""
         with self._session() as session:
             rows = session.execute(
-                select(_db.DATHash.rom_name, _db.DATHash.size)
-                .where(_db.DATHash.dat_id == dat_id, _db.DATHash.game_name == game_name)
-                .distinct()
+                select(_db.DATFile.rom_name, _db.DATFile.size)
+                .where(_db.DATFile.dat_id == dat_id, _db.DATFile.game_name == game_name)
             ).all()
+            listed = rows or session.execute(
+                select(_db.DATFile.rom_name).where(_db.DATFile.dat_id == dat_id).limit(1)
+            ).all()
+            if not listed:
+                rows = session.execute(
+                    select(_db.DATHash.rom_name, _db.DATHash.size)
+                    .where(_db.DATHash.dat_id == dat_id, _db.DATHash.game_name == game_name)
+                    .distinct()
+                ).all()
         files: dict[str, int] = {}
         for rom_name, size in rows:
             files.setdefault(rom_name, size)
