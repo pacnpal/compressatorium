@@ -51,6 +51,12 @@ SOURCE_KEPT = "source_kept"
 # (`services.duplicates`), which reconciles this kind alone, and settled by
 # :func:`clear_gone` once fewer than two copies are left.
 DUPLICATE = "duplicate"
+# A RomM swap the app stopped part way that startup recovery could not finish
+# (#392): the ROM, the step, where the Source and the output are, and what to
+# do by hand. Owned by the RomM Library, one per journal row (image key
+# ``romm-swap-<row id>``), written and cleared by
+# ``services.romm.swap_recovery`` alone, which settles it once the row is.
+ROMM_SWAP = "romm_swap"
 # A ``duplicate`` Finding's ``cause`` key: the copies, each ``{"image_key",
 # "path", "container", "size"}``.
 COPIES = "copies"

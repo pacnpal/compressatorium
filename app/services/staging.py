@@ -394,6 +394,53 @@ def _claim(
         raise
 
 
+# Taking an existing slot's lock again: a lock file a crashed holder left is
+# reused, so only a live holder (its flock) refuses.
+_RELOCK_FLAGS = os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | _CLOEXEC
+
+
+def reopen_slot(path: str) -> StagedOutput:
+    """A slot a run before this one left behind (a ``park-`` slot holding a
+    parked Source, or a kept output's slot), taken again by RomM swap
+    recovery (#392) to move what it holds and remove it once empty.
+
+    The same guards as :func:`open_slot`: the folder must be inside a
+    configured Volume, and the folder, the stage folder and the slot are
+    opened along their real path with no link followed. The slot's lock is
+    taken (``BlockingIOError`` while anyone else holds it). The slot is not
+    journaled: :meth:`StagedOutput.close` (only once :meth:`contents` is
+    empty) or :meth:`StagedOutput.keep` lets go of it. Raises ``OSError``;
+    ``ValueError`` when *path* is not a slot in a stage folder."""
+    slot_name = os.path.basename(path)
+    stage = os.path.dirname(path)
+    if os.path.basename(stage) != STAGE_DIR_NAME or not slot_name.startswith(
+        (PARK_PREFIX, partial_writes.SLOT_PREFIX),
+    ) or slot_name.endswith(partial_writes.LOCK_SUFFIX):
+        raise ValueError(f"Not a staging slot: {path}")
+    real, folder_fd = _open_folder(os.path.dirname(stage), make=False)
+    stage_fd = -1
+    try:
+        stage_fd = partial_writes.open_stage_folder(folder_fd, create=False)
+        lock_name = partial_writes.slot_lock_name(slot_name)
+        lock_fd = os.open(lock_name, _RELOCK_FLAGS, 0o600, dir_fd=stage_fd)
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            slot_fd = os.open(slot_name, _DIR_FLAGS, dir_fd=stage_fd)
+        except BaseException:
+            _unlink_quietly(lock_name, stage_fd)
+            os.close(lock_fd)
+            raise
+        return StagedOutput(
+            folder=real, folder_fd=folder_fd, stage_fd=stage_fd, slot_name=slot_name,
+            slot_fd=slot_fd, lock_fd=lock_fd, marker=None,
+        )
+    except BaseException:
+        if stage_fd >= 0:
+            os.close(stage_fd)
+        os.close(folder_fd)
+        raise
+
+
 def open_slot(
     folder: str, *, make_folder: bool = False, parking: bool = False,
 ) -> StagedOutput:

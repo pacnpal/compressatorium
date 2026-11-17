@@ -837,9 +837,32 @@ time, or the app stops, where the source is depends on how far the swap got:
 - *After it was deleted* (the last step): the swap had in fact finished, and
   the output is under RomM's new name, with the ROM's id.
 
-Picking such a swap up on the next start is a later change (#392); until
-then nothing acts on it, and you can move a set-aside source back by hand
-from that folder. The delete
+After the next start, the app picks such a swap up in the background (it
+never holds up startup) and finishes what is safe to finish:
+
+- *RomM still has the old name and the source is where it was* (the rename
+  never landed, or the undo already put the old name back): nothing changed
+  in RomM, so the swap is closed and the converted output the job kept
+  aside is put beside the source.
+- *RomM has the new name and the output is in place:* RomM rehashes the ROM
+  again (safe to repeat). If it reads back the output's size and SHA-1, the
+  set-aside source is deleted; if not, the source goes back under its own
+  name beside the output, which keeps the ROM's id.
+- *The undo was putting the source back beside the output:* the move is
+  finished.
+
+Anything else becomes a **Finding** ("RomM swap unfinished") that names the
+ROM, the step it stopped at, where the source and the output are, what is
+left in the staging folder, and what to do by hand: keep the conversion
+(put the output under the new name, delete the source and rescan the ROM in
+RomM), or undo it (put the source under the new name, rename the ROM's file
+back to the old name in RomM and keep the output aside). The app never
+renames a ROM back by itself: that was not proven safe against RomM. It also
+never touches a RomM instance other than the one the swap ran against: if
+RomM's settings now name another instance or library root, the swap is a
+Finding. If RomM can't be reached, the Finding says so and the app tries
+again every 10 minutes; the Finding stays until the swap is settled,
+including once you have done what it says. The delete
 confirmation lists the rename ("RomM: rename ROM 1234 to Game.chd"), and the
 Ledger records that the ROM kept its id. Archives (`.zip`, `.7z`), multi-file
 games (`.cue`/`.bin`) and anything else keep the usual behaviour.

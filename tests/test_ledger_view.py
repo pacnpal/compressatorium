@@ -376,8 +376,9 @@ def test_migrations_have_a_single_head():
     # (the EmulationStation frontend switch) on that, #388's 0017 (content
     # keys) on that, #387's 0018 (the ES-DE gamelists folder) on that, and
     # #389's 0019 (a content key's device and inode) on that, and #391's
-    # 0020 (the RomM swap journal) on that.
-    assert heads == ["0020"]
+    # 0020 (the RomM swap journal) on that, and #392's 0021 (what swap
+    # recovery needs) on that.
+    assert heads == ["0021"]
 
 
 def test_upgrade_from_0010_seeds_totals_from_populated_ledger(tmp_path):

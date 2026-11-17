@@ -4,6 +4,20 @@
 
 ### Added
 
+- **Unfinished RomM swaps are picked up after a restart** (#392). If the app
+  stops part way through keeping a ROM's id, the next start settles the swap
+  in the background, without holding up startup. What is safe to finish is
+  finished: a rename RomM never made is closed and the converted output put
+  beside the source, and a swap whose output is already in place gets RomM's
+  rehash again, then the set-aside source is deleted (or put back beside the
+  output if RomM doesn't confirm it). Anything else, including a swap whose
+  RomM instance has changed since, becomes a "RomM swap unfinished" Finding
+  that names the ROM, the step, where the source and the output are, and
+  what to do by hand. The app never renames a ROM back on its own. If RomM
+  can't be reached it tries again every 10 minutes, and the Finding stays
+  until the swap is settled. Swaps now also record the RomM instance and
+  the fingerprints recovery needs (database migration 0021).
+
 - **Converting a RomM game keeps its ROM id** (#391). With **Keep the ROM id
   when converting** on, a single-file game (an `.iso`, say) converted to one
   file beside it, with its source deleted after the check, no longer turns
@@ -38,9 +52,8 @@
   swap is simply complete. If that can't finish, the swap is recorded and
   the source is kept: set aside in `.compressatorium-stage/park-…` once it was
   parked, or, when the swap stopped after RomM's rename and before parking,
-  still beside the output under RomM's new name. Picking it up on the next
-  start comes later (#392); until then you can move the source back by hand
-  from whichever of the two it is in. A ROM RomM marks missing while its
+  still beside the output under RomM's new name. The next start picks it
+  up (see below). A ROM RomM marks missing while its
   file is there keeps its source, and so does a delete whose metadata re-pin
   RomM's settings change stops from being queued. Saving RomM settings that
   move to another instance waits up to 30 seconds for a running swap, then

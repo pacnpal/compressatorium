@@ -246,8 +246,9 @@ class RommSwap(Base):
     leaves the step the swap was on. ``state`` is that step (``renaming``,
     ``parking``, ``placing``, ``rehashing``, ``deleting``, ``reverting``,
     ``restoring``), or how it ended (``done``, ``refused``, ``failed``,
-    ``rolled_back``, ``kept``). A row still on a step needs the next run to
-    finish it or show it as a Finding (#392); ``detail`` says why it stopped.
+    ``rolled_back``, ``kept``). A row still on a step is settled by startup
+    recovery (``services.romm.swap_recovery``, #392): finished, or shown as a
+    Finding until it can be; ``detail`` says why it stopped.
 
     ``parked_path`` is where the Source sits while the output takes its name:
     a ``park-`` slot in the hidden staging folder, which no sweep removes.
@@ -270,6 +271,16 @@ class RommSwap(Base):
     detail = Column(String, nullable=True)
     created_at = Column(String, nullable=False, default=utcnow_iso)
     updated_at = Column(String, nullable=False, default=utcnow_iso)
+    # What startup recovery needs (#392): the RomM instance the swap ran
+    # against, and the fingerprints that tell the Source (size, mtime) and
+    # the output (size, SHA-1) apart wherever they are. None on a row written
+    # before 0021, which recovery can't tell about.
+    romm_url = Column(String, nullable=True)
+    library_root = Column(String, nullable=True)
+    source_size = Column(BigInteger, nullable=True)
+    source_mtime_ns = Column(BigInteger, nullable=True)
+    output_size = Column(BigInteger, nullable=True)
+    output_sha1 = Column(String, nullable=True)
 
 
 class CHDMetadata(Base):

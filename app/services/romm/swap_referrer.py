@@ -60,7 +60,7 @@ hands this task the job's holds (``ReferrerOutcome.outlive``), so the undo
 never runs with them gone. The output is held back from the job
 (``StagedPlacement.held``) until the undo has finished. Only an undo that
 runs out of grace, or fails, or a process that dies, leaves the row on the
-step it reached for the next run (#392), with the reason, a parked Source
+step it reached for the next run (``swap_recovery``, #392), with the reason, a parked Source
 still parked and the output still held: fail closed. At shutdown the job's
 task is cancelled: the hook cancels this task too and hands it the job's
 holds on that path as well (``unawaited``), so they are let go only when the
@@ -700,9 +700,16 @@ class _Swap:
             raise ReferrerError(self.target, f"couldn't read the output ({exc})") from exc
 
         def begin() -> None:
+            # With what startup recovery needs (#392): the instance, and the
+            # fingerprints that tell the Source and the output apart.
             self.row = swap_journal.begin(
                 rom_id=plan.rom_id, source_path=plan.source, output_path=plan.output,
                 staged_path=self.staged, old_name=plan.old_name, new_name=plan.new_name,
+                romm_url=self.binding.base_url,
+                library_root=str(romm_settings.effective().get("library_root") or ""),
+                source_size=int(self.snapshot["size"]),
+                source_mtime_ns=int(self.snapshot["mtime_ns"]),
+                output_size=size, output_sha1=sha1,
             )
 
         try:

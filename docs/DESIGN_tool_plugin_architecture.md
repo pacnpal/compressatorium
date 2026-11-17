@@ -4184,10 +4184,7 @@ carries RomM's own `detail` text.
   Source stays parked; and the output stays held, since the name it would
   take may hold, or be owed to, the Source (the job then sets the checked
   output aside, below). `swap_journal.unfinished()` lists the rows left for
-  the next run. Recovering them (finish, or show as a Finding) is #392:
-  until it lands nothing calls `unfinished()` or acts on such a row, and a
-  parked Source stays in `.compressatorium-stage/park-…` for the user to
-  move back by hand (CodeRabbit 4594326484).
+  the next run, which startup recovery settles (below, #392).
 - At shutdown the job's task is cancelled, so the hook's awaiter is.
   `_await_bounded` cancels the apply's task, keeps it referenced
   (`_let_it_end`) and, if it is still running, puts it in the caller's
@@ -4219,6 +4216,71 @@ carries RomM's own `detail` text.
   undo runs as far as the event loop lets it before the process exits, each
   step journaled; whatever it didn't reach is left for the next run, and a
   parked Source is never removed.
+
+*Startup recovery* (#392, `services.romm.swap_recovery`). `main.py` starts
+`swap_recovery.run_forever()` as a background task after startup, so it
+never holds up startup. It makes a pass over the rows that were unfinished
+when it started (`recover_once(started_before=...)`: a row written since
+belongs to a swap of this run), then repeats every `RETRY_SECONDS` (10
+minutes) while any of them is left. Migration 0021 adds what a row needs for
+this, written by `swap_journal.begin`:
+
+- the instance the swap ran against: `romm_url` and `library_root`;
+- the Source's fingerprint (`source_size`, `source_mtime_ns`);
+- the output's fingerprint (`output_size`, `output_sha1`).
+
+Recovery takes these steps for each row:
+
+1. Take the job locks on the Source and output paths (`lock_manager`). If a
+   job holds them, try again later.
+2. Classify what is at the Source path, the output path and the parked path
+   (`_what_is`: Source, output, other or absent; the output's SHA-1 is read
+   only when the size matches). Look for the job's set-aside output in its
+   staged slot, or in that slot's `park-` twin (`StagedOutput.set_aside`'s
+   name).
+3. Check that the instance is the one RomM's settings name now, and read
+   RomM's `fs_name` for the ROM through a client bound to that instance
+   (`_Binding`).
+
+It finishes only three cases:
+
+- **RomM has the old name and the Source is in place.** The row ends
+  `failed` (from `renaming`) or `rolled_back`, and the kept output is placed
+  beside the Source.
+- **RomM has the new name and the output is in place.** The `hashes` scan is
+  retried and the ROM read back (`_read_back_problem`). On a match, the
+  parked Source is deleted after a re-check, the row ends `done` and the
+  re-pin is settled. On a mismatch, the Source is restored beside the
+  output and the row ends `kept`. At `deleting` with the Source already
+  gone, the row ends `done`.
+- **The undo was at `restoring` beside the placed output.** The restore is
+  finished and the row ends `kept`.
+
+Recovery never renames a ROM: the rename back to the old `fs_name` was not
+proven in the spike. Every other combination raises `_Left` and becomes a
+`findings.ROMM_SWAP` Finding (Library `romm`, image key
+`romm-swap-<row id>`). The Finding names the ROM, the step, why, where the
+Source and the output are, the slots left (`cause["slots"]`) and the manual
+steps. A pass that can't settle the row writes the same Finding again, and a
+pass that settles it resolves the Finding.
+
+These cases also become Findings, and nothing is sent to RomM:
+
+- a row without the 0021 fields;
+- a row from another instance or library root;
+- a row read while an identity change is waiting (`_identity_changes`);
+- an unreachable RomM, which is retried later.
+
+The only RomM write, the rehash, counts in `swap_referrer._active_swaps`, so
+`identity_change()` waits for it.
+
+Moves go through `_mutate` and reads through `_probe` or `_read_whole`, the
+same seams the swap uses. Slots are taken again with
+`staging.reopen_slot`, which has the same Volume and no-link guards as
+`open_slot` and takes the slot's flock. A slot is removed only once its own
+listing is empty (a kept output's slot may still hold its keep marker,
+which is removed first). A pass that finds nothing new to do changes
+nothing.
 
 *Bound to one RomM instance* (Codex 4594286722). The settings-following
 client (`romm_client`) resolves the URL and token on every request, so a
