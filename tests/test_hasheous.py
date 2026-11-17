@@ -2363,11 +2363,13 @@ async def test_a_local_hit_from_a_deleted_dat_is_not_mistaken_for_a_remote_one(t
         "path": remote, "matched": True, "game_name": "Remote Game",
         "match_type": "file_sha1", "file_hash": "a" * 40, "source": "hasheous",
     })
-    assert store.get_match(orphan) is not None
+    # Read from the table, not get_match: a local hit with no ``matches`` reads
+    # as uncached since #424, which would hide whether the import deletes it.
+    assert orphan in store.list_match_paths()
 
     await store.import_dat(SAMPLE_DAT_XML)  # triggers invalidation
 
-    assert store.get_match(orphan) is None, (
+    assert orphan not in store.list_match_paths(), (
         "a local hit from a deleted DAT was preserved as if it were a remote hit"
     )
     assert store.get_match(remote) is not None, "the remote hit was not preserved"

@@ -138,13 +138,33 @@ def record_of(match: Mapping) -> dict:
     return record
 
 
+def is_unrankable_local_hit(payload: dict) -> bool:
+    """True for a local DAT hit cached before #424, which no ranking can reach.
+
+    Such a row names one DAT and carries no ``matches``, so it would keep that
+    name whatever order the user saves (Codex on PR #435). The store reads it
+    as uncached, and the next match records every DAT's match. Decided on read
+    rather than by deleting rows in migration 0022, so nothing is lost and a
+    row written any other way is caught too. A Hasheous hit has no local
+    matches to rank and is not one; a row without a ``dat_id`` is not a local
+    hit.
+    """
+    return bool(
+        payload.get("matched")
+        and payload.get("dat_id")
+        and payload.get("source") != "hasheous"
+        and not payload.get("matches")
+    )
+
+
 def apply_ranking(
     payload: dict, *, kind: str, ranks: Mapping[str, tuple[int | None, str]],
 ) -> dict | None:
     """*payload* (a match result) with the current ranking applied.
 
     Only a local DAT hit carrying ``matches`` is re-ranked; any other payload
-    (a miss, a Hasheous hit, a row cached before #424) is returned unchanged,
+    (a miss, a Hasheous hit, a row cached before #424, which the store reads as
+    uncached through :func:`is_unrankable_local_hit`) is returned unchanged,
     and one whose every DAT is gone comes back ``None`` (treat it as uncached).
     The top-level identity fields name the winner; on a conflict they name the
     first of the tied matches (so an existing badge still reads something) and

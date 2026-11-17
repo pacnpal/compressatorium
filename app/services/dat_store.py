@@ -25,7 +25,8 @@ from sqlalchemy.orm import Session, sessionmaker
 from services import db as _db
 from services.dat_parser import parse_dat
 from services.dat_ranking import (
-    FAMILIES, RankedMatch, apply_ranking, dat_family, image_kind, ranked_match,
+    FAMILIES, RankedMatch, apply_ranking, dat_family, image_kind,
+    is_unrankable_local_hit, ranked_match,
 )
 from utils.path_utils import path_presence
 
@@ -407,6 +408,8 @@ class DATStore:
 
     @staticmethod
     def _ranked(payload: dict, path: str, ranks) -> dict | None:
+        if is_unrankable_local_hit(payload):
+            return None  # cached before #424: read as uncached, match it again
         if not payload.get("matches"):
             return payload  # nothing to rank; skip the registry lookup
         return apply_ranking(payload, kind=image_kind(path), ranks=ranks)

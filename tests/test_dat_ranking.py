@@ -275,6 +275,42 @@ async def test_a_cached_match_whose_dats_are_all_gone_is_not_served(store, tmp_p
     assert ranked.top is None and not ranked.conflict
 
 
+@pytest.mark.asyncio
+async def test_a_local_hit_cached_before_the_ranking_is_matched_again(store, tmp_path):
+    """A local hit cached before #424 has no ``matches``, so it could never be
+    ranked: it would keep naming the DAT it was cached against whatever order
+    the user saves (Codex, PR #435). It reads as uncached and is matched again;
+    a Hasheous hit, which has no local matches to rank, is still served."""
+    mame = await _import(_dat_xml("MAME 0.260", "mame name"))
+    redump = await _import(_dat_xml("Sony - PlayStation", "Redump Name", homepage="redump.org"))
+    path = _file(tmp_path, "game.iso")
+    real = os.path.realpath(path)
+    await store.set_match(real, {
+        "path": real, "matched": True, "match_type": "file_sha1",
+        "file_hash": SHARED_SHA1, "dat_id": mame["id"], "dat_name": "MAME 0.260",
+        "game_name": "mame name", "rom_name": "mame name.bin", "source": "dat",
+    })
+    assert store.get_match(real) is None
+    assert store.ranked_match_for_image(real).top is None
+
+    hashed = dat_routes.compute_file_sha1
+    hashed.reset_mock()
+    got = await dat_routes.match_batch(dat_routes.MatchBatchRequest(paths=[str(path)]))
+    hashed.assert_called_once()
+    assert got["results"][str(path)]["dat_id"] == redump["id"]
+    assert store.ranked_match_for_image(real).top["game_name"] == "Redump Name"
+
+    remote = _file(tmp_path, "remote.iso")
+    remote_real = os.path.realpath(remote)
+    await store.set_match(remote_real, {
+        "path": remote_real, "matched": True, "match_type": "file_sha1",
+        "file_hash": "ee" * 20, "dat_id": None, "dat_name": "Redump",
+        "game_name": "Remote Game", "source": "hasheous", "family": "Redump",
+    })
+    assert store.get_match(remote_real)["game_name"] == "Remote Game"
+    assert store.ranked_match_for_image(remote_real).top["game_name"] == "Remote Game"
+
+
 # ---------------------------------------------------------------------------
 # Different DATs knowing different hashes of the same Image (Codex, PR #435)
 # ---------------------------------------------------------------------------
