@@ -794,6 +794,128 @@ says to turn RomM's converter off.
 | 4.6 | Inbox (N4) | M |
 | 4.7 | Multi-disc tidy, device packs, Library Wrapped (A8) | M each |
 
+### rom-converto spike findings (#421)
+
+Run on 2026-11-17 against rom-converto **v0.24.0**, the version RomM pins and
+the latest release upstream. The script is `scripts/spike/rom_converto/` (README
+there); it passes on all three targets below. It feeds the plugin ticket for 4.1
+(#420 spec). Nothing here is from the upstream README: every call was run.
+
+**Setup.** Apple M4 Mac, macOS. Linux assets ran in Docker (OrbStack or Docker
+Desktop) on `debian:trixie-slim` pinned by the digest the app's Dockerfile uses
+(`linux/arm64` natively, `linux/amd64` emulated). The macOS arm64 asset ran
+natively. No keys, no `seeddb.bin` and an empty `HOME`; a CIA to CCI run also
+worked with `--network none`. Inputs were synthetic or homebrew, never a commercial image:
+
+- Xbox 360: a hand-built XDVDFS image of three files (random bytes, a
+  `default.xex` that is not a real XEX), made at the trimmed, XGD3 and XGD2
+  partition bases.
+- PSP: a hand-made PBP with a valid PARAM.SFO and a junk PSAR.
+- 3DS: FBI 2.6.1 (MIT, Steveice10), a real CIA with an unencrypted NCCH.
+
+**Release assets** (plain binaries, no archive; each has a `.sha256` file that
+matches the release digest, and the script checks these pins):
+
+| Asset | SHA-256 |
+| --- | --- |
+| `rom-converto-cli-linux-x64` (amd64, glibc) | `0d4abd56cfec477ff447f68b656d45ca48f670f464363bca2d895b1eee2c356d` |
+| `rom-converto-cli-linux-arm64` (glibc) | `990286bc3367342b0e04ab6dd0d28d8e95c3133ac2b4c5d6440a119e541b0b43` |
+| `rom-converto-cli-linux-x64-musl` | `67964054931f7e74848bfe7b54ff1f0cacdc25596c29e3a79876f76e0f2407a8` |
+| `rom-converto-cli-linux-arm64-musl` | `60f9dc0fe7c3e3355c840c5e21c2b65b770b74ba78567aec7a2e5f846b8087ce` |
+| `rom-converto-cli-macos-arm64` | `4de8bbc96ddef23d8ed823ce42efcd64425c7885c4fe25058a2376ab42053aee` |
+
+URL: `https://github.com/DevYukine/rom-converto/releases/download/v0.24.0/<asset>`.
+The names say `x64`, not `amd64`, so the Dockerfile stage has to map `TARGETARCH`
+amd64 to `linux-x64`. The glibc builds ran on trixie-slim with no extra packages.
+
+**Exact calls at v0.24.0.** Global flags that matter: `--no-update-check` (the
+binary otherwise looks for a newer release, so pass it to keep a run off the network),
+`-q` (hides the success line, errors stay). `--report FILE` is **not** global:
+only `psp to-iso` takes it, and `ctr convert` and `xenon compress` reject it.
+
+| Mode | Call | Default output |
+| --- | --- | --- |
+| Xbox 360 ISO to ZAR | `rom-converto --no-update-check xenon compress [-f] INPUT.iso [OUTPUT.zar]` | `<stem>.zar` beside the input |
+| ZAR check | `xenon verify FILE.zar` (re-hashes, decodes every block, prints `Hash: OK`) | none |
+| ZAR to files | `xenon extract FILE.zar OUTPUT_DIR` | refuses a non-empty `OUTPUT_DIR` |
+| PBP to ISO | `psp to-iso [--on-conflict error\|overwrite\|skip\|rename\|overwrite-invalid] [-f] [--report FILE] INPUT.pbp [OUTPUT.iso]` | help says `<INPUT>.iso`; untested, so pass `OUTPUT` |
+| CIA to CCI | `ctr convert [--trim] [--on-conflict ...] [-f] INPUT.cia [OUTPUT.3ds]` | `<stem>.3ds` |
+| CCI to CIA | `ctr convert INPUT.3ds\|INPUT.cci [OUTPUT.cia]` | `<stem>.cia` |
+
+`ctr convert` picks the direction from the input extension (`.cia`, `.3ds`,
+`.cci`) and refuses any other. `psp to-iso` also takes a PSN `.pkg`, and says PS1
+Classic EBOOTs are not converted (from its help; not run). `xenon compress` also
+takes a directory. It has no `--on-conflict`, only `-f`. All of them refuse an
+existing output by default. `xenon convert` (Games on Demand) is out of scope.
+
+**Answers to the acceptance criteria.**
+
+- *Commands and flags:* above. ISO to ZAR exists. **ZAR back to ISO does not
+  exist** at v0.24.0, and no later release has it (v0.24.0 is the latest and
+  upstream `main` has the same `xenon` subcommands: compress, convert, extract,
+  verify, info).
+- *Does a ZAR decode to a byte-equal ISO?* **No, and it can't.** A ZAR stores
+  files, not sectors. `xenon extract` gives a folder. All three test images
+  extracted to files byte-equal to the ISO's own, and a second reader
+  (`xbox extract`) agreed, but nothing rebuilds the ISO, so the Round-trip
+  check as defined (decode, compare bytes with the Source) can't run. What is
+  available is `xenon verify` plus an extract and a file-by-file compare with
+  the Source's file tree. Compressing the same ISO twice gives identical ZAR
+  bytes. Deleting the ISO afterwards loses its exact bytes and therefore any
+  later DAT match, so ZAR probably needs the Recognized proof or a
+  keep-the-Source default; the owner decides.
+- *Does CIA to CCI need keys or a `seeddb.bin`?* **No.** Neither direction takes
+  a key or seed option, and none was read from disk. The binary has its common
+  keys built in: from the source at v0.24.0, CIA to CCI derives the title key
+  from the ticket and decrypts only the CIA layer, and CCI to CIA reads the
+  exheader with built-in keys and has no seed code. The NCCH inside is copied
+  untouched (byte-equal in both directions on FBI). The CIA to CCI to CIA path
+  is **not** byte-equal to the original CIA: 1,192,896 bytes became 1,177,856,
+  the output is unsigned with a zero title key (help text says it isn't
+  installable on a stock 3DS), `ctr verify` reports the signatures INVALID and
+  the title version reads 0 instead of 2145. So Round-trip is out for CIA and
+  CCI too. A padded CCI is 128 MiB for this 1.1 MiB CIA (`--trim`: 1,179,648).
+  **Untested:** a retail CIA with encrypted content, or a CCI with seed-crypto
+  NCCH. That needs a real dump, so it is an owner check. A CCI whose flags only
+  *claim* seed crypto converted with exit 0 and no message, so the binary does
+  not validate, and there is no "keys missing" text to capture.
+- *Progress, errors, exit codes:* exit **0** on success, **1** on any runtime
+  error (bad or missing input, existing output, parse failure), **2** on a
+  usage error (clap). Everything goes to **stderr**; stdout stays empty, even on
+  success (`Converted CIA to CCI: A -> B` then `1 files: 1.1 MiB -> 128.0 MiB in
+  0.1s`). With no terminal there is no progress at all, only the summary; on a
+  pty it emits terminal-progress escape sequences, so the plugin gets
+  indeterminate progress. Failures start `Error: ...`; a bad CIA header adds a
+  multi-line `Caused by` block. Set `NO_COLOR=1` or the text has ANSI codes.
+  Messages seen: `Error: output already exists: X; pass --on-conflict overwrite
+  to replace it`, `Error: input not found: X`, `Error: no XDVDFS volume
+  descriptor found at any probed base`, `Error: input is not a valid NCSD file
+  (missing NCSD magic at 0x100)`, `Error: early eof`, `Error: invalid ZArchive
+  magic: ...`, `Error: psp to-iso: DATA.PSAR magic is ..., not NPUMDIMG`.
+  Every failure left no output file behind. A failed `psp to-iso --report` also
+  writes no report.
+- *Linux assets and checksums:* the table above.
+- *Xenia:* **not done, and not faked.** Xenia has no macOS build, nothing on
+  this Mac could run it, and a ZAR of my random-byte `default.xex` couldn't boot
+  there anyway. Owner check: make a ZAR from an Xbox 360 disc the owner dumped
+  themselves, load it in a current Xenia Canary build, record the version and
+  whether it boots.
+- *Not tested:* the PBP to ISO success path. A real PBP holds a game's encrypted
+  NPUMDIMG, which can't be built here. Only the refusals were run (junk PSAR,
+  non-PBP input). PSP's keys are also in the binary (the version key sits in the
+  image header), so no key file is expected. Owner check on a PBP they own.
+  Everything that did run is deterministic and passes on all three targets.
+
+**What the plugin ticket should take from this.** Pass an explicit `OUTPUT`
+written to a temp name, `--no-update-check`, no `-q`, `NO_COLOR=1`; read the
+first `Error:` line from stderr; treat progress as indeterminate. Pick a CCI
+size policy (`--trim` or padded). PBP to ISO and CIA to CCI to CIA can't be
+Round-tripped, so those two modes use the Recognized proof as #420 says; ZAR
+needs the same, or the file-tree check above, since it can't be decoded to its
+Source. Expect few outputs to be Recognized (a converted CIA is unsigned, a PSN
+ISO rarely has a DAT), so Sources will mostly be kept; this is an expectation,
+not something the spike measured.
+
 Steps 1 and 2 don't change how the RomM integration behaves, apart from the
 Round-trip default in 1.4, so the remaining phases of
 `ROMM_INTEGRATION_ROADMAP.md` (scan trigger, pairing, covers) can run alongside
