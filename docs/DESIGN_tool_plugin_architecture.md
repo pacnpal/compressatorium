@@ -7156,10 +7156,13 @@ tick with a fake clock and real files. Each poll:
    by `image_sets.group_images` and fingerprinted by `image_fingerprint`
    (every file's size and mtime). The folder must still be inside a Volume
    and still clear of its Library's root.
-3. Settles each Image: first seen (or changed) records `(fingerprint, now)`;
+3. Images that share a file (two sheets naming one track, `_sharing`) are held,
+   each with a Finding naming the others, once settled: taking one in would
+   move a file the other still needs. None of them is taken.
+4. Settles each Image: first seen (or changed) records `(fingerprint, now)`;
    it is taken once a later poll at least `settle_seconds` after that sees the
    same fingerprint. So it always takes two polls, even with a settle time of 0.
-4. Takes it (`_take`): `detect_platform`; not decided is held with
+5. Takes it (`_take`): `detect_platform`; not decided is held with
    `inbox_unsorted` or `inbox_conflict`. A track sheet is checked with
    `delete_plan.sheet_reference_problems(within=[the Inbox])` first: a reference
    the confined resolver refuses (`../tracks/Game.bin`), or a sheet that can't
@@ -7190,7 +7193,17 @@ refuses the job (`source_identity_problem`: outside the Volumes, reached through
 a link, gone, or another file) with the reason. A folder swapped for a link
 while the job waits converts nothing from outside the Inbox. A job queued
 without one (a Rule sweep, a hand-started job) is not re-checked this way when
-it runs. So the job is a conversion in every sense the
+it runs. A job that passes is then bound before anything else reads its Source
+(`path_utils.bind_source`, Codex 4605281757): a fresh 0700 folder in the Inbox
+root (same filesystem, `.compressatorium-bind-*`, which intake never lists)
+gets a hard link of the Source and of each member it carries
+(`identity["members"]`, a sheet's tracks), made through descriptors opened
+beneath the root with no link followed and each `fstat`ed against the identity
+validated. Where links can't be made (`EXDEV`, `ENOTSUP`, `EPERM` on a NAS) the
+file is copied through a descriptor checked before and after. Sizing,
+detection, the companion checks and `run_convert` read `job._read_path`, never
+the Inbox name, and `_cleanup_temp_dir` removes the folder on every ending. The
+move to `processed/` still acts on the Inbox names, with its own inode check. So the job is a conversion in every sense the
 queue has: it takes a `max_concurrent` slot, gets its Ledger row and its
 Cancel. A Rule that is disabled, or whose mode doesn't take the file (it is
 already in the target format), copies instead; one whose mode isn't for the
@@ -7200,7 +7213,9 @@ Platform, or whose tool isn't ready, holds the file with a Finding.
 started_by_hand=False, takes_slot=True)`: it converts nothing). One background
 task per Image, each an external job. Its file work runs in one of the same
 `max_concurrent` slots conversions take: `job_manager.hold_slot(job_id,
-cancel_event)` acquires the dispatcher's own semaphore (only for a mode that
+cancel_event)` acquires the dispatcher's own semaphore and then the
+cross-process slot `_process_job` takes (`concurrency_manager.acquire`), so a
+CLI process converting holds a copy back too (only for a mode that
 declares `takes_slot`), racing the job's cancel, and `release_slot` gives it
 back on every outcome. A `hold_slot` whose own task is cancelled while it
 waits cancels its pending acquisition, and gives back a slot that acquisition
@@ -7238,7 +7253,9 @@ its file. Before it stages anything, a copy takes the shared output locks
 (`LockManager.acquire_all`) on every name it will place, as a conversion does on
 its outputs, and holds them through the placement: a name another job (a
 conversion here or in the CLI) is writing leaves the Image for the next poll,
-untouched and with no Finding.
+untouched and with no Finding. The acquisition runs through
+`run_detached_undoable` (`_LOCK_SECONDS`): one that answers after its wait gave
+up gives back the locks it took, never leaving them held.
 A stop is honoured before the verdict, so a cancelled read that left a reader on
 the storage stops the pass too. The staged slot is handed from its worker to
 the awaiter by `_SlotHandoff`, under one lock: once the awaiter has taken it,

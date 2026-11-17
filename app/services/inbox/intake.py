@@ -74,11 +74,13 @@ from services.rules.library import Library, LibraryUnreadable, PlacementUnknown
 from services.rules.rules import CONVERT
 from services.stream_digest import new_hasher
 from services.subprocess_runner import (
+    DeadlineExpired,
     MutationInFlight,
     MutationNotStarted,
     ReadCancelled,
     run_detached,
     run_detached_mutation,
+    run_detached_undoable,
     run_detached_within_stall_bound,
 )
 from services.tools import registry
@@ -105,6 +107,9 @@ _STEP_SECONDS = 60
 _PLACE_SECONDS = _STEP_SECONDS
 # The same for moving an original to processed/.
 _MOVE_SECONDS = _STEP_SECONDS
+# How long taking a copy's output locks may take; one that answers later
+# gives back what it took (`run_detached_undoable`).
+_LOCK_SECONDS = _STEP_SECONDS
 _PLACE_POLL_SECONDS = 0.05
 # How long a listing may go without reading an entry before it is given up.
 _LIST_STALL_SECONDS = 120
@@ -275,7 +280,9 @@ def _image_extensions() -> tuple[str, ...]:
     return extensions()
 
 
-def _list(folder: str, library: Library, progress) -> tuple[dict[str, str], list[str]]:
+def _list(
+    folder: str, library: Library, progress,
+) -> tuple[dict[str, str], list[str], dict[str, list[str]]]:
     """Every Image in the Inbox at *folder* (path -> fingerprint), and the
     folders the walk couldn't list. Blocking.
 
@@ -336,7 +343,24 @@ def _list(folder: str, library: Library, progress) -> tuple[dict[str, str], list
                 ):
                     files.append(entry.path)
     images = {path: image_fingerprint(path) for path in group_images(sorted(files))}
-    return images, unlisted
+    return images, unlisted, _sharing(images)
+
+
+def _sharing(images: dict[str, str]) -> dict[str, list[str]]:
+    """The Images that share a file with another (two sheets naming one
+    track): each one -> the others it shares with. Taking one in would move
+    a file the other still needs to ``processed/``. Blocking (reads sheets)."""
+    owners: dict[str, list[str]] = {}
+    for path in images:
+        for member in image_members(path):
+            key = os.path.normcase(os.path.realpath(member))
+            owners.setdefault(key, []).append(path)
+    shared: dict[str, set[str]] = {}
+    for paths in owners.values():
+        if len(paths) > 1:
+            for path in paths:
+                shared.setdefault(path, set()).update(p for p in paths if p != path)
+    return {path: sorted(others) for path, others in shared.items()}
 
 
 # ---- Findings ------------------------------------------------------------
@@ -426,7 +450,7 @@ async def poll(inbox: inbox_store.Inbox, *, now: float | None = None) -> dict[st
             state.error = result["error"] = "library_missing"
             return result
         try:
-            listing, unlisted = await run_detached_within_stall_bound(
+            listing, unlisted, sharing = await run_detached_within_stall_bound(
                 _list, inbox.folder, library, what=f"The Inbox {inbox.folder}",
                 stall=_LIST_STALL_SECONDS, report_progress=True,
             )
@@ -451,6 +475,18 @@ async def poll(inbox: inbox_store.Inbox, *, now: float | None = None) -> dict[st
                 continue
             if stop or now - seen.since < inbox.settle_seconds:
                 result["waiting"] += 1
+                continue
+            if path in sharing:
+                # Images that share a file are left alone, all of them:
+                # archiving one would take a file the other still needs.
+                others = ", ".join(os.path.basename(p) for p in sharing[path])
+                await _hold(
+                    inbox, state, path, fingerprint, findings.INBOX_FAILED,
+                    f"It shares files with {others}, so it isn't taken in on its own: "
+                    "take them in by hand, or give each its own copy of the files",
+                    {"shares_with": sharing[path]},
+                )
+                result["held"] += 1
                 continue
             outcome = await _take(inbox, library, state, path, fingerprint)
             if outcome == "queue_full":
@@ -709,6 +745,11 @@ async def _convert(
             source_identities={path: {
                 "root": inbox.folder,
                 "snapshot": flight.identities[os.path.basename(path)],
+                # Its tracks too: the job binds every file it reads.
+                "members": {
+                    name: snapshot for name, snapshot in flight.identities.items()
+                    if name != os.path.basename(path)
+                },
             }},
         )
     except QueueBackpressureError:
@@ -1246,10 +1287,19 @@ async def _copy_in(
     # takes on its outputs, held through the placement: a conversion (here or
     # in the CLI) writing one of those names meanwhile can't collide with it.
     targets = [os.path.join(folder, os.path.basename(f)) for f in flight.files]
+    def give_back(result: str | None) -> None:
+        # An acquisition that finished after its wait gave up: what it took
+        # (all of them, when it answered None) goes back, never left held.
+        if result is None:
+            _release_locks(targets)
+
     try:
-        refused = await _step(
+        refused = await run_detached_undoable(
             lock_manager.acquire_all, [(target, False) for target in targets],
+            timeout=_LOCK_SECONDS, undo=give_back,
         )
+    except DeadlineExpired:
+        return "deferred", "its output locks didn't answer in time", None
     except (asyncio.TimeoutError, OSError, LockFailed) as exc:
         return "failed", f"its output couldn't be locked: {exc}", None
     if refused is not None:

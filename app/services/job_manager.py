@@ -65,8 +65,10 @@ from services.verification_store import check_verdict, verification_store
 from utils.delete_plan import build_delete_plan, build_delete_snapshot
 from utils.path_utils import (
     is_safe_directory_tree,
+    bind_source,
     is_within_configured_volumes,
     source_identity_problem,
+    unbind_source,
     source_companions_are_safe,
     strip_archive_path,
 )
@@ -1455,9 +1457,11 @@ class JobManager:
     ) -> bool:
         """Take one of the ``max_concurrent`` conversion slots for the external
         job *job_id*, whose mode declares ``takes_slot`` (an Inbox copy, #431),
-        waiting as long as conversions hold them all. False when
+        waiting as long as conversions hold them all. Then the cross-process
+        slot too (``concurrency_manager``, the one ``_process_job`` takes), so
+        a CLI process converting holds the copy back as well. False when
         *cancel_event* fires first (nothing is held then). The caller gives
-        it back with :meth:`release_slot` on every outcome.
+        both back with :meth:`release_slot` on every outcome.
         """
         job = self.jobs.get(job_id)
         declared = EXTERNAL_JOB_MODES.get(job.mode) if job is not None else None
@@ -1483,6 +1487,18 @@ class JobManager:
             if not acquire.done() or cancel_event.is_set():
                 self._drop_acquisition(semaphore, acquire)
                 return False
+        # The local slot is held from here: the cross-process one next, in the
+        # order a conversion takes them (the dispatcher's, then its own).
+        try:
+            got_global = await concurrency_manager.acquire(job_id, cancel_event=cancel_event)
+        except BaseException:
+            concurrency_manager.release(job_id)
+            semaphore.release()
+            raise
+        if not got_global:
+            concurrency_manager.release(job_id)
+            semaphore.release()
+            return False
         self._slot_holders.add(job_id)
         return True
 
@@ -1503,9 +1519,11 @@ class JobManager:
             acquire.add_done_callback(release_if_taken)
 
     def release_slot(self, job_id: str) -> None:
-        """Give back the slot :meth:`hold_slot` took for *job_id*. Idempotent."""
+        """Give back the slots :meth:`hold_slot` took for *job_id*, the local
+        and the cross-process one. Idempotent."""
         if job_id in self._slot_holders:
             self._slot_holders.discard(job_id)
+            concurrency_manager.release(job_id)
             self._semaphore.release()
 
     def slots_in_use(self) -> int:
@@ -1830,6 +1848,26 @@ class JobManager:
             )
         except (asyncio.TimeoutError, OSError) as exc:
             return f"the Source couldn't be checked ({exc or 'no answer'})"
+
+    async def _bind_source_bounded(self, job: ConversionJob) -> Optional[str]:
+        """Bind a job's checked Source before anything else reads it (#431):
+        every later step (sizing, detection, the companion checks, the
+        converter) reads ``job._read_path``, a link in a private folder no
+        Inbox writer can redirect. None when bound (or nothing to bind), else
+        why it couldn't be. Bounded; a late answer's folder is removed."""
+        identity = job._source_identity
+        if not identity or job.input_kind == InputKind.DIRECTORY:
+            return None
+        try:
+            bound, read_path = await run_detached_undoable(
+                bind_source, job.file_path, identity,
+                timeout=_CANONICAL_PROBE_SECONDS,
+                undo=lambda answer: unbind_source(answer[0]),
+            )
+        except (DeadlineExpired, OSError) as exc:
+            return f"the Source couldn't be bound for reading ({exc})"
+        job._bound_dir, job._read_path = bound, read_path
+        return None
 
     async def _fail_before_start(
         self, job_id: str, job: ConversionJob, message: str, *, dir_lock_held: bool,
@@ -2656,6 +2694,14 @@ class JobManager:
                 pass
 
     async def _cleanup_temp_dir(self, job: ConversionJob):
+        if job._bound_dir:
+            bound, job._bound_dir = job._bound_dir, None
+            try:
+                await asyncio.wait_for(
+                    run_detached(unbind_source, bound), _CANONICAL_PROBE_SECONDS,
+                )
+            except (asyncio.TimeoutError, OSError):
+                logger.warning("Could not remove the bound Source folder %s", bound)
         if job.temp_dir:
             temp_dir = job.temp_dir
             try:
@@ -5354,7 +5400,9 @@ class JobManager:
         """
         try:
             return await asyncio.wait_for(
-                run_detached(_source_bytes, job.file_path, cancel_event=cancel_event),
+                run_detached(
+                    _source_bytes, job._read_path or job.file_path, cancel_event=cancel_event,
+                ),
                 timeout=_CANONICAL_PROBE_SECONDS,
             )
         except ReadCancelled:
@@ -5383,7 +5431,7 @@ class JobManager:
 
         try:
             detection = await run_detached_bounded(
-                detect_platform, job.file_path,
+                detect_platform, job._read_path or job.file_path,
                 timeout=_CANONICAL_PROBE_SECONDS, cancel_event=cancel_event,
             )
         except ReadCancelled:
@@ -5609,6 +5657,8 @@ class JobManager:
             # the folder it must stay under with no link followed (#431), now
             # that its lock is held and before anything reads it.
             problem = await self._source_identity_problem_bounded(job)
+            if problem is None:
+                problem = await self._bind_source_bounded(job)
             if problem is not None:
                 await self._fail_before_start(
                     job_id, job, f"Not converted: {problem}", dir_lock_held=dir_lock_acquired,
@@ -5699,7 +5749,8 @@ class JobManager:
                 )
                 return
 
-            input_path = job.file_path
+            # A bound Source (#431) is read from its private folder of links.
+            input_path = job._read_path or job.file_path
             # The trusted root(s) an extracted source's track sheet may name
             # files under (utils.sheet_text.resolve_track's ``within``). None
             # for a source in a Volume; the extraction dir for an archive

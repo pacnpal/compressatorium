@@ -163,13 +163,13 @@ def _link_no_clobber(src: str, dst: str, src_dir_fd: int | None, dst_dir_fd: int
         ) from exc
 
 
-def _private_folder(parent: int) -> tuple[str, int]:
+def _private_folder(parent: int, *, prefix: str = ".compressatorium-q-") -> tuple[str, int]:
     """A fresh folder in the open folder *parent* (same filesystem), mode 0700
     so only this app's user can enter it, and its descriptor, opened with no
     link followed. Made with ``mkdir``, which never takes an existing name: a
     colliding random name is tried again, never reused."""
     for _ in range(100):
-        name = short_temp_name(prefix=".compressatorium-q-")
+        name = short_temp_name(prefix=prefix)
         try:
             os.mkdir(name, 0o700, dir_fd=parent)
         except FileExistsError:
@@ -1462,6 +1462,111 @@ def source_identity_problem(path: str, identity: dict) -> str | None:
     if not stat.S_ISREG(st.st_mode) or file_snapshot(st) != identity["snapshot"]:
         return "the Source isn't the file this job was queued for (it was replaced or changed)"
     return None
+
+
+# A bound Source's private folder, beside the files it was bound from.
+BIND_PREFIX = ".compressatorium-bind-"
+_NOFOLLOW_FLAG = getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+# Linking can't be done here (another filesystem, a NAS that refuses links):
+# the bound copy is made through a descriptor that was checked instead.
+_NO_LINK_ERRNOS = frozenset({
+    errno.EXDEV, errno.ENOTSUP, errno.EOPNOTSUPP, errno.EPERM, errno.EMLINK,
+})
+
+
+def _bind_one(name: str, folder_fd: int, bound_fd: int, expected: dict) -> None:
+    """Put *name* (in *folder_fd*) into the private folder *bound_fd*: a hard
+    link, checked to be the inode *expected*; or, where links can't be made, a
+    copy read through a descriptor opened with no link followed and checked
+    the same way before and after. Raises OSError (ESTALE: not the file)."""
+    try:
+        os.link(name, name, src_dir_fd=folder_fd, dst_dir_fd=bound_fd, follow_symlinks=False)
+    except OSError as exc:
+        if exc.errno not in _NO_LINK_ERRNOS:
+            raise
+        _copy_checked(name, folder_fd, bound_fd, expected)
+        return
+    fd = os.open(name, os.O_RDONLY | _NOFOLLOW_FLAG, dir_fd=bound_fd)
+    try:
+        if file_snapshot(os.fstat(fd)) != expected:
+            raise OSError(errno.ESTALE, f"{name} isn't the file that was checked")
+    finally:
+        os.close(fd)
+
+
+def _copy_checked(name: str, folder_fd: int, bound_fd: int, expected: dict) -> None:
+    src = os.open(name, os.O_RDONLY | _NOFOLLOW_FLAG, dir_fd=folder_fd)
+    try:
+        if file_snapshot(os.fstat(src)) != expected:
+            raise OSError(errno.ESTALE, f"{name} isn't the file that was checked")
+        dst = os.open(
+            name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW_FLAG, 0o600,
+            dir_fd=bound_fd,
+        )
+        with os.fdopen(dst, "wb") as out:
+            while chunk := os.read(src, 4 * 1024 * 1024):
+                out.write(chunk)
+        if file_snapshot(os.fstat(src)) != expected:
+            raise OSError(errno.ESTALE, f"{name} changed while it was copied")
+    finally:
+        os.close(src)
+
+
+def bind_source(path: str, identity: dict) -> tuple[str, str]:
+    """Bind a queued conversion's Source before anything reads it (#431):
+    ``(private folder, the Source's path in it)``.
+
+    A fresh folder (mode 0700, same filesystem) is made in the identity's
+    root, and the Source and each of its members (``identity["members"]``, a
+    sheet's tracks) are hard-linked into it through descriptors opened beneath
+    the root with no link followed, each checked to be the inode that was
+    validated (or, where links can't be made, copied through a checked
+    descriptor). Everything the job then does reads these, a path no Inbox
+    writer can redirect. Raises OSError, leaving nothing behind. Blocking.
+    :func:`unbind_source` removes the folder."""
+    root = identity["root"]
+    folder_fd, name = _folder_beneath_root(path, root)
+    try:
+        root_fd = open_dir_beneath(os.path.abspath(root))
+        try:
+            private, bound_fd = _private_folder(root_fd, prefix=BIND_PREFIX)
+        finally:
+            os.close(root_fd)
+        try:
+            files = {name: identity["snapshot"], **identity.get("members", {})}
+            for each, expected in files.items():
+                _bind_one(each, folder_fd, bound_fd, expected)
+        except BaseException:
+            os.close(bound_fd)
+            unbind_source(os.path.join(os.path.abspath(root), private))
+            raise
+        os.close(bound_fd)
+    finally:
+        os.close(folder_fd)
+    bound = os.path.join(os.path.abspath(root), private)
+    return bound, os.path.join(bound, name)
+
+
+def unbind_source(bound: str) -> None:
+    """Remove a folder :func:`bind_source` made: its own names (links to the
+    Inbox's files, or copies it made) and itself. Opened with no link
+    followed. Never raises. Blocking."""
+    try:
+        fd = os.open(bound, _BENEATH_DIR_FLAGS)
+    except OSError:
+        return
+    try:
+        for entry in os.listdir(fd):
+            try:
+                os.unlink(entry, dir_fd=fd)
+            except OSError:
+                logger.warning("unbind_source: couldn't remove %s in %s", entry, bound)
+    finally:
+        os.close(fd)
+    try:
+        os.rmdir(bound)
+    except OSError:
+        logger.warning("unbind_source: couldn't remove %s", bound)
 
 
 def read_beneath(root: str, relative: str, *, max_bytes: int) -> bytes:

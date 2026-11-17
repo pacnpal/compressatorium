@@ -92,3 +92,52 @@ async def test_a_source_replaced_after_queueing_is_refused(env) -> None:
 
     assert job_manager.jobs[job.id].status == JobStatus.FAILED
     assert env["commands"] == []
+
+
+
+@pytest.mark.asyncio
+async def test_a_folder_swapped_after_the_check_still_converts_the_bound_source(
+    env, monkeypatch,
+) -> None:
+    """Codex 4605281757 (P1), ruled: the Source is bound before anything else
+    runs. Swapping its folder for a link right after the check (here, as the
+    job sizes its Source) can't redirect the converter: it reads the staged
+    link of the file that was checked, and nothing outside is read."""
+    from models import JobStatus
+    from services.job_manager import job_manager
+    from services.tools import registry
+
+    inbox = env["tmp"] / "Downloads"
+    game = _gamecube(inbox / "gc" / "Game.iso")
+    original = Path(game).read_bytes()
+    job = await _queue(env, game, inbox)
+    outside = env["tmp"].parent / f"{env['tmp'].name}-outside"
+    outside.mkdir()
+    (outside / "Game.iso").write_bytes(b"NOT THE INBOX'S" + bytes(0x440))
+    real_sizing = job_manager._source_bytes_bounded
+
+    async def swap_then_size(job_, cancel_event):
+        os.rename(inbox / "gc", inbox / "gc-moved")
+        os.symlink(outside, inbox / "gc")
+        return await real_sizing(job_, cancel_event)
+
+    monkeypatch.setattr(job_manager, "_source_bytes_bounded", swap_then_size)
+    read = {}
+    service = registry.get("dolphin")._service
+
+    async def capture(cmd, *, input_path, output_path, **kwargs):
+        read["path"] = input_path
+        read["bytes"] = Path(input_path).read_bytes()
+        Path(output_path).write_bytes(b"converted output")
+        yield {"progress": 100, "message": "Conversion complete"}
+
+    monkeypatch.setattr(service._runner, "run", capture)
+
+    await job_manager._process_job(job.id)
+
+    assert job_manager.jobs[job.id].status == JobStatus.COMPLETED, job.error_message
+    assert read["bytes"] == original
+    assert ".compressatorium-bind-" in read["path"]
+    assert not os.path.exists(read["path"])  # the binding is gone afterwards
+    assert not list(inbox.glob(".compressatorium-bind-*"))
+    assert (inbox / "gc-moved" / "Game.iso").read_bytes() == original
