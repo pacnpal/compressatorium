@@ -986,12 +986,16 @@ def _exists_at(parent: int, name: str) -> bool:
     return True
 
 
-def _processed_folder(inbox: inbox_store.Inbox, files: list[str], names: list[str]) -> int:
+def _processed_folder(
+    inbox: inbox_store.Inbox, files: list[str], names: list[str],
+) -> tuple[int, str]:
     """``processed/<the Image's folder in the Inbox>``, or a numbered
     ``<stem> (n)`` folder in it when one of *names* is taken there, made and
-    opened beneath the Inbox with no link followed. Blocking."""
+    opened beneath the Inbox with no link followed: its descriptor and its
+    path (for messages). Blocking."""
     rel = os.path.relpath(os.path.dirname(files[0]), inbox.folder)
     parts = [inbox_store.PROCESSED, *([] if rel == "." else rel.split(os.sep))]
+    where = os.path.join(inbox.folder, *parts)
     fd = open_dir_beneath(inbox.folder)
     try:
         for part in parts:
@@ -999,7 +1003,7 @@ def _processed_folder(inbox: inbox_store.Inbox, files: list[str], names: list[st
             os.close(fd)
             fd = child
         if not any(_exists_at(fd, name) for name in names):
-            return fd
+            return fd, where
         stem = os.path.splitext(names[0])[0]
         for n in range(2, 1000):
             numbered = f"{stem} ({n})"
@@ -1008,7 +1012,7 @@ def _processed_folder(inbox: inbox_store.Inbox, files: list[str], names: list[st
                 os.close(child)
                 continue
             os.close(fd)
-            return child
+            return child, os.path.join(where, numbered)
         raise OSError(errno.EEXIST, "No free name in processed/")
     except BaseException:
         os.close(fd)
@@ -1031,7 +1035,7 @@ def _move_to_processed(
     src, names = _folder_beneath(inbox, files)
     try:
         _check_identities(src, identities)
-        dst = _processed_folder(inbox, files, names)
+        dst, processed = _processed_folder(inbox, files, names)
         try:
             moved: list[str] = []
             try:
@@ -1054,21 +1058,44 @@ def _move_to_processed(
             except OSError as failure:
                 # Back the way they came, through the same two folders.
                 stuck = []
+                inbox_folder = os.path.dirname(files[0])
                 for name in reversed(moved):
+                    here = os.path.join(processed, name)
+                    there = os.path.join(inbox_folder, name)
+                    at_old, at_new = stat_at(name, src), stat_at(name, dst)
+                    if at_old is not None and at_new is not None and (
+                        at_old.st_dev, at_old.st_ino,
+                    ) == (at_new.st_dev, at_new.st_ino):
+                        # Both names of one file (a move that never let go
+                        # of its Inbox name): the processed/ name goes.
+                        try:
+                            os.unlink(name, dir_fd=dst)
+                        except OSError as exc:
+                            stuck.append(f"{here} (a second name of {there}; {exc})")
+                        continue
+                    if at_old is not None:
+                        # Its Inbox name is taken by another file (a writer
+                        # put one there): never moved back over it. It keeps
+                        # its only name, in processed/ (CodeRabbit 4607070950).
+                        logger.error(
+                            "inbox: %s stays in processed/: %s is taken by another file",
+                            here, there,
+                        )
+                        stuck.append(f"{here} (its name in the Inbox, {there}, is taken by "
+                                     "another file, which was left alone)")
+                        continue
                     try:
                         place_without_clobbering(
                             name, name, src_dir_fd=dst, dst_dir_fd=src, identity_sensitive=True,
                         )
                     except OSError as exc:
-                        # Its name in the Inbox was taken again meanwhile:
-                        # nothing is replaced, it stays in processed/.
                         logger.error("inbox: could not put %s back in the Inbox: %s", name, exc)
-                        stuck.append(name)
+                        stuck.append(f"{here} (couldn't be put back as {there}: {exc})")
                 if stuck:
                     raise MoveRollbackFailed(
                         errno.EIO,
-                        f"moving it to processed/ failed ({failure}), and "
-                        f"{', '.join(stuck)} couldn't be put back (left in processed/)",
+                        f"moving it to processed/ failed ({failure}), and these stay in "
+                        f"processed/: {'; '.join(stuck)}",
                     ) from failure
                 raise
         finally:

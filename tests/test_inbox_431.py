@@ -2638,3 +2638,118 @@ def test_a_take_that_moved_but_couldnt_clean_up_is_a_move(vol, monkeypatch):
     finally:
         slot.keep()
     assert not (folder / "Game.chd").exists()
+
+
+# ---- round thirteen: CodeRabbit on db9e530f ------------------------------
+
+
+def test_a_cleanup_that_cant_stat_the_destination_itself_says_it_is_committed(
+    tmp_path, monkeypatch,
+):
+    """CodeRabbit 4607070950 (c): the cleanup's stat of the destination (not
+    the source) failing is PlacementCommitted too."""
+    from utils import path_utils
+
+    monkeypatch.setattr(path_utils, "_rename_noreplace_at", lambda *_a: False)
+    a, b = _two_folders(tmp_path)
+    real_stat = os.stat
+    renamed = []
+    dst_fd_box = {}
+
+    def rename_fails(*_a, **_k):
+        renamed.append(True)
+        raise OSError(errno.EIO, "Input/output error (rename)")
+
+    def dst_stat_fails(path, *args, **kwargs):
+        if renamed and kwargs.get("dir_fd") == dst_fd_box["fd"]:
+            raise OSError(errno.EIO, "Input/output error (dst stat)")
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(path_utils.os, "rename", rename_fails)
+    monkeypatch.setattr(path_utils.os, "stat", dst_stat_fails)
+    src_fd, dst_fd = os.open(a, os.O_RDONLY), os.open(b, os.O_RDONLY)
+    dst_fd_box["fd"] = dst_fd
+    try:
+        with pytest.raises(path_utils.PlacementCommitted) as committed:
+            path_utils.place_without_clobbering(
+                "Game.iso", "Game.iso", src_dir_fd=src_fd, dst_dir_fd=dst_fd,
+                identity_sensitive=True,
+            )
+    finally:
+        os.close(src_fd)
+        os.close(dst_fd)
+
+    assert "rename" in str(committed.value.__cause__)
+    assert "dst stat" in str(committed.value.__context__)
+
+
+def test_a_source_replaced_before_a_failed_quarantine_leaves_the_original_committed(
+    tmp_path, monkeypatch,
+):
+    """CodeRabbit 4607070950 (a): an Inbox writer replaces the source after
+    the link, then the quarantine rename fails. The destination still holds
+    the original (its only name now): PlacementCommitted, never a plain
+    error, and neither file is touched."""
+    from utils import path_utils
+
+    monkeypatch.setattr(path_utils, "_rename_noreplace_at", lambda *_a: False)
+    a, b = _two_folders(tmp_path)
+
+    def replaced_then_fails(*_a, **_k):
+        os.unlink(a / "Game.iso")
+        (a / "Game.iso").write_bytes(b"the writer's")
+        raise OSError(errno.EIO, "Input/output error (rename)")
+
+    monkeypatch.setattr(path_utils.os, "rename", replaced_then_fails)
+    src_fd, dst_fd = os.open(a, os.O_RDONLY), os.open(b, os.O_RDONLY)
+    try:
+        with pytest.raises(path_utils.PlacementCommitted):
+            path_utils.place_without_clobbering(
+                "Game.iso", "Game.iso", src_dir_fd=src_fd, dst_dir_fd=dst_fd,
+                identity_sensitive=True,
+            )
+    finally:
+        os.close(src_fd)
+        os.close(dst_fd)
+
+    assert (b / "Game.iso").read_bytes() == b"original"
+    assert (a / "Game.iso").read_bytes() == b"the writer's"
+
+
+@pytest.mark.asyncio
+async def test_a_committed_move_whose_name_is_taken_again_is_kept_and_reported(
+    vol, db, queue, monkeypatch,
+):
+    """CodeRabbit 4607070950 (b): a move to processed/ that committed while
+    the Inbox name was taken by a replacement is never moved back over it:
+    the original stays in processed/ (its only name), and the Finding names
+    both paths."""
+    from services.inbox import intake
+    from utils import path_utils
+
+    library = _library(vol)
+    await _ps2_rule(library)
+    box = _inbox(vol, library)
+    game = await _converted(vol, queue, box)
+    real_move = intake.move_anchored
+    calls = []
+
+    def second_commits_after_a_writer(name, src, dst, expected, **kwargs):
+        calls.append(name)
+        real_move(name, src, dst, expected, **kwargs)
+        if name == "Game.iso":
+            # A writer puts a new file under the name just vacated, then
+            # something fails after the move landed.
+            game.write_bytes(b"the writer's")
+            raise path_utils.PlacementCommitted(errno.EIO, "cleanup failed")
+
+    monkeypatch.setattr(intake, "move_anchored", second_commits_after_a_writer)
+
+    await _poll(box, now=122)
+
+    processed = vol / "Downloads" / "processed" / "ps2" / "Game.iso"
+    assert processed.read_bytes() == DISC  # the original, kept there
+    assert game.read_bytes() == b"the writer's"  # the replacement, untouched
+    [finding] = [f for f in _inbox_findings() if f["kind"] == findings.INBOX_FAILED]
+    assert str(processed) in finding["reason"]
+    assert str(game) in finding["reason"]

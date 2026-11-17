@@ -639,3 +639,40 @@ async def test_a_committed_placement_is_rolled_back_with_the_rest(
     assert sorted(p.name for p in (psx / "game").iterdir()) == sorted([
         "game.cue", "game (Track 1).bin", "game (Track 2).bin",
     ])
+
+
+@pytest.mark.asyncio
+async def test_a_committed_move_whose_old_name_is_taken_is_kept_and_named(
+    db: Path, client: httpx.AsyncClient, monkeypatch,
+) -> None:
+    """CodeRabbit 4607070950 (b), ruled: a committed move whose old name a
+    writer took meanwhile is never moved back over the replacement. The file
+    keeps its new name (its only one), and the not-renamed result names both
+    paths."""
+    from services import image_rename
+    from utils.path_utils import PlacementCommitted
+
+    psx = db / "roms" / "psx"
+    image = await _cue_image(client, psx / "game")
+    await _register(client, db / "roms")
+    preview = await _preview(client, image["sheet"])
+    real_move = image_rename.move_anchored
+    old = image["two"]
+    moved_to: dict = {}
+
+    def committed_then_taken(name, src, dst, expected, **kwargs):
+        real_move(name, src, dst, expected, **kwargs)
+        if name == old.name and "new" not in moved_to:
+            moved_to["new"] = kwargs.get("new_name")
+            old.write_bytes(b"a writer's file")  # the vacated name, taken
+            raise PlacementCommitted(5, "Input/output error after the move")
+
+    monkeypatch.setattr(image_rename, "move_anchored", committed_then_taken)
+    job = await _run(client, preview)
+
+    result = _result(job)[str(image["sheet"])]
+    assert result["status"] == "not_renamed", result
+    assert old.read_bytes() == b"a writer's file"
+    kept = old.parent / moved_to["new"]
+    assert kept.exists()
+    assert str(kept) in result["reason"] and str(old) in result["reason"]

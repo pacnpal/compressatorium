@@ -860,3 +860,25 @@ async def test_a_parked_name_that_is_a_second_link_of_the_source_is_dropped(vol,
     (finding,) = _swap_findings()
     assert str(seed.output) in finding["reason"]
     assert str(seed.parked) not in finding["reason"]
+
+
+@pytest.mark.asyncio
+async def test_a_second_link_beside_a_source_still_in_place_is_settled(vol, romm):
+    """CodeRabbit 4607068244 (a): once the second link is dropped, a Source
+    still in place under the name RomM has for it is the state before the
+    swap moved anything: the row settles on its own, the output the job kept
+    is placed beside the Source, and there is no Finding."""
+    seed = Seed(vol, romm, original=True)
+    seed.park.mkdir(parents=True)
+    os.link(seed.source, seed.parked)  # both names: the park never moved it
+    seed.row("parking")
+
+    await _recover()
+
+    (row,) = _rows()
+    assert row["state"] in ("failed", "rolled_back"), row
+    assert not seed.parked.exists()
+    assert seed.source.read_bytes() == SOURCE_BYTES
+    assert seed.output.read_bytes() == OUTPUT_BYTES
+    assert romm.renames == [] and romm.scans == []
+    assert _swap_findings() == []

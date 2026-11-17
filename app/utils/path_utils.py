@@ -254,6 +254,7 @@ def _quarantine_move(
 ) -> None:
     """Steps 1 to 3 of :func:`_move_by_quarantine`, the private folder made."""
     _link_no_clobber(src, dst, src_dir_fd, dst_dir_fd)
+    linked: os.stat_result | None = None
     try:
         linked = os.stat(dst, dir_fd=dst_dir_fd, follow_symlinks=False)
         os.rename(name, name, src_dir_fd=parent, dst_dir_fd=private_fd)
@@ -293,6 +294,18 @@ def _quarantine_move(
                     f"{src} was linked at {dst}, moving it failed ({failure}), and "
                     f"{dst} couldn't be taken back ({exc})",
                 ) from failure
+        elif there is not None and (linked is None or _same_inode(there, linked)):
+            # src was replaced (or removed) after the link: dst holds the
+            # original, its only name now, and stays (CodeRabbit 4607070950).
+            # (Its link unchecked, it may be: taken as published.)
+            logger.error(
+                "place_without_clobbering: %s was replaced while it was moved and "
+                "moving it failed (%s); the original stays at %s", src, failure, dst,
+            )
+            raise PlacementCommitted(
+                getattr(failure, "errno", None) or errno.EIO,
+                f"{src} was replaced while it was moved; the original is at {dst}",
+            ) from failure
         raise
     try:
         held = os.stat(name, dir_fd=private_fd, follow_symlinks=False)

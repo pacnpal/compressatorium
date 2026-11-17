@@ -278,6 +278,10 @@ class _Files:
         self.folder: _FolderMove | None = None
         self.sheet: str | None = None
         self.journal: WriteJournal | None = None
+        # Files a put-back left under their new name because a writer took
+        # the old one meanwhile: what the not-renamed result says, both
+        # paths each (CodeRabbit 4607070950).
+        self.kept_apart: list[str] = []
 
     @classmethod
     def open_blocking(
@@ -400,6 +404,27 @@ class _Files:
         says so."""
         for move in reversed(done):
             try:
+                at_old = _stat_at(move.old_name, move.src)
+                at_new = _stat_at(move.new_name, move.dst)
+                if at_old is not None and at_new is not None and (
+                    at_old.st_dev, at_old.st_ino,
+                ) == (at_new.st_dev, at_new.st_ino):
+                    # Both names of one file (a move that never let go of
+                    # its old name): the new name goes, the old one stays.
+                    os.unlink(move.new_name, dir_fd=move.dst)
+                    continue
+                if at_old is not None:
+                    # Its old name is taken by another file: never moved
+                    # back over it. It keeps its new name, its only one.
+                    logger.error(
+                        "image_rename: %s keeps its new name: %s is taken by another file",
+                        move.new, move.old,
+                    )
+                    self.kept_apart.append(
+                        f"{move.new} keeps its new name ({move.old} is taken by another "
+                        "file, which was left alone)"
+                    )
+                    continue
                 if not self._is_ours(move, _stat_at(move.new_name, move.dst)):
                     raise OSError(f"{move.new_name} changed since it was renamed")
                 move_anchored(
@@ -759,6 +784,8 @@ async def _rename_locked(
             except OSError as exc:
                 what = "the file" if len(renames) == 1 else "its files"
                 reason = f"couldn't rename {what} ({exc.strerror or exc})"
+                if files.kept_apart:
+                    reason = f"{reason}; {'; '.join(files.kept_apart)}"
         try:
             where = await _probe(files.where_blocking)
         except OSError:

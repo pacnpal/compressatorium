@@ -799,7 +799,16 @@ unlink fails too, `dst` stays published beside `src` and it raises
 `PlacementCommitted` with the first failure chained (CodeRabbit 4606441954),
 never swallowing it. The same when that check can't stat either name for any
 reason but `ENOENT` (CodeRabbit 4606738359): only "gone" says `dst` isn't
-published, anything else means it may be. A failure
+published, anything else means it may be. And when `src` was replaced (or
+removed) after the link while `dst` is still the inode linked, `dst` holds the
+original, its only name now: `PlacementCommitted` too, both files left as they
+are (CodeRabbit 4607070950). The rollbacks never move a committed file back
+over a name another file took meanwhile: the Image rename and
+`_move_to_processed` check the old name first and, when it is taken, leave the
+file under its new name and say so, naming both paths (the rename's
+not-renamed reason; intake's `inbox_failed` Finding through
+`MoveRollbackFailed`); a file whose old and new names are one inode (a move
+that never let go of its old name) just loses the new name. A failure
 after step 2 raises `PlacementCommitted` (an `OSError`): the file is at `dst`
 and its old name gone, so a caller that rolls back counts it as moved (the
 Image rename and `_move_to_processed` put it back with the rest).
