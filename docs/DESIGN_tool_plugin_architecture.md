@@ -4548,8 +4548,11 @@ that fails.
 title-id extraction on, moves a missing ROM onto its converted file by title
 id at its next library scan, keeping the id, for some (Platform, output
 format) pairs. `REIDENTIFIED` is that finding as data: RomM version ->
-frozenset of `(RomM Platform slug, output extension)` (5.4.1: PS2 CHD, PSP
-CHD, PSP CSO, GameCube RVZ). A RomM release that behaves differently gets
+frozenset of `(RomM Platform slug, output extension)` (5.4.1: PSP CSO,
+GameCube RVZ). DAT-safe extensions (`DAT_SAFE_OUTPUT_EXTS`: `.chd`, `.zip`,
+`.7z`) never appear: `repin.mode_needs_repin` says no re-pin for them, so no
+row is recorded and there is nothing to mark (a test asserts the list holds
+none; #414). A RomM release that behaves differently gets
 its own key; a version with no key gets the re-pin. `reason(heartbeat,
 platform_slug, mode, output_path)` is the one decision: it answers only when
 the heartbeat's `SYSTEM.VERSION` (a leading `v` dropped) has a key,

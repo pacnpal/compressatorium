@@ -21,7 +21,7 @@
   (#393). With **Keep the ROM id when converting** off, RomM 5.4.1
   (title-id extraction on, its default) moves a missing game onto its
   converted file by title id at its next library scan, keeping the ROM id and
-  everything on it, for PS2 CHD, PSP CHD, PSP CSO and GameCube RVZ. A
+  everything on it, for PSP CSO and GameCube RVZ. A
   conversion to one of those whose source is deleted now says so in the job
   and the Ledger ("... so the metadata re-pin is expected to be unnecessary;
   the next re-pin pass will confirm it"). The re-pin stays queued: when it
@@ -30,7 +30,10 @@
   writing anything; otherwise (RomM saw the output before the source was gone
   and added a new game, say) it re-pins as before. PS2 CSO and ZSO, PSP ZSO
   and GameCube WIA and GCZ, other RomM versions, and a RomM whose heartbeat
-  can't be read re-pin as before. The list is data, kept per RomM version.
+  can't be read re-pin as before. CHD (and ZIP and 7z) never gets this
+  mark: those outputs keep RomM's DAT match, so no re-pin is recorded at all
+  and the job and the Ledger say nothing about one (#414). The RomM Library notice and the
+  Settings → Metadata text now describe this, too. The list is data, kept per RomM version.
   With the switch on, the swap keeps the id for every single-file format, as
   before. The re-pin pass's result also counts these (`reidentified`).
 - **Converting a RomM game keeps its ROM id** (#391). With **Keep the ROM id
@@ -144,6 +147,13 @@
   conversion or undoing it, and the undo first moves the converted file
   aside to a named path, so no step puts a file where another one is. Swaps
   set aside before this update are still recovered.
+- **Rules editor checkboxes save again** (#412). Ticking "Run automatically",
+  "Used by an EmulationStation frontend", a Platform's enable switch, the ID
+  filters, "Check the container only", the checking switch or a per-check
+  enable changed the box on screen but sent nothing, so a reload showed the
+  old value. The shared checkbox had no `onchange` to call. It has one now,
+  and a test fails if any component is given a prop its child does not
+  declare.
 - **A symlinked system folder keeps its ES-DE gamelist entry** (#413). In a
   Library used by an EmulationStation frontend, a system folder that is a
   symlink to somewhere outside the Library (`ROMs/psx -> /elsewhere/psx`) was

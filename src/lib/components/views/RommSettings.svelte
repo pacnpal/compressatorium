@@ -323,10 +323,12 @@
       <h2>Metadata</h2>
       <p>
         RomM identifies a CHD by the hash inside its header and an archive by its
-        largest member, so those keep their Redump/No-Intro match automatically.
-        RVZ, CSO, NSZ, WUX and Z3DS are matched on the file's own hash, which
-        conversion changes — so their metadata is saved first and re-applied
-        after RomM rescans.
+        largest member, so CHD, ZIP and 7z keep their Redump/No-Intro match
+        automatically. Other formats are matched on the file's own hash, which
+        conversion changes — so their metadata is saved first. Where RomM
+        re-identifies the format on its own, the saved metadata is confirmed
+        against RomM's record and only re-applied if RomM didn't match it; the
+        rest are re-applied after RomM rescans.
       </p>
     </header>
     <Checkbox
