@@ -659,15 +659,45 @@ def _can_renice(increment: int) -> bool:
     return soft == resource.RLIM_INFINITY or 20 - target <= soft
 
 
-@functools.cache
+_WRAPPERS: dict[str, str | None] = {}
+
+
 def _wrapper_path(name: str) -> str | None:
     """Where ``nice``/``ionice`` is, looked up once per process and only once
     its setting asks for it (a PATH scan stats directories, so it isn't
     repeated per spawn, nor made at import when no priority is enabled).
     Absolute, so a tool started in another folder (romz's ``cwd``) still
-    finds it when PATH held a relative entry."""
-    found = shutil.which(name)
-    return os.path.abspath(found) if found else None
+    finds it when PATH held a relative entry. A spawn resolves it off the
+    event loop first (:func:`_resolve_wrappers`), so this is then a lookup in
+    the cache."""
+    if name not in _WRAPPERS:
+        found = shutil.which(name)
+        _WRAPPERS[name] = os.path.abspath(found) if found else None
+    return _WRAPPERS[name]
+
+
+async def _resolve_wrappers(owner: str | None) -> bool:
+    """Look up, off the event loop and bounded (``_bounded_probe``), each
+    wrapper *owner*'s settings ask for that isn't cached yet (CodeRabbit
+    4616166783). False when a lookup stalled on a PATH entry that doesn't
+    answer: that spawn runs with no wrapper, at normal priority, and nothing
+    is cached, so a later spawn tries again."""
+    wanted = []
+    if nice_value(owner) is not None:
+        wanted.append("nice")
+    if None not in (_resolve_policy("ioprio_class", owner), _resolve_policy("ioprio_level", owner)):
+        wanted.append("ionice")
+    for name in wanted:
+        if name in _WRAPPERS:
+            continue
+        try:
+            await _bounded_probe(_wrapper_path, name)
+        except asyncio.TimeoutError:
+            logging.getLogger(f"chd.{owner}").warning(
+                "Looking up %s on PATH did not answer; running at normal priority", name,
+            )
+            return False
+    return True
 
 
 def _not_launched_event(returncode: int | None, wrapped: bool, said: bytes | str) -> dict | None:
@@ -2085,7 +2115,7 @@ class SubprocessRunner:
         # run(): a captured command (e.g. dolphin-tool verify reconstructing a
         # full disc for DAT hashing) is just as heavy as a conversion. Command
         # wrappers only, never a preexec_fn (see priority_prefix).
-        prefix = priority_prefix(self._owner)
+        prefix = priority_prefix(self._owner) if await _resolve_wrappers(self._owner) else []
         cmd = prefix + cmd
 
         process = await self._spawn_piped(
@@ -2171,7 +2201,7 @@ class SubprocessRunner:
             raise ReadCancelled("Read cancelled")
         label = os.path.basename(cmd[0])
         # Command wrappers, never a preexec_fn: see priority_prefix.
-        prefix = priority_prefix(self._owner)
+        prefix = priority_prefix(self._owner) if await _resolve_wrappers(self._owner) else []
         cmd = prefix + cmd
         process = await self._spawn_piped(
             cmd,
@@ -2421,7 +2451,7 @@ class SubprocessRunner:
         """
         # nice/ionice as command wrappers, never a preexec_fn: see
         # priority_prefix.
-        prefix = priority_prefix(self._owner)
+        prefix = priority_prefix(self._owner) if await _resolve_wrappers(self._owner) else []
         cmd = prefix + cmd
 
         # One the verifier can't open is no verdict, decided before it runs
@@ -2685,7 +2715,7 @@ class SubprocessRunner:
 
         # nice/ionice as command wrappers, never a preexec_fn: see
         # priority_prefix.
-        prefix = priority_prefix(self._owner)
+        prefix = priority_prefix(self._owner) if await _resolve_wrappers(self._owner) else []
         cmd = prefix + cmd
 
         # cmd is built from validated settings paths (no shell interpretation);

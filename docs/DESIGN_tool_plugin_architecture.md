@@ -553,6 +553,9 @@ apply them twice. Either binary missing, its prefix is empty and the child runs
 at normal priority. Each is looked up once per process, the first time its
 setting asks for it, and cached as an absolute path (`_wrapper_path`; nothing
 is scanned at import, and a tool started in another folder still finds it).
+A spawn makes that lookup off the event loop, bounded (`_resolve_wrappers`
+over `_bounded_probe`); a PATH entry that doesn't answer runs that spawn at
+normal priority with nothing cached, so a later spawn tries again.
 `ionice -t` is best effort, like the renice: a class the kernel denies
 (realtime without CAP_SYS_ADMIN) doesn't stop ionice before it runs the tool,
 which would otherwise hand back ionice's exit 1 as the tool's. A nice level

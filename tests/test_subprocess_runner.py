@@ -634,7 +634,7 @@ def test_ionice_is_best_effort(monkeypatch):
         pytest.skip("no ionice on this host")
     monkeypatch.setattr(runner_module, "_resolve_policy", lambda key, _owner: {
         "ioprio_class": 1, "ioprio_level": 0,
-    }[key])
+    }.get(key))
     prefix = runner_module.ioprio_prefix("test")
     assert prefix[1:] == ["-t", "-c", "1", "-n", "0"]
     # Whether or not this host may set the realtime class, the tool runs and
@@ -659,11 +659,8 @@ def test_the_wrapper_path_is_absolute_and_looked_up_lazily(tmp_path, monkeypatch
     fake.chmod(0o755)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("PATH", "bin")
-    runner_module._wrapper_path.cache_clear()
-    try:
-        assert runner_module._wrapper_path("nice") == str(fake)
-    finally:
-        runner_module._wrapper_path.cache_clear()
+    monkeypatch.setattr(runner_module, "_WRAPPERS", {})
+    assert runner_module._wrapper_path("nice") == str(fake)
     source = importlib.util.find_spec("services.subprocess_runner").origin
     assert '\n_wrapper_path("' not in open(source, encoding="utf-8").read()
 
@@ -1447,3 +1444,39 @@ def test_a_cancel_abandons_a_sweep_that_had_not_started_unlinking(tmp_path):
 
     assert done.wait(5)
     assert partial.exists()  # abandoned before it reached the unlink
+
+
+def test_a_wrapper_lookup_that_stalls_runs_at_normal_priority(monkeypatch):
+    """CodeRabbit 4616166783: a spawn looks its wrappers up off the event
+    loop, bounded; a PATH entry that doesn't answer means that spawn runs
+    with no wrapper, and nothing is cached, so a later spawn tries again."""
+    monkeypatch.setattr(runner_module, "_WRAPPERS", {})
+    monkeypatch.setattr(runner_module, "nice_value", lambda _owner=None: 10)
+    looked_up = []
+
+    async def stalled(func, *args, **_kwargs):
+        looked_up.append((func, args))
+        raise asyncio.TimeoutError
+
+    monkeypatch.setattr(runner_module, "_bounded_probe", stalled)
+
+    def scan_on_the_loop(_name):
+        raise AssertionError("PATH was scanned on the event loop")
+
+    monkeypatch.setattr(runner_module.shutil, "which", scan_on_the_loop)
+    spawned = []
+    real_exec = runner_module.asyncio.create_subprocess_exec
+
+    async def spy(*args, **kwargs):
+        spawned.append(list(args))
+        return await real_exec(*args, **kwargs)
+
+    monkeypatch.setattr(runner_module.asyncio, "create_subprocess_exec", spy)
+    cmd = [sys.executable, "-c", "print('ok')"]
+
+    rc, out, _ = asyncio.run(SubprocessRunner(owner="test").run_capture(cmd))
+
+    assert (rc, out) == (0, b"ok\n")
+    assert spawned == [cmd]  # no wrapper: normal priority
+    assert looked_up == [(runner_module._wrapper_path, ("nice",))]
+    assert runner_module._WRAPPERS == {}
