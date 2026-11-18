@@ -418,6 +418,11 @@
 
 ### Fixed
 
+- **Stopping the server with a job stream open logs no error** (#465). An
+  open job stream or verify stream now ends its response when the server
+  stops, instead of being cut off and logging "ASGI callable returned without
+  completing response."
+
 - **A tool killed by the system says so** (#455). When a tool is killed by a
   signal, most often the out-of-memory killer, the job's error now reads like
   "7z was killed (signal 9), most likely out of memory" instead of the tool's

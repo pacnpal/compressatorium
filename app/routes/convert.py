@@ -53,7 +53,7 @@ from services.output_conflicts import (
 )
 from services.tools import InputKind, ModeKind, registry
 from services.tools.base import compression_problem
-from sse_starlette.sse import EventSourceResponse
+from services.event_stream import event_stream
 from utils.delete_plan import build_delete_plan, build_delete_snapshot
 from utils.path_utils import (
     is_safe_directory_tree,
@@ -1745,7 +1745,7 @@ async def job_events():
         finally:
             feed.close()
 
-    return EventSourceResponse(event_generator())
+    return event_stream(event_generator())
 
 
 @router.get("/jobs/stuck-status")
@@ -1969,4 +1969,4 @@ async def job_progress(job_id: str):
             if queue:
                 job_manager.unsubscribe(job_id, queue)
 
-    return EventSourceResponse(event_generator())
+    return event_stream(event_generator())

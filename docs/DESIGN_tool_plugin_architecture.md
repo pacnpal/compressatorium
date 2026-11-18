@@ -8111,6 +8111,21 @@ own work has drained, whatever it queued meanwhile is cancelled and drained too
 memory a run keeps includes `ranked_holds` and `taken_holds` (Codex
 4608417851), so a later run lifts a hold whose ranking or name changed.
 
+### 3.3.26 Event streams end cleanly on shutdown (`services/event_stream.py`, #465)
+
+Every server-sent event route returns `event_stream(generator)`, never a bare
+`EventSourceResponse` (a test checks `routes/`). `sse_starlette` notices
+uvicorn's shutdown and, by default, cancels the whole response, so the closing
+body chunk never goes out and uvicorn logs "ASGI callable returned without
+completing response." for each open stream. `event_stream` passes the
+library a `shutdown_event` and a `shutdown_grace_period`
+(`SHUTDOWN_GRACE_SECONDS`, 5 s), and wraps the generator in `until_shutdown`:
+each wait for the next item runs in a cancel scope that the shutdown event
+cancels, after which the generator is closed (its `finally` runs) and the
+iteration ends. The response then sends its closing chunk and returns like
+any finished stream. The grace period is only a backstop for a generator that
+ignores cancellation. A new streaming route uses `event_stream` too.
+
 ### 3.4 `registry.py`
 
 ```python
