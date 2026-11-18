@@ -446,8 +446,13 @@
   tick and every Run now, under `romm_auto:` even on a folder Library and
   without naming the Library. Now it's logged once, with the Library's own
   prefix, naming the Library and the Platform, and again only when the reason
-  changes or once it clears and comes back. A skipped Rule's dropped settings
-  (#477) are logged when it next runs, not on each tick it is skipped. The
+  changes or once it clears and comes back. A check Rule whose verifier isn't
+  installed is logged the same way. A skipped Rule's dropped settings (#477)
+  are logged when it next runs, not on each tick it is skipped. The other
+  lines a sweep logs about a Library (a Platform that stops responding or
+  can't be listed, a batch that fails to queue, a volume that doesn't answer)
+  now also use the Library's prefix and name the Library and Platform, where
+  they used to say `romm_auto:` and give the Library's id or nothing. The
   sweep's errors and when a Rule runs are unchanged.
 - **Rules refuse and drop codecs the CHDMAN mode can't use** (#474). Saving a
   Rule (a Library's, RomM's, and so an Inbox's) that pairs a mode with a codec

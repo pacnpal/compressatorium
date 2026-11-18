@@ -258,3 +258,133 @@ async def test_a_removed_library_forgets_what_it_reported(
     await sweep.forget_library(library)
 
     assert not any(key[0] == lib["id"] for key in sweep._reported_skips)
+
+
+# ---- every sweep line names its Library under the Library's prefix --------
+#
+# A transient failure (a volume that stops answering, a listing that fails) is
+# logged by each sweep that hits it, which is fine: it is a real failure. But
+# it used to say `romm_auto:` on any Library and name it by id, or not at all.
+
+
+def _warnings(caplog) -> list[str]:
+    return [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+def _assert_each_names_the_library(lines: list[str]) -> None:
+    assert lines
+    for line in lines:
+        assert line.startswith("folder_library:"), line
+        assert "romm_auto" not in line
+        assert "roms" in line, line
+
+
+@pytest.mark.asyncio
+async def test_a_volume_that_stops_answering_is_logged_under_the_librarys_prefix(
+    tree: Path, tool_ready, queue, caplog, monkeypatch,
+) -> None:
+    from services import libraries
+    from services.rules import sweep
+
+    lib = await _register(tree)
+    await _store(lib["id"], {"ps2": {"enabled": True, "mode": "createdvd"}})
+    library = libraries.get(lib["id"])
+
+    async def not_answering(*_args, **_kwargs):
+        raise TimeoutError
+
+    monkeypatch.setattr(sweep, "bounded_path_check", not_answering)
+    with caplog.at_level(logging.DEBUG):
+        result = await sweep.sweep(library)
+
+    assert result["stopped_reason"] == "library_unresponsive"
+    _assert_each_names_the_library(_warnings(caplog))
+
+
+@pytest.mark.asyncio
+async def test_a_candidate_probe_that_fails_is_logged_under_the_librarys_prefix(
+    tree: Path, tool_ready, queue, caplog, monkeypatch,
+) -> None:
+    from services import libraries
+    from services.rules import sweep
+
+    lib = await _register(tree)
+    await _store(lib["id"], {"ps2": {"enabled": True, "mode": "createdvd"}})
+    library = libraries.get(lib["id"])
+
+    async def not_answering(*_args, **_kwargs):
+        raise OSError("stale file handle")
+
+    monkeypatch.setattr(sweep, "run_detached", not_answering)
+    with caplog.at_level(logging.DEBUG):
+        result = await sweep.sweep(library)
+
+    assert {"platform_id": "ps2", "error": "library_unresponsive"} in result["errors"]
+    lines = _warnings(caplog)
+    _assert_each_names_the_library(lines)
+    assert any("stopped responding" in m and "ps2" in m for m in lines), lines
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_platform_is_logged_under_the_librarys_prefix(
+    tree: Path, tool_ready, queue, caplog, monkeypatch,
+) -> None:
+    from services import libraries
+    from services.rules import sweep
+    from services.rules.library import LibraryUnreadable
+
+    lib = await _register(tree)
+    await _store(lib["id"], {"ps2": {"enabled": True, "mode": "createdvd"}})
+    library = libraries.get(lib["id"])
+
+    def unreadable(_platform_id):
+        raise LibraryUnreadable("the folder is not reachable")
+
+    monkeypatch.setattr(library, "images", unreadable)
+    with caplog.at_level(logging.DEBUG):
+        await sweep.sweep(library)
+        await sweep.sweep(library)
+
+    lines = _warnings(caplog)
+    assert len(lines) == 1, lines
+    _assert_each_names_the_library(lines)
+    assert "ps2" in lines[0] and "not reachable" in lines[0]
+    assert lib["id"] not in lines[0]
+
+
+@pytest.mark.asyncio
+async def test_a_check_rule_with_no_verifier_is_logged_once_per_change(
+    tree: Path, tool_ready, queue, caplog,
+) -> None:
+    from routes import libraries as routes
+    from services import libraries
+    from services.rules import sweep
+
+    # A file a tool checks on this Platform: a CHD.
+    (tree / "ps2" / "Ico.chd").write_bytes(b"\0" * 1024)
+    lib = await _register(tree)
+    await routes.put_library_rules(lib["id"], {"check_rules": {"ps2": {"enabled": True}}})
+    library = libraries.get(lib["id"])
+
+    tool_ready["ready"] = False
+    with caplog.at_level(logging.DEBUG):
+        results = [await sweep.sweep(library, ignore_schedule=True) for _ in range(3)]
+
+    for result in results:
+        assert {"platform_id": "ps2", "error": "tool_not_ready"} in result["errors"]
+    lines = _skips(caplog)
+    assert len(lines) == 1, lines
+    _assert_names_the_rule(lines[0])
+    assert "check Rule" in lines[0] and "not installed" in lines[0]
+
+    # Installed: nothing said. Gone again: said again.
+    caplog.clear()
+    tool_ready["ready"] = True
+    with caplog.at_level(logging.DEBUG):
+        await sweep.sweep(library, ignore_schedule=True)
+    assert _skips(caplog) == []
+    tool_ready["ready"] = False
+    with caplog.at_level(logging.DEBUG):
+        await sweep.sweep(library, ignore_schedule=True)
+        await sweep.sweep(library, ignore_schedule=True)
+    assert len(_skips(caplog)) == 1, _skips(caplog)

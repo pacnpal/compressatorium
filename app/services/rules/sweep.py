@@ -417,7 +417,7 @@ async def paused():
         yield
 
 
-async def _probe(func, *args, default):
+async def _probe(func, *args, default, library: Library):
     """One blocking filesystem answer, bounded, with the safe answer on timeout.
 
     Every stat and resolve in the sweep goes through here rather than
@@ -427,15 +427,16 @@ async def _probe(func, *args, default):
     stranded a pooled worker on the way.
 
     *default* is what "the volume did not answer" means at that call site, and
-    it is always the conservative reading.
+    it is always the conservative reading. *library* is the Library the
+    answer is for, which the line names.
     """
     try:
         return await bounded_path_check(func, *args)
     except (asyncio.TimeoutError, OSError):
         logger.warning(
-            "romm_auto: %s did not answer in time; treating it as %r "
+            "%s: %s did not answer in time for Library %s; treating it as %r "
             "(a volume is not answering)",
-            getattr(func, "__name__", func), default,
+            log_prefix(library), getattr(func, "__name__", func), library.name, default,
         )
         return default
 
@@ -502,9 +503,9 @@ async def normalize_rules_bounded(
         )
     except (asyncio.TimeoutError, OSError):
         logger.warning(
-            "romm_auto: validating the rules' output directories did not finish "
-            "in %ss; pausing the rules that name one (a volume is not answering)",
-            _VOLUME_PROBE_SECONDS,
+            "%s: validating the output directories of Library %s's Rules did not "
+            "finish in %ss; pausing the Rules that name one (a volume is not "
+            "answering)", log_prefix(library), library.name, _VOLUME_PROBE_SECONDS,
         )
         return _normalize(library, raw, kind=kind, volumes_unreachable=True)
 
@@ -738,9 +739,9 @@ async def _record_run(
     if not _listing_current(library, listed_at):
         summary["stale_listing"] = True
         logger.info(
-            "romm_auto: %s's %s run for platform %s saw a listing a finished job "
-            "made out of date; not recorded, so the next tick runs it again",
-            library.id, kind, platform_id,
+            "%s: the %s run for Platform %s in Library %s saw a listing a finished "
+            "job made out of date; not recorded, so the next tick runs it again",
+            log_prefix(library), kind, library.platform_value(platform_id), library.name,
         )
         return False
     state = await get_state(library, kind)
@@ -1295,7 +1296,7 @@ async def _current_plan(
     return await _probe(
         _planned_delete, image, rule, tool, spec,
         str(pending.get("source") or ""), str(pending.get("output") or ""),
-        default=PLAN_UNANSWERED,
+        default=PLAN_UNANSWERED, library=library,
     )
 
 
@@ -1336,7 +1337,7 @@ async def _file_kept_finding(
     """Write *item* under *library*, bound to its generation (codex
     4580078026), or under *owner* ``findings.NO_LIBRARY``, bound to none."""
     if owner == findings.NO_LIBRARY:
-        await _probe(findings.observe, owner, item, default=None)
+        await _probe(findings.observe, owner, item, default=None, library=library)
         return
     generation = _generations.get(library.id, 0)
     await _probe(
@@ -1344,7 +1345,7 @@ async def _file_kept_finding(
             findings.observe,
             current=lambda: _generations.get(library.id, 0) == generation,
         ),
-        library.id, item, default=None,
+        library.id, item, default=None, library=library,
     )
 
 
@@ -1525,7 +1526,7 @@ async def _plan_kept_deletes(
             # fresh (bounded; an unanswered volume is an attempt, not a verdict).
             inside = await _probe(
                 _inside_library, str(pending.get("source") or ""),
-                getattr(library, "root", None), default=None,
+                getattr(library, "root", None), default=None, library=library,
             )
             if inside is False:
                 remaining.pop(image_key)
@@ -1574,7 +1575,7 @@ async def _plan_kept_deletes(
             findings.clear_gone,
             current=lambda: _generations.get(library.id, 0) == generation,
         ),
-        library.id, findings.SOURCE_KEPT, default=0,
+        library.id, findings.SOURCE_KEPT, default=0, library=library,
     )
     for attempt in attempts:
         _kept_running.add(attempt.key(library))
@@ -1753,7 +1754,7 @@ async def _note_failure(
         source = getattr(job, "file_path", None)
         if not source:
             return
-        fingerprint = await _probe(image_fingerprint, source, default="")
+        fingerprint = await _probe(image_fingerprint, source, default="", library=library)
         if not fingerprint:
             return
         if queued_fingerprint is not None and fingerprint != queued_fingerprint:
@@ -2137,7 +2138,7 @@ async def _sweep_locked(
     # answer is `None`, which stops the run rather than proceeding blind --
     # without this set the sweep cannot tell a source already converting from
     # one to queue, and under `overwrite` would queue it a second time.
-    active_paths = await _probe(_active_source_paths, default=None)
+    active_paths = await _probe(_active_source_paths, default=None, library=library)
     if active_paths is None:
         result["stopped_reason"] = "library_unresponsive"
         return result
@@ -2358,8 +2359,9 @@ async def _sweep_locked(
                 # so the rest of this platform would time out one by one.
                 # Stop here and say why; the next sweep starts over.
                 logger.warning(
-                    "romm_auto: platform %s library stopped responding, "
-                    "stopping this platform", platform_id,
+                    "%s: Platform %s in Library %s stopped responding, "
+                    "stopping this Platform", log_prefix(library), platform_ref,
+                    library.name,
                 )
                 result["errors"].append(
                     {"platform_id": platform_ref, "error": "library_unresponsive"},
@@ -2460,7 +2462,7 @@ async def _sweep_locked(
                         # one, so an unreadable source must drop out of the
                         # batch rather than reach the runner and fail there.
                         snapshot = await _probe(
-                            build_delete_snapshot, path, default=None,
+                            build_delete_snapshot, path, default=None, library=library,
                         )
                         if snapshot is None:
                             unreadable.append(path)
@@ -2469,8 +2471,10 @@ async def _sweep_locked(
                     if unreadable:
                         batch = [p for p in batch if p not in set(unreadable)]
                         logger.warning(
-                            "romm_auto: dropping %d source(s) whose delete "
-                            "snapshot could not be read", len(unreadable),
+                            "%s: dropping %d source(s) of Platform %s in Library "
+                            "%s whose delete snapshot could not be read",
+                            log_prefix(library), len(unreadable), platform_ref,
+                            library.name,
                         )
                     if not batch:
                         # Every candidate dropped, which is a symptom of the
@@ -2479,8 +2483,9 @@ async def _sweep_locked(
                         # this platform's schedule, postponing the whole set
                         # for a full interval over a transient failure.
                         logger.warning(
-                            "romm_auto: platform %s had no readable source left "
-                            "to queue", platform_id,
+                            "%s: Platform %s in Library %s had no readable source "
+                            "left to queue", log_prefix(library), platform_ref,
+                            library.name,
                         )
                         summary["snapshot_failed"] = True
                         result["errors"].append({
@@ -2592,9 +2597,10 @@ async def _sweep_locked(
                         # and nothing else; the terminal-job listener still
                         # writes each outcome as it lands.
                         logger.warning(
-                            "romm_auto: could not record what platform %s "
+                            "%s: could not record what Platform %s in Library %s "
                             "produced; this run is not remembered",
-                            platform_id, exc_info=True,
+                            log_prefix(library), platform_ref, library.name,
+                            exc_info=True,
                         )
                         summary["provenance_failed"] = True
 
@@ -2606,7 +2612,10 @@ async def _sweep_locked(
                 # The queue is full. Stop rather than spin: the next sweep
                 # resumes exactly here, because the filesystem still reports
                 # these ROMs unconverted.
-                logger.info("romm_auto: queue full, stopping sweep")
+                logger.info(
+                    "%s: queue full, stopping the sweep of Library %s",
+                    log_prefix(library), library.name,
+                )
                 result["stopped_reason"] = "queue_full"
                 # What this Platform's refused batch held, so a caller can say
                 # how much work was left (run-rules).
@@ -2622,8 +2631,8 @@ async def _sweep_locked(
                 # exists. Named separately so the editor can say so instead of
                 # showing "could not be queued".
                 logger.info(
-                    "romm_auto: platform %s lost a destination to another job: %s",
-                    platform_id, exc,
+                    "%s: Platform %s in Library %s lost a destination to another "
+                    "job: %s", log_prefix(library), platform_ref, library.name, exc,
                 )
                 result["errors"].append(
                     {"platform_id": platform_ref, "error": "destination_claimed"},
@@ -2631,7 +2640,8 @@ async def _sweep_locked(
                 summary["queue_failed"] = True
             except Exception:
                 logger.warning(
-                    "romm_auto: failed to queue platform %s", platform_id, exc_info=True,
+                    "%s: failed to queue Platform %s in Library %s",
+                    log_prefix(library), platform_ref, library.name, exc_info=True,
                 )
                 result["errors"].append(
                     {"platform_id": platform_ref, "error": "queue_failed"},
@@ -2725,8 +2735,8 @@ async def _clear_vanished(library: Library) -> None:
         )
     except (asyncio.TimeoutError, OSError):
         logger.warning(
-            "romm_auto: checking %s's not-Intact Findings did not finish; "
-            "the next sweep tries again", library.id,
+            "%s: checking the not-Intact Findings of Library %s did not finish; "
+            "the next sweep tries again", log_prefix(library), library.name,
         )
 
 
@@ -2804,8 +2814,8 @@ async def _list_images(
     except LibraryUnreadable as exc:
         if _unreadable.get((library.id, platform_id)) != exc.code:
             logger.warning(
-                "romm_auto: platform %s of %s unreadable: %s",
-                platform_id, library.id, exc,
+                "%s: Platform %s in Library %s is unreadable: %s",
+                log_prefix(library), platform_ref, library.name, exc,
             )
         _unreadable[(library.id, platform_id)] = exc.code
         # The Library's reason, so the summary can say "still running" or
@@ -2815,9 +2825,9 @@ async def _list_images(
     except asyncio.TimeoutError:
         _unreadable[(library.id, platform_id)] = "library_unresponsive"
         logger.warning(
-            "romm_auto: listing platform %s did not finish in %ss; stopping "
-            "the sweep (the Library is not answering)", platform_id,
-            _LISTING_SECONDS,
+            "%s: listing Platform %s in Library %s did not finish in %ss; "
+            "stopping the sweep (the Library is not answering)",
+            log_prefix(library), platform_ref, library.name, _LISTING_SECONDS,
         )
         result["errors"].append(
             {"platform_id": platform_ref, "error": "library_unresponsive"},
@@ -2826,7 +2836,8 @@ async def _list_images(
         return None
     if _unreadable.pop((library.id, platform_id), None) is not None:
         logger.info(
-            "romm_auto: platform %s of %s is readable again", platform_id, library.id,
+            "%s: Platform %s in Library %s is readable again",
+            log_prefix(library), platform_ref, library.name,
         )
     return images
 
@@ -2881,8 +2892,9 @@ async def _sweep_check(
             )
         except (asyncio.TimeoutError, OSError):
             logger.warning(
-                "romm_auto: platform %s library stopped responding, "
-                "stopping this platform", platform_id,
+                "%s: Platform %s in Library %s stopped responding, "
+                "stopping this Platform", log_prefix(library), platform_ref,
+                library.name,
             )
             result["errors"].append(
                 {"platform_id": platform_ref, "error": "library_unresponsive"},
@@ -2927,6 +2939,15 @@ async def _sweep_check(
 
     if not_ready:
         result["errors"].append({"platform_id": platform_ref, "error": "tool_not_ready"})
+        missing = sorted(tool_id for tool_id, ok in ready.items() if not ok)
+        _report_skip(
+            library, CHECK, platform_id, "tool",
+            f"{', '.join(missing)} {'is' if len(missing) == 1 else 'are'} not "
+            "installed to check its Images",
+        )
+    elif not unresponsive:
+        # Every Image it reached had its verifier: whatever was missing is back.
+        _report_skip(library, CHECK, platform_id, "tool", None)
     result["considered"] += considered
     # Images a check Rule picked. Not conversions, so never in `queued` and
     # never against the per-sweep cap. Present only once a check Rule ran,
@@ -2996,15 +3017,19 @@ async def run_forever(
                 summary = await sweep(library)
                 if summary["queued"]:
                     logger.info(
-                        "romm_auto: queued %s job(s) across %s platform(s)",
-                        summary["queued"], len(summary["platforms"]),
+                        "%s: queued %s job(s) across %s Platform(s) of Library %s",
+                        log_prefix(library), summary["queued"],
+                        len(summary["platforms"]), library.name,
                     )
             except Exception:
                 # A sweep failure must never kill the scheduler, nor stop the
                 # other Libraries' sweeps; the next tick retries. Shutdown
                 # still stops it: CancelledError derives from BaseException,
                 # so it passes straight through this handler.
-                logger.warning("romm_auto: sweep failed", exc_info=True)
+                logger.warning(
+                    "%s: the sweep of Library %s failed",
+                    log_prefix(library), library.name, exc_info=True,
+                )
         if after_tick is not None:
             try:
                 await after_tick()
