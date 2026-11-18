@@ -762,7 +762,7 @@ def _prioritize_child(owner: str | None, pid: int) -> None:
     # asyncio child of its own, bounded and killed on a stall, and at most
     # _MAX_IONICE_TASKS at once; past that the child gets no I/O priority.
     prefix = ioprio_prefix(owner)
-    if prefix and len(_IONICE_TASKS) < _MAX_IONICE_TASKS:
+    if prefix and not _IONICE_STUCK and len(_IONICE_TASKS) < _MAX_IONICE_TASKS:
         task = asyncio.ensure_future(_ionice_child([*prefix, "-p", str(pid)]))
         _IONICE_TASKS.add(task)
         task.add_done_callback(_ionice_done)
@@ -773,6 +773,10 @@ def _prioritize_child(owner: str | None, pid: int) -> None:
 _MAX_IONICE_TASKS = 4
 _IONICE_SECONDS = 5.0
 _IONICE_TASKS: set[asyncio.Future] = set()
+# Set for good once an `ionice` child outlives SIGKILL: its slot can't be
+# counted back, and I/O priority isn't worth pursuing on that storage
+# (CodeRabbit 4617587026).
+_IONICE_STUCK = False
 
 
 async def _ionice_child(argv: list[str]) -> None:
@@ -793,8 +797,15 @@ async def _ionice_child(argv: list[str]) -> None:
     except asyncio.TimeoutError:
         with contextlib.suppress(ProcessLookupError):
             process.kill()
-        with contextlib.suppress(asyncio.TimeoutError):
+        try:
             await asyncio.wait_for(process.wait(), _IONICE_SECONDS)
+        except asyncio.TimeoutError:
+            global _IONICE_STUCK
+            _IONICE_STUCK = True
+            logging.getLogger("chd.ionice").warning(
+                "ionice pid %s outlived SIGKILL; I/O priority is off for "
+                "verifiers until restart", process.pid,
+            )
     finally:
         if process.returncode is None:  # cancelled (the loop is closing)
             with contextlib.suppress(ProcessLookupError):

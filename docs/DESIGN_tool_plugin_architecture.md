@@ -569,7 +569,9 @@ as a pass (CodeRabbit 4616898119, 4617217666).
   back the verify's deadline or cancel, which start at once. It stays out of
   the shared probe pool: bounded (`_IONICE_SECONDS`), killed and reaped on a
   stall, and at most `_MAX_IONICE_TASKS` in flight; past that the child gets
-  no I/O priority (CodeRabbit 4617447724). Either failing leaves the child at
+  no I/O priority (CodeRabbit 4617447724). One that outlives SIGKILL turns
+  the step off for the rest of the process, with one warning, since its slot
+  could never be counted back (CodeRabbit 4617587026). Either failing leaves the child at
   normal priority. Their argv comes from the same builder,
   `_wrapped_command(wrap=False)`.
 

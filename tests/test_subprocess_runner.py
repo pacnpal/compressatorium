@@ -1737,3 +1737,40 @@ def test_stalled_ionice_steps_stay_out_of_the_probe_pool(tmp_path, monkeypatch):
         with pytest.raises(ProcessLookupError):
             os.kill(pid, 0)
     assert runner_module._probe_slots._value == slots_before
+
+
+def test_an_ionice_child_that_outlives_sigkill_turns_the_step_off(tmp_path, monkeypatch):
+    """CodeRabbit 4617587026: an `ionice` child whose reap gives up after
+    SIGKILL would free its slot while still alive. Instead the post-spawn
+    I/O-priority step is turned off for the rest of the process."""
+    _stalled_ionice(tmp_path, monkeypatch)
+    monkeypatch.setattr(runner_module, "_IONICE_SECONDS", 0.1)
+    monkeypatch.setattr(runner_module, "_IONICE_STUCK", False)
+    spawned = []
+
+    class _Unkillable:
+        pid = 4242
+        returncode = None
+
+        async def wait(self):
+            await asyncio.sleep(30)  # never reaped, SIGKILL or not
+
+        def kill(self):
+            pass
+
+    async def fake_exec(*args, **_kwargs):
+        spawned.append(args)
+        return _Unkillable()
+
+    monkeypatch.setattr(runner_module.asyncio, "create_subprocess_exec", fake_exec)
+
+    async def twice():
+        runner_module._prioritize_child("test", 999999)
+        while runner_module._IONICE_TASKS:
+            await asyncio.sleep(0.05)
+        runner_module._prioritize_child("test", 999999)
+
+    asyncio.run(twice())
+    assert runner_module._IONICE_STUCK is True
+    assert len(spawned) == 1  # no further ionice child started
+    assert not runner_module._IONICE_TASKS
