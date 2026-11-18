@@ -8574,6 +8574,22 @@ the hidden ones on the next toggle, and the chip cap counts only offered codecs;
 an Auto target whose saved preference the mode refuses runs on the tool default
 (`checked_compression`).
 
+Rules go through the same check (#474). A Rule submission (`PUT
+/api/libraries/{id}/rules`, `PUT /api/romm/rules`, both `editor.save_rules`
+with `set_rules(strict=True)`; an Inbox runs its Library's Rules) is refused
+400 with `compression_problem`'s message when the Rule's mode refuses its
+compression (`rules.refuse_unusable_compression`, raising
+`UnusableCompression`), so nothing is saved that would fail once per Image. A
+stored Rule is read leniently: `normalize_rule`, which every sweep and Inbox
+plan reads its Rules through, keeps only the codecs the mode takes and records
+the rest in the Rule's `dropped_codecs` (the editor names them, and the drop is
+logged), so the job runs on what is left, or on the tool's own codecs when
+nothing is. The drop is one shared helper, `base.without_unusable_codecs(spec,
+compression)`, which `checked_compression` calls too, so an Auto target keeps
+the saved codecs its mode takes before falling back. The frontend's matching
+rule is `registry.offeredCodecs(mode, selection)`: the convert store sends,
+and the Rule editor shows and counts in "(N selected)", only those codecs.
+
 The convert panel keeps one level. `ConversionStore.#reconcileLevel` runs after
 every mode, codec or saved-preference change, in that order: the codec is
 `singleCodec` (the mode's default when the mode refuses the selected one), and

@@ -968,6 +968,19 @@ export const registry = {
     return entry?.spec?.compressionCodecs ?? entry?.tool?.compressionCodecs ?? [];
   },
 
+  /**
+   * The codecs in `selection` that `mode` offers (#471, #474). chdman's list
+   * is kept per tool and a Rule's may predate its mode naming codecs, so a CD
+   * codec can still be selected on Create DVD, which can't use it. The convert
+   * panel sends, and the Rule editor shows and counts, only these. A mode that
+   * offers none keeps the whole selection. Mirrors the backend's
+   * `without_unusable_codecs`.
+   */
+  offeredCodecs: (mode, selection) => {
+    const offered = registry.codecsForMode(mode).map((c) => c.value);
+    return offered.length ? selection.filter((c) => offered.includes(c)) : [...selection];
+  },
+
   /** The codec(s) a picker starts on for `mode`: the mode's own, else its tool's. */
   defaultCompressionForMode: (mode) => {
     const entry = byMode.get(mode);

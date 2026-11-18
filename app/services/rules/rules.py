@@ -29,6 +29,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from logging_setup import get_logger
 from services.round_trip import delete_check_level
 from services.tools import registry
+from services.tools.base import compression_problem, without_unusable_codecs
 from utils.path_utils import is_within_configured_volumes
 
 # The logger name the engine has always logged under, kept so existing log
@@ -455,6 +456,9 @@ def default_rule(
         # Set when delete-on-verify was refused because this mode + compression
         # cannot verify strongly enough to justify removing the source.
         "unsafe_delete_on_verify": False,
+        # The codecs a stored Rule named that its mode can't use (#474),
+        # dropped from `compression` so its jobs run on what the mode takes.
+        "dropped_codecs": [],
         # Set when a submitted include/exclude regex would not compile, so the
         # editor can say why the rule is paused instead of silently widening it.
         "invalid_pattern": False,
@@ -473,6 +477,45 @@ def is_check_rule(rule: Mapping[str, Any]) -> bool:
 def rule_kind(rule: Mapping[str, Any]) -> str:
     """``CHECK`` for a check Rule, else ``CONVERT``."""
     return CHECK if is_check_rule(rule) else CONVERT
+
+
+class UnusableCompression(ValueError):
+    """A submitted Rule names a codec (or level) its mode refuses (#474).
+
+    The message is ``compression_problem``'s, the one ``/api/jobs`` answers
+    400 with for the same pair.
+    """
+
+    def __init__(self, platform_id: str, problem: str) -> None:
+        super().__init__(problem)
+        self.platform_id = platform_id
+        self.problem = problem
+
+
+def refuse_unusable_compression(raw: Any) -> None:
+    """Raise :class:`UnusableCompression` for a submitted Rule whose mode
+    refuses its compression, as a job asking for it is refused (#474).
+
+    For submissions, so nothing is saved that is sure to fail per Image. A
+    stored Rule is read leniently instead: ``normalize_rule`` drops the codecs
+    its mode can't use. Rules ``normalize_rule`` would drop (no mode, or one no
+    tool provides) or whose mode takes no compression are left to it.
+    """
+    if not isinstance(raw, Mapping):
+        return
+    for platform_id, rule in raw.items():
+        if not isinstance(rule, Mapping) or not rule.get("compression"):
+            continue
+        try:
+            spec = registry.spec(rule.get("mode"))
+        except (KeyError, TypeError):
+            continue
+        if not (spec.supports_compression or spec.supports_compression_level):
+            continue
+        parts = (p.strip() for p in str(rule["compression"]).split(","))
+        problem = compression_problem(spec, ",".join(p for p in parts if p))
+        if problem:
+            raise UnusableCompression(str(platform_id), problem)
 
 
 def normalize_rule(
@@ -532,7 +575,20 @@ def normalize_rule(
     if spec is not None and (
         spec.supports_compression or spec.supports_compression_level
     ) and raw.get("compression"):
-        out["compression"] = str(raw["compression"])
+        # Only the codecs the mode takes (#474): a Rule saved before its mode
+        # named them (Create DVD with cdzl) would otherwise queue a job per
+        # Image that fails in the tool. None left runs the tool's own codecs.
+        # A save is refused first (`refuse_unusable_compression`), so this is
+        # a stored Rule, and the editor says what was dropped.
+        out["compression"], out["dropped_codecs"] = without_unusable_codecs(
+            spec, str(raw["compression"]),
+        )
+        if out["dropped_codecs"]:
+            logger.warning(
+                "romm_auto: rule for %s can't use %s compression; running it on %s",
+                spec.label, ", ".join(out["dropped_codecs"]),
+                out["compression"] or "the tool's own codecs",
+            )
     # A level only for a codec that takes one (#363): the Rule's own codec, or
     # the mode's default when blank (WIA on "Tool default" runs none, which
     # takes no level). Dropped, as this sanitizer drops any stale value, and

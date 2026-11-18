@@ -326,9 +326,15 @@
     return [rule.compression || registry.defaultCompressionForMode(rule.mode)?.[0]];
   }
 
-  /** The codecs a rule currently has selected, as a list. */
+  /**
+   * The codecs a rule currently has selected, as a list: only those its mode
+   * offers (#474), the narrowing the convert panel sends by. A codec the mode
+   * can't use has no chip, so counting it said "(1 selected)" with nothing
+   * pressed; the next toggle drops it.
+   */
   function selectedCodecs(rule) {
-    return (rule.compression ?? '').split(',').map((c) => c.trim()).filter(Boolean);
+    const listed = (rule.compression ?? '').split(',').map((c) => c.trim()).filter(Boolean);
+    return registry.offeredCodecs(rule.mode, listed);
   }
 
   /** Toggle one codec in a multi-codec (chdman) rule.
@@ -1080,6 +1086,14 @@
                     A name filter could not be read as a regular expression, so it was
                     not saved and this rule is paused — running it unfiltered would
                     convert the whole platform.
+                  </p>
+                {/if}
+
+                {#if rule.dropped_codecs?.length}
+                  <p class="warn" role="status">
+                    {spec?.label ?? 'This mode'} can't use
+                    <strong>{rule.dropped_codecs.join(', ')}</strong> compression, so this
+                    Rule runs without {rule.dropped_codecs.length === 1 ? 'it' : 'them'}.
                   </p>
                 {/if}
 

@@ -58,6 +58,30 @@ def compression_problem(spec: ModeSpec, compression: str | None) -> str | None:
     return None
 
 
+def without_unusable_codecs(
+    spec: ModeSpec, compression: str | None,
+) -> tuple[str | None, list[str]]:
+    """*compression* less the codecs *spec*'s mode can't use, and those codecs.
+
+    The one drop rule for a saved compression (#471, #474): an Auto target's
+    saved preference (``checked_compression``) and a stored Rule
+    (``normalize_rule``) keep the codecs ``compression_problem`` would take and
+    lose the rest. None when nothing is left, which runs the tool's own codecs.
+    A mode that names no codecs keeps everything. Parts are trimmed; a part
+    with only a level (``":19"``) is kept.
+    """
+    parts = [p.strip() for p in (compression or "").split(",") if p.strip()]
+    kept: list[str] = []
+    dropped: list[str] = []
+    for part in parts:
+        codec = part.partition(":")[0]
+        if spec.codecs and codec and codec not in spec.codecs:
+            dropped.append(codec)
+        else:
+            kept.append(part)
+    return ",".join(kept) or None, dropped
+
+
 def block_size_problem(spec: ModeSpec, size: int) -> str | None:
     """Why *spec*'s mode refuses block size *size*, or None when it takes it.
 

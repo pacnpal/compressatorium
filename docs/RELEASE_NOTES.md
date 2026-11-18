@@ -418,6 +418,16 @@
 
 ### Fixed
 
+- **Rules refuse and drop codecs the CHDMAN mode can't use** (#474). Saving a
+  Rule (a Library's, RomM's, and so an Inbox's) that pairs a mode with a codec
+  it can't use, Create DVD with cdzl say, is refused with a 400 and the same
+  message a job gets, instead of saving and then failing in chdman with "Codec
+  error" once per Image. A Rule saved that way before this release runs on
+  the codecs its mode takes (chdman's own when none is left), the app logs
+  which codec it left out, and the Rule editor says so. The editor shows and
+  counts only the codecs the mode offers, so "(1 selected)" no longer appears
+  with no chip pressed. An Auto convert whose saved CHDMAN codecs only partly
+  fit the mode now keeps the ones that fit, rather than using chdman's own.
 - **CHDMAN create modes only offer and accept their own codecs** (#471). Each
   mode's codec chips now list only what chdman can use for it: the CD codecs
   (cdzl, cdzs, cdlz, cdfl) on Create CD, avhu on Create LD, and zlib, zstd,
