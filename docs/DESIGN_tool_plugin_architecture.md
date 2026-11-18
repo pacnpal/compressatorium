@@ -7611,14 +7611,19 @@ Source as it is then (`_capture_source_identities` over
 resolved, read beneath its Volume root with no link followed the way
 `AnchoredFolders` opens a folder, plus `path` (the resolved path checked; an
 archive's own file for `archive::member`) and `in_place`. One that can't be
-captured carries `{"error": reason}`. When the job runs, a file job with no
-identity ("queued without its Source's identity") or with an `error` is
-refused like a changed one, so a run-time containment check is never skipped.
-An `in_place` identity is checked at `path` and not bound (a copy of every
-Library Image into the work area is not a cost a Library job should pay): the
-job reads its Source from `path` (`job._read_path`, with the archive member
-appended), the spelling just checked, never one that could be re-pointed
-since, and its output is staged only where its Library asks. A folder Source
+captured carries `{"error": reason}`. The capture is bounded by progress
+(`run_detached_within_stall_bound`), not by the batch's size: a large healthy
+batch is never cut off, and when a Source stops answering the ones already
+captured keep their identities (codex 4614857109). When the job runs, a file
+job with no identity ("queued without its Source's identity") or with an
+`error` is refused like a changed one, so a run-time containment check is
+never skipped. An `in_place` identity is not bound (a copy of every Library
+Image into the work area is not a cost a Library job should pay):
+`_queued_source_problem` requires the path the job was submitted as to still
+resolve to `path`, then checks `path` as above, and the job reads the
+submitted path. Not `path` itself (codex 4614857083): a sheet submitted
+through a link names its tracks beside the link, which is where the job
+locked them. Its output is staged only where its Library asks. A folder Source
 (a DIRECTORY mode, `folder_to_iso`) has no file identity; the folder checks
 that already run under its locks cover it. Both checks, and the bind below, run inside the job's full
 finalization region (CodeRabbit 4606147979): a cancel while either waits ends

@@ -395,6 +395,21 @@ def _trusted_roots(job) -> list[str] | None:
     return roots or None
 
 
+def _queued_source_problem(job, identity: dict) -> str | None:
+    """``source_identity_problem`` for the job's Source, and for an
+    ``in_place`` one (#449) that the path the job reads, as it was submitted,
+    still resolves to the file checked: a link on the way re-pointed since it
+    was queued is refused, never followed. Blocking."""
+    if identity.get("in_place"):
+        submitted = strip_archive_path(job.file_path)
+        if not is_within_configured_volumes(submitted, treat_archives=False):
+            return "the Source is no longer inside the configured Volumes"
+        if os.path.realpath(submitted) != identity["path"]:
+            return "the Source's path leads somewhere else than when it was queued"
+        return source_identity_problem(identity["path"], identity, job._trusted_root)
+    return source_identity_problem(job.file_path, identity, job._trusted_root)
+
+
 def _reads(job) -> str:
     """The path a job reads its Source from: the bound link once its Source
     was bound (#431, ``_bind_source_bounded``), else its own path."""
@@ -521,20 +536,24 @@ async def _resolve_paths_bounded(paths: Iterable[str]) -> Dict[str, str]:
     # would slip through a check that is otherwise atomic under the lock.
     produced: Dict[str, str] = {}
 
-    def _resolve_all() -> None:
+    def _resolve_all(progress) -> None:
         for path in pending:
             try:
                 produced[path] = os.path.realpath(path)
             except OSError:
                 pass  # leave the lexical seed in place
+            progress()
 
     try:
-        await asyncio.wait_for(
-            run_detached(_resolve_all), _CANONICAL_PROBE_SECONDS,
+        # Bounded by progress, not by the batch's size (codex 4614857109's
+        # class): the clock restarts after each path.
+        await run_detached_within_stall_bound(
+            _resolve_all, what="Canonicalising destinations",
+            stall=_CANONICAL_PROBE_SECONDS, report_progress=True,
         )
-    except (asyncio.TimeoutError, OSError):
+    except (RuntimeError, asyncio.TimeoutError, OSError):
         logger.warning(
-            "Canonicalising %d destination(s) did not finish in %.1fs; "
+            "Canonicalising %d destination(s) made no progress for %.1fs; "
             "refusing the reservation (a volume is not answering)",
             len(pending),
             _CANONICAL_PROBE_SECONDS,
@@ -1198,8 +1217,12 @@ class JobManager:
         specs already carry theirs. One that can't be captured carries why
         (``{"error": ...}``) and its job is refused when it runs, with that
         reason. A folder Source (a DIRECTORY mode) has no file identity and is
-        re-checked by the folder checks when it runs. Bounded, off the event
-        loop."""
+        re-checked by the folder checks when it runs. Off the event loop,
+        bounded by progress rather than by the batch's size (codex
+        4614857109): the clock restarts after each Source, so a large healthy
+        batch is never cut off, and when one stops answering, the Sources
+        already captured keep their identities and only the rest carry the
+        stall as their error."""
         try:
             if registry.mode_input_kind(mode.value) == InputKind.DIRECTORY:
                 return
@@ -1209,23 +1232,28 @@ class JobManager:
         if not wanted:
             return
 
-        def capture() -> list[dict[str, object]]:
-            out: list[dict[str, object]] = []
+        captured: list[dict[str, object]] = []
+
+        def capture(progress) -> None:
             for spec in wanted:
                 try:
-                    out.append(queued_source_identity(str(spec["file_path"])))
+                    identity = queued_source_identity(str(spec["file_path"]))
                 except (OSError, ValueError) as exc:
-                    out.append({"error": str(exc)})
-            return out
+                    identity = {"error": str(exc)}
+                progress()  # raises once the wait below has given up
+                captured.append(identity)
 
         try:
-            identities = await asyncio.wait_for(
-                run_detached(capture), _CANONICAL_PROBE_SECONDS,
+            await run_detached_within_stall_bound(
+                capture, what="Checking the Sources", stall=_CANONICAL_PROBE_SECONDS,
+                report_progress=True,
             )
-        except (asyncio.TimeoutError, OSError) as exc:
-            identities = [{"error": f"no answer ({exc})" if str(exc) else "no answer"}] * len(wanted)
-        for spec, identity in zip(wanted, identities):
-            spec["source_identity"] = identity
+            unanswered: dict[str, object] = {}
+        except (RuntimeError, asyncio.TimeoutError, OSError) as exc:
+            unanswered = {"error": f"no answer ({exc})" if str(exc) else "no answer"}
+        done = list(captured)  # a late append from an abandoned worker can't land in it
+        for index, spec in enumerate(wanted):
+            spec["source_identity"] = done[index] if index < len(done) else unanswered
 
     async def _reservation_keys(
         self, job_specs: List[Dict[str, object]], mode: ConversionMode,
@@ -1281,19 +1309,23 @@ class JobManager:
 
         companions: Dict[str, List[str]] = {}
 
-        def _enumerate() -> None:
+        def _enumerate(progress) -> None:
             for destination, job_mode in wanted:
                 if destination in companions:
                     continue
                 companions[destination] = self._companions(job_mode, destination)
+                progress()
 
         try:
-            await asyncio.wait_for(
-                run_detached(_enumerate), _CANONICAL_PROBE_SECONDS,
+            # Bounded by progress, not by the batch's size (codex
+            # 4614857109's class): the clock restarts after each destination.
+            await run_detached_within_stall_bound(
+                _enumerate, what="Listing companion outputs",
+                stall=_CANONICAL_PROBE_SECONDS, report_progress=True,
             )
-        except (asyncio.TimeoutError, OSError):
+        except (RuntimeError, asyncio.TimeoutError, OSError):
             logger.warning(
-                "Enumerating companion outputs did not finish in %.1fs; "
+                "Enumerating companion outputs made no progress for %.1fs; "
                 "refusing the reservation (a volume is not answering)",
                 _CANONICAL_PROBE_SECONDS,
             )
@@ -2124,10 +2156,7 @@ class JobManager:
             return f"the Source couldn't be checked when it was queued ({identity['error']})"
         try:
             return await asyncio.wait_for(
-                run_detached(
-                    source_identity_problem, identity.get("path") or job.file_path,
-                    identity, job._trusted_root,
-                ),
+                run_detached(_queued_source_problem, job, identity),
                 _CANONICAL_PROBE_SECONDS,
             )
         except (asyncio.TimeoutError, OSError) as exc:
@@ -2148,11 +2177,11 @@ class JobManager:
         if not identity or job.input_kind == InputKind.DIRECTORY:
             return None
         if identity.get("in_place"):
-            # A Source in a Volume (#449) isn't bound: it is read where it was
-            # just checked, the resolved path with no link on its way, never
-            # through a spelling that could be re-pointed since.
-            member = job.file_path.split("::", 1)[1] if "::" in job.file_path else None
-            job._read_path = identity["path"] + (f"::{member}" if member else "")
+            # A Source in a Volume (#449) isn't bound: it is read by the path
+            # it was submitted as, which `_queued_source_problem` just found
+            # still leads to the file checked. Not the resolved path: a sheet
+            # submitted through a link names its tracks beside the link, and
+            # that is what the job locked (codex 4614857083).
             return None
         # A copy fallback (no hard links on a NAS) takes as long as the Image:
         # bounded by its progress, not a fixed deadline (Codex 4606061281).
@@ -6176,7 +6205,7 @@ class JobManager:
             within = _trusted_roots(job)
             if "::" in job.file_path:
                 extract_start = time.monotonic()
-                archive_path, internal_path = input_path.split("::", 1)
+                archive_path, internal_path = job.file_path.split("::", 1)
                 if logger.isEnabledFor(logging.DEBUG):
                     logger.debug(
                         "Job %s extracting archive %s member %s",

@@ -104,3 +104,110 @@ async def test_a_job_queued_without_an_identity_is_refused(tmp_volume, tmp_path)
     assert job.status == JobStatus.FAILED
     assert "queued without its Source's identity" in job.error_message
     assert not os.path.exists(job.output_path)
+
+
+@pytest.mark.asyncio
+async def test_a_sheet_submitted_through_a_link_reads_its_tracks_beside_the_link(e2e_env):
+    """codex 4614857083: the job reads the sheet by the path it was submitted
+    as, so its tracks are the ones beside that path (the ones it locked), not
+    those beside the link's target."""
+    from app.models import ConversionMode, DuplicateAction, JobCreateRequest, JobStatus
+    from app.routes import convert as convert_routes
+
+    root = e2e_env["tmp_path"]
+    (root / "sheets").mkdir()
+    (root / "selected").mkdir()
+    sheet = root / "sheets" / "Game.cue"
+    sheet.write_text('FILE "Game.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n')
+    (root / "sheets" / "Game.bin").write_bytes(b"\1" * 2352)
+    (root / "selected" / "Game.bin").write_bytes(b"\2" * 2352)
+    submitted = root / "selected" / "Game.cue"
+    submitted.symlink_to(sheet)
+
+    job = await convert_routes.create_job(JobCreateRequest(
+        file_path=str(submitted), mode=ConversionMode.CREATECD,
+        duplicate_action=DuplicateAction.SKIP, delete_on_verify=False,
+    ))
+    await convert_routes.job_manager._process_job(job.id)
+
+    assert job.status.value == JobStatus.COMPLETED.value, job.error_message
+    assert [call["input"] for call in e2e_env["calls"]] == [str(submitted)]
+
+
+@pytest.mark.asyncio
+async def test_a_link_re_pointed_after_queueing_is_refused(e2e_env):
+    """The submitted path must still lead to the file checked: a sheet link
+    re-pointed to another in-Volume file is refused, never followed."""
+    from app.models import ConversionMode, DuplicateAction, JobCreateRequest, JobStatus
+    from app.routes import convert as convert_routes
+
+    root = e2e_env["tmp_path"]
+    first, second = root / "a.iso", root / "b.iso"
+    first.write_bytes(b"first")
+    second.write_bytes(b"second")
+    link = root / "Game.iso"
+    link.symlink_to(first)
+    job = await convert_routes.create_job(JobCreateRequest(
+        file_path=str(link), mode=ConversionMode.CSO_COMPRESS,
+        duplicate_action=DuplicateAction.SKIP, delete_on_verify=False,
+    ))
+    link.unlink()
+    link.symlink_to(second)
+    await convert_routes.job_manager._process_job(job.id)
+
+    assert job.status.value == JobStatus.FAILED.value
+    assert "leads somewhere else" in job.error_message
+    assert e2e_env["calls"] == []
+
+
+@pytest.mark.asyncio
+async def test_a_batch_bigger_than_the_bound_keeps_every_identity(monkeypatch, tmp_path):
+    """codex 4614857109: the bound restarts after each Source, so batch size
+    alone never turns a healthy Source's identity into an error."""
+    import time
+
+    from app.models import ConversionMode
+    from app.services import job_manager as jm
+
+    monkeypatch.setattr(jm, "_CANONICAL_PROBE_SECONDS", 0.2)
+
+    def slow(path):
+        time.sleep(0.05)
+        return {"path": path}
+
+    monkeypatch.setattr(jm, "queued_source_identity", slow)
+    specs = [{"file_path": str(tmp_path / f"{i}.iso")} for i in range(10)]  # 0.5s in all
+    await jm.JobManager._capture_source_identities(specs, ConversionMode.CSO_COMPRESS)
+
+    assert [spec["source_identity"] for spec in specs] == [
+        {"path": spec["file_path"]} for spec in specs
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_source_that_stops_answering_keeps_the_identities_before_it(
+    monkeypatch, tmp_path,
+):
+    import threading
+
+    from app.models import ConversionMode
+    from app.services import job_manager as jm
+
+    monkeypatch.setattr(jm, "_CANONICAL_PROBE_SECONDS", 0.2)
+    release = threading.Event()
+
+    def stuck_on_the_third(path):
+        if path.endswith("2.iso"):
+            release.wait(5)
+        return {"path": path}
+
+    monkeypatch.setattr(jm, "queued_source_identity", stuck_on_the_third)
+    specs = [{"file_path": str(tmp_path / f"{i}.iso")} for i in range(5)]
+    try:
+        await jm.JobManager._capture_source_identities(specs, ConversionMode.CSO_COMPRESS)
+    finally:
+        release.set()
+
+    got = [spec["source_identity"] for spec in specs]
+    assert got[:2] == [{"path": specs[0]["file_path"]}, {"path": specs[1]["file_path"]}]
+    assert all("no answer" in identity["error"] for identity in got[2:])
