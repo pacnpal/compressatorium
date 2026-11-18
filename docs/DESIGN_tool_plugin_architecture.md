@@ -1792,7 +1792,7 @@ This is a payload field, not a schema change.
   `dat_store` is the one place the question is answered, and it answers from
   `payload.source`, not from `dat_id IS NULL`. The FK proxy was wrong for one
   real row: a *local* hit whose DAT was deleted between the match and the write
-  has its dangling FK nulled by `_upsert_match_sync`, which also dodges the
+  has its dangling FK nulled by `_set_matches_batch_sync`, which also dodges the
   `WHERE dat_id = :id` cascade — so it was preserved through every later import
   and went on serving an identity from a DAT the operator had removed.
   `coalesce` is load-bearing there: SQL `NULL` is not `False`, so a payload with
@@ -1821,13 +1821,10 @@ This is a payload field, not a schema change.
   candidate set before a remote answer is accepted. The third is closed in
   `dat_store._local_index_now_covers()`, which re-checks inside the writing
   transaction and skips the write when the local index has since learned any of
-  the candidates (leaving the path uncached, so the next match resolves it
-  locally). What remains is the transaction boundary itself: an import
-  committing between that read and the write's commit leaves a remote hit,
-  which invalidation preserves by design — and which is now *scheduled for
-  rematch* unless its commit also lands after the post-change listing below,
-  so the residual window is the narrower one and sits entirely after the new
-  DATs are live.
+  the candidates. The transaction boundary itself is closed by the local-index
+  generation (below): the writer reads it before its checks and again once
+  SQLite's write lock is held, and rolls back if it moved, so no import can
+  commit between a check and the write it guards.
 
   That third guard covers **every verdict the remote source took part in, over
   the whole candidate set** — not just the hit, and not just the hash that
@@ -1843,15 +1840,49 @@ This is a payload field, not a schema change.
   skip the write on any unrelated import and send the file straight back out to
   the remote source, which is the same re-disclosure cost rejected just below.
 
-  That last one is deliberately *not* chased. Closing it read-side means
-  stamping remote hits with the DAT-set generation and rejecting stale ones,
+  **Local verdicts are checked by generation instead (issue #492).** A DAT hit,
+  or a miss the remote source was not asked about, was decided entirely by
+  the local index, so *any* change to it can change the verdict: a new DAT can
+  know the hash of a local-only miss, or know a hit's hash too and outrank it,
+  and a miss with no candidates has nothing to re-check. Each `DATStore` keeps
+  a generation (`index_generation()`); every change to the local index (an
+  import, a sync's `persist()`, a DAT delete) runs inside
+  `_changing_local_index()`, which moves it on entry and on exit and reads
+  `None` while the change is in flight. `_match_single_file()` stamps every
+  result with the generation it read before its first lookup
+  (`dat_store.INDEX_GENERATION_KEY`, stripped by `_persistable_payload()` like
+  the candidates), and `_verdict_is_stale()` refuses a stamped local verdict
+  whose generation is not the current one, and any stamped verdict at all while
+  a change is in flight. A dict with no stamp makes no claim and is only
+  hash-checked, as before.
+
+  The re-read is what makes the comparison sound. The checks run before the
+  writer holds the write lock; `flush()` takes it, and an import holds it from
+  its first DAT row to its commit, with the generation moved before that. So
+  once the writer holds the lock, an unchanged generation means no change
+  committed since the checks and none can until the writer commits; a moved one
+  rolls the whole call back. No Python lock is held across a database wait, and
+  none across a network call.
+
+  **A refused write is reported, not dropped.** `set_match()` and
+  `set_matches_batch()` share one writer (`_set_matches_batch_sync()`; the
+  single-row call is a batch of one) and return the paths they refused because
+  the index moved. Every writer (the match job, the batch route, the scan)
+  passes them to `routes.dat.rematch_refused_verdicts()`, which runs the same
+  local-only rematch a DAT change does: deferred behind the running match job
+  (the writer itself, when it is the job, so its own teardown drains it) or
+  started now. A refusal needs a DAT change between a decision and its write,
+  so a path can only be requeued as many times as the index changes.
+
+  Remote verdicts stay out of the generation check, read-side too. Rejecting
+  stale remote hits on read means stamping them with the DAT-set generation,
   which invalidates every remote hit on every DAT change — the recompute misses
   locally (the new DAT usually doesn't cover the file that needed Hasheous) and
   re-queries, re-disclosing thousands of hashes per sync, forever. That is a
   worse trade than the thing it fixes, whose worst outcome is a HASH badge where
-  a DAT badge would do: same game, self-correcting on the next rescan. Closing it
-  write-side means serialising matches against imports, i.e. holding a lock
-  across a network call.
+  a DAT badge would do: same game, self-correcting on the next rescan.
+  Write-side, a generation would refuse them on every unrelated import, which
+  is the hash re-check's reason for existing.
 - **A cancelled match job does not hand its queue to a successor.** The
   deferred-rematch drain lives in `_run_match_job`'s `finally`, which a
   cancellation reaches like any other exit — so the cancelled job started a
@@ -1900,10 +1931,20 @@ This is a payload field, not a schema change.
   chance to say so. `_paths_needing_rematch()` therefore unions the snapshot
   with a listing taken *after* the change — anything still cached once the new
   index is live either predates the change or was written during it, and both
-  need recomputing. A row written after the listing is redundant to include
-  rather than wrong. This is why the sync calls the hook unconditionally now:
+  need recomputing. This is why the sync calls the hook unconditionally now:
   an empty snapshot is exactly the case where the surviving row is the *only*
   thing to rematch, and the old `if previous_match_paths:` guard skipped it.
+
+  The rows the change *dropped* need the same treatment, and the snapshot
+  cannot supply all of them either (issue #492): a DAT-derived hit written
+  after the snapshot and before the commit is deleted by the invalidation, so
+  it is in neither the snapshot nor the survivors. `_invalidate_dat_derived_matches()`
+  lists the rows it deletes inside the import's own transaction, under the
+  write lock the import already holds, and `import_dat()` / `persist()` hand
+  them to the caller through `invalidated=`; both callers add them to the
+  snapshot. A row written after the commit was decided against the new index,
+  because the store refuses one that was not (above). An empty rematch set is
+  logged (`nothing to rematch`) rather than returned silently.
 
   **The rematch job is local-only** (`schedule_match_job(..., local_only=True)`,
   threaded down to `_match_single_file`). What a DAT change alters is the local

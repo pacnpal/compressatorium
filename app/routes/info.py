@@ -206,6 +206,7 @@ async def _scan_phase_dat_match(
         cached_result_usable,
         drop_if_content_changed,
         matching_available,
+        rematch_refused_verdicts,
     )
     from services.dat_store import CANDIDATE_HASHES_KEY, dat_store
 
@@ -297,7 +298,11 @@ async def _scan_phase_dat_match(
                 # Don't cache size-cap skips or transient errors (same policy
                 # as the /dat/match-batch job).
                 if not result.get("reason") and not result.get("error"):
-                    await dat_store.set_match(path, result)
+                    # A verdict a DAT change overtook is not written; it goes
+                    # to a rematch instead (issue #492).
+                    await rematch_refused_verdicts(
+                        await dat_store.set_match(path, result), source="scan",
+                    )
                 elif result.get("error") == HASHEOUS_ERROR:
                     hasheous_errors += 1
                     # The remote service is down, which says nothing about this

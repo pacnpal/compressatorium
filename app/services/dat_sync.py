@@ -448,11 +448,15 @@ class DATSyncService:
             except Exception:
                 logger.exception(
                     "dat_sync: failed to snapshot match paths; the post-sync"
-                    " rematch will cover only the rows that survive the sync",
+                    " rematch will cover only the rows the sync drops or keeps",
                 )
                 previous_match_paths = []
             old_ids = [d["id"] for d in existing_dats]
-            await dat_store.persist()
+            # The rows the persist's invalidation dropped, listed in its own
+            # transaction: the snapshot above misses any written after it
+            # (issue #492).
+            invalidated: set[str] = set()
+            await dat_store.persist(invalidated=invalidated)
             if old_ids:
                 deleted = await dat_store.delete_dats_bulk(old_ids)
                 if deleted:
@@ -479,7 +483,7 @@ class DATSyncService:
             # adds the rows that survived the sync, and a remote hit persisted
             # during it is exactly the row the snapshot cannot contain.
             rematch_status, rematch_job_id = await rematch_after_dat_change(
-                previous_match_paths, source="dat_sync",
+                [*previous_match_paths, *invalidated], source="dat_sync",
             )
         else:
             # Partial failure: discard all staged (uncommitted) new DATs so the

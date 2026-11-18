@@ -15,7 +15,7 @@ from config import settings
 from models import ConversionMode
 from services import dat_rename, hasheous
 from services.dat_ranking import record_of
-from services.dat_store import CANDIDATE_HASHES_KEY, dat_store
+from services.dat_store import CANDIDATE_HASHES_KEY, INDEX_GENERATION_KEY, dat_store
 from services.file_hasher import compute_file_sha1, compute_file_sha1_sync
 from services.hasheous import HasheousUnavailable
 from services.job_manager import ExternalJobCancelled, job_manager
@@ -178,6 +178,8 @@ async def import_dat(file: UploadFile = File(...)):
     total = 0
     tmp_path = None
     previous_match_paths: list[str] = []
+    # Filled by the import itself, inside its transaction (issue #492).
+    invalidated: set[str] = set()
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".dat") as tmp:
             tmp_path = tmp.name
@@ -202,7 +204,7 @@ async def import_dat(file: UploadFile = File(...)):
             previous_match_paths = await run_in_threadpool(dat_store.list_match_paths)
             # Pass the temp file path (not its contents) so parse_dat() can
             # iterparse directly from disk without a second in-memory copy.
-            result = await dat_store.import_dat(tmp_path)
+            result = await dat_store.import_dat(tmp_path, invalidated=invalidated)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from None
     finally:
@@ -215,7 +217,9 @@ async def import_dat(file: UploadFile = File(...)):
     # Shared with the sync path: a preserved remote hit is only replaced if the
     # local recompute actually matches -- set_match refuses to downgrade one to
     # an unmatched result.
-    await rematch_after_dat_change(previous_match_paths, source="import_dat")
+    await rematch_after_dat_change(
+        [*previous_match_paths, *invalidated], source="import_dat",
+    )
 
     return result
 
@@ -526,7 +530,9 @@ async def match_batch(request: MatchBatchRequest):
 
     # Cache new results using normalized path keys
     if new_matches:
-        await dat_store.set_matches_batch(new_matches)
+        await rematch_refused_verdicts(
+            await dat_store.set_matches_batch(new_matches), source="match-batch",
+        )
 
     return {"results": results}
 
@@ -763,9 +769,20 @@ async def _paths_needing_rematch(before: list[str]) -> list[str]:
     Reading the surviving rows *after* the change closes that without making
     the snapshot transactional with the import. Anything still cached once the
     new index is live either predates the change (already in *before*) or was
-    written during it, and both need recomputing. A row written after the
-    commit was decided against the new index already, so including it is
-    redundant rather than wrong -- and the window is milliseconds wide.
+    written during it, and both need recomputing.
+
+    The rows the change *dropped* are the other half, and the snapshot cannot
+    supply them either: a DAT-derived hit written after the snapshot and before
+    the commit is deleted by the invalidation and so is in neither list
+    (issue #492). Both callers therefore pass the paths the store reports it
+    invalidated (``import_dat`` / ``persist`` with ``invalidated=``) as part of
+    *before*.
+
+    A row written after the commit is current: the store refuses any verdict
+    decided against an older local index (``DATStore._verdict_is_stale``) and
+    reports the path, and the writer hands it to
+    :func:`rematch_refused_verdicts`. Including such a row here is redundant
+    rather than wrong.
 
     Sorted because ``list_match_paths`` promises no order and the resulting job
     should not depend on one.
@@ -795,7 +812,8 @@ async def rematch_after_dat_change(
     recomputed against the new index. It had been written twice, and only the
     sync copy reported what happened when the matcher was busy.
 
-    *paths* is the caller's pre-change snapshot; the rows that survived the
+    *paths* is the caller's pre-change snapshot plus the paths the change's
+    invalidation dropped (the store reports them); the rows that survived the
     change are added here (see :func:`_paths_needing_rematch`), which is why an
     empty snapshot is still worth calling with.
 
@@ -822,13 +840,51 @@ async def rematch_after_dat_change(
     """
     paths = await _paths_needing_rematch(paths)
     if not paths:
+        # Said out loud: an empty set used to return silently, which made a
+        # file dropped from every rematch set invisible in the log (#492).
+        logger.info("%s: nothing to rematch, no file had a cached verdict", source)
         return "none", None
+    return await _schedule_rematch(paths, source=source)
+
+
+async def rematch_refused_verdicts(refused: list[str] | None, *, source: str) -> None:
+    """Rematch the paths a store write refused because the index moved under them.
+
+    ``dat_store.set_match`` / ``set_matches_batch`` return the paths whose
+    verdict was decided against a local DAT index that changed before the
+    write (issue #492). The store leaves those rows alone, so without this the
+    file kept no verdict, or the one the change left it, until someone browsed
+    to it. Every writer (the match job, the batch route, the scan) calls this
+    with what the store returned.
+
+    Runs the same local-only rematch as a DAT change, because it is one: a
+    match job that is running (the writer itself, when it is the job) defers
+    the paths and drains them when it finishes; otherwise a job starts now.
+    Never raises.
+    """
+    paths = sorted(set(refused or ()))
+    if not paths:
+        return
+    logger.info(
+        "%s: %d verdict(s) were decided against a DAT index that has since "
+        "changed; rematching them",
+        source, len(paths),
+    )
+    await _schedule_rematch(paths, source=source)
+
+
+async def _schedule_rematch(paths: list[str], *, source: str) -> tuple[str, str | None]:
+    """Start, or queue behind the running job, a local-only rematch of *paths*.
+
+    Returns ``(status, job id)`` as :func:`rematch_after_dat_change` does, and
+    likewise never raises.
+    """
     try:
         # local_only: a DAT change tells us nothing new about the remote
         # source, so re-asking it for every previously-verdicted file is pure
         # cost -- thousands of hash disclosures and requests per sync, for
-        # answers that cannot differ from the ones already cached. See the
-        # docstring.
+        # answers that cannot differ from the ones already cached. See
+        # rematch_after_dat_change.
         job_id = await schedule_match_job(
             paths, defer_if_busy=True, local_only=True,
         )
@@ -846,7 +902,7 @@ async def rematch_after_dat_change(
         )
         return "scheduled", job_id
     logger.info(
-        "%s: deferred rematch, another match job is already active; "
+        "%s: deferred rematch, a match job is already running; "
         "%d file(s) queued until it finishes",
         source, len(paths),
     )
@@ -1146,10 +1202,15 @@ async def _run_match_job(
                 # crashes mid-run, without paying the extra preload/prefetch
                 # work of the batch upsert path for a one-item write.
                 try:
-                    await dat_store.set_match(normalized_path, result)
+                    refused = await dat_store.set_match(normalized_path, result)
                 except Exception:  # pragma: no cover, best-effort cache write
                     logger.exception("Failed to cache match for %s", normalized_path)
                     errors += 1
+                else:
+                    # A DAT change committed after this file was decided: the
+                    # store did not write the old verdict, and the path joins
+                    # the deferred rematch this job drains when it finishes.
+                    await rematch_refused_verdicts(refused, source=f"match job {job_id}")
             else:
                 # A non-cacheable result is not written, but it is not
                 # evidence-free either: a capped CHD's embedded hashes are
@@ -1789,7 +1850,32 @@ async def _match_single_file(
     stall_bounded: bool = False,
     stall: float | None = None,
 ) -> dict:
-    """Match a file against all imported DATs.
+    """Match a file against all imported DATs, stamped with the index it read.
+
+    The stamp (:data:`INDEX_GENERATION_KEY`) is the local-index generation read
+    before the first lookup. Hashing a file can take minutes, and a DAT change
+    can commit at any await in between; the store compares the stamp at the
+    write and refuses a local verdict decided against an index that is no
+    longer current (issue #492). Every caller that caches a result gets it
+    from here, so the check covers them all.
+    """
+    generation = dat_store.index_generation()
+    result = await _decide_match(
+        file_path, cancel_event=cancel_event, local_only=local_only,
+        stall_bounded=stall_bounded, stall=stall,
+    )
+    return {**result, INDEX_GENERATION_KEY: generation}
+
+
+async def _decide_match(
+    file_path: str,
+    *,
+    cancel_event: asyncio.Event | None = None,
+    local_only: bool = False,
+    stall_bounded: bool = False,
+    stall: float | None = None,
+) -> dict:
+    """The verdict :func:`_match_single_file` stamps.
 
     Fast path: ask the tool that owns this file type for any embedded /
     derivable content hashes (CHD header & data SHA1, Dolphin disc SHA1,
