@@ -212,12 +212,13 @@ def without_a_database() -> list[Library]:
 
 async def run_forever() -> None:
     """The scheduler: every Library whose switch is on, on its own Rules' clocks,
-    then one poll of every Inbox (#431) on the same tick."""
-    from services.inbox import intake
+    then one poll of every Inbox (#431) on the same tick, and what runs after
+    that pass (#433): RomM's scan and the summary notification."""
+    from services.inbox import intake, report
     from services.rules import sweep as rules_sweep
 
     async def poll_inboxes() -> None:
-        await intake.poll_all()
+        await report.after_pass(await intake.poll_all())
 
     await rules_sweep.run_forever(all_libraries, after_tick=poll_inboxes)
 

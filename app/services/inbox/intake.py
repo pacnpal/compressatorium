@@ -81,8 +81,10 @@ Archives and names (#432):
 * **A taken name.** A name already in the Library holds the Image with a
   Finding; a name only another job holds is tried again next poll.
 
-Asking RomM to scan and the intake notification (#433) read what a poll
-reports as ``placed``.
+Each poll reports what was ``placed`` and what was ``left`` with a Finding
+since the last one (an Image from an archive with the archive's path),
+which :mod:`services.inbox.report` turns into RomM's Platform scan and the
+pass summary (#433).
 """
 
 from __future__ import annotations
@@ -94,6 +96,7 @@ import shutil
 import stat
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -107,7 +110,12 @@ from services.archive import ArchiveSafetyRefused, archive_service
 from services.dat_ranking import ranked_match
 from services import inbox as inbox_store
 from services.image_sets import group_images, image_fingerprint, image_members
-from services.job_manager import OutputClaimedError, QueueBackpressureError, job_manager
+from services.job_manager import (
+    CANCEL_SHUTDOWN,
+    OutputClaimedError,
+    QueueBackpressureError,
+    job_manager,
+)
 from services.lock_manager import LockFailed, lock_manager
 from services.output_conflicts import (
     QUEUE,
@@ -237,6 +245,12 @@ class _State:
     # Path -> the DAT ranking it was held at for a naming conflict (#432):
     # looked at again once the ranking changes.
     ranked_holds: dict[str, tuple] = field(default_factory=dict)
+    # The last poll's stop predicate: an unpack or a Recognize that takes its
+    # Images on itself (`_take_on`, #432) admits nothing once it is true.
+    should_stop: Callable[[], bool] | None = None
+    # What got a Finding since the last poll reported it: ``{"path", "kind",
+    # "reason"}``, for the pass summary (#433).
+    left: list[dict[str, Any]] = field(default_factory=list)
     last_poll: float | None = None
     waiting: int = 0
     error: str | None = None
@@ -273,6 +287,11 @@ _stop_lock = threading.Lock()
 _stop_generation = 0
 _check_lock: asyncio.Lock | None = None
 _check_lock_loop: asyncio.AbstractEventLoop | None = None
+
+
+def _never() -> bool:
+    """The default stop predicate: the server's tick never stops a poll."""
+    return False
 
 
 def _stopped() -> bool:
@@ -668,6 +687,7 @@ async def _hold(
         member = os.path.relpath(path, unpacked.slot.path)
         reason = f"{member} (unpacked from it): {reason}"
         cause["member"] = member
+    state.left.append({"path": shown, "kind": kind, "reason": reason})
     item = findings.Observed(
         kind=kind, image_key=inbox.image_key(shown), path=shown, reason=reason,
         cause={"inbox": inbox.id, "fingerprint": fingerprint, **cause},
@@ -722,10 +742,16 @@ async def _clear(inbox: inbox_store.Inbox, path: str) -> None:
 # ---- the poll ------------------------------------------------------------
 
 
-async def poll_all(*, now: float | None = None) -> list[dict[str, Any]]:
-    """One poll of every Inbox: a pass. Never raises; called from the
-    scheduler's tick. A new pass may open files again after a check that had
-    to stop (``_storage_stop``)."""
+async def poll_all(
+    *, now: float | None = None, library_ids: set[str] | None = None,
+    should_stop: Callable[[], bool] = _never,
+) -> list[dict[str, Any]]:
+    """One poll of every Inbox (of the Libraries *library_ids*, when given):
+    a pass. Never raises; called from the scheduler's tick and ``run-rules``.
+    A poll that raised is reported with its ``error``. Once *should_stop*
+    is true (``run-rules`` got a stop) no further file is admitted and no
+    further Inbox polled; work already started finishes. A new pass may open
+    files again after a check that had to stop (``_storage_stop``)."""
     _set_stop(False)
     try:
         inboxes = await run_in_threadpool(inbox_store.all_inboxes)
@@ -734,15 +760,35 @@ async def poll_all(*, now: float | None = None) -> list[dict[str, Any]]:
         return []
     results = []
     for inbox in inboxes:
+        if library_ids is not None and inbox.library_id not in library_ids:
+            continue
+        if should_stop():
+            break
+        state = _state(inbox.id)
+        previous_error = state.error
         try:
-            results.append(await poll(inbox, now=now))
-        except Exception:
+            results.append(await poll(inbox, now=now, should_stop=should_stop))
+        except Exception as exc:
             logger.warning("inbox: polling %s failed", inbox.folder, exc_info=True)
+            # The same last-error comparison as a listing error (CodeRabbit
+            # 4608135791): kept as the Inbox's error, news only when it
+            # differs from the error before this poll.
+            error = f"Polling the Inbox failed: {exc}"
+            state.error = error
+            results.append({
+                "inbox_id": inbox.id, "library_id": inbox.library_id,
+                "placed": [], "left": [], "error": error,
+                "error_new": error != previous_error,
+            })
     return results
 
 
-async def poll(inbox: inbox_store.Inbox, *, now: float | None = None) -> dict[str, Any]:
-    """One poll of *inbox* at *now* (seconds; the wall clock by default)."""
+async def poll(
+    inbox: inbox_store.Inbox, *, now: float | None = None,
+    should_stop: Callable[[], bool] = _never,
+) -> dict[str, Any]:
+    """One poll of *inbox* at *now* (seconds; the wall clock by default).
+    Admits no file once *should_stop* is true."""
     from services import libraries
 
     now = time.time() if now is None else now
@@ -750,12 +796,15 @@ async def poll(inbox: inbox_store.Inbox, *, now: float | None = None) -> dict[st
     result: dict[str, Any] = {
         "inbox_id": inbox.id, "library_id": inbox.library_id,
         "queued": 0, "copying": 0, "held": 0, "waiting": 0,
-        "placed": [], "error": None,
+        "placed": [], "left": [], "error": None,
     }
     if state.polling:
         result["error"] = "poll_running"
         return result
     state.polling = True
+    state.should_stop = should_stop
+    # Whether this poll's error is news (#433): the summary notifies once.
+    previous_error = state.error
     try:
         await _settle_flights(inbox, state)
         library = libraries.get(inbox.library_id)
@@ -786,6 +835,8 @@ async def poll(inbox: inbox_store.Inbox, *, now: float | None = None) -> dict[st
         for path, fingerprint in listing.items():
             if state.revoked:
                 break  # removed meanwhile: nothing more is taken
+            if should_stop():
+                break  # a stop (run-rules): nothing more is admitted
             if path in state.flights or path in busy:
                 continue
             depends = _ownership_key(path, listing, sharing, blocked)
@@ -849,9 +900,18 @@ async def poll(inbox: inbox_store.Inbox, *, now: float | None = None) -> dict[st
                 result["waiting"] += 1
         state.waiting = result["waiting"]
         return result
+    except Exception as exc:
+        # Kept as the Inbox's error like a listing error, so it goes through
+        # the same comparison (CodeRabbit 4608135791), and what was placed or
+        # left before it raised is still reported.
+        logger.warning("inbox: polling %s failed", inbox.folder, exc_info=True)
+        state.error = result["error"] = f"Polling the Inbox failed: {exc}"
+        return result
     finally:
         state.last_poll = now
         result["placed"], state.placed = state.placed, []
+        result["left"], state.left = state.left, []
+        result["error_new"] = bool(state.error) and state.error != previous_error
         state.polling = False
 
 
@@ -923,13 +983,24 @@ async def _settle_unpacked(
             continue
         busy.add(archive)
         busy.update(unpacked.placed)
-        if unpacked.images <= unpacked.placed and state.held.get(archive) != unpacked.fingerprint:
-            flight = _Flight(
-                fingerprint=unpacked.fingerprint, files=[archive], platform="",
-                identities=unpacked.identities, unpacked=unpacked,
-            )
-            _archive_later(inbox, state, archive, flight, None)
+        _archive_if_done(inbox, state, archive, unpacked)
     return busy
+
+
+def _archive_if_done(
+    inbox: inbox_store.Inbox, state: _State, archive: str, unpacked: _Unpacked,
+) -> None:
+    """Start *archive*'s move to ``processed/`` once every Image unpacked
+    from it is placed (and it isn't held, nor moving already)."""
+    if archive in state.flights or not unpacked.images <= unpacked.placed:
+        return
+    if state.held.get(archive) == unpacked.fingerprint:
+        return
+    flight = _Flight(
+        fingerprint=unpacked.fingerprint, files=[archive], platform="",
+        identities=unpacked.identities, unpacked=unpacked,
+    )
+    _archive_later(inbox, state, archive, flight, None)
 
 
 async def _ranking_now() -> tuple | None:
@@ -1157,6 +1228,7 @@ def _start_finish(
     with state.guard:
         if state.revoked:
             return "retry"  # the Inbox was removed meanwhile
+        _note_placed(state, path, flight, output)
         _track(state, path, flight, _finish(inbox, state, path, flight, output))
     return "copying"
 
@@ -1223,6 +1295,30 @@ async def _name(
     return None
 
 
+async def _take_on(inbox: inbox_store.Inbox, state: _State, path: str, fingerprint: str) -> None:
+    """Take the Image at *path* on at once, from the task that made it ready
+    (#432): Recognized, or just unpacked from an archive. It doesn't wait a
+    poll for it, and ``run-rules``, which polls once a run and keeps no
+    match or unpack between runs, places it in the same run. Only while it is
+    still the file that was taken (*fingerprint*), and never once the Inbox
+    is removed or the last poll's stop is set; otherwise the next poll takes
+    it as usual."""
+    from services import libraries
+
+    if state.revoked or (state.should_stop is not None and state.should_stop()):
+        return
+    library = libraries.get(inbox.library_id)
+    if library is None:
+        return
+    try:
+        if await _step(image_fingerprint, path) != fingerprint:
+            return
+        await _take(inbox, library, state, path, fingerprint)
+    except Exception:
+        # Left to the next poll, which takes it as any settled file.
+        logger.warning("inbox: taking %s on failed", path, exc_info=True)
+
+
 def _start_recognize(
     inbox: inbox_store.Inbox, state: _State, path: str, flight: _Flight,
 ) -> str:
@@ -1245,6 +1341,7 @@ async def _recognize(
         os.path.basename(path), ConversionMode.INBOX_RECOGNIZE,
         message="Waiting to Recognize it",
     )
+    _tag(job, inbox)
     cancel = job_manager.get_cancel_event(job.id)
     outcome, why, result = "failed", "", None
     try:
@@ -1282,10 +1379,14 @@ async def _recognize(
     if outcome == "recognized":
         state.recognized[path] = (flight.fingerprint, result)
         await job_manager.finish_external_job(job.id, success=True)
+        await _take_on(inbox, state, path, flight.fingerprint)
         return
     if outcome == "cancelled":
-        await _hold(inbox, state, path, flight.fingerprint, findings.INBOX_FAILED,
-                    "Its intake was cancelled", {"platform": flight.platform})
+        if _cancelled_by_shutdown(job_manager.get_job(job.id) or job):
+            _release(state, path)  # a shutdown, not the file's fault (#433)
+        else:
+            await _hold(inbox, state, path, flight.fingerprint, findings.INBOX_FAILED,
+                        "Its intake was cancelled", {"platform": flight.platform})
         await job_manager.finish_external_job_cancelled(job.id, message="Cancelled")
         return
     await _hold(inbox, state, path, flight.fingerprint, findings.INBOX_FAILED,
@@ -1509,6 +1610,7 @@ async def _unpack(
     job = job_manager.create_external_job(
         os.path.basename(path), ConversionMode.INBOX_UNPACK, message="Waiting to unpack it",
     )
+    _tag(job, inbox)
     cancel = job_manager.get_cancel_event(job.id)
     outcome, why, unpacked = "failed", "", None
     try:
@@ -1546,10 +1648,15 @@ async def _unpack(
             await job_manager.finish_external_job(job.id, success=False, error_message=why)
             return
         await job_manager.finish_external_job(job.id, success=True)
+        if not revoked:
+            await _take_unpacked(inbox, state, path)
         return
     if outcome == "cancelled":
-        await _hold(inbox, state, path, flight.fingerprint, findings.INBOX_FAILED,
-                    "Its intake was cancelled")
+        if _cancelled_by_shutdown(job_manager.get_job(job.id) or job):
+            _release(state, path)  # a shutdown, not the file's fault (#433)
+        else:
+            await _hold(inbox, state, path, flight.fingerprint, findings.INBOX_FAILED,
+                        "Its intake was cancelled")
         await job_manager.finish_external_job_cancelled(job.id, message="Cancelled")
         return
     if outcome in ("changed", "deferred"):
@@ -1563,12 +1670,39 @@ async def _unpack(
     if outcome == "refused":
         message = (
             f"It's an archive the Inbox doesn't take: {why}. It wasn't unpacked; "
-            "extract it by hand if you trust it"
+            "extract it, or raise the limit if you trust it"
         )
     else:
         message = f"Unpacking it failed: {why}"
     await _hold(inbox, state, path, flight.fingerprint, findings.INBOX_FAILED, message)
     await job_manager.finish_external_job(job.id, success=False, error_message=why)
+
+
+async def _take_unpacked(inbox: inbox_store.Inbox, state: _State, archive: str) -> None:
+    """Take on every Image just unpacked from *archive* (:func:`_take_on`):
+    intake wrote them, so there is nothing to wait to settle. An Image that
+    shares a file with another, or sits below a sheet that can't be read
+    whole, is left to the next poll, which holds it as for any file."""
+    unpacked = state.unpacked.get(archive)
+    if unpacked is None:
+        return
+
+    def ready() -> dict[str, str]:
+        images = {image: image_fingerprint(image) for image in sorted(unpacked.images)}
+        doubtful = {
+            *_sharing(images),
+            *_behind_unreadable_sheets(images, within=[unpacked.slot.path]),
+        }
+        return {image: fp for image, fp in images.items() if image not in doubtful}
+
+    try:
+        images = await _step(ready)
+    except (asyncio.TimeoutError, OSError):
+        return
+    for image, fingerprint in images.items():
+        if image in state.flights or image in unpacked.placed:
+            continue
+        await _take_on(inbox, state, image, fingerprint)
 
 
 async def _unpack_in(
@@ -1761,6 +1895,9 @@ async def _convert(
         await _hold(inbox, state, path, fingerprint, findings.INBOX_FAILED,
                     f"Couldn't queue its conversion: {exc}", {"platform": platform})
         return "held"
+    for each in jobs:
+        # Before anything awaits: what reports the job names this Inbox.
+        _tag(each, inbox)
     with state.guard:
         revoked = state.revoked
         if not revoked:
@@ -1776,6 +1913,28 @@ async def _convert(
             await job_manager.cancel_job(each.id)
         return "retry"
     return "queued"
+
+
+def _tag(job: Any, inbox: inbox_store.Inbox) -> None:
+    """Mark an intake job with the Library and Inbox it came from (#433), so
+    whoever reports it names them, whenever the job is made (a copy's job is
+    made when its task runs, possibly while another Inbox is polled)."""
+    job.library_id = inbox.library_id
+    job.inbox_id = inbox.id
+
+
+def _cancelled_by_shutdown(job: Any) -> bool:
+    """A cancel because the app or ``run-rules`` is stopping (#433), read off
+    the job's ``cancel_reason``: not the file's fault, so it isn't held."""
+    return getattr(job, "cancel_reason", None) == CANCEL_SHUTDOWN
+
+
+def _release(state: _State, path: str) -> None:
+    """Forget *path*'s settling and any hold: the next poll sees it as new and
+    takes it once it has settled again. No Finding is written."""
+    state.seen.pop(path, None)
+    state.held.pop(path, None)
+    state.held_by.pop(path, None)
 
 
 async def _settle_flights(inbox: inbox_store.Inbox, state: _State) -> None:
@@ -1795,25 +1954,86 @@ async def _settle_flights(inbox: inbox_store.Inbox, state: _State) -> None:
                 {"platform": flight.platform},
             )
             continue
-        if job.status == JobStatus.COMPLETED:
-            # Moving the original to processed/ is its own tracked flight
-            # (CodeRabbit 4606147968): a slow move never holds up this poll,
-            # and the Image stays in flight, not taken again, until it ends.
-            flight.job_id = None
-            _archive_later(inbox, state, path, flight, job.output_path)
-        elif job.status == JobStatus.FAILED:
-            state.flights.pop(path, None)
-            await _hold(
-                inbox, state, path, flight.fingerprint, findings.INBOX_FAILED,
-                f"Its conversion failed: {job.error_message or 'see the job'}",
-                {"platform": flight.platform},
-            )
-        elif job.status == JobStatus.CANCELLED:
-            state.flights.pop(path, None)
-            await _hold(
-                inbox, state, path, flight.fingerprint, findings.INBOX_FAILED,
-                "Its intake was cancelled", {"platform": flight.platform},
-            )
+        await _settle_ended(inbox, state, path, flight, job)
+
+
+async def _settle_ended(
+    inbox: inbox_store.Inbox, state: _State, path: str, flight: _Flight, job: Any,
+) -> None:
+    """Settle *flight* once its conversion *job* has ended: completed, its
+    output counts as placed and the original goes to ``processed/``; failed or
+    cancelled, the file stays with a Finding (or, cancelled by a shutdown, is
+    released). Every change to the flight happens before the first await, so
+    a poll and the terminal listener (:func:`on_job_finished`) never settle
+    it twice."""
+    if state.flights.get(path) is not flight or flight.job_id != job.id:
+        return  # settled already, or not this job's
+    if job.status == JobStatus.COMPLETED:
+        # Moving the original to processed/ is its own tracked flight
+        # (CodeRabbit 4606147968): a slow move never holds up this poll,
+        # and the Image stays in flight, not taken again, until it ends.
+        flight.job_id = None
+        _note_placed(state, path, flight, job.output_path)
+        _archive_later(inbox, state, path, flight, job.output_path)
+    elif job.status == JobStatus.FAILED:
+        state.flights.pop(path, None)
+        await _hold(
+            inbox, state, path, flight.fingerprint, findings.INBOX_FAILED,
+            f"Its conversion failed: {job.error_message or 'see the job'}",
+            {"platform": flight.platform},
+        )
+    elif job.status == JobStatus.CANCELLED:
+        state.flights.pop(path, None)
+        if _cancelled_by_shutdown(job):
+            _release(state, path)
+            return
+        await _hold(
+            inbox, state, path, flight.fingerprint, findings.INBOX_FAILED,
+            "Its intake was cancelled", {"platform": flight.platform},
+        )
+
+
+async def on_job_finished(job: Any) -> None:
+    """A terminal listener (``run-rules`` registers it, #433): settle the
+    Inbox conversion *job* belongs to the moment it ends, from the job itself,
+    so nothing depends on the job history still holding it when the next
+    poll or :func:`finish_all` looks (Codex 4608095516). Never raises."""
+    inbox_id = getattr(job, "inbox_id", None)
+    state = _states.get(inbox_id) if inbox_id is not None else None
+    if state is None or job.mode in (
+        ConversionMode.INBOX_COPY, ConversionMode.INBOX_UNPACK, ConversionMode.INBOX_RECOGNIZE,
+    ):
+        return  # not intake's, or a copy, unpack or Recognize, which settles itself
+    # Counted with intake's own work before the first await, so `drain()`
+    # (and so `finish_all`) waits for this settle too.
+    task = asyncio.current_task()
+    if task is not None:
+        _tasks.add(task)
+        task.add_done_callback(_tasks.discard)
+    for path, flight in list(state.flights.items()):
+        if flight.job_id != job.id:
+            continue
+        try:
+            inbox = await run_in_threadpool(inbox_store.get, inbox_id)
+            if inbox is not None:
+                await _settle_ended(inbox, state, path, flight, job)
+        except Exception:
+            logger.warning("inbox: settling %s as its job ended failed", path, exc_info=True)
+        return
+
+
+def _note_placed(state: _State, path: str, flight: _Flight, output: str | None) -> None:
+    """The Image's output is in the Library: it counts as placed now, before
+    its original goes to ``processed/``, so the pass summary and RomM's scan
+    see it even when that move fails (Codex 4608095510). An Image unpacked
+    from an archive (#432) is reported with the archive's path, and counts
+    toward that archive's own move to ``processed/`` from now on."""
+    owner = _unpacked_holding(state, path)
+    if owner is not None:
+        owner[1].placed.add(path)
+    state.placed.append({
+        "path": owner[0] if owner else path, "platform": flight.platform, "output": output,
+    })
 
 
 def _archive_later(
@@ -1921,12 +2141,6 @@ async def _finish_locked(
             logger.warning("inbox: could not remove what was unpacked from %s", path)
         await _clear(inbox, path)
         return
-    if owner is not None:
-        owner[1].placed.add(path)
-    # An Image from an archive is reported with the archive's path.
-    state.placed.append({
-        "path": owner[0] if owner else path, "platform": flight.platform, "output": output,
-    })
     try:
         await _step(inbox_store.note_processed, inbox.id)
     except Exception:
@@ -2258,6 +2472,7 @@ async def _copy(
         os.path.basename(path), ConversionMode.INBOX_COPY,
         message=f"Waiting to copy into {folder}",
     )
+    _tag(job, inbox)
     cancel = job_manager.get_cancel_event(job.id)
     outcome, why, output = "failed", "", None
     try:
@@ -2285,12 +2500,16 @@ async def _copy(
         # `libraries.note_job_finished`, so its Library is told here, before
         # the job is announced finished, and drops its kept walk (#353).
         _tell_library(inbox, output)
+        _note_placed(state, path, flight, output[0])
         await _finish(inbox, state, path, flight, output[0])
         await job_manager.finish_external_job(job.id, success=True)
         return
     if outcome == "cancelled":
-        await _hold(inbox, state, path, flight.fingerprint, findings.INBOX_FAILED,
-                    "Its intake was cancelled", {"platform": flight.platform})
+        if _cancelled_by_shutdown(job_manager.get_job(job.id) or job):
+            _release(state, path)
+        else:
+            await _hold(inbox, state, path, flight.fingerprint, findings.INBOX_FAILED,
+                        "Its intake was cancelled", {"platform": flight.platform})
         await job_manager.finish_external_job_cancelled(job.id, message="Cancelled")
         return
     if outcome in ("changed", "deferred"):
@@ -2516,3 +2735,130 @@ async def _copy_locked(
             await _step(slot.close)
         except (OSError, asyncio.TimeoutError):
             logger.warning("inbox: could not close the staging slot for %s", path, exc_info=True)
+
+
+# ---- a pass from run-rules (#433) ------------------------------------------
+
+
+def settle_memory(inbox_ids: set[int]) -> dict[str, Any]:
+    """What intake remembers between polls of the Inboxes *inbox_ids*, as
+    JSON: the files seen settling (fingerprint and since when), the ones
+    held with a Finding, the last poll's error, and the originals whose move
+    to ``processed/`` was put off. ``run-rules`` is a new process each time, so it
+    keeps this between runs (:func:`restore_settle_memory`): a file one run
+    saw is taken by the next once its settle time has passed, and a held
+    file isn't reported again, as on the server's tick."""
+    memory: dict[str, Any] = {}
+    for inbox_id, state in _states.items():
+        if inbox_id not in inbox_ids or state.revoked:
+            continue
+        memory[str(inbox_id)] = {
+            "seen": {path: [s.fingerprint, s.since] for path, s in state.seen.items()},
+            "held": dict(state.held),
+            "held_by": {
+                path: [list(item) for item in depends]
+                for path, depends in state.held_by.items()
+            },
+            # The last poll's error, so the same outage isn't news to the
+            # next run's summary (Codex 4608095505).
+            "error": state.error,
+            # Originals whose output is in the Library but whose move to
+            # processed/ was put off (another process held one): the next run
+            # does only that move (CodeRabbit 4608135794).
+            "archive": {
+                path: {
+                    "fingerprint": flight.fingerprint, "files": list(flight.files),
+                    "platform": flight.platform, "identities": flight.identities,
+                    "output": flight.archive,
+                }
+                for path, flight in state.flights.items()
+                if flight.job_id is None and flight.archive is not None
+            },
+        }
+    return memory
+
+
+def restore_settle_memory(memory: dict[str, Any] | None) -> None:
+    """Take back what :func:`settle_memory` kept. What this process already
+    knows wins; an entry that can't be read is dropped (the file is then
+    simply seen again)."""
+    for key, kept in (memory or {}).items():
+        try:
+            state = _state(int(key))
+            for path, (fingerprint, since) in (kept.get("seen") or {}).items():
+                state.seen.setdefault(path, _Seen(str(fingerprint), float(since)))
+            for path, fingerprint in (kept.get("held") or {}).items():
+                state.held.setdefault(path, str(fingerprint))
+            for path, depends in (kept.get("held_by") or {}).items():
+                state.held_by.setdefault(path, tuple(tuple(item) for item in depends))
+            if state.error is None and kept.get("error"):
+                state.error = str(kept["error"])
+            for path, duty in (kept.get("archive") or {}).items():
+                if path in state.flights:
+                    continue
+                # In flight with its archival put off: the next poll does
+                # only the move, and only while the original is still the
+                # file that was taken (its fingerprint and identities);
+                # changed, it is new and taken normally.
+                state.flights[path] = _Flight(
+                    fingerprint=str(duty["fingerprint"]),
+                    files=[str(f) for f in duty["files"]],
+                    platform=str(duty["platform"]),
+                    identities={
+                        str(name): {str(k): int(v) for k, v in ids.items()}
+                        for name, ids in (duty.get("identities") or {}).items()
+                    },
+                    archive=str(duty.get("output") or ""),
+                )
+        except (TypeError, ValueError, AttributeError):
+            logger.warning("inbox: dropped the kept intake state of Inbox %s", key)
+
+
+async def finish_all(*, library_ids: set[str] | None = None) -> list[dict[str, Any]]:
+    """Finish what this process's polls started, for ``run-rules``, which
+    exits after one pass: each ended conversion's original goes to
+    ``processed/`` (as the next poll would on the server), every copy and
+    move is waited for, and what was placed or left with a Finding since
+    the last poll comes back in the shape :func:`poll` reports it. Call it
+    once the queued conversions have ended. Never raises."""
+    try:
+        inboxes = await run_in_threadpool(inbox_store.all_inboxes)
+    except Exception:
+        logger.warning("inbox: could not list the Inboxes", exc_info=True)
+        return []
+    inboxes = [
+        inbox for inbox in inboxes
+        if inbox.id in _states and (library_ids is None or inbox.library_id in library_ids)
+    ]
+    for inbox in inboxes:
+        try:
+            await _settle_flights(inbox, _states[inbox.id])
+        except Exception:
+            logger.warning("inbox: finishing %s failed", inbox.folder, exc_info=True)
+    await drain()
+    # An archive whose Images are all placed moves to processed/ now (#432);
+    # then what was unpacked goes, the process ending with it. A later run
+    # unpacks an archive still in the Inbox again, and counts what it placed
+    # already by its bytes (`_same_as_placed`).
+    for inbox in inboxes:
+        state = _states[inbox.id]
+        for archive, unpacked in list(state.unpacked.items()):
+            _archive_if_done(inbox, state, archive, unpacked)
+    await drain()
+    for inbox in inboxes:
+        state = _states[inbox.id]
+        try:
+            await run_in_threadpool(_close_unpacked, state)
+        except Exception:
+            logger.warning("inbox: removing what %s unpacked failed", inbox.folder,
+                           exc_info=True)
+        state.unpacked.clear()
+    results = []
+    for inbox in inboxes:
+        state = _states[inbox.id]
+        results.append({
+            "inbox_id": inbox.id, "library_id": inbox.library_id,
+            "placed": state.placed, "left": state.left,
+        })
+        state.placed, state.left = [], []
+    return results

@@ -39,7 +39,7 @@ from logging_setup import get_logger
 from models import ConversionMode
 from services import findings, image_checks, notifications
 from services.image_sets import image_fingerprint, image_members, image_size
-from services.job_manager import job_manager
+from services.job_manager import CANCEL_SHUTDOWN, job_manager
 from services.lock_manager import lock_manager
 from services.rules.library import Image, Library
 from services.subprocess_runner import (
@@ -453,7 +453,7 @@ async def drain(should_stop: Callable[[], bool] | None = None) -> None:
         if not cancelled and should_stop():
             cancelled = True
             for job_id in list(_task_jobs.values()):
-                await job_manager.cancel_job(job_id)
+                await job_manager.cancel_job(job_id, reason=CANCEL_SHUTDOWN)
 
 
 def _apply(library_id: str, check: Check, verdict: str, message: str, current) -> bool:

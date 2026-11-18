@@ -84,6 +84,13 @@ DELETE_READER_WAIT_SECONDS = 60.0
 DELETE_READER_POLL_SECONDS = 0.5
 SOURCE_KEPT_FOR_READERS = "Source kept: it was being read by another job"
 
+# Why a job was cancelled (``ConversionJob.cancel_reason``, #433): someone asked
+# (the UI or API, the default), or the app or ``run-rules`` is stopping. A
+# caller that reacts to a cancel (the Inbox holds a file the user cancelled)
+# reads this, never who cancelled.
+CANCEL_REQUESTED = "requested"
+CANCEL_SHUTDOWN = "shutdown"
+
 # The glossary names (CONTEXT.md) for each stored check, used in job messages so
 # "verified" never stands in for which check an output passed.
 _CHECK_LABELS = {
@@ -2741,11 +2748,23 @@ class JobManager:
         self._last_reset_seq = self._eviction_seq
         return self._eviction_seq
 
-    async def cancel_job(self, job_id: str) -> bool:
-        """Cancel a job."""
+    async def cancel_job(self, job_id: str, *, reason: str = CANCEL_REQUESTED) -> bool:
+        """Cancel a job. *reason* is recorded on it (``cancel_reason``) when
+        the cancel is taken; a job already being cancelled keeps its first."""
         job = self.jobs.get(job_id)
         if not job:
             return False
+        # Set before the cancel, which may tell the terminal listeners at
+        # once (a queued job), and taken back if the cancel isn't taken.
+        previous = job.cancel_reason
+        if previous is None:
+            job.cancel_reason = reason
+        accepted = await self._cancel_job(job, job_id)
+        if not accepted:
+            job.cancel_reason = previous
+        return accepted
+
+    async def _cancel_job(self, job: ConversionJob, job_id: str) -> bool:
 
         # Externally-managed jobs (metadata scan, DAT match) are always
         # created in PROCESSING state, they never sit in the dispatcher
@@ -2818,8 +2837,8 @@ class JobManager:
             return True
         return False
 
-    async def cancel_all_jobs(self) -> Dict[str, object]:
-        """Cancel all queued and processing jobs.
+    async def cancel_all_jobs(self, *, reason: str = CANCEL_REQUESTED) -> Dict[str, object]:
+        """Cancel all queued and processing jobs, each with *reason*.
 
         Returns:
             Summary payload with queued/processing counts and job IDs that received
@@ -2837,7 +2856,7 @@ class JobManager:
 
         # Snapshot IDs first to avoid mutating while iterating jobs.
         for job_id in queued_ids + processing_ids:
-            if await self.cancel_job(job_id):
+            if await self.cancel_job(job_id, reason=reason):
                 requested_ids.append(job_id)
 
         return {

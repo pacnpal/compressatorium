@@ -505,6 +505,30 @@ class RommClient:
             raise RommError("RomM queued no scan task")
         return str(task_id)
 
+    def scan_platforms(self, folders: list[str]) -> str:
+        """Ask RomM to quick scan the Platform folders *folders*; the task's id (#433).
+
+        ``POST /api/tasks/scan`` with ``{"type": "quick", "platform_fs_slugs":
+        [...]}``: each entry is a Platform's folder name on disk (its
+        ``fs_slug``), so a folder RomM has no Platform row for yet is scanned
+        and gets one. ``apis`` is left out, so the scan uses every metadata
+        source RomM has on, as its own scheduled scan does. A folder that
+        isn't there scans nothing; RomM never widens it to the library.
+        Needs ``tasks.run``: without it RomM answers 403. 409 means a library
+        scan is already queued or running, 503 that RomM has no scan worker.
+        Confirmed against RomM 5.4.1 (``scripts/spike/romm_platform_scan``).
+        Raises :class:`RommError`, also when RomM queues no task.
+        """
+        payload = {"type": "quick", "platform_fs_slugs": [str(f) for f in folders]}
+        result = self._request(
+            "POST", "/api/tasks/scan", data=json.dumps(payload).encode(),
+            content_type="application/json",
+        )
+        task_id = result.get("task_id") if isinstance(result, dict) else None
+        if not task_id:
+            raise RommError("RomM queued no scan task")
+        return str(task_id)
+
     def task(self, task_id: str) -> dict:
         """RomM's task *task_id*: its ``status`` (``queued``, ``started``,
         ``finished``, ``failed``, ``stopped``, ``canceled``) and result."""

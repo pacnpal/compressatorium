@@ -1043,3 +1043,126 @@ def test_a_source_outside_its_trusted_folder_is_refused(tmp_path):
     finally:
         slot.close()
         other.close()
+
+
+# ---- with #433's pass: tags, shutdown cancels, run-rules ---------------------
+
+
+@pytest.mark.asyncio
+async def test_unpack_and_recognize_jobs_name_their_library_and_inbox(vol, db, monkeypatch):
+    from models import ConversionMode
+    from services.inbox import intake
+
+    _verifies(monkeypatch)
+    rom = _bytes("tagged")
+    await _dat("Nintendo - Game Boy Advance (No-Intro)", {"Tagged": _sha1(rom)})
+    library = _library(vol)
+    box = _inbox(vol, library, settle=0)
+    _zip(vol / "Downloads" / "gba" / "tagged.zip", {"tagged.gba": rom})
+    before = set(intake.job_manager.jobs)
+
+    await _polls(box)
+
+    ours = [
+        job for job_id, job in intake.job_manager.jobs.items()
+        if job_id not in before
+        and job.mode in (ConversionMode.INBOX_UNPACK, ConversionMode.INBOX_RECOGNIZE)
+    ]
+    assert {job.mode for job in ours} == {
+        ConversionMode.INBOX_UNPACK, ConversionMode.INBOX_RECOGNIZE,
+    }
+    assert all(
+        (job.library_id, job.inbox_id) == (library.id, box.id) for job in ours
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_recognize_cancelled_by_a_shutdown_leaves_no_finding(vol, db, monkeypatch):
+    """#433: a cancel because the app or run-rules is stopping is not the
+    file's fault. The file is released with no Finding."""
+    import asyncio
+
+    from models import ConversionMode
+    from services import inbox
+    from services.inbox import intake
+    from services.job_manager import CANCEL_SHUTDOWN
+
+    await _dat("Sony - PlayStation 2 (Redump)", {"Other": _sha1(b"other")})
+    release, started = _hung_hash(monkeypatch)
+    library = _library(vol)
+    box = _inbox(vol, library, settle=0)
+    game = _drop(vol / "Downloads" / "ps2" / "Game.iso", _bytes("shutdown"))
+    before = set(intake.job_manager.jobs)
+    try:
+        await intake.poll(inbox.get(box.id), now=0)
+        await intake.poll(inbox.get(box.id), now=1)
+        assert await asyncio.to_thread(started.wait, 10)
+        [job] = [
+            j for job_id, j in intake.job_manager.jobs.items()
+            if job_id not in before and j.mode == ConversionMode.INBOX_RECOGNIZE
+        ]
+        await intake.job_manager.cancel_job(job.id, reason=CANCEL_SHUTDOWN)
+        await asyncio.wait_for(intake.drain(), 5)
+    finally:
+        release.set()
+
+    assert game.exists()
+    assert _inbox_findings() == []
+    assert str(game.resolve()) not in intake._states[box.id].held
+
+
+@pytest.mark.asyncio
+async def test_an_unpack_cancelled_by_a_shutdown_leaves_no_finding(vol, db, monkeypatch):
+    import asyncio
+
+    from services.inbox import intake
+    from services.job_manager import CANCEL_SHUTDOWN
+
+    _verifies(monkeypatch)
+    library = _library(vol)
+    box = _inbox(vol, library, settle=0)
+    archive = _zip(vol / "Downloads" / "gba" / "Game.zip", {"Game.gba": _bytes("stop")})
+
+    async def no_slot(job_id, cancel_event=None):
+        await intake.job_manager.cancel_job(job_id, reason=CANCEL_SHUTDOWN)
+        return False
+
+    monkeypatch.setattr(intake.job_manager, "hold_slot", no_slot)
+    await _polls(box, count=2)
+    await asyncio.wait_for(intake.drain(), 5)
+
+    assert archive.exists()
+    assert _inbox_findings() == []
+    assert str(archive.resolve()) not in intake._states[box.id].held
+
+
+@pytest.mark.asyncio
+async def test_one_run_rules_pass_places_an_archives_images(vol, db, monkeypatch):
+    """run-rules polls once a run and keeps no unpack or match between runs:
+    the Images an unpack or a Recognize readies are taken on in the same run,
+    and finish_all moves the archive and removes what was unpacked."""
+    from services import inbox
+    from services.inbox import intake
+
+    _verifies(monkeypatch)
+    rom = _bytes("one pass")
+    await _dat("Nintendo - Game Boy Advance (No-Intro)", {"One Pass (World)": _sha1(rom)})
+    library = _library(vol)
+    box = _inbox(vol, library, settle=0)
+    archive = _zip(vol / "Downloads" / "gba" / "pass.zip", {"pass.gba": rom})
+    # The file was seen by an earlier run (run-rules keeps that between runs).
+    intake.restore_settle_memory({str(box.id): {"seen": {
+        str(archive.resolve()): [intake.image_fingerprint(str(archive.resolve())), 0],
+    }}})
+
+    await intake.poll_all(now=100)
+    await intake.drain()
+    [result] = await intake.finish_all()
+
+    assert (vol / "ROMs" / "gba" / "One Pass (World).gba").read_bytes() == rom
+    assert not archive.exists()
+    assert (vol / "Downloads" / "processed" / "gba" / "pass.zip").exists()
+    assert _unpack_dirs() == []
+    assert [Path(p["output"]).name for p in result["placed"]] == ["One Pass (World).gba"]
+    assert result["placed"][0]["path"] == str(archive.resolve())
+    assert inbox.get(box.id) is not None
