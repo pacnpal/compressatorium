@@ -84,6 +84,12 @@ class ConversionMode(str, Enum):
     # An Inbox copying an Image into its Library as it is (#431): no Rule
     # converts it. External: it converts nothing.
     INBOX_COPY = "inbox_copy"
+    # An Inbox unpacking an arriving archive (#432) so the Images in it are
+    # taken one by one. External: it converts nothing.
+    INBOX_UNPACK = "inbox_unpack"
+    # An Inbox Recognizing an Image against the DATs before it is placed
+    # (#432), so it takes its DAT name. External: it converts nothing.
+    INBOX_RECOGNIZE = "inbox_recognize"
 
 
 class DuplicateAction(str, Enum):
@@ -274,6 +280,11 @@ class ConversionJob(BaseModel):
     # under (``utils.path_utils.source_identity``, #431), or None. Checked under
     # the job's Source lock right before the tool runs.
     _source_identity: dict | None = PrivateAttr(default=None)
+    # The one folder outside the Volumes this job was created to read its
+    # Source from (an Inbox's unpack folder in the app's work area, #432), or
+    # None. Set when the job is created; ``_trusted_roots`` and the Source's
+    # identity check honour it, and nothing outside it.
+    _trusted_root: str | None = PrivateAttr(default=None)
     # Where a job with a ``_source_identity`` reads its Source once bound
     # (``utils.path_utils.bind_source``): the ``BoundSource`` (a folder of
     # the job's own in the app's work area, removed through its kept

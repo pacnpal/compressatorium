@@ -265,8 +265,26 @@ def _read_zip(
     archive_path: str, progress: Callable[..., None] | None = None,
 ) -> list[ArchiveMember]:
     """Read every ZIP member, flagging symlinks via the Unix `external_attr`."""
+    with _source(archive_path, progress) as source:
+        return _zip_members(source)
+
+
+def read_members_of(source: IO[bytes], ext: str) -> list[ArchiveMember]:
+    """Every member of the zip or 7z already open as *source*, uncached: for
+    a caller that must read the listing and the contents from one open file
+    (the Inbox, #432, gating the very archive it unpacks). A rar is refused
+    (``ValueError``): rarfile finds a later volume by the file's name and
+    gives up silently on a file object (Codex 4584380491)."""
+    if ext == ".zip":
+        return _zip_members(source)
+    if ext == ".7z" and HAS_7Z:
+        return _7z_members(source)
+    raise ValueError(f"A {ext} archive can't be read from an open file")
+
+
+def _zip_members(source: str | IO[bytes]) -> list[ArchiveMember]:
     members: list[ArchiveMember] = []
-    with _source(archive_path, progress) as source, zipfile.ZipFile(source, "r") as zf:
+    with zipfile.ZipFile(source, "r") as zf:
         for info in zf.infolist():
             is_symlink = stat.S_ISLNK(info.external_attr >> 16)
             members.append(
@@ -282,11 +300,13 @@ def _read_7z(
     archive_path: str, progress: Callable[..., None] | None = None,
 ) -> list[ArchiveMember]:
     """Read every 7z member; ``uncompressed`` is ``None`` when the archive omits it."""
+    with _source(archive_path, progress) as source:
+        return _7z_members(source)
+
+
+def _7z_members(source: str | IO[bytes]) -> list[ArchiveMember]:
     members: list[ArchiveMember] = []
-    with (
-        _source(archive_path, progress) as source,
-        py7zr.SevenZipFile(source, "r") as zf,  # type: ignore[name-defined]
-    ):
+    with py7zr.SevenZipFile(source, "r") as zf:  # type: ignore[name-defined]
         # py7zr knows encryption per archive, not per entry.
         encrypted = bool(zf.needs_password())
         for entry in zf.list():

@@ -16,11 +16,15 @@ from models import ConversionMode
 from services import dat_rename, hasheous
 from services.dat_ranking import record_of
 from services.dat_store import CANDIDATE_HASHES_KEY, dat_store
-from services.file_hasher import compute_file_sha1
+from services.file_hasher import compute_file_sha1, compute_file_sha1_sync
 from services.hasheous import HasheousUnavailable
 from services.job_manager import ExternalJobCancelled, job_manager
 from services.preferences_store import preferences_store
-from services.subprocess_runner import collect_abandonment
+from services.subprocess_runner import (
+    ReadCancelled,
+    collect_abandonment,
+    run_detached_within_stall_bound,
+)
 from services.tools import registry
 from services.tools.base import EmbeddedHashUnavailable
 from services.workload_limiter import workload_limiter
@@ -955,6 +959,8 @@ async def _hash_one_for_job(
     *,
     cancel_event: asyncio.Event | None = None,
     local_only: bool = False,
+    stall_bounded: bool = False,
+    stall: float | None = None,
 ) -> tuple[dict, bool]:
     """Compute a match result for one path inside the background job loop.
 
@@ -969,7 +975,16 @@ async def _hash_one_for_job(
     (e.g. ``dolphin-tool verify``) aborts promptly when the job is cancelled.
     """
     try:
-        st = await run_in_threadpool(os.stat, normalized_path)
+        if stall_bounded:
+            # The bounded caller's first look is detached, bounded and stops
+            # at its Cancel too (CodeRabbit 4608968234).
+            st = await run_detached_within_stall_bound(
+                _stat_source, normalized_path,
+                what=f"Reading {os.path.basename(normalized_path)}",
+                cancel_event=cancel_event, stall=stall,
+            )
+        else:
+            st = await run_in_threadpool(os.stat, normalized_path)
     except FileNotFoundError:
         return {"path": normalized_path, "matched": False}, False
     except OSError as exc:
@@ -980,9 +995,17 @@ async def _hash_one_for_job(
         return {"path": normalized_path, "matched": False}, False
 
     try:
+        # The bounded read only for a caller that asks for it (the Inbox,
+        # #432): every other caller makes exactly the call it always made.
+        bounded = {"stall_bounded": True, "stall": stall} if stall_bounded else {}
         result = await _match_single_file(
-            normalized_path, cancel_event=cancel_event, local_only=local_only,
+            normalized_path, cancel_event=cancel_event, local_only=local_only, **bounded,
         )
+    except ReadCancelled as exc:
+        if stall_bounded:
+            raise  # the caller's Cancel, ended as a cancel (#432)
+        logger.exception("DAT match failed for %s", normalized_path)
+        return {"path": normalized_path, "matched": False, "error": str(exc)}, False
     except Exception as exc:  # pragma: no cover, isolated per-path
         # logger.exception rather than logger.warning: a KeyError /
         # AttributeError from a refactor bug should surface with a full
@@ -993,6 +1016,31 @@ async def _hash_one_for_job(
     if result.get("reason") == "file too large" or result.get("error"):
         return result, False
     return result, True
+
+
+def _stat_source(path: str) -> os.stat_result:
+    """A file's stat for the bounded match (``match_one``), on its own
+    detached thread. Blocking."""
+    return os.stat(path)
+
+
+async def match_one(
+    path: str, *, cancel_event: asyncio.Event | None = None, stall: float | None = None,
+) -> tuple[dict, bool]:
+    """Match the file at *path* now, uncached: ``(result, cacheable)``, the
+    step the match job runs per file. For the Inbox (#432), which names an
+    Image from the match of the very bytes it takes, never from a row cached
+    for an earlier file of that name.
+
+    Its whole-file read is stall-bounded and cancellable (Codex 4608007769):
+    it runs through ``run_detached_within_stall_bound``, the seam a bound
+    Source's copy uses, with *cancel_event*, reporting each chunk; a read with
+    no progress for *stall* seconds (None: the conversion's own limit) fails
+    the match, and a Cancel raises ``ReadCancelled``. The match job and the
+    routes keep their own read."""
+    return await _hash_one_for_job(
+        path, cancel_event=cancel_event, stall_bounded=True, stall=stall,
+    )
 
 
 async def _run_match_job(
@@ -1719,6 +1767,8 @@ async def _match_single_file(
     *,
     cancel_event: asyncio.Event | None = None,
     local_only: bool = False,
+    stall_bounded: bool = False,
+    stall: float | None = None,
 ) -> dict:
     """Match a file against all imported DATs.
 
@@ -1784,7 +1834,14 @@ async def _match_single_file(
         size_bytes = 0
         if size_cap > 0:
             try:
-                size_bytes = await run_in_threadpool(os.path.getsize, file_path)
+                if stall_bounded:
+                    size_bytes = (await run_detached_within_stall_bound(
+                        _stat_source, file_path,
+                        what=f"Reading {os.path.basename(file_path)}",
+                        cancel_event=cancel_event, stall=stall,
+                    )).st_size
+                else:
+                    size_bytes = await run_in_threadpool(os.path.getsize, file_path)
             except OSError:
                 size_bytes = 0
 
@@ -1802,8 +1859,20 @@ async def _match_single_file(
             # file hashes run at once when a directory of uncached files is
             # browsed.
             try:
-                async with await workload_limiter.acquire("match"):
-                    file_sha1 = await compute_file_sha1(file_path)
+                # The bounded caller's wait for the lane stops at its Cancel
+                # too (Codex 4608417866); every other caller waits as before.
+                lane_cancel = {"cancel_event": cancel_event} if stall_bounded else {}
+                async with await workload_limiter.acquire("match", **lane_cancel):
+                    if stall_bounded:
+                        # A read given up on after *stall* seconds with no
+                        # progress, or at the caller's Cancel (#432).
+                        file_sha1 = await run_detached_within_stall_bound(
+                            compute_file_sha1_sync, file_path,
+                            what=f"Hashing {os.path.basename(file_path)}",
+                            cancel_event=cancel_event, stall=stall, report_progress=True,
+                        )
+                    else:
+                        file_sha1 = await compute_file_sha1(file_path)
             except OSError:
                 logger.warning("Failed to hash %s", file_path, exc_info=True)
                 return {**base_result, "error": "Unable to process file"}

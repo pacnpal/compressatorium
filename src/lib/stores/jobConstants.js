@@ -32,4 +32,7 @@ export const EXTERNAL_MODE_LABELS = Object.freeze({
   dat_rename: 'Rename to DAT name',
   // An Inbox copying an Image into its Library as it is (#431).
   inbox_copy: 'Inbox copy',
+  // An Inbox unpacking an archive, and Recognizing an Image before naming it (#432).
+  inbox_unpack: 'Inbox unpack',
+  inbox_recognize: 'Inbox Recognize',
 });

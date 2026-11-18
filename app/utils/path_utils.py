@@ -1422,12 +1422,21 @@ def open_dir_beneath(root: str, relative: str = "") -> int:
 # link, or a file swapped under the checked name, can't redirect a move.
 
 
-def file_snapshot(st: os.stat_result) -> dict[str, int]:
-    """A file's identity as a delete snapshot has it: size, mtime, inode, device."""
-    return {
+def file_snapshot(st: os.stat_result, *, ctime: bool = False) -> dict[str, int]:
+    """A file's identity as a delete snapshot has it: size, mtime, inode, device.
+
+    With *ctime*, its ctime too (#432, Codex 4608936764): a rewrite in place
+    that keeps the inode and size and puts the mtime back can't put the ctime
+    back. Only where the file must not change at all while it is read (an
+    Inbox archive while it is copied): a hard link or a rename moves the ctime
+    as well, so a snapshot that must survive those leaves it out."""
+    snapshot = {
         "size": st.st_size, "mtime_ns": st.st_mtime_ns,
         "inode": st.st_ino, "device": st.st_dev,
     }
+    if ctime:
+        snapshot["ctime_ns"] = st.st_ctime_ns
+    return snapshot
 
 
 def stat_at(name: str, folder: int) -> os.stat_result | None:
@@ -1551,11 +1560,21 @@ def source_identity(path: str, root: str) -> dict:
     return {"root": os.path.abspath(root), "snapshot": file_snapshot(st)}
 
 
-def source_identity_problem(path: str, identity: dict) -> str | None:
+def source_identity_problem(
+    path: str, identity: dict, trusted_root: str | None = None,
+) -> str | None:
     """Why *path* isn't the Source a job was queued for (:func:`source_identity`),
     or None. Fail closed: outside the Volumes, reached through a link, gone, or
-    another file (device, inode, size or mtime) are all reasons. Blocking."""
-    if not is_within_configured_volumes(path, treat_archives=False):
+    another file (device, inode, size or mtime) are all reasons. Blocking.
+
+    *trusted_root*: the one folder outside the Volumes the job was created
+    to read from (an Inbox's unpack folder in the app's work area, #432). The
+    Source must then sit under exactly that folder (its identity's ``root``),
+    reached with no link followed; anywhere else is still refused."""
+    if trusted_root is not None:
+        if os.path.abspath(identity.get("root") or "") != os.path.abspath(trusted_root):
+            return "the Source isn't under the folder it was queued from"
+    elif not is_within_configured_volumes(path, treat_archives=False):
         return "the Source is no longer inside the configured Volumes"
     try:
         fd, name = _folder_beneath_root(path, identity["root"])
@@ -1615,12 +1634,27 @@ def _bind_one(
     return True
 
 
+def copy_checked(
+    name: str, folder_fd: int, into_fd: int, expected: dict, progress=None,
+) -> None:
+    """Copy *name* in the open folder *folder_fd* into the open folder
+    *into_fd*, under the same name, made new: the copy a bound Source falls
+    back to (:func:`bind_source`), shared with the Inbox's private copy of an
+    archive (#432). The source is opened with no link followed and must be
+    *expected* (:func:`file_snapshot`, its ctime compared when *expected*
+    has one) before the first read and after the last; *progress* is called
+    per chunk, so a stall-bounded caller is bounded and cancellable. Raises
+    OSError (ESTALE: not the file). Blocking."""
+    _copy_checked(name, folder_fd, into_fd, expected, progress)
+
+
 def _copy_checked(
     name: str, folder_fd: int, bound_fd: int, expected: dict, progress=None,
 ) -> None:
+    with_ctime = "ctime_ns" in expected
     src = os.open(name, os.O_RDONLY | _NOFOLLOW_FLAG, dir_fd=folder_fd)
     try:
-        if file_snapshot(os.fstat(src)) != expected:
+        if file_snapshot(os.fstat(src), ctime=with_ctime) != expected:
             raise OSError(errno.ESTALE, f"{name} isn't the file that was checked")
         dst = os.open(
             name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW_FLAG, 0o600,
@@ -1631,7 +1665,7 @@ def _copy_checked(
                 out.write(chunk)
                 if progress is not None:
                     progress(name)
-        if file_snapshot(os.fstat(src)) != expected:
+        if file_snapshot(os.fstat(src), ctime=with_ctime) != expected:
             raise OSError(errno.ESTALE, f"{name} changed while it was copied")
     finally:
         os.close(src)

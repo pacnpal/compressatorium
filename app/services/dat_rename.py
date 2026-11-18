@@ -126,12 +126,57 @@ def _dat_of(record: dict) -> dict:
     }
 
 
-def _conflict_finding(path: str, conflict: Iterable[dict]) -> findings.Observed:
+def dat_file_name(game_name: str, name: str) -> str | None:
+    """The file name the DAT's *game_name* gives a file now called *name*:
+    the game name with the file's own extension (compound ones whole, Codex
+    4602560251), made safe by the one shared rule (``safe_file_name``). None
+    when it can't be made a file name. The one naming rule: the rename to DAT
+    name and the Inbox (#432) both name Images with it.
+
+    A numbered part of a split output (``Game.iso.0``, the registry's
+    ``split_owner_name``) keeps its logical extension and its part number:
+    ``Canonical Game.iso.0`` (Codex 4608919686)."""
+    logical = tools.split_owner_name(name)
+    if logical is not None:
+        named = safe_file_name(f"{game_name}{tools.extension_of(logical)}")
+        return None if named is None else f"{named}{name[len(logical):]}"
+    return safe_file_name(f"{game_name}{tools.extension_of(name)}")
+
+
+def dat_file_names(game_name: str, names: list[str]) -> list[str] | None:
+    """Each of an Image's files' names under the DAT's *game_name*, its main
+    file first (*names* in that order): the main file by
+    :func:`dat_file_name`, and every other part of a split output alike
+    (``Game.iso.1`` -> ``Canonical Game.iso.1``), so the set stays one; a
+    sheet's tracks keep theirs, so the sheet still names them. None when the
+    name can't be made a file name."""
+    main = dat_file_name(game_name, names[0])
+    if main is None:
+        return None
+    logical = tools.split_owner_name(names[0])
+    renamed = [main]
+    for name in names[1:]:
+        if logical is not None and tools.split_owner_name(name) == logical:
+            renamed.append(dat_file_name(game_name, name) or name)
+        else:
+            renamed.append(name)
+    return renamed
+
+
+def conflict_text(conflict: Iterable[dict]) -> tuple[str, list[dict]]:
+    """Which DAT names an Image how, for a conflict's Finding: the words
+    (each DAT and the name it gives) and the matches. Shared by the
+    rename's Finding and the Inbox's (#432)."""
     matches = sorted(
         (_dat_of(m) | {"dat_id": m.get("dat_id")} for m in conflict),
         key=lambda m: (m["dat_name"] or "", m["game_name"] or ""),
     )
     named = " and ".join(f"{m['dat_name']} names it “{m['game_name']}”" for m in matches)
+    return named, matches
+
+
+def _conflict_finding(path: str, conflict: Iterable[dict]) -> findings.Observed:
+    named, matches = conflict_text(conflict)
     return findings.Observed(
         kind=findings.RENAME_CONFLICT, image_key=path, path=path,
         reason=f"Not renamed: {named}, and the ranking puts them level; rank the DATs to choose",
@@ -349,8 +394,7 @@ def plan_blocking(path: str, tracks: Owners | None) -> tuple[dict, Any]:
         return _skip(item, "not Recognized: no DAT or Hasheous match is known for it"), library
     item["dat"] = _dat_of(ranked.top)
     game_name = ranked.top.get("game_name") or ""
-    # The file's own extension, compound ones whole (Codex 4602560251).
-    new_name = safe_file_name(f"{game_name}{tools.extension_of(name)}")
+    new_name = dat_file_name(game_name, name)
     if new_name is None:
         return _skip(item, "its DAT name can't be made a file name"), library
     inner = {path: os.path.join(os.path.dirname(path), new_name)}

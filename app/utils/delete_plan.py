@@ -35,7 +35,9 @@ def _gdi_tracks_from_text(text: str) -> list[str]:
     return [track.name for track in gdi_tracks(text)]
 
 
-def sheet_track_paths(sheet_path: str) -> list[str]:
+def sheet_track_paths(
+    sheet_path: str, *, within: Sequence[str | Path] | None = None,
+) -> list[str]:
     """The track files a ``.cue`` or ``.gdi`` sheet names, resolved beside it.
 
     The same parsing and containment rules the delete plan uses, so a track
@@ -53,7 +55,7 @@ def sheet_track_paths(sheet_path: str) -> list[str]:
     )
     if parse is None:
         return []
-    tracks = sheet_tracks(sheet, parse)
+    tracks = sheet_tracks(sheet, parse, within=within)
     return [str(track) for track in tracks] if tracks else []
 
 

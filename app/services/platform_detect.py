@@ -150,6 +150,10 @@ _NAMES: dict[str, str] = {
     "xbox": "Xbox",
     "xbox360": "Xbox 360",
 }
+# The Platforms whose Image *is* an archive: an arcade romset is a zip of the
+# ROM chips' dumps, which an emulator reads as it is. Unpacked, it is no
+# longer an Image of anything. The Inbox takes such an archive whole (#432).
+_ARCHIVE_IMAGES: frozenset[str] = frozenset({"arcade"})
 _CANONICAL: dict[str, str] = {
     alias: slug for slug, aliases in _ALIASES.items() for alias in (slug, *aliases)
 }
@@ -206,6 +210,12 @@ def platforms() -> list[dict[str, str]]:
         ({"slug": slug, "name": platform_name(slug)} for slug in known_slugs()),
         key=lambda p: p["name"].lower(),
     )
+
+
+def archive_is_image(slug: str | None) -> bool:
+    """Whether an archive is *slug*'s own Image (an arcade romset), so it is
+    taken whole and never unpacked (#432). Any alias counts as its Platform."""
+    return canonical_slug(slug) in _ARCHIVE_IMAGES
 
 
 def esde_folder_name(slug: str) -> str:
@@ -290,7 +300,9 @@ def _probes(tool, path: str, is_dir: bool) -> bool:
     return match_extension(path, tool.input_extensions) is not None
 
 
-def _header(path: str, tools: Iterable) -> tuple[set[str], list[str]]:
+def _header(
+    path: str, tools: Iterable, within: list[str] | None = None,
+) -> tuple[set[str], list[str]]:
     found: set[str] = set()
     sources: list[str] = []
     seen: set[int] = set()
@@ -302,7 +314,12 @@ def _header(path: str, tools: Iterable) -> tuple[set[str], list[str]]:
         if not _probes(tool, path, is_dir):
             continue
         try:
-            raw = tool.header_platform(path)
+            # A trusted root only when one is given: every probe is asked
+            # exactly as before otherwise.
+            raw = (
+                tool.header_platform(path) if within is None
+                else tool.header_platform(path, within=within)
+            )
         except Exception:  # a probe must never break detection
             logger.debug("header probe %s failed for %s", tool.id, path, exc_info=True)
             continue
@@ -450,15 +467,24 @@ def platform_folders(
     return sorted(found)
 
 
-def _decide(path: str, tools: list, mapped: dict[str, str]) -> Detection:
+def _decide(
+    path: str, tools: list, mapped: dict[str, str], placed_at: str | None = None,
+    within: list[str] | None = None,
+) -> Detection:
     disk_path, member = _split_member(path)
     headers: set[str] = set()
     sources: list[str] = []
     if not member:
-        headers, sources = _header(disk_path, tools)
+        # A trusted root only when one is given: the usual call is unchanged.
+        headers, sources = (
+            _header(disk_path, tools) if within is None
+            else _header(disk_path, tools, within)
+        )
     names = _folder_names(tools)
-    folder, _folder_name = _folder(disk_path, names)
-    found = _place(disk_path, names, mapped)
+    # The folders read: its own, or those *placed_at* names (`detect_platform_as`).
+    at = placed_at or disk_path
+    folder, _folder_name = _folder(at, names)
+    found = _place(at, names, mapped)
     place = how = where = mapped = place_path = None
     if found:
         how, place, place_path, label = found
@@ -505,6 +531,30 @@ _cache_lock = threading.Lock()
 def clear_cache() -> None:
     with _cache_lock:
         _cache.clear()
+
+
+def detect_platform_as(
+    path: str, placed_at: str, *, tools: Iterable | None = None,
+    within: list[str] | None = None,
+) -> Detection:
+    """:func:`detect_platform` for a file that isn't where it belongs: its
+    header read from *path*, its folders (and the user's mappings) read as if
+    it sat at *placed_at*, a path inside a Volume that need not exist. An
+    Image the Inbox unpacked into the app's work area (#432) is judged by the
+    folders its archive sat in and those inside the archive. Uncached.
+    *within*: the trusted roots its header probes resolve a sheet's tracks
+    under (its unpack folder, Codex 4608919681); None is the configured
+    Volumes. Blocking."""
+    from services.platform_mappings import MappingsUnavailable
+
+    if is_special_file(path):
+        return Detection(None, UNSORTED, None, None, "not a regular file or folder")
+    try:
+        mapped = _mapped_folders()
+    except MappingsUnavailable:
+        return Detection(None, UNSORTED, None, None, _MAPPINGS_UNREADABLE)
+    tool_list = list(tools) if tools is not None else _default_tools()
+    return _decide(path, tool_list, mapped, placed_at, within)
 
 
 def detect_uncached(

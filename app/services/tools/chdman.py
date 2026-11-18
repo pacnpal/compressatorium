@@ -259,10 +259,11 @@ class ChdmanTool(BaseTool):
         super().__init__(binary_path)
         self._service = chdman_service
 
-    def header_platform(self, path: str) -> str | None:
+    def header_platform(self, path: str, *, within=None) -> str | None:
         # PS1/PS2/PSP/Dreamcast through the disc-ID parser, Saturn and Sega CD
-        # through their sector-0 system ids.
-        return disc_platform(path)
+        # through their sector-0 system ids. A sheet's tracks resolve within
+        # *within* when given (an Inbox's unpack folder, #432).
+        return disc_platform(path, within=within)
 
     def header_reads(self, path: str) -> list[str] | None:
         # A .cue/.gdi is answered from the tracks it names. None (unknown
@@ -431,6 +432,28 @@ class ChdmanTool(BaseTool):
         if data_sha1:
             out.append((data_sha1, "chd_data_sha1"))
         return out
+
+    async def prime_embedded_hashes(
+        self, path: str, *, cancel_event: asyncio.Event | None = None,
+    ) -> None:
+        # A CHD no scan has seen (an Inbox's bound copy, #432, Codex
+        # 4609181291): `chdman info` read once, under its own bound and the
+        # caller's cancel, and the store primed for that path, as a scan or
+        # raw_image_sha1 would.
+        if Path(path).suffix.lower() != ".chd":
+            return
+        from services.chd_metadata_store import chd_metadata_store
+
+        if await chd_metadata_store.get_fresh_metadata(path):
+            return
+        try:
+            await chd_metadata_store.read_and_cache(
+                path, lambda: self._service.info(path, cancel_event=cancel_event),
+            )
+        except (ReadCancelled, StorageAbandoned):
+            raise
+        except Exception:
+            logger.info("chdman info failed for %s; matching by its own hash", path)
 
     async def raw_image_sha1(
         self, path: str, *, cancel_event: asyncio.Event | None = None,

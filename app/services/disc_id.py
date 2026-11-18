@@ -584,21 +584,22 @@ def _cue_track_paths(path: str, within=None) -> list[Path]:
     return sheet_tracks(path, cue_tracks, within=within) or []
 
 
-def _cue_data_file(path: str) -> str | None:
+def _cue_data_file(path: str, within=None) -> str | None:
     """The first ``FILE`` a cue sheet names, when it exists beside the sheet."""
-    tracks = _cue_track_paths(path)
+    tracks = _cue_track_paths(path, within)
     if not tracks:
         return None
     return str(tracks[0]) if tracks[0].is_file() else None
 
 
-def sega_sector0_platform(path: str) -> str | None:
+def sega_sector0_platform(path: str, *, within=None) -> str | None:
     """Saturn, Sega CD or Dreamcast from the system id at the start of sector 0.
 
-    Reads one sector. A ``.cue`` is followed to its first data file.
+    Reads one sector. A ``.cue`` is followed to its first data file, resolved
+    within *within* (the configured Volumes when None).
     """
     if Path(path).suffix.lower() == ".cue":
-        resolved = _cue_data_file(path)
+        resolved = _cue_data_file(path, within)
         if resolved is None:
             return None
         path = resolved
@@ -615,17 +616,19 @@ def sega_sector0_platform(path: str) -> str | None:
     return None
 
 
-def disc_platform(path: str) -> str | None:
+def disc_platform(path: str, *, within=None) -> str | None:
     """The console of a CD/DVD source image, from its own header, or None.
 
     PS1 / PS2 through ``SYSTEM.CNF``, PSP through ``PARAM.SFO`` and Dreamcast
     through a ``.gdi``'s ``IP.BIN`` (all the existing extractor), then the Sega
     sector-0 ids (Saturn, Sega CD, a Dreamcast track read directly).
+    *within*: the trusted roots a sheet's tracks resolve under (an Inbox's
+    unpack folder, #432); None, the default, is the configured Volumes.
     """
-    found = extract_from_source(path)
+    found = extract_from_source(path, within=within)
     if found and found.get("platform"):
         return found["platform"]
-    return sega_sector0_platform(path)
+    return sega_sector0_platform(path, within=within)
 
 
 # ===========================================================================

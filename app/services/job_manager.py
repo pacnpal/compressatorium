@@ -345,6 +345,15 @@ EXTERNAL_JOB_MODES: Dict[ConversionMode, ExternalMode] = {
     ConversionMode.INBOX_COPY: ExternalMode(
         in_ledger=False, started_by_hand=False, takes_slot=True,
     ),
+    # An Inbox unpacking an archive, and Recognizing an Image before it is
+    # named (#432): the scheduler starts them, they read and write as much as
+    # a copy, and convert nothing.
+    ConversionMode.INBOX_UNPACK: ExternalMode(
+        in_ledger=False, started_by_hand=False, takes_slot=True,
+    ),
+    ConversionMode.INBOX_RECOGNIZE: ExternalMode(
+        in_ledger=False, started_by_hand=False, takes_slot=True,
+    ),
 }
 _EXTERNAL_JOB_MODES = frozenset(EXTERNAL_JOB_MODES)
 
@@ -369,14 +378,19 @@ def is_external_mode(mode) -> bool:
 def _trusted_roots(job) -> list[str] | None:
     """The folders a job's Source (and the files its sheet names) may be read
     from when it isn't in a Volume: an archive member's extraction dir
-    (``temp_dir``), or a bound Source's folder in the work area (#431). None
+    (``temp_dir``), a bound Source's folder in the work area (#431), or the
+    unpack folder it was created to read from (``_trusted_root``, #432). None
     for a Source in a Volume, which stays confined to the Volumes."""
     if getattr(job, "temp_dir", None):
         return [job.temp_dir]
+    roots = []
     bound = getattr(job, "_bound", None)
     if bound is not None:
-        return [bound.path]
-    return None
+        roots.append(bound.path)
+    trusted = getattr(job, "_trusted_root", None)
+    if trusted:
+        roots.append(trusted)
+    return roots or None
 
 
 def _reads(job) -> str:
@@ -794,6 +808,7 @@ class JobManager:
         reservation: Optional[_Reservation] = None,
         owner: Optional[str] = None,
         source_identity: Optional[Dict[str, object]] = None,
+        trusted_root: Optional[str] = None,
     ) -> ConversionJob:
         """Queue a job while holding _create_lock (no backpressure check here)."""
         job_id = str(uuid.uuid4())[:8]
@@ -845,6 +860,7 @@ class JobManager:
         )
         job._sweep_owner = owner
         job._source_identity = source_identity
+        job._trusted_root = trusted_root
 
         self.jobs[job_id] = job
         # Every key this job claims -- its destination and the sidecars the
@@ -973,6 +989,7 @@ class JobManager:
                         reservation=reservation,
                         owner=owner,
                         source_identity=spec.get("source_identity"),
+                        trusted_root=spec.get("trusted_root"),
                     )
                 )
         return jobs
@@ -993,6 +1010,7 @@ class JobManager:
         container_only: bool = False,
         owner: Optional[str] = None,
         source_identities: Optional[Dict[str, Dict[str, object]]] = None,
+        trusted_roots: Optional[Dict[str, str]] = None,
     ) -> List[ConversionJob]:
         """Create multiple conversion jobs.
 
@@ -1006,6 +1024,13 @@ class JobManager:
         when its job runs (``utils.path_utils.source_identity``, #431): checked
         under the job's Source lock right before the tool runs, and the job is
         refused when the Source was replaced or is reached through a link.
+
+        ``trusted_roots`` maps an input to the one folder outside the Volumes
+        it may be read from (an Inbox's unpack folder in the app's work area,
+        #432): set on the job when it is created (``_trusted_root``), so its
+        identity check takes the Source there, and only there, and its
+        companion and post-conversion checks read beneath it
+        (``_trusted_roots``). Only with a ``source_identities`` entry.
         """
         job_specs: List[Dict[str, object]] = []
         for fp in file_paths:
@@ -1022,6 +1047,9 @@ class JobManager:
             identity = source_identities.get(fp) if source_identities else None
             if identity:
                 spec["source_identity"] = identity
+                trusted = trusted_roots.get(fp) if trusted_roots else None
+                if trusted:
+                    spec["trusted_root"] = trusted
             job_specs.append(spec)
         return await self.create_jobs_atomic(
             job_specs,
@@ -1956,7 +1984,9 @@ class JobManager:
             return None
         try:
             return await asyncio.wait_for(
-                run_detached(source_identity_problem, job.file_path, identity),
+                run_detached(
+                    source_identity_problem, job.file_path, identity, job._trusted_root,
+                ),
                 _CANONICAL_PROBE_SECONDS,
             )
         except (asyncio.TimeoutError, OSError) as exc:
@@ -3004,6 +3034,15 @@ class JobManager:
                     debug_interval,
                 )
         await self._dispatcher_task
+
+    def has_live_conversions(self) -> bool:
+        """Whether a conversion is still queued or running. For a caller
+        that drains to a fixed point (``run-rules``'s Inbox pass, #432):
+        work that finishes may queue more."""
+        return any(
+            _is_conversion_job(job) and job.status in (JobStatus.QUEUED, JobStatus.PROCESSING)
+            for job in list(self.jobs.values())
+        )
 
     async def drain(self) -> None:
         """Wait until every queued job has run to its very end.

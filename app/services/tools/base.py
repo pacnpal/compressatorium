@@ -305,7 +305,7 @@ class ToolPlugin(Protocol):
         next consolidation.
         """
 
-    def header_platform(self, path: str) -> str | None:
+    def header_platform(self, path: str, *, within=None) -> str | None:
         """The Platform this tool reads from ``path``'s own header, or None.
 
         How a tool recognises its Images. ``services.platform_detect`` asks
@@ -314,6 +314,11 @@ class ToolPlugin(Protocol):
         by its tool, not by a central list. None means "not mine, or I cannot
         tell", never a guess. Reads a few bytes from disk; call it off the
         event loop.
+
+        *within*: the trusted roots a track sheet's tracks resolve under, for
+        a sheet outside the Volumes (an Inbox's unpack folder, #432). None,
+        the default, is the configured Volumes. A tool whose answer reads no
+        sheet ignores it.
         """
 
     def header_reads(self, path: str) -> list[str] | None:
@@ -848,7 +853,17 @@ class BaseTool:
             path, self.policy_owner, cancel_event=cancel_event,
         )
 
-    def header_platform(self, path: str) -> str | None:
+    async def prime_embedded_hashes(
+        self, path: str, *, cancel_event: asyncio.Event | None = None,
+    ) -> None:
+        """Make :meth:`embedded_hashes` able to answer for *path*, a file no
+        scan has seen (an Inbox's bound copy, #432): read and cache what it
+        reads, as the library scan would. Default: nothing to prime. Raises
+        ``ReadCancelled`` on a cancel; any other failure leaves the match to
+        fall back to the file's own hash."""
+        return None
+
+    def header_platform(self, path: str, *, within=None) -> str | None:
         # Default: no header probe. Tools that can tell their consoles apart
         # from the image bytes (chdman, dolphin, xiso) override it.
         return None

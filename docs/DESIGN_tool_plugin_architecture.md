@@ -7433,7 +7433,7 @@ tick with a fake clock and real files. Each poll:
    size, `ArchiveMember.compressed`) and in all (against the archive's size);
    a member with no declared size, a link or an absolute or `..` path is
    refused too. One over any of them is held with an `inbox_failed` Finding
-   naming the limit, never checked or copied. romz's Verify sizes its bound by
+   naming the limit, never unpacked (#432, below). romz's Verify sizes its bound by
    the members' declared sizes (`capture_verify(size=...)`, through
    `resolve_verify_timeout` and `compute_size_scaled_timeout`), never the
    archive's own size, and keeps its stall bound.
@@ -7684,10 +7684,239 @@ waiting, in progress, held, and the error a poll hit (the folder gone or
 outside a Volume). `LibraryInboxes.svelte` in the Rules view lists and adds
 them.
 
-**Seams.** Unpacking an archive, Recognizing and naming from a DAT, and a taken
-name's handling (#432) go in `_take` before `_plan`. Each poll returns
+**Archives (#432).** An archive the walk lists (`.zip`, `.7z`: extensions a
+tool reads; `archive_service.is_archive` decides) is unpacked before its Platform is worked out (`_take_archive`, first
+thing in `_take`), unless it is the Image itself. Which Platforms keep their
+archives whole is platform data, not an Inbox branch:
+`platform_detect.archive_is_image(slug)` reads `_ARCHIVE_IMAGES` beside the
+Platform aliases (today `arcade`, so its aliases `mame`, `fbneo`, `naomi`, ...
+count too; a user's folder mapping to Arcade does as well). When the archive's
+folder evidence (`Detection.place_platform`: a Platform folder or a mapping)
+names such a Platform, the archive is taken whole: its identity is read first,
+then the gate runs on that very file (`_gate_opened`: opened beneath the Inbox
+with `O_NOFOLLOW`, its `fstat` compared with the identity, then
+`ArchiveService.check_inbox_source` on the open file), and the take goes on only
+while the archive is still that file; it then goes down the ordinary path
+(detected, Recognized, copied or converted), never unpacked. A Platform the
+folder can't tell is unpacked: its Images say.
+
+Otherwise it is unpacked as an `inbox_unpack` job (`ConversionMode.INBOX_UNPACK`,
+an `ExternalMode(in_ledger=False, started_by_hand=False, takes_slot=True)` like
+the copy) on a stall-bounded worker (`run_detached_within_stall_bound`, its
+progress reported per chunk written). **A private copy** (Codex 4608007766,
+4608936764): the archive's identity is read when it is taken; the job opens it
+through the Inbox folder's descriptor with `O_NOFOLLOW`, refuses it unless its
+`fstat` is that identity, and copies it into a hidden folder of its unpack slot
+(`.archive/`, which the walk never lists) through `path_utils.copy_checked`, the
+copy a bound Source falls back to: bounded by its progress and cancellable, its
+source's identity, ctime included (`file_snapshot(ctime=True)`), checked before
+the first read and after the last. A rewrite in place that keeps the inode and
+size and puts the mtime back can't put the ctime back. The gate and the
+extraction then read only that copy (`ArchiveService.check_inbox_source`, built
+on `archive_members.read_members_of`: the listing and the size read from the
+descriptor), so nothing done to the original afterwards reaches them. The copy
+counts toward the slot's room and goes with the slot. ctime is compared only
+there: a bound Source's hard link and the move to `processed/` (a rename) both
+move it, so the identities that must survive those leave it out.
+
+**Extraction** is `ArchiveService.extract_members` (shared, in
+`services/archive.py`), the one extraction path that never hands a library a
+path name (Codex 4608030847). It checks every member it is about to write again,
+whatever the gate read: a link (or, in a 7z, an entry that is neither a file nor
+a folder), a name the extract path refuses (`_validate_member`: a backslash, an
+absolute or `..` path, an empty segment, a drive letter) or two members landing
+on one path refuses the whole archive (`ArchiveSafetyRefused`, held with an
+`inbox_failed` Finding naming it) before anything is written. Each member's
+bytes come through the library's read API (a zip's or rar's `open`, py7zr's
+writer factory, `_BudgetedWriters`) and go into a file created beneath the held
+destination folder by `_create_member`: each folder on the way made with
+`mkdir(dir_fd=...)` and opened `O_NOFOLLOW`, the file opened
+`O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW` relative to it. The bytes are counted
+as they are written (`_UnpackBudget`), never the header trusted: a member that
+yields more than it declares, or more than the Inbox's member cap, or a total
+past its total cap (`inbox_limits`), or past the room the slot reserved for its
+declared contents (`reserved_total`, exact: 0 allows nothing, CodeRabbit
+4608968265), or more than `CHD_ARCHIVE_INBOX_MAX_RATIO` times its compressed
+size, or a total past that many times the archive's own size (Codex 4608936764),
+is refused before the chunk that would cross the line is written. Junk is skipped; an empty 7z member, which py7zr
+hands no writer, is made empty.
+
+**The unpack slot** (`_UnpackSlot`) is a private folder in the app's own work
+area (`disk.create_scratch_dir("inbox_unpack_")`, under `CHD_TEMP_DIR` or the
+data folder's `temp/`, the tree a bound Source uses), on which no Inbox writer
+has any right. It is held open; extraction writes beneath its descriptor, and a
+slot whose path no longer names the folder held (`intact()`) refuses the
+archive. Closing removes it, or, when its path was swapped, empties only the
+folder held, through its descriptor. Its real path is registered
+(`_slot_roots`) as the one place outside an Inbox intake reads an Image under:
+`_folder_beneath`, and so every identity read, copy and comparison, opens an
+unpacked Image beneath its slot (`_root_of`). An archive inside an unpacked one
+is held, not unpacked again; one holding no Image is held too. A walk of the
+slot that couldn't list a folder is no inventory (CodeRabbit 4608968267): the
+archive is held with a Finding naming the folder, until it changes. A crash
+leaves the slot in the work area; nothing sweeps it yet.
+
+From then on the slot (`_State.unpacked`, an `_Unpacked` per archive: its
+fingerprint, slot, identity, the Images found in it and those placed) is walked
+with the Inbox by its recorded path (`_list(extra=...)`, the walk shared as
+`_walk`), and each Image in it settles and is taken like a loose file. Its
+Platform is read from its own header and from the folders it would sit in had
+the archive been unpacked beside it (`platform_detect.detect_platform_as(path,
+placed_at, within=...)`: the archive's folder in the Inbox, then the folders
+inside the archive; mappings apply). Its header probes resolve a sheet's tracks
+within its slot too (Codex 4608919681): `ToolPlugin.header_platform(path,
+within=...)`, an optional trusted root every tool takes and chdman passes on to
+`disc_id.disc_platform`, `extract_from_source` and `sega_sector0_platform`, so an
+unpacked PS1 cue is read from its own track. A probe is asked with no `within`,
+exactly as before, everywhere else. Its sheet's tracks resolve within its slot (Codex
+4608417860): `image_members`, `image_fingerprint` and `group_images` (through
+`image_sets.image_members(within=...)` and `delete_plan.sheet_track_paths(within=...)`)
+are called with the slot as the one trusted root, the value its conversion job
+is created trusting (`_slot_within`, `_members`, `_fingerprint`), so a cue and its
+bin are one Image whose identity lists the track. A conversion
+of it keeps every #431/#443 protection: it is queued with `source_identities`
+rooted at its slot, and with that slot as the job's one trusted root
+(`create_batch_jobs(trusted_roots=...)`, set on the job when it is created as
+`ConversionJob._trusted_root`). `source_identity_problem(path, identity,
+trusted_root)` then takes the Source outside the Volumes only when its identity
+is rooted at exactly that folder, reached beneath it with no link followed;
+anywhere else is refused as before. `_trusted_roots(job)` adds the folder (after
+a bound Source's), so the bind, the companion check and the post-conversion
+checks read beneath it. A Finding for one of them
+is written on the archive (the file the user dropped), naming the Image (`_hold`
+redirects through `_unpacked_holding`). A placed Image stays in the slot,
+counted (`note_processed`) and reported in `placed` with the archive's path; the
+archive's own Findings stay until it moves, since another of its Images may
+still be held. Once every Image is placed, `_settle_unpacked` starts the
+archive's move to `processed/` (the same anchored, locked move, a flight
+carrying `unpacked`), and the slot is closed then: intake's own scratch, the
+archive still holds every byte. An archive that leaves the Inbox or changes has
+its slot closed the same way; a changed one is unpacked again once it settles.
+
+**A slot is never kept for held Images** (Codex 4608429476). When every Image
+left in a slot is held and none is in flight, `_settle_unpacked` closes it and
+holds the archive itself (`_hold_unpacked`), its Findings as they are: the
+archive stays the source of truth. The archive's hold carries its Images'
+dependencies: the DAT ranking a naming conflict was held under
+(`ranked_holds`) and the Library paths a taken name was held for
+(`taken_holds`, lifted once one of them is free, `_freed`). When either
+changes, or the archive does, it is unpacked again, and an Image placed before
+counts by its bytes (`_same_as_placed`), or, for a conversion, whose output's
+bytes can't be compared with its Source, by its record (CodeRabbit 4608968248):
+every Image placed from an archive is recorded in `_State.placed_members`,
+outside the slot, by the archive's fingerprint and the Image's path in the
+archive, with every output file and its identity, the file and its members (a
+CUE's BINs, an extractcd's tracks; `_record_placed`, Codex 4609181297). An Image
+unpacked again whose output files are all still those very files counts as
+placed with nothing taken (`_placed_before`); one missing or changed is taken
+again, and a name still taken holds it. The records go when the archive moves to
+`processed/`, changes or leaves the Inbox, and are kept in the settle memory.
+A loose file's taken-name hold lifts the same way once the name is free.
+
+**Room to unpack** (same thread). Every open slot reserves its archive's
+private copy (`_UnpackSlot(size)`) and, once the copy is gated, its declared
+contents (`grow`), in `_slot_sizes`, and all of them together
+stay under `CHD_ARCHIVE_INBOX_MAX_UNPACKED_SIZE`
+(`ArchiveService.inbox_unpacked_limit`: the Inbox total cap,
+`CHD_ARCHIVE_INBOX_MAX_TOTAL_SIZE`, when unset; 0 is no limit). The work area
+must also hold it beyond its reserve (`disk.ensure_headroom` with
+`scratch_margin_bytes`, the cushion every scratch-dir check keeps). An archive
+that doesn't fit waits (`_NoRoom`): no Finding, it stays settled and is tried
+again on a later poll, logged once per wait (`_note_no_room`). `_take_archive`
+looks first, from the cached listing, so a waiting archive starts no job; the
+unpack job checks again as it reserves. The cap keeps many archives from
+adding up past it: one with nothing else unpacked always goes in (the gate
+bounds it), so a single large archive is never stuck behind its own copy.
+
+**Removing the Inbox** (Codex 4608007773) closes a slot nothing reads at once.
+One a queued or running conversion, or a copy's task (one waiting for a
+conversion slot included, CodeRabbit 4608968241), still reads from is kept
+(`_close_after`): jobs are counted down by the job manager's terminal hook
+(`add_terminal_listener(_job_ended)`), tasks by a done callback added on their
+own loop, one that ended before it was watched is counted at once, and the slot
+is removed when the last reader ends, so the work runs as started.
+
+**Recognizing and naming (#432).** Where something can answer
+(`routes.dat.matching_available`: a DAT is loaded, or Hasheous is on), an Image
+is matched before it is placed, after its plan: an `inbox_recognize` job
+(`ConversionMode.INBOX_RECOGNIZE`, the same `ExternalMode` as the copy) runs
+`routes.dat.match_one` (the match job's per-file step: embedded hashes, then the
+file SHA-1, then Hasheous) on the very bytes taken (CodeRabbit 4608968259):
+the Image's main file is bound into the app's work area first, as a
+conversion's Source is (`_bind_for_match` over `bind_source`: a hard link or a
+checked copy, opened beneath its root only while it is the file taken), the
+match reads the bound file (its tool first primes the embedded hashes it reads
+for it, `ToolPlugin.prime_embedded_hashes`: chdman reads a CHD's SHA-1s with
+`chdman info` into `chd_metadata_store`, bounded and cancellable, Codex
+4609181291), and it is kept only while the bound file is
+unchanged (`BoundSource.changed`), with the identity it was made for; `_name`
+uses it only while the file's fingerprint and identity are still those. Its
+first look at the file (its stat, and the size cap's) is detached, bounded and
+cancellable too for this caller (`_stat_source`, CodeRabbit 4608968234). Its
+whole-file SHA-1 is
+stall-bounded and cancellable (Codex 4608007769): `match_one` asks
+`_match_single_file` for it through `run_detached_within_stall_bound`, the seam
+a bound Source's copy uses, with the job's cancel event, and
+`file_hasher.compute_file_sha1_sync(progress=...)` reports each chunk. A read
+with no progress for `_RECOGNIZE_STALL_SECONDS` (the conversion's own stall
+limit by default) fails the job with a Finding, a Cancel raises `ReadCancelled`
+and ends it cancelled, and the slot is given back either way. The match job and
+the routes keep their own read, unchanged. Its wait for the `match` lane
+(`workload_limiter.acquire`) stops at the job's Cancel too (Codex
+4608417866), for this caller only. The result is kept with
+the fingerprint it was made at (`_State.recognized`); the next poll names the
+Image from it. It never reads a row cached for the path: an Inbox name is
+reused by the next download, and a cached hit would name it. The result is
+ranked by the ranking as it stands (`DATStore.with_current_ranking`,
+`dat_ranking.ranked_match`, the two halves of `ranked_match_for_image`). A match
+that can't be made (an error, a process stuck on the storage) holds the Image
+with an `inbox_failed` Finding; one over the match size cap is not Recognized
+and keeps its name.
+
+The top-ranked DAT names it by the rename's one rule
+(`dat_rename.dat_file_name`: the game name with the file's own extension,
+compound ones whole, through `safe_file_name`; a numbered part of a split output
+keeps its logical extension and part number, `Game.iso.0` becoming
+`Canonical Game.iso.0`, read with the registry's `split_owner_name`, Codex
+4608919686). A copy places its files under `dat_rename.dat_file_names`
+(`_Flight.placed_names`, read by the staging, the output locks and the
+taken-name check): its main file, and every other part of a split output alike,
+so the set is still one; a sheet's tracks keep their names, so the sheet still
+names them. A conversion's output takes it with the output's extension
+(`_destination(game_name=...)`, checked with `output_status`). Two DATs the
+ranking puts level that name it differently (`ranked.conflict`) hold it with an
+`inbox_conflict` Finding naming both (`dat_rename.conflict_text`, the words the
+rename's `rename_conflict` Finding uses): never guessed at, as the rename leaves
+it unnamed. The hold records the ranking it was made under
+(`_State.ranked_holds`, `_ranking_now`: every DAT and its rank); a poll that
+finds the ranking changed lifts it and takes the Image again, without waiting
+for the file to change.
+
+**Taken names (#432).** The name an Image would take in the Library, its DAT
+name or its own, is checked before anything is written: a copy's names
+(`_taken`), a conversion's output and its companions (`output_status`). A
+copy's taken names are first compared with the Image's own files
+(`_same_as_placed`, stall-bounded, under the output locks a copy would take, so
+no job writes them meanwhile): every name a regular file of the same size, then
+the same SHA-1 (`stream_digest.new_hasher`), both sides opened with no link
+followed and the Image's files only while they are the ones taken; after
+hashing, the Library's name must still be the very file read (device, inode,
+size, mtime and ctime, CodeRabbit 4608968255). All the same
+means it was placed already (by this Inbox before a restart, with its state
+lost): it is counted placed with no Finding and finished as after a copy
+(`_start_finish`: the original to `processed/`, or, unpacked from an archive,
+counted so the archive can complete). This holds for loose files too. A
+conversion's output can't be compared with its Source, so a taken one stays a
+hold. One on disk that differs holds the Image with an `inbox_failed` Finding
+naming it; one only another
+job holds is a retry with no Finding. Nothing is ever overwritten: the copy's
+placement never replaces, and a conversion is queued without
+`allow_overwrite`.
+
+**Seams.** Each poll returns
 `placed` (`{"path", "platform", "output"}` for every Image whose output
-landed in the Library since the last poll: recorded by `_note_placed` the
+landed in the Library since the last poll, an Image unpacked from an archive
+with the archive's path, which also counts it toward that archive's move: recorded by `_note_placed` the
 moment a copy is placed or a conversion completes, before the original's move
 to `processed/`, so a move that fails, which keeps its `inbox_failed` Finding
 and its hold, still has its output scanned by RomM and summarised, Codex
@@ -7765,6 +7994,27 @@ left as the next poll would on the server: settles any conversion still in
 flight (originals to `processed/`), waits for every copy and move, and hands
 back what was placed or left, so nothing a run started is left in flight when
 it exits.
+
+**#432 under #433.** The unpack and Recognize jobs are tagged with their
+Library and Inbox (`_tag`) like a copy, a shutdown cancel of either releases the
+file with no Finding (`_cancelled_by_shutdown`), and `on_job_finished` leaves
+them to settle themselves. An unpacked or Recognized Image is taken on at once
+by the job that made it ready (`_take_on`, `_take_unpacked`; never after the
+last poll's stop, `_State.should_stop`): it doesn't wait a poll, and a
+`run-rules` pass, which polls once and keeps no match or unpack between runs,
+places it in the same run. `finish_all` then starts the move of every archive
+whose Images are all placed and, the process ending, closes what was unpacked
+(`_close_unpacked`); a later run unpacks an archive still in the Inbox again
+and counts what it placed already by its bytes (`_same_as_placed`).
+`run-rules`'s pass drains to a fixed point before `finish_all` (Codex
+4608417841): it waits for the job queue and intake's own tasks in turn
+(`job_manager.has_live_conversions`, `intake.busy`) until neither has anything
+left, since an unpack or a Recognize may queue a conversion after the queue
+last emptied. A stop cancels what is queued and ends the loop; once intake's
+own work has drained, whatever it queued meanwhile is cancelled and drained too
+(CodeRabbit 4608968227), so the run never ends with a live job. The settle
+memory a run keeps includes `ranked_holds` and `taken_holds` (Codex
+4608417851), so a later run lifts a hold whose ranking or name changed.
 
 ### 3.4 `registry.py`
 

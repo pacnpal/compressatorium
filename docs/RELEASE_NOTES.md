@@ -133,8 +133,8 @@
   size, not the archive's own.
   Removing a Library while another Library or Inbox is being saved answers
   "try again shortly" with nothing removed.
-  Database migration 0027 adds the Inboxes. Archives and DAT names come next
-  (#432).
+  Database migration 0027 adds the Inboxes. Archives and DAT names are #432,
+  RomM's scan and the pass summary #433.
 - **Inboxes tell RomM, report each pass, and run from cron** (#433). After a
   pass that placed Images in a RomM Library, the app asks RomM to scan just
   the Platform folders it added to, so new games show up in RomM without
@@ -163,6 +163,68 @@
   holds its file. Jobs now record why they were cancelled. The RomM call
   and its scope were checked against RomM 5.4.1 (see the RomM integration
   roadmap).
+- **Inboxes unpack archives and name what they place from your DATs**
+  (#432). A zip or 7z that settles in an Inbox is unpacked (an **Inbox
+  unpack** job, under the same concurrency limit) before its Platform is
+  worked out, so a zip in your `gba` folder, or a zip holding a `gba` folder,
+  both land in the Library's GBA folder. The limits above still apply, checked
+  on the very file that is unpacked; the bytes are counted as they are written,
+  so a member bigger than its header says is stopped at the limit. Every
+  member is checked again before anything is written (a link, a name with a
+  backslash, an absolute or `..` path, or two members with one name refuses
+  the whole archive with a Finding). Archives are unpacked into a private
+  folder in the app's work area (`CHD_TEMP_DIR`, or `temp/` in the data
+  folder), never inside the Inbox, so make room there for your largest
+  archive. A Recognize read on storage that stops answering gives up instead
+  of holding a conversion slot, and Cancel stops it. Removing an Inbox while a
+  conversion from one of its archives is queued lets that conversion finish.
+  Each Image in it is then taken like a loose file;
+  a Finding about one of them is shown on the archive, naming it. Once every
+  Image in it is placed, the archive moves to `processed/` and the unpacked
+  copies are removed (the archive still holds them). An archive inside an
+  archive isn't unpacked. An arcade romset is never unpacked, since the zip is
+  the game: a zip in an `arcade`, `mame` or `fbneo` folder (or one you mapped
+  to Arcade) is checked against the same limits and copied in whole. If the app
+  restarts partway through an archive, an Image it had already placed is
+  recognised as the same file and counted, so the archive still finishes; the
+  same goes for a loose file whose exact copy is already in the Library, which
+  now moves to `processed/` instead of being held.
+  Where a DAT is loaded (or Hasheous is on), each Image is Recognized first
+  (an **Inbox Recognize** job) and placed under its top-ranked DAT's name,
+  with its own extension, by the same rule as **Rename to DAT name**; a
+  converted output takes the name with its own extension. A sheet's tracks
+  keep their names, so the sheet still finds them. Two DATs your order puts
+  level that name it differently leave it in the Inbox with a Finding naming
+  both, until you order them in **DAT ranking**; the next poll then takes it.
+  A name already in the Library, its DAT name or its own, leaves it in the
+  Inbox with a Finding saying which. Nothing is overwritten. An unpacked or
+  Recognized Image is taken on at once, so a `run-rules` pass places it in
+  the same run, conversions included, and the run waits for all of it; what a
+  run unpacked is removed before it exits. A held file is looked at again once
+  its name in the Library is free or your DAT order changes, across cron runs
+  too. A cue and its bin inside an archive are one Image, its Platform read
+  from its own track when no folder names it, and a split Image (`Game.iso.0`,
+  `.1`) named from its DAT keeps every part together (`Canonical Game.iso.0`,
+  `.1`); the same naming rule keeps a part's `.iso.0` in Rename to DAT name.
+  Nothing unpacked is
+  kept for an Image that is held: the archive stays in the Inbox with its
+  Finding and is unpacked again when the hold lifts. Everything unpacked at
+  once stays under `CHD_ARCHIVE_INBOX_MAX_UNPACKED_SIZE` (by default the
+  Inbox's 32 GiB total) and within the work area's free space; an archive that
+  doesn't fit waits for room, with no Finding (one archive on its own always
+  goes in). Cancel stops a Recognize that is still waiting its turn to read,
+  or stuck on its first look at the file. An archive is copied into the work
+  area before it is checked and unpacked, and only the copy is read, so the
+  original can't be changed under the check; its contents are also held to
+  `CHD_ARCHIVE_INBOX_MAX_RATIO` as they are written. A Recognize reads a bound
+  copy of the file it names, as a conversion does, so a file swapped while it
+  is matched is never named after what was swapped in, and a CHD is matched
+  by its embedded SHA-1s as in a Library. An Image from an archive
+  that was converted stays counted when the archive is unpacked again after a
+  hold, as long as every file it was placed as is still there, and a folder of an archive that couldn't be listed holds it with a
+  Finding instead of being skipped. Removing an Inbox lets a copy already
+  started from one of its archives finish. A stopped `run-rules` cancels any
+  conversion intake queued while it stopped.
 - **Xbox 360 disc images to ZAR, with rom-converto** (#422). A new tool,
   rom-converto (the converter RomM ships, at the version RomM pins, v0.24.0),
   packs an Xbox 360 `.iso` into a `.zar`, the format Xenia mounts directly.

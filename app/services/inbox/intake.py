@@ -41,11 +41,50 @@ files changes, so a second poll changes nothing. Findings are written one file
 at a time, under the Inbox's Library, keyed ``inbox:<id>/<path>``, and cleared
 when the file is taken or gone.
 
-What comes later builds on this: unpacking archives, Recognizing and naming
-from a DAT, and a taken name's handling (#432) all happen in :func:`_take`
-before the plan. Each poll reports what was ``placed`` and what was ``left``
-with a Finding since the last one, which :mod:`services.inbox.report` turns
-into RomM's Platform scan and the pass summary (#433).
+Archives and names (#432):
+
+* **An archive** (a zip or 7z) is unpacked before its Platform is worked
+  out, as an ``inbox_unpack`` job holding a conversion slot. It is opened
+  once, beneath the Inbox with no link followed and only while it is the
+  file taken; the gate (``ArchiveService.check_inbox_source``: the Inbox's
+  size and expansion caps, links, absolute and ``..`` paths) and the
+  extraction both read that one open file. Every member is checked again and
+  written, its bytes counted against its declared size and the caps,
+  through descriptors beneath an unpack slot in the app's own work area
+  (``_UnpackSlot``, ``ArchiveService.extract_members``), never inside the
+  Inbox. The Images in the slot are listed with the Inbox's own from then on
+  and taken one by one like loose files, their Platform read from the
+  folders the archive sat in (``platform_detect.detect_platform_as``); a
+  Finding for one of them is written on the archive, naming it. Once every
+  one of them is placed the archive moves to ``processed/`` and the slot,
+  intake's own scratch, goes (after the last conversion reading it, when
+  the Inbox is removed meanwhile). An archive found
+  inside an archive is not unpacked, nor is one whose folder names a
+  Platform whose Image is the archive itself
+  (``platform_detect.archive_is_image``: an arcade romset), which is gated
+  and then taken whole.
+* **A restart midway.** A copy's name already in the Library holding the
+  same bytes (size, then SHA-1) was placed before: counted placed, with no
+  Finding (``_same_as_placed``).
+* **Recognizing.** Where a DAT (or Hasheous) can answer, each Image is
+  matched before it is placed, as an ``inbox_recognize`` job: the match of
+  the very bytes taken (``routes.dat.match_one``), never a row cached for an
+  earlier file of that name, ranked by the current DAT ranking
+  (``DATStore.with_current_ranking``, ``dat_ranking.ranked_match``).
+* **Naming.** A Recognized Image's main file takes its top-ranked DAT name
+  with its own extension, by the rename's rule (``dat_rename.dat_file_name``);
+  a conversion's output takes it with the output's extension; a sheet's
+  tracks keep theirs, so the sheet still names them. Two DATs the ranking
+  puts level that name it differently hold it with an ``inbox_conflict``
+  Finding naming both: it is never guessed at, and the hold lifts once the
+  ranking changes.
+* **A taken name.** A name already in the Library holds the Image with a
+  Finding; a name only another job holds is tried again next poll.
+
+Each poll reports what was ``placed`` and what was ``left`` with a Finding
+since the last one (an Image from an archive with the archive's path),
+which :mod:`services.inbox.report` turns into RomM's Platform scan and the
+pass summary (#433).
 """
 
 from __future__ import annotations
@@ -53,6 +92,7 @@ from __future__ import annotations
 import asyncio
 import errno
 import os
+import shutil
 import stat
 import threading
 import time
@@ -67,6 +107,7 @@ from logging_setup import get_logger
 from models import ConversionMode, JobStatus
 from services import findings, platform_detect, staging
 from services.archive import ArchiveSafetyRefused, archive_service
+from services.dat_ranking import ranked_match
 from services import inbox as inbox_store
 from services.image_sets import group_images, image_fingerprint, image_members
 from services.job_manager import (
@@ -76,7 +117,13 @@ from services.job_manager import (
     job_manager,
 )
 from services.lock_manager import LockFailed, lock_manager
-from services.output_conflicts import QUEUE, SKIP_LOCKED, resolve_destination
+from services.output_conflicts import (
+    QUEUE,
+    SKIP_EXISTING,
+    SKIP_LOCKED,
+    output_status,
+    resolve_destination,
+)
 from services.rules import check as checks
 from services.rules.library import Library, LibraryUnreadable, PlacementUnknown
 from services.rules.rules import CONVERT
@@ -86,6 +133,7 @@ from services.subprocess_runner import (
     MutationInFlight,
     MutationNotStarted,
     ReadCancelled,
+    collect_abandonment,
     run_detached,
     run_detached_mutation,
     run_detached_undoable,
@@ -97,6 +145,8 @@ from utils.junk import is_junk_entry
 from utils.path_utils import (
     MoveRollbackFailed,
     PlacementCommitted,
+    bind_source,
+    copy_checked,
     file_snapshot,
     match_extension,
     move_anchored,
@@ -152,6 +202,27 @@ class _Flight:
     # processed/: set when another job held one of them (Codex 4607108034),
     # so the next poll tries the move again (``_settle_flights``).
     archive: str | None = None
+    # Each of its files' names in the Library, in ``files`` order: its main
+    # file's DAT name (#432) or its own, its tracks' own.
+    placed_names: list[str] = field(default_factory=list)
+    # Its top-ranked DAT's game name (#432), or None to keep its own name.
+    game_name: str | None = None
+    # Set on the flight that moves an unpacked archive to processed/ once
+    # every Image in it is placed (#432).
+    unpacked: _Unpacked | None = None
+
+
+@dataclass
+class _Unpacked:
+    """An archive intake unpacked (#432): its Images are taken one by one
+    from the staging slot, and it moves to processed/ once all are placed."""
+
+    fingerprint: str
+    slot: Any  # services.staging.StagedOutput
+    # The archive's own identity, for its move to processed/.
+    identities: dict[str, dict[str, int]]
+    images: frozenset[str]
+    placed: set[str] = field(default_factory=set)
 
 
 @dataclass
@@ -166,8 +237,29 @@ class _State:
     held_by: dict[str, tuple] = field(default_factory=dict)
     flights: dict[str, _Flight] = field(default_factory=dict)
     # What was placed since the last poll reported it: ``{"path", "platform",
-    # "output"}``, for what runs after a pass (#433).
+    # "output"}``, for what runs after a pass (#433). An Image from an
+    # archive (#432) is reported with the archive's path.
     placed: list[dict[str, Any]] = field(default_factory=list)
+    # Archive path -> what was unpacked from it (#432).
+    unpacked: dict[str, _Unpacked] = field(default_factory=dict)
+    # Path -> (the fingerprint and the identity of the very file it was
+    # matched as, its match), #432: used only for that file.
+    recognized: dict[str, tuple[str, dict | None, dict]] = field(default_factory=dict)
+    # Path -> the DAT ranking it was held at for a naming conflict (#432):
+    # looked at again once the ranking changes.
+    ranked_holds: dict[str, tuple] = field(default_factory=dict)
+    # Path -> the Library paths whose names it was held for (#432): looked at
+    # again once one of them is free.
+    taken_holds: dict[str, list[str]] = field(default_factory=dict)
+    # Archive path -> {"fingerprint", "members": {path in the archive:
+    # {"output", "identity"}}}: each of its Images already placed, kept
+    # outside its disposable unpack slot (CodeRabbit 4608968248), so one
+    # unpacked again counts as placed while its output is still that file
+    # (a conversion's bytes can't be compared with its Source).
+    placed_members: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # The last poll's stop predicate: an unpack or a Recognize that takes its
+    # Images on itself (`_take_on`, #432) admits nothing once it is true.
+    should_stop: Callable[[], bool] | None = None
     # What got a Finding since the last poll reported it: ``{"path", "kind",
     # "reason"}``, for the pass summary (#433).
     left: list[dict[str, Any]] = field(default_factory=list)
@@ -186,6 +278,25 @@ class _State:
 
 _states: dict[int, _State] = {}
 _tasks: set[asyncio.Task] = set()
+# An unpack slot's name prefix in the app's work area (#432).
+_UNPACK_PREFIX = "inbox_unpack_"
+# The real paths of the unpack slots open now: the only folders outside an
+# Inbox intake reads an Image under (`_root_of`). Guarded by `_slots_lock`,
+# never held across I/O.
+_slot_roots: set[str] = set()
+_slots_lock = threading.Lock()
+# What each open unpack slot reserved (its archive's declared total), by
+# slot: all of them together stay under `inbox_unpacked_limit` (Codex
+# 4608429476). Guarded by `_slots_lock`.
+_slot_sizes: dict[int, int] = {}
+# Archives whose wait for room was logged already: logged once per wait.
+_room_logged: set[str] = set()
+# How long the Recognize read may go without progress before it is given up
+# (Codex 4608007769); None is the conversion's own stall limit.
+_RECOGNIZE_STALL_SECONDS: float | None = None
+# How long priming a bound file's embedded hashes (a CHD's `chdman info`)
+# may take before the match goes on without them.
+_PRIME_SECONDS = 300
 # Set when a copy's check had to stop with a reader still on the storage
 # (#306's stop): no copy opens another file until the next pass. Read and set
 # under `_check_lock`, which every copy's check-and-place runs under, so a
@@ -216,6 +327,16 @@ def _set_stop(value: bool) -> None:
         if value:
             # Moves with every stop, so a check that raced one can tell.
             _stop_generation += 1
+
+
+class _Incomplete(Exception):
+    """Part of what was unpacked couldn't be listed (#432): which folder."""
+
+
+class _NoRoom(Exception):
+    """No room to unpack an archive now (#432, Codex 4608429476): the work
+    area's free space, or the cap on what is unpacked at once. Not the
+    archive's fault: it waits, with no Finding, and is tried again."""
 
 
 class _Deferred(Exception):
@@ -257,6 +378,13 @@ def _checking() -> asyncio.Lock:
 
 def reset_for_tests() -> None:
     global _storage_stop, _check_lock, _check_lock_loop
+    for state in _states.values():
+        for unpacked in list(state.unpacked.values()):
+            unpacked.slot.close()
+    with _orphans_lock:
+        for orphan in _orphans:
+            orphan.slot.close()
+        _orphans.clear()
     _states.clear()
     _tasks.clear()
     _storage_stop = False
@@ -265,11 +393,106 @@ def reset_for_tests() -> None:
 
 def forget(inbox_id: int) -> None:
     """Drop a removed Inbox's intake state, revoking it: a poll still running
-    on it starts no copy or conversion. A copy already running finishes."""
+    on it starts no copy or conversion. A copy already running finishes.
+    What was unpacked from its archives goes (intake's own scratch).
+    Blocking: called from the Inbox's removal, off the event loop."""
     state = _states.pop(inbox_id, None)
     if state is not None:
         with state.guard:
             state.revoked = True
+        _close_unpacked(state)
+
+
+def _close_unpacked(state: _State) -> None:
+    """Remove every unpack slot of a removed Inbox (idempotent): at once
+    when nothing reads from it, else once the last reader ends (Codex
+    4608007773, CodeRabbit 4608968241): a conversion queued or running from
+    it, or a copy's task (a copy waiting for a conversion slot included), so
+    it still runs. The map itself is left as it is: a poll still running on
+    the loop may be reading it. Blocking."""
+    flights = list(state.flights.items())
+    for unpacked in list(state.unpacked.values()):
+        mine = [
+            flight for path, flight in flights
+            if path.startswith(unpacked.slot.path + os.sep)
+        ]
+        jobs = {f.job_id for f in mine if f.job_id and not _ended(f.job_id)}
+        tasks = {f.task for f in mine if f.task is not None and not f.task.done()}
+        if jobs or tasks:
+            _close_after(unpacked.slot, jobs, tasks)
+        else:
+            unpacked.slot.close()
+
+
+@dataclass
+class _Orphan:
+    """An unpack slot of a removed Inbox, kept until what reads from it has
+    ended: job ids, and ``id()`` of the tasks of copies."""
+
+    slot: Any
+    readers: set
+
+
+_orphans: list[_Orphan] = []
+# Guards `_orphans`; never held across I/O.
+_orphans_lock = threading.Lock()
+
+
+def _ended(job_id: str) -> bool:
+    job = job_manager.get_job_for_lookup(job_id)
+    return job is None or job.status in (
+        JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED,
+    )
+
+
+def _close_after(slot: Any, jobs: set[str], tasks: set | None = None) -> None:
+    """Remove *slot* once every one of *jobs* and *tasks* has ended: a job
+    told by the job manager's terminal hook, a task by its done callback
+    (added on its own loop: this runs on a worker thread). One that ended
+    before it was watched is counted here. Blocking."""
+    tasks = set(tasks or ())
+    job_manager.add_terminal_listener(_job_ended)
+    with _orphans_lock:
+        _orphans.append(_Orphan(slot, {*jobs, *(id(task) for task in tasks)}))
+    for job_id in list(jobs):
+        if _ended(job_id):
+            _job_done(job_id)
+    for task in tasks:
+        try:
+            task.get_loop().call_soon_threadsafe(task.add_done_callback, _task_done)
+        except RuntimeError:
+            _job_done(id(task))  # its loop is closed: it has ended
+
+
+def _task_done(task: Any) -> None:
+    """A copy's task reading an orphaned slot ended."""
+    _job_done(id(task))
+
+
+def _job_ended(job: Any) -> None:
+    """The job manager's terminal hook: a job reading an orphaned slot ended."""
+    _job_done(job.id)
+
+
+def _job_done(reader: Any) -> None:
+    """A reader of an orphaned slot (a job id, a copy task's id) ended."""
+    ready = []
+    with _orphans_lock:
+        for orphan in list(_orphans):
+            orphan.readers.discard(reader)
+            if not orphan.readers:
+                _orphans.remove(orphan)
+                ready.append(orphan.slot)
+    for slot in ready:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            slot.close()  # on a worker thread: it may block
+            continue
+        # On the loop: removed on a worker thread, tracked so `drain` waits.
+        task = loop.create_task(_step(slot.close))
+        _tasks.add(task)
+        task.add_done_callback(_tasks.discard)
 
 
 def _state(inbox_id: int) -> _State:
@@ -290,6 +513,12 @@ def status(inbox_id: int) -> dict[str, Any]:
         "held": len(state.held),
         "error": state.error,
     }
+
+
+def busy() -> bool:
+    """Whether intake has work of its own still running (a copy, an unpack,
+    a Recognize, a move). For a caller that drains to a fixed point."""
+    return bool(_tasks)
 
 
 async def drain() -> None:
@@ -317,14 +546,16 @@ def _image_extensions() -> tuple[str, ...]:
 
 
 def _list(
-    folder: str, library: Library, progress,
+    folder: str, library: Library, progress, extra: tuple[str, ...] = (),
 ) -> tuple[dict[str, str], list[str], dict[str, list[str]], dict[str, str]]:
     """Every Image in the Inbox at *folder* (path -> fingerprint), and the
     folders the walk couldn't list. Blocking.
 
     Skips ``processed/``, dot-entries, links and files no tool reads or
     writes (a numbered split part, ``Game.iso.0``, counts as its output's,
-    as the folder Library lists it); walks no link. Raises :class:`InboxUnavailable` when the folder
+    as the folder Library lists it); walks no link. *extra*: the staging
+    slots archives were unpacked into (#432), hidden folders inside the
+    Inbox, walked too. Raises :class:`InboxUnavailable` when the folder
     isn't there, isn't confirmed inside a Volume, or now overlaps its
     Library (its root moved since the Inbox was saved): intake would read
     its own output.
@@ -340,10 +571,33 @@ def _list(
     )
     if problem:
         raise InboxUnavailable(problem)
+    files, unlisted = _walk([folder, *extra], folder, progress)
+    # Progress between Images through grouping, fingerprinting and the
+    # ownership checks too, so the stall bound measures stalled storage, not
+    # how long a big pass takes (Codex 4607108046).
+
+    def members(path: str) -> list[str]:
+        progress(path)
+        return _members(path)
+
+    images: dict[str, str] = {}
+    for path in group_images(sorted(files), members=members):
+        progress(path)
+        images[path] = _fingerprint(path)
+    return (
+        images, unlisted, _sharing(images, progress),
+        _behind_unreadable_sheets(images, progress, within=[folder, *extra]),
+    )
+
+
+def _walk(roots: list[str], inbox: str | None, progress) -> tuple[list[str], list[str]]:
+    """The Image files below *roots* and the folders that couldn't be listed:
+    no dot-entry, junk or link, no ``processed/`` at the top of the Inbox
+    folder *inbox*. Blocking."""
     extensions = _image_extensions()
     files: list[str] = []
     unlisted: list[str] = []
-    stack = [folder]
+    stack = list(roots)
     while stack:
         current = stack.pop()
         progress(current)
@@ -358,7 +612,7 @@ def _list(
                 name = entry.name
                 if name.startswith(".") or is_junk_entry(name):
                     continue
-                if current == folder and name == inbox_store.PROCESSED:
+                if current == inbox and name == inbox_store.PROCESSED:
                     continue
                 try:
                     if entry.is_symlink():
@@ -378,26 +632,11 @@ def _list(
                     or registry.split_owner(entry.path) is not None
                 ):
                     files.append(entry.path)
-    # Progress between Images through grouping, fingerprinting and the
-    # ownership checks too, so the stall bound measures stalled storage, not
-    # how long a big pass takes (Codex 4607108046).
-
-    def members(path: str) -> list[str]:
-        progress(path)
-        return image_members(path)
-
-    images: dict[str, str] = {}
-    for path in group_images(sorted(files), members=members):
-        progress(path)
-        images[path] = image_fingerprint(path)
-    return (
-        images, unlisted, _sharing(images, progress),
-        _behind_unreadable_sheets(images, progress, within=folder),
-    )
+    return files, unlisted
 
 
 def _behind_unreadable_sheets(
-    images: dict[str, str], progress=None, *, within: str | None = None,
+    images: dict[str, str], progress=None, *, within: str | list[str] | None = None,
 ) -> dict[str, str]:
     """Image -> the sheet of unknown ownership (its path) that could name it,
     for every loose track-type file in that sheet's folder or any folder
@@ -412,7 +651,7 @@ def _behind_unreadable_sheets(
     from services.image_sets import SHEET_EXTENSIONS, is_playlist
     from utils.sheet_text import sheet_is_readable, sheet_track_list
 
-    roots = [within] if within else None
+    roots = [within] if isinstance(within, str) else (list(within) if within else None)
     unreadable: dict[str, str] = {}
     for path in images:
         if progress is not None:
@@ -450,7 +689,7 @@ def _sharing(images: dict[str, str], progress=None) -> dict[str, list[str]]:
     for path in images:
         if progress is not None:
             progress(path)
-        for member in image_members(path):
+        for member in _members(path):
             key = os.path.normcase(os.path.realpath(member))
             owners.setdefault(key, []).append(path)
     shared: dict[str, set[str]] = {}
@@ -489,11 +728,22 @@ async def _hold(
         state.held_by[path] = depends
     else:
         state.held_by.pop(path, None)
+    state.ranked_holds.pop(path, None)
+    state.taken_holds.pop(path, None)
     state.seen.pop(path, None)
-    state.left.append({"path": path, "kind": kind, "reason": reason})
+    shown, cause = path, dict(cause or {})
+    owner = _unpacked_holding(state, path)
+    if owner is not None:
+        # An Image unpacked from an archive (#432): the Finding goes on the
+        # archive, the file the user dropped, naming the Image.
+        shown, unpacked = owner
+        member = os.path.relpath(path, unpacked.slot.path)
+        reason = f"{member} (unpacked from it): {reason}"
+        cause["member"] = member
+    state.left.append({"path": shown, "kind": kind, "reason": reason})
     item = findings.Observed(
-        kind=kind, image_key=inbox.image_key(path), path=path, reason=reason,
-        cause={"inbox": inbox.id, "fingerprint": fingerprint, **(cause or {})},
+        kind=kind, image_key=inbox.image_key(shown), path=shown, reason=reason,
+        cause={"inbox": inbox.id, "fingerprint": fingerprint, **cause},
     )
     others = [k for k in findings.INBOX_KINDS if k != kind]
 
@@ -509,6 +759,24 @@ async def _hold(
         await _step(write)
     except Exception:
         logger.warning("inbox: could not record a Finding for %s", path, exc_info=True)
+
+
+def _unpacked_holding(state: _State, path: str) -> tuple[str, _Unpacked] | None:
+    """The archive whose staging slot *path* was unpacked into, and what was
+    unpacked from it (#432); None for a file the user dropped."""
+    for archive, unpacked in state.unpacked.items():
+        if path.startswith(unpacked.slot.path + os.sep):
+            return archive, unpacked
+    return None
+
+
+def _as_in_inbox(owner: tuple[str, _Unpacked], path: str) -> str:
+    """Where the Image at *path*, unpacked from the archive *owner* names,
+    would sit had the archive been unpacked beside it: the archive's folder
+    in the Inbox, then the folders inside the archive. What its Platform is
+    worked out from (#432)."""
+    archive, unpacked = owner
+    return os.path.join(os.path.dirname(archive), os.path.relpath(path, unpacked.slot.path))
 
 
 async def _clear(inbox: inbox_store.Inbox, path: str) -> None:
@@ -587,6 +855,7 @@ async def poll(
         result["error"] = "poll_running"
         return result
     state.polling = True
+    state.should_stop = should_stop
     # Whether this poll's error is news (#433): the summary notifies once.
     previous_error = state.error
     try:
@@ -599,6 +868,7 @@ async def poll(
             listing, unlisted, sharing, blocked = await run_detached_within_stall_bound(
                 _list, inbox.folder, library, what=f"The Inbox {inbox.folder}",
                 stall=_LIST_STALL_SECONDS, report_progress=True,
+                extra=tuple(u.slot.path for u in state.unpacked.values()),
             )
         except InboxUnavailable as exc:
             state.error = result["error"] = str(exc)
@@ -612,17 +882,31 @@ async def poll(
             return result
         state.error = None
         await _forget_gone(inbox, state, listing, unlisted)
+        busy = await _settle_unpacked(inbox, state, listing, unlisted)
         stop = False
+        ranking: tuple | None = None
         for path, fingerprint in listing.items():
             if state.revoked:
                 break  # removed meanwhile: nothing more is taken
             if should_stop():
                 break  # a stop (run-rules): nothing more is admitted
-            if path in state.flights:
+            if path in state.flights or path in busy:
                 continue
             depends = _ownership_key(path, listing, sharing, blocked)
             if state.held.get(path) == fingerprint:
-                if path not in state.held_by or state.held_by[path] == depends:
+                if path in state.ranked_holds or path in state.taken_holds:
+                    # Held for a naming conflict or a name taken (#432):
+                    # looked at again once the DAT ranking changed or the
+                    # name is free.
+                    lifted = False
+                    if path in state.ranked_holds:
+                        ranking = ranking or await _ranking_now()
+                        lifted = ranking is not None and state.ranked_holds[path] != ranking
+                    if not lifted and path in state.taken_holds:
+                        lifted = await _freed(state.taken_holds[path])
+                    if not lifted:
+                        continue
+                elif path not in state.held_by or state.held_by[path] == depends:
                     continue
                 # What held it changed (the other sheet gone, the unreadable
                 # sheet removed or fixed): its stale Finding goes and it is
@@ -631,6 +915,8 @@ async def poll(
                 state.seen[path] = _Seen(fingerprint, now - inbox.settle_seconds)
             state.held.pop(path, None)
             state.held_by.pop(path, None)
+            state.ranked_holds.pop(path, None)
+            state.taken_holds.pop(path, None)
             seen = state.seen.get(path)
             if seen is None or seen.fingerprint != fingerprint:
                 state.seen[path] = _Seen(fingerprint, now)
@@ -703,6 +989,15 @@ async def _forget_gone(
         state.seen.pop(path, None)
     for path in [p for p in state.held if p not in listing]:
         state.held.pop(path, None)
+        state.ranked_holds.pop(path, None)
+        state.taken_holds.pop(path, None)
+    for path in [p for p in state.recognized if p not in listing]:
+        state.recognized.pop(path, None)
+    for path, record in list(state.placed_members.items()):
+        if listing.get(path) != record.get("fingerprint") and not any(
+            path.startswith(folder + os.sep) for folder in unlisted
+        ):
+            state.placed_members.pop(path, None)  # changed, or gone
     keep = {inbox.image_key(p) for p in (*listing, *state.flights)}
     hidden = tuple(inbox.image_key(folder) for folder in unlisted)
 
@@ -722,6 +1017,176 @@ async def _forget_gone(
         logger.warning("inbox: could not settle the Findings of %s", inbox.folder, exc_info=True)
 
 
+async def _settle_unpacked(
+    inbox: inbox_store.Inbox, state: _State, listing: dict, unlisted: list[str],
+) -> set[str]:
+    """Move each archive whose Images are all placed to ``processed/``, and
+    let go of what was unpacked from one that is gone or changed (#432).
+    Returns the paths this poll leaves alone: each archive being worked
+    through, and each of its Images already placed."""
+    busy: set[str] = set()
+    for archive, unpacked in list(state.unpacked.items()):
+        if archive in state.flights or any(i in state.flights for i in unpacked.images):
+            busy.add(archive)
+            busy.update(unpacked.placed)
+            continue
+        if archive not in listing and any(
+            archive.startswith(folder + os.sep) for folder in unlisted
+        ):
+            busy.update(unpacked.placed)  # not seen is not gone
+            continue
+        if listing.get(archive) != unpacked.fingerprint:
+            # Gone, or changed since it was unpacked: what was unpacked goes
+            # (intake's own scratch; the archive still holds it). A changed
+            # archive is unpacked again once it settles. Its Images, still
+            # in this poll's listing, are left alone.
+            busy.update(unpacked.images)
+            state.unpacked.pop(archive, None)
+            state.placed_members.pop(archive, None)
+            try:
+                await _step(unpacked.slot.close)
+            except (asyncio.TimeoutError, OSError):
+                logger.warning("inbox: could not remove what was unpacked from %s", archive)
+            continue
+        remaining = unpacked.images - unpacked.placed
+        if remaining and all(image in state.held for image in remaining):
+            # Every Image left in it is held: nothing is kept for them
+            # (Codex 4608429476). The archive stays the source of truth.
+            busy.update(unpacked.images)
+            await _hold_unpacked(state, archive, unpacked, remaining)
+            continue
+        busy.add(archive)
+        busy.update(unpacked.placed)
+        _archive_if_done(inbox, state, archive, unpacked)
+    return busy
+
+
+async def _hold_unpacked(
+    state: _State, archive: str, unpacked: _Unpacked, held: set[str],
+) -> None:
+    """Close the unpack slot of *archive*, all of whose Images left are
+    *held*, and hold the archive itself instead, its Findings as they are.
+    Its hold lifts as theirs would: the DAT ranking changed, a name it was
+    held for freed, or the archive changed. It is then unpacked again, and an
+    Image placed before counts by its bytes (`_same_as_placed`)."""
+    ranking = next((state.ranked_holds[i] for i in held if i in state.ranked_holds), None)
+    taken = sorted({name for i in held for name in state.taken_holds.get(i, ())})
+    state.unpacked.pop(archive, None)
+    for image in unpacked.images:
+        for memory in (
+            state.held, state.held_by, state.ranked_holds, state.taken_holds,
+            state.seen, state.recognized,
+        ):
+            memory.pop(image, None)
+    try:
+        await _step(unpacked.slot.close)
+    except (asyncio.TimeoutError, OSError):
+        logger.warning("inbox: could not remove what was unpacked from %s", archive)
+    state.held[archive] = unpacked.fingerprint
+    state.held_by.pop(archive, None)
+    state.seen.pop(archive, None)
+    if ranking is not None:
+        state.ranked_holds[archive] = ranking
+    if taken:
+        state.taken_holds[archive] = taken
+
+
+def _outputs_identity(output: str) -> dict[str, dict[str, int]] | None:
+    """Every file of the output Image at *output* in the Library (the file
+    and its members: a CUE's BINs, an extractcd's tracks, a split's parts,
+    Codex 4609181297), each with its identity; None when any of them isn't a
+    regular file there now. Blocking."""
+    out: dict[str, dict[str, int]] = {}
+    for name in [output, *_members(output)]:
+        try:
+            st = os.stat(name, follow_symlinks=False)
+        except OSError:
+            return None
+        if not stat.S_ISREG(st.st_mode):
+            return None
+        out[name] = file_snapshot(st)
+    return out
+
+
+async def _record_placed(
+    state: _State, owner: tuple[str, _Unpacked], path: str, output: str,
+) -> None:
+    """Keep that the Image at *path*, unpacked from *owner*'s archive, is
+    placed as *output*: by the archive's fingerprint and the Image's path in
+    the archive, with the output's identity."""
+    archive, unpacked = owner
+    try:
+        outputs = await _step(_outputs_identity, output)
+    except (asyncio.TimeoutError, OSError):
+        outputs = None
+    if outputs is None:
+        return
+    record = state.placed_members.get(archive)
+    if record is None or record.get("fingerprint") != unpacked.fingerprint:
+        record = state.placed_members[archive] = {
+            "fingerprint": unpacked.fingerprint, "members": {},
+        }
+    record["members"][os.path.relpath(path, unpacked.slot.path)] = {
+        "output": output, "outputs": outputs,
+    }
+
+
+async def _placed_before(state: _State, owner: tuple[str, _Unpacked], path: str) -> bool:
+    """Whether the Image at *path*, unpacked again from *owner*'s archive,
+    was placed before: a record for this archive (its fingerprint) and this
+    path in it whose every output file is still that very file. One missing
+    or changed, it is taken again (and a name still taken holds it)."""
+    archive, unpacked = owner
+    record = state.placed_members.get(archive)
+    if record is None or record.get("fingerprint") != unpacked.fingerprint:
+        return False
+    member = record["members"].get(os.path.relpath(path, unpacked.slot.path))
+    if not member:
+        return False
+    try:
+        return await _step(_outputs_identity, member["output"]) == member["outputs"]
+    except (asyncio.TimeoutError, OSError):
+        return False
+
+
+def _archive_if_done(
+    inbox: inbox_store.Inbox, state: _State, archive: str, unpacked: _Unpacked,
+) -> None:
+    """Start *archive*'s move to ``processed/`` once every Image unpacked
+    from it is placed (and it isn't held, nor moving already)."""
+    if archive in state.flights or not unpacked.images <= unpacked.placed:
+        return
+    if state.held.get(archive) == unpacked.fingerprint:
+        return
+    flight = _Flight(
+        fingerprint=unpacked.fingerprint, files=[archive], platform="",
+        identities=unpacked.identities, unpacked=unpacked,
+    )
+    _archive_later(inbox, state, archive, flight, None)
+
+
+async def _freed(names: list[str]) -> bool:
+    """Whether any of the Library paths *names* a hold waits on is free now.
+    Couldn't tell is no."""
+    try:
+        return await _step(lambda: any(not os.path.lexists(name) for name in names))
+    except (asyncio.TimeoutError, OSError):
+        return False
+
+
+async def _ranking_now() -> tuple | None:
+    """The DAT ranking as it stands (each DAT and its rank), or None when it
+    can't be read: what a naming conflict's hold waits on to change (#432)."""
+    from services.dat_store import dat_store
+
+    try:
+        ranking = await _step(dat_store.get_ranking)
+    except Exception:
+        logger.warning("inbox: could not read the DAT ranking", exc_info=True)
+        return None
+    return tuple((dat["id"], dat["rank"]) for dat in ranking["dats"])
+
+
 # ---- taking one Image ----------------------------------------------------
 
 
@@ -736,10 +1201,48 @@ async def _take(
     inbox: inbox_store.Inbox, library: Library, state: _State, path: str, fingerprint: str,
 ) -> str:
     """Start intake for one settled Image: ``queued``, ``copying``, ``held``,
-    ``queue_full`` or ``retry`` (something transient; the next poll tries again)."""
+    ``queue_full``, ``unpacking``, ``recognizing`` or ``retry`` (something
+    transient; the next poll tries again)."""
+    owner = _unpacked_holding(state, path)
+    if owner is not None and await _placed_before(state, owner, path):
+        # Placed before this archive was unpacked again (CodeRabbit
+        # 4608968248): counted, nothing taken.
+        owner[1].placed.add(path)
+        return "placed_before"
+    if archive_service.is_archive(path):
+        try:
+            whole = await _step(_archive_is_image, path)
+        except (asyncio.TimeoutError, OSError):
+            return "retry"
+        if not whole:
+            # Unpacked before its Platform is worked out (#432).
+            return await _take_archive(inbox, state, path, fingerprint)
+        # Its folder names a Platform whose Image is the archive (an arcade
+        # romset): gated, then taken whole like any other file, only while
+        # it is the file gated.
+        try:
+            gated = await _step(_identities, inbox, [path])
+        except (asyncio.TimeoutError, OSError):
+            return "retry"
+        outcome = await _gate_archive(
+            inbox, state, path, fingerprint, "checked or copied",
+            gated[os.path.basename(path)],
+        )
+        if outcome is not None:
+            return outcome
+    else:
+        gated = None
     try:
-        detection = await _step(platform_detect.detect_platform, path)
-        members = await _step(image_members, path)
+        if owner is None:
+            detection = await _step(platform_detect.detect_platform, path)
+        else:
+            # Unpacked (#432): its own header, and the folders it sat in, the
+            # archive's in the Inbox and those inside the archive.
+            detection = await _step(
+                platform_detect.detect_platform_as, path, _as_in_inbox(owner, path),
+                within=_slot_within(path),
+            )
+        members = await _step(_members, path)
     except (asyncio.TimeoutError, OSError):
         return "retry"
     if not detection.decided:
@@ -756,7 +1259,8 @@ async def _take(
     platform = detection.platform
     files = [path, *members]
     try:
-        sheet = await _step(sheet_reference_problems, path, within=[inbox.folder])
+        within = [_root_of(inbox, path) or inbox.folder]
+        sheet = await _step(sheet_reference_problems, path, within=within)
     except (asyncio.TimeoutError, OSError):
         return "retry"
     if sheet:
@@ -773,28 +1277,6 @@ async def _take(
     if problem:
         await _hold(inbox, state, path, fingerprint, findings.INBOX_FAILED, problem)
         return "held"
-    if archive_service.is_archive(path):
-        # Anyone who can write the Inbox can drop one: an archive past the
-        # Inbox's size and expansion caps is never checked (`7z t` would
-        # decompress all of it) nor copied (Codex 4607318277).
-        try:
-            await _step(archive_service.check_inbox_archive, path)
-        except ArchiveSafetyRefused as exc:
-            await _hold(
-                inbox, state, path, fingerprint, findings.INBOX_FAILED,
-                f"It's an archive the Inbox doesn't take: {exc.rule}. It wasn't checked "
-                "or copied; extract it, or raise the limit if you trust it",
-                {"limit": exc.rule},
-            )
-            return "held"
-        except asyncio.TimeoutError:
-            return "retry"
-        except Exception as exc:
-            await _hold(
-                inbox, state, path, fingerprint, findings.INBOX_FAILED,
-                f"It couldn't be read as an archive ({exc}), so it wasn't checked or copied",
-            )
-            return "held"
     try:
         identities = await _step(_identities, inbox, files)
     except asyncio.TimeoutError:
@@ -805,6 +1287,11 @@ async def _take(
             f"Its files can't be read inside the Inbox without following a link: {exc}",
         )
         return "held"
+    if gated is not None and gated != {
+        os.path.basename(path): identities.get(os.path.basename(path)),
+    }:
+        state.seen.pop(path, None)  # replaced since it was gated: settles again
+        return "retry"
     try:
         plan = await _plan(library, platform, path)
     except PlacementUnknown as exc:
@@ -826,26 +1313,893 @@ async def _take(
     flight = _Flight(
         fingerprint=fingerprint, files=files, platform=platform, identities=identities,
     )
+    outcome = await _name(inbox, state, path, flight)
+    if outcome is not None:
+        return outcome
     if plan.rule is not None:
         return await _convert(inbox, state, path, flight, plan)
     try:
-        taken = await _step(_taken, plan.folder, files)
+        taken = await _step(_taken, plan.folder, flight.placed_names)
     except (asyncio.TimeoutError, OSError):
         return "retry"
     if taken:
+        # Under the output locks a copy would take (CodeRabbit 4608968255):
+        # no job writes the Library's file while it is compared.
+        targets = [os.path.join(plan.folder, name) for name in flight.placed_names]
+        try:
+            refused = await _lock_all(targets, allow_existing=True)
+        except (DeadlineExpired, asyncio.TimeoutError, OSError, LockFailed):
+            return "retry"
+        if refused is not None:
+            return "retry"  # another job holds one of them: tried again later
+        try:
+            same = await run_detached_within_stall_bound(
+                _same_as_placed, inbox, flight, plan.folder,
+                what=f"Comparing {os.path.basename(path)} with the Library's copy",
+                report_progress=True,
+            )
+        except _SourceChanged:
+            return "retry"
+        except Exception:
+            logger.warning("inbox: could not compare %s with the Library", path, exc_info=True)
+            same = False
+        finally:
+            try:
+                await _step(_release_locks, targets)
+            except (asyncio.TimeoutError, OSError):
+                logger.warning("inbox: could not release the locks of %s", path, exc_info=True)
+        if same:
+            # Already placed, byte for byte (by this Inbox before a restart):
+            # counted placed, with no Finding, and the original moves on.
+            return _start_finish(inbox, state, path, flight, plan.folder)
         await _hold(
             inbox, state, path, fingerprint, findings.INBOX_FAILED,
             f"{taken} is already in the Library ({plan.folder})", {"platform": platform},
         )
+        state.taken_holds[path] = [os.path.join(plan.folder, taken)]
         return "held"
     return _start_copy(inbox, state, path, flight, plan.folder)
 
 
-def _taken(folder: str, files: list[str]) -> str | None:
-    """The first of *files*' names already in *folder*, or None. Blocking.
+def _same_as_placed(
+    inbox: inbox_store.Inbox, flight: _Flight, folder: str, progress,
+) -> bool:
+    """Whether every file of the Image is already in *folder* under its
+    placed name, the same bytes (#432): what a restart midway leaves. Size
+    first, then the content hash (``stream_digest.new_hasher``), both sides
+    opened with no link followed, the Image's own files through the Inbox's
+    folder and only while they are the files taken. Blocking."""
+    names = flight.placed_names or [os.path.basename(f) for f in flight.files]
+    src_fd, sources = _folder_beneath(inbox, flight.files)
+    try:
+        dst_fd = os.open(folder, _DIR_FLAGS)
+    except OSError:
+        os.close(src_fd)
+        return False
+    try:
+        for source, name in zip(sources, names):
+            there = stat_at(name, dst_fd)
+            taken = flight.identities.get(source)
+            if there is None or taken is None or not stat.S_ISREG(there.st_mode):
+                return False
+            if there.st_size != taken["size"]:
+                return False
+        for source, name in zip(sources, names):
+            opened: list[os.stat_result] = []
+            if _digest_at(source, src_fd, progress, flight.identities[source]) != _digest_at(
+                name, dst_fd, progress, opened=opened,
+            ):
+                return False
+            # The Library's name must still be the very file just hashed
+            # (CodeRabbit 4608968255): one replaced while it was read is not.
+            there = stat_at(name, dst_fd)
+            if there is None or not opened or _held_identity(there) != _held_identity(
+                opened[0],
+            ):
+                return False
+        return True
+    finally:
+        os.close(dst_fd)
+        os.close(src_fd)
+
+
+def _digest_at(
+    name: str, folder: int, progress, identity: dict | None = None,
+    opened: list | None = None,
+) -> str:
+    """The SHA-1 of *name* in the open *folder*, opened with no link
+    followed; with *identity*, only while it is that file. *opened*, when
+    given, gets the stat of the file read, after its last read. Blocking."""
+    hasher = new_hasher("sha1")
+    fd = os.open(name, os.O_RDONLY | _NOFOLLOW, dir_fd=folder)
+    with os.fdopen(fd, "rb") as handle:
+        if identity is not None and file_snapshot(os.fstat(handle.fileno())) != identity:
+            raise _SourceChanged(errno.ESTALE, f"{name} changed since it was taken")
+        while chunk := handle.read(_CHUNK):
+            progress(name)
+            hasher.update(chunk)
+        if opened is not None:
+            opened.append(os.fstat(handle.fileno()))
+    return hasher.hexdigest()
+
+
+def _held_identity(st: os.stat_result) -> tuple[int, int, int, int, int]:
+    """Which file, and whether it was written: device, inode, size, mtime and
+    ctime (nanoseconds)."""
+    return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+
+
+def _start_finish(
+    inbox: inbox_store.Inbox, state: _State, path: str, flight: _Flight, folder: str,
+) -> str:
+    """Finish an Image whose copy is already in *folder*: the move to
+    ``processed/`` (or, unpacked from an archive, its count) as a tracked
+    flight, as after a copy."""
+    names = flight.placed_names or [os.path.basename(f) for f in flight.files]
+    output = os.path.join(folder, names[0])
+    with state.guard:
+        if state.revoked:
+            return "retry"  # the Inbox was removed meanwhile
+        _note_placed(state, path, flight, output)
+        _track(state, path, flight, _finish(inbox, state, path, flight, output))
+    return "copying"
+
+
+# ---- Recognizing and naming (#432) -----------------------------------------
+
+
+def _matching_available() -> bool:
+    """Whether a DAT is loaded, or Hasheous can answer. Blocking."""
+    from routes.dat import matching_available
+    from services.dat_store import dat_store
+
+    return matching_available(dat_store.has_dats())
+
+
+async def _name(
+    inbox: inbox_store.Inbox, state: _State, path: str, flight: _Flight,
+) -> str | None:
+    """Name *flight* from its top-ranked DAT, Recognizing it first where a
+    DAT can answer: None once it is named (``flight.game_name`` and
+    ``flight.placed_names`` set; no name keeps its own), else the outcome
+    :func:`_take` answers (``recognizing``, ``held`` or ``retry``)."""
+    from services.dat_rename import conflict_text, dat_file_names
+    from services.dat_store import dat_store
+
+    names = [os.path.basename(f) for f in flight.files]
+    flight.placed_names = names
+    done = state.recognized.get(path)
+    if done is None or done[:2] != (
+        flight.fingerprint, flight.identities.get(names[0]),
+    ):
+        try:
+            if not await _step(_matching_available):
+                return None  # no DAT loaded: it keeps its own name
+        except Exception:
+            logger.warning("inbox: could not tell whether a DAT is loaded", exc_info=True)
+            return "retry"
+        return _start_recognize(inbox, state, path, flight)
+    # The ranking first, so a change made while this one is read lifts the
+    # hold below on the next poll.
+    ranking = await _ranking_now()
+    try:
+        payload = await _step(dat_store.with_current_ranking, done[2], path)
+    except Exception:
+        logger.warning("inbox: could not rank the match of %s", path, exc_info=True)
+        return "retry"
+    ranked = ranked_match(payload)
+    if ranked.conflict:
+        # Never guessed at: held, as the rename to DAT name leaves it
+        # unnamed, until the ranking orders them.
+        named, matches = conflict_text(ranked.conflict)
+        await _hold(
+            inbox, state, path, flight.fingerprint, findings.INBOX_CONFLICT,
+            f"Its DAT name is in doubt: {named}, and the ranking puts them level; "
+            "rank the DATs to choose",
+            {"platform": flight.platform, "matches": matches},
+        )
+        if ranking is not None:
+            state.ranked_holds[path] = ranking
+        return "held"
+    if ranked.top is not None and ranked.top.get("game_name"):
+        # Every part of a split output alike (Codex 4608919686); a sheet's
+        # tracks keep their names.
+        named = dat_file_names(ranked.top["game_name"], names)
+        if named:
+            flight.game_name = ranked.top["game_name"]
+            flight.placed_names = named
+    return None
+
+
+async def _prime_for_match(path: str, cancel: asyncio.Event | None) -> None:
+    """Have the tool that reads *path* prime its embedded hashes for it
+    (``ToolPlugin.prime_embedded_hashes``), bounded; a cancel propagates,
+    anything else leaves the match to the file's own hash."""
+    try:
+        tool = await _step(registry.tool_for_verify, path)
+        if tool is not None:
+            await asyncio.wait_for(
+                tool.prime_embedded_hashes(path, cancel_event=cancel), _PRIME_SECONDS,
+            )
+    except ReadCancelled:
+        raise
+    except Exception:
+        logger.info("inbox: could not read %s's embedded hashes", path, exc_info=True)
+
+
+async def _bind_for_match(
+    inbox: inbox_store.Inbox, path: str, flight: _Flight, cancel: asyncio.Event | None,
+) -> Any:
+    """The Image's main file bound into a folder of the app's work area for
+    its match (``bind_source``: a hard link or a checked copy, opened beneath
+    its root with no link followed, only while it is the file taken). Bounded
+    by its progress and stopped at *cancel*; a bind answered after its awaiter
+    gave up is closed. Raises ``_SourceChanged`` for another file."""
+    from services.disk import create_scratch_dir
+
+    name = os.path.basename(path)
+    identity = {
+        "root": _root_of(inbox, path) or inbox.folder,
+        "snapshot": flight.identities[name],
+    }
+
+    def bind(progress):
+        into = create_scratch_dir("inbox_match_")
+        try:
+            return bind_source(path, identity, into, progress=progress), []
+        except OSError as exc:
+            shutil.rmtree(into, ignore_errors=True)
+            if exc.errno == errno.ESTALE:
+                raise _SourceChanged(errno.ESTALE, str(exc)) from exc
+            raise
+
+    handoff = _SlotHandoff(bind)
+    try:
+        bound, _none = await run_detached_within_stall_bound(
+            handoff.stage, what=f"Binding {name} to match it", cancel_event=cancel,
+            stall=_RECOGNIZE_STALL_SECONDS, report_progress=True,
+        )
+    except BaseException:
+        handoff.abandon()
+        raise
+    handoff.taken()
+    return bound
+
+
+async def _take_on(inbox: inbox_store.Inbox, state: _State, path: str, fingerprint: str) -> None:
+    """Take the Image at *path* on at once, from the task that made it ready
+    (#432): Recognized, or just unpacked from an archive. It doesn't wait a
+    poll for it, and ``run-rules``, which polls once a run and keeps no
+    match or unpack between runs, places it in the same run. Only while it is
+    still the file that was taken (*fingerprint*), and never once the Inbox
+    is removed or the last poll's stop is set; otherwise the next poll takes
+    it as usual."""
+    from services import libraries
+
+    if state.revoked or (state.should_stop is not None and state.should_stop()):
+        return
+    library = libraries.get(inbox.library_id)
+    if library is None:
+        return
+    try:
+        if await _step(_fingerprint, path) != fingerprint:
+            return
+        await _take(inbox, library, state, path, fingerprint)
+    except Exception:
+        # Left to the next poll, which takes it as any settled file.
+        logger.warning("inbox: taking %s on failed", path, exc_info=True)
+
+
+def _start_recognize(
+    inbox: inbox_store.Inbox, state: _State, path: str, flight: _Flight,
+) -> str:
+    with state.guard:
+        if state.revoked:
+            return "retry"  # the Inbox was removed meanwhile
+        _track(state, path, flight, _recognize(inbox, state, path, flight))
+    return "recognizing"
+
+
+async def _recognize(
+    inbox: inbox_store.Inbox, state: _State, path: str, flight: _Flight,
+) -> None:
+    """Match the Image against the DATs (and Hasheous), as an
+    ``inbox_recognize`` job holding a conversion slot; the next poll names it
+    from the result. A match that can't be made holds it with a Finding."""
+    from routes.dat import match_one
+
+    job = job_manager.create_external_job(
+        os.path.basename(path), ConversionMode.INBOX_RECOGNIZE,
+        message="Waiting to Recognize it",
+    )
+    _tag(job, inbox)
+    cancel = job_manager.get_cancel_event(job.id)
+    outcome, why, result = "failed", "", None
+    try:
+        if not await job_manager.hold_slot(job.id, cancel):
+            outcome = "cancelled"
+        else:
+            try:
+                await job_manager.update_external_job(job.id, message="Recognizing it")
+                # The bytes intake takes, never the pathname (CodeRabbit
+                # 4608968259): its file bound into the app's work area as a
+                # conversion's Source is, identity-checked, read there, and
+                # the match kept only while the bound file is unchanged. The
+                # read is stall-bounded and stops at Cancel (Codex
+                # 4608007769); the slot is given back below either way.
+                bound = await _bind_for_match(inbox, path, flight, cancel)
+                try:
+                    # What its tool reads its embedded hashes from, read from
+                    # the bound copy (Codex 4609181291): a CHD's SHA-1s.
+                    await _prime_for_match(bound.read_path, cancel)
+                    with collect_abandonment() as abandoned:
+                        try:
+                            result, _cacheable = await match_one(
+                                bound.read_path, cancel_event=cancel,
+                                stall=_RECOGNIZE_STALL_SECONDS,
+                            )
+                        except ReadCancelled:
+                            result = {"error": "cancelled"}
+                    changed = await _step(bound.changed)
+                finally:
+                    await _step(bound.close)
+                if cancel is not None and cancel.is_set():
+                    outcome = "cancelled"
+                elif changed:
+                    outcome, why = "changed", f"{changed} changed while it was matched"
+                elif abandoned:
+                    why = (
+                        "matching left a process stuck on its storage "
+                        f"({', '.join(abandoned)})"
+                    )
+                elif result.get("error"):
+                    why = str(result["error"])
+                else:
+                    outcome = "recognized"
+            finally:
+                job_manager.release_slot(job.id)
+    except ReadCancelled:
+        outcome = "cancelled"
+    except _SourceChanged as exc:
+        outcome, why = "changed", str(exc)
+    except Exception as exc:
+        logger.warning("inbox: Recognizing %s failed", path, exc_info=True)
+        why = str(exc)
+    if outcome == "recognized":
+        # With the identity of the file it hashed: `_name` uses it only for
+        # that very file (CodeRabbit 4608968259).
+        name = os.path.basename(path)
+        state.recognized[path] = (flight.fingerprint, flight.identities.get(name), result)
+        await job_manager.finish_external_job(job.id, success=True)
+        await _take_on(inbox, state, path, flight.fingerprint)
+        return
+    if outcome == "changed":
+        # Not the file's fault: it settles again and is matched afresh.
+        state.seen.pop(path, None)
+        await job_manager.finish_external_job(
+            job.id, success=False, error_message=f"{why}; it is taken again once it settles",
+        )
+        return
+    if outcome == "cancelled":
+        if _cancelled_by_shutdown(job_manager.get_job(job.id) or job):
+            _release(state, path)  # a shutdown, not the file's fault (#433)
+        else:
+            await _hold(inbox, state, path, flight.fingerprint, findings.INBOX_FAILED,
+                        "Its intake was cancelled", {"platform": flight.platform})
+        await job_manager.finish_external_job_cancelled(job.id, message="Cancelled")
+        return
+    await _hold(inbox, state, path, flight.fingerprint, findings.INBOX_FAILED,
+                f"It couldn't be Recognized against the DATs: {why}",
+                {"platform": flight.platform})
+    await job_manager.finish_external_job(job.id, success=False, error_message=why)
+
+
+# ---- unpacking an archive (#432) -------------------------------------------
+
+
+def _archive_is_image(path: str) -> bool:
+    """Whether the folder evidence for the archive at *path* (a Platform
+    folder, or the user's mapping of one) names a Platform whose Image is the
+    archive itself (``platform_detect.archive_is_image``). A Platform its
+    folder can't tell is False: the archive is unpacked and its Images say.
+    Blocking."""
+    detection = platform_detect.detect_platform(path)
+    return platform_detect.archive_is_image(detection.place_platform)
+
+
+def _gate_opened(inbox: inbox_store.Inbox, path: str, identity: dict) -> None:
+    """The Inbox gate on the archive at *path*, opened through the Inbox's
+    own folder with no link followed and only while it is *identity*: the
+    file judged is the one taken (Codex 4608007766). Blocking."""
+    folder_fd, names = _folder_beneath(inbox, [path])
+    try:
+        fd = os.open(names[0], os.O_RDONLY | _NOFOLLOW, dir_fd=folder_fd)
+    finally:
+        os.close(folder_fd)
+    with os.fdopen(fd, "rb") as source:
+        if file_snapshot(os.fstat(source.fileno())) != identity:
+            raise _SourceChanged(errno.ESTALE, f"{names[0]} changed since it was taken")
+        archive_service.check_inbox_source(source, path)
+
+
+async def _gate_archive(
+    inbox: inbox_store.Inbox, state: _State, path: str, fingerprint: str, what: str,
+    identity: dict,
+) -> str | None:
+    """Check an archive taken whole against the Inbox's limits before
+    anything reads it whole: None when it passes, else the outcome (held with
+    a Finding, or ``retry``). *what* says what wasn't done to it."""
+    # Anyone who can write the Inbox can drop one: an archive past the
+    # Inbox's size and expansion caps is never unpacked, checked nor copied
+    # (Codex 4607318277).
+    try:
+        await _step(_gate_opened, inbox, path, identity)
+    except _SourceChanged:
+        state.seen.pop(path, None)  # it settles again
+        return "retry"
+    except ArchiveSafetyRefused as exc:
+        await _hold(
+            inbox, state, path, fingerprint, findings.INBOX_FAILED,
+            f"It's an archive the Inbox doesn't take: {exc.rule}. It wasn't {what}; "
+            "extract it, or raise the limit if you trust it",
+            {"limit": exc.rule},
+        )
+        return "held"
+    except asyncio.TimeoutError:
+        return "retry"
+    except Exception as exc:
+        await _hold(
+            inbox, state, path, fingerprint, findings.INBOX_FAILED,
+            f"It couldn't be read as an archive ({exc}), so it wasn't {what}",
+        )
+        return "held"
+    return None
+
+
+def _room_problem(path: str) -> str | None:
+    """Why the archive at *path* can't be unpacked now for want of room (the
+    cap on what is unpacked at once, the work area's free space), or None.
+    Its declared total is read from its listing, a first look only: the
+    unpack job's gate reads it again from the file it opens and reserves.
+    An archive the gate refuses is left to the job, which says so. Blocking."""
+    from services.disk import (
+        InsufficientDiskSpace,
+        ensure_headroom,
+        scratch_margin_bytes,
+    )
+
+    try:
+        # Its contents and its private copy (#432).
+        size = archive_service.check_inbox_archive(path) + os.path.getsize(path)
+    except Exception:
+        return None
+    cap = archive_service.inbox_unpacked_limit()
+    with _slots_lock:
+        live = sum(_slot_sizes.values())
+        if cap and _slot_sizes and live + size > cap:
+            return (
+                f"what is unpacked now ({live} bytes) and it ({size} bytes) would "
+                f"pass CHD_ARCHIVE_INBOX_MAX_UNPACKED_SIZE ({cap} bytes)"
+            )
+    from config import settings
+
+    base = settings.temp_dir or os.path.join(settings.data_dir, "temp")
+    try:
+        ensure_headroom([(base, size)], margin_bytes=scratch_margin_bytes())
+    except InsufficientDiskSpace as exc:
+        return str(exc)
+    return None
+
+
+def _note_no_room(path: str, why: str) -> None:
+    """Log, once per wait, that the archive at *path* waits for room."""
+    if path not in _room_logged:
+        _room_logged.add(path)
+        logger.info("inbox: %s waits for room to be unpacked: %s", path, why)
+
+
+async def _take_archive(
+    inbox: inbox_store.Inbox, state: _State, path: str, fingerprint: str,
+) -> str:
+    """Start unpacking an archive, or hold it with a Finding saying why not."""
+    if _unpacked_holding(state, path) is not None:
+        await _hold(
+            inbox, state, path, fingerprint, findings.INBOX_FAILED,
+            "It's an archive inside an archive, which isn't unpacked: extract the "
+            "outer one by hand",
+        )
+        return "held"
+    # Room first (Codex 4608429476): an archive that won't fit now waits,
+    # with no Finding and no job. The unpack job checks it again, reserving.
+    try:
+        room = await _step(_room_problem, path)
+    except (asyncio.TimeoutError, OSError):
+        return "retry"
+    if room:
+        _note_no_room(path, room)
+        return "waiting"
+    _room_logged.discard(path)
+    # Its identity first: the unpack job gates and unpacks the one file it
+    # then opens, and only while it is this one (Codex 4608007766).
+    try:
+        identities = await _step(_identities, inbox, [path])
+    except asyncio.TimeoutError:
+        return "retry"
+    except OSError as exc:
+        await _hold(
+            inbox, state, path, fingerprint, findings.INBOX_FAILED,
+            f"It can't be read inside the Inbox without following a link: {exc}",
+        )
+        return "held"
+    flight = _Flight(fingerprint=fingerprint, files=[path], platform="", identities=identities)
+    with state.guard:
+        if state.revoked:
+            return "retry"  # the Inbox was removed meanwhile
+        _track(state, path, flight, _unpack(inbox, state, path, flight))
+    return "unpacking"
+
+
+class _UnpackSlot:
+    """A private folder an archive is unpacked into (#432), in the app's own
+    work area (``disk.create_scratch_dir``, the tree a bound Source uses), on
+    which no Inbox writer has any right (Codex 4608030847). Held open
+    (``fd``): extraction writes beneath the descriptor, never by path. Its
+    real path is registered as a root intake may read an Image under
+    (:func:`_root_of`) until it is closed."""
+
+    def __init__(self, size: int = 0) -> None:
+        """Reserve room for *size* bytes and make the folder. Raises
+        :class:`_NoRoom` when there isn't room (:meth:`grow`); nothing is
+        made then. Blocking."""
+        from services.disk import create_scratch_dir
+
+        self._closed = False
+        self._mutex = threading.Lock()
+        self.path = ""
+        self._reserve(size)
+        try:
+            self.path = os.path.realpath(create_scratch_dir(_UNPACK_PREFIX))
+            try:
+                self._check_headroom(size)
+                self.fd = os.open(self.path, _DIR_FLAGS)
+            except BaseException:
+                shutil.rmtree(self.path, ignore_errors=True)
+                raise
+        except BaseException:
+            with _slots_lock:
+                _slot_sizes.pop(id(self), None)
+            raise
+        with _slots_lock:
+            _slot_roots.add(self.path)
+
+    def grow(self, more: int) -> None:
+        """Reserve *more* bytes for this slot (an archive's declared contents,
+        once its private copy is gated). Raises :class:`_NoRoom` when what
+        every open slot reserved would pass
+        ``CHD_ARCHIVE_INBOX_MAX_UNPACKED_SIZE``, or the work area hasn't the
+        room beyond its reserve (``disk.ensure_headroom``,
+        ``scratch_margin_bytes``); nothing is reserved then. Blocking."""
+        self._reserve(more)
+        try:
+            self._check_headroom(more)
+        except BaseException:
+            with _slots_lock:
+                _slot_sizes[id(self)] = _slot_sizes.get(id(self), 0) - more
+            raise
+
+    def _reserve(self, more: int) -> None:
+        cap = archive_service.inbox_unpacked_limit()
+        with _slots_lock:
+            mine = _slot_sizes.get(id(self), 0)
+            live = sum(_slot_sizes.values())
+            # The cap keeps many archives from adding up past it; one with
+            # nothing else unpacked always goes in (the gate bounds it, and
+            # the work area's free space is checked below).
+            if cap and live > mine and live + more > cap:
+                raise _NoRoom(
+                    f"what is unpacked now ({live - mine} bytes) and it ({mine + more} "
+                    f"bytes) would pass CHD_ARCHIVE_INBOX_MAX_UNPACKED_SIZE ({cap} bytes)",
+                )
+            _slot_sizes[id(self)] = mine + more
+
+    def _check_headroom(self, size: int) -> None:
+        from services.disk import InsufficientDiskSpace, ensure_headroom, scratch_margin_bytes
+
+        try:
+            ensure_headroom([(self.path, size)], margin_bytes=scratch_margin_bytes())
+        except InsufficientDiskSpace as exc:
+            raise _NoRoom(str(exc)) from exc
+
+    def intact(self) -> bool:
+        """Whether its path still names the folder held open."""
+        try:
+            there = os.stat(self.path, follow_symlinks=False)
+        except OSError:
+            return False
+        held = os.fstat(self.fd)
+        return stat.S_ISDIR(there.st_mode) and (there.st_dev, there.st_ino) == (
+            held.st_dev, held.st_ino,
+        )
+
+    def close(self) -> None:
+        """Remove it and what is in it. Idempotent; never raises. When its
+        path no longer names the folder held open, only what is inside the
+        held folder is removed, through its descriptor: nothing reached by
+        the swapped path is touched."""
+        with self._mutex:
+            if self._closed:
+                return
+            self._closed = True
+            with _slots_lock:
+                _slot_roots.discard(self.path)
+                _slot_sizes.pop(id(self), None)
+            try:
+                if self.intact():
+                    shutil.rmtree(self.path)
+                else:
+                    logger.warning(
+                        "inbox: the unpack folder %s was replaced; emptying the one held",
+                        self.path,
+                    )
+                    for name in os.listdir(self.fd):
+                        _remove_at(name, self.fd)
+            except OSError:
+                logger.warning("inbox: could not remove the unpack folder %s", self.path,
+                               exc_info=True)
+            finally:
+                os.close(self.fd)
+
+
+# The hidden folder in an unpack slot its archive's private copy is made in
+# (#432): the walk never lists a dot-entry, so the copy is never an Image.
+_COPY_DIR = ".archive"
+
+
+def _private_dir(slot_fd: int) -> int:
+    """The slot's folder for its archive's private copy, made new and opened
+    with no link followed. Blocking."""
+    os.mkdir(_COPY_DIR, 0o700, dir_fd=slot_fd)
+    return os.open(_COPY_DIR, _DIR_FLAGS, dir_fd=slot_fd)
+
+
+def _remove_at(name: str, folder: int) -> None:
+    """Remove the entry *name* in the open *folder*, a folder whole, never
+    following a link. Blocking."""
+    st = os.stat(name, dir_fd=folder, follow_symlinks=False)
+    if stat.S_ISDIR(st.st_mode):
+        shutil.rmtree(name, dir_fd=folder)
+    else:
+        os.unlink(name, dir_fd=folder)
+
+
+def _unpack_blocking(
+    inbox: inbox_store.Inbox, path: str, flight: _Flight, progress,
+) -> tuple[Any, list[str]]:
+    """Copy, gate and unpack the archive at *path* into a fresh unpack slot:
+    the open slot and the Images in it.
+
+    The archive is opened through the Inbox's own folder with no link
+    followed, and only while it is the file that was taken. A private copy of
+    it is made first, into the slot (``copy_checked``, the copy a bound
+    Source falls back to: bounded by its progress, its source's identity,
+    ctime included, checked before the first read and after the last, Codex
+    4608936764), so nothing an Inbox writer does to the original afterwards
+    can reach what is gated and unpacked. The gate and the extraction both
+    read that copy (Codex 4608007766), which counts toward the slot's room
+    and goes with it. Blocking."""
+    _may_open(os.path.basename(path))
+    folder_fd, names = _folder_beneath(inbox, [path])
+    slot = None
+    try:
+        name = names[0]
+        generation = _may_open(name)
+        fd = os.open(name, os.O_RDONLY | _NOFOLLOW, dir_fd=folder_fd)
+        _opened(name, fd, generation)
+        try:
+            st = os.fstat(fd)
+        finally:
+            os.close(fd)
+        if file_snapshot(st) != flight.identities.get(name):
+            raise _SourceChanged(errno.ESTALE, f"{name} changed since it was taken")
+        slot = _UnpackSlot(st.st_size)
+        copy_fd = _private_dir(slot.fd)
+        try:
+            try:
+                copy_checked(name, folder_fd, copy_fd, file_snapshot(st, ctime=True), progress)
+            except OSError as exc:
+                if exc.errno == errno.ESTALE:
+                    raise _SourceChanged(errno.ESTALE, str(exc)) from exc
+                raise
+            source_fd = os.open(name, os.O_RDONLY | _NOFOLLOW, dir_fd=copy_fd)
+        finally:
+            os.close(copy_fd)
+        with os.fdopen(source_fd, "rb") as source:
+            declared = archive_service.check_inbox_source(source, path)
+            slot.grow(declared)
+            max_member, max_total, max_ratio = archive_service.inbox_limits()
+            archive_service.extract_members(
+                path, slot.path, destination_fd=slot.fd, source=source, progress=progress,
+                max_member=max_member, max_total=max_total, max_ratio=max_ratio,
+                reserved_total=declared,
+            )
+        if not slot.intact():
+            raise ArchiveSafetyRefused(
+                f"The unpack folder of {name} was replaced while it was unpacked",
+                rule="its unpack folder was replaced while it was unpacked",
+            )
+        files, unlisted = _walk([slot.path], None, progress)
+        if unlisted:
+            # An inventory missing a folder would let the archive move to
+            # processed/ with its Images there never placed (CodeRabbit
+            # 4608968267): nothing is taken from it.
+            raise _Incomplete(os.path.relpath(unlisted[0], slot.path))
+        images = list(group_images(sorted(files), members=_members))
+        progress()
+        return slot, images
+    except BaseException:
+        if slot is not None:
+            slot.close()
+        raise
+    finally:
+        os.close(folder_fd)
+
+
+async def _unpack(
+    inbox: inbox_store.Inbox, state: _State, path: str, flight: _Flight,
+) -> None:
+    """Unpack one archive as an ``inbox_unpack`` job you can cancel, holding
+    one of the ``max_concurrent`` slots; its Images are taken from the next
+    poll on."""
+    job = job_manager.create_external_job(
+        os.path.basename(path), ConversionMode.INBOX_UNPACK, message="Waiting to unpack it",
+    )
+    _tag(job, inbox)
+    cancel = job_manager.get_cancel_event(job.id)
+    outcome, why, unpacked = "failed", "", None
+    try:
+        if not await job_manager.hold_slot(job.id, cancel):
+            outcome = "cancelled"
+        else:
+            try:
+                if _stopped():
+                    outcome = "deferred"
+                else:
+                    outcome, why, unpacked = await _unpack_in(job.id, inbox, path, flight, cancel)
+            finally:
+                job_manager.release_slot(job.id)
+    except Exception as exc:
+        logger.warning("inbox: unpacking %s failed", path, exc_info=True)
+        outcome, why = "failed", str(exc)
+    if outcome == "unpacked":
+        slot, images = unpacked
+        with state.guard:
+            revoked = state.revoked
+            if not revoked and images:
+                state.unpacked[path] = _Unpacked(
+                    fingerprint=flight.fingerprint, slot=slot,
+                    identities=flight.identities, images=frozenset(images),
+                )
+        if revoked or not images:
+            try:
+                await _step(slot.close)
+            except (asyncio.TimeoutError, OSError):
+                logger.warning("inbox: could not remove what was unpacked from %s", path)
+        if not revoked and not images:
+            why = "it holds no Image the app reads"
+            await _hold(inbox, state, path, flight.fingerprint, findings.INBOX_FAILED,
+                        f"Nothing was taken from it: {why}")
+            await job_manager.finish_external_job(job.id, success=False, error_message=why)
+            return
+        await job_manager.finish_external_job(job.id, success=True)
+        if not revoked:
+            await _take_unpacked(inbox, state, path)
+        return
+    if outcome == "cancelled":
+        if _cancelled_by_shutdown(job_manager.get_job(job.id) or job):
+            _release(state, path)  # a shutdown, not the file's fault (#433)
+        else:
+            await _hold(inbox, state, path, flight.fingerprint, findings.INBOX_FAILED,
+                        "Its intake was cancelled")
+        await job_manager.finish_external_job_cancelled(job.id, message="Cancelled")
+        return
+    if outcome == "no_room":
+        # Not the archive's fault: no Finding, and it stays settled, so the
+        # next poll tries again (Codex 4608429476).
+        _note_no_room(path, why)
+        await job_manager.finish_external_job(
+            job.id, success=False, error_message=f"No room to unpack it yet: {why}",
+        )
+        return
+    if outcome in ("changed", "deferred"):
+        # Not a failure of the file: it is left to settle and be taken again.
+        state.seen.pop(path, None)
+        why = why or "the storage is still being read by an earlier check"
+        await job_manager.finish_external_job(
+            job.id, success=False, error_message=f"{why}; it is taken again once it settles",
+        )
+        return
+    if outcome == "incomplete":
+        message = (
+            f"Part of what was unpacked from it couldn't be listed ({why}), so nothing "
+            "is taken from it: it is tried again once it changes"
+        )
+    elif outcome == "refused":
+        message = (
+            f"It's an archive the Inbox doesn't take: {why}. It wasn't unpacked; "
+            "extract it, or raise the limit if you trust it"
+        )
+    else:
+        message = f"Unpacking it failed: {why}"
+    await _hold(inbox, state, path, flight.fingerprint, findings.INBOX_FAILED, message)
+    await job_manager.finish_external_job(job.id, success=False, error_message=why)
+
+
+async def _take_unpacked(inbox: inbox_store.Inbox, state: _State, archive: str) -> None:
+    """Take on every Image just unpacked from *archive* (:func:`_take_on`):
+    intake wrote them, so there is nothing to wait to settle. An Image that
+    shares a file with another, or sits below a sheet that can't be read
+    whole, is left to the next poll, which holds it as for any file."""
+    unpacked = state.unpacked.get(archive)
+    if unpacked is None:
+        return
+
+    def ready() -> dict[str, str]:
+        images = {image: _fingerprint(image) for image in sorted(unpacked.images)}
+        doubtful = {
+            *_sharing(images),
+            *_behind_unreadable_sheets(images, within=[unpacked.slot.path]),
+        }
+        return {image: fp for image, fp in images.items() if image not in doubtful}
+
+    try:
+        images = await _step(ready)
+    except (asyncio.TimeoutError, OSError):
+        return
+    for image, fingerprint in images.items():
+        if image in state.flights or image in unpacked.placed:
+            continue
+        await _take_on(inbox, state, image, fingerprint)
+
+
+async def _unpack_in(
+    job_id: str, inbox: inbox_store.Inbox, path: str, flight: _Flight,
+    cancel: asyncio.Event | None,
+) -> tuple[str, str, tuple[Any, list[str]] | None]:
+    """Unpack, stall-bounded: ``(outcome, why, (slot, Images))``."""
+    await job_manager.update_external_job(job_id, message="Unpacking it")
+    handoff = _SlotHandoff(_unpack_blocking)
+    try:
+        unpacked = await run_detached_within_stall_bound(
+            handoff.stage, inbox, path, flight, what=f"Unpacking {os.path.basename(path)}",
+            cancel_event=cancel, report_progress=True,
+        )
+    except BaseException as exc:
+        # Given up on: a slot the worker delivers now, or already did, is closed.
+        handoff.abandon()
+        if isinstance(exc, ReadCancelled):
+            return "cancelled", "", None
+        if isinstance(exc, _Deferred):
+            return "deferred", str(exc), None
+        if isinstance(exc, _NoRoom):
+            return "no_room", str(exc), None
+        if isinstance(exc, _Incomplete):
+            return "incomplete", str(exc), None
+        if isinstance(exc, _SourceChanged):
+            return "changed", str(exc), None
+        if isinstance(exc, ArchiveSafetyRefused):
+            return "refused", exc.rule, None
+        if isinstance(exc, Exception):
+            return "failed", str(exc), None
+        raise
+    handoff.taken()
+    return "unpacked", "", unpacked
+
+
+def _taken(folder: str, names: list[str]) -> str | None:
+    """The first of *names* already in *folder*, or None. Blocking.
     Checked before a copy starts, so a taken name costs no copy; the
     placement itself never replaces either."""
-    for name in (os.path.basename(f) for f in files):
+    for name in names:
         if os.path.lexists(os.path.join(folder, name)):
             return name
     return None
@@ -904,21 +2258,39 @@ async def _plan(library: Library, platform: str, path: str) -> _Plan:
     return _Plan(folder=placement.folder, rule=rule)
 
 
-def _destination(path: str, rule: dict, folder: str) -> tuple[str | None, str]:
-    """The conversion's output in *folder*, made if it isn't there yet, and
-    whether it's free. Blocking."""
+def _destination(
+    path: str, rule: dict, folder: str, game_name: str | None = None,
+) -> tuple[str | None, str, str]:
+    """The conversion's output in *folder*, made if it isn't there yet,
+    whether it's free, and its name. With *game_name* (#432) the output
+    takes that DAT name, with its own extension, by the rename's rule.
+    Blocking."""
+    from services.dat_rename import dat_file_name
+
     if volume_containment(folder) is not True:
-        return None, "the placement folder isn't confirmed inside a Volume"
+        return None, "the placement folder isn't confirmed inside a Volume", ""
     os.makedirs(folder, exist_ok=True)
-    tool = registry.for_mode(rule["mode"])
-    destination, decision = resolve_destination(tool, path, rule["mode"], folder, "skip")
+    mode = rule["mode"]
+    tool = registry.for_mode(mode)
+    try:
+        own = tool.output_path(mode, path, folder)
+    except (KeyError, ValueError, OSError):
+        own = None
+    named = dat_file_name(game_name, os.path.basename(own)) if own and game_name else None
+    if named:
+        destination = os.path.join(os.path.dirname(own), named)
+        on_disk, locked = output_status(mode, destination)
+        decision = SKIP_EXISTING if on_disk else SKIP_LOCKED if locked else QUEUE
+    else:
+        destination, decision = resolve_destination(tool, path, mode, folder, "skip")
+    shown = named or (os.path.basename(own) if own else "")
     if decision == SKIP_LOCKED:
         # Another job holds the name, nothing is on disk: busy for now, never
         # a Finding (Codex 4606794174).
-        return None, "busy"
+        return None, "busy", shown
     if decision != QUEUE or not destination:
-        return None, "already_taken"
-    return destination, QUEUE
+        return None, "already_taken", shown
+    return destination, QUEUE, shown
 
 
 async def _convert(
@@ -930,7 +2302,9 @@ async def _convert(
     rule = plan.rule
     fingerprint, platform = flight.fingerprint, flight.platform
     try:
-        destination, decision = await _step(_destination, path, rule, plan.folder)
+        destination, decision, shown = await _step(
+            _destination, path, rule, plan.folder, flight.game_name,
+        )
     except (asyncio.TimeoutError, OSError):
         return "retry"
     if state.revoked:
@@ -939,12 +2313,15 @@ async def _convert(
         return "retry"  # taken again next poll, its fingerprint not held
     if destination is None:
         reason = (
-            f"Its output is already in the Library ({plan.folder})"
+            f"{shown or 'Its output'} is already in the Library ({plan.folder})"
             if decision == "already_taken" else f"Can't convert it: {decision}"
         )
         await _hold(inbox, state, path, fingerprint, findings.INBOX_FAILED, reason,
                     {"platform": platform})
+        if decision == "already_taken" and shown:
+            state.taken_holds[path] = [os.path.join(plan.folder, shown)]
         return "held"
+    root = _root_of(inbox, path) or inbox.folder
     try:
         jobs = await job_manager.create_batch_jobs(
             [path], ConversionMode(rule["mode"]),
@@ -956,9 +2333,12 @@ async def _convert(
             output_paths={path: destination},
             # The file taken, and the Inbox it must stay under: the job checks
             # both, under its Source lock, before its tool reads anything, so a
-            # folder swapped for a link meanwhile converts nothing.
+            # folder swapped for a link meanwhile converts nothing. An Image
+            # unpacked from an archive (#432) must stay under its unpack
+            # folder, outside every Volume: the job is created trusting that
+            # one folder (``trusted_roots``), and nothing else outside them.
             source_identities={path: {
-                "root": inbox.folder,
+                "root": root,
                 "snapshot": flight.identities[os.path.basename(path)],
                 # Its tracks too: the job binds every file it reads.
                 "members": {
@@ -966,6 +2346,7 @@ async def _convert(
                     if name != os.path.basename(path)
                 },
             }},
+            trusted_roots={path: root} if root != inbox.folder else None,
         )
     except QueueBackpressureError:
         return "queue_full"
@@ -1081,8 +2462,10 @@ async def on_job_finished(job: Any) -> None:
     poll or :func:`finish_all` looks (Codex 4608095516). Never raises."""
     inbox_id = getattr(job, "inbox_id", None)
     state = _states.get(inbox_id) if inbox_id is not None else None
-    if state is None or job.mode == ConversionMode.INBOX_COPY:
-        return  # not intake's, or a copy, which settles itself
+    if state is None or job.mode in (
+        ConversionMode.INBOX_COPY, ConversionMode.INBOX_UNPACK, ConversionMode.INBOX_RECOGNIZE,
+    ):
+        return  # not intake's, or a copy, unpack or Recognize, which settles itself
     # Counted with intake's own work before the first await, so `drain()`
     # (and so `finish_all`) waits for this settle too.
     task = asyncio.current_task()
@@ -1104,8 +2487,15 @@ async def on_job_finished(job: Any) -> None:
 def _note_placed(state: _State, path: str, flight: _Flight, output: str | None) -> None:
     """The Image's output is in the Library: it counts as placed now, before
     its original goes to ``processed/``, so the pass summary and RomM's scan
-    see it even when that move fails (Codex 4608095510)."""
-    state.placed.append({"path": path, "platform": flight.platform, "output": output})
+    see it even when that move fails (Codex 4608095510). An Image unpacked
+    from an archive (#432) is reported with the archive's path, and counts
+    toward that archive's own move to ``processed/`` from now on."""
+    owner = _unpacked_holding(state, path)
+    if owner is not None:
+        owner[1].placed.add(path)
+    state.placed.append({
+        "path": owner[0] if owner else path, "platform": flight.platform, "output": output,
+    })
 
 
 def _archive_later(
@@ -1173,10 +2563,13 @@ async def _finish(
 async def _finish_locked(
     inbox: inbox_store.Inbox, state: _State, path: str, flight: _Flight, output: str | None,
 ) -> None:
-    """:func:`_finish`, its locks held."""
+    """:func:`_finish`, its locks held. An Image unpacked from an archive
+    (#432) stays in its slot, counted placed; the archive moves once all of
+    them are (``flight.unpacked``), and its slot goes then."""
+    owner = _unpacked_holding(state, path)
     try:
-        same = await _step(image_fingerprint, path) == flight.fingerprint
-        if same:
+        same = await _step(_fingerprint, path) == flight.fingerprint
+        if same and owner is None:
             # A move past its bound may still land: its outcome is waited for
             # (`_owned`), so a move that lands late is counted, not lost.
             await _owned(
@@ -1198,27 +2591,90 @@ async def _finish_locked(
         return
     state.seen.pop(path, None)
     state.held.pop(path, None)
+    state.recognized.pop(path, None)
+    if flight.unpacked is not None:
+        # The archive is in processed/: what was unpacked from it goes. Its
+        # Images were counted and reported as each was placed.
+        if state.unpacked.get(path) is flight.unpacked:
+            state.unpacked.pop(path, None)
+        state.placed_members.pop(path, None)
+        try:
+            await _step(flight.unpacked.slot.close)
+        except (asyncio.TimeoutError, OSError):
+            logger.warning("inbox: could not remove what was unpacked from %s", path)
+        await _clear(inbox, path)
+        return
+    if owner is not None and output:
+        await _record_placed(state, owner, path, output)
     try:
         await _step(inbox_store.note_processed, inbox.id)
     except Exception:
         logger.warning("inbox: could not count %s as processed", path, exc_info=True)
-    await _clear(inbox, path)
+    if owner is None:
+        # An archive's Findings stay until it moves: another of its Images
+        # may still be held.
+        await _clear(inbox, path)
 
 
 class _SourceChanged(OSError):
     """A file isn't the one intake took (replaced, changed or gone)."""
 
 
+def _slot_within(path: str) -> list[str] | None:
+    """The unpack folder *path* sits in, as the one trusted root its sheet's
+    tracks resolve within (#432, Codex 4608417860): the value its conversion
+    job is created trusting. None for a file in a Volume."""
+    with _slots_lock:
+        for root in _slot_roots:
+            if path.startswith(root + os.sep):
+                return [root]
+    return None
+
+
+def _members(path: str) -> list[str]:
+    """``image_members`` of *path*, its tracks resolved within its unpack
+    folder when it has one. Blocking."""
+    within = _slot_within(path)
+    return image_members(path) if within is None else image_members(path, within=within)
+
+
+def _fingerprint(path: str) -> str:
+    """``image_fingerprint`` of *path*, read as :func:`_members` reads it.
+    Blocking."""
+    within = _slot_within(path)
+    return (
+        image_fingerprint(path) if within is None
+        else image_fingerprint(path, within=within)
+    )
+
+
+def _root_of(inbox: inbox_store.Inbox, path: str) -> str | None:
+    """The folder *path* must stay under: the Inbox's own, or the unpack
+    slot (#432) in the app's work area it was unpacked into. None for
+    anywhere else."""
+    if path.startswith(inbox.folder + os.sep):
+        return inbox.folder
+    with _slots_lock:
+        for root in _slot_roots:
+            if path.startswith(root + os.sep):
+                return root
+    return None
+
+
 def _folder_beneath(inbox: inbox_store.Inbox, files: list[str]) -> tuple[int, list[str]]:
-    """The Image's folder in the Inbox, opened beneath the Inbox's own folder
-    with no link followed on the way (``open_dir_beneath``), and the files'
-    names in it. Every later look at the files goes through the descriptor,
-    so a folder swapped for a link afterwards can't redirect it. Raises
-    OSError; the caller closes the descriptor. Blocking."""
-    rel = os.path.relpath(os.path.dirname(files[0]), inbox.folder)
+    """The Image's folder, opened beneath the Inbox's own folder (or, for an
+    Image unpacked from an archive, its unpack slot's, #432) with no link
+    followed on the way (``open_dir_beneath``), and the files' names in it.
+    Every later look at the files goes through the descriptor, so a folder
+    swapped for a link afterwards can't redirect it. Raises OSError; the
+    caller closes the descriptor. Blocking."""
+    root = _root_of(inbox, files[0])
+    if root is None:
+        raise OSError(errno.EACCES, f"{files[0]} isn't in the Inbox")
+    rel = os.path.relpath(os.path.dirname(files[0]), root)
     if rel == os.pardir or rel.startswith(os.pardir + os.sep):
         raise OSError(errno.EACCES, f"{files[0]} isn't in the Inbox")
-    fd = open_dir_beneath(inbox.folder, "" if rel == "." else rel.replace(os.sep, "/"))
+    fd = open_dir_beneath(root, "" if rel == "." else rel.replace(os.sep, "/"))
     return fd, [os.path.basename(f) for f in files]
 
 
@@ -1247,7 +2703,7 @@ def _still_taken(inbox: inbox_store.Inbox, path: str, flight: _Flight) -> None:
         _check_identities(fd, flight.identities)
     finally:
         os.close(fd)
-    if image_fingerprint(path) != flight.fingerprint:
+    if _fingerprint(path) != flight.fingerprint:
         raise _SourceChanged(errno.ESTALE, f"{os.path.basename(path)} changed since it was taken")
 
 
@@ -1441,15 +2897,18 @@ def _stage_copy(
     """Copy the Image's files into a fresh staging slot beside *folder*'s
     files, each read through the Inbox's own folder (no link followed) and
     only while it is still the file that was taken, then read back and
-    compared. Returns the open slot and the names. Blocking."""
+    compared. Returns the open slot and the names they are placed under.
+    Blocking."""
     _may_open(os.path.basename(flight.files[0]))
     folder_fd, names = _folder_beneath(inbox, flight.files)
+    # Each file under its name in the Library (a DAT name, #432).
+    placed = flight.placed_names or names
     slot = None
     try:
         slot = staging.open_slot(folder, make_folder=True)
-        for name in names:
+        for name, as_name in zip(names, placed):
             generation = _may_open(name)
-            target = slot.path_for(name)
+            target = slot.path_for(as_name)
             wrote = new_hasher("sha1")
             fd = os.open(name, os.O_RDONLY | _NOFOLLOW, dir_fd=folder_fd)
             _opened(name, fd, generation)
@@ -1489,7 +2948,7 @@ def _stage_copy(
         # An awaiter that gave up meanwhile makes this raise, so the slot is
         # closed below instead of left open with nobody to close it.
         progress()
-        return slot, names
+        return slot, list(placed)
     except BaseException:
         if slot is not None:
             slot.close()
@@ -1663,17 +3122,19 @@ class _SlotHandoff:
     under one lock, who owns the slot: the awaiter once it took the result;
     otherwise whoever comes second closes it. So a slot delivered after its
     awaiter gave up (a cancel after the last progress report) is never left
-    open.
+    open. *work* makes the slot: a copy's staging by default, or an
+    archive's unpacking (#432); either returns ``(slot, names)``.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, work: Any = None) -> None:
+        self._work = work
         self._lock = threading.Lock()
         self._result: tuple[Any, list[str]] | None = None
         self._abandoned = False
         self._taken = False
 
     def stage(self, *args: Any, **kwargs: Any) -> tuple[Any, list[str]]:
-        result = _stage_copy(*args, **kwargs)
+        result = (self._work or _stage_copy)(*args, **kwargs)
         with self._lock:
             if not self._abandoned:
                 self._result = result
@@ -1704,7 +3165,8 @@ async def _copy_in(
     # The shared output locks on every name it will place, as a conversion
     # takes on its outputs, held through the placement: a conversion (here or
     # in the CLI) writing one of those names meanwhile can't collide with it.
-    targets = [os.path.join(folder, os.path.basename(f)) for f in flight.files]
+    names = flight.placed_names or [os.path.basename(f) for f in flight.files]
+    targets = [os.path.join(folder, name) for name in names]
     try:
         refused = await _lock_all(targets, allow_existing=False)
     except DeadlineExpired:
@@ -1790,6 +3252,15 @@ def settle_memory(inbox_ids: set[int]) -> dict[str, Any]:
                 path: [list(item) for item in depends]
                 for path, depends in state.held_by.items()
             },
+            # What a naming conflict or a taken name is held on (#432, Codex
+            # 4608417851): a later run lifts the hold when it changed.
+            "ranked_holds": {
+                path: [list(item) for item in ranking]
+                for path, ranking in state.ranked_holds.items()
+            },
+            "taken_holds": {path: list(taken) for path, taken in state.taken_holds.items()},
+            # Each archive's Images placed (CodeRabbit 4608968248).
+            "placed_members": state.placed_members,
             # The last poll's error, so the same outage isn't news to the
             # next run's summary (Codex 4608095505).
             "error": state.error,
@@ -1822,6 +3293,24 @@ def restore_settle_memory(memory: dict[str, Any] | None) -> None:
                 state.held.setdefault(path, str(fingerprint))
             for path, depends in (kept.get("held_by") or {}).items():
                 state.held_by.setdefault(path, tuple(tuple(item) for item in depends))
+            for path, ranking in (kept.get("ranked_holds") or {}).items():
+                state.ranked_holds.setdefault(path, tuple(tuple(item) for item in ranking))
+            for path, taken in (kept.get("taken_holds") or {}).items():
+                state.taken_holds.setdefault(path, [str(t) for t in taken])
+            for path, record in (kept.get("placed_members") or {}).items():
+                state.placed_members.setdefault(path, {
+                    "fingerprint": str(record["fingerprint"]),
+                    "members": {
+                        str(member): {
+                            "output": str(entry["output"]),
+                            "outputs": {
+                                str(name): {str(k): int(v) for k, v in ids.items()}
+                                for name, ids in entry["outputs"].items()
+                            },
+                        }
+                        for member, entry in (record.get("members") or {}).items()
+                    },
+                })
             if state.error is None and kept.get("error"):
                 state.error = str(kept["error"])
             for path, duty in (kept.get("archive") or {}).items():
@@ -1867,6 +3356,23 @@ async def finish_all(*, library_ids: set[str] | None = None) -> list[dict[str, A
         except Exception:
             logger.warning("inbox: finishing %s failed", inbox.folder, exc_info=True)
     await drain()
+    # An archive whose Images are all placed moves to processed/ now (#432);
+    # then what was unpacked goes, the process ending with it. A later run
+    # unpacks an archive still in the Inbox again, and counts what it placed
+    # already by its bytes (`_same_as_placed`).
+    for inbox in inboxes:
+        state = _states[inbox.id]
+        for archive, unpacked in list(state.unpacked.items()):
+            _archive_if_done(inbox, state, archive, unpacked)
+    await drain()
+    for inbox in inboxes:
+        state = _states[inbox.id]
+        try:
+            await run_in_threadpool(_close_unpacked, state)
+        except Exception:
+            logger.warning("inbox: removing what %s unpacked failed", inbox.folder,
+                           exc_info=True)
+        state.unpacked.clear()
     results = []
     for inbox in inboxes:
         state = _states[inbox.id]
