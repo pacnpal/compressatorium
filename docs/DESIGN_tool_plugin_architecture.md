@@ -8519,6 +8519,17 @@ isn't ready (§3.3.25, which adds ", so the Rule can't run") and the ZAR Info
 route's 503 (`GET /api/rom-converto-info`) all use it, so they say the same
 thing. A new caller does too, rather than formatting its own.
 
+The SPA shows that text as the server sent it. The shared client's
+`fetchJson` (`src/lib/api/client.js`) throws an `Error` whose `message` is the
+response's `detail` and whose `status` is the HTTP status, so a caller reads a
+503 the same way for every tool. The File info modal's `loadInfo`
+(`src/lib/util/fileInfo.js`) does this for the candidate tools' `getInfo`
+bindings: when none answers and it falls back to the listing's basics, each
+candidate that answered 503 has its `detail` added to the note under the
+basics, beside the usual "No tool could read this file" line when another
+candidate ran and failed (#486). No tool id is checked there; a tool's info
+route opts in by answering 503 with `not_ready_message(tool)`.
+
 It is a free function rather than a method so a tool that satisfies the
 protocol without subclassing `BaseTool` still works. Read it after the
 readiness check that answered False: rom-converto's `not_ready_reason` is a
