@@ -26,8 +26,10 @@ _inbox_lines = inbox_433._inbox_lines
 
 
 @pytest.fixture(autouse=True)
-def _work_area(tmp_path, monkeypatch):
-    """The app's own work area, where archives are unpacked."""
+def _work_area(tmp_path, monkeypatch, env):
+    """The app's own work area, where archives are unpacked. After ``env``,
+    which sets a work area of its own (CodeRabbit 4608968273), so the
+    cleanup check reads the folder extraction really used."""
     from config import settings
 
     work = tmp_path / "work"
@@ -64,3 +66,72 @@ def test_one_run_converts_what_it_unpacks_and_moves_the_archive(
     assert list(Path(_work_area).glob("inbox_unpack_*")) == []
     [line] = _inbox_lines(lines)
     assert [Path(p).name for p in line["placed"]] == ["Sunshine.rvz"]
+
+
+def test_a_stop_cancels_a_job_intake_queued_after_the_last_cancel(monkeypatch):
+    """CodeRabbit 4608968227: under a stop, a conversion intake queues while
+    its own work drains (after the queue was cancelled and drained) is
+    cancelled and drained too before finish_all, so the run never ends with
+    a live job."""
+    import cli
+    from services.inbox import intake, report
+
+    state = cli.RunState(stopping=True)
+    queued: list[str] = []
+    cancels: list[str] = []
+    seen_by_finish: list[bool] = []
+
+    class Jobs:
+        jobs: dict = {}
+
+        async def cancel_all_jobs(self, *, reason):
+            cancels.append(reason)
+            queued.clear()
+
+        async def drain(self):
+            return None
+
+        def has_live_conversions(self):
+            return bool(queued)
+
+    async def poll_all(**_kwargs):
+        return []
+
+    async def intake_drain():
+        queued.append("late")  # an unpack's take-on queues as the stop lands
+
+    async def finish_all(**_kwargs):
+        seen_by_finish.append(bool(queued))
+        return []
+
+    async def inboxes_of(_chosen):
+        return [type("Box", (), {"id": 1, "library_id": "lib"})()]
+
+    async def nothing(*_args, **_kwargs):
+        return None
+
+    async def no_memory(_key):
+        return None
+
+    from services.preferences_store import preferences_store
+
+    monkeypatch.setattr(cli, "_inboxes_of", inboxes_of)
+    monkeypatch.setattr(intake, "poll_all", poll_all)
+    monkeypatch.setattr(intake, "drain", intake_drain)
+    monkeypatch.setattr(intake, "busy", lambda: False)
+    monkeypatch.setattr(intake, "finish_all", finish_all)
+    monkeypatch.setattr(intake, "restore_settle_memory", lambda _memory: None)
+    monkeypatch.setattr(intake, "settle_memory", lambda _ids: {})
+    monkeypatch.setattr(preferences_store, "get", no_memory)
+    monkeypatch.setattr(preferences_store, "put", nothing)
+    monkeypatch.setattr(report, "after_pass", nothing, raising=False)
+
+    printer = type("P", (), {"summary": lambda *_a, **_k: None,
+                             "line": lambda *_a, **_k: None})()
+    try:
+        asyncio.run(cli._inbox_pass([], printer, state, Jobs()))
+    except Exception:
+        pass  # what runs after finish_all isn't this test's concern
+
+    assert seen_by_finish == [False]
+    assert len(cancels) >= 2

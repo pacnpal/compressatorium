@@ -211,8 +211,19 @@
   Finding and is unpacked again when the hold lifts. Everything unpacked at
   once stays under `CHD_ARCHIVE_INBOX_MAX_UNPACKED_SIZE` (by default the
   Inbox's 32 GiB total) and within the work area's free space; an archive that
-  doesn't fit waits for room, with no Finding. Cancel stops a Recognize that
-  is still waiting its turn to read.
+  doesn't fit waits for room, with no Finding (one archive on its own always
+  goes in). Cancel stops a Recognize that is still waiting its turn to read,
+  or stuck on its first look at the file. An archive is copied into the work
+  area before it is checked and unpacked, and only the copy is read, so the
+  original can't be changed under the check; its contents are also held to
+  `CHD_ARCHIVE_INBOX_MAX_RATIO` as they are written. A Recognize reads a bound
+  copy of the file it names, as a conversion does, so a file swapped while it
+  is matched is never named after what was swapped in. An Image from an archive
+  that was converted stays counted when the archive is unpacked again after a
+  hold, and a folder of an archive that couldn't be listed holds it with a
+  Finding instead of being skipped. Removing an Inbox lets a copy already
+  started from one of its archives finish. A stopped `run-rules` cancels any
+  conversion intake queued while it stopped.
 - **Xbox 360 disc images to ZAR, with rom-converto** (#422). A new tool,
   rom-converto (the converter RomM ships, at the version RomM pins, v0.24.0),
   packs an Xbox 360 `.iso` into a `.zar`, the format Xenia mounts directly.

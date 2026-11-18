@@ -145,6 +145,7 @@ from utils.junk import is_junk_entry
 from utils.path_utils import (
     MoveRollbackFailed,
     PlacementCommitted,
+    bind_source,
     copy_checked,
     file_snapshot,
     match_extension,
@@ -241,14 +242,21 @@ class _State:
     placed: list[dict[str, Any]] = field(default_factory=list)
     # Archive path -> what was unpacked from it (#432).
     unpacked: dict[str, _Unpacked] = field(default_factory=dict)
-    # Path -> (the fingerprint it was matched at, its match), #432.
-    recognized: dict[str, tuple[str, dict]] = field(default_factory=dict)
+    # Path -> (the fingerprint and the identity of the very file it was
+    # matched as, its match), #432: used only for that file.
+    recognized: dict[str, tuple[str, dict | None, dict]] = field(default_factory=dict)
     # Path -> the DAT ranking it was held at for a naming conflict (#432):
     # looked at again once the ranking changes.
     ranked_holds: dict[str, tuple] = field(default_factory=dict)
     # Path -> the Library paths whose names it was held for (#432): looked at
     # again once one of them is free.
     taken_holds: dict[str, list[str]] = field(default_factory=dict)
+    # Archive path -> {"fingerprint", "members": {path in the archive:
+    # {"output", "identity"}}}: each of its Images already placed, kept
+    # outside its disposable unpack slot (CodeRabbit 4608968248), so one
+    # unpacked again counts as placed while its output is still that file
+    # (a conversion's bytes can't be compared with its Source).
+    placed_members: dict[str, dict[str, Any]] = field(default_factory=dict)
     # The last poll's stop predicate: an unpack or a Recognize that takes its
     # Images on itself (`_take_on`, #432) admits nothing once it is true.
     should_stop: Callable[[], bool] | None = None
@@ -316,6 +324,10 @@ def _set_stop(value: bool) -> None:
         if value:
             # Moves with every stop, so a check that raced one can tell.
             _stop_generation += 1
+
+
+class _Incomplete(Exception):
+    """Part of what was unpacked couldn't be listed (#432): which folder."""
 
 
 class _NoRoom(Exception):
@@ -390,30 +402,32 @@ def forget(inbox_id: int) -> None:
 
 def _close_unpacked(state: _State) -> None:
     """Remove every unpack slot of a removed Inbox (idempotent): at once
-    when no live job reads from it, else once the last such job ends (Codex
-    4608007773), so a conversion queued from it still runs. The map itself
-    is left as it is: a poll still running on the loop may be reading it.
-    Blocking."""
+    when nothing reads from it, else once the last reader ends (Codex
+    4608007773, CodeRabbit 4608968241): a conversion queued or running from
+    it, or a copy's task (a copy waiting for a conversion slot included), so
+    it still runs. The map itself is left as it is: a poll still running on
+    the loop may be reading it. Blocking."""
     flights = list(state.flights.items())
     for unpacked in list(state.unpacked.values()):
-        live = {
-            flight.job_id for path, flight in flights
-            if flight.job_id and path.startswith(unpacked.slot.path + os.sep)
-        }
-        live = {job_id for job_id in live if not _ended(job_id)}
-        if live:
-            _close_after(unpacked.slot, live)
+        mine = [
+            flight for path, flight in flights
+            if path.startswith(unpacked.slot.path + os.sep)
+        ]
+        jobs = {f.job_id for f in mine if f.job_id and not _ended(f.job_id)}
+        tasks = {f.task for f in mine if f.task is not None and not f.task.done()}
+        if jobs or tasks:
+            _close_after(unpacked.slot, jobs, tasks)
         else:
             unpacked.slot.close()
 
 
 @dataclass
 class _Orphan:
-    """An unpack slot of a removed Inbox, kept until the jobs reading from
-    it have ended."""
+    """An unpack slot of a removed Inbox, kept until what reads from it has
+    ended: job ids, and ``id()`` of the tasks of copies."""
 
     slot: Any
-    jobs: set[str]
+    readers: set
 
 
 _orphans: list[_Orphan] = []
@@ -428,16 +442,28 @@ def _ended(job_id: str) -> bool:
     )
 
 
-def _close_after(slot: Any, jobs: set[str]) -> None:
-    """Remove *slot* once every one of *jobs* has ended, told by the job
-    manager's terminal hook. A job that ended before the hook was in place
-    is counted here. Blocking."""
+def _close_after(slot: Any, jobs: set[str], tasks: set | None = None) -> None:
+    """Remove *slot* once every one of *jobs* and *tasks* has ended: a job
+    told by the job manager's terminal hook, a task by its done callback
+    (added on its own loop: this runs on a worker thread). One that ended
+    before it was watched is counted here. Blocking."""
+    tasks = set(tasks or ())
     job_manager.add_terminal_listener(_job_ended)
     with _orphans_lock:
-        _orphans.append(_Orphan(slot, set(jobs)))
+        _orphans.append(_Orphan(slot, {*jobs, *(id(task) for task in tasks)}))
     for job_id in list(jobs):
         if _ended(job_id):
             _job_done(job_id)
+    for task in tasks:
+        try:
+            task.get_loop().call_soon_threadsafe(task.add_done_callback, _task_done)
+        except RuntimeError:
+            _job_done(id(task))  # its loop is closed: it has ended
+
+
+def _task_done(task: Any) -> None:
+    """A copy's task reading an orphaned slot ended."""
+    _job_done(id(task))
 
 
 def _job_ended(job: Any) -> None:
@@ -445,12 +471,13 @@ def _job_ended(job: Any) -> None:
     _job_done(job.id)
 
 
-def _job_done(job_id: str) -> None:
+def _job_done(reader: Any) -> None:
+    """A reader of an orphaned slot (a job id, a copy task's id) ended."""
     ready = []
     with _orphans_lock:
         for orphan in list(_orphans):
-            orphan.jobs.discard(job_id)
-            if not orphan.jobs:
+            orphan.readers.discard(reader)
+            if not orphan.readers:
                 _orphans.remove(orphan)
                 ready.append(orphan.slot)
     for slot in ready:
@@ -963,6 +990,11 @@ async def _forget_gone(
         state.taken_holds.pop(path, None)
     for path in [p for p in state.recognized if p not in listing]:
         state.recognized.pop(path, None)
+    for path, record in list(state.placed_members.items()):
+        if listing.get(path) != record.get("fingerprint") and not any(
+            path.startswith(folder + os.sep) for folder in unlisted
+        ):
+            state.placed_members.pop(path, None)  # changed, or gone
     keep = {inbox.image_key(p) for p in (*listing, *state.flights)}
     hidden = tuple(inbox.image_key(folder) for folder in unlisted)
 
@@ -1007,6 +1039,7 @@ async def _settle_unpacked(
             # in this poll's listing, are left alone.
             busy.update(unpacked.images)
             state.unpacked.pop(archive, None)
+            state.placed_members.pop(archive, None)
             try:
                 await _step(unpacked.slot.close)
             except (asyncio.TimeoutError, OSError):
@@ -1053,6 +1086,56 @@ async def _hold_unpacked(
         state.ranked_holds[archive] = ranking
     if taken:
         state.taken_holds[archive] = taken
+
+
+def _output_identity(output: str) -> dict[str, int] | None:
+    """An output's identity in the Library, or None when it isn't a regular
+    file there now. Blocking."""
+    try:
+        st = os.stat(output, follow_symlinks=False)
+    except OSError:
+        return None
+    return file_snapshot(st) if stat.S_ISREG(st.st_mode) else None
+
+
+async def _record_placed(
+    state: _State, owner: tuple[str, _Unpacked], path: str, output: str,
+) -> None:
+    """Keep that the Image at *path*, unpacked from *owner*'s archive, is
+    placed as *output*: by the archive's fingerprint and the Image's path in
+    the archive, with the output's identity."""
+    archive, unpacked = owner
+    try:
+        identity = await _step(_output_identity, output)
+    except (asyncio.TimeoutError, OSError):
+        identity = None
+    if identity is None:
+        return
+    record = state.placed_members.get(archive)
+    if record is None or record.get("fingerprint") != unpacked.fingerprint:
+        record = state.placed_members[archive] = {
+            "fingerprint": unpacked.fingerprint, "members": {},
+        }
+    record["members"][os.path.relpath(path, unpacked.slot.path)] = {
+        "output": output, "identity": identity,
+    }
+
+
+async def _placed_before(state: _State, owner: tuple[str, _Unpacked], path: str) -> bool:
+    """Whether the Image at *path*, unpacked again from *owner*'s archive,
+    was placed before: a record for this archive (its fingerprint) and this
+    path in it whose output is still that very file."""
+    archive, unpacked = owner
+    record = state.placed_members.get(archive)
+    if record is None or record.get("fingerprint") != unpacked.fingerprint:
+        return False
+    member = record["members"].get(os.path.relpath(path, unpacked.slot.path))
+    if not member:
+        return False
+    try:
+        return await _step(_output_identity, member["output"]) == member["identity"]
+    except (asyncio.TimeoutError, OSError):
+        return False
 
 
 def _archive_if_done(
@@ -1109,6 +1192,12 @@ async def _take(
     """Start intake for one settled Image: ``queued``, ``copying``, ``held``,
     ``queue_full``, ``unpacking``, ``recognizing`` or ``retry`` (something
     transient; the next poll tries again)."""
+    owner = _unpacked_holding(state, path)
+    if owner is not None and await _placed_before(state, owner, path):
+        # Placed before this archive was unpacked again (CodeRabbit
+        # 4608968248): counted, nothing taken.
+        owner[1].placed.add(path)
+        return "placed_before"
     if archive_service.is_archive(path):
         try:
             whole = await _step(_archive_is_image, path)
@@ -1132,7 +1221,6 @@ async def _take(
             return outcome
     else:
         gated = None
-    owner = _unpacked_holding(state, path)
     try:
         if owner is None:
             detection = await _step(platform_detect.detect_platform, path)
@@ -1224,6 +1312,15 @@ async def _take(
     except (asyncio.TimeoutError, OSError):
         return "retry"
     if taken:
+        # Under the output locks a copy would take (CodeRabbit 4608968255):
+        # no job writes the Library's file while it is compared.
+        targets = [os.path.join(plan.folder, name) for name in flight.placed_names]
+        try:
+            refused = await _lock_all(targets, allow_existing=True)
+        except (DeadlineExpired, asyncio.TimeoutError, OSError, LockFailed):
+            return "retry"
+        if refused is not None:
+            return "retry"  # another job holds one of them: tried again later
         try:
             same = await run_detached_within_stall_bound(
                 _same_as_placed, inbox, flight, plan.folder,
@@ -1235,6 +1332,11 @@ async def _take(
         except Exception:
             logger.warning("inbox: could not compare %s with the Library", path, exc_info=True)
             same = False
+        finally:
+            try:
+                await _step(_release_locks, targets)
+            except (asyncio.TimeoutError, OSError):
+                logger.warning("inbox: could not release the locks of %s", path, exc_info=True)
         if same:
             # Already placed, byte for byte (by this Inbox before a restart):
             # counted placed, with no Finding, and the original moves on.
@@ -1272,8 +1374,16 @@ def _same_as_placed(
             if there.st_size != taken["size"]:
                 return False
         for source, name in zip(sources, names):
+            opened: list[os.stat_result] = []
             if _digest_at(source, src_fd, progress, flight.identities[source]) != _digest_at(
-                name, dst_fd, progress,
+                name, dst_fd, progress, opened=opened,
+            ):
+                return False
+            # The Library's name must still be the very file just hashed
+            # (CodeRabbit 4608968255): one replaced while it was read is not.
+            there = stat_at(name, dst_fd)
+            if there is None or not opened or _held_identity(there) != _held_identity(
+                opened[0],
             ):
                 return False
         return True
@@ -1282,9 +1392,13 @@ def _same_as_placed(
         os.close(src_fd)
 
 
-def _digest_at(name: str, folder: int, progress, identity: dict | None = None) -> str:
+def _digest_at(
+    name: str, folder: int, progress, identity: dict | None = None,
+    opened: list | None = None,
+) -> str:
     """The SHA-1 of *name* in the open *folder*, opened with no link
-    followed; with *identity*, only while it is that file. Blocking."""
+    followed; with *identity*, only while it is that file. *opened*, when
+    given, gets the stat of the file read, after its last read. Blocking."""
     hasher = new_hasher("sha1")
     fd = os.open(name, os.O_RDONLY | _NOFOLLOW, dir_fd=folder)
     with os.fdopen(fd, "rb") as handle:
@@ -1293,7 +1407,15 @@ def _digest_at(name: str, folder: int, progress, identity: dict | None = None) -
         while chunk := handle.read(_CHUNK):
             progress(name)
             hasher.update(chunk)
+        if opened is not None:
+            opened.append(os.fstat(handle.fileno()))
     return hasher.hexdigest()
+
+
+def _held_identity(st: os.stat_result) -> tuple[int, int, int, int, int]:
+    """Which file, and whether it was written: device, inode, size, mtime and
+    ctime (nanoseconds)."""
+    return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
 
 
 def _start_finish(
@@ -1336,7 +1458,9 @@ async def _name(
     names = [os.path.basename(f) for f in flight.files]
     flight.placed_names = names
     done = state.recognized.get(path)
-    if done is None or done[0] != flight.fingerprint:
+    if done is None or done[:2] != (
+        flight.fingerprint, flight.identities.get(names[0]),
+    ):
         try:
             if not await _step(_matching_available):
                 return None  # no DAT loaded: it keeps its own name
@@ -1348,7 +1472,7 @@ async def _name(
     # hold below on the next poll.
     ranking = await _ranking_now()
     try:
-        payload = await _step(dat_store.with_current_ranking, done[1], path)
+        payload = await _step(dat_store.with_current_ranking, done[2], path)
     except Exception:
         logger.warning("inbox: could not rank the match of %s", path, exc_info=True)
         return "retry"
@@ -1374,6 +1498,45 @@ async def _name(
             flight.game_name = ranked.top["game_name"]
             flight.placed_names = named
     return None
+
+
+async def _bind_for_match(
+    inbox: inbox_store.Inbox, path: str, flight: _Flight, cancel: asyncio.Event | None,
+) -> Any:
+    """The Image's main file bound into a folder of the app's work area for
+    its match (``bind_source``: a hard link or a checked copy, opened beneath
+    its root with no link followed, only while it is the file taken). Bounded
+    by its progress and stopped at *cancel*; a bind answered after its awaiter
+    gave up is closed. Raises ``_SourceChanged`` for another file."""
+    from services.disk import create_scratch_dir
+
+    name = os.path.basename(path)
+    identity = {
+        "root": _root_of(inbox, path) or inbox.folder,
+        "snapshot": flight.identities[name],
+    }
+
+    def bind(progress):
+        into = create_scratch_dir("inbox_match_")
+        try:
+            return bind_source(path, identity, into, progress=progress), []
+        except OSError as exc:
+            shutil.rmtree(into, ignore_errors=True)
+            if exc.errno == errno.ESTALE:
+                raise _SourceChanged(errno.ESTALE, str(exc)) from exc
+            raise
+
+    handoff = _SlotHandoff(bind)
+    try:
+        bound, _none = await run_detached_within_stall_bound(
+            handoff.stage, what=f"Binding {name} to match it", cancel_event=cancel,
+            stall=_RECOGNIZE_STALL_SECONDS, report_progress=True,
+        )
+    except BaseException:
+        handoff.abandon()
+        raise
+    handoff.taken()
+    return bound
 
 
 async def _take_on(inbox: inbox_store.Inbox, state: _State, path: str, fingerprint: str) -> None:
@@ -1431,18 +1594,29 @@ async def _recognize(
         else:
             try:
                 await job_manager.update_external_job(job.id, message="Recognizing it")
-                # Its whole-file read is stall-bounded and stops at Cancel
-                # (Codex 4608007769): a hung mount fails the job, and the
-                # slot is given back below either way.
-                with collect_abandonment() as abandoned:
-                    try:
-                        result, _cacheable = await match_one(
-                            path, cancel_event=cancel, stall=_RECOGNIZE_STALL_SECONDS,
-                        )
-                    except ReadCancelled:
-                        result = {"error": "cancelled"}
+                # The bytes intake takes, never the pathname (CodeRabbit
+                # 4608968259): its file bound into the app's work area as a
+                # conversion's Source is, identity-checked, read there, and
+                # the match kept only while the bound file is unchanged. The
+                # read is stall-bounded and stops at Cancel (Codex
+                # 4608007769); the slot is given back below either way.
+                bound = await _bind_for_match(inbox, path, flight, cancel)
+                try:
+                    with collect_abandonment() as abandoned:
+                        try:
+                            result, _cacheable = await match_one(
+                                bound.read_path, cancel_event=cancel,
+                                stall=_RECOGNIZE_STALL_SECONDS,
+                            )
+                        except ReadCancelled:
+                            result = {"error": "cancelled"}
+                    changed = await _step(bound.changed)
+                finally:
+                    await _step(bound.close)
                 if cancel is not None and cancel.is_set():
                     outcome = "cancelled"
+                elif changed:
+                    outcome, why = "changed", f"{changed} changed while it was matched"
                 elif abandoned:
                     why = (
                         "matching left a process stuck on its storage "
@@ -1454,13 +1628,27 @@ async def _recognize(
                     outcome = "recognized"
             finally:
                 job_manager.release_slot(job.id)
+    except ReadCancelled:
+        outcome = "cancelled"
+    except _SourceChanged as exc:
+        outcome, why = "changed", str(exc)
     except Exception as exc:
         logger.warning("inbox: Recognizing %s failed", path, exc_info=True)
         why = str(exc)
     if outcome == "recognized":
-        state.recognized[path] = (flight.fingerprint, result)
+        # With the identity of the file it hashed: `_name` uses it only for
+        # that very file (CodeRabbit 4608968259).
+        name = os.path.basename(path)
+        state.recognized[path] = (flight.fingerprint, flight.identities.get(name), result)
         await job_manager.finish_external_job(job.id, success=True)
         await _take_on(inbox, state, path, flight.fingerprint)
+        return
+    if outcome == "changed":
+        # Not the file's fault: it settles again and is matched afresh.
+        state.seen.pop(path, None)
+        await job_manager.finish_external_job(
+            job.id, success=False, error_message=f"{why}; it is taken again once it settles",
+        )
         return
     if outcome == "cancelled":
         if _cancelled_by_shutdown(job_manager.get_job(job.id) or job):
@@ -1802,13 +1990,19 @@ def _unpack_blocking(
             archive_service.extract_members(
                 path, slot.path, destination_fd=slot.fd, source=source, progress=progress,
                 max_member=max_member, max_total=max_total, max_ratio=max_ratio,
+                reserved_total=declared,
             )
         if not slot.intact():
             raise ArchiveSafetyRefused(
                 f"The unpack folder of {name} was replaced while it was unpacked",
                 rule="its unpack folder was replaced while it was unpacked",
             )
-        files, _unlisted = _walk([slot.path], None, progress)
+        files, unlisted = _walk([slot.path], None, progress)
+        if unlisted:
+            # An inventory missing a folder would let the archive move to
+            # processed/ with its Images there never placed (CodeRabbit
+            # 4608968267): nothing is taken from it.
+            raise _Incomplete(os.path.relpath(unlisted[0], slot.path))
         images = list(group_images(sorted(files), members=_members))
         progress()
         return slot, images
@@ -1894,7 +2088,12 @@ async def _unpack(
             job.id, success=False, error_message=f"{why}; it is taken again once it settles",
         )
         return
-    if outcome == "refused":
+    if outcome == "incomplete":
+        message = (
+            f"Part of what was unpacked from it couldn't be listed ({why}), so nothing "
+            "is taken from it: it is tried again once it changes"
+        )
+    elif outcome == "refused":
         message = (
             f"It's an archive the Inbox doesn't take: {why}. It wasn't unpacked; "
             "extract it, or raise the limit if you trust it"
@@ -1953,6 +2152,8 @@ async def _unpack_in(
             return "deferred", str(exc), None
         if isinstance(exc, _NoRoom):
             return "no_room", str(exc), None
+        if isinstance(exc, _Incomplete):
+            return "incomplete", str(exc), None
         if isinstance(exc, _SourceChanged):
             return "changed", str(exc), None
         if isinstance(exc, ArchiveSafetyRefused):
@@ -2366,12 +2567,15 @@ async def _finish_locked(
         # Images were counted and reported as each was placed.
         if state.unpacked.get(path) is flight.unpacked:
             state.unpacked.pop(path, None)
+        state.placed_members.pop(path, None)
         try:
             await _step(flight.unpacked.slot.close)
         except (asyncio.TimeoutError, OSError):
             logger.warning("inbox: could not remove what was unpacked from %s", path)
         await _clear(inbox, path)
         return
+    if owner is not None and output:
+        await _record_placed(state, owner, path, output)
     try:
         await _step(inbox_store.note_processed, inbox.id)
     except Exception:
@@ -3025,6 +3229,8 @@ def settle_memory(inbox_ids: set[int]) -> dict[str, Any]:
                 for path, ranking in state.ranked_holds.items()
             },
             "taken_holds": {path: list(taken) for path, taken in state.taken_holds.items()},
+            # Each archive's Images placed (CodeRabbit 4608968248).
+            "placed_members": state.placed_members,
             # The last poll's error, so the same outage isn't news to the
             # next run's summary (Codex 4608095505).
             "error": state.error,
@@ -3061,6 +3267,17 @@ def restore_settle_memory(memory: dict[str, Any] | None) -> None:
                 state.ranked_holds.setdefault(path, tuple(tuple(item) for item in ranking))
             for path, taken in (kept.get("taken_holds") or {}).items():
                 state.taken_holds.setdefault(path, [str(t) for t in taken])
+            for path, record in (kept.get("placed_members") or {}).items():
+                state.placed_members.setdefault(path, {
+                    "fingerprint": str(record["fingerprint"]),
+                    "members": {
+                        str(member): {
+                            "output": str(entry["output"]),
+                            "identity": {str(k): int(v) for k, v in entry["identity"].items()},
+                        }
+                        for member, entry in (record.get("members") or {}).items()
+                    },
+                })
             if state.error is None and kept.get("error"):
                 state.error = str(kept["error"])
             for path, duty in (kept.get("archive") or {}).items():

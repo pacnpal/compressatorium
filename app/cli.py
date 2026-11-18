@@ -1750,6 +1750,12 @@ async def _inbox_pass(chosen: list, printer: Printer, state: RunState, jobs) -> 
             await intake.drain()
             if state.stopping or not (jobs.has_live_conversions() or intake.busy()):
                 break
+        if state.stopping:
+            # Intake's own work has drained, and may have queued a conversion
+            # after the cancel above (CodeRabbit 4608968227): cancelled and
+            # drained too, so the run never ends with a live job.
+            await jobs.cancel_all_jobs(reason=CANCEL_SHUTDOWN)
+            await jobs.drain()
         results += await intake.finish_all(library_ids=wanted)
     except Exception as exc:  # the Rule sweeps already ran; say so and fail the run
         logger.warning("run-rules: the Inbox pass failed: %s", exc, exc_info=True)

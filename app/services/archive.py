@@ -68,8 +68,10 @@ class _UnpackBudget:
 
     def __init__(
         self, max_member: int = 0, max_total: int = 0, max_ratio: int = 0,
-        packed: int = 0,
+        packed: int = 0, reserved: int | None = None,
     ) -> None:
+        # What the caller reserved room for, an exact cap: 0 allows nothing.
+        self._reserved = None if reserved is None else max(0, int(reserved))
         self._max_member = max(0, int(max_member or 0))
         self._max_total = max(0, int(max_total or 0))
         self._max_ratio = max(0, int(max_ratio or 0))
@@ -106,6 +108,11 @@ class _UnpackBudget:
             raise ArchiveSafetyRefused(
                 "Archive extraction exceeds max total size",
                 rule=f"its contents are over the limit ({self._max_total} bytes)",
+            )
+        if self._reserved is not None and self._total + count > self._reserved:
+            raise ArchiveSafetyRefused(
+                "Archive extraction exceeds the room reserved for it",
+                rule=f"its contents are over the {self._reserved} bytes it declared",
             )
         if self._max_ratio:
             compressed = self._compressed.get(member)
@@ -421,7 +428,7 @@ class ArchiveService:
     def extract_members(
         self, archive_path: str, destination: str, *, destination_fd: int | None = None,
         source=None, progress=None, max_member: int = 0, max_total: int = 0,
-        max_ratio: int = 0,
+        max_ratio: int = 0, reserved_total: int | None = None,
     ) -> List[str]:
         """Unpack every file in *archive_path* beneath the folder
         *destination*, keeping the folders inside it (#432, the Inbox): the
@@ -448,7 +455,9 @@ class ArchiveService:
         (0: no limit), is refused before the chunk that would cross the line
         is written. With *max_ratio*, the bytes written are held to that
         many times each member's compressed size, and in all to that many
-        times the archive's own size (Codex 4608936764).
+        times the archive's own size (Codex 4608936764). With
+        *reserved_total*, the total written is held to it exactly, the room
+        the caller reserved (CodeRabbit 4608968265); 0 allows nothing.
 
         *source*, when given, is the archive already opened by the caller (a
         binary file object it read through its own folder, no link
@@ -463,7 +472,7 @@ class ArchiveService:
             os.fstat(source.fileno()).st_size if source is not None
             else os.path.getsize(archive_path)
         )
-        budget = _UnpackBudget(max_member, max_total, max_ratio, packed)
+        budget = _UnpackBudget(max_member, max_total, max_ratio, packed, reserved_total)
         own_fd = None
         if destination_fd is None:
             own_fd = destination_fd = open_dir_beneath(os.path.realpath(destination))

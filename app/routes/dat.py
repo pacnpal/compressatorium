@@ -975,7 +975,16 @@ async def _hash_one_for_job(
     (e.g. ``dolphin-tool verify``) aborts promptly when the job is cancelled.
     """
     try:
-        st = await run_in_threadpool(os.stat, normalized_path)
+        if stall_bounded:
+            # The bounded caller's first look is detached, bounded and stops
+            # at its Cancel too (CodeRabbit 4608968234).
+            st = await run_detached_within_stall_bound(
+                _stat_source, normalized_path,
+                what=f"Reading {os.path.basename(normalized_path)}",
+                cancel_event=cancel_event, stall=stall,
+            )
+        else:
+            st = await run_in_threadpool(os.stat, normalized_path)
     except FileNotFoundError:
         return {"path": normalized_path, "matched": False}, False
     except OSError as exc:
@@ -1007,6 +1016,12 @@ async def _hash_one_for_job(
     if result.get("reason") == "file too large" or result.get("error"):
         return result, False
     return result, True
+
+
+def _stat_source(path: str) -> os.stat_result:
+    """A file's stat for the bounded match (``match_one``), on its own
+    detached thread. Blocking."""
+    return os.stat(path)
 
 
 async def match_one(
@@ -1819,7 +1834,14 @@ async def _match_single_file(
         size_bytes = 0
         if size_cap > 0:
             try:
-                size_bytes = await run_in_threadpool(os.path.getsize, file_path)
+                if stall_bounded:
+                    size_bytes = (await run_detached_within_stall_bound(
+                        _stat_source, file_path,
+                        what=f"Reading {os.path.basename(file_path)}",
+                        cancel_event=cancel_event, stall=stall,
+                    )).st_size
+                else:
+                    size_bytes = await run_in_threadpool(os.path.getsize, file_path)
             except OSError:
                 size_bytes = 0
 

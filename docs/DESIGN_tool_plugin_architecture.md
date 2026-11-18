@@ -7703,15 +7703,21 @@ folder can't tell is unpacked: its Images say.
 Otherwise it is unpacked as an `inbox_unpack` job (`ConversionMode.INBOX_UNPACK`,
 an `ExternalMode(in_ledger=False, started_by_hand=False, takes_slot=True)` like
 the copy) on a stall-bounded worker (`run_detached_within_stall_bound`, its
-progress reported per chunk written). **One open file** (Codex 4608007766): the
-archive's identity is read when it is taken, and the job opens it once, through
-the Inbox folder's descriptor with `O_NOFOLLOW`, refuses it unless its `fstat`
-is that identity, gates it from that open file
-(`ArchiveService.check_inbox_source`, built on
-`archive_members.read_members_of`: the listing and the size read from the
-descriptor, never the path), extracts from the same open file and checks its
-identity again afterwards. An archive swapped in at any point is either judged
-itself or not unpacked at all, and settles again.
+progress reported per chunk written). **A private copy** (Codex 4608007766,
+4608936764): the archive's identity is read when it is taken; the job opens it
+through the Inbox folder's descriptor with `O_NOFOLLOW`, refuses it unless its
+`fstat` is that identity, and copies it into a hidden folder of its unpack slot
+(`.archive/`, which the walk never lists) through `path_utils.copy_checked`, the
+copy a bound Source falls back to: bounded by its progress and cancellable, its
+source's identity, ctime included (`file_snapshot(ctime=True)`), checked before
+the first read and after the last. A rewrite in place that keeps the inode and
+size and puts the mtime back can't put the ctime back. The gate and the
+extraction then read only that copy (`ArchiveService.check_inbox_source`, built
+on `archive_members.read_members_of`: the listing and the size read from the
+descriptor), so nothing done to the original afterwards reaches them. The copy
+counts toward the slot's room and goes with the slot. ctime is compared only
+there: a bound Source's hard link and the move to `processed/` (a rename) both
+move it, so the identities that must survive those leave it out.
 
 **Extraction** is `ArchiveService.extract_members` (shared, in
 `services/archive.py`), the one extraction path that never hands a library a
@@ -7728,8 +7734,11 @@ destination folder by `_create_member`: each folder on the way made with
 `O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW` relative to it. The bytes are counted
 as they are written (`_UnpackBudget`), never the header trusted: a member that
 yields more than it declares, or more than the Inbox's member cap, or a total
-past its total cap (`inbox_limits`), is refused before the chunk that would
-cross the line is written. Junk is skipped; an empty 7z member, which py7zr
+past its total cap (`inbox_limits`), or past the room the slot reserved for its
+declared contents (`reserved_total`, exact: 0 allows nothing, CodeRabbit
+4608968265), or more than `CHD_ARCHIVE_INBOX_MAX_RATIO` times its compressed
+size, or a total past that many times the archive's own size (Codex 4608936764),
+is refused before the chunk that would cross the line is written. Junk is skipped; an empty 7z member, which py7zr
 hands no writer, is made empty.
 
 **The unpack slot** (`_UnpackSlot`) is a private folder in the app's own work
@@ -7742,8 +7751,10 @@ folder held, through its descriptor. Its real path is registered
 (`_slot_roots`) as the one place outside an Inbox intake reads an Image under:
 `_folder_beneath`, and so every identity read, copy and comparison, opens an
 unpacked Image beneath its slot (`_root_of`). An archive inside an unpacked one
-is held, not unpacked again; one holding no Image is held too. A crash leaves
-the slot in the work area; nothing sweeps it yet.
+is held, not unpacked again; one holding no Image is held too. A walk of the
+slot that couldn't list a folder is no inventory (CodeRabbit 4608968267): the
+archive is held with a Finding naming the folder, until it changes. A crash
+leaves the slot in the work area; nothing sweeps it yet.
 
 From then on the slot (`_State.unpacked`, an `_Unpacked` per archive: its
 fingerprint, slot, identity, the Images found in it and those placed) is walked
@@ -7790,11 +7801,19 @@ dependencies: the DAT ranking a naming conflict was held under
 (`ranked_holds`) and the Library paths a taken name was held for
 (`taken_holds`, lifted once one of them is free, `_freed`). When either
 changes, or the archive does, it is unpacked again, and an Image placed before
-counts by its bytes (`_same_as_placed`). A loose file's taken-name hold lifts
-the same way once the name is free.
+counts by its bytes (`_same_as_placed`), or, for a conversion, whose output's
+bytes can't be compared with its Source, by its record (CodeRabbit 4608968248):
+every Image placed from an archive is recorded in `_State.placed_members`,
+outside the slot, by the archive's fingerprint and the Image's path in the
+archive, with its output and the output's identity (`_record_placed`). An Image
+unpacked again whose output is still that very file counts as placed with
+nothing taken (`_placed_before`). The records go when the archive moves to
+`processed/`, changes or leaves the Inbox, and are kept in the settle memory.
+A loose file's taken-name hold lifts the same way once the name is free.
 
 **Room to unpack** (same thread). Every open slot reserves its archive's
-declared total (`_UnpackSlot(size)`, `_slot_sizes`), and all of them together
+private copy (`_UnpackSlot(size)`) and, once the copy is gated, its declared
+contents (`grow`), in `_slot_sizes`, and all of them together
 stay under `CHD_ARCHIVE_INBOX_MAX_UNPACKED_SIZE`
 (`ArchiveService.inbox_unpacked_limit`: the Inbox total cap,
 `CHD_ARCHIVE_INBOX_MAX_TOTAL_SIZE`, when unset; 0 is no limit). The work area
@@ -7803,22 +7822,33 @@ must also hold it beyond its reserve (`disk.ensure_headroom` with
 that doesn't fit waits (`_NoRoom`): no Finding, it stays settled and is tried
 again on a later poll, logged once per wait (`_note_no_room`). `_take_archive`
 looks first, from the cached listing, so a waiting archive starts no job; the
-unpack job checks again as it reserves. One archive alone over the unpack cap
-is refused with a Finding, since it could never fit.
+unpack job checks again as it reserves. The cap keeps many archives from
+adding up past it: one with nothing else unpacked always goes in (the gate
+bounds it), so a single large archive is never stuck behind its own copy.
 
-**Removing the Inbox** (Codex 4608007773) closes a slot no live job reads at
-once. One a queued or running conversion still reads from is kept
-(`_close_after`): its jobs are counted down by the job manager's terminal hook
-(`add_terminal_listener(_job_ended)`), a job that ended before the hook was in
-place is counted at once, and the slot is removed when the last one ends, so
-the conversion runs as queued.
+**Removing the Inbox** (Codex 4608007773) closes a slot nothing reads at once.
+One a queued or running conversion, or a copy's task (one waiting for a
+conversion slot included, CodeRabbit 4608968241), still reads from is kept
+(`_close_after`): jobs are counted down by the job manager's terminal hook
+(`add_terminal_listener(_job_ended)`), tasks by a done callback added on their
+own loop, one that ended before it was watched is counted at once, and the slot
+is removed when the last reader ends, so the work runs as started.
 
 **Recognizing and naming (#432).** Where something can answer
 (`routes.dat.matching_available`: a DAT is loaded, or Hasheous is on), an Image
 is matched before it is placed, after its plan: an `inbox_recognize` job
 (`ConversionMode.INBOX_RECOGNIZE`, the same `ExternalMode` as the copy) runs
 `routes.dat.match_one` (the match job's per-file step: embedded hashes, then the
-file SHA-1, then Hasheous) on the very bytes taken. Its whole-file SHA-1 is
+file SHA-1, then Hasheous) on the very bytes taken (CodeRabbit 4608968259):
+the Image's main file is bound into the app's work area first, as a
+conversion's Source is (`_bind_for_match` over `bind_source`: a hard link or a
+checked copy, opened beneath its root only while it is the file taken), the
+match reads the bound file, and it is kept only while the bound file is
+unchanged (`BoundSource.changed`), with the identity it was made for; `_name`
+uses it only while the file's fingerprint and identity are still those. Its
+first look at the file (its stat, and the size cap's) is detached, bounded and
+cancellable too for this caller (`_stat_source`, CodeRabbit 4608968234). Its
+whole-file SHA-1 is
 stall-bounded and cancellable (Codex 4608007769): `match_one` asks
 `_match_single_file` for it through `run_detached_within_stall_bound`, the seam
 a bound Source's copy uses, with the job's cancel event, and
@@ -7861,9 +7891,12 @@ for the file to change.
 name or its own, is checked before anything is written: a copy's names
 (`_taken`), a conversion's output and its companions (`output_status`). A
 copy's taken names are first compared with the Image's own files
-(`_same_as_placed`, stall-bounded): every name a regular file of the same size,
-then the same SHA-1 (`stream_digest.new_hasher`), both sides opened with no link
-followed and the Image's files only while they are the ones taken. All the same
+(`_same_as_placed`, stall-bounded, under the output locks a copy would take, so
+no job writes them meanwhile): every name a regular file of the same size, then
+the same SHA-1 (`stream_digest.new_hasher`), both sides opened with no link
+followed and the Image's files only while they are the ones taken; after
+hashing, the Library's name must still be the very file read (device, inode,
+size, mtime and ctime, CodeRabbit 4608968255). All the same
 means it was placed already (by this Inbox before a restart, with its state
 lost): it is counted placed with no Finding and finished as after a copy
 (`_start_finish`: the original to `processed/`, or, unpacked from an archive,
@@ -7972,7 +8005,9 @@ and counts what it placed already by its bytes (`_same_as_placed`).
 4608417841): it waits for the job queue and intake's own tasks in turn
 (`job_manager.has_live_conversions`, `intake.busy`) until neither has anything
 left, since an unpack or a Recognize may queue a conversion after the queue
-last emptied. A stop cancels what is queued and ends the loop. The settle
+last emptied. A stop cancels what is queued and ends the loop; once intake's
+own work has drained, whatever it queued meanwhile is cancelled and drained too
+(CodeRabbit 4608968227), so the run never ends with a live job. The settle
 memory a run keeps includes `ranked_holds` and `taken_holds` (Codex
 4608417851), so a later run lifts a hold whose ranking or name changed.
 

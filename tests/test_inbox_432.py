@@ -1572,3 +1572,292 @@ def test_a_snapshot_with_ctime_catches_a_change_that_puts_mtime_back(tmp_path):
     after = os.stat(path)
     assert file_snapshot(after) == file_snapshot(st)  # what the old check saw
     assert file_snapshot(after, ctime=True) != before
+
+
+# ---- CodeRabbit on PR #453 at b9073a61 --------------------------------------
+
+
+def _ps1_cue_zip(archive: Path) -> tuple[bytes, bytes]:
+    """A PS1 cue and its bin, stored in a zip at *archive*."""
+    from .test_disc_id import _make_iso, _make_mode1_bin
+
+    track = _make_mode1_bin(_make_iso({"SYSTEM.CNF": b"BOOT = cdrom:\\SLPS_123.45;1\n"}))
+    cue = b'FILE "Game.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n'
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_STORED) as zf:
+        zf.writestr("Game.cue", cue)
+        zf.writestr("Game.bin", track)
+    return cue, track
+
+
+@pytest.mark.asyncio
+async def test_an_unpacked_disc_in_the_wrong_platform_folder_is_a_conflict(
+    vol, db, monkeypatch,
+):
+    """CodeRabbit 4608968270: the header is read from the unpacked track, so
+    a PS1 disc in a ps2 folder raises the header/folder conflict instead of
+    being placed by its folder."""
+    _verifies(monkeypatch)
+    library = _library(vol)
+    box = _inbox(vol, library, settle=0)
+    archive = vol / "Downloads" / "ps2" / "Bundle.zip"
+    _ps1_cue_zip(archive)
+
+    await _polls(box)
+
+    assert archive.exists()
+    assert not (vol / "ROMs" / "ps2").exists()
+    [finding] = _inbox_findings()
+    assert finding["kind"] == findings.INBOX_CONFLICT
+    assert "psx" in finding["reason"]
+
+
+def test_unpacking_never_writes_past_what_was_reserved(tmp_path):
+    """CodeRabbit 4608968265: the total written is held to the slot's
+    reservation too, and a reservation of 0 allows nothing."""
+    from services.archive import ArchiveSafetyRefused, archive_service
+
+    archive = _stored_zip(tmp_path / "Game.zip", "Game.gba", _bytes("reserved", 4096))
+    for reserved in (1024, 0):
+        dest = tmp_path / f"out{reserved}"
+        dest.mkdir()
+        with pytest.raises(ArchiveSafetyRefused):
+            archive_service.extract_members(
+                str(archive), str(dest), reserved_total=reserved,
+            )
+        written = dest / "Game.gba"
+        assert not written.exists() or written.stat().st_size <= reserved
+
+
+@pytest.mark.asyncio
+async def test_an_unpack_whose_folders_cant_all_be_listed_is_held(vol, db, monkeypatch):
+    """CodeRabbit 4608968267: a walk of the unpacked files that missed a
+    folder is no inventory: the archive is held, naming the folder, and
+    nothing is taken from it."""
+    from services.inbox import intake
+
+    _verifies(monkeypatch)
+    real_walk = intake._walk
+
+    def partial(roots, inbox, progress):
+        files, unlisted = real_walk(roots, inbox, progress)
+        if inbox is None:  # the walk of an unpack slot
+            unlisted = [*unlisted, os.path.join(roots[0], "Disc 2")]
+        return files, unlisted
+
+    import os
+
+    monkeypatch.setattr(intake, "_walk", partial)
+    library = _library(vol)
+    box = _inbox(vol, library, settle=0)
+    archive = _zip(vol / "Downloads" / "gba" / "Game.zip", {"Game.gba": _bytes("part")})
+
+    await _polls(box)
+
+    assert archive.exists()
+    assert not (vol / "ROMs" / "gba").exists()
+    assert _unpack_dirs() == []
+    [finding] = _inbox_findings()
+    assert "Disc 2" in finding["reason"]
+
+
+@pytest.mark.asyncio
+async def test_removing_an_inbox_keeps_a_slot_a_waiting_copy_reads(vol, db, monkeypatch):
+    """CodeRabbit 4608968241: a copy waiting for a conversion slot reads
+    from the unpack folder too: removing the Inbox keeps the folder until
+    the copy ends."""
+    import asyncio
+
+    from models import ConversionMode
+    from services import inbox
+    from services.inbox import intake
+
+    _verifies(monkeypatch)
+    release = asyncio.Event()
+    real_hold = intake.job_manager.hold_slot
+
+    async def hold_slot(job_id, cancel_event=None):
+        if intake.job_manager.jobs[job_id].mode == ConversionMode.INBOX_COPY:
+            await release.wait()
+        return await real_hold(job_id, cancel_event)
+
+    monkeypatch.setattr(intake.job_manager, "hold_slot", hold_slot)
+    library = _library(vol)
+    box = _inbox(vol, library, settle=0)
+    rom = _bytes("waiting copy")
+    _zip(vol / "Downloads" / "gba" / "Game.zip", {"Game.gba": rom})
+    for now in range(4):
+        await intake.poll(inbox.get(box.id), now=now)
+        await asyncio.sleep(0.05)
+    assert len(_unpack_dirs()) == 1
+
+    await asyncio.to_thread(inbox.remove, box.id)
+    assert len(_unpack_dirs()) == 1  # the waiting copy still reads from it
+
+    release.set()
+    await asyncio.wait_for(intake.drain(), 10)
+
+    assert (vol / "ROMs" / "gba" / "Game.gba").read_bytes() == rom
+    assert _unpack_dirs() == []
+
+
+@pytest.mark.asyncio
+async def test_a_library_file_swapped_while_compared_is_not_taken_as_placed(vol, db):
+    """CodeRabbit 4608968255: the Library's file must still be the one
+    hashed: one replaced while it was read leaves the Image held."""
+    import os
+
+    from services.inbox import intake
+
+    data = _bytes("same bytes")
+    library = _library(vol)
+    box = _inbox(vol, library, settle=0)
+    existing = _drop(vol / "ROMs" / "ps2" / "Game.iso", data)
+    game = _drop(vol / "Downloads" / "ps2" / "Game.iso", data)
+    real_digest = intake._digest_at
+    swapped: list[bool] = []
+
+    def digest_then_swap(name, folder, progress, identity=None, **kwargs):
+        digest = real_digest(name, folder, progress, identity, **kwargs)
+        if identity is None and not swapped:  # the Library's side
+            swapped.append(True)
+            other = existing.with_name("other")
+            other.write_bytes(_bytes("someone else's", len(data)))
+            os.replace(other, existing)
+        return digest
+
+    import pytest as _pytest
+
+    with _pytest.MonkeyPatch.context() as mp:
+        mp.setattr(intake, "_digest_at", digest_then_swap)
+        await _polls(box)
+
+    assert swapped
+    assert game.exists()
+    [finding] = _inbox_findings()
+    assert "already in the Library" in finding["reason"]
+
+
+@pytest.mark.asyncio
+async def test_a_recognize_stuck_before_its_read_ends_at_cancel(vol, db, monkeypatch):
+    """CodeRabbit 4608968234: the Recognize's first look at its file (its
+    stat) is detached and bounded too: a Cancel while it hangs ends the job
+    promptly and gives the slot back."""
+    import asyncio
+    import threading
+
+    from models import ConversionMode, JobStatus
+    from routes import dat as dat_routes
+    from services import inbox
+    from services.inbox import intake
+
+    await _dat("Sony - PlayStation 2 (Redump)", {"Other": _sha1(b"other")})
+    release, started = threading.Event(), threading.Event()
+    real_stat = dat_routes._stat_source
+
+    def hung(path):
+        if path.endswith("Game.iso"):
+            started.set()
+            release.wait(30)
+        return real_stat(path)
+
+    monkeypatch.setattr(dat_routes, "_stat_source", hung)
+    library = _library(vol)
+    box = _inbox(vol, library, settle=0)
+    _drop(vol / "Downloads" / "ps2" / "Game.iso", _bytes("stat"))
+    before = set(intake.job_manager.jobs)
+    try:
+        await intake.poll(inbox.get(box.id), now=0)
+        await intake.poll(inbox.get(box.id), now=1)
+        assert await asyncio.to_thread(started.wait, 10)
+        [job] = [
+            j for job_id, j in intake.job_manager.jobs.items()
+            if job_id not in before and j.mode == ConversionMode.INBOX_RECOGNIZE
+        ]
+        await intake.job_manager.cancel_job(job.id)
+        await asyncio.wait_for(intake.drain(), 5)
+    finally:
+        release.set()
+
+    assert intake.job_manager.get_job(job.id).status == JobStatus.CANCELLED
+    assert intake.job_manager.slots_in_use() == 0
+
+
+@pytest.mark.asyncio
+async def test_a_converted_image_from_an_archive_stays_placed_across_unpacks(
+    vol, db, queue,
+):
+    """CodeRabbit 4608968248: A converts, B is held on a taken name. When B's
+    name is freed and the archive is unpacked again, A counts as placed by
+    the record of its output (a conversion's bytes can't be compared), B
+    converts, and the archive completes."""
+    from models import JobStatus
+
+    library = _library(vol)
+    await inbox_431._ps2_rule(library)
+    box = _inbox(vol, library, settle=0)
+    taken = _drop(vol / "ROMs" / "ps2" / "B.cso", b"someone else's")
+    archive = _zip(vol / "Downloads" / "ps2" / "Pair.zip", {
+        "A.iso": _bytes("a", 8192), "B.iso": _bytes("b", 8192),
+    })
+
+    def complete(index: int) -> None:
+        job = queue.jobs[f"job{index}"]
+        Path(job.output_path).write_bytes(b"converted " + str(index).encode())
+        job.status = JobStatus.COMPLETED
+
+    await _polls(box, count=6)
+    assert [Path(j["paths"][0]).name for j in queue.submitted] == ["A.iso"]
+    complete(0)
+    await _polls(box, count=6, start=10)
+    assert archive.exists()
+
+    taken.unlink()  # B's name is free
+    await _polls(box, count=6, start=20)
+    assert [Path(j["paths"][0]).name for j in queue.submitted] == ["A.iso", "B.iso"]
+    complete(1)
+    await _polls(box, count=6, start=30)
+
+    assert not archive.exists()
+    assert (vol / "Downloads" / "processed" / "ps2" / "Pair.zip").exists()
+    assert _inbox_findings() == []
+
+
+@pytest.mark.asyncio
+async def test_a_match_read_while_the_file_was_swapped_never_names_it(vol, db, monkeypatch):
+    """CodeRabbit 4608968259: the Recognize reads the bytes intake takes. A
+    swapped for B while the match reads, then put back, is never placed
+    under B's name."""
+    import os
+
+    from routes import dat as dat_routes
+
+    disc_a, disc_b = _bytes("disc a"), _bytes("disc b")
+    await _dat("Sony - PlayStation 2 (Redump)", {
+        "Name A": _sha1(disc_a), "Name B": _sha1(disc_b),
+    })
+    library = _library(vol)
+    box = _inbox(vol, library, settle=0)
+    game = _drop(vol / "Downloads" / "ps2" / "Game.iso", disc_a)
+    real_match = dat_routes.match_one
+    swapped: list[bool] = []
+
+    async def match_during_swap(path, **kwargs):
+        if swapped:
+            return await real_match(path, **kwargs)
+        swapped.append(True)
+        aside = game.with_name("aside")
+        os.replace(game, aside)
+        game.write_bytes(disc_b)
+        try:
+            return await real_match(path, **kwargs)
+        finally:
+            os.replace(aside, game)  # A is back, as it was
+
+    monkeypatch.setattr(dat_routes, "match_one", match_during_swap)
+
+    await _polls(box)
+
+    assert swapped
+    assert not (vol / "ROMs" / "ps2" / "Name B.iso").exists()
+    assert (vol / "ROMs" / "ps2" / "Name A.iso").read_bytes() == disc_a
