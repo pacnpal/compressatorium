@@ -198,6 +198,14 @@ class ConversionJob(BaseModel):
     started_at: datetime | None = None
     completed_at: datetime | None = None
     error_message: str | None = None
+    # Why a cancel was asked for, once one was (#433): ``requested`` (someone
+    # asked, through the UI or API) or ``shutdown`` (the app or ``run-rules``
+    # is stopping). See ``job_manager.CANCEL_REQUESTED`` / ``CANCEL_SHUTDOWN``.
+    cancel_reason: str | None = None
+    # The Library and Inbox an intake job came from (#433), set when it is
+    # made, so whoever reports it (run-rules) names the right one.
+    library_id: str | None = None
+    inbox_id: int | None = None
     output_path: str | None = None
     output_size: int | None = None
     temp_dir: str | None = None

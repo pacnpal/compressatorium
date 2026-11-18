@@ -133,8 +133,36 @@
   size, not the archive's own.
   Removing a Library while another Library or Inbox is being saved answers
   "try again shortly" with nothing removed.
-  Database migration 0027 adds the Inboxes. Archives, DAT names and asking
-  RomM to scan come next (#432, #433).
+  Database migration 0027 adds the Inboxes. Archives and DAT names come next
+  (#432).
+- **Inboxes tell RomM, report each pass, and run from cron** (#433). After a
+  pass that placed Images in a RomM Library, the app asks RomM to scan just
+  the Platform folders it added to, so new games show up in RomM without
+  anyone pressing anything (a folder RomM has no Platform for yet is scanned
+  too). It needs the token's **tasks.run** scope; without it, or when RomM
+  won't take the scan right now, that's said in the pass summary and the log
+  and the scan isn't tried again. Each pass that placed an Image or left one
+  with a Finding sends one notification listing them (**An Inbox pass placed
+  Images or left some with a Finding**); a pass that did nothing sends
+  nothing. `run-rules` makes one Inbox pass after its Rule sweep, under the
+  same one-scheduler-per-data-directory lock, and keeps what intake has seen
+  settling between runs, so a file one cron run sees is taken by the next.
+  The conversions and copies it starts finish before it exits. An Inbox that
+  can't be polled (its folder gone, say) is in the summary, once until it
+  changes (also across cron runs), and makes `run-rules` print an error and
+  exit 1 every run it lasts. An output that reached the Library is scanned
+  and summarised even when its original can't be moved to `processed/`, and
+  `run-rules` settles each conversion as it ends, so a big pass loses none to
+  a short job history. An Inbox job that fails leaves its Finding without
+  failing the run, an original another process held is moved by the next
+  run, and a pass whose memory can't be saved is still reported. A stop
+  during
+  the pass takes no more files, and a conversion or copy cancelled because
+  the app or `run-rules` was stopping (`docker stop`, Ctrl-C) leaves the file
+  with no Finding, to be taken once it settles again; only a job you cancel
+  holds its file. Jobs now record why they were cancelled. The RomM call
+  and its scope were checked against RomM 5.4.1 (see the RomM integration
+  roadmap).
 - **Xbox 360 disc images to ZAR, with rom-converto** (#422). A new tool,
   rom-converto (the converter RomM ships, at the version RomM pins, v0.24.0),
   packs an Xbox 360 `.iso` into a `.zar`, the format Xenia mounts directly.

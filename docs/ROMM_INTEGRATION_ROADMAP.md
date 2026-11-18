@@ -539,6 +539,50 @@ without the scope, behaviour is unchanged and Settings says what would turn
 this on. *Risk:* `409` (scan already running) needs a retry-after-current-scan
 path, not a dropped request.
 
+#### Platform scan findings (2026-11-17, RomM 5.4.1, #433)
+
+The Inbox (#431, #433) asks RomM to scan the Platforms it added Images to. The
+call and its scope were confirmed two ways.
+
+**Source.** RomM 5.4.1, `backend/endpoints/tasks.py`: `POST /api/tasks/scan`
+is a `protected_route` with `[Scope.TASKS_RUN]` and answers 202 with a
+`task_id`; `NoScanWorkerException` becomes 503 and `ScanInFlightException`
+409. The body is `ScanPayload` (`backend/endpoints/sockets/scan.py`), with
+`model_config = ConfigDict(extra="forbid")` and the fields `type` (default
+`quick`), `platforms` (RomM Platform ids), `platform_fs_slugs` (folder names
+on disk, "folders to scan with no database row" too), `roms_ids`, `apis`
+(left out: every enabled metadata source, as a scheduled scan) and
+`launchbox_remote_enabled`. A scan without `roms_ids` is a library scan: it is
+refused with 409 while another library scan is queued or running, and scans
+only the selected folders when any are named (`has_selection`), so a folder
+name that matches nothing scans nothing rather than the whole library. 5.4.0
+has the same payload.
+
+**Live.** `scripts/spike/romm_platform_scan/spike.py` (it reuses the swap
+spike's stack: `rommapp/romm:5.4.1` by digest `sha256:8677fb7b…`,
+`mariadb:11.8`, no provider keys, Hasheous off) on the swap spike's fixture
+library after a first quick scan. New files: `ps2/New PS2.iso` (a Platform
+RomM had), `gb/New GB.gb` (a synthetic cartridge in a folder RomM had no
+Platform for) and `psp/New PSP.iso` (a Platform not named in the scan).
+
+| Request | Answer |
+| --- | --- |
+| `{"type": "quick", "platform_fs_slugs": ["ps2", "gb"]}`, token without `tasks.run` (`roms.read roms.write`, and `roms.read platforms.read`) | 403 `{"detail": "Forbidden"}`, no ROM added |
+| the same, token with only `tasks.run` | 202, task `finished`: `scanned_platforms: 2`, `new_platforms: 1`, `new_roms: 2`. `New PS2.iso` and `New GB.gb` became ROMs and a `gb` Platform was created; `New PSP.iso` was not scanned |
+| `{"type": "quick", "platform_fs_slugs": ["no-such-folder"]}` | 202, task `finished` with every count 0 |
+| `{"type": "quick", "platform_slugs": ["ps2"]}` (a misspelt key) | 422 `extra_forbidden` |
+
+**What the app does with it** (`RommClient.scan_platforms`,
+`RommLibrary.after_intake`). After a pass that placed Images in RomM, one
+`quick` scan of the placed outputs' Platform folders by `platform_fs_slugs`
+(the folder name, so a new folder is found and a renamed one still matches),
+with `apis` left out. `tasks.run` is the only scope it needs. A 403 is
+reported in the pass summary and the log as the missing scope and is never
+retried. A 409 or 503 is reported the same way and not retried either: the
+files are on disk, so RomM's own next scan (scheduled, watcher or manual)
+picks them up. Following the task and retrying after a running scan (1.2,
+and the 409 risk above) are not done yet.
+
 ### Phase 2 — First-run and look-and-feel
 
 *Goal:* setup takes a minute, and the RomM view looks like the user's library.

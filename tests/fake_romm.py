@@ -47,6 +47,13 @@ source at ``eb10d95``:
     ``scan_updates=False`` makes the scan finish without rehashing (its stats
     say ``updated_roms: 0`` either way, as RomM's do); ``task_status`` ends it
     with another status.
+  - ``POST /api/tasks/scan`` with ``{"type": "quick", "platform_fs_slugs":
+    [...]}`` (#433), the Inbox's scan of the Platform folders it added to:
+    answered 202 and recorded in ``platform_scans``. Every scan needs
+    ``tasks.run`` (403 ``Forbidden`` without it, as RomM 5.4.1 answers), and
+    a key RomM's ``ScanPayload`` doesn't take is a 422 (it forbids extras).
+    ``scan_reply`` makes every scan answer with that status and detail
+    instead (409 while a library scan runs, 503 with no scan worker).
 
   ``on_request`` is called with the method and path before each answer, so a
   test can look at the app's state at the moment RomM is asked.
@@ -91,6 +98,11 @@ LIBRARY_TARGETS: dict[str, list[str]] = {
     "xbox360": ["zar"],
 }
 
+
+# The keys RomM 5.4.1's ScanPayload takes; any other is a 422.
+SCAN_KEYS = frozenset({
+    "type", "platforms", "platform_fs_slugs", "roms_ids", "apis", "launchbox_remote_enabled",
+})
 
 # What a token for the swap holds (an admin user's).
 DEFAULT_SCOPES = frozenset({"roms.read", "roms.write", "tasks.run"})
@@ -141,6 +153,10 @@ class FakeRomm:
         # Each metadata write's (ROM id, {field: value}) (#393).
         self.metadata_writes: list[tuple[int, dict[str, str]]] = []
         self.scans: list[dict[str, Any]] = []
+        # Each Platform scan's folder list, ``platform_fs_slugs`` (#433).
+        self.platform_scans: list[list[str]] = []
+        # Makes every scan answer with that (status, detail) instead.
+        self.scan_reply: tuple[int, str] | None = None
         self._tasks: dict[str, dict[str, Any]] = {}
         self._lock = threading.Lock()
 
@@ -256,7 +272,21 @@ class FakeRomm:
         return 200, dict(rom)
 
     def _scan(self, body: dict) -> tuple[int, Any]:
+        if "tasks.run" not in self.scopes:
+            return 403, {"detail": "Forbidden"}
+        extra = sorted(set(body) - SCAN_KEYS)
+        if extra:
+            # RomM's ScanPayload forbids extra keys (`extra="forbid"`).
+            return 422, {"detail": [
+                {"type": "extra_forbidden", "loc": ["body", key],
+                 "msg": "Extra inputs are not permitted"} for key in extra
+            ]}
+        if self.scan_reply is not None:
+            status, detail = self.scan_reply
+            return status, {"detail": detail}
         self.scans.append(body)
+        if not body.get("roms_ids"):
+            self.platform_scans.append(list(body.get("platform_fs_slugs") or []))
         task_id = f"task-{len(self.scans)}"
         if body.get("type") == "hashes" and self.scan_updates:
             for rom_id in body.get("roms_ids") or []:

@@ -837,6 +837,7 @@ async def _run_jobs(prepared: list[tuple], printer: Printer, state: RunState) ->
     """
     from fastapi import HTTPException
     from routes.convert import queue_prepared
+    from services.job_manager import CANCEL_SHUTDOWN
 
     from config import settings
 
@@ -900,7 +901,7 @@ async def _run_jobs(prepared: list[tuple], printer: Printer, state: RunState) ->
             if state.stopping:
                 # A stop that arrived while this batch was being queued: the
                 # signal handler's cancel-all ran before these jobs existed.
-                await job_manager.cancel_all_jobs()
+                await job_manager.cancel_all_jobs(reason=CANCEL_SHUTDOWN)
             report()
         while pending:
             await wait_for_an_end()
@@ -1616,10 +1617,16 @@ async def run_rules(args, printer: Printer, state: RunState) -> int:
         with preferences_store.read_only():
             for library in chosen:
                 failed = await _sweep_one(printer, library, state, dry_run=True) or failed
+        # Intake has no dry run: an Inbox is never polled by one (#433).
+        for library_id in dict.fromkeys(i.library_id for i in await _inboxes_of(chosen)):
+            line = _inbox_line(library_id, status="skipped", reason="dry_run")
+            printer.summary(line, _inbox_text(line))
         return EXIT_FAILED if failed or state.stopping else EXIT_OK
 
 
 async def _run_rules_pass(chosen: list, printer: Printer, state: RunState) -> int:
+    from services.inbox import intake
+    from services.job_manager import CANCEL_SHUTDOWN
     from services.rules import check as rules_check
     from services.rules import sweep as rules_sweep
 
@@ -1639,15 +1646,27 @@ async def _run_rules_pass(chosen: list, printer: Printer, state: RunState) -> in
         item = Item(path=job.file_path, mode=getattr(job.mode, "value", job.mode))
         _finish(item, job)
         _finish_check_run(item, job)
-        failed = failed or item.status in ("failed", "cancelled")
-        # A job that ends while its own sweep is still running has no owner
+        # An Inbox job that fails leaves its Finding and isn't a Rule's
+        # failure (CodeRabbit 4608135778); an Inbox that can't be polled
+        # still fails the run, from the pass.
+        if getattr(job, "inbox_id", None) is None:
+            failed = failed or item.status in ("failed", "cancelled")
+        # An intake job names its own Library (#433, Codex 4607940252). A
+        # sweep's job that ends while its sweep is still running has no owner
         # yet; the Library being swept queued it.
-        library_id = owners.get(job.id) or (sweeping[-1] if sweeping else None)
+        library_id = (
+            getattr(job, "library_id", None) or owners.get(job.id)
+            or (sweeping[-1] if sweeping else None)
+        )
         printer.line({"library": library_id, **item.convert_line()},
                      prefix=f"{library_id}: " if library_id else "")
 
     # Registered like the server's: the Rule history hears each job's outcome.
-    async with _job_runner(state, on_terminal, rules_sweep.note_job_finished) as jobs:
+    # And an Inbox conversion is settled the moment it ends (Codex 4608095516),
+    # not when the pass looks it up again, by which time history may be pruned.
+    async with _job_runner(
+        state, on_terminal, rules_sweep.note_job_finished, intake.on_job_finished,
+    ) as jobs:
         for library in chosen:
             if state.stopping:
                 break
@@ -1661,14 +1680,124 @@ async def _run_rules_pass(chosen: list, printer: Printer, state: RunState) -> in
                 # The signal cancelled what was queued when it arrived; the
                 # sweep may have let one more batch in since. Cancel that too
                 # rather than wait for it.
-                await jobs.cancel_all_jobs()
+                await jobs.cancel_all_jobs(reason=CANCEL_SHUTDOWN)
                 break
         await jobs.drain()
         # A check Rule's run is not a queued job: it runs as its own task
         # (#305), so it is waited for here, while the job runner and the
         # listeners above still hear it end. A stop cancels it promptly.
         await rules_check.drain(should_stop=lambda: state.stopping)
+        if not state.stopping:
+            # Then one Inbox pass (#433), as the server's tick polls them
+            # after its sweeps, under the scheduler lock this run holds.
+            failed = await _inbox_pass(chosen, printer, state, jobs) or failed
     return EXIT_FAILED if failed or state.stopping else EXIT_OK
+
+
+# Where run-rules keeps intake's memory between runs (#433).
+INBOX_SETTLE_KEY = "inbox_settle"
+
+
+async def _inboxes_of(chosen: list) -> list:
+    """The Inboxes feeding the Libraries in *chosen*."""
+    from fastapi.concurrency import run_in_threadpool
+    from services import inbox as inbox_store
+
+    wanted = {library.id for library in chosen}
+    return [i for i in await run_in_threadpool(inbox_store.all_inboxes) if i.library_id in wanted]
+
+
+async def _inbox_pass(chosen: list, printer: Printer, state: RunState, jobs) -> bool:
+    """One poll of every Inbox feeding *chosen*, then what runs after a pass
+    (``services.inbox.report``): RomM's scan and the summary notification.
+
+    A cron run is a new process each time, so what intake has seen settling
+    is kept between runs in the preferences (``INBOX_SETTLE_KEY``). The
+    conversions and copies the poll starts finish within the run, and their
+    originals go to ``processed/`` before it exits (``intake.finish_all``).
+    One line per Library whose Inboxes placed or left something, and an
+    ``error`` line for each Inbox that couldn't be polled. True when the pass
+    failed or an Inbox couldn't be polled; an Image left with a Finding is
+    not a failure. A stop admits nothing more; what already started drains.
+    """
+    from fastapi.concurrency import run_in_threadpool
+    from services import inbox as inbox_store
+    from services.inbox import intake, report
+    from services.job_manager import CANCEL_SHUTDOWN
+    from services.preferences_store import preferences_store
+
+    inboxes = await _inboxes_of(chosen)
+    if not inboxes:
+        return False
+    try:
+        intake.restore_settle_memory(await preferences_store.get(INBOX_SETTLE_KEY))
+        wanted = {inbox.library_id for inbox in inboxes}
+        # A stop admits nothing more (Codex 4607809613); what started drains.
+        # Each job it makes names its own Library (``job.library_id``, Codex
+        # 4607940252), so the job lines don't depend on when a job was made.
+        results = await intake.poll_all(
+            library_ids=wanted, should_stop=lambda: state.stopping,
+        )
+        if state.stopping:
+            await jobs.cancel_all_jobs(reason=CANCEL_SHUTDOWN)
+        await jobs.drain()
+        await intake.drain()
+        results += await intake.finish_all(library_ids=wanted)
+    except Exception as exc:  # the Rule sweeps already ran; say so and fail the run
+        logger.warning("run-rules: the Inbox pass failed: %s", exc, exc_info=True)
+        line = _inbox_line(None, status="error", reason=f"inbox_pass_failed: {exc}")
+        printer.summary(line, _inbox_text(line))
+        return True
+    failed = False
+    try:
+        every = {inbox.id for inbox in await run_in_threadpool(inbox_store.all_inboxes)}
+        await preferences_store.put(INBOX_SETTLE_KEY, intake.settle_memory(every))
+    except Exception as exc:
+        # On its own (CodeRabbit 4608135785): what the pass did is still
+        # reported and RomM still scans; the run fails and says why.
+        logger.warning("run-rules: could not save intake's memory: %s", exc, exc_info=True)
+        line = _inbox_line(None, status="error", reason=f"inbox_memory_not_saved: {exc}")
+        printer.summary(line, _inbox_text(line))
+        failed = True
+    summary = await report.after_pass(results)
+    for library_id, entry in summary["libraries"].items():
+        # An Inbox that couldn't be polled (its folder gone, outside a
+        # Volume, its Library missing) fails the run like a failed sweep
+        # (Codex 4607809607).
+        for error in entry.get("errors") or []:
+            line = _inbox_line(library_id, status="error", error=error)
+            printer.summary(line, _inbox_text(line))
+            failed = True
+        if entry["placed"] or entry["left"]:
+            line = _inbox_line(library_id, status="inbox", entry=entry)
+            printer.summary(line, _inbox_text(line))
+    return failed
+
+
+def _inbox_line(library_id, *, status: str, entry: dict | None = None,
+                reason: str | None = None, error: str | None = None) -> dict:
+    entry = entry or {}
+    return {
+        "library": library_id, "inbox": True, "status": status,
+        "placed": [p.get("output") or p["path"] for p in entry.get("placed") or []],
+        "left": [{"path": item["path"], "reason": item["reason"]}
+                 for item in entry.get("left") or []],
+        "scan": entry.get("scan"), "reason": reason, "error": error,
+    }
+
+
+def _inbox_text(line: dict) -> str:
+    from services.inbox import report
+
+    where = line["library"] or "every Inbox"
+    if line["error"]:
+        return f"{'error':<10} {where} Inbox: {line['error']}"
+    if line["status"] != "inbox":
+        return f"{line['status']:<10} {where} Inbox pass: {line['reason']}"
+    text = (f"{'inbox':<10} {where}: {len(line['placed'])} placed, "
+            f"{len(line['left'])} left with a Finding")
+    said = report.scan_text(line["scan"])
+    return f"{text}; {said}" if said else text
 
 
 def _finish_check_run(item: Item, job) -> None:
@@ -1733,9 +1862,9 @@ def _signals(state: RunState):
         if not state.jobs_started:
             task.cancel()
             return
-        from services.job_manager import job_manager
+        from services.job_manager import CANCEL_SHUTDOWN, job_manager
 
-        asyncio.ensure_future(job_manager.cancel_all_jobs())
+        asyncio.ensure_future(job_manager.cancel_all_jobs(reason=CANCEL_SHUTDOWN))
 
     installed = []
     for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
