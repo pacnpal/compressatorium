@@ -468,7 +468,8 @@ async def test_an_unranked_conflict_is_held_until_the_ranking_orders_it(vol, db)
     assert game.exists()
     assert not (vol / "ROMs" / "ps2").exists()
     [finding] = _inbox_findings()
-    assert finding["kind"] == findings.INBOX_CONFLICT
+    assert finding["kind"] == findings.INBOX_DAT_CONFLICT
+    assert finding["kind"] in findings.INBOX_KINDS
     assert "Name From A" in finding["reason"] and "Name From B" in finding["reason"]
     assert "rank" in finding["reason"]
 

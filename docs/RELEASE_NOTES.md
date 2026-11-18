@@ -424,6 +424,23 @@
   last progress line. Tool output that does reach a job's error has its
   backspaces, colour codes and other control characters removed, for every
   tool.
+- **Inbox reporting** (#457, #458). A ROM an Inbox holds because equally
+  ranked DATs name it differently now shows in Findings as "Inbox: DAT name
+  conflict" (kind `inbox_dat_conflict`), not "Inbox: Platform conflict"; the
+  hold still lifts when the ranking orders the DATs, and Findings already
+  stored as `inbox_conflict` keep their label. An archive that only waits to
+  be unpacked (no room under `CHD_ARCHIVE_INBOX_MAX_UNPACKED_SIZE`, or its
+  file changed or the storage was busy so it is taken again once it
+  settles) now ends its unpack
+  job completed with a warning, not failed, and `run-rules` prints it as
+  `waiting` under the archive's own file name instead of
+  `failed ... /__external_jobs__/<id>`. It still leaves no Finding and still
+  exits 0.
+- **Short jobs reach the Jobs panel at once** (#456). The job stream only
+  picked up jobs it saw queued or running on its 0.1 s loop, so a job that
+  started and ended in between (a patch job takes about 60 ms) showed up only
+  on the 30 s refresh. The stream now follows every job from the moment it is
+  created, and sends its end state exactly once.
 - **Rename to DAT name no longer skips every Image because of one bad sheet**
   (#454). A `.cue` or `.gdi` whose tracks can't be told (one that names a
   track by an absolute path, or one the app can't read) used to make the

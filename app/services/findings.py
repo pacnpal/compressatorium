@@ -65,14 +65,16 @@ ROMM_SWAP = "romm_swap"
 RENAME_CONFLICT = "rename_conflict"
 # A file an Inbox could not take into its Library (#431), each kind saying
 # why: its Platform couldn't be worked out, its header and folder disagree,
+# equally ranked DATs name it differently (``inbox_dat_conflict``, #457),
 # or intake failed (no placement folder, a failed conversion or copy, an
 # output name already taken). Owned by the Inbox's Library, keyed
 # ``inbox:<id>/<path in the Inbox>``. Written one file at a time by
 # ``services.inbox.intake`` and cleared when the file is taken or gone.
 INBOX_UNSORTED = "inbox_unsorted"
 INBOX_CONFLICT = "inbox_conflict"
+INBOX_DAT_CONFLICT = "inbox_dat_conflict"
 INBOX_FAILED = "inbox_failed"
-INBOX_KINDS = (INBOX_UNSORTED, INBOX_CONFLICT, INBOX_FAILED)
+INBOX_KINDS = (INBOX_UNSORTED, INBOX_CONFLICT, INBOX_DAT_CONFLICT, INBOX_FAILED)
 # A ``duplicate`` Finding's ``cause`` key: the copies, each ``{"image_key",
 # "path", "container", "size"}``.
 COPIES = "copies"

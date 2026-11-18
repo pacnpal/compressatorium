@@ -1626,8 +1626,12 @@ async def job_events():
     import json
 
     async def event_generator():
-        # Create a queue to receive all job updates
-        queues = {}
+        # Every job registered from here on is followed from its
+        # registration (#456): a job that starts and ends between two ticks
+        # (a patch job lives about 60 ms) still sends its whole life, end
+        # state included. The loop below follows the jobs that were already
+        # live when the stream opened.
+        feed = job_manager.watch_jobs()
         # One-time snapshot of every known job on (re)connection, so the
         # client never has to do a separate /api/jobs round-trip to hydrate.
         # This eliminates the race that existed when a client refreshed the
@@ -1663,13 +1667,13 @@ async def job_events():
         try:
             while True:
                 try:
-                    # Subscribe to any new jobs FIRST.
+                    # Follow any live job not yet followed FIRST.
                     for job in job_manager.get_all_jobs():
-                        if job.id not in queues and job.status in (
+                        if job.status in (
                             JobStatus.QUEUED,
                             JobStatus.PROCESSING,
-                        ):
-                            queues[job.id] = job_manager.subscribe(job.id)
+                        ) and not feed.following(job.id):
+                            feed.follow(job.id)
 
                     # Then emit the one-time snapshot of every known job.
                     if not snapshot_sent:
@@ -1708,10 +1712,15 @@ async def job_events():
                             "data": json.dumps({"type": "history", "history": history}),
                         }
 
-                    # Check all queues for updates
-                    for job_id, queue in list(queues.items()):
-                        try:
-                            update = queue.get_nowait()
+                    # Drain every followed job's queue: taking one event a
+                    # tick let a burst fill the queue and drop the end state.
+                    for job_id, queue in feed.followed():
+                        ended = False
+                        while not ended:
+                            try:
+                                update = queue.get_nowait()
+                            except asyncio.QueueEmpty:
+                                break
                             job = job_manager.get_job(job_id)
                             if job is not None:
                                 update = {
@@ -1722,14 +1731,11 @@ async def job_events():
                                 "event": update.get("type", "progress"),
                                 "data": json.dumps(update),
                             }
-
-                            # Unsubscribe if job is done
-                            if update.get("type") in ("complete", "error", "cancelled"):
-                                job_manager.unsubscribe(job_id, queue)
-                                del queues[job_id]
-
-                        except asyncio.QueueEmpty:
-                            pass
+                            ended = update.get("type") in ("complete", "error", "cancelled")
+                        if ended or job_manager.get_job(job_id) is None:
+                            # Done, or deleted without an end event: nothing
+                            # more comes for it.
+                            feed.drop(job_id)
 
                     await asyncio.sleep(0.1)
 
@@ -1737,8 +1743,7 @@ async def job_events():
                     # Log error but keep the connection alive
                     await asyncio.sleep(1)
         finally:
-            for job_id, queue in list(queues.items()):
-                job_manager.unsubscribe(job_id, queue)
+            feed.close()
 
     return EventSourceResponse(event_generator())
 

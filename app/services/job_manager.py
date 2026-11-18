@@ -638,6 +638,60 @@ class SourceRefused(Exception):
     run's own cleanup letting go of everything it holds."""
 
 
+class JobFeed:
+    """Every job's events for one reader (the job stream), each job followed
+    from the moment the job manager registers it (#456).
+
+    A reader that only subscribed to the jobs it saw queued or running on
+    its own poll missed any job that started and ended between two polls.
+    Here the job manager subscribes the feed to each job as it registers
+    it, before any event for that job can be sent, so a job's whole life,
+    its end state included, lands in the feed however short it is.
+
+    A job may be registered on a worker thread while the reader works on the
+    event loop: ``_mutex`` guards the followed jobs, and the per-job queues
+    are only ever written on the loop (``_notify_subscribers``).
+    """
+
+    def __init__(self, manager: "JobManager") -> None:
+        self._manager = manager
+        self._queues: dict[str, asyncio.Queue] = {}
+        self._closed = False
+        self._mutex = threading.Lock()
+
+    def follow(self, job_id: str) -> None:
+        """Start following *job_id*; a no-op for one already followed, or
+        once the feed is closed (a registration racing ``close``)."""
+        with self._mutex:
+            if not self._closed and job_id not in self._queues:
+                self._queues[job_id] = self._manager.subscribe(job_id)
+
+    def following(self, job_id: str) -> bool:
+        with self._mutex:
+            return job_id in self._queues
+
+    def followed(self) -> list[tuple[str, asyncio.Queue]]:
+        """The jobs followed right now, with each one's queue."""
+        with self._mutex:
+            return list(self._queues.items())
+
+    def drop(self, job_id: str) -> None:
+        """Stop following *job_id* (it ended, or the manager forgot it)."""
+        with self._mutex:
+            queue = self._queues.pop(job_id, None)
+        if queue is not None:
+            self._manager.unsubscribe(job_id, queue)
+
+    def close(self) -> None:
+        """Stop following every job, and stop being told of new ones."""
+        self._manager.unwatch_jobs(self)
+        with self._mutex:
+            self._closed = True
+            queues, self._queues = self._queues, {}
+        for job_id, queue in queues.items():
+            self._manager.unsubscribe(job_id, queue)
+
+
 class JobManager:
     """Manages conversion job queue and execution."""
 
@@ -661,6 +715,11 @@ class JobManager:
         self.max_job_history = max(0, max_job_history)
         self._queue: asyncio.PriorityQueue = asyncio.PriorityQueue()
         self._subscribers: Dict[str, List[asyncio.Queue]] = {}
+        # Guards `_subscribers` and `_feeds`: a job can be registered (and a
+        # feed subscribed to it) on a worker thread.
+        self._subscribers_mutex = threading.Lock()
+        # Readers told of every job as it is registered (`watch_jobs`).
+        self._feeds: list[JobFeed] = []
         self._cancelled: Set[str] = set()
         self._cancel_events: Dict[str, asyncio.Event] = {}
         # Strong refs to in-flight requeue tasks so the event loop can't
@@ -863,7 +922,7 @@ class JobManager:
         job._source_identity = source_identity
         job._trusted_root = trusted_root
 
-        self.jobs[job_id] = job
+        self._register_job(job)
         # Every key this job claims -- its destination and the sidecars the
         # mode writes beside it -- for the reservation that runs after this
         # one. See `_output_keys`.
@@ -1511,7 +1570,7 @@ class JobManager:
             created_at=datetime.now(timezone.utc),
             started_at=datetime.now(timezone.utc),
         )
-        self.jobs[job_id] = job
+        self._register_job(job)
         # Register a cancel event so external-job loops can check for
         # cancellation (symmetric with dispatcher jobs at _process_job).
         # Event must be created on a running loop; fall back silently in
@@ -1771,6 +1830,21 @@ class JobManager:
         # - the normal "Clear Done" flow can remove it alongside conversion jobs
         # Enforce max_job_history on completion (exclude_id preserves this job).
         await self._prune_jobs(exclude_id=job_id)
+
+    async def finish_external_job_waiting(self, job_id: str, reason: str) -> None:
+        """End an externally-managed job that did nothing yet, only because
+        it has to wait (an Inbox archive with no room to unpack, #458).
+
+        Not a failure: the job is COMPLETED, its ``warning`` says what it
+        waits for, and ``result["waiting"]`` lets a reader (``run-rules``'s
+        line, the job list) report it as waiting instead of done. The work is
+        tried again by whoever started it."""
+        job = self.jobs.get(job_id)
+        if job is None:
+            return
+        job.warning = reason
+        job.result = {"waiting": True}
+        await self.finish_external_job(job_id, success=True)
 
     async def finish_external_job_cancelled(
         self,
@@ -2892,18 +2966,44 @@ class JobManager:
     def subscribe(self, job_id: str) -> asyncio.Queue:
         """Subscribe to progress updates for a job."""
         queue: asyncio.Queue = asyncio.Queue(maxsize=100)
-        if job_id not in self._subscribers:
-            self._subscribers[job_id] = []
-        self._subscribers[job_id].append(queue)
+        with self._subscribers_mutex:
+            self._subscribers.setdefault(job_id, []).append(queue)
         return queue
 
     def unsubscribe(self, job_id: str, queue: asyncio.Queue):
         """Unsubscribe from progress updates."""
-        if job_id in self._subscribers:
-            try:
-                self._subscribers[job_id].remove(queue)
-            except ValueError:
-                pass
+        with self._subscribers_mutex:
+            queues = self._subscribers.get(job_id)
+            if queues is None:
+                return
+            with contextlib.suppress(ValueError):
+                queues.remove(queue)
+            if not queues:
+                del self._subscribers[job_id]
+
+    def watch_jobs(self) -> JobFeed:
+        """A feed of every job registered from now on, each followed from
+        its registration (#456); ``JobFeed.close`` ends it. Jobs registered
+        before the call are the caller's to follow (``JobFeed.follow``)."""
+        feed = JobFeed(self)
+        with self._subscribers_mutex:
+            self._feeds.append(feed)
+        return feed
+
+    def unwatch_jobs(self, feed: JobFeed) -> None:
+        """Stop telling *feed* of new jobs; a no-op when it is not watching."""
+        with self._subscribers_mutex, contextlib.suppress(ValueError):
+            self._feeds.remove(feed)
+
+    def _register_job(self, job: ConversionJob) -> None:
+        """Add *job* to the list and subscribe every open feed to it, before
+        anything can send an event for it. The one place a job is
+        registered, conversion or external, on the loop or a worker thread."""
+        self.jobs[job.id] = job
+        with self._subscribers_mutex:
+            feeds = list(self._feeds)
+        for feed in feeds:
+            feed.follow(job.id)
 
     async def _cleanup_temp_dir(self, job: ConversionJob):
         if job._bound is not None:
@@ -2978,12 +3078,13 @@ class JobManager:
 
     async def _notify_subscribers(self, job_id: str, data: dict):
         """Notify all subscribers of a job update."""
-        if job_id in self._subscribers:
-            for queue in self._subscribers[job_id]:
-                try:
-                    queue.put_nowait(data)
-                except asyncio.QueueFull:
-                    pass
+        with self._subscribers_mutex:
+            queues = list(self._subscribers.get(job_id, ()))
+        for queue in queues:
+            try:
+                queue.put_nowait(data)
+            except asyncio.QueueFull:
+                pass
 
     async def _set_job_message(self, job_id: str, message: str):
         job = self.jobs.get(job_id)
