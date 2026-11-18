@@ -986,9 +986,11 @@ async def _hash_one_for_job(
         return {"path": normalized_path, "matched": False}, False
 
     try:
+        # The bounded read only for a caller that asks for it (the Inbox,
+        # #432): every other caller makes exactly the call it always made.
+        bounded = {"stall_bounded": True, "stall": stall} if stall_bounded else {}
         result = await _match_single_file(
-            normalized_path, cancel_event=cancel_event, local_only=local_only,
-            stall_bounded=stall_bounded, stall=stall,
+            normalized_path, cancel_event=cancel_event, local_only=local_only, **bounded,
         )
     except ReadCancelled as exc:
         if stall_bounded:
