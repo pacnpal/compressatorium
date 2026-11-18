@@ -1462,6 +1462,8 @@ def test_a_wrapper_lookup_that_stalls_runs_at_normal_priority(monkeypatch):
     loop, bounded; a PATH entry that doesn't answer means that spawn runs
     with no wrapper, and nothing is cached, so a later spawn tries again."""
     monkeypatch.setattr(runner_module, "_WRAPPERS", {})
+    # A fresh set: the stub below never runs the lookup that would clear it.
+    monkeypatch.setattr(runner_module, "_LOOKING_UP", set())
     monkeypatch.setattr(runner_module, "nice_value", lambda _owner=None: 10)
     looked_up = []
 
@@ -1630,3 +1632,32 @@ def test_a_format_check_that_doesnt_complete_runs_the_tool_bare(tmp_path, monkey
     assert spawned and all(arg == str(empty) for arg in spawned)  # never the wrapper
     assert not runner.active_pids()
 
+
+
+def test_a_wrapped_127_forgets_a_stale_inner_wrapper(tmp_path, monkeypatch):
+    """codex 4617171876: a cached inner `ionice` removed since makes the outer
+    `nice` exit 127. That run forgets the cache, so the next spawn looks the
+    wrappers up again and runs without the missing one."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake_nice = bin_dir / "nice"
+    fake_nice.write_text('#!/bin/sh\nshift 2\nexec "$@"\n')  # nice -n N cmd...
+    fake_nice.chmod(0o755)
+    monkeypatch.setenv("PATH", str(bin_dir))  # no ionice on it any more
+    monkeypatch.setattr(runner_module, "_resolve_policy", lambda key, _owner: {
+        "nice": 0, "ioprio_class": 2, "ioprio_level": 7,
+    }.get(key))
+    monkeypatch.setattr(runner_module, "_WRAPPERS", {
+        "nice": str(fake_nice), "ionice": str(tmp_path / "gone" / "ionice"),
+    })
+    monkeypatch.setattr(runner_module, "_LOOKING_UP", set())
+    runner = SubprocessRunner(owner="test")
+    cmd = [sys.executable, "-c", "print('ok')"]
+
+    rc, _out, _err = asyncio.run(runner.run_capture(cmd))
+    assert rc == 127
+    assert runner_module._WRAPPERS == {}
+
+    rc, out, _err = asyncio.run(runner.run_capture(cmd))
+    assert (rc, out) == (0, b"ok\n")
+    assert runner_module._WRAPPERS == {"nice": str(fake_nice), "ionice": None}

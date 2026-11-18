@@ -560,7 +560,10 @@ wrapper outstanding, even after its caller gave up on it, so a PATH entry
 that never answers costs one probe thread. A lookup that doesn't answer runs
 that spawn with no wrappers at all, both omitted, at normal priority, with
 nothing cached, so a later spawn tries again. A wrapped spawn that fails to
-start forgets the cache, so a wrapper removed since is looked up again.
+start, or a wrapped run that exits 126/127 on any path (an outer `nice` that
+starts while its cached inner `ionice` is gone exits 127), forgets the cache,
+so a wrapper removed since is looked up again; a tool's own 126/127 costs one
+extra lookup.
 Building a prefix (`nice_prefix`, `ioprio_prefix`) reads the cache alone and
 never scans; `run_capture` reports whether it actually wrapped its run
 (`wrapped_into`), which is what `capture_verify` reads a 126/127 by. A wrapped

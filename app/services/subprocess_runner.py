@@ -772,6 +772,15 @@ def _forget_wrappers() -> None:
     _WRAPPERS.clear()
 
 
+def _note_exit(returncode: int | None, wrapped: bool) -> None:
+    """A wrapped run that exited 126/127 may mean a cached wrapper is gone:
+    the outer ``nice`` starts and its inner ``ionice`` doesn't (codex
+    4617171876). Forget the cache, so the next spawn looks them up again; a
+    tool's own 126/127 costs one extra lookup."""
+    if wrapped and returncode in (126, 127):
+        _forget_wrappers()
+
+
 def _not_launched_event(returncode: int | None, wrapped: bool, said: bytes | str) -> dict | None:
     """The inconclusive verify event for a wrapped verifier that exited
     126/127, or None. Those are the codes ``nice``/``ionice`` (like a shell)
@@ -781,6 +790,7 @@ def _not_launched_event(returncode: int | None, wrapped: bool, said: bytes | str
     a verify reads them as "could not run" and a stored pass is never
     overwritten. Only the verify paths ask: every other caller sees the exit
     code as before (a non-zero exit, the "couldn't run" fallback it had)."""
+    _note_exit(returncode, wrapped)
     if not wrapped or returncode not in (126, 127):
         return None
     if isinstance(said, bytes):
@@ -2229,6 +2239,7 @@ class SubprocessRunner:
             )
             if comm in done:
                 stdout, stderr = comm.result()
+                _note_exit(process.returncode, wrapped)
                 return process.returncode, stdout or b"", stderr or b""
             # Cancelled or timed out before the process exited; the finally
             # block below terminates it and drains ``comm``.
@@ -2352,6 +2363,7 @@ class SubprocessRunner:
                     with contextlib.suppress(asyncio.CancelledError, Exception):
                         await helper
             self.untrack_pid(process.pid)
+        _note_exit(process.returncode, wrapped)
         if process.returncode is not None and process.returncode < 0:
             raise RuntimeError(killed_by_signal_message(label, process.returncode))
         if process.returncode != 0:
@@ -3257,6 +3269,7 @@ class SubprocessRunner:
             if abandoned_error:
                 raise RuntimeError(abandoned_error)
 
+            _note_exit(process.returncode, wrapped)
             if process.returncode is not None and process.returncode < 0:
                 # Killed (by the OOM killer, most likely): its last output is
                 # a progress line, not the reason, so it goes to the log only.
