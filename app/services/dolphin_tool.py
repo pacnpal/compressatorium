@@ -11,8 +11,6 @@ from services.subprocess_runner import (
     abandonment_checkpoint,
     collect_verify,
     info_timeout,
-    ioprio_prefix,
-    nice_prefix,
     resolve_verify_timeout,
 )
 
@@ -78,10 +76,6 @@ class DolphinToolService:
             if level:
                 cmd.extend(["-l", level])
 
-        prefix = ioprio_prefix(self._runner.owner)
-        if prefix:
-            cmd = prefix + cmd
-
         return cmd
 
     def _wrap_with_stdbuf(self, cmd: list[str]) -> list[str]:
@@ -140,17 +134,10 @@ class DolphinToolService:
         ``collect_abandonment()`` sink (issue #268).
         """
         timeout = info_timeout(self._runner.owner)
-        # Wrapper-based priority, not preexec_fn -- see the note in
-        # ``chdman.info``: a fork of a Python callable from this multithreaded
-        # parent can deadlock the child before exec, and then
-        # create_subprocess_exec never returns to apply the bound at all.
-        owner = self._runner.owner
         with abandonment_checkpoint() as abandoned:
             returncode, stdout, stderr = await self._runner.run_capture(
-                nice_prefix(owner) + ioprio_prefix(owner)
-                + [self.dolphin_tool_path, "header", "-i", path],
+                [self.dolphin_tool_path, "header", "-i", path],
                 timeout=timeout or None,
-                nice_via_wrapper=True,
             )
         # An ordinary timeout leaves the child dead; this one does not, and the
         # caller's answer differs (retry vs. tell the client the storage is not

@@ -33,8 +33,6 @@ from services.chdman import ConversionCancelled
 from services.subprocess_runner import (
     SubprocessRunner,
     collect_verify,
-    ioprio_prefix,
-    nice_prefix,
     remove_partial_output,
     verify_preflight,
     verify_exception_event,
@@ -150,14 +148,7 @@ class MaxcsoService:
         # cso_compress uses the default cso1 format (no flag).
         cmd += _effort_flags(mode, compression)
         cmd += [input_path, "-o", output_path]
-
-        # Apply nice/ionice via command wrappers, NOT preexec_fn: forking a
-        # Python callable in a multithreaded app (this one uses threadpools) can
-        # deadlock the child before exec. `nice`/`ionice` are exec-only. The
-        # priority policy is the shared tool-neutral one (with optional
-        # COMPRESSATORIUM_MAXCSO_* overrides), resolved in subprocess_runner.
-        prefix = nice_prefix(_OWNER) + ioprio_prefix(_OWNER)
-        return prefix + cmd
+        return cmd
 
     def active_pids(self) -> list[int]:
         return self._runner.active_pids()
@@ -214,8 +205,7 @@ class MaxcsoService:
 
         yield {"progress": 1, "message": f"Starting CSO {verb}..."}
 
-        # maxcso applies nice/ionice as command wrappers in _build_command
-        # (nice_via_wrapper) to avoid preexec_fn, and prints no parseable percent
+        # maxcso prints no parseable percent
         # (its TTY bar goes silent on a pipe), so the runner's size-growth
         # fallback reports status from the growing -o file.
         try:
@@ -229,7 +219,6 @@ class MaxcsoService:
                 fail_label="maxcso",
                 complete_message=f"CSO {verb} complete",
                 mode=mode,
-                nice_via_wrapper=True,
             ):
                 yield update
         except (ConversionCancelled, RuntimeError, asyncio.CancelledError, GeneratorExit):
@@ -320,23 +309,13 @@ class MaxcsoService:
             yield problem
             return
 
-        # Throttle verify the same way conversions are: `maxcso --crc` fully
-        # decompresses the container and is just as disk/CPU-heavy as a convert,
-        # so it must honor the same nice/ionice policy (incl. the optional
-        # COMPRESSATORIUM_MAXCSO_* overrides) via command wrappers -- maxcso
-        # avoids preexec_fn, hence nice_via_wrapper below.
-        verify_cmd = (
-            nice_prefix(_OWNER)
-            + ioprio_prefix(_OWNER)
-            + [self.maxcso_path, "--crc", file_path]
-        )
+        verify_cmd = [self.maxcso_path, "--crc", file_path]
         try:
             async for update in self._runner.capture_verify(
                 verify_cmd,
                 path=file_path,
                 success_message="File is Intact",
                 cancel_event=cancel_event,
-                nice_via_wrapper=True,
             ):
                 yield update
         except Exception as e:

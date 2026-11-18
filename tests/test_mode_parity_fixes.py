@@ -588,7 +588,7 @@ async def test_get_job_endpoint_returns_archived_job(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_dispatcher_keeps_processing_serial_when_max_concurrent_one(
-    tmp_path: Path, monkeypatch,
+    tmp_path: Path, tmp_volume, monkeypatch,
 ):
     """The dispatcher should never run more than one conversion at a time in serial mode."""
     source_a = tmp_path / "a.iso"

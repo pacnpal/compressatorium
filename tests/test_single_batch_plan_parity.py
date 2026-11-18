@@ -903,7 +903,7 @@ async def test_destination_canonicalisation_never_runs_on_the_event_loop(
     real = os.path.realpath
     stuck = threading.Event()
 
-    def _realpath(path):
+    def _realpath(path, *_args, **_kwargs):
         assert threading.get_ident() != loop_thread, (
             f"realpath({path}) ran on the event loop"
         )
@@ -1010,7 +1010,7 @@ async def test_companion_enumeration_never_runs_on_the_event_loop(
     stuck = threading.Event()
     real = os.path.realpath
 
-    def _realpath(path):
+    def _realpath(path, *_args, **_kwargs):
         assert threading.get_ident() != loop_thread, (
             f"realpath({path}) ran on the event loop"
         )

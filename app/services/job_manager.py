@@ -70,6 +70,8 @@ from utils.path_utils import (
     is_safe_directory_tree,
     bind_source,
     is_within_configured_volumes,
+    queued_source_identity,
+    queued_source_problem,
     source_identity_problem,
     source_companions_are_safe,
     strip_archive_path,
@@ -520,20 +522,24 @@ async def _resolve_paths_bounded(paths: Iterable[str]) -> Dict[str, str]:
     # would slip through a check that is otherwise atomic under the lock.
     produced: Dict[str, str] = {}
 
-    def _resolve_all() -> None:
+    def _resolve_all(progress) -> None:
         for path in pending:
             try:
                 produced[path] = os.path.realpath(path)
             except OSError:
                 pass  # leave the lexical seed in place
+            progress()
 
     try:
-        await asyncio.wait_for(
-            run_detached(_resolve_all), _CANONICAL_PROBE_SECONDS,
+        # Bounded by progress, not by the batch's size (codex 4614857109's
+        # class): the clock restarts after each path.
+        await run_detached_within_stall_bound(
+            _resolve_all, what="Canonicalising destinations",
+            stall=_CANONICAL_PROBE_SECONDS, report_progress=True,
         )
-    except (asyncio.TimeoutError, OSError):
+    except (RuntimeError, asyncio.TimeoutError, OSError):
         logger.warning(
-            "Canonicalising %d destination(s) did not finish in %.1fs; "
+            "Canonicalising %d destination(s) made no progress for %.1fs; "
             "refusing the reservation (a volume is not answering)",
             len(pending),
             _CANONICAL_PROBE_SECONDS,
@@ -982,6 +988,9 @@ class JobManager:
         # `create_jobs_atomic`).
         await self._prune_jobs()
         # Outside the lock, and off the event loop: see `_reservation_keys`.
+        # The Source capture first, so its wait never sits between resolving
+        # the destination keys and comparing them under the lock.
+        await self._capture_source_identities(specs, mode)
         reservation = await self._reservation_keys(specs, mode)
         async with self._create_lock:
             self._enforce_queue_backpressure_locked(1)
@@ -1002,6 +1011,7 @@ class JobManager:
                 split=split,
                 delete_snapshot=delete_snapshot,
                 reservation=reservation,
+                source_identity=specs[0].get("source_identity"),
             )
         return job
 
@@ -1027,6 +1037,13 @@ class JobManager:
         # back and so could not withdraw. It removes finished jobs only, so the
         # claim check below answers the same either way.
         await self._prune_jobs()
+        # Captured into this attempt's own copies: a submission refused below
+        # (backpressure, a claimed destination) captures again when retried,
+        # rather than reusing an error from storage that has since recovered.
+        # First, so the capture's wait never sits between resolving the
+        # destination keys and comparing them under the lock.
+        job_specs = [dict(spec) for spec in job_specs]
+        await self._capture_source_identities(job_specs, mode)
         # Outside the lock, and off the event loop: see `_reservation_keys`.
         reservation = await self._reservation_keys(job_specs, mode)
         async with self._create_lock:
@@ -1183,6 +1200,61 @@ class JobManager:
             mode.value, file_path, output_dir,
         )
 
+    async def _capture_source_identities(
+        self, job_specs: list[dict[str, object]], mode: ConversionMode,
+    ) -> None:
+        """Give every spec queued without one its Source's identity as it is
+        now (``queued_source_identity``, #449), so the job can tell when it
+        runs that it still reads that file, inside the Volumes. Every
+        conversion is queued through here, whoever queued it; an Inbox's
+        specs already carry theirs. One that can't be captured carries why
+        (``{"error": ...}``) and its job is refused when it runs, with that
+        reason. A folder Source (a DIRECTORY mode) has no file identity and is
+        re-checked by the folder checks when it runs. Off the event loop,
+        bounded by progress rather than by the batch's size (codex
+        4614857109): the clock restarts after each Source, so a large healthy
+        batch is never cut off, and when one stops answering, the Sources
+        already captured keep their identities and only the rest carry the
+        stall as their error."""
+        try:
+            if registry.mode_input_kind(mode.value) == InputKind.DIRECTORY:
+                return
+        except KeyError:
+            pass
+        wanted = [spec for spec in job_specs if not spec.get("source_identity")]
+        if not wanted:
+            return
+
+        captured: list[dict[str, object]] = []
+
+        def capture(progress) -> None:
+            for spec in wanted:
+                file_path = str(spec["file_path"])
+                try:
+                    identity = queued_source_identity(file_path, mode.value)
+                except TimeoutError as exc:  # a Volume root didn't answer: no verdict
+                    identity = {"error": str(exc), "unanswered": True}
+                except (OSError, ValueError) as exc:
+                    identity = {"error": str(exc)}
+                progress()  # raises once the wait below has given up
+                captured.append(identity)
+
+        try:
+            await run_detached_within_stall_bound(
+                capture, what="Checking the Sources", stall=_CANONICAL_PROBE_SECONDS,
+                report_progress=True,
+            )
+            unanswered: dict[str, object] = {}
+        except (RuntimeError, asyncio.TimeoutError, OSError) as exc:
+            # Marked: a Source never reached says nothing about the Image, so
+            # a Rule's failed-hold skips it (``sweep._never_checked``).
+            unanswered = {
+                "error": f"no answer ({exc})" if str(exc) else "no answer", "unanswered": True,
+            }
+        done = list(captured)  # a late append from an abandoned worker can't land in it
+        for index, spec in enumerate(wanted):
+            spec["source_identity"] = done[index] if index < len(done) else unanswered
+
     async def _reservation_keys(
         self, job_specs: List[Dict[str, object]], mode: ConversionMode,
     ) -> _Reservation:
@@ -1237,19 +1309,23 @@ class JobManager:
 
         companions: Dict[str, List[str]] = {}
 
-        def _enumerate() -> None:
+        def _enumerate(progress) -> None:
             for destination, job_mode in wanted:
                 if destination in companions:
                     continue
                 companions[destination] = self._companions(job_mode, destination)
+                progress()
 
         try:
-            await asyncio.wait_for(
-                run_detached(_enumerate), _CANONICAL_PROBE_SECONDS,
+            # Bounded by progress, not by the batch's size (codex
+            # 4614857109's class): the clock restarts after each destination.
+            await run_detached_within_stall_bound(
+                _enumerate, what="Listing companion outputs",
+                stall=_CANONICAL_PROBE_SECONDS, report_progress=True,
             )
-        except (asyncio.TimeoutError, OSError):
+        except (RuntimeError, asyncio.TimeoutError, OSError):
             logger.warning(
-                "Enumerating companion outputs did not finish in %.1fs; "
+                "Enumerating companion outputs made no progress for %.1fs; "
                 "refusing the reservation (a volume is not answering)",
                 _CANONICAL_PROBE_SECONDS,
             )
@@ -2064,21 +2140,47 @@ class JobManager:
         if held is not None:
             held.release()
 
-    async def _source_identity_problem_bounded(self, job: ConversionJob) -> Optional[str]:
+    async def _source_identity_problem_bounded(
+        self, job: ConversionJob, cancel_event: asyncio.Event | None = None,
+    ) -> Optional[str]:
         """Why the job's Source isn't the one it was queued with
-        (``_source_identity``), or None; None too for a job queued without
-        one. Bounded: a Source that doesn't answer is a reason, never a pass."""
-        identity = job._source_identity
-        if not identity or job.input_kind == InputKind.DIRECTORY:
+        (``_source_identity``), or None. A file Source queued without one, or
+        whose identity couldn't be captured (#449), is a reason too: nothing
+        tells what it reads now from what it was queued for. A folder Source
+        (DIRECTORY) has none; the folder checks cover it. Bounded: a Source
+        that doesn't answer is a reason, never a pass, and is marked
+        ``unanswered`` on the job's identity like a stalled capture, so a
+        Rule's failed-hold doesn't take it for a verdict. A cancel
+        (*cancel_event*) stops the wait and ends the job CANCELLED."""
+        if job.input_kind == InputKind.DIRECTORY:
             return None
+        identity = job._source_identity
+        if not identity:
+            return "the job was queued without its Source's identity, so it can't be checked"
+        if "error" in identity:
+            return f"the Source couldn't be checked when it was queued ({identity['error']})"
+        def problem() -> Optional[str]:
+            if identity.get("in_place"):
+                # The Source first: its sheet isn't read for the companions
+                # until it is the one queued, inside the Volumes (CodeRabbit
+                # 4614956778). Then its companions too (CodeRabbit 4614956755):
+                # the converter opens a split set's parts and a sheet's tracks
+                # itself.
+                return queued_source_problem(job.file_path, identity) or queued_source_problem(
+                    job.file_path, identity, job.mode.value,
+                )
+            return source_identity_problem(job.file_path, identity, job._trusted_root)
+
         try:
             return await asyncio.wait_for(
-                run_detached(
-                    source_identity_problem, job.file_path, identity, job._trusted_root,
-                ),
-                _CANONICAL_PROBE_SECONDS,
+                run_detached(problem, cancel_event=cancel_event), _CANONICAL_PROBE_SECONDS,
             )
+        except ReadCancelled as exc:
+            raise ConversionCancelled("Conversion cancelled") from exc
         except (asyncio.TimeoutError, OSError) as exc:
+            # No answer is no verdict on the Image (CodeRabbit, review
+            # 5960207187): ``sweep._never_checked`` reads this mark.
+            job._source_identity = {**identity, "unanswered": True}
             return f"the Source couldn't be checked ({exc or 'no answer'})"
 
     async def _bind_source_bounded(
@@ -2094,6 +2196,13 @@ class JobManager:
         CANCELLED (Codex 4606539525); a late answer's folder is removed."""
         identity = job._source_identity
         if not identity or job.input_kind == InputKind.DIRECTORY:
+            return None
+        if identity.get("in_place"):
+            # A Source in a Volume (#449) isn't bound: it is read by the path
+            # it was submitted as, which `queued_source_problem` just found
+            # still leads to the file checked. Not the resolved path: a sheet
+            # submitted through a link names its tracks beside the link, and
+            # that is what the job locked (codex 4614857083).
             return None
         # A copy fallback (no hard links on a NAS) takes as long as the Image:
         # bounded by its progress, not a fixed deadline (Codex 4606061281).
@@ -2126,6 +2235,8 @@ class JobManager:
             if isinstance(exc, ReadCancelled):
                 raise ConversionCancelled("Conversion cancelled") from exc
             if isinstance(exc, (OSError, RuntimeError, asyncio.TimeoutError)):
+                if isinstance(exc, TimeoutError):  # no answer: no verdict (codex 4618766182)
+                    job._source_identity = {**identity, "unanswered": True}
                 return f"the Source couldn't be bound for reading ({exc})"
             raise
         job._bound, job._read_path = bound, bound.read_path
@@ -2304,6 +2415,18 @@ class JobManager:
         member) and the Source's companions (cue/gdi tracks, split parts)."""
         if "::" in job.file_path:
             return [job.file_path.split("::", 1)[0]]
+        identity = job._source_identity
+        if not identity or "error" in identity:
+            # No usable identity: refused once its Source's lock is held, and
+            # its sheet is never parsed for tracks to lock first (CodeRabbit
+            # 4614956778, 4615215842).
+            return [job.file_path]
+        if identity.get("in_place"):
+            # The companions captured when it was queued, so nothing is read
+            # here: this runs inside the unbounded input-lock wait (CodeRabbit
+            # 4615955374). The bounded check after the locks are held finds a
+            # companion that changed since.
+            return [job.file_path, *(each["ref"] for each in identity.get("companions", []))]
         return [job.file_path, *self._track_candidate_paths(job.file_path)]
 
     def _begin_input_attempt(self, job_id: str) -> object:
@@ -2407,13 +2530,10 @@ class JobManager:
             lock_manager.release_lock(path)
 
     def _candidate_paths(self, job: ConversionJob) -> List[str]:
-        paths = []
-        file_path = job.file_path
-        if "::" in file_path:
-            paths.append(file_path.split("::", 1)[0])
-        else:
-            paths.append(file_path)
-            paths.extend(self._track_candidate_paths(file_path))
+        # The files it reads, as its input locks name them: the captured
+        # companions for an in-place Source, so a sheet swapped since it was
+        # queued isn't read here (CodeRabbit, review 5960207187).
+        paths = self._input_paths(job)
         if job.output_path:
             paths.append(job.output_path)
             # Companion outputs a mode writes beside its primary (extractcd's
@@ -3608,7 +3728,7 @@ class JobManager:
         # Imported here: services.libraries imports this module.
         from services import libraries
 
-        if job._source_identity:
+        if job._source_identity and not job._source_identity.get("in_place"):
             # A bound Source (#431) may change under its job: its output is
             # staged, so one made from a changed Source is never published
             # (Codex 4606539513).
@@ -6052,10 +6172,12 @@ class JobManager:
             # region (CodeRabbit 4606147979): a cancel while either waits lets
             # go of the output locks and the slot too. A refusal ends the job
             # FAILED with nothing written or removed: no output exists yet.
-            problem = await self._source_identity_problem_bounded(job)
+            problem = await self._source_identity_problem_bounded(job, cancel_event)
             if problem is None:
                 problem = await self._bind_source_bounded(job, cancel_event)
             if problem is not None:
+                if cancel_event.is_set():
+                    raise ConversionCancelled("Conversion cancelled")
                 raise SourceRefused(f"Not converted: {problem}")
             # Ledger bookkeeping (#292): size the Source set before anything can
             # delete it. Inside the cleanup-protected region, on a detached

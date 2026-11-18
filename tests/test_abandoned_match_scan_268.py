@@ -120,7 +120,7 @@ async def test_chdman_info_uses_the_shared_capture(monkeypatch):
     seen = []
 
     async def fake_capture(cmd, **kwargs):
-        seen.append((cmd, kwargs.get("nice_via_wrapper")))
+        seen.append(cmd)
         return 0, b"", b""
 
     monkeypatch.setattr(chdman_service.runner, "run_capture", fake_capture)
@@ -128,10 +128,7 @@ async def test_chdman_info_uses_the_shared_capture(monkeypatch):
 
     assert await chdman_service.info("/data/g.chd") == {"ok": True}
     assert len(seen) == 1
-    cmd, via_wrapper = seen[0]
-    assert "info" in cmd
-    # Never preexec_fn -- see the note in the disc_id case above.
-    assert via_wrapper is True
+    assert "info" in seen[0]
 
 
 @pytest.mark.asyncio
@@ -142,7 +139,7 @@ async def test_dolphin_header_uses_the_shared_capture(monkeypatch):
     seen = []
 
     async def fake_capture(cmd, **kwargs):
-        seen.append((cmd, kwargs.get("nice_via_wrapper")))
+        seen.append(cmd)
         return 0, b"", b""
 
     monkeypatch.setattr(dolphin_tool_service._runner, "run_capture", fake_capture)
@@ -152,9 +149,7 @@ async def test_dolphin_header_uses_the_shared_capture(monkeypatch):
 
     assert await dolphin_tool_service.header("/data/g.iso") == {"ok": True}
     assert len(seen) == 1
-    cmd, via_wrapper = seen[0]
-    assert "header" in cmd
-    assert via_wrapper is True
+    assert "header" in seen[0]
 
 
 @pytest.mark.asyncio
@@ -171,13 +166,11 @@ async def test_disc_id_helpers_use_chdmans_runner(tmp_path, monkeypatch):
     from services.chdman import chdman_service
 
     calls = []
-    wrapper_only = []
 
     async def fake_capture(cmd, **kwargs):
         for sub in ("addmeta", "delmeta", "dumpmeta"):
             if sub in cmd:
                 calls.append(sub)
-        wrapper_only.append(kwargs.get("nice_via_wrapper"))
         return 0, b"", b""
 
     monkeypatch.setattr(chdman_service.runner, "run_capture", fake_capture)
@@ -187,11 +180,6 @@ async def test_disc_id_helpers_use_chdmans_runner(tmp_path, monkeypatch):
     await disc_id._dumpmeta_raw(str(chd), "GDRO", "chdman")
 
     assert calls == ["dumpmeta"]
-    # Priority as command wrappers, never run_capture's preexec_fn: forking a
-    # Python callable from this multithreaded parent can deadlock the child
-    # before exec, and create_subprocess_exec then never returns to apply the
-    # bound at all. The spawn this replaced used no preexec_fn either.
-    assert wrapper_only == [True]
 
 
 # ---------------------------------------------------------------------------

@@ -25,6 +25,7 @@ name pass ``resolve_track`` while chdman opens another one:
 """
 from __future__ import annotations
 
+import errno
 import os
 import re
 from collections.abc import Callable, Mapping, Sequence
@@ -150,7 +151,14 @@ def _sheet_spellings(path: str | Path) -> tuple[list[str], str] | None:
     try:
         with open(path, "rb") as fh:
             raw = fh.read(MAX_SHEET_BYTES + 1)
-    except OSError:
+    except OSError as exc:
+        if exc.errno in (errno.ETIMEDOUT, errno.EIO):
+            # Storage that didn't answer: "couldn't tell", never "no tracks",
+            # for a caller that reads the unknown count (the queued identity's
+            # companion list, codex 4618766182).
+            from utils.path_utils import _note_unknown  # local: no cycle
+
+            _note_unknown()
         return None
     return sheet_spellings_of(raw, Path(path).suffix)
 
@@ -249,7 +257,7 @@ def _ambiguity(
             except ValueError:
                 continue
             try:
-                both = decoded_path.exists() and opened_path.exists()
+                both = _present(decoded_path) and _present(opened_path)
                 if both and not os.path.samefile(decoded_path, opened_path):
                     return (
                         f"Ambiguous track sheet: {decoded!r} names a different file "
@@ -505,6 +513,14 @@ def gdi_tracks(text: str) -> list[GdiTrack]:
     return tracks
 
 
+def _present(path: Path) -> bool:
+    """``path_utils.path_present``: a stat that doesn't answer is counted as
+    unknown, never taken for a missing track."""
+    from utils.path_utils import path_present  # local: no cycle at import
+
+    return path_present(path)
+
+
 def pick_existing(
     readings: Sequence[Sequence[str]],
     resolve: Callable[[str], Path],
@@ -533,7 +549,7 @@ def pick_existing(
                 continue
             if fallback is None:
                 fallback = candidate
-            if candidate.exists():
+            if _present(candidate):
                 chosen = candidate
                 break
         if chosen is not None or fallback is not None:

@@ -28,6 +28,31 @@ def strip_archive_path(path: str) -> str:
     return path.split("::", 1)[0] if "::" in path else path
 
 
+# What `os.stat` raises for a path that simply isn't there (or can't be, as
+# named): an answer. Anything else (a timeout, EIO) is "couldn't tell".
+_ABSENT_ERRNOS = frozenset({
+    errno.ENOENT, errno.ENOTDIR, errno.ELOOP, errno.ENAMETOOLONG, errno.EACCES, errno.EPERM,
+})
+
+
+def path_present(path: str | os.PathLike, *, regular: bool = False) -> bool:
+    """Whether *path* exists (a regular file, with *regular*), following links:
+    the existence check every companion enumeration uses (a split set's
+    parts, a sheet's tracks), in place of ``os.path.isfile``/``exists``, which
+    swallow every error. False when it is absent. Any other ``OSError``
+    (ETIMEDOUT, EIO) is "couldn't tell": counted as unknown (``_note_unknown``)
+    and reported absent, so a caller that reads the count (``_answered``, the
+    queued identity, codex 4620404219) gets no verdict, and every other caller
+    sees what the boolean check gave it before."""
+    try:
+        st = os.stat(path)
+    except OSError as exc:
+        if exc.errno not in _ABSENT_ERRNOS:
+            _note_unknown()
+        return False
+    return stat.S_ISREG(st.st_mode) if regular else True
+
+
 def is_special_file(path: str | os.PathLike) -> bool:
     """Whether ``path`` exists and is neither a regular file nor a directory.
 
@@ -896,7 +921,7 @@ def platform_boundary_root(path: str) -> Path | None:
     return max(holders, key=lambda root: len(root.parts), default=None)
 
 
-def lock_boundary_root(path: str) -> Path | None:
+def lock_boundary_root(path: str, *, treat_archives: bool = True) -> Path | None:
     """The outermost Volume root over ``path``: where a lock walk stops.
 
     A folder lock (another process packing a folder) can sit anywhere above
@@ -912,7 +937,7 @@ def lock_boundary_root(path: str) -> Path | None:
     is safer, so a cached spelling may extend it. None when the path is
     outside every Volume; a caller then walks to the filesystem root.
     """
-    disk_path = strip_archive_path(path)
+    disk_path = strip_archive_path(path) if treat_archives else path
     real_path = _confined_real_path(disk_path)
     if real_path is None:
         return None
@@ -1066,18 +1091,13 @@ def source_companions_are_safe(
     Blocking I/O (an ``lstat`` and a ``realpath`` per companion); call it off
     the event loop.
     """
-    from services.tools import registry  # local: avoids an import cycle
     from utils.delete_plan import sheet_reference_problems  # local: cycle
     from utils.sheet_text import resolve_track  # local: cycle
 
     if sheet_reference_problems(file_path, within=within):
         return False
 
-    try:
-        tool = registry.for_mode(mode)
-    except KeyError:
-        return True
-    for companion in tool.source_companions(file_path):
+    for companion in _tool_companions(file_path, mode):
         if os.path.islink(companion):
             return False
         # The one confined resolver, as for a sheet's tracks: the companion's
@@ -1088,6 +1108,38 @@ def source_companions_are_safe(
         except ValueError:
             return False
     return True
+
+
+def _tool_companions(file_path: str, mode: str) -> list[str]:
+    """The files *mode*'s own tool reads besides *file_path* (a split set's
+    parts), in its order: scoped to that tool, never the registry-wide union,
+    so another plugin's multi-file semantics never count (a ``createhd`` on
+    ``game_part1.wud`` reads no part 2)."""
+    from services.tools import registry  # local: avoids an import cycle
+
+    try:
+        return list(registry.for_mode(mode).source_companions(file_path))
+    except KeyError:
+        return []
+
+
+def source_companion_paths(file_path: str, mode: str) -> list[str]:
+    """Every file a *mode* job on *file_path* reads besides it, in the order
+    it reads them: a ``.cue``/``.gdi`` sheet's tracks as the sheet names them
+    (beside the sheet, unresolved), then the tool's own companions
+    (:func:`_tool_companions`). The one enumeration the queued identity
+    captures and its run-time check repeats (#449). Empty for an archive
+    member. Blocking."""
+    from utils.delete_plan import sheet_track_paths  # local: cycle
+
+    if "::" in file_path:
+        return []
+    # A track the sheet names is confined by Volume-root probes: one that
+    # doesn't answer leaves the list short, so it is an error, not a list.
+    tracks = _answered(sheet_track_paths, file_path, whole=True)
+    # The tool's own companions the same way: a split set's part whose stat
+    # didn't answer would otherwise drop out of the list (codex 4620404219).
+    return [*tracks, *_answered(_tool_companions, file_path, mode, whole=True)]
 
 
 def is_safe_directory_tree(path: str) -> bool:
@@ -1580,10 +1632,19 @@ def source_identity_problem(
     if trusted_root is not None:
         if os.path.abspath(identity.get("root") or "") != os.path.abspath(trusted_root):
             return "the Source isn't under the folder it was queued from"
-    elif not is_within_configured_volumes(path, treat_archives=False):
-        return "the Source is no longer inside the configured Volumes"
+    else:
+        inside = volume_containment(path, treat_archives=False)
+        if inside is None:  # couldn't tell: no verdict (CodeRabbit 4617787310)
+            raise TimeoutError(
+                errno.ETIMEDOUT, "a Volume root didn't answer, so containment couldn't be told",
+                path,
+            )
+        if not inside:
+            return "the Source is no longer inside the configured Volumes"
     try:
         fd, name = _folder_beneath_root(path, identity["root"])
+    except TimeoutError:
+        raise  # couldn't tell: no verdict (codex 4618766182)
     except OSError as exc:
         return (
             f"the Source can't be reached under {identity['root']} without "
@@ -1597,6 +1658,128 @@ def source_identity_problem(
         return "the Source is gone"
     if not stat.S_ISREG(st.st_mode) or file_snapshot(st) != identity["snapshot"]:
         return "the Source isn't the file this job was queued for (it was replaced or changed)"
+    return None
+
+
+def queued_source_identity(path: str, mode: str | None = None) -> dict:
+    """The :func:`source_identity` a conversion of a Source in a Volume carries
+    from the moment it is queued (#449), whoever queued it (a Rule sweep, a
+    hand-started conversion, ``run-rules``): *path* (an archive's own file for
+    ``archive::member``) resolved, then read beneath its Volume root with no
+    link followed, the way :class:`AnchoredFolders` opens a folder.
+
+    The identity adds ``path``, the resolved path checked, ``in_place`` (the
+    job checks its Source in place rather than binding a copy into the work
+    area as an Inbox intake does), and with *mode*, ``companions``: each other
+    file a *mode* job reads with it (:func:`source_companion_paths`), in
+    order, as the reference the job opens (``ref``) with its resolved
+    ``path``, its own Volume ``root`` and its snapshot taken the same way. Resolved through the
+    shared gate (``_confined_real_path``), so a spelling outside every Volume
+    is refused before the filesystem is asked. Raises OSError when the Source
+    or a companion isn't confirmed inside a Volume, can't be read that way, or
+    isn't a regular file. Blocking."""
+    real = _confined_source(path)
+    # The resolved path is literal: a folder named `a::b` is no archive
+    # (CodeRabbit 4616898142). Archive syntax was read off *path* above.
+    root = _answered(lock_boundary_root, real, treat_archives=False)
+    if root is None:
+        raise OSError(errno.EACCES, f"{path} isn't confirmed inside the configured Volumes")
+    return {
+        **source_identity(real, str(root)), "path": real, "in_place": True,
+        "companions": [
+            _companion_identity(ref)
+            for ref in (source_companion_paths(path, mode) if mode else [])
+        ],
+    }
+
+
+def _companion_identity(ref: str) -> dict:
+    """One companion as :func:`queued_source_identity` records it: the
+    reference, where it resolves, and its snapshot under that file's own
+    Volume root (codex 4615261287: a sheet linked across Volumes names
+    tracks beside the link, in another Volume)."""
+    # A literal path, never archive syntax: a sheet may name `Track::01.bin`
+    # (CodeRabbit 4615955480).
+    confined = _confined_answered(ref)
+    root = _answered(lock_boundary_root, str(confined), treat_archives=False) if confined else None
+    if root is None:
+        raise OSError(errno.EACCES, f"{ref} isn't confirmed inside the configured Volumes")
+    real = str(confined)
+    return {"ref": ref, "path": real, **source_identity(real, str(root))}
+
+
+def _answered(call: Callable, *args: object, whole: bool = False, **kwargs: object):
+    """*call* (a Volume-root-probing lookup), raising ``TimeoutError`` (an
+    ``OSError``, ETIMEDOUT) when its answer depended on a Volume root that
+    didn't answer (the ``_note_unknown`` count, as :func:`volume_containment`
+    reads it): when it returned None, or, with *whole* (a list that may be
+    missing what a silent root held), whatever it returned. The one place
+    the queued identity's capture and checks turn "couldn't tell" into an
+    error a job refused for is marked ``unanswered`` by, never "confirmed
+    outside" (CodeRabbit 4617787310, 4617888601)."""
+    before = _unknown_count()
+    result = call(*args, **kwargs)
+    if (whole or result is None) and _unknown_count() != before:
+        raise TimeoutError(
+            errno.ETIMEDOUT, "a Volume root didn't answer, so containment couldn't be told",
+            str(args[0]) if args else "",
+        )
+    return result
+
+
+def _confined_answered(path: str) -> Path | None:
+    """:func:`_confined_real_path` through :func:`_answered`."""
+    return _answered(_confined_real_path, path)
+
+
+def _confined_source(path: str) -> str:
+    confined = _confined_answered(strip_archive_path(path))
+    if confined is None:
+        raise OSError(errno.EACCES, f"{path} isn't confirmed inside the configured Volumes")
+    return str(confined)
+
+
+def queued_source_problem(
+    path: str, identity: dict, mode: str | None = None,
+) -> str | None:
+    """Why the Source a job was submitted as (*path*) isn't the one its
+    :func:`queued_source_identity` was taken from, or None. *path* must still
+    resolve, through the shared gate, to the identity's ``path``, which must
+    pass :func:`source_identity_problem`; a link re-pointed since queueing is
+    refused, never followed. With *mode*, the companions a *mode* job would
+    read now must be the ones captured: the same references in the same
+    order, each still resolving where it did (two track links that swapped
+    targets read the disc in another order, codex 4615553385), each
+    unchanged. Fail closed. Blocking."""
+    confined = _confined_answered(strip_archive_path(path))
+    if confined is None:
+        return "the Source is no longer inside the configured Volumes"
+    if str(confined) != identity["path"]:
+        return "the Source's path leads somewhere else than when it was queued"
+    problem = source_identity_problem(identity["path"], identity)
+    if problem is not None or mode is None:
+        return problem
+    expected = identity.get("companions", [])
+    refs = source_companion_paths(path, mode)
+    now = [_confined_answered(ref) for ref in refs]
+    if None in now:
+        return (
+            "a companion file it reads with the Source is no longer inside "
+            "the configured Volumes"
+        )
+    if [(ref, str(real)) for ref, real in zip(refs, now)] != [
+        (each["ref"], each["path"]) for each in expected
+    ]:
+        return "the companion files it reads with the Source aren't the ones it was queued with"
+    for each in expected:
+        try:
+            if source_identity(each["path"], each["root"])["snapshot"] != each["snapshot"]:
+                raise OSError(errno.ESTALE, "it was replaced or changed")
+        except TimeoutError:
+            raise  # an open or stat that timed out: no verdict (codex 4618766182)
+        except OSError as exc:
+            name = os.path.basename(each["ref"])
+            return f"{name}, a companion file it reads with the Source, changed ({exc})"
     return None
 
 

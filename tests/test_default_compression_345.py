@@ -262,16 +262,13 @@ async def test_an_out_of_range_level_is_refused_before_the_tool_runs(env) -> Non
 
 
 def test_the_codec_is_read_after_a_priority_prefix(monkeypatch) -> None:
-    """On Linux with `ionice`, `ionice -c 2 -n …` comes before dolphin-tool;
-    its `-c` is the I/O class, not the codec (codex 4581651579)."""
-    from services import dolphin_tool
-
-    monkeypatch.setattr(
-        dolphin_tool, "ioprio_prefix", lambda _owner: ["ionice", "-c", "2", "-n", "7"],
-    )
+    """On Linux with `ionice`, the runner puts `ionice -c 2 -n …` before
+    dolphin-tool; its `-c` is the I/O class, not the codec (codex 4581651579)."""
     service = registry.get("dolphin")._service
 
-    cmd = service._build_convert_command("dolphin_rvz", "in.iso", "out.rvz", compression="zstd:19")
+    cmd = ["ionice", "-c", "2", "-n", "7"] + service._build_convert_command(
+        "dolphin_rvz", "in.iso", "out.rvz", compression="zstd:19",
+    )
 
     assert cmd[:3] == ["ionice", "-c", "2"]
     assert (dolphin_option(cmd, "-c"), dolphin_option(cmd, "-l")) == ("zstd", "19")

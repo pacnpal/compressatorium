@@ -402,8 +402,7 @@ class SubprocessRunner:
                   parse_progress, cancel_event=None, heartbeat=False,
                   fail_label="process", complete_message="Conversion complete",
                   cwd=None, output_growth_paths=None, mode=None,
-                  nice_via_wrapper=False, env=None,
-                  require_output=False) -> AsyncGenerator[dict, None]:
+                  env=None, require_output=False) -> AsyncGenerator[dict, None]:
         """Spawn cmd, stream stdout, yield {"progress","message"}.
         Handles: nice/ionice wrap, stdbuf, PID tracking, deterministic \\r/\\n
         line buffering (CRLF/CR normalized to LF in one pass via
@@ -433,10 +432,7 @@ class SubprocessRunner:
           size ratio in `SIZE_RATIOS` so the size-growth fallback (below) can
           emit a percentage as well as a message. Optional: a mode with no row
           still reports bytes and rate.
-        - `nice_via_wrapper` — skip preexec_fn when the caller prefixed cmd with
-          nice/ionice command wrappers (maxcso/nsz avoid forking a Python callable
-          in this multithreaded process before exec). `env` — forwarded to the
-          subprocess (nsz's private keys-home).
+        - `env` — forwarded to the subprocess (nsz's private keys-home).
         - `require_output` — treat a clean exit (return code 0) that left no file
           at `output_path` as a failure, raised as RuntimeError(tail) like the
           non-zero-exit path, so a tool that exits 0 without producing output
@@ -485,8 +481,8 @@ class SubprocessRunner:
 
     async def run_capture(self, cmd: list[str], *, timeout=None,
                           cancel_event=None, stderr_to_stdout=False,
-                          nice_via_wrapper=False, env=None
-                          ) -> tuple[int | None, bytes, bytes]:
+                          env=None, on_abandoned=None,
+                          verdict=False) -> tuple[int | None, bytes, bytes]:
         """One-shot counterpart to run(): buffered (returncode, stdout, stderr)
         for tools that need a result rather than streamed lines (info / header /
         embedded-hash extraction). Same PID tracking; races communicate()
@@ -494,9 +490,11 @@ class SubprocessRunner:
         reporting returncode None to signal the abort. Used by
         `dolphin_tool.disc_hashes` so `dolphin-tool verify --algorithm sha1`
         (the Dolphin disc-hash source for `embedded_hashes`) aborts promptly
-        when a scan/match job is cancelled. `nice_via_wrapper` / `env` mirror
-        run()'s, for the tools that must avoid preexec_fn or need a private
-        environment.
+        when a scan/match job is cancelled. `env` mirrors run()'s, for a tool
+        that needs a private environment. `on_abandoned(pid)` is called for
+        a child that survives SIGKILL. `verdict=True` (capture_verify) spawns
+        the tool bare, with no `nice`/`ionice` prefix, and applies priority
+        to the child afterwards, so its exit code is the tool's own verdict.
         """
 
     # --- verify: two shapes, no per-tool loops (issue #266) ---------------
@@ -518,8 +516,7 @@ class SubprocessRunner:
         """
 
     async def capture_verify(self, cmd: list[str], *, path: str,
-                             success_message: str, cancel_event=None,
-                             nice_via_wrapper=False, env=None,
+                             success_message: str, cancel_event=None, env=None,
                              start_message="Verifying integrity..."
                              ) -> AsyncGenerator[dict, None]:
         """One-shot verifier (maxcso --crc, nsz -V, 7z t): the same event shape
@@ -551,10 +548,77 @@ async def remove_partial_tree(path: str, *, label="work directory",
 
 Per-tool `convert()` becomes ~15 lines: build argv, then
 `async for u in self._runner.run(cmd, ..., parse_progress=self._parse_progress): yield u`.
-Tools with no parseable percent (maxcso/nsz/z3ds) additionally pass
-`nice_via_wrapper=True` to keep their command-wrapper nice; nsz also forwards its
-keys-home `env=`, sets `require_output=True`, and writes into a private work dir,
-moving the result onto `output_path` after `run()` returns.
+nsz also forwards its keys-home `env=`, sets `require_output=True`, and writes
+into a private work dir, moving the result onto `output_path` after `run()`
+returns.
+
+### How priority reaches a child process (issue #444)
+
+The runner applies the priority policy, never the tool. A tool passes the
+bare argv; it never adds `nice`/`ionice` itself. There are two shapes, by one
+rule: **a verdict never comes from a process started through an `execvp`
+wrapper.** `nice` and `ionice` exec through `execvp`, which hands a file the
+kernel refuses (empty, a bare `#!`) to `/bin/sh`, and its exit 0 would read
+as a pass (CodeRabbit 4616898119, 4617217666).
+
+- **Wrapped** (`run`, and `run_capture` for info and header reads): the argv
+  is `priority_prefix(owner) + cmd`, built in one place (`_wrapped_command`):
+  `nice -n <level>` then `ionice -t -c <class> -n <level>`, resolved from the
+  `COMPRESSATORIUM_TOOL_*` settings and any `COMPRESSATORIUM_<OWNER>_*`
+  override. Their exit codes are no verdict on their own (a conversion's
+  output is checked after it).
+- **Bare, then reniced** (`capture_verify` through `run_capture(verdict=True)`,
+  `run_verify`, and `hash_stdout`, whose digest is the Round-trip's): the tool
+  is spawned directly, so the kernel's ENOEXEC is the only exec semantics and
+  a verifier that can't start (missing, not executable, a missing
+  interpreter) raises, which both verify paths report as inconclusive
+  ("Verification could not run"). The priority is then applied to the child
+  by its pid, best effort (`_prioritize_child`): `os.setpriority` to the
+  increment over this process that `nice -n` gives, a syscall made inline,
+  and `ionice -t ... -p <pid>` as an asyncio child of its own, from the
+  cached path only, that the spawn never awaits, so a stalled one can't hold
+  back the verify's deadline or cancel, which start at once. It stays out of
+  the shared probe pool: bounded (`_IONICE_SECONDS`), killed and reaped on a
+  stall, and at most `_MAX_IONICE_TASKS` in flight; past that the child gets
+  no I/O priority (CodeRabbit 4617447724). One that outlives SIGKILL turns
+  the step off for the rest of the process, with one warning, since its slot
+  could never be counted back (CodeRabbit 4617587026). Either failing leaves the child at
+  normal priority. Their argv comes from the same builder,
+  `_wrapped_command(wrap=False)`.
+
+A wrapper binary that isn't installed omits only its own prefix; the other
+enabled one still applies. Each is looked up once per process, the first
+time its setting asks for it, and cached as an absolute path (`_wrapper_path`;
+nothing is scanned at import, and a tool started in another folder still
+finds it). A spawn makes that lookup off the event loop, bounded
+(`_resolve_wrappers` over `_bounded_probe`), with at most one lookup per
+wrapper outstanding, even after its caller gave up on it, so a PATH entry
+that never answers costs one probe thread. A lookup that doesn't answer runs
+that spawn with no wrappers at all, both omitted, at normal priority, with
+nothing cached, so a later spawn tries again. A wrapped spawn that fails to
+start, or a wrapped run that exits 126/127 (an outer `nice` that starts while
+its cached inner `ionice` is gone exits 127), forgets the cache, so a wrapper
+removed since is looked up again; a tool's own 126/127 costs one extra
+lookup. Building a prefix (`nice_prefix`, `ioprio_prefix`) reads the cache
+alone and never scans. `ionice -t` is best effort, like the renice: a class
+the kernel denies (realtime without CAP_SYS_ADMIN) doesn't stop ionice before
+it runs the tool, which would otherwise hand back ionice's exit 1 as the
+tool's. A nice level this process can't apply is left off (`_can_renice`, the
+kernel's own rule: lowering niceness needs CAP_SYS_NICE, read once from
+`CapEff`, or room under RLIMIT_NICE; being root is not the test): `nice` would
+warn and run the tool anyway, putting its warning into output a caller
+parses, where the old `preexec_fn` renice dropped the failure silently.
+rom-converto's `--version` probe reads the version line from stdout's first
+line or from stderr, skipping a wrapper's diagnostics. A wrapped run's exit
+code reaches its caller as it is (dolphin-tool's hash read falls back to no
+hashes on a non-zero exit).
+
+Nothing passes `preexec_fn`. This process is multithreaded (threadpools, the
+SSE routes), and forking a Python callable from it can deadlock the child on a
+lock it inherited before `exec`: that hangs inside `create_subprocess_exec`,
+before the PID is tracked or any timeout is installed, so no bound could rescue
+it. `nice`/`ionice` only exec. `test_nothing_in_app_passes_a_preexec_fn` fails
+on any `preexec_fn=` anywhere in `app/`.
 
 ### Every tool reports status (issue #263)
 
@@ -7704,9 +7768,76 @@ mechanism, not an Inbox branch: any caller may queue a conversion with it, and
 anything, re-reads the Source beneath that folder with no link followed and
 refuses the job (`source_identity_problem`: outside the Volumes, reached through
 a link, gone, or another file) with the reason. A folder swapped for a link
-while the job waits converts nothing from outside the Inbox. A job queued
-without one (a Rule sweep, a hand-started job) is not re-checked this way when
-it runs. Both checks, and the bind below, run inside the job's full
+while the job waits converts nothing from outside the Inbox.
+
+**Every conversion carries one (#449).** `create_job` and `create_jobs_atomic`,
+which every queueing path goes through (a Rule sweep, a hand-started job, the
+Auto route, `run-rules`), give each spec that has none the identity of its
+Source as it is then (`_capture_source_identities` over
+`path_utils.queued_source_identity`, bounded, off the event loop): the path
+resolved, read beneath its Volume root with no link followed the way
+`AnchoredFolders` opens a folder, plus `path` (the resolved path checked; an
+archive's own file for `archive::member`), `in_place`, and `companions`:
+every file a job of its mode opens alongside it, from the one shared
+enumeration `path_utils.source_companion_paths(path, mode)` (the sheet's
+tracks in sheet order, then the mode's own tool's `source_companions`, the
+same tool-scoped set `source_companions_are_safe` checks, so a `createhd` on
+`game_part1.wud` has no part 2): an ordered list of the reference the job
+opens, where it resolves, the Volume root it was read beneath (a sheet linked
+across Volumes names tracks in another one) and its snapshot (CodeRabbit
+4614956755; codex 4615261287, 4615553372, 4615553385). The path is resolved through the shared gate
+(`_confined_real_path`), so a spelling outside every Volume is refused before
+the filesystem is asked. One that can't be captured carries
+`{"error": reason}`. Captures go into the attempt's own copies of the specs,
+never the caller's, so a submission refused for backpressure captures again
+when retried. The capture is bounded by progress
+(`run_detached_within_stall_bound`), not by the batch's size: a large healthy
+batch is never cut off, and when a Source stops answering the ones already
+captured keep their identities (codex 4614857109). When the job runs, a file
+job with no identity ("queued without its Source's identity") or with an
+`error` is refused like a changed one, so a run-time containment check is
+never skipped. An `in_place` identity is not bound (a copy of every Library
+Image into the work area is not a cost a Library job should pay):
+`path_utils.queued_source_problem` requires the path the job was submitted as
+to still resolve to `path`, checks `path` as above, and only then reads the
+sheet for its companions, which must be the captured references in the same
+order, each still resolving where it did (two track links that swapped
+targets read the disc in another order) and unchanged.
+`_input_paths` locks only the Source of a job with no usable identity, and the
+Source plus its captured companions for an `in_place` one, so nothing is read
+inside the unbounded input-lock wait and a sheet is never parsed before its
+check (CodeRabbit 4614956778, 4615215842, 4615955374). A Source a stalled
+batch capture never reached is marked `unanswered`; its refusal says nothing
+about the Image, so a Rule's failed-hold neither holds nor releases it and the
+next sweep queues it again (`sweep._never_checked`, CodeRabbit 4615955365).
+The job's own check marks its identity `unanswered` the same way when it
+times out or when a Volume root it depends on doesn't answer: every
+root-probing lookup in the identity's capture and checks (the containment
+gate, each Volume-root choice, the sheet's track list) goes through one
+helper, `path_utils._answered`, which raises `TimeoutError` when the probe's
+unknown count rose during the call, so "couldn't tell" is never "outside the
+Volumes" or "other companions". A `TimeoutError` (ETIMEDOUT) from any open,
+stat or folder walk in those paths is re-raised past their `except OSError`
+refusals, and a sheet read that times out or fails with EIO is counted as
+unknown, so it ends unanswered too. Every existence check a companion
+enumeration makes (a split set's parts, a sheet's tracks, its spelling
+check) is `path_utils.path_present`, never `os.path.isfile`/`exists`, which
+swallow every error: a stat that doesn't answer is counted as unknown, so the
+tool's companion list is "couldn't tell" through `_answered`, never shorter
+(codex 4620404219); capture marks such a Source unanswered too, and a Cancel while it waits ends the job CANCELLED, never refused.
+The capture runs before the destination keys are resolved, so its wait never
+sits between those keys and their comparison under the lock. The active-job
+inventory other sweeps read (`_candidate_paths`) names the same files as the
+input locks, so a queued sheet isn't read there either. The job reads the submitted path, not `path` itself (codex
+4614857083): a sheet submitted through a link names its tracks beside the
+link, which is where the job locked them. Its output is staged only where its
+Library asks. **What this does not close:** the check runs once, under the
+Source lock, before the tool starts. A parent folder swapped for a link after
+the check and before the tool opens the file still redirects the read; only a
+bound Source (#431) is immune to that, and binding every Library Image is the
+cost declined above. A folder Source
+(a DIRECTORY mode, `folder_to_iso`) has no file identity; the folder checks
+that already run under its locks cover it. Both checks, and the bind below, run inside the job's full
 finalization region (CodeRabbit 4606147979): a cancel while either waits ends
 the job CANCELLED and lets go of its output locks and its cross-process slot,
 and a refusal raises `SourceRefused`, ending it FAILED ("Not converted: ...")

@@ -1042,6 +1042,7 @@ async def note_job_finished(job) -> None:
         await _remember_kept_source(library, platform_id, rom_id, job, generation, decision)
     if (
         FAILED_HOLD in library.capabilities and status != JobStatus.CANCELLED
+        and not _never_checked(job)
         and await _same_rule(library, platform_id, identity)
     ):
         await _note_failure(
@@ -1729,6 +1730,17 @@ async def _prune_holds(
     state[platform_id] = entry
     await store.write(store.STATE_KEY, library, state)
     return kept
+
+
+def _never_checked(job) -> bool:
+    """Whether *job* was refused because its Source never answered: the
+    batch's identity capture stalled before reaching it, or the job's own
+    check when it ran timed out (#449). That says nothing about the Image,
+    so it is neither held nor released, and the next sweep queues it again
+    (CodeRabbit 4615955365). A Source the capture did reach and refused
+    (outside the Volumes, reached through a link) is held as before."""
+    identity = getattr(job, "_source_identity", None)
+    return bool(identity and identity.get("unanswered"))
 
 
 async def _note_failure(

@@ -61,8 +61,6 @@ from services.subprocess_runner import (
     collect_verify,
     files_in_folder,
     info_timeout,
-    ioprio_prefix,
-    nice_prefix,
     remove_partial_tree,
     run_detached,
     run_detached_within_stall_bound,
@@ -245,13 +243,8 @@ class RomConvertoService:
         return self._runner.abandoned_pids()
 
     def _command(self, *args: str) -> list[str]:
-        """``rom-converto --no-update-check --no-cache <args>``.
-
-        ``nice``/``ionice`` are command wrappers (``nice_via_wrapper``), never a
-        ``preexec_fn``: forking a Python callable in this multithreaded process
-        can deadlock the child before exec.
-        """
-        return nice_prefix(_OWNER) + ioprio_prefix(_OWNER) + [
+        """``rom-converto --no-update-check --no-cache <args>``."""
+        return [
             self.binary_path, "--no-update-check", "--no-cache", *args,
         ]
 
@@ -303,24 +296,33 @@ class RomConvertoService:
 
     async def _probe_version(self, resolved: str) -> tuple[bool, str]:
         try:
-            # nice_via_wrapper: no preexec_fn, which can deadlock the child
-            # before exec in this threaded process (and before the timeout runs).
-            returncode, stdout, _ = await self._runner.run_capture(
-                [resolved, "--version"], timeout=_VERSION_TIMEOUT,
-                stderr_to_stdout=True, nice_via_wrapper=True, env=_env(),
+            # stdout alone: the version line is there, and stderr may carry a
+            # priority wrapper's diagnostics, which must not decide readiness.
+            returncode, stdout, stderr = await self._runner.run_capture(
+                [resolved, "--version"], timeout=_VERSION_TIMEOUT, env=_env(),
             )
         except OSError as exc:
             return False, f"rom-converto at {resolved} did not run: {exc}"
-        output = (stdout or b"").decode("utf-8", errors="replace").strip()
         if returncode is None:
             return False, (
                 f"rom-converto at {resolved} did not run: no answer to --version "
                 f"within {int(_VERSION_TIMEOUT)}s"
             )
-        if returncode != 0 or not output.startswith("rom-converto"):
-            said = output.splitlines()[0] if output else f"exit code {returncode}"
-            return False, f"rom-converto at {resolved} did not run: {said}"
-        return True, ""
+        out = (stdout or b"").decode("utf-8", errors="replace").strip()
+        err = (stderr or b"").decode("utf-8", errors="replace").strip()
+        # The version line on stdout's first line, else anywhere on stderr (a
+        # build that prints it there, beside any wrapper diagnostics), and only
+        # from a clean exit.
+        lines = out.splitlines()[:1] + err.splitlines()
+        if returncode == 0 and any(line.startswith("rom-converto") for line in lines):
+            return True, ""
+        said = (out or err).splitlines()[0] if (out or err) else ""
+        if returncode == 0:
+            return False, (
+                f"rom-converto at {resolved} ran but printed no rom-converto version "
+                f"line" + (f": {said}" if said else "")
+            )
+        return False, f"rom-converto at {resolved} did not run: {said or f'exit code {returncode}'}"
 
     # --- source / output naming ---------------------------------------------
 
@@ -493,7 +495,6 @@ class RomConvertoService:
                     # whole work folder is the growth signal (ruling 2, #422).
                     output_growth_paths=files_in_folder(work_dir),
                     mode=mode,
-                    nice_via_wrapper=True,
                     env=_env(),
                     require_output=True,
                 ):
@@ -570,7 +571,6 @@ class RomConvertoService:
                 path=file_path,
                 success_message="ZAR is Intact: every block decoded and matched its hash",
                 cancel_event=cancel_event,
-                nice_via_wrapper=True,
                 env=_env(),
                 start_message="Decoding every ZAR block...",
             ):
@@ -628,8 +628,7 @@ class RomConvertoService:
         timeout = info_timeout(_OWNER)
         returncode, stdout, _ = await self._runner.run_capture(
             self._command("xenon", "info", file_path),
-            timeout=timeout or None, stderr_to_stdout=True,
-            nice_via_wrapper=True, env=_env(),
+            timeout=timeout or None, stderr_to_stdout=True, env=_env(),
         )
         output = (stdout or b"").decode("utf-8", errors="replace")
         if returncode is None:

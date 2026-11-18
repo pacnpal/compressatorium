@@ -599,37 +599,253 @@ def ioprio_prefix(owner: str | None = None) -> list[str]:
     ioprio_level = _resolve_policy("ioprio_level", owner)
     if ioprio_class is None or ioprio_level is None:
         return []
-    ionice = shutil.which("ionice")
+    ionice = _WRAPPERS.get("ionice")  # cache only: see _resolve_wrappers
     if not ionice:
         return []
-    return [ionice, "-c", str(ioprio_class), "-n", str(ioprio_level)]
+    # -t: best effort, like nice's renice (CodeRabbit 4615955439). A class the
+    # kernel denies (realtime without CAP_SYS_ADMIN) no longer stops ionice
+    # before it runs the tool with ionice's own exit 1, read as the tool's.
+    return [ionice, "-t", "-c", str(ioprio_class), "-n", str(ioprio_level)]
 
 
 def nice_prefix(owner: str | None = None) -> list[str]:
     """Return the ``nice`` command prefix for ``owner``.
 
-    Used by services that apply nice via a command wrapper instead of a
-    ``preexec_fn`` (e.g. nsz, where forking a Python callable in a
-    multithreaded process can deadlock the child before exec).
+    Empty when renicing is off for ``owner`` or ``nice`` is unavailable, and
+    for a level this process can't apply (:func:`_can_renice`): ``nice`` would
+    only warn and run the tool anyway, and its warning would land in output a
+    caller parses (rom-converto's ``--version`` readiness probe). The old
+    ``preexec_fn`` renice dropped that failure silently too.
     """
     value = nice_value(owner)
-    if value is None:
+    if value is None or not _can_renice(value):
         return []
-    nice = shutil.which("nice")
+    nice = _WRAPPERS.get("nice")  # cache only: see _resolve_wrappers
     if not nice:
         return []
     return [nice, "-n", str(value)]
 
 
-def apply_nice(owner: str | None = None) -> None:
-    """Renice the current process per the shared policy (for ``preexec_fn``)."""
+def _has_cap_sys_nice() -> bool:
+    """Whether this process holds CAP_SYS_NICE (bit 23 of CapEff), read once.
+    Being root is not the test (codex 4615398086): a container's root often
+    lacks it. Where /proc can't say, root is assumed to hold it."""
+    try:
+        with open("/proc/self/status", encoding="ascii") as status:
+            for line in status:
+                if line.startswith("CapEff:"):
+                    return bool(int(line.split()[1], 16) >> 23 & 1)
+    except (OSError, ValueError):
+        pass
+    return os.geteuid() == 0
+
+
+_CAP_SYS_NICE = _has_cap_sys_nice()
+
+
+def _can_renice(increment: int) -> bool:
+    """Whether ``nice -n increment`` would apply, by the kernel's rule:
+    raising niceness always may; lowering it to N needs CAP_SYS_NICE or
+    ``20 - N`` within RLIMIT_NICE. A couple of syscalls, no filesystem."""
+    if increment >= 0 or _CAP_SYS_NICE:
+        return True
+    try:
+        import resource
+
+        target = max(-20, os.getpriority(os.PRIO_PROCESS, 0) + increment)
+        soft = resource.getrlimit(resource.RLIMIT_NICE)[0]
+    except (AttributeError, ImportError, OSError):
+        return False
+    return soft == resource.RLIM_INFINITY or 20 - target <= soft
+
+
+_WRAPPERS: dict[str, str | None] = {}
+
+
+def _wrapper_path(name: str) -> str | None:
+    """Where ``nice``/``ionice`` is, looked up once per process and only once
+    its setting asks for it (a PATH scan stats directories, so it isn't
+    repeated per spawn, nor made at import when no priority is enabled).
+    Absolute, so a tool started in another folder (romz's ``cwd``) still
+    finds it when PATH held a relative entry. Blocking: only
+    :func:`_resolve_wrappers` calls it, off the event loop. ``nice_prefix`` and
+    ``ioprio_prefix`` read the cache alone, a wrapper not yet looked up being
+    no wrapper (CodeRabbit 4616275683), so building a prefix never scans."""
+    if name not in _WRAPPERS:
+        found = shutil.which(name)
+        _WRAPPERS[name] = os.path.abspath(found) if found else None
+    return _WRAPPERS[name]
+
+
+async def _resolve_wrappers(owner: str | None) -> bool:
+    """Look up, off the event loop and bounded (``_bounded_probe``), each
+    wrapper *owner*'s settings ask for that isn't cached yet (CodeRabbit
+    4616166783). False when a lookup stalled on a PATH entry that doesn't
+    answer: that spawn runs with no wrapper, at normal priority, and nothing
+    is cached, so a later spawn tries again."""
+    wanted = []
+    if nice_value(owner) is not None:
+        wanted.append("nice")
+    if None not in (_resolve_policy("ioprio_class", owner), _resolve_policy("ioprio_level", owner)):
+        wanted.append("ionice")
+    for name in wanted:
+        if name in _WRAPPERS:
+            continue
+        if name in _LOOKING_UP:
+            # One lookup per wrapper at a time, even after its caller gave up
+            # on it (CodeRabbit 4616898109): a PATH entry that never answers
+            # costs one probe thread, not one per spawn until the probe slots
+            # run out. This spawn runs at normal priority meanwhile.
+            return False
+        _LOOKING_UP.add(name)
+
+        def lookup(name: str = name) -> str | None:
+            try:
+                return _wrapper_path(name)
+            finally:
+                _LOOKING_UP.discard(name)  # the thread finished, answer or not
+
+        try:
+            await _bounded_probe(lookup)
+        except asyncio.TimeoutError as exc:
+            if isinstance(exc, ProbeCapacityExceeded):
+                _LOOKING_UP.discard(name)  # never started
+            logging.getLogger(f"chd.{owner}").warning(
+                "Looking up %s on PATH did not answer; running at normal priority", name,
+            )
+            return False
+    return True
+
+
+_LOOKING_UP: set[str] = set()
+
+
+async def _wrapped_command(
+    owner: str | None, cmd: list[str], *, wrap: bool = True,
+) -> tuple[list[str], bool]:
+    """The argv every spawn method runs, built here for all of them: *cmd*
+    behind the priority wrappers *owner*'s settings ask for, and whether it
+    got them. The wrappers come from the cache, looked up off the loop first
+    (:func:`_resolve_wrappers`); a stalled lookup means no wrappers. With
+    ``wrap=False`` (a spawn whose exit code is a verdict) it is *cmd* alone, a
+    new list all the same: a verdict never comes from a process started
+    through them, see :func:`_prioritize_child`."""
+    resolved = await _resolve_wrappers(owner)
+    prefix = priority_prefix(owner) if wrap and resolved else []
+    return prefix + cmd, bool(prefix)
+
+
+def _prioritize_child(owner: str | None, pid: int) -> None:
+    """Apply *owner*'s priority to a child spawned bare, best effort.
+
+    The verify paths (``capture_verify``, ``run_verify``, ``hash_stdout``)
+    spawn the tool directly: ``nice``/``ionice`` exec through ``execvp``,
+    which hands a file the kernel refuses (empty, a bare ``#!``) to
+    ``/bin/sh``, and its exit 0 would read as a pass (CodeRabbit 4616898119).
+    A direct exec raises ENOEXEC instead. The nice level is then set on the
+    child by ``setpriority`` (the same increment over this process that
+    ``nice -n`` gives; a level :func:`_can_renice` refuses is left off), and
+    the I/O class by ``ionice -p <pid>`` through the bounded probe. A failure
+    of either leaves the child at normal priority."""
     value = nice_value(owner)
-    if value is None:
+    if value is not None and _can_renice(value):
+        try:
+            own = os.getpriority(os.PRIO_PROCESS, 0)
+            os.setpriority(os.PRIO_PROCESS, pid, max(-20, min(19, own + value)))
+        except OSError:
+            pass
+    # Never awaited by the spawn (CodeRabbit 4617379646): the nice level is a
+    # syscall, and `ionice -p` runs as a task of its own, so a stalled one
+    # can't hold back the verify's deadline or cancel, which start at once.
+    # Its cache was filled by the argv build before the spawn (no lookup
+    # here). Kept out of the shared probe pool (CodeRabbit 4617447724): an
+    # asyncio child of its own, bounded and killed on a stall, and at most
+    # _MAX_IONICE_TASKS at once; past that the child gets no I/O priority.
+    prefix = ioprio_prefix(owner)
+    if prefix and not _IONICE_STUCK and len(_IONICE_TASKS) < _MAX_IONICE_TASKS:
+        task = asyncio.ensure_future(_ionice_child([*prefix, "-p", str(pid)]))
+        _IONICE_TASKS.add(task)
+        task.add_done_callback(_ionice_done)
+
+
+# At most this many `ionice -p` steps in flight, each given this long before
+# it is killed; I/O priority is best effort, never a cost to anything else.
+_MAX_IONICE_TASKS = 4
+_IONICE_SECONDS = 5.0
+_IONICE_TASKS: set[asyncio.Future] = set()
+# Set for good once an `ionice` child outlives SIGKILL: its slot can't be
+# counted back, and I/O priority isn't worth pursuing on that storage
+# (CodeRabbit 4617587026).
+_IONICE_STUCK = False
+
+
+async def _ionice_child(argv: list[str]) -> None:
+    """Run ``ionice ... -p <pid>`` as an asyncio child, bounded: one that
+    doesn't finish in :data:`_IONICE_SECONDS` is killed and reaped (bounded
+    too). Every failure is dropped."""
+    try:
+        process = await asyncio.create_subprocess_exec(  # nosemgrep
+            argv[0], *argv[1:],
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+    except OSError:
         return
     try:
-        os.nice(value)
-    except OSError:
-        pass
+        await asyncio.wait_for(process.wait(), _IONICE_SECONDS)
+    except asyncio.TimeoutError:
+        with contextlib.suppress(ProcessLookupError):
+            process.kill()
+        try:
+            await asyncio.wait_for(process.wait(), _IONICE_SECONDS)
+        except asyncio.TimeoutError:
+            global _IONICE_STUCK
+            _IONICE_STUCK = True
+            logging.getLogger("chd.ionice").warning(
+                "ionice pid %s outlived SIGKILL; I/O priority is off for "
+                "verifiers until restart", process.pid,
+            )
+    finally:
+        if process.returncode is None:  # cancelled (the loop is closing)
+            with contextlib.suppress(ProcessLookupError):
+                process.kill()
+
+
+def _ionice_done(task: asyncio.Future) -> None:
+    _IONICE_TASKS.discard(task)
+    if not task.cancelled():
+        task.exception()  # best effort: retrieved, never raised
+
+
+def _forget_wrappers() -> None:
+    """A wrapped spawn failed to start: the cached ``nice``/``ionice`` may be
+    gone (CodeRabbit, review 5960207187), so the next spawn looks them up
+    again rather than failing until the process restarts."""
+    _WRAPPERS.clear()
+
+
+def _note_exit(returncode: int | None, wrapped: bool) -> None:
+    """A wrapped run that exited 126/127 may mean a cached wrapper is gone:
+    the outer ``nice`` starts and its inner ``ionice`` doesn't (codex
+    4617171876). Forget the cache, so the next spawn looks them up again; a
+    tool's own 126/127 costs one extra lookup."""
+    if wrapped and returncode in (126, 127):
+        _forget_wrappers()
+
+
+def priority_prefix(owner: str | None = None) -> list[str]:
+    """``nice`` + ``ionice`` command wrappers for ``owner`` (issue #444).
+
+    The only way the runner applies the priority policy to a child, never a
+    ``preexec_fn``: this process is multithreaded (threadpools, the SSE routes),
+    and forking a Python callable from a multithreaded parent can deadlock the
+    child on a lock it inherited before ``exec``. That hangs inside
+    ``create_subprocess_exec``, before the PID is tracked or any bound is
+    installed, so nothing could rescue it. ``nice``/``ionice`` only exec; either
+    absent, its prefix is empty and the child runs at normal priority.
+    """
+    return nice_prefix(owner) + ioprio_prefix(owner)
 
 
 def info_timeout(owner: str | None = None) -> int:
@@ -1940,22 +2156,26 @@ class SubprocessRunner:
         *,
         stdin=None,
         stderr=asyncio.subprocess.PIPE,
-        preexec_fn: Callable[[], None] | None = None,
         env: Mapping[str, str] | None = None,
+        wrapped: bool = False,
     ):
         """Spawn ``cmd`` (a list argv, never a shell) with stdout on a pipe.
 
         The one spawn site :meth:`run_capture` and :meth:`hash_stdout` share,
         so the argv-from-the-tool's-config spawn exists once in this module.
         """
-        return await asyncio.create_subprocess_exec(  # nosemgrep
-            cmd[0], *cmd[1:],
-            stdin=stdin,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=stderr,
-            preexec_fn=preexec_fn,
-            env=env,
-        )
+        try:
+            return await asyncio.create_subprocess_exec(  # nosemgrep
+                cmd[0], *cmd[1:],
+                stdin=stdin,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=stderr,
+                env=env,
+            )
+        except OSError:
+            if wrapped:
+                _forget_wrappers()
+            raise
 
     async def run_capture(
         self,
@@ -1964,9 +2184,9 @@ class SubprocessRunner:
         timeout: float | None = None,
         cancel_event: asyncio.Event | None = None,
         stderr_to_stdout: bool = False,
-        nice_via_wrapper: bool = False,
         env: Mapping[str, str] | None = None,
         on_abandoned: Callable[[int], None] | None = None,
+        verdict: bool = False,
     ) -> tuple[int | None, bytes, bytes]:
         """Run ``cmd`` to completion and capture ``(returncode, stdout, stderr)``.
 
@@ -1982,12 +2202,9 @@ class SubprocessRunner:
         folded into ``stdout`` when ``stderr_to_stdout`` is set (and the
         returned ``stderr`` is then empty).
 
-        ``nice_via_wrapper`` and ``env`` mirror :meth:`run`: the first skips the
-        ``preexec_fn`` renice for a caller that has already prefixed ``cmd`` with
-        ``nice``/``ionice`` wrappers (maxcso/nsz avoid ``preexec_fn`` -- forking a
-        Python callable in this multithreaded process can deadlock the child
-        before ``exec``), the second forwards a private environment (nsz runs
-        with its own keys home).
+        ``cmd`` is wrapped with :func:`priority_prefix` here, so a caller passes
+        the bare argv. ``env`` mirrors :meth:`run`: it forwards a private
+        environment (nsz runs with its own keys home).
 
         ``on_abandoned`` is called with the pid when the TERM/KILL ladder gives
         up -- the child outlived ``SIGKILL`` and is still holding whatever it
@@ -2010,22 +2227,16 @@ class SubprocessRunner:
         # that blocks immediately and may outlive SIGKILL. Checked in the shared
         # seam so every capture caller gets it, not just the ones that remember.
         # Reported as the ordinary abort, which is what a cancel is.
+        # Honour the shared process-priority policy, same as the streaming
+        # run(): a captured command (e.g. dolphin-tool verify reconstructing a
+        # full disc for DAT hashing) is just as heavy as a conversion. Command
+        # wrappers only, never a preexec_fn (see priority_prefix). Resolved
+        # before the cancel check, which then also covers its (bounded) wait.
+        # *verdict* (capture_verify): its exit code is a check's verdict, so
+        # it is spawned bare and reniced after (_prioritize_child).
+        cmd, wrapped = await _wrapped_command(self._owner, cmd, wrap=not verdict)
         if cancel_event is not None and cancel_event.is_set():
             return None, b"", b""
-
-        # Honour the shared process-priority policy, same as the streaming
-        # run(): renice via preexec and wrap with ionice. A captured command
-        # (e.g. dolphin-tool verify reconstructing a full disc for DAT hashing)
-        # is just as heavy as a conversion, so it must respect TOOL_NICE /
-        # TOOL_IOPRIO_* instead of running at normal priority. A caller using
-        # command wrappers has already applied both.
-        if not nice_via_wrapper:
-            cmd = ioprio_prefix(self._owner) + cmd
-
-        def _preexec():
-            apply_nice(self._owner)
-
-        use_preexec = os.name == "posix" and not nice_via_wrapper
 
         process = await self._spawn_piped(
             cmd,
@@ -2037,8 +2248,8 @@ class SubprocessRunner:
                 if stderr_to_stdout
                 else asyncio.subprocess.PIPE
             ),
-            preexec_fn=_preexec if use_preexec else None,
             env=env,
+            wrapped=wrapped,
         )
         self.track_pid(process.pid)
         comm = asyncio.ensure_future(process.communicate())
@@ -2048,6 +2259,8 @@ class SubprocessRunner:
             else None
         )
         try:
+            if verdict:  # inside the try: a cancel here still reaps the child
+                _prioritize_child(self._owner, process.pid)
             waiters = [comm] + ([cancel_wait] if cancel_wait is not None else [])
             done, _pending = await asyncio.wait(
                 waiters,
@@ -2056,6 +2269,7 @@ class SubprocessRunner:
             )
             if comm in done:
                 stdout, stderr = comm.result()
+                _note_exit(process.returncode, wrapped)
                 return process.returncode, stdout or b"", stderr or b""
             # Cancelled or timed out before the process exited; the finally
             # block below terminates it and drains ``comm``.
@@ -2088,7 +2302,6 @@ class SubprocessRunner:
         stdin_offset: int = 0,
         timeout: float | None = None,
         cancel_event: asyncio.Event | None = None,
-        nice_via_wrapper: bool = False,
         env: Mapping[str, str] | None = None,
     ) -> str:
         """Run a decoder that writes the decoded image to stdout; hash the stream.
@@ -2108,12 +2321,15 @@ class SubprocessRunner:
         """
         from services.stream_digest import new_hasher  # import cycle
 
+        # Command wrappers, never a preexec_fn: see priority_prefix. Resolved
+        # before the cancel check, which then also covers its (bounded) wait.
+        label = os.path.basename(cmd[0])
+        # Spawned bare, its priority applied after (_prioritize_child): the
+        # digest it streams is a Round-trip verdict, so no execvp wrapper may
+        # start it.
+        cmd, wrapped = await _wrapped_command(self._owner, cmd, wrap=False)
         if cancel_event is not None and cancel_event.is_set():
             raise ReadCancelled("Read cancelled")
-        label = os.path.basename(cmd[0])
-        # Command wrappers, never a preexec_fn: see run_verify.
-        if not nice_via_wrapper:
-            cmd = nice_prefix(self._owner) + ioprio_prefix(self._owner) + cmd
         process = await self._spawn_piped(
             cmd,
             stdin=(
@@ -2122,6 +2338,7 @@ class SubprocessRunner:
                 else asyncio.subprocess.DEVNULL
             ),
             env=env,
+            wrapped=wrapped,
         )
         self.track_pid(process.pid)
         hasher = new_hasher(algorithm)
@@ -2159,6 +2376,7 @@ class SubprocessRunner:
             else None
         )
         try:
+            _prioritize_child(self._owner, process.pid)
             done, _pending = await asyncio.wait(
                 [work] + ([cancel_wait] if cancel_wait is not None else []),
                 timeout=timeout or None,
@@ -2179,6 +2397,7 @@ class SubprocessRunner:
                     with contextlib.suppress(asyncio.CancelledError, Exception):
                         await helper
             self.untrack_pid(process.pid)
+        _note_exit(process.returncode, wrapped)
         if process.returncode is not None and process.returncode < 0:
             raise RuntimeError(killed_by_signal_message(label, process.returncode))
         if process.returncode != 0:
@@ -2239,7 +2458,6 @@ class SubprocessRunner:
         path: str,
         success_message: str,
         cancel_event: asyncio.Event | None = None,
-        nice_via_wrapper: bool = False,
         env: Mapping[str, str] | None = None,
         start_message: str = "Verifying integrity...",
         on_success_output: Callable[[bytes], None] | None = None,
@@ -2279,15 +2497,21 @@ class SubprocessRunner:
             yield self._verify_error("Verification cancelled", cancelled=True)
             return
         abandoned_pid: list[int] = []
-        returncode, stdout, _ = await self.run_capture(
-            cmd,
-            timeout=timeout or None,
-            cancel_event=cancel_event,
-            stderr_to_stdout=True,
-            nice_via_wrapper=nice_via_wrapper,
-            env=env,
-            on_abandoned=abandoned_pid.append,
-        )
+        try:
+            returncode, stdout, _ = await self.run_capture(
+                cmd,
+                timeout=timeout or None,
+                cancel_event=cancel_event,
+                stderr_to_stdout=True,
+                env=env,
+                on_abandoned=abandoned_pid.append,
+                verdict=True,
+            )
+        except OSError as exc:
+            # The verifier couldn't be started: no verdict, so no stored check
+            # is overwritten.
+            yield verify_exception_event(exc, prefix="Verification could not run")
+            return
         if abandoned_pid:
             # Outranks both branches below: the child outlived SIGKILL, so it is
             # still holding the storage whether the operator cancelled or the
@@ -2350,16 +2574,9 @@ class SubprocessRunner:
         shared :func:`_split_stream_lines`, so a percentage redraw split across
         read chunks still parses.
         """
-        # nice/ionice as *command wrappers*, never a preexec_fn: this process is
-        # multithreaded (threadpools, the SSE routes), and forking a Python
-        # callable from a multithreaded parent can deadlock the child before it
-        # reaches exec. That would hang inside create_subprocess_exec, before
-        # the PID is tracked and before any of the bounds below are installed --
-        # the one failure mode nothing here could rescue. maxcso and nsz already
-        # avoid preexec for the same reason; `nice`/`ionice` only exec. When
-        # either binary is absent its prefix is empty and the verify simply runs
-        # unniced, which is what it did before this policy applied to it at all.
-        cmd = nice_prefix(self._owner) + ioprio_prefix(self._owner) + cmd
+        # Spawned bare, its priority applied after (_prioritize_child): its
+        # exit code is the verdict, so no execvp wrapper may start it.
+        cmd, wrapped = await _wrapped_command(self._owner, cmd, wrap=False)
 
         # One the verifier can't open is no verdict, decided before it runs
         # (#359): chdman's exit 1 on "Permission denied" would read as one.
@@ -2386,14 +2603,22 @@ class SubprocessRunner:
             yield self._verify_error("Verification cancelled", cancelled=True)
             return
 
-        process = await asyncio.create_subprocess_exec(  # nosemgrep
-            cmd[0], *cmd[1:],
-            # Never the caller's terminal: a tool that asks for input (7z
-            # wanting a password) fails at once instead of waiting (#306).
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-        )
+        try:
+            process = await asyncio.create_subprocess_exec(  # nosemgrep
+                cmd[0], *cmd[1:],
+                # Never the caller's terminal: a tool that asks for input (7z
+                # wanting a password) fails at once instead of waiting (#306).
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+        except OSError as exc:
+            if wrapped:
+                _forget_wrappers()
+            # The verifier couldn't be started (ENOEXEC, missing): no verdict,
+            # the same event capture_verify gives for it.
+            yield verify_exception_event(exc, prefix="Verification could not run")
+            return
         self.track_pid(process.pid)
         if self._logger.isEnabledFor(logging.DEBUG):
             self._logger.debug(
@@ -2445,6 +2670,7 @@ class SubprocessRunner:
             return True
 
         try:
+            _prioritize_child(self._owner, process.pid)
             while True:
                 try:
                     chunk = await asyncio.wait_for(process.stdout.read(100), timeout=2)
@@ -2548,7 +2774,6 @@ class SubprocessRunner:
         cwd: str | None = None,
         output_growth_paths: Callable[[], list[str]] | None = None,
         mode: str | None = None,
-        nice_via_wrapper: bool = False,
         env: Mapping[str, str] | None = None,
         require_output: bool = False,
     ) -> AsyncGenerator[dict, None]:
@@ -2591,11 +2816,9 @@ class SubprocessRunner:
         service's "Starting..." yield at 1/5%) so an early non-parseable line
         cannot drop the bar below it.
 
-        ``nice_via_wrapper`` skips the ``preexec_fn`` renice when the caller has
-        already prefixed ``cmd`` with ``nice``/``ionice`` command wrappers
-        (maxcso/nsz avoid ``preexec_fn``: forking a Python callable in this
-        multithreaded process can deadlock the child before ``exec``).  ``env``
-        is forwarded to the subprocess (nsz runs with a private keys-home env).
+        ``cmd`` is the bare argv: the runner wraps it with :func:`priority_prefix`
+        (``nice``/``ionice``), never a ``preexec_fn``. ``env`` is forwarded to
+        the subprocess (nsz runs with a private keys-home env).
 
         ``require_output`` makes a clean exit (return code 0) that left no file
         at ``output_path`` a failure, raised as a ``RuntimeError`` carrying the
@@ -2617,33 +2840,34 @@ class SubprocessRunner:
                     f"{fail_label}: output directory {output_dir} stopped responding"
                 ) from None
 
-        def _preexec():
-            apply_nice(self._owner)
-
-        # nice/ionice: by default renice the forked child via ``preexec_fn``
-        # (ionice, when used, is folded into ``cmd`` by the caller's
-        # ``_build_command``). ``nice_via_wrapper`` callers have instead prefixed
-        # ``cmd`` with ``nice``/``ionice`` command wrappers and must NOT also be
-        # reniced via preexec — forking a Python callable in this multithreaded
-        # process can deadlock the child before ``exec``.
-        use_preexec = os.name == "posix" and not nice_via_wrapper
+        # nice/ionice as command wrappers, never a preexec_fn: see
+        # priority_prefix. No cancel check before the spawn, deliberately:
+        # ConversionCancelled from run() means the child ran, which callers
+        # rely on before removing a partial output (see
+        # test_cancel_event_preset_terminates_and_raises); a cancel that landed
+        # meanwhile is honoured by the watcher as soon as it spawns.
+        cmd, wrapped = await _wrapped_command(self._owner, cmd)
 
         # cmd is built from validated settings paths (no shell interpretation);
         # create_subprocess_exec passes the arg list directly (shell=False), so
         # there is no shell expansion / injection surface. Same call shape that
         # already lives unsuppressed in chdman/dolphin/z3ds; flagged here only
         # because the line is new in this extracted module.
-        process = await asyncio.create_subprocess_exec(  # nosemgrep
-            cmd[0], *cmd[1:],
-            # Never the caller's terminal: a tool that asks for input (7z
-            # wanting a password) fails at once instead of waiting (#306).
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-            preexec_fn=_preexec if use_preexec else None,
-            cwd=cwd,
-            env=env,
-        )
+        try:
+            process = await asyncio.create_subprocess_exec(  # nosemgrep
+                cmd[0], *cmd[1:],
+                # Never the caller's terminal: a tool that asks for input (7z
+                # wanting a password) fails at once instead of waiting (#306).
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+                cwd=cwd,
+                env=env,
+            )
+        except OSError:
+            if wrapped:
+                _forget_wrappers()
+            raise
         self.track_pid(process.pid)
         # Everything below runs under try/finally so that if the caller stops
         # iterating (generator aclose / task cancellation) or an unexpected
@@ -3063,6 +3287,7 @@ class SubprocessRunner:
             if abandoned_error:
                 raise RuntimeError(abandoned_error)
 
+            _note_exit(process.returncode, wrapped)
             if process.returncode is not None and process.returncode < 0:
                 # Killed (by the OOM killer, most likely): its last output is
                 # a progress line, not the reason, so it goes to the log only.

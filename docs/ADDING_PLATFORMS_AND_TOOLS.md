@@ -613,13 +613,10 @@ class NszipService:
         self._pid_lock = threading.Lock()
 
     def _build_command(self, input_path: str, output_path: str) -> list[str]:
-        cmd = [self.nszip_path, input_path, output_path]
-        # I/O priority: mirror the other services so heavy jobs stay nice.
-        # The shared SubprocessRunner owns the priority policy; pass your tool's
-        # owner id so a per-tool override (COMPRESSATORIUM_NSZIP_IOPRIO_*) can
-        # diverge from the shared COMPRESSATORIUM_TOOL_IOPRIO_* default.
-        cmd = ioprio_prefix("nszip") + cmd
-        return cmd
+        # The bare argv: SubprocessRunner(owner="nszip") prefixes nice/ionice
+        # itself, honouring COMPRESSATORIUM_NSZIP_* overrides of the shared
+        # COMPRESSATORIUM_TOOL_* policy.
+        return [self.nszip_path, input_path, output_path]
 
     def active_pids(self):
         with self._pid_lock:
@@ -633,9 +630,8 @@ class NszipService:
         # at runtime. Same rule as a `compression` your tool doesn't use.
         # 1. mkdir -p output dir
         # 2. build cmd, spawn with asyncio.create_subprocess_exec (NEVER shell=True)
-        # 3. apply the shared nice level via preexec_fn (posix only):
-        #    `from services.subprocess_runner import apply_nice` then
-        #    `apply_nice("nszip")` inside the preexec callback
+        # 3. priority comes from the runner's nice/ionice wrappers; never
+        #    pass a preexec_fn
         # 4. stream stdout, parse progress, yield {"progress": int, "message": str}
         # 5. honor cancel_event -> terminate/kill, clean partial output,
         #    raise ConversionCancelled
@@ -765,9 +761,8 @@ class NszipTool(BaseTool):
     why it once showed nothing but a spinning elapsed counter (issue #263).
   - Never hand-roll a size-growth estimator in a service. That logic lives in
     the runner precisely so all nine tools behave the same way.
-- Respect the shared priority policy via the `services.subprocess_runner`
-  helpers (`ioprio_prefix(owner)`, `nice_prefix(owner)`, `apply_nice(owner)`,
-  `info_timeout(owner)`, `verify_timeout(owner)`,
+- Read the shared timeout policy via the `services.subprocess_runner`
+  helpers (`info_timeout(owner)`, `verify_timeout(owner)`,
   `resolve_verify_timeout(path, owner)`). These read the tool-neutral
   `COMPRESSATORIUM_TOOL_*` settings (with optional per-tool
   `COMPRESSATORIUM_<TOOL>_*` overrides) in one place, so you never re-read a
@@ -800,10 +795,11 @@ class NszipTool(BaseTool):
   `{"cancelled": True}` terminal event). Don't wrap the handle in a context
   manager either — its exit awaits a close that a stuck read blocks, which is
   just the unbounded wait again in the cleanup path.
-- **Spawn with `nice`/`ionice` command wrappers, not `preexec_fn`.** This
-  process is multithreaded, and forking a Python callable from it can deadlock
-  the child before `exec` — inside `create_subprocess_exec`, before the PID is
-  tracked and before any bound is installed.
+- **Spawn through the runner, and never pass `preexec_fn`.** The runner adds
+  the `nice`/`ionice` wrappers for your owner id, so don't add them yourself.
+  This process is multithreaded, and forking a Python callable from it can
+  deadlock the child before `exec` — inside `create_subprocess_exec`, before the
+  PID is tracked and before any bound is installed.
 - Track PIDs so the debug heartbeat can report them.
 
 ### 5.4 Register the plugin: `app/services/tools/__init__.py`

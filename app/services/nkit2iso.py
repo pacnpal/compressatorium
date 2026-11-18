@@ -26,7 +26,6 @@ from logging_setup import get_logger
 from services.subprocess_runner import (
     ConversionCancelled,
     SubprocessRunner,
-    ioprio_prefix,
     remove_partial_output,
 )
 from utils.path_utils import match_extension
@@ -237,7 +236,7 @@ class Nkit2IsoService:
             "-f",
             "-recovery", recovery,
         ]
-        return ioprio_prefix("nkit2iso") + cmd
+        return cmd
 
     def active_pids(self) -> list[int]:
         return self._runner.active_pids()

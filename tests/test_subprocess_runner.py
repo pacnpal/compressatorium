@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import shutil
 import sys
 import threading
 import time
@@ -463,45 +464,220 @@ def test_env_is_forwarded_to_subprocess(tmp_path):
     assert not runner.active_pids()
 
 
-def test_nice_via_wrapper_omits_preexec_fn(tmp_path, monkeypatch):
-    """nice_via_wrapper=True must spawn with preexec_fn=None — the deadlock-
-    avoidance contract maxcso/nsz rely on — while still completing normally.
+def test_priority_is_a_command_wrapper_never_a_preexec_fn(tmp_path, monkeypatch):
+    """Every spawn applies the priority policy as an argv prefix and never
+    passes ``preexec_fn`` (issue #444): forking a Python callable from this
+    multithreaded process can deadlock the child before ``exec``, inside
+    ``create_subprocess_exec``, before any bound or PID tracking exists.
 
-    Asserting the spawn kwarg (not just completion) guards against a regression
-    that reintroduced a harmless-looking preexec_fn, which a completion-only
-    test would miss.
+    ``env`` stands in for ``nice``/``ionice`` so the prefix is visible and the
+    command still runs.
     """
-    out = tmp_path / "out.bin"
-    script = "import sys; sys.stdout.write('done 50%\\n')"
-    runner = SubprocessRunner(owner="test")
-
-    captured = {}
+    wrapper = shutil.which("env")
+    assert wrapper
+    # Two distinct stand-ins: `env` runs `env IO=1 <cmd>`, so both wrappers
+    # must be there, in order, for the payload to run.
+    monkeypatch.setattr(runner_module, "nice_prefix", lambda _owner=None: [wrapper])
+    monkeypatch.setattr(runner_module, "ioprio_prefix", lambda _owner=None: [wrapper, "IO=1"])
+    # The verdict path's post-spawn renice is its own test's concern.
+    monkeypatch.setattr(runner_module, "_prioritize_child", lambda _owner, _pid: None)
+    spawns: list[tuple[list, dict]] = []
     real_exec = runner_module.asyncio.create_subprocess_exec
 
     async def spy(*args, **kwargs):
-        captured.update(kwargs)
+        spawns.append((list(args), kwargs))
         return await real_exec(*args, **kwargs)
 
     monkeypatch.setattr(runner_module.asyncio, "create_subprocess_exec", spy)
+    runner = SubprocessRunner(owner="test")
+    script = "import sys; sys.stdout.write('done 50%\\n')"
 
-    updates = asyncio.run(
-        _drain(
-            runner.run(
-                _py_cmd(script),
-                input_path=str(tmp_path / "in.bin"),
-                output_path=str(out),
-                parse_progress=_parse_pct,
-                nice_via_wrapper=True,
-                fail_label="testproc",
-            )
-        )
-    )
-
-    assert captured.get("preexec_fn") is None
-    assert 50 in [u["progress"] for u in updates]
+    updates = asyncio.run(_drain(runner.run(
+        _py_cmd(script),
+        input_path=str(tmp_path / "in.bin"),
+        output_path=str(tmp_path / "out.bin"),
+        parse_progress=_parse_pct,
+        fail_label="testproc",
+    )))
     assert updates[-1]["progress"] == 100
-    assert updates[-1]["message"] == "Conversion complete"
+    rc, out, _ = asyncio.run(runner.run_capture(_py_cmd(script)))
+    assert (rc, out) == (0, b"done 50%\n")
+    asyncio.run(runner.hash_stdout(_py_cmd(script)))
+
+    assert len(spawns) == 3
+    # run and run_capture behind both wrappers, in order; hash_stdout's
+    # digest is a verdict, so it is spawned bare (CodeRabbit 4616898119).
+    for argv, _kwargs in spawns[:2]:
+        assert argv[:4] == [wrapper, wrapper, "IO=1", sys.executable]
+    assert spawns[2][0][0] == sys.executable
+    for _argv, kwargs in spawns:
+        assert kwargs.get("preexec_fn") is None
     assert not runner.active_pids()
+
+
+def test_nothing_in_app_passes_a_preexec_fn():
+    """No call anywhere in ``app/`` passes ``preexec_fn`` (issue #444).
+
+    The runner applies priority as command wrappers; a spawn that brought back
+    a Python ``preexec_fn`` -- in the runner or in a tool calling
+    ``create_subprocess_exec``/``subprocess`` directly -- fails here.
+    """
+    from pathlib import Path
+
+    app_dir = Path(__file__).resolve().parent.parent / "app"
+    offenders = [
+        f"{path.relative_to(app_dir)}:{line}"
+        for path in app_dir.rglob("*.py")
+        for line in _preexec_fn_lines(path.read_text(encoding="utf-8"))
+    ]
+    assert offenders == []
+
+
+def _preexec_fn_lines(source: str) -> list[int]:
+    """Lines passing ``preexec_fn``: as a keyword, or as a key of a mapping
+    unpacked into a call (``**{"preexec_fn": ...}``)."""
+    import ast
+
+    lines = []
+    tree = ast.parse(source)
+    # `from subprocess import Popen as P` too (CodeRabbit 4616898209).
+    popen_names = {"Popen"} | {
+        alias.asname for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module == "subprocess"
+        for alias in node.names if alias.name == "Popen" and alias.asname
+    }
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            # Popen's seventh positional parameter is preexec_fn (CodeRabbit
+            # 4615955530); None there passes nothing.
+            name = getattr(node.func, "attr", None) or getattr(node.func, "id", None)
+            if name in popen_names and len(node.args) > 6 and not (
+                isinstance(node.args[6], ast.Constant) and node.args[6].value is None
+            ):
+                lines.append(node.lineno)
+            continue
+        if not isinstance(node, ast.keyword):
+            continue
+        if node.arg == "preexec_fn":
+            lines.append(node.value.lineno)
+        elif node.arg is None and isinstance(node.value, ast.Dict) and any(
+            isinstance(key, ast.Constant) and key.value == "preexec_fn"
+            for key in node.value.keys
+        ):
+            lines.append(node.value.lineno)
+    return lines
+
+
+def test_the_preexec_fn_scan_sees_an_unpacked_mapping():
+    assert _preexec_fn_lines("f(x, preexec_fn=g)") == [1]
+    assert _preexec_fn_lines('f(x, **{"preexec_fn": g})') == [1]
+    assert _preexec_fn_lines('f(x, **{"env": e}, cwd=c)') == []
+    assert _preexec_fn_lines("subprocess.Popen(a, -1, None, None, None, None, g)") == [1]
+    assert _preexec_fn_lines("subprocess.Popen(a, -1, None, None, None, None, None)") == []
+    aliased = "from subprocess import Popen as Spawn\nSpawn(a, -1, None, None, None, None, g)"
+    assert _preexec_fn_lines(aliased) == [2]
+    assert _preexec_fn_lines(aliased.replace(", g)", ", None)")) == []
+
+
+def test_a_negative_nice_this_process_cannot_apply_is_left_off(monkeypatch):
+    """`nice` would only warn and run the tool anyway, and the warning would
+    land in output a caller parses (rom-converto's readiness probe). Whether
+    it applies is the kernel's rule, not being root (codex 4615398086): root
+    without CAP_SYS_NICE can't lower niceness either."""
+    import resource
+
+    monkeypatch.setattr(runner_module, "_WRAPPERS", {"nice": "/usr/bin/nice"})
+    monkeypatch.setattr(runner_module, "nice_value", lambda _owner=None: -5)
+    monkeypatch.setattr(runner_module.os, "geteuid", lambda: 0)  # root, but...
+    monkeypatch.setattr(runner_module, "_CAP_SYS_NICE", False)  # ...no capability
+    monkeypatch.setattr(resource, "getrlimit", lambda _which: (0, 0))
+    assert runner_module.nice_prefix("test") == []
+    # RLIMIT_NICE that reaches the level, or the capability, lets it through.
+    monkeypatch.setattr(runner_module.os, "getpriority", lambda *_a: 0)
+    monkeypatch.setattr(resource, "getrlimit", lambda _which: (25, 25))
+    assert runner_module.nice_prefix("test")[1:] == ["-n", "-5"]
+    monkeypatch.setattr(resource, "getrlimit", lambda _which: (0, 0))
+    monkeypatch.setattr(runner_module, "_CAP_SYS_NICE", True)
+    assert runner_module.nice_prefix("test")[1:] == ["-n", "-5"]
+    # Raising niceness always applies.
+    monkeypatch.setattr(runner_module, "_CAP_SYS_NICE", False)
+    monkeypatch.setattr(runner_module, "nice_value", lambda _owner=None: 5)
+    assert runner_module.nice_prefix("test")[1:] == ["-n", "5"]
+
+
+def test_a_verifier_that_cant_start_is_no_verdict(tmp_path, monkeypatch):
+    """codex 4615398097: a verifier that can't start (missing, or a script
+    whose interpreter is missing) is no verdict on either verify path: they
+    spawn it bare, so the direct exec raises and they report "could not run".
+    run_capture for anything else still wraps, and returns the wrapper's 127
+    as the exit code it is (dolphin-tool's hash read falls back to none)."""
+    monkeypatch.setattr(runner_module, "priority_prefix", lambda _owner=None: [shutil.which("env")])
+    script = tmp_path / "verifier"
+    script.write_text("#!/nonexistent/interpreter\n")
+    script.chmod(0o755)
+    runner = SubprocessRunner(owner="test")
+    target = tmp_path / "a.7z"
+    target.write_bytes(b"7z")
+
+    for tool in (str(tmp_path / "no-such-tool"), str(script)):
+        rc, _out, _err = asyncio.run(runner.run_capture([tool]))
+        assert rc == 127
+
+        async def capture(tool=tool):
+            return [e async for e in runner.capture_verify(
+                [tool, str(target)], path=str(target), success_message="ok",
+            )]
+
+        async def stream(tool=tool):
+            return [e async for e in runner.run_verify(
+                [tool, str(target)], path=str(target), parse_progress=lambda _l: None,
+                success_message="ok", failure_message="bad",
+            )]
+
+        for events in (asyncio.run(capture()), asyncio.run(stream())):
+            assert events[-1]["valid"] is False and events[-1].get("inconclusive") is True
+            assert "could not run" in events[-1]["message"]
+    assert not runner.active_pids()
+
+
+def test_ionice_is_best_effort(monkeypatch):
+    """CodeRabbit 4615955439: `ionice -t`, so a class the kernel denies
+    doesn't stop ionice before it runs the tool, with ionice's exit 1 read as
+    the tool's."""
+    if not shutil.which("ionice"):
+        pytest.skip("no ionice on this host")
+    monkeypatch.setattr(runner_module, "_WRAPPERS", {"ionice": shutil.which("ionice")})
+    monkeypatch.setattr(runner_module, "_resolve_policy", lambda key, _owner: {
+        "ioprio_class": 1, "ioprio_level": 0,
+    }.get(key))
+    prefix = runner_module.ioprio_prefix("test")
+    assert prefix[1:] == ["-t", "-c", "1", "-n", "0"]
+    # Whether or not this host may set the realtime class, the tool runs and
+    # its own exit status comes back.
+    monkeypatch.setattr(runner_module, "priority_prefix", lambda _owner=None: prefix)
+    rc, _out, _err = asyncio.run(SubprocessRunner(owner="test").run_capture(
+        [sys.executable, "-c", "raise SystemExit(3)"],
+    ))
+    assert rc == 3
+
+
+def test_the_wrapper_path_is_absolute_and_looked_up_lazily(tmp_path, monkeypatch):
+    """CodeRabbit 4615955398 / 4615955456: found through a relative PATH
+    entry, the cached wrapper is absolute (romz starts 7z in another folder);
+    nothing is looked up at import."""
+    import importlib.util
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake = bin_dir / "nice"
+    fake.write_text("#!/bin/sh\nexec \"$@\"\n")
+    fake.chmod(0o755)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PATH", "bin")
+    monkeypatch.setattr(runner_module, "_WRAPPERS", {})
+    assert runner_module._wrapper_path("nice") == str(fake)
+    source = importlib.util.find_spec("services.subprocess_runner").origin
+    assert '\n_wrapper_path("' not in open(source, encoding="utf-8").read()
 
 
 def test_initial_progress_floor_keeps_bar_monotonic(tmp_path):
@@ -1283,3 +1459,318 @@ def test_a_cancel_abandons_a_sweep_that_had_not_started_unlinking(tmp_path):
 
     assert done.wait(5)
     assert partial.exists()  # abandoned before it reached the unlink
+
+
+def test_a_wrapper_lookup_that_stalls_runs_at_normal_priority(monkeypatch):
+    """CodeRabbit 4616166783: a spawn looks its wrappers up off the event
+    loop, bounded; a PATH entry that doesn't answer means that spawn runs
+    with no wrapper, and nothing is cached, so a later spawn tries again."""
+    monkeypatch.setattr(runner_module, "_WRAPPERS", {})
+    # A fresh set: the stub below never runs the lookup that would clear it.
+    monkeypatch.setattr(runner_module, "_LOOKING_UP", set())
+    monkeypatch.setattr(runner_module, "nice_value", lambda _owner=None: 10)
+    looked_up = []
+
+    async def stalled(func, *args, **_kwargs):
+        looked_up.append((func, args))
+        raise asyncio.TimeoutError
+
+    monkeypatch.setattr(runner_module, "_bounded_probe", stalled)
+
+    def scan_on_the_loop(_name):
+        raise AssertionError("PATH was scanned on the event loop")
+
+    monkeypatch.setattr(runner_module.shutil, "which", scan_on_the_loop)
+    spawned = []
+    real_exec = runner_module.asyncio.create_subprocess_exec
+
+    async def spy(*args, **kwargs):
+        spawned.append(list(args))
+        return await real_exec(*args, **kwargs)
+
+    monkeypatch.setattr(runner_module.asyncio, "create_subprocess_exec", spy)
+    cmd = [sys.executable, "-c", "print('ok')"]
+
+    runner = SubprocessRunner(owner="test")
+    rc, out, _ = asyncio.run(runner.run_capture(cmd))
+
+    assert (rc, out) == (0, b"ok\n")
+    assert spawned == [cmd]  # no wrapper: normal priority
+    assert len(looked_up) == 1  # one bounded lookup, of nice
+    assert runner_module._WRAPPERS == {}
+
+    # capture_verify too (CodeRabbit 4616275683): after the stalled lookup it
+    # neither scans PATH nor reads the run as wrapped, so an exit 127 from a
+    # tool that ran unwrapped is its own verdict, not "could not start".
+    import tempfile
+
+    with tempfile.NamedTemporaryFile() as target:
+        async def verify():
+            return [e async for e in runner.capture_verify(
+                [sys.executable, "-c", "raise SystemExit(127)"],
+                path=target.name, success_message="ok",
+            )]
+
+        events = asyncio.run(verify())
+    assert events[-1]["valid"] is False and not events[-1].get("inconclusive")
+    assert "couldn't be started" not in events[-1]["message"]
+    assert runner_module._WRAPPERS == {}
+
+
+@pytest.mark.parametrize("body", [b"", b"#!\n"], ids=["empty", "bare-shebang"])
+def test_a_verifier_the_kernel_cant_exec_is_no_verdict(tmp_path, monkeypatch, body):
+    """CodeRabbit 4616898119, 4617217666: `nice`/`ionice` exec through execvp,
+    which hands an empty file or a bare `#!` to /bin/sh, and that exits 0. A
+    verdict never comes from a process started through them: both verify
+    paths spawn the tool directly, so the kernel's ENOEXEC is the answer, and
+    apply the priority to the child by its pid afterwards."""
+    reniced = []
+
+    def prioritize(owner, pid):
+        reniced.append((owner, pid))
+
+    monkeypatch.setattr(runner_module, "_prioritize_child", prioritize)
+    monkeypatch.setattr(runner_module, "priority_prefix", lambda _owner=None: [shutil.which("env")])
+    spawned = []
+    real_exec = runner_module.asyncio.create_subprocess_exec
+
+    async def spy(*args, **kwargs):
+        spawned.append(args[0])
+        return await real_exec(*args, **kwargs)
+
+    monkeypatch.setattr(runner_module.asyncio, "create_subprocess_exec", spy)
+    broken = tmp_path / "verifier"
+    broken.write_bytes(body)
+    broken.chmod(0o755)
+    target = tmp_path / "a.7z"
+    target.write_bytes(b"7z")
+    runner = SubprocessRunner(owner="test")
+
+    async def capture(tool):
+        return [e async for e in runner.capture_verify(
+            [tool, str(target)], path=str(target), success_message="ok",
+        )]
+
+    async def stream(tool):
+        return [e async for e in runner.run_verify(
+            [tool, str(target)], path=str(target), parse_progress=lambda _l: None,
+            success_message="ok", failure_message="bad",
+        )]
+
+    for events in (asyncio.run(capture(str(broken))), asyncio.run(stream(str(broken)))):
+        assert events[-1]["valid"] is False and events[-1].get("inconclusive") is True
+        assert "Exec format error" in events[-1]["message"]
+    assert spawned == [str(broken), str(broken)]  # never the wrapper
+    assert reniced == []  # nothing ran to renice
+
+    assert not runner.active_pids()
+
+
+def test_a_verifier_that_runs_gives_a_verdict_at_its_priority(tmp_path, monkeypatch):
+    """The other half: a valid verifier, spawned bare, still gives a verdict on
+    both paths, and its nice level is set on its own pid (the increment over
+    this process `nice -n` would give); I/O priority goes to `ionice -p`."""
+    monkeypatch.setattr(runner_module, "nice_value", lambda _owner=None: 5)
+    monkeypatch.setattr(runner_module, "_can_renice", lambda _value: True)
+    monkeypatch.setattr(runner_module.os, "getpriority", lambda *_a: 0)
+    reniced = []
+    def setpriority(which, pid, level):
+        reniced.append((which, pid, level))
+
+    monkeypatch.setattr(runner_module.os, "setpriority", setpriority)
+    monkeypatch.setattr(runner_module, "ioprio_prefix", lambda _owner=None: [])
+    async def resolved(_owner=None):
+        return True
+
+    monkeypatch.setattr(runner_module, "_resolve_wrappers", resolved)
+    spawned = []
+    real_exec = runner_module.asyncio.create_subprocess_exec
+
+    async def spy(*args, **kwargs):
+        process = await real_exec(*args, **kwargs)
+        spawned.append((args, process.pid))
+        return process
+
+    monkeypatch.setattr(runner_module.asyncio, "create_subprocess_exec", spy)
+    target = tmp_path / "a.7z"
+    target.write_bytes(b"7z")
+    runner = SubprocessRunner(owner="test")
+    cmd = [sys.executable, "-c", "print('100%')"]
+
+    async def capture():
+        return [e async for e in runner.capture_verify(cmd, path=str(target), success_message="ok")]
+
+    async def stream():
+        return [e async for e in runner.run_verify(
+            cmd, path=str(target), parse_progress=lambda _l: None,
+            success_message="ok", failure_message="bad",
+        )]
+
+    for events in (asyncio.run(capture()), asyncio.run(stream())):
+        assert events[-1]["valid"] is True
+    assert [args for args, _pid in spawned] == [tuple(cmd), tuple(cmd)]  # bare
+    assert reniced == [(os.PRIO_PROCESS, pid, 5) for _args, pid in spawned]
+    assert not runner.active_pids()
+
+
+def test_one_wrapper_lookup_at_a_time(monkeypatch):
+    """CodeRabbit 4616898109: while a lookup of `nice` is still out (its
+    caller gave up on it), no second one starts; the spawn runs unwrapped."""
+    monkeypatch.setattr(runner_module, "_WRAPPERS", {})
+    monkeypatch.setattr(runner_module, "_LOOKING_UP", {"nice"})
+    monkeypatch.setattr(runner_module, "nice_value", lambda _owner=None: 10)
+    probes = []
+
+    async def probe(*args, **_kwargs):
+        probes.append(args)
+
+    monkeypatch.setattr(runner_module, "_bounded_probe", probe)
+    assert asyncio.run(runner_module._resolve_wrappers("test")) is False
+    assert probes == []
+
+
+def test_a_wrapper_that_fails_to_start_is_looked_up_again(tmp_path, monkeypatch):
+    """A cached `nice` removed since: the spawn fails once, and the cache is
+    forgotten so the next spawn looks it up again (review 5960207187)."""
+    monkeypatch.setattr(runner_module, "_WRAPPERS", {"nice": str(tmp_path / "gone" / "nice")})
+    monkeypatch.setattr(runner_module, "nice_value", lambda _owner=None: 10)
+    monkeypatch.setattr(runner_module, "_can_renice", lambda _value: True)
+    with pytest.raises(FileNotFoundError):
+        asyncio.run(SubprocessRunner(owner="test").run_capture([sys.executable, "-c", "1"]))
+    assert runner_module._WRAPPERS == {}
+
+
+
+def test_a_wrapped_127_forgets_a_stale_inner_wrapper(tmp_path, monkeypatch):
+    """codex 4617171876: a cached inner `ionice` removed since makes the outer
+    `nice` exit 127. That run forgets the cache, so the next spawn looks the
+    wrappers up again and runs without the missing one."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake_nice = bin_dir / "nice"
+    fake_nice.write_text('#!/bin/sh\nshift 2\nexec "$@"\n')  # nice -n N cmd...
+    fake_nice.chmod(0o755)
+    monkeypatch.setenv("PATH", str(bin_dir))  # no ionice on it any more
+    monkeypatch.setattr(runner_module, "_resolve_policy", lambda key, _owner: {
+        "nice": 0, "ioprio_class": 2, "ioprio_level": 7,
+    }.get(key))
+    monkeypatch.setattr(runner_module, "_WRAPPERS", {
+        "nice": str(fake_nice), "ionice": str(tmp_path / "gone" / "ionice"),
+    })
+    monkeypatch.setattr(runner_module, "_LOOKING_UP", set())
+    runner = SubprocessRunner(owner="test")
+    cmd = [sys.executable, "-c", "print('ok')"]
+
+    rc, _out, _err = asyncio.run(runner.run_capture(cmd))
+    assert rc == 127
+    assert runner_module._WRAPPERS == {}
+
+    rc, out, _err = asyncio.run(runner.run_capture(cmd))
+    assert (rc, out) == (0, b"ok\n")
+    assert runner_module._WRAPPERS == {"nice": str(fake_nice), "ionice": None}
+
+
+def _stalled_ionice(tmp_path, monkeypatch):
+    """A real `ionice` stand-in that records its pid and never answers."""
+    pids = tmp_path / "ionice-pids"
+    stand_in = tmp_path / "ionice"
+    stand_in.write_text(f"#!/bin/sh\necho $$ >> {pids}\nexec sleep 30\n")
+    stand_in.chmod(0o755)
+    monkeypatch.setattr(runner_module, "_WRAPPERS", {"ionice": str(stand_in)})
+    monkeypatch.setattr(runner_module, "_resolve_policy", lambda key, _owner: {
+        "ioprio_class": 2, "ioprio_level": 7,
+    }.get(key))
+    monkeypatch.setattr(runner_module, "_IONICE_SECONDS", 0.3)
+    return pids
+
+
+def test_a_stalled_ionice_step_never_holds_back_a_verify_deadline(tmp_path, monkeypatch):
+    """CodeRabbit 4617379646: the `ionice -p` step runs as a task of its own,
+    never awaited by the spawn, so a stalled one can't let a verifier run past
+    its deadline or its cancel, on run_capture(verdict=True) or run_verify."""
+    import time
+
+    _stalled_ionice(tmp_path, monkeypatch)
+    runner = SubprocessRunner(owner="test")
+    slow = [sys.executable, "-c", "import time; time.sleep(30)"]
+
+    started = time.monotonic()
+    rc, _out, _err = asyncio.run(runner.run_capture(slow, timeout=0.3, verdict=True))
+    assert rc is None and time.monotonic() - started < 5  # the deadline held
+
+    target = tmp_path / "a.bin"
+    target.write_bytes(b"x")
+
+    async def cancelled_verify():
+        cancel = asyncio.Event()
+        asyncio.get_running_loop().call_later(0.2, cancel.set)
+        return [e async for e in runner.run_verify(
+            slow, path=str(target), parse_progress=lambda _l: None,
+            success_message="ok", failure_message="bad", cancel_event=cancel,
+        )]
+
+    started = time.monotonic()
+    events = asyncio.run(cancelled_verify())
+    assert events[-1].get("cancelled") is True and time.monotonic() - started < 8
+    assert not runner.active_pids()
+
+
+def test_stalled_ionice_steps_stay_out_of_the_probe_pool(tmp_path, monkeypatch):
+    """CodeRabbit 4617447724: `ionice -p` is an asyncio child, bounded and
+    killed on a stall, never a probe-pool thread, and at most a few are in
+    flight; past that a child just gets no I/O priority."""
+    pids = _stalled_ionice(tmp_path, monkeypatch)
+    slots_before = runner_module._probe_slots._value
+
+    async def many():
+        for _ in range(10):  # the stand-in ignores the pid it is given
+            runner_module._prioritize_child("test", 999999)
+            assert len(runner_module._IONICE_TASKS) <= runner_module._MAX_IONICE_TASKS
+        assert runner_module._probe_slots._value == slots_before
+        while runner_module._IONICE_TASKS:
+            await asyncio.sleep(0.05)
+
+    asyncio.run(many())
+    started = [int(line) for line in pids.read_text().split()]
+    assert 0 < len(started) <= runner_module._MAX_IONICE_TASKS
+    for pid in started:  # every stalled stand-in was killed and reaped
+        with pytest.raises(ProcessLookupError):
+            os.kill(pid, 0)
+    assert runner_module._probe_slots._value == slots_before
+
+
+def test_an_ionice_child_that_outlives_sigkill_turns_the_step_off(tmp_path, monkeypatch):
+    """CodeRabbit 4617587026: an `ionice` child whose reap gives up after
+    SIGKILL would free its slot while still alive. Instead the post-spawn
+    I/O-priority step is turned off for the rest of the process."""
+    _stalled_ionice(tmp_path, monkeypatch)
+    monkeypatch.setattr(runner_module, "_IONICE_SECONDS", 0.1)
+    monkeypatch.setattr(runner_module, "_IONICE_STUCK", False)
+    spawned = []
+
+    class _Unkillable:
+        pid = 4242
+        returncode = None
+
+        async def wait(self):
+            await asyncio.sleep(30)  # never reaped, SIGKILL or not
+
+        def kill(self):
+            pass
+
+    async def fake_exec(*args, **_kwargs):
+        spawned.append(args)
+        return _Unkillable()
+
+    monkeypatch.setattr(runner_module.asyncio, "create_subprocess_exec", fake_exec)
+
+    async def twice():
+        runner_module._prioritize_child("test", 999999)
+        while runner_module._IONICE_TASKS:
+            await asyncio.sleep(0.05)
+        runner_module._prioritize_child("test", 999999)
+
+    asyncio.run(twice())
+    assert runner_module._IONICE_STUCK is True
+    assert len(spawned) == 1  # no further ionice child started
+    assert not runner_module._IONICE_TASKS

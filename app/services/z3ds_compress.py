@@ -14,7 +14,6 @@ from services.subprocess_runner import (
     SubprocessRunner,
     abandoned_verify_error,
     collect_verify,
-    ioprio_prefix,
     ReadCancelled,
     feed_stdin_from_file,
     remove_partial_output,
@@ -87,11 +86,6 @@ class Z3DSCompressService:
             input_path,
             output_path,
         ]
-
-        prefix = ioprio_prefix("z3ds")
-        if prefix:
-            cmd = prefix + cmd
-
         return cmd
 
     def active_pids(self) -> list[int]:
@@ -226,8 +220,7 @@ class Z3DSCompressService:
         yield {"progress": 5, "message": f"Starting 3DS {verb}..."}
 
         # Delegate the streaming spawn / stall / cancel / PID loop to the shared
-        # runner. z3ds keeps preexec nice (owner "z3ds") and folds ionice into
-        # _build_command, so nice_via_wrapper stays False. parse_progress is a
+        # runner, which applies nice/ionice (owner "z3ds"). parse_progress is a
         # no-op — there is no parseable percent — so the runner's size-growth
         # fallback drives the bar from the growing output file.
         try:

@@ -34,8 +34,6 @@ from services.subprocess_runner import (
     ReadCancelled,
     SubprocessRunner,
     collect_verify,
-    ioprio_prefix,
-    nice_prefix,
     remove_partial_tree,
     run_detached,
     verify_preflight,
@@ -304,12 +302,7 @@ class NszService:
             elif block is False:
                 cmd.append("-S")
         cmd += ["-o", work_dir, input_path]
-
-        # Apply nice/ionice via command wrappers, NOT preexec_fn: forking a
-        # Python callable in a multithreaded app (this one uses threadpools) can
-        # deadlock the child before exec. `nice`/`ionice` are exec-only.
-        prefix = nice_prefix("nsz") + ioprio_prefix("nsz")
-        return prefix + cmd
+        return cmd
 
     def active_pids(self) -> list[int]:
         return self._runner.active_pids()
@@ -412,8 +405,7 @@ class NszService:
         yield {"progress": 1, "message": f"Starting Switch {verb}..."}
 
         # nsz names the file itself inside work_dir, so the runner watches
-        # produced_path for growth/stall. nice/ionice are command wrappers in
-        # _build_command (nice_via_wrapper) and the private keys-home env is
+        # produced_path for growth/stall. The private keys-home env is
         # forwarded; nsz prints no parseable percent, so the runner's fallback drives the
         # bar. The terminal 100% is held back — convert() emits it after the
         # os.replace onto the real output_path. require_output makes the runner
@@ -429,7 +421,6 @@ class NszService:
             fail_label="nsz",
             complete_message=f"Switch {verb} complete",
             mode=mode,
-            nice_via_wrapper=True,
             env=env,
             require_output=True,
         ):
@@ -489,8 +480,7 @@ class NszService:
         """Run an nsz command with the keys HOME; its output, or why it failed."""
         with self._keys_home(keys_file) as env:
             rc, out, _ = await self._runner.run_capture(
-                cmd, cancel_event=cancel_event, stderr_to_stdout=True,
-                nice_via_wrapper=True, env=env,
+                cmd, cancel_event=cancel_event, stderr_to_stdout=True, env=env,
             )
         text = (out or b"").decode("utf-8", errors="replace")
         if rc is None:
@@ -519,7 +509,7 @@ class NszService:
         if cached is not None:
             return cached
         keys_file = await self._keys_for_digest(cancel_event)
-        cmd = nice_prefix("nsz") + ioprio_prefix("nsz") + [self.nsz_path, "-V", file_path]
+        cmd = [self.nsz_path, "-V", file_path]
         text = await self._capture(cmd, keys_file, cancel_event)
         hashes = _one_nsp_sha256(text)
         if hashes is None:
@@ -576,9 +566,7 @@ class NszService:
         test can't validate it. nsz's own verify re-derives and checks the
         content hashes, which is why this also needs keys. The run is the shared
         :meth:`SubprocessRunner.capture_verify` (size-scaled bound +
-        ``cancel_event``), given nsz's private keys HOME and its command-wrapper
-        nice/ionice -- forking a Python callable via ``preexec_fn`` in this
-        multithreaded process can deadlock the child before ``exec``.
+        ``cancel_event``), given nsz's private keys HOME.
         """
         # Bounded, off the event loop: an unresponsive volume must fail this
         # verify, not freeze every task in the process (see verify_preflight).
@@ -635,17 +623,12 @@ class NszService:
                     self._rebuilt_hashes[identity] = found
 
             with self._keys_home(keys_file) as env:
-                verify_cmd = (
-                    nice_prefix("nsz")
-                    + ioprio_prefix("nsz")
-                    + [self.nsz_path, "-V", file_path]
-                )
+                verify_cmd = [self.nsz_path, "-V", file_path]
                 async for update in self._runner.capture_verify(
                     verify_cmd,
                     path=file_path,
                     success_message="File is Intact",
                     cancel_event=cancel_event,
-                    nice_via_wrapper=True,
                     env=env,
                     on_success_output=_keep_rebuilt_hash,
                 ):

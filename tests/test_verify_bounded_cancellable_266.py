@@ -1003,7 +1003,49 @@ def test_streaming_verify_spawns_without_a_preexec_fork_hook():
     # The argument, not the word: the comment above the spawn explains why it
     # is absent, and should keep explaining it.
     assert "preexec_fn=" not in source
-    assert "nice_prefix(self._owner)" in source
+
+
+def test_the_streaming_verifier_spawns_bare_and_is_reniced(tmp_path, monkeypatch):
+    """The argv run_verify spawns: the bare command, never behind the priority
+    prefix (whose execvp could run a broken verifier through /bin/sh), with
+    the priority then applied to the child."""
+    import shutil
+    import sys
+
+    from app.services import subprocess_runner as sr
+
+    wrapper = shutil.which("env")
+    monkeypatch.setattr(sr, "priority_prefix", lambda _owner=None: [wrapper])
+    spawned = []
+    real_exec = sr.asyncio.create_subprocess_exec
+
+    async def spy(*args, **kwargs):
+        spawned.append(list(args))
+        return await real_exec(*args, **kwargs)
+
+    monkeypatch.setattr(sr.asyncio, "create_subprocess_exec", spy)
+    target = tmp_path / "disc.bin"
+    target.write_bytes(b"data")
+    cmd = [sys.executable, "-c", "print('100%')"]
+
+    async def drain():
+        return [e async for e in sr.SubprocessRunner(owner="test").run_verify(
+            cmd, path=str(target), parse_progress=lambda _l: None,
+            success_message="ok", failure_message="bad",
+        )]
+
+    reniced = []
+
+    def prioritize(owner, pid):
+        reniced.append(owner)
+
+    monkeypatch.setattr(sr, "_prioritize_child", prioritize)
+    events = asyncio.run(drain())
+    # A verdict never comes through an execvp wrapper (CodeRabbit 4616898119):
+    # the verifier is spawned bare and given its priority by pid.
+    assert spawned == [cmd]
+    assert reniced == ["test"]
+    assert events[-1]["valid"] is True
 
 
 def test_cancelling_the_z3ds_feeder_does_not_close_behind_a_stuck_read(

@@ -53,14 +53,13 @@ from logging_setup import get_logger
 from services.subprocess_runner import (
     SubprocessRunner,
     collect_verify,
-    ioprio_prefix,
-    nice_prefix,
     ReadCancelled,
     remove_partial_tree,
     run_detached,
     verify_preflight,
     verify_exception_event,
 )
+from utils.path_utils import path_present
 
 # Compress takes the raw dump, decompress takes the compressed container.
 JWUD_COMPRESS_EXTENSIONS = {".wud"}
@@ -154,7 +153,9 @@ def split_set_parts(primary_path: str) -> list[str]:
     parts: list[str] = []
     for index in range(2, WUD_SPLIT_MAX_PARTS + 1):
         candidate = os.path.join(directory, WUD_SPLIT_PART_TEMPLATE % index)
-        if not os.path.isfile(candidate):
+        # path_present, not os.path.isfile: a part whose stat timed out is
+        # "couldn't tell" for the queued identity, never a shorter set.
+        if not path_present(candidate, regular=True):
             break
         parts.append(candidate)
     return parts
@@ -374,10 +375,7 @@ class JwudToolService:
         ]
         if not verification_enabled(compression):
             cmd.append("-noVerify")
-        # Apply nice/ionice via command wrappers, NOT preexec_fn: forking a
-        # Python callable in this multithreaded app can deadlock the child
-        # before exec (same reason nsz/maxcso do it this way).
-        return nice_prefix("jwud") + ioprio_prefix("jwud") + cmd
+        return cmd
 
     def active_pids(self) -> list[int]:
         return self._runner.active_pids()
@@ -581,7 +579,6 @@ class JwudToolService:
             cancel_event=cancel_event,
             fail_label="JWUDTool",
             complete_message=f"Wii U {verb} complete",
-            nice_via_wrapper=True,
             require_output=True,
             mode=mode,
         ):
