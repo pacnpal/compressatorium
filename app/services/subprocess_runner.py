@@ -750,13 +750,16 @@ async def _wrapped_command(owner: str | None, cmd: list[str]) -> tuple[list[str]
     The wrappers come from the cache, looked up off the loop first
     (:func:`_resolve_wrappers`); a stalled lookup means no wrappers. A wrapped
     tool the kernel couldn't exec raises ``OSError`` (ENOEXEC) as a direct
-    exec would have (:func:`_exec_format_problem`)."""
+    exec would have (:func:`_exec_format_problem`). A wrapper is used only for
+    a tool known to be execable: a format check that doesn't complete (a
+    timeout, no probe slot) runs the bare command, whose direct exec raises
+    ENOEXEC itself (CodeRabbit 4617149402)."""
     prefix = priority_prefix(owner) if await _resolve_wrappers(owner) else []
     if prefix:
         try:
             problem = await _bounded_probe(_exec_format_problem, cmd[0])
-        except asyncio.TimeoutError:
-            problem = None  # couldn't tell: the wrapper runs it, as before
+        except asyncio.TimeoutError:  # ProbeCapacityExceeded included
+            return cmd, False  # couldn't tell: no wrapper, so no /bin/sh fallback
         if problem is not None:
             raise problem
     return prefix + cmd, bool(prefix)
@@ -2574,10 +2577,13 @@ class SubprocessRunner:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
             )
-        except OSError:
+        except OSError as exc:
             if wrapped:
                 _forget_wrappers()
-            raise
+            # The verifier couldn't be started (ENOEXEC, missing): no verdict,
+            # the same event capture_verify gives for it.
+            yield verify_exception_event(exc, prefix="Verification could not run")
+            return
         self.track_pid(process.pid)
         if self._logger.isEnabledFor(logging.DEBUG):
             self._logger.debug(

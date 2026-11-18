@@ -567,7 +567,11 @@ never scans; `run_capture` reports whether it actually wrapped its run
 tool the kernel can't execute (empty, neither ELF nor `#!`) is refused before
 the spawn with the `OSError` (ENOEXEC) a direct exec raised
 (`_exec_format_problem`): `nice`/`ionice` exec through `execvp`, which would
-hand it to `/bin/sh` and exit 0, so an empty verifier would pass.
+hand it to `/bin/sh` and exit 0, so an empty verifier would pass. One rule:
+a wrapper is used only for a tool known to be ELF or `#!`. A format check that
+doesn't complete (it times out, or no probe slot is free) runs that spawn
+bare, at normal priority, and the direct exec raises ENOEXEC itself, which
+both verify paths report as inconclusive.
 `ionice -t` is best effort, like the renice: a class the kernel denies
 (realtime without CAP_SYS_ADMIN) doesn't stop ionice before it runs the tool,
 which would otherwise hand back ionice's exit 1 as the tool's. A nice level

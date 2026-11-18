@@ -1577,3 +1577,56 @@ def test_a_wrapper_that_fails_to_start_is_looked_up_again(tmp_path, monkeypatch)
         asyncio.run(SubprocessRunner(owner="test").run_capture([sys.executable, "-c", "1"]))
     assert runner_module._WRAPPERS == {}
 
+
+@pytest.mark.parametrize("stall", ["timeout", "capacity"])
+def test_a_format_check_that_doesnt_complete_runs_the_tool_bare(tmp_path, monkeypatch, stall):
+    """CodeRabbit 4617149402: when the exec-format check times out or finds no
+    probe slot, the spawn drops the wrappers (no execvp fallback to /bin/sh),
+    so an empty verifier's direct exec raises ENOEXEC and both verify paths
+    report no verdict."""
+    env_path = shutil.which("env")
+    monkeypatch.setattr(runner_module, "_WRAPPERS", {"nice": env_path})
+    monkeypatch.setattr(runner_module, "nice_value", lambda _owner=None: 0)
+    monkeypatch.setattr(runner_module, "nice_prefix", lambda _owner=None: [env_path])
+    real_probe = runner_module._bounded_probe
+
+    async def probe(func, *args, **kwargs):
+        if func is runner_module._exec_format_problem:
+            if stall == "capacity":
+                raise runner_module.ProbeCapacityExceeded("no slot")
+            raise asyncio.TimeoutError
+        return await real_probe(func, *args, **kwargs)
+
+    monkeypatch.setattr(runner_module, "_bounded_probe", probe)
+    spawned = []
+    real_exec = runner_module.asyncio.create_subprocess_exec
+
+    async def spy(*args, **kwargs):
+        spawned.append(args[0])
+        return await real_exec(*args, **kwargs)
+
+    monkeypatch.setattr(runner_module.asyncio, "create_subprocess_exec", spy)
+    empty = tmp_path / "verifier"
+    empty.write_bytes(b"")
+    empty.chmod(0o755)
+    target = tmp_path / "a.7z"
+    target.write_bytes(b"7z")
+    runner = SubprocessRunner(owner="test")
+
+    async def capture():
+        return [e async for e in runner.capture_verify(
+            [str(empty), str(target)], path=str(target), success_message="ok",
+        )]
+
+    async def stream():
+        return [e async for e in runner.run_verify(
+            [str(empty), str(target)], path=str(target), parse_progress=lambda _l: None,
+            success_message="ok", failure_message="bad",
+        )]
+
+    for events in (asyncio.run(capture()), asyncio.run(stream())):
+        assert events[-1]["valid"] is False and events[-1].get("inconclusive") is True
+        assert "Exec format error" in events[-1]["message"]
+    assert spawned and all(arg == str(empty) for arg in spawned)  # never the wrapper
+    assert not runner.active_pids()
+
