@@ -429,7 +429,9 @@
   ready gave only the tool id (`cso isn't ready, so the Rule can't run`).
   Its Finding now gives the tool's reason too. The CLI, Auto, the sweep, the
   Inbox and the ZAR Info view now build this text in one place, so they say
-  the same thing. The sweep's line is still logged once per reason.
+  the same thing. The sweep's line is still logged once per reason. After
+  Preview or Run now, the Rule editor no longer says the tool "is not installed here";
+  it says the tool isn't ready and that the server log says why.
 
 - **A deferred rematch no longer logs a false match-lock warning** (#481).
   When a DAT import had to wait behind a running match job, the rematch that
