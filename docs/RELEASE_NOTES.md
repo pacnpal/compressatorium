@@ -424,12 +424,22 @@
   ready came back as a 500 "Failed to read ... info" and the File info window
   said no tool could read the file. They now answer 503 with the same text the
   rest of the app uses, such as `CHDMAN isn't ready: its program is not
-  available on this server`. The Info views that read the file themselves
+  available on this server`, which the File info window shows (#486). The
+  Info views that read the file themselves
   (3DS, NKit, Xbox, CSO, handheld ROM, Wii U and Switch) don't need their
   tool's program, so they keep answering when it is missing, and a Switch
   Info read doesn't wait on the search for `prod.keys`. Each tool now says
   whether its Info read needs its program, and every Info view checks through
   the same place.
+
+- **The File info modal says why a tool isn't ready** (#486). When the only
+  tool that could describe a file wasn't ready, the modal showed the basics
+  under "No tool could read this file", as if the file were broken, and
+  dropped the reason the server gave. It now shows the server's text for each
+  tool that couldn't run, for example `rom-converto isn't ready: rom-converto
+  at /usr/local/bin/rom-converto is not executable`. A tool that ran and
+  couldn't read the file still gets the old note, and a later tool that reads
+  the file still wins with no note.
 
 - **A skipped Rule's log line gives the tool's own reason** (#484). The line
   the sweep logs for a Rule whose tool can't run said the tool "is not

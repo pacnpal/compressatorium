@@ -8525,6 +8525,15 @@ which adds ", so the Rule can't run") and the File info routes' 503 (below) all
 use it, so they say the same thing. A new caller does too, rather than
 formatting its own.
 
+It is a free function rather than a method so a tool that satisfies the
+protocol without subclassing `BaseTool` still works. Read it after the
+readiness check that answered False: rom-converto's `not_ready_reason` is a
+property that returns what its last probe found. Reading a reason is an
+attribute read, never I/O, so it is safe on the event loop; a plugin whose
+reason needs I/O would have to compute it in its readiness probe. A reason
+that raises, or is empty, gives `BaseTool.not_ready_reason` (with a warning
+logged) instead of failing the caller.
+
 **File info routes (#488).** Every `GET /api/*info` route in `routes/info.py`
 (`/info` for chdman, `/dolphin-info`, `/z3ds-info`, `/nkit-info`, `/xiso-info`,
 `/rom-converto-info`, `/cso-info`, `/romz-info`, `/jwud-info`, `/nsz-info`)
@@ -8554,14 +8563,17 @@ is cached is not shown while chdman isn't ready. chdman and dolphin keep
 `BaseTool.is_ready()` (always True), so today their gate only bites for a
 plugin that overrides it; the route is ready for that without another change.
 
-It is a free function rather than a method so a tool that satisfies the
-protocol without subclassing `BaseTool` still works. Read it after the
-readiness check that answered False: rom-converto's `not_ready_reason` is a
-property that returns what its last probe found. Reading a reason is an
-attribute read, never I/O, so it is safe on the event loop; a plugin whose
-reason needs I/O would have to compute it in its readiness probe. A reason
-that raises, or is empty, gives `BaseTool.not_ready_reason` (with a warning
-logged) instead of failing the caller.
+The SPA shows the 503's text as the server sent it. The shared client's
+`fetchJson` (`src/lib/api/client.js`) throws an `Error` whose `message` is the
+response's `detail` and whose `status` is the HTTP status, so a caller reads a
+503 the same way for every tool. The File info modal's `loadInfo`
+(`src/lib/util/fileInfo.js`) does this for the candidate tools' `getInfo`
+bindings: when none answers and it falls back to the listing's basics, each
+candidate that answered 503 has its `detail` added to the note under the
+basics, beside the usual "No tool could read this file" line when another
+candidate ran and failed (#486). No tool id is checked there; a tool's info
+route opts in by answering 503 with `not_ready_message(tool)`, which every
+info route now does through `_require_info_ready` when its read needs the tool.
 
 #### Resolving what to verify (`_verify_target_bounded`)
 
