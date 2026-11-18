@@ -418,6 +418,19 @@
 
 ### Fixed
 
+- **A DAT import during a running rematch no longer leaves a file unmatched**
+  (#492). Importing several DATs in quick succession could leave a file the
+  last one covers as a cached miss, or with no cached match at all, until it
+  was rematched by hand or browsed to. A match that was already running when a
+  DAT committed decided against the old DATs and wrote afterwards, and a match
+  written just before an import could be cleared by it without the import
+  rematching that file. Now a match decided against DATs that have since
+  changed is not saved; the file is rematched against the current DATs
+  instead, whether the match came from a match job, browsing or a library
+  scan. A match from Hasheous is still saved while DATs are being imported.
+  Each import or sync rematches every file whose match it cleared, and so
+  does deleting a DAT. An import that has nothing to rematch now says so in
+  the log.
 - **A queued conversion checks its Source again when it runs** (#449). Every
   file conversion, from a Rule sweep, a hand-started job or `run-rules`, now
   carries the identity of the file it was queued for and of the tracks or

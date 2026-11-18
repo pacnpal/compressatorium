@@ -386,7 +386,8 @@ async def test_sync_defers_deletion_until_all_imports_succeed(sync_service, tmp_
     assert result["status"] == "complete"
     # New DATs committed first, then old DAT deleted.
     mock_dat_store.persist.assert_called_once()
-    mock_dat_store.delete_dats_bulk.assert_called_once_with(["old-dat"])
+    mock_dat_store.delete_dats_bulk.assert_called_once()
+    assert mock_dat_store.delete_dats_bulk.call_args.args == (["old-dat"],)
     assert sync_service._state.get("last_sync_tag") == "0.285"
 
 
@@ -632,6 +633,51 @@ async def test_do_sync_rematches_a_hit_persisted_during_the_sync(sync_service, t
         ["/data/late.chd"], defer_if_busy=True, local_only=True,
     )
     assert result["rematch_status"] == "scheduled"
+
+
+@pytest.mark.asyncio
+async def test_do_sync_rematches_what_its_old_dat_delete_removed(sync_service, tmp_path):
+    """Issue #492, CodeRabbit on PR #493: the old-DAT delete reports its rows.
+
+    A hit decided after the persist can cite a DAT the sync then deletes; the
+    delete drops that row, and it is in neither the snapshot, the persist's
+    invalidated paths nor the survivors.
+    """
+    service = sync_service
+    dat_file = tmp_path / "sample.dat"
+    dat_file.write_text("<datafile></datafile>")
+
+    async def delete_old(dat_ids, *, invalidated=None):
+        invalidated.add("/data/cited-old.gba")
+        return len(dat_ids)
+
+    mock_store = MagicMock()
+    mock_store.list_dats = MagicMock(return_value=[
+        {"id": "old1", "name": "Old", "file_count": 1},
+    ])
+    mock_store.delete_dats_bulk = delete_old
+    mock_store.import_dat_no_persist = AsyncMock(return_value={
+        "id": "new1", "name": "Fresh", "file_count": 1, "hashes_added": 1,
+    })
+    mock_store.persist = AsyncMock()
+    mock_store.list_match_paths = MagicMock(return_value=[])
+    mock_schedule = AsyncMock(return_value="rematch-job")
+
+    with patch.object(service, "_fetch_latest_tag", return_value="0.285"), \
+         patch.object(service, "_list_dat_files", side_effect=[
+             [{"name": "test.dat", "path": "MAME Redump/test.dat", "size": 100}],
+             [],
+         ]), \
+         patch.object(service, "_download_dat", return_value=str(dat_file)), \
+         patch.object(service, "_get_dat_store", return_value=mock_store), \
+         patch("routes.dat.schedule_match_job", mock_schedule), \
+         patch("routes.dat.dat_store.list_match_paths", return_value=[]):
+        result = await service.sync(tag="0.285", force=True)
+
+    assert result["status"] == "complete", result
+    mock_schedule.assert_awaited_once_with(
+        ["/data/cited-old.gba"], defer_if_busy=True, local_only=True,
+    )
 
 
 @pytest.mark.asyncio
