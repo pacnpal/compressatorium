@@ -415,6 +415,12 @@
 
 ### Fixed
 
+- **Short jobs reach the Jobs panel at once** (#456). The job stream only
+  picked up jobs it saw queued or running on its 0.1 s loop, so a job that
+  started and ended in between (a patch job takes about 60 ms) showed up only
+  on the 30 s refresh. The stream now follows every job from the moment it is
+  created, and sends its end state exactly once.
+
 - **The CLI no longer hangs on exit** (#450). `JobManager.shutdown` and `drain`
   waited on sets that only shrink when the loop runs a done callback, and on
   Python 3.14 awaiting finished tasks doesn't give the loop a turn, so
