@@ -6121,8 +6121,15 @@ drains the jobs and copies the poll started, finishes them
 `inbox.report.after_pass` (RomM's scan, the `inbox_pass` notification). It
 prints one `{"inbox": true, ...}` line per Library whose Inboxes placed or
 left something. An Image left with a Finding, or a RomM scan that wasn't
-asked, doesn't change the exit status; an exception in the pass is an
-`error` line and exit 1. A stop skips it. `--dry-run` polls nothing and prints
+asked, doesn't change the exit status. A poll that reports an `error` (the
+folder gone or outside a Volume, the Library missing, or the poll raised;
+not `poll_running` / `inbox_removed`) prints a `{"inbox": true, "status":
+"error", "error": ...}` line and exits 1, as a failed sweep does (Codex
+4607809607); so does an exception in the pass. A stop before the pass skips
+it; a stop during it reaches `poll_all(should_stop=...)` and `poll`, which
+check it between files as they check `revoked`, so no further file is
+admitted while what already started drains (Codex 4607809613). The server's
+tick passes nothing: its predicate never stops. `--dry-run` polls nothing and prints
 a `skipped` / `dry_run` line per Library with Inboxes.
 
 Compared with the server, a pass restores the Hasheous toggle saved in the web
@@ -7676,10 +7683,17 @@ out, so a copy or a move that ends between polls is reported by the next one.
 one pass's poll results, groups them by Library, calls each Library's
 `after_intake` hook (§3.3.11) once with what was placed in it (RomM asks for a
 quick scan of just those Platform folders), and, when anything was placed or
-left, sends one `inbox_pass` notification (registered with the others in
-`services.notifications`) listing the files, the Findings' reasons and the
-scan outcome. A pass that placed and left nothing sends nothing and asks no
-one. The server's tick (`libraries.run_forever`) runs it after
+left, or a poll hit a new error, sends one `inbox_pass` notification
+(registered with the others in `services.notifications`) listing the files,
+the Findings' reasons, the errors and the scan outcome. Every result's real
+`error` is carried in the summary (`errors` per Library); `poll_running` and
+`inbox_removed` aren't failures. An error notifies only when it's news: `poll`
+sets `error_new` when its error differs from the Inbox's previous
+`state.error`, so an Inbox left unreadable doesn't notify every minute on the
+server, and notifies again once it was fixed and breaks again. A
+`run-rules` process starts with no state, so each run that hits it reports
+it. A pass that placed and left nothing and hit no new error sends nothing
+and asks no one. The server's tick (`libraries.run_forever`) runs it after
 `intake.poll_all()`; `run-rules` runs it after its own pass, so the two can't
 drift.
 

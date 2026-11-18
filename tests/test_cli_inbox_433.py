@@ -182,6 +182,35 @@ def test_a_dry_run_takes_nothing_from_an_inbox(folder, dolphin, capsys):
     )
 
 
+def test_an_inbox_that_cant_be_read_fails_the_run(folder, dolphin, capsys, sent):
+    """Codex 4607809607: a poll that couldn't read its Inbox reports an
+    error; run-rules prints it and exits 1, as for a failed sweep, and the
+    pass summary says so."""
+    import shutil
+
+    shutil.rmtree(folder["vol"] / "Downloads")
+
+    code, lines, _err = _cli(capsys, "run-rules", "--json")
+
+    assert code == 1
+    [line] = _inbox_lines(lines)
+    assert line["library"] == folder["library"].id
+    assert line["status"] == "error"
+    assert "isn't there" in line["error"]
+    [event] = [e for e in sent if e.kind == "inbox_pass"]
+    assert "isn't there" in event.body
+
+
+def test_an_idle_inbox_exits_0_with_no_inbox_line(folder, dolphin, capsys, sent):
+    for _ in range(2):
+        code, lines, err = _cli(capsys, "run-rules", "--json")
+        assert code == 0, err
+        assert _inbox_lines(lines) == []
+        _new_process()
+
+    assert [e for e in sent if e.kind == "inbox_pass"] == []
+
+
 def test_library_limits_the_inbox_pass_to_its_inboxes(folder, dolphin, capsys):
     game = _game(folder)
 

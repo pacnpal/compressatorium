@@ -314,6 +314,75 @@ async def test_a_pass_that_did_nothing_sends_nothing(vol, db, sent):
     assert sent == []
 
 
+@pytest.mark.asyncio
+async def test_a_stop_admits_nothing_more_and_lets_started_work_finish(vol, db):
+    """Codex 4607809613: once the stop predicate is true (run-rules got
+    SIGTERM), the poll admits no more files; what it started finishes."""
+    from services import inbox
+    from services.inbox import intake
+
+    box = _folder_inbox(vol)
+    names = ["A.iso", "B.iso", "C.iso"]
+    for name in names:
+        _drop(vol / "Downloads" / "ps2" / name)
+    await intake.poll_all(now=0)  # seen: settled from the next poll on
+
+    def stopping() -> bool:
+        return intake.status(box.id)["in_progress"] >= 1
+
+    await intake.poll_all(now=1, should_stop=stopping)
+    await intake.drain()
+    result = await intake.poll(inbox.get(box.id), now=2, should_stop=lambda: True)
+
+    placed = sorted(p.name for p in (vol / "ROMs" / "ps2").iterdir())
+    assert len(placed) == 1
+    assert [Path(p["output"]).name for p in result["placed"]] == placed
+    assert sorted(p.name for p in (vol / "Downloads" / "processed" / "ps2").iterdir()) == placed
+    left = sorted(p.name for p in (vol / "Downloads" / "ps2").iterdir())
+    assert left == sorted(set(names) - set(placed))
+
+
+@pytest.mark.asyncio
+async def test_a_poll_error_is_in_the_pass_summary_once(vol, db, sent):
+    """An Inbox that can't be read: every pass's summary carries the error,
+    and it is notified once per change, so the server's tick doesn't repeat
+    it every minute."""
+    import shutil
+
+    box = _folder_inbox(vol)
+    downloads = vol / "Downloads"
+
+    shutil.rmtree(downloads)
+    first = await _pass(0)
+    again = await _pass(1)
+    downloads.mkdir()
+    fine = await _pass(2)
+    shutil.rmtree(downloads)
+    back = await _pass(3)
+
+    [error] = first["libraries"][box.library_id]["errors"]
+    assert "isn't there" in error
+    assert again["libraries"][box.library_id]["errors"] == [error]
+    assert fine["libraries"] == {}
+    assert back["libraries"][box.library_id]["errors"] == [error]
+    events = [e for e in sent if e.kind == "inbox_pass"]
+    assert len(events) == 2  # the first time, and again once it came back
+    assert "isn't there" in events[0].body
+
+
+@pytest.mark.asyncio
+async def test_a_poll_skipped_or_removed_mid_pass_is_not_an_error(vol, db, sent):
+    from services.inbox import report
+
+    summary = await report.after_pass([
+        {"inbox_id": 1, "library_id": "folder:1", "placed": [], "left": [],
+         "error": code} for code in ("poll_running", "inbox_removed")
+    ])
+
+    assert summary["libraries"] == {}
+    assert sent == []
+
+
 def test_the_inbox_summary_is_a_registered_event():
     from services import notifications
 

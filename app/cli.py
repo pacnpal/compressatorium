@@ -1701,8 +1701,10 @@ async def _inbox_pass(chosen: list, printer: Printer, state: RunState, jobs, own
     is kept between runs in the preferences (``INBOX_SETTLE_KEY``). The
     conversions and copies the poll starts finish within the run, and their
     originals go to ``processed/`` before it exits (``intake.finish_all``).
-    One line per Library whose Inboxes placed or left something. True when
-    the pass itself failed; an Image left with a Finding is not a failure.
+    One line per Library whose Inboxes placed or left something, and an
+    ``error`` line for each Inbox that couldn't be polled. True when the pass
+    failed or an Inbox couldn't be polled; an Image left with a Finding is
+    not a failure. A stop admits nothing more; what already started drains.
     """
     from fastapi.concurrency import run_in_threadpool
     from services import inbox as inbox_store
@@ -1720,7 +1722,10 @@ async def _inbox_pass(chosen: list, printer: Printer, state: RunState, jobs, own
                 break
             before = set(jobs.jobs)
             sweeping.append(library_id)
-            results += await intake.poll_all(library_ids={library_id})
+            # A stop admits nothing more (Codex 4607809613); what started drains.
+            results += await intake.poll_all(
+                library_ids={library_id}, should_stop=lambda: state.stopping,
+            )
             for job_id in set(jobs.jobs) - before:
                 owners.setdefault(job_id, library_id)
         if state.stopping:
@@ -1736,21 +1741,30 @@ async def _inbox_pass(chosen: list, printer: Printer, state: RunState, jobs, own
         line = _inbox_line(None, status="error", reason=f"inbox_pass_failed: {exc}")
         printer.summary(line, _inbox_text(line))
         return True
+    failed = False
     for library_id, entry in summary["libraries"].items():
-        line = _inbox_line(library_id, status="inbox", entry=entry)
-        printer.summary(line, _inbox_text(line))
-    return False
+        # An Inbox that couldn't be polled (its folder gone, outside a
+        # Volume, its Library missing) fails the run like a failed sweep
+        # (Codex 4607809607).
+        for error in entry.get("errors") or []:
+            line = _inbox_line(library_id, status="error", error=error)
+            printer.summary(line, _inbox_text(line))
+            failed = True
+        if entry["placed"] or entry["left"]:
+            line = _inbox_line(library_id, status="inbox", entry=entry)
+            printer.summary(line, _inbox_text(line))
+    return failed
 
 
 def _inbox_line(library_id, *, status: str, entry: dict | None = None,
-                reason: str | None = None) -> dict:
+                reason: str | None = None, error: str | None = None) -> dict:
     entry = entry or {}
     return {
         "library": library_id, "inbox": True, "status": status,
         "placed": [p.get("output") or p["path"] for p in entry.get("placed") or []],
         "left": [{"path": item["path"], "reason": item["reason"]}
                  for item in entry.get("left") or []],
-        "scan": entry.get("scan"), "reason": reason,
+        "scan": entry.get("scan"), "reason": reason, "error": error,
     }
 
 
@@ -1758,6 +1772,8 @@ def _inbox_text(line: dict) -> str:
     from services.inbox import report
 
     where = line["library"] or "every Inbox"
+    if line["error"]:
+        return f"{'error':<10} {where} Inbox: {line['error']}"
     if line["status"] != "inbox":
         return f"{line['status']:<10} {where} Inbox pass: {line['reason']}"
     text = (f"{'inbox':<10} {where}: {len(line['placed'])} placed, "

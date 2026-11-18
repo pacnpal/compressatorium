@@ -147,7 +147,10 @@
   nothing. `run-rules` makes one Inbox pass after its Rule sweep, under the
   same one-scheduler-per-data-directory lock, and keeps what intake has seen
   settling between runs, so a file one cron run sees is taken by the next.
-  The conversions and copies it starts finish before it exits. The RomM call
+  The conversions and copies it starts finish before it exits. An Inbox that
+  can't be polled (its folder gone, say) is in the summary, once until it
+  changes, and makes `run-rules` print an error and exit 1. A stop during
+  the pass takes no more files. The RomM call
   and its scope were checked against RomM 5.4.1 (see the RomM integration
   roadmap).
 - **Xbox 360 disc images to ZAR, with rom-converto** (#422). A new tool,

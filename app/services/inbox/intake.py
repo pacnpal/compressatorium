@@ -56,6 +56,7 @@ import os
 import stat
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -191,6 +192,11 @@ _stop_lock = threading.Lock()
 _stop_generation = 0
 _check_lock: asyncio.Lock | None = None
 _check_lock_loop: asyncio.AbstractEventLoop | None = None
+
+
+def _never() -> bool:
+    """The default stop predicate: the server's tick never stops a poll."""
+    return False
 
 
 def _stopped() -> bool:
@@ -518,11 +524,14 @@ async def _clear(inbox: inbox_store.Inbox, path: str) -> None:
 
 async def poll_all(
     *, now: float | None = None, library_ids: set[str] | None = None,
+    should_stop: Callable[[], bool] = _never,
 ) -> list[dict[str, Any]]:
     """One poll of every Inbox (of the Libraries *library_ids*, when given):
     a pass. Never raises; called from the scheduler's tick and ``run-rules``.
-    A new pass may open files again after a check that had to stop
-    (``_storage_stop``)."""
+    A poll that raised is reported with its ``error``. Once *should_stop*
+    is true (``run-rules`` got a stop) no further file is admitted and no
+    further Inbox polled; work already started finishes. A new pass may open
+    files again after a check that had to stop (``_storage_stop``)."""
     _set_stop(False)
     try:
         inboxes = await run_in_threadpool(inbox_store.all_inboxes)
@@ -533,15 +542,25 @@ async def poll_all(
     for inbox in inboxes:
         if library_ids is not None and inbox.library_id not in library_ids:
             continue
+        if should_stop():
+            break
         try:
-            results.append(await poll(inbox, now=now))
-        except Exception:
+            results.append(await poll(inbox, now=now, should_stop=should_stop))
+        except Exception as exc:
             logger.warning("inbox: polling %s failed", inbox.folder, exc_info=True)
+            results.append({
+                "inbox_id": inbox.id, "library_id": inbox.library_id,
+                "placed": [], "left": [], "error": f"Polling the Inbox failed: {exc}",
+            })
     return results
 
 
-async def poll(inbox: inbox_store.Inbox, *, now: float | None = None) -> dict[str, Any]:
-    """One poll of *inbox* at *now* (seconds; the wall clock by default)."""
+async def poll(
+    inbox: inbox_store.Inbox, *, now: float | None = None,
+    should_stop: Callable[[], bool] = _never,
+) -> dict[str, Any]:
+    """One poll of *inbox* at *now* (seconds; the wall clock by default).
+    Admits no file once *should_stop* is true."""
     from services import libraries
 
     now = time.time() if now is None else now
@@ -555,6 +574,8 @@ async def poll(inbox: inbox_store.Inbox, *, now: float | None = None) -> dict[st
         result["error"] = "poll_running"
         return result
     state.polling = True
+    # Whether this poll's error is news (#433): the summary notifies once.
+    previous_error = state.error
     try:
         await _settle_flights(inbox, state)
         library = libraries.get(inbox.library_id)
@@ -582,6 +603,8 @@ async def poll(inbox: inbox_store.Inbox, *, now: float | None = None) -> dict[st
         for path, fingerprint in listing.items():
             if state.revoked:
                 break  # removed meanwhile: nothing more is taken
+            if should_stop():
+                break  # a stop (run-rules): nothing more is admitted
             if path in state.flights:
                 continue
             depends = _ownership_key(path, listing, sharing, blocked)
@@ -642,6 +665,7 @@ async def poll(inbox: inbox_store.Inbox, *, now: float | None = None) -> dict[st
         state.last_poll = now
         result["placed"], state.placed = state.placed, []
         result["left"], state.left = state.left, []
+        result["error_new"] = bool(state.error) and state.error != previous_error
         state.polling = False
 
 

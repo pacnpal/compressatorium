@@ -1159,7 +1159,10 @@ long a file must stay unchanged before it's taken (60 seconds by default).
   Finding sends one notification (**An Inbox pass placed Images or left some
   with a Finding**) to your [notification destinations](#notifications): how
   many were placed and where, which were left and why, and whether RomM was
-  asked to scan. A pass that did nothing sends nothing.
+  asked to scan. An Inbox that can't be polled (its folder gone, or no
+  longer inside a Volume) is in the message too, once when it starts and
+  again if it comes back after being fixed. A pass that did nothing sends
+  nothing.
 - **From cron.** [`run-rules`](#command-line-compressatorium) makes one Inbox pass after its
   Rule sweep, under the same lock, so intake works without the server.
 
@@ -2667,7 +2670,10 @@ conversions and copies it starts finish before it exits, and their originals
 move to `processed/`. It prints one line per Library whose Inboxes placed or
 left something (`"inbox": true` in `--json`, with the outputs placed, the files
 left with their Finding, and RomM's scan), and sends the pass summary
-notification. A file left with a Finding doesn't change the exit status.
+notification. A file left with a Finding doesn't change the exit status, but
+an Inbox that can't be polled prints an `error` line (`"error"` in `--json`)
+and makes the run exit `1`, as a failed sweep does. A stop admits no more
+files; what it already started finishes or is cancelled with the run's jobs.
 `--dry-run` polls no Inbox and says so (`skipped`, `dry_run`).
 
 Before it sweeps RomM, `run-rules` does the RomM upkeep the server does in the

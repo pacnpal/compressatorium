@@ -7,10 +7,14 @@ the Inbox with a Finding (``left``). :func:`after_pass` takes those results:
 * each Library that had Images placed hears about them through its
   ``after_intake`` hook, once per pass (RomM is asked to scan just those
   Platform folders; a folder Library has no one to tell);
-* if anything was placed or left, one ``inbox_pass`` notification goes out
-  through the notify path, with the counts, the files and what the Library
-  said (a RomM token without ``tasks.run`` is reported here). A pass that did
-  nothing sends nothing.
+* if anything was placed or left, or a poll hit an error it hadn't hit on
+  the poll before (the folder gone, outside a Volume, its Library missing;
+  ``error_new``), one ``inbox_pass`` notification goes out through the notify
+  path, with the counts, the files, the errors and what the Library said (a
+  RomM token without ``tasks.run`` is reported here). A pass that did
+  nothing sends nothing, and an error that persists isn't sent every minute.
+  The summary itself carries every pass's errors (``run-rules`` fails on
+  them).
 
 The server's scheduler tick (``libraries.run_forever``) and ``run-rules`` both
 call it, so the two cannot drift.
@@ -31,27 +35,39 @@ logger = get_logger("inbox")
 EVENT = "inbox_pass"
 # Files listed by name in one message; the rest are counted.
 MAX_LISTED = 20
+# Poll results that aren't failures: the Inbox was already being polled, or
+# was removed while it was.
+NOT_ERRORS = frozenset({"poll_running", "inbox_removed"})
 
 
 async def after_pass(results: list[dict[str, Any]]) -> dict[str, Any]:
     """Tell each Library what a pass placed in it, then send the summary.
 
-    Returns ``{"libraries": {library_id: {"name", "placed", "left", "scan"}}}``,
-    holding only the Libraries whose Inboxes placed or left something. Never
-    raises.
+    Returns ``{"libraries": {library_id: {"name", "placed", "left", "errors",
+    "scan"}}}``, holding only the Libraries whose Inboxes placed or left
+    something or hit an error. Never raises.
     """
     grouped: dict[str, dict[str, Any]] = {}
+    news = False
     for result in results:
         placed = list(result.get("placed") or [])
         left = list(result.get("left") or [])
-        if not (placed or left):
+        error = result.get("error")
+        if error in NOT_ERRORS:
+            error = None
+        if not (placed or left or error):
             continue
         entry = grouped.setdefault(
             result["library_id"],
-            {"name": result["library_id"], "placed": [], "left": [], "scan": None},
+            {"name": result["library_id"], "placed": [], "left": [], "errors": [],
+             "scan": None},
         )
         entry["placed"] += placed
         entry["left"] += left
+        if error:
+            entry["errors"].append(error)
+        # A poll that raised has no ``error_new``: it is news.
+        news = news or bool(placed or left or (error and result.get("error_new", True)))
     for library_id, entry in grouped.items():
         library = await _library(library_id)
         if library is None:
@@ -59,7 +75,7 @@ async def after_pass(results: list[dict[str, Any]]) -> dict[str, Any]:
         entry["name"] = getattr(library, "name", library_id)
         if entry["placed"]:
             entry["scan"] = await _tell(library, entry["placed"])
-    if grouped:
+    if news:
         notifications.notify(event(grouped))
     return {"libraries": grouped}
 
@@ -106,11 +122,16 @@ def event(grouped: dict[str, dict[str, Any]]) -> notifications.Event:
     """The ``inbox_pass`` message for one pass."""
     placed = sum(len(entry["placed"]) for entry in grouped.values())
     left = sum(len(entry["left"]) for entry in grouped.values())
+    errors = sum(len(entry.get("errors") or []) for entry in grouped.values())
     title = f"Inbox: {placed} placed, {left} left with a Finding"
+    if errors:
+        title += f", {errors} couldn't be polled"
     lines: list[str] = []
     missing_scope = False
     for entry in grouped.values():
         lines.append(f"{entry['name']}:")
+        for error in entry.get("errors") or []:
+            lines.append(f"An Inbox couldn't be polled: {error}")
         if entry["placed"]:
             lines.append(f"Placed {len(entry['placed'])}:")
             lines += _listed([
@@ -129,6 +150,7 @@ def event(grouped: dict[str, dict[str, Any]]) -> notifications.Event:
     return notifications.Event(EVENT, title, "\n".join(lines), {
         "placed": placed,
         "left": left,
+        "errors": errors,
         "missing_scope": missing_scope,
         "failures": [
             {"file": os.path.basename(item["path"]), "error": item["reason"]}
