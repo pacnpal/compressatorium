@@ -2824,12 +2824,16 @@ or refused on the Rule (`dropped_codecs`, `dropped_timezone`,
 `rules.rule_changes(rule)` puts those in words, and `rules.refusal(raw,
 kind=)` says why it refuses a Rule outright (a mode no tool provides, or one
 `mode_is_automatable` refuses; a Rule with no mode is an empty row and gets
-None). Two places in `rules/sweep.py` log them:
+None). Three helpers in `rules/sweep.py` log them, and a fourth logs the
+Rules the run loop skips:
 
 - `report_rule_changes(library, platform, rule, kind=, prefix=, seen=)` logs
   one line for a Rule about to run. The sweep calls it once per Rule it runs
-  (after the paused, due and active-check gates, for both kinds), so any
-  Library logs it once per sweep. An Inbox calls it as it converts under a
+  (after the paused, due and active-check gates, for both kinds, and after
+  the skip checks below too: for a conversion Rule once it passes them all,
+  for a check Rule from `_sweep_check` once it has listed its Images and
+  picked one or found no verifier missing), so any Library logs it once per
+  sweep that runs the Rule, and a Rule skipped every tick doesn't repeat it. An Inbox calls it as it converts under a
   Rule (`intake._take`), with `prefix="inbox"` and `seen` the pass's
   `_State.rules_reported`, so once per pass.
 - `_report_unrunnable(library, stored, rules)` runs in each sweep right after
@@ -2852,6 +2856,30 @@ None). Two places in `rules/sweep.py` log them:
   still refuses a codec the mode can't use (#474) before anything is stored.
   It compares changes, not fields, so a field added to `rule_changes` later is
   covered without touching it.
+- `_report_skip(library, kind, platform_id, check, reason)` logs a Rule the
+  run loop skips (#480). Before it queues anything for a conversion Rule the
+  loop makes the checks in `_SKIP_CHECKS`, in order: `tool` (its tool is
+  installed, `_ready_bounded`), `output_dir` (its output folder is inside a
+  Volume, `_output_dir_problem`, which also covers a Volume that doesn't
+  answer within `_VOLUME_PROBE_SECONDS`) and, once the Platform is listed,
+  `platform` (`registry.mode_allows_platform` for the Images' slug). A Rule
+  that fails one is skipped with its `result["errors"]` entry
+  (`tool_not_ready`, `output_dir_outside_volumes`, `tool_wrong_for_platform`)
+  and no run recorded, so it is due on the next tick and runs as soon as the
+  cause is fixed. A check Rule uses the `tool` check the same way:
+  `_sweep_check` reports the verifiers it found not installed (still adding
+  `tool_not_ready`, and recording no run when it picked nothing), and a pass
+  that reached its Images without finding one missing clears it. The loop calls `_report_skip` with the reason on a failure
+  and with `reason=None` on a pass. The reason is logged once per
+  `(library id, kind, platform id)` (`_reported_skips`, which keeps the check
+  and the reason), and again only when it changes. A pass forgets a reason
+  from that check or an earlier one, so a cause that clears and comes back is
+  logged again, while a Rule stopped every tick at `platform` keeps its memo
+  through the earlier checks it passes. `_forget_skips` drops the memo of a
+  Rule removed or paused by the operator, at the top of each sweep, and
+  `forget_library` drops a removed Library's. A new skip check goes in
+  `_SKIP_CHECKS` at its place in the loop and reports through `_report_skip`,
+  never through a bare `logger` call, which would repeat on every tick.
 
 Each line names the Library (`library.name`) and the Platform, and starts with
 the Library's prefix, `rules.library.log_prefix(library)`: the Library's own
@@ -2859,6 +2887,14 @@ optional `log_prefix` (`RommLibrary` keeps `romm_auto`), else
 `f"{kind}_library"` (`folder_library`), else `library` for a Library with
 neither. It is optional on the contract, so a Library written before it still
 logs. The logger is still `romm_auto`, so log filters keyed on it still match.
+The same goes for every other line a sweep logs about one Library (#480): a
+Platform that stops responding or can't be listed, sources dropped for an
+unreadable delete snapshot, a batch that fails to queue or loses a
+destination, a bounded probe that times out (`_probe` takes the `library` it
+answers for), the scheduler's per-Library summary and failure. Those are real
+failures, logged by each sweep that hits them, under `log_prefix(library)`
+with `library.name` and the Platform. Only the scheduler's own lines (started,
+couldn't list the Libraries, the tick's follow-up failed) keep `romm_auto:`.
 
 Capabilities (`RECOGNIZED_FILTER`, `CONVERTED_HISTORY`, `FAILED_HOLD`) say
 what a Library supports. Nothing in `rules/` asks what kind of Library it has.

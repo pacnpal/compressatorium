@@ -447,6 +447,22 @@
   Volumes) logs what it changed once, at the save, since the Rule is stored
   already changed and later sweeps have nothing left to report. What runs,
   what is paused and what is refused are unchanged.
+- **A Rule the sweep skips is logged once, naming the Rule** (#480). A
+  conversion Rule whose tool isn't installed, whose output folder is outside
+  every Volume (or on a Volume that isn't answering), or whose mode isn't one
+  for its Platform is skipped and tried again on the next tick, so it starts
+  working as soon as that's fixed. Each skip used to log a warning on every
+  tick and every Run now, under `romm_auto:` even on a folder Library and
+  without naming the Library. Now it's logged once, with the Library's own
+  prefix, naming the Library and the Platform, and again only when the reason
+  changes or once it clears and comes back. A check Rule whose verifier isn't
+  installed is logged the same way. A skipped Rule's dropped settings (#477)
+  are logged when it next runs, not on each tick it is skipped. The other
+  lines a sweep logs about a Library (a Platform that stops responding or
+  can't be listed, a batch that fails to queue, a volume that doesn't answer)
+  now also use the Library's prefix and name the Library and Platform, where
+  they used to say `romm_auto:` and give the Library's id or nothing. The
+  sweep's errors and when a Rule runs are unchanged.
 - **Rules refuse and drop codecs the CHDMAN mode can't use** (#474). Saving a
   Rule (a Library's, RomM's, and so an Inbox's) that pairs a mode with a codec
   it can't use, Create DVD with cdzl say, is refused with a 400 and the same
