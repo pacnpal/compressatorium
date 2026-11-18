@@ -1657,7 +1657,10 @@ def queued_source_problem(
     expected = identity.get("companions", {})
     now = [_confined_real_path(each) for each in companions]
     if None in now:
-        return "a companion file it reads with the Source is no longer inside the configured Volumes"
+        return (
+            "a companion file it reads with the Source is no longer inside "
+            "the configured Volumes"
+        )
     if {str(each) for each in now} != set(expected):
         return "the companion files it reads with the Source aren't the ones it was queued with"
     for each, snapshot in expected.items():
@@ -1665,7 +1668,8 @@ def queued_source_problem(
             if source_identity(each, identity["root"])["snapshot"] != snapshot:
                 raise OSError(errno.ESTALE, "it was replaced or changed")
         except OSError as exc:
-            return f"{os.path.basename(each)}, a companion file it reads with the Source, changed ({exc})"
+            name = os.path.basename(each)
+            return f"{name}, a companion file it reads with the Source, changed ({exc})"
     return None
 
 

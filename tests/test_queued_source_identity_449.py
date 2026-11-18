@@ -267,9 +267,11 @@ async def test_a_sheet_swapped_out_of_the_volume_is_never_read(
 
     sheets_read = []
     real_plan = jm.build_delete_plan
-    monkeypatch.setattr(
-        jm, "build_delete_plan", lambda path, *a, **k: sheets_read.append(path) or real_plan(path, *a, **k),
-    )
+    def spying_plan(path, *args, **kwargs):
+        sheets_read.append(path)
+        return real_plan(path, *args, **kwargs)
+
+    monkeypatch.setattr(jm, "build_delete_plan", spying_plan)
     await convert_routes.job_manager._process_job(job.id)
 
     assert job.status.value == JobStatus.FAILED.value
