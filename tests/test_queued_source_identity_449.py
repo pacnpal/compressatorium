@@ -595,3 +595,68 @@ async def test_a_volume_root_that_doesnt_answer_is_no_verdict(tmp_volume, tmp_pa
     await jm.job_manager._capture_source_identities(specs, ConversionMode.CREATECD)
     assert specs[0]["source_identity"].get("unanswered") is True
     assert sweep._never_checked(SimpleNamespace(_source_identity=specs[0]["source_identity"]))
+
+
+@pytest.mark.parametrize("silent_call", [1, 2], ids=["source-root", "companion-root"])
+def test_a_later_root_probe_that_doesnt_answer_is_no_verdict(
+    tmp_volume, tmp_path, monkeypatch, silent_call,
+):
+    """CodeRabbit 4617888601: the first containment probe answers, then the
+    Volume-root lookup for the Source (call 1) or its companion (call 2)
+    doesn't. Capture marks the identity unanswered, never a plain refusal,
+    so ``sweep._never_checked`` is True."""
+    from types import SimpleNamespace
+
+    from models import ConversionMode
+    from services import job_manager as jm
+    from services.rules import sweep
+    from utils import path_utils
+
+    (tmp_path / "Game.cue").write_text(CUE)
+    (tmp_path / "Game.bin").write_bytes(b"\\1" * 2352)
+    real_root, real_fresh = path_utils.lock_boundary_root, path_utils._fresh_root
+    calls = []
+
+    def lock_boundary_root(path, **kwargs):
+        calls.append(path)
+        if len(calls) == silent_call:  # this root probe gets no answer
+            monkeypatch.setattr(path_utils, "_fresh_root", lambda _configured: None)
+        try:
+            return real_root(path, **kwargs)
+        finally:
+            monkeypatch.setattr(path_utils, "_fresh_root", real_fresh)
+
+    monkeypatch.setattr(path_utils, "lock_boundary_root", lock_boundary_root)
+    specs = [{"file_path": str(tmp_path / "Game.cue")}]
+    asyncio.run(jm.job_manager._capture_source_identities(specs, ConversionMode.CREATECD))
+
+    identity = specs[0]["source_identity"]
+    assert len(calls) == silent_call
+    assert identity.get("unanswered") is True and "didn't answer" in identity["error"]
+    assert sweep._never_checked(SimpleNamespace(_source_identity=identity))
+
+
+def test_a_sheet_whose_tracks_cant_be_confined_now_is_no_verdict(tmp_volume, tmp_path, monkeypatch):
+    """The same at the job's own check: the sheet's tracks are confined by
+    root probes too, and one that doesn't answer is "couldn't tell", not
+    "the companion files aren't the ones it was queued with"."""
+    from utils import path_utils
+    from utils.path_utils import queued_source_identity, queued_source_problem
+
+    cue = tmp_path / "Game.cue"
+    cue.write_text(CUE)
+    (tmp_path / "Game.bin").write_bytes(b"\\1" * 2352)
+    identity = queued_source_identity(str(cue), "createcd")
+    import utils.delete_plan as delete_plan
+
+    real_sheet = delete_plan.sheet_track_paths
+
+    def silent_sheet(path, *args, **kwargs):
+        path_utils._note_unknown()  # a track's root probe got no answer
+        return []
+
+    monkeypatch.setattr(delete_plan, "sheet_track_paths", silent_sheet)
+    with pytest.raises(TimeoutError, match="didn't answer"):
+        queued_source_problem(str(cue), identity, "createcd")
+    monkeypatch.setattr(delete_plan, "sheet_track_paths", real_sheet)
+    assert queued_source_problem(str(cue), identity, "createcd") is None

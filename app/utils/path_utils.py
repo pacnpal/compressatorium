@@ -1109,7 +1109,10 @@ def source_companion_paths(file_path: str, mode: str) -> list[str]:
 
     if "::" in file_path:
         return []
-    return [*sheet_track_paths(file_path), *_tool_companions(file_path, mode)]
+    # A track the sheet names is confined by Volume-root probes: one that
+    # doesn't answer leaves the list short, so it is an error, not a list.
+    tracks = _answered(sheet_track_paths, file_path, whole=True)
+    return [*tracks, *_tool_companions(file_path, mode)]
 
 
 def is_safe_directory_tree(path: str) -> bool:
@@ -1649,7 +1652,7 @@ def queued_source_identity(path: str, mode: str | None = None) -> dict:
     real = _confined_source(path)
     # The resolved path is literal: a folder named `a::b` is no archive
     # (CodeRabbit 4616898142). Archive syntax was read off *path* above.
-    root = lock_boundary_root(real, treat_archives=False)
+    root = _answered(lock_boundary_root, real, treat_archives=False)
     if root is None:
         raise OSError(errno.EACCES, f"{path} isn't confirmed inside the configured Volumes")
     return {
@@ -1669,27 +1672,35 @@ def _companion_identity(ref: str) -> dict:
     # A literal path, never archive syntax: a sheet may name `Track::01.bin`
     # (CodeRabbit 4615955480).
     confined = _confined_answered(ref)
-    root = lock_boundary_root(str(confined), treat_archives=False) if confined else None
+    root = _answered(lock_boundary_root, str(confined), treat_archives=False) if confined else None
     if root is None:
         raise OSError(errno.EACCES, f"{ref} isn't confirmed inside the configured Volumes")
     real = str(confined)
     return {"ref": ref, "path": real, **source_identity(real, str(root))}
 
 
-def _confined_answered(path: str) -> Path | None:
-    """:func:`_confined_real_path`, raising ``TimeoutError`` (an ``OSError``,
-    ETIMEDOUT) instead of returning None when the answer depended on a Volume
-    root that didn't answer (the ``_note_unknown`` count, as
-    :func:`volume_containment` reads it). "Couldn't tell" is then never taken
-    for "confirmed outside": a queued job refused for it is marked
-    ``unanswered`` and takes no failed-hold (CodeRabbit 4617787310)."""
+def _answered(call: Callable, *args: object, whole: bool = False, **kwargs: object):
+    """*call* (a Volume-root-probing lookup), raising ``TimeoutError`` (an
+    ``OSError``, ETIMEDOUT) when its answer depended on a Volume root that
+    didn't answer (the ``_note_unknown`` count, as :func:`volume_containment`
+    reads it): when it returned None, or, with *whole* (a list that may be
+    missing what a silent root held), whatever it returned. The one place
+    the queued identity's capture and checks turn "couldn't tell" into an
+    error a job refused for is marked ``unanswered`` by, never "confirmed
+    outside" (CodeRabbit 4617787310, 4617888601)."""
     before = _unknown_count()
-    confined = _confined_real_path(path)
-    if confined is None and _unknown_count() != before:
+    result = call(*args, **kwargs)
+    if (whole or result is None) and _unknown_count() != before:
         raise TimeoutError(
-            errno.ETIMEDOUT, "a Volume root didn't answer, so containment couldn't be told", path,
+            errno.ETIMEDOUT, "a Volume root didn't answer, so containment couldn't be told",
+            str(args[0]) if args else "",
         )
-    return confined
+    return result
+
+
+def _confined_answered(path: str) -> Path | None:
+    """:func:`_confined_real_path` through :func:`_answered`."""
+    return _answered(_confined_real_path, path)
 
 
 def _confined_source(path: str) -> str:

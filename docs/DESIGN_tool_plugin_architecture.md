@@ -7738,9 +7738,12 @@ batch capture never reached is marked `unanswered`; its refusal says nothing
 about the Image, so a Rule's failed-hold neither holds nor releases it and the
 next sweep queues it again (`sweep._never_checked`, CodeRabbit 4615955365).
 The job's own check marks its identity `unanswered` the same way when it
-times out or when a Volume root it depends on doesn't answer (`_confined_answered`
-and `source_identity_problem` raise `TimeoutError` for "couldn't tell", never
-"outside the Volumes"; capture marks such a Source unanswered too), and a Cancel while it waits ends the job CANCELLED, never refused.
+times out or when a Volume root it depends on doesn't answer: every
+root-probing lookup in the identity's capture and checks (the containment
+gate, each Volume-root choice, the sheet's track list) goes through one
+helper, `path_utils._answered`, which raises `TimeoutError` when the probe's
+unknown count rose during the call, so "couldn't tell" is never "outside the
+Volumes" or "other companions"; capture marks such a Source unanswered too, and a Cancel while it waits ends the job CANCELLED, never refused.
 The capture runs before the destination keys are resolved, so its wait never
 sits between those keys and their comparison under the lock. The active-job
 inventory other sweeps read (`_candidate_paths`) names the same files as the
