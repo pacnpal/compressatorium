@@ -52,7 +52,7 @@ from services.output_conflicts import (
     get_unique_output_path as _get_unique_output_path,
 )
 from services.tools import InputKind, ModeKind, registry
-from services.tools.base import compression_problem
+from services.tools.base import compression_problem, without_unusable_codecs
 from services.event_stream import event_stream
 from utils.delete_plan import build_delete_plan, build_delete_snapshot
 from utils.path_utils import (
@@ -1361,13 +1361,23 @@ def checked_compression(mode: str, compression: str | None) -> str | None:
 
     A saved value the mode would refuse (left over from an older picker) falls
     back to the tool default rather than failing the whole batch. Used for
-    Auto targets and by the CLI (#306).
+    Auto targets and by the CLI (#306). Codecs the mode can't use are dropped
+    first and the rest kept (``without_unusable_codecs``, the rule a stored
+    Rule reads by too, #474), so the default runs only when none is left.
     """
     if not compression:
         return None
     try:
-        value = normalize_compression(compression)
-        _validate_request_compression(registry.spec(mode), mode, value)
+        spec = registry.spec(mode)
+        value, dropped = without_unusable_codecs(spec, normalize_compression(compression))
+        if dropped:
+            logger.warning(
+                "Saved compression %r: %s can't use %s; dropped",
+                compression, spec.label, ", ".join(dropped),
+            )
+        if not value:
+            return None
+        _validate_request_compression(spec, mode, value)
     except HTTPException:
         logger.warning(
             "Saved compression %r does not fit %s; using the tool default",

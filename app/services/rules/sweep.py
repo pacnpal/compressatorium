@@ -84,6 +84,7 @@ from services.rules.rules import (
     _validation_paused,
     effective_check_level,
     normalize_rules,
+    refuse_unusable_compression,
     takes_container_only,
 )
 from services.rules.schedule import _is_due
@@ -354,6 +355,8 @@ async def set_rules(library: Library, raw: Any, *, strict: bool = False) -> dict
     *strict* is for a submission: a Rule asking for a duplicate policy the
     Library cannot honour raises :class:`UnsupportedPolicy` and nothing is
     saved. Without it the policy falls back to ``skip``, as a stored blob does.
+    So does a Rule whose mode refuses its codec (:class:`UnusableCompression`,
+    #474); without *strict* the codecs the mode can't use are dropped.
 
     Switching a platform from RVZ to GCZ, or pointing it at a new output
     directory, asks for a different file than the one already produced. Left
@@ -369,6 +372,7 @@ async def set_rules(library: Library, raw: Any, *, strict: bool = False) -> dict
     # format for -- and inherit the old run's clock as well.
     if strict:
         refuse_unsupported_policies(library, raw)
+        refuse_unusable_compression(raw)
     async with _sweep_lock:
         previous = await get_rules(library)
         # Off the loop and bounded: this stats every configured volume, and the

@@ -352,8 +352,7 @@ class ConversionStore {
     // chdman's list is kept per tool, so CD codecs picked for Create CD are
     // still selected on Create DVD, which can't use them (#471). Send only
     // the codecs this mode takes; none left means chdman's own.
-    const allowed = registry.codecsForMode(this.mode).map((c) => c.value);
-    const taken = allowed.length ? selection.filter((c) => allowed.includes(c)) : selection;
+    const taken = registry.offeredCodecs(this.mode, selection);
     if (taken.length === 0) return null;
     return taken.join(',');
   }
@@ -624,10 +623,8 @@ class ConversionStore {
     }
     // A codec this mode doesn't offer (a CD codec kept from Create CD, #471)
     // is dropped here, so it never counts against the cap unseen.
-    const offered = registry.codecsForMode(this.mode).map((c) => c.value);
-    const current = this.compressionSelection.filter(
-      (c) => c !== 'none' && (!offered.length || offered.includes(c)),
-    );
+    const current = registry.offeredCodecs(this.mode, this.compressionSelection)
+      .filter((c) => c !== 'none');
     if (current.includes(codec)) {
       this.compressionSelection = current.filter((c) => c !== codec);
       this.#persistCompression();

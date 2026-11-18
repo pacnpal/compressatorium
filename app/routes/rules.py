@@ -11,16 +11,21 @@ from fastapi.concurrency import run_in_threadpool
 from services import libraries
 from services.rules import editor, store
 from services.rules.library import Library, UnsupportedPolicy
+from services.rules.rules import UnusableCompression
 
 router = APIRouter()
 
 
 async def save_rules(library: Library, payload: Any) -> dict:
-    """``PUT .../rules`` for any Library: 422 for a policy the Library cannot honour."""
+    """``PUT .../rules`` for any Library: 422 for a policy the Library cannot
+    honour, 400 for a codec the Rule's mode can't use (the job route's answer
+    for the same pair, #474)."""
     try:
         return await editor.save_rules(library, payload)
     except UnsupportedPolicy as exc:
         raise HTTPException(status_code=422, detail=exc.detail()) from None
+    except UnusableCompression as exc:
+        raise HTTPException(status_code=400, detail=exc.problem) from None
 
 
 def requested_platform_ids(payload: dict | None) -> list[str] | None:

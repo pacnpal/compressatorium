@@ -74,6 +74,11 @@ const registry = {
   specFor: () => ({ supportsCompression: true }),
   maxCodecsFor: () => 4,
   codecsForMode: () => [],
+  // registry.js's own rule, over whatever codecsForMode a test sets.
+  offeredCodecs(mode, selection) {
+    const offered = this.codecsForMode(mode).map((c) => c.value);
+    return offered.length ? selection.filter((c) => offered.includes(c)) : [...selection];
+  },
 };
 const calls = { plan: [], cancel: [], auto: [] };
 let planAnswer = () => ({});
