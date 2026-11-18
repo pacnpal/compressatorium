@@ -1261,6 +1261,7 @@ def folder_has_entries(path: str) -> bool:
 
 def walk_tree(
     top: str, progress: Callable[..., None], *, unlisted: list[str] | None = None,
+    skip_junk: bool = True,
 ) -> Iterator[tuple[str, list[str], list[str]]]:
     """``os.walk(top)`` that reports its progress, for a stall-bounded walk.
 
@@ -1276,6 +1277,11 @@ def walk_tree(
     it could not list and each entry it could not tell is a folder or not. A
     caller that must not take "not seen" as "not there" (the duplicate
     finder's record of sheet tracks, #389) passes it.
+
+    *skip_junk* (on by default) leaves out OS and NAS junk names
+    (``is_junk_entry``). A walk that must see every name a sheet could use
+    (``image_sets.sheet_reach``, #454: ``resolve_track`` takes ``__MACOSX/x``
+    like any other name) turns it off.
     """
     stack = [top]
     while stack:
@@ -1288,7 +1294,7 @@ def walk_tree(
             with os.scandir(current) as entries:
                 for entry in entries:
                     progress()
-                    if is_junk_entry(entry.name):
+                    if skip_junk and is_junk_entry(entry.name):
                         continue
                     try:
                         is_dir = entry.is_dir()
