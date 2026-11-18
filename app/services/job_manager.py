@@ -338,6 +338,15 @@ EXTERNAL_JOB_MODES: Dict[ConversionMode, ExternalMode] = {
     ConversionMode.INBOX_COPY: ExternalMode(
         in_ledger=False, started_by_hand=False, takes_slot=True,
     ),
+    # An Inbox unpacking an archive, and Recognizing an Image before it is
+    # named (#432): the scheduler starts them, they read and write as much as
+    # a copy, and convert nothing.
+    ConversionMode.INBOX_UNPACK: ExternalMode(
+        in_ledger=False, started_by_hand=False, takes_slot=True,
+    ),
+    ConversionMode.INBOX_RECOGNIZE: ExternalMode(
+        in_ledger=False, started_by_hand=False, takes_slot=True,
+    ),
 }
 _EXTERNAL_JOB_MODES = frozenset(EXTERNAL_JOB_MODES)
 

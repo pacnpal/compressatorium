@@ -7398,7 +7398,7 @@ tick with a fake clock and real files. Each poll:
    size, `ArchiveMember.compressed`) and in all (against the archive's size);
    a member with no declared size, a link or an absolute or `..` path is
    refused too. One over any of them is held with an `inbox_failed` Finding
-   naming the limit, never checked or copied. romz's Verify sizes its bound by
+   naming the limit, never unpacked (#432, below). romz's Verify sizes its bound by
    the members' declared sizes (`capture_verify(size=...)`, through
    `resolve_verify_timeout` and `compute_size_scaled_timeout`), never the
    archive's own size, and keeps its stall bound.
@@ -7636,10 +7636,90 @@ waiting, in progress, held, and the error a poll hit (the folder gone or
 outside a Volume). `LibraryInboxes.svelte` in the Rules view lists and adds
 them.
 
-**Seams.** Unpacking an archive, Recognizing and naming from a DAT, and a taken
-name's handling (#432) go in `_take` before `_plan`. Each poll returns
-`placed` (`{"path", "platform", "output"}` for every Image placed since the
-last poll), which the RomM scan and the intake notification (#433) read.
+**Archives (#432).** An archive the walk lists (`.zip`, `.7z`: extensions a
+tool reads; `archive_service.is_archive` decides) is unpacked before its Platform is worked out (`_take_archive`, first
+thing in `_take`). It is gated as above (`check_inbox_archive`, listing only),
+then unpacked as an `inbox_unpack` job (`ConversionMode.INBOX_UNPACK`, an
+`ExternalMode(in_ledger=False, started_by_hand=False, takes_slot=True)` like
+the copy) on a stall-bounded worker (`run_detached_within_stall_bound`, its
+progress reported per chunk written). The archive is opened through the Inbox
+folder's descriptor with `O_NOFOLLOW`, its `fstat` identity checked before and
+after against the one taken, and handed to `ArchiveService.extract_members`
+(shared, in `services/archive.py`) as an open file. That method checks every
+member it is about to write again, whatever the gate read: a link (or, in a 7z,
+an entry that is neither a file nor a folder), a name the extract path refuses
+(`_validate_member`: a backslash, an absolute or `..` path, an empty segment, a
+drive letter) or two members landing on one path refuses the whole archive
+(`ArchiveSafetyRefused`, held with an `inbox_failed` Finding naming it) before
+any folder is made. Each member goes beneath the destination
+(`_prepare_destination`); a zip's or rar's is created with `O_EXCL` (never over
+anything), a 7z is extracted in one `py7zr` call with a progress callback and
+each member checked to have landed as a regular file; junk is skipped. The
+destination is a fresh `staging.open_slot` beside the archive (§3.3.21): a
+hidden folder inside the Inbox, journaled, so a crash leaves nothing the
+startup sweep won't remove, and the `_SlotHandoff` (given the unpacking as its
+`work`) closes a slot delivered after its awaiter gave up. An archive inside an
+unpacked one is held, not unpacked again; one holding no Image is held too.
+
+From then on the slot (`_State.unpacked`, an `_Unpacked` per archive: its
+fingerprint, slot, identity, the Images found in it and those placed) is walked
+with the Inbox (`_list(extra=...)`, the walk shared as `_walk`), and each Image
+in it settles and is taken like a loose file: Platform (`detect_platform` walks
+up from the slot, so a Platform folder holding the archive, or one inside it,
+decides), Recognizing, naming, placing. Its tracks are found, its identity read
+and a conversion's `source_identities` bound beneath the Inbox exactly as for a
+dropped file. A Finding for one of them is written on the archive (the file the
+user dropped), naming the Image (`_hold` redirects through `_unpacked_holding`).
+A placed Image stays in the slot, counted (`note_processed`) and reported in
+`placed` with the archive's path; the archive's own Findings stay until it
+moves, since another of its Images may still be held. Once every Image is
+placed, `_settle_unpacked` starts the archive's move to `processed/` (the same
+anchored, locked move, a flight carrying `unpacked`), and the slot is closed
+then: intake's own scratch, the archive still holds every byte. An archive that
+leaves the Inbox or changes has its slot closed the same way; a changed one is
+unpacked again once it settles. Removing the Inbox closes its slots.
+
+**Recognizing and naming (#432).** Where something can answer
+(`routes.dat.matching_available`: a DAT is loaded, or Hasheous is on), an Image
+is matched before it is placed, after its plan: an `inbox_recognize` job
+(`ConversionMode.INBOX_RECOGNIZE`, the same `ExternalMode` as the copy) runs
+`routes.dat.match_one` (the match job's per-file step: embedded hashes, then the
+file SHA-1, then Hasheous) on the very bytes taken, and keeps the result with
+the fingerprint it was made at (`_State.recognized`); the next poll names the
+Image from it. It never reads a row cached for the path: an Inbox name is
+reused by the next download, and a cached hit would name it. The result is
+ranked by the ranking as it stands (`DATStore.with_current_ranking`,
+`dat_ranking.ranked_match`, the two halves of `ranked_match_for_image`). A match
+that can't be made (an error, a process stuck on the storage) holds the Image
+with an `inbox_failed` Finding; one over the match size cap is not Recognized
+and keeps its name.
+
+The top-ranked DAT names it by the rename's one rule
+(`dat_rename.dat_file_name`: the game name with the file's own extension,
+compound ones whole, through `safe_file_name`). A copy places its main file
+under that name (`_Flight.placed_names`, read by the staging, the output locks
+and the taken-name check); a sheet's tracks keep their names, so the sheet still
+names them. A conversion's output takes it with the output's extension
+(`_destination(game_name=...)`, checked with `output_status`). Two DATs the
+ranking puts level that name it differently (`ranked.conflict`) hold it with an
+`inbox_conflict` Finding naming both (`dat_rename.conflict_text`, the words the
+rename's `rename_conflict` Finding uses): never guessed at, as the rename leaves
+it unnamed. The hold records the ranking it was made under
+(`_State.ranked_holds`, `_ranking_now`: every DAT and its rank); a poll that
+finds the ranking changed lifts it and takes the Image again, without waiting
+for the file to change.
+
+**Taken names (#432).** The name an Image would take in the Library, its DAT
+name or its own, is checked before anything is written: a copy's names
+(`_taken`), a conversion's output and its companions (`output_status`). One on
+disk holds the Image with an `inbox_failed` Finding naming it; one only another
+job holds is a retry with no Finding. Nothing is ever overwritten: the copy's
+placement never replaces, and a conversion is queued without
+`allow_overwrite`.
+
+**Seams.** Each poll returns `placed` (`{"path", "platform", "output"}` for
+every Image placed since the last poll; an Image from an archive carries the
+archive's path), which the RomM scan and the intake notification (#433) read.
 
 ### 3.4 `registry.py`
 

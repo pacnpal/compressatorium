@@ -1,5 +1,6 @@
 import os
 import shutil
+import stat
 import tempfile
 import zipfile
 import time
@@ -16,10 +17,12 @@ from utils.path_utils import match_extension
 
 try:
     import py7zr
+    from py7zr.callbacks import ExtractCallback
 
     HAS_7Z = True
 except ImportError:
     HAS_7Z = False
+    ExtractCallback = object
 
 try:
     import rarfile
@@ -38,6 +41,46 @@ ARCHIVE_EXTENSIONS = {".zip", ".7z", ".rar"}
 # instead of being masked.
 
 logger = get_logger("archive")
+
+# How much of a member :meth:`ArchiveService.extract_members` copies between
+# two progress reports.
+_UNPACK_CHUNK = 4 * 1024 * 1024
+
+
+def _rar_is_link(info) -> bool:
+    """Whether a rar member is a link (``is_symlink`` on recent rarfile)."""
+    is_link = getattr(info, "is_symlink", None)
+    return bool(is_link()) if callable(is_link) else False
+
+
+class _ExtractProgress(ExtractCallback):
+    """py7zr's extraction events, passed on to a stall-bounded caller's
+    ``progress`` (:meth:`ArchiveService.extract_members`)."""
+
+    def __init__(self, progress) -> None:
+        self._progress = progress
+
+    def _report(self, where: str | None = None) -> None:
+        if self._progress is not None:
+            self._progress(where)
+
+    def report_start_preparation(self) -> None:
+        self._report()
+
+    def report_start(self, processing_file_path, processing_bytes) -> None:
+        self._report(str(processing_file_path))
+
+    def report_update(self, decompressed_bytes) -> None:
+        self._report()
+
+    def report_end(self, processing_file_path, wrote_bytes) -> None:
+        self._report(str(processing_file_path))
+
+    def report_warning(self, message) -> None:
+        logger.warning("Unpacking: %s", message)
+
+    def report_postprocess(self) -> None:
+        self._report()
 
 
 class ArchiveSafetyRefused(ValueError):
@@ -210,6 +253,117 @@ class ArchiveService:
                 rule=f"it expands more than CHD_ARCHIVE_INBOX_MAX_RATIO ({max_ratio}:1)",
             )
         return total
+
+    def extract_members(
+        self, archive_path: str, destination: str, *, source=None, progress=None,
+    ) -> List[str]:
+        """Unpack every file in *archive_path* into the folder *destination*,
+        keeping the folders inside it (#432, the Inbox): the paths written.
+
+        The caller gates the archive first (:meth:`check_inbox_archive` for an
+        Inbox: the declared sizes, links, absolute and ``..`` paths). Here the
+        members actually read are checked again before anything is written,
+        and the whole archive is refused (:class:`ArchiveSafetyRefused`) when
+        one is a link, or a name the extract path refuses
+        (``_validate_member``: a backslash, an absolute or ``..`` path, an
+        empty segment, a drive letter), or two members would land on one
+        path. Each lands beneath *destination* (``_prepare_destination``) and
+        is created there, never written over anything. Junk is skipped.
+
+        *source*, when given, is the archive already opened by the caller (a
+        binary file object it read through its own folder, no link
+        followed); otherwise *archive_path* is opened. *progress*, when given,
+        is called as each member's bytes are written. Blocking.
+        """
+        ext = Path(archive_path).suffix.lower()
+        opened = source if source is not None else archive_path
+        if ext == ".zip":
+            with zipfile.ZipFile(opened, "r") as zf:
+                infos = zf.infolist()
+                targets = self._extract_targets(destination, [
+                    (i.filename, i.is_dir(), stat.S_ISLNK(i.external_attr >> 16))
+                    for i in infos
+                ])
+                for info in infos:
+                    if info.filename in targets:
+                        with zf.open(info) as src:
+                            self._write_member(src, targets[info.filename], progress)
+        elif ext == ".7z" and HAS_7Z:
+            with py7zr.SevenZipFile(opened, "r") as zf:
+                targets = self._extract_targets(destination, [
+                    # Neither a folder nor a file (a link, a junction): refused.
+                    (e.filename, e.is_directory, not (e.is_file or e.is_directory))
+                    for e in zf.list()
+                ])
+                if targets:
+                    zf.extract(
+                        path=destination, targets=list(targets),
+                        callback=_ExtractProgress(progress),
+                    )
+            for member, target in targets.items():
+                if os.path.islink(target) or not os.path.isfile(target):
+                    raise ArchiveSafetyRefused(
+                        f"Archive member wasn't unpacked as a file: {member}",
+                        rule=f"{member} didn't unpack as a file",
+                    )
+        elif ext == ".rar" and HAS_RAR:
+            with rarfile.RarFile(opened, "r") as rf:
+                infos = rf.infolist()
+                targets = self._extract_targets(destination, [
+                    (i.filename, i.is_dir(), _rar_is_link(i)) for i in infos
+                ])
+                for info in infos:
+                    if info.filename in targets:
+                        with rf.open(info) as src:
+                            self._write_member(src, targets[info.filename], progress)
+        else:
+            raise ValueError(f"Unsupported archive format: {ext}")
+        return list(targets.values())
+
+    def _extract_targets(
+        self, destination: str, members: list[Tuple[str, bool, bool]],
+    ) -> Dict[str, str]:
+        """``member -> where it is written`` for every file member of
+        ``(name, is_dir, is_link)``, all checked before any folder is made.
+        Raises :class:`ArchiveSafetyRefused` (see :meth:`extract_members`)."""
+        wanted: list[str] = []
+        for name, is_dir, is_link in members:
+            if is_link:
+                raise ArchiveSafetyRefused(
+                    f"Archive member is a link: {name}", rule=f"a link ({name})",
+                )
+            if is_dir or is_junk_path(name):
+                continue
+            try:
+                self._validate_member(name)
+            except ValueError as exc:
+                raise ArchiveSafetyRefused(
+                    f"Unsafe archive member path: {name}",
+                    rule=f"a member name it refuses ({name!r}: {exc})",
+                ) from exc
+            wanted.append(name)
+        targets: Dict[str, str] = {}
+        seen: set[str] = set()
+        for name in wanted:
+            target = self._prepare_destination(destination, name)
+            key = os.path.normcase(target)
+            if key in seen:
+                raise ArchiveSafetyRefused(
+                    f"Two archive members unpack to one path: {name}",
+                    rule=f"two members named {name}",
+                )
+            seen.add(key)
+            targets[name] = target
+        return targets
+
+    @staticmethod
+    def _write_member(src, target: str, progress) -> None:
+        """Copy one member's bytes to *target*, made new (never over anything)."""
+        with open(target, "xb") as dst:
+            while chunk := src.read(_UNPACK_CHUNK):
+                dst.write(chunk)
+                if progress is not None:
+                    progress(target)
 
     def _create_temp_dir(self) -> str:
         base_dir = settings.temp_dir

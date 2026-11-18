@@ -133,8 +133,30 @@
   size, not the archive's own.
   Removing a Library while another Library or Inbox is being saved answers
   "try again shortly" with nothing removed.
-  Database migration 0027 adds the Inboxes. Archives, DAT names and asking
-  RomM to scan come next (#432, #433).
+  Database migration 0027 adds the Inboxes. Asking RomM to scan comes next
+  (#433).
+- **Inboxes unpack archives and name what they place from your DATs**
+  (#432). A zip or 7z that settles in an Inbox is unpacked (an **Inbox
+  unpack** job, under the same concurrency limit) before its Platform is
+  worked out, so a zip in your `gba` folder, or a zip holding a `gba` folder,
+  both land in the Library's GBA folder. The limits above still apply, every
+  member is checked again before anything is written (a link, a name with a
+  backslash, an absolute or `..` path, or two members with one name refuses
+  the whole archive with a Finding), and nothing is written outside a hidden
+  folder beside the archive. Each Image in it is then taken like a loose file;
+  a Finding about one of them is shown on the archive, naming it. Once every
+  Image in it is placed, the archive moves to `processed/` and the unpacked
+  copies are removed (the archive still holds them). An archive inside an
+  archive isn't unpacked.
+  Where a DAT is loaded (or Hasheous is on), each Image is Recognized first
+  (an **Inbox Recognize** job) and placed under its top-ranked DAT's name,
+  with its own extension, by the same rule as **Rename to DAT name**; a
+  converted output takes the name with its own extension. A sheet's tracks
+  keep their names, so the sheet still finds them. Two DATs your order puts
+  level that name it differently leave it in the Inbox with a Finding naming
+  both, until you order them in **DAT ranking**; the next poll then takes it.
+  A name already in the Library, its DAT name or its own, leaves it in the
+  Inbox with a Finding saying which. Nothing is overwritten.
 - **Xbox 360 disc images to ZAR, with rom-converto** (#422). A new tool,
   rom-converto (the converter RomM ships, at the version RomM pins, v0.24.0),
   packs an Xbox 360 `.iso` into a `.zar`, the format Xenia mounts directly.

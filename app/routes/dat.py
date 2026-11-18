@@ -995,6 +995,16 @@ async def _hash_one_for_job(
     return result, True
 
 
+async def match_one(
+    path: str, *, cancel_event: asyncio.Event | None = None,
+) -> tuple[dict, bool]:
+    """Match the file at *path* now, uncached: ``(result, cacheable)``, the
+    step the match job runs per file. For the Inbox (#432), which names an
+    Image from the match of the very bytes it takes, never from a row cached
+    for an earlier file of that name."""
+    return await _hash_one_for_job(path, cancel_event=cancel_event)
+
+
 async def _run_match_job(
     *,
     job_id: str,

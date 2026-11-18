@@ -2987,9 +2987,10 @@ async def test_an_archive_over_the_ratio_cap_is_held(vol, db, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_a_normal_rom_zip_is_still_verified_and_taken(vol, db, monkeypatch):
-    """Codex 4607318277: an ordinary ROM zip is within every cap: verified and
-    copied in, the original moved to processed/."""
+async def test_a_normal_rom_zip_is_unpacked_and_taken(vol, db, monkeypatch):
+    """Codex 4607318277: an ordinary ROM zip is within every cap. Since #432
+    it is unpacked: the ROM in it is checked and copied in, and the zip moves
+    to processed/."""
     import zipfile
 
     verified = _verifies(monkeypatch)
@@ -3000,12 +3001,13 @@ async def test_a_normal_rom_zip_is_still_verified_and_taken(vol, db, monkeypatch
         compression=zipfile.ZIP_DEFLATED,
     )
 
-    for now in (0, 1):
+    for now in range(6):
         await _poll(box, now=now)
 
-    assert len(verified) == 1
-    assert (vol / "ROMs" / "gba" / "Game.zip").exists()
+    assert [Path(p).name for p in verified] == ["Game.gba"]
+    assert (vol / "ROMs" / "gba" / "Game.gba").exists()
     assert not rom.exists()
+    assert (vol / "Downloads" / "processed" / "gba" / "Game.zip").exists()
     assert _inbox_findings() == []
 
 

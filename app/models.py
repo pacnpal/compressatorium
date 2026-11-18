@@ -84,6 +84,12 @@ class ConversionMode(str, Enum):
     # An Inbox copying an Image into its Library as it is (#431): no Rule
     # converts it. External: it converts nothing.
     INBOX_COPY = "inbox_copy"
+    # An Inbox unpacking an arriving archive (#432) so the Images in it are
+    # taken one by one. External: it converts nothing.
+    INBOX_UNPACK = "inbox_unpack"
+    # An Inbox Recognizing an Image against the DATs before it is placed
+    # (#432), so it takes its DAT name. External: it converts nothing.
+    INBOX_RECOGNIZE = "inbox_recognize"
 
 
 class DuplicateAction(str, Enum):

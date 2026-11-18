@@ -126,12 +126,29 @@ def _dat_of(record: dict) -> dict:
     }
 
 
-def _conflict_finding(path: str, conflict: Iterable[dict]) -> findings.Observed:
+def dat_file_name(game_name: str, name: str) -> str | None:
+    """The file name the DAT's *game_name* gives a file now called *name*:
+    the game name with the file's own extension (compound ones whole, Codex
+    4602560251), made safe by the one shared rule (``safe_file_name``). None
+    when it can't be made a file name. The one naming rule: the rename to DAT
+    name and the Inbox (#432) both name Images with it."""
+    return safe_file_name(f"{game_name}{tools.extension_of(name)}")
+
+
+def conflict_text(conflict: Iterable[dict]) -> tuple[str, list[dict]]:
+    """Which DAT names an Image how, for a conflict's Finding: the words
+    (each DAT and the name it gives) and the matches. Shared by the
+    rename's Finding and the Inbox's (#432)."""
     matches = sorted(
         (_dat_of(m) | {"dat_id": m.get("dat_id")} for m in conflict),
         key=lambda m: (m["dat_name"] or "", m["game_name"] or ""),
     )
     named = " and ".join(f"{m['dat_name']} names it “{m['game_name']}”" for m in matches)
+    return named, matches
+
+
+def _conflict_finding(path: str, conflict: Iterable[dict]) -> findings.Observed:
+    named, matches = conflict_text(conflict)
     return findings.Observed(
         kind=findings.RENAME_CONFLICT, image_key=path, path=path,
         reason=f"Not renamed: {named}, and the ranking puts them level; rank the DATs to choose",
@@ -349,8 +366,7 @@ def plan_blocking(path: str, tracks: Owners | None) -> tuple[dict, Any]:
         return _skip(item, "not Recognized: no DAT or Hasheous match is known for it"), library
     item["dat"] = _dat_of(ranked.top)
     game_name = ranked.top.get("game_name") or ""
-    # The file's own extension, compound ones whole (Codex 4602560251).
-    new_name = safe_file_name(f"{game_name}{tools.extension_of(name)}")
+    new_name = dat_file_name(game_name, name)
     if new_name is None:
         return _skip(item, "its DAT name can't be made a file name"), library
     inner = {path: os.path.join(os.path.dirname(path), new_name)}
