@@ -317,8 +317,11 @@ def sheet_reach(
     it reaches *folder* and below, and through a link a file or folder
     anywhere in *roots* (the Volumes): each linked folder is walked too, and
     each file is taken by identity, links followed, so a hard link counts.
-    A link out of *roots* is a track ``resolve_track`` refuses. Never partial
-    in silence: a folder or file that can't be read is in what was missed."""
+    A link out of *roots* (to a folder or a file) is a track ``resolve_track``
+    refuses, so it reaches nothing. Junk names (``__MACOSX``, ``@eaDir``) are
+    walked too: ``resolve_track`` takes them like any other name. Never
+    partial in silence: a folder or file that can't be read is in what was
+    missed."""
     from utils.path_utils import walk_tree
 
     trusted = [os.path.realpath(root) for root in roots]
@@ -336,7 +339,9 @@ def sheet_reach(
             continue
         walked.append(top)
         unlisted: list[str] = []
-        for current, dirs, files in walk_tree(top, progress, unlisted=unlisted):
+        for current, dirs, files in walk_tree(
+            top, progress, unlisted=unlisted, skip_junk=False,
+        ):
             for name in dirs:
                 path = os.path.join(current, name)
                 if os.path.islink(path):
@@ -345,6 +350,8 @@ def sheet_reach(
                         pending.append(real)
             for name in files:
                 path = os.path.join(current, name)
+                if os.path.islink(path) and not inside(os.path.realpath(path), trusted):
+                    continue
                 try:
                     st = os.stat(path)
                 except FileNotFoundError:

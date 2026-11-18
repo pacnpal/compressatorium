@@ -47,7 +47,9 @@ def _unreadable_sheet(folder: Path) -> Path:
     """A ``.cue`` the app can't read, and its track."""
     _disc(folder / "Unread Game.bin", b"unread track")
     sheet = folder / "Unread Game.cue"
-    sheet.write_text('FILE "Unread Game.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n')
+    sheet.write_text(
+        'FILE "Unread Game.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n',
+    )
     sheet.chmod(0)
     return sheet
 
@@ -155,3 +157,67 @@ async def test_a_sheets_track_an_unresolvable_sheet_may_also_name_is_held(
     assert item["status"] == "skip", item
     assert "may be listed by a sheet whose tracks can't be told" in item["reason"], item
     assert "Abs Game.cue" in item["reason"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(rename_425.folder_library_303._IS_ROOT, reason="root reads any file")
+async def test_a_junk_named_link_in_the_sheets_folder_still_holds_what_it_reaches(
+    db: Path, client: httpx.AsyncClient,
+) -> None:
+    """``resolve_track`` takes ``__MACOSX/Game.gba`` like any other name, so
+    the reach walk doesn't hide junk-named entries the way listings do."""
+    folder = db / "inbox" / "psx" / "unread"
+    sheet = _unreadable_sheet(folder)
+    sibling = db / "inbox" / "psx" / "sibling" / "Game.gba"
+    free = db / "free" / "Free.gba"
+    try:
+        await _recognized(client, (sibling, "Sibling (USA)"), (free, "Free (USA)"))
+        (folder / "__MACOSX").symlink_to(sibling.parent, target_is_directory=True)
+
+        items = _by_path(await _preview(client, sibling, free))
+    finally:
+        sheet.chmod(0o644)
+
+    assert items[str(sibling)]["status"] == "skip", items[str(sibling)]
+    assert HELD in items[str(sibling)]["reason"]
+    assert "Unread Game.cue" in items[str(sibling)]["reason"]
+    assert items[str(free)]["status"] == "rename", items[str(free)]
+
+
+@pytest.mark.asyncio
+async def test_files_in_a_plain_junk_named_folder_of_the_sheets_folder_are_reached(
+    db: Path, client: httpx.AsyncClient,
+) -> None:
+    """A hard link in ``@eaDir`` beside the sheet reaches an Image elsewhere."""
+    folder = db / "inbox" / "psx" / "abs"
+    _absolute_sheet(folder)
+    hard = db / "other" / "Hard.gba"
+    await _recognized(client, (hard, "Hard (USA)"))
+    (folder / "@eaDir").mkdir()
+    os.link(hard, folder / "@eaDir" / "hard.gba")
+
+    item = _by_path(await _preview(client, hard))[str(hard)]
+
+    assert item["status"] == "skip", item
+    assert HELD in item["reason"]
+
+
+@pytest.mark.asyncio
+async def test_a_link_to_a_file_outside_the_volumes_reaches_nothing(
+    db: Path, client: httpx.AsyncClient,
+) -> None:
+    """``resolve_track`` refuses a track whose real path is outside the
+    Volumes, so a link there holds nothing back, even when an Image inside a
+    Volume is a hard link to its target."""
+    folder = db / "inbox" / "psx" / "abs"
+    _absolute_sheet(folder)
+    free = db / "free" / "Free.gba"
+    await _recognized(client, (free, "Free (USA)"))
+    outside = db.parent / "outside"
+    outside.mkdir()
+    os.link(free, outside / "out.gba")
+    (folder / "out.gba").symlink_to(outside / "out.gba")
+
+    item = _by_path(await _preview(client, free))[str(free)]
+
+    assert item["status"] == "rename", item
