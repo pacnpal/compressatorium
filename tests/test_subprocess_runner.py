@@ -9,7 +9,6 @@ CLIs are unavailable in the sandbox.
 from __future__ import annotations
 
 import asyncio
-import errno
 import os
 import re
 import shutil
@@ -504,8 +503,12 @@ def test_priority_is_a_command_wrapper_never_a_preexec_fn(tmp_path, monkeypatch)
     asyncio.run(runner.hash_stdout(_py_cmd(script)))
 
     assert len(spawns) == 3
-    for argv, kwargs in spawns:
+    # run and run_capture behind both wrappers, in order; hash_stdout's
+    # digest is a verdict, so it is spawned bare (CodeRabbit 4616898119).
+    for argv, _kwargs in spawns[:2]:
         assert argv[:4] == [wrapper, wrapper, "IO=1", sys.executable]
+    assert spawns[2][0][0] == sys.executable
+    for _argv, kwargs in spawns:
         assert kwargs.get("preexec_fn") is None
     assert not runner.active_pids()
 
@@ -600,13 +603,12 @@ def test_a_negative_nice_this_process_cannot_apply_is_left_off(monkeypatch):
     assert runner_module.nice_prefix("test")[1:] == ["-n", "5"]
 
 
-def test_a_tool_that_cant_start_behind_a_wrapper_is_no_verdict(tmp_path, monkeypatch):
-    """codex 4615398097: a wrapped verifier the wrapper can't exec (missing,
-    or a script whose interpreter is missing) exits 127. Finding the tool on
-    PATH proves nothing, so both verify paths read a wrapped 126/127 as "could
-    not run" (inconclusive, a stored pass kept). Every other caller sees the
-    exit code itself, as before: run_capture returns it (dolphin-tool's hash
-    read falls back to no hashes, CodeRabbit's dolphin_tool.py:233 note)."""
+def test_a_verifier_that_cant_start_is_no_verdict(tmp_path, monkeypatch):
+    """codex 4615398097: a verifier that can't start (missing, or a script
+    whose interpreter is missing) is no verdict on either verify path: they
+    spawn it bare, so the direct exec raises and they report "could not run".
+    run_capture for anything else still wraps, and returns the wrapper's 127
+    as the exit code it is (dolphin-tool's hash read falls back to none)."""
     monkeypatch.setattr(runner_module, "priority_prefix", lambda _owner=None: [shutil.which("env")])
     script = tmp_path / "verifier"
     script.write_text("#!/nonexistent/interpreter\n")
@@ -632,7 +634,7 @@ def test_a_tool_that_cant_start_behind_a_wrapper_is_no_verdict(tmp_path, monkeyp
 
         for events in (asyncio.run(capture()), asyncio.run(stream())):
             assert events[-1]["valid"] is False and events[-1].get("inconclusive") is True
-            assert "couldn't be started" in events[-1]["message"]
+            assert "could not run" in events[-1]["message"]
     assert not runner.active_pids()
 
 
@@ -1513,25 +1515,34 @@ def test_a_wrapper_lookup_that_stalls_runs_at_normal_priority(monkeypatch):
     assert runner_module._WRAPPERS == {}
 
 
-def test_an_empty_verifier_behind_a_wrapper_is_no_verdict(tmp_path, monkeypatch):
-    """CodeRabbit 4616898119: `nice`/`ionice` exec through execvp, which hands
-    an empty executable to /bin/sh, and that exits 0. A wrapped tool the
-    kernel can't exec is refused before the spawn, as a direct exec raised,
-    and both verify paths report no verdict; a real verifier still runs."""
-    env_path = shutil.which("env")
-    monkeypatch.setattr(runner_module, "_WRAPPERS", {"nice": env_path})
-    monkeypatch.setattr(runner_module, "nice_value", lambda _owner=None: 0)
-    monkeypatch.setattr(runner_module, "nice_prefix", lambda _owner=None: [env_path])
-    empty = tmp_path / "verifier"
-    empty.write_bytes(b"")
-    empty.chmod(0o755)
+@pytest.mark.parametrize("body", [b"", b"#!\n"], ids=["empty", "bare-shebang"])
+def test_a_verifier_the_kernel_cant_exec_is_no_verdict(tmp_path, monkeypatch, body):
+    """CodeRabbit 4616898119, 4617217666: `nice`/`ionice` exec through execvp,
+    which hands an empty file or a bare `#!` to /bin/sh, and that exits 0. A
+    verdict never comes from a process started through them: both verify
+    paths spawn the tool directly, so the kernel's ENOEXEC is the answer, and
+    apply the priority to the child by its pid afterwards."""
+    reniced = []
+
+    async def prioritize(owner, pid):
+        reniced.append((owner, pid))
+
+    monkeypatch.setattr(runner_module, "_prioritize_child", prioritize)
+    monkeypatch.setattr(runner_module, "priority_prefix", lambda _owner=None: [shutil.which("env")])
+    spawned = []
+    real_exec = runner_module.asyncio.create_subprocess_exec
+
+    async def spy(*args, **kwargs):
+        spawned.append(args[0])
+        return await real_exec(*args, **kwargs)
+
+    monkeypatch.setattr(runner_module.asyncio, "create_subprocess_exec", spy)
+    broken = tmp_path / "verifier"
+    broken.write_bytes(body)
+    broken.chmod(0o755)
     target = tmp_path / "a.7z"
     target.write_bytes(b"7z")
     runner = SubprocessRunner(owner="test")
-
-    with pytest.raises(OSError) as raised:
-        asyncio.run(runner.run_capture([str(empty)]))
-    assert raised.value.errno == errno.ENOEXEC
 
     async def capture(tool):
         return [e async for e in runner.capture_verify(
@@ -1544,13 +1555,60 @@ def test_an_empty_verifier_behind_a_wrapper_is_no_verdict(tmp_path, monkeypatch)
             success_message="ok", failure_message="bad",
         )]
 
-    for events in (asyncio.run(capture(str(empty))), asyncio.run(stream(str(empty)))):
+    for events in (asyncio.run(capture(str(broken))), asyncio.run(stream(str(broken)))):
         assert events[-1]["valid"] is False and events[-1].get("inconclusive") is True
-    ran = asyncio.run(capture(sys.executable))[-1]  # it ran: a verdict, not "could not run"
-    assert ran["valid"] is False and not ran.get("inconclusive")
+        assert "Exec format error" in events[-1]["message"]
+    assert spawned == [str(broken), str(broken)]  # never the wrapper
+    assert reniced == []  # nothing ran to renice
+
     assert not runner.active_pids()
 
 
+def test_a_verifier_that_runs_gives_a_verdict_at_its_priority(tmp_path, monkeypatch):
+    """The other half: a valid verifier, spawned bare, still gives a verdict on
+    both paths, and its nice level is set on its own pid (the increment over
+    this process `nice -n` would give); I/O priority goes to `ionice -p`."""
+    monkeypatch.setattr(runner_module, "nice_value", lambda _owner=None: 5)
+    monkeypatch.setattr(runner_module, "_can_renice", lambda _value: True)
+    monkeypatch.setattr(runner_module.os, "getpriority", lambda *_a: 0)
+    reniced = []
+    def setpriority(which, pid, level):
+        reniced.append((which, pid, level))
+
+    monkeypatch.setattr(runner_module.os, "setpriority", setpriority)
+    monkeypatch.setattr(runner_module, "ioprio_prefix", lambda _owner=None: [])
+    async def resolved(_owner=None):
+        return True
+
+    monkeypatch.setattr(runner_module, "_resolve_wrappers", resolved)
+    spawned = []
+    real_exec = runner_module.asyncio.create_subprocess_exec
+
+    async def spy(*args, **kwargs):
+        process = await real_exec(*args, **kwargs)
+        spawned.append((args, process.pid))
+        return process
+
+    monkeypatch.setattr(runner_module.asyncio, "create_subprocess_exec", spy)
+    target = tmp_path / "a.7z"
+    target.write_bytes(b"7z")
+    runner = SubprocessRunner(owner="test")
+    cmd = [sys.executable, "-c", "print('100%')"]
+
+    async def capture():
+        return [e async for e in runner.capture_verify(cmd, path=str(target), success_message="ok")]
+
+    async def stream():
+        return [e async for e in runner.run_verify(
+            cmd, path=str(target), parse_progress=lambda _l: None,
+            success_message="ok", failure_message="bad",
+        )]
+
+    for events in (asyncio.run(capture()), asyncio.run(stream())):
+        assert events[-1]["valid"] is True
+    assert [args for args, _pid in spawned] == [tuple(cmd), tuple(cmd)]  # bare
+    assert reniced == [(os.PRIO_PROCESS, pid, 5) for _args, pid in spawned]
+    assert not runner.active_pids()
 
 
 def test_one_wrapper_lookup_at_a_time(monkeypatch):
@@ -1578,59 +1636,6 @@ def test_a_wrapper_that_fails_to_start_is_looked_up_again(tmp_path, monkeypatch)
     with pytest.raises(FileNotFoundError):
         asyncio.run(SubprocessRunner(owner="test").run_capture([sys.executable, "-c", "1"]))
     assert runner_module._WRAPPERS == {}
-
-
-@pytest.mark.parametrize("stall", ["timeout", "capacity"])
-def test_a_format_check_that_doesnt_complete_runs_the_tool_bare(tmp_path, monkeypatch, stall):
-    """CodeRabbit 4617149402: when the exec-format check times out or finds no
-    probe slot, the spawn drops the wrappers (no execvp fallback to /bin/sh),
-    so an empty verifier's direct exec raises ENOEXEC and both verify paths
-    report no verdict."""
-    env_path = shutil.which("env")
-    monkeypatch.setattr(runner_module, "_WRAPPERS", {"nice": env_path})
-    monkeypatch.setattr(runner_module, "nice_value", lambda _owner=None: 0)
-    monkeypatch.setattr(runner_module, "nice_prefix", lambda _owner=None: [env_path])
-    real_probe = runner_module._bounded_probe
-
-    async def probe(func, *args, **kwargs):
-        if func is runner_module._exec_format_problem:
-            if stall == "capacity":
-                raise runner_module.ProbeCapacityExceeded("no slot")
-            raise asyncio.TimeoutError
-        return await real_probe(func, *args, **kwargs)
-
-    monkeypatch.setattr(runner_module, "_bounded_probe", probe)
-    spawned = []
-    real_exec = runner_module.asyncio.create_subprocess_exec
-
-    async def spy(*args, **kwargs):
-        spawned.append(args[0])
-        return await real_exec(*args, **kwargs)
-
-    monkeypatch.setattr(runner_module.asyncio, "create_subprocess_exec", spy)
-    empty = tmp_path / "verifier"
-    empty.write_bytes(b"")
-    empty.chmod(0o755)
-    target = tmp_path / "a.7z"
-    target.write_bytes(b"7z")
-    runner = SubprocessRunner(owner="test")
-
-    async def capture():
-        return [e async for e in runner.capture_verify(
-            [str(empty), str(target)], path=str(target), success_message="ok",
-        )]
-
-    async def stream():
-        return [e async for e in runner.run_verify(
-            [str(empty), str(target)], path=str(target), parse_progress=lambda _l: None,
-            success_message="ok", failure_message="bad",
-        )]
-
-    for events in (asyncio.run(capture()), asyncio.run(stream())):
-        assert events[-1]["valid"] is False and events[-1].get("inconclusive") is True
-        assert "Exec format error" in events[-1]["message"]
-    assert spawned and all(arg == str(empty) for arg in spawned)  # never the wrapper
-    assert not runner.active_pids()
 
 
 

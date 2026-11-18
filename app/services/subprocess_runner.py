@@ -32,7 +32,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import contextvars
-import errno
 import functools
 import logging
 import os
@@ -721,48 +720,45 @@ async def _resolve_wrappers(owner: str | None) -> bool:
 _LOOKING_UP: set[str] = set()
 
 
-def _exec_format_problem(tool: str) -> OSError | None:
-    """``OSError(ENOEXEC)`` when *tool* is a file the kernel can't execute
-    (empty, or neither an ELF binary nor a ``#!`` script), else None.
-
-    ``nice``/``ionice`` exec through ``execvp``, which hands such a file to
-    ``/bin/sh``: an empty verifier then exits 0 and would pass every check
-    (CodeRabbit 4616898119), where a direct exec raised. Checked only for a
-    wrapped spawn, so the wrapper can't turn that into a run. A tool that
-    isn't there or can't be opened is left to the wrapper (126/127).
-    Blocking."""
-    path = tool if os.sep in tool else shutil.which(tool)
-    if path is None:
-        return None
-    try:
-        with open(path, "rb") as handle:
-            head = handle.read(4)
-    except OSError:
-        return None
-    if head.startswith((b"\x7fELF", b"#!")):
-        return None
-    return OSError(errno.ENOEXEC, os.strerror(errno.ENOEXEC), tool)
-
-
 async def _wrapped_command(owner: str | None, cmd: list[str]) -> tuple[list[str], bool]:
     """*cmd* behind the priority wrappers *owner*'s settings ask for, and
-    whether it got them: the one place every spawn method builds its argv.
-    The wrappers come from the cache, looked up off the loop first
-    (:func:`_resolve_wrappers`); a stalled lookup means no wrappers. A wrapped
-    tool the kernel couldn't exec raises ``OSError`` (ENOEXEC) as a direct
-    exec would have (:func:`_exec_format_problem`). A wrapper is used only for
-    a tool known to be execable: a format check that doesn't complete (a
-    timeout, no probe slot) runs the bare command, whose direct exec raises
-    ENOEXEC itself (CodeRabbit 4617149402)."""
+    whether it got them: the argv of every spawn whose exit code is not a
+    verdict (conversions, info and header reads). The wrappers come from the
+    cache, looked up off the loop first (:func:`_resolve_wrappers`); a stalled
+    lookup means no wrappers. A verdict never comes from a process started
+    through them: see :func:`_prioritize_child`."""
     prefix = priority_prefix(owner) if await _resolve_wrappers(owner) else []
-    if prefix:
-        try:
-            problem = await _bounded_probe(_exec_format_problem, cmd[0])
-        except asyncio.TimeoutError:  # ProbeCapacityExceeded included
-            return cmd, False  # couldn't tell: no wrapper, so no /bin/sh fallback
-        if problem is not None:
-            raise problem
     return prefix + cmd, bool(prefix)
+
+
+async def _prioritize_child(owner: str | None, pid: int) -> None:
+    """Apply *owner*'s priority to a child spawned bare, best effort.
+
+    The verify paths (``capture_verify``, ``run_verify``, ``hash_stdout``)
+    spawn the tool directly: ``nice``/``ionice`` exec through ``execvp``,
+    which hands a file the kernel refuses (empty, a bare ``#!``) to
+    ``/bin/sh``, and its exit 0 would read as a pass (CodeRabbit 4616898119).
+    A direct exec raises ENOEXEC instead. The nice level is then set on the
+    child by ``setpriority`` (the same increment over this process that
+    ``nice -n`` gives; a level :func:`_can_renice` refuses is left off), and
+    the I/O class by ``ionice -p <pid>`` through the bounded probe. A failure
+    of either leaves the child at normal priority."""
+    value = nice_value(owner)
+    if value is not None and _can_renice(value):
+        try:
+            own = os.getpriority(os.PRIO_PROCESS, 0)
+            os.setpriority(os.PRIO_PROCESS, pid, max(-20, min(19, own + value)))
+        except OSError:
+            pass
+    prefix = ioprio_prefix(owner) if await _resolve_wrappers(owner) else []
+    if prefix:
+        import subprocess  # local: the one spawn here, never a preexec_fn
+
+        with contextlib.suppress(asyncio.TimeoutError, OSError):
+            await _bounded_probe(
+                subprocess.run, [*prefix, "-p", str(pid)],
+                capture_output=True, check=False,
+            )
 
 
 def _forget_wrappers() -> None:
@@ -779,29 +775,6 @@ def _note_exit(returncode: int | None, wrapped: bool) -> None:
     tool's own 126/127 costs one extra lookup."""
     if wrapped and returncode in (126, 127):
         _forget_wrappers()
-
-
-def _not_launched_event(returncode: int | None, wrapped: bool, said: bytes | str) -> dict | None:
-    """The inconclusive verify event for a wrapped verifier that exited
-    126/127, or None. Those are the codes ``nice``/``ionice`` (like a shell)
-    exit with when they can't exec the tool: missing, not executable, or a
-    script whose interpreter is missing (codex 4615398097), which finding the
-    tool on PATH can't rule out. No verifier here uses them for a verdict, so
-    a verify reads them as "could not run" and a stored pass is never
-    overwritten. Only the verify paths ask: every other caller sees the exit
-    code as before (a non-zero exit, the "couldn't run" fallback it had)."""
-    _note_exit(returncode, wrapped)
-    if not wrapped or returncode not in (126, 127):
-        return None
-    if isinstance(said, bytes):
-        said = said.decode("utf-8", errors="replace")
-    lines = clean_tool_output(said).splitlines()
-    reason = f": {lines[-1]}" if lines else ""  # the wrapper's own words, if any
-    return SubprocessRunner._verify_error(
-        f"Verification could not run: the verifier couldn't be started "
-        f"(the priority wrapper exited {returncode}){reason}",
-        inconclusive=True,
-    )
 
 
 def priority_prefix(owner: str | None = None) -> list[str]:
@@ -2156,7 +2129,7 @@ class SubprocessRunner:
         stderr_to_stdout: bool = False,
         env: Mapping[str, str] | None = None,
         on_abandoned: Callable[[int], None] | None = None,
-        wrapped_into: list[bool] | None = None,
+        verdict: bool = False,
     ) -> tuple[int | None, bytes, bytes]:
         """Run ``cmd`` to completion and capture ``(returncode, stdout, stderr)``.
 
@@ -2202,13 +2175,15 @@ class SubprocessRunner:
         # full disc for DAT hashing) is just as heavy as a conversion. Command
         # wrappers only, never a preexec_fn (see priority_prefix). Resolved
         # before the cancel check, which then also covers its (bounded) wait.
-        cmd, wrapped = await _wrapped_command(self._owner, cmd)
+        # *verdict* (capture_verify): its exit code is a check's verdict, so
+        # it is spawned bare and reniced after (_prioritize_child).
+        if verdict:
+            wrapped = False
+            await _resolve_wrappers(self._owner)
+        else:
+            cmd, wrapped = await _wrapped_command(self._owner, cmd)
         if cancel_event is not None and cancel_event.is_set():
             return None, b"", b""
-        if wrapped_into is not None:
-            # Whether this run had a wrapper, for capture_verify's 126/127
-            # reading: asking the cache again later could answer otherwise.
-            wrapped_into.append(wrapped)
 
         process = await self._spawn_piped(
             cmd,
@@ -2231,6 +2206,8 @@ class SubprocessRunner:
             else None
         )
         try:
+            if verdict:  # inside the try: a cancel here still reaps the child
+                await _prioritize_child(self._owner, process.pid)
             waiters = [comm] + ([cancel_wait] if cancel_wait is not None else [])
             done, _pending = await asyncio.wait(
                 waiters,
@@ -2294,7 +2271,11 @@ class SubprocessRunner:
         # Command wrappers, never a preexec_fn: see priority_prefix. Resolved
         # before the cancel check, which then also covers its (bounded) wait.
         label = os.path.basename(cmd[0])
-        cmd, wrapped = await _wrapped_command(self._owner, cmd)
+        # Spawned bare, its priority applied after (_prioritize_child): the
+        # digest it streams is a Round-trip verdict, so no execvp wrapper may
+        # start it.
+        wrapped = False
+        await _resolve_wrappers(self._owner)
         if cancel_event is not None and cancel_event.is_set():
             raise ReadCancelled("Read cancelled")
         process = await self._spawn_piped(
@@ -2343,6 +2324,7 @@ class SubprocessRunner:
             else None
         )
         try:
+            await _prioritize_child(self._owner, process.pid)
             done, _pending = await asyncio.wait(
                 [work] + ([cancel_wait] if cancel_wait is not None else []),
                 timeout=timeout or None,
@@ -2463,7 +2445,6 @@ class SubprocessRunner:
             yield self._verify_error("Verification cancelled", cancelled=True)
             return
         abandoned_pid: list[int] = []
-        wrapped: list[bool] = []
         try:
             returncode, stdout, _ = await self.run_capture(
                 cmd,
@@ -2472,7 +2453,7 @@ class SubprocessRunner:
                 stderr_to_stdout=True,
                 env=env,
                 on_abandoned=abandoned_pid.append,
-                wrapped_into=wrapped,
+                verdict=True,
             )
         except OSError as exc:
             # The verifier couldn't be started: no verdict, so no stored check
@@ -2484,12 +2465,6 @@ class SubprocessRunner:
             # still holding the storage whether the operator cancelled or the
             # bound expired, and a caller walking a list has to stop.
             yield abandoned_verify_error(abandoned_pid[0])
-            return
-        not_launched = _not_launched_event(
-            returncode, any(wrapped), stdout or b"",
-        )
-        if not_launched is not None:
-            yield not_launched
             return
         if returncode == 0:
             if on_success_output is not None:
@@ -2547,13 +2522,10 @@ class SubprocessRunner:
         shared :func:`_split_stream_lines`, so a percentage redraw split across
         read chunks still parses.
         """
-        # nice/ionice as command wrappers, never a preexec_fn: see
-        # priority_prefix.
-        try:
-            cmd, wrapped = await _wrapped_command(self._owner, cmd)
-        except OSError as exc:  # a verifier the kernel can't exec: no verdict
-            yield verify_exception_event(exc, prefix="Verification could not run")
-            return
+        # Spawned bare, its priority applied after (_prioritize_child): its
+        # exit code is the verdict, so no execvp wrapper may start it.
+        wrapped = False
+        await _resolve_wrappers(self._owner)
 
         # One the verifier can't open is no verdict, decided before it runs
         # (#359): chdman's exit 1 on "Permission denied" would read as one.
@@ -2647,6 +2619,7 @@ class SubprocessRunner:
             return True
 
         try:
+            await _prioritize_child(self._owner, process.pid)
             while True:
                 try:
                     chunk = await asyncio.wait_for(process.stdout.read(100), timeout=2)
@@ -2726,12 +2699,6 @@ class SubprocessRunner:
             elif process.returncode == 0:
                 yield {"type": "complete", "valid": True, "message": success_message}
             else:
-                not_launched = _not_launched_event(
-                    process.returncode, wrapped, "\n".join(output_lines[-6:]),
-                )
-                if not_launched is not None:
-                    yield not_launched
-                    return
                 output = "\n".join(output_lines[-20:]).strip()
                 yield verify_exit_event(process.returncode, output or failure_message)
         finally:

@@ -279,7 +279,9 @@ async def test_verify_passes_on_zero_exit(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_verify_applies_priority_wrappers(tmp_path, monkeypatch):
-    """`maxcso --crc` is as heavy as a convert, so it must honor nice/ionice."""
+    """`maxcso --crc` is as heavy as a convert, so it must honor nice/ionice:
+    spawned bare (a verdict never comes through an execvp wrapper,
+    CodeRabbit 4616898119), then given the maxcso priority by its pid."""
     cso_path = tmp_path / "game.cso"
     cso_path.write_bytes(b"data")
 
@@ -290,25 +292,22 @@ async def test_verify_applies_priority_wrappers(tmp_path, monkeypatch):
         return _FakeProcess(pid=13, chunks=[], returncode=0)
 
     monkeypatch.setattr(maxcso_module.asyncio, "create_subprocess_exec", fake_exec)
-    # A fixed prefix, so the handoff is checked whatever this host has: no
-    # PATH lookup and no exec-format probe of a binary that isn't installed.
+    # No PATH lookup on this host.
     async def resolved(_owner=None):
         return True
 
     monkeypatch.setattr(runner_module, "_resolve_wrappers", resolved)
-    monkeypatch.setattr(runner_module, "_exec_format_problem", lambda _tool: None)
-    owners = []
-    monkeypatch.setattr(
-        runner_module, "priority_prefix",
-        lambda owner=None: owners.append(owner) or ["nice", "-n", "10", "ionice", "-c", "2"],
-    )
+    reniced = []
+
+    async def prioritize(owner, pid):
+        reniced.append((owner, pid))
+
+    monkeypatch.setattr(runner_module, "_prioritize_child", prioritize)
 
     await service.verify(str(cso_path))
 
-    assert set(owners) == {maxcso_module._OWNER}
-    assert captured["argv"] == [
-        "nice", "-n", "10", "ionice", "-c", "2", service.maxcso_path, "--crc", str(cso_path),
-    ]
+    assert captured["argv"] == [service.maxcso_path, "--crc", str(cso_path)]
+    assert reniced == [(maxcso_module._OWNER, 13)]
 
 
 @pytest.mark.asyncio

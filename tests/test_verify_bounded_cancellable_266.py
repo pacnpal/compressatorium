@@ -1005,8 +1005,10 @@ def test_streaming_verify_spawns_without_a_preexec_fork_hook():
     assert "preexec_fn=" not in source
 
 
-def test_the_streaming_verifier_spawns_behind_the_priority_prefix(tmp_path, monkeypatch):
-    """The argv run_verify spawns: a known prefix, then the bare command."""
+def test_the_streaming_verifier_spawns_bare_and_is_reniced(tmp_path, monkeypatch):
+    """The argv run_verify spawns: the bare command, never behind the priority
+    prefix (whose execvp could run a broken verifier through /bin/sh), with
+    the priority then applied to the child."""
     import shutil
     import sys
 
@@ -1032,8 +1034,17 @@ def test_the_streaming_verifier_spawns_behind_the_priority_prefix(tmp_path, monk
             success_message="ok", failure_message="bad",
         )]
 
+    reniced = []
+
+    async def prioritize(owner, pid):
+        reniced.append(owner)
+
+    monkeypatch.setattr(sr, "_prioritize_child", prioritize)
     events = asyncio.run(drain())
-    assert spawned == [[wrapper, *cmd]]
+    # A verdict never comes through an execvp wrapper (CodeRabbit 4616898119):
+    # the verifier is spawned bare and given its priority by pid.
+    assert spawned == [cmd]
+    assert reniced == ["test"]
     assert events[-1]["valid"] is True
 
 

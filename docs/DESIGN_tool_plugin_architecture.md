@@ -543,56 +543,56 @@ returns.
 
 ### How priority reaches a child process (issue #444)
 
-The runner applies the priority policy, never the tool: every spawn method
-(`run`, `run_capture`, `hash_stdout`, `run_verify`, and `capture_verify` through
-`run_capture`) prefixes the argv with `priority_prefix(owner)`, which is
-`nice -n <level>` then `ionice -t -c <class> -n <level>` resolved from the
-`COMPRESSATORIUM_TOOL_*` settings and any `COMPRESSATORIUM_<OWNER>_*` override.
-A tool passes the bare argv; it never adds `nice`/`ionice` itself, which would
-apply them twice. Every spawn method builds its argv in one place,
-`_wrapped_command`. A binary that isn't installed omits only its own prefix;
-the other enabled wrapper still applies. Each is looked up once per process,
-the first time its setting asks for it, and cached as an absolute path
-(`_wrapper_path`; nothing is scanned at import, and a tool started in another
-folder still finds it). A spawn makes that lookup off the event loop, bounded
+The runner applies the priority policy, never the tool. A tool passes the
+bare argv; it never adds `nice`/`ionice` itself. There are two shapes, by one
+rule: **a verdict never comes from a process started through an `execvp`
+wrapper.** `nice` and `ionice` exec through `execvp`, which hands a file the
+kernel refuses (empty, a bare `#!`) to `/bin/sh`, and its exit 0 would read
+as a pass (CodeRabbit 4616898119, 4617217666).
+
+- **Wrapped** (`run`, and `run_capture` for info and header reads): the argv
+  is `priority_prefix(owner) + cmd`, built in one place (`_wrapped_command`):
+  `nice -n <level>` then `ionice -t -c <class> -n <level>`, resolved from the
+  `COMPRESSATORIUM_TOOL_*` settings and any `COMPRESSATORIUM_<OWNER>_*`
+  override. Their exit codes are no verdict on their own (a conversion's
+  output is checked after it).
+- **Bare, then reniced** (`capture_verify` through `run_capture(verdict=True)`,
+  `run_verify`, and `hash_stdout`, whose digest is the Round-trip's): the tool
+  is spawned directly, so the kernel's ENOEXEC is the only exec semantics and
+  a verifier that can't start (missing, not executable, a missing
+  interpreter) raises, which both verify paths report as inconclusive
+  ("Verification could not run"). The priority is then applied to the child
+  by its pid, best effort (`_prioritize_child`): `os.setpriority` to the
+  increment over this process that `nice -n` gives, and `ionice -t ... -p
+  <pid>` through the bounded probe. Either failing leaves the child at normal
+  priority.
+
+A wrapper binary that isn't installed omits only its own prefix; the other
+enabled one still applies. Each is looked up once per process, the first
+time its setting asks for it, and cached as an absolute path (`_wrapper_path`;
+nothing is scanned at import, and a tool started in another folder still
+finds it). A spawn makes that lookup off the event loop, bounded
 (`_resolve_wrappers` over `_bounded_probe`), with at most one lookup per
 wrapper outstanding, even after its caller gave up on it, so a PATH entry
 that never answers costs one probe thread. A lookup that doesn't answer runs
 that spawn with no wrappers at all, both omitted, at normal priority, with
 nothing cached, so a later spawn tries again. A wrapped spawn that fails to
-start, or a wrapped run that exits 126/127 on any path (an outer `nice` that
-starts while its cached inner `ionice` is gone exits 127), forgets the cache,
-so a wrapper removed since is looked up again; a tool's own 126/127 costs one
-extra lookup.
-Building a prefix (`nice_prefix`, `ioprio_prefix`) reads the cache alone and
-never scans; `run_capture` reports whether it actually wrapped its run
-(`wrapped_into`), which is what `capture_verify` reads a 126/127 by. A wrapped
-tool the kernel can't execute (empty, neither ELF nor `#!`) is refused before
-the spawn with the `OSError` (ENOEXEC) a direct exec raised
-(`_exec_format_problem`): `nice`/`ionice` exec through `execvp`, which would
-hand it to `/bin/sh` and exit 0, so an empty verifier would pass. One rule:
-a wrapper is used only for a tool known to be ELF or `#!`. A format check that
-doesn't complete (it times out, or no probe slot is free) runs that spawn
-bare, at normal priority, and the direct exec raises ENOEXEC itself, which
-both verify paths report as inconclusive.
-`ionice -t` is best effort, like the renice: a class the kernel denies
-(realtime without CAP_SYS_ADMIN) doesn't stop ionice before it runs the tool,
-which would otherwise hand back ionice's exit 1 as the tool's. A nice level
-this process can't apply is left off (`_can_renice`, the kernel's own rule:
-lowering niceness needs CAP_SYS_NICE, read once from `CapEff`, or room under
-RLIMIT_NICE; being root is not the test): `nice` would warn and run the tool
-anyway, putting its warning into output a caller parses, where the old
-`preexec_fn` renice dropped the failure silently. rom-converto's `--version`
-probe reads the version line from stdout, or from stderr when stdout is
-empty, skipping a wrapper's diagnostics. A wrapped verifier that exits
-126/127 is no verdict: those are the codes `nice` and `ionice` give when they
-can't exec the tool (missing, not executable, or a script whose interpreter
-is missing), which finding the tool on PATH can't rule out, and no verifier
-here uses them. `capture_verify` and `run_verify` report it as inconclusive
-(`_not_launched_event`, with the wrapper's own words), so a verifier that
-never ran can't record a failed verdict over a stored pass. Every other
-caller sees the exit code itself, as before the wrappers were shared (a
-non-zero exit: dolphin-tool's hash read falls back to no hashes).
+start, or a wrapped run that exits 126/127 (an outer `nice` that starts while
+its cached inner `ionice` is gone exits 127), forgets the cache, so a wrapper
+removed since is looked up again; a tool's own 126/127 costs one extra
+lookup. Building a prefix (`nice_prefix`, `ioprio_prefix`) reads the cache
+alone and never scans. `ionice -t` is best effort, like the renice: a class
+the kernel denies (realtime without CAP_SYS_ADMIN) doesn't stop ionice before
+it runs the tool, which would otherwise hand back ionice's exit 1 as the
+tool's. A nice level this process can't apply is left off (`_can_renice`, the
+kernel's own rule: lowering niceness needs CAP_SYS_NICE, read once from
+`CapEff`, or room under RLIMIT_NICE; being root is not the test): `nice` would
+warn and run the tool anyway, putting its warning into output a caller
+parses, where the old `preexec_fn` renice dropped the failure silently.
+rom-converto's `--version` probe reads the version line from stdout's first
+line or from stderr, skipping a wrapper's diagnostics. A wrapped run's exit
+code reaches its caller as it is (dolphin-tool's hash read falls back to no
+hashes on a non-zero exit).
 
 Nothing passes `preexec_fn`. This process is multithreaded (threadpools, the
 SSE routes), and forking a Python callable from it can deadlock the child on a
