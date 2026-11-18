@@ -20,7 +20,10 @@
   limits too. An upload over the patch limit is refused as it arrives, so it
   never fills the temp space first. A cancel that lands while the patched
   archive is being put in place waits for it, and the job then names the
-  archive it wrote instead of saying nothing was written.
+  archive it wrote instead of saying nothing was written. Patching a large
+  ROM no longer runs out of memory (#455): the ROM is held once (twice for
+  BPS) and not at all while 7z packs it, and the pack uses a dictionary of at
+  most 64 MiB and two threads, so 7z needs under 1 GiB however big the ROM.
 
 - **Unidentified in RomM** (#427). The RomM view's Library tab has an
   "Unidentified in RomM" filter that lists only the ROMs RomM couldn't
@@ -415,6 +418,12 @@
 
 ### Fixed
 
+- **A tool killed by the system says so** (#455). When a tool is killed by a
+  signal, most often the out-of-memory killer, the job's error now reads like
+  "7z was killed (signal 9), most likely out of memory" instead of the tool's
+  last progress line. Tool output that does reach a job's error has its
+  backspaces, colour codes and other control characters removed, for every
+  tool.
 - **Inbox reporting** (#457, #458). A ROM an Inbox holds because equally
   ranked DATs name it differently now shows in Findings as "Inbox: DAT name
   conflict" (kind `inbox_dat_conflict`), not "Inbox: Platform conflict"; the

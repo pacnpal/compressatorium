@@ -24,6 +24,13 @@ from its file name.
 ``max_target`` bounds the output, so neither a BPS header claiming a huge
 target nor an IPS record far past the end can allocate more than the caller
 allows.
+
+Memory (#455): ``apply_patch_in_place`` takes the ROM as a ``bytearray`` the
+caller gives up. IPS patches that buffer in place, so applying costs no copy
+of the ROM; BPS builds one target buffer and reads the source through a view,
+so it costs the target and nothing ROM-sized besides. Neither copies its
+result on the way out. ``apply_patch`` is the pure form: it leaves its source
+alone and returns ``bytes``.
 """
 
 from __future__ import annotations
@@ -62,7 +69,9 @@ class TargetMismatch(PatchError):
 
 @dataclass(frozen=True)
 class PatchResult:
-    target: bytes
+    # The patched ROM: ``bytes`` from ``apply_patch``, a ``bytearray`` from
+    # ``apply_patch_in_place`` (for IPS, the very buffer it was given).
+    target: bytes | bytearray
     # "ips" or "bps".
     kind: str
     # Whether the patch's own checksums proved the source and the output
@@ -80,10 +89,28 @@ def patch_kind(patch: bytes) -> str:
 
 
 def apply_patch(source: bytes, patch: bytes, *, max_target: int) -> PatchResult:
-    """Apply *patch* to *source*; the result's ``target`` is the patched ROM."""
+    """Apply *patch* to *source*; the result's ``target`` is the patched ROM.
+
+    *source* is left as it was."""
     if patch_kind(patch) == "bps":
-        return PatchResult(_apply_bps(source, patch, max_target), "bps", True)
-    return PatchResult(_apply_ips(source, patch, max_target), "ips", False)
+        return PatchResult(bytes(_apply_bps(source, patch, max_target)), "bps", True)
+    out = bytearray(source)
+    _apply_ips(out, patch, max_target)
+    return PatchResult(bytes(out), "ips", False)
+
+
+def apply_patch_in_place(rom: bytearray, patch: bytes, *, max_target: int) -> PatchResult:
+    """Apply *patch* to *rom*, a buffer the caller gives up.
+
+    IPS patches *rom* itself, growing or truncating it, and the result's
+    ``target`` is *rom*. BPS reads *rom* and builds a new target. Either way
+    nothing ROM-sized is copied besides that target, and a failure leaves
+    *rom* in no state worth keeping.
+    """
+    if patch_kind(patch) == "bps":
+        return PatchResult(_apply_bps(rom, patch, max_target), "bps", True)
+    _apply_ips(rom, patch, max_target)
+    return PatchResult(rom, "ips", False)
 
 
 # ----------------------------------------------------------------------
@@ -100,10 +127,10 @@ def _grow(out: bytearray, end: int, max_target: int) -> None:
         out.extend(bytes(end - len(out)))
 
 
-def _apply_ips(source: bytes, patch: bytes, max_target: int) -> bytes:
-    if len(source) > max_target:
+def _apply_ips(out: bytearray, patch: bytes, max_target: int) -> None:
+    """Patch *out* in place."""
+    if len(out) > max_target:
         raise PatchTooLarge(f"The ROM is over the limit of {max_target} bytes")
-    out = bytearray(source)
     pos = len(IPS_MAGIC)
     end = len(patch)
     while True:
@@ -118,7 +145,7 @@ def _apply_ips(source: bytes, patch: bytes, max_target: int) -> bytes:
             if rest == 3:
                 length = int.from_bytes(patch[pos + 3:pos + 6], "big")
                 del out[length:]
-            return bytes(out)
+            return
         offset = int.from_bytes(head, "big")
         pos += 3
         if pos + 2 > end:
@@ -184,7 +211,7 @@ class _Reader:
         return -(value >> 1) if value & 1 else value >> 1
 
 
-def _apply_bps(source: bytes, patch: bytes, max_target: int) -> bytes:
+def _apply_bps(source: bytes | bytearray, patch: bytes, max_target: int) -> bytearray:
     if len(patch) < len(BPS_MAGIC) + 3 + _BPS_FOOTER:
         raise PatchFormatError("The BPS patch is too short to be one")
     footer = len(patch) - _BPS_FOOTER
@@ -208,6 +235,20 @@ def _apply_bps(source: bytes, patch: bytes, max_target: int) -> bytes:
         )
 
     target = bytearray(target_size)
+    # Every copy goes view to view: slices of a view share memory, and
+    # assigning one into a bytearray slice would copy it first. So a
+    # SourceRead of the whole ROM costs no ROM-sized slice.
+    with memoryview(source) as view, memoryview(target) as out:
+        _bps_actions(reader, footer, view, out)
+    if zlib.crc32(target) != target_crc:
+        raise TargetMismatch(
+            "The patched ROM doesn't match the CRC32 the patch promises, so it wasn't kept",
+        )
+    return target
+
+
+def _bps_actions(reader: _Reader, footer: int, source: memoryview, target: memoryview) -> None:
+    target_size = len(target)
     written = 0
     source_cursor = target_cursor = 0
     while reader.pos < footer:
@@ -237,20 +278,21 @@ def _apply_bps(source: bytes, patch: bytes, max_target: int) -> bytes:
 
     if written != target_size:
         raise PatchFormatError("The BPS patch ends before its target is complete")
-    if zlib.crc32(target) != target_crc:
-        raise TargetMismatch(
-            "The patched ROM doesn't match the CRC32 the patch promises, so it wasn't kept",
-        )
-    return bytes(target)
 
 
-def _target_copy(target: bytearray, start: int, at: int, length: int) -> None:
+def _target_copy(target: memoryview, start: int, at: int, length: int) -> None:
     """Copy *length* bytes from *start* to *at* in *target*, reading bytes
-    this copy itself writes when the two overlap (a repeating pattern)."""
+    this copy itself writes when the two overlap (a repeating pattern).
+
+    The bytes from *start* on repeat with period ``at - start``, so each step
+    copies the longest whole number of periods already written, ending where
+    the write is: the run doubles each step, and no copy overlaps or needs a
+    buffer of its own."""
     gap = at - start
-    if gap >= length:
-        target[at:at + length] = target[start:start + length]
-        return
-    pattern = bytes(target[start:at])
-    repeats = -(-length // gap)
-    target[at:at + length] = (pattern * repeats)[:length]
+    end = at + length
+    pos = at
+    while pos < end:
+        span = (pos - start) // gap * gap
+        count = min(span, end - pos)
+        target[pos:pos + count] = target[pos - span:pos - span + count]
+        pos += count

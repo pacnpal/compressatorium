@@ -1832,17 +1832,8 @@ def read_beneath(root: str, relative: str, *, max_bytes: int) -> bytes:
     A file over ``max_bytes`` is refused with ``ValueError``.
     Blocking: run it off the event loop.
     """
-    parts = _beneath_parts(relative)
-    fd = open_dir_beneath(root, "/".join(parts[:-1]))
+    fd = _open_file_beneath(root, relative, max_bytes)
     try:
-        child = os.open(parts[-1], _BENEATH_FLAGS, dir_fd=fd)
-        os.close(fd)
-        fd = child
-        info = os.fstat(fd)
-        if not stat.S_ISREG(info.st_mode):
-            raise OSError(errno.EINVAL, "Not a regular file", os.path.join(root, relative))
-        if info.st_size > max_bytes:
-            raise ValueError(f"{relative} is larger than {max_bytes} bytes")
         chunks: list[bytes] = []
         total = 0
         while chunk := os.read(fd, _BENEATH_CHUNK):
@@ -1853,6 +1844,70 @@ def read_beneath(root: str, relative: str, *, max_bytes: int) -> bytes:
         return b"".join(chunks)
     finally:
         os.close(fd)
+
+
+def read_beneath_mutable(root: str, relative: str, *, max_bytes: int) -> bytearray:
+    """:func:`read_beneath`, into one ``bytearray`` the caller may change.
+
+    For a big file the caller works on in place (a ROM being patched, #455):
+    the bytes are read straight into a buffer sized from ``fstat``, so the
+    read costs the file once, where joining chunks would cost it twice.
+    Blocking: run it off the event loop.
+    """
+    fd = _open_file_beneath(root, relative, max_bytes)
+    try:
+        return read_fd_capped(fd, max_bytes, relative)
+    finally:
+        os.close(fd)
+
+
+def _open_file_beneath(root: str, relative: str, max_bytes: int) -> int:
+    """The descriptor :func:`read_beneath` reads: ``root/relative`` opened
+    with no symlink anywhere, a regular file no larger than ``max_bytes``."""
+    parts = _beneath_parts(relative)
+    fd = open_dir_beneath(root, "/".join(parts[:-1]))
+    try:
+        child = os.open(parts[-1], _BENEATH_FLAGS, dir_fd=fd)
+    finally:
+        os.close(fd)
+    try:
+        info = os.fstat(child)
+        if not stat.S_ISREG(info.st_mode):
+            raise OSError(errno.EINVAL, "Not a regular file", os.path.join(root, relative))
+        if info.st_size > max_bytes:
+            raise ValueError(f"{relative} is larger than {max_bytes} bytes")
+    except BaseException:
+        os.close(child)
+        raise
+    return child
+
+
+def read_fd_capped(fd: int, max_bytes: int, name: str) -> bytearray:
+    """All of the open file *fd*, from where it is, in one ``bytearray``.
+
+    Read straight into a buffer of the size ``fstat`` gives, then on to the
+    real end, so a file that changed size since is still read whole and right.
+    Past ``max_bytes`` it is refused with ``ValueError`` naming *name*. The
+    descriptor stays open. Blocking: run it off the event loop.
+    """
+    expected = os.fstat(fd).st_size
+    if expected > max_bytes:
+        raise ValueError(f"{name} is larger than {max_bytes} bytes")
+    data = bytearray(expected)
+    filled = 0
+    with io.FileIO(fd, "rb", closefd=False) as handle:
+        with memoryview(data) as view:
+            while filled < expected:
+                count = handle.readinto(view[filled:])
+                if not count:
+                    break
+                filled += count
+        del data[filled:]
+        while chunk := handle.read(_BENEATH_CHUNK):
+            if len(data) + len(chunk) > max_bytes:
+                raise ValueError(f"{name} is larger than {max_bytes} bytes")
+            data += chunk
+    return data
 
 
 # The characters ``tempfile.mkstemp`` draws its eight random ones from.

@@ -126,19 +126,45 @@ def _parse_progress(line: str) -> int | None:
     return value if 0 <= value <= 100 else None
 
 
-def _compress_flags(mode: str, compression: str | None) -> list[str]:
-    """7z switches for an effort preset (fast | default | max)."""
+def _size_switch(size: int) -> str:
+    """A byte count as 7z writes a size: ``64m``, ``1536k`` or ``1000b``."""
+    for unit, shift in (("m", 20), ("k", 10)):
+        if size % (1 << shift) == 0:
+            return f"{size >> shift}{unit}"
+    return f"{size}b"
+
+
+def _compress_flags(
+    mode: str, compression: str | None, *,
+    dictionary: int | None = None, threads: int | None = None,
+) -> list[str]:
+    """7z switches for an effort preset (fast | default | max).
+
+    *dictionary* (bytes) and *threads* bound 7z's memory for a caller that
+    must (#455): they replace the preset's ``-md`` and ``-mmt`` and leave the
+    rest of the profile as it is. LZMA2's compression memory is about 11.5
+    times the dictionary per block encoder, and ``-mmt=on`` runs one encoder
+    per pair of cores, so the reference profile can want gigabytes.
+    """
     effort = (compression or "max").strip().lower()
     if mode == "romz_zip":
         level = {"fast": "1", "default": "7", "max": "9"}.get(effort, "9")
-        return ["-tzip", f"-mx={level}", "-mmt=on"]
-    # romz_7z (LZMA2)
-    if effort == "fast":
-        return ["-t7z", "-m0=lzma2", "-mx=1", "-mmt=on"]
-    if effort == "default":
-        return ["-t7z", "-m0=lzma2", "-mx=7", "-md=64m", "-mmt=on"]
-    # "max" (and any unknown token) -> the reference best-settings profile.
-    return ["-t7z", "-m0=lzma2", "-mx=9", "-md=256m", "-mfb=273", "-mmt=on"]
+        flags = ["-tzip", f"-mx={level}", "-mmt=on"]
+    elif effort == "fast":  # romz_7z (LZMA2) from here on
+        flags = ["-t7z", "-m0=lzma2", "-mx=1", "-mmt=on"]
+    elif effort == "default":
+        flags = ["-t7z", "-m0=lzma2", "-mx=7", "-md=64m", "-mmt=on"]
+    else:
+        # "max" (and any unknown token) -> the reference best-settings profile.
+        flags = ["-t7z", "-m0=lzma2", "-mx=9", "-md=256m", "-mfb=273", "-mmt=on"]
+    if dictionary is not None and mode != "romz_zip":
+        size = f"-md={_size_switch(dictionary)}"
+        flags = [size if f.startswith("-md=") else f for f in flags]
+        if size not in flags:
+            flags.insert(flags.index("-mmt=on"), size)
+    if threads is not None:
+        flags = [f"-mmt={threads}" if f.startswith("-mmt=") else f for f in flags]
+    return flags
 
 
 class NotSingleRomArchive(ValueError):
@@ -386,7 +412,8 @@ class RomzService:
 
     def _build_command(
         self, input_arg: str, output_target: str, mode: str,
-        compression: str | None,
+        compression: str | None, *,
+        dictionary: int | None = None, threads: int | None = None,
     ) -> list[str]:
         # All switches go before a literal ``--`` so positional names that begin
         # with ``-`` (an archive/member/ROM whose filename starts with a dash)
@@ -397,7 +424,9 @@ class RomzService:
         # extract ``output_target`` is the extraction ROOT directory and
         # ``input_arg`` is the archive path.
         if mode in ROMZ_COMPRESS_MODES:
-            switches = _compress_flags(mode, compression) + ["-bsp1", "-y"]
+            switches = _compress_flags(
+                mode, compression, dictionary=dictionary, threads=threads,
+            ) + ["-bsp1", "-y"]
             cmd = [self.sevenzip_path, "a", *switches, "--", output_target, input_arg]
         elif mode == ROMZ_EXTRACT_MODE:
             # `-o` is the extraction ROOT: `7z x` recreates each member's own
@@ -486,7 +515,12 @@ class RomzService:
         *,
         compression: str | None = None,  # effort preset: fast | default | max
         cancel_event: asyncio.Event | None = None,
+        dictionary: int | None = None,
+        threads: int | None = None,
     ) -> AsyncGenerator[dict, None]:
+        """Run one romz mode. *dictionary* and *threads* bound a compress's
+        memory (see ``_compress_flags``); a caller that leaves them out gets
+        the preset as it is."""
         member: str | None = None
         # Where the 7z subprocess actually writes (and what the runner watches).
         # For compress this is output_path; for extract it's a temp file we then
@@ -549,6 +583,7 @@ class RomzService:
 
         cmd = self._build_command(
             cmd_input, cmd_target, mode, compression,
+            dictionary=dictionary, threads=threads,
         )
 
         try:
