@@ -90,8 +90,24 @@ async def _dat(name: str, games: dict[str, str]) -> str:
     return result["id"]
 
 
+@pytest.fixture(autouse=True)
+def _work_area(tmp_path, monkeypatch) -> Path:
+    """The app's own work area (``CHD_TEMP_DIR``), where archives are
+    unpacked: outside every Volume and the Inbox."""
+    work = tmp_path / "work"
+    work.mkdir()
+    monkeypatch.setattr(settings, "temp_dir", str(work))
+    return work
+
+
+def _unpack_dirs() -> list[Path]:
+    return sorted(Path(settings.temp_dir).glob("inbox_unpack_*"))
+
+
 def _stage_folders(root: Path) -> list[Path]:
-    return [p for p in root.rglob(".compressatorium-stage")]
+    """What unpacking left: a hidden stage folder in the Inbox (there should
+    never be one), or an unpack folder in the work area."""
+    return [*root.rglob(".compressatorium-stage"), *_unpack_dirs()]
 
 
 # ---- archives --------------------------------------------------------------
@@ -555,3 +571,326 @@ async def test_what_was_unpacked_goes_when_its_archive_leaves_the_inbox(vol, db,
 
     assert _stage_folders(vol / "Downloads") == []
     assert _inbox_findings() == []
+
+
+# ---- review fixes (Codex on PR #453) -----------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_an_archive_swapped_before_the_gate_is_gated_as_the_file_unpacked(
+    vol, db, monkeypatch,
+):
+    """Codex 4608007766 (P1): an archive replaced after it settled, before
+    the gate, must be gated as the very file that is unpacked. The
+    replacement is over the cap, so nothing is written and it is held."""
+    import os
+
+    from services.inbox import intake
+
+    _verifies(monkeypatch)
+    monkeypatch.setattr(settings, "archive_max_total_size", 0)
+    monkeypatch.setattr(settings, "archive_inbox_max_total_size", 2048)
+    library = _library(vol)
+    box = _inbox(vol, library, settle=0)
+    archive = _zip(vol / "Downloads" / "gba" / "Game.zip", {"Game.gba": _bytes("ok", 1024)})
+    bomb = _zip(vol / "bomb.zip", {"Game.gba": _bytes("big", 4096)})
+    real = intake._identities
+    swapped: list[bool] = []
+
+    def swap_then_read(inbox, files):
+        if not swapped and files == [str(archive.resolve())]:
+            swapped.append(True)
+            os.replace(bomb, archive)
+        return real(inbox, files)
+
+    monkeypatch.setattr(intake, "_identities", swap_then_read)
+    unpack = intake._unpack_blocking
+    unpacked_sizes: list[int] = []
+
+    def recording(*args, **kwargs):
+        slot, images = unpack(*args, **kwargs)
+        unpacked_sizes.extend(os.path.getsize(i) for i in images)
+        return slot, images
+
+    monkeypatch.setattr(intake, "_unpack_blocking", recording)
+
+    await _polls(box)
+
+    assert swapped
+    # Nothing over the cap was ever written, not even for a moment.
+    assert all(size <= 2048 for size in unpacked_sizes)
+    assert not (vol / "ROMs" / "gba").exists()
+    assert _stage_folders(vol / "Downloads") == []
+    [finding] = _inbox_findings()
+    assert "CHD_ARCHIVE_INBOX_MAX_TOTAL_SIZE" in finding["reason"]
+
+
+def _stored_zip(path: Path, name: str, data: bytes) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_STORED) as zf:
+        zf.writestr(name, data)
+    return path
+
+
+def test_a_member_bigger_than_it_declares_is_stopped(tmp_path, monkeypatch):
+    """Codex 4608007766, defence in depth: the bytes actually written are
+    counted, and a member that yields more than its header declares is
+    stopped there, never written whole."""
+    import copy
+
+    from services.archive import ArchiveSafetyRefused, archive_service
+
+    archive = _stored_zip(tmp_path / "Game.zip", "Game.gba", _bytes("liar", 64 * 1024))
+    real = zipfile.ZipFile.infolist
+
+    def lying(self):
+        infos = []
+        for info in real(self):
+            told = copy.copy(info)
+            told.file_size = 1024
+            infos.append(told)
+        return infos
+
+    monkeypatch.setattr(zipfile.ZipFile, "infolist", lying)
+    dest = tmp_path / "out"
+    dest.mkdir()
+
+    with pytest.raises(ArchiveSafetyRefused, match="more than it declares"):
+        archive_service.extract_members(str(archive), str(dest))
+
+    written = dest / "Game.gba"
+    assert not written.exists() or written.stat().st_size <= 1024
+
+
+@pytest.mark.parametrize("limit", ["max_member", "max_total"])
+@pytest.mark.parametrize("kind", ["zip", "7z"])
+def test_unpacking_stops_at_the_cap_whatever_the_header_says(tmp_path, limit, kind):
+    from services.archive import ArchiveSafetyRefused, archive_service
+
+    data = _bytes("big", 64 * 1024)
+    archive = (
+        _stored_zip(tmp_path / "Game.zip", "Game.gba", data) if kind == "zip"
+        else _seven_zip(tmp_path / "Game.7z", {"Game.gba": data})
+    )
+    dest = tmp_path / "out"
+    dest.mkdir()
+
+    with pytest.raises(ArchiveSafetyRefused):
+        archive_service.extract_members(str(archive), str(dest), **{limit: 1024})
+
+    written = dest / "Game.gba"
+    assert not written.exists() or written.stat().st_size <= 1024
+
+
+def _hung_hash(monkeypatch):
+    """The whole-file SHA-1 read hangs (storage that stopped answering)
+    until the returned event is set; *started* is set once it hangs."""
+    import threading
+
+    from services import file_hasher
+
+    release, started = threading.Event(), threading.Event()
+
+    def hung(_hasher, _path, progress=None):
+        started.set()
+        release.wait(30)
+
+    monkeypatch.setattr(file_hasher, "_update_from_file", hung)
+    return release, started
+
+
+@pytest.mark.asyncio
+async def test_a_recognize_read_that_stalls_fails_within_its_bound(vol, db, monkeypatch):
+    """Codex 4608007769 (P1): the SHA-1 fallback is stall-bounded, so a hung
+    read fails the job with a Finding and gives its conversion slot back."""
+    import asyncio
+
+    from services.inbox import intake
+
+    await _dat("Sony - PlayStation 2 (Redump)", {"Other": _sha1(b"other")})
+    monkeypatch.setattr(intake, "_RECOGNIZE_STALL_SECONDS", 0.3)
+    release, _started = _hung_hash(monkeypatch)
+    library = _library(vol)
+    box = _inbox(vol, library, settle=0)
+    game = _drop(vol / "Downloads" / "ps2" / "Game.iso", _bytes("hung"))
+    try:
+        await asyncio.wait_for(_polls(box, count=3), 10)
+    finally:
+        release.set()
+
+    assert game.exists()
+    assert intake.job_manager.slots_in_use() == 0
+    [finding] = _inbox_findings()
+    assert finding["kind"] == findings.INBOX_FAILED
+    assert "couldn't be Recognized" in finding["reason"]
+
+
+@pytest.mark.asyncio
+async def test_cancelling_a_recognize_mid_hash_ends_it_promptly(vol, db, monkeypatch):
+    import asyncio
+
+    from models import ConversionMode, JobStatus
+    from services import inbox
+    from services.inbox import intake
+
+    await _dat("Sony - PlayStation 2 (Redump)", {"Other": _sha1(b"other")})
+    release, started = _hung_hash(monkeypatch)
+    library = _library(vol)
+    box = _inbox(vol, library, settle=0)
+    _drop(vol / "Downloads" / "ps2" / "Game.iso", _bytes("cancel"))
+    before = set(intake.job_manager.jobs)
+    try:
+        await intake.poll(inbox.get(box.id), now=0)
+        await intake.poll(inbox.get(box.id), now=1)
+        assert await asyncio.to_thread(started.wait, 10)
+        [job] = [
+            j for job_id, j in intake.job_manager.jobs.items()
+            if job_id not in before and j.mode == ConversionMode.INBOX_RECOGNIZE
+        ]
+        await intake.job_manager.cancel_job(job.id)
+        await asyncio.wait_for(intake.drain(), 5)
+    finally:
+        release.set()
+
+    assert intake.job_manager.get_job(job.id).status == JobStatus.CANCELLED
+    assert intake.job_manager.slots_in_use() == 0
+    [finding] = _inbox_findings()
+    assert "cancelled" in finding["reason"]
+
+
+@pytest.mark.asyncio
+async def test_removing_an_inbox_keeps_a_slot_a_queued_conversion_reads(vol, db, queue):
+    """Codex 4608007773 (P2): a slot a queued conversion reads from outlives
+    the Inbox's removal, and goes once that job ends."""
+    import asyncio
+
+    from models import JobStatus
+    from services import inbox
+    from services.inbox import intake
+
+    library = _library(vol)
+    await inbox_431._ps2_rule(library)
+    box = _inbox(vol, library, settle=0)
+    _zip(vol / "Downloads" / "ps2" / "Game.zip", {"Game.iso": _bytes("queued")})
+    await _polls(box, count=6)
+    [job] = queue.submitted
+    source = Path(job["paths"][0])
+    assert source.parent in _unpack_dirs() and source.exists()
+
+    await asyncio.to_thread(inbox.remove, box.id)
+
+    assert source.exists()  # the queued conversion can still read it
+    queue.jobs["job0"].status = JobStatus.COMPLETED
+    intake.job_manager._notify_terminal(queue.jobs["job0"])
+    await intake.drain()
+
+    assert _stage_folders(vol / "Downloads") == []
+
+
+@pytest.mark.asyncio
+async def test_removing_an_inbox_with_no_job_on_a_slot_removes_it_at_once(
+    vol, db, monkeypatch,
+):
+    import asyncio
+
+    from services import inbox
+
+    _verifies(monkeypatch)
+    library = _library(vol)
+    box = _inbox(vol, library, settle=0)
+    _zip(vol / "Downloads" / "Bundle.zip", {"Mystery.iso": _bytes("held", 4096)})
+    await _polls(box)
+    assert _stage_folders(vol / "Downloads")
+
+    await asyncio.to_thread(inbox.remove, box.id)
+
+    assert _stage_folders(vol / "Downloads") == []
+
+
+@pytest.mark.asyncio
+async def test_an_archive_is_unpacked_in_the_work_area_not_the_inbox(vol, db, monkeypatch):
+    """Codex 4608030847 (P1): the unpack folder is the app's own, outside the
+    Inbox (and every Volume), where no Inbox writer has any right."""
+    from services.inbox import intake
+
+    _verifies(monkeypatch)
+    library = _library(vol)
+    box = _inbox(vol, library, settle=0)
+    _zip(vol / "Downloads" / "Bundle.zip", {"Mystery.iso": _bytes("where", 4096)})
+
+    await _polls(box)
+
+    [unpacked] = intake._states[box.id].unpacked.values()
+    slot = Path(unpacked.slot.path)
+    assert slot.parent == Path(settings.temp_dir).resolve()
+    assert not slot.is_relative_to(vol)
+    assert list((vol / "Downloads").rglob(".compressatorium-stage")) == []
+
+
+@pytest.mark.asyncio
+async def test_an_unpack_folder_swapped_for_a_link_writes_nothing_outside(
+    vol, db, tmp_path, monkeypatch,
+):
+    """Codex 4608030847 (P1): the unpack folder replaced by a link to another
+    folder mid-extract. Every byte goes beneath the folder held open, so
+    nothing lands where the link points, and the archive is refused with a
+    Finding."""
+    import os
+
+    from services.archive import ArchiveService
+
+    _verifies(monkeypatch)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    real = ArchiveService.extract_members
+
+    def swap_then_extract(self, archive_path, destination, **kwargs):
+        os.rename(destination, destination + ".moved")
+        os.symlink(outside, destination)
+        return real(self, archive_path, destination, **kwargs)
+
+    monkeypatch.setattr(ArchiveService, "extract_members", swap_then_extract)
+    library = _library(vol)
+    box = _inbox(vol, library, settle=0)
+    archive = _zip(vol / "Downloads" / "gba" / "Game.zip", {"sub/Game.gba": _bytes("swap")})
+
+    await _polls(box, count=3)
+
+    assert list(outside.iterdir()) == []
+    assert archive.exists()
+    assert not (vol / "ROMs" / "gba").exists()
+    [finding] = _inbox_findings()
+    assert finding["path"] == str(archive.resolve())
+    assert "unpack folder was replaced" in finding["reason"]
+
+
+@pytest.mark.parametrize("kind", ["zip", "7z"])
+def test_extraction_writes_through_the_held_folder(tmp_path, kind):
+    """Codex 4608030847: every format is unpacked through descriptors (a
+    nested folder made with ``mkdir(dir_fd=...)``, each file ``O_EXCL``), and
+    the bytes come out right."""
+    import os
+
+    from services.archive import archive_service
+
+    members = {
+        "Game (Disc 1)/Game.cue": b"FILE \"Game.bin\" BINARY\n",
+        "Game (Disc 1)/Game.bin": _bytes("track", 8192),
+        "readme.txt": b"hello",
+        "empty.dat": b"",
+    }
+    archive = (
+        _zip(tmp_path / "Set.zip", members) if kind == "zip"
+        else _seven_zip(tmp_path / "Set.7z", members)
+    )
+    dest = tmp_path / "out"
+    dest.mkdir()
+    fd = os.open(dest, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        written = archive_service.extract_members(str(archive), str(dest), destination_fd=fd)
+    finally:
+        os.close(fd)
+
+    assert sorted(written) == sorted(str(dest / name) for name in members)
+    for name, data in members.items():
+        assert (dest / name).read_bytes() == data

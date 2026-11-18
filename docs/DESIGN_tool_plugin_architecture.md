@@ -7644,56 +7644,100 @@ archives whole is platform data, not an Inbox branch:
 Platform aliases (today `arcade`, so its aliases `mame`, `fbneo`, `naomi`, ...
 count too; a user's folder mapping to Arcade does as well). When the archive's
 folder evidence (`Detection.place_platform`: a Platform folder or a mapping)
-names such a Platform, the archive goes through the same gate and is then taken
-as one file down the ordinary path (detected, Recognized, copied or converted),
-never unpacked. A Platform the folder can't tell is unpacked: its Images say.
-Otherwise it is gated as above (`check_inbox_archive`, listing only),
-then unpacked as an `inbox_unpack` job (`ConversionMode.INBOX_UNPACK`, an
-`ExternalMode(in_ledger=False, started_by_hand=False, takes_slot=True)` like
+names such a Platform, the archive is taken whole: its identity is read first,
+then the gate runs on that very file (`_gate_opened`: opened beneath the Inbox
+with `O_NOFOLLOW`, its `fstat` compared with the identity, then
+`ArchiveService.check_inbox_source` on the open file), and the take goes on only
+while the archive is still that file; it then goes down the ordinary path
+(detected, Recognized, copied or converted), never unpacked. A Platform the
+folder can't tell is unpacked: its Images say.
+
+Otherwise it is unpacked as an `inbox_unpack` job (`ConversionMode.INBOX_UNPACK`,
+an `ExternalMode(in_ledger=False, started_by_hand=False, takes_slot=True)` like
 the copy) on a stall-bounded worker (`run_detached_within_stall_bound`, its
-progress reported per chunk written). The archive is opened through the Inbox
-folder's descriptor with `O_NOFOLLOW`, its `fstat` identity checked before and
-after against the one taken, and handed to `ArchiveService.extract_members`
-(shared, in `services/archive.py`) as an open file. That method checks every
-member it is about to write again, whatever the gate read: a link (or, in a 7z,
-an entry that is neither a file nor a folder), a name the extract path refuses
-(`_validate_member`: a backslash, an absolute or `..` path, an empty segment, a
-drive letter) or two members landing on one path refuses the whole archive
-(`ArchiveSafetyRefused`, held with an `inbox_failed` Finding naming it) before
-any folder is made. Each member goes beneath the destination
-(`_prepare_destination`); a zip's or rar's is created with `O_EXCL` (never over
-anything), a 7z is extracted in one `py7zr` call with a progress callback and
-each member checked to have landed as a regular file; junk is skipped. The
-destination is a fresh `staging.open_slot` beside the archive (§3.3.21): a
-hidden folder inside the Inbox, journaled, so a crash leaves nothing the
-startup sweep won't remove, and the `_SlotHandoff` (given the unpacking as its
-`work`) closes a slot delivered after its awaiter gave up. An archive inside an
-unpacked one is held, not unpacked again; one holding no Image is held too.
+progress reported per chunk written). **One open file** (Codex 4608007766): the
+archive's identity is read when it is taken, and the job opens it once, through
+the Inbox folder's descriptor with `O_NOFOLLOW`, refuses it unless its `fstat`
+is that identity, gates it from that open file
+(`ArchiveService.check_inbox_source`, built on
+`archive_members.read_members_of`: the listing and the size read from the
+descriptor, never the path), extracts from the same open file and checks its
+identity again afterwards. An archive swapped in at any point is either judged
+itself or not unpacked at all, and settles again.
+
+**Extraction** is `ArchiveService.extract_members` (shared, in
+`services/archive.py`), the one extraction path that never hands a library a
+path name (Codex 4608030847). It checks every member it is about to write again,
+whatever the gate read: a link (or, in a 7z, an entry that is neither a file nor
+a folder), a name the extract path refuses (`_validate_member`: a backslash, an
+absolute or `..` path, an empty segment, a drive letter) or two members landing
+on one path refuses the whole archive (`ArchiveSafetyRefused`, held with an
+`inbox_failed` Finding naming it) before anything is written. Each member's
+bytes come through the library's read API (a zip's or rar's `open`, py7zr's
+writer factory, `_BudgetedWriters`) and go into a file created beneath the held
+destination folder by `_create_member`: each folder on the way made with
+`mkdir(dir_fd=...)` and opened `O_NOFOLLOW`, the file opened
+`O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW` relative to it. The bytes are counted
+as they are written (`_UnpackBudget`), never the header trusted: a member that
+yields more than it declares, or more than the Inbox's member cap, or a total
+past its total cap (`inbox_limits`), is refused before the chunk that would
+cross the line is written. Junk is skipped; an empty 7z member, which py7zr
+hands no writer, is made empty.
+
+**The unpack slot** (`_UnpackSlot`) is a private folder in the app's own work
+area (`disk.create_scratch_dir("inbox_unpack_")`, under `CHD_TEMP_DIR` or the
+data folder's `temp/`, the tree a bound Source uses), on which no Inbox writer
+has any right. It is held open; extraction writes beneath its descriptor, and a
+slot whose path no longer names the folder held (`intact()`) refuses the
+archive. Closing removes it, or, when its path was swapped, empties only the
+folder held, through its descriptor. Its real path is registered
+(`_slot_roots`) as the one place outside an Inbox intake reads an Image under:
+`_folder_beneath`, and so every identity read, copy and comparison, opens an
+unpacked Image beneath its slot (`_root_of`). An archive inside an unpacked one
+is held, not unpacked again; one holding no Image is held too. A crash leaves
+the slot in the work area; nothing sweeps it yet.
 
 From then on the slot (`_State.unpacked`, an `_Unpacked` per archive: its
 fingerprint, slot, identity, the Images found in it and those placed) is walked
-with the Inbox (`_list(extra=...)`, the walk shared as `_walk`), and each Image
-in it settles and is taken like a loose file: Platform (`detect_platform` walks
-up from the slot, so a Platform folder holding the archive, or one inside it,
-decides), Recognizing, naming, placing. Its tracks are found, its identity read
-and a conversion's `source_identities` bound beneath the Inbox exactly as for a
-dropped file. A Finding for one of them is written on the archive (the file the
-user dropped), naming the Image (`_hold` redirects through `_unpacked_holding`).
-A placed Image stays in the slot, counted (`note_processed`) and reported in
-`placed` with the archive's path; the archive's own Findings stay until it
-moves, since another of its Images may still be held. Once every Image is
-placed, `_settle_unpacked` starts the archive's move to `processed/` (the same
-anchored, locked move, a flight carrying `unpacked`), and the slot is closed
-then: intake's own scratch, the archive still holds every byte. An archive that
-leaves the Inbox or changes has its slot closed the same way; a changed one is
-unpacked again once it settles. Removing the Inbox closes its slots.
+with the Inbox by its recorded path (`_list(extra=...)`, the walk shared as
+`_walk`), and each Image in it settles and is taken like a loose file. Its
+Platform is read from its own header and from the folders it would sit in had
+the archive been unpacked beside it (`platform_detect.detect_platform_as(path,
+placed_at)`: the archive's folder in the Inbox, then the folders inside the
+archive; mappings apply). Its tracks are checked within its slot. A conversion
+of it is queued without `source_identities`: its Source is in the app's own work
+area, outside every Volume, where nothing can swap it. A Finding for one of them
+is written on the archive (the file the user dropped), naming the Image (`_hold`
+redirects through `_unpacked_holding`). A placed Image stays in the slot,
+counted (`note_processed`) and reported in `placed` with the archive's path; the
+archive's own Findings stay until it moves, since another of its Images may
+still be held. Once every Image is placed, `_settle_unpacked` starts the
+archive's move to `processed/` (the same anchored, locked move, a flight
+carrying `unpacked`), and the slot is closed then: intake's own scratch, the
+archive still holds every byte. An archive that leaves the Inbox or changes has
+its slot closed the same way; a changed one is unpacked again once it settles.
+
+**Removing the Inbox** (Codex 4608007773) closes a slot no live job reads at
+once. One a queued or running conversion still reads from is kept
+(`_close_after`): its jobs are counted down by the job manager's terminal hook
+(`add_terminal_listener(_job_ended)`), a job that ended before the hook was in
+place is counted at once, and the slot is removed when the last one ends, so
+the conversion runs as queued.
 
 **Recognizing and naming (#432).** Where something can answer
 (`routes.dat.matching_available`: a DAT is loaded, or Hasheous is on), an Image
 is matched before it is placed, after its plan: an `inbox_recognize` job
 (`ConversionMode.INBOX_RECOGNIZE`, the same `ExternalMode` as the copy) runs
 `routes.dat.match_one` (the match job's per-file step: embedded hashes, then the
-file SHA-1, then Hasheous) on the very bytes taken, and keeps the result with
+file SHA-1, then Hasheous) on the very bytes taken. Its whole-file SHA-1 is
+stall-bounded and cancellable (Codex 4608007769): `match_one` asks
+`_match_single_file` for it through `run_detached_within_stall_bound`, the seam
+a bound Source's copy uses, with the job's cancel event, and
+`file_hasher.compute_file_sha1_sync(progress=...)` reports each chunk. A read
+with no progress for `_RECOGNIZE_STALL_SECONDS` (the conversion's own stall
+limit by default) fails the job with a Finding, a Cancel raises `ReadCancelled`
+and ends it cancelled, and the slot is given back either way. The match job and
+the routes keep their own read, unchanged. The result is kept with
 the fingerprint it was made at (`_State.recognized`); the next poll names the
 Image from it. It never reads a row cached for the path: an Inbox name is
 reused by the next download, and a cached hit would name it. The result is

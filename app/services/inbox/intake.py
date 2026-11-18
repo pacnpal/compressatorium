@@ -44,15 +44,21 @@ when the file is taken or gone.
 Archives and names (#432):
 
 * **An archive** (a zip or 7z) is unpacked before its Platform is worked
-  out, as an ``inbox_unpack`` job holding a conversion slot: gated first
-  (``ArchiveService.check_inbox_archive``: the Inbox's size and expansion
-  caps, links, absolute and ``..`` paths), then every member checked again
-  and written beneath a hidden staging slot beside it
-  (``ArchiveService.extract_members`` into ``services.staging``). The Images
-  in the slot are listed with the Inbox's own from then on and taken one by
-  one like loose files; a Finding for one of them is written on the archive,
-  naming it. Once every one of them is placed the archive moves to
-  ``processed/`` and the slot, intake's own scratch, goes. An archive found
+  out, as an ``inbox_unpack`` job holding a conversion slot. It is opened
+  once, beneath the Inbox with no link followed and only while it is the
+  file taken; the gate (``ArchiveService.check_inbox_source``: the Inbox's
+  size and expansion caps, links, absolute and ``..`` paths) and the
+  extraction both read that one open file. Every member is checked again and
+  written, its bytes counted against its declared size and the caps,
+  through descriptors beneath an unpack slot in the app's own work area
+  (``_UnpackSlot``, ``ArchiveService.extract_members``), never inside the
+  Inbox. The Images in the slot are listed with the Inbox's own from then on
+  and taken one by one like loose files, their Platform read from the
+  folders the archive sat in (``platform_detect.detect_platform_as``); a
+  Finding for one of them is written on the archive, naming it. Once every
+  one of them is placed the archive moves to ``processed/`` and the slot,
+  intake's own scratch, goes (after the last conversion reading it, when
+  the Inbox is removed meanwhile). An archive found
   inside an archive is not unpacked, nor is one whose folder names a
   Platform whose Image is the archive itself
   (``platform_detect.archive_is_image``: an arcade romset), which is gated
@@ -84,6 +90,7 @@ from __future__ import annotations
 import asyncio
 import errno
 import os
+import shutil
 import stat
 import threading
 import time
@@ -245,6 +252,16 @@ class _State:
 
 _states: dict[int, _State] = {}
 _tasks: set[asyncio.Task] = set()
+# An unpack slot's name prefix in the app's work area (#432).
+_UNPACK_PREFIX = "inbox_unpack_"
+# The real paths of the unpack slots open now: the only folders outside an
+# Inbox intake reads an Image under (`_root_of`). Guarded by `_slots_lock`,
+# never held across I/O.
+_slot_roots: set[str] = set()
+_slots_lock = threading.Lock()
+# How long the Recognize read may go without progress before it is given up
+# (Codex 4608007769); None is the conversion's own stall limit.
+_RECOGNIZE_STALL_SECONDS: float | None = None
 # Set when a copy's check had to stop with a reader still on the storage
 # (#306's stop): no copy opens another file until the next pass. Read and set
 # under `_check_lock`, which every copy's check-and-place runs under, so a
@@ -312,7 +329,12 @@ def _checking() -> asyncio.Lock:
 def reset_for_tests() -> None:
     global _storage_stop, _check_lock, _check_lock_loop
     for state in _states.values():
-        _close_unpacked(state)
+        for unpacked in list(state.unpacked.values()):
+            unpacked.slot.close()
+    with _orphans_lock:
+        for orphan in _orphans:
+            orphan.slot.close()
+        _orphans.clear()
     _states.clear()
     _tasks.clear()
     _storage_stop = False
@@ -332,11 +354,80 @@ def forget(inbox_id: int) -> None:
 
 
 def _close_unpacked(state: _State) -> None:
-    """Close every staging slot *state* unpacked archives into (idempotent).
-    The map itself is left as it is: a poll still running on the loop may be
-    reading it. Blocking."""
+    """Remove every unpack slot of a removed Inbox (idempotent): at once
+    when no live job reads from it, else once the last such job ends (Codex
+    4608007773), so a conversion queued from it still runs. The map itself
+    is left as it is: a poll still running on the loop may be reading it.
+    Blocking."""
+    flights = list(state.flights.items())
     for unpacked in list(state.unpacked.values()):
-        unpacked.slot.close()
+        live = {
+            flight.job_id for path, flight in flights
+            if flight.job_id and path.startswith(unpacked.slot.path + os.sep)
+        }
+        live = {job_id for job_id in live if not _ended(job_id)}
+        if live:
+            _close_after(unpacked.slot, live)
+        else:
+            unpacked.slot.close()
+
+
+@dataclass
+class _Orphan:
+    """An unpack slot of a removed Inbox, kept until the jobs reading from
+    it have ended."""
+
+    slot: Any
+    jobs: set[str]
+
+
+_orphans: list[_Orphan] = []
+# Guards `_orphans`; never held across I/O.
+_orphans_lock = threading.Lock()
+
+
+def _ended(job_id: str) -> bool:
+    job = job_manager.get_job_for_lookup(job_id)
+    return job is None or job.status in (
+        JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED,
+    )
+
+
+def _close_after(slot: Any, jobs: set[str]) -> None:
+    """Remove *slot* once every one of *jobs* has ended, told by the job
+    manager's terminal hook. A job that ended before the hook was in place
+    is counted here. Blocking."""
+    job_manager.add_terminal_listener(_job_ended)
+    with _orphans_lock:
+        _orphans.append(_Orphan(slot, set(jobs)))
+    for job_id in list(jobs):
+        if _ended(job_id):
+            _job_done(job_id)
+
+
+def _job_ended(job: Any) -> None:
+    """The job manager's terminal hook: a job reading an orphaned slot ended."""
+    _job_done(job.id)
+
+
+def _job_done(job_id: str) -> None:
+    ready = []
+    with _orphans_lock:
+        for orphan in list(_orphans):
+            orphan.jobs.discard(job_id)
+            if not orphan.jobs:
+                _orphans.remove(orphan)
+                ready.append(orphan.slot)
+    for slot in ready:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            slot.close()  # on a worker thread: it may block
+            continue
+        # On the loop: removed on a worker thread, tracked so `drain` waits.
+        task = loop.create_task(_step(slot.close))
+        _tasks.add(task)
+        task.add_done_callback(_tasks.discard)
 
 
 def _state(inbox_id: int) -> _State:
@@ -424,7 +515,7 @@ def _list(
         images[path] = image_fingerprint(path)
     return (
         images, unlisted, _sharing(images, progress),
-        _behind_unreadable_sheets(images, progress, within=folder),
+        _behind_unreadable_sheets(images, progress, within=[folder, *extra]),
     )
 
 
@@ -474,7 +565,7 @@ def _walk(roots: list[str], inbox: str | None, progress) -> tuple[list[str], lis
 
 
 def _behind_unreadable_sheets(
-    images: dict[str, str], progress=None, *, within: str | None = None,
+    images: dict[str, str], progress=None, *, within: str | list[str] | None = None,
 ) -> dict[str, str]:
     """Image -> the sheet of unknown ownership (its path) that could name it,
     for every loose track-type file in that sheet's folder or any folder
@@ -489,7 +580,7 @@ def _behind_unreadable_sheets(
     from services.image_sets import SHEET_EXTENSIONS, is_playlist
     from utils.sheet_text import sheet_is_readable, sheet_track_list
 
-    roots = [within] if within else None
+    roots = [within] if isinstance(within, str) else (list(within) if within else None)
     unreadable: dict[str, str] = {}
     for path in images:
         if progress is not None:
@@ -604,6 +695,15 @@ def _unpacked_holding(state: _State, path: str) -> tuple[str, _Unpacked] | None:
         if path.startswith(unpacked.slot.path + os.sep):
             return archive, unpacked
     return None
+
+
+def _as_in_inbox(owner: tuple[str, _Unpacked], path: str) -> str:
+    """Where the Image at *path*, unpacked from the archive *owner* names,
+    would sit had the archive been unpacked beside it: the archive's folder
+    in the Inbox, then the folders inside the archive. What its Platform is
+    worked out from (#432)."""
+    archive, unpacked = owner
+    return os.path.join(os.path.dirname(archive), os.path.relpath(path, unpacked.slot.path))
 
 
 async def _clear(inbox: inbox_store.Inbox, path: str) -> None:
@@ -870,12 +970,30 @@ async def _take(
             # Unpacked before its Platform is worked out (#432).
             return await _take_archive(inbox, state, path, fingerprint)
         # Its folder names a Platform whose Image is the archive (an arcade
-        # romset): gated, then taken whole like any other file.
-        outcome = await _gate_archive(inbox, state, path, fingerprint, "checked or copied")
+        # romset): gated, then taken whole like any other file, only while
+        # it is the file gated.
+        try:
+            gated = await _step(_identities, inbox, [path])
+        except (asyncio.TimeoutError, OSError):
+            return "retry"
+        outcome = await _gate_archive(
+            inbox, state, path, fingerprint, "checked or copied",
+            gated[os.path.basename(path)],
+        )
         if outcome is not None:
             return outcome
+    else:
+        gated = None
+    owner = _unpacked_holding(state, path)
     try:
-        detection = await _step(platform_detect.detect_platform, path)
+        if owner is None:
+            detection = await _step(platform_detect.detect_platform, path)
+        else:
+            # Unpacked (#432): its own header, and the folders it sat in, the
+            # archive's in the Inbox and those inside the archive.
+            detection = await _step(
+                platform_detect.detect_platform_as, path, _as_in_inbox(owner, path),
+            )
         members = await _step(image_members, path)
     except (asyncio.TimeoutError, OSError):
         return "retry"
@@ -893,7 +1011,8 @@ async def _take(
     platform = detection.platform
     files = [path, *members]
     try:
-        sheet = await _step(sheet_reference_problems, path, within=[inbox.folder])
+        within = [_root_of(inbox, path) or inbox.folder]
+        sheet = await _step(sheet_reference_problems, path, within=within)
     except (asyncio.TimeoutError, OSError):
         return "retry"
     if sheet:
@@ -920,6 +1039,11 @@ async def _take(
             f"Its files can't be read inside the Inbox without following a link: {exc}",
         )
         return "held"
+    if gated is not None and gated != {
+        os.path.basename(path): identities.get(os.path.basename(path)),
+    }:
+        state.seen.pop(path, None)  # replaced since it was gated: settles again
+        return "retry"
     try:
         plan = await _plan(library, platform, path)
     except PlacementUnknown as exc:
@@ -1129,8 +1253,16 @@ async def _recognize(
         else:
             try:
                 await job_manager.update_external_job(job.id, message="Recognizing it")
+                # Its whole-file read is stall-bounded and stops at Cancel
+                # (Codex 4608007769): a hung mount fails the job, and the
+                # slot is given back below either way.
                 with collect_abandonment() as abandoned:
-                    result, _cacheable = await match_one(path, cancel_event=cancel)
+                    try:
+                        result, _cacheable = await match_one(
+                            path, cancel_event=cancel, stall=_RECOGNIZE_STALL_SECONDS,
+                        )
+                    except ReadCancelled:
+                        result = {"error": "cancelled"}
                 if cancel is not None and cancel.is_set():
                     outcome = "cancelled"
                 elif abandoned:
@@ -1175,17 +1307,36 @@ def _archive_is_image(path: str) -> bool:
     return platform_detect.archive_is_image(detection.place_platform)
 
 
+def _gate_opened(inbox: inbox_store.Inbox, path: str, identity: dict) -> None:
+    """The Inbox gate on the archive at *path*, opened through the Inbox's
+    own folder with no link followed and only while it is *identity*: the
+    file judged is the one taken (Codex 4608007766). Blocking."""
+    folder_fd, names = _folder_beneath(inbox, [path])
+    try:
+        fd = os.open(names[0], os.O_RDONLY | _NOFOLLOW, dir_fd=folder_fd)
+    finally:
+        os.close(folder_fd)
+    with os.fdopen(fd, "rb") as source:
+        if file_snapshot(os.fstat(source.fileno())) != identity:
+            raise _SourceChanged(errno.ESTALE, f"{names[0]} changed since it was taken")
+        archive_service.check_inbox_source(source, path)
+
+
 async def _gate_archive(
     inbox: inbox_store.Inbox, state: _State, path: str, fingerprint: str, what: str,
+    identity: dict,
 ) -> str | None:
-    """Check an archive against the Inbox's limits before anything reads it
-    whole: None when it passes, else the outcome (held with a Finding, or
-    ``retry``). *what* says what wasn't done to it."""
+    """Check an archive taken whole against the Inbox's limits before
+    anything reads it whole: None when it passes, else the outcome (held with
+    a Finding, or ``retry``). *what* says what wasn't done to it."""
     # Anyone who can write the Inbox can drop one: an archive past the
     # Inbox's size and expansion caps is never unpacked, checked nor copied
     # (Codex 4607318277).
     try:
-        await _step(archive_service.check_inbox_archive, path)
+        await _step(_gate_opened, inbox, path, identity)
+    except _SourceChanged:
+        state.seen.pop(path, None)  # it settles again
+        return "retry"
     except ArchiveSafetyRefused as exc:
         await _hold(
             inbox, state, path, fingerprint, findings.INBOX_FAILED,
@@ -1216,9 +1367,8 @@ async def _take_archive(
             "outer one by hand",
         )
         return "held"
-    outcome = await _gate_archive(inbox, state, path, fingerprint, "unpacked")
-    if outcome is not None:
-        return outcome
+    # Its identity first: the unpack job gates and unpacks the one file it
+    # then opens, and only while it is this one (Codex 4608007766).
     try:
         identities = await _step(_identities, inbox, [path])
     except asyncio.TimeoutError:
@@ -1237,13 +1387,82 @@ async def _take_archive(
     return "unpacking"
 
 
+class _UnpackSlot:
+    """A private folder an archive is unpacked into (#432), in the app's own
+    work area (``disk.create_scratch_dir``, the tree a bound Source uses), on
+    which no Inbox writer has any right (Codex 4608030847). Held open
+    (``fd``): extraction writes beneath the descriptor, never by path. Its
+    real path is registered as a root intake may read an Image under
+    (:func:`_root_of`) until it is closed."""
+
+    def __init__(self) -> None:
+        from services.disk import create_scratch_dir
+
+        self.path = os.path.realpath(create_scratch_dir(_UNPACK_PREFIX))
+        self.fd = os.open(self.path, _DIR_FLAGS)
+        self._closed = False
+        self._mutex = threading.Lock()
+        with _slots_lock:
+            _slot_roots.add(self.path)
+
+    def intact(self) -> bool:
+        """Whether its path still names the folder held open."""
+        try:
+            there = os.stat(self.path, follow_symlinks=False)
+        except OSError:
+            return False
+        held = os.fstat(self.fd)
+        return stat.S_ISDIR(there.st_mode) and (there.st_dev, there.st_ino) == (
+            held.st_dev, held.st_ino,
+        )
+
+    def close(self) -> None:
+        """Remove it and what is in it. Idempotent; never raises. When its
+        path no longer names the folder held open, only what is inside the
+        held folder is removed, through its descriptor: nothing reached by
+        the swapped path is touched."""
+        with self._mutex:
+            if self._closed:
+                return
+            self._closed = True
+            with _slots_lock:
+                _slot_roots.discard(self.path)
+            try:
+                if self.intact():
+                    shutil.rmtree(self.path)
+                else:
+                    logger.warning(
+                        "inbox: the unpack folder %s was replaced; emptying the one held",
+                        self.path,
+                    )
+                    for name in os.listdir(self.fd):
+                        _remove_at(name, self.fd)
+            except OSError:
+                logger.warning("inbox: could not remove the unpack folder %s", self.path,
+                               exc_info=True)
+            finally:
+                os.close(self.fd)
+
+
+def _remove_at(name: str, folder: int) -> None:
+    """Remove the entry *name* in the open *folder*, a folder whole, never
+    following a link. Blocking."""
+    st = os.stat(name, dir_fd=folder, follow_symlinks=False)
+    if stat.S_ISDIR(st.st_mode):
+        shutil.rmtree(name, dir_fd=folder)
+    else:
+        os.unlink(name, dir_fd=folder)
+
+
 def _unpack_blocking(
     inbox: inbox_store.Inbox, path: str, flight: _Flight, progress,
 ) -> tuple[Any, list[str]]:
-    """Unpack the archive at *path* into a fresh staging slot beside it: the
-    open slot and the Images in it. The archive is read through the Inbox's
-    own folder with no link followed, and only while it is the file that was
-    taken. Blocking."""
+    """Gate and unpack the archive at *path* into a fresh unpack slot: the
+    open slot and the Images in it. The archive is opened once, through the
+    Inbox's own folder with no link followed, and only while it is the file
+    that was taken; the gate and the extraction both read that one open file
+    (Codex 4608007766), and its identity is checked again afterwards.
+    Blocking."""
     _may_open(os.path.basename(path))
     folder_fd, names = _folder_beneath(inbox, [path])
     slot = None
@@ -1255,10 +1474,20 @@ def _unpack_blocking(
         with os.fdopen(fd, "rb") as source:
             if file_snapshot(os.fstat(source.fileno())) != flight.identities.get(name):
                 raise _SourceChanged(errno.ESTALE, f"{name} changed since it was taken")
-            slot = staging.open_slot(os.path.dirname(path))
-            archive_service.extract_members(path, slot.path, source=source, progress=progress)
+            archive_service.check_inbox_source(source, path)
+            max_member, max_total, _ratio = archive_service.inbox_limits()
+            slot = _UnpackSlot()
+            archive_service.extract_members(
+                path, slot.path, destination_fd=slot.fd, source=source, progress=progress,
+                max_member=max_member, max_total=max_total,
+            )
             if file_snapshot(os.fstat(source.fileno())) != flight.identities.get(name):
                 raise _SourceChanged(errno.ESTALE, f"{name} changed while it was unpacked")
+        if not slot.intact():
+            raise ArchiveSafetyRefused(
+                f"The unpack folder of {name} was replaced while it was unpacked",
+                rule="its unpack folder was replaced while it was unpacked",
+            )
         files, _unlisted = _walk([slot.path], None, progress)
         images = list(group_images(sorted(files)))
         progress()
@@ -1507,8 +1736,11 @@ async def _convert(
             output_paths={path: destination},
             # The file taken, and the Inbox it must stay under: the job checks
             # both, under its Source lock, before its tool reads anything, so a
-            # folder swapped for a link meanwhile converts nothing.
-            source_identities={path: {
+            # folder swapped for a link meanwhile converts nothing. An Image
+            # unpacked from an archive (#432) sits in the app's own work
+            # area, which no Inbox writer can reach, outside every Volume:
+            # there is nothing to bind it against.
+            source_identities=None if _unpacked_holding(state, path) else {path: {
                 "root": inbox.folder,
                 "snapshot": flight.identities[os.path.basename(path)],
                 # Its tracks too: the job binds every file it reads.
@@ -1707,16 +1939,33 @@ class _SourceChanged(OSError):
     """A file isn't the one intake took (replaced, changed or gone)."""
 
 
+def _root_of(inbox: inbox_store.Inbox, path: str) -> str | None:
+    """The folder *path* must stay under: the Inbox's own, or the unpack
+    slot (#432) in the app's work area it was unpacked into. None for
+    anywhere else."""
+    if path.startswith(inbox.folder + os.sep):
+        return inbox.folder
+    with _slots_lock:
+        for root in _slot_roots:
+            if path.startswith(root + os.sep):
+                return root
+    return None
+
+
 def _folder_beneath(inbox: inbox_store.Inbox, files: list[str]) -> tuple[int, list[str]]:
-    """The Image's folder in the Inbox, opened beneath the Inbox's own folder
-    with no link followed on the way (``open_dir_beneath``), and the files'
-    names in it. Every later look at the files goes through the descriptor,
-    so a folder swapped for a link afterwards can't redirect it. Raises
-    OSError; the caller closes the descriptor. Blocking."""
-    rel = os.path.relpath(os.path.dirname(files[0]), inbox.folder)
+    """The Image's folder, opened beneath the Inbox's own folder (or, for an
+    Image unpacked from an archive, its unpack slot's, #432) with no link
+    followed on the way (``open_dir_beneath``), and the files' names in it.
+    Every later look at the files goes through the descriptor, so a folder
+    swapped for a link afterwards can't redirect it. Raises OSError; the
+    caller closes the descriptor. Blocking."""
+    root = _root_of(inbox, files[0])
+    if root is None:
+        raise OSError(errno.EACCES, f"{files[0]} isn't in the Inbox")
+    rel = os.path.relpath(os.path.dirname(files[0]), root)
     if rel == os.pardir or rel.startswith(os.pardir + os.sep):
         raise OSError(errno.EACCES, f"{files[0]} isn't in the Inbox")
-    fd = open_dir_beneath(inbox.folder, "" if rel == "." else rel.replace(os.sep, "/"))
+    fd = open_dir_beneath(root, "" if rel == "." else rel.replace(os.sep, "/"))
     return fd, [os.path.basename(f) for f in files]
 
 

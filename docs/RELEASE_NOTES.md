@@ -139,11 +139,18 @@
   (#432). A zip or 7z that settles in an Inbox is unpacked (an **Inbox
   unpack** job, under the same concurrency limit) before its Platform is
   worked out, so a zip in your `gba` folder, or a zip holding a `gba` folder,
-  both land in the Library's GBA folder. The limits above still apply, every
+  both land in the Library's GBA folder. The limits above still apply, checked
+  on the very file that is unpacked; the bytes are counted as they are written,
+  so a member bigger than its header says is stopped at the limit. Every
   member is checked again before anything is written (a link, a name with a
   backslash, an absolute or `..` path, or two members with one name refuses
-  the whole archive with a Finding), and nothing is written outside a hidden
-  folder beside the archive. Each Image in it is then taken like a loose file;
+  the whole archive with a Finding). Archives are unpacked into a private
+  folder in the app's work area (`CHD_TEMP_DIR`, or `temp/` in the data
+  folder), never inside the Inbox, so make room there for your largest
+  archive. A Recognize read on storage that stops answering gives up instead
+  of holding a conversion slot, and Cancel stops it. Removing an Inbox while a
+  conversion from one of its archives is queued lets that conversion finish.
+  Each Image in it is then taken like a loose file;
   a Finding about one of them is shown on the archive, naming it. Once every
   Image in it is placed, the archive moves to `processed/` and the unpacked
   copies are removed (the archive still holds them). An archive inside an

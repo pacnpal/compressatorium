@@ -11,18 +11,22 @@ from collections.abc import Callable
 from typing import List, Tuple, Optional, Union, Dict
 
 from config import settings
-from services.archive_members import later_volume_of, read_archive_members
+from services.archive_members import (
+    later_volume_of,
+    read_archive_members,
+    read_members_of,
+)
 from utils.junk import is_junk_path
-from utils.path_utils import match_extension
+from utils.path_utils import match_extension, open_dir_beneath
 
 try:
     import py7zr
-    from py7zr.callbacks import ExtractCallback
+    from py7zr.io import Py7zIO, WriterFactory
 
     HAS_7Z = True
 except ImportError:
     HAS_7Z = False
-    ExtractCallback = object
+    Py7zIO = WriterFactory = object
 
 try:
     import rarfile
@@ -53,34 +57,145 @@ def _rar_is_link(info) -> bool:
     return bool(is_link()) if callable(is_link) else False
 
 
-class _ExtractProgress(ExtractCallback):
-    """py7zr's extraction events, passed on to a stall-bounded caller's
-    ``progress`` (:meth:`ArchiveService.extract_members`)."""
+class _UnpackBudget:
+    """What :meth:`ArchiveService.extract_members` may write: each member at
+    most what it declares (and *max_member*), all of them at most
+    *max_total* (0: no limit). Counts the bytes actually written, so a
+    header that lies is caught at the first chunk past it (#432)."""
 
-    def __init__(self, progress) -> None:
-        self._progress = progress
+    def __init__(self, max_member: int = 0, max_total: int = 0) -> None:
+        self._max_member = max(0, int(max_member or 0))
+        self._max_total = max(0, int(max_total or 0))
+        self._declared: dict[str, int | None] = {}
+        self._written: dict[str, int] = {}
+        self._total = 0
 
-    def _report(self, where: str | None = None) -> None:
+    def declare(self, member: str, size) -> None:
+        self._declared[member] = None if size is None else int(size)
+
+    def declared(self, member: str) -> int | None:
+        return self._declared.get(member)
+
+    def take(self, member: str, count: int) -> None:
+        """Count *count* more bytes of *member*, or raise
+        :class:`ArchiveSafetyRefused` before they are written."""
+        written = self._written.get(member, 0) + count
+        declared = self._declared.get(member)
+        if declared is None or written > declared:
+            raise ArchiveSafetyRefused(
+                f"Archive member holds more than it declares: {member}",
+                rule=f"{member} holds more than it declares ({declared} bytes)",
+            )
+        if self._max_member and written > self._max_member:
+            raise ArchiveSafetyRefused(
+                f"Archive member exceeds max size: {member}",
+                rule=f"{member} is over the limit ({self._max_member} bytes)",
+            )
+        if self._max_total and self._total + count > self._max_total:
+            raise ArchiveSafetyRefused(
+                "Archive extraction exceeds max total size",
+                rule=f"its contents are over the limit ({self._max_total} bytes)",
+            )
+        self._written[member] = written
+        self._total += count
+
+
+_CLOEXEC = getattr(os, "O_CLOEXEC", 0)
+# A folder on the way to a member: opened, never followed through a link.
+_MEMBER_DIR_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | os.O_NOFOLLOW | _CLOEXEC
+# A member's file: created new, never over anything, never through a link.
+_MEMBER_FILE_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | _CLOEXEC
+
+
+def _create_member(root_fd: int, segments: list[str]):
+    """Create the member at *segments* beneath the open folder *root_fd*:
+    each folder on the way made (``mkdir(dir_fd=...)``) and opened with
+    ``O_NOFOLLOW``, the file created with ``O_EXCL | O_NOFOLLOW``. Nothing is
+    ever reached by a path name, so a folder swapped for a link can't send a
+    byte anywhere else. Returns the file open for writing."""
+    fd = root_fd
+    try:
+        for part in segments[:-1]:
+            try:
+                os.mkdir(part, 0o755, dir_fd=fd)
+            except FileExistsError:
+                pass
+            child = os.open(part, _MEMBER_DIR_FLAGS, dir_fd=fd)
+            if fd != root_fd:
+                os.close(fd)
+            fd = child
+        created = os.open(segments[-1], _MEMBER_FILE_FLAGS, 0o644, dir_fd=fd)
+    finally:
+        if fd != root_fd:
+            os.close(fd)
+    return os.fdopen(created, "wb")
+
+
+class _BudgetedWriter(Py7zIO):
+    """One 7z member's file, created beneath the held folder, every write
+    counted first."""
+
+    def __init__(
+        self, member: str, root_fd: int, segments: list[str], budget: _UnpackBudget,
+        progress,
+    ) -> None:
+        self._member, self._budget, self._progress = member, budget, progress
+        self._file = _create_member(root_fd, segments)
+        self._size = 0
+
+    def write(self, s) -> int:
+        self._budget.take(self._member, len(s))
+        written = self._file.write(s)
+        self._size += len(s)
         if self._progress is not None:
-            self._progress(where)
+            self._progress(self._member)
+        return written
 
-    def report_start_preparation(self) -> None:
-        self._report()
+    def read(self, size=None) -> bytes:
+        return b""
 
-    def report_start(self, processing_file_path, processing_bytes) -> None:
-        self._report(str(processing_file_path))
+    def seek(self, offset: int, whence: int = 0) -> int:
+        return self._size
 
-    def report_update(self, decompressed_bytes) -> None:
-        self._report()
+    def flush(self) -> None:
+        self._file.flush()
 
-    def report_end(self, processing_file_path, wrote_bytes) -> None:
-        self._report(str(processing_file_path))
+    def size(self) -> int:
+        return self._size
 
-    def report_warning(self, message) -> None:
-        logger.warning("Unpacking: %s", message)
+    def close(self) -> None:
+        if not self._file.closed:
+            self._file.close()
 
-    def report_postprocess(self) -> None:
-        self._report()
+
+class _BudgetedWriters(WriterFactory):
+    """py7zr's writers for :meth:`ArchiveService.extract_members`: py7zr
+    hands each member's bytes to a writer, never a path; each is written to
+    its checked place beneath the held folder."""
+
+    def __init__(
+        self, root_fd: int, targets: dict[str, list[str]], budget: _UnpackBudget, progress,
+    ) -> None:
+        self._root_fd, self._targets = root_fd, targets
+        self._budget, self._progress = budget, progress
+        self._writers: list[_BudgetedWriter] = []
+        self.created: set[str] = set()
+
+    def create(self, filename: str) -> _BudgetedWriter:
+        segments = self._targets.get(filename)
+        if segments is None:
+            raise ArchiveSafetyRefused(
+                f"Archive member wasn't asked for: {filename}",
+                rule=f"an unexpected member ({filename!r})",
+            )
+        writer = _BudgetedWriter(filename, self._root_fd, segments, self._budget, self._progress)
+        self._writers.append(writer)
+        self.created.add(filename)
+        return writer
+
+    def close_all(self) -> None:
+        for writer in self._writers:
+            writer.close()
 
 
 class ArchiveSafetyRefused(ValueError):
@@ -195,6 +310,21 @@ class ArchiveService:
         reading the listing raises. Returns the declared uncompressed total.
         Blocking; reads the listing only."""
         members = read_archive_members(archive_path, progress)
+        return self._check_inbox_members(members, os.path.getsize(archive_path))
+
+    def check_inbox_source(self, source, archive_path: str) -> int:
+        """:meth:`check_inbox_archive` on the archive already open as
+        *source* (a binary file object), reading its listing and size from
+        that open file, never from *archive_path* (#432, Codex 4608007766):
+        so the gate judges the very file :meth:`extract_members` then reads
+        from the same *source*. A zip or 7z; anything else raises
+        ``ValueError``. Blocking."""
+        source.seek(0)
+        members = read_members_of(source, Path(archive_path).suffix.lower())
+        return self._check_inbox_members(members, os.fstat(source.fileno()).st_size)
+
+    def _check_inbox_members(self, members: list, packed: int) -> int:
+        """The Inbox gate over a member listing and the archive's size."""
         max_member, max_total, max_ratio = self.inbox_limits()
         max_entries, _, _ = self._archive_limits()
         if max_entries > 0 and len(members) > max_entries:
@@ -246,7 +376,6 @@ class ArchiveService:
                 f"Archive extraction exceeds max total size ({total} bytes)",
                 rule=f"its contents are over {total_rule} ({max_total} bytes)",
             )
-        packed = os.path.getsize(archive_path)
         if max_ratio and total > max(packed, 1) * max_ratio:
             raise ArchiveSafetyRefused(
                 f"Archive expands too far ({total} bytes from {packed})",
@@ -255,20 +384,33 @@ class ArchiveService:
         return total
 
     def extract_members(
-        self, archive_path: str, destination: str, *, source=None, progress=None,
+        self, archive_path: str, destination: str, *, destination_fd: int | None = None,
+        source=None, progress=None, max_member: int = 0, max_total: int = 0,
     ) -> List[str]:
-        """Unpack every file in *archive_path* into the folder *destination*,
-        keeping the folders inside it (#432, the Inbox): the paths written.
+        """Unpack every file in *archive_path* beneath the folder
+        *destination*, keeping the folders inside it (#432, the Inbox): the
+        paths written. The one shared extraction path that never hands a
+        library a path name.
 
-        The caller gates the archive first (:meth:`check_inbox_archive` for an
+        The caller gates the archive first (:meth:`check_inbox_source` for an
         Inbox: the declared sizes, links, absolute and ``..`` paths). Here the
         members actually read are checked again before anything is written,
         and the whole archive is refused (:class:`ArchiveSafetyRefused`) when
         one is a link, or a name the extract path refuses
         (``_validate_member``: a backslash, an absolute or ``..`` path, an
         empty segment, a drive letter), or two members would land on one
-        path. Each lands beneath *destination* (``_prepare_destination``) and
-        is created there, never written over anything. Junk is skipped.
+        path. Junk is skipped.
+
+        Every byte goes through the library's read API (a zip's or rar's
+        ``open``, py7zr's writer factory) into a file created beneath the
+        held folder *destination_fd* (opened from *destination* with no link
+        followed when not given) by ``mkdir``/``open`` with ``dir_fd`` and
+        ``O_NOFOLLOW``, the file ``O_EXCL``: nothing is reached by path name
+        (Codex 4608030847). The bytes are counted as they are written, never
+        the header trusted (Codex 4608007766): a member that yields more than
+        it declares, or more than *max_member*, or a total past *max_total*
+        (0: no limit), is refused before the chunk that would cross the line
+        is written.
 
         *source*, when given, is the archive already opened by the caller (a
         binary file object it read through its own folder, no link
@@ -276,57 +418,86 @@ class ArchiveService:
         is called as each member's bytes are written. Blocking.
         """
         ext = Path(archive_path).suffix.lower()
+        if source is not None:
+            source.seek(0)
         opened = source if source is not None else archive_path
-        if ext == ".zip":
-            with zipfile.ZipFile(opened, "r") as zf:
-                infos = zf.infolist()
-                targets = self._extract_targets(destination, [
-                    (i.filename, i.is_dir(), stat.S_ISLNK(i.external_attr >> 16))
-                    for i in infos
-                ])
-                for info in infos:
-                    if info.filename in targets:
-                        with zf.open(info) as src:
-                            self._write_member(src, targets[info.filename], progress)
-        elif ext == ".7z" and HAS_7Z:
-            with py7zr.SevenZipFile(opened, "r") as zf:
-                targets = self._extract_targets(destination, [
-                    # Neither a folder nor a file (a link, a junction): refused.
-                    (e.filename, e.is_directory, not (e.is_file or e.is_directory))
-                    for e in zf.list()
-                ])
-                if targets:
-                    zf.extract(
-                        path=destination, targets=list(targets),
-                        callback=_ExtractProgress(progress),
-                    )
-            for member, target in targets.items():
-                if os.path.islink(target) or not os.path.isfile(target):
-                    raise ArchiveSafetyRefused(
-                        f"Archive member wasn't unpacked as a file: {member}",
-                        rule=f"{member} didn't unpack as a file",
-                    )
-        elif ext == ".rar" and HAS_RAR:
-            with rarfile.RarFile(opened, "r") as rf:
-                infos = rf.infolist()
-                targets = self._extract_targets(destination, [
-                    (i.filename, i.is_dir(), _rar_is_link(i)) for i in infos
-                ])
-                for info in infos:
-                    if info.filename in targets:
-                        with rf.open(info) as src:
-                            self._write_member(src, targets[info.filename], progress)
-        else:
-            raise ValueError(f"Unsupported archive format: {ext}")
-        return list(targets.values())
+        budget = _UnpackBudget(max_member, max_total)
+        own_fd = None
+        if destination_fd is None:
+            own_fd = destination_fd = open_dir_beneath(os.path.realpath(destination))
+        try:
+            if ext == ".zip":
+                with zipfile.ZipFile(opened, "r") as zf:
+                    infos = zf.infolist()
+                    targets = self._extract_targets([
+                        (i.filename, i.is_dir(), stat.S_ISLNK(i.external_attr >> 16))
+                        for i in infos
+                    ])
+                    for info in infos:
+                        if info.filename in targets:
+                            budget.declare(info.filename, info.file_size)
+                            # By name: the reader's own record of the member.
+                            with zf.open(info.filename) as src:
+                                self._write_member(
+                                    src, destination_fd, targets[info.filename],
+                                    progress, budget, info.filename,
+                                )
+            elif ext == ".7z" and HAS_7Z:
+                with py7zr.SevenZipFile(opened, "r") as zf:
+                    entries = zf.list()
+                    targets = self._extract_targets([
+                        # Neither a folder nor a file (a link, a junction): refused.
+                        (e.filename, e.is_directory, not (e.is_file or e.is_directory))
+                        for e in entries
+                    ])
+                    for entry in entries:
+                        if entry.filename in targets:
+                            budget.declare(entry.filename, entry.uncompressed)
+                    factory = _BudgetedWriters(destination_fd, targets, budget, progress)
+                    try:
+                        if targets:
+                            zf.extract(targets=list(targets), factory=factory)
+                    finally:
+                        factory.close_all()
+                for member, segments in targets.items():
+                    if member in factory.created:
+                        continue
+                    # py7zr hands an empty member no writer: it is made here.
+                    if budget.declared(member) != 0:
+                        raise ArchiveSafetyRefused(
+                            f"Archive member wasn't unpacked: {member}",
+                            rule=f"{member} didn't unpack",
+                        )
+                    _create_member(destination_fd, segments).close()
+            elif ext == ".rar" and HAS_RAR:
+                with rarfile.RarFile(opened, "r") as rf:
+                    infos = rf.infolist()
+                    targets = self._extract_targets([
+                        (i.filename, i.is_dir(), _rar_is_link(i)) for i in infos
+                    ])
+                    for info in infos:
+                        if info.filename in targets:
+                            budget.declare(info.filename, info.file_size)
+                            with rf.open(info) as src:
+                                self._write_member(
+                                    src, destination_fd, targets[info.filename],
+                                    progress, budget, info.filename,
+                                )
+            else:
+                raise ValueError(f"Unsupported archive format: {ext}")
+        finally:
+            if own_fd is not None:
+                os.close(own_fd)
+        return [os.path.join(destination, *segments) for segments in targets.values()]
 
     def _extract_targets(
-        self, destination: str, members: list[Tuple[str, bool, bool]],
-    ) -> Dict[str, str]:
-        """``member -> where it is written`` for every file member of
-        ``(name, is_dir, is_link)``, all checked before any folder is made.
+        self, members: list[Tuple[str, bool, bool]],
+    ) -> Dict[str, List[str]]:
+        """``member -> its path segments`` for every file member of
+        ``(name, is_dir, is_link)``, all checked before anything is written.
         Raises :class:`ArchiveSafetyRefused` (see :meth:`extract_members`)."""
-        wanted: list[str] = []
+        targets: Dict[str, List[str]] = {}
+        seen: set[str] = set()
         for name, is_dir, is_link in members:
             if is_link:
                 raise ArchiveSafetyRefused(
@@ -335,35 +506,35 @@ class ArchiveService:
             if is_dir or is_junk_path(name):
                 continue
             try:
-                self._validate_member(name)
+                segments = self._validate_member(name)
             except ValueError as exc:
                 raise ArchiveSafetyRefused(
                     f"Unsafe archive member path: {name}",
                     rule=f"a member name it refuses ({name!r}: {exc})",
                 ) from exc
-            wanted.append(name)
-        targets: Dict[str, str] = {}
-        seen: set[str] = set()
-        for name in wanted:
-            target = self._prepare_destination(destination, name)
-            key = os.path.normcase(target)
+            key = os.path.normcase("/".join(segments))
             if key in seen:
                 raise ArchiveSafetyRefused(
                     f"Two archive members unpack to one path: {name}",
                     rule=f"two members named {name}",
                 )
             seen.add(key)
-            targets[name] = target
+            targets[name] = segments
         return targets
 
     @staticmethod
-    def _write_member(src, target: str, progress) -> None:
-        """Copy one member's bytes to *target*, made new (never over anything)."""
-        with open(target, "xb") as dst:
+    def _write_member(
+        src, root_fd: int, segments: List[str], progress, budget, member: str,
+    ) -> None:
+        """Copy one member's bytes to a file created beneath *root_fd*
+        (:func:`_create_member`), each chunk counted against *budget* before
+        it is written."""
+        with _create_member(root_fd, segments) as dst:
             while chunk := src.read(_UNPACK_CHUNK):
+                budget.take(member, len(chunk))
                 dst.write(chunk)
                 if progress is not None:
-                    progress(target)
+                    progress(member)
 
     def _create_temp_dir(self) -> str:
         base_dir = settings.temp_dir

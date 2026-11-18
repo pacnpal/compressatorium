@@ -460,15 +460,19 @@ def platform_folders(
     return sorted(found)
 
 
-def _decide(path: str, tools: list, mapped: dict[str, str]) -> Detection:
+def _decide(
+    path: str, tools: list, mapped: dict[str, str], placed_at: str | None = None,
+) -> Detection:
     disk_path, member = _split_member(path)
     headers: set[str] = set()
     sources: list[str] = []
     if not member:
         headers, sources = _header(disk_path, tools)
     names = _folder_names(tools)
-    folder, _folder_name = _folder(disk_path, names)
-    found = _place(disk_path, names, mapped)
+    # The folders read: its own, or those *placed_at* names (`detect_platform_as`).
+    at = placed_at or disk_path
+    folder, _folder_name = _folder(at, names)
+    found = _place(at, names, mapped)
     place = how = where = mapped = place_path = None
     if found:
         how, place, place_path, label = found
@@ -515,6 +519,25 @@ _cache_lock = threading.Lock()
 def clear_cache() -> None:
     with _cache_lock:
         _cache.clear()
+
+
+def detect_platform_as(path: str, placed_at: str, *, tools: Iterable | None = None) -> Detection:
+    """:func:`detect_platform` for a file that isn't where it belongs: its
+    header read from *path*, its folders (and the user's mappings) read as if
+    it sat at *placed_at*, a path inside a Volume that need not exist. An
+    Image the Inbox unpacked into the app's work area (#432) is judged by the
+    folders its archive sat in and those inside the archive. Uncached.
+    Blocking."""
+    from services.platform_mappings import MappingsUnavailable
+
+    if is_special_file(path):
+        return Detection(None, UNSORTED, None, None, "not a regular file or folder")
+    try:
+        mapped = _mapped_folders()
+    except MappingsUnavailable:
+        return Detection(None, UNSORTED, None, None, _MAPPINGS_UNREADABLE)
+    tool_list = list(tools) if tools is not None else _default_tools()
+    return _decide(path, tool_list, mapped, placed_at)
 
 
 def detect_uncached(

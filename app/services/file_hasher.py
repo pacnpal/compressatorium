@@ -18,16 +18,18 @@ async def compute_file_sha1(file_path: str) -> str:
     return await run_in_threadpool(_sha1_sync, file_path)
 
 
-def compute_file_sha1_sync(file_path: str) -> str:
+def compute_file_sha1_sync(file_path: str, progress=None) -> str:
     """Blocking SHA-1 for callers that bring their own offload strategy.
 
     ``compute_file_sha1`` hands the work to the shared threadpool, which is the
     wrong home for a whole-file read of a path on storage that may stop
     answering (AGENTS.md: such a read must never occupy a pooled worker). A
     caller that runs this through ``run_detached`` gets the same digest on a
-    throwaway thread instead.
+    throwaway thread instead. *progress*, when given, is called after each
+    chunk read: a caller that runs it through ``run_detached_within_stall_bound``
+    (``report_progress=True``) is stall-bounded and cancellable (#432).
     """
-    return _sha1_sync(file_path)
+    return _sha1_sync(file_path, progress=progress)
 
 
 def compute_files_sha1_sync(file_paths: list[str]) -> str:
@@ -40,21 +42,23 @@ def compute_files_sha1_sync(file_paths: list[str]) -> str:
     return _sha1_sync(*file_paths)
 
 
-def _sha1_sync(*file_paths: str) -> str:
+def _sha1_sync(*file_paths: str, progress=None) -> str:
     """Synchronous SHA1 computation (several files: read end to end)."""
     h = hashlib.sha1(usedforsecurity=False)  # nosec # nosemgrep: insecure-hash-algorithm-sha1  # pylint: disable=unexpected-keyword-arg
     for file_path in file_paths:
-        _update_from_file(h, file_path)
+        _update_from_file(h, file_path, progress)
     return h.hexdigest()
 
 
-def _update_from_file(h, file_path: str) -> None:
+def _update_from_file(h, file_path: str, progress=None) -> None:
     with open(file_path, "rb") as f:
         while True:
             chunk = f.read(_CHUNK_SIZE)
             if not chunk:
                 break
             h.update(chunk)
+            if progress is not None:
+                progress(file_path)
 
 
 async def compute_file_sha1_with_size(file_path: str) -> tuple[str, int]:
