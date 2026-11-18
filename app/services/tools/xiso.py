@@ -47,6 +47,8 @@ class XisoTool(BaseTool):
     platform_slugs = frozenset({"xbox", "xbox360"})
     policy_owner = "xiso"
     display_name = "Xbox"
+    # File info walks the XDVDFS tables in Python; extract-xiso isn't run.
+    info_needs_tool = False
     modes = (
         ModeSpec(
             mode="xiso_rewrite",

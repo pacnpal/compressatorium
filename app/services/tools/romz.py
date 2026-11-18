@@ -72,6 +72,8 @@ class RomzTool(BaseTool):
     default_compression = "max"
     policy_owner = "romz"
     display_name = "Handheld ROM"
+    # File info lists the archive in Python (zipfile / py7zr); 7z isn't run.
+    info_needs_tool = False
     modes = (
         ModeSpec(
             mode="romz_7z",

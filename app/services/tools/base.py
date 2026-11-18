@@ -231,6 +231,13 @@ class ToolPlugin(Protocol):
     not_ready_reason: str
     # The same for ``verify_is_ready()``.
     verify_not_ready_reason: str
+    # Whether this tool's ``info()`` runs its program (#488). True: the File
+    # info route asks ``is_ready()`` first and, when it answers False, says
+    # ``not_ready_message(tool)`` with a 503 instead of failing with a 500.
+    # False: the read is done in Python (a header, an archive listing, the
+    # file's size) and answers whether or not the tool could convert here.
+    # Asked through ``ToolRegistry.tool_is_ready(tool, purpose="info")``.
+    info_needs_tool: bool
 
     def spec(self, mode: str) -> ModeSpec:
         """Return the ModeSpec for a mode this tool owns."""
@@ -729,6 +736,10 @@ class BaseTool:
     # Why ``is_ready()`` answered False, in the user's words. Tools gated on a
     # user-supplied file or an optional runtime say which one.
     not_ready_reason: str = "its program is not available on this server"
+    # Default True: an info read that runs the program needs it to be ready.
+    # A tool whose ``info()`` reads the file in Python sets False, so its File
+    # info keeps answering when the program is missing (#488).
+    info_needs_tool: bool = True
 
     @property
     def verify_not_ready_reason(self) -> str:
@@ -1039,8 +1050,10 @@ def not_ready_message(tool: ToolPlugin, *, purpose: str = "convert") -> str:
 
     ``"<display name> isn't ready: <reason>"``, the reason being the plugin's
     own: ``verify_not_ready_reason`` for *purpose* ``"verify"`` (as
-    :meth:`ToolRegistry.tool_is_ready` takes it), else ``not_ready_reason``.
-    One place, so the CLI, Auto's plan and the Rules sweep say the same thing.
+    :meth:`ToolRegistry.tool_is_ready` takes it), else ``not_ready_reason``
+    (``"convert"``, and ``"info"``, which asks the same ``is_ready()``).
+    One place, so the CLI, Auto's plan, the Rules sweep and the File info
+    routes say the same thing.
 
     Read it after the readiness check that answered False: a plugin may learn
     its reason while it probes (rom-converto keeps the last probe's). Reading

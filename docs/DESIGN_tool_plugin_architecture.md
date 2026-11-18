@@ -291,6 +291,11 @@ class ToolPlugin(Protocol):
     # why it answered False; callers show them through `not_ready_message`
     # (§3.4) rather than formatting their own line.
     async def is_ready(self) -> bool: ...
+
+    # Whether info() runs the tool's program. True (BaseTool's default): the
+    # File info route asks is_ready() first and answers 503 when it is False.
+    # False: info() reads the file in Python and answers regardless (§3.4).
+    info_needs_tool: bool
 ```
 
 `BaseTool(ABC)` provides shared defaults so concrete tools stay tiny:
@@ -8636,25 +8641,15 @@ requirement is stated on `ToolPlugin.is_ready` so a new gated tool inherits it.
 `ToolPlugin.not_ready_reason` and `verify_not_ready_reason` say, in the user's
 words, why `is_ready()` or `verify_is_ready()` answered False. Every caller
 that tells someone a tool isn't ready builds the line with
-`services.tools.not_ready_message(tool, purpose="convert" | "verify")`, which
-returns `"<display_name> isn't ready: <reason>"` with the reason for that
-purpose (#484). It takes `purpose` the way `tool_is_ready` does. The CLI's
-`--to` and `verify` paths, Auto's plan (`platform_detect._plan_targets`), the
-Rules sweep's skip line (§3.3.11), the Inbox's hold under a Rule whose tool
-isn't ready (§3.3.25, which adds ", so the Rule can't run") and the ZAR Info
-route's 503 (`GET /api/rom-converto-info`) all use it, so they say the same
-thing. A new caller does too, rather than formatting its own.
-
-The SPA shows that text as the server sent it. The shared client's
-`fetchJson` (`src/lib/api/client.js`) throws an `Error` whose `message` is the
-response's `detail` and whose `status` is the HTTP status, so a caller reads a
-503 the same way for every tool. The File info modal's `loadInfo`
-(`src/lib/util/fileInfo.js`) does this for the candidate tools' `getInfo`
-bindings: when none answers and it falls back to the listing's basics, each
-candidate that answered 503 has its `detail` added to the note under the
-basics, beside the usual "No tool could read this file" line when another
-candidate ran and failed (#486). No tool id is checked there; a tool's info
-route opts in by answering 503 with `not_ready_message(tool)`.
+`services.tools.not_ready_message(tool, purpose="convert" | "verify" | "info")`,
+which returns `"<display_name> isn't ready: <reason>"` with the reason for that
+purpose (#484). It takes `purpose` the way `tool_is_ready` does; `"info"` gives
+`not_ready_reason`, the same as `"convert"`. The CLI's `--to` and `verify`
+paths, Auto's plan (`platform_detect._plan_targets`), the Rules sweep's skip
+line (§3.3.11), the Inbox's hold under a Rule whose tool isn't ready (§3.3.25,
+which adds ", so the Rule can't run") and the File info routes' 503 (below) all
+use it, so they say the same thing. A new caller does too, rather than
+formatting its own.
 
 It is a free function rather than a method so a tool that satisfies the
 protocol without subclassing `BaseTool` still works. Read it after the
@@ -8664,6 +8659,49 @@ attribute read, never I/O, so it is safe on the event loop; a plugin whose
 reason needs I/O would have to compute it in its readiness probe. A reason
 that raises, or is empty, gives `BaseTool.not_ready_reason` (with a warning
 logged) instead of failing the caller.
+
+**File info routes (#488).** Every `GET /api/*info` route in `routes/info.py`
+(`/info` for chdman, `/dolphin-info`, `/z3ds-info`, `/nkit-info`, `/xiso-info`,
+`/rom-converto-info`, `/cso-info`, `/romz-info`, `/jwud-info`, `/nsz-info`)
+calls the one helper `_require_info_ready(tool_id)` after its 403/404/400
+checks. It asks `registry.tool_is_ready(tool, purpose="info")` and answers 503
+with `not_ready_message(tool, purpose="info")` when that is False, so the File
+info modal can say the tool is missing rather than "No tool could read this
+file". Whether the read needs the tool is the plugin's
+`ToolPlugin.info_needs_tool`:
+
+- `True` (`BaseTool`'s default): `info()` runs the program, so `purpose="info"`
+  asks `is_ready()` under the registry's usual bound. chdman (`chdman info`),
+  dolphin (`dolphin-tool header`) and rom-converto (`rom-converto xenon info`).
+- `False`: `info()` reads the file in Python, so `purpose="info"` answers True
+  without probing and the route answers whether or not the tool could convert
+  here. z3ds, cso and nsz (size and extension), nkit (the NKit header), xiso
+  (the XDVDFS tables), romz (the archive listing, through zipfile / py7zr) and
+  jwud (the WUX header). nsz in particular never waits on its `prod.keys` walk
+  for a File info read. makeps3iso (PARAM.SFO) and exodos (size and
+  extension) read in Python too and say so, though neither has an info route
+  today. `ChainTool` keeps the default: its `info()` is its last tool's.
+
+A new tool sets `info_needs_tool = False` only when its `info()` never spawns
+its program; leaving the default is the safe choice, since a ready tool's info
+route answers as before.
+
+chdman's route checks before it reads its metadata cache, so a CHD whose info
+is cached is not shown while chdman isn't ready. chdman and dolphin keep
+`BaseTool.is_ready()` (always True), so today their gate only bites for a
+plugin that overrides it; the route is ready for that without another change.
+
+The SPA shows the 503's text as the server sent it. The shared client's
+`fetchJson` (`src/lib/api/client.js`) throws an `Error` whose `message` is the
+response's `detail` and whose `status` is the HTTP status, so a caller reads a
+503 the same way for every tool. The File info modal's `loadInfo`
+(`src/lib/util/fileInfo.js`) does this for the candidate tools' `getInfo`
+bindings: when none answers and it falls back to the listing's basics, each
+candidate that answered 503 has its `detail` added to the note under the
+basics, beside the usual "No tool could read this file" line when another
+candidate ran and failed (#486). No tool id is checked there; a tool's info
+route opts in by answering 503 with `not_ready_message(tool)`, which every
+info route now does through `_require_info_ready` when its read needs the tool.
 
 #### Resolving what to verify (`_verify_target_bounded`)
 
