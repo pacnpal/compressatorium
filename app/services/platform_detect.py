@@ -475,7 +475,11 @@ def _decide(
     headers: set[str] = set()
     sources: list[str] = []
     if not member:
-        headers, sources = _header(disk_path, tools, within)
+        # A trusted root only when one is given: the usual call is unchanged.
+        headers, sources = (
+            _header(disk_path, tools) if within is None
+            else _header(disk_path, tools, within)
+        )
     names = _folder_names(tools)
     # The folders read: its own, or those *placed_at* names (`detect_platform_as`).
     at = placed_at or disk_path
