@@ -338,6 +338,11 @@ class RomzService:
             )
 
     @classmethod
+    def _declared_size(cls, archive_path: str) -> int:
+        """Every member's declared uncompressed size, in all. Blocking."""
+        return sum(size for _name, size, is_dir in cls._list_entries(archive_path) if not is_dir)
+
+    @classmethod
     def _single_rom_member(cls, archive_path: str) -> str:
         """Return the sole ROM member of ``archive_path`` or raise a clear error.
 
@@ -697,6 +702,12 @@ class RomzService:
             await run_detached(
                 self._single_rom_member, file_path, cancel_event=cancel_event,
             )
+            # The bound comes from what `7z t` decompresses, the members'
+            # declared sizes (the archive limits bound them), never the
+            # archive's own small size (#431, Codex 4607318277).
+            declared = await run_detached(
+                self._declared_size, file_path, cancel_event=cancel_event,
+            )
         except ReadCancelled:
             yield {
                 "type": "error",
@@ -726,6 +737,7 @@ class RomzService:
             path=file_path,
             success_message="File is Intact",
             cancel_event=cancel_event,
+            size=declared,
         ):
             yield update
 

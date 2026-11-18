@@ -130,6 +130,87 @@ class ArchiveService:
             total += size
         self._check_total_size(total)
 
+    @staticmethod
+    def inbox_limits() -> Tuple[int, int, int]:
+        """``(max member, max total, max ratio)`` for an archive an Inbox
+        takes in (#431, Codex 4607318277): the declared uncompressed size per
+        member and in all (``CHD_ARCHIVE_MAX_MEMBER_SIZE`` /
+        ``CHD_ARCHIVE_MAX_TOTAL_SIZE`` where set, else
+        ``CHD_ARCHIVE_INBOX_MAX_TOTAL_SIZE``), and the uncompressed to
+        compressed ratio (``CHD_ARCHIVE_INBOX_MAX_RATIO``). 0 is no limit."""
+        _, member, total = ArchiveService._archive_limits()
+        fallback = max(0, int(getattr(settings, "archive_inbox_max_total_size", 0) or 0))
+        ratio = max(0, int(getattr(settings, "archive_inbox_max_ratio", 0) or 0))
+        return member or fallback, total or fallback, ratio
+
+    def check_inbox_archive(self, archive_path: str, progress=None) -> int:
+        """Refuse an archive an Inbox must not check or copy: the configured
+        entry limit, the Inbox's declared-size and expansion caps
+        (:meth:`inbox_limits`), per member and in all, a member whose size
+        isn't declared (it can't be bounded), a link, an absolute or ``..``
+        path. Raises :class:`ArchiveSafetyRefused` naming the limit, or what
+        reading the listing raises. Returns the declared uncompressed total.
+        Blocking; reads the listing only."""
+        members = read_archive_members(archive_path, progress)
+        max_member, max_total, max_ratio = self.inbox_limits()
+        max_entries, _, _ = self._archive_limits()
+        if max_entries > 0 and len(members) > max_entries:
+            raise ArchiveSafetyRefused(
+                f"Archive exceeds max entries ({max_entries})",
+                rule="it has more entries than CHD_ARCHIVE_MAX_ENTRIES",
+            )
+        member_rule = (
+            "CHD_ARCHIVE_MAX_MEMBER_SIZE" if self._archive_limits()[1]
+            else "CHD_ARCHIVE_INBOX_MAX_TOTAL_SIZE"
+        )
+        total_rule = (
+            "CHD_ARCHIVE_MAX_TOTAL_SIZE" if self._archive_limits()[2]
+            else "CHD_ARCHIVE_INBOX_MAX_TOTAL_SIZE"
+        )
+        total = 0
+        for member in members:
+            if member.is_symlink:
+                raise ArchiveSafetyRefused(
+                    f"Archive member is a link: {member.name}", rule=f"a link ({member.name})",
+                )
+            stripped = member.name.rstrip("/")
+            if stripped.startswith("/") or ".." in stripped.split("/"):
+                raise ArchiveSafetyRefused(
+                    f"Unsafe archive member path: {member.name}",
+                    rule=f"an absolute or .. member path ({member.name})",
+                )
+            if member.is_dir:
+                continue
+            if member.size is None:
+                raise ArchiveSafetyRefused(
+                    f"Archive member declares no size: {member.name}",
+                    rule=f"{member.name} declares no uncompressed size",
+                )
+            if max_member and member.size > max_member:
+                raise ArchiveSafetyRefused(
+                    f"Archive member exceeds max size: {member.name}",
+                    rule=f"{member.name} is over {member_rule} ({max_member} bytes)",
+                )
+            if max_ratio and member.compressed and member.size > member.compressed * max_ratio:
+                raise ArchiveSafetyRefused(
+                    f"Archive member expands too far: {member.name}",
+                    rule=f"{member.name} expands more than CHD_ARCHIVE_INBOX_MAX_RATIO "
+                    f"({max_ratio}:1)",
+                )
+            total += member.size
+        if max_total and total > max_total:
+            raise ArchiveSafetyRefused(
+                f"Archive extraction exceeds max total size ({total} bytes)",
+                rule=f"its contents are over {total_rule} ({max_total} bytes)",
+            )
+        packed = os.path.getsize(archive_path)
+        if max_ratio and total > max(packed, 1) * max_ratio:
+            raise ArchiveSafetyRefused(
+                f"Archive expands too far ({total} bytes from {packed})",
+                rule=f"it expands more than CHD_ARCHIVE_INBOX_MAX_RATIO ({max_ratio}:1)",
+            )
+        return total
+
     def _create_temp_dir(self) -> str:
         base_dir = settings.temp_dir
         if base_dir is None:

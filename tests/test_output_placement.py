@@ -13,6 +13,7 @@ import os
 import threading
 
 import pytest
+from utils import path_utils
 
 from app.services.output_placement import OutputPlacement
 
@@ -95,6 +96,9 @@ async def test_a_placement_that_lands_after_the_job_gave_up_removes_itself(
         real_link(src, dst)
 
     monkeypatch.setattr(os, "link", slow_link)
+    # The link fallback: the slow placement this simulates is the hard link a
+    # filesystem without a no-replace rename takes (path_utils, #431).
+    monkeypatch.setattr(path_utils, "_rename_noreplace", lambda *_a: False)
     worker = asyncio.create_task(asyncio.to_thread(placement.place, str(produced)))
     assert await asyncio.to_thread(started.wait, 5)
 

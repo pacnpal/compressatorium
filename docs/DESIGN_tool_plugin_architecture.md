@@ -759,18 +759,76 @@ so taking it on the event loop can't block.
 
 The placement itself must not overwrite anything either, because a move that
 lands late replaces whatever is at the destination by then.
-`utils.path_utils.place_without_clobbering(src, dst)` places the file with a
-hard link. That's atomic and never replaces anything (`FileExistsError` if
-`dst` exists), and it creates nothing at `dst` before it succeeds, so there's
-no placeholder to leave behind or for anyone to swap out. It then removes
-`src`, and a source the caller's cleanup already swept doesn't count as a
-failure.
+`utils.path_utils.place_without_clobbering(src, dst)` first uses the kernel's
+atomic no-replace rename: `renameat2(RENAME_NOREPLACE)` on Linux,
+`renamex_np(RENAME_EXCL)` (or `renameatx_np` with folder descriptors) on macOS,
+called through `ctypes` with a feature check. It is one step, never replaces
+anything (`FileExistsError` if `dst` exists), and creates nothing at `dst`
+before it succeeds, so there's no placeholder to leave behind or for anyone to
+swap out.
 
-On a filesystem without hard links (FAT/exFAT), it uses the kernel's own
-atomic no-replace rename instead: `renameat2(RENAME_NOREPLACE)` on Linux, which
-vfat and exfat support, or `renamex_np(RENAME_EXCL)` on macOS. Both are called
-through `ctypes`. Where neither is available, it refuses with
-`OSError(ENOTSUP)` rather than falling back to a check-then-rename. A
+Where the kernel or filesystem has none, it falls back to a hard link, which is
+atomic and no-replace too, then removes the `src` name, and a source the
+caller's cleanup already swept doesn't count as a failure. That name is removed
+only while it is still the inode just linked (`stat` through the same folder
+descriptor, #431): a file put under the `src` name between the link and the
+unlink is someone else's and stays. Where neither is available, it refuses
+with `OSError(ENOTSUP)` rather than falling back to a check-then-rename.
+
+That check still leaves a window before the unlink, so a move of a user's file,
+whose name someone else may reuse at any moment, passes `identity_sensitive=True`
+and, where there is no atomic no-replace rename (Linux CIFS, older NFS), takes
+`_move_by_quarantine` instead (#431): (0) a fresh folder of its own beside `src`
+is made first, so nothing is published if it can't be (`_private_folder`:
+`mkdir(dir_fd=parent)` through the open parent, mode `stat.S_IRWXU`, a random
+name tried again on `EEXIST`, then opened through the parent with `O_NOFOLLOW`;
+CodeRabbit 4606147997, 4606148011); (1) `link(src, dst)`, which fails if `dst`
+exists; (2) `rename(src, <private>/<name>)`, so no name in the shared folder is
+involved and the quarantined entry is reachable only inside a folder only the
+app's user can enter; (3) if the
+quarantined entry is the inode linked, unlink it inside the private folder and
+remove the folder, so a file put at `src` after step 2 is never touched. If it
+isn't (`src` was replaced between steps 1 and 2), the file moved is the one that
+was there at step 1, now held by `dst` alone, and stays there; the replacement
+goes back to `src` by `link` (which fails if `src` was made again) and its
+private folder is removed. If it can't go back, it stays in the private folder
+and `MoveRollbackFailed` names it, which intake turns into a Finding. A
+failure between steps 1 and 2 (the file still at `src`) unlinks `dst` again,
+once it is checked to be the same inode, and raises: nothing moved. If that
+unlink fails too, `dst` stays published beside `src` and it raises
+`PlacementCommitted` with the first failure chained (CodeRabbit 4606441954),
+never swallowing it. The same when that check can't stat either name for any
+reason but `ENOENT` (CodeRabbit 4606738359): only "gone" says `dst` isn't
+published, anything else means it may be. And when `src` was replaced (or
+removed) after the link while `dst` is still the inode linked, `dst` holds the
+original, its only name now: `PlacementCommitted` too, both files left as they
+are (CodeRabbit 4607070950). The rollbacks never move a committed file back
+over a name another file took meanwhile: the Image rename and
+`_move_to_processed` check the old name first and, when it is taken, leave the
+file under its new name and say so, naming both paths (the rename's
+not-renamed reason; intake's `inbox_failed` Finding through
+`MoveRollbackFailed`); a file whose old and new names are one inode (a move
+that never let go of its old name) just loses the new name. A failure
+after step 2 raises `PlacementCommitted` (an `OSError`): the file is at `dst`
+and its old name gone, so a caller that rolls back counts it as moved (the
+Image rename and `_move_to_processed` put it back with the rest).
+`StagedOutput.take` / `restore` tell the two apart by what is left
+(`staging._move_committed`, CodeRabbit 4606887339): the old name gone is a
+move whose cleanup failed, answered as moved; the old name still the same
+inode as the new one (both names: it never moved) is not a move, so the new
+name is taken back after that inode check and the failure raised (raising too
+if it can't be), and the RomM swap fails cleanly. Swap recovery drops a parked
+name that is a second hard link of the Source the same way
+(`swap_recovery._drop_second_link`) instead of refusing it. `move_anchored`
+raises `PlacementCommitted` too when the move landed but the check of what
+landed can't stat it (CodeRabbit outside-diff note). Each unlink removes a
+second name of an inode another name still holds, so nothing is ever deleted. The identity-sensitive callers are `move_anchored` (the Image
+rename and an Inbox's originals), intake's put-back, and `StagedOutput.take` /
+`restore` (a RomM swap parking its Source, #391). The plain fallback stays for
+the app's own files, whose names nobody else writes: a staging slot's placed
+entries (`StagedOutput.place`, `_move_back`, `set_aside`), a temp file
+(`archive_edit.rewrite_zip`, the Referrer writers in `referrers/base.py`) and a
+tool's product (`OutputPlacement`). A
 claim-then-rename can overwrite a file another writer swapped in for the claim,
 so it is deliberately not used. The worker of an abandoned job removes its late
 product only while `output_path` is still that inode (`remove_if_same_file`),
@@ -2833,7 +2891,9 @@ RomM routes and `main.py` call (`get_rules()`, `set_rules(raw)`, `sweep(...)`,
 not change. `run_forever(libraries)` takes a callable returning the Libraries to
 sweep on each tick. `main.py` passes `services.libraries.all_libraries` (through
 `services.libraries.run_forever`), so RomM and every folder Library whose
-`schedule_enabled` is on are swept. `compressatorium run-rules` (§3.3.17) sweeps
+`schedule_enabled` is on are swept, then calls its `after_tick` once (the
+Inbox poll, §3.3.25; its failure is logged, and a failed Library listing
+still polls). `compressatorium run-rules` (§3.3.17) sweeps
 the same `services.libraries.all_libraries()` list, so the server's scheduler
 and a cron pass always see the same Libraries.
 
@@ -6423,8 +6483,8 @@ way to produce an edited copy of a zip. The first user is the eXoDOS repack
   goes, and the journal entry goes only if the temp file is known to be gone
   (`TempClaim.release(temp_gone=...)`). `temp_gone` comes only from an
   observed absence (no-follow `lstat`) or a successful unlink, never assumed:
-  `place_without_clobbering` ignores a failed unlink of the temp name after
-  linking the output, so `rewrite_zip` checks the name afterwards and tries
+  `place_without_clobbering` (on its link fallback) ignores a failed unlink of
+  the temp name after linking the output, so `rewrite_zip` checks the name afterwards and tries
   once more. A temp name still there keeps the entry for the next sweep (the
   output is published, so the rewrite still succeeds), and a failed rewrite
   whose cleanup could not remove it logs that, re-raises the original error,
@@ -6698,9 +6758,10 @@ The RomM swap (#391) stages through the same helper.
   output's own name inside the slot, so a `.cue` naming its `.bin` is still
   right once moved. `place(names)` moves the named entries (files or
   folders) into the folder with `utils.path_utils.place_without_clobbering`
-  given both folder descriptors (`src_dir_fd` / `dst_dir_fd`): a `linkat`
-  then removing the staged name, or for a folder (or a filesystem without
-  hard links) `renameat2(RENAME_NOREPLACE)` / `renameatx_np(RENAME_EXCL)`.
+  given both folder descriptors (`src_dir_fd` / `dst_dir_fd`):
+  `renameat2(RENAME_NOREPLACE)` / `renameatx_np(RENAME_EXCL)`, or where the
+  filesystem has neither, a `linkat` then removing the staged name while it is
+  still the linked inode.
   Each move is atomic and no-replace, so an entry another process creates at
   the destination at any moment raises `FileExistsError` and is never
   touched; the existence check before the moves is only a fast path. All or
@@ -7266,6 +7327,319 @@ The frontend offers **Patch…** in `RowActionsMenu` when
 `util/patchDialog.canPatch` allows it (a file, a `.zip`/`.7z`, or a member of
 one, never a disc Image by `registry.discImages`), and `PatchModal` uploads or
 names the patch and starts the job.
+
+### 3.3.25 Inboxes (`services/inbox/`, #431)
+
+An Inbox is a folder that feeds one Library: what settles in it is placed in the
+Library and the original moved aside. Nothing here deletes anything.
+
+| Module | Holds |
+| --- | --- |
+| `inbox/__init__.py` | the `inboxes` rows (migration 0027), cached like the folder Libraries: `register`, `update`, `remove`, `note_processed`, `forget_library`, `describe` |
+| `inbox/intake.py` | one poll of an Inbox (`poll`, `poll_all`), its in-memory state, the copy job |
+
+**Saving** (`inbox.register`, blocking, run through `libraries.run_admitted`).
+Fails closed: the folder must be absolute and `volume_containment(...) is True`
+(None is 503), a real folder, not inside any Library's root nor holding one
+(`inbox.overlap_problem`, resolved both: its own Library would feed intake its
+own output, another's would have its Images moved to `processed/`), and not
+equal to, inside or around another Inbox. The overlap checks and the insert run
+under `libraries.registration_lock`, the lock a folder Library's registration,
+RomM's root save and a folder Library's removal take (removal takes it before
+anything is cleaned up, its Rules' run state included, waiting at most
+`REGISTER_WAIT_SECONDS` and answering a retryable 409 with the Library untouched
+when it isn't free, CodeRabbit 4606147989, and holds it across its Inboxes'
+removal, the delete and the cache; the delete's worker lets go of it once it
+has started, else the request does, decided under a lock, so a removal
+cancelled while waiting for a worker leaves no lock held, CodeRabbit
+4606887332), so an Inbox and a Library saved
+or removed at once can't interleave (Codex 4603071815); `inboxes.folder` unique is the backstop. The other way
+round, `libraries.register` and `check_romm_root` refuse a Library root that
+is, holds or sits inside an Inbox (`inbox.holding`), and every poll checks its
+Library's root again before it lists anything (a RomM root saved elsewhere since). Removing an Inbox (or its folder Library, from `libraries._remove`)
+drops the row, its intake state (revoked: a poll still running on it starts
+no copy or conversion, CodeRabbit 4606147955) and its Findings. The revoke is
+set under the state's own `threading.Lock` (removal runs on a worker thread):
+a copy's check and its scheduling are one step under it, and a conversion
+checks it again under it once `create_batch_jobs` returns, cancelling the jobs
+it just made while they are still queued, the Source untouched, if the Inbox
+was removed meanwhile (CodeRabbit 4606443430)
+(`findings.forget_under(library_id, "inbox:<id>", INBOX_KINDS)`); no file. A
+settle-time change writes the row and publishes it to the cache under one
+mutation lock, so two saves publish in commit order.
+
+**The poll.** `rules.sweep.run_forever(libraries, after_tick=...)` calls
+`intake.poll_all()` once per tick, after the sweeps, so there is no loop of its
+own. `poll(inbox, now=...)` takes the clock as an argument, so a test runs one
+tick with a fake clock and real files. Each poll:
+
+1. Settles the conversions it queued (`job_manager.get_job_for_lookup`):
+   completed moves the original; failed or cancelled holds it with a Finding.
+2. Lists the Inbox on a stall-bounded detached thread
+   (`run_detached_within_stall_bound(report_progress=True)`): regular files
+   with an extension a tool reads or writes, or a numbered split part
+   (`registry.split_owner`, as the folder Library lists `Game.iso.0`), never the
+   top-level `processed/`, a dot-entry (a staging folder), a junk entry or a
+   link (a linked folder is reported as not listed), grouped into Images
+   by `image_sets.group_images` and fingerprinted by `image_fingerprint`
+   (every file's size and mtime). The folder must still be inside a Volume
+   and still clear of its Library's root. Progress is reported between
+   Images all through the grouping, the fingerprinting and the ownership
+   checks below as well as the walk, so the stall bound measures stalled
+   storage, never how long a big pass takes (Codex 4607108046).
+   An archive Image (`.zip`, `.7z`, `.rar`) is checked before it is taken
+   (`ArchiveService.check_inbox_archive`, Codex 4607318277), reading its
+   listing only: anyone who can write the Inbox can drop a compression bomb,
+   and `7z t` would decompress all of it in a conversion slot. Its declared
+   uncompressed size, per member and in all, may be at most
+   `CHD_ARCHIVE_MAX_MEMBER_SIZE` / `CHD_ARCHIVE_MAX_TOTAL_SIZE` where set, else
+   `CHD_ARCHIVE_INBOX_MAX_TOTAL_SIZE` (32 GiB); it may expand at most
+   `CHD_ARCHIVE_INBOX_MAX_RATIO` (200:1) per member (its declared compressed
+   size, `ArchiveMember.compressed`) and in all (against the archive's size);
+   a member with no declared size, a link or an absolute or `..` path is
+   refused too. One over any of them is held with an `inbox_failed` Finding
+   naming the limit, never checked or copied. romz's Verify sizes its bound by
+   the members' declared sizes (`capture_verify(size=...)`, through
+   `resolve_verify_timeout` and `compute_size_scaled_timeout`), never the
+   archive's own size, and keeps its stall bound.
+3. Every loose track-type file in the folder of a track sheet whose owner is
+   unknown, or in any folder below it (a sheet may name `tracks/Track.bin`,
+   Codex 4607108018), is held with a Finding naming the sheet
+   (`_behind_unreadable_sheets`). Unknown means what `owning_sheet` treats as
+   unknown: the sheet can't be read whole (unreadable, over the size cap), or
+   its track list doesn't fully resolve beneath the Inbox
+   (`sheet_track_list(within=[the Inbox])` is None: an absolute, escaping or
+   missing reference, anything `image_members` drops; Codex 4607280415). Such
+   a sheet owns nobody, so its tracks would otherwise be taken as Images of
+   their own.
+   Images that share a file (two sheets naming one track, `_sharing`) are
+   held, each with a Finding naming the others, once settled: taking one in
+   would move a file the other still needs. None of them is taken. Each of
+   these ownership holds keeps what caused it (`_ownership_key`: the sheets'
+   paths and fingerprints, in `_State.held_by`), recomputed every poll; once
+   it changes (the other sheet removed, the unreadable sheet removed or
+   fixed), the hold lifts, its stale Finding goes and the Image is looked at
+   again as settled, without waiting for it to change (Codex 4607108025).
+4. Settles each Image: first seen (or changed) records `(fingerprint, now)`;
+   it is taken once a later poll at least `settle_seconds` after that sees the
+   same fingerprint. So it always takes two polls, even with a settle time of 0.
+5. Takes it (`_take`): `detect_platform`; not decided is held with
+   `inbox_unsorted` or `inbox_conflict`. A track sheet is checked with
+   `delete_plan.sheet_reference_problems(within=[the Inbox])` first: a reference
+   the confined resolver refuses (`../tracks/Game.bin`), or a sheet that can't
+   be read, is dropped by `image_members`, so the Image would look trackless;
+   it is held instead. Its tracks must sit beside it, so the Image moves as one. `_plan` reads the Library's conversion Rules
+   (`sweep.get_rules`) and finds the Platform's Rule (`canonical_platform_id`,
+   or the Library's `platforms()` by slug for RomM's numeric ids, passed on as
+   `known`), then `Library.placement(platform)` (§3.3.11). Each file's
+   identity (device, inode, size, mtime) is read then through the Inbox's own
+   folders (`open_dir_beneath`, no link followed) and kept with the flight.
+   `PlacementUnknown` holds it; `LibraryUnreadable` or a timeout retries next
+   poll.
+
+**Converting.** An enabled Rule whose mode is for the Platform and takes the
+file (`sweep._accepts_source`, on a bounded worker thread: it can read a
+header), with its tool ready, queues through
+`job_manager.create_batch_jobs`, the call a Rule sweep makes: the placement
+folder (made if missing) as `output_dir`, the destination resolved with the
+`skip` policy (`resolve_destination`: an output on disk, `SKIP_EXISTING`,
+holds it; a name another job only holds, `SKIP_LOCKED` from
+`output_conflicts.output_status`, is a retry with no Finding, so the next poll
+queues it once the lock is gone, Codex 4606794174), the Rule's compression
+(`sweep._compression_arg`) and `split`, `verify_after` wherever
+`registry.mode_supports_verify` says the mode can check its output (the Intact
+check; a `jwud_decompress` WUD can't be), and never `delete_on_verify`. It also passes `source_identities`: the Source's `file_snapshot` and the Inbox
+folder it must stay under (`path_utils.source_identity`). That is a shared job
+mechanism, not an Inbox branch: any caller may queue a conversion with it, and
+`_process_job`, once it holds the job's Source lock and before the tool reads
+anything, re-reads the Source beneath that folder with no link followed and
+refuses the job (`source_identity_problem`: outside the Volumes, reached through
+a link, gone, or another file) with the reason. A folder swapped for a link
+while the job waits converts nothing from outside the Inbox. A job queued
+without one (a Rule sweep, a hand-started job) is not re-checked this way when
+it runs. Both checks, and the bind below, run inside the job's full
+finalization region (CodeRabbit 4606147979): a cancel while either waits ends
+the job CANCELLED and lets go of its output locks and its cross-process slot,
+and a refusal raises `SourceRefused`, ending it FAILED ("Not converted: ...")
+with nothing written or removed. A job that passes is then bound before anything else reads its Source
+(`path_utils.bind_source`, Codex 4605281757). **Where binding lives** (Codex
+4606562350): in a folder of the job's own in the app's work area
+(`disk.create_scratch_dir("bind_<job>_")`, under `CHD_TEMP_DIR` or the data
+folder's `temp/`, mode 0700), never in the Inbox, so no Inbox writer has any
+right on its parent chain and none can rename it or swap it for a link. The
+Source and each member it carries (`identity["members"]`, a sheet's tracks) are
+put there through descriptors opened beneath the Inbox root with no link
+followed, each `fstat`ed against the identity validated: a hard link where the
+work area is on the Inbox's filesystem, else (`EXDEV`, or `ENOTSUP`/`EPERM` on a
+NAS or under protected hard links) a copy read through a descriptor checked
+before and after. The bind runs under `run_detached_within_stall_bound`
+(`_BIND_STALL_SECONDS`, the conversion's own stall limit by default) with the
+job's cancel event (Codex 4606539525): each copied chunk reports progress, so a
+slow copy that keeps moving finishes, only a real stall fails the job, and a
+Cancel stops it at its next chunk and ends the job CANCELLED (`ReadCancelled`
+becomes the job's own cancel). A bind given up on or cancelled removes its
+folder; one that answers after its awaiter left is removed too. `bind_source`
+returns a `BoundSource` (`path`, `read_path`, `changed()`, `close()`) that keeps
+descriptors from bind time: the folder's and its parent's, which `close()`
+removes it through (the folder taken from its parent only while that name is
+still the same inode), and one per bound file with its size, mtime and ctime
+then, taken only once every name is bound (linking a second name of one
+inode, two track names hard-linked together, moves its ctime; CodeRabbit
+4606887346). A hard link shares its inode with the Inbox's file, so a resumed download
+writing it in place would reach the converter: before any output is published
+(both placement points in `_process_job`), `_require_bound_unchanged` `fstat`s
+every bound file through its descriptor, and one that changed raises
+`SourceChanged` ("the source changed while it was being converted"), so the job
+fails, its staged output is discarded, nothing is published and the Source is
+left alone (Codex 4606539513). For that, every job that reads a bound Source
+stages its output (`_needs_stage`), whichever Library holds it. The
+`BoundSource` is runtime-only: an archived snapshot of a finished job
+(`ConversionJob.archived_copy`) leaves out every private in
+`models.RUNTIME_ONLY_PRIVATES`, without touching the live job (Codex
+4606539536). The metadata probes keep their fixed bound. Sizing,
+detection, the companion checks and `run_convert` read `job._read_path`, never
+the Inbox name. The bound folder is the job's trusted root (`_trusted_roots`,
+the same `within` an archive member's extraction dir gets): the companion check,
+the post-conversion checks and the Round-trip take its sheet's tracks there,
+outside every Volume, and still refuse one that leaves it (Codex 4606794168).
+`_cleanup_temp_dir` removes the folder on every ending, through
+`start_detached_eventually` (a thread of its own when every probe slot is
+taken, retried when no thread can start), so it is never skipped (CodeRabbit
+4606887319). The
+move to `processed/` still acts on the Inbox names, with its own inode check. So the job is a conversion in every sense the
+queue has: it takes a `max_concurrent` slot, gets its Ledger row and its
+Cancel. A Rule that is disabled, or whose mode doesn't take the file (it is
+already in the target format), copies instead; one whose mode isn't for the
+Platform, or whose tool isn't ready, holds the file with a Finding.
+
+**Copying** (`ConversionMode.INBOX_COPY`, an `ExternalMode(in_ledger=False,
+started_by_hand=False, takes_slot=True)`: it converts nothing). One background
+task per Image, each an external job. Its file work runs in one of the same
+`max_concurrent` slots conversions take: `job_manager.hold_slot(job_id,
+cancel_event)` acquires the dispatcher's own semaphore and then the
+cross-process slot `_process_job` takes (`concurrency_manager.acquire`), so a
+CLI process converting holds a copy back too. With the dispatcher running a copy
+joins the conversions' FIFO (Codex 4606061259): it reserves its ticket when it
+asks, its id goes on the dispatcher's queue under that ticket, and the
+dispatcher hands it the local slot when the ticket comes up (`_hand_slot`), so
+nothing holds the local slot while waiting behind someone else and one slot
+can't deadlock; a cancel drops the ticket and gives back a slot already handed
+over (only for a mode that
+declares `takes_slot`), racing the job's cancel, and `release_slot` gives it
+back on every outcome. A `hold_slot` whose own task is cancelled while it
+waits cancels its pending acquisition, and gives back a slot that acquisition
+took anyway, so a cancelled wait never leaks one. The job still never enters the queue, and keeps its
+external-job presentation. The #377 concurrency invariant now counts by
+`job_manager.slots_in_use()`: every PROCESSING conversion, plus every external
+job holding a slot (a check run or scan still holds none). The copy goes into a fresh
+`staging.open_slot(folder, make_folder=True)` (§3.3.21), each file opened
+through the Inbox folder's descriptor with `O_NOFOLLOW` and refused unless its
+`fstat` identity is the one taken, then read back and compared
+(`stream_digest.new_hasher`). Every source's identity is checked again once
+the last byte is read, and the whole Image (identities and fingerprint,
+`_still_taken`) again just before it is placed, and each open source's own
+`fstat` after its last read: a source rewritten in place
+mid-copy reads back as written yet is neither version, so the staged copy is
+discarded and the source left to settle again. When `registry.check_tool(staged,
+platform)` (on a bounded worker thread: it can open the file) names a tool,
+`check.verify_file` (the check Rule's Verify on the `verify` lane) must say
+Intact; only then `slot.place(names)`, which never replaces (a taken name holds
+the file). The check and the placement run under one asyncio lock
+(`_checking()`), and `_storage_stop` is read and set under it: a copy staged
+beside one whose check stopped (`max_concurrent` > 1) neither checks nor places.
+The flag is thread-safe (`_stopped()`, `_set_stop()`): a copy reads it after
+taking its slot, and its staging reads it again on its worker thread right
+before it opens each file (`_may_open`), so a copy that reaches its first open
+after another's check stopped opens nothing (`deferred`). The lock is never held across an
+open, which can stall on a mount that stopped answering, so one open already in
+flight when the stop lands may complete: the stop (and a stop generation that
+moves with every stop) is checked again the moment it returns (`_opened`), and
+the file is closed without a byte read. The read-back of the staged copy is
+guarded the same way, before and after its open. A cancel is checked
+again once the check-and-place lock is held and right before placing, so a copy
+cancelled while it waited for the lock places nothing even when no tool checks
+its file. Before it stages anything, a copy takes the shared output locks
+(`LockManager.acquire_all`) on every name it will place, as a conversion does on
+its outputs, and holds them through the placement: a name another job (a
+conversion here or in the CLI) is writing leaves the Image for the next poll,
+untouched and with no Finding. The acquisition runs through
+`run_detached_undoable` (`_LOCK_SECONDS`): one that answers after its wait gave
+up gives back the locks it took, never leaving them held.
+A stop is honoured before the verdict, so a cancelled read that left a reader on
+the storage stops the pass too. The staged slot is handed from its worker to
+the awaiter by `_SlotHandoff`, under one lock: once the awaiter has taken it,
+it owns it; a slot delivered after the awaiter gave up (a cancel after the last
+progress report) is closed by whichever side comes second, never left open.
+Placing is a rename that can outlast any bound, so it runs through
+`run_detached_mutation` (`_PLACE_SECONDS`): past the bound, intake keeps waiting
+for the worker to report that it finished and reads `slot.placed`, rather than
+failing a copy that may still land. A verifier that returns #306's `stop` (a
+reader still on the storage) places nothing, and no copy opens another file
+until the next pass (`poll_all` clears `_storage_stop`); its Image settles
+again. `_stage_copy` reports progress once more before it returns, so a result
+that arrives after its awaiter gave up closes its own slot. The slot is always
+closed, so nothing half-copied is left in sight.
+A copy is an external job with no output path, so `libraries.note_job_finished`
+can't see it: intake calls the Library's `note_paths_changed` with what it
+placed before the job is announced finished, so its kept walk is dropped. A
+conversion's output is already covered by `note_job_finished`.
+
+**Moving the original** (`_move_to_processed`). Only under the lock
+manager's exclusive locks on every original, the sheet and its tracks
+(`_lock_all`, `LockManager.acquire_all`, the acquisition a copy's output locks
+take too): while another job reads one (its input lock), nothing moves, no
+Finding is written, and the Image stays in flight (`_Flight.archive`) for the
+next poll to try again; the locks go on every outcome (Codex 4607108034). And
+only while the Image is still the one taken: its whole fingerprint is compared first, and a source replaced
+after its conversion stays in the Inbox to settle again (the Library holds the
+old contents). The move is anchored, as the Image rename's is: the source
+folder and `processed/<its folder in the Inbox>/` are opened beneath the Inbox
+with no link followed (`open_dir_beneath`, then `mkdirat`/`openat` with
+`O_NOFOLLOW`), every file's identity is checked through the source descriptor,
+and each file moves by `place_without_clobbering` between the two descriptors,
+so a folder swapped for a link after the conversion can't redirect it (Codex
+4603069915). Each file moves by `path_utils.move_anchored`, the anchored move
+the Image rename (§3.3.23) uses too, with its `file_snapshot`, `stat_at` and
+`AnchoredFolders`: the entry that landed in `processed/` is checked again, and
+a file swapped in under the checked name meanwhile is moved back (never over
+another file) along with the rest, and the Image stays in the Inbox. A put-back
+that fails is never swallowed: `move_anchored` logs it and raises
+`MoveRollbackFailed` (an `OSError`), and so does intake's own rollback of the
+files already moved, so the Image gets an `inbox_failed` Finding naming what
+was left in `processed/`, never the quiet "changed, settle again". A name already there uses `processed/.../<stem> (2)/` and so on.
+All or none: a failed move puts back the ones already moved, through the same
+descriptors. The move runs like a copy's placement (`_owned`: past
+`_MOVE_SECONDS` its worker's outcome is still waited for), so a move that lands
+late is counted and reported, never lost behind a Finding. After a conversion
+it is its own tracked flight (`_track`, CodeRabbit 4606147968): the poll that
+saw the job complete starts it and goes on, the Image stays in flight (never
+taken again) until the move ends, and its real outcome is reconciled then. A
+copy's flight likewise lasts until its own move has ended. Then
+`processed_count` is incremented in one `UPDATE ... SET
+processed_count = processed_count + 1` (a copy and a conversion can finish at
+once; the cached total only grows to what the database answers) and the file's
+Findings cleared.
+
+**Holding.** A file that gets a Finding (`inbox_unsorted`, `inbox_conflict`,
+`inbox_failed`, in `findings.INBOX_KINDS`, under the Inbox's Library, keyed
+`inbox:<id>/<path in the Inbox>`) is remembered with its fingerprint and not
+taken again until it changes. Every poll reconciles the Inbox's stored
+Findings against its listing (`findings.stored_of`), not only the held paths in
+memory, so a Finding for a file removed across a restart is cleared too; one
+under a folder the walk couldn't list (or a link it won't walk) is kept. So a second poll over the same files changes nothing. The
+state (seen, held, in flight) lives in memory: after a restart every file
+settles again, and a held one gets its Finding again.
+
+**Status and API.** `GET/POST /api/libraries/{id}/inboxes`, `PATCH/DELETE
+.../inboxes/{inbox_id}`. `inbox.describe` adds `intake.status`: last poll,
+waiting, in progress, held, and the error a poll hit (the folder gone or
+outside a Volume). `LibraryInboxes.svelte` in the Rules view lists and adds
+them.
+
+**Seams.** Unpacking an archive, Recognizing and naming from a DAT, and a taken
+name's handling (#432) go in `_take` before `_plan`. Each poll returns
+`placed` (`{"path", "platform", "output"}` for every Image placed since the
+last poll), which the RomM scan and the intake notification (#433) read.
 
 ### 3.4 `registry.py`
 

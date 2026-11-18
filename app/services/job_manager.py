@@ -41,6 +41,7 @@ from services.concurrency_manager import concurrency_manager
 from services.lock_manager import LockFailed, lock_manager
 from services.mutation_guard import locked_for_mutation
 from services import referrers, staging
+from services.disk import create_scratch_dir
 from services.recognized import recognize
 from services.round_trip import RECOGNIZED, recognized_applies, round_trip, round_trip_applies
 from services.rules.library import HIDDEN_STAGING
@@ -64,8 +65,11 @@ from services.tools import ModeKind, registry
 from services.verification_store import check_verdict, verification_store
 from utils.delete_plan import build_delete_plan, build_delete_snapshot
 from utils.path_utils import (
+    BIND_PREFIX,
     is_safe_directory_tree,
+    bind_source,
     is_within_configured_volumes,
+    source_identity_problem,
     source_companions_are_safe,
     strip_archive_path,
 )
@@ -308,6 +312,10 @@ class ExternalMode:
     # Whether a failed job of this mode is "a job you started" (#293's
     # ``job_failed`` message). A check Rule's run is started by the scheduler.
     started_by_hand: bool = True
+    # Whether its file work holds one of the ``max_concurrent`` conversion
+    # slots (``JobManager.hold_slot``): an Inbox copy (#431) counts toward the
+    # same limit as conversions. It still never enters the queue.
+    takes_slot: bool = False
 
 
 EXTERNAL_JOB_MODES: Dict[ConversionMode, ExternalMode] = {
@@ -325,6 +333,11 @@ EXTERNAL_JOB_MODES: Dict[ConversionMode, ExternalMode] = {
     # A rename to DAT names (#425): a person confirmed it; it renames, so it
     # converts nothing to record.
     ConversionMode.DAT_RENAME: ExternalMode(in_ledger=False),
+    # An Inbox's copy of an Image no Rule converts (#431): the scheduler starts
+    # it, and it converts nothing, so it has no Ledger row.
+    ConversionMode.INBOX_COPY: ExternalMode(
+        in_ledger=False, started_by_hand=False, takes_slot=True,
+    ),
 }
 _EXTERNAL_JOB_MODES = frozenset(EXTERNAL_JOB_MODES)
 
@@ -344,6 +357,25 @@ def in_ledger(mode) -> bool:
 def is_external_mode(mode) -> bool:
     """Whether *mode* names an externally-managed job, never a conversion."""
     return mode in _EXTERNAL_JOB_MODES
+
+
+def _trusted_roots(job) -> list[str] | None:
+    """The folders a job's Source (and the files its sheet names) may be read
+    from when it isn't in a Volume: an archive member's extraction dir
+    (``temp_dir``), or a bound Source's folder in the work area (#431). None
+    for a Source in a Volume, which stays confined to the Volumes."""
+    if getattr(job, "temp_dir", None):
+        return [job.temp_dir]
+    bound = getattr(job, "_bound", None)
+    if bound is not None:
+        return [bound.path]
+    return None
+
+
+def _reads(job) -> str:
+    """The path a job reads its Source from: the bound link once its Source
+    was bound (#431, ``_bind_source_bounded``), else its own path."""
+    return getattr(job, "_read_path", None) or job.file_path
 
 
 def _is_conversion_job(job) -> bool:
@@ -506,6 +538,9 @@ ROLLBACK_WAIT_CAP_SECONDS = 30.0
 # the event loop, every request. The abandoned thread may linger until the
 # mount answers; it holds no shared pool worker (`run_detached`).
 VOLUME_PROBE_TIMEOUT_SECONDS = 30.0
+# How long binding a Source may go without progress (#431): None is the
+# conversion's own "no progress for this long" limit.
+_BIND_STALL_SECONDS: Optional[float] = None
 
 
 class DestinationUnresolvableError(RuntimeError):
@@ -568,6 +603,17 @@ class QueueBackpressureError(RuntimeError):
 
 class ExternalJobCancelled(Exception):
     """Raised inside an external-job loop when cancel_job() has been requested."""
+
+
+class SourceChanged(RuntimeError):
+    """A bound Source changed while its job ran (Codex 4606539513): its
+    output is discarded, never published, and the Source is left alone."""
+
+
+class SourceRefused(Exception):
+    """A queued conversion's Source isn't the file it was queued for, or
+    couldn't be bound (#431): the job ends FAILED with this message, its
+    run's own cleanup letting go of everything it holds."""
 
 
 class JobManager:
@@ -656,6 +702,11 @@ class JobManager:
         self._dispatcher_task: Optional[asyncio.Task] = None
         self._debug_task: Optional[asyncio.Task] = None
         self._semaphore = asyncio.Semaphore(self.max_concurrent)
+        # External jobs holding a conversion slot right now (`hold_slot`).
+        self._slot_holders: Set[str] = set()
+        # External jobs queued for a slot (`hold_slot`), by id: the dispatcher
+        # hands each its local slot when its ticket comes up.
+        self._slot_waiters: Dict[str, asyncio.Future] = {}
         self._stuck_detected_at: Optional[float] = None
         self._last_stuck_recovery_at: float = 0
         self._create_lock = asyncio.Lock()
@@ -735,6 +786,7 @@ class JobManager:
         delete_snapshot: Optional[Dict[str, object]] = None,
         reservation: Optional[_Reservation] = None,
         owner: Optional[str] = None,
+        source_identity: Optional[Dict[str, object]] = None,
     ) -> ConversionJob:
         """Queue a job while holding _create_lock (no backpressure check here)."""
         job_id = str(uuid.uuid4())[:8]
@@ -785,6 +837,7 @@ class JobManager:
             input_kind=input_kind,
         )
         job._sweep_owner = owner
+        job._source_identity = source_identity
 
         self.jobs[job_id] = job
         # Every key this job claims -- its destination and the sidecars the
@@ -912,6 +965,7 @@ class JobManager:
                         delete_snapshot=spec.get("delete_snapshot"),
                         reservation=reservation,
                         owner=owner,
+                        source_identity=spec.get("source_identity"),
                     )
                 )
         return jobs
@@ -931,6 +985,7 @@ class JobManager:
         allow_overwrite: bool = False,
         container_only: bool = False,
         owner: Optional[str] = None,
+        source_identities: Optional[Dict[str, Dict[str, object]]] = None,
     ) -> List[ConversionJob]:
         """Create multiple conversion jobs.
 
@@ -939,6 +994,11 @@ class JobManager:
         so a caller that has already resolved duplicates (the RomM sweep's
         rename/overwrite policy) hands the decision down instead of the queue
         re-deriving a different answer.
+
+        ``source_identities`` maps an input to the identity it must still have
+        when its job runs (``utils.path_utils.source_identity``, #431): checked
+        under the job's Source lock right before the tool runs, and the job is
+        refused when the Source was replaced or is reached through a link.
         """
         job_specs: List[Dict[str, object]] = []
         for fp in file_paths:
@@ -952,6 +1012,9 @@ class JobManager:
             override = output_paths.get(fp) if output_paths else None
             if override:
                 spec["output_path"] = override
+            identity = source_identities.get(fp) if source_identities else None
+            if identity:
+                spec["source_identity"] = identity
             job_specs.append(spec)
         return await self.create_jobs_atomic(
             job_specs,
@@ -1377,7 +1440,9 @@ class JobManager:
             self._archived_jobs.pop(oldest_job_id, None)
 
     def _archive_job_for_lookup(self, job: ConversionJob) -> None:
-        archived = job.model_copy(deep=True)
+        # Without its runtime-only state (descriptors, locks), which can't be
+        # deep-copied and means nothing in a snapshot (Codex 4606539536).
+        archived = job.archived_copy()
         self._archived_jobs[archived.id] = (archived, time.monotonic())
         self._prune_archived_jobs()
 
@@ -1428,6 +1493,154 @@ class JobManager:
         except RuntimeError:
             pass
         return job
+
+    async def _hand_slot(self, job_id: str, waiter: asyncio.Future) -> None:
+        """Give the local slot to the external job *job_id* waiting on
+        *waiter*, once one is free. One that stopped waiting meanwhile (a
+        cancel) gets none, and a slot taken for it goes back."""
+        try:
+            if waiter.done():
+                return
+            await self._semaphore.acquire()
+            if waiter.done():
+                self._semaphore.release()
+                return
+            waiter.set_result(True)
+        finally:
+            self._slot_waiters.pop(job_id, None)
+
+    async def hold_slot(
+        self, job_id: str, cancel_event: Optional[asyncio.Event] = None,
+    ) -> bool:
+        """Take one of the ``max_concurrent`` conversion slots for the external
+        job *job_id*, whose mode declares ``takes_slot`` (an Inbox copy, #431),
+        waiting as long as conversions hold them all. Then the cross-process
+        slot too (``concurrency_manager``, the one ``_process_job`` takes), so
+        a CLI process converting holds the copy back as well. False when
+        *cancel_event* fires first (nothing is held then). The caller gives
+        both back with :meth:`release_slot` on every outcome.
+
+        With the dispatcher running it joins the conversions' FIFO (Codex
+        4606061259): it reserves its ticket now, as a queued conversion does,
+        and the dispatcher hands it the local slot when that ticket comes up
+        (:meth:`_hand_slot`). So it never holds the local slot while an older
+        conversion waits for it, and with one slot it can't deadlock behind
+        one. Without the dispatcher (a process that only runs jobs it was
+        given) the local slot is taken directly.
+        """
+        job = self.jobs.get(job_id)
+        declared = EXTERNAL_JOB_MODES.get(job.mode) if job is not None else None
+        if declared is None or not declared.takes_slot:
+            raise ValueError(f"Job {job_id} does not take a conversion slot")
+        semaphore = self._semaphore
+        if self._running:
+            if not await self._queued_for_slot(job_id, cancel_event):
+                return False
+        elif cancel_event is None:
+            await semaphore.acquire()
+        else:
+            if cancel_event.is_set():
+                return False
+            acquire = asyncio.ensure_future(semaphore.acquire())
+            cancelled = asyncio.ensure_future(cancel_event.wait())
+            try:
+                await asyncio.wait({acquire, cancelled}, return_when=asyncio.FIRST_COMPLETED)
+            except BaseException:
+                # The caller itself was cancelled: the acquisition goes too,
+                # and a slot it already took is given back, never left held.
+                self._drop_acquisition(semaphore, acquire)
+                raise
+            finally:
+                cancelled.cancel()
+            if not acquire.done() or cancel_event.is_set():
+                self._drop_acquisition(semaphore, acquire)
+                return False
+        # The local slot is held from here: the cross-process one next, in the
+        # order a conversion takes them (the dispatcher's, then its own).
+        try:
+            got_global = await concurrency_manager.acquire(job_id, cancel_event=cancel_event)
+        except BaseException:
+            concurrency_manager.release(job_id)
+            semaphore.release()
+            raise
+        if not got_global:
+            concurrency_manager.release(job_id)
+            semaphore.release()
+            return False
+        self._slot_holders.add(job_id)
+        return True
+
+    async def _queued_for_slot(
+        self, job_id: str, cancel_event: Optional[asyncio.Event],
+    ) -> bool:
+        """Queue *job_id* for the local slot in ticket order and wait for the
+        dispatcher to hand it over. False on a cancel (no slot is held then,
+        and the ticket is dropped)."""
+        ticket = concurrency_manager.reserve_ticket(job_id)
+        waiter = asyncio.get_running_loop().create_future()
+        self._slot_waiters[job_id] = waiter
+        self._queue.put_nowait((ticket, job_id))
+        waits = {waiter}
+        cancelled = (
+            asyncio.ensure_future(cancel_event.wait()) if cancel_event is not None else None
+        )
+        if cancelled is not None:
+            waits.add(cancelled)
+        try:
+            await asyncio.wait(waits, return_when=asyncio.FIRST_COMPLETED)
+        except BaseException:
+            self._give_up_slot_wait(job_id, waiter)
+            raise
+        finally:
+            if cancelled is not None:
+                cancelled.cancel()
+        if not waiter.done() or (cancel_event is not None and cancel_event.is_set()):
+            self._give_up_slot_wait(job_id, waiter)
+            return False
+        return True
+
+    def _give_up_slot_wait(self, job_id: str, waiter: asyncio.Future) -> None:
+        """Stop waiting for the local slot: one already handed over goes back,
+        a pending hand-over never happens, and the ticket is dropped."""
+        if waiter.done() and not waiter.cancelled():
+            self._semaphore.release()
+        else:
+            waiter.cancel()
+        concurrency_manager.release(job_id)
+
+    @staticmethod
+    def _drop_acquisition(semaphore: asyncio.Semaphore, acquire: asyncio.Future) -> None:
+        """Abandon a pending ``semaphore.acquire()``: cancel it if it is still
+        waiting, or give back the slot it already took (now, or once its
+        result lands, when it is done but not yet seen)."""
+        def release_if_taken(future: asyncio.Future) -> None:
+            if not future.cancelled() and future.exception() is None:
+                semaphore.release()
+
+        if acquire.done():
+            release_if_taken(acquire)
+        else:
+            acquire.cancel()
+            # A cancel can lose to an acquisition that already succeeded.
+            acquire.add_done_callback(release_if_taken)
+
+    def release_slot(self, job_id: str) -> None:
+        """Give back the slots :meth:`hold_slot` took for *job_id*, the local
+        and the cross-process one. Idempotent."""
+        if job_id in self._slot_holders:
+            self._slot_holders.discard(job_id)
+            concurrency_manager.release(job_id)
+            self._semaphore.release()
+
+    def slots_in_use(self) -> int:
+        """How many ``max_concurrent`` slots are held: every PROCESSING
+        conversion, and every external job holding one (`hold_slot`). What
+        the concurrency invariant counts (#377, #431)."""
+        return sum(
+            1 for job in self.jobs.values()
+            if job.status == JobStatus.PROCESSING
+            and (_is_conversion_job(job) or job.id in self._slot_holders)
+        )
 
     def get_cancel_event(self, job_id: str) -> Optional[asyncio.Event]:
         """Return the cancel event for *job_id*, if one is registered."""
@@ -1726,6 +1939,95 @@ class JobManager:
         held = self._output_locks.pop(job.id, None)
         if held is not None:
             held.release()
+
+    async def _source_identity_problem_bounded(self, job: ConversionJob) -> Optional[str]:
+        """Why the job's Source isn't the one it was queued with
+        (``_source_identity``), or None; None too for a job queued without
+        one. Bounded: a Source that doesn't answer is a reason, never a pass."""
+        identity = job._source_identity
+        if not identity or job.input_kind == InputKind.DIRECTORY:
+            return None
+        try:
+            return await asyncio.wait_for(
+                run_detached(source_identity_problem, job.file_path, identity),
+                _CANONICAL_PROBE_SECONDS,
+            )
+        except (asyncio.TimeoutError, OSError) as exc:
+            return f"the Source couldn't be checked ({exc or 'no answer'})"
+
+    async def _bind_source_bounded(
+        self, job: ConversionJob, cancel_event: asyncio.Event | None = None,
+    ) -> Optional[str]:
+        """Bind a job's checked Source before anything else reads it (#431):
+        every later step (sizing, detection, the companion checks, the
+        converter) reads ``job._read_path``, in a folder of the job's own in
+        the app's work area (``disk.create_scratch_dir``), where no Inbox
+        writer has any right on the parent chain (Codex 4606562350). None when
+        bound (or nothing to bind), else why it couldn't be. Bounded by its
+        progress; a cancel (*cancel_event*) stops it and ends the job
+        CANCELLED (Codex 4606539525); a late answer's folder is removed."""
+        identity = job._source_identity
+        if not identity or job.input_kind == InputKind.DIRECTORY:
+            return None
+        # A copy fallback (no hard links on a NAS) takes as long as the Image:
+        # bounded by its progress, not a fixed deadline (Codex 4606061281).
+        guard = threading.Lock()
+        state: Dict[str, object] = {"abandoned": False, "result": None}
+
+        def bind(progress):
+            into = create_scratch_dir(f"{BIND_PREFIX}{job.id}_")
+            result = bind_source(job.file_path, identity, into, progress=progress)
+            with guard:
+                if not state["abandoned"]:
+                    state["result"] = result
+                    return result
+            result.close()  # nobody is waiting for it any more
+            return result
+
+        try:
+            bound = await run_detached_within_stall_bound(
+                bind, what="Binding the Source", stall=_BIND_STALL_SECONDS,
+                report_progress=True, cancel_event=cancel_event,
+            )
+        except BaseException as exc:
+            with guard:
+                state["abandoned"] = True
+                late = state["result"]
+            if late is not None:
+                # Answered, but the answer never reached here: removed on a
+                # thread of its own (it touches the disk).
+                start_detached_eventually(late.close)
+            if isinstance(exc, ReadCancelled):
+                raise ConversionCancelled("Conversion cancelled") from exc
+            if isinstance(exc, (OSError, RuntimeError, asyncio.TimeoutError)):
+                return f"the Source couldn't be bound for reading ({exc})"
+            raise
+        job._bound, job._read_path = bound, bound.read_path
+        return None
+
+    async def _require_bound_unchanged(self, job: ConversionJob) -> None:
+        """Before any output is published: every bound file, read through the
+        descriptor kept from bind time, still has the size, mtime and ctime it
+        had then (Codex 4606539513). A hard link shares its inode with the
+        Inbox's file, so a resumed download writing it in place shows here.
+        Raises :class:`SourceChanged` (the job fails, its staged output is
+        discarded and the Source left alone), or when it can't be told."""
+        bound = job._bound
+        if bound is None:
+            return
+        try:
+            changed = await run_detached_bounded(
+                bound.changed, timeout=_CANONICAL_PROBE_SECONDS,
+            )
+        except (OSError, DeadlineExpired, ProbeCapacityExceeded) as exc:
+            raise SourceChanged(
+                f"the source changed while it was being converted (couldn't tell: {exc})"
+            ) from exc
+        if changed is not None:
+            raise SourceChanged(
+                f"the source changed while it was being converted ({changed}); "
+                "nothing was published"
+            )
 
     async def _fail_before_start(
         self, job_id: str, job: ConversionJob, message: str, *, dir_lock_held: bool,
@@ -2552,6 +2854,17 @@ class JobManager:
                 pass
 
     async def _cleanup_temp_dir(self, job: ConversionJob):
+        if job._bound is not None:
+            bound, job._bound = job._bound, None
+            # Cleanup that must happen: started now whatever the probe slots
+            # say (a thread of its own when they are all taken, retried when
+            # no thread can start), never skipped (CodeRabbit 4606887319).
+            closing = start_detached_eventually(bound.close)
+            if closing is not None:
+                try:
+                    await asyncio.wait_for(asyncio.shield(closing), _CANONICAL_PROBE_SECONDS)
+                except (asyncio.TimeoutError, OSError):
+                    logger.warning("Removing the bound Source folder %s is slow", bound.path)
         if job.temp_dir:
             temp_dir = job.temp_dir
             try:
@@ -2722,6 +3035,8 @@ class JobManager:
             self._background_tasks.difference_update(t for t in snapshot if t.done())
         self._queue = asyncio.PriorityQueue()
         self._semaphore = asyncio.Semaphore(self.max_concurrent)
+        # A slot held on the old semaphore is not the new one's to give back.
+        self._slot_holders.clear()
         self._create_lock = asyncio.Lock()
 
     async def _handle_background_maintenance(self, cleanup_counter: int) -> int:
@@ -3029,6 +3344,13 @@ class JobManager:
                 job = self.jobs.get(job_id)
                 if not job:
                     continue
+                waiter = self._slot_waiters.get(job_id)
+                if waiter is not None:
+                    # An external job queued for a slot (an Inbox copy, #431):
+                    # its turn has come, so it gets the local slot, in the same
+                    # FIFO order as every conversion.
+                    await self._hand_slot(job_id, waiter)
+                    continue
                 if job_id in self._cancelled or job.status == JobStatus.CANCELLED:
                     self._cancelled.discard(job_id)
                     await self._cleanup_temp_dir(job)
@@ -3112,6 +3434,11 @@ class JobManager:
         # Imported here: services.libraries imports this module.
         from services import libraries
 
+        if job._source_identity:
+            # A bound Source (#431) may change under its job: its output is
+            # staged, so one made from a changed Source is never published
+            # (Codex 4606539513).
+            return True
         try:
             library = await run_detached_bounded(
                 libraries.library_for, job.output_path, timeout=_CANONICAL_PROBE_SECONDS,
@@ -5074,12 +5401,12 @@ class JobManager:
         # no progress, exactly like the container check before it.
         self._verifying[job.id] = time.monotonic()
         try:
-            # An archive-member Source (and any sheet it names) lives in the
-            # job's extraction folder, outside the Volumes; the tool may read
-            # it there. Anything else stays confined to the Volumes (None).
+            # An archive-member or bound Source (and any sheet it names)
+            # lives in the job's own folder outside the Volumes; the tool may
+            # read it there. Anything else stays confined to the Volumes.
             outcome = await round_trip(
                 tool, source_path, output_path, cancel_event=cancel_event,
-                within=[job.temp_dir] if job.temp_dir else None,
+                within=_trusted_roots(job),
             )
         finally:
             self._verifying.pop(job.id, None)
@@ -5256,7 +5583,9 @@ class JobManager:
         """
         try:
             return await asyncio.wait_for(
-                run_detached(_source_bytes, job.file_path, cancel_event=cancel_event),
+                run_detached(
+                    _source_bytes, _reads(job), cancel_event=cancel_event,
+                ),
                 timeout=_CANONICAL_PROBE_SECONDS,
             )
         except ReadCancelled:
@@ -5285,7 +5614,7 @@ class JobManager:
 
         try:
             detection = await run_detached_bounded(
-                detect_platform, job.file_path,
+                detect_platform, _reads(job),
                 timeout=_CANONICAL_PROBE_SECONDS, cancel_event=cancel_event,
             )
         except ReadCancelled:
@@ -5516,11 +5845,9 @@ class JobManager:
             # otherwise be reported stalled the instant it started running.
             self._last_progress_at[job_id] = time.monotonic()
             # The jobs holding a conversion slot, by the dispatcher's own rule:
-            # a check run or scan beside this job is PROCESSING but holds none.
-            processing_now = sum(
-                1 for candidate in self.jobs.values()
-                if candidate.status == JobStatus.PROCESSING and _is_conversion_job(candidate)
-            )
+            # a check run or scan beside this job is PROCESSING but holds none;
+            # an Inbox copy holding one (`hold_slot`, #431) counts.
+            processing_now = self.slots_in_use()
             if processing_now > self.max_concurrent:
                 logger.error(
                     "Processing concurrency invariant violated: processing=%d max_concurrent=%d",
@@ -5545,6 +5872,17 @@ class JobManager:
             raise
 
         try:
+            # The Source is still the file the job was queued for, read beneath
+            # the folder it must stay under with no link followed (#431), now
+            # that its lock is held and before anything reads it. Inside this
+            # region (CodeRabbit 4606147979): a cancel while either waits lets
+            # go of the output locks and the slot too. A refusal ends the job
+            # FAILED with nothing written or removed: no output exists yet.
+            problem = await self._source_identity_problem_bounded(job)
+            if problem is None:
+                problem = await self._bind_source_bounded(job, cancel_event)
+            if problem is not None:
+                raise SourceRefused(f"Not converted: {problem}")
             # Ledger bookkeeping (#292): size the Source set before anything can
             # delete it. Inside the cleanup-protected region, on a detached
             # thread, bounded and cancellable like the verify-target probe: a
@@ -5594,12 +5932,15 @@ class JobManager:
                 )
                 return
 
-            input_path = job.file_path
-            # The trusted root(s) an extracted source's track sheet may name
-            # files under (utils.sheet_text.resolve_track's ``within``). None
-            # for a source in a Volume; the extraction dir for an archive
-            # member. Built once here and handed to every consumer.
-            within: list[str] | None = None
+            # A bound Source (#431) is read from its folder in the work area.
+            input_path = _reads(job)
+            # The trusted root(s) a source's track sheet may name files under
+            # (utils.sheet_text.resolve_track's ``within``): None for a source
+            # in a Volume; the folder it is read from for one outside them,
+            # a bound Source's (Codex 4606794168) or, set below, an archive
+            # member's extraction dir. Built once here (`_trusted_roots`) and
+            # handed to every consumer.
+            within = _trusted_roots(job)
             if "::" in job.file_path:
                 extract_start = time.monotonic()
                 archive_path, internal_path = job.file_path.split("::", 1)
@@ -5627,7 +5968,7 @@ class JobManager:
                 except asyncio.CancelledError:
                     pass
                 job.temp_dir = temp_dir
-                within = [temp_dir]
+                within = _trusted_roots(job)
                 await run_in_threadpool(
                     archive_service.extract_related_files,
                     archive_path,
@@ -5906,6 +6247,8 @@ class JobManager:
                     # it itself (the RomM swap, #391): it then stays staged
                     # until the Referrer hook, and its records are written
                     # where it is staged and carried along when it moves.
+                    # Not from a bound Source that changed meanwhile.
+                    await self._require_bound_unchanged(job)
                     placeable = True
                     placement = await self._staged_placement(job, slot, write_path)
                     if placement is None:
@@ -6100,6 +6443,9 @@ class JobManager:
                                 job.warning = "; ".join(removal.notes)
                                 job.message = f"Output is {check_label}. {job.warning}"
 
+                if slot is not None and not slot.placed:
+                    # Not from a bound Source that changed meanwhile.
+                    await self._require_bound_unchanged(job)
                 placeable = True
                 if (
                     slot is not None and not slot.placed

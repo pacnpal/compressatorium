@@ -79,10 +79,13 @@ from services.subprocess_runner import (
     start_detached_or_own_thread,
 )
 from utils.path_utils import (
-    lock_boundary_root,
-    open_dir_beneath,
+    AnchoredFolders,
+    PlacementCommitted,
+    file_snapshot,
+    move_anchored,
     place_without_clobbering,
     short_temp_name,
+    stat_at,
     volume_containment,
 )
 from utils.sheet_text import (
@@ -220,19 +223,10 @@ def _release_blocking(paths: list[str]) -> None:
             logger.warning("image_rename: could not release the lock on %s", path, exc_info=True)
 
 
-def _stat_at(name: str, folder: int) -> os.stat_result | None:
-    try:
-        return os.stat(name, dir_fd=folder, follow_symlinks=False)
-    except FileNotFoundError:
-        return None
-
-
-def _snapshot(st: os.stat_result) -> dict[str, int]:
-    """A file's fingerprint as a delete snapshot has it."""
-    return {
-        "size": st.st_size, "mtime_ns": st.st_mtime_ns,
-        "inode": st.st_ino, "device": st.st_dev,
-    }
+# The anchored-move helpers this rename and the Inbox (#431) share live in
+# `utils.path_utils`; these names are the ones this module has always used.
+_stat_at = stat_at
+_snapshot = file_snapshot
 
 
 @dataclass
@@ -276,7 +270,7 @@ class _Files:
     def __init__(self) -> None:
         self.moves: list[_Move] = []
         self.fingerprints: dict[str, dict[str, int]] = {}
-        self._fds: dict[str, int] = {}
+        self._folders = AnchoredFolders()
         # The final ``{old: new}`` the Referrers see (a renamed folder's new
         # name included), the folder renamed with the Image, and the Image's
         # sheet, whose track references follow the tracks (#426).
@@ -284,6 +278,10 @@ class _Files:
         self.folder: _FolderMove | None = None
         self.sheet: str | None = None
         self.journal: WriteJournal | None = None
+        # Files a put-back left under their new name because a writer took
+        # the old one meanwhile: what the not-renamed result says, both
+        # paths each (CodeRabbit 4607070950).
+        self.kept_apart: list[str] = []
 
     @classmethod
     def open_blocking(
@@ -332,25 +330,16 @@ class _Files:
             raise OSError(f"{move.old_name} isn't the folder that was checked")
         return move
 
+    @property
+    def _fds(self) -> dict[str, int]:
+        """The folders open now (real path -> descriptor)."""
+        return self._folders.descriptors
+
     def _folder(self, path: str) -> tuple[int, str]:
-        real = os.path.realpath(os.path.dirname(path))
-        if real in self._fds:
-            return self._fds[real], real
-        root = lock_boundary_root(real)
-        if root is None or volume_containment(real, treat_archives=False) is not True:
-            raise OSError(f"{real} isn't confirmed inside the configured Volumes")
-        relative = os.path.relpath(real, str(root))
-        fd = open_dir_beneath(str(root), "" if relative == "." else relative)
-        self._fds[real] = fd
-        return fd, real
+        return self._folders.open(os.path.dirname(path))
 
     def close(self) -> None:
-        for fd in self._fds.values():
-            try:
-                os.close(fd)
-            except OSError:
-                pass
-        self._fds.clear()
+        self._folders.close()
 
     def _is_ours(self, move: _Move, st: os.stat_result | None) -> bool:
         return st is not None and _snapshot(st) == self.fingerprints[move.old]
@@ -373,9 +362,20 @@ class _Files:
                     continue
                 if not self._is_ours(move, here):
                     raise OSError(f"{move.old_name} changed since the rename began")
-                place_without_clobbering(
-                    move.old_name, move.new_name, src_dir_fd=move.src, dst_dir_fd=move.dst,
-                )
+                # The shared anchored move (#431): only while it is the file
+                # fingerprinted, never over anything, the entry that landed
+                # checked again, and no delete race on a share without an
+                # atomic no-replace rename.
+                try:
+                    move_anchored(
+                        move.old_name, move.src, move.dst, self.fingerprints[move.old],
+                        new_name=move.new_name,
+                    )
+                except PlacementCommitted:
+                    # It landed, and its old name is gone: put back with
+                    # the rest (CodeRabbit 4606148011).
+                    done.append(move)
+                    raise
                 done.append(move)
             self._move_folder_blocking()
         except BaseException:
@@ -404,10 +404,32 @@ class _Files:
         says so."""
         for move in reversed(done):
             try:
+                at_old = _stat_at(move.old_name, move.src)
+                at_new = _stat_at(move.new_name, move.dst)
+                if at_old is not None and at_new is not None and (
+                    at_old.st_dev, at_old.st_ino,
+                ) == (at_new.st_dev, at_new.st_ino):
+                    # Both names of one file (a move that never let go of
+                    # its old name): the new name goes, the old one stays.
+                    os.unlink(move.new_name, dir_fd=move.dst)
+                    continue
+                if at_old is not None:
+                    # Its old name is taken by another file: never moved
+                    # back over it. It keeps its new name, its only one.
+                    logger.error(
+                        "image_rename: %s keeps its new name: %s is taken by another file",
+                        move.new, move.old,
+                    )
+                    self.kept_apart.append(
+                        f"{move.new} keeps its new name ({move.old} is taken by another "
+                        "file, which was left alone)"
+                    )
+                    continue
                 if not self._is_ours(move, _stat_at(move.new_name, move.dst)):
                     raise OSError(f"{move.new_name} changed since it was renamed")
-                place_without_clobbering(
-                    move.new_name, move.old_name, src_dir_fd=move.dst, dst_dir_fd=move.src,
+                move_anchored(
+                    move.new_name, move.dst, move.src, self.fingerprints[move.old],
+                    new_name=move.old_name,
                 )
             except OSError:
                 logger.warning(
@@ -762,6 +784,8 @@ async def _rename_locked(
             except OSError as exc:
                 what = "the file" if len(renames) == 1 else "its files"
                 reason = f"couldn't rename {what} ({exc.strerror or exc})"
+                if files.kept_apart:
+                    reason = f"{reason}; {'; '.join(files.kept_apart)}"
         try:
             where = await _probe(files.where_blocking)
         except OSError:

@@ -41,16 +41,24 @@ class OutputPathLocked(RuntimeError):
     """
 
 
-def check_output_conflicts(mode: str, output_path: str) -> tuple[bool, bool]:
-    """``(exists, locked)`` for an output path *and all of its companion outputs*."""
-    file_exists, is_locked = lock_manager.check_file_status(output_path)
-    exists = file_exists or is_locked
-    locked = is_locked
+def output_status(mode: str, output_path: str) -> tuple[bool, bool]:
+    """``(on_disk, locked)`` for an output path *and all of its companion
+    outputs*: whether any of them is on disk, and whether any is held by a
+    job right now. A name only locked is a temporary conflict; one on disk is
+    a real output (#431, Codex 4606794174)."""
+    on_disk, locked = lock_manager.check_file_status(output_path)
     for companion in registry.for_mode(mode).companion_outputs(output_path, mode):
         c_exists, c_locked = lock_manager.check_file_status(companion)
-        exists = exists or c_exists or c_locked
+        on_disk = on_disk or c_exists
         locked = locked or c_locked
-    return exists, locked
+    return on_disk, locked
+
+
+def check_output_conflicts(mode: str, output_path: str) -> tuple[bool, bool]:
+    """``(exists, locked)`` for an output path *and all of its companion outputs*;
+    a locked name counts as existing."""
+    on_disk, locked = output_status(mode, output_path)
+    return on_disk or locked, locked
 
 
 def _rename_parts(base_path: str, mode: str | None) -> tuple[Path, str, str]:
@@ -160,7 +168,8 @@ def resolve_destination(
     so ``overwrite`` and ``rename`` mean here exactly what they mean there
     rather than silently degrading to ``skip``:
 
-    * ``skip`` -- an occupied destination drops the candidate;
+    * ``skip`` -- an occupied destination drops the candidate (``SKIP_EXISTING``
+      when an output is on disk, ``SKIP_LOCKED`` when a job only holds the name);
     * ``overwrite`` -- reuses it, unless a job holds it right now;
     * ``rename`` -- probes ``name_1``, ``name_2``, ... for a free one.
 
@@ -182,7 +191,8 @@ def resolve_destination(
     if registry.spec(mode).kind is not ModeKind.COPY and _same_file(destination, path):
         return None, SKIP_EXISTING
 
-    exists, locked = check_output_conflicts(mode, destination)
+    on_disk, locked = output_status(mode, destination)
+    exists = on_disk or locked
     if not exists:
         return destination, QUEUE
     if duplicate_action == "overwrite":
@@ -192,7 +202,9 @@ def resolve_destination(
             return get_unique_output_path(destination, mode), QUEUE
         except (OutputPathLocked, OutputPathExhausted):
             return None, SKIP_LOCKED
-    return None, SKIP_EXISTING
+    # Only a real output is "existing"; a name another job holds with nothing
+    # on disk yet is busy for now, tried again next pass.
+    return None, (SKIP_EXISTING if on_disk else SKIP_LOCKED)
 
 
 def input_priority(path: str) -> int:

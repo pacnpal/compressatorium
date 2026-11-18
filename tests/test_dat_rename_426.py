@@ -295,17 +295,19 @@ async def test_a_failure_on_the_last_track_puts_every_file_the_sheet_and_the_pla
     playlist.write_text("game/game.cue\n")
     await _register(client, db / "roms")
     preview = await _preview(client, image["sheet"])
-    real_place = image_rename.place_without_clobbering
+    # Each file moves through the shared anchored move (#431's
+    # `path_utils.move_anchored`); the last track's move fails.
+    real_move = image_rename.move_anchored
     seen: list[list[str]] = []
 
-    def fails_on_the_last_track(src, dst, **kwargs):
-        if src == image["two"].name:
+    def fails_on_the_last_track(name, src, dst, expected, **kwargs):
+        if name == image["two"].name:
             # Everything before it has been renamed, the sheet rewritten.
             seen.append(sorted(p.name for p in (psx / "game").iterdir()))
             raise OSError(5, "Input/output error")
-        return real_place(src, dst, **kwargs)
+        return real_move(name, src, dst, expected, **kwargs)
 
-    monkeypatch.setattr(image_rename, "place_without_clobbering", fails_on_the_last_track)
+    monkeypatch.setattr(image_rename, "move_anchored", fails_on_the_last_track)
     job = await _run(client, preview)
 
     assert seen == [sorted([f"{GAME}.cue", f"{GAME} (Track 1).bin", "game (Track 2).bin"])]
@@ -606,3 +608,71 @@ def test_the_sheet_rewrite_changes_only_the_track_names() -> None:
     )
     # A name that can't be written back as one token is refused, never guessed.
     assert rewrite_track_names(cue, ".cue", {"game.bin": 'a"b.bin'}) is None
+
+
+
+@pytest.mark.asyncio
+async def test_a_committed_placement_is_rolled_back_with_the_rest(
+    db: Path, client: httpx.AsyncClient, monkeypatch,
+) -> None:
+    """CodeRabbit 4606148011: a move that raises PlacementCommitted (the file
+    is at its new name) counts as moved, so the rollback puts it back too."""
+    from services import image_rename
+    from utils.path_utils import PlacementCommitted
+
+    psx = db / "roms" / "psx"
+    image = await _cue_image(client, psx / "game")
+    await _register(client, db / "roms")
+    preview = await _preview(client, image["sheet"])
+    real_move = image_rename.move_anchored
+
+    def committed_on_the_last_track(name, src, dst, expected, **kwargs):
+        real_move(name, src, dst, expected, **kwargs)
+        if name == image["two"].name:
+            raise PlacementCommitted(5, "Input/output error after the move")
+
+    monkeypatch.setattr(image_rename, "move_anchored", committed_on_the_last_track)
+    job = await _run(client, preview)
+
+    result = _result(job)[str(image["sheet"])]
+    assert result["status"] == "not_renamed", result
+    assert sorted(p.name for p in (psx / "game").iterdir()) == sorted([
+        "game.cue", "game (Track 1).bin", "game (Track 2).bin",
+    ])
+
+
+@pytest.mark.asyncio
+async def test_a_committed_move_whose_old_name_is_taken_is_kept_and_named(
+    db: Path, client: httpx.AsyncClient, monkeypatch,
+) -> None:
+    """CodeRabbit 4607070950 (b), ruled: a committed move whose old name a
+    writer took meanwhile is never moved back over the replacement. The file
+    keeps its new name (its only one), and the not-renamed result names both
+    paths."""
+    from services import image_rename
+    from utils.path_utils import PlacementCommitted
+
+    psx = db / "roms" / "psx"
+    image = await _cue_image(client, psx / "game")
+    await _register(client, db / "roms")
+    preview = await _preview(client, image["sheet"])
+    real_move = image_rename.move_anchored
+    old = image["two"]
+    moved_to: dict = {}
+
+    def committed_then_taken(name, src, dst, expected, **kwargs):
+        real_move(name, src, dst, expected, **kwargs)
+        if name == old.name and "new" not in moved_to:
+            moved_to["new"] = kwargs.get("new_name")
+            old.write_bytes(b"a writer's file")  # the vacated name, taken
+            raise PlacementCommitted(5, "Input/output error after the move")
+
+    monkeypatch.setattr(image_rename, "move_anchored", committed_then_taken)
+    job = await _run(client, preview)
+
+    result = _result(job)[str(image["sheet"])]
+    assert result["status"] == "not_renamed", result
+    assert old.read_bytes() == b"a writer's file"
+    kept = old.parent / moved_to["new"]
+    assert kept.exists()
+    assert str(kept) in result["reason"] and str(old) in result["reason"]

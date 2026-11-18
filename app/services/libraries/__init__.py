@@ -21,7 +21,7 @@ import asyncio
 import os
 import threading
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -48,6 +48,7 @@ __all__ = [
     "FolderLibrary",
     "LibraryPathError",
     "check_gamelists_folder",
+    "registration_lock",
     "all_libraries",
     "describe",
     "folder_libraries",
@@ -210,10 +211,15 @@ def without_a_database() -> list[Library]:
 
 
 async def run_forever() -> None:
-    """The scheduler: every Library whose switch is on, on its own Rules' clocks."""
+    """The scheduler: every Library whose switch is on, on its own Rules' clocks,
+    then one poll of every Inbox (#431) on the same tick."""
+    from services.inbox import intake
     from services.rules import sweep as rules_sweep
 
-    await rules_sweep.run_forever(all_libraries)
+    async def poll_inboxes() -> None:
+        await intake.poll_all()
+
+    await rules_sweep.run_forever(all_libraries, after_tick=poll_inboxes)
 
 
 def get(library_id: str) -> Library | None:
@@ -371,6 +377,37 @@ def _romm_root() -> Path | None:
     return _resolved(romm_library.root)
 
 
+class RegistrationBusy(Exception):
+    """:func:`registration_lock` wasn't free in time."""
+
+
+@contextmanager
+def registration_lock(timeout: float | None = None):
+    """The lock every save of a root that must not overlap another is made
+    under: a folder Library's registration, RomM's root, and an Inbox (#431),
+    so no two of them pass their overlap checks at once. Blocking; with
+    *timeout*, raises :class:`RegistrationBusy` when it isn't free in time.
+    Taken in a worker thread only."""
+    if not _register_lock.acquire(timeout=-1 if timeout is None else timeout):
+        raise RegistrationBusy("another registration is still running")
+    try:
+        yield
+    finally:
+        _register_lock.release()
+
+
+def _refuse_inbox(root: Path, *, what: str = "A Library") -> None:
+    """Refuse a Library root that is, holds or sits inside an Inbox (#431):
+    intake would take the Library's own Images. 409. Blocking (first read)."""
+    from services import inbox
+
+    found = inbox.holding(root)
+    if found is not None:
+        raise LibraryPathError(
+            409, f"{what} can't overlap the Inbox at {found.folder}; remove that Inbox first",
+        )
+
+
 def check_romm_root(path: str) -> None:
     """Refuse RomM's library root at *path* if it overlaps a folder Library.
 
@@ -378,6 +415,7 @@ def check_romm_root(path: str) -> None:
     (resolves the path); the caller holds the registration lock.
     """
     root = _resolved(path)
+    _refuse_inbox(root, what="RomM's library folder")
     others = [(lib.name, Path(lib.root)) for lib in folder_libraries()]
     hit = find_overlap(root, others)
     if hit is not None:
@@ -433,6 +471,20 @@ async def run_admitted(func, *args, timeout: float, **kwargs):
             _worker_slots.release()
 
 
+async def _claim_registration() -> None:
+    """Take the registration lock from the event loop, waiting at most
+    ``REGISTER_WAIT_SECONDS`` and polling rather than parking a thread, so a
+    cancelled request never leaves it taken. Not free in time: a retryable
+    409 (:class:`LibraryPathError`). The caller releases it."""
+    deadline = time.monotonic() + REGISTER_WAIT_SECONDS
+    while not _register_lock.acquire(blocking=False):
+        if time.monotonic() >= deadline:
+            raise LibraryPathError(
+                409, "A Library registration is still running; try again shortly",
+            )
+        await asyncio.sleep(0.05)
+
+
 @asynccontextmanager
 async def romm_root_claim(path: str | None):
     """Hold the registration lock while RomM's library root is checked and saved.
@@ -448,13 +500,7 @@ async def romm_root_claim(path: str | None):
     with 503 and the lock released, rather than holding it for good. Callers
     take this before any lock of their own, so a hung check holds nothing else.
     """
-    deadline = time.monotonic() + REGISTER_WAIT_SECONDS
-    while not _register_lock.acquire(blocking=False):
-        if time.monotonic() >= deadline:
-            raise LibraryPathError(
-                409, "A Library registration is still running; try again shortly",
-            )
-        await asyncio.sleep(0.05)
+    await _claim_registration()
     try:
         if path:
             await run_in_threadpool(_loaded)
@@ -494,6 +540,7 @@ def register(path: str, name: str | None = None) -> FolderLibrary:
         romm_root = _romm_root()
         if romm_root is not None:
             others.append((romm_library.name, romm_root))
+        _refuse_inbox(root)
         hit = find_overlap(root, others)
         if hit is not None:
             other_name, other_root = hit
@@ -646,23 +693,49 @@ async def remove(library_id: str) -> bool:
 async def _remove(library: FolderLibrary, library_id: str, record_id: int) -> None:
     from services.rules import sweep as rules_sweep
 
-    await rules_sweep.forget_library(library)
+    # Under the registration lock (#431): an Inbox saved for this Library
+    # between its Inboxes' removal and the delete would be left behind,
+    # feeding a Library that no longer exists. Taken before anything is
+    # cleaned up, and bounded (CodeRabbit 4606147989): a registration that
+    # won't end answers a retryable 409 with the Library untouched.
+    await _claim_registration()
+    # Who lets go of the lock: the delete's worker once it has started, else
+    # this request. Decided under `guard`, so a worker that starts as the
+    # request gives up never runs without it (CodeRabbit 4606887332).
+    guard = threading.Lock()
+    run = {"started": False, "abandoned": False}
+    try:
+        await rules_sweep.forget_library(library)
 
-    def _delete() -> None:
-        from services import library_records, platform_mappings
+        def _delete() -> None:
+            from services import inbox, library_records, platform_mappings
 
-        platform_mappings.forget_library(library_id)
-        library_records.forget(library_id)
-        with _session() as session:
-            row = session.get(_db.FolderLibraryRecord, record_id)
-            if row is not None:
-                session.delete(row)
-                session.commit()
-        with _lock:
-            if _cache is not None:
-                _cache.pop(record_id, None)
+            with guard:
+                if run["abandoned"]:
+                    return  # the request gave up and let go of the lock
+                run["started"] = True
+            try:
+                inbox.forget_library(library_id)
+                platform_mappings.forget_library(library_id)
+                library_records.forget(library_id)
+                with _session() as session:
+                    row = session.get(_db.FolderLibraryRecord, record_id)
+                    if row is not None:
+                        session.delete(row)
+                        session.commit()
+                with _lock:
+                    if _cache is not None:
+                        _cache.pop(record_id, None)
+            finally:
+                _register_lock.release()
 
-    await run_in_threadpool(_delete)
+        await run_in_threadpool(_delete)
+    finally:
+        with guard:
+            mine = not run["started"]
+            run["abandoned"] = True
+        if mine:
+            _register_lock.release()
 
 
 def describe(library: Library) -> dict[str, Any]:

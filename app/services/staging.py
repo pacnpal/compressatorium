@@ -67,7 +67,9 @@ from logging_setup import get_logger
 from services import partial_writes
 from utils.junk import STAGE_DIR_NAME
 from utils.path_utils import (
+    PlacementCommitted,
     open_dir_beneath,
+    stat_at,
     place_without_clobbering,
     short_temp_name,
     volume_containment,
@@ -87,6 +89,40 @@ _KEEP_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | _CLOEXEC
 PARK_PREFIX = "park-"
 
 __all__ = ["PARK_PREFIX", "STAGE_DIR_NAME", "StagedOutput", "open_slot"]
+
+
+def _move_committed(name: str, target: str, *, src_dir_fd: int, dst_dir_fd: int) -> None:
+    """Move a user's file between the slot and its folder, never over
+    anything and with no delete race (``identity_sensitive``).
+
+    A :class:`PlacementCommitted` is told apart by what it left (CodeRabbit
+    4606887339): the old name gone means the file moved and only the
+    quarantine's cleanup failed, answered as moved, never as a failure a
+    caller would undo by discarding the slot it is now in. The old name still
+    the same file as *target* (both names: it never moved) isn't a move: the
+    second name is taken back, once checked to be that same file, and the
+    failure raised, so the caller (a RomM swap parking its Source) fails
+    cleanly with things as they were. Taking it back failing raises too.
+    Raises OSError."""
+    try:
+        place_without_clobbering(
+            name, target, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd,
+            identity_sensitive=True,
+        )
+    except PlacementCommitted as exc:
+        here = stat_at(name, src_dir_fd)
+        if here is None:
+            logger.warning("staging: %s moved, but its cleanup failed: %s", name, exc)
+            return
+        there = stat_at(target, dst_dir_fd)
+        if there is None or (here.st_dev, here.st_ino) != (there.st_dev, there.st_ino):
+            # Its old name holds another file now: the one moved is at target.
+            logger.warning("staging: %s moved, but its cleanup failed: %s", name, exc)
+            return
+        os.unlink(target, dir_fd=dst_dir_fd)  # a second name of the same file
+        raise OSError(
+            exc.errno or errno.EIO, f"{name} wasn't moved, and was left as it was ({exc})",
+        ) from exc
 
 
 class StagedOutput:
@@ -173,7 +209,9 @@ class StagedOutput:
         target = as_name or name
         with self._mutex:
             self._require_open()
-            place_without_clobbering(
+            # A user's file (a RomM swap parks its Source): moved with no
+            # delete race where there is no no-replace rename (#431).
+            _move_committed(
                 name, target, src_dir_fd=self._folder_fd, dst_dir_fd=self._slot_fd,
             )
             return os.path.join(self.path, target)
@@ -186,7 +224,7 @@ class StagedOutput:
         target = as_name or name
         with self._mutex:
             self._require_open()
-            place_without_clobbering(
+            _move_committed(
                 name, target, src_dir_fd=self._slot_fd, dst_dir_fd=self._folder_fd,
             )
             return os.path.join(self.folder, target)

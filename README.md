@@ -1096,6 +1096,58 @@ becomes a Library, and the **Rules** view (in the sidebar) shows it:
 
 The RomM view's **Automation** tab is the same Rules view, opened on RomM.
 
+### Inboxes
+
+An Inbox is a folder whose new files are taken into one Library: point it at
+your downloads folder and new games are sorted into the Library for you. In the
+Rules view, pick the Library and type the folder under **Inboxes**, with how
+long a file must stay unchanged before it's taken (60 seconds by default).
+
+- The folder must be inside a Volume, and can't be inside a Library or hold
+  one (intake would read its own output, or take another Library's Images). A
+  folder can only be one Inbox, and a Library can't be registered around or
+  inside an Inbox either.
+- The Inbox is polled once a minute, on the same tick as the Rules, so it works
+  on NFS and SMB shares where change notifications don't. A file is taken only
+  once its size and modified time are the same across two polls at least the
+  settle time apart. That is an inactivity check, not proof a download
+  finished: a download that pauses for longer than the settle time looks
+  settled. When that matters, download somewhere else and move finished files
+  into the Inbox (a move within one filesystem lands whole at once). A sheet
+  and its tracks, or a split `Game.iso.0`, `.1`, ..., are one Image, and wait
+  for every file.
+- Its Platform is worked out the same way a folder Library does it: the header
+  first, then a folder named after a Platform. So `downloads/ps2/Game.iso` is a
+  PS2 Image even when its header can't be read.
+- It goes where **Where new Images go** says. If that Platform has an enabled
+  Rule, the Image is converted under it as a normal job (it shows in the queue,
+  counts toward the concurrency limit, gets a Ledger row and can be cancelled),
+  and the output is checked Intact wherever its mode can check it. With no enabled Rule, or a file already in
+  the Rule's format, it's copied as it is, as an **Inbox copy** job you can
+  cancel, which also waits for a slot under the same concurrency limit: the copy is read back and compared, checked Intact by its own tool
+  when one checks it, and only then appears in the Library. An archive
+  (`.zip`, `.7z`, `.rar`) is checked against limits first, since anyone who can
+  write the Inbox can drop one: by default its declared contents may be at most
+  32 GiB (`CHD_ARCHIVE_INBOX_MAX_TOTAL_SIZE`, or your `CHD_ARCHIVE_MAX_*` when
+  set) and expand at most 200 to 1 (`CHD_ARCHIVE_INBOX_MAX_RATIO`). One over
+  either stays in the Inbox with a Finding naming the limit, never checked or
+  copied.
+- The original then moves to `processed/` inside the Inbox, keeping its
+  folder, if it is still the file that was taken (one replaced meanwhile
+  stays in the Inbox to settle again). Intake never reads `processed/`. **Nothing is ever deleted**: clear
+  out `processed/` yourself once you're happy with the result.
+- A file it can't place stays in the Inbox with a Finding saying why: Unsorted
+  (no Platform), a Platform conflict, or not taken (a failed or cancelled
+  conversion, a name already in the Library, no folder for the Platform). It
+  isn't tried again until it changes: move it into a folder named after its
+  Platform, or rename it.
+- Each Inbox shows its last poll, the files waiting to settle, in progress and
+  held, and how many it has processed. **Remove** stops using the folder as an
+  Inbox and touches no file. Removing the Library removes its Inboxes.
+
+Unpacking archives, naming from a DAT, and asking RomM to scan after intake are
+on the way (#432, #433).
+
 ### Check Rules
 
 A check Rule checks Images instead of converting them: it has no target format.
@@ -1596,6 +1648,14 @@ The folder Library's layout picker and where new Images of each of its Platforms
 | Light | Dark |
 |-------|------|
 | ![Library layout, light](docs/screenshots/rules-folder-layout-light.png) | ![Library layout, dark](docs/screenshots/rules-folder-layout-dark.png) |
+
+#### Inboxes
+
+A folder saved as the Library's Inbox, with its settle time, last poll, the files waiting to settle, in progress, held with a Finding, and processed. See [Inboxes](#inboxes).
+
+| Light | Dark |
+|-------|------|
+| ![Inboxes, light](docs/screenshots/rules-inboxes-light.png) | ![Inboxes, dark](docs/screenshots/rules-inboxes-dark.png) |
 
 #### Check Rule
 
@@ -2973,6 +3033,8 @@ The Web UI communicates with a REST API that can also be used directly. Interact
 | `CHD_ARCHIVE_MAX_ENTRIES` | `5000` | Max archive members to list (0 disables limit) |
 | `CHD_ARCHIVE_MAX_MEMBER_SIZE` | `0` | Max size in bytes per archive member (0 disables limit) |
 | `CHD_ARCHIVE_MAX_TOTAL_SIZE` | `0` | Max total size in bytes for archive listings/extractions (0 disables limit) |
+| `CHD_ARCHIVE_INBOX_MAX_TOTAL_SIZE` | `34359738368` | For an archive an Inbox takes in: max declared uncompressed size in bytes, per member and in all, where `CHD_ARCHIVE_MAX_MEMBER_SIZE` / `CHD_ARCHIVE_MAX_TOTAL_SIZE` are 0 (either one set wins; 32 GiB; 0 disables limit) |
+| `CHD_ARCHIVE_INBOX_MAX_RATIO` | `200` | For an archive an Inbox takes in: max uncompressed-to-compressed ratio, per member and in all (0 disables limit) |
 | `CHD_PATCH_MAX_PATCH_SIZE` | `67108864` | Max size in bytes of an IPS or BPS patch, picked or uploaded (64 MiB; 0 disables limit) |
 | `CHD_PATCH_MAX_ROM_SIZE` | `536870912` | Max size in bytes of a ROM to patch, and of the patched ROM (512 MiB; 0 disables limit). The patch is applied in memory. |
 | `LOGLEVEL` | `INFO` | Log verbosity level (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`) |

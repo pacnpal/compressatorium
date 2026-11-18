@@ -16,6 +16,7 @@ import zipfile
 import pytest
 from services import partial_writes
 from services.archive_edit import rewrite_zip
+from utils import path_utils
 
 HOUR_AGO = time.time() - 3600
 
@@ -328,6 +329,9 @@ def test_a_temp_name_left_after_placing_keeps_its_record_until_swept(
         return real_unlink(path, *args, **kwargs)
 
     monkeypatch.setattr(os, "unlink", stuck)
+    # The link fallback: the slow placement this simulates is the hard link a
+    # filesystem without a no-replace rename takes (path_utils, #431).
+    monkeypatch.setattr(path_utils, "_rename_noreplace", lambda *_a: False)
 
     rewrite_zip(src, str(dst))
 

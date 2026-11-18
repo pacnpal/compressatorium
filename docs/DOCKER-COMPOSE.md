@@ -245,6 +245,8 @@ Volume behavior:
 | `CHD_ARCHIVE_MAX_ENTRIES` | `5000` | Max archive members to list (0 disables limit) |
 | `CHD_ARCHIVE_MAX_MEMBER_SIZE` | `0` | Max size in bytes per archive member (0 disables limit) |
 | `CHD_ARCHIVE_MAX_TOTAL_SIZE` | `0` | Max total size in bytes for archive listings/extractions (0 disables) |
+| `CHD_ARCHIVE_INBOX_MAX_TOTAL_SIZE` | `34359738368` | An Inbox archive's max declared uncompressed size, per member and in all, where the two above are 0 (32 GiB; 0 disables) |
+| `CHD_ARCHIVE_INBOX_MAX_RATIO` | `200` | An Inbox archive's max uncompressed-to-compressed ratio, per member and in all (0 disables) |
 | `CHD_PATCH_MAX_PATCH_SIZE` | `67108864` | Max size in bytes of an IPS or BPS patch, picked or uploaded (0 disables) |
 | `CHD_PATCH_MAX_ROM_SIZE` | `536870912` | Max size in bytes of a ROM to patch, and of the patched ROM (0 disables) |
 | `LOGLEVEL` | `INFO` | Log verbosity level (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`) |

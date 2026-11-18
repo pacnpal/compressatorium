@@ -43,10 +43,15 @@
     duplicate: 'Duplicate',
     romm_swap: 'RomM swap unfinished',
     rename_conflict: 'Rename conflict',
+    // A file an Inbox couldn't take into its Library (#431).
+    inbox_unsorted: 'Inbox: Unsorted',
+    inbox_conflict: 'Inbox: Platform conflict',
+    inbox_failed: 'Inbox: not taken',
   };
   const KIND_TONE = {
     platform_conflict: 'warning', not_intact: 'error', source_kept: 'warning',
     duplicate: 'info', romm_swap: 'warning', rename_conflict: 'warning',
+    inbox_unsorted: 'warning', inbox_conflict: 'warning', inbox_failed: 'error',
   };
   function bytes(n) {
     const size = Number(n) || 0;
@@ -309,9 +314,12 @@
             <!-- A check Rule's "not Intact" (#305), a Source a Rule could
                  not delete (#329) and an unfinished RomM swap (#392) are about
                  the file, not its Platform: Open folder reaches Verify, the
-                 backup and the file itself. -->
+                 backup and the file itself. An Inbox's file (#431) isn't in a
+                 Library folder to map: it moves into a Platform-named folder
+                 inside the Inbox instead. -->
             {#if row.kind !== 'not_intact' && row.kind !== 'source_kept' && row.kind !== 'duplicate'
-              && row.kind !== 'romm_swap' && row.kind !== 'rename_conflict'}
+              && row.kind !== 'romm_swap' && row.kind !== 'rename_conflict'
+              && !row.kind.startsWith('inbox_')}
               <Button
                 variant="ghost" size="sm" icon={mapIcon}
                 ariaLabel={`Set the Platform of the folder holding ${findingName(row)}`}

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import contextlib
 import ctypes
 import errno
 import functools
 import hashlib
 import io
+import logging
 import os
 import secrets
 import stat
@@ -17,6 +19,8 @@ from typing import NamedTuple, Optional
 
 from config import settings
 from utils.junk import is_junk_entry
+
+logger = logging.getLogger("compressatorium.path_utils")
 
 
 def strip_archive_path(path: str) -> str:
@@ -50,6 +54,7 @@ _NO_HARDLINK_ERRNOS = frozenset({
 
 def place_without_clobbering(
     src: str, dst: str, *, src_dir_fd: int | None = None, dst_dir_fd: int | None = None,
+    identity_sensitive: bool = False,
 ) -> None:
     """Move ``src`` to ``dst``, never replacing anything already at ``dst``.
 
@@ -59,12 +64,24 @@ def place_without_clobbering(
     file at ``dst`` raises ``FileExistsError`` and is never touched, however
     late the move lands, and nothing is created at ``dst`` before it succeeds:
 
-    1. A hard link, then removing ``src``. Most filesystems.
-    2. Without hard links (FAT/exFAT), the kernel's no-replace rename:
+    1. The kernel's no-replace rename, one atomic step:
        ``renameat2(RENAME_NOREPLACE)`` on Linux, ``renamex_np(RENAME_EXCL)``
        on macOS.
+    2. Where the kernel or filesystem has none, a hard link, then removing the
+       ``src`` name, only while it is still the file just linked (#431): a
+       file put under that name in between is never deleted.
     3. Neither available: refuse with ``OSError(ENOTSUP)`` rather than fall
        back to a check-then-rename that could overwrite another file.
+
+    That link fallback still has a window between its check and the unlink. A
+    move of a user's file, whose name someone else may reuse at any moment,
+    passes ``identity_sensitive=True`` and takes :func:`_move_by_quarantine`
+    instead, which never deletes a file it didn't move: ``move_anchored`` (the
+    Image rename and an Inbox's originals, #431) and ``StagedOutput.take`` /
+    ``restore`` (a RomM swap parking its Source, #391). The plain fallback is
+    kept for the app's own files, whose names nobody else writes: a staging
+    slot's placed entries, a temp file (``archive_edit``, the Referrer
+    writers), a tool's product (``output_placement``).
 
     Both paths must be on one filesystem, as for ``os.replace``.
 
@@ -73,11 +90,20 @@ def place_without_clobbering(
     ``renameat2`` / ``renameatx_np``), so a folder swapped for a link after
     the caller opened it can't redirect the move, and a link at ``src`` is
     moved as the link, never followed. A folder entry (no hard links to
-    folders) takes the no-replace rename. Placing a staged output (#398).
+    folders) needs the no-replace rename. Placing a staged output (#398).
     """
     at = src_dir_fd is not None or dst_dir_fd is not None
     if at and (src_dir_fd is None or dst_dir_fd is None):
         raise ValueError("Pass both src_dir_fd and dst_dir_fd, or neither")
+    if at:
+        renamed = _rename_noreplace_at(src_dir_fd, src, dst_dir_fd, dst)
+    else:
+        renamed = _rename_noreplace(src, dst)
+    if renamed:
+        return
+    if identity_sensitive:
+        _move_by_quarantine(src, dst, src_dir_fd, dst_dir_fd)
+        return
     try:
         if at:
             os.link(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd,
@@ -89,12 +115,6 @@ def place_without_clobbering(
     except OSError as exc:
         if exc.errno not in _NO_HARDLINK_ERRNOS:
             raise
-        if at:
-            renamed = _rename_noreplace_at(src_dir_fd, src, dst_dir_fd, dst)
-        else:
-            renamed = _rename_noreplace(src, dst)
-        if renamed:
-            return
         raise OSError(
             errno.ENOTSUP,
             "the output filesystem supports neither hard links nor an atomic "
@@ -107,10 +127,227 @@ def place_without_clobbering(
     # I/O error) must not be reported as a failed placement: the product is at
     # dst, and a caller told otherwise would leave it orphaned there. A stray
     # source sits in the caller's work dir, which the caller sweeps anyway.
+    # The source name is removed only while it is still the file just linked:
+    # one put there in between is someone else's, and stays.
+    try:
+        linked = os.stat(dst, dir_fd=dst_dir_fd, follow_symlinks=False)
+        here = os.stat(src, dir_fd=src_dir_fd, follow_symlinks=False)
+    except OSError:
+        return
+    if (here.st_dev, here.st_ino) != (linked.st_dev, linked.st_ino):
+        logger.warning(
+            "place_without_clobbering: %s was replaced while it was moved; "
+            "the replacement is left where it is", src,
+        )
+        return
     try:
         os.unlink(src, dir_fd=src_dir_fd)
     except OSError:
         pass
+
+
+def _link_no_clobber(src: str, dst: str, src_dir_fd: int | None, dst_dir_fd: int | None) -> None:
+    """``link(src, dst)``, never followed; ``FileExistsError`` when *dst* is
+    taken, ``OSError(ENOTSUP)`` where the filesystem has no hard links."""
+    try:
+        os.link(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd, follow_symlinks=False)
+    except FileExistsError:
+        raise
+    except OSError as exc:
+        if exc.errno not in _NO_HARDLINK_ERRNOS:
+            raise
+        raise OSError(
+            errno.ENOTSUP,
+            "the filesystem supports neither hard links nor an atomic no-replace "
+            "rename, so the file can't be moved without risking another one",
+            dst,
+        ) from exc
+
+
+def _private_folder(parent: int, *, prefix: str = ".compressatorium-q-") -> tuple[str, int]:
+    """A fresh folder in the open folder *parent* (same filesystem) that only
+    this app's user can enter, and its descriptor, opened with no link
+    followed. Made through *parent* itself (``mkdir`` with ``dir_fd``), so a
+    parent path swapped for a link can't redirect it; owner-only
+    (``S_IRWXU``); a random name already taken is tried again, never reused
+    (``mkdir`` never takes an existing name)."""
+    for _ in range(100):
+        name = short_temp_name(prefix=prefix)
+        try:
+            os.mkdir(name, stat.S_IRWXU, dir_fd=parent)
+        except FileExistsError:
+            continue
+        try:
+            fd = os.open(name, _BENEATH_DIR_FLAGS, dir_fd=parent)
+        except OSError:
+            with contextlib.suppress(OSError):
+                os.rmdir(name, dir_fd=parent)
+            raise
+        return name, fd
+    raise OSError(errno.EEXIST, "No free name for a private folder")
+
+
+class PlacementCommitted(OSError):
+    """:func:`place_without_clobbering` failed with the file published at its
+    destination (#431): after the move (its old name gone), or before it when
+    the destination couldn't be taken back (both names left). Either way a
+    caller that rolls back treats it as moved."""
+
+
+def _same_inode(a: os.stat_result | None, b: os.stat_result | None) -> bool:
+    return a is not None and b is not None and (a.st_dev, a.st_ino) == (b.st_dev, b.st_ino)
+
+
+def _move_by_quarantine(
+    src: str, dst: str, src_dir_fd: int | None, dst_dir_fd: int | None,
+) -> None:
+    """The fallback for moving a user's file with no delete race (#431), where
+    there is no atomic no-replace rename:
+
+    0. A fresh private folder beside ``src`` (:func:`_private_folder`: owner
+       only, same filesystem) is made first, so nothing is published if it
+       can't be.
+    1. ``link(src, dst)``: no clobber, ``dst`` taken raises.
+    2. ``rename(src, <private>/<name>)``: atomic, and no name in the shared
+       folder is involved, so none can collide; the quarantined entry is
+       reachable only inside the private folder.
+    3. The quarantined entry is the inode linked: unlink it inside the private
+       folder, then remove that folder. Done, and a file put at ``src`` after
+       step 2 is never touched. It isn't (``src`` was replaced between steps 1
+       and 2): the file moved is the one that was there at step 1, now at
+       ``dst`` alone, and is kept there; the replacement is put back at
+       ``src`` (``link``, which fails if ``src`` was made again meanwhile) and
+       the private folder removed. If it can't be put back it stays in the
+       private folder, and :class:`MoveRollbackFailed` names it.
+
+    A failure between the link and the quarantine rename (the file still at
+    ``src``) unlinks ``dst`` again, once it is checked to be that same inode,
+    and raises: nothing was moved. If ``dst`` can't be unlinked it raises
+    :class:`PlacementCommitted` instead, the first failure chained. A failure
+    after the rename raises :class:`PlacementCommitted`: the file is at ``dst``
+    and its old name gone.
+
+    Nothing is ever deleted that a name doesn't also keep: each unlink removes
+    a second name of an inode another name still holds.
+    """
+    if src_dir_fd is None:
+        parent = os.open(os.path.dirname(src) or ".", _BENEATH_DIR_FLAGS)
+    else:
+        parent = src_dir_fd
+    name = os.path.basename(src) if src_dir_fd is None else src
+    try:
+        private, private_fd = _private_folder(parent)
+        try:
+            _quarantine_move(src, dst, src_dir_fd, dst_dir_fd, parent, name, private, private_fd)
+        finally:
+            os.close(private_fd)
+            with contextlib.suppress(OSError):
+                os.rmdir(private, dir_fd=parent)  # gone unless something is kept in it
+    finally:
+        if src_dir_fd is None:
+            os.close(parent)
+
+
+def _quarantine_move(
+    src: str, dst: str, src_dir_fd: int | None, dst_dir_fd: int | None,
+    parent: int, name: str, private: str, private_fd: int,
+) -> None:
+    """Steps 1 to 3 of :func:`_move_by_quarantine`, the private folder made."""
+    _link_no_clobber(src, dst, src_dir_fd, dst_dir_fd)
+    linked: os.stat_result | None = None
+    try:
+        linked = os.stat(dst, dir_fd=dst_dir_fd, follow_symlinks=False)
+        os.rename(name, name, src_dir_fd=parent, dst_dir_fd=private_fd)
+    except FileNotFoundError:
+        return  # the src name is gone already: the file is at dst
+    except BaseException as failure:
+        # Nothing has moved yet: the file is still at src. The name published
+        # at dst goes again, only while it is that same file. If it can't, dst
+        # stays published beside src: answered PlacementCommitted, the first
+        # failure chained, so a caller rolls it back as moved
+        # (CodeRabbit 4606441954).
+        try:
+            here = _stat_unless_gone(name, parent)
+            there = _stat_unless_gone(dst, dst_dir_fd)
+        except OSError as exc:
+            # Only ENOENT says dst is gone; any other error means it can't be
+            # told, so dst may still be published (CodeRabbit 4606738359).
+            logger.error(
+                "place_without_clobbering: moving %s failed (%s) and %s couldn't be "
+                "checked: %s", src, failure, dst, exc,
+            )
+            raise PlacementCommitted(
+                exc.errno or errno.EIO,
+                f"{src} was linked at {dst}, moving it failed ({failure}), and "
+                f"{dst} couldn't be checked ({exc})",
+            ) from failure
+        if _same_inode(here, there):
+            try:
+                os.unlink(dst, dir_fd=dst_dir_fd)
+            except OSError as exc:
+                logger.error(
+                    "place_without_clobbering: moving %s failed (%s) and %s couldn't "
+                    "be taken back: %s", src, failure, dst, exc,
+                )
+                raise PlacementCommitted(
+                    exc.errno or errno.EIO,
+                    f"{src} was linked at {dst}, moving it failed ({failure}), and "
+                    f"{dst} couldn't be taken back ({exc})",
+                ) from failure
+        elif there is not None and (linked is None or _same_inode(there, linked)):
+            # src was replaced (or removed) after the link: dst holds the
+            # original, its only name now, and stays (CodeRabbit 4607070950).
+            # (Its link unchecked, it may be: taken as published.)
+            logger.error(
+                "place_without_clobbering: %s was replaced while it was moved and "
+                "moving it failed (%s); the original stays at %s", src, failure, dst,
+            )
+            raise PlacementCommitted(
+                getattr(failure, "errno", None) or errno.EIO,
+                f"{src} was replaced while it was moved; the original is at {dst}",
+            ) from failure
+        raise
+    try:
+        held = os.stat(name, dir_fd=private_fd, follow_symlinks=False)
+        if not _same_inode(held, linked):
+            # Replaced between the link and the quarantine: put it back.
+            try:
+                _link_no_clobber(name, name, private_fd, parent)
+            except OSError as exc:
+                logger.error(
+                    "place_without_clobbering: %s was replaced while it was moved "
+                    "and the replacement couldn't be put back; it is kept in %s: %s",
+                    src, private, exc,
+                )
+                raise MoveRollbackFailed(
+                    exc.errno or errno.EIO,
+                    f"{src} was replaced while it was moved, and the replacement "
+                    f"couldn't be put back: it is kept in {private} beside it ({exc})",
+                ) from exc
+        os.unlink(name, dir_fd=private_fd)
+    except MoveRollbackFailed:
+        raise
+    except OSError as exc:
+        raise PlacementCommitted(
+            exc.errno or errno.EIO,
+            f"{src} reached {dst}, but finishing the move failed ({exc})",
+        ) from exc
+
+
+def _stat_unless_gone(name: str, folder: int | None) -> os.stat_result | None:
+    """*name*'s stat through *folder* (no link followed), None only when it is
+    gone (ENOENT). Any other error is raised: it can't be told."""
+    try:
+        return os.stat(name, dir_fd=folder, follow_symlinks=False)
+    except FileNotFoundError:
+        return None
+
+
+def _stat_or_none(name: str, folder: int | None) -> os.stat_result | None:
+    try:
+        return os.stat(name, dir_fd=folder, follow_symlinks=False)
+    except OSError:
+        return None
 
 
 # errnos meaning "this kernel/filesystem has no no-replace rename", as opposed
@@ -1171,6 +1408,369 @@ def open_dir_beneath(root: str, relative: str = "") -> int:
         os.close(fd)
         raise
     return fd
+
+
+# ---- anchored moves: files bound to the folders that were checked ----------
+#
+# One helper for every move of a user's file that was checked first: the Image
+# rename (#425) and an Inbox moving its originals to ``processed/`` (#431). A
+# folder is opened beneath its Volume root with no link on the way
+# (:class:`AnchoredFolders`); each file is looked at and moved through those
+# descriptors (``*at`` calls), only while it is still the file that was
+# snapshotted (:func:`file_snapshot`), never over another file, and the entry
+# that landed is checked again (:func:`move_anchored`). A folder swapped for a
+# link, or a file swapped under the checked name, can't redirect a move.
+
+
+def file_snapshot(st: os.stat_result) -> dict[str, int]:
+    """A file's identity as a delete snapshot has it: size, mtime, inode, device."""
+    return {
+        "size": st.st_size, "mtime_ns": st.st_mtime_ns,
+        "inode": st.st_ino, "device": st.st_dev,
+    }
+
+
+def stat_at(name: str, folder: int) -> os.stat_result | None:
+    """*name* in the open folder *folder*, not followed; None when it isn't there."""
+    return _stat_unless_gone(name, folder)
+
+
+class AnchoredFolders:
+    """Folders opened beneath their Volume root with no link followed, one
+    descriptor per real path, closed together (:meth:`close`). Blocking."""
+
+    def __init__(self) -> None:
+        self._fds: dict[str, int] = {}
+
+    @property
+    def descriptors(self) -> dict[str, int]:
+        """The folders open now: real path -> descriptor."""
+        return dict(self._fds)
+
+    def open(self, folder: str) -> tuple[int, str]:
+        """``(descriptor, real path)`` of *folder*. Raises OSError when it isn't
+        confirmed inside a Volume, or can't be opened without following a link."""
+        real = os.path.realpath(folder)
+        if real in self._fds:
+            return self._fds[real], real
+        root = lock_boundary_root(real)
+        if root is None or volume_containment(real, treat_archives=False) is not True:
+            raise OSError(f"{real} isn't confirmed inside the configured Volumes")
+        relative = os.path.relpath(real, str(root))
+        fd = open_dir_beneath(str(root), "" if relative == "." else relative)
+        self._fds[real] = fd
+        return fd, real
+
+    def close(self) -> None:
+        for fd in self._fds.values():
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        self._fds.clear()
+
+
+class MoveRollbackFailed(OSError):
+    """:func:`move_anchored` moved a file that wasn't the one expected and
+    couldn't move it back: it is still at the destination. The caller reports
+    it; it is never quietly taken as a file that merely changed."""
+
+
+def move_anchored(
+    name: str, src: int, dst: int, expected: dict[str, int], *, new_name: str | None = None,
+) -> None:
+    """Move *name* from the open folder *src* to *dst* (as *new_name*, else
+    its own name), only while it is the file *expected* (:func:`file_snapshot`),
+    never over another file (:func:`place_without_clobbering` with folder
+    descriptors, identity-sensitive: its fallback never deletes a file it
+    didn't move). The entry that landed is checked again: one swapped in under
+    the name between the check and the move is moved back (never over another
+    file either) and nothing stays moved. Raises ``OSError(ESTALE)`` when the
+    file isn't the one expected, :class:`MoveRollbackFailed` when such a file
+    couldn't be moved back (logged too), and whatever the move raises."""
+    target = new_name or name
+    st = stat_at(name, src)
+    if st is None or not stat.S_ISREG(st.st_mode) or file_snapshot(st) != expected:
+        raise OSError(errno.ESTALE, f"{name} changed since it was checked")
+    place_without_clobbering(
+        name, target, src_dir_fd=src, dst_dir_fd=dst, identity_sensitive=True,
+    )
+    try:
+        landed = stat_at(target, dst)
+    except OSError as exc:
+        # It moved; only what landed can't be checked. Never a plain error a
+        # caller would take for nothing moved (CodeRabbit outside-diff note).
+        raise PlacementCommitted(
+            exc.errno or errno.EIO,
+            f"{name} was moved to {target}, but what landed couldn't be checked ({exc})",
+        ) from exc
+    if landed is not None and file_snapshot(landed) == expected:
+        return
+    try:
+        place_without_clobbering(
+            target, name, src_dir_fd=dst, dst_dir_fd=src, identity_sensitive=True,
+        )
+    except OSError as exc:
+        # Its old name taken again meanwhile, or the folder failing: nothing
+        # is replaced, and the caller is told where the file was left.
+        logger.error(
+            "move_anchored: %s was replaced as it was moved and couldn't be put "
+            "back (it is still at %s): %s", name, target, exc,
+        )
+        raise MoveRollbackFailed(
+            exc.errno or errno.EIO,
+            f"{name} was replaced as it was moved and couldn't be put back "
+            f"(it is still at {target}): {exc}",
+        ) from exc
+    raise OSError(errno.ESTALE, f"{name} was replaced as it was moved")
+
+
+def _folder_beneath_root(path: str, root: str) -> tuple[int, str]:
+    """The folder holding *path*, opened beneath *root* with no link followed
+    (:func:`open_dir_beneath`), and *path*'s name. *path* is taken lexically
+    under *root* (both as given, never resolved). Raises OSError."""
+    rel = os.path.relpath(os.path.dirname(os.path.abspath(path)), os.path.abspath(root))
+    if rel == os.pardir or rel.startswith(os.pardir + os.sep) or os.path.isabs(rel):
+        raise OSError(errno.EACCES, f"{path} isn't under {root}")
+    fd = open_dir_beneath(os.path.abspath(root), "" if rel == "." else rel.replace(os.sep, "/"))
+    return fd, os.path.basename(path)
+
+
+def source_identity(path: str, root: str) -> dict:
+    """What a queued conversion carries to be sure, when it runs, that it reads
+    the file it was queued for (#431): *path*'s :func:`file_snapshot`, read
+    beneath *root* with no link followed, and *root*. Raises OSError when it
+    can't be read that way or isn't a regular file. Blocking."""
+    fd, name = _folder_beneath_root(path, root)
+    try:
+        st = stat_at(name, fd)
+    finally:
+        os.close(fd)
+    if st is None or not stat.S_ISREG(st.st_mode):
+        raise OSError(errno.ENOENT, f"{path} isn't a regular file under {root}")
+    return {"root": os.path.abspath(root), "snapshot": file_snapshot(st)}
+
+
+def source_identity_problem(path: str, identity: dict) -> str | None:
+    """Why *path* isn't the Source a job was queued for (:func:`source_identity`),
+    or None. Fail closed: outside the Volumes, reached through a link, gone, or
+    another file (device, inode, size or mtime) are all reasons. Blocking."""
+    if not is_within_configured_volumes(path, treat_archives=False):
+        return "the Source is no longer inside the configured Volumes"
+    try:
+        fd, name = _folder_beneath_root(path, identity["root"])
+    except OSError as exc:
+        return (
+            f"the Source can't be reached under {identity['root']} without "
+            f"following a link ({exc})"
+        )
+    try:
+        st = stat_at(name, fd)
+    finally:
+        os.close(fd)
+    if st is None:
+        return "the Source is gone"
+    if not stat.S_ISREG(st.st_mode) or file_snapshot(st) != identity["snapshot"]:
+        return "the Source isn't the file this job was queued for (it was replaced or changed)"
+    return None
+
+
+# A bound Source's folder in the app's work area (``bind_source``'s *into*).
+BIND_PREFIX = "bind_"
+# How much a bind's copy fallback reads at a time; each chunk reports progress.
+_BIND_CHUNK = 4 * 1024 * 1024
+
+
+def _read_chunk(fd: int, size: int) -> bytes:
+    return os.read(fd, size)
+_NOFOLLOW_FLAG = getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+# Linking can't be done here (another filesystem, a NAS that refuses links):
+# the bound copy is made through a descriptor that was checked instead.
+_NO_LINK_ERRNOS = frozenset({
+    errno.EXDEV, errno.ENOTSUP, errno.EOPNOTSUPP, errno.EPERM, errno.EMLINK,
+})
+
+
+def _bind_one(
+    name: str, folder_fd: int, bound_fd: int, expected: dict, progress=None,
+) -> bool:
+    """Put *name* (in *folder_fd*) into the private folder *bound_fd*: a hard
+    link, checked to be the inode *expected*; or, where links can't be made, a
+    copy read through a descriptor opened with no link followed and checked
+    the same way before and after. True for a link, False for a copy.
+    Raises OSError (ESTALE: not the file)."""
+    try:
+        os.link(name, name, src_dir_fd=folder_fd, dst_dir_fd=bound_fd, follow_symlinks=False)
+    except OSError as exc:
+        if exc.errno not in _NO_LINK_ERRNOS:
+            raise
+        _copy_checked(name, folder_fd, bound_fd, expected, progress)
+        return False
+    fd = os.open(name, os.O_RDONLY | _NOFOLLOW_FLAG, dir_fd=bound_fd)
+    try:
+        if file_snapshot(os.fstat(fd)) != expected:
+            raise OSError(errno.ESTALE, f"{name} isn't the file that was checked")
+    finally:
+        os.close(fd)
+    return True
+
+
+def _copy_checked(
+    name: str, folder_fd: int, bound_fd: int, expected: dict, progress=None,
+) -> None:
+    src = os.open(name, os.O_RDONLY | _NOFOLLOW_FLAG, dir_fd=folder_fd)
+    try:
+        if file_snapshot(os.fstat(src)) != expected:
+            raise OSError(errno.ESTALE, f"{name} isn't the file that was checked")
+        dst = os.open(
+            name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW_FLAG, 0o600,
+            dir_fd=bound_fd,
+        )
+        with os.fdopen(dst, "wb") as out:
+            while chunk := _read_chunk(src, _BIND_CHUNK):
+                out.write(chunk)
+                if progress is not None:
+                    progress(name)
+        if file_snapshot(os.fstat(src)) != expected:
+            raise OSError(errno.ESTALE, f"{name} changed while it was copied")
+    finally:
+        os.close(src)
+
+
+def _held(st: os.stat_result) -> tuple[int, int, int]:
+    """What a bound file must keep while its job runs: size, mtime, ctime
+    (nanoseconds). An in-place write through another name of a linked
+    inode moves at least one of them."""
+    return (st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+
+
+class BoundSource:
+    """A Source bound by :func:`bind_source` into a folder of the app's own
+    work area: ``path`` (that folder), ``read_path`` (the Source in it).
+
+    It keeps the descriptors from bind time: the folder's and its parent's,
+    which :meth:`close` removes it through, never by its path, and one per
+    bound file, which :meth:`changed` checks."""
+
+    def __init__(self, path: str, read_path: str, parent_fd: int, name: str, fd: int) -> None:
+        self.path = path
+        self.read_path = read_path
+        self._parent_fd = parent_fd
+        self._name = name
+        self._fd = fd
+        # Bound name -> (its open descriptor, :func:`_held` at bind time).
+        self._files: dict[str, tuple[int, tuple[int, int, int]]] = {}
+        self._closed = False
+        self._lock = threading.Lock()
+
+    def _hold(self, name: str, expected: dict | None) -> None:
+        """Open the bound *name* (no link followed) and keep it, with what it
+        is now; a link must still be the file *expected* (a copy, None, is
+        the app's own). Called by :func:`bind_source`. Raises OSError."""
+        fd = os.open(name, os.O_RDONLY | _NOFOLLOW_FLAG, dir_fd=self._fd)
+        st = os.fstat(fd)
+        self._files[name] = (fd, _held(st))
+        if expected is not None and file_snapshot(st) != expected:
+            raise OSError(errno.ESTALE, f"{name} changed as it was bound")
+
+    def changed(self) -> str | None:
+        """The first bound file whose size, mtime or ctime is no longer what it
+        was at bind time, read through its own descriptor, or None. A hard
+        link shares its inode with the Inbox's file, so a resumed download
+        writing that file in place shows here (Codex 4606539513). Blocking."""
+        for name, (fd, then) in self._files.items():
+            if _held(os.fstat(fd)) != then:
+                return name
+        return None
+
+    def close(self) -> None:
+        """Remove the bound folder: its own names through its kept descriptor,
+        then the folder from its parent, only while that name is still this
+        folder. Idempotent; never raises. Blocking."""
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+        for fd, _then in self._files.values():
+            with contextlib.suppress(OSError):
+                os.close(fd)
+        try:
+            for entry in os.listdir(self._fd):
+                try:
+                    os.unlink(entry, dir_fd=self._fd)
+                except OSError:
+                    logger.warning("bind: couldn't remove %s in %s", entry, self.path)
+            own = os.fstat(self._fd)
+            there = _stat_or_none(self._name, self._parent_fd)
+            if _same_inode(own, there):
+                os.rmdir(self._name, dir_fd=self._parent_fd)
+            else:
+                logger.warning("bind: %s isn't the bound folder any more; left alone", self.path)
+        except OSError:
+            logger.warning("bind: couldn't remove %s", self.path, exc_info=True)
+        finally:
+            for fd in (self._fd, self._parent_fd):
+                with contextlib.suppress(OSError):
+                    os.close(fd)
+
+def bind_source(path: str, identity: dict, into: str, progress=None) -> BoundSource:
+    """Bind a queued conversion's Source before anything reads it (#431).
+
+    *into* is an empty folder the job made in the app's own work area
+    (``disk.create_scratch_dir``), never in the Inbox: no Inbox writer has
+    any right on its parent chain, so it can't be renamed or swapped for a
+    link (Codex 4606562350). The Source and each of its members
+    (``identity["members"]``, a sheet's tracks) are put in it through
+    descriptors opened beneath the identity's root with no link followed,
+    each checked to be the inode that was validated: a hard link where *into*
+    is on the Inbox's filesystem, else a copy read through a checked
+    descriptor. Everything the job then does reads these. Raises OSError,
+    leaving *into* removed. Blocking. :meth:`BoundSource.close` removes it
+    through the descriptors kept from here.
+
+    *progress* (a ``subprocess_runner.Progress``) is called after every chunk
+    a copy reads, and once more before returning, so a stall-bounded caller
+    gives up only on a copy that stopped moving, and a caller that gave up or
+    was cancelled stops it at its next report, removing what it made."""
+    root = os.path.abspath(identity["root"])
+    into = os.path.abspath(into)
+    parent, private = os.path.split(into)
+    try:
+        folder_fd, name = _folder_beneath_root(path, root)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.rmdir(into)
+        raise
+    try:
+        parent_fd = os.open(parent, _BENEATH_DIR_FLAGS)
+        try:
+            bound_fd = os.open(private, _BENEATH_DIR_FLAGS, dir_fd=parent_fd)
+        except BaseException:
+            os.close(parent_fd)
+            with contextlib.suppress(OSError):
+                os.rmdir(into)
+            raise
+        bound = BoundSource(into, os.path.join(into, name), parent_fd, private, bound_fd)
+        try:
+            files = {name: identity["snapshot"], **identity.get("members", {})}
+            linked = {
+                each: _bind_one(each, folder_fd, bound_fd, expected, progress)
+                for each, expected in files.items()
+            }
+            # Baselines only once every name is bound: linking a second name
+            # of one inode (two track names hard-linked together) moves its
+            # ctime (CodeRabbit 4606887346). Each is still checked against
+            # the identity validated.
+            for each, expected in files.items():
+                bound._hold(each, expected if linked[each] else None)
+            if progress is not None:
+                progress()  # a caller that gave up makes this raise: cleaned below
+        except BaseException:
+            bound.close()
+            raise
+    finally:
+        os.close(folder_fd)
+    return bound
 
 
 def read_beneath(root: str, relative: str, *, max_bytes: int) -> bytes:

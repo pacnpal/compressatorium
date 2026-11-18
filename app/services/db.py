@@ -420,6 +420,28 @@ class FolderLibraryRecord(Base):
     layout = Column(String, nullable=False, default="esde", server_default=text("'esde'"))
 
 
+class InboxRecord(Base):
+    """A folder registered as an Inbox for one Library (#431).
+
+    ``folder`` is the resolved folder, inside a Volume, never inside or
+    holding its Library's root. ``library_id`` is the Library it feeds
+    (``romm``, ``folder:3``). A file there is taken once its size and mtime
+    have stayed the same for ``settle_seconds``. ``processed_count`` is how
+    many Images intake has placed in the Library and moved to ``processed/``.
+    Removing a row never touches files.
+    """
+
+    __tablename__ = "inboxes"
+    # AUTOINCREMENT: a removed Inbox's id (its Findings' keys) is never reused.
+    __table_args__ = {"sqlite_autoincrement": True}
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    folder = Column(String, nullable=False, unique=True)
+    library_id = Column(String, nullable=False)
+    settle_seconds = Column(Integer, nullable=False, default=60)
+    processed_count = Column(Integer, nullable=False, default=0)
+    created_at = Column(String, nullable=False)
+
+
 class PlatformMappingRecord(Base):
     """The user's word on a folder's Platform: "this folder is PSP" (#304).
 

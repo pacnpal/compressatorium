@@ -367,6 +367,28 @@ async def _verify(
     )
 
 
+async def verify_file(
+    path: str, tool_id: str, cancel_event: asyncio.Event | None = None,
+) -> tuple[str, str, bool]:
+    """One file's Verify, as a check Rule runs it: ``(outcome, message, stop)``.
+
+    On the ``verify`` lane, through the same call and bound as :func:`_verify`.
+    For a file nothing else holds yet: an Inbox's staged copy (#431), checked
+    Intact before it is placed. ``CANCELLED`` when *cancel_event* fires first.
+    ``stop`` is #306's ``stops_verify_batch``, kept for the caller: something
+    is still reading the storage, so it must not open its next file.
+    """
+    token = await _acquire_slot(cancel_event)
+    if token is None:
+        return CANCELLED, "", False
+    async with token:
+        check = Check(
+            key=path, name=os.path.basename(path), path=path, size=0,
+            tool_id=tool_id, fingerprint="",
+        )
+        return await _verify(check, cancel_event)
+
+
 def start(
     library: Library, picked: list[Check], *, generation: int,
     on_finished: Callable[[frozenset[str]], Awaitable[None]] | None = None,

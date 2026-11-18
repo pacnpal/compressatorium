@@ -837,3 +837,48 @@ async def test_a_swap_left_for_the_same_reason_warns_once_then_again_on_a_new_on
     await swap_recovery.recover_once()
     assert _rows()[0]["state"] == "done"
     assert _swap_findings() == []
+
+
+@pytest.mark.asyncio
+async def test_a_parked_name_that_is_a_second_link_of_the_source_is_dropped(vol, romm):
+    """CodeRabbit 4606887339, ruled: a park that left both names (the Source
+    never moved; the slot holds a second hard link to it) is reconciled by
+    dropping that link, never refused as something that isn't the Source.
+    Recovery then sees the Source where RomM moved it and nothing parked:
+    the plain "moved but not parked" Finding, with the link gone."""
+    seed = Seed(vol, romm, original=True)
+    seed.romm_renamed()
+    seed.park.mkdir(parents=True)
+    os.link(seed.output, seed.parked)  # both names: the take never moved it
+    seed.row("parking")
+
+    await _recover()
+
+    assert not seed.parked.exists()
+    assert seed.output.read_bytes() == SOURCE_BYTES
+    assert romm.renames == [] and romm.scans == []
+    (finding,) = _swap_findings()
+    assert str(seed.output) in finding["reason"]
+    assert str(seed.parked) not in finding["reason"]
+
+
+@pytest.mark.asyncio
+async def test_a_second_link_beside_a_source_still_in_place_is_settled(vol, romm):
+    """CodeRabbit 4607068244 (a): once the second link is dropped, a Source
+    still in place under the name RomM has for it is the state before the
+    swap moved anything: the row settles on its own, the output the job kept
+    is placed beside the Source, and there is no Finding."""
+    seed = Seed(vol, romm, original=True)
+    seed.park.mkdir(parents=True)
+    os.link(seed.source, seed.parked)  # both names: the park never moved it
+    seed.row("parking")
+
+    await _recover()
+
+    (row,) = _rows()
+    assert row["state"] in ("failed", "rolled_back"), row
+    assert not seed.parked.exists()
+    assert seed.source.read_bytes() == SOURCE_BYTES
+    assert seed.output.read_bytes() == OUTPUT_BYTES
+    assert romm.renames == [] and romm.scans == []
+    assert _swap_findings() == []

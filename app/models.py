@@ -81,6 +81,9 @@ class ConversionMode(str, Enum):
     # A confirmed rename of Images to their DAT names (#425): each one renamed
     # through the Referrer hook, nothing converted or deleted. External.
     DAT_RENAME = "dat_rename"
+    # An Inbox copying an Image into its Library as it is (#431): no Rule
+    # converts it. External: it converts nothing.
+    INBOX_COPY = "inbox_copy"
 
 
 class DuplicateAction(str, Enum):
@@ -259,6 +262,34 @@ class ConversionJob(BaseModel):
     # The planned Source files still to remove when the delete step stopped
     # part way (#329): the Rule's sweep finishes them, else a Finding says so.
     _unfinished_delete: list[str] | None = PrivateAttr(default=None)
+    # The Source's identity when the job was queued and the folder it must stay
+    # under (``utils.path_utils.source_identity``, #431), or None. Checked under
+    # the job's Source lock right before the tool runs.
+    _source_identity: dict | None = PrivateAttr(default=None)
+    # Where a job with a ``_source_identity`` reads its Source once bound
+    # (``utils.path_utils.bind_source``): the ``BoundSource`` (a folder of
+    # the job's own in the app's work area, removed through its kept
+    # descriptors), and the Source's path in it. None until bound, and for
+    # every other job. Runtime-only (``RUNTIME_ONLY_PRIVATES``).
+    _bound: object | None = PrivateAttr(default=None)
+    _read_path: str | None = PrivateAttr(default=None)
+
+    def archived_copy(self) -> "ConversionJob":
+        """A deep copy for the archive of finished jobs, without the
+        runtime-only private state (``RUNTIME_ONLY_PRIVATES``: open handles,
+        locks), which can't be copied and means nothing once archived. The
+        live job is never touched (Codex 4606539536)."""
+        shallow = self.model_copy()
+        shallow.__pydantic_private__ = dict(shallow.__pydantic_private__ or {})
+        for name in RUNTIME_ONLY_PRIVATES:
+            shallow.__pydantic_private__[name] = None
+        return shallow.model_copy(deep=True)
+
+
+# A job's private attributes that hold runtime handles (the bound Source's
+# descriptors and lock, #431): left out of every archived copy. Add any new
+# private that holds a handle, a lock or a thread here.
+RUNTIME_ONLY_PRIVATES: tuple[str, ...] = ("_bound",)
 
 
 class JobCreateRequest(BaseModel):

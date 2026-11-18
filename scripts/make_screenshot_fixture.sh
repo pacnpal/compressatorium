@@ -153,6 +153,11 @@ PY
 mkdir -p "$root/ROM Library/roms/snes"
 printf 'Compressatorium sample cartridge: a made-up homebrew placeholder.\n' \
   > "$root/ROM Library/roms/snes/castle-quest.sfc"
+# An Inbox (#431) beside the Library, not inside it: a download waiting to
+# settle in a Platform folder, and one with no Platform that will be held.
+mkdir -p "$root/ROM Library/downloads/ps2"
+placeholder "$root/ROM Library/downloads/ps2/shadow-colossus.iso" 1024
+placeholder "$root/ROM Library/downloads/unknown-disc.iso" 512
 
 # Rename to DAT name for a cue Image (#426): a made-up two-track disc in a
 # folder named after it. The shot's synthetic DAT names the sheet by its SHA1

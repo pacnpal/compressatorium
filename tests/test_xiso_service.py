@@ -17,6 +17,7 @@ import struct
 from pathlib import Path
 
 import pytest
+from utils import path_utils
 
 from app.services.tools import registry
 from app.services.tools.spec import ModeKind
@@ -867,6 +868,9 @@ async def test_a_hung_final_placement_is_bounded(tmp_path, scratch, monkeypatch)
     started, release, finished = (MODULE.threading.Event() for _ in range(3))
     monkeypatch.setattr(SERVICE._runner, "run", _fake_run)
     monkeypatch.setattr(MODULE.os, "link", _late_link(started, release, finished))
+    # The link fallback: the slow placement this simulates is the hard link a
+    # filesystem without a no-replace rename takes (path_utils, #431).
+    monkeypatch.setattr(path_utils, "_rename_noreplace", lambda *_a: False)
     try:
         with pytest.raises(RuntimeError, match="Placing the XISO output stopped responding"):
             async for _ in SERVICE.convert(str(src), str(out), "xiso_rewrite"):
@@ -892,6 +896,9 @@ async def test_a_late_placement_after_a_cancel_leaves_nothing_behind(
     started, release, finished = (MODULE.threading.Event() for _ in range(3))
     monkeypatch.setattr(SERVICE._runner, "run", _fake_run)
     monkeypatch.setattr(MODULE.os, "link", _late_link(started, release, finished))
+    # The link fallback: the slow placement this simulates is the hard link a
+    # filesystem without a no-replace rename takes (path_utils, #431).
+    monkeypatch.setattr(path_utils, "_rename_noreplace", lambda *_a: False)
 
     async def run():
         async for _ in SERVICE.convert(
@@ -926,6 +933,9 @@ async def test_a_late_placement_never_replaces_a_file_that_appeared_meanwhile(
     started, release, finished = (MODULE.threading.Event() for _ in range(3))
     monkeypatch.setattr(SERVICE._runner, "run", _fake_run)
     monkeypatch.setattr(MODULE.os, "link", _late_link(started, release, finished))
+    # The link fallback: the slow placement this simulates is the hard link a
+    # filesystem without a no-replace rename takes (path_utils, #431).
+    monkeypatch.setattr(path_utils, "_rename_noreplace", lambda *_a: False)
 
     async def run():
         async for _ in SERVICE.convert(

@@ -73,6 +73,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import stat
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -249,6 +250,39 @@ def _place_kept(row: dict, kept: str) -> None:
     finally:
         slot.keep()
     _release(os.path.dirname(kept), marker=True)
+
+
+def _drop_second_link(row: dict) -> bool:
+    """A parked name that is a second hard link of the Source (a park that
+    left both names: ``StagedOutput.take`` never moved it) is dropped,
+    leaving things as they were before the park, then its slot once empty:
+    True when it was. Only while it is the same inode as the file at the
+    Source's or the output's path (where RomM moved it). Blocking
+    (CodeRabbit 4606887339)."""
+    parked = row.get("parked_path")
+    if not parked:
+        return False
+    try:
+        held = os.stat(parked, follow_symlinks=False)
+    except FileNotFoundError:
+        return False
+    if not stat.S_ISREG(held.st_mode):
+        return False
+    for where in (row["source_path"], row["output_path"]):
+        try:
+            other = os.stat(where, follow_symlinks=False)
+        except FileNotFoundError:
+            continue
+        if (other.st_dev, other.st_ino) != (held.st_dev, held.st_ino):
+            continue
+        slot = staging.reopen_slot(os.path.dirname(parked))
+        try:
+            slot.remove(os.path.basename(parked))
+        finally:
+            slot.keep()
+        _release(os.path.dirname(parked))
+        return True
+    return False
 
 
 def _delete_parked(row: dict) -> None:
@@ -434,6 +468,11 @@ class _Recovery:
             _look, row, what=f"Checking the files of RomM swap {row['id']}",
         )
         self._same_instance()
+        if facts.parked == SOURCE and SOURCE in (facts.source, facts.output):
+            # Parked and in place both: a park that left a second link. That
+            # link is dropped, never refused (CodeRabbit 4606887339).
+            if await _mutate(_drop_second_link, row):
+                facts.parked = ABSENT
         facts.romm_name = await self._romm_name()
         if facts.romm_name == row["old_name"]:
             return await self._romm_never_renamed()

@@ -104,6 +104,37 @@
   a **Rename conflict** Finding, which clears once you order them. A summary
   goes to your notification destinations. The single-file rename is
   unchanged.
+- **Inboxes: new files are taken into a Library** (#431). In the Rules view,
+  give a Library an Inbox (a folder inside a Volume, not inside a Library or
+  holding one) and a settle time (60 seconds by default). Once a minute, on
+  the Rules' own tick, each file that has stopped growing (its size and
+  modified time unchanged across two polls at least the settle time apart)
+  gets its Platform from the header or its folder, and goes where **Where new
+  Images go** says: converted under that Platform's enabled Rule as a normal
+  job (queued, counted toward the concurrency limit, cancellable, in the
+  Ledger, the output checked Intact), or copied as it is when there's no
+  enabled Rule (an **Inbox copy** job you can cancel, under the same
+  concurrency limit; the copy is read back,
+  compared and checked Intact before it appears). The original then moves to
+  `processed/` inside the Inbox, which intake never reads. Nothing is ever
+  deleted. An Unsorted, conflicting or failed file stays where it is with a
+  Finding saying why, and isn't tried again until it changes. Each Inbox shows
+  its last poll and the files waiting, in progress, held and processed.
+  Settling is an inactivity check, not proof a download finished: when that
+  matters, download elsewhere and move finished files into the Inbox. A file
+  that changes while it is being converted fails its job with nothing put in
+  the Library, and stays in the Inbox.
+  An archive dropped in an Inbox is checked against limits before anything
+  reads it whole: by default its declared contents may be at most 32 GiB
+  (`CHD_ARCHIVE_INBOX_MAX_TOTAL_SIZE`; your `CHD_ARCHIVE_MAX_MEMBER_SIZE` /
+  `CHD_ARCHIVE_MAX_TOTAL_SIZE` win when set) and expand at most 200 to 1
+  (`CHD_ARCHIVE_INBOX_MAX_RATIO`); one over either stays with a Finding naming
+  the limit. A ROM archive's Verify is now bounded by its declared contents'
+  size, not the archive's own.
+  Removing a Library while another Library or Inbox is being saved answers
+  "try again shortly" with nothing removed.
+  Database migration 0027 adds the Inboxes. Archives, DAT names and asking
+  RomM to scan come next (#432, #433).
 - **Xbox 360 disc images to ZAR, with rom-converto** (#422). A new tool,
   rom-converto (the converter RomM ships, at the version RomM pins, v0.24.0),
   packs an Xbox 360 `.iso` into a `.zar`, the format Xenia mounts directly.

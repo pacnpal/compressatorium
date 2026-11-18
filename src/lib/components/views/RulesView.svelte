@@ -18,6 +18,7 @@
   import { ui } from '$lib/stores/ui.svelte.js';
   import RuleEditor from '$lib/components/views/RuleEditor.svelte';
   import LibraryPlacement from '$lib/components/views/LibraryPlacement.svelte';
+  import LibraryInboxes from '$lib/components/views/LibraryInboxes.svelte';
   import BaseModal from '$lib/components/modals/BaseModal.svelte';
   import Button from '$lib/components/ui/Button.svelte';
   import Select from '$lib/components/ui/Select.svelte';
@@ -223,6 +224,7 @@
       listing={source?.platformsLoading ?? false}
       platforms={source?.platforms ?? null}
     />
+    <LibraryInboxes library={selected} />
   {/if}
 
   {#if source}
