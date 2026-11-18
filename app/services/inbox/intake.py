@@ -84,7 +84,8 @@ Archives and names (#432):
 Each poll reports what was ``placed`` and what was ``left`` with a Finding
 since the last one (an Image from an archive with the archive's path),
 which :mod:`services.inbox.report` turns into RomM's Platform scan and the
-pass summary (#433).
+pass summary (#433), and which archives ``waits`` (no room to unpack, or
+left to settle), each with its reason, which ``run-rules`` names (#470).
 """
 
 from __future__ import annotations
@@ -263,6 +264,10 @@ class _State:
     # What got a Finding since the last poll reported it: ``{"path", "kind",
     # "reason"}``, for the pass summary (#433).
     left: list[dict[str, Any]] = field(default_factory=list)
+    # What waits since the last poll reported it (#470): an archive with no
+    # room to unpack, whichever check found that, or one left to settle.
+    # ``{"path", "mode", "reason"}`` (:func:`_wait`), for ``run-rules``.
+    waits: list[dict[str, Any]] = field(default_factory=list)
     last_poll: float | None = None
     waiting: int = 0
     error: str | None = None
@@ -971,6 +976,7 @@ async def poll(
         state.last_poll = now
         result["placed"], state.placed = state.placed, []
         result["left"], state.left = state.left, []
+        result["waits"], state.waits = state.waits, []
         result["error_new"] = bool(state.error) and state.error != previous_error
         state.polling = False
 
@@ -1791,11 +1797,23 @@ def _room_problem(path: str) -> str | None:
     return None
 
 
-def _note_no_room(path: str, why: str) -> None:
-    """Log, once per wait, that the archive at *path* waits for room."""
+def _wait(state: _State, path: str, reason: str) -> str:
+    """Record that the archive at *path* waits, and why (#470): the one
+    place a wait is noted, whichever check made it wait, so the poll reports
+    it (``waits``) and ``run-rules`` names it. Returns *reason*."""
+    state.waits.append({"path": path, "mode": ConversionMode.INBOX_UNPACK.value,
+                        "reason": reason})
+    return reason
+
+
+def _wait_for_room(state: _State, path: str, why: str) -> str:
+    """The archive at *path* waits for room to be unpacked (*why*): the first
+    look (``_room_problem``) or the unpack job's own gate found none. Logged
+    once per wait, recorded every time (:func:`_wait`). Returns the reason."""
     if path not in _room_logged:
         _room_logged.add(path)
         logger.info("inbox: %s waits for room to be unpacked: %s", path, why)
+    return _wait(state, path, f"No room to unpack it yet: {why}")
 
 
 async def _take_archive(
@@ -1816,7 +1834,7 @@ async def _take_archive(
     except (asyncio.TimeoutError, OSError):
         return "retry"
     if room:
-        _note_no_room(path, room)
+        _wait_for_room(state, path, room)
         return "waiting"
     _room_logged.discard(path)
     # Its identity first: the unpack job gates and unpacks the one file it
@@ -2105,9 +2123,8 @@ async def _unpack(
     if outcome == "no_room":
         # Not the archive's fault: no Finding, and it stays settled, so the
         # next poll tries again (Codex 4608429476).
-        _note_no_room(path, why)
         await job_manager.finish_external_job_waiting(
-            job.id, f"No room to unpack it yet: {why}",
+            job.id, _wait_for_room(state, path, why),
         )
         return
     if outcome in ("changed", "deferred"):
@@ -2115,7 +2132,7 @@ async def _unpack(
         state.seen.pop(path, None)
         why = why or "the storage is still being read by an earlier check"
         await job_manager.finish_external_job_waiting(
-            job.id, f"{why}; it is taken again once it settles",
+            job.id, _wait(state, path, f"{why}; it is taken again once it settles"),
         )
         return
     if outcome == "incomplete":
@@ -3338,9 +3355,10 @@ async def finish_all(*, library_ids: set[str] | None = None) -> list[dict[str, A
     """Finish what this process's polls started, for ``run-rules``, which
     exits after one pass: each ended conversion's original goes to
     ``processed/`` (as the next poll would on the server), every copy and
-    move is waited for, and what was placed or left with a Finding since
-    the last poll comes back in the shape :func:`poll` reports it. Call it
-    once the queued conversions have ended. Never raises."""
+    move is waited for, and what was placed, left with a Finding or left
+    waiting since the last poll comes back in the shape :func:`poll`
+    reports it. Call it once the queued conversions have ended. Never
+    raises."""
     try:
         inboxes = await run_in_threadpool(inbox_store.all_inboxes)
     except Exception:
@@ -3378,7 +3396,7 @@ async def finish_all(*, library_ids: set[str] | None = None) -> list[dict[str, A
         state = _states[inbox.id]
         results.append({
             "inbox_id": inbox.id, "library_id": inbox.library_id,
-            "placed": state.placed, "left": state.left,
+            "placed": state.placed, "left": state.left, "waits": state.waits,
         })
-        state.placed, state.left = [], []
+        state.placed, state.left, state.waits = [], [], []
     return results

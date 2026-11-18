@@ -1655,6 +1655,10 @@ async def _run_rules_pass(chosen: list, printer: Printer, state: RunState) -> in
         reported.add(job.id)
         item = Item(path=job.file_path, mode=getattr(job.mode, "value", job.mode))
         _finish(item, job)
+        if item.status == "waiting":
+            # A wait is the Inbox pass's to report, with the waits no job
+            # was made for (#470): one line each, from ``_inbox_pass``.
+            return
         _finish_check_run(item, job)
         # An Inbox job that fails leaves its Finding and isn't a Rule's
         # failure (CodeRabbit 4608135778); an Inbox that can't be polled
@@ -1725,8 +1729,9 @@ async def _inbox_pass(chosen: list, printer: Printer, state: RunState, jobs) -> 
     is kept between runs in the preferences (``INBOX_SETTLE_KEY``). The
     conversions and copies the poll starts finish within the run, and their
     originals go to ``processed/`` before it exits (``intake.finish_all``).
-    One line per Library whose Inboxes placed or left something, and an
-    ``error`` line for each Inbox that couldn't be polled. True when the pass
+    One line per Library whose Inboxes placed or left something, a
+    ``waiting`` line for each archive that waits (#470), and an ``error``
+    line for each Inbox that couldn't be polled. True when the pass
     failed or an Inbox couldn't be polled; an Image left with a Finding is
     not a failure. A stop admits nothing more; what already started drains.
     """
@@ -1783,6 +1788,11 @@ async def _inbox_pass(chosen: list, printer: Printer, state: RunState, jobs) -> 
         line = _inbox_line(None, status="error", reason=f"inbox_memory_not_saved: {exc}")
         printer.summary(line, _inbox_text(line))
         failed = True
+    for result in results:
+        # Every archive that waits, whichever check held it back (#470):
+        # not a failure, and taken on a later run.
+        for wait in result.get("waits") or []:
+            _print_wait(printer, result["library_id"], wait)
     summary = await report.after_pass(results)
     for library_id, entry in summary["libraries"].items():
         # An Inbox that couldn't be polled (its folder gone, outside a
@@ -1796,6 +1806,17 @@ async def _inbox_pass(chosen: list, printer: Printer, state: RunState, jobs) -> 
             line = _inbox_line(library_id, status="inbox", entry=entry)
             printer.summary(line, _inbox_text(line))
     return failed
+
+
+def _print_wait(printer: Printer, library_id, wait: dict) -> None:
+    """The line for an Inbox archive that waits (#458, #470): under its own
+    file name, as a job's line, whether or not a job was made for it."""
+    item = Item(
+        path=os.path.basename(wait["path"]), mode=wait["mode"], status="waiting",
+        reason=wait["reason"],
+    )
+    printer.line({"library": library_id, **item.convert_line()},
+                 prefix=f"{library_id}: " if library_id else "")
 
 
 def _inbox_line(library_id, *, status: str, entry: dict | None = None,
