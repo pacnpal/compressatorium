@@ -720,14 +720,18 @@ async def _resolve_wrappers(owner: str | None) -> bool:
 _LOOKING_UP: set[str] = set()
 
 
-async def _wrapped_command(owner: str | None, cmd: list[str]) -> tuple[list[str], bool]:
-    """*cmd* behind the priority wrappers *owner*'s settings ask for, and
-    whether it got them: the argv of every spawn whose exit code is not a
-    verdict (conversions, info and header reads). The wrappers come from the
-    cache, looked up off the loop first (:func:`_resolve_wrappers`); a stalled
-    lookup means no wrappers. A verdict never comes from a process started
-    through them: see :func:`_prioritize_child`."""
-    prefix = priority_prefix(owner) if await _resolve_wrappers(owner) else []
+async def _wrapped_command(
+    owner: str | None, cmd: list[str], *, wrap: bool = True,
+) -> tuple[list[str], bool]:
+    """The argv every spawn method runs, built here for all of them: *cmd*
+    behind the priority wrappers *owner*'s settings ask for, and whether it
+    got them. The wrappers come from the cache, looked up off the loop first
+    (:func:`_resolve_wrappers`); a stalled lookup means no wrappers. With
+    ``wrap=False`` (a spawn whose exit code is a verdict) it is *cmd* alone, a
+    new list all the same: a verdict never comes from a process started
+    through them, see :func:`_prioritize_child`."""
+    resolved = await _resolve_wrappers(owner)
+    prefix = priority_prefix(owner) if wrap and resolved else []
     return prefix + cmd, bool(prefix)
 
 
@@ -2177,11 +2181,7 @@ class SubprocessRunner:
         # before the cancel check, which then also covers its (bounded) wait.
         # *verdict* (capture_verify): its exit code is a check's verdict, so
         # it is spawned bare and reniced after (_prioritize_child).
-        if verdict:
-            wrapped = False
-            await _resolve_wrappers(self._owner)
-        else:
-            cmd, wrapped = await _wrapped_command(self._owner, cmd)
+        cmd, wrapped = await _wrapped_command(self._owner, cmd, wrap=not verdict)
         if cancel_event is not None and cancel_event.is_set():
             return None, b"", b""
 
@@ -2274,8 +2274,7 @@ class SubprocessRunner:
         # Spawned bare, its priority applied after (_prioritize_child): the
         # digest it streams is a Round-trip verdict, so no execvp wrapper may
         # start it.
-        wrapped = False
-        await _resolve_wrappers(self._owner)
+        cmd, wrapped = await _wrapped_command(self._owner, cmd, wrap=False)
         if cancel_event is not None and cancel_event.is_set():
             raise ReadCancelled("Read cancelled")
         process = await self._spawn_piped(
@@ -2524,8 +2523,7 @@ class SubprocessRunner:
         """
         # Spawned bare, its priority applied after (_prioritize_child): its
         # exit code is the verdict, so no execvp wrapper may start it.
-        wrapped = False
-        await _resolve_wrappers(self._owner)
+        cmd, wrapped = await _wrapped_command(self._owner, cmd, wrap=False)
 
         # One the verifier can't open is no verdict, decided before it runs
         # (#359): chdman's exit 1 on "Permission denied" would read as one.
