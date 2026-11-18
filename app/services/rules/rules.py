@@ -15,6 +15,15 @@ is (Library, Platform, kind), so one Platform can have one of each.
 Pure apart from one thing: an output directory is checked against the
 configured Volumes when a Rule is saved. Nothing here knows which Library a
 Rule belongs to. The few defaults a Library sets come in as ``defaults``.
+
+Nothing here logs (#477). The sanitizer runs on every read of the Rules (each
+GET, the editor, startup, every scheduler tick), so a line logged here repeated
+once a minute and could not say which Library it meant. What it drops or
+refuses is recorded on the Rule instead (``dropped_codecs``,
+``dropped_timezone``, ``unsafe_delete_on_verify``, ``invalid_output_dir``,
+``invalid_pattern``) and put in words by :func:`rule_changes`; why it refuses a
+Rule outright is :func:`refusal`. The sweep logs both, naming the Library and
+the Platform: see ``sweep.report_rule_changes``.
 """
 
 from __future__ import annotations
@@ -26,15 +35,10 @@ from datetime import time as dt_time
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from logging_setup import get_logger
 from services.round_trip import delete_check_level
 from services.tools import registry
 from services.tools.base import compression_problem, without_unusable_codecs
 from utils.path_utils import is_within_configured_volumes
-
-# The logger name the engine has always logged under, kept so existing log
-# filters and dashboards still match.
-logger = get_logger("romm_auto")
 
 ORDERS = ("name", "size_desc", "size_asc", "id", "newest")
 DUPLICATE_ACTIONS = ("skip", "overwrite", "rename")
@@ -96,22 +100,22 @@ def _parse_hhmm(value: Any) -> dt_time | None:
         return None
 
 
-def _valid_timezone(value: Any) -> str:
-    """An IANA zone name we can actually load, or ``"UTC"``.
+def _valid_timezone(value: Any) -> tuple[str, str | None]:
+    """``(zone, dropped)``: an IANA zone name we can actually load, or ``"UTC"``
+    and the name that could not be (#477: recorded, not logged).
 
     Validated on the way in so a sweep can never fail on a zone the host has no
     data for -- a rule written on a machine with a fuller tzdata than the
     container's would otherwise break the schedule silently.
     """
     if not isinstance(value, str) or not value.strip():
-        return "UTC"
+        return "UTC", None
     name = value.strip()
     try:
         ZoneInfo(name)
     except (ZoneInfoNotFoundError, ValueError, KeyError):
-        logger.warning("romm_auto: unknown timezone %r, falling back to UTC", name)
-        return "UTC"
-    return name
+        return "UTC", name
+    return name, None
 
 
 def _valid_pattern(value: Any) -> tuple[str | None, bool]:
@@ -133,21 +137,13 @@ def _valid_pattern(value: Any) -> tuple[str | None, bool]:
         # that narrows stops protecting the titles they meant to skip, with
         # delete-on-verify possibly attached. Both are the "helpfully widened"
         # failure this whole validator exists to refuse.
-        logger.warning(
-            "romm_auto: refusing filter pattern of %d characters, the limit is %d",
-            len(pattern), _MAX_PATTERN,
-        )
         return None, True
     try:
         re.compile(pattern)
     except re.error:
-        logger.warning("romm_auto: refusing invalid filter pattern %r", pattern)
         return None, True
     if _has_nested_quantifier(pattern) or _has_overlapping_quantifiers(pattern):
-        logger.warning(
-            "romm_auto: refusing filter pattern %r, it backtracks too long",
-            pattern,
-        )
+        # It backtracks too long.
         return None, True
     return pattern, False
 
@@ -459,6 +455,8 @@ def default_rule(
         # The codecs a stored Rule named that its mode can't use (#474),
         # dropped from `compression` so its jobs run on what the mode takes.
         "dropped_codecs": [],
+        # A stored timezone the host has no data for (#477), replaced by UTC.
+        "dropped_timezone": None,
         # Set when a submitted include/exclude regex would not compile, so the
         # editor can say why the rule is paused instead of silently widening it.
         "invalid_pattern": False,
@@ -545,21 +543,9 @@ def normalize_rule(
     mode = raw.get("mode") if kind == CONVERT else None
     if kind == CONVERT and not (isinstance(mode, str) and mode):
         return None
+    if refusal(raw, kind=kind) is not None:
+        return None
     if isinstance(mode, str) and mode:
-        try:
-            registry.spec(mode)
-        except KeyError:
-            logger.warning("romm_auto: rule names unknown mode %r", mode)
-            return None
-        # Refused here as well as omitted from the editor, because a rules blob
-        # can be written straight into the database. A mode that turns its own
-        # product into a differently named file never terminates under
-        # automation -- see `registry.mode_is_automatable`.
-        if not registry.mode_is_automatable(mode):
-            logger.warning(
-                "romm_auto: rule names mode %r, which cannot run unattended", mode,
-            )
-            return None
         out["mode"] = mode
 
     spec = registry.spec(out["mode"]) if out["mode"] else None
@@ -583,12 +569,6 @@ def normalize_rule(
         out["compression"], out["dropped_codecs"] = without_unusable_codecs(
             spec, str(raw["compression"]),
         )
-        if out["dropped_codecs"]:
-            logger.warning(
-                "romm_auto: rule for %s can't use %s compression; running it on %s",
-                spec.label, ", ".join(out["dropped_codecs"]),
-                out["compression"] or "the tool's own codecs",
-            )
     # A level only for a codec that takes one (#363): the Rule's own codec, or
     # the mode's default when blank (WIA on "Tool default" runs none, which
     # takes no level). Dropped, as this sanitizer drops any stale value, and
@@ -624,12 +604,6 @@ def normalize_rule(
         if within:
             out["output_dir"] = candidate
         else:
-            logger.warning(
-                "romm_auto: refusing output_dir %r (%s)",
-                candidate,
-                "the volumes did not answer" if volumes_unreachable
-                else "outside the configured volumes",
-            )
             out["output_dir"] = None
             out["invalid_output_dir"] = candidate
             # Pausing matters: with output_dir cleared the sweep would happily
@@ -669,10 +643,6 @@ def normalize_rule(
         if out["delete_on_verify"] and not tool.delete_on_verify_is_safe(
             out["mode"], out["compression"],
         ):
-            logger.warning(
-                "romm_auto: refusing delete-on-verify for %s with compression %r",
-                out["mode"], out["compression"],
-            )
             out["delete_on_verify"] = False
             out["unsafe_delete_on_verify"] = True
     else:
@@ -705,7 +675,7 @@ def normalize_rule(
         # Rule reads it as the whole day: `schedule._window`.)
         out["invalid_window"] = True
         out["enabled"] = False
-    out["timezone"] = _valid_timezone(raw.get("timezone"))
+    out["timezone"], out["dropped_timezone"] = _valid_timezone(raw.get("timezone"))
     days = raw.get("days")
     if isinstance(days, list):
         parsed = sorted({int(d) for d in days if isinstance(d, (int, float)) and 0 <= int(d) <= 6})
@@ -758,6 +728,68 @@ def normalize_rule(
     if out["only_matched"] and out["only_unmatched"]:
         out["only_matched"] = out["only_unmatched"] = False
     return out
+
+
+def refusal(raw: Any, *, kind: str = CONVERT) -> str | None:
+    """Why :func:`normalize_rule` refuses *raw* outright, in words for a log
+    line, or None.
+
+    A conversion Rule naming a mode no registered tool provides, or one that
+    can't run unattended, is refused: no sweep can run it. Refused here as well
+    as omitted from the editor, because a rules blob can be written straight
+    into the database. A mode that turns its own product into a differently
+    named file never terminates under automation -- see
+    ``registry.mode_is_automatable``. None for anything else, a Rule with no
+    mode included: that is an empty row, with nothing to report.
+    """
+    if kind != CONVERT or not isinstance(raw, Mapping):
+        return None
+    mode = raw.get("mode")
+    if not (isinstance(mode, str) and mode):
+        return None
+    try:
+        registry.spec(mode)
+    except KeyError:
+        return f"it names unknown mode {mode!r}"
+    if not registry.mode_is_automatable(mode):
+        return f"its mode {mode!r} can't run unattended"
+    return None
+
+
+def rule_changes(rule: Mapping[str, Any]) -> list[str]:
+    """What :func:`normalize_rule` dropped or refused on *rule*, in words for a
+    log line (#477). Empty when it took the Rule as stored.
+
+    Read off the fields the sanitizer records, so the sweep can say it once
+    where it runs the Rule, rather than the sanitizer on every read.
+    """
+    changes: list[str] = []
+    if rule.get("dropped_codecs"):
+        try:
+            label = registry.spec(rule.get("mode")).label
+        except (KeyError, TypeError):
+            label = str(rule.get("mode"))
+        kept = rule.get("compression") or "the tool's own codecs"
+        changes.append(
+            f"{label} can't use {', '.join(rule['dropped_codecs'])} compression; "
+            f"running it on {kept}",
+        )
+    if rule.get("unsafe_delete_on_verify"):
+        changes.append(
+            f"delete-on-verify refused for {rule.get('mode')} with compression "
+            f"{rule.get('compression')!r}; its Sources are kept",
+        )
+    if rule.get("dropped_timezone"):
+        changes.append(
+            f"unknown timezone {rule['dropped_timezone']!r}; its window runs on UTC",
+        )
+    if rule.get("invalid_output_dir"):
+        changes.append(
+            f"output folder {rule['invalid_output_dir']!r} refused; the Rule is paused",
+        )
+    if rule.get("invalid_pattern"):
+        changes.append("a filter pattern was refused; the Rule is paused")
+    return changes
 
 
 # What a check Rule never uses: its order is stalest first, its limit the budget.
