@@ -83,6 +83,20 @@ def folder_holding(parent: str, path: str) -> str | None:
     return holding[0] if holding else None
 
 
+def log_prefix(library: Any) -> str:
+    """What a log line about *library*'s Rules starts with (#477).
+
+    Its own ``log_prefix`` when it sets one (RomM: ``romm_auto``), else
+    ``f"{kind}_library"`` (a folder: ``folder_library``), else ``library``.
+    Optional on the contract, so a Library that predates it still logs.
+    """
+    own = getattr(library, "log_prefix", None)
+    if own:
+        return str(own)
+    kind = getattr(library, "kind", None)
+    return f"{kind}_library" if kind else "library"
+
+
 def duplicate_actions(library: Library) -> tuple[str, ...]:
     """The duplicate policies *library*'s Rules may use.
 
@@ -304,10 +318,9 @@ class Library(Protocol):
     kind: str
     name: str
     root: str | None
-    # What a log line about this Library's Rules starts with (#477):
-    # ``romm_auto`` for RomM, ``folder_library`` for a folder. The default is
-    # ``f"{kind}_library"`` (:class:`LibraryDefaults`).
-    log_prefix: str
+    # Optional ``log_prefix``: what a log line about this Library's Rules
+    # starts with (#477). Read through :func:`log_prefix`, which falls back to
+    # ``f"{kind}_library"`` (``folder_library``); RomM sets ``romm_auto``.
     # A set of the capability names above.
     capabilities: frozenset[str]
     # Where an earlier release kept this Library's Rules or state without the
@@ -466,11 +479,6 @@ class LibraryDefaults:
     Only hooks with a safe "nothing to do" answer belong here; everything
     else in the Protocol a Library must implement itself.
     """
-
-    @property
-    def log_prefix(self) -> str:
-        """``f"{kind}_library"``: ``folder_library`` for a folder (#477)."""
-        return f"{getattr(self, 'kind', 'unknown')}_library"
 
     async def before_pass(self, *, dry_run: bool) -> None:
         """No upkeep before ``run-rules`` sweeps this Library."""

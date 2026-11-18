@@ -2842,9 +2842,11 @@ None). Two places in `rules/sweep.py` log them:
   once fixed and in `forget_library`.
 
 Each line names the Library (`library.name`) and the Platform, and starts with
-`Library.log_prefix`: `LibraryDefaults` gives `f"{kind}_library"`
-(`folder_library`), `RommLibrary` keeps `romm_auto`. The logger is still
-`romm_auto`, so log filters keyed on it still match.
+the Library's prefix, `rules.library.log_prefix(library)`: the Library's own
+optional `log_prefix` (`RommLibrary` keeps `romm_auto`), else
+`f"{kind}_library"` (`folder_library`), else `library` for a Library with
+neither. It is optional on the contract, so a Library written before it still
+logs. The logger is still `romm_auto`, so log filters keyed on it still match.
 
 Capabilities (`RECOGNIZED_FILTER`, `CONVERTED_HISTORY`, `FAILED_HOLD`) say
 what a Library supports. Nothing in `rules/` asks what kind of Library it has.

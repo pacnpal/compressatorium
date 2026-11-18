@@ -73,6 +73,7 @@ from services.rules.library import (
     LibraryUnreadable,
     QueuedImage,
     duplicate_actions,
+    log_prefix,
     refuse_unsupported_policies,
 )
 from services.rules.rules import (
@@ -102,7 +103,7 @@ from utils.path_utils import (
 
 # The logger name the engine has always logged under, kept so existing log
 # filters and dashboards still match. A line about one Library's Rule starts
-# with that Library's own prefix instead (`Library.log_prefix`, #477).
+# with that Library's own prefix instead (`library.log_prefix`, #477).
 logger = get_logger("romm_auto")
 
 # How long one candidate's disk probes may take before the library counts as
@@ -249,7 +250,7 @@ def report_rule_changes(
     the Inbox calls it as it converts under a Rule, once per pass (*seen*
     holds what that pass reported already). The line names the Library and
     *platform*, and starts with *prefix*, by default the Library's own
-    (``Library.log_prefix``).
+    (:func:`services.rules.library.log_prefix`).
     """
     changes = rule_changes(rule)
     if not changes:
@@ -262,7 +263,7 @@ def report_rule_changes(
     label = "check" if kind == CHECK else "conversion"
     logger.warning(
         "%s: the %s Rule for Platform %s in Library %s: %s",
-        prefix or library.log_prefix, label, platform, library.name, "; ".join(changes),
+        prefix or log_prefix(library), label, platform, library.name, "; ".join(changes),
     )
     return True
 
@@ -306,7 +307,7 @@ def _report_unrunnable(
         _, kind, platform_id = memo
         logger.warning(
             "%s: the %s Rule for Platform %s in Library %s %s",
-            library.log_prefix, "check" if kind == CHECK else "conversion",
+            log_prefix(library), "check" if kind == CHECK else "conversion",
             library.platform_value(platform_id), library.name, problem,
         )
 
