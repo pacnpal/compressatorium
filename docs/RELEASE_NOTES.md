@@ -428,6 +428,20 @@
   warning naming the file. File info still shows everything else about the
   CHD. A read that ran and found no disc ID is still remembered as before.
 
+- **File info says the tool isn't ready instead of failing** (#488). Only the
+  ZAR Info view checked whether its tool could run. The CHD and GameCube/Wii
+  Info views ran `chdman` or `dolphin-tool` regardless, so a tool that wasn't
+  ready came back as a 500 "Failed to read ... info" and the File info window
+  said no tool could read the file. They now answer 503 with the same text the
+  rest of the app uses, such as `CHDMAN isn't ready: its program is not
+  available on this server`, which the File info window shows (#486). The
+  Info views that read the file themselves
+  (3DS, NKit, Xbox, CSO, handheld ROM, Wii U and Switch) don't need their
+  tool's program, so they keep answering when it is missing, and a Switch
+  Info read doesn't wait on the search for `prod.keys`. Each tool now says
+  whether its Info read needs its program, and every Info view checks through
+  the same place.
+
 - **The File info modal says why a tool isn't ready** (#486). When the only
   tool that could describe a file wasn't ready, the modal showed the basics
   under "No tool could read this file", as if the file were broken, and

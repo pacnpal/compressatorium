@@ -147,6 +147,9 @@ def _info_env(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(info_routes.settings, "chd_volumes", str(tmp_path))
     monkeypatch.setattr(info_routes.settings, "data_mount_root", str(tmp_path))
+    # chdman counts as ready whatever this host has installed (#488 gate):
+    # these tests fake its runs at the run_capture seam.
+    monkeypatch.setattr(info_routes, "_require_info_ready", AsyncMock())
     return info_routes, marked, updated
 
 

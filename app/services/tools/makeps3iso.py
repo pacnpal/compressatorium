@@ -28,6 +28,8 @@ class MakePs3IsoTool(BaseTool):
     platform_slugs = frozenset({"ps3"})
     policy_owner = "makeps3iso"
     display_name = "PS3 ISO"
+    # File info reads PARAM.SFO and sizes the folder in Python; makeps3iso isn't run.
+    info_needs_tool = False
     modes = (
         ModeSpec(
             mode="folder_to_iso",
