@@ -145,6 +145,7 @@ from utils.junk import is_junk_entry
 from utils.path_utils import (
     MoveRollbackFailed,
     PlacementCommitted,
+    copy_checked,
     file_snapshot,
     match_extension,
     move_anchored,
@@ -1550,7 +1551,8 @@ def _room_problem(path: str) -> str | None:
     )
 
     try:
-        size = archive_service.check_inbox_archive(path)
+        # Its contents and its private copy (#432).
+        size = archive_service.check_inbox_archive(path) + os.path.getsize(path)
     except Exception:
         return None
     cap = archive_service.inbox_unpacked_limit()
@@ -1628,54 +1630,67 @@ class _UnpackSlot:
     (:func:`_root_of`) until it is closed."""
 
     def __init__(self, size: int = 0) -> None:
-        """Reserve room for *size* bytes (an archive's declared total) and
-        make the folder. Raises :class:`_NoRoom` when what every open slot
-        reserved and *size* would pass ``CHD_ARCHIVE_INBOX_MAX_UNPACKED_SIZE``,
-        or the work area hasn't *size* bytes free beyond its reserve
-        (``disk.ensure_headroom``, ``scratch_margin_bytes``); nothing is made
-        then. Blocking."""
-        from services.disk import (
-            InsufficientDiskSpace,
-            create_scratch_dir,
-            ensure_headroom,
-            scratch_margin_bytes,
-        )
+        """Reserve room for *size* bytes and make the folder. Raises
+        :class:`_NoRoom` when there isn't room (:meth:`grow`); nothing is
+        made then. Blocking."""
+        from services.disk import create_scratch_dir
 
         self._closed = False
         self._mutex = threading.Lock()
-        cap = archive_service.inbox_unpacked_limit()
-        with _slots_lock:
-            live = sum(_slot_sizes.values())
-            if cap and live + size > cap:
-                if not _slot_sizes:
-                    raise ArchiveSafetyRefused(
-                        f"Archive unpacks to {size} bytes, over the unpack limit",
-                        rule=f"it unpacks to more than CHD_ARCHIVE_INBOX_MAX_UNPACKED_SIZE "
-                        f"({cap} bytes)",
-                    )
-                raise _NoRoom(
-                    f"what is unpacked now ({live} bytes) and it ({size} bytes) would "
-                    f"pass CHD_ARCHIVE_INBOX_MAX_UNPACKED_SIZE ({cap} bytes)",
-                )
-            _slot_sizes[id(self)] = size
+        self.path = ""
+        self._reserve(size)
         try:
             self.path = os.path.realpath(create_scratch_dir(_UNPACK_PREFIX))
             try:
-                ensure_headroom([(self.path, size)], margin_bytes=scratch_margin_bytes())
+                self._check_headroom(size)
                 self.fd = os.open(self.path, _DIR_FLAGS)
             except BaseException:
                 shutil.rmtree(self.path, ignore_errors=True)
                 raise
-        except InsufficientDiskSpace as exc:
-            with _slots_lock:
-                _slot_sizes.pop(id(self), None)
-            raise _NoRoom(str(exc)) from exc
         except BaseException:
             with _slots_lock:
                 _slot_sizes.pop(id(self), None)
             raise
         with _slots_lock:
             _slot_roots.add(self.path)
+
+    def grow(self, more: int) -> None:
+        """Reserve *more* bytes for this slot (an archive's declared contents,
+        once its private copy is gated). Raises :class:`_NoRoom` when what
+        every open slot reserved would pass
+        ``CHD_ARCHIVE_INBOX_MAX_UNPACKED_SIZE``, or the work area hasn't the
+        room beyond its reserve (``disk.ensure_headroom``,
+        ``scratch_margin_bytes``); nothing is reserved then. Blocking."""
+        self._reserve(more)
+        try:
+            self._check_headroom(more)
+        except BaseException:
+            with _slots_lock:
+                _slot_sizes[id(self)] = _slot_sizes.get(id(self), 0) - more
+            raise
+
+    def _reserve(self, more: int) -> None:
+        cap = archive_service.inbox_unpacked_limit()
+        with _slots_lock:
+            mine = _slot_sizes.get(id(self), 0)
+            live = sum(_slot_sizes.values())
+            # The cap keeps many archives from adding up past it; one with
+            # nothing else unpacked always goes in (the gate bounds it, and
+            # the work area's free space is checked below).
+            if cap and live > mine and live + more > cap:
+                raise _NoRoom(
+                    f"what is unpacked now ({live - mine} bytes) and it ({mine + more} "
+                    f"bytes) would pass CHD_ARCHIVE_INBOX_MAX_UNPACKED_SIZE ({cap} bytes)",
+                )
+            _slot_sizes[id(self)] = mine + more
+
+    def _check_headroom(self, size: int) -> None:
+        from services.disk import InsufficientDiskSpace, ensure_headroom, scratch_margin_bytes
+
+        try:
+            ensure_headroom([(self.path, size)], margin_bytes=scratch_margin_bytes())
+        except InsufficientDiskSpace as exc:
+            raise _NoRoom(str(exc)) from exc
 
     def intact(self) -> bool:
         """Whether its path still names the folder held open."""
@@ -1717,6 +1732,18 @@ class _UnpackSlot:
                 os.close(self.fd)
 
 
+# The hidden folder in an unpack slot its archive's private copy is made in
+# (#432): the walk never lists a dot-entry, so the copy is never an Image.
+_COPY_DIR = ".archive"
+
+
+def _private_dir(slot_fd: int) -> int:
+    """The slot's folder for its archive's private copy, made new and opened
+    with no link followed. Blocking."""
+    os.mkdir(_COPY_DIR, 0o700, dir_fd=slot_fd)
+    return os.open(_COPY_DIR, _DIR_FLAGS, dir_fd=slot_fd)
+
+
 def _remove_at(name: str, folder: int) -> None:
     """Remove the entry *name* in the open *folder*, a folder whole, never
     following a link. Blocking."""
@@ -1730,12 +1757,18 @@ def _remove_at(name: str, folder: int) -> None:
 def _unpack_blocking(
     inbox: inbox_store.Inbox, path: str, flight: _Flight, progress,
 ) -> tuple[Any, list[str]]:
-    """Gate and unpack the archive at *path* into a fresh unpack slot: the
-    open slot and the Images in it. The archive is opened once, through the
-    Inbox's own folder with no link followed, and only while it is the file
-    that was taken; the gate and the extraction both read that one open file
-    (Codex 4608007766), and its identity is checked again afterwards.
-    Blocking."""
+    """Copy, gate and unpack the archive at *path* into a fresh unpack slot:
+    the open slot and the Images in it.
+
+    The archive is opened through the Inbox's own folder with no link
+    followed, and only while it is the file that was taken. A private copy of
+    it is made first, into the slot (``copy_checked``, the copy a bound
+    Source falls back to: bounded by its progress, its source's identity,
+    ctime included, checked before the first read and after the last, Codex
+    4608936764), so nothing an Inbox writer does to the original afterwards
+    can reach what is gated and unpacked. The gate and the extraction both
+    read that copy (Codex 4608007766), which counts toward the slot's room
+    and goes with it. Blocking."""
     _may_open(os.path.basename(path))
     folder_fd, names = _folder_beneath(inbox, [path])
     slot = None
@@ -1744,18 +1777,32 @@ def _unpack_blocking(
         generation = _may_open(name)
         fd = os.open(name, os.O_RDONLY | _NOFOLLOW, dir_fd=folder_fd)
         _opened(name, fd, generation)
-        with os.fdopen(fd, "rb") as source:
-            if file_snapshot(os.fstat(source.fileno())) != flight.identities.get(name):
-                raise _SourceChanged(errno.ESTALE, f"{name} changed since it was taken")
+        try:
+            st = os.fstat(fd)
+        finally:
+            os.close(fd)
+        if file_snapshot(st) != flight.identities.get(name):
+            raise _SourceChanged(errno.ESTALE, f"{name} changed since it was taken")
+        slot = _UnpackSlot(st.st_size)
+        copy_fd = _private_dir(slot.fd)
+        try:
+            try:
+                copy_checked(name, folder_fd, copy_fd, file_snapshot(st, ctime=True), progress)
+            except OSError as exc:
+                if exc.errno == errno.ESTALE:
+                    raise _SourceChanged(errno.ESTALE, str(exc)) from exc
+                raise
+            source_fd = os.open(name, os.O_RDONLY | _NOFOLLOW, dir_fd=copy_fd)
+        finally:
+            os.close(copy_fd)
+        with os.fdopen(source_fd, "rb") as source:
             declared = archive_service.check_inbox_source(source, path)
-            max_member, max_total, _ratio = archive_service.inbox_limits()
-            slot = _UnpackSlot(declared)
+            slot.grow(declared)
+            max_member, max_total, max_ratio = archive_service.inbox_limits()
             archive_service.extract_members(
                 path, slot.path, destination_fd=slot.fd, source=source, progress=progress,
-                max_member=max_member, max_total=max_total,
+                max_member=max_member, max_total=max_total, max_ratio=max_ratio,
             )
-            if file_snapshot(os.fstat(source.fileno())) != flight.identities.get(name):
-                raise _SourceChanged(errno.ESTALE, f"{name} changed while it was unpacked")
         if not slot.intact():
             raise ArchiveSafetyRefused(
                 f"The unpack folder of {name} was replaced while it was unpacked",

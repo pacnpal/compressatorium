@@ -1495,3 +1495,80 @@ def test_the_dat_name_of_a_split_part_keeps_its_logical_extension():
     assert dat_file_name("Canonical Game", "Game.iso.0") == "Canonical Game.iso.0"
     assert dat_file_name("Canonical Game", "Game.iso.12") == "Canonical Game.iso.12"
     assert dat_file_name("Canonical Game", "Game.iso") == "Canonical Game.iso"
+
+
+# ---- Codex security review at b9073a61 (4608936764) ------------------------
+
+
+@pytest.mark.asyncio
+async def test_an_archive_rewritten_in_place_after_its_copy_is_never_read(
+    vol, db, monkeypatch,
+):
+    """The gate and the extraction read a private copy in the work area.
+    The original rewritten in place right after the copy, its inode, size
+    and mtime kept, is never what is unpacked."""
+    import os
+
+    from services.inbox import intake
+
+    _verifies(monkeypatch)
+    library = _library(vol)
+    box = _inbox(vol, library, settle=0)
+    rom = _bytes("the real one", 4096)
+    archive = _zip(vol / "Downloads" / "gba" / "Game.zip", {"Game.gba": rom})
+    real_copy = intake.copy_checked
+    rewritten: list[bool] = []
+
+    def copy_then_rewrite(name, folder_fd, into_fd, expected, progress=None):
+        real_copy(name, folder_fd, into_fd, expected, progress)
+        if not rewritten:
+            rewritten.append(True)
+            st = os.stat(archive)
+            with open(archive, "r+b") as handle:  # same inode, same size
+                handle.write(b"\xff" * st.st_size)
+            os.utime(archive, ns=(st.st_atime_ns, st.st_mtime_ns))  # mtime put back
+
+    monkeypatch.setattr(intake, "copy_checked", copy_then_rewrite)
+
+    await _polls(box)
+
+    assert rewritten
+    assert (vol / "ROMs" / "gba" / "Game.gba").read_bytes() == rom
+
+
+def test_unpacking_stops_a_member_that_expands_past_the_ratio(tmp_path):
+    """Defence in depth: the bytes written are held to the ratio cap against
+    each member's compressed size, and in all against the archive's."""
+    from services.archive import ArchiveSafetyRefused, archive_service
+
+    archive = tmp_path / "Bomb.zip"
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("Bomb.gba", b"\0" * (4 * 1024 * 1024))
+    dest = tmp_path / "out"
+    dest.mkdir()
+
+    with pytest.raises(ArchiveSafetyRefused, match="expands"):
+        archive_service.extract_members(str(archive), str(dest), max_ratio=10)
+
+    written = dest / "Bomb.gba"
+    assert not written.exists() or written.stat().st_size <= 4 * 1024 * 1024
+
+
+def test_a_snapshot_with_ctime_catches_a_change_that_puts_mtime_back(tmp_path):
+    import os
+    import time
+
+    from utils.path_utils import file_snapshot
+
+    path = tmp_path / "Game.zip"
+    path.write_bytes(b"x" * 64)
+    before = file_snapshot(os.stat(path), ctime=True)
+    st = os.stat(path)
+    time.sleep(0.01)
+    with open(path, "r+b") as handle:
+        handle.write(b"y" * 64)
+    os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns))
+
+    after = os.stat(path)
+    assert file_snapshot(after) == file_snapshot(st)  # what the old check saw
+    assert file_snapshot(after, ctime=True) != before

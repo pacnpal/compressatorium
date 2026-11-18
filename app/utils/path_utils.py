@@ -1422,12 +1422,21 @@ def open_dir_beneath(root: str, relative: str = "") -> int:
 # link, or a file swapped under the checked name, can't redirect a move.
 
 
-def file_snapshot(st: os.stat_result) -> dict[str, int]:
-    """A file's identity as a delete snapshot has it: size, mtime, inode, device."""
-    return {
+def file_snapshot(st: os.stat_result, *, ctime: bool = False) -> dict[str, int]:
+    """A file's identity as a delete snapshot has it: size, mtime, inode, device.
+
+    With *ctime*, its ctime too (#432, Codex 4608936764): a rewrite in place
+    that keeps the inode and size and puts the mtime back can't put the ctime
+    back. Only where the file must not change at all while it is read (an
+    Inbox archive while it is copied): a hard link or a rename moves the ctime
+    as well, so a snapshot that must survive those leaves it out."""
+    snapshot = {
         "size": st.st_size, "mtime_ns": st.st_mtime_ns,
         "inode": st.st_ino, "device": st.st_dev,
     }
+    if ctime:
+        snapshot["ctime_ns"] = st.st_ctime_ns
+    return snapshot
 
 
 def stat_at(name: str, folder: int) -> os.stat_result | None:
@@ -1625,12 +1634,27 @@ def _bind_one(
     return True
 
 
+def copy_checked(
+    name: str, folder_fd: int, into_fd: int, expected: dict, progress=None,
+) -> None:
+    """Copy *name* in the open folder *folder_fd* into the open folder
+    *into_fd*, under the same name, made new: the copy a bound Source falls
+    back to (:func:`bind_source`), shared with the Inbox's private copy of an
+    archive (#432). The source is opened with no link followed and must be
+    *expected* (:func:`file_snapshot`, its ctime compared when *expected*
+    has one) before the first read and after the last; *progress* is called
+    per chunk, so a stall-bounded caller is bounded and cancellable. Raises
+    OSError (ESTALE: not the file). Blocking."""
+    _copy_checked(name, folder_fd, into_fd, expected, progress)
+
+
 def _copy_checked(
     name: str, folder_fd: int, bound_fd: int, expected: dict, progress=None,
 ) -> None:
+    with_ctime = "ctime_ns" in expected
     src = os.open(name, os.O_RDONLY | _NOFOLLOW_FLAG, dir_fd=folder_fd)
     try:
-        if file_snapshot(os.fstat(src)) != expected:
+        if file_snapshot(os.fstat(src), ctime=with_ctime) != expected:
             raise OSError(errno.ESTALE, f"{name} isn't the file that was checked")
         dst = os.open(
             name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW_FLAG, 0o600,
@@ -1641,7 +1665,7 @@ def _copy_checked(
                 out.write(chunk)
                 if progress is not None:
                     progress(name)
-        if file_snapshot(os.fstat(src)) != expected:
+        if file_snapshot(os.fstat(src), ctime=with_ctime) != expected:
             raise OSError(errno.ESTALE, f"{name} changed while it was copied")
     finally:
         os.close(src)

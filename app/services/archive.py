@@ -60,18 +60,29 @@ def _rar_is_link(info) -> bool:
 class _UnpackBudget:
     """What :meth:`ArchiveService.extract_members` may write: each member at
     most what it declares (and *max_member*), all of them at most
-    *max_total* (0: no limit). Counts the bytes actually written, so a
-    header that lies is caught at the first chunk past it (#432)."""
+    *max_total*; and with *max_ratio*, each member at most that many times
+    its compressed size, all of them at most that many times the archive's
+    own size *packed* (Codex 4608936764). 0 is no limit. Counts the bytes
+    actually written, so a header that lies is caught at the first chunk
+    past it (#432)."""
 
-    def __init__(self, max_member: int = 0, max_total: int = 0) -> None:
+    def __init__(
+        self, max_member: int = 0, max_total: int = 0, max_ratio: int = 0,
+        packed: int = 0,
+    ) -> None:
         self._max_member = max(0, int(max_member or 0))
         self._max_total = max(0, int(max_total or 0))
+        self._max_ratio = max(0, int(max_ratio or 0))
+        self._packed = max(1, int(packed or 0))
         self._declared: dict[str, int | None] = {}
+        self._compressed: dict[str, int] = {}
         self._written: dict[str, int] = {}
         self._total = 0
 
-    def declare(self, member: str, size) -> None:
+    def declare(self, member: str, size, compressed=None) -> None:
         self._declared[member] = None if size is None else int(size)
+        if compressed:
+            self._compressed[member] = int(compressed)
 
     def declared(self, member: str) -> int | None:
         return self._declared.get(member)
@@ -96,6 +107,20 @@ class _UnpackBudget:
                 "Archive extraction exceeds max total size",
                 rule=f"its contents are over the limit ({self._max_total} bytes)",
             )
+        if self._max_ratio:
+            compressed = self._compressed.get(member)
+            if compressed and written > compressed * self._max_ratio:
+                raise ArchiveSafetyRefused(
+                    f"Archive member expands too far: {member}",
+                    rule=f"{member} expands more than CHD_ARCHIVE_INBOX_MAX_RATIO "
+                    f"({self._max_ratio}:1)",
+                )
+            if self._total + count > self._packed * self._max_ratio:
+                raise ArchiveSafetyRefused(
+                    "Archive expands too far",
+                    rule=f"it expands more than CHD_ARCHIVE_INBOX_MAX_RATIO "
+                    f"({self._max_ratio}:1)",
+                )
         self._written[member] = written
         self._total += count
 
@@ -396,6 +421,7 @@ class ArchiveService:
     def extract_members(
         self, archive_path: str, destination: str, *, destination_fd: int | None = None,
         source=None, progress=None, max_member: int = 0, max_total: int = 0,
+        max_ratio: int = 0,
     ) -> List[str]:
         """Unpack every file in *archive_path* beneath the folder
         *destination*, keeping the folders inside it (#432, the Inbox): the
@@ -420,7 +446,9 @@ class ArchiveService:
         the header trusted (Codex 4608007766): a member that yields more than
         it declares, or more than *max_member*, or a total past *max_total*
         (0: no limit), is refused before the chunk that would cross the line
-        is written.
+        is written. With *max_ratio*, the bytes written are held to that
+        many times each member's compressed size, and in all to that many
+        times the archive's own size (Codex 4608936764).
 
         *source*, when given, is the archive already opened by the caller (a
         binary file object it read through its own folder, no link
@@ -431,7 +459,11 @@ class ArchiveService:
         if source is not None:
             source.seek(0)
         opened = source if source is not None else archive_path
-        budget = _UnpackBudget(max_member, max_total)
+        packed = (
+            os.fstat(source.fileno()).st_size if source is not None
+            else os.path.getsize(archive_path)
+        )
+        budget = _UnpackBudget(max_member, max_total, max_ratio, packed)
         own_fd = None
         if destination_fd is None:
             own_fd = destination_fd = open_dir_beneath(os.path.realpath(destination))
@@ -445,7 +477,9 @@ class ArchiveService:
                     ])
                     for info in infos:
                         if info.filename in targets:
-                            budget.declare(info.filename, info.file_size)
+                            budget.declare(
+                                info.filename, info.file_size, info.compress_size,
+                            )
                             # By name: the reader's own record of the member.
                             with zf.open(info.filename) as src:
                                 self._write_member(
@@ -462,7 +496,10 @@ class ArchiveService:
                     ])
                     for entry in entries:
                         if entry.filename in targets:
-                            budget.declare(entry.filename, entry.uncompressed)
+                            budget.declare(
+                                entry.filename, entry.uncompressed,
+                                getattr(entry, "compressed", None),
+                            )
                     factory = _BudgetedWriters(destination_fd, targets, budget, progress)
                     try:
                         if targets:
@@ -487,7 +524,10 @@ class ArchiveService:
                     ])
                     for info in infos:
                         if info.filename in targets:
-                            budget.declare(info.filename, info.file_size)
+                            budget.declare(
+                                info.filename, info.file_size,
+                                getattr(info, "compress_size", None),
+                            )
                             with rf.open(info) as src:
                                 self._write_member(
                                     src, destination_fd, targets[info.filename],
