@@ -476,7 +476,8 @@ class SubprocessRunner:
 
     async def run_capture(self, cmd: list[str], *, timeout=None,
                           cancel_event=None, stderr_to_stdout=False,
-                          env=None) -> tuple[int | None, bytes, bytes]:
+                          env=None, on_abandoned=None,
+                          verdict=False) -> tuple[int | None, bytes, bytes]:
         """One-shot counterpart to run(): buffered (returncode, stdout, stderr)
         for tools that need a result rather than streamed lines (info / header /
         embedded-hash extraction). Same PID tracking; races communicate()
@@ -485,7 +486,10 @@ class SubprocessRunner:
         `dolphin_tool.disc_hashes` so `dolphin-tool verify --algorithm sha1`
         (the Dolphin disc-hash source for `embedded_hashes`) aborts promptly
         when a scan/match job is cancelled. `env` mirrors run()'s, for a tool
-        that needs a private environment.
+        that needs a private environment. `on_abandoned(pid)` is called for
+        a child that survives SIGKILL. `verdict=True` (capture_verify) spawns
+        the tool bare, with no `nice`/`ionice` prefix, and applies priority
+        to the child afterwards, so its exit code is the tool's own verdict.
         """
 
     # --- verify: two shapes, no per-tool loops (issue #266) ---------------
