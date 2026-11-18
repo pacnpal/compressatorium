@@ -433,8 +433,11 @@
   never run (one naming a mode that doesn't exist or can't run unattended,
   or one paused for a refused output folder or filter) is logged once, the
   first time a sweep of its Library reads it, and again only if what is wrong
-  with it changes. What runs, what is paused and what is refused are
-  unchanged.
+  with it changes. Saving a Rule the app has to change (a timezone it
+  doesn't know, delete-on-verify it refuses, an output folder outside the
+  Volumes) logs what it changed once, at the save, since the Rule is stored
+  already changed and later sweeps have nothing left to report. What runs,
+  what is paused and what is refused are unchanged.
 - **Rules refuse and drop codecs the CHDMAN mode can't use** (#474). Saving a
   Rule (a Library's, RomM's, and so an Inbox's) that pairs a mode with a codec
   it can't use, Create DVD with cdzl say, is refused with a 400 and the same

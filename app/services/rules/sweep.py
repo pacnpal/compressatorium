@@ -268,6 +268,33 @@ def report_rule_changes(
     return True
 
 
+def _report_saved(library: Library, rules: Mapping[str, dict], kind: str) -> None:
+    """Log what a save changed that a later read of the stored Rule won't show.
+
+    A save stores each Rule as the sanitizer left it: a refused timezone is
+    stored as ``UTC``, refused delete-on-verify as off, a refused output folder
+    as none, a lenient save's dropped codecs as gone. Re-reading that finds
+    nothing to drop, so the field the sanitizer recorded is gone before any
+    sweep could report it (Codex on #479). Each Rule is re-read here as it
+    will be stored, and only what that re-read loses is logged, once, now.
+    What survives the round trip (a refused filter is carried by
+    ``invalid_pattern``) is left to the sweep, so nothing is said twice.
+    Derived per change rather than per field, so a field added later is
+    covered too.
+    """
+    label = "check" if kind == CHECK else "conversion"
+    for platform_id, rule in rules.items():
+        reread = _normalize(library, {platform_id: rule}, kind=kind, check_volumes=False)
+        kept = set(rule_changes(reread.get(platform_id) or {}))
+        lost = [change for change in rule_changes(rule) if change not in kept]
+        if lost:
+            logger.warning(
+                "%s: saved the %s Rule for Platform %s in Library %s with changes: %s",
+                log_prefix(library), label, library.platform_value(platform_id),
+                library.name, "; ".join(lost),
+            )
+
+
 def _report_unrunnable(
     library: Library, stored: Mapping[str, Any], rules: Mapping[str, dict],
 ) -> None:
@@ -439,6 +466,7 @@ async def set_check_rules(library: Library, raw: Any) -> dict[str, dict]:
     async with _sweep_lock:
         rules = _normalize(library, raw, kind=CHECK, check_volumes=False)
         await store.write(store.CHECK_RULES_KEY, library, rules)
+        _report_saved(library, rules, CHECK)
         return rules
 
 
@@ -517,6 +545,7 @@ async def set_rules(library: Library, raw: Any, *, strict: bool = False) -> dict
             if pending:
                 await store.write(store.STATE_KEY, library, state)
         await store.write(store.RULES_KEY, library, rules)
+        _report_saved(library, rules, CONVERT)
         return rules
 
 

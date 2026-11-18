@@ -2840,6 +2840,18 @@ None). Two places in `rules/sweep.py` log them:
   once per `(library id, kind, platform id)` and problem
   (`_reported_unrunnable`), again only when the problem changes, forgotten
   once fixed and in `forget_library`.
+- `_report_saved(library, rules, kind)` runs at the end of `set_rules` and
+  `set_check_rules`. A save stores each Rule as the sanitizer left it
+  (`timezone: "UTC"`, delete-on-verify off, no output folder, a lenient save's
+  codecs dropped), so re-reading it finds nothing to drop and the recorded
+  field is gone before a sweep could see it. It re-normalizes each Rule as
+  stored and logs, once, only the `rule_changes` that re-read loses. What
+  survives the round trip is left to the sweep, so nothing is said twice:
+  `invalid_pattern` is carried from the stored Rule, so a refused filter is
+  reported by `_report_unrunnable`. The editor's own save (`strict=True`)
+  still refuses a codec the mode can't use (#474) before anything is stored.
+  It compares changes, not fields, so a field added to `rule_changes` later is
+  covered without touching it.
 
 Each line names the Library (`library.name`) and the Platform, and starts with
 the Library's prefix, `rules.library.log_prefix(library)`: the Library's own

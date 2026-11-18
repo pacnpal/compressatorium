@@ -264,3 +264,87 @@ async def test_a_romm_rule_is_reported_under_romms_own_prefix(
     lines = _warnings(caplog)
     assert len(lines) == 1, lines
     assert lines[0].startswith("romm_auto:") and "RomM" in lines[0] and "10" in lines[0]
+
+
+# ---- what the save changed survives the round trip (Codex on #479) ---------
+#
+# A save stores the Rule as the sanitizer left it: `timezone: "UTC"`, delete
+# off, no output folder. Re-reading that finds nothing to drop, so a field the
+# sanitizer recorded at the save is gone by the sweep. Each change is reported
+# exactly once over save, read and sweep: by the save when a re-read loses it,
+# by the sweep when the stored Rule still carries it.
+
+_ROUND_TRIPS = [
+    # (platform, submitted rule, what the line names)
+    ("ps2", {"mode": "createdvd", "timezone": "Mars/Olympus_Mons"}, "Mars/Olympus_Mons"),
+    ("wiiu", {
+        "mode": "jwud_compress", "compression": "noverify", "delete_on_verify": True,
+    }, "delete-on-verify"),
+    ("ps2", {"mode": "createdvd", "output_dir": "/somewhere/else"}, "/somewhere/else"),
+    ("ps2", {"mode": "createdvd", "include_pattern": "(USA"}, "filter pattern"),
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("platform", "submitted", "named"), _ROUND_TRIPS)
+async def test_a_saved_change_is_reported_once_over_save_read_and_sweep(
+    tree: Path, ready, queue, caplog, platform: str, submitted: dict, named: str,
+) -> None:
+    from routes import libraries as routes
+
+    lib = await _register(tree)
+    with caplog.at_level(logging.DEBUG):
+        await routes.put_library_rules(
+            lib["id"], {"rules": {platform: {"enabled": True, **submitted}}},
+        )
+        for _ in range(2):
+            await routes.get_library_rules(lib["id"])
+        await routes.run_library(lib["id"], routes.SweepRequest(platform_ids=[platform]))
+        await routes.run_library(lib["id"], routes.SweepRequest())
+
+    lines = [m for m in _warnings(caplog) if named in m]
+    assert len(lines) == 1, _warnings(caplog)
+    assert platform in lines[0] and "roms" in lines[0], lines[0]
+    assert lines[0].startswith("folder_library:"), lines[0]
+
+
+@pytest.mark.asyncio
+async def test_codecs_dropped_by_a_lenient_save_are_reported_once(
+    tree: Path, ready, queue, caplog,
+) -> None:
+    """The editor's save refuses the codec (#474); a lenient save (RomM's
+    ``set_rules``) drops it, and stores the Rule without it."""
+    from routes import libraries as routes
+    from services import libraries
+    from services.rules import sweep
+
+    lib = await _register(tree)
+    library = libraries.get(lib["id"])
+    with caplog.at_level(logging.DEBUG):
+        await sweep.set_rules(library, {
+            "ps2": {"enabled": True, "mode": "createdvd", "compression": "cdzl"},
+        })
+        await routes.get_library_rules(lib["id"])
+        await routes.run_library(lib["id"], routes.SweepRequest(platform_ids=["ps2"]))
+
+    lines = [m for m in _warnings(caplog) if "cdzl" in m]
+    assert len(lines) == 1, _warnings(caplog)
+    assert "ps2" in lines[0] and "roms" in lines[0], lines[0]
+
+
+@pytest.mark.asyncio
+async def test_a_check_rules_dropped_timezone_is_reported_once_from_its_save(
+    tree: Path, caplog,
+) -> None:
+    from routes import libraries as routes
+
+    lib = await _register(tree)
+    with caplog.at_level(logging.DEBUG):
+        await routes.put_library_rules(lib["id"], {"check_rules": {
+            "ps2": {"enabled": False, "timezone": "Mars/Olympus_Mons"},
+        }})
+        await routes.get_library_rules(lib["id"])
+
+    lines = [m for m in _warnings(caplog) if "Mars/Olympus_Mons" in m]
+    assert len(lines) == 1, _warnings(caplog)
+    assert "check" in lines[0] and "ps2" in lines[0], lines[0]
