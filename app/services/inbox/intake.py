@@ -294,6 +294,9 @@ _room_logged: set[str] = set()
 # How long the Recognize read may go without progress before it is given up
 # (Codex 4608007769); None is the conversion's own stall limit.
 _RECOGNIZE_STALL_SECONDS: float | None = None
+# How long priming a bound file's embedded hashes (a CHD's `chdman info`)
+# may take before the match goes on without them.
+_PRIME_SECONDS = 300
 # Set when a copy's check had to stop with a reader still on the storage
 # (#306's stop): no copy opens another file until the next pass. Read and set
 # under `_check_lock`, which every copy's check-and-place runs under, so a
@@ -1088,14 +1091,21 @@ async def _hold_unpacked(
         state.taken_holds[archive] = taken
 
 
-def _output_identity(output: str) -> dict[str, int] | None:
-    """An output's identity in the Library, or None when it isn't a regular
-    file there now. Blocking."""
-    try:
-        st = os.stat(output, follow_symlinks=False)
-    except OSError:
-        return None
-    return file_snapshot(st) if stat.S_ISREG(st.st_mode) else None
+def _outputs_identity(output: str) -> dict[str, dict[str, int]] | None:
+    """Every file of the output Image at *output* in the Library (the file
+    and its members: a CUE's BINs, an extractcd's tracks, a split's parts,
+    Codex 4609181297), each with its identity; None when any of them isn't a
+    regular file there now. Blocking."""
+    out: dict[str, dict[str, int]] = {}
+    for name in [output, *_members(output)]:
+        try:
+            st = os.stat(name, follow_symlinks=False)
+        except OSError:
+            return None
+        if not stat.S_ISREG(st.st_mode):
+            return None
+        out[name] = file_snapshot(st)
+    return out
 
 
 async def _record_placed(
@@ -1106,10 +1116,10 @@ async def _record_placed(
     the archive, with the output's identity."""
     archive, unpacked = owner
     try:
-        identity = await _step(_output_identity, output)
+        outputs = await _step(_outputs_identity, output)
     except (asyncio.TimeoutError, OSError):
-        identity = None
-    if identity is None:
+        outputs = None
+    if outputs is None:
         return
     record = state.placed_members.get(archive)
     if record is None or record.get("fingerprint") != unpacked.fingerprint:
@@ -1117,14 +1127,15 @@ async def _record_placed(
             "fingerprint": unpacked.fingerprint, "members": {},
         }
     record["members"][os.path.relpath(path, unpacked.slot.path)] = {
-        "output": output, "identity": identity,
+        "output": output, "outputs": outputs,
     }
 
 
 async def _placed_before(state: _State, owner: tuple[str, _Unpacked], path: str) -> bool:
     """Whether the Image at *path*, unpacked again from *owner*'s archive,
     was placed before: a record for this archive (its fingerprint) and this
-    path in it whose output is still that very file."""
+    path in it whose every output file is still that very file. One missing
+    or changed, it is taken again (and a name still taken holds it)."""
     archive, unpacked = owner
     record = state.placed_members.get(archive)
     if record is None or record.get("fingerprint") != unpacked.fingerprint:
@@ -1133,7 +1144,7 @@ async def _placed_before(state: _State, owner: tuple[str, _Unpacked], path: str)
     if not member:
         return False
     try:
-        return await _step(_output_identity, member["output"]) == member["identity"]
+        return await _step(_outputs_identity, member["output"]) == member["outputs"]
     except (asyncio.TimeoutError, OSError):
         return False
 
@@ -1500,6 +1511,22 @@ async def _name(
     return None
 
 
+async def _prime_for_match(path: str, cancel: asyncio.Event | None) -> None:
+    """Have the tool that reads *path* prime its embedded hashes for it
+    (``ToolPlugin.prime_embedded_hashes``), bounded; a cancel propagates,
+    anything else leaves the match to the file's own hash."""
+    try:
+        tool = await _step(registry.tool_for_verify, path)
+        if tool is not None:
+            await asyncio.wait_for(
+                tool.prime_embedded_hashes(path, cancel_event=cancel), _PRIME_SECONDS,
+            )
+    except ReadCancelled:
+        raise
+    except Exception:
+        logger.info("inbox: could not read %s's embedded hashes", path, exc_info=True)
+
+
 async def _bind_for_match(
     inbox: inbox_store.Inbox, path: str, flight: _Flight, cancel: asyncio.Event | None,
 ) -> Any:
@@ -1602,6 +1629,9 @@ async def _recognize(
                 # 4608007769); the slot is given back below either way.
                 bound = await _bind_for_match(inbox, path, flight, cancel)
                 try:
+                    # What its tool reads its embedded hashes from, read from
+                    # the bound copy (Codex 4609181291): a CHD's SHA-1s.
+                    await _prime_for_match(bound.read_path, cancel)
                     with collect_abandonment() as abandoned:
                         try:
                             result, _cacheable = await match_one(
@@ -3273,7 +3303,10 @@ def restore_settle_memory(memory: dict[str, Any] | None) -> None:
                     "members": {
                         str(member): {
                             "output": str(entry["output"]),
-                            "identity": {str(k): int(v) for k, v in entry["identity"].items()},
+                            "outputs": {
+                                str(name): {str(k): int(v) for k, v in ids.items()}
+                                for name, ids in entry["outputs"].items()
+                            },
                         }
                         for member, entry in (record.get("members") or {}).items()
                     },

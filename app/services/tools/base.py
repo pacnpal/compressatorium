@@ -853,6 +853,16 @@ class BaseTool:
             path, self.policy_owner, cancel_event=cancel_event,
         )
 
+    async def prime_embedded_hashes(
+        self, path: str, *, cancel_event: asyncio.Event | None = None,
+    ) -> None:
+        """Make :meth:`embedded_hashes` able to answer for *path*, a file no
+        scan has seen (an Inbox's bound copy, #432): read and cache what it
+        reads, as the library scan would. Default: nothing to prime. Raises
+        ``ReadCancelled`` on a cancel; any other failure leaves the match to
+        fall back to the file's own hash."""
+        return None
+
     def header_platform(self, path: str, *, within=None) -> str | None:
         # Default: no header probe. Tools that can tell their consoles apart
         # from the image bytes (chdman, dolphin, xiso) override it.

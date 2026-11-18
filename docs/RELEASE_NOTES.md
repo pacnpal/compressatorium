@@ -218,9 +218,10 @@
   original can't be changed under the check; its contents are also held to
   `CHD_ARCHIVE_INBOX_MAX_RATIO` as they are written. A Recognize reads a bound
   copy of the file it names, as a conversion does, so a file swapped while it
-  is matched is never named after what was swapped in. An Image from an archive
+  is matched is never named after what was swapped in, and a CHD is matched
+  by its embedded SHA-1s as in a Library. An Image from an archive
   that was converted stays counted when the archive is unpacked again after a
-  hold, and a folder of an archive that couldn't be listed holds it with a
+  hold, as long as every file it was placed as is still there, and a folder of an archive that couldn't be listed holds it with a
   Finding instead of being skipped. Removing an Inbox lets a copy already
   started from one of its archives finish. A stopped `run-rules` cancels any
   conversion intake queued while it stopped.

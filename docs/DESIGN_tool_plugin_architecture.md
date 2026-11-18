@@ -7805,9 +7805,11 @@ counts by its bytes (`_same_as_placed`), or, for a conversion, whose output's
 bytes can't be compared with its Source, by its record (CodeRabbit 4608968248):
 every Image placed from an archive is recorded in `_State.placed_members`,
 outside the slot, by the archive's fingerprint and the Image's path in the
-archive, with its output and the output's identity (`_record_placed`). An Image
-unpacked again whose output is still that very file counts as placed with
-nothing taken (`_placed_before`). The records go when the archive moves to
+archive, with every output file and its identity, the file and its members (a
+CUE's BINs, an extractcd's tracks; `_record_placed`, Codex 4609181297). An Image
+unpacked again whose output files are all still those very files counts as
+placed with nothing taken (`_placed_before`); one missing or changed is taken
+again, and a name still taken holds it. The records go when the archive moves to
 `processed/`, changes or leaves the Inbox, and are kept in the settle memory.
 A loose file's taken-name hold lifts the same way once the name is free.
 
@@ -7843,7 +7845,10 @@ file SHA-1, then Hasheous) on the very bytes taken (CodeRabbit 4608968259):
 the Image's main file is bound into the app's work area first, as a
 conversion's Source is (`_bind_for_match` over `bind_source`: a hard link or a
 checked copy, opened beneath its root only while it is the file taken), the
-match reads the bound file, and it is kept only while the bound file is
+match reads the bound file (its tool first primes the embedded hashes it reads
+for it, `ToolPlugin.prime_embedded_hashes`: chdman reads a CHD's SHA-1s with
+`chdman info` into `chd_metadata_store`, bounded and cancellable, Codex
+4609181291), and it is kept only while the bound file is
 unchanged (`BoundSource.changed`), with the identity it was made for; `_name`
 uses it only while the file's fingerprint and identity are still those. Its
 first look at the file (its stat, and the size cap's) is detached, bounded and

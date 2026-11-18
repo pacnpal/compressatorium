@@ -1861,3 +1861,67 @@ async def test_a_match_read_while_the_file_was_swapped_never_names_it(vol, db, m
     assert swapped
     assert not (vol / "ROMs" / "ps2" / "Name B.iso").exists()
     assert (vol / "ROMs" / "ps2" / "Name A.iso").read_bytes() == disc_a
+
+
+# ---- Codex on PR #453 at 238b0378 -------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_chd_matched_by_its_embedded_sha1_takes_its_dat_name(vol, db, monkeypatch):
+    """Codex 4609181291: the bound copy's CHD metadata is read before the
+    match, so a DAT that knows the CHD only by its embedded SHA-1 names it."""
+    from services.chdman import chdman_service
+
+    _verifies(monkeypatch)
+    embedded = "ab" * 20
+    await _dat("Sony - PlayStation 2 (Redump)", {"Embedded Game": embedded})
+    read: list[str] = []
+
+    async def info(path, **_kwargs):
+        read.append(path)
+        return {"sha1": embedded, "data_sha1": "cd" * 20, "version": 5}
+
+    monkeypatch.setattr(chdman_service, "info", info)
+    library = _library(vol)
+    box = _inbox(vol, library, settle=0)
+    game = _drop(vol / "Downloads" / "ps2" / "download.chd", _bytes("a chd"))
+
+    await _polls(box)
+
+    assert (vol / "ROMs" / "ps2" / "Embedded Game.chd").read_bytes() == _bytes("a chd")
+    assert not game.exists()
+    assert read and all(str(vol) not in path for path in read)  # the bound copy
+
+
+@pytest.mark.asyncio
+async def test_an_image_whose_placed_track_is_gone_is_not_counted_placed(
+    vol, db, monkeypatch,
+):
+    """Codex 4609181297: a record counts only while every output file is
+    still there as placed. Its BIN deleted, a CUE/BIN unpacked again is taken
+    anew; its surviving CUE then holds it on the taken name, and the archive
+    doesn't move to processed/."""
+    _verifies(monkeypatch)
+    library = _library(vol)
+    box = _inbox(vol, library, settle=0)
+    taken = _drop(vol / "ROMs" / "psx" / "B.iso", b"someone else's")
+    cue = b'FILE "Game.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n'
+    archive = vol / "Downloads" / "psx" / "Pair.zip"
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_STORED) as zf:
+        zf.writestr("Game.cue", cue)
+        zf.writestr("Game.bin", _bytes("track", 2352 * 4))
+        zf.writestr("B.iso", _bytes("b", 4096))
+
+    await _polls(box)
+    assert (vol / "ROMs" / "psx" / "Game.bin").exists()
+    assert archive.exists()  # B is held on its taken name
+
+    (vol / "ROMs" / "psx" / "Game.bin").unlink()
+    taken.unlink()  # B's name is free: the archive is unpacked again
+    await _polls(box, start=20)
+
+    assert archive.exists()
+    assert not (vol / "Downloads" / "processed" / "psx" / "Pair.zip").exists()
+    reasons = " ".join(f["reason"] for f in _inbox_findings())
+    assert "Game.cue is already in the Library" in reasons
