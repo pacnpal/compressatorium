@@ -150,6 +150,10 @@ _NAMES: dict[str, str] = {
     "xbox": "Xbox",
     "xbox360": "Xbox 360",
 }
+# The Platforms whose Image *is* an archive: an arcade romset is a zip of the
+# ROM chips' dumps, which an emulator reads as it is. Unpacked, it is no
+# longer an Image of anything. The Inbox takes such an archive whole (#432).
+_ARCHIVE_IMAGES: frozenset[str] = frozenset({"arcade"})
 _CANONICAL: dict[str, str] = {
     alias: slug for slug, aliases in _ALIASES.items() for alias in (slug, *aliases)
 }
@@ -206,6 +210,12 @@ def platforms() -> list[dict[str, str]]:
         ({"slug": slug, "name": platform_name(slug)} for slug in known_slugs()),
         key=lambda p: p["name"].lower(),
     )
+
+
+def archive_is_image(slug: str | None) -> bool:
+    """Whether an archive is *slug*'s own Image (an arcade romset), so it is
+    taken whole and never unpacked (#432). Any alias counts as its Platform."""
+    return canonical_slug(slug) in _ARCHIVE_IMAGES
 
 
 def esde_folder_name(slug: str) -> str:

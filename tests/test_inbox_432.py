@@ -243,6 +243,137 @@ async def test_an_archive_inside_an_archive_is_not_unpacked(vol, db, monkeypatch
     assert "archive inside an archive" in finding["reason"]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("folder", ["arcade", "mame"])
+async def test_an_arcade_romset_zip_is_placed_whole(vol, db, monkeypatch, folder):
+    """On a Platform whose Image is the archive itself (an arcade romset),
+    the zip is never unpacked: gated, then copied in as one file."""
+    _verifies(monkeypatch)
+    library = _library(vol)
+    box = _inbox(vol, library, settle=0)
+    members = {"pacman.6e": _bytes("6e", 4096), "pacman.6f": _bytes("6f", 4096)}
+    archive = _zip(vol / "Downloads" / folder / "pacman.zip", members)
+    data = archive.read_bytes()
+
+    await _polls(box)
+
+    placed = vol / "ROMs" / "arcade" / "pacman.zip"
+    assert placed.read_bytes() == data
+    assert not (vol / "ROMs" / "arcade" / "pacman.6e").exists()
+    assert (vol / "Downloads" / "processed" / folder / "pacman.zip").exists()
+    assert _stage_folders(vol / "Downloads") == []
+    assert _inbox_findings() == []
+
+
+@pytest.mark.asyncio
+async def test_an_arcade_romset_zip_still_goes_through_the_gate(vol, db, monkeypatch):
+    _verifies(monkeypatch)
+    monkeypatch.setattr(settings, "archive_max_total_size", 0)
+    monkeypatch.setattr(settings, "archive_inbox_max_total_size", 1024)
+    library = _library(vol)
+    box = _inbox(vol, library, settle=0)
+    archive = _zip(vol / "Downloads" / "arcade" / "big.zip", {"big.rom": _bytes("big", 4096)})
+
+    await _polls(box)
+
+    assert archive.exists()
+    assert not (vol / "ROMs" / "arcade").exists()
+    [finding] = _inbox_findings()
+    assert "CHD_ARCHIVE_INBOX_MAX_TOTAL_SIZE" in finding["reason"]
+
+
+@pytest.mark.asyncio
+async def test_a_disc_platforms_zip_is_still_unpacked(vol, db, monkeypatch):
+    _verifies(monkeypatch)
+    library = _library(vol)
+    box = _inbox(vol, library, settle=0)
+    disc = _bytes("psx-disc")
+    archive = _zip(vol / "Downloads" / "psx" / "Game.zip", {"Game.iso": disc})
+
+    await _polls(box)
+
+    assert (vol / "ROMs" / "psx" / "Game.iso").read_bytes() == disc
+    assert not (vol / "ROMs" / "psx" / "Game.zip").exists()
+    assert not archive.exists()
+    assert (vol / "Downloads" / "processed" / "psx" / "Game.zip").exists()
+
+
+def test_the_platform_registry_says_which_platforms_keep_archives_whole():
+    from services import platform_detect
+
+    assert platform_detect.archive_is_image("arcade")
+    assert platform_detect.archive_is_image(platform_detect.canonical_slug("fbneo"))
+    assert not platform_detect.archive_is_image("psx")
+    assert not platform_detect.archive_is_image("gba")
+    assert not platform_detect.archive_is_image(None)
+
+
+# ---- a restart midway --------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_an_image_placed_before_a_restart_counts_as_placed(vol, db, monkeypatch):
+    """Unpacked, one Image placed, then the app restarts before the archive
+    moved: unpacked again, the Image already in the Library is the same
+    bytes, so it counts as placed with no Finding and the archive completes."""
+    from services.inbox import intake
+
+    _verifies(monkeypatch)
+    library = _library(vol)
+    box = _inbox(vol, library, settle=0)
+    rom = _bytes("restart")
+    archive = _zip(vol / "Downloads" / "gba" / "Game.zip", {"Game.gba": rom})
+    placed = vol / "ROMs" / "gba" / "Game.gba"
+    for now in range(8):
+        await _poll(box, now=now)
+        if placed.exists():
+            break
+    assert placed.exists() and archive.exists()
+
+    intake.reset_for_tests()  # a restart: everything in memory is gone
+    await _polls(box, start=20)
+
+    assert placed.read_bytes() == rom
+    assert not archive.exists()
+    assert (vol / "Downloads" / "processed" / "gba" / "Game.zip").exists()
+    assert _stage_folders(vol / "Downloads") == []
+    assert _inbox_findings() == []
+
+
+@pytest.mark.asyncio
+async def test_a_different_image_under_the_same_name_is_still_held_after_a_restart(
+    vol, db, monkeypatch,
+):
+    _verifies(monkeypatch)
+    library = _library(vol)
+    box = _inbox(vol, library, settle=0)
+    other = _drop(vol / "ROMs" / "gba" / "Game.gba", _bytes("someone else's", 64 * 1024))
+    archive = _zip(vol / "Downloads" / "gba" / "Game.zip", {"Game.gba": _bytes("mine")})
+
+    await _polls(box)
+
+    assert other.read_bytes() == _bytes("someone else's", 64 * 1024)
+    assert archive.exists()
+    [finding] = _inbox_findings()
+    assert "Game.gba is already in the Library" in finding["reason"]
+
+
+@pytest.mark.asyncio
+async def test_a_loose_file_already_in_the_library_byte_for_byte_counts_as_placed(vol, db):
+    disc = _bytes("same")
+    library = _library(vol)
+    box = _inbox(vol, library, settle=0)
+    existing = _drop(vol / "ROMs" / "ps2" / "Game.iso", disc)
+    game = _drop(vol / "Downloads" / "ps2" / "Game.iso", disc)
+
+    await _polls(box)
+
+    assert existing.read_bytes() == disc
+    assert not game.exists()
+    assert (vol / "Downloads" / "processed" / "ps2" / "Game.iso").read_bytes() == disc
+    assert _inbox_findings() == []
+
+
 # ---- DAT names -------------------------------------------------------------
 
 

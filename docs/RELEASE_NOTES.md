@@ -147,7 +147,13 @@
   a Finding about one of them is shown on the archive, naming it. Once every
   Image in it is placed, the archive moves to `processed/` and the unpacked
   copies are removed (the archive still holds them). An archive inside an
-  archive isn't unpacked.
+  archive isn't unpacked. An arcade romset is never unpacked, since the zip is
+  the game: a zip in an `arcade`, `mame` or `fbneo` folder (or one you mapped
+  to Arcade) is checked against the same limits and copied in whole. If the app
+  restarts partway through an archive, an Image it had already placed is
+  recognised as the same file and counted, so the archive still finishes; the
+  same goes for a loose file whose exact copy is already in the Library, which
+  now moves to `processed/` instead of being held.
   Where a DAT is loaded (or Hasheous is on), each Image is Recognized first
   (an **Inbox Recognize** job) and placed under its top-ranked DAT's name,
   with its own extension, by the same rule as **Rename to DAT name**; a

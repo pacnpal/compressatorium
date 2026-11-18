@@ -53,7 +53,13 @@ Archives and names (#432):
   one like loose files; a Finding for one of them is written on the archive,
   naming it. Once every one of them is placed the archive moves to
   ``processed/`` and the slot, intake's own scratch, goes. An archive found
-  inside an archive is not unpacked.
+  inside an archive is not unpacked, nor is one whose folder names a
+  Platform whose Image is the archive itself
+  (``platform_detect.archive_is_image``: an arcade romset), which is gated
+  and then taken whole.
+* **A restart midway.** A copy's name already in the Library holding the
+  same bytes (size, then SHA-1) was placed before: counted placed, with no
+  Finding (``_same_as_placed``).
 * **Recognizing.** Where a DAT (or Hasheous) can answer, each Image is
   matched before it is placed, as an ``inbox_recognize`` job: the match of
   the very bytes taken (``routes.dat.match_one``), never a row cached for an
@@ -856,8 +862,18 @@ async def _take(
     ``queue_full``, ``unpacking``, ``recognizing`` or ``retry`` (something
     transient; the next poll tries again)."""
     if archive_service.is_archive(path):
-        # Unpacked before its Platform is worked out (#432).
-        return await _take_archive(inbox, state, path, fingerprint)
+        try:
+            whole = await _step(_archive_is_image, path)
+        except (asyncio.TimeoutError, OSError):
+            return "retry"
+        if not whole:
+            # Unpacked before its Platform is worked out (#432).
+            return await _take_archive(inbox, state, path, fingerprint)
+        # Its folder names a Platform whose Image is the archive (an arcade
+        # romset): gated, then taken whole like any other file.
+        outcome = await _gate_archive(inbox, state, path, fingerprint, "checked or copied")
+        if outcome is not None:
+            return outcome
     try:
         detection = await _step(platform_detect.detect_platform, path)
         members = await _step(image_members, path)
@@ -935,12 +951,90 @@ async def _take(
     except (asyncio.TimeoutError, OSError):
         return "retry"
     if taken:
+        try:
+            same = await run_detached_within_stall_bound(
+                _same_as_placed, inbox, flight, plan.folder,
+                what=f"Comparing {os.path.basename(path)} with the Library's copy",
+                report_progress=True,
+            )
+        except _SourceChanged:
+            return "retry"
+        except Exception:
+            logger.warning("inbox: could not compare %s with the Library", path, exc_info=True)
+            same = False
+        if same:
+            # Already placed, byte for byte (by this Inbox before a restart):
+            # counted placed, with no Finding, and the original moves on.
+            return _start_finish(inbox, state, path, flight, plan.folder)
         await _hold(
             inbox, state, path, fingerprint, findings.INBOX_FAILED,
             f"{taken} is already in the Library ({plan.folder})", {"platform": platform},
         )
         return "held"
     return _start_copy(inbox, state, path, flight, plan.folder)
+
+
+def _same_as_placed(
+    inbox: inbox_store.Inbox, flight: _Flight, folder: str, progress,
+) -> bool:
+    """Whether every file of the Image is already in *folder* under its
+    placed name, the same bytes (#432): what a restart midway leaves. Size
+    first, then the content hash (``stream_digest.new_hasher``), both sides
+    opened with no link followed, the Image's own files through the Inbox's
+    folder and only while they are the files taken. Blocking."""
+    names = flight.placed_names or [os.path.basename(f) for f in flight.files]
+    src_fd, sources = _folder_beneath(inbox, flight.files)
+    try:
+        dst_fd = os.open(folder, _DIR_FLAGS)
+    except OSError:
+        os.close(src_fd)
+        return False
+    try:
+        for source, name in zip(sources, names):
+            there = stat_at(name, dst_fd)
+            taken = flight.identities.get(source)
+            if there is None or taken is None or not stat.S_ISREG(there.st_mode):
+                return False
+            if there.st_size != taken["size"]:
+                return False
+        for source, name in zip(sources, names):
+            if _digest_at(source, src_fd, progress, flight.identities[source]) != _digest_at(
+                name, dst_fd, progress,
+            ):
+                return False
+        return True
+    finally:
+        os.close(dst_fd)
+        os.close(src_fd)
+
+
+def _digest_at(name: str, folder: int, progress, identity: dict | None = None) -> str:
+    """The SHA-1 of *name* in the open *folder*, opened with no link
+    followed; with *identity*, only while it is that file. Blocking."""
+    hasher = new_hasher("sha1")
+    fd = os.open(name, os.O_RDONLY | _NOFOLLOW, dir_fd=folder)
+    with os.fdopen(fd, "rb") as handle:
+        if identity is not None and file_snapshot(os.fstat(handle.fileno())) != identity:
+            raise _SourceChanged(errno.ESTALE, f"{name} changed since it was taken")
+        while chunk := handle.read(_CHUNK):
+            progress(name)
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+
+def _start_finish(
+    inbox: inbox_store.Inbox, state: _State, path: str, flight: _Flight, folder: str,
+) -> str:
+    """Finish an Image whose copy is already in *folder*: the move to
+    ``processed/`` (or, unpacked from an archive, its count) as a tracked
+    flight, as after a copy."""
+    names = flight.placed_names or [os.path.basename(f) for f in flight.files]
+    output = os.path.join(folder, names[0])
+    with state.guard:
+        if state.revoked:
+            return "retry"  # the Inbox was removed meanwhile
+        _track(state, path, flight, _finish(inbox, state, path, flight, output))
+    return "copying"
 
 
 # ---- Recognizing and naming (#432) -----------------------------------------
@@ -1071,6 +1165,46 @@ async def _recognize(
 # ---- unpacking an archive (#432) -------------------------------------------
 
 
+def _archive_is_image(path: str) -> bool:
+    """Whether the folder evidence for the archive at *path* (a Platform
+    folder, or the user's mapping of one) names a Platform whose Image is the
+    archive itself (``platform_detect.archive_is_image``). A Platform its
+    folder can't tell is False: the archive is unpacked and its Images say.
+    Blocking."""
+    detection = platform_detect.detect_platform(path)
+    return platform_detect.archive_is_image(detection.place_platform)
+
+
+async def _gate_archive(
+    inbox: inbox_store.Inbox, state: _State, path: str, fingerprint: str, what: str,
+) -> str | None:
+    """Check an archive against the Inbox's limits before anything reads it
+    whole: None when it passes, else the outcome (held with a Finding, or
+    ``retry``). *what* says what wasn't done to it."""
+    # Anyone who can write the Inbox can drop one: an archive past the
+    # Inbox's size and expansion caps is never unpacked, checked nor copied
+    # (Codex 4607318277).
+    try:
+        await _step(archive_service.check_inbox_archive, path)
+    except ArchiveSafetyRefused as exc:
+        await _hold(
+            inbox, state, path, fingerprint, findings.INBOX_FAILED,
+            f"It's an archive the Inbox doesn't take: {exc.rule}. It wasn't {what}; "
+            "extract it, or raise the limit if you trust it",
+            {"limit": exc.rule},
+        )
+        return "held"
+    except asyncio.TimeoutError:
+        return "retry"
+    except Exception as exc:
+        await _hold(
+            inbox, state, path, fingerprint, findings.INBOX_FAILED,
+            f"It couldn't be read as an archive ({exc}), so it wasn't {what}",
+        )
+        return "held"
+    return None
+
+
 async def _take_archive(
     inbox: inbox_store.Inbox, state: _State, path: str, fingerprint: str,
 ) -> str:
@@ -1082,26 +1216,9 @@ async def _take_archive(
             "outer one by hand",
         )
         return "held"
-    # Anyone who can write the Inbox can drop one: an archive past the
-    # Inbox's size and expansion caps is never unpacked (Codex 4607318277).
-    try:
-        await _step(archive_service.check_inbox_archive, path)
-    except ArchiveSafetyRefused as exc:
-        await _hold(
-            inbox, state, path, fingerprint, findings.INBOX_FAILED,
-            f"It's an archive the Inbox doesn't take: {exc.rule}. It wasn't unpacked; "
-            "extract it, or raise the limit if you trust it",
-            {"limit": exc.rule},
-        )
-        return "held"
-    except asyncio.TimeoutError:
-        return "retry"
-    except Exception as exc:
-        await _hold(
-            inbox, state, path, fingerprint, findings.INBOX_FAILED,
-            f"It couldn't be read as an archive ({exc}), so it wasn't unpacked",
-        )
-        return "held"
+    outcome = await _gate_archive(inbox, state, path, fingerprint, "unpacked")
+    if outcome is not None:
+        return outcome
     try:
         identities = await _step(_identities, inbox, [path])
     except asyncio.TimeoutError:

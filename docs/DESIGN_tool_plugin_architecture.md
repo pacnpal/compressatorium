@@ -7638,7 +7638,16 @@ them.
 
 **Archives (#432).** An archive the walk lists (`.zip`, `.7z`: extensions a
 tool reads; `archive_service.is_archive` decides) is unpacked before its Platform is worked out (`_take_archive`, first
-thing in `_take`). It is gated as above (`check_inbox_archive`, listing only),
+thing in `_take`), unless it is the Image itself. Which Platforms keep their
+archives whole is platform data, not an Inbox branch:
+`platform_detect.archive_is_image(slug)` reads `_ARCHIVE_IMAGES` beside the
+Platform aliases (today `arcade`, so its aliases `mame`, `fbneo`, `naomi`, ...
+count too; a user's folder mapping to Arcade does as well). When the archive's
+folder evidence (`Detection.place_platform`: a Platform folder or a mapping)
+names such a Platform, the archive goes through the same gate and is then taken
+as one file down the ordinary path (detected, Recognized, copied or converted),
+never unpacked. A Platform the folder can't tell is unpacked: its Images say.
+Otherwise it is gated as above (`check_inbox_archive`, listing only),
 then unpacked as an `inbox_unpack` job (`ConversionMode.INBOX_UNPACK`, an
 `ExternalMode(in_ledger=False, started_by_hand=False, takes_slot=True)` like
 the copy) on a stall-bounded worker (`run_detached_within_stall_bound`, its
@@ -7711,8 +7720,18 @@ for the file to change.
 
 **Taken names (#432).** The name an Image would take in the Library, its DAT
 name or its own, is checked before anything is written: a copy's names
-(`_taken`), a conversion's output and its companions (`output_status`). One on
-disk holds the Image with an `inbox_failed` Finding naming it; one only another
+(`_taken`), a conversion's output and its companions (`output_status`). A
+copy's taken names are first compared with the Image's own files
+(`_same_as_placed`, stall-bounded): every name a regular file of the same size,
+then the same SHA-1 (`stream_digest.new_hasher`), both sides opened with no link
+followed and the Image's files only while they are the ones taken. All the same
+means it was placed already (by this Inbox before a restart, with its state
+lost): it is counted placed with no Finding and finished as after a copy
+(`_start_finish`: the original to `processed/`, or, unpacked from an archive,
+counted so the archive can complete). This holds for loose files too. A
+conversion's output can't be compared with its Source, so a taken one stays a
+hold. One on disk that differs holds the Image with an `inbox_failed` Finding
+naming it; one only another
 job holds is a retry with no Finding. Nothing is ever overwritten: the copy's
 placement never replaces, and a conversion is queued without
 `allow_overwrite`.
