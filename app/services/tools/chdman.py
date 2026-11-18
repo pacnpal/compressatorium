@@ -103,6 +103,24 @@ _IMPLICIT_CODECS = {
     "createdvd": _GENERAL_DEFAULT_CODECS,
     "createld": ("avhu",),
 }
+# The codecs each create mode takes with ``-c`` (#471), the shared
+# ``compression_problem`` refuses the rest before a job exists. chdman parses
+# any four-letter codec it knows (``parse_compression``, so ``lzma2`` is an
+# "Invalid compressor" everywhere), but a CD codec refuses a hunk that is not
+# whole 2448-byte CD frames (``chd_cd_compressor``: CODEC_ERROR), and only
+# createcd writes those: createdvd sends ``-hs 2048``, createhd and createraw
+# (``-us 512``) default to 4096. avhu encodes the A/V frames only createld
+# writes. The general codecs compress any bytes, so every mode takes them,
+# and ``none`` stores the hunks as they are.
+_GENERAL_CODECS = frozenset({"none", "zlib", "zstd", "lzma", "huff", "flac"})
+_CD_CODECS = frozenset({"cdzl", "cdzs", "cdlz", "cdfl"})
+_CREATE_CODECS = {
+    "createraw": _GENERAL_CODECS,
+    "createhd": _GENERAL_CODECS,
+    "createcd": _GENERAL_CODECS | _CD_CODECS,
+    "createdvd": _GENERAL_CODECS,
+    "createld": _GENERAL_CODECS | {"avhu"},
+}
 _CREATE_MODES = {
     "createraw": ("Create Raw", _HD_PLATFORMS, _NONE, False, _NONE),
     "createhd": ("Create HD", _HD_PLATFORMS, _NONE, False, _NONE),
@@ -176,6 +194,7 @@ def _build_modes() -> list[ModeSpec]:
             output_ext=".chd",
             input_extensions=frozenset(CHDMAN_CONVERTIBLE_EXTENSIONS),
             supports_compression=True,
+            codecs=_CREATE_CODECS[mode],
             implicit_codecs=_IMPLICIT_CODECS[mode],
             supports_delete_on_verify=mode not in _NO_DELETE_SOURCE_MODES,
             supports_round_trip=mode in _ROUND_TRIP_MODES,

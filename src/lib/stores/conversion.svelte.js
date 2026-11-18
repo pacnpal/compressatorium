@@ -349,8 +349,13 @@ class ConversionStore {
       // not take is sent as the codec's default, never as itself.
       return `${codec}:${fitLevel(this.levelRange, this.compressionLevel)}`;
     }
-    if (selection.length === 0) return null;
-    return selection.join(',');
+    // chdman's list is kept per tool, so CD codecs picked for Create CD are
+    // still selected on Create DVD, which can't use them (#471). Send only
+    // the codecs this mode takes; none left means chdman's own.
+    const allowed = registry.codecsForMode(this.mode).map((c) => c.value);
+    const taken = allowed.length ? selection.filter((c) => allowed.includes(c)) : selection;
+    if (taken.length === 0) return null;
+    return taken.join(',');
   }
 
   // ─── Setters ──────────────────────────────────────────────────────────
@@ -617,7 +622,12 @@ class ConversionStore {
       this.#persistCompression();
       return;
     }
-    const current = this.compressionSelection.filter((c) => c !== 'none');
+    // A codec this mode doesn't offer (a CD codec kept from Create CD, #471)
+    // is dropped here, so it never counts against the cap unseen.
+    const offered = registry.codecsForMode(this.mode).map((c) => c.value);
+    const current = this.compressionSelection.filter(
+      (c) => c !== 'none' && (!offered.length || offered.includes(c)),
+    );
     if (current.includes(codec)) {
       this.compressionSelection = current.filter((c) => c !== codec);
       this.#persistCompression();

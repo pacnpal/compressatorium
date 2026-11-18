@@ -14,6 +14,28 @@ import { api } from '$lib/api/endpoints.js';
 
 const CHDMAN_SOURCE_EXTS = ['.gdi', '.iso', '.cue', '.bin'];
 const CHDMAN_VERIFY_EXTS = ['.chd'];
+// chdman's codecs, in the groups its create modes take them (#471). Mirrors
+// `_CREATE_CODECS` in app/services/tools/chdman.py: every mode takes the
+// general codecs, only Create CD the CD-frame ones, only Create LD avhu.
+// `none` is listed so the per-mode list matches the backend's; both pickers
+// draw it as their own None chip.
+const CHDMAN_GENERAL_CODECS = [
+  { value: 'none',  label: 'No compression' },
+  { value: 'zlib',  label: 'zlib',  hint: 'Fast, baseline compatibility' },
+  { value: 'zstd',  label: 'zstd',  hint: 'Modern general-purpose codec' },
+  { value: 'lzma',  label: 'lzma',  hint: 'Slower, better ratio' },
+  { value: 'huff',  label: 'huff',  hint: 'Huffman entropy coder' },
+  { value: 'flac',  label: 'flac',  hint: 'For CD audio tracks' },
+];
+const CHDMAN_CD_CODECS = [
+  { value: 'cdzl',  label: 'cdzl',  hint: 'CD-zlib variant' },
+  { value: 'cdzs',  label: 'cdzs',  hint: 'CD-zstd variant' },
+  { value: 'cdlz',  label: 'cdlz',  hint: 'CD-lzma variant' },
+  { value: 'cdfl',  label: 'cdfl',  hint: 'CD-FLAC variant' },
+];
+const CHDMAN_LD_CODECS = [
+  { value: 'avhu',  label: 'avhu',  hint: 'Audio/video Huffman' },
+];
 
 const DOLPHIN_SOURCE_EXTS = ['.iso', '.gcz', '.wia', '.rvz', '.wbfs'];
 // `.iso` is intentionally absent from DOLPHIN_VERIFY_EXTS even
@@ -204,24 +226,10 @@ export const TOOLS = [
     glyph: 'CD',
     accent: 'var(--badge-cd)',
     // Compression options. chdman accepts a comma-separated codec list;
-    // CompressionPicker offers the union of these as toggleable chips.
-    compressionCodecs: [
-      // Full codec catalog from the README + legacy UI. Backend
-      // forwards arbitrary tokens to `chdman -c`, so adding entries
-      // here only widens what the user can pick; chdman itself
-      // ignores incompatible combinations for the active mode.
-      { value: 'zlib',  label: 'zlib',  hint: 'Fast, baseline compatibility' },
-      { value: 'zstd',  label: 'zstd',  hint: 'Modern general-purpose codec' },
-      { value: 'lzma',  label: 'lzma',  hint: 'Slower, better ratio' },
-      { value: 'lzma2', label: 'lzma2', hint: 'Best ratio, slowest' },
-      { value: 'huff',  label: 'huff',  hint: 'Huffman entropy coder' },
-      { value: 'flac',  label: 'flac',  hint: 'For CD audio tracks' },
-      { value: 'cdzl',  label: 'cdzl',  hint: 'CD-zlib variant' },
-      { value: 'cdzs',  label: 'cdzs',  hint: 'CD-zstd variant' },
-      { value: 'cdlz',  label: 'cdlz',  hint: 'CD-lzma variant' },
-      { value: 'cdfl',  label: 'cdfl',  hint: 'CD-FLAC variant' },
-      { value: 'avhu',  label: 'avhu',  hint: 'Audio/video Huffman' },
-    ],
+    // CompressionPicker offers these as toggleable chips. Each create mode
+    // names its own list below (#471); this full catalog is what Copy /
+    // Recompress offers, whose codecs follow the input CHD.
+    compressionCodecs: [...CHDMAN_GENERAL_CODECS, ...CHDMAN_CD_CODECS, ...CHDMAN_LD_CODECS],
     compressionStyle: 'multi',  // multi-codec list joined with commas
     // chdman's `-c` takes at most four codecs. Declared on the tool, not in
     // whichever picker happens to be on screen: the manual panel and the RomM
@@ -233,27 +241,29 @@ export const TOOLS = [
         outputExt: '.chd', inputExtensions: CHDMAN_SOURCE_EXTS,
         supportsCompression: true,  supportsCompressionLevel: false,
         supportsDeleteOnVerify: true, supportsRoundTrip: true,
-        allowsArchiveInput: true },
+        allowsArchiveInput: true, compressionCodecs: CHDMAN_GENERAL_CODECS },
       { mode: 'createhd',  kind: 'create',  label: 'Create HD',  group: 'create',
         outputExt: '.chd', inputExtensions: CHDMAN_SOURCE_EXTS,
         supportsCompression: true,  supportsCompressionLevel: false,
         supportsDeleteOnVerify: true, supportsRoundTrip: true,
-        allowsArchiveInput: true },
+        allowsArchiveInput: true, compressionCodecs: CHDMAN_GENERAL_CODECS },
       { mode: 'createcd',  kind: 'create',  label: 'Create CD',  group: 'create',
         outputExt: '.chd', inputExtensions: CHDMAN_SOURCE_EXTS,
         supportsCompression: true,  supportsCompressionLevel: false,
         supportsDeleteOnVerify: true, supportsRoundTrip: true,
-        allowsArchiveInput: true },
+        allowsArchiveInput: true,
+        compressionCodecs: [...CHDMAN_GENERAL_CODECS, ...CHDMAN_CD_CODECS] },
       { mode: 'createdvd', kind: 'create',  label: 'Create DVD', group: 'create',
         outputExt: '.chd', inputExtensions: CHDMAN_SOURCE_EXTS,
         supportsCompression: true,  supportsCompressionLevel: false,
         supportsDeleteOnVerify: true, supportsRoundTrip: true,
-        allowsArchiveInput: true },
+        allowsArchiveInput: true, compressionCodecs: CHDMAN_GENERAL_CODECS },
       { mode: 'createld',  kind: 'create',  label: 'Create LD',  group: 'create',
         outputExt: '.chd', inputExtensions: CHDMAN_SOURCE_EXTS,
         supportsCompression: true,  supportsCompressionLevel: false,
         // No delete-source: an AVI has no digest comparable with the CHD (#301).
-        supportsDeleteOnVerify: false, allowsArchiveInput: true },
+        supportsDeleteOnVerify: false, allowsArchiveInput: true,
+        compressionCodecs: [...CHDMAN_GENERAL_CODECS, ...CHDMAN_LD_CODECS] },
       // Extract modes accept a .chd straight out of an archive (decompress it
       // back to a disc image); the backend extracts the member first. Keep
       // copy/recompress below at false — re-CHD'ing a .chd from a zip is a

@@ -101,7 +101,9 @@
 
     {#if style === 'multi'}
       {@const max = conversion.CHDMAN_MAX_CODECS ?? 4}
-      {@const activeCount = selection.filter((c) => c && c !== 'none').length}
+      {@const activeCount = selection.filter(
+        (c) => c && c !== 'none' && codecs.some((k) => k.value === c),
+      ).length}
       {@const atCap = activeCount >= max}
       <div class="chips" role="group" aria-label="Codec selection">
         <button

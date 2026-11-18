@@ -195,10 +195,10 @@
       <tbody>
         <tr><th scope="row">zlib</th><td>Best compatibility. If an emulator refuses a CHD, reconvert with zlib only.</td></tr>
         <tr><th scope="row">zstd</th><td>Fast and small. The modern default, but older software may not support it.</td></tr>
-        <tr><th scope="row">lzma / lzma2</th><td>Smallest files, slowest to make. Good for archival.</td></tr>
+        <tr><th scope="row">lzma / lzma2</th><td>Smallest files, slowest to make. Good for archival. lzma2 is for Dolphin only; CHD takes lzma.</td></tr>
         <tr><th scope="row">flac</th><td>CD audio tracks.</td></tr>
         <tr><th scope="row">cdzl / cdzs / cdlz / cdfl</th><td>CD-specific variants of the above. CD images only.</td></tr>
-        <tr><th scope="row">huff / avhu</th><td>Huffman and audio/video Huffman entropy coders.</td></tr>
+        <tr><th scope="row">huff / avhu</th><td>Huffman and audio/video Huffman entropy coders. avhu is for LaserDisc images only.</td></tr>
         <tr><th scope="row">No compression</th><td>Uncompressed. Maximum compatibility, no size win.</td></tr>
       </tbody>
     </table>
