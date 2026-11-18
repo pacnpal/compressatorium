@@ -427,6 +427,13 @@
   `waiting` under the archive's own file name instead of
   `failed ... /__external_jobs__/<id>`. It still leaves no Finding and still
   exits 0.
+- **Rename to DAT name no longer skips every Image because of one bad sheet**
+  (#454). A `.cue` or `.gdi` whose tracks can't be told (one that names a
+  track by an absolute path, or one the app can't read) used to make the
+  rename skip every Image in every Volume, so a sheet waiting in the Inbox
+  turned the rename off for the whole install. Now it holds back only the
+  Images that sheet could name: those in its own folder and below, and any
+  reached from there through a link. Every other Image renames as usual.
 
 - **The CLI no longer hangs on exit** (#450). `JobManager.shutdown` and `drain`
   waited on sets that only shrink when the loop runs a done callback, and on
