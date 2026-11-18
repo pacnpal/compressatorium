@@ -701,36 +701,26 @@ async def test_a_failed_chdman_read_is_no_disc_id(tmp_path, monkeypatch, caplog)
 
 
 def test_dumpmeta_raw_times_out(tmp_path, monkeypatch):
-    """chdman dumpmeta must not hang indefinitely."""
+    """A dumpmeta that timed out read nothing, so it is not "no tag" (#490).
+
+    run_capture bounds the read and reports the timeout as a None returncode;
+    answering None here would be cached as "no disc ID" for good.
+    """
+    from services.chdman import chdman_service
+
+    from app.services.disc_id import DiscIdReadFailed
+
     chd = tmp_path / "game.chd"
     chd.write_bytes(b"fake")
 
-    class FakeProc:
-        returncode = 0
-        killed = False
+    async def timed_out(cmd, **kwargs):
+        assert kwargs["timeout"] > 0
+        return None, b"", b""
 
-        async def communicate(self):
-            if self.killed:
-                return b"", b""
-            await asyncio.sleep(1)
-            return b"", b""
+    monkeypatch.setattr(chdman_service.runner, "run_capture", timed_out)
 
-        def kill(self):
-            self.killed = True
-            self.returncode = -9
-
-    async def fake_create_subprocess_exec(*args, **kwargs):
-        return FakeProc()
-
-    monkeypatch.setattr(
-        "app.services.disc_id._DUMPMETA_TIMEOUT_SECONDS", 0.01
-    )
-    monkeypatch.setattr(
-        "app.services.disc_id.asyncio.create_subprocess_exec",
-        fake_create_subprocess_exec,
-    )
-
-    assert asyncio.run(_dumpmeta_raw(str(chd), "GDRO", "chdman")) is None
+    with pytest.raises(DiscIdReadFailed):
+        asyncio.run(_dumpmeta_raw(str(chd), "GDRO", "chdman"))
 
 
 @pytest.mark.asyncio

@@ -662,6 +662,9 @@ async def scan_metadata_task(
                 except ReadCancelled:
                     pass  # Cancel pressed mid-read: handled just below
                 except Exception:
+                    # Not marked checked: a read that could not run
+                    # (DiscIdReadFailed) says nothing about the file, so the
+                    # next scan retries it (issue #490).
                     logger.warning(
                         "Phase 2: could not read the disc ID of %s", path, exc_info=True,
                     )
@@ -953,11 +956,16 @@ async def get_chd_info(path: str = Query(..., description="Path to CHD file")):
                     ),
                 ) from None
             except Exception as e:
-                logger.debug("disc_id extraction failed for %s: %s", path, e)
-            await chd_metadata_store.update_disc_id_info(
-                path, disc_info.get("game_id"), disc_info.get("title")
-            )
-            await chd_metadata_store.mark_disc_id_checked(path)
+                # The read could not run (DiscIdReadFailed: chdman missing,
+                # crashed or timed out), which says nothing about the file. Not
+                # cached, so the next request retries; the rest of the info is
+                # still answered, without a disc ID (issue #490).
+                logger.warning("disc_id extraction could not run for %s: %s", path, e)
+            else:
+                await chd_metadata_store.update_disc_id_info(
+                    path, disc_info.get("game_id"), disc_info.get("title")
+                )
+                await chd_metadata_store.mark_disc_id_checked(path)
 
         game_id = disc_info.get("game_id")
         # Only surface a distinct human-readable title; skip when it equals
