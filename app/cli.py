@@ -1738,10 +1738,18 @@ async def _inbox_pass(chosen: list, printer: Printer, state: RunState, jobs) -> 
         results = await intake.poll_all(
             library_ids=wanted, should_stop=lambda: state.stopping,
         )
-        if state.stopping:
-            await jobs.cancel_all_jobs(reason=CANCEL_SHUTDOWN)
-        await jobs.drain()
-        await intake.drain()
+        # Drained to a fixed point (#432, Codex 4608417841): an unpack or a
+        # Recognize takes its Images on itself and may queue a conversion
+        # after the queue last emptied, and a conversion ending starts intake
+        # work. A stop cancels what is queued and admits nothing more, so the
+        # loop ends then too.
+        while True:
+            if state.stopping:
+                await jobs.cancel_all_jobs(reason=CANCEL_SHUTDOWN)
+            await jobs.drain()
+            await intake.drain()
+            if state.stopping or not (jobs.has_live_conversions() or intake.busy()):
+                break
         results += await intake.finish_all(library_ids=wanted)
     except Exception as exc:  # the Rule sweeps already ran; say so and fail the run
         logger.warning("run-rules: the Inbox pass failed: %s", exc, exc_info=True)

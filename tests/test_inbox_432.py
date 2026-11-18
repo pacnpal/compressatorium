@@ -104,6 +104,17 @@ def _unpack_dirs() -> list[Path]:
     return sorted(Path(settings.temp_dir).glob("inbox_unpack_*"))
 
 
+def _untaken(monkeypatch) -> None:
+    """Images an unpack readies aren't taken on: its slot stays live, as
+    while an Image in it waits to be taken."""
+    from services.inbox import intake
+
+    async def not_yet(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(intake, "_take_on", not_yet)
+
+
 def _stage_folders(root: Path) -> list[Path]:
     """What unpacking left: a hidden stage folder in the Inbox (there should
     never be one), or an unpack folder in the work area."""
@@ -556,20 +567,35 @@ async def test_unpacking_and_recognizing_run_as_jobs(vol, db, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_what_was_unpacked_goes_when_its_archive_leaves_the_inbox(vol, db, monkeypatch):
-    """An archive held for one of its Images, then taken out of the Inbox by
-    hand: what was unpacked from it is removed and its Finding cleared."""
+    """An archive unpacked, its Image not placed yet, then taken out of the
+    Inbox by hand: what was unpacked from it is removed."""
     _verifies(monkeypatch)
+    _untaken(monkeypatch)
     library = _library(vol)
     box = _inbox(vol, library, settle=0)
     archive = _zip(vol / "Downloads" / "Bundle.zip", {"Mystery.iso": _bytes("left", 4096)})
-    await _polls(box)
+    await _polls(box, count=2)
     assert _stage_folders(vol / "Downloads")
-    assert _inbox_findings()
 
     archive.rename(vol / "Bundle.zip")
     await _polls(box, count=2, start=20)
 
     assert _stage_folders(vol / "Downloads") == []
+    assert _inbox_findings() == []
+
+
+@pytest.mark.asyncio
+async def test_a_held_archives_finding_goes_when_it_leaves_the_inbox(vol, db, monkeypatch):
+    _verifies(monkeypatch)
+    library = _library(vol)
+    box = _inbox(vol, library, settle=0)
+    archive = _zip(vol / "Downloads" / "Bundle.zip", {"Mystery.iso": _bytes("left", 4096)})
+    await _polls(box)
+    assert _inbox_findings()
+
+    archive.rename(vol / "Bundle.zip")
+    await _polls(box, count=2, start=20)
+
     assert _inbox_findings() == []
 
 
@@ -796,10 +822,11 @@ async def test_removing_an_inbox_with_no_job_on_a_slot_removes_it_at_once(
     from services import inbox
 
     _verifies(monkeypatch)
+    _untaken(monkeypatch)
     library = _library(vol)
     box = _inbox(vol, library, settle=0)
     _zip(vol / "Downloads" / "Bundle.zip", {"Mystery.iso": _bytes("held", 4096)})
-    await _polls(box)
+    await _polls(box, count=2)
     assert _stage_folders(vol / "Downloads")
 
     await asyncio.to_thread(inbox.remove, box.id)
@@ -814,11 +841,12 @@ async def test_an_archive_is_unpacked_in_the_work_area_not_the_inbox(vol, db, mo
     from services.inbox import intake
 
     _verifies(monkeypatch)
+    _untaken(monkeypatch)
     library = _library(vol)
     box = _inbox(vol, library, settle=0)
     _zip(vol / "Downloads" / "Bundle.zip", {"Mystery.iso": _bytes("where", 4096)})
 
-    await _polls(box)
+    await _polls(box, count=2)
 
     [unpacked] = intake._states[box.id].unpacked.values()
     slot = Path(unpacked.slot.path)
@@ -1166,3 +1194,224 @@ async def test_one_run_rules_pass_places_an_archives_images(vol, db, monkeypatch
     assert [Path(p["output"]).name for p in result["placed"]] == ["One Pass (World).gba"]
     assert result["placed"][0]["path"] == str(archive.resolve())
     assert inbox.get(box.id) is not None
+
+
+# ---- Codex on PR #453 at 892b9c3f -------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_naming_conflict_hold_lifts_across_runs_when_the_ranking_changes(vol, db):
+    """Codex 4608417851: a run-rules run is a new process. The ranking a
+    conflict was held under is kept with intake's memory, so a later run
+    sees the ranking changed and places the Image."""
+    import json
+
+    from services import inbox
+    from services.dat_store import dat_store
+    from services.inbox import intake
+
+    disc = _bytes("between runs")
+    first = await _dat("Set A", {"Name From A": _sha1(disc)})
+    second = await _dat("Set B", {"Name From B": _sha1(disc)})
+    library = _library(vol)
+    box = _inbox(vol, library, settle=0)
+    game = _drop(vol / "Downloads" / "ps2" / "download.iso", disc)
+    await _polls(box)
+    assert _inbox_findings()
+    memory = json.loads(json.dumps(intake.settle_memory({box.id})))
+
+    intake.reset_for_tests()  # the next run is a new process
+    intake.restore_settle_memory(memory)
+    await dat_store.set_ranking([second, first])
+    await intake.poll(inbox.get(box.id), now=50)
+    await intake.drain()
+
+    assert (vol / "ROMs" / "ps2" / "Name From B.iso").read_bytes() == disc
+    assert not game.exists()
+
+
+@pytest.mark.asyncio
+async def test_a_cue_and_its_bin_in_an_archive_are_one_image(vol, db, queue):
+    """Codex 4608417860: inside the unpack folder, a sheet's tracks resolve
+    within that folder, so a cue and its bin are one Image. Its conversion
+    carries the track in its identity and passes the companion check."""
+    from services.job_manager import JobManager, _reads, _trusted_roots, job_manager
+    from services.rules import sweep
+    from utils.path_utils import source_companions_are_safe
+
+    library = _library(vol)
+    await sweep.set_rules(library, {"psx": {"mode": "createcd", "enabled": True}})
+    box = _inbox(vol, library, settle=0)
+    cue = 'FILE "Game.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n'
+    _zip(vol / "Downloads" / "psx" / "Game.zip", {
+        "Game.cue": cue.encode(), "Game.bin": _bytes("psx track", 2352 * 8),
+    })
+
+    await _polls(box, count=6)
+
+    [submitted] = queue.submitted
+    [source] = submitted["paths"]
+    assert Path(source).name == "Game.cue"
+    identity = submitted["source_identities"][source]
+    assert set(identity["members"]) == {"Game.bin"}
+    assert _inbox_findings() == []
+
+    # The same job, queued for real: the pipeline's own checks pass.
+    [job] = await JobManager.create_batch_jobs(
+        job_manager, submitted["paths"], submitted["mode"],
+        output_dir=submitted["output_dir"], source_identities=submitted["source_identities"],
+        trusted_roots=submitted["trusted_roots"],
+    )
+    try:
+        assert await job_manager._source_identity_problem_bounded(job) is None
+        assert await job_manager._bind_source_bounded(job) is None
+        assert source_companions_are_safe(
+            _reads(job), job.mode.value, within=_trusted_roots(job),
+        )
+    finally:
+        await job_manager.cancel_job(job.id)
+        if job._bound is not None:
+            job._bound.close()
+
+
+@pytest.mark.asyncio
+async def test_a_recognize_waiting_for_the_match_lane_ends_at_cancel(vol, db):
+    """Codex 4608417866: a Recognize waiting for the match lane stops at
+    Cancel, ends cancelled and gives its conversion slot back."""
+    import asyncio
+
+    from models import ConversionMode, JobStatus
+    from services import inbox
+    from services.inbox import intake
+    from services.workload_limiter import workload_limiter
+
+    await _dat("Sony - PlayStation 2 (Redump)", {"Other": _sha1(b"other")})
+    held = []
+    while (token := await workload_limiter.try_acquire("match")) is not None:
+        held.append(token)
+    library = _library(vol)
+    box = _inbox(vol, library, settle=0)
+    _drop(vol / "Downloads" / "ps2" / "Game.iso", _bytes("lane"))
+    before = set(intake.job_manager.jobs)
+    try:
+        await intake.poll(inbox.get(box.id), now=0)
+        await intake.poll(inbox.get(box.id), now=1)
+        for _ in range(100):
+            jobs = [
+                j for job_id, j in intake.job_manager.jobs.items()
+                if job_id not in before and j.mode == ConversionMode.INBOX_RECOGNIZE
+            ]
+            if jobs and jobs[0].message == "Recognizing it":
+                break
+            await asyncio.sleep(0.01)
+        [job] = jobs
+        await intake.job_manager.cancel_job(job.id)
+        await asyncio.wait_for(intake.drain(), 5)
+    finally:
+        for token in held:
+            token.release()
+
+    assert intake.job_manager.get_job(job.id).status == JobStatus.CANCELLED
+    assert intake.job_manager.slots_in_use() == 0
+
+
+# ---- unpack folders don't pile up (Codex 4608429476) -------------------------
+
+
+@pytest.mark.asyncio
+async def test_an_archive_whose_image_is_held_keeps_no_unpack_folder(vol, db, monkeypatch):
+    """Its only Image is held for a taken name: what was unpacked goes at
+    once; the archive, with its Finding, stays the source of truth."""
+    _verifies(monkeypatch)
+    library = _library(vol)
+    existing = _drop(vol / "ROMs" / "gba" / "Game.gba", b"the Library's own")
+    box = _inbox(vol, library, settle=0)
+    archive = _zip(vol / "Downloads" / "gba" / "Game.zip", {"Game.gba": _bytes("held")})
+
+    await _polls(box)
+
+    assert _unpack_dirs() == []
+    assert archive.exists()
+    assert existing.read_bytes() == b"the Library's own"
+    [finding] = _inbox_findings()
+    assert finding["path"] == str(archive.resolve())
+    assert "Game.gba is already in the Library" in finding["reason"]
+
+
+@pytest.mark.asyncio
+async def test_a_held_archive_is_unpacked_again_once_its_hold_lifts(vol, db, monkeypatch):
+    _verifies(monkeypatch)
+    library = _library(vol)
+    existing = _drop(vol / "ROMs" / "gba" / "Game.gba", b"the Library's own")
+    box = _inbox(vol, library, settle=0)
+    rom = _bytes("lifted")
+    archive = _zip(vol / "Downloads" / "gba" / "Game.zip", {"Game.gba": rom})
+    await _polls(box)
+    assert archive.exists()
+
+    existing.unlink()  # the name is free again
+    await _polls(box, start=20)
+
+    assert (vol / "ROMs" / "gba" / "Game.gba").read_bytes() == rom
+    assert not archive.exists()
+    assert (vol / "Downloads" / "processed" / "gba" / "Game.zip").exists()
+    assert _unpack_dirs() == []
+    assert _inbox_findings() == []
+
+
+@pytest.mark.asyncio
+async def test_unpacking_waits_while_what_is_unpacked_would_pass_the_cap(
+    vol, db, queue, monkeypatch,
+):
+    """All live unpack folders together stay under
+    CHD_ARCHIVE_INBOX_MAX_UNPACKED_SIZE: a second archive waits, with no
+    Finding, until the first one's folder is gone."""
+    from models import JobStatus
+
+    monkeypatch.setattr(settings, "archive_inbox_max_unpacked_size", 100 * 1024)
+    library = _library(vol)
+    await inbox_431._ps2_rule(library)
+    box = _inbox(vol, library, settle=0)
+    first = _zip(vol / "Downloads" / "ps2" / "a.zip", {"A.iso": _bytes("a", 64 * 1024)})
+    second = _zip(vol / "Downloads" / "ps2" / "b.zip", {"B.iso": _bytes("b", 64 * 1024)})
+
+    await _polls(box, count=6)
+
+    assert [Path(job["paths"][0]).name for job in queue.submitted] == ["A.iso"]
+    assert len(_unpack_dirs()) == 1
+    assert second.exists()
+    assert _inbox_findings() == []
+
+    queue.jobs["job0"].status = JobStatus.COMPLETED
+    await _polls(box, count=6, start=20)
+
+    assert not first.exists()
+    assert [Path(job["paths"][0]).name for job in queue.submitted] == ["A.iso", "B.iso"]
+    assert _inbox_findings() == []
+
+
+@pytest.mark.asyncio
+async def test_low_free_space_in_the_work_area_defers_with_no_finding(vol, db, monkeypatch):
+    import shutil
+    from collections import namedtuple
+
+    _verifies(monkeypatch)
+    usage = namedtuple("usage", "total used free")
+    real = shutil.disk_usage
+    monkeypatch.setattr(shutil, "disk_usage", lambda _path: usage(10, 10, 0))
+    library = _library(vol)
+    box = _inbox(vol, library, settle=0)
+    rom = _bytes("room")
+    archive = _zip(vol / "Downloads" / "gba" / "Game.zip", {"Game.gba": rom})
+
+    await _polls(box)
+
+    assert archive.exists()
+    assert _unpack_dirs() == []
+    assert _inbox_findings() == []
+
+    monkeypatch.setattr(shutil, "disk_usage", real)
+    await _polls(box, start=20)
+
+    assert (vol / "ROMs" / "gba" / "Game.gba").read_bytes() == rom
+    assert not archive.exists()

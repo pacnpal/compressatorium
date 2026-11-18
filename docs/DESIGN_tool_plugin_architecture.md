@@ -7752,7 +7752,12 @@ with the Inbox by its recorded path (`_list(extra=...)`, the walk shared as
 Platform is read from its own header and from the folders it would sit in had
 the archive been unpacked beside it (`platform_detect.detect_platform_as(path,
 placed_at)`: the archive's folder in the Inbox, then the folders inside the
-archive; mappings apply). Its tracks are checked within its slot. A conversion
+archive; mappings apply). Its sheet's tracks resolve within its slot (Codex
+4608417860): `image_members`, `image_fingerprint` and `group_images` (through
+`image_sets.image_members(within=...)` and `delete_plan.sheet_track_paths(within=...)`)
+are called with the slot as the one trusted root, the value its conversion job
+is created trusting (`_slot_within`, `_members`, `_fingerprint`), so a cue and its
+bin are one Image whose identity lists the track. A conversion
 of it keeps every #431/#443 protection: it is queued with `source_identities`
 rooted at its slot, and with that slot as the job's one trusted root
 (`create_batch_jobs(trusted_roots=...)`, set on the job when it is created as
@@ -7771,6 +7776,30 @@ archive's move to `processed/` (the same anchored, locked move, a flight
 carrying `unpacked`), and the slot is closed then: intake's own scratch, the
 archive still holds every byte. An archive that leaves the Inbox or changes has
 its slot closed the same way; a changed one is unpacked again once it settles.
+
+**A slot is never kept for held Images** (Codex 4608429476). When every Image
+left in a slot is held and none is in flight, `_settle_unpacked` closes it and
+holds the archive itself (`_hold_unpacked`), its Findings as they are: the
+archive stays the source of truth. The archive's hold carries its Images'
+dependencies: the DAT ranking a naming conflict was held under
+(`ranked_holds`) and the Library paths a taken name was held for
+(`taken_holds`, lifted once one of them is free, `_freed`). When either
+changes, or the archive does, it is unpacked again, and an Image placed before
+counts by its bytes (`_same_as_placed`). A loose file's taken-name hold lifts
+the same way once the name is free.
+
+**Room to unpack** (same thread). Every open slot reserves its archive's
+declared total (`_UnpackSlot(size)`, `_slot_sizes`), and all of them together
+stay under `CHD_ARCHIVE_INBOX_MAX_UNPACKED_SIZE`
+(`ArchiveService.inbox_unpacked_limit`: the Inbox total cap,
+`CHD_ARCHIVE_INBOX_MAX_TOTAL_SIZE`, when unset; 0 is no limit). The work area
+must also hold it beyond its reserve (`disk.ensure_headroom` with
+`scratch_margin_bytes`, the cushion every scratch-dir check keeps). An archive
+that doesn't fit waits (`_NoRoom`): no Finding, it stays settled and is tried
+again on a later poll, logged once per wait (`_note_no_room`). `_take_archive`
+looks first, from the cached listing, so a waiting archive starts no job; the
+unpack job checks again as it reserves. One archive alone over the unpack cap
+is refused with a Finding, since it could never fit.
 
 **Removing the Inbox** (Codex 4608007773) closes a slot no live job reads at
 once. One a queued or running conversion still reads from is kept
@@ -7792,7 +7821,9 @@ a bound Source's copy uses, with the job's cancel event, and
 with no progress for `_RECOGNIZE_STALL_SECONDS` (the conversion's own stall
 limit by default) fails the job with a Finding, a Cancel raises `ReadCancelled`
 and ends it cancelled, and the slot is given back either way. The match job and
-the routes keep their own read, unchanged. The result is kept with
+the routes keep their own read, unchanged. Its wait for the `match` lane
+(`workload_limiter.acquire`) stops at the job's Cancel too (Codex
+4608417866), for this caller only. The result is kept with
 the fingerprint it was made at (`_State.recognized`); the next poll names the
 Image from it. It never reads a row cached for the path: an Inbox name is
 reused by the next download, and a cached hit would name it. The result is
@@ -7928,6 +7959,13 @@ places it in the same run. `finish_all` then starts the move of every archive
 whose Images are all placed and, the process ending, closes what was unpacked
 (`_close_unpacked`); a later run unpacks an archive still in the Inbox again
 and counts what it placed already by its bytes (`_same_as_placed`).
+`run-rules`'s pass drains to a fixed point before `finish_all` (Codex
+4608417841): it waits for the job queue and intake's own tasks in turn
+(`job_manager.has_live_conversions`, `intake.busy`) until neither has anything
+left, since an unpack or a Recognize may queue a conversion after the queue
+last emptied. A stop cancels what is queued and ends the loop. The settle
+memory a run keeps includes `ranked_holds` and `taken_holds` (Codex
+4608417851), so a later run lifts a hold whose ranking or name changed.
 
 ### 3.4 `registry.py`
 

@@ -1131,7 +1131,15 @@ long a file must stay unchanged before it's taken (60 seconds by default).
   32 GiB (`CHD_ARCHIVE_INBOX_MAX_TOTAL_SIZE`, or your `CHD_ARCHIVE_MAX_*` when
   set) and expand at most 200 to 1 (`CHD_ARCHIVE_INBOX_MAX_RATIO`). One over
   either stays in the Inbox with a Finding naming the limit, never checked or
-  copied.
+  copied. A zip or 7z is then unpacked into a private folder in the app's
+  work area (`CHD_TEMP_DIR`, or `temp/` in the data folder) and the Images in
+  it taken one by one; an arcade romset (a zip in an `arcade`, `mame` or
+  `fbneo` folder) is copied in whole instead. Everything unpacked at once
+  stays under `CHD_ARCHIVE_INBOX_MAX_UNPACKED_SIZE` (the same 32 GiB by
+  default) and leaves the work area's free-space reserve; an archive that
+  doesn't fit waits for room, with no Finding. Nothing unpacked is kept for
+  an Image that is held: the archive stays in the Inbox with the Finding, and
+  is unpacked again once the hold lifts.
 - The original then moves to `processed/` inside the Inbox, keeping its
   folder, if it is still the file that was taken (one replaced meanwhile
   stays in the Inbox to settle again). Intake never reads `processed/`. **Nothing is ever deleted**: clear
@@ -3081,6 +3089,7 @@ The Web UI communicates with a REST API that can also be used directly. Interact
 | `CHD_ARCHIVE_MAX_TOTAL_SIZE` | `0` | Max total size in bytes for archive listings/extractions (0 disables limit) |
 | `CHD_ARCHIVE_INBOX_MAX_TOTAL_SIZE` | `34359738368` | For an archive an Inbox takes in: max declared uncompressed size in bytes, per member and in all, where `CHD_ARCHIVE_MAX_MEMBER_SIZE` / `CHD_ARCHIVE_MAX_TOTAL_SIZE` are 0 (either one set wins; 32 GiB; 0 disables limit) |
 | `CHD_ARCHIVE_INBOX_MAX_RATIO` | `200` | For an archive an Inbox takes in: max uncompressed-to-compressed ratio, per member and in all (0 disables limit) |
+| `CHD_ARCHIVE_INBOX_MAX_UNPACKED_SIZE` | `CHD_ARCHIVE_INBOX_MAX_TOTAL_SIZE` | Max bytes every archive an Inbox has unpacked at once may hold in all, in the work area; one more waits for room, with no Finding (0 disables limit) |
 | `CHD_PATCH_MAX_PATCH_SIZE` | `67108864` | Max size in bytes of an IPS or BPS patch, picked or uploaded (64 MiB; 0 disables limit) |
 | `CHD_PATCH_MAX_ROM_SIZE` | `536870912` | Max size in bytes of a ROM to patch, and of the patched ROM (512 MiB; 0 disables limit). The patch is applied in memory. |
 | `LOGLEVEL` | `INFO` | Log verbosity level (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`) |

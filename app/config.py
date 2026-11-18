@@ -174,6 +174,13 @@ class Settings(BaseSettings):
         default=200,
         alias="CHD_ARCHIVE_INBOX_MAX_RATIO",
     )
+    # What every archive an Inbox has unpacked at once may hold in all, in
+    # the work area (#432, Codex 4608429476): one more waits until there is
+    # room. Unset, it is CHD_ARCHIVE_INBOX_MAX_TOTAL_SIZE; 0 turns it off.
+    archive_inbox_max_unpacked_size: int | None = Field(
+        default=None,
+        alias="CHD_ARCHIVE_INBOX_MAX_UNPACKED_SIZE",
+    )
 
     # The Patch action (#428). A patch file over this is refused (an upload
     # stops reading at it), and so is a ROM, or a patched ROM, over the other.

@@ -245,6 +245,9 @@ class _State:
     # Path -> the DAT ranking it was held at for a naming conflict (#432):
     # looked at again once the ranking changes.
     ranked_holds: dict[str, tuple] = field(default_factory=dict)
+    # Path -> the Library paths whose names it was held for (#432): looked at
+    # again once one of them is free.
+    taken_holds: dict[str, list[str]] = field(default_factory=dict)
     # The last poll's stop predicate: an unpack or a Recognize that takes its
     # Images on itself (`_take_on`, #432) admits nothing once it is true.
     should_stop: Callable[[], bool] | None = None
@@ -273,6 +276,12 @@ _UNPACK_PREFIX = "inbox_unpack_"
 # never held across I/O.
 _slot_roots: set[str] = set()
 _slots_lock = threading.Lock()
+# What each open unpack slot reserved (its archive's declared total), by
+# slot: all of them together stay under `inbox_unpacked_limit` (Codex
+# 4608429476). Guarded by `_slots_lock`.
+_slot_sizes: dict[int, int] = {}
+# Archives whose wait for room was logged already: logged once per wait.
+_room_logged: set[str] = set()
 # How long the Recognize read may go without progress before it is given up
 # (Codex 4608007769); None is the conversion's own stall limit.
 _RECOGNIZE_STALL_SECONDS: float | None = None
@@ -306,6 +315,12 @@ def _set_stop(value: bool) -> None:
         if value:
             # Moves with every stop, so a check that raced one can tell.
             _stop_generation += 1
+
+
+class _NoRoom(Exception):
+    """No room to unpack an archive now (#432, Codex 4608429476): the work
+    area's free space, or the cap on what is unpacked at once. Not the
+    archive's fault: it waits, with no Finding, and is tried again."""
 
 
 class _Deferred(Exception):
@@ -469,6 +484,12 @@ def status(inbox_id: int) -> dict[str, Any]:
     }
 
 
+def busy() -> bool:
+    """Whether intake has work of its own still running (a copy, an unpack,
+    a Recognize, a move). For a caller that drains to a fixed point."""
+    return bool(_tasks)
+
+
 async def drain() -> None:
     """Wait for every copy intake started. For tests and shutdown."""
     while _tasks:
@@ -526,12 +547,12 @@ def _list(
 
     def members(path: str) -> list[str]:
         progress(path)
-        return image_members(path)
+        return _members(path)
 
     images: dict[str, str] = {}
     for path in group_images(sorted(files), members=members):
         progress(path)
-        images[path] = image_fingerprint(path)
+        images[path] = _fingerprint(path)
     return (
         images, unlisted, _sharing(images, progress),
         _behind_unreadable_sheets(images, progress, within=[folder, *extra]),
@@ -637,7 +658,7 @@ def _sharing(images: dict[str, str], progress=None) -> dict[str, list[str]]:
     for path in images:
         if progress is not None:
             progress(path)
-        for member in image_members(path):
+        for member in _members(path):
             key = os.path.normcase(os.path.realpath(member))
             owners.setdefault(key, []).append(path)
     shared: dict[str, set[str]] = {}
@@ -677,6 +698,7 @@ async def _hold(
     else:
         state.held_by.pop(path, None)
     state.ranked_holds.pop(path, None)
+    state.taken_holds.pop(path, None)
     state.seen.pop(path, None)
     shown, cause = path, dict(cause or {})
     owner = _unpacked_holding(state, path)
@@ -841,11 +863,17 @@ async def poll(
                 continue
             depends = _ownership_key(path, listing, sharing, blocked)
             if state.held.get(path) == fingerprint:
-                if path in state.ranked_holds:
-                    # Held for a naming conflict (#432): looked at again
-                    # once the DAT ranking changed.
-                    ranking = ranking or await _ranking_now()
-                    if ranking is None or state.ranked_holds[path] == ranking:
+                if path in state.ranked_holds or path in state.taken_holds:
+                    # Held for a naming conflict or a name taken (#432):
+                    # looked at again once the DAT ranking changed or the
+                    # name is free.
+                    lifted = False
+                    if path in state.ranked_holds:
+                        ranking = ranking or await _ranking_now()
+                        lifted = ranking is not None and state.ranked_holds[path] != ranking
+                    if not lifted and path in state.taken_holds:
+                        lifted = await _freed(state.taken_holds[path])
+                    if not lifted:
                         continue
                 elif path not in state.held_by or state.held_by[path] == depends:
                     continue
@@ -857,6 +885,7 @@ async def poll(
             state.held.pop(path, None)
             state.held_by.pop(path, None)
             state.ranked_holds.pop(path, None)
+            state.taken_holds.pop(path, None)
             seen = state.seen.get(path)
             if seen is None or seen.fingerprint != fingerprint:
                 state.seen[path] = _Seen(fingerprint, now)
@@ -930,6 +959,7 @@ async def _forget_gone(
     for path in [p for p in state.held if p not in listing]:
         state.held.pop(path, None)
         state.ranked_holds.pop(path, None)
+        state.taken_holds.pop(path, None)
     for path in [p for p in state.recognized if p not in listing]:
         state.recognized.pop(path, None)
     keep = {inbox.image_key(p) for p in (*listing, *state.flights)}
@@ -981,10 +1011,47 @@ async def _settle_unpacked(
             except (asyncio.TimeoutError, OSError):
                 logger.warning("inbox: could not remove what was unpacked from %s", archive)
             continue
+        remaining = unpacked.images - unpacked.placed
+        if remaining and all(image in state.held for image in remaining):
+            # Every Image left in it is held: nothing is kept for them
+            # (Codex 4608429476). The archive stays the source of truth.
+            busy.update(unpacked.images)
+            await _hold_unpacked(state, archive, unpacked, remaining)
+            continue
         busy.add(archive)
         busy.update(unpacked.placed)
         _archive_if_done(inbox, state, archive, unpacked)
     return busy
+
+
+async def _hold_unpacked(
+    state: _State, archive: str, unpacked: _Unpacked, held: set[str],
+) -> None:
+    """Close the unpack slot of *archive*, all of whose Images left are
+    *held*, and hold the archive itself instead, its Findings as they are.
+    Its hold lifts as theirs would: the DAT ranking changed, a name it was
+    held for freed, or the archive changed. It is then unpacked again, and an
+    Image placed before counts by its bytes (`_same_as_placed`)."""
+    ranking = next((state.ranked_holds[i] for i in held if i in state.ranked_holds), None)
+    taken = sorted({name for i in held for name in state.taken_holds.get(i, ())})
+    state.unpacked.pop(archive, None)
+    for image in unpacked.images:
+        for memory in (
+            state.held, state.held_by, state.ranked_holds, state.taken_holds,
+            state.seen, state.recognized,
+        ):
+            memory.pop(image, None)
+    try:
+        await _step(unpacked.slot.close)
+    except (asyncio.TimeoutError, OSError):
+        logger.warning("inbox: could not remove what was unpacked from %s", archive)
+    state.held[archive] = unpacked.fingerprint
+    state.held_by.pop(archive, None)
+    state.seen.pop(archive, None)
+    if ranking is not None:
+        state.ranked_holds[archive] = ranking
+    if taken:
+        state.taken_holds[archive] = taken
 
 
 def _archive_if_done(
@@ -1001,6 +1068,15 @@ def _archive_if_done(
         identities=unpacked.identities, unpacked=unpacked,
     )
     _archive_later(inbox, state, archive, flight, None)
+
+
+async def _freed(names: list[str]) -> bool:
+    """Whether any of the Library paths *names* a hold waits on is free now.
+    Couldn't tell is no."""
+    try:
+        return await _step(lambda: any(not os.path.lexists(name) for name in names))
+    except (asyncio.TimeoutError, OSError):
+        return False
 
 
 async def _ranking_now() -> tuple | None:
@@ -1065,7 +1141,7 @@ async def _take(
             detection = await _step(
                 platform_detect.detect_platform_as, path, _as_in_inbox(owner, path),
             )
-        members = await _step(image_members, path)
+        members = await _step(_members, path)
     except (asyncio.TimeoutError, OSError):
         return "retry"
     if not detection.decided:
@@ -1165,6 +1241,7 @@ async def _take(
             inbox, state, path, fingerprint, findings.INBOX_FAILED,
             f"{taken} is already in the Library ({plan.folder})", {"platform": platform},
         )
+        state.taken_holds[path] = [os.path.join(plan.folder, taken)]
         return "held"
     return _start_copy(inbox, state, path, flight, plan.folder)
 
@@ -1311,7 +1388,7 @@ async def _take_on(inbox: inbox_store.Inbox, state: _State, path: str, fingerpri
     if library is None:
         return
     try:
-        if await _step(image_fingerprint, path) != fingerprint:
+        if await _step(_fingerprint, path) != fingerprint:
             return
         await _take(inbox, library, state, path, fingerprint)
     except Exception:
@@ -1457,6 +1534,47 @@ async def _gate_archive(
     return None
 
 
+def _room_problem(path: str) -> str | None:
+    """Why the archive at *path* can't be unpacked now for want of room (the
+    cap on what is unpacked at once, the work area's free space), or None.
+    Its declared total is read from its listing, a first look only: the
+    unpack job's gate reads it again from the file it opens and reserves.
+    An archive the gate refuses is left to the job, which says so. Blocking."""
+    from services.disk import (
+        InsufficientDiskSpace,
+        ensure_headroom,
+        scratch_margin_bytes,
+    )
+
+    try:
+        size = archive_service.check_inbox_archive(path)
+    except Exception:
+        return None
+    cap = archive_service.inbox_unpacked_limit()
+    with _slots_lock:
+        live = sum(_slot_sizes.values())
+        if cap and _slot_sizes and live + size > cap:
+            return (
+                f"what is unpacked now ({live} bytes) and it ({size} bytes) would "
+                f"pass CHD_ARCHIVE_INBOX_MAX_UNPACKED_SIZE ({cap} bytes)"
+            )
+    from config import settings
+
+    base = settings.temp_dir or os.path.join(settings.data_dir, "temp")
+    try:
+        ensure_headroom([(base, size)], margin_bytes=scratch_margin_bytes())
+    except InsufficientDiskSpace as exc:
+        return str(exc)
+    return None
+
+
+def _note_no_room(path: str, why: str) -> None:
+    """Log, once per wait, that the archive at *path* waits for room."""
+    if path not in _room_logged:
+        _room_logged.add(path)
+        logger.info("inbox: %s waits for room to be unpacked: %s", path, why)
+
+
 async def _take_archive(
     inbox: inbox_store.Inbox, state: _State, path: str, fingerprint: str,
 ) -> str:
@@ -1468,6 +1586,16 @@ async def _take_archive(
             "outer one by hand",
         )
         return "held"
+    # Room first (Codex 4608429476): an archive that won't fit now waits,
+    # with no Finding and no job. The unpack job checks it again, reserving.
+    try:
+        room = await _step(_room_problem, path)
+    except (asyncio.TimeoutError, OSError):
+        return "retry"
+    if room:
+        _note_no_room(path, room)
+        return "waiting"
+    _room_logged.discard(path)
     # Its identity first: the unpack job gates and unpacks the one file it
     # then opens, and only while it is this one (Codex 4608007766).
     try:
@@ -1496,13 +1624,53 @@ class _UnpackSlot:
     real path is registered as a root intake may read an Image under
     (:func:`_root_of`) until it is closed."""
 
-    def __init__(self) -> None:
-        from services.disk import create_scratch_dir
+    def __init__(self, size: int = 0) -> None:
+        """Reserve room for *size* bytes (an archive's declared total) and
+        make the folder. Raises :class:`_NoRoom` when what every open slot
+        reserved and *size* would pass ``CHD_ARCHIVE_INBOX_MAX_UNPACKED_SIZE``,
+        or the work area hasn't *size* bytes free beyond its reserve
+        (``disk.ensure_headroom``, ``scratch_margin_bytes``); nothing is made
+        then. Blocking."""
+        from services.disk import (
+            InsufficientDiskSpace,
+            create_scratch_dir,
+            ensure_headroom,
+            scratch_margin_bytes,
+        )
 
-        self.path = os.path.realpath(create_scratch_dir(_UNPACK_PREFIX))
-        self.fd = os.open(self.path, _DIR_FLAGS)
         self._closed = False
         self._mutex = threading.Lock()
+        cap = archive_service.inbox_unpacked_limit()
+        with _slots_lock:
+            live = sum(_slot_sizes.values())
+            if cap and live + size > cap:
+                if not _slot_sizes:
+                    raise ArchiveSafetyRefused(
+                        f"Archive unpacks to {size} bytes, over the unpack limit",
+                        rule=f"it unpacks to more than CHD_ARCHIVE_INBOX_MAX_UNPACKED_SIZE "
+                        f"({cap} bytes)",
+                    )
+                raise _NoRoom(
+                    f"what is unpacked now ({live} bytes) and it ({size} bytes) would "
+                    f"pass CHD_ARCHIVE_INBOX_MAX_UNPACKED_SIZE ({cap} bytes)",
+                )
+            _slot_sizes[id(self)] = size
+        try:
+            self.path = os.path.realpath(create_scratch_dir(_UNPACK_PREFIX))
+            try:
+                ensure_headroom([(self.path, size)], margin_bytes=scratch_margin_bytes())
+                self.fd = os.open(self.path, _DIR_FLAGS)
+            except BaseException:
+                shutil.rmtree(self.path, ignore_errors=True)
+                raise
+        except InsufficientDiskSpace as exc:
+            with _slots_lock:
+                _slot_sizes.pop(id(self), None)
+            raise _NoRoom(str(exc)) from exc
+        except BaseException:
+            with _slots_lock:
+                _slot_sizes.pop(id(self), None)
+            raise
         with _slots_lock:
             _slot_roots.add(self.path)
 
@@ -1528,6 +1696,7 @@ class _UnpackSlot:
             self._closed = True
             with _slots_lock:
                 _slot_roots.discard(self.path)
+                _slot_sizes.pop(id(self), None)
             try:
                 if self.intact():
                     shutil.rmtree(self.path)
@@ -1575,9 +1744,9 @@ def _unpack_blocking(
         with os.fdopen(fd, "rb") as source:
             if file_snapshot(os.fstat(source.fileno())) != flight.identities.get(name):
                 raise _SourceChanged(errno.ESTALE, f"{name} changed since it was taken")
-            archive_service.check_inbox_source(source, path)
+            declared = archive_service.check_inbox_source(source, path)
             max_member, max_total, _ratio = archive_service.inbox_limits()
-            slot = _UnpackSlot()
+            slot = _UnpackSlot(declared)
             archive_service.extract_members(
                 path, slot.path, destination_fd=slot.fd, source=source, progress=progress,
                 max_member=max_member, max_total=max_total,
@@ -1590,7 +1759,7 @@ def _unpack_blocking(
                 rule="its unpack folder was replaced while it was unpacked",
             )
         files, _unlisted = _walk([slot.path], None, progress)
-        images = list(group_images(sorted(files)))
+        images = list(group_images(sorted(files), members=_members))
         progress()
         return slot, images
     except BaseException:
@@ -1659,6 +1828,14 @@ async def _unpack(
                         "Its intake was cancelled")
         await job_manager.finish_external_job_cancelled(job.id, message="Cancelled")
         return
+    if outcome == "no_room":
+        # Not the archive's fault: no Finding, and it stays settled, so the
+        # next poll tries again (Codex 4608429476).
+        _note_no_room(path, why)
+        await job_manager.finish_external_job(
+            job.id, success=False, error_message=f"No room to unpack it yet: {why}",
+        )
+        return
     if outcome in ("changed", "deferred"):
         # Not a failure of the file: it is left to settle and be taken again.
         state.seen.pop(path, None)
@@ -1688,7 +1865,7 @@ async def _take_unpacked(inbox: inbox_store.Inbox, state: _State, archive: str) 
         return
 
     def ready() -> dict[str, str]:
-        images = {image: image_fingerprint(image) for image in sorted(unpacked.images)}
+        images = {image: _fingerprint(image) for image in sorted(unpacked.images)}
         doubtful = {
             *_sharing(images),
             *_behind_unreadable_sheets(images, within=[unpacked.slot.path]),
@@ -1724,6 +1901,8 @@ async def _unpack_in(
             return "cancelled", "", None
         if isinstance(exc, _Deferred):
             return "deferred", str(exc), None
+        if isinstance(exc, _NoRoom):
+            return "no_room", str(exc), None
         if isinstance(exc, _SourceChanged):
             return "changed", str(exc), None
         if isinstance(exc, ArchiveSafetyRefused):
@@ -1858,6 +2037,8 @@ async def _convert(
         )
         await _hold(inbox, state, path, fingerprint, findings.INBOX_FAILED, reason,
                     {"platform": platform})
+        if decision == "already_taken" and shown:
+            state.taken_holds[path] = [os.path.join(plan.folder, shown)]
         return "held"
     root = _root_of(inbox, path) or inbox.folder
     try:
@@ -2106,7 +2287,7 @@ async def _finish_locked(
     them are (``flight.unpacked``), and its slot goes then."""
     owner = _unpacked_holding(state, path)
     try:
-        same = await _step(image_fingerprint, path) == flight.fingerprint
+        same = await _step(_fingerprint, path) == flight.fingerprint
         if same and owner is None:
             # A move past its bound may still land: its outcome is waited for
             # (`_owned`), so a move that lands late is counted, not lost.
@@ -2153,6 +2334,34 @@ async def _finish_locked(
 
 class _SourceChanged(OSError):
     """A file isn't the one intake took (replaced, changed or gone)."""
+
+
+def _slot_within(path: str) -> list[str] | None:
+    """The unpack folder *path* sits in, as the one trusted root its sheet's
+    tracks resolve within (#432, Codex 4608417860): the value its conversion
+    job is created trusting. None for a file in a Volume."""
+    with _slots_lock:
+        for root in _slot_roots:
+            if path.startswith(root + os.sep):
+                return [root]
+    return None
+
+
+def _members(path: str) -> list[str]:
+    """``image_members`` of *path*, its tracks resolved within its unpack
+    folder when it has one. Blocking."""
+    within = _slot_within(path)
+    return image_members(path) if within is None else image_members(path, within=within)
+
+
+def _fingerprint(path: str) -> str:
+    """``image_fingerprint`` of *path*, read as :func:`_members` reads it.
+    Blocking."""
+    within = _slot_within(path)
+    return (
+        image_fingerprint(path) if within is None
+        else image_fingerprint(path, within=within)
+    )
 
 
 def _root_of(inbox: inbox_store.Inbox, path: str) -> str | None:
@@ -2210,7 +2419,7 @@ def _still_taken(inbox: inbox_store.Inbox, path: str, flight: _Flight) -> None:
         _check_identities(fd, flight.identities)
     finally:
         os.close(fd)
-    if image_fingerprint(path) != flight.fingerprint:
+    if _fingerprint(path) != flight.fingerprint:
         raise _SourceChanged(errno.ESTALE, f"{os.path.basename(path)} changed since it was taken")
 
 
@@ -2759,6 +2968,13 @@ def settle_memory(inbox_ids: set[int]) -> dict[str, Any]:
                 path: [list(item) for item in depends]
                 for path, depends in state.held_by.items()
             },
+            # What a naming conflict or a taken name is held on (#432, Codex
+            # 4608417851): a later run lifts the hold when it changed.
+            "ranked_holds": {
+                path: [list(item) for item in ranking]
+                for path, ranking in state.ranked_holds.items()
+            },
+            "taken_holds": {path: list(taken) for path, taken in state.taken_holds.items()},
             # The last poll's error, so the same outage isn't news to the
             # next run's summary (Codex 4608095505).
             "error": state.error,
@@ -2791,6 +3007,10 @@ def restore_settle_memory(memory: dict[str, Any] | None) -> None:
                 state.held.setdefault(path, str(fingerprint))
             for path, depends in (kept.get("held_by") or {}).items():
                 state.held_by.setdefault(path, tuple(tuple(item) for item in depends))
+            for path, ranking in (kept.get("ranked_holds") or {}).items():
+                state.ranked_holds.setdefault(path, tuple(tuple(item) for item in ranking))
+            for path, taken in (kept.get("taken_holds") or {}).items():
+                state.taken_holds.setdefault(path, [str(t) for t in taken])
             if state.error is None and kept.get("error"):
                 state.error = str(kept["error"])
             for path, duty in (kept.get("archive") or {}).items():

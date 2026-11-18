@@ -301,6 +301,16 @@ class ArchiveService:
         ratio = max(0, int(getattr(settings, "archive_inbox_max_ratio", 0) or 0))
         return member or fallback, total or fallback, ratio
 
+    @staticmethod
+    def inbox_unpacked_limit() -> int:
+        """What every archive an Inbox has unpacked at once may hold in all
+        (``CHD_ARCHIVE_INBOX_MAX_UNPACKED_SIZE``, #432): the Inbox's total cap
+        (:meth:`inbox_limits`) when unset. 0 is no limit."""
+        value = getattr(settings, "archive_inbox_max_unpacked_size", None)
+        if value is None:
+            return ArchiveService.inbox_limits()[1]
+        return max(0, int(value))
+
     def check_inbox_archive(self, archive_path: str, progress=None) -> int:
         """Refuse an archive an Inbox must not check or copy: the configured
         entry limit, the Inbox's declared-size and expansion caps

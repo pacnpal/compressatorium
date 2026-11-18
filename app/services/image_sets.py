@@ -16,7 +16,7 @@ with it are decided by the same code.
 from __future__ import annotations
 
 import os
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
 
 from services.tools import registry
@@ -31,7 +31,9 @@ def is_playlist(path: str) -> bool:
     return Path(path).suffix.lower() in PLAYLIST_EXTENSIONS
 
 
-def _named_tracks(path: str) -> list[str] | None:
+def _named_tracks(
+    path: str, within: Sequence[str | Path] | None = None,
+) -> list[str] | None:
     """The tracks a ``.cue``/``.gdi`` at *path* names, or None when that
     cannot be told. Blocking.
 
@@ -60,7 +62,7 @@ def _named_tracks(path: str) -> list[str] | None:
         return []
     if not sheet_is_readable(path):
         return None
-    tracks = sheet_track_paths(path)
+    tracks = sheet_track_paths(path, within=within)
     if tracks:
         return tracks
     folder = Path(path).parent
@@ -68,14 +70,18 @@ def _named_tracks(path: str) -> list[str] | None:
     for text in sheet_readings(path):
         for ref in parse(text):
             try:
-                named.append(str(resolve_track(folder, ref)))
+                named.append(str(resolve_track(folder, ref, within=within)))
             except ValueError:
                 continue
     return list(dict.fromkeys(named))
 
 
-def image_members(path: str) -> list[str]:
+def image_members(path: str, *, within: Sequence[str | Path] | None = None) -> list[str]:
     """The other files the Image at *path* is made of. Reads the sheet; blocking.
+
+    A sheet's tracks resolve within the configured Volumes, or within the
+    trusted roots *within* names for a sheet outside them (an Inbox's unpack
+    folder in the app's work area, #432), as ``resolve_track`` takes them.
 
     A sheet that cannot be read whole contributes no members here: a listing
     cannot hide files it cannot name, so they stay listed. Nothing that deletes
@@ -83,7 +89,7 @@ def image_members(path: str) -> list[str]:
     (:func:`sheet_track_identities`) is marked incomplete for such a sheet, and
     a delete is then not offered.
     """
-    tracks = _named_tracks(path)
+    tracks = _named_tracks(path, within)
     members = [
         *(tracks or ()), *registry.source_companions(path),
         # A split output (`Game.iso.0` owns `.1`, `.2`): one logical Image.
@@ -361,11 +367,12 @@ def image_size(
     return total
 
 
-def image_fingerprint(path: str) -> str:
+def image_fingerprint(path: str, *, within: Sequence[str | Path] | None = None) -> str:
     """Size and mtime of every file of the Image at *path* (the file and its members).
 
     Changes when any of them changes: replacing a bad track changes it even
     though the sheet did not. Blocking (reads the sheet, stats each file).
+    *within*: as :func:`image_members` takes it.
     """
-    files = [path, *sorted(image_members(path))]
+    files = [path, *sorted(image_members(path, within=within))]
     return "|".join(path_fingerprint(f) for f in files)

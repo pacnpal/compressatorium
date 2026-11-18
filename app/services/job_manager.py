@@ -3035,6 +3035,15 @@ class JobManager:
                 )
         await self._dispatcher_task
 
+    def has_live_conversions(self) -> bool:
+        """Whether a conversion is still queued or running. For a caller
+        that drains to a fixed point (``run-rules``'s Inbox pass, #432):
+        work that finishes may queue more."""
+        return any(
+            _is_conversion_job(job) and job.status in (JobStatus.QUEUED, JobStatus.PROCESSING)
+            for job in list(self.jobs.values())
+        )
+
     async def drain(self) -> None:
         """Wait until every queued job has run to its very end.
 

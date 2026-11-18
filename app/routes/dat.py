@@ -1837,7 +1837,10 @@ async def _match_single_file(
             # file hashes run at once when a directory of uncached files is
             # browsed.
             try:
-                async with await workload_limiter.acquire("match"):
+                # The bounded caller's wait for the lane stops at its Cancel
+                # too (Codex 4608417866); every other caller waits as before.
+                lane_cancel = {"cancel_event": cancel_event} if stall_bounded else {}
+                async with await workload_limiter.acquire("match", **lane_cancel):
                     if stall_bounded:
                         # A read given up on after *stall* seconds with no
                         # progress, or at the caller's Cancel (#432).

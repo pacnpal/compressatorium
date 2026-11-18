@@ -199,7 +199,16 @@
   A name already in the Library, its DAT name or its own, leaves it in the
   Inbox with a Finding saying which. Nothing is overwritten. An unpacked or
   Recognized Image is taken on at once, so a `run-rules` pass places it in
-  the same run; what a run unpacked is removed before it exits.
+  the same run, conversions included, and the run waits for all of it; what a
+  run unpacked is removed before it exits. A held file is looked at again once
+  its name in the Library is free or your DAT order changes, across cron runs
+  too. A cue and its bin inside an archive are one Image. Nothing unpacked is
+  kept for an Image that is held: the archive stays in the Inbox with its
+  Finding and is unpacked again when the hold lifts. Everything unpacked at
+  once stays under `CHD_ARCHIVE_INBOX_MAX_UNPACKED_SIZE` (by default the
+  Inbox's 32 GiB total) and within the work area's free space; an archive that
+  doesn't fit waits for room, with no Finding. Cancel stops a Recognize that
+  is still waiting its turn to read.
 - **Xbox 360 disc images to ZAR, with rom-converto** (#422). A new tool,
   rom-converto (the converter RomM ships, at the version RomM pins, v0.24.0),
   packs an Xbox 360 `.iso` into a `.zar`, the format Xenia mounts directly.
