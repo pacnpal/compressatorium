@@ -221,3 +221,30 @@ async def test_a_link_to_a_file_outside_the_volumes_reaches_nothing(
     item = _by_path(await _preview(client, free))[str(free)]
 
     assert item["status"] == "rename", item
+
+
+@pytest.mark.asyncio
+async def test_a_folder_link_out_of_the_volumes_holds_every_image(
+    db: Path, client: httpx.AsyncClient,
+) -> None:
+    """``out -> /external`` and ``/external/back -> /volume/other``:
+    ``resolve_track`` checks only the real path, so ``out/back/Game.gba`` is a
+    track it takes. The reach walk doesn't follow links outside the Volumes,
+    so it can't tell what such a link reaches and fails closed."""
+    folder = db / "inbox" / "psx" / "abs"
+    _absolute_sheet(folder)
+    game = db / "other" / "Game.gba"
+    free = db / "free" / "Free.gba"
+    await _recognized(client, (game, "Game (USA)"), (free, "Free (USA)"))
+    external = db.parent / "external"
+    external.mkdir()
+    (external / "back").symlink_to(game.parent, target_is_directory=True)
+    (folder / "out").symlink_to(external, target_is_directory=True)
+
+    items = _by_path(await _preview(client, game, free))
+
+    for path in (game, free):
+        item = items[str(path)]
+        assert item["status"] == "skip", item
+        assert "Abs Game.cue" in item["reason"], item
+        assert str(folder / "out") in item["reason"], item

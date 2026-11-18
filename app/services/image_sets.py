@@ -317,8 +317,11 @@ def sheet_reach(
     it reaches *folder* and below, and through a link a file or folder
     anywhere in *roots* (the Volumes): each linked folder is walked too, and
     each file is taken by identity, links followed, so a hard link counts.
-    A link out of *roots* (to a folder or a file) is a track ``resolve_track``
-    refuses, so it reaches nothing. Junk names (``__MACOSX``, ``@eaDir``) are
+    A link to a file out of *roots* is a track ``resolve_track`` refuses, so
+    it reaches nothing. A link to a folder out of *roots* is in what was
+    missed: a link inside that folder may lead back in, and ``resolve_track``
+    checks only the real path, so what it reaches can't be told without
+    walking outside the Volumes, which this never does. Junk names (``__MACOSX``, ``@eaDir``) are
     walked too: ``resolve_track`` takes them like any other name. Never
     partial in silence: a folder or file that can't be read is in what was
     missed."""
@@ -346,7 +349,9 @@ def sheet_reach(
                 path = os.path.join(current, name)
                 if os.path.islink(path):
                     real = os.path.realpath(path)
-                    if inside(real, trusted) and os.path.isdir(real):
+                    if not inside(real, trusted):
+                        missed.append(f"{path} links to a folder outside the Volumes")
+                    elif os.path.isdir(real):
                         pending.append(real)
             for name in files:
                 path = os.path.join(current, name)
@@ -370,7 +375,8 @@ def volume_sheet_owners_scoped(
     """:func:`volume_sheet_owners`, with a sheet whose tracks can't be told
     holding back only what it could name (#454): every file in its folder and
     below (:func:`sheet_reach`) is in ``unknown``. None and why only when the
-    walk itself missed something, or a folder an unresolved sheet reaches."""
+    walk itself missed something, or the reach of an unresolved sheet did (a
+    folder it can't read, a folder link out of the Volumes), naming the sheet."""
     roots = list(roots)
     owners, unresolved, missed = _walk_volume_sheets(roots, progress)
     unknown: dict[Identity, str] = {}
@@ -380,7 +386,8 @@ def volume_sheet_owners_scoped(
         if folder not in reached_folders:
             reached, more = sheet_reach(folder, roots, progress=progress)
             reached_folders[folder] = reached
-            missed.extend(more)
+            name = os.path.basename(sheet)
+            missed.extend(f"{m}, so what {name} names through it can't be told" for m in more)
         for identity in reached_folders[folder]:
             unknown.setdefault(identity, why)
     if missed:

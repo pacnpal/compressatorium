@@ -7230,8 +7230,11 @@ that is its folder and below, through any link inside the Volumes;
 `image_sets.sheet_reach` walks it, following linked folders, and records each
 file by identity, so a hard link counts too. It walks junk names as well
 (`walk_tree(skip_junk=False)`: `resolve_track` takes `__MACOSX/x` like any
-other name), and a link whose real path is outside the Volumes reaches
-nothing, since `resolve_track` refuses it. Those identities go in
+other name). A file link whose real path is outside the Volumes reaches
+nothing, since `resolve_track` refuses it. A folder link out of the Volumes
+fails the whole walk instead, naming the sheet and the link: a link inside
+that folder may lead back in, `resolve_track` checks only the final real
+path, and the walk never goes outside the Volumes to find out. Those identities go in
 `SheetOwners.unknown`, and an Image or a sheet's track among them is skipped
 with the sheet that holds it. A folder or file that walk can't read still
 fails the whole walk. `volume_sheet_owners` keeps the stricter rule (one such
