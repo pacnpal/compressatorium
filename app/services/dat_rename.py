@@ -204,7 +204,7 @@ def _note_conflict(path: str, library, conflict) -> None:
         logger.warning("dat_rename: could not record the conflict of %s", path, exc_info=True)
 
 
-Owners = Mapping[tuple[int, int], frozenset[tuple[int, int]]]
+Owners = image_sets.SheetOwners
 
 
 def _identity(path: str) -> tuple[int, int]:
@@ -214,10 +214,14 @@ def _identity(path: str) -> tuple[int, int]:
 
 def _member_problem(path: str, tracks: Owners) -> str | None:
     """Why *path* isn't an Image this can rename, or None. *tracks* is every
-    sheet's tracks over the Volumes, each with the sheets that name it
-    (:func:`sheet_tracks`)."""
+    sheet's tracks over the Volumes, each with the sheets that name it, and
+    what a sheet whose tracks can't be told may name (:func:`sheet_tracks`)."""
     if image_sets.is_playlist(path):
         return "a playlist, not an Image"
+    # Only what such a sheet could name is held back (#454).
+    unknown = tracks.unknown.get(_identity(path))
+    if unknown is not None:
+        return f"can't tell whether a sheet lists it as a track ({unknown})"
     boundary = lock_boundary_root(path)
     if boundary is None:
         return "can't confirm its Volume boundary, so its sheet can't be looked for"
@@ -229,7 +233,7 @@ def _member_problem(path: str, tracks: Owners) -> str | None:
         return f"a track of {os.path.basename(sheet)}: it is renamed with its sheet"
     # A sheet anywhere in the Volumes may reach it through a link (Codex
     # 4602560262): the Volume-wide walk the duplicate delete uses decides.
-    if _identity(path) in tracks:
+    if _identity(path) in tracks.owners:
         return "a track a .cue or .gdi elsewhere lists: it is renamed with its sheet"
     if not image_rename.is_sheet(path) and image_sets.image_members(path):
         return "an Image of several files that aren't a sheet's tracks; not renamed"
@@ -256,7 +260,14 @@ def _sheet_tracks(path: str, tracks: Owners) -> list[str] | str:
         name = os.path.basename(track)
         if os.path.islink(track) or not os.path.isfile(track):
             return f"its track {name} isn't a file of its own"
-        if tracks.get(_identity(track)) != own:
+        identity = _identity(track)
+        unknown = tracks.unknown.get(identity)
+        if unknown is not None:
+            return (
+                f"its track {name} may be listed by a sheet whose tracks "
+                f"can't be told ({unknown})"
+            )
+        if tracks.owners.get(identity) != own:
             return f"its track {name} is listed by another sheet too"
     return named
 
@@ -470,14 +481,15 @@ def renames_of(item: Mapping) -> tuple[dict[str, str], image_rename.Folder | Non
 
 async def sheet_tracks(cancel_event=None) -> tuple[Owners | None, str]:
     """Every sheet's tracks over the Volumes, each with the sheets that name
-    it, read once per preview and per run (``image_sets.volume_sheet_owners``,
+    it, read once per preview and per run (``image_sets.volume_sheet_owners_scoped``,
     the walk the duplicate delete reads them by), or None and why when the
-    walk didn't finish: fail closed."""
+    walk didn't finish: fail closed. A sheet whose tracks can't be told holds
+    back only the files it could name, in its folder and below (#454)."""
     from services import content_keys, duplicates
 
     try:
         tracks, problem = await run_detached_within_stall_bound(
-            image_sets.volume_sheet_owners, duplicates.volume_scope(),
+            image_sets.volume_sheet_owners_scoped, duplicates.volume_scope(),
             what="reading the Volumes' sheets", cancel_event=cancel_event,
             stall=content_keys.STALL_SECONDS, report_progress=True,
         )
