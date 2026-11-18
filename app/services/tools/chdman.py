@@ -259,10 +259,11 @@ class ChdmanTool(BaseTool):
         super().__init__(binary_path)
         self._service = chdman_service
 
-    def header_platform(self, path: str) -> str | None:
+    def header_platform(self, path: str, *, within=None) -> str | None:
         # PS1/PS2/PSP/Dreamcast through the disc-ID parser, Saturn and Sega CD
-        # through their sector-0 system ids.
-        return disc_platform(path)
+        # through their sector-0 system ids. A sheet's tracks resolve within
+        # *within* when given (an Inbox's unpack folder, #432).
+        return disc_platform(path, within=within)
 
     def header_reads(self, path: str) -> list[str] | None:
         # A .cue/.gdi is answered from the tracks it names. None (unknown

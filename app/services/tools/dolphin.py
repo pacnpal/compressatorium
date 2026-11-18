@@ -180,7 +180,7 @@ class DolphinTool(BaseTool):
         super().__init__(binary_path)
         self._service = dolphin_tool_service
 
-    def header_platform(self, path: str) -> str | None:
+    def header_platform(self, path: str, *, within=None) -> str | None:
         # The magic numbers in a raw disc header. Dolphin's own containers
         # (RVZ/WIA/GCZ) hold that header compressed, so they answer None.
         return nintendo_disc_platform(path)

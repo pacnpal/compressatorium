@@ -300,7 +300,9 @@ def _probes(tool, path: str, is_dir: bool) -> bool:
     return match_extension(path, tool.input_extensions) is not None
 
 
-def _header(path: str, tools: Iterable) -> tuple[set[str], list[str]]:
+def _header(
+    path: str, tools: Iterable, within: list[str] | None = None,
+) -> tuple[set[str], list[str]]:
     found: set[str] = set()
     sources: list[str] = []
     seen: set[int] = set()
@@ -312,7 +314,12 @@ def _header(path: str, tools: Iterable) -> tuple[set[str], list[str]]:
         if not _probes(tool, path, is_dir):
             continue
         try:
-            raw = tool.header_platform(path)
+            # A trusted root only when one is given: every probe is asked
+            # exactly as before otherwise.
+            raw = (
+                tool.header_platform(path) if within is None
+                else tool.header_platform(path, within=within)
+            )
         except Exception:  # a probe must never break detection
             logger.debug("header probe %s failed for %s", tool.id, path, exc_info=True)
             continue
@@ -462,12 +469,13 @@ def platform_folders(
 
 def _decide(
     path: str, tools: list, mapped: dict[str, str], placed_at: str | None = None,
+    within: list[str] | None = None,
 ) -> Detection:
     disk_path, member = _split_member(path)
     headers: set[str] = set()
     sources: list[str] = []
     if not member:
-        headers, sources = _header(disk_path, tools)
+        headers, sources = _header(disk_path, tools, within)
     names = _folder_names(tools)
     # The folders read: its own, or those *placed_at* names (`detect_platform_as`).
     at = placed_at or disk_path
@@ -521,13 +529,18 @@ def clear_cache() -> None:
         _cache.clear()
 
 
-def detect_platform_as(path: str, placed_at: str, *, tools: Iterable | None = None) -> Detection:
+def detect_platform_as(
+    path: str, placed_at: str, *, tools: Iterable | None = None,
+    within: list[str] | None = None,
+) -> Detection:
     """:func:`detect_platform` for a file that isn't where it belongs: its
     header read from *path*, its folders (and the user's mappings) read as if
     it sat at *placed_at*, a path inside a Volume that need not exist. An
     Image the Inbox unpacked into the app's work area (#432) is judged by the
     folders its archive sat in and those inside the archive. Uncached.
-    Blocking."""
+    *within*: the trusted roots its header probes resolve a sheet's tracks
+    under (its unpack folder, Codex 4608919681); None is the configured
+    Volumes. Blocking."""
     from services.platform_mappings import MappingsUnavailable
 
     if is_special_file(path):
@@ -537,7 +550,7 @@ def detect_platform_as(path: str, placed_at: str, *, tools: Iterable | None = No
     except MappingsUnavailable:
         return Detection(None, UNSORTED, None, None, _MAPPINGS_UNREADABLE)
     tool_list = list(tools) if tools is not None else _default_tools()
-    return _decide(path, tool_list, mapped, placed_at)
+    return _decide(path, tool_list, mapped, placed_at, within)
 
 
 def detect_uncached(

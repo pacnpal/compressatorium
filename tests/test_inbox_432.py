@@ -1432,3 +1432,66 @@ async def test_low_free_space_in_the_work_area_defers_with_no_finding(vol, db, m
 
     assert (vol / "ROMs" / "gba" / "Game.gba").read_bytes() == rom
     assert not archive.exists()
+
+
+# ---- Codex on PR #453 at b9073a61 -------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_an_unpacked_ps1_cue_is_detected_by_its_header(vol, db, monkeypatch):
+    """Codex 4608919681: a PS1 cue and bin in a zip with no Platform folder.
+    Its header is read with the unpack folder as the trusted root its track
+    resolves within, so it is detected as psx and placed."""
+    from .test_disc_id import _make_iso, _make_mode1_bin
+
+    _verifies(monkeypatch)
+    library = _library(vol)
+    box = _inbox(vol, library, settle=0)
+    track = _make_mode1_bin(_make_iso({"SYSTEM.CNF": b"BOOT = cdrom:\\SLPS_123.45;1\n"}))
+    cue = b'FILE "Game.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n'
+    archive = vol / "Downloads" / "Bundle.zip"
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_STORED) as zf:
+        zf.writestr("Game.cue", cue)
+        zf.writestr("Game.bin", track)
+
+    await _polls(box)
+
+    assert (vol / "ROMs" / "psx" / "Game.cue").read_bytes() == cue
+    assert (vol / "ROMs" / "psx" / "Game.bin").read_bytes() == track
+    assert not archive.exists()
+    assert _inbox_findings() == []
+
+
+@pytest.mark.asyncio
+async def test_a_split_image_takes_its_dat_name_on_every_part(vol, db):
+    """Codex 4608919686: a numbered split Image named from its DAT keeps its
+    logical extension and renames every part alike, so it is still one set."""
+    from services.tools import registry
+
+    part0, part1 = _bytes("part zero"), _bytes("part one")
+    await _dat("Sony - PlayStation 3 (Redump)", {"Canonical Game": _sha1(part0)})
+    library = _library(vol)
+    box = _inbox(vol, library, settle=0)
+    _drop(vol / "Downloads" / "ps3" / "Game.iso.0", part0)
+    _drop(vol / "Downloads" / "ps3" / "Game.iso.1", part1)
+
+    await _polls(box)
+
+    placed0 = vol / "ROMs" / "ps3" / "Canonical Game.iso.0"
+    placed1 = vol / "ROMs" / "ps3" / "Canonical Game.iso.1"
+    assert placed0.read_bytes() == part0
+    assert placed1.read_bytes() == part1
+    assert sorted(p.name for p in (vol / "ROMs" / "ps3").iterdir()) == [
+        "Canonical Game.iso.0", "Canonical Game.iso.1",
+    ]
+    assert registry.split_owner(str(placed1))[0] == str(vol / "ROMs" / "ps3" / "Canonical Game.iso")
+    assert registry.split_members(str(placed0)) == [str(placed1)]
+
+
+def test_the_dat_name_of_a_split_part_keeps_its_logical_extension():
+    from services.dat_rename import dat_file_name
+
+    assert dat_file_name("Canonical Game", "Game.iso.0") == "Canonical Game.iso.0"
+    assert dat_file_name("Canonical Game", "Game.iso.12") == "Canonical Game.iso.12"
+    assert dat_file_name("Canonical Game", "Game.iso") == "Canonical Game.iso"

@@ -1140,6 +1140,7 @@ async def _take(
             # archive's in the Inbox and those inside the archive.
             detection = await _step(
                 platform_detect.detect_platform_as, path, _as_in_inbox(owner, path),
+                within=_slot_within(path),
             )
         members = await _step(_members, path)
     except (asyncio.TimeoutError, OSError):
@@ -1328,7 +1329,7 @@ async def _name(
     DAT can answer: None once it is named (``flight.game_name`` and
     ``flight.placed_names`` set; no name keeps its own), else the outcome
     :func:`_take` answers (``recognizing``, ``held`` or ``retry``)."""
-    from services.dat_rename import conflict_text, dat_file_name
+    from services.dat_rename import conflict_text, dat_file_names
     from services.dat_store import dat_store
 
     names = [os.path.basename(f) for f in flight.files]
@@ -1365,10 +1366,12 @@ async def _name(
             state.ranked_holds[path] = ranking
         return "held"
     if ranked.top is not None and ranked.top.get("game_name"):
-        named = dat_file_name(ranked.top["game_name"], names[0])
+        # Every part of a split output alike (Codex 4608919686); a sheet's
+        # tracks keep their names.
+        named = dat_file_names(ranked.top["game_name"], names)
         if named:
             flight.game_name = ranked.top["game_name"]
-            flight.placed_names = [named, *names[1:]]
+            flight.placed_names = named
     return None
 
 

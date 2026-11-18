@@ -202,7 +202,11 @@
   the same run, conversions included, and the run waits for all of it; what a
   run unpacked is removed before it exits. A held file is looked at again once
   its name in the Library is free or your DAT order changes, across cron runs
-  too. A cue and its bin inside an archive are one Image. Nothing unpacked is
+  too. A cue and its bin inside an archive are one Image, its Platform read
+  from its own track when no folder names it, and a split Image (`Game.iso.0`,
+  `.1`) named from its DAT keeps every part together (`Canonical Game.iso.0`,
+  `.1`); the same naming rule keeps a part's `.iso.0` in Rename to DAT name.
+  Nothing unpacked is
   kept for an Image that is held: the archive stays in the Inbox with its
   Finding and is unpacked again when the hold lifts. Everything unpacked at
   once stays under `CHD_ARCHIVE_INBOX_MAX_UNPACKED_SIZE` (by default the

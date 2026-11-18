@@ -131,8 +131,36 @@ def dat_file_name(game_name: str, name: str) -> str | None:
     the game name with the file's own extension (compound ones whole, Codex
     4602560251), made safe by the one shared rule (``safe_file_name``). None
     when it can't be made a file name. The one naming rule: the rename to DAT
-    name and the Inbox (#432) both name Images with it."""
+    name and the Inbox (#432) both name Images with it.
+
+    A numbered part of a split output (``Game.iso.0``, the registry's
+    ``split_owner_name``) keeps its logical extension and its part number:
+    ``Canonical Game.iso.0`` (Codex 4608919686)."""
+    logical = tools.split_owner_name(name)
+    if logical is not None:
+        named = safe_file_name(f"{game_name}{tools.extension_of(logical)}")
+        return None if named is None else f"{named}{name[len(logical):]}"
     return safe_file_name(f"{game_name}{tools.extension_of(name)}")
+
+
+def dat_file_names(game_name: str, names: list[str]) -> list[str] | None:
+    """Each of an Image's files' names under the DAT's *game_name*, its main
+    file first (*names* in that order): the main file by
+    :func:`dat_file_name`, and every other part of a split output alike
+    (``Game.iso.1`` -> ``Canonical Game.iso.1``), so the set stays one; a
+    sheet's tracks keep theirs, so the sheet still names them. None when the
+    name can't be made a file name."""
+    main = dat_file_name(game_name, names[0])
+    if main is None:
+        return None
+    logical = tools.split_owner_name(names[0])
+    renamed = [main]
+    for name in names[1:]:
+        if logical is not None and tools.split_owner_name(name) == logical:
+            renamed.append(dat_file_name(game_name, name) or name)
+        else:
+            renamed.append(name)
+    return renamed
 
 
 def conflict_text(conflict: Iterable[dict]) -> tuple[str, list[dict]]:

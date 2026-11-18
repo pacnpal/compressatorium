@@ -7751,8 +7751,13 @@ with the Inbox by its recorded path (`_list(extra=...)`, the walk shared as
 `_walk`), and each Image in it settles and is taken like a loose file. Its
 Platform is read from its own header and from the folders it would sit in had
 the archive been unpacked beside it (`platform_detect.detect_platform_as(path,
-placed_at)`: the archive's folder in the Inbox, then the folders inside the
-archive; mappings apply). Its sheet's tracks resolve within its slot (Codex
+placed_at, within=...)`: the archive's folder in the Inbox, then the folders
+inside the archive; mappings apply). Its header probes resolve a sheet's tracks
+within its slot too (Codex 4608919681): `ToolPlugin.header_platform(path,
+within=...)`, an optional trusted root every tool takes and chdman passes on to
+`disc_id.disc_platform`, `extract_from_source` and `sega_sector0_platform`, so an
+unpacked PS1 cue is read from its own track. A probe is asked with no `within`,
+exactly as before, everywhere else. Its sheet's tracks resolve within its slot (Codex
 4608417860): `image_members`, `image_fingerprint` and `group_images` (through
 `image_sets.image_members(within=...)` and `delete_plan.sheet_track_paths(within=...)`)
 are called with the slot as the one trusted root, the value its conversion job
@@ -7835,9 +7840,13 @@ and keeps its name.
 
 The top-ranked DAT names it by the rename's one rule
 (`dat_rename.dat_file_name`: the game name with the file's own extension,
-compound ones whole, through `safe_file_name`). A copy places its main file
-under that name (`_Flight.placed_names`, read by the staging, the output locks
-and the taken-name check); a sheet's tracks keep their names, so the sheet still
+compound ones whole, through `safe_file_name`; a numbered part of a split output
+keeps its logical extension and part number, `Game.iso.0` becoming
+`Canonical Game.iso.0`, read with the registry's `split_owner_name`, Codex
+4608919686). A copy places its files under `dat_rename.dat_file_names`
+(`_Flight.placed_names`, read by the staging, the output locks and the
+taken-name check): its main file, and every other part of a split output alike,
+so the set is still one; a sheet's tracks keep their names, so the sheet still
 names them. A conversion's output takes it with the output's extension
 (`_destination(game_name=...)`, checked with `output_status`). Two DATs the
 ranking puts level that name it differently (`ranked.conflict`) hold it with an
