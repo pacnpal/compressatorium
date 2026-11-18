@@ -272,6 +272,11 @@ class ConversionJob(BaseModel):
     # under (``utils.path_utils.source_identity``, #431), or None. Checked under
     # the job's Source lock right before the tool runs.
     _source_identity: dict | None = PrivateAttr(default=None)
+    # The one folder outside the Volumes this job was created to read its
+    # Source from (an Inbox's unpack folder in the app's work area, #432), or
+    # None. Set when the job is created; ``_trusted_roots`` and the Source's
+    # identity check honour it, and nothing outside it.
+    _trusted_root: str | None = PrivateAttr(default=None)
     # Where a job with a ``_source_identity`` reads its Source once bound
     # (``utils.path_utils.bind_source``): the ``BoundSource`` (a folder of
     # the job's own in the app's work area, removed through its kept

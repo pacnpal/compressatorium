@@ -7705,8 +7705,15 @@ Platform is read from its own header and from the folders it would sit in had
 the archive been unpacked beside it (`platform_detect.detect_platform_as(path,
 placed_at)`: the archive's folder in the Inbox, then the folders inside the
 archive; mappings apply). Its tracks are checked within its slot. A conversion
-of it is queued without `source_identities`: its Source is in the app's own work
-area, outside every Volume, where nothing can swap it. A Finding for one of them
+of it keeps every #431/#443 protection: it is queued with `source_identities`
+rooted at its slot, and with that slot as the job's one trusted root
+(`create_batch_jobs(trusted_roots=...)`, set on the job when it is created as
+`ConversionJob._trusted_root`). `source_identity_problem(path, identity,
+trusted_root)` then takes the Source outside the Volumes only when its identity
+is rooted at exactly that folder, reached beneath it with no link followed;
+anywhere else is refused as before. `_trusted_roots(job)` adds the folder (after
+a bound Source's), so the bind, the companion check and the post-conversion
+checks read beneath it. A Finding for one of them
 is written on the archive (the file the user dropped), naming the Image (`_hold`
 redirects through `_unpacked_holding`). A placed Image stays in the slot,
 counted (`note_processed`) and reported in `placed` with the archive's path; the

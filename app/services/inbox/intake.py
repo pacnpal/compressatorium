@@ -1725,6 +1725,7 @@ async def _convert(
         await _hold(inbox, state, path, fingerprint, findings.INBOX_FAILED, reason,
                     {"platform": platform})
         return "held"
+    root = _root_of(inbox, path) or inbox.folder
     try:
         jobs = await job_manager.create_batch_jobs(
             [path], ConversionMode(rule["mode"]),
@@ -1737,11 +1738,11 @@ async def _convert(
             # The file taken, and the Inbox it must stay under: the job checks
             # both, under its Source lock, before its tool reads anything, so a
             # folder swapped for a link meanwhile converts nothing. An Image
-            # unpacked from an archive (#432) sits in the app's own work
-            # area, which no Inbox writer can reach, outside every Volume:
-            # there is nothing to bind it against.
-            source_identities=None if _unpacked_holding(state, path) else {path: {
-                "root": inbox.folder,
+            # unpacked from an archive (#432) must stay under its unpack
+            # folder, outside every Volume: the job is created trusting that
+            # one folder (``trusted_roots``), and nothing else outside them.
+            source_identities={path: {
+                "root": root,
                 "snapshot": flight.identities[os.path.basename(path)],
                 # Its tracks too: the job binds every file it reads.
                 "members": {
@@ -1749,6 +1750,7 @@ async def _convert(
                     if name != os.path.basename(path)
                 },
             }},
+            trusted_roots={path: root} if root != inbox.folder else None,
         )
     except QueueBackpressureError:
         return "queue_full"

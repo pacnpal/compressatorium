@@ -1551,11 +1551,21 @@ def source_identity(path: str, root: str) -> dict:
     return {"root": os.path.abspath(root), "snapshot": file_snapshot(st)}
 
 
-def source_identity_problem(path: str, identity: dict) -> str | None:
+def source_identity_problem(
+    path: str, identity: dict, trusted_root: str | None = None,
+) -> str | None:
     """Why *path* isn't the Source a job was queued for (:func:`source_identity`),
     or None. Fail closed: outside the Volumes, reached through a link, gone, or
-    another file (device, inode, size or mtime) are all reasons. Blocking."""
-    if not is_within_configured_volumes(path, treat_archives=False):
+    another file (device, inode, size or mtime) are all reasons. Blocking.
+
+    *trusted_root*: the one folder outside the Volumes the job was created
+    to read from (an Inbox's unpack folder in the app's work area, #432). The
+    Source must then sit under exactly that folder (its identity's ``root``),
+    reached with no link followed; anywhere else is still refused."""
+    if trusted_root is not None:
+        if os.path.abspath(identity.get("root") or "") != os.path.abspath(trusted_root):
+            return "the Source isn't under the folder it was queued from"
+    elif not is_within_configured_volumes(path, treat_archives=False):
         return "the Source is no longer inside the configured Volumes"
     try:
         fd, name = _folder_beneath_root(path, identity["root"])

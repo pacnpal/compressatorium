@@ -894,3 +894,152 @@ def test_extraction_writes_through_the_held_folder(tmp_path, kind):
     assert sorted(written) == sorted(str(dest / name) for name in members)
     for name, data in members.items():
         assert (dest / name).read_bytes() == data
+
+
+# ---- an unpacked Image's conversion keeps its Source identity --------------
+
+
+@pytest.mark.asyncio
+async def test_an_unpacked_images_conversion_carries_its_identity_and_folder(vol, db, queue):
+    """The conversion of an Image unpacked from an archive is queued with its
+    Source identity, rooted at its unpack folder, and that folder as the one
+    trusted root outside the Volumes."""
+    library = _library(vol)
+    await inbox_431._ps2_rule(library)
+    box = _inbox(vol, library, settle=0)
+    _zip(vol / "Downloads" / "ps2" / "Game.zip", {"Game.iso": _bytes("identity")})
+
+    await _polls(box, count=6)
+
+    [job] = queue.submitted
+    [source] = job["paths"]
+    [slot] = _unpack_dirs()
+    identity = job["source_identities"][source]
+    assert identity["root"] == str(slot)
+    assert identity["snapshot"]["size"] == len(_bytes("identity"))
+    assert job["trusted_roots"] == {source: str(slot)}
+
+
+def _unpacked_cue(tmp_path):
+    """A cue and its track in a fresh unpack folder: the folder and the cue."""
+    from services.inbox import intake
+
+    slot = intake._UnpackSlot()
+    folder = Path(slot.path)
+    (folder / "Game.bin").write_bytes(_bytes("track", 2352 * 4))
+    cue = folder / "Game.cue"
+    cue.write_text('FILE "Game.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n')
+    return slot, cue
+
+
+async def _queued(cue: Path, slot, *, trusted: bool = True):
+    """A real queued createcd job for *cue*, carrying its identity under the
+    unpack folder (as intake queues it), and its folder as trusted root."""
+    from models import ConversionMode
+    from services.job_manager import job_manager
+    from utils.path_utils import source_identity
+
+    identity = source_identity(str(cue), slot.path)
+    identity["members"] = {"Game.bin": source_identity(
+        str(cue.parent / "Game.bin"), slot.path,
+    )["snapshot"]}
+    [job] = await job_manager.create_batch_jobs(
+        [str(cue)], ConversionMode.CREATECD, output_dir=str(cue.parent.parent / "out"),
+        source_identities={str(cue): identity},
+        trusted_roots={str(cue): slot.path} if trusted else None,
+    )
+    return job
+
+
+@pytest.mark.asyncio
+async def test_an_unpacked_images_job_passes_its_identity_bind_and_companion_checks(
+    vol, db, tmp_path,
+):
+    """The real job pipeline's checks on a queued conversion of an unpacked
+    Image: the Source identity check takes it under its trusted folder, the
+    bind reads it there, and the companion check finds its track."""
+    from services.job_manager import _reads, _trusted_roots, job_manager
+    from utils.path_utils import source_companions_are_safe
+
+    slot, cue = _unpacked_cue(tmp_path)
+    job = await _queued(cue, slot)
+    try:
+        assert job._trusted_root == slot.path
+        assert await job_manager._source_identity_problem_bounded(job) is None
+        assert await job_manager._bind_source_bounded(job) is None
+        assert slot.path in _trusted_roots(job)
+        assert source_companions_are_safe(
+            _reads(job), job.mode.value, within=_trusted_roots(job),
+        )
+    finally:
+        await job_manager.cancel_job(job.id)
+        if job._bound is not None:
+            job._bound.close()
+        slot.close()
+
+
+@pytest.mark.asyncio
+async def test_a_job_without_its_trusted_folder_is_still_refused(vol, db, tmp_path):
+    """Trust is per job and set when it is created: the same Source queued
+    without its unpack folder as trusted root is refused, being outside the
+    Volumes."""
+    from services.job_manager import job_manager
+
+    slot, cue = _unpacked_cue(tmp_path)
+    job = await _queued(cue, slot, trusted=False)
+    try:
+        problem = await job_manager._source_identity_problem_bounded(job)
+        assert problem and "Volumes" in problem
+    finally:
+        await job_manager.cancel_job(job.id)
+        slot.close()
+
+
+@pytest.mark.asyncio
+async def test_an_unpacked_image_swapped_after_queueing_is_refused(vol, db, tmp_path):
+    import os
+
+    from services.job_manager import job_manager
+
+    slot, cue = _unpacked_cue(tmp_path)
+    job = await _queued(cue, slot)
+    try:
+        replacement = cue.parent / "other.cue"
+        replacement.write_text(cue.read_text() + "REM swapped\n")
+        os.replace(replacement, cue)
+
+        problem = await job_manager._source_identity_problem_bounded(job)
+        assert problem and "isn't the file" in problem
+    finally:
+        await job_manager.cancel_job(job.id)
+        slot.close()
+
+
+def test_a_source_outside_its_trusted_folder_is_refused(tmp_path):
+    """The trusted folder is the only place outside the Volumes a Source is
+    taken from: a path outside it, or an identity rooted anywhere else, is
+    refused."""
+    from services.inbox import intake
+    from utils.path_utils import source_identity, source_identity_problem
+
+    slot = intake._UnpackSlot()
+    other = intake._UnpackSlot()
+    try:
+        inside = Path(slot.path) / "Game.iso"
+        inside.write_bytes(_bytes("inside"))
+        outside = Path(other.path) / "Game.iso"
+        outside.write_bytes(_bytes("inside"))
+        identity = source_identity(str(inside), slot.path)
+
+        assert source_identity_problem(str(inside), identity, slot.path) is None
+        assert source_identity_problem(str(outside), identity, slot.path)
+        rooted_elsewhere = source_identity(str(outside), other.path)
+        assert source_identity_problem(str(outside), rooted_elsewhere, slot.path)
+        link = Path(slot.path) / "linked"
+        link.symlink_to(other.path)
+        assert source_identity_problem(
+            str(link / "Game.iso"), {**identity, "root": slot.path}, slot.path,
+        )
+    finally:
+        slot.close()
+        other.close()
