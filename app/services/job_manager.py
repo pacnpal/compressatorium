@@ -400,6 +400,15 @@ def _reads(job) -> str:
     return getattr(job, "_read_path", None) or job.file_path
 
 
+def _set_status_message(job, message: str) -> None:
+    """Set *job*'s status line from *message*, a tool's progress or the app's
+    own words, cleaned as a job's error is (``clean_tool_output``, #466): no
+    backspaces or escape sequences, no blank lines, runs of blanks folded. The
+    one place a status message from a tool's progress is set, so every tool
+    gets it."""
+    job.message = clean_tool_output(message)
+
+
 def _is_conversion_job(job) -> bool:
     """A real conversion job, not external bookkeeping (metadata scan / DAT match).
 
@@ -1767,7 +1776,7 @@ class JobManager:
         if progress is not None:
             job.progress = max(0, min(100, progress))
         if message is not None:
-            job.message = message
+            _set_status_message(job, message)
         await self._notify_subscribers(
             job_id,
             {
@@ -1806,6 +1815,9 @@ class JobManager:
             # Tool output that reached the error loses its control characters
             # (a progress bar's backspaces), for every external job (#455).
             job.error_message = clean_tool_output(error_message)
+        if not success:
+            # The status line says why it stopped, not its last progress (#466).
+            job.message = job.error_message or "Failed"
         # Clean up any spurious cancel state that may have been set by
         # cancel_all while the external task was still running.
         self._cancel_events.pop(job_id, None)
@@ -1865,7 +1877,7 @@ class JobManager:
         job.status = JobStatus.CANCELLED
         job.completed_at = datetime.now(timezone.utc)
         if message is not None:
-            job.message = message
+            _set_status_message(job, message)
         self._cancel_events.pop(job_id, None)
         self._cancelled.discard(job_id)
         self._notify_terminal(job)
@@ -3090,7 +3102,7 @@ class JobManager:
         job = self.jobs.get(job_id)
         if not job:
             return
-        job.message = message
+        _set_status_message(job, message)
         now = time.monotonic()
         self._last_progress_at[job_id] = now
         await self._notify_subscribers(
@@ -6248,12 +6260,12 @@ class JobManager:
                 if update.get("activity"):
                     self._last_progress_at[job_id] = now
                 job.progress = update["progress"]
-                job.message = update["message"]
+                _set_status_message(job, update["message"])
                 # A tool's caveat (an eXoDOS conf that points outside its game,
                 # a chain step's warning) is kept on the job: later messages,
                 # such as the verify step's, replace job.message.
                 if update.get("warning"):
-                    job.warning = update["message"]
+                    job.warning = job.message
                 if logger.isEnabledFor(logging.DEBUG):
                     last_log = self._last_progress_log_at.get(job_id, 0)
                     if now - last_log >= settings.debug_progress_interval:
@@ -6660,6 +6672,8 @@ class JobManager:
             # Whatever tool output the error carries, without its control
             # characters (#455): the one sink every conversion failure meets.
             job.error_message = clean_tool_output(str(e))
+            # The status line says why it stopped, not its last progress (#466).
+            job.message = job.error_message or "Failed"
             job.completed_at = datetime.now(timezone.utc)
 
             await self._notify_subscribers(

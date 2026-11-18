@@ -909,6 +909,8 @@ async def _run_jobs(prepared: list[tuple], printer: Printer, state: RunState) ->
 
 
 def _finish(item: Item, job) -> None:
+    from services.job_manager import is_external_mode
+
     item.status = getattr(job.status, "value", str(job.status))
     item.output = job.output_path or item.output
     item.check = job.check_passed
@@ -923,8 +925,11 @@ def _finish(item: Item, job) -> None:
         item.reason = job.error_message
     if (getattr(job, "result", None) or {}).get("waiting"):
         # Only waiting (an Inbox archive with no room to unpack, #458): not a
-        # failure, and named by its own file, not the job's internal path.
+        # failure.
         item.status = "waiting"
+    if is_external_mode(job.mode):
+        # An external job has no real input path, only its internal
+        # /__external_jobs__/<id>: every line names its own file (#463).
         item.path = job.filename
 
 
