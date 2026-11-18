@@ -32,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import contextvars
+import errno
 import functools
 import logging
 import os
@@ -599,7 +600,7 @@ def ioprio_prefix(owner: str | None = None) -> list[str]:
     ioprio_level = _resolve_policy("ioprio_level", owner)
     if ioprio_class is None or ioprio_level is None:
         return []
-    ionice = shutil.which("ionice")
+    ionice = _wrapper_path("ionice")
     if not ionice:
         return []
     return [ionice, "-c", str(ioprio_class), "-n", str(ioprio_level)]
@@ -608,15 +609,35 @@ def ioprio_prefix(owner: str | None = None) -> list[str]:
 def nice_prefix(owner: str | None = None) -> list[str]:
     """Return the ``nice`` command prefix for ``owner``.
 
-    Empty when renicing is off for ``owner`` or ``nice`` is unavailable.
+    Empty when renicing is off for ``owner`` or ``nice`` is unavailable, and
+    for a negative level this process can't apply (not root): ``nice`` would
+    only warn and run the tool anyway, and its warning would land in output a
+    caller parses (rom-converto's ``--version`` readiness probe). The old
+    ``preexec_fn`` renice dropped that failure silently too.
     """
     value = nice_value(owner)
-    if value is None:
+    if value is None or (value < 0 and os.geteuid() != 0):
         return []
-    nice = shutil.which("nice")
+    nice = _wrapper_path("nice")
     if not nice:
         return []
     return [nice, "-n", str(value)]
+
+
+@functools.cache
+def _wrapper_path(name: str) -> str | None:
+    """Where ``nice``/``ionice`` is, looked up once per process: a PATH scan
+    stats directories, and a spawn on the event loop must not repeat it. Warmed
+    at import, below, so the first spawn doesn't pay for it either."""
+    return shutil.which(name)
+
+
+def _raise_if_not_launched(tool: str, returncode: int | None, wrapped: bool) -> None:
+    """A wrapper exits 126/127 when it can't exec *tool*; raise what a direct
+    exec would have (``FileNotFoundError``), so a missing tool is never read as
+    the tool's own verdict (a verify recording a failure)."""
+    if wrapped and returncode in (126, 127) and shutil.which(tool) is None:
+        raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), tool)
 
 
 def priority_prefix(owner: str | None = None) -> list[str]:
@@ -631,6 +652,10 @@ def priority_prefix(owner: str | None = None) -> list[str]:
     absent, its prefix is empty and the child runs at normal priority.
     """
     return nice_prefix(owner) + ioprio_prefix(owner)
+
+
+_wrapper_path("nice")
+_wrapper_path("ionice")
 
 
 def info_timeout(owner: str | None = None) -> int:
@@ -2012,7 +2037,8 @@ class SubprocessRunner:
         # run(): a captured command (e.g. dolphin-tool verify reconstructing a
         # full disc for DAT hashing) is just as heavy as a conversion. Command
         # wrappers only, never a preexec_fn (see priority_prefix).
-        cmd = priority_prefix(self._owner) + cmd
+        prefix = priority_prefix(self._owner)
+        tool, cmd = cmd[0], prefix + cmd
 
         process = await self._spawn_piped(
             cmd,
@@ -2042,6 +2068,7 @@ class SubprocessRunner:
             )
             if comm in done:
                 stdout, stderr = comm.result()
+                _raise_if_not_launched(tool, process.returncode, bool(prefix))
                 return process.returncode, stdout or b"", stderr or b""
             # Cancelled or timed out before the process exited; the finally
             # block below terminates it and drains ``comm``.
@@ -2097,7 +2124,8 @@ class SubprocessRunner:
             raise ReadCancelled("Read cancelled")
         label = os.path.basename(cmd[0])
         # Command wrappers, never a preexec_fn: see priority_prefix.
-        cmd = priority_prefix(self._owner) + cmd
+        prefix = priority_prefix(self._owner)
+        tool, cmd = cmd[0], prefix + cmd
         process = await self._spawn_piped(
             cmd,
             stdin=(
@@ -2165,6 +2193,7 @@ class SubprocessRunner:
             self.untrack_pid(process.pid)
         if process.returncode is not None and process.returncode < 0:
             raise RuntimeError(killed_by_signal_message(label, process.returncode))
+        _raise_if_not_launched(tool, process.returncode, bool(prefix))
         if process.returncode != 0:
             tail = clean_tool_output(stderr_tail.decode("utf-8", errors="replace"))
             raise RuntimeError(
@@ -2262,14 +2291,20 @@ class SubprocessRunner:
             yield self._verify_error("Verification cancelled", cancelled=True)
             return
         abandoned_pid: list[int] = []
-        returncode, stdout, _ = await self.run_capture(
-            cmd,
-            timeout=timeout or None,
-            cancel_event=cancel_event,
-            stderr_to_stdout=True,
-            env=env,
-            on_abandoned=abandoned_pid.append,
-        )
+        try:
+            returncode, stdout, _ = await self.run_capture(
+                cmd,
+                timeout=timeout or None,
+                cancel_event=cancel_event,
+                stderr_to_stdout=True,
+                env=env,
+                on_abandoned=abandoned_pid.append,
+            )
+        except FileNotFoundError as exc:
+            # The verifier isn't there (run_capture tells a wrapper's 127 from
+            # the tool's own exit): no verdict, so no stored check is overwritten.
+            yield verify_exception_event(exc, prefix="Verification could not run")
+            return
         if abandoned_pid:
             # Outranks both branches below: the child outlived SIGKILL, so it is
             # still holding the storage whether the operator cancelled or the
@@ -2334,7 +2369,8 @@ class SubprocessRunner:
         """
         # nice/ionice as command wrappers, never a preexec_fn: see
         # priority_prefix.
-        cmd = priority_prefix(self._owner) + cmd
+        prefix = priority_prefix(self._owner)
+        tool, cmd = cmd[0], prefix + cmd
 
         # One the verifier can't open is no verdict, decided before it runs
         # (#359): chdman's exit 1 on "Permission denied" would read as one.
@@ -2499,6 +2535,11 @@ class SubprocessRunner:
             elif process.returncode == 0:
                 yield {"type": "complete", "valid": True, "message": success_message}
             else:
+                try:
+                    _raise_if_not_launched(tool, process.returncode, bool(prefix))
+                except FileNotFoundError as exc:  # no verdict: it never ran
+                    yield verify_exception_event(exc, prefix="Verification could not run")
+                    return
                 output = "\n".join(output_lines[-20:]).strip()
                 yield verify_exit_event(process.returncode, output or failure_message)
         finally:
@@ -2591,7 +2632,8 @@ class SubprocessRunner:
 
         # nice/ionice as command wrappers, never a preexec_fn: see
         # priority_prefix.
-        cmd = priority_prefix(self._owner) + cmd
+        prefix = priority_prefix(self._owner)
+        tool, cmd = cmd[0], prefix + cmd
 
         # cmd is built from validated settings paths (no shell interpretation);
         # create_subprocess_exec passes the arg list directly (shell=False), so
@@ -3036,6 +3078,7 @@ class SubprocessRunner:
                     "\n".join(output_lines[-6:]),
                 )
                 raise RuntimeError(killed_by_signal_message(fail_label, process.returncode))
+            _raise_if_not_launched(tool, process.returncode, bool(prefix))
             if process.returncode != 0:
                 tail = clean_tool_output("\n".join(output_lines[-6:]))
                 if tail:

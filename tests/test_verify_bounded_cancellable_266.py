@@ -1003,7 +1003,38 @@ def test_streaming_verify_spawns_without_a_preexec_fork_hook():
     # The argument, not the word: the comment above the spawn explains why it
     # is absent, and should keep explaining it.
     assert "preexec_fn=" not in source
-    assert "priority_prefix(self._owner)" in source
+
+
+def test_the_streaming_verifier_spawns_behind_the_priority_prefix(tmp_path, monkeypatch):
+    """The argv run_verify spawns: a known prefix, then the bare command."""
+    import shutil
+    import sys
+
+    from app.services import subprocess_runner as sr
+
+    wrapper = shutil.which("env")
+    monkeypatch.setattr(sr, "priority_prefix", lambda _owner=None: [wrapper])
+    spawned = []
+    real_exec = sr.asyncio.create_subprocess_exec
+
+    async def spy(*args, **kwargs):
+        spawned.append(list(args))
+        return await real_exec(*args, **kwargs)
+
+    monkeypatch.setattr(sr.asyncio, "create_subprocess_exec", spy)
+    target = tmp_path / "disc.bin"
+    target.write_bytes(b"data")
+    cmd = [sys.executable, "-c", "print('100%')"]
+
+    async def drain():
+        return [e async for e in sr.SubprocessRunner(owner="test").run_verify(
+            cmd, path=str(target), parse_progress=lambda _l: None,
+            success_message="ok", failure_message="bad",
+        )]
+
+    events = asyncio.run(drain())
+    assert spawned == [[wrapper, *cmd]]
+    assert events[-1]["valid"] is True
 
 
 def test_cancelling_the_z3ds_feeder_does_not_close_behind_a_stuck_read(

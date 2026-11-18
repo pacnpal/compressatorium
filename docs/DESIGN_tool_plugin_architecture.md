@@ -550,7 +550,15 @@ The runner applies the priority policy, never the tool: every spawn method
 `COMPRESSATORIUM_TOOL_*` settings and any `COMPRESSATORIUM_<OWNER>_*` override.
 A tool passes the bare argv; it never adds `nice`/`ionice` itself, which would
 apply them twice. Either binary missing, its prefix is empty and the child runs
-at normal priority.
+at normal priority. Both are looked up once per process, at import
+(`_wrapper_path`), never on the event loop at spawn time. A negative nice
+level a non-root process can't apply is left off: `nice` would warn and run
+the tool anyway, putting its warning into output a caller parses, where the
+old `preexec_fn` renice dropped the failure silently. A wrapper exits 126/127
+when it can't exec the tool; when the tool isn't there, the runner raises
+`FileNotFoundError` as a direct exec would (`_raise_if_not_launched`), and the
+verify paths report that as inconclusive, so a missing verifier never records
+a failed verdict over a stored pass.
 
 Nothing passes `preexec_fn`. This process is multithreaded (threadpools, the
 SSE routes), and forking a Python callable from it can deadlock the child on a
@@ -7610,8 +7618,15 @@ Source as it is then (`_capture_source_identities` over
 `path_utils.queued_source_identity`, bounded, off the event loop): the path
 resolved, read beneath its Volume root with no link followed the way
 `AnchoredFolders` opens a folder, plus `path` (the resolved path checked; an
-archive's own file for `archive::member`) and `in_place`. One that can't be
-captured carries `{"error": reason}`. The capture is bounded by progress
+archive's own file for `archive::member`), `in_place`, and `companions`: the
+snapshot of every file the converter opens itself alongside it (a sheet's
+tracks, a split set's parts, `_track_candidate_paths`), keyed by resolved path
+(CodeRabbit 4614956755). The path is resolved through the shared gate
+(`_confined_real_path`), so a spelling outside every Volume is refused before
+the filesystem is asked. One that can't be captured carries
+`{"error": reason}`. Captures go into the attempt's own copies of the specs,
+never the caller's, so a submission refused for backpressure captures again
+when retried. The capture is bounded by progress
 (`run_detached_within_stall_bound`), not by the batch's size: a large healthy
 batch is never cut off, and when a Source stops answering the ones already
 captured keep their identities (codex 4614857109). When the job runs, a file
@@ -7619,11 +7634,19 @@ job with no identity ("queued without its Source's identity") or with an
 `error` is refused like a changed one, so a run-time containment check is
 never skipped. An `in_place` identity is not bound (a copy of every Library
 Image into the work area is not a cost a Library job should pay):
-`_queued_source_problem` requires the path the job was submitted as to still
-resolve to `path`, then checks `path` as above, and the job reads the
-submitted path. Not `path` itself (codex 4614857083): a sheet submitted
-through a link names its tracks beside the link, which is where the job
-locked them. Its output is staged only where its Library asks. A folder Source
+`path_utils.queued_source_problem` requires the path the job was submitted as
+to still resolve to `path`, checks `path` as above, and only then reads the
+sheet for its companions, which must be the ones captured, each unchanged.
+`_input_paths` likewise locks only the Source of a job whose check fails, so a
+sheet that now leads out of the Volumes is never parsed (CodeRabbit
+4614956778). The job reads the submitted path, not `path` itself (codex
+4614857083): a sheet submitted through a link names its tracks beside the
+link, which is where the job locked them. Its output is staged only where its
+Library asks. **What this does not close:** the check runs once, under the
+Source lock, before the tool starts. A parent folder swapped for a link after
+the check and before the tool opens the file still redirects the read; only a
+bound Source (#431) is immune to that, and binding every Library Image is the
+cost declined above. A folder Source
 (a DIRECTORY mode, `folder_to_iso`) has no file identity; the folder checks
 that already run under its locks cover it. Both checks, and the bind below, run inside the job's full
 finalization region (CodeRabbit 4606147979): a cancel while either waits ends

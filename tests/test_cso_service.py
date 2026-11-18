@@ -290,16 +290,19 @@ async def test_verify_applies_priority_wrappers(tmp_path, monkeypatch):
         return _FakeProcess(pid=13, chunks=[], returncode=0)
 
     monkeypatch.setattr(maxcso_module.asyncio, "create_subprocess_exec", fake_exec)
+    # A fixed prefix, so the handoff is checked whatever this host has.
+    owners = []
+    monkeypatch.setattr(
+        runner_module, "priority_prefix",
+        lambda owner=None: owners.append(owner) or ["nice", "-n", "10", "ionice", "-c", "2"],
+    )
 
     await service.verify(str(cso_path))
 
-    argv = captured["argv"]
-    # The maxcso invocation is the tail; the head is the shared priority policy.
-    assert argv[-3:] == [service.maxcso_path, "--crc", str(cso_path)]
-    from services.subprocess_runner import priority_prefix
-
-    expected_prefix = priority_prefix(maxcso_module._OWNER)
-    assert argv[: len(expected_prefix)] == expected_prefix
+    assert owners == [maxcso_module._OWNER]
+    assert captured["argv"] == [
+        "nice", "-n", "10", "ionice", "-c", "2", service.maxcso_path, "--crc", str(cso_path),
+    ]
 
 
 @pytest.mark.asyncio

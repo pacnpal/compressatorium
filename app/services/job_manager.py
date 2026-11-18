@@ -71,6 +71,7 @@ from utils.path_utils import (
     bind_source,
     is_within_configured_volumes,
     queued_source_identity,
+    queued_source_problem,
     source_identity_problem,
     source_companions_are_safe,
     strip_archive_path,
@@ -393,21 +394,6 @@ def _trusted_roots(job) -> list[str] | None:
     if trusted:
         roots.append(trusted)
     return roots or None
-
-
-def _queued_source_problem(job, identity: dict) -> str | None:
-    """``source_identity_problem`` for the job's Source, and for an
-    ``in_place`` one (#449) that the path the job reads, as it was submitted,
-    still resolves to the file checked: a link on the way re-pointed since it
-    was queued is refused, never followed. Blocking."""
-    if identity.get("in_place"):
-        submitted = strip_archive_path(job.file_path)
-        if not is_within_configured_volumes(submitted, treat_archives=False):
-            return "the Source is no longer inside the configured Volumes"
-        if os.path.realpath(submitted) != identity["path"]:
-            return "the Source's path leads somewhere else than when it was queued"
-        return source_identity_problem(identity["path"], identity, job._trusted_root)
-    return source_identity_problem(job.file_path, identity, job._trusted_root)
 
 
 def _reads(job) -> str:
@@ -1051,6 +1037,10 @@ class JobManager:
         await self._prune_jobs()
         # Outside the lock, and off the event loop: see `_reservation_keys`.
         reservation = await self._reservation_keys(job_specs, mode)
+        # Captured into this attempt's own copies: a submission refused below
+        # (backpressure, a claimed destination) captures again when retried,
+        # rather than reusing an error from storage that has since recovered.
+        job_specs = [dict(spec) for spec in job_specs]
         await self._capture_source_identities(job_specs, mode)
         async with self._create_lock:
             self._enforce_queue_backpressure_locked(len(job_specs))
@@ -1206,9 +1196,8 @@ class JobManager:
             mode.value, file_path, output_dir,
         )
 
-    @staticmethod
     async def _capture_source_identities(
-        job_specs: list[dict[str, object]], mode: ConversionMode,
+        self, job_specs: list[dict[str, object]], mode: ConversionMode,
     ) -> None:
         """Give every spec queued without one its Source's identity as it is
         now (``queued_source_identity``, #449), so the job can tell when it
@@ -1236,8 +1225,11 @@ class JobManager:
 
         def capture(progress) -> None:
             for spec in wanted:
+                file_path = str(spec["file_path"])
                 try:
-                    identity = queued_source_identity(str(spec["file_path"]))
+                    identity = queued_source_identity(
+                        file_path, self._track_candidate_paths(file_path),
+                    )
                 except (OSError, ValueError) as exc:
                     identity = {"error": str(exc)}
                 progress()  # raises once the wait below has given up
@@ -2154,11 +2146,20 @@ class JobManager:
             return "the job was queued without its Source's identity, so it can't be checked"
         if "error" in identity:
             return f"the Source couldn't be checked when it was queued ({identity['error']})"
+        def problem() -> Optional[str]:
+            if identity.get("in_place"):
+                # The Source first: its sheet isn't read for the companions
+                # until it is the one queued, inside the Volumes (CodeRabbit
+                # 4614956778). Then its companions too (CodeRabbit 4614956755):
+                # the converter opens a split set's parts and a sheet's tracks
+                # itself.
+                return queued_source_problem(job.file_path, identity) or queued_source_problem(
+                    job.file_path, identity, self._track_candidate_paths(job.file_path),
+                )
+            return source_identity_problem(job.file_path, identity, job._trusted_root)
+
         try:
-            return await asyncio.wait_for(
-                run_detached(_queued_source_problem, job, identity),
-                _CANONICAL_PROBE_SECONDS,
-            )
+            return await asyncio.wait_for(run_detached(problem), _CANONICAL_PROBE_SECONDS)
         except (asyncio.TimeoutError, OSError) as exc:
             return f"the Source couldn't be checked ({exc or 'no answer'})"
 
@@ -2178,7 +2179,7 @@ class JobManager:
             return None
         if identity.get("in_place"):
             # A Source in a Volume (#449) isn't bound: it is read by the path
-            # it was submitted as, which `_queued_source_problem` just found
+            # it was submitted as, which `queued_source_problem` just found
             # still leads to the file checked. Not the resolved path: a sheet
             # submitted through a link names its tracks beside the link, and
             # that is what the job locked (codex 4614857083).
@@ -2392,6 +2393,16 @@ class JobManager:
         member) and the Source's companions (cue/gdi tracks, split parts)."""
         if "::" in job.file_path:
             return [job.file_path.split("::", 1)[0]]
+        identity = job._source_identity
+        if identity and (
+            "error" in identity
+            or identity.get("in_place")
+            and queued_source_problem(job.file_path, identity) is not None
+        ):
+            # Its sheet isn't read for tracks to lock until the Source is the
+            # one queued, inside the Volumes (CodeRabbit 4614956778): this job
+            # is refused once its Source's lock is held.
+            return [job.file_path]
         return [job.file_path, *self._track_candidate_paths(job.file_path)]
 
     def _begin_input_attempt(self, job_id: str) -> object:

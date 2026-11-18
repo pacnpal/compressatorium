@@ -475,8 +475,10 @@ def test_priority_is_a_command_wrapper_never_a_preexec_fn(tmp_path, monkeypatch)
     """
     wrapper = shutil.which("env")
     assert wrapper
+    # Two distinct stand-ins: `env` runs `env IO=1 <cmd>`, so both wrappers
+    # must be there, in order, for the payload to run.
     monkeypatch.setattr(runner_module, "nice_prefix", lambda _owner=None: [wrapper])
-    monkeypatch.setattr(runner_module, "ioprio_prefix", lambda _owner=None: [])
+    monkeypatch.setattr(runner_module, "ioprio_prefix", lambda _owner=None: [wrapper, "IO=1"])
     spawns: list[tuple[list, dict]] = []
     real_exec = runner_module.asyncio.create_subprocess_exec
 
@@ -502,7 +504,7 @@ def test_priority_is_a_command_wrapper_never_a_preexec_fn(tmp_path, monkeypatch)
 
     assert len(spawns) == 3
     for argv, kwargs in spawns:
-        assert argv[0] == wrapper
+        assert argv[:4] == [wrapper, wrapper, "IO=1", sys.executable]
         assert kwargs.get("preexec_fn") is None
     assert not runner.active_pids()
 
@@ -514,16 +516,74 @@ def test_nothing_in_app_passes_a_preexec_fn():
     a Python ``preexec_fn`` -- in the runner or in a tool calling
     ``create_subprocess_exec``/``subprocess`` directly -- fails here.
     """
-    import ast
     from pathlib import Path
 
     app_dir = Path(__file__).resolve().parent.parent / "app"
-    offenders = []
-    for path in app_dir.rglob("*.py"):
-        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
-            if isinstance(node, ast.keyword) and node.arg == "preexec_fn":
-                offenders.append(f"{path.relative_to(app_dir)}:{node.value.lineno}")
+    offenders = [
+        f"{path.relative_to(app_dir)}:{line}"
+        for path in app_dir.rglob("*.py")
+        for line in _preexec_fn_lines(path.read_text(encoding="utf-8"))
+    ]
     assert offenders == []
+
+
+def _preexec_fn_lines(source: str) -> list[int]:
+    """Lines passing ``preexec_fn``: as a keyword, or as a key of a mapping
+    unpacked into a call (``**{"preexec_fn": ...}``)."""
+    import ast
+
+    lines = []
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.keyword):
+            continue
+        if node.arg == "preexec_fn":
+            lines.append(node.value.lineno)
+        elif node.arg is None and isinstance(node.value, ast.Dict) and any(
+            isinstance(key, ast.Constant) and key.value == "preexec_fn"
+            for key in node.value.keys
+        ):
+            lines.append(node.value.lineno)
+    return lines
+
+
+def test_the_preexec_fn_scan_sees_an_unpacked_mapping():
+    assert _preexec_fn_lines("f(x, preexec_fn=g)") == [1]
+    assert _preexec_fn_lines('f(x, **{"preexec_fn": g})') == [1]
+    assert _preexec_fn_lines('f(x, **{"env": e}, cwd=c)') == []
+
+
+def test_a_negative_nice_this_process_cannot_apply_is_left_off(monkeypatch):
+    """`nice` would only warn and run the tool anyway, and the warning would
+    land in output a caller parses (rom-converto's readiness probe)."""
+    monkeypatch.setattr(runner_module, "nice_value", lambda _owner=None: -5)
+    monkeypatch.setattr(runner_module.os, "geteuid", lambda: 1000)
+    assert runner_module.nice_prefix("test") == []
+    monkeypatch.setattr(runner_module, "nice_value", lambda _owner=None: 5)
+    assert runner_module.nice_prefix("test")[1:] == ["-n", "5"] or not shutil.which("nice")
+
+
+def test_a_missing_tool_behind_a_wrapper_raises_like_an_exec(tmp_path, monkeypatch):
+    """The wrapper exits 127 for a tool it can't run; that is no verdict (a
+    stored pass must not be overwritten), so it raises as a direct exec did,
+    and a captured verify reports it as inconclusive."""
+    monkeypatch.setattr(runner_module, "priority_prefix", lambda _owner=None: [shutil.which("env")])
+    runner = SubprocessRunner(owner="test")
+    missing = str(tmp_path / "no-such-tool")
+
+    with pytest.raises(FileNotFoundError):
+        asyncio.run(runner.run_capture([missing, "t"]))
+
+    archive = tmp_path / "a.7z"
+    archive.write_bytes(b"7z")
+
+    async def verify():
+        return [e async for e in runner.capture_verify(
+            [missing, "t", str(archive)], path=str(archive), success_message="ok",
+        )]
+
+    last = asyncio.run(verify())[-1]
+    assert last["valid"] is False and last.get("inconclusive") is True
+    assert not runner.active_pids()
 
 
 def test_initial_progress_floor_keeps_bar_monotonic(tmp_path):

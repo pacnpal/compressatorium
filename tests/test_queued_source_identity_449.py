@@ -171,13 +171,13 @@ async def test_a_batch_bigger_than_the_bound_keeps_every_identity(monkeypatch, t
 
     monkeypatch.setattr(jm, "_CANONICAL_PROBE_SECONDS", 0.2)
 
-    def slow(path):
+    def slow(path, companions=()):
         time.sleep(0.05)
         return {"path": path}
 
     monkeypatch.setattr(jm, "queued_source_identity", slow)
     specs = [{"file_path": str(tmp_path / f"{i}.iso")} for i in range(10)]  # 0.5s in all
-    await jm.JobManager._capture_source_identities(specs, ConversionMode.CSO_COMPRESS)
+    await jm.job_manager._capture_source_identities(specs, ConversionMode.CSO_COMPRESS)
 
     assert [spec["source_identity"] for spec in specs] == [
         {"path": spec["file_path"]} for spec in specs
@@ -196,7 +196,7 @@ async def test_a_source_that_stops_answering_keeps_the_identities_before_it(
     monkeypatch.setattr(jm, "_CANONICAL_PROBE_SECONDS", 0.2)
     release = threading.Event()
 
-    def stuck_on_the_third(path):
+    def stuck_on_the_third(path, companions=()):
         if path.endswith("2.iso"):
             release.wait(5)
         return {"path": path}
@@ -204,10 +204,95 @@ async def test_a_source_that_stops_answering_keeps_the_identities_before_it(
     monkeypatch.setattr(jm, "queued_source_identity", stuck_on_the_third)
     specs = [{"file_path": str(tmp_path / f"{i}.iso")} for i in range(5)]
     try:
-        await jm.JobManager._capture_source_identities(specs, ConversionMode.CSO_COMPRESS)
+        await jm.job_manager._capture_source_identities(specs, ConversionMode.CSO_COMPRESS)
     finally:
         release.set()
 
     got = [spec["source_identity"] for spec in specs]
     assert got[:2] == [{"path": specs[0]["file_path"]}, {"path": specs[1]["file_path"]}]
     assert all("no answer" in identity["error"] for identity in got[2:])
+
+
+CUE = 'FILE "Game.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n'
+
+
+@pytest.mark.asyncio
+async def test_a_track_replaced_after_queueing_is_refused(e2e_env):
+    """CodeRabbit 4614956755: the tracks (and split parts) the converter opens
+    itself are captured with the Source and checked again when it runs."""
+    from app.models import ConversionMode, DuplicateAction, JobCreateRequest, JobStatus
+    from app.routes import convert as convert_routes
+
+    root = e2e_env["tmp_path"]
+    cue = root / "Game.cue"
+    cue.write_text(CUE)
+    track = root / "Game.bin"
+    track.write_bytes(b"\1" * 2352)
+    job = await convert_routes.create_job(JobCreateRequest(
+        file_path=str(cue), mode=ConversionMode.CREATECD,
+        duplicate_action=DuplicateAction.SKIP, delete_on_verify=False,
+    ))
+    track.unlink()
+    track.write_bytes(b"\2" * 4704)  # another disc's data under the same name
+    await convert_routes.job_manager._process_job(job.id)
+
+    assert job.status.value == JobStatus.FAILED.value
+    assert "Game.bin, a companion file it reads with the Source, changed" in job.error_message
+    assert e2e_env["calls"] == []
+
+
+@pytest.mark.asyncio
+async def test_a_sheet_swapped_out_of_the_volume_is_never_read(
+    e2e_env, tmp_path_factory, monkeypatch,
+):
+    """CodeRabbit 4614956778 / 4614956871: a queued sheet whose folder now
+    leads out of the Volumes isn't parsed for tracks to lock before the
+    identity check refuses it; nothing outside is read."""
+    from services import job_manager as jm  # the module the route queues with
+
+    from app.models import ConversionMode, DuplicateAction, JobCreateRequest, JobStatus
+    from app.routes import convert as convert_routes
+
+    folder = e2e_env["tmp_path"] / "games"
+    folder.mkdir()
+    (folder / "Game.cue").write_text(CUE)
+    (folder / "Game.bin").write_bytes(b"\1" * 2352)
+    job = await convert_routes.create_job(JobCreateRequest(
+        file_path=str(folder / "Game.cue"), mode=ConversionMode.CREATECD,
+        duplicate_action=DuplicateAction.SKIP, delete_on_verify=False,
+    ))
+    outside = tmp_path_factory.mktemp("elsewhere") / "outside"
+    _swap_for_link(folder, outside)
+    (outside / "Game.cue").write_text(CUE)
+
+    sheets_read = []
+    real_plan = jm.build_delete_plan
+    monkeypatch.setattr(
+        jm, "build_delete_plan", lambda path, *a, **k: sheets_read.append(path) or real_plan(path, *a, **k),
+    )
+    await convert_routes.job_manager._process_job(job.id)
+
+    assert job.status.value == JobStatus.FAILED.value
+    assert "no longer inside the configured Volumes" in job.error_message
+    assert sheets_read == []
+    assert e2e_env["calls"] == []
+
+
+@pytest.mark.asyncio
+async def test_a_refused_submission_captures_again_when_retried(tmp_volume, tmp_path, monkeypatch):
+    """CodeRabbit 4614956744: identities are captured into the attempt's own
+    copies, never written back into the caller's specs."""
+    from app.models import ConversionMode
+    from app.services.job_manager import QueueBackpressureError, job_manager
+
+    iso = tmp_path / "Game.iso"
+    iso.write_bytes(b"disc")
+    specs = [{"file_path": str(iso), "output_dir": None}]
+
+    def full(_count):
+        raise QueueBackpressureError(1, 1, 1)
+
+    monkeypatch.setattr(job_manager, "_enforce_queue_backpressure_locked", full)
+    with pytest.raises(QueueBackpressureError):
+        await job_manager.create_jobs_atomic(specs, ConversionMode.CSO_COMPRESS)
+    assert "source_identity" not in specs[0]

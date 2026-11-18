@@ -1600,23 +1600,73 @@ def source_identity_problem(
     return None
 
 
-def queued_source_identity(path: str) -> dict:
+def queued_source_identity(path: str, companions: Sequence[str] = ()) -> dict:
     """The :func:`source_identity` a conversion of a Source in a Volume carries
     from the moment it is queued (#449), whoever queued it (a Rule sweep, a
     hand-started conversion, ``run-rules``): *path* (an archive's own file for
     ``archive::member``) resolved, then read beneath its Volume root with no
     link followed, the way :class:`AnchoredFolders` opens a folder.
 
-    The identity adds ``path``, the resolved path checked, and ``in_place``:
-    the job checks its Source there and reads it from there, rather than
-    binding a copy into the work area as an Inbox intake does. Raises OSError
-    when the Source isn't confirmed inside a Volume, can't be read that way,
-    or isn't a regular file. Blocking."""
-    real = os.path.realpath(strip_archive_path(path))
+    The identity adds ``path``, the resolved path checked, ``in_place`` (the
+    job checks its Source in place rather than binding a copy into the work
+    area as an Inbox intake does), and ``companions``: each other file the
+    converter reads with it (a sheet's tracks, a split set's parts), by its
+    resolved path, with its snapshot taken the same way. Resolved through the
+    shared gate (``_confined_real_path``), so a spelling outside every Volume
+    is refused before the filesystem is asked. Raises OSError when the Source
+    or a companion isn't confirmed inside a Volume, can't be read that way, or
+    isn't a regular file. Blocking."""
+    real = _confined_source(path)
     root = lock_boundary_root(real)
-    if root is None or volume_containment(real, treat_archives=False) is not True:
+    if root is None:
         raise OSError(errno.EACCES, f"{path} isn't confirmed inside the configured Volumes")
-    return {**source_identity(real, str(root)), "path": real, "in_place": True}
+    return {
+        **source_identity(real, str(root)), "path": real, "in_place": True,
+        "companions": {
+            each: source_identity(each, str(root))["snapshot"]
+            for each in map(_confined_source, companions)
+        },
+    }
+
+
+def _confined_source(path: str) -> str:
+    confined = _confined_real_path(strip_archive_path(path))
+    if confined is None:
+        raise OSError(errno.EACCES, f"{path} isn't confirmed inside the configured Volumes")
+    return str(confined)
+
+
+def queued_source_problem(
+    path: str, identity: dict, companions: Sequence[str] | None = None,
+) -> str | None:
+    """Why the Source a job was submitted as (*path*) isn't the one its
+    :func:`queued_source_identity` was taken from, or None. *path* must still
+    resolve, through the shared gate, to the identity's ``path``, which must
+    pass :func:`source_identity_problem`; a link re-pointed since queueing is
+    refused, never followed. With *companions* (the files the job would read
+    with it now), they must be the companions captured, each unchanged. Fail
+    closed. Blocking."""
+    confined = _confined_real_path(strip_archive_path(path))
+    if confined is None:
+        return "the Source is no longer inside the configured Volumes"
+    if str(confined) != identity["path"]:
+        return "the Source's path leads somewhere else than when it was queued"
+    problem = source_identity_problem(identity["path"], identity)
+    if problem is not None or companions is None:
+        return problem
+    expected = identity.get("companions", {})
+    now = [_confined_real_path(each) for each in companions]
+    if None in now:
+        return "a companion file it reads with the Source is no longer inside the configured Volumes"
+    if {str(each) for each in now} != set(expected):
+        return "the companion files it reads with the Source aren't the ones it was queued with"
+    for each, snapshot in expected.items():
+        try:
+            if source_identity(each, identity["root"])["snapshot"] != snapshot:
+                raise OSError(errno.ESTALE, "it was replaced or changed")
+        except OSError as exc:
+            return f"{os.path.basename(each)}, a companion file it reads with the Source, changed ({exc})"
+    return None
 
 
 # A bound Source's folder in the app's work area (``bind_source``'s *into*).

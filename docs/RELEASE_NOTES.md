@@ -419,12 +419,14 @@
 ### Fixed
 
 - **A queued conversion checks its Source again when it runs** (#449). Every
-  conversion, from a Rule sweep, a hand-started job or `run-rules`, now
-  carries the identity of the file it was queued for, as Inbox intake's did.
-  When it starts, under its Source lock and before the tool reads anything,
-  the job reads the file again beneath its Volume with no link followed and
-  is refused ("Not converted: ...") if it left the Volumes, is reached through
-  a link, or is another file. A folder in a Library swapped for a link while
+  file conversion, from a Rule sweep, a hand-started job or `run-rules`, now
+  carries the identity of the file it was queued for and of the tracks or
+  split parts the tool reads with it, as Inbox intake's did. When it starts,
+  under its Source lock and before the tool reads anything, the job reads
+  them again beneath their Volume with no link followed and is refused
+  ("Not converted: ...") if one left the Volumes, the path now leads to
+  another file, or one was replaced. A folder conversion (`folder_to_iso`)
+  keeps the folder checks it already had. A folder in a Library swapped for a link while
   the job waited can no longer make a tool read an image from outside the
   Volumes.
 - **Child processes never start through a Python `preexec_fn`** (#444). The
