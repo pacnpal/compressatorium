@@ -599,7 +599,7 @@ def ioprio_prefix(owner: str | None = None) -> list[str]:
     ioprio_level = _resolve_policy("ioprio_level", owner)
     if ioprio_class is None or ioprio_level is None:
         return []
-    ionice = _wrapper_path("ionice")
+    ionice = _WRAPPERS.get("ionice")  # cache only: see _resolve_wrappers
     if not ionice:
         return []
     # -t: best effort, like nice's renice (CodeRabbit 4615955439). A class the
@@ -620,7 +620,7 @@ def nice_prefix(owner: str | None = None) -> list[str]:
     value = nice_value(owner)
     if value is None or not _can_renice(value):
         return []
-    nice = _wrapper_path("nice")
+    nice = _WRAPPERS.get("nice")  # cache only: see _resolve_wrappers
     if not nice:
         return []
     return [nice, "-n", str(value)]
@@ -667,9 +667,10 @@ def _wrapper_path(name: str) -> str | None:
     its setting asks for it (a PATH scan stats directories, so it isn't
     repeated per spawn, nor made at import when no priority is enabled).
     Absolute, so a tool started in another folder (romz's ``cwd``) still
-    finds it when PATH held a relative entry. A spawn resolves it off the
-    event loop first (:func:`_resolve_wrappers`), so this is then a lookup in
-    the cache."""
+    finds it when PATH held a relative entry. Blocking: only
+    :func:`_resolve_wrappers` calls it, off the event loop. ``nice_prefix`` and
+    ``ioprio_prefix`` read the cache alone, a wrapper not yet looked up being
+    no wrapper (CodeRabbit 4616275683), so building a prefix never scans."""
     if name not in _WRAPPERS:
         found = shutil.which(name)
         _WRAPPERS[name] = os.path.abspath(found) if found else None
@@ -2068,6 +2069,7 @@ class SubprocessRunner:
         stderr_to_stdout: bool = False,
         env: Mapping[str, str] | None = None,
         on_abandoned: Callable[[int], None] | None = None,
+        wrapped_into: list[bool] | None = None,
     ) -> tuple[int | None, bytes, bytes]:
         """Run ``cmd`` to completion and capture ``(returncode, stdout, stderr)``.
 
@@ -2108,15 +2110,19 @@ class SubprocessRunner:
         # that blocks immediately and may outlive SIGKILL. Checked in the shared
         # seam so every capture caller gets it, not just the ones that remember.
         # Reported as the ordinary abort, which is what a cancel is.
-        if cancel_event is not None and cancel_event.is_set():
-            return None, b"", b""
-
         # Honour the shared process-priority policy, same as the streaming
         # run(): a captured command (e.g. dolphin-tool verify reconstructing a
         # full disc for DAT hashing) is just as heavy as a conversion. Command
-        # wrappers only, never a preexec_fn (see priority_prefix).
+        # wrappers only, never a preexec_fn (see priority_prefix). Resolved
+        # before the cancel check, which then also covers its (bounded) wait.
         prefix = priority_prefix(self._owner) if await _resolve_wrappers(self._owner) else []
+        if cancel_event is not None and cancel_event.is_set():
+            return None, b"", b""
         cmd = prefix + cmd
+        if wrapped_into is not None:
+            # Whether this run had a wrapper, for capture_verify's 126/127
+            # reading: asking the cache again later could answer otherwise.
+            wrapped_into.append(bool(prefix))
 
         process = await self._spawn_piped(
             cmd,
@@ -2197,11 +2203,12 @@ class SubprocessRunner:
         """
         from services.stream_digest import new_hasher  # import cycle
 
+        # Command wrappers, never a preexec_fn: see priority_prefix. Resolved
+        # before the cancel check, which then also covers its (bounded) wait.
+        prefix = priority_prefix(self._owner) if await _resolve_wrappers(self._owner) else []
         if cancel_event is not None and cancel_event.is_set():
             raise ReadCancelled("Read cancelled")
         label = os.path.basename(cmd[0])
-        # Command wrappers, never a preexec_fn: see priority_prefix.
-        prefix = priority_prefix(self._owner) if await _resolve_wrappers(self._owner) else []
         cmd = prefix + cmd
         process = await self._spawn_piped(
             cmd,
@@ -2367,6 +2374,7 @@ class SubprocessRunner:
             yield self._verify_error("Verification cancelled", cancelled=True)
             return
         abandoned_pid: list[int] = []
+        wrapped: list[bool] = []
         try:
             returncode, stdout, _ = await self.run_capture(
                 cmd,
@@ -2375,6 +2383,7 @@ class SubprocessRunner:
                 stderr_to_stdout=True,
                 env=env,
                 on_abandoned=abandoned_pid.append,
+                wrapped_into=wrapped,
             )
         except OSError as exc:
             # The verifier couldn't be started: no verdict, so no stored check
@@ -2388,7 +2397,7 @@ class SubprocessRunner:
             yield abandoned_verify_error(abandoned_pid[0])
             return
         not_launched = _not_launched_event(
-            returncode, bool(priority_prefix(self._owner)), stdout or b"",
+            returncode, any(wrapped), stdout or b"",
         )
         if not_launched is not None:
             yield not_launched

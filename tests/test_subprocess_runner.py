@@ -570,8 +570,7 @@ def test_a_negative_nice_this_process_cannot_apply_is_left_off(monkeypatch):
     without CAP_SYS_NICE can't lower niceness either."""
     import resource
 
-    if not shutil.which("nice"):
-        pytest.skip("no nice on this host")
+    monkeypatch.setattr(runner_module, "_WRAPPERS", {"nice": "/usr/bin/nice"})
     monkeypatch.setattr(runner_module, "nice_value", lambda _owner=None: -5)
     monkeypatch.setattr(runner_module.os, "geteuid", lambda: 0)  # root, but...
     monkeypatch.setattr(runner_module, "_CAP_SYS_NICE", False)  # ...no capability
@@ -632,6 +631,7 @@ def test_ionice_is_best_effort(monkeypatch):
     the tool's."""
     if not shutil.which("ionice"):
         pytest.skip("no ionice on this host")
+    monkeypatch.setattr(runner_module, "_WRAPPERS", {"ionice": shutil.which("ionice")})
     monkeypatch.setattr(runner_module, "_resolve_policy", lambda key, _owner: {
         "ioprio_class": 1, "ioprio_level": 0,
     }.get(key))
@@ -1474,9 +1474,27 @@ def test_a_wrapper_lookup_that_stalls_runs_at_normal_priority(monkeypatch):
     monkeypatch.setattr(runner_module.asyncio, "create_subprocess_exec", spy)
     cmd = [sys.executable, "-c", "print('ok')"]
 
-    rc, out, _ = asyncio.run(SubprocessRunner(owner="test").run_capture(cmd))
+    runner = SubprocessRunner(owner="test")
+    rc, out, _ = asyncio.run(runner.run_capture(cmd))
 
     assert (rc, out) == (0, b"ok\n")
     assert spawned == [cmd]  # no wrapper: normal priority
     assert looked_up == [(runner_module._wrapper_path, ("nice",))]
+    assert runner_module._WRAPPERS == {}
+
+    # capture_verify too (CodeRabbit 4616275683): after the stalled lookup it
+    # neither scans PATH nor reads the run as wrapped, so an exit 127 from a
+    # tool that ran unwrapped is its own verdict, not "could not start".
+    import tempfile
+
+    with tempfile.NamedTemporaryFile() as target:
+        async def verify():
+            return [e async for e in runner.capture_verify(
+                [sys.executable, "-c", "raise SystemExit(127)"],
+                path=target.name, success_message="ok",
+            )]
+
+        events = asyncio.run(verify())
+    assert events[-1]["valid"] is False and not events[-1].get("inconclusive")
+    assert "couldn't be started" not in events[-1]["message"]
     assert runner_module._WRAPPERS == {}

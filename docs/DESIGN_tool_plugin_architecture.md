@@ -555,7 +555,10 @@ setting asks for it, and cached as an absolute path (`_wrapper_path`; nothing
 is scanned at import, and a tool started in another folder still finds it).
 A spawn makes that lookup off the event loop, bounded (`_resolve_wrappers`
 over `_bounded_probe`); a PATH entry that doesn't answer runs that spawn at
-normal priority with nothing cached, so a later spawn tries again.
+normal priority with nothing cached, so a later spawn tries again. Building a
+prefix (`nice_prefix`, `ioprio_prefix`) reads that cache alone and never
+scans; `run_capture` reports whether it actually wrapped its run
+(`wrapped_into`), which is what `capture_verify` reads a 126/127 by.
 `ionice -t` is best effort, like the renice: a class the kernel denies
 (realtime without CAP_SYS_ADMIN) doesn't stop ionice before it runs the tool,
 which would otherwise hand back ionice's exit 1 as the tool's. A nice level
