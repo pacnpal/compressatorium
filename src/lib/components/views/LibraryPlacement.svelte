@@ -12,7 +12,7 @@
   import { toast } from 'svelte-sonner';
   import { api } from '$lib/api/endpoints.js';
   import { libraries } from '$lib/stores/libraries.svelte.js';
-  import { LatestOnly } from '$lib/util/latestOnly.js';
+  import { PlacementsLoad, placementsOf } from '$lib/util/libraryPlacements.js';
   import Select from '$lib/components/ui/Select.svelte';
   import Spinner from '$lib/components/ui/Spinner.svelte';
 
@@ -22,9 +22,6 @@
   // wait for it, then load again whenever `platforms` changes.
   let { library, listing = false, platforms = null } = $props();
 
-  // routes/libraries.py LISTING_IN_PROGRESS.
-  const LISTING_IN_PROGRESS = 'listing_in_progress';
-
   const LAYOUTS = [
     { value: 'esde', label: 'ES-DE / Batocera: <root>/<platform>' },
     { value: 'romm', label: 'RomM: <root>/roms/<platform>' },
@@ -32,33 +29,18 @@
   ];
 
   const isFolder = $derived(library?.kind === 'folder');
-  let placements = $state([]);
-  let loading = $state(false);
-  let error = $state(null);
   let saving = $state(false);
 
-  // Only the latest load counts: a layout change (or another Library) while
-  // one is out starts another, and the older answer, data or error, is
-  // dropped however late it arrives (Codex PRRT_kwDOQ9nULM64es7U).
-  const latest = new LatestOnly();
+  // The latest answer, with the Library it is for. Only the selected
+  // Library's is shown: until it arrives the panel shows its loading line,
+  // never the previous Library's rows (#464). Of overlapping loads only the
+  // latest counts (Codex PRRT_kwDOQ9nULM64es7U).
+  const placementsLoad = new PlacementsLoad((id) => api.getLibraryPlacements(id));
+  let loaded = $state(null);
 
   async function load(id) {
-    loading = true;
-    error = null;
-    const result = await latest.run(() => api.getLibraryPlacements(id));
-    if (!result.current) return;
-    loading = false;
-    if (result.error) {
-      const e = result.error;
-      // Another listing of the folder is still running: a wait, not an
-      // error. The next change of `platforms` loads again.
-      if (e?.status === 409 && e?.message === LISTING_IN_PROGRESS) return;
-      error = e?.message ?? 'Could not read where Images go';
-      placements = [];
-      return;
-    }
-    const data = result.value;
-    placements = Array.isArray(data?.placements) ? data.placements : [];
+    const answer = await placementsLoad.load(id);
+    if (answer) loaded = answer;
   }
 
   // Again whenever the Library, its layout or its listed Platforms change,
@@ -68,6 +50,7 @@
   // view's effect that starts its listing may run after this one in the same
   // flush, and the placements must not set off first.
   const libraryId = $derived(library?.id);
+  const shown = $derived(placementsOf(loaded, libraryId));
   const layout = $derived(library?.layout);
   $effect(() => {
     const id = libraryId;
@@ -119,17 +102,17 @@
       </div>
     {/if}
   </div>
-  {#if loading && placements.length === 0}
+  {#if !shown}
     <p class="muted"><Spinner /> Working out the folders…</p>
-  {:else if error}
-    <p class="error">{error}</p>
-  {:else if placements.length === 0}
+  {:else if shown.error}
+    <p class="error">{shown.error}</p>
+  {:else if shown.placements.length === 0}
     <p class="muted">No Platforms yet.</p>
   {:else}
     <ul class="rows">
       <!-- Keyed by the Library's own Platform id: two RomM platforms can
            share a slug, and both rows show why (Codex PRRT_kwDOQ9nULM64es7J). -->
-      {#each placements as row (row.id)}
+      {#each shown.placements as row (row.id)}
         <li>
           <span class="name">{row.name}</span>
           {#if row.error}

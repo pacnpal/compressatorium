@@ -422,6 +422,10 @@
   open job stream or verify stream now ends its response when the server
   stops, instead of being cut off and logging "ASGI callable returned without
   completing response."
+- **The Rules view shows only the selected Library's placements** (#464). After
+  switching Libraries, "Where new Images go" shows its loading line until the new
+  Library's folders arrive, instead of the previous Library's rows, and a late
+  answer for the previous Library is no longer shown.
 
 - **A tool killed by the system says so** (#455). When a tool is killed by a
   signal, most often the out-of-memory killer, the job's error now reads like
@@ -441,6 +445,16 @@
   `waiting` under the archive's own file name instead of
   `failed ... /__external_jobs__/<id>`. It still leaves no Finding and still
   exits 0.
+- **`run-rules` names every Inbox job by its file** (#463). An unpack or copy
+  line (and any other job with no real input path) now shows the file it is
+  about, as the `waiting` line does, instead of `/__external_jobs__/<id>`.
+- **A job's status message has no tool control characters** (#466). The
+  status line a job reports while it runs gets the same cleaning as its error:
+  backspaces, colour codes and other control characters removed, blank lines
+  dropped and runs of spaces folded, for every tool. A failed job's status
+  message is its error, not the last progress line. Before, a patch job whose
+  7z was killed still had 7z's raw progress in its `message` in
+  `GET /api/jobs/<id>`.
 - **Short jobs reach the Jobs panel at once** (#456). The job stream only
   picked up jobs it saw queued or running on its 0.1 s loop, so a job that
   started and ended in between (a patch job takes about 60 ms) showed up only
