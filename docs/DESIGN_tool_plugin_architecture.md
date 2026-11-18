@@ -456,6 +456,14 @@ class SubprocessRunner:
     # `finish_external_job(error_message=...)`. So a tool needs no wiring, and
     # a service that builds its own message from tool output is covered at
     # the sink.
+    #
+    # The status line gets the same cleaning (#466). Every status message set
+    # from a tool's progress goes through JobManager's
+    # `_set_status_message(job, message)`: a conversion's progress updates
+    # (and the `warning` copied from one), `update_external_job(message=...)`,
+    # `_set_job_message` and `finish_external_job_cancelled(message=...)`. A
+    # failed job's `message` is then set to its cleaned `error_message`, so it
+    # says why the job stopped instead of keeping its last progress text.
 
     async def reap(self, process, *, exit_timeout=_EXIT_GRACE) -> bool:
         """Bounded teardown for any spawned child. True if reaped, False if
@@ -7812,7 +7820,7 @@ counts toward the slot's room and goes with the slot. ctime is compared only
 there: a bound Source's hard link and the move to `processed/` (a rename) both
 move it, so the identities that must survive those leave it out.
 
-An unpack that finds no room (the cap on what is unpacked at once, or the work area's free space) is not a failure: `JobManager.finish_external_job_waiting` ends the `inbox_unpack` job COMPLETED with `job.warning` set and `job.result = {"waiting": True}`, and `run-rules` (`cli._finish`) reports it as `waiting`, named by `job.filename`. Intake writes no Finding and tries the archive again next poll (#458). The Findings kinds an Inbox writes are `findings.INBOX_KINDS`: unsorted, Platform conflict, DAT name conflict (`inbox_dat_conflict`, #457) and failed.
+An unpack that finds no room (the cap on what is unpacked at once, or the work area's free space) is not a failure: `JobManager.finish_external_job_waiting` ends the `inbox_unpack` job COMPLETED with `job.warning` set and `job.result = {"waiting": True}`, and `run-rules` (`cli._finish`) reports it as `waiting`. Every external job (`is_external_mode(job.mode)`, whose `file_path` is the internal `/__external_jobs__/<id>`) is named on its `run-rules` line by `job.filename`, whatever its result (#463). Intake writes no Finding and tries the archive again next poll (#458). The Findings kinds an Inbox writes are `findings.INBOX_KINDS`: unsorted, Platform conflict, DAT name conflict (`inbox_dat_conflict`, #457) and failed.
 
 **Extraction** is `ArchiveService.extract_members` (shared, in
 `services/archive.py`), the one extraction path that never hands a library a

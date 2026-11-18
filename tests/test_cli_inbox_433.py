@@ -439,7 +439,7 @@ def test_each_inbox_job_line_names_the_library_it_came_from(
 
     assert code == 0, err
     copies = {
-        job_manager.jobs[line["path"].rsplit("/", 1)[-1]].filename: line["library"]
+        line["path"]: line["library"]
         for line in lines if line.get("mode") == "inbox_copy"
     }
     assert copies == {

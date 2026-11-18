@@ -441,6 +441,16 @@
   `waiting` under the archive's own file name instead of
   `failed ... /__external_jobs__/<id>`. It still leaves no Finding and still
   exits 0.
+- **`run-rules` names every Inbox job by its file** (#463). An unpack or copy
+  line (and any other job with no real input path) now shows the file it is
+  about, as the `waiting` line does, instead of `/__external_jobs__/<id>`.
+- **A job's status message has no tool control characters** (#466). The
+  status line a job reports while it runs gets the same cleaning as its error:
+  backspaces, colour codes and other control characters removed, blank lines
+  dropped and runs of spaces folded, for every tool. A failed job's status
+  message is its error, not the last progress line. Before, a patch job whose
+  7z was killed still had 7z's raw progress in its `message` in
+  `GET /api/jobs/<id>`.
 - **Short jobs reach the Jobs panel at once** (#456). The job stream only
   picked up jobs it saw queued or running on its 0.1 s loop, so a job that
   started and ended in between (a patch job takes about 60 ms) showed up only
