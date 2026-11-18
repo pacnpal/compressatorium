@@ -2123,6 +2123,25 @@ snapshot emission suspends the generator between jobs, so a row already handed
 to the client can be evicted moments later, and the first `history` frame has to
 be able to retract it.
 
+**The stream follows every job from its registration** (#456). It opens a
+`JobFeed` (`JobManager.watch_jobs()`) before anything else, and
+`JobManager._register_job`, the one place a job (conversion or external) is
+added to the list, subscribes every open feed to the new job before anything
+can send an event for it. So a job that starts and ends between two of the
+stream's 0.1 s ticks (a patch job lives about 60 ms) still reaches the client
+with its whole life, end state included, exactly once. The tick still follows
+any queued or running job the feed doesn't follow yet, which covers the jobs
+that were live when the stream opened (subscribed before the snapshot, as
+above); a job already followed is never subscribed twice. Each tick drains
+every followed queue rather than taking one event a job, since a queue is
+bounded (100) and a burst faster than one event a tick would fill it and drop
+the end state. A job is dropped from the feed at its terminal event, or once
+the manager no longer has it and its queue is empty. A job can be registered
+on a worker thread: the feed and `_subscribers` each sit behind a lock, and the
+queues themselves are written only on the loop (`_notify_subscribers`). The
+feed is closed in the stream's `finally`, which unwatches it and unsubscribes
+every queue.
+
 **The three invariants a client must preserve** (`src/lib/stores/jobs.svelte.js`):
 
 1. **Displayed total = retained + evicted.** Apply the same filters to both
@@ -7291,8 +7310,10 @@ or `not_renamed` with its reason and Referrer records, and one
 `rename_finished` notification (a registered event) carries the counts and
 what wasn't renamed. The dialog has the jobs store track the job
 (`jobs.track`: read from the API until it ends, each read added to the list,
-failed reads tried again, a 404 ending it), independent of the dialog, since a
-rename can end before the job stream subscribes to it. The
+failed reads tried again, a 404 ending it), independent of the dialog. It was
+added because a rename could end before the job stream subscribed to it; since
+#456 the stream follows every job from its registration, so the tracking is
+now only a fallback (a stream that is reconnecting) and harmless. The
 single-file `POST /api/files/rename` is unchanged.
 
 ### 3.3.24 The patch engine and the Patch action (`services/patch_engine.py`, `services/patch_bench.py`, #428)
