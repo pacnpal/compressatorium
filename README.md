@@ -1156,7 +1156,9 @@ long a file must stay unchanged before it's taken (60 seconds by default).
   token without it is reported in the pass summary and the log, and the app
   doesn't try again; RomM's own scheduled scan finds the games instead. A scan
   RomM won't take right now (a library scan already running) is reported the
-  same way. A folder Library has no one to tell.
+  same way. An Image whose output reached the Library counts even if its
+  original couldn't be moved to `processed/` (that stays a Finding). A folder
+  Library has no one to tell.
 - **A summary of each pass.** A pass that placed an Image or left one with a
   Finding sends one notification (**An Inbox pass placed Images or left some
   with a Finding**) to your [notification destinations](#notifications): how
@@ -2674,8 +2676,11 @@ left something (`"inbox": true` in `--json`, with the outputs placed, the files
 left with their Finding, and RomM's scan), and sends the pass summary
 notification. A file left with a Finding doesn't change the exit status, but
 an Inbox that can't be polled prints an `error` line (`"error"` in `--json`)
-and makes the run exit `1`, as a failed sweep does. A stop admits no more
-files; what it already started finishes or is cancelled with the run's jobs.
+and makes the run exit `1`, as a failed sweep does, on every run it lasts;
+the summary notification goes out only when the error changes. A stop admits
+no more files; what it already started finishes or is cancelled with the
+run's jobs. Each conversion is settled as it ends, so a big pass loses none
+to a short job history.
 `--dry-run` polls no Inbox and says so (`skipped`, `dry_run`).
 
 Before it sweeps RomM, `run-rules` does the RomM upkeep the server does in the

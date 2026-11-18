@@ -201,6 +201,52 @@ def test_an_inbox_that_cant_be_read_fails_the_run(folder, dolphin, capsys, sent)
     assert "isn't there" in event.body
 
 
+def test_the_same_outage_fails_each_run_but_notifies_once(folder, dolphin, capsys, sent):
+    """Codex 4608095505: the Inbox's last error is kept with the settle
+    memory, so a cron run that hits the same outage again prints it and exits
+    1, but doesn't send the summary again."""
+    import shutil
+
+    shutil.rmtree(folder["vol"] / "Downloads")
+    errors = []
+    for _ in range(2):
+        code, lines, _err = _cli(capsys, "run-rules", "--json")
+        assert code == 1
+        errors += [line["error"] for line in _inbox_lines(lines) if line["status"] == "error"]
+        _new_process()
+
+    assert len(errors) == 2
+    assert "isn't there" in errors[0]
+    assert len([e for e in sent if e.kind == "inbox_pass"]) == 1
+
+
+def test_a_big_pass_settles_each_conversion_as_it_ends(folder, dolphin, capsys, monkeypatch):
+    """Codex 4608095516: with a tiny job history, the jobs that ended first
+    are pruned before the pass ends. Each conversion is settled as it ends
+    (the run's terminal listener), so every original still moves to
+    processed/ and none is "Lost track of"."""
+    from services import findings
+    from services.job_manager import job_manager
+    from services.rules import sweep as rules_sweep
+
+    monkeypatch.setattr(job_manager, "max_job_history", 2)
+    monkeypatch.setattr(job_manager, "MAX_ARCHIVED_JOBS", 0)
+    asyncio.run(rules_sweep.set_rules(folder["library"], {"ngc": RVZ_RULE["gc"]}))
+    names = [f"Game {n}.iso" for n in range(7)]
+    for name in names:
+        _gamecube(folder["vol"] / "Downloads" / name)
+    _cli(capsys, "run-rules", "--json")  # seen
+    _new_process()
+
+    code, _lines, err = _cli(capsys, "run-rules", "--json")
+
+    assert code == 0, err
+    processed = folder["vol"] / "Downloads" / "processed"
+    assert sorted(p.name for p in processed.iterdir()) == sorted(names)
+    assert len(list((folder["vol"] / "ROMs").rglob("*.rvz"))) == len(names)
+    assert [f for f in findings.list_findings() if f["kind"] in findings.INBOX_KINDS] == []
+
+
 def test_an_idle_inbox_exits_0_with_no_inbox_line(folder, dolphin, capsys, sent):
     for _ in range(2):
         code, lines, err = _cli(capsys, "run-rules", "--json")

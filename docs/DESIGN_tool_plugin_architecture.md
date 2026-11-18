@@ -7686,8 +7686,12 @@ them.
 
 **Seams.** Unpacking an archive, Recognizing and naming from a DAT, and a taken
 name's handling (#432) go in `_take` before `_plan`. Each poll returns
-`placed` (`{"path", "platform", "output"}` for every Image placed since the
-last poll) and `left` (`{"path", "kind", "reason"}` for every Image `_hold`
+`placed` (`{"path", "platform", "output"}` for every Image whose output
+landed in the Library since the last poll: recorded by `_note_placed` the
+moment a copy is placed or a conversion completes, before the original's move
+to `processed/`, so a move that fails, which keeps its `inbox_failed` Finding
+and its hold, still has its output scanned by RomM and summarised, Codex
+4608095510) and `left` (`{"path", "kind", "reason"}` for every Image `_hold`
 gave a Finding since the last poll; a held file isn't held again, so it is
 reported once). Both are kept on the Inbox's state until a poll hands them
 out, so a copy or a move that ends between polls is reported by the next one.
@@ -7725,7 +7729,9 @@ records each Platform scan in `platform_scans`, and `scan_reply` makes it
 answer 409 or 503.
 
 **From `run-rules`** (§3.3.17). The CLI is a new process each run, so the
-settle memory (seen, held, and what an ownership hold depends on) is kept
+settle memory (seen, held, what an ownership hold depends on, and the last
+poll's error, so the same outage isn't notified again each run, Codex
+4608095505) is kept
 between runs: `intake.settle_memory(inbox_ids)` serialises it and
 `intake.restore_settle_memory` takes it back (what the process already knows
 wins; an unreadable entry is dropped, so the file is simply seen again), under
@@ -7734,10 +7740,18 @@ Inboxes of the Libraries the run swept. Every job intake makes is tagged when
 it is made (`intake._tag`: `ConversionJob.library_id` and `inbox_id`), and
 run-rules names a job's Library from that, not from which poll was running
 when the job appeared: a copy's job is made when its task runs, which can be
-during another Inbox's poll (Codex 4607940252). `intake.finish_all()` then does what the next poll
-would on the server: settles the conversions that ended (originals to
-`processed/`), waits for every copy and move, and hands back what was placed
-or left, so nothing a run started is left in flight when it exits.
+during another Inbox's poll (Codex 4607940252). Each Inbox conversion is
+settled the moment it ends: run-rules registers `intake.on_job_finished` as a
+terminal listener, which finds the flight by the job's `inbox_id` and settles
+it from the job it was handed (`_settle_ended`, shared with `_settle_flights`;
+every change to the flight happens before its first await, so the two never
+settle it twice), so a big pass doesn't depend on the job history still
+holding early jobs (Codex 4608095516). The listener counts itself in intake's
+tasks, so `drain()` waits for it. `intake.finish_all()` then sweeps up what is
+left as the next poll would on the server: settles any conversion still in
+flight (originals to `processed/`), waits for every copy and move, and hands
+back what was placed or left, so nothing a run started is left in flight when
+it exits.
 
 ### 3.4 `registry.py`
 

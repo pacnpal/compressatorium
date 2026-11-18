@@ -1020,28 +1020,77 @@ async def _settle_flights(inbox: inbox_store.Inbox, state: _State) -> None:
                 {"platform": flight.platform},
             )
             continue
-        if job.status == JobStatus.COMPLETED:
-            # Moving the original to processed/ is its own tracked flight
-            # (CodeRabbit 4606147968): a slow move never holds up this poll,
-            # and the Image stays in flight, not taken again, until it ends.
-            flight.job_id = None
-            _archive_later(inbox, state, path, flight, job.output_path)
-        elif job.status == JobStatus.FAILED:
-            state.flights.pop(path, None)
-            await _hold(
-                inbox, state, path, flight.fingerprint, findings.INBOX_FAILED,
-                f"Its conversion failed: {job.error_message or 'see the job'}",
-                {"platform": flight.platform},
-            )
-        elif job.status == JobStatus.CANCELLED:
-            state.flights.pop(path, None)
-            if _cancelled_by_shutdown(job):
-                _release(state, path)
-                continue
-            await _hold(
-                inbox, state, path, flight.fingerprint, findings.INBOX_FAILED,
-                "Its intake was cancelled", {"platform": flight.platform},
-            )
+        await _settle_ended(inbox, state, path, flight, job)
+
+
+async def _settle_ended(
+    inbox: inbox_store.Inbox, state: _State, path: str, flight: _Flight, job: Any,
+) -> None:
+    """Settle *flight* once its conversion *job* has ended: completed, its
+    output counts as placed and the original goes to ``processed/``; failed or
+    cancelled, the file stays with a Finding (or, cancelled by a shutdown, is
+    released). Every change to the flight happens before the first await, so
+    a poll and the terminal listener (:func:`on_job_finished`) never settle
+    it twice."""
+    if state.flights.get(path) is not flight or flight.job_id != job.id:
+        return  # settled already, or not this job's
+    if job.status == JobStatus.COMPLETED:
+        # Moving the original to processed/ is its own tracked flight
+        # (CodeRabbit 4606147968): a slow move never holds up this poll,
+        # and the Image stays in flight, not taken again, until it ends.
+        flight.job_id = None
+        _note_placed(state, path, flight, job.output_path)
+        _archive_later(inbox, state, path, flight, job.output_path)
+    elif job.status == JobStatus.FAILED:
+        state.flights.pop(path, None)
+        await _hold(
+            inbox, state, path, flight.fingerprint, findings.INBOX_FAILED,
+            f"Its conversion failed: {job.error_message or 'see the job'}",
+            {"platform": flight.platform},
+        )
+    elif job.status == JobStatus.CANCELLED:
+        state.flights.pop(path, None)
+        if _cancelled_by_shutdown(job):
+            _release(state, path)
+            return
+        await _hold(
+            inbox, state, path, flight.fingerprint, findings.INBOX_FAILED,
+            "Its intake was cancelled", {"platform": flight.platform},
+        )
+
+
+async def on_job_finished(job: Any) -> None:
+    """A terminal listener (``run-rules`` registers it, #433): settle the
+    Inbox conversion *job* belongs to the moment it ends, from the job itself,
+    so nothing depends on the job history still holding it when the next
+    poll or :func:`finish_all` looks (Codex 4608095516). Never raises."""
+    inbox_id = getattr(job, "inbox_id", None)
+    state = _states.get(inbox_id) if inbox_id is not None else None
+    if state is None or job.mode == ConversionMode.INBOX_COPY:
+        return  # not intake's, or a copy, which settles itself
+    # Counted with intake's own work before the first await, so `drain()`
+    # (and so `finish_all`) waits for this settle too.
+    task = asyncio.current_task()
+    if task is not None:
+        _tasks.add(task)
+        task.add_done_callback(_tasks.discard)
+    for path, flight in list(state.flights.items()):
+        if flight.job_id != job.id:
+            continue
+        try:
+            inbox = await run_in_threadpool(inbox_store.get, inbox_id)
+            if inbox is not None:
+                await _settle_ended(inbox, state, path, flight, job)
+        except Exception:
+            logger.warning("inbox: settling %s as its job ended failed", path, exc_info=True)
+        return
+
+
+def _note_placed(state: _State, path: str, flight: _Flight, output: str | None) -> None:
+    """The Image's output is in the Library: it counts as placed now, before
+    its original goes to ``processed/``, so the pass summary and RomM's scan
+    see it even when that move fails (Codex 4608095510)."""
+    state.placed.append({"path": path, "platform": flight.platform, "output": output})
 
 
 def _archive_later(
@@ -1134,7 +1183,6 @@ async def _finish_locked(
         return
     state.seen.pop(path, None)
     state.held.pop(path, None)
-    state.placed.append({"path": path, "platform": flight.platform, "output": output})
     try:
         await _step(inbox_store.note_processed, inbox.id)
     except Exception:
@@ -1471,6 +1519,7 @@ async def _copy(
         # `libraries.note_job_finished`, so its Library is told here, before
         # the job is announced finished, and drops its kept walk (#353).
         _tell_library(inbox, output)
+        _note_placed(state, path, flight, output[0])
         await _finish(inbox, state, path, flight, output[0])
         await job_manager.finish_external_job(job.id, success=True)
         return
@@ -1709,8 +1758,8 @@ async def _copy_locked(
 
 def settle_memory(inbox_ids: set[int]) -> dict[str, Any]:
     """What intake remembers between polls of the Inboxes *inbox_ids*, as
-    JSON: the files seen settling (fingerprint and since when) and the ones
-    held with a Finding. ``run-rules`` is a new process each time, so it
+    JSON: the files seen settling (fingerprint and since when), the ones
+    held with a Finding, and the last poll's error. ``run-rules`` is a new process each time, so it
     keeps this between runs (:func:`restore_settle_memory`): a file one run
     saw is taken by the next once its settle time has passed, and a held
     file isn't reported again, as on the server's tick."""
@@ -1725,6 +1774,9 @@ def settle_memory(inbox_ids: set[int]) -> dict[str, Any]:
                 path: [list(item) for item in depends]
                 for path, depends in state.held_by.items()
             },
+            # The last poll's error, so the same outage isn't news to the
+            # next run's summary (Codex 4608095505).
+            "error": state.error,
         }
     return memory
 
@@ -1742,6 +1794,8 @@ def restore_settle_memory(memory: dict[str, Any] | None) -> None:
                 state.held.setdefault(path, str(fingerprint))
             for path, depends in (kept.get("held_by") or {}).items():
                 state.held_by.setdefault(path, tuple(tuple(item) for item in depends))
+            if state.error is None and kept.get("error"):
+                state.error = str(kept["error"])
         except (TypeError, ValueError, AttributeError):
             logger.warning("inbox: dropped the kept intake state of Inbox %s", key)
 

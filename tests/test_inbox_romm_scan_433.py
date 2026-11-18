@@ -258,6 +258,33 @@ async def test_a_token_without_tasks_run_is_reported_not_retried(vol, romm, sent
 
 
 @pytest.mark.asyncio
+async def test_an_output_whose_original_cant_be_archived_is_still_scanned(vol, romm):
+    """Codex 4608095510: the output counts as placed the moment it lands in
+    the Library; a move to processed/ that fails keeps its Finding (and
+    hold) but RomM is still asked to scan the output's Platform."""
+    import os
+
+    box = _romm_inbox(vol)
+    game = _drop(vol / "Downloads" / "ps2" / "Game.iso")
+    processed = vol / "Downloads" / "processed"
+    processed.mkdir()
+    os.chmod(processed, 0o500)  # nothing can be moved in
+    try:
+        await _until_placed()
+    finally:
+        os.chmod(processed, 0o700)
+
+    assert (vol / "romm" / "roms" / "ps2" / "Game.iso").exists()
+    assert game.exists()
+    assert romm.platform_scans == [["ps2"]]
+    [finding] = _inbox_findings()
+    assert "processed/" in finding["reason"]
+    from services.inbox import intake
+
+    assert intake.status(box.id)["held"] == 1
+
+
+@pytest.mark.asyncio
 async def test_a_folder_library_asks_no_one_to_scan(vol, romm):
     _folder_inbox(vol)
     _drop(vol / "Downloads" / "ps2" / "Game.iso")

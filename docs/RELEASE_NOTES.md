@@ -149,7 +149,11 @@
   settling between runs, so a file one cron run sees is taken by the next.
   The conversions and copies it starts finish before it exits. An Inbox that
   can't be polled (its folder gone, say) is in the summary, once until it
-  changes, and makes `run-rules` print an error and exit 1. A stop during
+  changes (also across cron runs), and makes `run-rules` print an error and
+  exit 1 every run it lasts. An output that reached the Library is scanned
+  and summarised even when its original can't be moved to `processed/`, and
+  `run-rules` settles each conversion as it ends, so a big pass loses none to
+  a short job history. A stop during
   the pass takes no more files, and a conversion or copy cancelled because
   the app or `run-rules` was stopping (`docker stop`, Ctrl-C) leaves the file
   with no Finding, to be taken once it settles again; only a job you cancel

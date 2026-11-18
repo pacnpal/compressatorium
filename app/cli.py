@@ -1625,6 +1625,7 @@ async def run_rules(args, printer: Printer, state: RunState) -> int:
 
 
 async def _run_rules_pass(chosen: list, printer: Printer, state: RunState) -> int:
+    from services.inbox import intake
     from services.job_manager import CANCEL_SHUTDOWN
     from services.rules import check as rules_check
     from services.rules import sweep as rules_sweep
@@ -1657,7 +1658,11 @@ async def _run_rules_pass(chosen: list, printer: Printer, state: RunState) -> in
                      prefix=f"{library_id}: " if library_id else "")
 
     # Registered like the server's: the Rule history hears each job's outcome.
-    async with _job_runner(state, on_terminal, rules_sweep.note_job_finished) as jobs:
+    # And an Inbox conversion is settled the moment it ends (Codex 4608095516),
+    # not when the pass looks it up again, by which time history may be pruned.
+    async with _job_runner(
+        state, on_terminal, rules_sweep.note_job_finished, intake.on_job_finished,
+    ) as jobs:
         for library in chosen:
             if state.stopping:
                 break
