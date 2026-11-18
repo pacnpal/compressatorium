@@ -53,8 +53,6 @@ from logging_setup import get_logger
 from services.subprocess_runner import (
     SubprocessRunner,
     collect_verify,
-    ioprio_prefix,
-    nice_prefix,
     ReadCancelled,
     remove_partial_tree,
     run_detached,
@@ -374,10 +372,7 @@ class JwudToolService:
         ]
         if not verification_enabled(compression):
             cmd.append("-noVerify")
-        # Apply nice/ionice via command wrappers, NOT preexec_fn: forking a
-        # Python callable in this multithreaded app can deadlock the child
-        # before exec (same reason nsz/maxcso do it this way).
-        return nice_prefix("jwud") + ioprio_prefix("jwud") + cmd
+        return cmd
 
     def active_pids(self) -> list[int]:
         return self._runner.active_pids()
@@ -581,7 +576,6 @@ class JwudToolService:
             cancel_event=cancel_event,
             fail_label="JWUDTool",
             complete_message=f"Wii U {verb} complete",
-            nice_via_wrapper=True,
             require_output=True,
             mode=mode,
         ):

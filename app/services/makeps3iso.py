@@ -44,7 +44,6 @@ from services.subprocess_runner import (
     ConversionCancelled,
     ReadCancelled,
     SubprocessRunner,
-    ioprio_prefix,
     remove_partial_output,
     run_detached,
 )
@@ -81,10 +80,7 @@ class MakePs3IsoService:
         if split:
             cmd.append("-s")
         cmd += [folder, output_path]
-        # run() applies nice via preexec but not ionice, so wrap with the shared
-        # ionice prefix here (mirrors chdman) — packing an ISO is I/O-heavy.
-        prefix = ioprio_prefix(self._runner.owner)
-        return prefix + cmd if prefix else cmd
+        return cmd
 
     @staticmethod
     def _numbered_parts(output_path: str) -> list[str]:

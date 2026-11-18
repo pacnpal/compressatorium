@@ -608,9 +608,7 @@ def ioprio_prefix(owner: str | None = None) -> list[str]:
 def nice_prefix(owner: str | None = None) -> list[str]:
     """Return the ``nice`` command prefix for ``owner``.
 
-    Used by services that apply nice via a command wrapper instead of a
-    ``preexec_fn`` (e.g. nsz, where forking a Python callable in a
-    multithreaded process can deadlock the child before exec).
+    Empty when renicing is off for ``owner`` or ``nice`` is unavailable.
     """
     value = nice_value(owner)
     if value is None:
@@ -621,15 +619,18 @@ def nice_prefix(owner: str | None = None) -> list[str]:
     return [nice, "-n", str(value)]
 
 
-def apply_nice(owner: str | None = None) -> None:
-    """Renice the current process per the shared policy (for ``preexec_fn``)."""
-    value = nice_value(owner)
-    if value is None:
-        return
-    try:
-        os.nice(value)
-    except OSError:
-        pass
+def priority_prefix(owner: str | None = None) -> list[str]:
+    """``nice`` + ``ionice`` command wrappers for ``owner`` (issue #444).
+
+    The only way the runner applies the priority policy to a child, never a
+    ``preexec_fn``: this process is multithreaded (threadpools, the SSE routes),
+    and forking a Python callable from a multithreaded parent can deadlock the
+    child on a lock it inherited before ``exec``. That hangs inside
+    ``create_subprocess_exec``, before the PID is tracked or any bound is
+    installed, so nothing could rescue it. ``nice``/``ionice`` only exec; either
+    absent, its prefix is empty and the child runs at normal priority.
+    """
+    return nice_prefix(owner) + ioprio_prefix(owner)
 
 
 def info_timeout(owner: str | None = None) -> int:
@@ -1940,7 +1941,6 @@ class SubprocessRunner:
         *,
         stdin=None,
         stderr=asyncio.subprocess.PIPE,
-        preexec_fn: Callable[[], None] | None = None,
         env: Mapping[str, str] | None = None,
     ):
         """Spawn ``cmd`` (a list argv, never a shell) with stdout on a pipe.
@@ -1953,7 +1953,6 @@ class SubprocessRunner:
             stdin=stdin,
             stdout=asyncio.subprocess.PIPE,
             stderr=stderr,
-            preexec_fn=preexec_fn,
             env=env,
         )
 
@@ -1964,7 +1963,6 @@ class SubprocessRunner:
         timeout: float | None = None,
         cancel_event: asyncio.Event | None = None,
         stderr_to_stdout: bool = False,
-        nice_via_wrapper: bool = False,
         env: Mapping[str, str] | None = None,
         on_abandoned: Callable[[int], None] | None = None,
     ) -> tuple[int | None, bytes, bytes]:
@@ -1982,12 +1980,9 @@ class SubprocessRunner:
         folded into ``stdout`` when ``stderr_to_stdout`` is set (and the
         returned ``stderr`` is then empty).
 
-        ``nice_via_wrapper`` and ``env`` mirror :meth:`run`: the first skips the
-        ``preexec_fn`` renice for a caller that has already prefixed ``cmd`` with
-        ``nice``/``ionice`` wrappers (maxcso/nsz avoid ``preexec_fn`` -- forking a
-        Python callable in this multithreaded process can deadlock the child
-        before ``exec``), the second forwards a private environment (nsz runs
-        with its own keys home).
+        ``cmd`` is wrapped with :func:`priority_prefix` here, so a caller passes
+        the bare argv. ``env`` mirrors :meth:`run`: it forwards a private
+        environment (nsz runs with its own keys home).
 
         ``on_abandoned`` is called with the pid when the TERM/KILL ladder gives
         up -- the child outlived ``SIGKILL`` and is still holding whatever it
@@ -2014,18 +2009,10 @@ class SubprocessRunner:
             return None, b"", b""
 
         # Honour the shared process-priority policy, same as the streaming
-        # run(): renice via preexec and wrap with ionice. A captured command
-        # (e.g. dolphin-tool verify reconstructing a full disc for DAT hashing)
-        # is just as heavy as a conversion, so it must respect TOOL_NICE /
-        # TOOL_IOPRIO_* instead of running at normal priority. A caller using
-        # command wrappers has already applied both.
-        if not nice_via_wrapper:
-            cmd = ioprio_prefix(self._owner) + cmd
-
-        def _preexec():
-            apply_nice(self._owner)
-
-        use_preexec = os.name == "posix" and not nice_via_wrapper
+        # run(): a captured command (e.g. dolphin-tool verify reconstructing a
+        # full disc for DAT hashing) is just as heavy as a conversion. Command
+        # wrappers only, never a preexec_fn (see priority_prefix).
+        cmd = priority_prefix(self._owner) + cmd
 
         process = await self._spawn_piped(
             cmd,
@@ -2037,7 +2024,6 @@ class SubprocessRunner:
                 if stderr_to_stdout
                 else asyncio.subprocess.PIPE
             ),
-            preexec_fn=_preexec if use_preexec else None,
             env=env,
         )
         self.track_pid(process.pid)
@@ -2088,7 +2074,6 @@ class SubprocessRunner:
         stdin_offset: int = 0,
         timeout: float | None = None,
         cancel_event: asyncio.Event | None = None,
-        nice_via_wrapper: bool = False,
         env: Mapping[str, str] | None = None,
     ) -> str:
         """Run a decoder that writes the decoded image to stdout; hash the stream.
@@ -2111,9 +2096,8 @@ class SubprocessRunner:
         if cancel_event is not None and cancel_event.is_set():
             raise ReadCancelled("Read cancelled")
         label = os.path.basename(cmd[0])
-        # Command wrappers, never a preexec_fn: see run_verify.
-        if not nice_via_wrapper:
-            cmd = nice_prefix(self._owner) + ioprio_prefix(self._owner) + cmd
+        # Command wrappers, never a preexec_fn: see priority_prefix.
+        cmd = priority_prefix(self._owner) + cmd
         process = await self._spawn_piped(
             cmd,
             stdin=(
@@ -2239,7 +2223,6 @@ class SubprocessRunner:
         path: str,
         success_message: str,
         cancel_event: asyncio.Event | None = None,
-        nice_via_wrapper: bool = False,
         env: Mapping[str, str] | None = None,
         start_message: str = "Verifying integrity...",
         on_success_output: Callable[[bytes], None] | None = None,
@@ -2284,7 +2267,6 @@ class SubprocessRunner:
             timeout=timeout or None,
             cancel_event=cancel_event,
             stderr_to_stdout=True,
-            nice_via_wrapper=nice_via_wrapper,
             env=env,
             on_abandoned=abandoned_pid.append,
         )
@@ -2350,16 +2332,9 @@ class SubprocessRunner:
         shared :func:`_split_stream_lines`, so a percentage redraw split across
         read chunks still parses.
         """
-        # nice/ionice as *command wrappers*, never a preexec_fn: this process is
-        # multithreaded (threadpools, the SSE routes), and forking a Python
-        # callable from a multithreaded parent can deadlock the child before it
-        # reaches exec. That would hang inside create_subprocess_exec, before
-        # the PID is tracked and before any of the bounds below are installed --
-        # the one failure mode nothing here could rescue. maxcso and nsz already
-        # avoid preexec for the same reason; `nice`/`ionice` only exec. When
-        # either binary is absent its prefix is empty and the verify simply runs
-        # unniced, which is what it did before this policy applied to it at all.
-        cmd = nice_prefix(self._owner) + ioprio_prefix(self._owner) + cmd
+        # nice/ionice as command wrappers, never a preexec_fn: see
+        # priority_prefix.
+        cmd = priority_prefix(self._owner) + cmd
 
         # One the verifier can't open is no verdict, decided before it runs
         # (#359): chdman's exit 1 on "Permission denied" would read as one.
@@ -2548,7 +2523,6 @@ class SubprocessRunner:
         cwd: str | None = None,
         output_growth_paths: Callable[[], list[str]] | None = None,
         mode: str | None = None,
-        nice_via_wrapper: bool = False,
         env: Mapping[str, str] | None = None,
         require_output: bool = False,
     ) -> AsyncGenerator[dict, None]:
@@ -2591,11 +2565,9 @@ class SubprocessRunner:
         service's "Starting..." yield at 1/5%) so an early non-parseable line
         cannot drop the bar below it.
 
-        ``nice_via_wrapper`` skips the ``preexec_fn`` renice when the caller has
-        already prefixed ``cmd`` with ``nice``/``ionice`` command wrappers
-        (maxcso/nsz avoid ``preexec_fn``: forking a Python callable in this
-        multithreaded process can deadlock the child before ``exec``).  ``env``
-        is forwarded to the subprocess (nsz runs with a private keys-home env).
+        ``cmd`` is the bare argv: the runner wraps it with :func:`priority_prefix`
+        (``nice``/``ionice``), never a ``preexec_fn``. ``env`` is forwarded to
+        the subprocess (nsz runs with a private keys-home env).
 
         ``require_output`` makes a clean exit (return code 0) that left no file
         at ``output_path`` a failure, raised as a ``RuntimeError`` carrying the
@@ -2617,16 +2589,9 @@ class SubprocessRunner:
                     f"{fail_label}: output directory {output_dir} stopped responding"
                 ) from None
 
-        def _preexec():
-            apply_nice(self._owner)
-
-        # nice/ionice: by default renice the forked child via ``preexec_fn``
-        # (ionice, when used, is folded into ``cmd`` by the caller's
-        # ``_build_command``). ``nice_via_wrapper`` callers have instead prefixed
-        # ``cmd`` with ``nice``/``ionice`` command wrappers and must NOT also be
-        # reniced via preexec — forking a Python callable in this multithreaded
-        # process can deadlock the child before ``exec``.
-        use_preexec = os.name == "posix" and not nice_via_wrapper
+        # nice/ionice as command wrappers, never a preexec_fn: see
+        # priority_prefix.
+        cmd = priority_prefix(self._owner) + cmd
 
         # cmd is built from validated settings paths (no shell interpretation);
         # create_subprocess_exec passes the arg list directly (shell=False), so
@@ -2640,7 +2605,6 @@ class SubprocessRunner:
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
-            preexec_fn=_preexec if use_preexec else None,
             cwd=cwd,
             env=env,
         )

@@ -61,8 +61,6 @@ from services.subprocess_runner import (
     collect_verify,
     files_in_folder,
     info_timeout,
-    ioprio_prefix,
-    nice_prefix,
     remove_partial_tree,
     run_detached,
     run_detached_within_stall_bound,
@@ -245,13 +243,8 @@ class RomConvertoService:
         return self._runner.abandoned_pids()
 
     def _command(self, *args: str) -> list[str]:
-        """``rom-converto --no-update-check --no-cache <args>``.
-
-        ``nice``/``ionice`` are command wrappers (``nice_via_wrapper``), never a
-        ``preexec_fn``: forking a Python callable in this multithreaded process
-        can deadlock the child before exec.
-        """
-        return nice_prefix(_OWNER) + ioprio_prefix(_OWNER) + [
+        """``rom-converto --no-update-check --no-cache <args>``."""
+        return [
             self.binary_path, "--no-update-check", "--no-cache", *args,
         ]
 
@@ -303,11 +296,9 @@ class RomConvertoService:
 
     async def _probe_version(self, resolved: str) -> tuple[bool, str]:
         try:
-            # nice_via_wrapper: no preexec_fn, which can deadlock the child
-            # before exec in this threaded process (and before the timeout runs).
             returncode, stdout, _ = await self._runner.run_capture(
                 [resolved, "--version"], timeout=_VERSION_TIMEOUT,
-                stderr_to_stdout=True, nice_via_wrapper=True, env=_env(),
+                stderr_to_stdout=True, env=_env(),
             )
         except OSError as exc:
             return False, f"rom-converto at {resolved} did not run: {exc}"
@@ -493,7 +484,6 @@ class RomConvertoService:
                     # whole work folder is the growth signal (ruling 2, #422).
                     output_growth_paths=files_in_folder(work_dir),
                     mode=mode,
-                    nice_via_wrapper=True,
                     env=_env(),
                     require_output=True,
                 ):
@@ -570,7 +560,6 @@ class RomConvertoService:
                 path=file_path,
                 success_message="ZAR is Intact: every block decoded and matched its hash",
                 cancel_event=cancel_event,
-                nice_via_wrapper=True,
                 env=_env(),
                 start_message="Decoding every ZAR block...",
             ):
@@ -628,8 +617,7 @@ class RomConvertoService:
         timeout = info_timeout(_OWNER)
         returncode, stdout, _ = await self._runner.run_capture(
             self._command("xenon", "info", file_path),
-            timeout=timeout or None, stderr_to_stdout=True,
-            nice_via_wrapper=True, env=_env(),
+            timeout=timeout or None, stderr_to_stdout=True, env=_env(),
         )
         output = (stdout or b"").decode("utf-8", errors="replace")
         if returncode is None:

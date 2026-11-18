@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import shutil
 import sys
 import threading
 import time
@@ -463,45 +464,66 @@ def test_env_is_forwarded_to_subprocess(tmp_path):
     assert not runner.active_pids()
 
 
-def test_nice_via_wrapper_omits_preexec_fn(tmp_path, monkeypatch):
-    """nice_via_wrapper=True must spawn with preexec_fn=None — the deadlock-
-    avoidance contract maxcso/nsz rely on — while still completing normally.
+def test_priority_is_a_command_wrapper_never_a_preexec_fn(tmp_path, monkeypatch):
+    """Every spawn applies the priority policy as an argv prefix and never
+    passes ``preexec_fn`` (issue #444): forking a Python callable from this
+    multithreaded process can deadlock the child before ``exec``, inside
+    ``create_subprocess_exec``, before any bound or PID tracking exists.
 
-    Asserting the spawn kwarg (not just completion) guards against a regression
-    that reintroduced a harmless-looking preexec_fn, which a completion-only
-    test would miss.
+    ``env`` stands in for ``nice``/``ionice`` so the prefix is visible and the
+    command still runs.
     """
-    out = tmp_path / "out.bin"
-    script = "import sys; sys.stdout.write('done 50%\\n')"
-    runner = SubprocessRunner(owner="test")
-
-    captured = {}
+    wrapper = shutil.which("env")
+    assert wrapper
+    monkeypatch.setattr(runner_module, "nice_prefix", lambda _owner=None: [wrapper])
+    monkeypatch.setattr(runner_module, "ioprio_prefix", lambda _owner=None: [])
+    spawns: list[tuple[list, dict]] = []
     real_exec = runner_module.asyncio.create_subprocess_exec
 
     async def spy(*args, **kwargs):
-        captured.update(kwargs)
+        spawns.append((list(args), kwargs))
         return await real_exec(*args, **kwargs)
 
     monkeypatch.setattr(runner_module.asyncio, "create_subprocess_exec", spy)
+    runner = SubprocessRunner(owner="test")
+    script = "import sys; sys.stdout.write('done 50%\\n')"
 
-    updates = asyncio.run(
-        _drain(
-            runner.run(
-                _py_cmd(script),
-                input_path=str(tmp_path / "in.bin"),
-                output_path=str(out),
-                parse_progress=_parse_pct,
-                nice_via_wrapper=True,
-                fail_label="testproc",
-            )
-        )
-    )
-
-    assert captured.get("preexec_fn") is None
-    assert 50 in [u["progress"] for u in updates]
+    updates = asyncio.run(_drain(runner.run(
+        _py_cmd(script),
+        input_path=str(tmp_path / "in.bin"),
+        output_path=str(tmp_path / "out.bin"),
+        parse_progress=_parse_pct,
+        fail_label="testproc",
+    )))
     assert updates[-1]["progress"] == 100
-    assert updates[-1]["message"] == "Conversion complete"
+    rc, out, _ = asyncio.run(runner.run_capture(_py_cmd(script)))
+    assert (rc, out) == (0, b"done 50%\n")
+    asyncio.run(runner.hash_stdout(_py_cmd(script)))
+
+    assert len(spawns) == 3
+    for argv, kwargs in spawns:
+        assert argv[0] == wrapper
+        assert kwargs.get("preexec_fn") is None
     assert not runner.active_pids()
+
+
+def test_nothing_in_app_passes_a_preexec_fn():
+    """No call anywhere in ``app/`` passes ``preexec_fn`` (issue #444).
+
+    The runner applies priority as command wrappers; a spawn that brought back
+    a Python ``preexec_fn`` -- in the runner or in a tool calling
+    ``create_subprocess_exec``/``subprocess`` directly -- fails here.
+    """
+    import ast
+    from pathlib import Path
+
+    app_dir = Path(__file__).resolve().parent.parent / "app"
+    offenders = []
+    for path in app_dir.rglob("*.py"):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.keyword) and node.arg == "preexec_fn":
+                offenders.append(f"{path.relative_to(app_dir)}:{node.value.lineno}")
+    assert offenders == []
 
 
 def test_initial_progress_floor_keeps_bar_monotonic(tmp_path):

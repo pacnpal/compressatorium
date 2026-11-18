@@ -43,8 +43,6 @@ from services.subprocess_runner import (
     ReadCancelled,
     SubprocessRunner,
     collect_verify,
-    ioprio_prefix,
-    nice_prefix,
     remove_partial_tree,
     run_detached,
     run_detached_within_stall_bound,
@@ -466,12 +464,9 @@ class ExtractXisoService:
         Options must precede the image path: extract-xiso stops parsing options
         at the first operand, so a trailing ``-d`` is silently ignored and the
         rewrite lands in the current directory instead. ``-D`` (delete the
-        source) is never passed. ``nice`` is a command wrapper rather than a
-        ``preexec_fn`` (the runner is told so via ``nice_via_wrapper``): this
-        process runs detached reader threads, and forking a Python callable in
-        a multithreaded process can deadlock the child before exec.
+        source) is never passed.
         """
-        return nice_prefix(_OWNER) + ioprio_prefix(_OWNER) + [
+        return [
             self.extract_xiso_path, "-r", "-d", out_dir, source_link,
         ]
 
@@ -616,7 +611,6 @@ class ExtractXisoService:
                 complete_message="XISO written",
                 require_output=True,
                 mode=mode,
-                nice_via_wrapper=True,
             ):
                 if update.get("progress", 0) >= 100:
                     # Hold the bar short of done until the file is in place.
@@ -729,19 +723,11 @@ class ExtractXisoService:
             yield verify_exception_event(exc, prefix="Could not read the XISO")
             return
 
-        # nice/ionice as command wrappers, never preexec_fn (the maxcso / chdman /
-        # dolphin verify convention): forking a Python callable in this
-        # multithreaded process can deadlock the child before exec. Passing
-        # nice_via_wrapper also stops capture_verify adding a second ionice.
-        cmd = (
-            nice_prefix(_OWNER) + ioprio_prefix(_OWNER)
-            + [self.extract_xiso_path, "-q", "-l", file_path]
-        )
+        cmd = [self.extract_xiso_path, "-q", "-l", file_path]
         try:
             async for update in self._runner.capture_verify(
                 cmd,
                 path=file_path,
-                nice_via_wrapper=True,
                 success_message=(
                     f"XISO structure is Intact ({stats['file_count']} files, "
                     f"{_format_size(stats['data_bytes'])} of game data)"

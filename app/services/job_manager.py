@@ -70,6 +70,7 @@ from utils.path_utils import (
     is_safe_directory_tree,
     bind_source,
     is_within_configured_volumes,
+    queued_source_identity,
     source_identity_problem,
     source_companions_are_safe,
     strip_archive_path,
@@ -983,6 +984,7 @@ class JobManager:
         await self._prune_jobs()
         # Outside the lock, and off the event loop: see `_reservation_keys`.
         reservation = await self._reservation_keys(specs, mode)
+        await self._capture_source_identities(specs, mode)
         async with self._create_lock:
             self._enforce_queue_backpressure_locked(1)
             # Same destination reservation the batch path gets: a single
@@ -1002,6 +1004,7 @@ class JobManager:
                 split=split,
                 delete_snapshot=delete_snapshot,
                 reservation=reservation,
+                source_identity=specs[0].get("source_identity"),
             )
         return job
 
@@ -1029,6 +1032,7 @@ class JobManager:
         await self._prune_jobs()
         # Outside the lock, and off the event loop: see `_reservation_keys`.
         reservation = await self._reservation_keys(job_specs, mode)
+        await self._capture_source_identities(job_specs, mode)
         async with self._create_lock:
             self._enforce_queue_backpressure_locked(len(job_specs))
             self._reject_claimed_destinations_locked(job_specs, mode, reservation)
@@ -1182,6 +1186,46 @@ class JobManager:
         return registry.for_mode(mode.value).output_path(
             mode.value, file_path, output_dir,
         )
+
+    @staticmethod
+    async def _capture_source_identities(
+        job_specs: list[dict[str, object]], mode: ConversionMode,
+    ) -> None:
+        """Give every spec queued without one its Source's identity as it is
+        now (``queued_source_identity``, #449), so the job can tell when it
+        runs that it still reads that file, inside the Volumes. Every
+        conversion is queued through here, whoever queued it; an Inbox's
+        specs already carry theirs. One that can't be captured carries why
+        (``{"error": ...}``) and its job is refused when it runs, with that
+        reason. A folder Source (a DIRECTORY mode) has no file identity and is
+        re-checked by the folder checks when it runs. Bounded, off the event
+        loop."""
+        try:
+            if registry.mode_input_kind(mode.value) == InputKind.DIRECTORY:
+                return
+        except KeyError:
+            pass
+        wanted = [spec for spec in job_specs if not spec.get("source_identity")]
+        if not wanted:
+            return
+
+        def capture() -> list[dict[str, object]]:
+            out: list[dict[str, object]] = []
+            for spec in wanted:
+                try:
+                    out.append(queued_source_identity(str(spec["file_path"])))
+                except (OSError, ValueError) as exc:
+                    out.append({"error": str(exc)})
+            return out
+
+        try:
+            identities = await asyncio.wait_for(
+                run_detached(capture), _CANONICAL_PROBE_SECONDS,
+            )
+        except (asyncio.TimeoutError, OSError) as exc:
+            identities = [{"error": f"no answer ({exc})" if str(exc) else "no answer"}] * len(wanted)
+        for spec, identity in zip(wanted, identities):
+            spec["source_identity"] = identity
 
     async def _reservation_keys(
         self, job_specs: List[Dict[str, object]], mode: ConversionMode,
@@ -2066,15 +2110,23 @@ class JobManager:
 
     async def _source_identity_problem_bounded(self, job: ConversionJob) -> Optional[str]:
         """Why the job's Source isn't the one it was queued with
-        (``_source_identity``), or None; None too for a job queued without
-        one. Bounded: a Source that doesn't answer is a reason, never a pass."""
-        identity = job._source_identity
-        if not identity or job.input_kind == InputKind.DIRECTORY:
+        (``_source_identity``), or None. A file Source queued without one, or
+        whose identity couldn't be captured (#449), is a reason too: nothing
+        tells what it reads now from what it was queued for. A folder Source
+        (DIRECTORY) has none; the folder checks cover it. Bounded: a Source
+        that doesn't answer is a reason, never a pass."""
+        if job.input_kind == InputKind.DIRECTORY:
             return None
+        identity = job._source_identity
+        if not identity:
+            return "the job was queued without its Source's identity, so it can't be checked"
+        if "error" in identity:
+            return f"the Source couldn't be checked when it was queued ({identity['error']})"
         try:
             return await asyncio.wait_for(
                 run_detached(
-                    source_identity_problem, job.file_path, identity, job._trusted_root,
+                    source_identity_problem, identity.get("path") or job.file_path,
+                    identity, job._trusted_root,
                 ),
                 _CANONICAL_PROBE_SECONDS,
             )
@@ -2094,6 +2146,13 @@ class JobManager:
         CANCELLED (Codex 4606539525); a late answer's folder is removed."""
         identity = job._source_identity
         if not identity or job.input_kind == InputKind.DIRECTORY:
+            return None
+        if identity.get("in_place"):
+            # A Source in a Volume (#449) isn't bound: it is read where it was
+            # just checked, the resolved path with no link on its way, never
+            # through a spelling that could be re-pointed since.
+            member = job.file_path.split("::", 1)[1] if "::" in job.file_path else None
+            job._read_path = identity["path"] + (f"::{member}" if member else "")
             return None
         # A copy fallback (no hard links on a NAS) takes as long as the Image:
         # bounded by its progress, not a fixed deadline (Codex 4606061281).
@@ -3608,7 +3667,7 @@ class JobManager:
         # Imported here: services.libraries imports this module.
         from services import libraries
 
-        if job._source_identity:
+        if job._source_identity and not job._source_identity.get("in_place"):
             # A bound Source (#431) may change under its job: its output is
             # staged, so one made from a changed Source is never published
             # (Codex 4606539513).
@@ -6117,7 +6176,7 @@ class JobManager:
             within = _trusted_roots(job)
             if "::" in job.file_path:
                 extract_start = time.monotonic()
-                archive_path, internal_path = job.file_path.split("::", 1)
+                archive_path, internal_path = input_path.split("::", 1)
                 if logger.isEnabledFor(logging.DEBUG):
                     logger.debug(
                         "Job %s extracting archive %s member %s",

@@ -12,6 +12,7 @@ import os
 import pytest
 from services import lock_manager as lock_module
 from services.lock_manager import LockManager
+from utils.path_utils import queued_source_identity
 
 
 def _manager(lock_dir) -> LockManager:
@@ -702,6 +703,7 @@ def test_a_cue_naming_a_native_track_converts(tmp_path, monkeypatch, db_path, re
         created_at=datetime.now(timezone.utc), output_path=str(out),
     )
     job_manager.jobs[job.id] = job
+    job._source_identity = queued_source_identity(job.file_path)
     try:
         asyncio.run(job_manager._process_job(job.id))
         assert job.status == JobStatus.COMPLETED, job.error_message
@@ -772,6 +774,7 @@ async def test_a_companion_output_is_held_against_other_processes(
         created_at=datetime.now(timezone.utc), output_path=str(cue),
     )
     job_manager.jobs[job.id] = job
+    job._source_identity = queued_source_identity(job.file_path)
     try:
         await job_manager._process_job(job.id)
     finally:
@@ -868,6 +871,7 @@ async def test_an_overwrite_job_on_a_symlinked_output_keeps_its_destination_lock
         created_at=datetime.now(timezone.utc), output_path=str(out), allow_overwrite=True,
     )
     job_manager.jobs[job.id] = job
+    job._source_identity = queued_source_identity(job.file_path)
     try:
         await job_manager._process_job(job.id)
     finally:

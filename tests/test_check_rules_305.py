@@ -19,6 +19,7 @@ import pytest
 from services import db as _db
 from services import platform_detect
 from services.tools import registry
+from utils.path_utils import queued_source_identity
 
 from config import settings as app_settings
 
@@ -1854,6 +1855,7 @@ async def test_a_converted_images_mode_survives_a_nightly_check(
         verify_after=True,
     )
     job_manager.jobs[job.id] = job
+    job._source_identity = queued_source_identity(job.file_path)
     try:
         await job_manager._process_job(job.id)
     finally:

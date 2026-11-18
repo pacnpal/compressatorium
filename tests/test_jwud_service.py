@@ -18,6 +18,7 @@ import pytest
 from app.services import jwudtool as jwud_module
 from app.services.chdman import ConversionCancelled
 from app.services.tools import registry as tool_registry
+from app.utils.path_utils import queued_source_identity
 
 service = jwud_module.jwudtool_service
 tool = tool_registry.get("jwud")
@@ -917,6 +918,7 @@ async def test_process_job_revalidates_split_companions_after_locking(
         allow_overwrite=True,
     )
     job_manager.jobs[job.id] = job
+    job._source_identity = queued_source_identity(job.file_path)
     try:
         await job_manager._process_job(job.id)
         assert job.status == JobStatus.FAILED

@@ -296,10 +296,9 @@ async def test_verify_applies_priority_wrappers(tmp_path, monkeypatch):
     argv = captured["argv"]
     # The maxcso invocation is the tail; the head is the shared priority policy.
     assert argv[-3:] == [service.maxcso_path, "--crc", str(cso_path)]
-    expected_prefix = (
-        maxcso_module.nice_prefix(maxcso_module._OWNER)
-        + maxcso_module.ioprio_prefix(maxcso_module._OWNER)
-    )
+    from services.subprocess_runner import priority_prefix
+
+    expected_prefix = priority_prefix(maxcso_module._OWNER)
     assert argv[: len(expected_prefix)] == expected_prefix
 
 

@@ -1600,6 +1600,25 @@ def source_identity_problem(
     return None
 
 
+def queued_source_identity(path: str) -> dict:
+    """The :func:`source_identity` a conversion of a Source in a Volume carries
+    from the moment it is queued (#449), whoever queued it (a Rule sweep, a
+    hand-started conversion, ``run-rules``): *path* (an archive's own file for
+    ``archive::member``) resolved, then read beneath its Volume root with no
+    link followed, the way :class:`AnchoredFolders` opens a folder.
+
+    The identity adds ``path``, the resolved path checked, and ``in_place``:
+    the job checks its Source there and reads it from there, rather than
+    binding a copy into the work area as an Inbox intake does. Raises OSError
+    when the Source isn't confirmed inside a Volume, can't be read that way,
+    or isn't a regular file. Blocking."""
+    real = os.path.realpath(strip_archive_path(path))
+    root = lock_boundary_root(real)
+    if root is None or volume_containment(real, treat_archives=False) is not True:
+        raise OSError(errno.EACCES, f"{path} isn't confirmed inside the configured Volumes")
+    return {**source_identity(real, str(root)), "path": real, "in_place": True}
+
+
 # A bound Source's folder in the app's work area (``bind_source``'s *into*).
 BIND_PREFIX = "bind_"
 # How much a bind's copy fallback reads at a time; each chunk reports progress.

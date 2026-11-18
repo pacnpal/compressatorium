@@ -356,21 +356,6 @@ async def test_a_broken_binary_is_not_ready_and_says_why(tmp_path, monkeypatch):
     SERVICE.forget_readiness()
 
 
-@pytest.mark.asyncio
-async def test_the_version_probe_never_forks_a_python_preexec(stub, monkeypatch):
-    """Readiness runs the binary in this threaded process: nice is a command
-    wrapper, never a preexec_fn, which can deadlock the child before exec."""
-    seen: dict = {}
-
-    async def capture(cmd, **kwargs):
-        seen.update(kwargs)
-        return 0, b"rom-converto 0.24.0\n", b""
-
-    monkeypatch.setattr(SERVICE._runner, "run_capture", capture)
-    assert await TOOL.is_ready() is True
-    assert seen.get("nice_via_wrapper") is True
-
-
 # --------------------------------------------------------------------------- #
 # Verify and info
 # --------------------------------------------------------------------------- #

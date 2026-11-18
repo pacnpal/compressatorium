@@ -73,14 +73,18 @@ async def test_a_queued_job_cancelled_while_it_starts_is_announced_once(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("outcome", ["completed", "failed", "cancelled", "lock_error"])
-async def test_every_terminal_path_announces_once(tmp_path, monkeypatch, heard, outcome):
+async def test_every_terminal_path_announces_once(
+    tmp_path, tmp_volume, monkeypatch, heard, outcome,
+):
     import asyncio
 
     from services import job_manager as job_manager_module
+    from utils.path_utils import queued_source_identity
 
     monkeypatch.setattr(lock_manager, "_lock_dir", str(tmp_path / "locks"))
     monkeypatch.setattr(lock_manager, "_ready", False)
     job = _job(tmp_path, f"once{outcome}")
+    job._source_identity = queued_source_identity(job.file_path)
     tool = job_manager_module.registry.for_mode("dolphin_rvz")
 
     async def converting(*_args, **_kwargs):

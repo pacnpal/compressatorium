@@ -367,7 +367,7 @@ def stub_runner(monkeypatch):
         yield {"progress": 100, "message": complete_message}
 
     async def fake_capture(cmd, *, timeout=None, cancel_event=None,
-                           stderr_to_stdout=False, nice_via_wrapper=False,
+                           stderr_to_stdout=False,
                            env=None, on_abandoned=None):
         calls["capture_timeout"] = timeout
         calls["capture_cmd"] = cmd

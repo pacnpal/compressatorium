@@ -36,7 +36,6 @@ from services.subprocess_runner import (
     ConversionCancelled,
     SubprocessRunner,
     collect_verify,
-    ioprio_prefix,
     ReadCancelled,
     remove_partial_output,
     remove_partial_tree,
@@ -449,10 +448,7 @@ class RomzService:
             cmd = [self.sevenzip_path, "x", *switches, "--", input_arg]
         else:
             raise ValueError(f"Unsupported romz mode: {mode}")
-        # Apply ionice via a command wrapper (the shared nice level is applied by
-        # SubprocessRunner.run's preexec); both honor the COMPRESSATORIUM_ROMZ_*
-        # overrides, falling back to the tool-neutral policy.
-        return ioprio_prefix(_OWNER) + cmd
+        return cmd
 
     def _test_command(self, archive_path: str) -> list[str]:
         """``7z t``: tests every member's CRC. ``--`` keeps an archive name

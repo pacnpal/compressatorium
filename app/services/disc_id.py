@@ -52,8 +52,6 @@ from services.subprocess_runner import (
     ReadCancelled,
     StorageAbandoned,
     abandonment_checkpoint,
-    ioprio_prefix,
-    nice_prefix,
     run_detached_bounded,
 )
 from utils.sheet_text import cue_tracks, gdi_tracks, sheet_readings, sheet_tracks
@@ -119,17 +117,8 @@ def _chdman_runner():
 
 
 def _chdman_cmd(chdman_path: str, *args: str) -> list[str]:
-    """chdman argv with the tool priority policy applied as command wrappers.
-
-    Wrappers, never ``run_capture``'s ``preexec_fn``: this process is
-    multithreaded, and forking a Python callable from a multithreaded parent can
-    deadlock the child before it ``exec()``s -- and a child wedged there never
-    returns from ``create_subprocess_exec``, so the bound these calls exist to
-    get would never be applied. ``nice``/``ionice`` only exec. The hand-rolled
-    spawns this replaces used no ``preexec_fn`` either.
-    """
-    owner = _chdman_runner().owner
-    return nice_prefix(owner) + ioprio_prefix(owner) + [chdman_path, *args]
+    """chdman argv; ``run_capture`` applies the tool priority policy."""
+    return [chdman_path, *args]
 
 # ---------------------------------------------------------------------------
 # ISO 9660 constants
@@ -943,7 +932,6 @@ async def _read_chd_units(
                 ),
                 timeout=_DISC_READ_TIMEOUT_SECONDS,
                 cancel_event=cancel_event,
-                nice_via_wrapper=True,
             )
         _abort_if_abandoned(abandoned, "chdman extractraw", chd_path)
         if returncode is None:
@@ -1243,7 +1231,6 @@ async def _dumpmeta_raw(
             returncode, _, stderr = await _chdman_runner().run_capture(
                 _chdman_cmd(chdman_path, "dumpmeta", "-i", chd_path, "-t", tag, "-o", tmp_path),
                 timeout=_DUMPMETA_TIMEOUT_SECONDS,
-                nice_via_wrapper=True,
             )
         # Before the result is reduced to False/None below, which would read as
         # "tag absent" / "nothing to delete" and invite the next read or write.

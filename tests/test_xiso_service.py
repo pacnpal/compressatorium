@@ -514,28 +514,6 @@ async def test_verify_accepts_a_good_xiso(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_verify_uses_wrapper_priority_like_the_other_tools(tmp_path, monkeypatch):
-    """nice/ionice as command wrappers with nice_via_wrapper=True (maxcso,
-    chdman, dolphin), so capture_verify neither forks a preexec renice nor
-    prepends a second ionice."""
-    img = tmp_path / "g.xiso.iso"
-    build_image(img, layout="XISO", optimized=True)
-    monkeypatch.setattr(MODULE, "nice_prefix", lambda _o: ["nice", "-n", "10"])
-    monkeypatch.setattr(MODULE, "ioprio_prefix", lambda _o: ["ionice", "-c", "3"])
-    seen: dict = {}
-
-    async def fake_capture(cmd, *, path, success_message, **kw):
-        seen["cmd"], seen["kw"] = cmd, kw
-        yield {"type": "complete", "valid": True, "message": success_message}
-
-    monkeypatch.setattr(SERVICE._runner, "capture_verify", fake_capture)
-    [e async for e in SERVICE.verify_stream(str(img))]
-    assert seen["kw"].get("nice_via_wrapper") is True
-    assert seen["cmd"][:5] == ["nice", "-n", "10", "ionice", "-c"]
-    assert seen["cmd"].count("ionice") == 1
-
-
-@pytest.mark.asyncio
 async def test_verify_catches_a_truncated_copy(tmp_path, monkeypatch):
     img = tmp_path / "g.xiso.iso"
     build_image(img, layout="XISO", optimized=True, truncate_by=80)
@@ -763,28 +741,6 @@ def test_walk_holds_one_directory_table_at_a_time(tmp_path, monkeypatch):
 
     assert stats["dir_count"] == 2 and stats["file_count"] == 3
     assert _TrackedRead.peak == 1
-
-
-@pytest.mark.asyncio
-async def test_convert_uses_wrapper_priority(tmp_path, scratch, monkeypatch):
-    """The rewrite is reniced by a ``nice`` wrapper, not a ``preexec_fn``: this
-    process runs detached reader threads, where a preexec fork can deadlock."""
-    src = tmp_path / "g.iso"
-    build_image(src, layout="XGD2")
-    monkeypatch.setattr(MODULE, "nice_prefix", lambda _o: ["nice", "-n", "10"])
-    monkeypatch.setattr(MODULE, "ioprio_prefix", lambda _o: ["ionice", "-c", "3"])
-    seen: dict = {}
-
-    async def fake_run(cmd, *, output_path, complete_message, **kw):
-        seen["cmd"], seen["kw"] = cmd, kw
-        Path(output_path).write_bytes(b"XISO")
-        yield {"progress": 100, "message": complete_message}
-
-    monkeypatch.setattr(SERVICE._runner, "run", fake_run)
-    [u async for u in SERVICE.convert(str(src), str(tmp_path / "g.xiso.iso"), "xiso_rewrite")]
-
-    assert seen["kw"].get("nice_via_wrapper") is True
-    assert seen["cmd"][:5] == ["nice", "-n", "10", "ionice", "-c"]
 
 
 @pytest.mark.asyncio

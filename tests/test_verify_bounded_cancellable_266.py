@@ -1003,7 +1003,7 @@ def test_streaming_verify_spawns_without_a_preexec_fork_hook():
     # The argument, not the word: the comment above the spawn explains why it
     # is absent, and should keep explaining it.
     assert "preexec_fn=" not in source
-    assert "nice_prefix(self._owner)" in source
+    assert "priority_prefix(self._owner)" in source
 
 
 def test_cancelling_the_z3ds_feeder_does_not_close_behind_a_stuck_read(

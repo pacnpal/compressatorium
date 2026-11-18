@@ -418,6 +418,22 @@
 
 ### Fixed
 
+- **A queued conversion checks its Source again when it runs** (#449). Every
+  conversion, from a Rule sweep, a hand-started job or `run-rules`, now
+  carries the identity of the file it was queued for, as Inbox intake's did.
+  When it starts, under its Source lock and before the tool reads anything,
+  the job reads the file again beneath its Volume with no link followed and
+  is refused ("Not converted: ...") if it left the Volumes, is reached through
+  a link, or is another file. A folder in a Library swapped for a link while
+  the job waited can no longer make a tool read an image from outside the
+  Volumes.
+- **Child processes never start through a Python `preexec_fn`** (#444). The
+  shared runner applies the nice level and I/O priority to every tool it
+  starts as `nice`/`ionice` command wrappers. Conversions by chdman,
+  dolphin-tool, z3ds, makeps3iso, nkit2iso and 7z, the CHD Round-trip's
+  `extractcd`, dolphin-tool's hash verify and the 7z archive test used to
+  renice the child from Python between fork and exec, which can deadlock in
+  this multithreaded process before any timeout applies.
 - **Rules refuse and drop codecs the CHDMAN mode can't use** (#474). Saving a
   Rule (a Library's, RomM's, and so an Inbox's) that pairs a mode with a codec
   it can't use, Create DVD with cdzl say, is refused with a 400 and the same
