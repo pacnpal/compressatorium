@@ -846,6 +846,25 @@ def _is_rom_converto_info_file(path: str) -> bool:
     return match_extension(path, ZAR_VERIFY_EXTENSIONS) is not None
 
 
+async def _require_info_ready(tool_id: str) -> ToolPlugin:
+    """The tool for a File info read, or a 503 saying why it can't run (#488).
+
+    Every info route asks this once its 403/404/400 checks pass. Whether the
+    read needs the tool at all is the plugin's ``info_needs_tool``: a header
+    read in Python answers without a probe, and one that runs the program asks
+    ``is_ready()`` first, so a missing program is a 503 with the plugin's own
+    reason (:func:`not_ready_message`) rather than a 500 from the failed run.
+    The probe goes through ``registry.tool_is_ready``, whose bound keeps an
+    unresponsive mount from holding the request past it.
+    """
+    tool = registry.get(tool_id)
+    if not await registry.tool_is_ready(tool, purpose="info"):
+        raise HTTPException(
+            status_code=503, detail=not_ready_message(tool, purpose="info"),
+        )
+    return tool
+
+
 @router.get("/info", response_model=CHDInfo)
 async def get_chd_info(path: str = Query(..., description="Path to CHD file")):
     """Get information about a CHD file (cached with mtime-based invalidation)."""
@@ -859,6 +878,7 @@ async def get_chd_info(path: str = Query(..., description="Path to CHD file")):
 
     if not path.lower().endswith(".chd"):
         raise HTTPException(status_code=400, detail="Not a CHD file")
+    await _require_info_ready("chdman")
 
     try:
         # Check cache first
@@ -1146,6 +1166,7 @@ async def get_dolphin_info(
         raise HTTPException(
             status_code=400, detail="Not a supported disc image format",
         )
+    await _require_info_ready("dolphin")
 
     try:
         info = await dolphin_tool_service.header(path)
@@ -1203,6 +1224,7 @@ async def get_z3ds_info(
                 "(.3ds, .cci, .cia, .cxi, .3dsx, .z3ds, .zcci, .zcia, .zcxi, .z3dsx)"
             ),
         )
+    await _require_info_ready("z3ds")
 
     try:
         info = await run_in_threadpool(z3ds_compress_service.info, path)
@@ -1247,6 +1269,7 @@ async def get_nkit_info(
             status_code=400,
             detail="Not an NKit-shrunk GameCube/Wii image (.nkit.iso, .nkit.gcz)",
         )
+    tool = await _require_info_ready("nkit")
 
     try:
         info = await run_in_threadpool(nkit2iso_service.info, path)
@@ -1262,7 +1285,7 @@ async def get_nkit_info(
             status_code=500,
             detail=f"Failed to read NKit info: {e!s}",
         ) from None
-    return registry.get("nkit").info_model(info, path)
+    return tool.info_model(info, path)
 
 
 @router.get("/xiso-info", response_model=XisoInfo)
@@ -1290,6 +1313,7 @@ async def get_xiso_info(
             status_code=400,
             detail="Not an Xbox / Xbox 360 disc image (.iso, .xiso.iso)",
         )
+    tool = await _require_info_ready("xiso")
 
     try:
         info = await run_in_threadpool(extract_xiso_service.info, path)
@@ -1303,7 +1327,7 @@ async def get_xiso_info(
             status_code=500,
             detail=f"Failed to read Xbox image info: {e!s}",
         ) from None
-    return registry.get("xiso").info_model(info, path)
+    return tool.info_model(info, path)
 
 
 @router.get("/rom-converto-info", response_model=RomConvertoInfo)
@@ -1324,9 +1348,7 @@ async def get_rom_converto_info(
         raise HTTPException(status_code=404, detail="File not found")
     if not _is_rom_converto_info_file(path):
         raise HTTPException(status_code=400, detail="Not a ZAR (.zar)")
-    tool = registry.get("rom_converto")
-    if not await registry.tool_is_ready(tool):
-        raise HTTPException(status_code=503, detail=not_ready_message(tool))
+    tool = await _require_info_ready("rom_converto")
 
     try:
         info = await rom_converto_service.info(path)
@@ -1339,7 +1361,7 @@ async def get_rom_converto_info(
             status_code=500,
             detail=f"Failed to read ZAR info: {e!s}",
         ) from None
-    return registry.get("rom_converto").info_model(info, path)
+    return tool.info_model(info, path)
 
 
 @router.get("/cso-info", response_model=CsoInfo)
@@ -1361,6 +1383,7 @@ async def get_cso_info(
             status_code=400,
             detail="Not a supported CSO format (.iso, .cso, .zso, .dax)",
         )
+    await _require_info_ready("cso")
 
     try:
         info = await run_in_threadpool(maxcso_service.info, path)
@@ -1399,6 +1422,7 @@ async def get_romz_info(
             status_code=400,
             detail="Not a supported ROM format (.gb, .gbc, .gba, .nds, .7z, .zip)",
         )
+    await _require_info_ready("romz")
 
     try:
         info = await run_in_threadpool(romz_service.info, path)
@@ -1440,6 +1464,7 @@ async def get_jwud_info(
             status_code=400,
             detail="Not a supported Wii U disc image format (.wud, .wux)",
         )
+    await _require_info_ready("jwud")
 
     try:
         info = await run_in_threadpool(jwudtool_service.info, path)
@@ -1502,6 +1527,7 @@ async def get_nsz_info(
             status_code=400,
             detail="Not a supported Switch format (.nsp, .xci, .nsz, .xcz)",
         )
+    await _require_info_ready("nsz")
 
     try:
         info = await run_in_threadpool(nsz_service.info, path)

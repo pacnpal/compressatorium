@@ -38,6 +38,8 @@ class JwudTool(BaseTool):
     default_compression = "verify"
     policy_owner = "jwud"
     display_name = "Wii U"
+    # File info reads the WUX header in Python; JWUDTool and Java aren't run.
+    info_needs_tool = False
     not_ready_reason = "the JWUDTool launcher or its Java runtime is missing"
     modes = (
         ModeSpec(

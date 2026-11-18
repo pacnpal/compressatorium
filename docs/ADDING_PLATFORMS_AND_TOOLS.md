@@ -233,6 +233,7 @@ A plugin subclasses `BaseTool` and provides:
 | `companion_outputs(output_path, mode)` | sibling paths this mode writes *besides* `output_path` (never including it). `BaseTool` derives them from `ModeSpec.companion_exts` as pure path math; override only when the set is dynamic (makeps3iso's size-dependent split parts). |
 | `overwrite_targets(output_path, mode)` | every path an authorized overwrite must sweep, primary **first**. A superset of `companion_outputs`: it includes the primary, and it covers artifacts only a *failed* run leaves (an interrupted makeps3iso `-s` build leaves the base *and* numbered parts, which never coexist on success — so `companion_outputs`, describing a finished output, under-reports). Enumeration only; the pipeline validates and unlinks. Default = primary + companions. |
 | `is_ready()` | **async.** Whether the tool's runtime prerequisites are met. `False` ⇒ `GET /api/tools` reports it unavailable and the frontend hides it, instead of offering jobs that can only fail. Default `True`; override for a tool gated on an operator-supplied secret or an optional binary (`NszTool` → `prod.keys`). Threadpool anything that touches disk. |
+| `info_needs_tool` | Whether your `info()` runs the tool's program. Default `True`: your `/<tool>-info` route answers 503 with `not_ready_message(tool)` when `is_ready()` is False, instead of a 500 from the failed run. Set `False` when `info()` reads the file in Python (a header, an archive listing, the size), so File info keeps working without the program (nkit, xiso, jwud). Your info route calls the shared `_require_info_ready("<tool>")` either way (design doc §3.4, "Saying why a tool can't run"). |
 | `detect_output(input_path, *, from_archive=False)` | optional, returns an `OutputStatus` so the file list can badge "output already exists". May content-validate the candidate before claiming it: `romz` only reports a `.7z`/`.zip` sibling as its output when it's a genuine single-ROM archive (not just any file matching the `Game.gba.7z` naming), so the badge and the source row's verify-from-output flow track real outputs. `from_archive` marks `input_path` as the *synthesised* location an archive member would occupy once extracted — the listing-side counterpart of the `treat_as_stem` `plan_job` passes for the same member. Ignore it unless your output *name* depends on the input's neighbours: extraction hands over one member and never its siblings, so a member can only produce a single-file output (`jwud` forwards it, so a member named `game_part1.wud` doesn't badge a real split set's `game.wux`). |
 | `converts_path(path)` | optional per-file refinement of `input_extensions` — the input-side mirror of `verifies_path`. Default is the plain extension match; override when your source is really a *set* of files so only the primary is offered (`jwud` hides the secondary members of a split `game_part1.wud` … `game_part12.wud` dump, which stay listed but non-convertible). Drives `FileEntry.convertible_by`. May do disk I/O — it runs inside the threadpool scan. |
 | `header_platform(path)` | optional. The Platform your tool reads from the file's own header (a few bytes), or `None`. Default `None`. Platform detection (`services/platform_detect.py`) asks every tool whose `input_extensions` match, maps the answer onto a RomM slug, and uses it for the convert panel's Auto choice. Override it when your consoles can be told apart from the bytes (chdman: `SYSTEM.CNF` / `PARAM.SFO` / sector-0 ids; dolphin: GC/Wii magic; xiso: XDVDFS layout). Never guess: answer `None` when unsure. Add your Platform's folder names to `_ALIASES` and its display name to `_NAMES` in `platform_detect.py`, keyed by RomM's slug (tests fail until you do). If a mode cannot read every input it accepts by hand, set `ModeSpec.reads_extensions`; set `auto_target=False` on a mode that should never be an Auto default, and `auto_platform_slugs` for a Platform a mode should serve in Auto but not by hand. Add your rows to `tests/test_auto_routing_table.py`. If the probe reads other files (a sheet's tracks), list them from `header_reads(path)` so the cache sees them change. If `is_ready()` can be False, set `not_ready_reason` to say why. See design doc §3.3.14. |
@@ -1237,6 +1238,9 @@ PLUGIN (app/services/tools/<tool>.py)
 [ ] BaseTool subclass: id, display_name, modes (ModeSpec rows),
     output_extensions, verify_extensions
 [ ] delegate convert/verify/verify_stream/info/info_model/output_path/active_pids
+[ ] info_needs_tool = False if info() reads the file in Python and never runs
+    the program; leave the default True if it does (the info route then says
+    "<Tool> isn't ready: ..." with a 503 when is_ready() is False)
 [ ] optional: detect_output() for "output exists" badges
 [ ] optional: verifies_path() to refine verify_extensions per-file when the
     tool over-claims a container extension (drives FileEntry.verifiable_by)
@@ -1287,7 +1291,8 @@ ROUTES
 [ ] files.py: NOTHING — the scan loops over registry.all()
 [ ] info.py (optional, skip if no user-facing verify/info):
     _VERIFY_CONFIG["<tool>"] entry + register_verify_routes(...) +
-    /<tool>-info + _is_<tool>_info_file + service import
+    /<tool>-info + _is_<tool>_info_file + service import; the info route
+    calls await _require_info_ready("<tool>") after its 403/404/400 checks
 
 PIPELINE (app/services/job_manager.py)
 [ ] usually nothing (registry dispatches convert + verify)
