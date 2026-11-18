@@ -247,6 +247,104 @@ def test_a_big_pass_settles_each_conversion_as_it_ends(folder, dolphin, capsys, 
     assert [f for f in findings.list_findings() if f["kind"] in findings.INBOX_KINDS] == []
 
 
+def test_a_failed_intake_copy_leaves_a_finding_but_not_a_failed_run(
+    folder, dolphin, capsys,
+):
+    """CodeRabbit 4608135778: an Inbox job that fails leaves its Finding; it
+    isn't a Rule job, so the run still exits 0."""
+    from services import findings
+
+    game = _game(folder)
+    _cli(capsys, "run-rules", "--json")  # seen
+    _new_process()
+    dolphin["valid"] = False  # the copy's Intact check fails
+
+    code, lines, err = _cli(capsys, "run-rules", "--json")
+
+    assert code == 0, (lines, err)
+    assert [line["status"] for line in lines if line.get("mode") == "inbox_copy"] == ["failed"]
+    assert game.exists()
+    [finding] = [f for f in findings.list_findings() if f["kind"] in findings.INBOX_KINDS]
+    assert finding["path"] == str(game.resolve())
+
+
+def test_a_settle_memory_that_cant_be_saved_still_reports_the_pass(
+    folder, dolphin, capsys, sent, monkeypatch,
+):
+    """CodeRabbit 4608135785: saving intake's memory failing doesn't skip
+    what runs after the pass; it fails the run and says why."""
+    from services.preferences_store import preferences_store
+
+    game = _game(folder)
+    _cli(capsys, "run-rules", "--json")  # seen
+    _new_process()
+    real_put = preferences_store.put
+
+    async def put(key, value):
+        if key == "inbox_settle":
+            raise OSError("database is locked")
+        return await real_put(key, value)
+
+    monkeypatch.setattr(preferences_store, "put", put)
+    calls = []
+    from services.inbox import report
+
+    real_after = report.after_pass
+
+    async def after_pass(results):
+        calls.append(results)
+        return await real_after(results)
+
+    monkeypatch.setattr(report, "after_pass", after_pass)
+    code, lines, _err = _cli(capsys, "run-rules", "--json")
+
+    assert code == 1
+    assert not game.exists()  # taken
+    assert len(calls) == 1  # what runs after the pass ran: hooks (scan) and summary
+    [event] = [e for e in sent if e.kind == "inbox_pass"]
+    assert event.data["placed"] == 1
+    errors = [line for line in _inbox_lines(lines) if line["status"] == "error"]
+    assert ["database is locked" in line["reason"] for line in errors] == [True]
+
+
+def test_a_deferred_move_to_processed_is_finished_by_the_next_run(
+    folder, dolphin, capsys, monkeypatch,
+):
+    """CodeRabbit 4608135794: the original was locked by another process
+    through the end of the run, so its move to processed/ was put off. The
+    duty is kept with the settle memory, and the next run moves it, with no
+    hold and no Finding, and doesn't copy it again."""
+    from services import findings
+    from services.inbox import intake
+
+    game = _game(folder)
+    _cli(capsys, "run-rules", "--json")  # seen
+    _new_process()
+    real_lock_all = intake._lock_all
+
+    async def originals_in_use(paths, *, allow_existing):
+        if allow_existing:  # the originals' locks, for the move
+            return paths[0]
+        return await real_lock_all(paths, allow_existing=allow_existing)
+
+    monkeypatch.setattr(intake, "_lock_all", originals_in_use)
+    code, _lines, err = _cli(capsys, "run-rules", "--json")
+    assert code == 0, err
+    assert game.exists()
+    [placed] = list((folder["vol"] / "ROMs").rglob("Sunshine.iso"))
+    _new_process()
+
+    monkeypatch.setattr(intake, "_lock_all", real_lock_all)
+    code, lines, err = _cli(capsys, "run-rules", "--json")
+
+    assert code == 0, err
+    assert not game.exists()
+    assert (folder["vol"] / "Downloads" / "processed" / "Sunshine.iso").exists()
+    assert list((folder["vol"] / "ROMs").rglob("Sunshine*")) == [placed]
+    assert [line for line in lines if line.get("mode") == "inbox_copy"] == []
+    assert [f for f in findings.list_findings() if f["kind"] in findings.INBOX_KINDS] == []
+
+
 def test_an_idle_inbox_exits_0_with_no_inbox_line(folder, dolphin, capsys, sent):
     for _ in range(2):
         code, lines, err = _cli(capsys, "run-rules", "--json")

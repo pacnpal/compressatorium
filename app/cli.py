@@ -1646,7 +1646,11 @@ async def _run_rules_pass(chosen: list, printer: Printer, state: RunState) -> in
         item = Item(path=job.file_path, mode=getattr(job.mode, "value", job.mode))
         _finish(item, job)
         _finish_check_run(item, job)
-        failed = failed or item.status in ("failed", "cancelled")
+        # An Inbox job that fails leaves its Finding and isn't a Rule's
+        # failure (CodeRabbit 4608135778); an Inbox that can't be polled
+        # still fails the run, from the pass.
+        if getattr(job, "inbox_id", None) is None:
+            failed = failed or item.status in ("failed", "cancelled")
         # An intake job names its own Library (#433, Codex 4607940252). A
         # sweep's job that ends while its sweep is still running has no owner
         # yet; the Library being swept queued it.
@@ -1739,15 +1743,23 @@ async def _inbox_pass(chosen: list, printer: Printer, state: RunState, jobs) -> 
         await jobs.drain()
         await intake.drain()
         results += await intake.finish_all(library_ids=wanted)
-        every = {inbox.id for inbox in await run_in_threadpool(inbox_store.all_inboxes)}
-        await preferences_store.put(INBOX_SETTLE_KEY, intake.settle_memory(every))
-        summary = await report.after_pass(results)
     except Exception as exc:  # the Rule sweeps already ran; say so and fail the run
         logger.warning("run-rules: the Inbox pass failed: %s", exc, exc_info=True)
         line = _inbox_line(None, status="error", reason=f"inbox_pass_failed: {exc}")
         printer.summary(line, _inbox_text(line))
         return True
     failed = False
+    try:
+        every = {inbox.id for inbox in await run_in_threadpool(inbox_store.all_inboxes)}
+        await preferences_store.put(INBOX_SETTLE_KEY, intake.settle_memory(every))
+    except Exception as exc:
+        # On its own (CodeRabbit 4608135785): what the pass did is still
+        # reported and RomM still scans; the run fails and says why.
+        logger.warning("run-rules: could not save intake's memory: %s", exc, exc_info=True)
+        line = _inbox_line(None, status="error", reason=f"inbox_memory_not_saved: {exc}")
+        printer.summary(line, _inbox_text(line))
+        failed = True
+    summary = await report.after_pass(results)
     for library_id, entry in summary["libraries"].items():
         # An Inbox that couldn't be polled (its folder gone, outside a
         # Volume, its Library missing) fails the run like a failed sweep

@@ -7706,7 +7706,9 @@ the Findings' reasons, the errors and the scan outcome. Every result's real
 `error` is carried in the summary (`errors` per Library); `poll_running` and
 `inbox_removed` aren't failures. An error notifies only when it's news: `poll`
 sets `error_new` when its error differs from the Inbox's previous
-`state.error`, so an Inbox left unreadable doesn't notify every minute on the
+`state.error` (a poll that raises keeps its error the same way, CodeRabbit
+4608135791, and `poll_all` compares one that escapes `poll` too), so an Inbox
+left unreadable doesn't notify every minute on the
 server, and notifies again once it was fixed and breaks again. A
 `run-rules` process starts with no state, so each run that hits it reports
 it. A pass that placed and left nothing and hit no new error sends nothing
@@ -7731,11 +7733,22 @@ answer 409 or 503.
 **From `run-rules`** (§3.3.17). The CLI is a new process each run, so the
 settle memory (seen, held, what an ownership hold depends on, and the last
 poll's error, so the same outage isn't notified again each run, Codex
-4608095505) is kept
+4608095505, and each original whose move to `processed/` was put off
+because another process held it, with its files, identities and output,
+CodeRabbit 4608135794) is kept
 between runs: `intake.settle_memory(inbox_ids)` serialises it and
 `intake.restore_settle_memory` takes it back (what the process already knows
 wins; an unreadable entry is dropped, so the file is simply seen again), under
-the `inbox_settle` preference. `poll_all(library_ids=...)` polls only the
+the `inbox_settle` preference. A put-off move comes back as a flight with
+only its archival left: the next poll's `_settle_flights` retries the move,
+which goes ahead only while the original's fingerprint and identities are
+the ones taken; changed, the file is new and is taken normally. Saving the
+memory is guarded on its own (CodeRabbit 4608135785): if it fails, the run
+still runs `after_pass` (scan, summary), prints an
+`inbox_memory_not_saved` error line and exits 1. An Inbox job (one with an
+`inbox_id`) that fails doesn't fail the run: it leaves its Finding, which is
+the report (CodeRabbit 4608135778); a Rule job that fails, or an Inbox that
+can't be polled, still does. `poll_all(library_ids=...)` polls only the
 Inboxes of the Libraries the run swept. Every job intake makes is tagged when
 it is made (`intake._tag`: `ConversionJob.library_id` and `inbox_id`), and
 run-rules names a job's Library from that, not from which poll was running

@@ -403,6 +403,36 @@ async def test_a_poll_error_is_in_the_pass_summary_once(vol, db, sent):
 
 
 @pytest.mark.asyncio
+async def test_a_poll_that_raises_is_notified_once_per_change(vol, db, sent, monkeypatch):
+    """CodeRabbit 4608135791: a poll that raises goes through the same
+    last-error comparison as a listing error: the same exception on three
+    ticks notifies once, and again only after a recovery."""
+    from services.inbox import intake
+
+    box = _folder_inbox(vol)
+    real = intake._settle_flights
+
+    async def broken(*_args):
+        raise RuntimeError("the state is broken")
+
+    def events():
+        return [e for e in sent if e.kind == "inbox_pass"]
+
+    monkeypatch.setattr(intake, "_settle_flights", broken)
+    summaries = [await _pass(now) for now in range(3)]
+    assert len(events()) == 1
+    assert all(s["libraries"][box.library_id]["errors"] for s in summaries)
+
+    monkeypatch.setattr(intake, "_settle_flights", real)
+    assert (await _pass(3))["libraries"] == {}
+    monkeypatch.setattr(intake, "_settle_flights", broken)
+    await _pass(4)
+
+    assert len(events()) == 2
+    assert "the state is broken" in events()[0].body
+
+
+@pytest.mark.asyncio
 async def test_a_poll_skipped_or_removed_mid_pass_is_not_an_error(vol, db, sent):
     from services.inbox import report
 

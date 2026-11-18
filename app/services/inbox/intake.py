@@ -549,13 +549,21 @@ async def poll_all(
             continue
         if should_stop():
             break
+        state = _state(inbox.id)
+        previous_error = state.error
         try:
             results.append(await poll(inbox, now=now, should_stop=should_stop))
         except Exception as exc:
             logger.warning("inbox: polling %s failed", inbox.folder, exc_info=True)
+            # The same last-error comparison as a listing error (CodeRabbit
+            # 4608135791): kept as the Inbox's error, news only when it
+            # differs from the error before this poll.
+            error = f"Polling the Inbox failed: {exc}"
+            state.error = error
             results.append({
                 "inbox_id": inbox.id, "library_id": inbox.library_id,
-                "placed": [], "left": [], "error": f"Polling the Inbox failed: {exc}",
+                "placed": [], "left": [], "error": error,
+                "error_new": error != previous_error,
             })
     return results
 
@@ -665,6 +673,13 @@ async def poll(
             else:
                 result["waiting"] += 1
         state.waiting = result["waiting"]
+        return result
+    except Exception as exc:
+        # Kept as the Inbox's error like a listing error, so it goes through
+        # the same comparison (CodeRabbit 4608135791), and what was placed or
+        # left before it raised is still reported.
+        logger.warning("inbox: polling %s failed", inbox.folder, exc_info=True)
+        state.error = result["error"] = f"Polling the Inbox failed: {exc}"
         return result
     finally:
         state.last_poll = now
@@ -1759,7 +1774,8 @@ async def _copy_locked(
 def settle_memory(inbox_ids: set[int]) -> dict[str, Any]:
     """What intake remembers between polls of the Inboxes *inbox_ids*, as
     JSON: the files seen settling (fingerprint and since when), the ones
-    held with a Finding, and the last poll's error. ``run-rules`` is a new process each time, so it
+    held with a Finding, the last poll's error, and the originals whose move
+    to ``processed/`` was put off. ``run-rules`` is a new process each time, so it
     keeps this between runs (:func:`restore_settle_memory`): a file one run
     saw is taken by the next once its settle time has passed, and a held
     file isn't reported again, as on the server's tick."""
@@ -1777,6 +1793,18 @@ def settle_memory(inbox_ids: set[int]) -> dict[str, Any]:
             # The last poll's error, so the same outage isn't news to the
             # next run's summary (Codex 4608095505).
             "error": state.error,
+            # Originals whose output is in the Library but whose move to
+            # processed/ was put off (another process held one): the next run
+            # does only that move (CodeRabbit 4608135794).
+            "archive": {
+                path: {
+                    "fingerprint": flight.fingerprint, "files": list(flight.files),
+                    "platform": flight.platform, "identities": flight.identities,
+                    "output": flight.archive,
+                }
+                for path, flight in state.flights.items()
+                if flight.job_id is None and flight.archive is not None
+            },
         }
     return memory
 
@@ -1796,6 +1824,23 @@ def restore_settle_memory(memory: dict[str, Any] | None) -> None:
                 state.held_by.setdefault(path, tuple(tuple(item) for item in depends))
             if state.error is None and kept.get("error"):
                 state.error = str(kept["error"])
+            for path, duty in (kept.get("archive") or {}).items():
+                if path in state.flights:
+                    continue
+                # In flight with its archival put off: the next poll does
+                # only the move, and only while the original is still the
+                # file that was taken (its fingerprint and identities);
+                # changed, it is new and taken normally.
+                state.flights[path] = _Flight(
+                    fingerprint=str(duty["fingerprint"]),
+                    files=[str(f) for f in duty["files"]],
+                    platform=str(duty["platform"]),
+                    identities={
+                        str(name): {str(k): int(v) for k, v in ids.items()}
+                        for name, ids in (duty.get("identities") or {}).items()
+                    },
+                    archive=str(duty.get("output") or ""),
+                )
         except (TypeError, ValueError, AttributeError):
             logger.warning("inbox: dropped the kept intake state of Inbox %s", key)
 

@@ -2674,13 +2674,17 @@ conversions and copies it starts finish before it exits, and their originals
 move to `processed/`. It prints one line per Library whose Inboxes placed or
 left something (`"inbox": true` in `--json`, with the outputs placed, the files
 left with their Finding, and RomM's scan), and sends the pass summary
-notification. A file left with a Finding doesn't change the exit status, but
+notification. A file left with a Finding (an Inbox copy or conversion that
+failed included) doesn't change the exit status, but
 an Inbox that can't be polled prints an `error` line (`"error"` in `--json`)
 and makes the run exit `1`, as a failed sweep does, on every run it lasts;
 the summary notification goes out only when the error changes. A stop admits
 no more files; what it already started finishes or is cancelled with the
 run's jobs. Each conversion is settled as it ends, so a big pass loses none
-to a short job history.
+to a short job history. An original another process still held at the end
+of a run is moved to `processed/` by the next run. If what intake remembers
+between runs can't be saved, the pass is still reported and the run exits
+`1`.
 `--dry-run` polls no Inbox and says so (`skipped`, `dry_run`).
 
 Before it sweeps RomM, `run-rules` does the RomM upkeep the server does in the

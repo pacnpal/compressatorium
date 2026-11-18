@@ -153,7 +153,10 @@
   exit 1 every run it lasts. An output that reached the Library is scanned
   and summarised even when its original can't be moved to `processed/`, and
   `run-rules` settles each conversion as it ends, so a big pass loses none to
-  a short job history. A stop during
+  a short job history. An Inbox job that fails leaves its Finding without
+  failing the run, an original another process held is moved by the next
+  run, and a pass whose memory can't be saved is still reported. A stop
+  during
   the pass takes no more files, and a conversion or copy cancelled because
   the app or `run-rules` was stopping (`docker stop`, Ctrl-C) leaves the file
   with no Finding, to be taken once it settles again; only a job you cancel
