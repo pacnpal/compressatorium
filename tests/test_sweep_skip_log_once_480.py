@@ -388,3 +388,35 @@ async def test_a_check_rule_with_no_verifier_is_logged_once_per_change(
         await sweep.sweep(library, ignore_schedule=True)
         await sweep.sweep(library, ignore_schedule=True)
     assert len(_skips(caplog)) == 1, _skips(caplog)
+
+
+@pytest.mark.asyncio
+async def test_a_skipped_check_rule_says_its_dropped_setting_only_when_it_runs(
+    tree: Path, tool_ready, queue, caplog,
+) -> None:
+    """A check Rule edited straight in the database with a timezone this
+    machine doesn't know: skipped every tick while its verifier is missing,
+    so it says the dropped timezone once it runs, not on each of those ticks."""
+    from services import libraries
+    from services.rules import store, sweep
+    from services.rules.rules import CHECK
+
+    (tree / "ps2" / "Ico.chd").write_bytes(b"\0" * 1024)
+    lib = await _register(tree)
+    await preferences_store.put(store.rules_key(CHECK), {
+        f"{lib['id']}:ps2": {"enabled": True, "timezone": "Mars/Olympus_Mons"},
+    })
+    library = libraries.get(lib["id"])
+
+    tool_ready["ready"] = False
+    with caplog.at_level(logging.DEBUG):
+        for _ in range(3):
+            await sweep.sweep(library, ignore_schedule=True, dry_run=True)
+    assert [m for m in caplog.messages if "Mars/Olympus_Mons" in m] == []
+
+    tool_ready["ready"] = True
+    with caplog.at_level(logging.DEBUG):
+        await sweep.sweep(library, ignore_schedule=True, dry_run=True)
+    lines = [m for m in caplog.messages if "Mars/Olympus_Mons" in m]
+    assert len(lines) == 1, caplog.messages
+    assert lines[0].startswith("folder_library:") and "check" in lines[0], lines[0]

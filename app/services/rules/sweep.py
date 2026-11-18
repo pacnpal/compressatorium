@@ -2211,9 +2211,8 @@ async def _sweep_locked(
             # Its scheduled run is still checking: one budget per window.
             continue
         if kind == CHECK:
-            # It runs: what the sanitizer dropped or refused on it is said
-            # once, here, for every kind of Library (#477), not on each read.
-            report_rule_changes(library, platform_ref, rule, kind=kind)
+            # What the sanitizer dropped or refused on it is said by
+            # `_sweep_check`, once it knows the Rule runs (#477, #480).
             if await _sweep_check(
                 library, platform_id, rule, result, active_paths,
                 picked=picked, check_runs=check_runs, dry_run=dry_run,
@@ -2948,6 +2947,11 @@ async def _sweep_check(
     elif not unresponsive:
         # Every Image it reached had its verifier: whatever was missing is back.
         _report_skip(library, CHECK, platform_id, "tool", None)
+    if chosen or not not_ready:
+        # It runs: what the sanitizer dropped or refused on it is said once,
+        # here (#477). Not for a Rule skipped because no verifier is
+        # installed: that one is tried, and would say it, on every tick (#480).
+        report_rule_changes(library, platform_ref, rule, kind=CHECK)
     result["considered"] += considered
     # Images a check Rule picked. Not conversions, so never in `queued` and
     # never against the per-sweep cap. Present only once a check Rule ran,

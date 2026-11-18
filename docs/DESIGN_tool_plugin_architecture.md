@@ -2829,9 +2829,11 @@ Rules the run loop skips:
 
 - `report_rule_changes(library, platform, rule, kind=, prefix=, seen=)` logs
   one line for a Rule about to run. The sweep calls it once per Rule it runs
-  (after the paused, due and active-check gates, for both kinds, and for a
-  conversion Rule after the skip checks below too), so any Library logs it
-  once per sweep that runs the Rule. An Inbox calls it as it converts under a
+  (after the paused, due and active-check gates, for both kinds, and after
+  the skip checks below too: for a conversion Rule once it passes them all,
+  for a check Rule from `_sweep_check` once it has listed its Images and
+  picked one or found no verifier missing), so any Library logs it once per
+  sweep that runs the Rule, and a Rule skipped every tick doesn't repeat it. An Inbox calls it as it converts under a
   Rule (`intake._take`), with `prefix="inbox"` and `seen` the pass's
   `_State.rules_reported`, so once per pass.
 - `_report_unrunnable(library, stored, rules)` runs in each sweep right after
