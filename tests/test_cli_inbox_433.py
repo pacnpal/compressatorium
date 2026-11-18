@@ -256,6 +256,56 @@ def test_a_stop_mid_conversion_leaves_the_file_to_be_taken_next_time(
     assert [f for f in findings.list_findings() if f["kind"] in findings.INBOX_KINDS] == []
 
 
+def test_each_inbox_job_line_names_the_library_it_came_from(
+    folder, dolphin, capsys, monkeypatch,
+):
+    """Codex 4607940252: a copy's job is made when its task runs, which can
+    be while another Library's Inbox is being polled. Each intake job carries
+    its Library and Inbox, and run-rules names the Library from that."""
+    from services import inbox, libraries
+    from services.inbox import intake
+    from services.job_manager import job_manager
+
+    vol = folder["vol"]
+    (vol / "ROMs2").mkdir()
+    (vol / "Downloads2").mkdir()
+    second = libraries.register(str(vol / "ROMs2"))
+    second_box = inbox.register(str(vol / "Downloads2"), second.id, 0)
+    first_game = _gamecube(vol / "Downloads" / "First.iso")
+    second_game = _gamecube(vol / "Downloads2" / "Second.iso")
+    _cli(capsys, "run-rules", "--json")  # seen
+    _new_process()
+
+    second_polling = asyncio.Event()
+    real_poll, real_copy = intake.poll, intake._copy
+
+    async def poll(box, **kwargs):
+        if box.id == second_box.id:
+            second_polling.set()
+        return await real_poll(box, **kwargs)
+
+    async def late_copy(box, *args):
+        if box.id == folder["inbox"].id:
+            await second_polling.wait()  # its job is made during the next poll
+        return await real_copy(box, *args)
+
+    monkeypatch.setattr(intake, "poll", poll)
+    monkeypatch.setattr(intake, "_copy", late_copy)
+    code, lines, err = _cli(capsys, "run-rules", "--json")
+
+    assert code == 0, err
+    copies = {
+        job_manager.jobs[line["path"].rsplit("/", 1)[-1]].filename: line["library"]
+        for line in lines if line.get("mode") == "inbox_copy"
+    }
+    assert copies == {
+        Path(first_game).name: folder["library"].id,
+        Path(second_game).name: second.id,
+    }
+    assert {job.library_id for job in job_manager.jobs.values()
+            if job.mode == "inbox_copy"} == {folder["library"].id, second.id}
+
+
 def test_library_limits_the_inbox_pass_to_its_inboxes(folder, dolphin, capsys):
     game = _game(folder)
 

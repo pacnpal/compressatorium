@@ -1646,9 +1646,13 @@ async def _run_rules_pass(chosen: list, printer: Printer, state: RunState) -> in
         _finish(item, job)
         _finish_check_run(item, job)
         failed = failed or item.status in ("failed", "cancelled")
-        # A job that ends while its own sweep is still running has no owner
+        # An intake job names its own Library (#433, Codex 4607940252). A
+        # sweep's job that ends while its sweep is still running has no owner
         # yet; the Library being swept queued it.
-        library_id = owners.get(job.id) or (sweeping[-1] if sweeping else None)
+        library_id = (
+            getattr(job, "library_id", None) or owners.get(job.id)
+            or (sweeping[-1] if sweeping else None)
+        )
         printer.line({"library": library_id, **item.convert_line()},
                      prefix=f"{library_id}: " if library_id else "")
 
@@ -1677,7 +1681,7 @@ async def _run_rules_pass(chosen: list, printer: Printer, state: RunState) -> in
         if not state.stopping:
             # Then one Inbox pass (#433), as the server's tick polls them
             # after its sweeps, under the scheduler lock this run holds.
-            failed = await _inbox_pass(chosen, printer, state, jobs, owners, sweeping) or failed
+            failed = await _inbox_pass(chosen, printer, state, jobs) or failed
     return EXIT_FAILED if failed or state.stopping else EXIT_OK
 
 
@@ -1694,8 +1698,7 @@ async def _inboxes_of(chosen: list) -> list:
     return [i for i in await run_in_threadpool(inbox_store.all_inboxes) if i.library_id in wanted]
 
 
-async def _inbox_pass(chosen: list, printer: Printer, state: RunState, jobs, owners: dict,
-                      sweeping: list) -> bool:
+async def _inbox_pass(chosen: list, printer: Printer, state: RunState, jobs) -> bool:
     """One poll of every Inbox feeding *chosen*, then what runs after a pass
     (``services.inbox.report``): RomM's scan and the summary notification.
 
@@ -1719,23 +1722,18 @@ async def _inbox_pass(chosen: list, printer: Printer, state: RunState, jobs, own
         return False
     try:
         intake.restore_settle_memory(await preferences_store.get(INBOX_SETTLE_KEY))
-        results = []
-        for library_id in dict.fromkeys(inbox.library_id for inbox in inboxes):
-            if state.stopping:
-                break
-            before = set(jobs.jobs)
-            sweeping.append(library_id)
-            # A stop admits nothing more (Codex 4607809613); what started drains.
-            results += await intake.poll_all(
-                library_ids={library_id}, should_stop=lambda: state.stopping,
-            )
-            for job_id in set(jobs.jobs) - before:
-                owners.setdefault(job_id, library_id)
+        wanted = {inbox.library_id for inbox in inboxes}
+        # A stop admits nothing more (Codex 4607809613); what started drains.
+        # Each job it makes names its own Library (``job.library_id``, Codex
+        # 4607940252), so the job lines don't depend on when a job was made.
+        results = await intake.poll_all(
+            library_ids=wanted, should_stop=lambda: state.stopping,
+        )
         if state.stopping:
             await jobs.cancel_all_jobs(reason=CANCEL_SHUTDOWN)
         await jobs.drain()
         await intake.drain()
-        results += await intake.finish_all(library_ids={i.library_id for i in inboxes})
+        results += await intake.finish_all(library_ids=wanted)
         every = {inbox.id for inbox in await run_in_threadpool(inbox_store.all_inboxes)}
         await preferences_store.put(INBOX_SETTLE_KEY, intake.settle_memory(every))
         summary = await report.after_pass(results)

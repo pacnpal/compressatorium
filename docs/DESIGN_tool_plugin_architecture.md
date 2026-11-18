@@ -6115,7 +6115,8 @@ whose sweep queued it.
 
 Then one Inbox pass (#433, `cli._inbox_pass`, §3.3.25) over the Inboxes of
 the Libraries it swept, still under the scheduler lock and inside the job
-runner: it restores intake's settle memory, polls each Library's Inboxes,
+runner: it restores intake's settle memory, polls those Libraries' Inboxes
+(each intake job's line names the Library from `job.library_id`),
 drains the jobs and copies the poll started, finishes them
 (`intake.finish_all`), saves the settle memory and runs
 `inbox.report.after_pass` (RomM's scan, the `inbox_pass` notification). It
@@ -7729,8 +7730,11 @@ between runs: `intake.settle_memory(inbox_ids)` serialises it and
 `intake.restore_settle_memory` takes it back (what the process already knows
 wins; an unreadable entry is dropped, so the file is simply seen again), under
 the `inbox_settle` preference. `poll_all(library_ids=...)` polls only the
-Inboxes of the Libraries the run swept, one Library at a time so each job's
-line names its Library. `intake.finish_all()` then does what the next poll
+Inboxes of the Libraries the run swept. Every job intake makes is tagged when
+it is made (`intake._tag`: `ConversionJob.library_id` and `inbox_id`), and
+run-rules names a job's Library from that, not from which poll was running
+when the job appeared: a copy's job is made when its task runs, which can be
+during another Inbox's poll (Codex 4607940252). `intake.finish_all()` then does what the next poll
 would on the server: settles the conversions that ended (originals to
 `processed/`), waits for every copy and move, and hands back what was placed
 or left, so nothing a run started is left in flight when it exits.

@@ -961,6 +961,9 @@ async def _convert(
         await _hold(inbox, state, path, fingerprint, findings.INBOX_FAILED,
                     f"Couldn't queue its conversion: {exc}", {"platform": platform})
         return "held"
+    for each in jobs:
+        # Before anything awaits: what reports the job names this Inbox.
+        _tag(each, inbox)
     with state.guard:
         revoked = state.revoked
         if not revoked:
@@ -976,6 +979,14 @@ async def _convert(
             await job_manager.cancel_job(each.id)
         return "retry"
     return "queued"
+
+
+def _tag(job: Any, inbox: inbox_store.Inbox) -> None:
+    """Mark an intake job with the Library and Inbox it came from (#433), so
+    whoever reports it names them, whenever the job is made (a copy's job is
+    made when its task runs, possibly while another Inbox is polled)."""
+    job.library_id = inbox.library_id
+    job.inbox_id = inbox.id
 
 
 def _cancelled_by_shutdown(job: Any) -> bool:
@@ -1432,6 +1443,7 @@ async def _copy(
         os.path.basename(path), ConversionMode.INBOX_COPY,
         message=f"Waiting to copy into {folder}",
     )
+    _tag(job, inbox)
     cancel = job_manager.get_cancel_event(job.id)
     outcome, why, output = "failed", "", None
     try:
