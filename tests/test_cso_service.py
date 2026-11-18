@@ -290,7 +290,13 @@ async def test_verify_applies_priority_wrappers(tmp_path, monkeypatch):
         return _FakeProcess(pid=13, chunks=[], returncode=0)
 
     monkeypatch.setattr(maxcso_module.asyncio, "create_subprocess_exec", fake_exec)
-    # A fixed prefix, so the handoff is checked whatever this host has.
+    # A fixed prefix, so the handoff is checked whatever this host has: no
+    # PATH lookup and no exec-format probe of a binary that isn't installed.
+    async def resolved(_owner=None):
+        return True
+
+    monkeypatch.setattr(runner_module, "_resolve_wrappers", resolved)
+    monkeypatch.setattr(runner_module, "_exec_format_problem", lambda _tool: None)
     owners = []
     monkeypatch.setattr(
         runner_module, "priority_prefix",

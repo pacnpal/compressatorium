@@ -879,11 +879,12 @@ async def test_a_job_whose_paths_are_on_a_stuck_mount_never_holds_the_loop(
     library = await _register(client, roms)
     release = threading.Event()
 
-    def stuck(_file_path):
+    def stuck(_job):
         release.wait(5)
         return []
 
-    monkeypatch.setattr(job_manager, "_track_candidate_paths", stuck)
+    # The files an active job reads, as its input locks name them (#449).
+    monkeypatch.setattr(job_manager, "_input_paths", stuck)
     monkeypatch.setattr(content_keys, "STALL_SECONDS", 0.5)
     try:
         job_id = await _start(client, library)

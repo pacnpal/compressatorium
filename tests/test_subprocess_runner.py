@@ -9,6 +9,7 @@ CLIs are unavailable in the sandbox.
 from __future__ import annotations
 
 import asyncio
+import errno
 import os
 import re
 import shutil
@@ -533,12 +534,19 @@ def _preexec_fn_lines(source: str) -> list[int]:
     import ast
 
     lines = []
-    for node in ast.walk(ast.parse(source)):
+    tree = ast.parse(source)
+    # `from subprocess import Popen as P` too (CodeRabbit 4616898209).
+    popen_names = {"Popen"} | {
+        alias.asname for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module == "subprocess"
+        for alias in node.names if alias.name == "Popen" and alias.asname
+    }
+    for node in ast.walk(tree):
         if isinstance(node, ast.Call):
             # Popen's seventh positional parameter is preexec_fn (CodeRabbit
             # 4615955530); None there passes nothing.
             name = getattr(node.func, "attr", None) or getattr(node.func, "id", None)
-            if name == "Popen" and len(node.args) > 6 and not (
+            if name in popen_names and len(node.args) > 6 and not (
                 isinstance(node.args[6], ast.Constant) and node.args[6].value is None
             ):
                 lines.append(node.lineno)
@@ -561,6 +569,9 @@ def test_the_preexec_fn_scan_sees_an_unpacked_mapping():
     assert _preexec_fn_lines('f(x, **{"env": e}, cwd=c)') == []
     assert _preexec_fn_lines("subprocess.Popen(a, -1, None, None, None, None, g)") == [1]
     assert _preexec_fn_lines("subprocess.Popen(a, -1, None, None, None, None, None)") == []
+    aliased = "from subprocess import Popen as Spawn\nSpawn(a, -1, None, None, None, None, g)"
+    assert _preexec_fn_lines(aliased) == [2]
+    assert _preexec_fn_lines(aliased.replace(", g)", ", None)")) == []
 
 
 def test_a_negative_nice_this_process_cannot_apply_is_left_off(monkeypatch):
@@ -1479,7 +1490,7 @@ def test_a_wrapper_lookup_that_stalls_runs_at_normal_priority(monkeypatch):
 
     assert (rc, out) == (0, b"ok\n")
     assert spawned == [cmd]  # no wrapper: normal priority
-    assert looked_up == [(runner_module._wrapper_path, ("nice",))]
+    assert len(looked_up) == 1  # one bounded lookup, of nice
     assert runner_module._WRAPPERS == {}
 
     # capture_verify too (CodeRabbit 4616275683): after the stalled lookup it
@@ -1498,3 +1509,71 @@ def test_a_wrapper_lookup_that_stalls_runs_at_normal_priority(monkeypatch):
     assert events[-1]["valid"] is False and not events[-1].get("inconclusive")
     assert "couldn't be started" not in events[-1]["message"]
     assert runner_module._WRAPPERS == {}
+
+
+def test_an_empty_verifier_behind_a_wrapper_is_no_verdict(tmp_path, monkeypatch):
+    """CodeRabbit 4616898119: `nice`/`ionice` exec through execvp, which hands
+    an empty executable to /bin/sh, and that exits 0. A wrapped tool the
+    kernel can't exec is refused before the spawn, as a direct exec raised,
+    and both verify paths report no verdict; a real verifier still runs."""
+    env_path = shutil.which("env")
+    monkeypatch.setattr(runner_module, "_WRAPPERS", {"nice": env_path})
+    monkeypatch.setattr(runner_module, "nice_value", lambda _owner=None: 0)
+    monkeypatch.setattr(runner_module, "nice_prefix", lambda _owner=None: [env_path])
+    empty = tmp_path / "verifier"
+    empty.write_bytes(b"")
+    empty.chmod(0o755)
+    target = tmp_path / "a.7z"
+    target.write_bytes(b"7z")
+    runner = SubprocessRunner(owner="test")
+
+    with pytest.raises(OSError) as raised:
+        asyncio.run(runner.run_capture([str(empty)]))
+    assert raised.value.errno == errno.ENOEXEC
+
+    async def capture(tool):
+        return [e async for e in runner.capture_verify(
+            [tool, str(target)], path=str(target), success_message="ok",
+        )]
+
+    async def stream(tool):
+        return [e async for e in runner.run_verify(
+            [tool, str(target)], path=str(target), parse_progress=lambda _l: None,
+            success_message="ok", failure_message="bad",
+        )]
+
+    for events in (asyncio.run(capture(str(empty))), asyncio.run(stream(str(empty)))):
+        assert events[-1]["valid"] is False and events[-1].get("inconclusive") is True
+    ran = asyncio.run(capture(sys.executable))[-1]  # it ran: a verdict, not "could not run"
+    assert ran["valid"] is False and not ran.get("inconclusive")
+    assert not runner.active_pids()
+
+
+
+
+def test_one_wrapper_lookup_at_a_time(monkeypatch):
+    """CodeRabbit 4616898109: while a lookup of `nice` is still out (its
+    caller gave up on it), no second one starts; the spawn runs unwrapped."""
+    monkeypatch.setattr(runner_module, "_WRAPPERS", {})
+    monkeypatch.setattr(runner_module, "_LOOKING_UP", {"nice"})
+    monkeypatch.setattr(runner_module, "nice_value", lambda _owner=None: 10)
+    probes = []
+
+    async def probe(*args, **_kwargs):
+        probes.append(args)
+
+    monkeypatch.setattr(runner_module, "_bounded_probe", probe)
+    assert asyncio.run(runner_module._resolve_wrappers("test")) is False
+    assert probes == []
+
+
+def test_a_wrapper_that_fails_to_start_is_looked_up_again(tmp_path, monkeypatch):
+    """A cached `nice` removed since: the spawn fails once, and the cache is
+    forgotten so the next spawn looks it up again (review 5960207187)."""
+    monkeypatch.setattr(runner_module, "_WRAPPERS", {"nice": str(tmp_path / "gone" / "nice")})
+    monkeypatch.setattr(runner_module, "nice_value", lambda _owner=None: 10)
+    monkeypatch.setattr(runner_module, "_can_renice", lambda _value: True)
+    with pytest.raises(FileNotFoundError):
+        asyncio.run(SubprocessRunner(owner="test").run_capture([sys.executable, "-c", "1"]))
+    assert runner_module._WRAPPERS == {}
+

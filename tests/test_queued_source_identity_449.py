@@ -477,3 +477,95 @@ def test_a_track_named_with_a_double_colon_is_a_literal_file(tmp_volume, tmp_pat
     identity = queued_source_identity(str(cue), "createcd")
     assert [each["path"] for each in identity["companions"]] == [str(track)]
     assert queued_source_problem(str(cue), identity, "createcd") is None
+
+
+def test_a_folder_named_with_a_double_colon_is_a_literal_folder(tmp_volume, tmp_path):
+    """CodeRabbit 4616898142: the resolved Source path is literal when its
+    Volume root is chosen, so a folder named `a::b` is no archive."""
+    from utils.path_utils import queued_source_identity, queued_source_problem
+
+    folder = tmp_path / "a::b"
+    folder.mkdir()
+    (folder / "Game.iso").write_bytes(b"disc")
+    # Submitted through a link (a submitted `::` names an archive member).
+    (tmp_path / "games").symlink_to(folder, target_is_directory=True)
+    iso = tmp_path / "games" / "Game.iso"
+    identity = queued_source_identity(str(iso), "cso_compress")
+    assert identity["path"] == str(folder / "Game.iso")
+    assert queued_source_problem(str(iso), identity, "cso_compress") is None
+
+
+def _in_place_job(tmp_path, job_id):
+    from models import ConversionJob, ConversionMode, JobStatus
+    from utils.path_utils import queued_source_identity
+
+    cue = tmp_path / "Game.cue"
+    cue.write_text(CUE)
+    (tmp_path / "Game.bin").write_bytes(b"\1" * 2352)
+    job = ConversionJob(
+        id=job_id, file_path=str(cue), filename=cue.name,
+        mode=ConversionMode.CREATECD, status=JobStatus.QUEUED,
+        created_at=datetime.now(timezone.utc), output_path=str(tmp_path / "Game.chd"),
+    )
+    job._source_identity = queued_source_identity(job.file_path, job.mode.value)
+    return job
+
+
+@pytest.mark.asyncio
+async def test_a_source_check_that_times_out_is_no_verdict(tmp_volume, tmp_path, monkeypatch):
+    """Review 5960207187: the job's own Source check timing out refuses the
+    job but marks it unanswered, so a Rule's failed-hold skips it, like a
+    stalled capture."""
+    import time
+    from types import SimpleNamespace
+
+    from services import job_manager as jm
+    from services.rules import sweep
+
+    job = _in_place_job(tmp_path, "timeout449")
+    monkeypatch.setattr(jm, "_CANONICAL_PROBE_SECONDS", 0.1)
+    monkeypatch.setattr(jm, "queued_source_problem", lambda *_a, **_k: time.sleep(1))
+
+    problem = await jm.job_manager._source_identity_problem_bounded(job)
+
+    assert "couldn't be checked" in problem
+    assert sweep._never_checked(SimpleNamespace(_source_identity=job._source_identity))
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_during_the_source_check_ends_the_job_cancelled(
+    tmp_volume, tmp_path, monkeypatch,
+):
+    """Review 5960207187: a Cancel while the Source check waits is the job's
+    cancel, never a refusal."""
+    import time
+
+    from services import job_manager as jm
+    from services.subprocess_runner import ConversionCancelled
+
+    job = _in_place_job(tmp_path, "cancel449")
+    cancel = asyncio.Event()
+
+    def slow(*_args, **_kwargs):
+        time.sleep(1)
+
+    monkeypatch.setattr(jm, "queued_source_problem", slow)
+    asyncio.get_running_loop().call_later(0.05, cancel.set)
+    with pytest.raises(ConversionCancelled):
+        await jm.job_manager._source_identity_problem_bounded(job, cancel)
+
+
+def test_the_active_job_inventory_uses_the_captured_companions(tmp_volume, tmp_path, monkeypatch):
+    """Review 5960207187: another sweep asking which files queued jobs use
+    gets the captured companions, without the sheet being read again."""
+    from services import job_manager as jm
+
+    job = _in_place_job(tmp_path, "inventory449")
+
+    def no_reads(*_args, **_kwargs):
+        raise AssertionError("the sheet was read for the active-job inventory")
+
+    monkeypatch.setattr(jm, "build_delete_plan", no_reads)
+    paths = jm.job_manager._candidate_paths(job)
+    assert paths[:2] == [str(tmp_path / "Game.cue"), str(tmp_path / "Game.bin")]
+

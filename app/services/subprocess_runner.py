@@ -32,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import contextvars
+import errno
 import functools
 import logging
 import os
@@ -691,14 +692,81 @@ async def _resolve_wrappers(owner: str | None) -> bool:
     for name in wanted:
         if name in _WRAPPERS:
             continue
+        if name in _LOOKING_UP:
+            # One lookup per wrapper at a time, even after its caller gave up
+            # on it (CodeRabbit 4616898109): a PATH entry that never answers
+            # costs one probe thread, not one per spawn until the probe slots
+            # run out. This spawn runs at normal priority meanwhile.
+            return False
+        _LOOKING_UP.add(name)
+
+        def lookup(name: str = name) -> str | None:
+            try:
+                return _wrapper_path(name)
+            finally:
+                _LOOKING_UP.discard(name)  # the thread finished, answer or not
+
         try:
-            await _bounded_probe(_wrapper_path, name)
-        except asyncio.TimeoutError:
+            await _bounded_probe(lookup)
+        except asyncio.TimeoutError as exc:
+            if isinstance(exc, ProbeCapacityExceeded):
+                _LOOKING_UP.discard(name)  # never started
             logging.getLogger(f"chd.{owner}").warning(
                 "Looking up %s on PATH did not answer; running at normal priority", name,
             )
             return False
     return True
+
+
+_LOOKING_UP: set[str] = set()
+
+
+def _exec_format_problem(tool: str) -> OSError | None:
+    """``OSError(ENOEXEC)`` when *tool* is a file the kernel can't execute
+    (empty, or neither an ELF binary nor a ``#!`` script), else None.
+
+    ``nice``/``ionice`` exec through ``execvp``, which hands such a file to
+    ``/bin/sh``: an empty verifier then exits 0 and would pass every check
+    (CodeRabbit 4616898119), where a direct exec raised. Checked only for a
+    wrapped spawn, so the wrapper can't turn that into a run. A tool that
+    isn't there or can't be opened is left to the wrapper (126/127).
+    Blocking."""
+    path = tool if os.sep in tool else shutil.which(tool)
+    if path is None:
+        return None
+    try:
+        with open(path, "rb") as handle:
+            head = handle.read(4)
+    except OSError:
+        return None
+    if head.startswith((b"\x7fELF", b"#!")):
+        return None
+    return OSError(errno.ENOEXEC, os.strerror(errno.ENOEXEC), tool)
+
+
+async def _wrapped_command(owner: str | None, cmd: list[str]) -> tuple[list[str], bool]:
+    """*cmd* behind the priority wrappers *owner*'s settings ask for, and
+    whether it got them: the one place every spawn method builds its argv.
+    The wrappers come from the cache, looked up off the loop first
+    (:func:`_resolve_wrappers`); a stalled lookup means no wrappers. A wrapped
+    tool the kernel couldn't exec raises ``OSError`` (ENOEXEC) as a direct
+    exec would have (:func:`_exec_format_problem`)."""
+    prefix = priority_prefix(owner) if await _resolve_wrappers(owner) else []
+    if prefix:
+        try:
+            problem = await _bounded_probe(_exec_format_problem, cmd[0])
+        except asyncio.TimeoutError:
+            problem = None  # couldn't tell: the wrapper runs it, as before
+        if problem is not None:
+            raise problem
+    return prefix + cmd, bool(prefix)
+
+
+def _forget_wrappers() -> None:
+    """A wrapped spawn failed to start: the cached ``nice``/``ionice`` may be
+    gone (CodeRabbit, review 5960207187), so the next spawn looks them up
+    again rather than failing until the process restarts."""
+    _WRAPPERS.clear()
 
 
 def _not_launched_event(returncode: int | None, wrapped: bool, said: bytes | str) -> dict | None:
@@ -2046,19 +2114,25 @@ class SubprocessRunner:
         stdin=None,
         stderr=asyncio.subprocess.PIPE,
         env: Mapping[str, str] | None = None,
+        wrapped: bool = False,
     ):
         """Spawn ``cmd`` (a list argv, never a shell) with stdout on a pipe.
 
         The one spawn site :meth:`run_capture` and :meth:`hash_stdout` share,
         so the argv-from-the-tool's-config spawn exists once in this module.
         """
-        return await asyncio.create_subprocess_exec(  # nosemgrep
-            cmd[0], *cmd[1:],
-            stdin=stdin,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=stderr,
-            env=env,
-        )
+        try:
+            return await asyncio.create_subprocess_exec(  # nosemgrep
+                cmd[0], *cmd[1:],
+                stdin=stdin,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=stderr,
+                env=env,
+            )
+        except OSError:
+            if wrapped:
+                _forget_wrappers()
+            raise
 
     async def run_capture(
         self,
@@ -2115,14 +2189,13 @@ class SubprocessRunner:
         # full disc for DAT hashing) is just as heavy as a conversion. Command
         # wrappers only, never a preexec_fn (see priority_prefix). Resolved
         # before the cancel check, which then also covers its (bounded) wait.
-        prefix = priority_prefix(self._owner) if await _resolve_wrappers(self._owner) else []
+        cmd, wrapped = await _wrapped_command(self._owner, cmd)
         if cancel_event is not None and cancel_event.is_set():
             return None, b"", b""
-        cmd = prefix + cmd
         if wrapped_into is not None:
             # Whether this run had a wrapper, for capture_verify's 126/127
             # reading: asking the cache again later could answer otherwise.
-            wrapped_into.append(bool(prefix))
+            wrapped_into.append(wrapped)
 
         process = await self._spawn_piped(
             cmd,
@@ -2135,6 +2208,7 @@ class SubprocessRunner:
                 else asyncio.subprocess.PIPE
             ),
             env=env,
+            wrapped=wrapped,
         )
         self.track_pid(process.pid)
         comm = asyncio.ensure_future(process.communicate())
@@ -2205,11 +2279,10 @@ class SubprocessRunner:
 
         # Command wrappers, never a preexec_fn: see priority_prefix. Resolved
         # before the cancel check, which then also covers its (bounded) wait.
-        prefix = priority_prefix(self._owner) if await _resolve_wrappers(self._owner) else []
+        label = os.path.basename(cmd[0])
+        cmd, wrapped = await _wrapped_command(self._owner, cmd)
         if cancel_event is not None and cancel_event.is_set():
             raise ReadCancelled("Read cancelled")
-        label = os.path.basename(cmd[0])
-        cmd = prefix + cmd
         process = await self._spawn_piped(
             cmd,
             stdin=(
@@ -2218,6 +2291,7 @@ class SubprocessRunner:
                 else asyncio.subprocess.DEVNULL
             ),
             env=env,
+            wrapped=wrapped,
         )
         self.track_pid(process.pid)
         hasher = new_hasher(algorithm)
@@ -2460,8 +2534,11 @@ class SubprocessRunner:
         """
         # nice/ionice as command wrappers, never a preexec_fn: see
         # priority_prefix.
-        prefix = priority_prefix(self._owner) if await _resolve_wrappers(self._owner) else []
-        cmd = prefix + cmd
+        try:
+            cmd, wrapped = await _wrapped_command(self._owner, cmd)
+        except OSError as exc:  # a verifier the kernel can't exec: no verdict
+            yield verify_exception_event(exc, prefix="Verification could not run")
+            return
 
         # One the verifier can't open is no verdict, decided before it runs
         # (#359): chdman's exit 1 on "Permission denied" would read as one.
@@ -2488,14 +2565,19 @@ class SubprocessRunner:
             yield self._verify_error("Verification cancelled", cancelled=True)
             return
 
-        process = await asyncio.create_subprocess_exec(  # nosemgrep
-            cmd[0], *cmd[1:],
-            # Never the caller's terminal: a tool that asks for input (7z
-            # wanting a password) fails at once instead of waiting (#306).
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-        )
+        try:
+            process = await asyncio.create_subprocess_exec(  # nosemgrep
+                cmd[0], *cmd[1:],
+                # Never the caller's terminal: a tool that asks for input (7z
+                # wanting a password) fails at once instead of waiting (#306).
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+        except OSError:
+            if wrapped:
+                _forget_wrappers()
+            raise
         self.track_pid(process.pid)
         if self._logger.isEnabledFor(logging.DEBUG):
             self._logger.debug(
@@ -2627,7 +2709,7 @@ class SubprocessRunner:
                 yield {"type": "complete", "valid": True, "message": success_message}
             else:
                 not_launched = _not_launched_event(
-                    process.returncode, bool(prefix), "\n".join(output_lines[-6:]),
+                    process.returncode, wrapped, "\n".join(output_lines[-6:]),
                 )
                 if not_launched is not None:
                     yield not_launched
@@ -2723,25 +2805,33 @@ class SubprocessRunner:
                 ) from None
 
         # nice/ionice as command wrappers, never a preexec_fn: see
-        # priority_prefix.
-        prefix = priority_prefix(self._owner) if await _resolve_wrappers(self._owner) else []
-        cmd = prefix + cmd
+        # priority_prefix. No cancel check before the spawn, deliberately:
+        # ConversionCancelled from run() means the child ran, which callers
+        # rely on before removing a partial output (see
+        # test_cancel_event_preset_terminates_and_raises); a cancel that landed
+        # meanwhile is honoured by the watcher as soon as it spawns.
+        cmd, wrapped = await _wrapped_command(self._owner, cmd)
 
         # cmd is built from validated settings paths (no shell interpretation);
         # create_subprocess_exec passes the arg list directly (shell=False), so
         # there is no shell expansion / injection surface. Same call shape that
         # already lives unsuppressed in chdman/dolphin/z3ds; flagged here only
         # because the line is new in this extracted module.
-        process = await asyncio.create_subprocess_exec(  # nosemgrep
-            cmd[0], *cmd[1:],
-            # Never the caller's terminal: a tool that asks for input (7z
-            # wanting a password) fails at once instead of waiting (#306).
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-            cwd=cwd,
-            env=env,
-        )
+        try:
+            process = await asyncio.create_subprocess_exec(  # nosemgrep
+                cmd[0], *cmd[1:],
+                # Never the caller's terminal: a tool that asks for input (7z
+                # wanting a password) fails at once instead of waiting (#306).
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+                cwd=cwd,
+                env=env,
+            )
+        except OSError:
+            if wrapped:
+                _forget_wrappers()
+            raise
         self.track_pid(process.pid)
         # Everything below runs under try/finally so that if the caller stops
         # iterating (generator aclose / task cancellation) or an unexpected

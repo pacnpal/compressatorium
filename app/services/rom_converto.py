@@ -310,9 +310,10 @@ class RomConvertoService:
             )
         out = (stdout or b"").decode("utf-8", errors="replace").strip()
         err = (stderr or b"").decode("utf-8", errors="replace").strip()
-        # The version line on stdout, or on stderr when stdout is empty (a
-        # build that prints it there), skipping any wrapper diagnostics.
-        lines = out.splitlines()[:1] if out else err.splitlines()
+        # The version line on stdout's first line, else anywhere on stderr (a
+        # build that prints it there, beside any wrapper diagnostics), and only
+        # from a clean exit.
+        lines = out.splitlines()[:1] + err.splitlines()
         if returncode == 0 and any(line.startswith("rom-converto") for line in lines):
             return True, ""
         said = (out or err).splitlines()[0] if (out or err) else ""

@@ -369,6 +369,16 @@ async def test_a_version_line_on_stderr_alone_is_ready(tmp_path, monkeypatch):
     SERVICE.forget_readiness()
     assert await TOOL.is_ready() is True
 
+    # CodeRabbit 4616898094: something else on stdout, the version on stderr.
+    (tmp_path / "both").mkdir()
+    both = _write_stub(
+        tmp_path / "both" / "rom-converto",
+        "import sys\nprint('a banner')\nsys.stderr.write('rom-converto 0.24.0\\n')\n",
+    )
+    monkeypatch.setattr(SERVICE, "binary_path", str(both))
+    SERVICE.forget_readiness()
+    assert await TOOL.is_ready() is True
+
     (tmp_path / "other").mkdir()
     other = _write_stub(tmp_path / "other" / "rom-converto", "print('something else 1.0')\n")
     monkeypatch.setattr(SERVICE, "binary_path", str(other))

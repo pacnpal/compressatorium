@@ -254,7 +254,7 @@ async def test_a_cancel_during_the_identity_preflight_releases_everything(
     job = await _queue(env, game, inbox)
     entered = asyncio.Event()
 
-    async def hangs(_job):
+    async def hangs(_job, _cancel_event=None):
         entered.set()
         await asyncio.sleep(30)
 

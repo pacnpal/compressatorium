@@ -549,16 +549,25 @@ The runner applies the priority policy, never the tool: every spawn method
 `nice -n <level>` then `ionice -t -c <class> -n <level>` resolved from the
 `COMPRESSATORIUM_TOOL_*` settings and any `COMPRESSATORIUM_<OWNER>_*` override.
 A tool passes the bare argv; it never adds `nice`/`ionice` itself, which would
-apply them twice. Either binary missing, its prefix is empty and the child runs
-at normal priority. Each is looked up once per process, the first time its
-setting asks for it, and cached as an absolute path (`_wrapper_path`; nothing
-is scanned at import, and a tool started in another folder still finds it).
-A spawn makes that lookup off the event loop, bounded (`_resolve_wrappers`
-over `_bounded_probe`); a PATH entry that doesn't answer runs that spawn at
-normal priority with nothing cached, so a later spawn tries again. Building a
-prefix (`nice_prefix`, `ioprio_prefix`) reads that cache alone and never
-scans; `run_capture` reports whether it actually wrapped its run
-(`wrapped_into`), which is what `capture_verify` reads a 126/127 by.
+apply them twice. Every spawn method builds its argv in one place,
+`_wrapped_command`. A binary that isn't installed omits only its own prefix;
+the other enabled wrapper still applies. Each is looked up once per process,
+the first time its setting asks for it, and cached as an absolute path
+(`_wrapper_path`; nothing is scanned at import, and a tool started in another
+folder still finds it). A spawn makes that lookup off the event loop, bounded
+(`_resolve_wrappers` over `_bounded_probe`), with at most one lookup per
+wrapper outstanding, even after its caller gave up on it, so a PATH entry
+that never answers costs one probe thread. A lookup that doesn't answer runs
+that spawn with no wrappers at all, both omitted, at normal priority, with
+nothing cached, so a later spawn tries again. A wrapped spawn that fails to
+start forgets the cache, so a wrapper removed since is looked up again.
+Building a prefix (`nice_prefix`, `ioprio_prefix`) reads the cache alone and
+never scans; `run_capture` reports whether it actually wrapped its run
+(`wrapped_into`), which is what `capture_verify` reads a 126/127 by. A wrapped
+tool the kernel can't execute (empty, neither ELF nor `#!`) is refused before
+the spawn with the `OSError` (ENOEXEC) a direct exec raised
+(`_exec_format_problem`): `nice`/`ionice` exec through `execvp`, which would
+hand it to `/bin/sh` and exit 0, so an empty verifier would pass.
 `ionice -t` is best effort, like the renice: a class the kernel denies
 (realtime without CAP_SYS_ADMIN) doesn't stop ionice before it runs the tool,
 which would otherwise hand back ionice's exit 1 as the tool's. A nice level
@@ -7712,7 +7721,13 @@ inside the unbounded input-lock wait and a sheet is never parsed before its
 check (CodeRabbit 4614956778, 4615215842, 4615955374). A Source a stalled
 batch capture never reached is marked `unanswered`; its refusal says nothing
 about the Image, so a Rule's failed-hold neither holds nor releases it and the
-next sweep queues it again (`sweep._never_checked`, CodeRabbit 4615955365). The job reads the submitted path, not `path` itself (codex
+next sweep queues it again (`sweep._never_checked`, CodeRabbit 4615955365).
+The job's own check marks its identity `unanswered` the same way when it
+times out, and a Cancel while it waits ends the job CANCELLED, never refused.
+The capture runs before the destination keys are resolved, so its wait never
+sits between those keys and their comparison under the lock. The active-job
+inventory other sweeps read (`_candidate_paths`) names the same files as the
+input locks, so a queued sheet isn't read there either. The job reads the submitted path, not `path` itself (codex
 4614857083): a sheet submitted through a link names its tracks beside the
 link, which is where the job locked them. Its output is staged only where its
 Library asks. **What this does not close:** the check runs once, under the

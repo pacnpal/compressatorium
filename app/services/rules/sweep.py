@@ -1678,8 +1678,9 @@ async def _prune_holds(
 
 
 def _never_checked(job) -> bool:
-    """Whether *job* was refused because the batch's identity capture stalled
-    before it reached this Source (#449): that says nothing about the Image,
+    """Whether *job* was refused because its Source never answered: the
+    batch's identity capture stalled before reaching it, or the job's own
+    check when it ran timed out (#449). That says nothing about the Image,
     so it is neither held nor released, and the next sweep queues it again
     (CodeRabbit 4615955365). A Source the capture did reach and refused
     (outside the Volumes, reached through a link) is held as before."""

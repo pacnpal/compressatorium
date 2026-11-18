@@ -1640,7 +1640,9 @@ def queued_source_identity(path: str, mode: str | None = None) -> dict:
     or a companion isn't confirmed inside a Volume, can't be read that way, or
     isn't a regular file. Blocking."""
     real = _confined_source(path)
-    root = lock_boundary_root(real)
+    # The resolved path is literal: a folder named `a::b` is no archive
+    # (CodeRabbit 4616898142). Archive syntax was read off *path* above.
+    root = lock_boundary_root(real, treat_archives=False)
     if root is None:
         raise OSError(errno.EACCES, f"{path} isn't confirmed inside the configured Volumes")
     return {
