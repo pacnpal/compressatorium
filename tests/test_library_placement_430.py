@@ -619,9 +619,13 @@ def test_the_panel_keys_rows_by_id_and_drops_superseded_answers():
     panel = (
         Path(__file__).resolve().parents[1] / "src/lib/components/views/LibraryPlacement.svelte"
     ).read_text()
-    assert "{#each placements as row (row.id)}" in panel
-    assert "new LatestOnly()" in panel
-    assert "if (!result.current) return;" in panel
+    loader = (
+        Path(__file__).resolve().parents[1] / "src/lib/util/libraryPlacements.js"
+    ).read_text()
+    assert "{#each shown.placements as row (row.id)}" in panel
+    assert "new PlacementsLoad(" in panel
+    assert "new LatestOnly()" in loader
+    assert "if (!result.current) return null;" in loader
 
 
 # ---- the Libraries view -------------------------------------------------------------
