@@ -418,6 +418,10 @@
 
 ### Fixed
 
+- **Stopping the server with a job stream open logs no error** (#465). An
+  open job stream or verify stream now ends its response when the server
+  stops, instead of being cut off and logging "ASGI callable returned without
+  completing response."
 - **The Rules view shows only the selected Library's placements** (#464). After
   switching Libraries, "Where new Images go" shows its loading line until the new
   Library's folders arrive, instead of the previous Library's rows, and a late

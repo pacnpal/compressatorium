@@ -38,6 +38,7 @@ from services.dolphin_tool import (
     DOLPHIN_CONVERTIBLE_EXTENSIONS,
     dolphin_tool_service,
 )
+from services.event_stream import event_stream
 from services.exodos import exodos_service
 from services.extract_xiso import (
     XISO_CONVERTIBLE_EXTENSIONS,
@@ -1885,7 +1886,7 @@ def _sse_from_verify_stream(
                 # terminal write is done; one that never ran cannot.
                 verify_token.release()
 
-    return EventSourceResponse(event_generator())
+    return event_stream(event_generator())
 
 
 def _sse_batch_from_verify_stream(
@@ -2169,7 +2170,7 @@ def _sse_batch_from_verify_stream(
                 lane["token"] = None
             verify_token.release()
 
-    return EventSourceResponse(wrapped_event_generator())
+    return event_stream(wrapped_event_generator())
 
 
 def register_verify_routes(router_: APIRouter, tool: ToolPlugin) -> tuple:
