@@ -211,6 +211,51 @@ def test_an_idle_inbox_exits_0_with_no_inbox_line(folder, dolphin, capsys, sent)
     assert [e for e in sent if e.kind == "inbox_pass"] == []
 
 
+def test_a_stop_mid_conversion_leaves_the_file_to_be_taken_next_time(
+    folder, dolphin, capsys, monkeypatch,
+):
+    """A `docker stop` or Ctrl-C while the Inbox's conversion runs isn't the
+    file's fault: no Finding, not held, and a later run takes it."""
+    import os
+    import signal
+
+    from services import findings
+    from services.rules import sweep as rules_sweep
+    from services.tools import registry
+
+    asyncio.run(rules_sweep.set_rules(folder["library"], {"ngc": RVZ_RULE["gc"]}))
+    game = _game(folder)
+    _cli(capsys, "run-rules", "--json")  # seen
+    _new_process()
+
+    runner = registry.get("dolphin")._service._runner
+    real_run = runner.run
+
+    async def stopped_mid_run(cmd, **kwargs):
+        os.kill(os.getpid(), signal.SIGTERM)
+        async for event in real_run(cmd, **kwargs):
+            yield event
+
+    dolphin["seconds"] = 30  # runs until it is cancelled
+    monkeypatch.setattr(runner, "run", stopped_mid_run)
+    code, _lines, _err = _cli(capsys, "run-rules", "--json")
+    assert code == 1
+    assert game.exists()
+    assert [f for f in findings.list_findings() if f["kind"] in findings.INBOX_KINDS] == []
+    _new_process()
+
+    monkeypatch.setattr(runner, "run", real_run)
+    dolphin["seconds"] = 0
+    for _ in range(2):  # seen as new, then taken once it has settled again
+        code, _lines, err = _cli(capsys, "run-rules", "--json")
+        assert code == 0, err
+        _new_process()
+
+    assert not game.exists()
+    assert len(list((folder["vol"] / "ROMs").rglob("Sunshine.rvz"))) == 1
+    assert [f for f in findings.list_findings() if f["kind"] in findings.INBOX_KINDS] == []
+
+
 def test_library_limits_the_inbox_pass_to_its_inboxes(folder, dolphin, capsys):
     game = _game(folder)
 

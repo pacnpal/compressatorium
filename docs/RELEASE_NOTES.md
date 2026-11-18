@@ -150,7 +150,10 @@
   The conversions and copies it starts finish before it exits. An Inbox that
   can't be polled (its folder gone, say) is in the summary, once until it
   changes, and makes `run-rules` print an error and exit 1. A stop during
-  the pass takes no more files. The RomM call
+  the pass takes no more files, and a conversion or copy cancelled because
+  the app or `run-rules` was stopping (`docker stop`, Ctrl-C) leaves the file
+  with no Finding, to be taken once it settles again; only a job you cancel
+  holds its file. Jobs now record why they were cancelled. The RomM call
   and its scope were checked against RomM 5.4.1 (see the RomM integration
   roadmap).
 - **Xbox 360 disc images to ZAR, with rom-converto** (#422). A new tool,

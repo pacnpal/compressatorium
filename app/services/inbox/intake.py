@@ -69,7 +69,12 @@ from services import findings, platform_detect, staging
 from services.archive import ArchiveSafetyRefused, archive_service
 from services import inbox as inbox_store
 from services.image_sets import group_images, image_fingerprint, image_members
-from services.job_manager import OutputClaimedError, QueueBackpressureError, job_manager
+from services.job_manager import (
+    CANCEL_SHUTDOWN,
+    OutputClaimedError,
+    QueueBackpressureError,
+    job_manager,
+)
 from services.lock_manager import LockFailed, lock_manager
 from services.output_conflicts import QUEUE, SKIP_LOCKED, resolve_destination
 from services.rules import check as checks
@@ -973,6 +978,20 @@ async def _convert(
     return "queued"
 
 
+def _cancelled_by_shutdown(job: Any) -> bool:
+    """A cancel because the app or ``run-rules`` is stopping (#433), read off
+    the job's ``cancel_reason``: not the file's fault, so it isn't held."""
+    return getattr(job, "cancel_reason", None) == CANCEL_SHUTDOWN
+
+
+def _release(state: _State, path: str) -> None:
+    """Forget *path*'s settling and any hold: the next poll sees it as new and
+    takes it once it has settled again. No Finding is written."""
+    state.seen.pop(path, None)
+    state.held.pop(path, None)
+    state.held_by.pop(path, None)
+
+
 async def _settle_flights(inbox: inbox_store.Inbox, state: _State) -> None:
     """Finish the conversions intake queued that have ended."""
     for path, flight in list(state.flights.items()):
@@ -1005,6 +1024,9 @@ async def _settle_flights(inbox: inbox_store.Inbox, state: _State) -> None:
             )
         elif job.status == JobStatus.CANCELLED:
             state.flights.pop(path, None)
+            if _cancelled_by_shutdown(job):
+                _release(state, path)
+                continue
             await _hold(
                 inbox, state, path, flight.fingerprint, findings.INBOX_FAILED,
                 "Its intake was cancelled", {"platform": flight.platform},
@@ -1441,8 +1463,11 @@ async def _copy(
         await job_manager.finish_external_job(job.id, success=True)
         return
     if outcome == "cancelled":
-        await _hold(inbox, state, path, flight.fingerprint, findings.INBOX_FAILED,
-                    "Its intake was cancelled", {"platform": flight.platform})
+        if _cancelled_by_shutdown(job_manager.get_job(job.id) or job):
+            _release(state, path)
+        else:
+            await _hold(inbox, state, path, flight.fingerprint, findings.INBOX_FAILED,
+                        "Its intake was cancelled", {"platform": flight.platform})
         await job_manager.finish_external_job_cancelled(job.id, message="Cancelled")
         return
     if outcome in ("changed", "deferred"):

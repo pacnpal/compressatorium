@@ -1140,7 +1140,9 @@ long a file must stay unchanged before it's taken (60 seconds by default).
   (no Platform), a Platform conflict, or not taken (a failed or cancelled
   conversion, a name already in the Library, no folder for the Platform). It
   isn't tried again until it changes: move it into a folder named after its
-  Platform, or rename it.
+  Platform, or rename it. "Cancelled" means you cancelled its job; a job
+  cancelled because the app or `run-rules` was stopping (`docker stop`,
+  Ctrl-C) gets no Finding, and the file is taken again once it has settled.
 - Each Inbox shows its last poll, the files waiting to settle, in progress and
   held, and how many it has processed. **Remove** stops using the folder as an
   Inbox and touches no file. Removing the Library removes its Inboxes.

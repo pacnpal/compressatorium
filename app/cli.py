@@ -837,6 +837,7 @@ async def _run_jobs(prepared: list[tuple], printer: Printer, state: RunState) ->
     """
     from fastapi import HTTPException
     from routes.convert import queue_prepared
+    from services.job_manager import CANCEL_SHUTDOWN
 
     from config import settings
 
@@ -900,7 +901,7 @@ async def _run_jobs(prepared: list[tuple], printer: Printer, state: RunState) ->
             if state.stopping:
                 # A stop that arrived while this batch was being queued: the
                 # signal handler's cancel-all ran before these jobs existed.
-                await job_manager.cancel_all_jobs()
+                await job_manager.cancel_all_jobs(reason=CANCEL_SHUTDOWN)
             report()
         while pending:
             await wait_for_an_end()
@@ -1624,6 +1625,7 @@ async def run_rules(args, printer: Printer, state: RunState) -> int:
 
 
 async def _run_rules_pass(chosen: list, printer: Printer, state: RunState) -> int:
+    from services.job_manager import CANCEL_SHUTDOWN
     from services.rules import check as rules_check
     from services.rules import sweep as rules_sweep
 
@@ -1665,7 +1667,7 @@ async def _run_rules_pass(chosen: list, printer: Printer, state: RunState) -> in
                 # The signal cancelled what was queued when it arrived; the
                 # sweep may have let one more batch in since. Cancel that too
                 # rather than wait for it.
-                await jobs.cancel_all_jobs()
+                await jobs.cancel_all_jobs(reason=CANCEL_SHUTDOWN)
                 break
         await jobs.drain()
         # A check Rule's run is not a queued job: it runs as its own task
@@ -1709,6 +1711,7 @@ async def _inbox_pass(chosen: list, printer: Printer, state: RunState, jobs, own
     from fastapi.concurrency import run_in_threadpool
     from services import inbox as inbox_store
     from services.inbox import intake, report
+    from services.job_manager import CANCEL_SHUTDOWN
     from services.preferences_store import preferences_store
 
     inboxes = await _inboxes_of(chosen)
@@ -1729,7 +1732,7 @@ async def _inbox_pass(chosen: list, printer: Printer, state: RunState, jobs, own
             for job_id in set(jobs.jobs) - before:
                 owners.setdefault(job_id, library_id)
         if state.stopping:
-            await jobs.cancel_all_jobs()
+            await jobs.cancel_all_jobs(reason=CANCEL_SHUTDOWN)
         await jobs.drain()
         await intake.drain()
         results += await intake.finish_all(library_ids={i.library_id for i in inboxes})
@@ -1844,9 +1847,9 @@ def _signals(state: RunState):
         if not state.jobs_started:
             task.cancel()
             return
-        from services.job_manager import job_manager
+        from services.job_manager import CANCEL_SHUTDOWN, job_manager
 
-        asyncio.ensure_future(job_manager.cancel_all_jobs())
+        asyncio.ensure_future(job_manager.cancel_all_jobs(reason=CANCEL_SHUTDOWN))
 
     installed = []
     for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):

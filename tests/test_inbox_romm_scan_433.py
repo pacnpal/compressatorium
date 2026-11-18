@@ -22,7 +22,12 @@ from services import platform_detect
 
 from config import settings
 
+from . import test_inbox_431 as t431
 from .fake_romm import FakeRomm
+
+# The 431 job-queue fixture: records what intake submits; the test sets each
+# job's status.
+queue_fixture = t431._queue
 
 PS2 = {"id": 3, "slug": "ps2", "fs_slug": "ps2", "name": "PlayStation 2"}
 PSX = {"id": 4, "slug": "psx", "fs_slug": "psx", "name": "PlayStation"}
@@ -381,6 +386,139 @@ async def test_a_poll_skipped_or_removed_mid_pass_is_not_an_error(vol, db, sent)
 
     assert summary["libraries"] == {}
     assert sent == []
+
+
+# ---- a cancel because the app is stopping isn't the file's fault ------------
+
+
+async def _ps2_rule_and_game(vol):
+    from services import libraries
+    from services.rules import sweep
+
+    box = _folder_inbox(vol)
+    await sweep.set_rules(
+        libraries.get(box.library_id), {"ps2": {"mode": "cso_compress", "enabled": True}},
+    )
+    return box, _drop(vol / "Downloads" / "ps2" / "Game.iso")
+
+
+def _inbox_findings() -> list[dict]:
+    from services import findings
+
+    return [f for f in findings.list_findings() if f["kind"] in findings.INBOX_KINDS]
+
+
+@pytest.mark.asyncio
+async def test_a_conversion_cancelled_by_a_shutdown_is_retried_not_held(vol, db, queue):
+    from models import JobStatus
+    from services import inbox
+    from services.inbox import intake
+    from services.job_manager import CANCEL_SHUTDOWN
+
+    box, game = await _ps2_rule_and_game(vol)
+    await intake.poll(inbox.get(box.id), now=0)
+    await intake.poll(inbox.get(box.id), now=1)
+    queue.jobs["job0"].status = JobStatus.CANCELLED
+    queue.jobs["job0"].cancel_reason = CANCEL_SHUTDOWN
+
+    settled = await intake.poll(inbox.get(box.id), now=2)
+    seen_again = await intake.poll(inbox.get(box.id), now=3)
+
+    assert settled["left"] == [] and _inbox_findings() == []
+    assert game.exists()
+    assert intake.status(box.id)["held"] == 0
+    # Seen as new, so taken once it has settled again: queued a second time.
+    assert seen_again["queued"] == 1
+    assert len(queue.submitted) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_conversion_the_user_cancelled_is_still_held(vol, db, queue):
+    from models import JobStatus
+    from services import inbox
+    from services.inbox import intake
+    from services.job_manager import CANCEL_REQUESTED
+
+    box, game = await _ps2_rule_and_game(vol)
+    await intake.poll(inbox.get(box.id), now=0)
+    await intake.poll(inbox.get(box.id), now=1)
+    queue.jobs["job0"].status = JobStatus.CANCELLED
+    queue.jobs["job0"].cancel_reason = CANCEL_REQUESTED
+
+    for now in (2, 3, 4):
+        await intake.poll(inbox.get(box.id), now=now)
+
+    [finding] = _inbox_findings()
+    assert "cancelled" in finding["reason"]
+    assert len(queue.submitted) == 1  # held, not queued again
+    assert game.exists()
+
+
+@pytest.mark.asyncio
+async def test_a_copy_cancelled_by_a_shutdown_is_retried_not_held(vol, db):
+    import asyncio
+
+    from models import ConversionMode
+    from services import inbox
+    from services.inbox import intake
+    from services.job_manager import CANCEL_SHUTDOWN
+
+    box = _folder_inbox(vol)
+    game = _drop(vol / "Downloads" / "ps2" / "Game.iso")
+    async with intake._checking():
+        await intake.poll(inbox.get(box.id), now=0)
+        await intake.poll(inbox.get(box.id), now=1)
+        for _ in range(100):  # staged, now waiting for the lock
+            if t431._slots(vol / "ROMs" / "ps2"):
+                break
+            await asyncio.sleep(0.02)
+        [job] = [
+            j for j in intake.job_manager.jobs.values()
+            if j.mode == ConversionMode.INBOX_COPY and j.status == "processing"
+        ]
+        await intake.job_manager.cancel_all_jobs(reason=CANCEL_SHUTDOWN)
+    await intake.drain()
+    await intake.poll(inbox.get(box.id), now=2)
+    await intake.poll(inbox.get(box.id), now=3)
+    await intake.drain()
+
+    assert _inbox_findings() == []
+    assert not game.exists()
+    assert (vol / "ROMs" / "ps2" / "Game.iso").exists()
+
+
+def test_a_cancel_records_why(monkeypatch):
+    """The shared marker: a cancel the user asks for is ``requested`` (the
+    default); the shutdown path says ``shutdown``. The first reason stays."""
+    import asyncio
+
+    from models import ConversionJob, ConversionMode, JobStatus
+    from services.job_manager import CANCEL_REQUESTED, CANCEL_SHUTDOWN, job_manager
+
+    from collections import OrderedDict
+    from datetime import datetime, timezone
+
+    monkeypatch.setattr(job_manager, "jobs", OrderedDict())
+
+    def job(job_id: str) -> ConversionJob:
+        made = ConversionJob(
+            id=job_id, file_path=f"/x/{job_id}.iso", filename=f"{job_id}.iso",
+            mode=ConversionMode.INBOX_COPY, status=JobStatus.PROCESSING,
+            created_at=datetime.now(timezone.utc),
+        )
+        job_manager.jobs[job_id] = made
+        return made
+
+    one, two = job("cancel-one"), job("cancel-two")
+
+    async def cancel():
+        await job_manager.cancel_job(one.id)
+        await job_manager.cancel_all_jobs(reason=CANCEL_SHUTDOWN)
+
+    asyncio.run(cancel())
+
+    assert one.cancel_reason == CANCEL_REQUESTED
+    assert two.cancel_reason == CANCEL_SHUTDOWN
 
 
 def test_the_inbox_summary_is_a_registered_event():

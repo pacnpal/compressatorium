@@ -7654,6 +7654,18 @@ processed_count = processed_count + 1` (a copy and a conversion can finish at
 once; the cached total only grows to what the database answers) and the file's
 Findings cleared.
 
+**A cancel's reason** (#433). `ConversionJob.cancel_reason` records why a
+cancel was taken: `job_manager.cancel_job(job_id, reason=...)` and
+`cancel_all_jobs(reason=...)` default to `CANCEL_REQUESTED` (the UI and API
+routes pass nothing), and every stop path passes `CANCEL_SHUTDOWN`: the CLI's
+signal handler and its stop-time cancel-alls, and a check Rule run's stop
+(`rules.check.drain`). The first reason a job gets is kept. Intake reads the
+job, never who cancelled: a conversion or copy that ends cancelled with
+`CANCEL_SHUTDOWN` isn't the file's fault, so it gets no Finding and isn't
+held; its seen and held entries are dropped (`intake._release`), and the next
+poll (the next `run-rules`, with the settle memory) sees it as new and takes
+it once it has settled again. Any other cancel keeps the hold below.
+
 **Holding.** A file that gets a Finding (`inbox_unsorted`, `inbox_conflict`,
 `inbox_failed`, in `findings.INBOX_KINDS`, under the Inbox's Library, keyed
 `inbox:<id>/<path in the Inbox>`) is remembered with its fingerprint and not
