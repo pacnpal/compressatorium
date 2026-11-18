@@ -8551,6 +8551,20 @@ offer or send a codec or level the mode refuses: the level control follows the
 selected codec, and switching codec resets a level the new codec does not take
 to its default. `test_frontend_parity_186` fails on drift.
 
+chdman's create modes declare `codecs` the same way (#471), from chdman's own
+rules (MAME `src/tools/chdman.cpp` `parse_compression`, `src/lib/util/chdcodec.cpp`):
+every create mode takes the general codecs (none, zlib, zstd, lzma, huff, flac),
+Create CD also the CD-frame codecs (cdzl, cdzs, cdlz, cdfl, which refuse a hunk
+that is not whole 2448-byte frames, so createdvd, createhd and createraw fail
+with "Codec error"), and Create LD also avhu (it encodes the A/V frames only
+createld writes). Each mode's `implicit_codecs` is a subset of its `codecs`.
+`copy` declares none: what it can use follows the input CHD. The multi-codec
+picker (chdman's chips) keeps one selection per tool, so the store sends only
+the codecs the current mode offers (`ConversionStore.compressionValue`), drops
+the hidden ones on the next toggle, and the chip cap counts only offered codecs;
+an Auto target whose saved preference the mode refuses runs on the tool default
+(`checked_compression`).
+
 The convert panel keeps one level. `ConversionStore.#reconcileLevel` runs after
 every mode, codec or saved-preference change, in that order: the codec is
 `singleCodec` (the mode's default when the mode refuses the selected one), and

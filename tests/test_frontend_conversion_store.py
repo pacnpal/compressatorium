@@ -73,6 +73,7 @@ const registry = {
   defaultMode: () => 'createcd',
   specFor: () => ({ supportsCompression: true }),
   maxCodecsFor: () => 4,
+  codecsForMode: () => [],
 };
 const calls = { plan: [], cancel: [], auto: [] };
 let planAnswer = () => ({});
@@ -997,6 +998,41 @@ const chosen = store.compressionValue;
 process.stdout.write(JSON.stringify({ rvz, wia, chosen }));
 """)
     assert data == {"rvz": "zstd:19", "wia": "none", "chosen": "lzma2:5"}
+
+
+def test_a_chdman_codec_the_mode_cannot_use_is_never_sent(tmp_path):
+    """#471: the chdman codec list is kept per tool, so CD codecs picked for
+    Create CD are still selected when the mode turns to Create DVD, which
+    chdman refuses them on (a DVD hunk is not whole CD frames). The store sends
+    only the codecs the mode takes, and nothing (chdman's own) when none is
+    left; Create CD still gets what was picked."""
+    data = _run(tmp_path, """
+const GENERAL = ['none', 'zlib', 'zstd', 'lzma', 'huff', 'flac'];
+const CODECS = {
+  createcd: [...GENERAL, 'cdzl', 'cdzs', 'cdlz', 'cdfl'],
+  createdvd: GENERAL,
+};
+registry.codecsForMode = (m) => (CODECS[m] ?? []).map((value) => ({ value }));
+const store = new ConversionStore();
+store.compressionSelection = ['cdlz', 'zlib', 'cdfl'];
+store.mode = 'createcd';
+const cd = store.compressionValue;
+store.mode = 'createdvd';
+const dvd = store.compressionValue;
+store.compressionSelection = ['cdlz', 'cdzl'];
+const onlyCd = store.compressionValue;
+store.compressionSelection = ['none'];
+const none = store.compressionValue;
+// Four CD codecs kept from Create CD don't fill Create DVD's four-codec cap.
+store.compressionSelection = ['cdlz', 'cdzl', 'cdzs', 'cdfl'];
+store.toggleCodec('zlib');
+const toggled = store.compressionSelection;
+process.stdout.write(JSON.stringify({ cd, dvd, onlyCd, none, toggled }));
+""")
+    assert data == {
+        "cd": "cdlz,zlib,cdfl", "dvd": "zlib", "onlyCd": None, "none": "none",
+        "toggled": ["zlib"],
+    }
 
 
 def test_switching_codec_resets_a_level_the_new_codec_refuses(tmp_path):

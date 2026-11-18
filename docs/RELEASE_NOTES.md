@@ -418,6 +418,15 @@
 
 ### Fixed
 
+- **CHDMAN create modes only offer and accept their own codecs** (#471). Each
+  mode's codec chips now list only what chdman can use for it: the CD codecs
+  (cdzl, cdzs, cdlz, cdfl) on Create CD, avhu on Create LD, and zlib, zstd,
+  lzma, huff and flac on every create mode. A job asking for a codec its mode
+  can't use (Create DVD with cdzl, say) is refused with a 400 before it is
+  queued, instead of failing in chdman with "Codec error". lzma2 is gone from
+  the CHDMAN chips: chdman never accepted it. Codecs picked for Create CD and
+  still selected on another mode are left out of that mode's job, and an Auto
+  convert whose saved CHDMAN codecs don't fit the mode runs on chdman's own.
 - **Stopping the server with a job stream open logs no error** (#465). An
   open job stream or verify stream now ends its response when the server
   stops, instead of being cut off and logging "ASGI callable returned without

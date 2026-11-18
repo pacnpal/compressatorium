@@ -34,13 +34,15 @@ targets:
     label: PCSX2
     entries:
       - &pcsx2
-        mode: createdvd
+        mode: createcd
         codecs: [zlib, lzma, zstd, huff, flac, cdzl, cdlz, cdzs, cdfl]
         preferred: [zstd]
         source: https://github.com/PCSX2/pcsx2/blob/master/pcsx2/CDVD/ChdFileReader.cpp
         note: PCSX2 reads CHD through libchdr (zlib, lzma, zstd, huffman and FLAC codecs).
+      # A DVD CHD never holds the CD-frame codecs (chdman refuses them there, #471).
       - <<: *pcsx2
-        mode: createcd
+        mode: createdvd
+        codecs: [zlib, lzma, zstd, huff, flac]
       - <<: *pcsx2
         mode: copy
 
@@ -79,6 +81,7 @@ targets:
         note: Main_MiSTer builds libchdr with zlib, LZMA and zstd, and no FLAC.
       - <<: *mister
         mode: createdvd
+        codecs: [zlib, lzma, zstd]
       - <<: *mister
         mode: copy
 
