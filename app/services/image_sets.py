@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 from services.tools import registry
@@ -227,16 +228,33 @@ def volume_sheet_tracks(
     return (None, problem) if owners is None else (set(owners), None)
 
 
-def volume_sheet_owners(
-    roots: Iterable[str], *, progress: Callable[..., None],
-) -> tuple[dict[tuple[int, int], frozenset[tuple[int, int]]] | None, str | None]:
-    """:func:`volume_sheet_tracks` with, for each track identity, the
-    identities of every sheet that names it: what an Image rename (#426)
-    needs to know that a track belongs to its own sheet and to no other one.
-    The same walk, scope and "None, never partial" rule."""
+Identity = tuple[int, int]
+
+
+@dataclass(frozen=True)
+class SheetOwners:
+    """Every sheet's tracks over the Volumes (:func:`volume_sheet_owners_scoped`).
+
+    *owners*: each track identity, with the identities of every sheet that
+    names it. *unknown*: each file identity a sheet whose tracks can't be told
+    (an absolute ``FILE`` name, a sheet that can't be read whole) may name,
+    with why. Such a sheet names only files in its own folder and below,
+    reached through any link (``resolve_track``), so only those are unknown:
+    a file in neither map is no sheet's track (#454)."""
+
+    owners: Mapping[Identity, frozenset[Identity]]
+    unknown: Mapping[Identity, str]
+
+
+def _walk_volume_sheets(
+    roots: Iterable[str], progress: Callable[..., None],
+) -> tuple[dict[Identity, set[Identity]], list[tuple[str, str]], list[str]]:
+    """Every sheet over *roots*: the track owners of each one read whole,
+    each sheet that can't be (its path and why), and what the walk missed."""
     from utils.path_utils import walk_tree
 
-    owners: dict[tuple[int, int], set[tuple[int, int]]] = {}
+    owners: dict[Identity, set[Identity]] = {}
+    unresolved: list[tuple[str, str]] = []
     missed: list[str] = []
     walked: list[str] = []
     for root in roots:
@@ -258,18 +276,112 @@ def volume_sheet_owners(
                     tracks = sheet_track_identities(sheet)
                     st = os.stat(sheet)
                 except SheetOwnerUnknown as exc:
-                    missed.append(f"{exc} (in {folder})")
+                    unresolved.append((sheet, f"{exc} (in {folder})"))
                     continue
                 except OSError as exc:
-                    missed.append(f"{name} could not be read ({exc.strerror or exc}) (in {folder})")
+                    unresolved.append(
+                        (sheet, f"{name} could not be read ({exc.strerror or exc}) (in {folder})"),
+                    )
                     continue
                 for track in tracks:
                     owners.setdefault(track, set()).add((st.st_dev, st.st_ino))
         missed.extend(f"{path} could not be listed" for path in unlisted)
+    return owners, unresolved, missed
+
+
+def _problem(missed: list[str]) -> str:
+    more = len(missed) - 3
+    return "; ".join(missed[:3]) + (f"; and {more} more" if more > 0 else "")
+
+
+def volume_sheet_owners(
+    roots: Iterable[str], *, progress: Callable[..., None],
+) -> tuple[dict[Identity, frozenset[Identity]] | None, str | None]:
+    """:func:`volume_sheet_tracks` with, for each track identity, the
+    identities of every sheet that names it. The same walk, scope and "None,
+    never partial" rule: one sheet that can't be read whole makes it None."""
+    owners, unresolved, missed = _walk_volume_sheets(roots, progress)
+    missed = [why for _sheet, why in unresolved] + missed
     if missed:
-        more = len(missed) - 3
-        return None, "; ".join(missed[:3]) + (f"; and {more} more" if more > 0 else "")
+        return None, _problem(missed)
     return {track: frozenset(sheets) for track, sheets in owners.items()}, None
+
+
+def sheet_reach(
+    folder: str, roots: Iterable[str], *, progress: Callable[..., None],
+) -> tuple[set[Identity], list[str]]:
+    """The identity of every file a sheet in *folder* could name, and what the
+    walk missed. Blocking.
+
+    A sheet's track name is relative, without ``..`` (``resolve_track``), so
+    it reaches *folder* and below, and through a link a file or folder
+    anywhere in *roots* (the Volumes): each linked folder is walked too, and
+    each file is taken by identity, links followed, so a hard link counts.
+    A link out of *roots* is a track ``resolve_track`` refuses. Never partial
+    in silence: a folder or file that can't be read is in what was missed."""
+    from utils.path_utils import walk_tree
+
+    trusted = [os.path.realpath(root) for root in roots]
+
+    def inside(real: str, tops: Iterable[str]) -> bool:
+        return any(real == top or real.startswith(top.rstrip(os.sep) + os.sep) for top in tops)
+
+    reached: set[Identity] = set()
+    missed: list[str] = []
+    walked: list[str] = []
+    pending = [os.path.realpath(folder)]
+    while pending:
+        top = pending.pop()
+        if inside(top, walked):
+            continue
+        walked.append(top)
+        unlisted: list[str] = []
+        for current, dirs, files in walk_tree(top, progress, unlisted=unlisted):
+            for name in dirs:
+                path = os.path.join(current, name)
+                if os.path.islink(path):
+                    real = os.path.realpath(path)
+                    if inside(real, trusted) and os.path.isdir(real):
+                        pending.append(real)
+            for name in files:
+                path = os.path.join(current, name)
+                try:
+                    st = os.stat(path)
+                except FileNotFoundError:
+                    continue
+                except OSError as exc:
+                    missed.append(f"{path} could not be read ({exc.strerror or exc})")
+                    continue
+                reached.add((st.st_dev, st.st_ino))
+        missed.extend(f"{path} could not be listed" for path in unlisted)
+    return reached, missed
+
+
+def volume_sheet_owners_scoped(
+    roots: Iterable[str], *, progress: Callable[..., None],
+) -> tuple[SheetOwners | None, str | None]:
+    """:func:`volume_sheet_owners`, with a sheet whose tracks can't be told
+    holding back only what it could name (#454): every file in its folder and
+    below (:func:`sheet_reach`) is in ``unknown``. None and why only when the
+    walk itself missed something, or a folder an unresolved sheet reaches."""
+    roots = list(roots)
+    owners, unresolved, missed = _walk_volume_sheets(roots, progress)
+    unknown: dict[Identity, str] = {}
+    reached_folders: dict[str, set[Identity]] = {}
+    for sheet, why in unresolved:
+        folder = os.path.dirname(sheet)
+        if folder not in reached_folders:
+            reached, more = sheet_reach(folder, roots, progress=progress)
+            reached_folders[folder] = reached
+            missed.extend(more)
+        for identity in reached_folders[folder]:
+            unknown.setdefault(identity, why)
+    if missed:
+        return None, _problem(missed)
+    return SheetOwners(
+        owners={track: frozenset(sheets) for track, sheets in owners.items()},
+        unknown=unknown,
+    ), None
 
 
 def _is_track(own: os.stat_result, real: str, track: str) -> bool:
