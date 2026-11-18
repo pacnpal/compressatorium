@@ -553,7 +553,7 @@ def _route_to(items: list[Item], args, prefs: dict, ready: list[str]) -> list[It
         format_route,
         serves_platform,
     )
-    from services.tools import registry
+    from services.tools import not_ready_message, registry
 
     target = args.to
     kept = []
@@ -583,7 +583,7 @@ def _route_to(items: list[Item], args, prefs: dict, ready: list[str]) -> list[It
         tool = registry.for_mode(item.mode) if item.mode else None
         if tool is not None and tool.id not in ready:
             item.mode = None
-            item.reason = f"{tool.display_name} isn't ready: {tool.not_ready_reason}"
+            item.reason = not_ready_message(tool)
         if item.mode:
             item.compression, error = _compression_for(item.mode, args, prefs)
             if error:
@@ -1335,7 +1335,7 @@ async def _check_held(
 
 async def verify(args, printer: Printer, state: RunState) -> int:
     from services.subprocess_runner import BATCH_STOPPED_MESSAGE
-    from services.tools import registry
+    from services.tools import not_ready_message, registry
 
     since = parse_age(args.since) if args.since else None
     paths = _check_paths(args.paths)
@@ -1398,7 +1398,7 @@ async def verify(args, printer: Printer, state: RunState) -> int:
             # inside a folder it is reported and the run goes on.
             printer.line({
                 "path": item.path, "status": "skipped", "tool": tool.id,
-                "reason": f"{tool.display_name} isn't ready: {tool.verify_not_ready_reason}",
+                "reason": not_ready_message(tool, purpose="verify"),
             })
             failed = failed or item.explicit
             continue

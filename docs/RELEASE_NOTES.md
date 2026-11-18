@@ -436,6 +436,21 @@
   `extractcd`, dolphin-tool's hash verify and the 7z archive test used to
   renice the child from Python between fork and exec, which can deadlock in
   this multithreaded process before any timeout applies.
+- **A skipped Rule's log line gives the tool's own reason** (#484). The line
+  the sweep logs for a Rule whose tool can't run said the tool "is not
+  installed", even when it was installed and something else was missing. A
+  Switch Rule with no `prod.keys` now says `Switch isn't ready: no prod.keys
+  was found ...`, and a 3DS check Rule with `zstd` missing says `3DS isn't
+  ready: zstd is not installed, so 3DS files cannot be checked`. A check Rule
+  with more than one verifier not ready names each with its own reason. The
+  Inbox had the same problem: a file held under a Rule whose tool wasn't
+  ready gave only the tool id (`cso isn't ready, so the Rule can't run`).
+  Its Finding now gives the tool's reason too. The CLI, Auto, the sweep, the
+  Inbox and the ZAR Info view now build this text in one place, so they say
+  the same thing. The sweep's line is still logged once per reason. After
+  Preview or Run now, the Rule editor no longer says the tool "is not installed here";
+  it says the tool isn't ready and that the server log says why.
+
 - **A deferred rematch no longer logs a false match-lock warning** (#481).
   When a DAT import had to wait behind a running match job, the rematch that
   started once that job finished logged `concurrency guard may be
@@ -465,6 +480,22 @@
   Volumes) logs what it changed once, at the save, since the Rule is stored
   already changed and later sweeps have nothing left to report. What runs,
   what is paused and what is refused are unchanged.
+- **A Rule the sweep skips is logged once, naming the Rule** (#480). A
+  conversion Rule whose tool isn't installed, whose output folder is outside
+  every Volume (or on a Volume that isn't answering), or whose mode isn't one
+  for its Platform is skipped and tried again on the next tick, so it starts
+  working as soon as that's fixed. Each skip used to log a warning on every
+  tick and every Run now, under `romm_auto:` even on a folder Library and
+  without naming the Library. Now it's logged once, with the Library's own
+  prefix, naming the Library and the Platform, and again only when the reason
+  changes or once it clears and comes back. A check Rule whose verifier isn't
+  installed is logged the same way. A skipped Rule's dropped settings (#477)
+  are logged when it next runs, not on each tick it is skipped. The other
+  lines a sweep logs about a Library (a Platform that stops responding or
+  can't be listed, a batch that fails to queue, a volume that doesn't answer)
+  now also use the Library's prefix and name the Library and Platform, where
+  they used to say `romm_auto:` and give the Library's id or nothing. The
+  sweep's errors and when a Rule runs are unchanged.
 - **Rules refuse and drop codecs the CHDMAN mode can't use** (#474). Saving a
   Rule (a Library's, RomM's, and so an Inbox's) that pairs a mode with a codec
   it can't use, Create DVD with cdzl say, is refused with a 400 and the same

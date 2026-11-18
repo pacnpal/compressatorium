@@ -1454,10 +1454,10 @@ async def test_removing_a_library_mid_callback_leaves_no_holds(
     release = asyncio.Event()
     real_probe = rules_sweep._probe
 
-    async def slow_probe(func, *args, default):
+    async def slow_probe(func, *args, **kwargs):
         probing.set()
         await release.wait()
-        return await real_probe(func, *args, default=default)
+        return await real_probe(func, *args, **kwargs)
 
     monkeypatch.setattr(rules_sweep, "_probe", slow_probe)
     noting = asyncio.create_task(rules_sweep.note_job_finished(SimpleNamespace(

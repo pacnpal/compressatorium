@@ -1032,3 +1032,29 @@ class BaseTool:
         # run wouldn't. makeps3iso overrides (a mid-split failure can leave the
         # base *and* numbered parts, which never coexist on success).
         return [output_path, *self.companion_outputs(output_path, mode)]
+
+
+def not_ready_message(tool: ToolPlugin, *, purpose: str = "convert") -> str:
+    """Why *tool* can't run here, as every caller says it (#484).
+
+    ``"<display name> isn't ready: <reason>"``, the reason being the plugin's
+    own: ``verify_not_ready_reason`` for *purpose* ``"verify"`` (as
+    :meth:`ToolRegistry.tool_is_ready` takes it), else ``not_ready_reason``.
+    One place, so the CLI, Auto's plan and the Rules sweep say the same thing.
+
+    Read it after the readiness check that answered False: a plugin may learn
+    its reason while it probes (rom-converto keeps the last probe's). Reading
+    it is an attribute read, never I/O, so it is safe on the event loop. A
+    reason that can't be read, or is empty, gives the base default rather
+    than raising into the caller.
+    """
+    try:
+        reason = (
+            tool.verify_not_ready_reason if purpose == "verify" else tool.not_ready_reason
+        )
+    except Exception:  # a broken reason must not fail the caller that asked
+        logger.warning("could not read %s's not-ready reason", tool.id, exc_info=True)
+        reason = None
+    if not isinstance(reason, str) or not reason.strip():
+        reason = BaseTool.not_ready_reason
+    return f"{getattr(tool, 'display_name', None) or tool.id} isn't ready: {reason}"

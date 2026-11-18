@@ -287,7 +287,9 @@ class ToolPlugin(Protocol):
     # Runtime prerequisites met? False => GET /api/tools reports the tool
     # unavailable and the frontend hides it, instead of offering jobs that can
     # only fail. Default True; nsz overrides (prod.keys). Async because the
-    # probe may touch disk.
+    # probe may touch disk. `not_ready_reason` / `verify_not_ready_reason` say
+    # why it answered False; callers show them through `not_ready_message`
+    # (§3.4) rather than formatting their own line.
     async def is_ready(self) -> bool: ...
 ```
 
@@ -2884,12 +2886,16 @@ or refused on the Rule (`dropped_codecs`, `dropped_timezone`,
 `rules.rule_changes(rule)` puts those in words, and `rules.refusal(raw,
 kind=)` says why it refuses a Rule outright (a mode no tool provides, or one
 `mode_is_automatable` refuses; a Rule with no mode is an empty row and gets
-None). Two places in `rules/sweep.py` log them:
+None). Three helpers in `rules/sweep.py` log them, and a fourth logs the
+Rules the run loop skips:
 
 - `report_rule_changes(library, platform, rule, kind=, prefix=, seen=)` logs
   one line for a Rule about to run. The sweep calls it once per Rule it runs
-  (after the paused, due and active-check gates, for both kinds), so any
-  Library logs it once per sweep. An Inbox calls it as it converts under a
+  (after the paused, due and active-check gates, for both kinds, and after
+  the skip checks below too: for a conversion Rule once it passes them all,
+  for a check Rule from `_sweep_check` once it has listed its Images and
+  picked one or found no verifier missing), so any Library logs it once per
+  sweep that runs the Rule, and a Rule skipped every tick doesn't repeat it. An Inbox calls it as it converts under a
   Rule (`intake._take`), with `prefix="inbox"` and `seen` the pass's
   `_State.rules_reported`, so once per pass.
 - `_report_unrunnable(library, stored, rules)` runs in each sweep right after
@@ -2912,6 +2918,39 @@ None). Two places in `rules/sweep.py` log them:
   still refuses a codec the mode can't use (#474) before anything is stored.
   It compares changes, not fields, so a field added to `rule_changes` later is
   covered without touching it.
+- `_report_skip(library, kind, platform_id, check, reason)` logs a Rule the
+  run loop skips (#480). Before it queues anything for a conversion Rule the
+  loop makes the checks in `_SKIP_CHECKS`, in order: `tool` (its tool is
+  installed, `_ready_bounded`), `output_dir` (its output folder is inside a
+  Volume, `_output_dir_problem`, which also covers a Volume that doesn't
+  answer within `_VOLUME_PROBE_SECONDS`) and, once the Platform is listed,
+  `platform` (`registry.mode_allows_platform` for the Images' slug). A Rule
+  that fails one is skipped with its `result["errors"]` entry
+  (`tool_not_ready`, `output_dir_outside_volumes`, `tool_wrong_for_platform`)
+  and no run recorded, so it is due on the next tick and runs as soon as the
+  cause is fixed. A check Rule uses the `tool` check the same way:
+  `_sweep_check` reports the verifiers it found not ready (still adding
+  `tool_not_ready`, and recording no run when it picked nothing), and a pass
+  that reached its Images without finding one missing clears it. The `tool`
+  reason is the plugin's own (#484), from `not_ready_message` (§3.4, "Saying
+  why a tool can't run"): `"<display_name> isn't ready: <not_ready_reason>"`
+  for a conversion Rule, and for a check Rule the same with
+  `verify_not_ready_reason` for each verifier not ready, sorted by tool id
+  and joined with `"; "`. It is read after the readiness check, never before,
+  since a plugin may learn its reason while it probes (rom-converto). So an
+  nsz Rule with no `prod.keys` says so rather than "not installed", and a
+  reason that changes while the tool stays not ready is a new reason, logged
+  once more. The loop calls `_report_skip` with the reason on a failure
+  and with `reason=None` on a pass. The reason is logged once per
+  `(library id, kind, platform id)` (`_reported_skips`, which keeps the check
+  and the reason), and again only when it changes. A pass forgets a reason
+  from that check or an earlier one, so a cause that clears and comes back is
+  logged again, while a Rule stopped every tick at `platform` keeps its memo
+  through the earlier checks it passes. `_forget_skips` drops the memo of a
+  Rule removed or paused by the operator, at the top of each sweep, and
+  `forget_library` drops a removed Library's. A new skip check goes in
+  `_SKIP_CHECKS` at its place in the loop and reports through `_report_skip`,
+  never through a bare `logger` call, which would repeat on every tick.
 
 Each line names the Library (`library.name`) and the Platform, and starts with
 the Library's prefix, `rules.library.log_prefix(library)`: the Library's own
@@ -2919,6 +2958,14 @@ optional `log_prefix` (`RommLibrary` keeps `romm_auto`), else
 `f"{kind}_library"` (`folder_library`), else `library` for a Library with
 neither. It is optional on the contract, so a Library written before it still
 logs. The logger is still `romm_auto`, so log filters keyed on it still match.
+The same goes for every other line a sweep logs about one Library (#480): a
+Platform that stops responding or can't be listed, sources dropped for an
+unreadable delete snapshot, a batch that fails to queue or loses a
+destination, a bounded probe that times out (`_probe` takes the `library` it
+answers for), the scheduler's per-Library summary and failure. Those are real
+failures, logged by each sweep that hits them, under `log_prefix(library)`
+with `library.name` and the Platform. Only the scheduler's own lines (started,
+couldn't list the Libraries, the tick's follow-up failed) keep `romm_auto:`.
 
 Capabilities (`RECOGNIZED_FILTER`, `CONVERTED_HISTORY`, `FAILED_HOLD`) say
 what a Library supports. Nothing in `rules/` asks what kind of Library it has.
@@ -4025,7 +4072,7 @@ files" when the file is the problem.
 A target whose tool cannot run here is skipped too. The route awaits the
 shared, bounded `registry.ready_tool_ids()` and passes it to `plan_auto`
 (`ready_tool_ids=`), which skips the Image with
-"<display_name> isn't ready: <not_ready_reason>". `ToolPlugin.not_ready_reason`
+"<display_name> isn't ready: <not_ready_reason>" (`not_ready_message`, §3.4). `ToolPlugin.not_ready_reason`
 says why in the user's words; the default names a missing program, nsz names
 `prod.keys`, jwud the JWUDTool launcher and Java. Both Auto routes plan through
 this, so the plan the user confirms and the jobs queued agree.
@@ -7809,7 +7856,9 @@ move to `processed/` still acts on the Inbox names, with its own inode check. So
 queue has: it takes a `max_concurrent` slot, gets its Ledger row and its
 Cancel. A Rule that is disabled, or whose mode doesn't take the file (it is
 already in the target format), copies instead; one whose mode isn't for the
-Platform, or whose tool isn't ready, holds the file with a Finding.
+Platform, or whose tool isn't ready, holds the file with a Finding. A tool
+that isn't ready gives its own reason, `not_ready_message(tool)` read after
+`tool_is_ready` (§3.4, #484), followed by ", so the Rule can't run".
 
 **Copying** (`ConversionMode.INBOX_COPY`, an `ExternalMode(in_ledger=False,
 started_by_hand=False, takes_slot=True)`: it converts nothing). One background
@@ -8574,6 +8623,29 @@ time until unrelated offloads have nowhere to run — the bound turns a hang int
 a leak rather than removing it. `nsz` (a recursive walk for `prod.keys`) and
 `jwud` (a stat for the `.jar`) are the two that touch the disk today; the
 requirement is stated on `ToolPlugin.is_ready` so a new gated tool inherits it.
+
+#### Saying why a tool can't run (`not_ready_message`)
+
+`ToolPlugin.not_ready_reason` and `verify_not_ready_reason` say, in the user's
+words, why `is_ready()` or `verify_is_ready()` answered False. Every caller
+that tells someone a tool isn't ready builds the line with
+`services.tools.not_ready_message(tool, purpose="convert" | "verify")`, which
+returns `"<display_name> isn't ready: <reason>"` with the reason for that
+purpose (#484). It takes `purpose` the way `tool_is_ready` does. The CLI's
+`--to` and `verify` paths, Auto's plan (`platform_detect._plan_targets`), the
+Rules sweep's skip line (§3.3.11), the Inbox's hold under a Rule whose tool
+isn't ready (§3.3.25, which adds ", so the Rule can't run") and the ZAR Info
+route's 503 (`GET /api/rom-converto-info`) all use it, so they say the same
+thing. A new caller does too, rather than formatting its own.
+
+It is a free function rather than a method so a tool that satisfies the
+protocol without subclassing `BaseTool` still works. Read it after the
+readiness check that answered False: rom-converto's `not_ready_reason` is a
+property that returns what its last probe found. Reading a reason is an
+attribute read, never I/O, so it is safe on the event loop; a plugin whose
+reason needs I/O would have to compute it in its readiness probe. A reason
+that raises, or is empty, gives `BaseTool.not_ready_reason` (with a warning
+logged) instead of failing the caller.
 
 #### Resolving what to verify (`_verify_target_bounded`)
 
