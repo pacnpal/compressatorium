@@ -151,8 +151,6 @@ class ArchiveService:
         path. Raises :class:`ArchiveSafetyRefused` naming the limit, or what
         reading the listing raises. Returns the declared uncompressed total.
         Blocking; reads the listing only."""
-        from services.archive_members import read_archive_members
-
         members = read_archive_members(archive_path, progress)
         max_member, max_total, max_ratio = self.inbox_limits()
         max_entries, _, _ = self._archive_limits()
