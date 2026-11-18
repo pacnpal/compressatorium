@@ -35,7 +35,9 @@ import contextvars
 import functools
 import logging
 import os
+import re
 import shutil
+import signal
 import threading
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
@@ -46,6 +48,48 @@ from services.timeout_policy import (
     compute_progress_stall_timeout,
     compute_size_scaled_timeout,
 )
+
+# A CSI escape sequence (colour, cursor movement), then any other control
+# character but the newline and the tab: what a progress bar or a coloured
+# message leaves in captured output (#455).
+_ESCAPE_SEQUENCE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b[@-_]")
+_CONTROL_CHARACTERS = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+_RUN_OF_BLANKS = re.compile(r"[ \t]+")
+
+
+def clean_tool_output(text: str) -> str:
+    """*text*, a tool's output or an error carrying it, fit for a job's error.
+
+    Escape sequences and control characters go (a progress bar's backspaces,
+    a coloured ``ERROR:``), a carriage return ends a line as a newline does,
+    runs of blanks become one space, and blank lines are dropped (#455). The
+    one place tool output is cleaned: the runner's own messages and every job
+    error sink (``JobManager``) go through it, so every tool gets it.
+    """
+    text = _ESCAPE_SEQUENCE.sub("", text).replace("\r", "\n")
+    lines = (
+        _RUN_OF_BLANKS.sub(" ", _CONTROL_CHARACTERS.sub("", line)).strip()
+        for line in text.split("\n")
+    )
+    return "\n".join(line for line in lines if line)
+
+
+def killed_by_signal_message(label: str, returncode: int) -> str:
+    """A tool ended by a signal, in plain words (#455).
+
+    *returncode* is the negative return code ``asyncio`` reports. SIGKILL that
+    the app didn't send (a cancel or a stall is reported as itself) is almost
+    always the kernel's OOM killer, so it says so; any other signal is named.
+    """
+    number = -returncode
+    if number == signal.SIGKILL:
+        return f"{label} was killed (signal {number}), most likely out of memory"
+    try:
+        name = signal.Signals(number).name
+    except ValueError:
+        return f"{label} was killed (signal {number})"
+    return f"{label} was killed (signal {number}, {name})"
+
 
 class ConversionCancelled(Exception):
     """Raised when a conversion is cancelled before completion."""
@@ -2135,8 +2179,10 @@ class SubprocessRunner:
                     with contextlib.suppress(asyncio.CancelledError, Exception):
                         await helper
             self.untrack_pid(process.pid)
+        if process.returncode is not None and process.returncode < 0:
+            raise RuntimeError(killed_by_signal_message(label, process.returncode))
         if process.returncode != 0:
-            tail = stderr_tail.decode("utf-8", errors="replace").strip()
+            tail = clean_tool_output(stderr_tail.decode("utf-8", errors="replace"))
             raise RuntimeError(
                 f"{label} exited with {process.returncode}"
                 + (f": {tail.splitlines()[-1]}" if tail else ""),
@@ -3017,8 +3063,17 @@ class SubprocessRunner:
             if abandoned_error:
                 raise RuntimeError(abandoned_error)
 
+            if process.returncode is not None and process.returncode < 0:
+                # Killed (by the OOM killer, most likely): its last output is
+                # a progress line, not the reason, so it goes to the log only.
+                self._logger.warning(
+                    "%s pid=%s was killed by signal %s; last output: %r",
+                    fail_label, process.pid, -process.returncode,
+                    "\n".join(output_lines[-6:]),
+                )
+                raise RuntimeError(killed_by_signal_message(fail_label, process.returncode))
             if process.returncode != 0:
-                tail = "\n".join(output_lines[-6:])
+                tail = clean_tool_output("\n".join(output_lines[-6:]))
                 if tail:
                     raise RuntimeError(
                         f"{fail_label} failed with return code {process.returncode}."
@@ -3034,7 +3089,7 @@ class SubprocessRunner:
             # output usually printed the reason first (e.g. nsz, whose output is
             # the temp file the runner already watches).
             if require_output and not os.path.exists(output_path):
-                tail = "\n".join(output_lines[-6:])
+                tail = clean_tool_output("\n".join(output_lines[-6:]))
                 if tail:
                     raise RuntimeError(
                         f"{fail_label} produced no output file.\nLast output:\n{tail}",

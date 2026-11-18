@@ -21,14 +21,36 @@ writes ``Name (Patched).7z`` beside the Image and never changes the Image:
    in no imported DAT and its cached match is no hit) the job finishes with a
    warning rather than a refusal.
 5. **The packer** is romz's ``7z a`` (``romz_service.convert``), writing a
-   hidden staged archive beside the Image. It is read back and must hold the
-   patched ROM exactly (the row's check is ``intact``), then placed under
+   hidden staged archive beside the Image, with a memory bound (below). It is
+   read back and must hold the patched ROM exactly, by size and SHA1 (the
+   row's check is ``intact``), then placed under
    ``Name (Patched).7z`` without ever replacing a file: a taken name moves on
    to ``Name (Patched) (2).7z`` and so on. Placing is never abandoned: a
    cancel or stall during it waits for it, and the job records what landed.
 
 The job is external (``ConversionMode.PATCH``): it takes no conversion slot,
 and its Ledger row is written by the usual terminal listener.
+
+**Memory (#455).** A ROM may be up to ``CHD_PATCH_MAX_ROM_SIZE`` (512 MiB by
+default), so the job holds at most one ROM-sized buffer, two for BPS, and none
+while 7z runs:
+
+* The ROM is read into one ``bytearray`` (``read_beneath_mutable``,
+  ``read_fd_capped``). IPS patches it in place; BPS builds one target from it
+  (``patch_engine.apply_patch_in_place``). The SHA1 the Recognized check needs
+  is taken before the patch changes the bytes.
+* The patched ROM is written to the scratch file in the same detached call,
+  and the call returns only its size and SHA1, so the buffers are gone before
+  7z starts. The read-back compares the archive's member by size and SHA1.
+* 7z runs romz's Max profile (LZMA2, ``-mx=9 -mfb=273``) with the dictionary
+  sized from the ROM and capped at ``PACK_MAX_DICTIONARY`` (64 MiB), and
+  ``-mmt=2``: one LZMA2 block encoder with a two-thread match finder.
+  romz's ``-md=256m -mmt=on`` wanted about 11.5 times 256 MiB per encoder and
+  one encoder per pair of cores, which the OOM killer stopped on a 400 MiB
+  ROM. Bounded, 7z needs well under 1 GiB (``pack_memory_estimate``) whatever
+  the ROM size or core count, and the archive is still a 7z (LZMA2) any 7z
+  reader takes, which needs only the dictionary's 64 MiB to unpack. For a ROM
+  up to 64 MiB nothing changes: 7z shrinks its dictionary to the ROM anyway.
 """
 
 from __future__ import annotations
@@ -49,7 +71,7 @@ from models import ConversionMode
 from services.archive import ArchiveSafetyRefused, archive_service
 from services.archive_members import read_archive_members
 from services.job_manager import job_manager
-from services.patch_engine import PatchError, apply_patch, patch_kind
+from services.patch_engine import PatchError, apply_patch_in_place, patch_kind
 from services.romz import romz_service
 from services.stream_digest import new_hasher
 from services.subprocess_runner import (
@@ -70,6 +92,8 @@ from utils.path_utils import (
     match_extension,
     place_without_clobbering,
     read_beneath,
+    read_beneath_mutable,
+    read_fd_capped,
     short_temp_file,
     short_temp_name,
     volume_containment,
@@ -90,6 +114,14 @@ _MAX_NUMBER = 999
 # safe. No separator can appear, so an id is always one plain file name.
 _UPLOAD_ID = re.compile(r"[0-9a-f]{16}-[A-Za-z0-9 ._()\[\]-]{1,200}", re.ASCII)
 _UNSAFE = re.compile(r"[^A-Za-z0-9 ._()\[\]-]", re.ASCII)
+# The pack's memory bound (#455): see the module docstring.
+PACK_MAX_DICTIONARY = 64 << 20
+PACK_MIN_DICTIONARY = 1 << 20
+PACK_THREADS = 2
+# 7-Zip's table for the BT4 match finder: about 11.5 times the dictionary,
+# plus a few MiB, for one LZMA2 block encoder.
+_BT4_MEMORY_PER_DICTIONARY = 11.5
+_BT4_MEMORY_OVERHEAD = 6 << 20
 
 
 class PatchRefused(Exception):
@@ -148,6 +180,23 @@ def _sha1(data: bytes) -> str:
 
 def _limit(name: str) -> int:
     return max(0, int(getattr(settings, name, 0) or 0))
+
+
+def pack_dictionary(rom_size: int) -> int:
+    """The LZMA2 dictionary for packing a ROM of *rom_size* bytes.
+
+    The smallest power of two that holds the ROM (a bigger one buys nothing),
+    from 1 MiB up to ``PACK_MAX_DICTIONARY``, so 7z's memory has a ceiling.
+    """
+    dictionary = PACK_MIN_DICTIONARY
+    while dictionary < rom_size and dictionary < PACK_MAX_DICTIONARY:
+        dictionary <<= 1
+    return dictionary
+
+
+def pack_memory_estimate(rom_size: int) -> int:
+    """About how many bytes 7z needs to pack a ROM of *rom_size* bytes."""
+    return int(pack_dictionary(rom_size) * _BT4_MEMORY_PER_DICTIONARY) + _BT4_MEMORY_OVERHEAD
 
 
 def _upload_id(name: str, ext: str) -> str:
@@ -254,18 +303,24 @@ async def _require_inside(path: str, what: str) -> None:
         raise PatchRefused(400, f"{what} isn't inside a Volume")
 
 
-def _read_in_volume(path: str, max_bytes: int) -> bytes:
+def _read_in_volume(path: str, max_bytes: int, *, mutable: bool = False) -> bytes | bytearray:
     """*path*'s bytes, read with no symlink anywhere below its Volume root.
 
     Checked again here, on the resolved path, so a link swapped in after the
-    route's check can't take the read out of the Volumes.
+    route's check can't take the read out of the Volumes. *mutable* reads
+    into one ``bytearray`` the caller patches in place (a ROM, #455).
     """
     real = os.path.realpath(path)
     root = lock_boundary_root(real) if volume_containment(real) is True else None
     if root is None:
         raise PatchRefused(400, f"{os.path.basename(path)} isn't inside a Volume")
     relative = os.path.relpath(real, root).replace(os.sep, "/")
-    return _read_capped(lambda cap: read_beneath(str(root), relative, max_bytes=cap), max_bytes)
+    read = read_beneath_mutable if mutable else read_beneath
+    return _read_capped(lambda cap: read(str(root), relative, max_bytes=cap), max_bytes)
+
+
+def _read_rom(path: str, max_bytes: int) -> bytearray:
+    return _read_in_volume(path, max_bytes, mutable=True)
 
 
 def _read_capped(read: Callable[[int], bytes], max_bytes: int) -> bytes:
@@ -391,6 +446,8 @@ async def _patch(job_id: str, image: _Image, patch: _Patch) -> None:
         "kind": "patch", "path": patch.path, "sha1": _sha1(patch_bytes),
     }]
 
+    kind = patch_kind(patch_bytes)
+
     await _step(job_id, 10, "Reading the ROM")
     if image.archived:
         rom_name, source = await _detached(
@@ -399,32 +456,47 @@ async def _patch(job_id: str, image: _Image, patch: _Patch) -> None:
     else:
         rom_name = os.path.basename(image.disk)
         source = await _detached(
-            job_id, _read_in_volume, image.disk, rom_cap, what="reading the ROM",
+            job_id, _read_rom, image.disk, rom_cap, what="reading the ROM",
         )
     job.input_bytes = len(source)
     job.platform = await run_in_threadpool(_platform, image.path)
+    # IPS proves nothing about the ROM, so the Recognized check needs its
+    # SHA1, taken now: the patch is applied in place.
+    source_sha1 = None
+    if kind == "ips":
+        source_sha1 = await _detached(job_id, _sha1, source, what="hashing the ROM")
 
-    await _step(job_id, 30, "Applying the patch")
-    result = await _detached(
-        job_id, _apply, source, patch_bytes, rom_cap, what="applying the patch",
-    )
-    if not result.checked and not await run_in_threadpool(_recognized, image.path, source):
-        job.warning = (
-            "The ROM isn't Recognized, and an IPS patch carries no checksums, "
-            "so nothing shows the patch was made for it"
-        )
-
-    await _step(job_id, 50, "Packing the patched ROM")
     stem = PurePosixPath(rom_name).stem
     patched_name = f"{stem} (Patched){PurePosixPath(rom_name).suffix}"
-    final = await _pack_and_place(job_id, image, patched_name, stem, result.target)
+    work = await run_in_threadpool(_work_dir)
+    try:
+        await _step(job_id, 30, "Applying the patch")
+        patched = await _detached(
+            job_id, _apply_and_write, source, patch_bytes, rom_cap,
+            os.path.join(work, patched_name), what="applying the patch",
+        )
+        # The patched ROM is on disk: nothing here holds a ROM-sized buffer
+        # while 7z runs (#455).
+        del source, patch_bytes
+        if source_sha1 is not None and not await run_in_threadpool(
+            _recognized, image.path, source_sha1,
+        ):
+            job.warning = (
+                "The ROM isn't Recognized, and an IPS patch carries no checksums, "
+                "so nothing shows the patch was made for it"
+            )
+
+        await _step(job_id, 50, "Packing the patched ROM")
+        final = await _pack_and_place(job_id, image, patched, stem)
+    finally:
+        await remove_partial_tree(work, label="patch work directory")
     # Placed: recorded before anything else can fail, and whatever a cancel
     # that came during the placement says. It came too late to stop it.
     job.output_path = final
     job.check_passed = "intact"
     job.result = {
-        "patch_kind": result.kind,
-        "checksums_checked": result.checked,
+        "patch_kind": patched.kind,
+        "checksums_checked": patched.checked,
         "output_path": final,
     }
     job.message = f"Wrote {os.path.basename(final)}"
@@ -433,11 +505,32 @@ async def _patch(job_id: str, image: _Image, patch: _Patch) -> None:
     job.output_size = await run_in_threadpool(os.path.getsize, final)
 
 
-def _apply(source: bytes, patch_bytes: bytes, rom_cap: int):
-    return apply_patch(source, patch_bytes, max_target=rom_cap or (1 << 62))
+@dataclass(frozen=True)
+class _Patched:
+    """The patched ROM, written to the work directory: what the pack needs."""
+
+    path: str
+    size: int
+    sha1: str
+    # "ips" or "bps".
+    kind: str
+    # Whether the patch's own checksums proved the source and the output.
+    checked: bool
 
 
-def _read_archived(image: _Image, max_bytes: int) -> tuple[str, bytes]:
+def _apply_and_write(
+    source: bytearray, patch_bytes: bytes, rom_cap: int, path: str,
+) -> _Patched:
+    """Patch *source* (given up: IPS changes it in place) and write the
+    result to *path*. Only the result's size and SHA1 come back, so no
+    ROM-sized buffer outlives the call."""
+    result = apply_patch_in_place(source, patch_bytes, max_target=rom_cap or (1 << 62))
+    target = result.target
+    _write(path, target)
+    return _Patched(path, len(target), _sha1(target), result.kind, result.checked)
+
+
+def _read_archived(image: _Image, max_bytes: int) -> tuple[str, bytearray]:
     """The ROM inside the archive: ``(member name, bytes)``.
 
     The whole listing is held to the archive limits before anything is
@@ -485,22 +578,24 @@ def _read_archived(image: _Image, max_bytes: int) -> tuple[str, bytes]:
     extracted, temp_dir = archive_service.extract_file(real, member.name)
     try:
         with open(extracted, "rb") as handle:
-            data = handle.read(max_bytes + 1 if max_bytes else -1)
+            data = read_fd_capped(handle.fileno(), max_bytes or (1 << 62), member.name)
+    except ValueError:
+        raise PatchRefused(
+            400, f"{member.name} is over the CHD_PATCH_MAX_ROM_SIZE limit",
+        ) from None
     finally:
         archive_service.cleanup_temp_dir(temp_dir)
-    if max_bytes and len(data) > max_bytes:
-        raise PatchRefused(400, f"{member.name} is over the CHD_PATCH_MAX_ROM_SIZE limit")
     return os.path.basename(member.name), data
 
 
-def _recognized(image_path: str, data: bytes) -> bool:
-    """Whether a DAT names these bytes, or the cached match for the Image is a
-    hit. A store that can't be read counts as not Recognized: the answer only
-    decides whether a warning is shown."""
+def _recognized(image_path: str, sha1: str) -> bool:
+    """Whether a DAT names the bytes with this SHA1, or the cached match for
+    the Image is a hit. A store that can't be read counts as not Recognized:
+    the answer only decides whether a warning is shown."""
     from services.dat_store import dat_store
 
     try:
-        if dat_store.lookup_sha1(_sha1(data)) is not None:
+        if dat_store.lookup_sha1(sha1) is not None:
             return True
     except MultipleResultsFound:
         return True  # named by more than one DAT
@@ -532,31 +627,68 @@ def _work_dir() -> str:
     return tempfile.mkdtemp(prefix="patch_", dir=base)
 
 
-def _write(path: str, data: bytes) -> None:
+def _write(path: str, data: bytes | bytearray) -> None:
     with open(path, "xb") as handle:
         handle.write(data)
 
 
-def _read_back(archive: str, member: str, expected: bytes, work: str) -> None:
+class _Digest:
+    """Where py7zr unpacks a member during the read-back: its size and SHA1
+    as the bytes go by, and nothing kept. A ``py7zr.io.Py7zIO``."""
+
+    def __init__(self) -> None:
+        self.hasher = new_hasher("sha1")
+        self.written = 0
+
+    def write(self, data: bytes | bytearray) -> int:
+        self.hasher.update(data)
+        self.written += len(data)
+        return len(data)
+
+    def read(self, size: int | None = None) -> bytes:
+        return b""
+
+    def seek(self, offset: int, whence: int = 0) -> int:
+        return self.written
+
+    def flush(self) -> None:
+        return None
+
+    def size(self) -> int:
+        return self.written
+
+    def close(self) -> None:
+        return None
+
+
+def _read_back(archive: str, patched: _Patched) -> None:
     """The packed archive must hold exactly one member, the patched ROM.
 
-    Read whole with py7zr, the reader the app lists archives with. Not through
-    the archive limits: this is the app's own output, already within
+    Unpacked with py7zr, the reader the app lists archives with, straight
+    into a digest: the member's size and SHA1 must be the patched ROM's, and
+    no copy of it is kept in memory or on disk. Not through the archive
+    limits: this is the app's own output, already within
     ``CHD_PATCH_MAX_ROM_SIZE``.
     """
     import py7zr
+    from py7zr.io import Py7zIO, WriterFactory
 
-    out = tempfile.mkdtemp(prefix="readback_", dir=work)
-    try:
-        with py7zr.SevenZipFile(archive, "r") as packed:
-            names = packed.getnames()
-            if names != [member]:
-                raise PatchRefused(500, f"The packed archive holds {names}, not {member}")
-            packed.extract(path=out, targets=[member])
-        with open(os.path.join(out, member), "rb") as handle:
-            same = handle.read(len(expected) + 1) == expected
-    finally:
-        shutil.rmtree(out, ignore_errors=True)
+    member = os.path.basename(patched.path)
+    digests: dict[str, _Digest] = {}
+
+    class _Factory(WriterFactory):
+        def create(self, filename: str) -> Py7zIO:
+            return digests.setdefault(filename, _Digest())
+
+    with py7zr.SevenZipFile(archive, "r") as packed:
+        names = packed.getnames()
+        if names != [member]:
+            raise PatchRefused(500, f"The packed archive holds {names}, not {member}")
+        packed.extract(targets=[member], factory=_Factory())
+    digest = digests.get(member)
+    same = digest is not None and (digest.written, digest.hasher.hexdigest()) == (
+        patched.size, patched.sha1,
+    )
     if not same:
         raise PatchRefused(
             500, "The packed archive didn't read back as the patched ROM, so it wasn't kept",
@@ -578,17 +710,17 @@ def _place(staged: str, folder: str, stem: str) -> str:
 
 
 async def _pack_and_place(
-    job_id: str, image: _Image, patched_name: str, stem: str, target: bytes,
+    job_id: str, image: _Image, patched: _Patched, stem: str,
 ) -> str:
+    """Pack the patched ROM, read it back and place it. The patched ROM's
+    work directory is the caller's to remove."""
     folder = os.path.dirname(image.disk)
     staged = os.path.join(folder, short_temp_name(".patch-", ".7z"))
-    work = await run_in_threadpool(_work_dir)
     try:
-        rom_file = os.path.join(work, patched_name)
-        await _detached(job_id, _write, rom_file, target, what="writing the patched ROM")
         async for update in romz_service.convert(
-            rom_file, staged, mode=ConversionMode.ROMZ_7Z.value,
+            patched.path, staged, mode=ConversionMode.ROMZ_7Z.value,
             cancel_event=job_manager.get_cancel_event(job_id),
+            dictionary=pack_dictionary(patched.size), threads=PACK_THREADS,
         ):
             progress = update.get("progress")
             if isinstance(progress, (int, float)):
@@ -597,10 +729,7 @@ async def _pack_and_place(
                     message=update.get("message") or "Packing the patched ROM",
                 )
         await _step(job_id, 90, "Reading the archive back")
-        await _detached(
-            job_id, _read_back, staged, patched_name, target, work,
-            what="reading the archive back",
-        )
+        await _detached(job_id, _read_back, staged, patched, what="reading the archive back")
         _stop_if_cancelled(job_id)
         # Placing is irreversible: the link may be made however late the call
         # returns. So it is never abandoned, not for a cancel and not for the
@@ -610,4 +739,3 @@ async def _pack_and_place(
         return await run_detached_to_end(_place, staged, folder, stem)
     finally:
         await remove_partial_output(staged, label="staged patch archive")
-        await remove_partial_tree(work, label="patch work directory")

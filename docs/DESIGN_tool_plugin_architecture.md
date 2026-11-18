@@ -408,7 +408,8 @@ class SubprocessRunner:
         is pending, so a child whose stdout ended before the watcher ran is
         still reported cancelled, not "return code -15"; a child that had
         already exited stays complete),
-        non-zero exit -> RuntimeError(tail),
+        non-zero exit -> RuntimeError(tail), a signal -> RuntimeError in
+        plain words (see "A tool's failure in a job's error" below),
         final 100%. `parse_progress(line) -> int|None` is the only per-tool knob
         in the common path. `cwd` sets the working directory (romz runs `7z a`
         from the ROM dir).
@@ -435,6 +436,26 @@ class SubprocessRunner:
           still reports the reason it printed first (nsz, whose `output_path` is
           the temp file the runner already watches).
         """
+
+    # A tool's failure in a job's error (#455) ------------------------------
+    #
+    # `killed_by_signal_message(label, returncode)`: a negative return code is
+    # a signal, so the job's error says "<label> was killed (signal 9), most
+    # likely out of memory" for SIGKILL the app didn't send (a cancel and a
+    # stall are reported as themselves), and "<label> was killed (signal 11,
+    # SIGSEGV)" for any other. The tool's last output is a progress line, not
+    # the reason, so it goes to the log only. run() and hash_stdout() use it;
+    # killed_verify_error() is the verify counterpart.
+    #
+    # `clean_tool_output(text)`: drops escape sequences and control
+    # characters (a progress bar's backspaces, a coloured "ERROR:"), turns a
+    # carriage return into a line end, folds runs of blanks and drops blank
+    # lines. The runner cleans the output tail it puts in a RuntimeError, and
+    # JobManager cleans every job error it records: a conversion's
+    # `error_message = clean_tool_output(str(exc))` and every external job's
+    # `finish_external_job(error_message=...)`. So a tool needs no wiring, and
+    # a service that builds its own message from tool output is covered at
+    # the sink.
 
     async def reap(self, process, *, exit_timeout=_EXIT_GRACE) -> bool:
         """Bounded teardown for any spawned child. True if reaped, False if
@@ -7298,7 +7319,13 @@ target size and CRC after (`TargetMismatch`). Every action is bounds-checked
 against the source, the patch and the declared target. `max_target` bounds
 the output before it is allocated, so a header claiming a huge target or a
 record far past the end raises `PatchTooLarge`. `checked` is True for BPS
-only.
+only. `apply_patch_in_place(rom, patch, *, max_target)` is the form the
+action uses (#455): *rom* is a `bytearray` the caller gives up. IPS patches
+it in place (growing or truncating it) and returns it as the target; BPS
+builds one target `bytearray`, copying view to view (`memoryview` slices, so
+a SourceRead of the whole ROM makes no ROM-sized slice), and a long
+overlapping TargetCopy doubles its run in place instead of building the run
+in a buffer. Nothing ROM-sized is copied on the way out.
 
 **The action** (`patch_bench.start`, `POST /api/patch`) is an external job,
 `ConversionMode.PATCH`, declared in `EXTERNAL_JOB_MODES` with a Ledger row
@@ -7321,15 +7348,20 @@ an external job's path). Then, every blocking step through
    symlink or encrypted member refuses it; with no member named it must hold
    exactly one non-junk file; the member must have a recorded size within the
    ROM limit; then `ArchiveService.extract_file` unpacks it.
-3. The engine runs on its own detached thread. For an unchecked (IPS) result,
-   `_recognized` asks `dat_store.lookup_sha1` and then the cached match for
-   the Image; neither a hit nor a readable store means `job.warning`, not a
-   refusal.
-4. The patched ROM is written as `<stem> (Patched)<ext>` in a work directory
-   under `CHD_TEMP_DIR`, then packed by `romz_service.convert(..., mode=
-   "romz_7z")` into a hidden staged `.patch-*.7z` beside the Image (the same
-   filesystem as the target). The staged archive is read back with py7zr and
-   must hold exactly that one member with exactly the patched bytes
+3. The engine runs on its own detached thread, `apply_patch_in_place` on
+   the ROM's buffer, and the same call writes the patched ROM as
+   `<stem> (Patched)<ext>` in a work directory under `CHD_TEMP_DIR` and
+   returns only its path, size and SHA1 (`_Patched`). For IPS, which proves
+   nothing about the ROM, the ROM's SHA1 is taken before the patch changes
+   it, and `_recognized` asks `dat_store.lookup_sha1` and then the cached
+   match for the Image; neither a hit nor a readable store means
+   `job.warning`, not a refusal.
+4. The patched ROM is packed by `romz_service.convert(..., mode="romz_7z",
+   dictionary=pack_dictionary(size), threads=PACK_THREADS)` into a hidden
+   staged `.patch-*.7z` beside the Image (the same filesystem as the target).
+   The staged archive is read back with py7zr, unpacked straight into a
+   SHA1 (a `py7zr.io` writer factory, nothing kept), and must hold exactly
+   that one member with the patched ROM's size and SHA1
    (`check_passed = "intact"`). `place_without_clobbering` then moves it to
    `<stem> (Patched).7z`, and on `FileExistsError` to `(2)`, `(3)`, … up to
    999. The staged file and the work directory are always swept. Placing is
@@ -7339,6 +7371,31 @@ an external job's path). Then, every blocking step through
    after the job said "nothing was written". The job waits for it, then
    records the archive in `output_path` and the Ledger, noting a cancel that
    came too late. A cancel before placement still writes nothing.
+
+**Memory (#455).** `CHD_PATCH_MAX_ROM_SIZE` allows a 512 MiB ROM, and the
+first version held the source and the patched bytes while romz's
+`-mx=9 -md=256m -mfb=273 -mmt=on` ran, which the OOM killer stopped on a
+400 MiB ROM in a container with 4 GiB free. Now:
+
+- The ROM is read once into one `bytearray`: `read_beneath_mutable` (a loose
+  ROM) and `read_fd_capped` (an unpacked member), both in
+  `utils/path_utils.py`, read straight into a buffer sized by `fstat` and on
+  to the real end, under the cap. Patching costs no copy for IPS and one
+  target for BPS. The job holds no ROM-sized buffer once the patched ROM is
+  written, so none while 7z runs.
+- 7z keeps romz's Max profile (LZMA2, `-mx=9 -mfb=273`) with two switches
+  replaced through `romz_service.convert`'s `dictionary` and `threads`
+  (`romz._compress_flags`): the dictionary is the smallest power of two that
+  holds the ROM, from 1 MiB to `PACK_MAX_DICTIONARY` (64 MiB), and `-mmt=2`
+  runs one LZMA2 block encoder with a two-thread match finder, whatever the
+  core count. 7-Zip's table puts BT4 at about 11.5 times the dictionary, so
+  7z needs about 740 MiB at most (`pack_memory_estimate`). 7z shrinks its
+  dictionary to the input anyway, so a ROM up to 64 MiB packs exactly as
+  before; a bigger one packs with a 64 MiB window instead of up to 256 MiB,
+  a little larger, and any 7z reader opens it with 64 MiB.
+- Nothing is refused for size up front: with the bound, a ROM at the cap
+  needs about one ROM (two for BPS) in the app and 740 MiB in 7z, at
+  different times.
 
 Uploads (`POST /api/patch/upload`, `patch_bench.save_upload`) are read by
 `services/upload_stream.file_upload`, not FastAPI's `UploadFile`, which

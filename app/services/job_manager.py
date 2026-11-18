@@ -52,6 +52,7 @@ from services.subprocess_runner import (
     ProbeCapacityExceeded,
     ReadCancelled,
     StorageAbandoned,
+    clean_tool_output,
     run_detached,
     run_detached_bounded,
     run_detached_mutation,
@@ -1743,7 +1744,9 @@ class JobManager:
             job.progress = 100
         job.completed_at = datetime.now(timezone.utc)
         if error_message is not None:
-            job.error_message = error_message
+            # Tool output that reached the error loses its control characters
+            # (a progress bar's backspaces), for every external job (#455).
+            job.error_message = clean_tool_output(error_message)
         # Clean up any spurious cancel state that may have been set by
         # cancel_all while the external task was still running.
         self._cancel_events.pop(job_id, None)
@@ -6553,11 +6556,13 @@ class JobManager:
         except Exception as e:
             self._cancelled.discard(job_id)
             job.status = JobStatus.FAILED
-            job.error_message = str(e)
+            # Whatever tool output the error carries, without its control
+            # characters (#455): the one sink every conversion failure meets.
+            job.error_message = clean_tool_output(str(e))
             job.completed_at = datetime.now(timezone.utc)
 
             await self._notify_subscribers(
-                job_id, {"type": "error", "job_id": job_id, "error": str(e)}
+                job_id, {"type": "error", "job_id": job_id, "error": job.error_message}
             )
 
         finally:
