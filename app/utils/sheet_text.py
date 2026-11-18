@@ -257,7 +257,7 @@ def _ambiguity(
             except ValueError:
                 continue
             try:
-                both = decoded_path.exists() and opened_path.exists()
+                both = _present(decoded_path) and _present(opened_path)
                 if both and not os.path.samefile(decoded_path, opened_path):
                     return (
                         f"Ambiguous track sheet: {decoded!r} names a different file "
@@ -513,6 +513,14 @@ def gdi_tracks(text: str) -> list[GdiTrack]:
     return tracks
 
 
+def _present(path: Path) -> bool:
+    """``path_utils.path_present``: a stat that doesn't answer is counted as
+    unknown, never taken for a missing track."""
+    from utils.path_utils import path_present  # local: no cycle at import
+
+    return path_present(path)
+
+
 def pick_existing(
     readings: Sequence[Sequence[str]],
     resolve: Callable[[str], Path],
@@ -541,7 +549,7 @@ def pick_existing(
                 continue
             if fallback is None:
                 fallback = candidate
-            if candidate.exists():
+            if _present(candidate):
                 chosen = candidate
                 break
         if chosen is not None or fallback is not None:

@@ -734,3 +734,46 @@ async def test_a_source_or_sheet_read_that_times_out_is_no_verdict(
     problem = await jm.job_manager._source_identity_problem_bounded(job)
     assert "couldn't be checked" in problem
     assert sweep._never_checked(SimpleNamespace(_source_identity=job._source_identity))
+
+
+@pytest.mark.asyncio
+async def test_a_split_part_whose_stat_times_out_is_no_verdict(tmp_volume, tmp_path, monkeypatch):
+    """codex 4620404219: a split set's part 2 whose stat times out used to drop
+    out of `os.path.isfile`'s answer, so the set looked one part long. The
+    shared `path_present` counts it as unknown, and the identity ends
+    unanswered at capture and at the job's own check."""
+    from types import SimpleNamespace
+
+    from models import ConversionJob, ConversionMode, JobStatus
+    from services import job_manager as jm
+    from services.rules import sweep
+    from utils.path_utils import queued_source_identity
+
+    part1, part2 = tmp_path / "game_part1.wud", tmp_path / "game_part2.wud"
+    part1.write_bytes(b"\1" * 64)
+    part2.write_bytes(b"\2" * 64)
+    job = ConversionJob(
+        id="splittimeout449", file_path=str(part1), filename=part1.name,
+        mode=ConversionMode.JWUD_COMPRESS, status=JobStatus.QUEUED,
+        created_at=datetime.now(timezone.utc), output_path=str(tmp_path / "game.wux"),
+    )
+    job._source_identity = queued_source_identity(job.file_path, job.mode.value)
+    assert [each["path"] for each in job._source_identity["companions"]] == [str(part2)]
+
+    real_stat = os.stat
+
+    def stat(path, *args, **kwargs):
+        if str(path) == str(part2) and not kwargs.get("dir_fd"):
+            raise TimeoutError(errno.ETIMEDOUT, "Connection timed out", str(path))
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "stat", stat)
+
+    problem = await jm.job_manager._source_identity_problem_bounded(job)
+    assert "couldn't be checked" in problem
+    assert sweep._never_checked(SimpleNamespace(_source_identity=job._source_identity))
+
+    specs = [{"file_path": job.file_path}]
+    await jm.job_manager._capture_source_identities(specs, ConversionMode.JWUD_COMPRESS)
+    assert specs[0]["source_identity"].get("unanswered") is True
+    assert sweep._never_checked(SimpleNamespace(_source_identity=specs[0]["source_identity"]))

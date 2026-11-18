@@ -28,6 +28,31 @@ def strip_archive_path(path: str) -> str:
     return path.split("::", 1)[0] if "::" in path else path
 
 
+# What `os.stat` raises for a path that simply isn't there (or can't be, as
+# named): an answer. Anything else (a timeout, EIO) is "couldn't tell".
+_ABSENT_ERRNOS = frozenset({
+    errno.ENOENT, errno.ENOTDIR, errno.ELOOP, errno.ENAMETOOLONG, errno.EACCES, errno.EPERM,
+})
+
+
+def path_present(path: str | os.PathLike, *, regular: bool = False) -> bool:
+    """Whether *path* exists (a regular file, with *regular*), following links:
+    the existence check every companion enumeration uses (a split set's
+    parts, a sheet's tracks), in place of ``os.path.isfile``/``exists``, which
+    swallow every error. False when it is absent. Any other ``OSError``
+    (ETIMEDOUT, EIO) is "couldn't tell": counted as unknown (``_note_unknown``)
+    and reported absent, so a caller that reads the count (``_answered``, the
+    queued identity, codex 4620404219) gets no verdict, and every other caller
+    sees what the boolean check gave it before."""
+    try:
+        st = os.stat(path)
+    except OSError as exc:
+        if exc.errno not in _ABSENT_ERRNOS:
+            _note_unknown()
+        return False
+    return stat.S_ISREG(st.st_mode) if regular else True
+
+
 def is_special_file(path: str | os.PathLike) -> bool:
     """Whether ``path`` exists and is neither a regular file nor a directory.
 
@@ -1112,7 +1137,9 @@ def source_companion_paths(file_path: str, mode: str) -> list[str]:
     # A track the sheet names is confined by Volume-root probes: one that
     # doesn't answer leaves the list short, so it is an error, not a list.
     tracks = _answered(sheet_track_paths, file_path, whole=True)
-    return [*tracks, *_tool_companions(file_path, mode)]
+    # The tool's own companions the same way: a split set's part whose stat
+    # didn't answer would otherwise drop out of the list (codex 4620404219).
+    return [*tracks, *_answered(_tool_companions, file_path, mode, whole=True)]
 
 
 def is_safe_directory_tree(path: str) -> bool:

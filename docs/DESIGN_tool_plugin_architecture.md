@@ -7819,7 +7819,12 @@ unknown count rose during the call, so "couldn't tell" is never "outside the
 Volumes" or "other companions". A `TimeoutError` (ETIMEDOUT) from any open,
 stat or folder walk in those paths is re-raised past their `except OSError`
 refusals, and a sheet read that times out or fails with EIO is counted as
-unknown, so it ends unanswered too; capture marks such a Source unanswered too, and a Cancel while it waits ends the job CANCELLED, never refused.
+unknown, so it ends unanswered too. Every existence check a companion
+enumeration makes (a split set's parts, a sheet's tracks, its spelling
+check) is `path_utils.path_present`, never `os.path.isfile`/`exists`, which
+swallow every error: a stat that doesn't answer is counted as unknown, so the
+tool's companion list is "couldn't tell" through `_answered`, never shorter
+(codex 4620404219); capture marks such a Source unanswered too, and a Cancel while it waits ends the job CANCELLED, never refused.
 The capture runs before the destination keys are resolved, so its wait never
 sits between those keys and their comparison under the lock. The active-job
 inventory other sweeps read (`_candidate_paths`) names the same files as the

@@ -59,6 +59,7 @@ from services.subprocess_runner import (
     verify_preflight,
     verify_exception_event,
 )
+from utils.path_utils import path_present
 
 # Compress takes the raw dump, decompress takes the compressed container.
 JWUD_COMPRESS_EXTENSIONS = {".wud"}
@@ -152,7 +153,9 @@ def split_set_parts(primary_path: str) -> list[str]:
     parts: list[str] = []
     for index in range(2, WUD_SPLIT_MAX_PARTS + 1):
         candidate = os.path.join(directory, WUD_SPLIT_PART_TEMPLATE % index)
-        if not os.path.isfile(candidate):
+        # path_present, not os.path.isfile: a part whose stat timed out is
+        # "couldn't tell" for the queued identity, never a shorter set.
+        if not path_present(candidate, regular=True):
             break
         parts.append(candidate)
     return parts
