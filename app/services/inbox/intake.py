@@ -140,7 +140,7 @@ from services.subprocess_runner import (
     run_detached_undoable,
     run_detached_within_stall_bound,
 )
-from services.tools import registry
+from services.tools import not_ready_message, registry
 from utils.delete_plan import sheet_reference_problems
 from utils.junk import is_junk_entry
 from utils.path_utils import (
@@ -2282,7 +2282,10 @@ async def _plan(library: Library, platform: str, path: str) -> _Plan:
         # it goes in as it is.
         return _Plan(folder=placement.folder, rule=None)
     if not await registry.tool_is_ready(tool):
-        return _Plan(placement.folder, None, f"{spec.tool_id} isn't ready, so the Rule can't run")
+        # The plugin's own reason, read after the probe that set it (#484).
+        return _Plan(
+            placement.folder, None, f"{not_ready_message(tool)}, so the Rule can't run",
+        )
     return _Plan(folder=placement.folder, rule=rule)
 
 

@@ -7737,7 +7737,9 @@ move to `processed/` still acts on the Inbox names, with its own inode check. So
 queue has: it takes a `max_concurrent` slot, gets its Ledger row and its
 Cancel. A Rule that is disabled, or whose mode doesn't take the file (it is
 already in the target format), copies instead; one whose mode isn't for the
-Platform, or whose tool isn't ready, holds the file with a Finding.
+Platform, or whose tool isn't ready, holds the file with a Finding. A tool
+that isn't ready gives its own reason, `not_ready_message(tool)` read after
+`tool_is_ready` (§3.4, #484), followed by ", so the Rule can't run".
 
 **Copying** (`ConversionMode.INBOX_COPY`, an `ExternalMode(in_ledger=False,
 started_by_hand=False, takes_slot=True)`: it converts nothing). One background
@@ -8511,9 +8513,11 @@ that tells someone a tool isn't ready builds the line with
 `services.tools.not_ready_message(tool, purpose="convert" | "verify")`, which
 returns `"<display_name> isn't ready: <reason>"` with the reason for that
 purpose (#484). It takes `purpose` the way `tool_is_ready` does. The CLI's
-`--to` and `verify` paths, Auto's plan (`platform_detect._plan_targets`) and
-the Rules sweep's skip line (§3.3.11) all use it, so they say the same thing;
-a new caller does too, rather than formatting its own.
+`--to` and `verify` paths, Auto's plan (`platform_detect._plan_targets`), the
+Rules sweep's skip line (§3.3.11), the Inbox's hold under a Rule whose tool
+isn't ready (§3.3.25, which adds ", so the Rule can't run") and the ZAR Info
+route's 503 (`GET /api/rom-converto-info`) all use it, so they say the same
+thing. A new caller does too, rather than formatting its own.
 
 It is a free function rather than a method so a tool that satisfies the
 protocol without subclassing `BaseTool` still works. Read it after the

@@ -425,8 +425,11 @@
   was found ...`, and a 3DS check Rule with `zstd` missing says `3DS isn't
   ready: zstd is not installed, so 3DS files cannot be checked`. A check Rule
   with more than one verifier not ready names each with its own reason. The
-  CLI, Auto and the sweep now build this text in one place, so they say the
-  same thing. The line is still logged once per reason.
+  Inbox had the same problem: a file held under a Rule whose tool wasn't
+  ready gave only the tool id (`cso isn't ready, so the Rule can't run`).
+  Its Finding now gives the tool's reason too. The CLI, Auto, the sweep, the
+  Inbox and the ZAR Info view now build this text in one place, so they say
+  the same thing. The sweep's line is still logged once per reason.
 
 - **A deferred rematch no longer logs a false match-lock warning** (#481).
   When a DAT import had to wait behind a running match job, the rematch that
