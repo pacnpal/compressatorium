@@ -1232,6 +1232,8 @@ class JobManager:
                 file_path = str(spec["file_path"])
                 try:
                     identity = queued_source_identity(file_path, mode.value)
+                except TimeoutError as exc:  # a Volume root didn't answer: no verdict
+                    identity = {"error": str(exc), "unanswered": True}
                 except (OSError, ValueError) as exc:
                     identity = {"error": str(exc)}
                 progress()  # raises once the wait below has given up

@@ -569,3 +569,29 @@ def test_the_active_job_inventory_uses_the_captured_companions(tmp_volume, tmp_p
     paths = jm.job_manager._candidate_paths(job)
     assert paths[:2] == [str(tmp_path / "Game.cue"), str(tmp_path / "Game.bin")]
 
+
+
+@pytest.mark.asyncio
+async def test_a_volume_root_that_doesnt_answer_is_no_verdict(tmp_volume, tmp_path, monkeypatch):
+    """CodeRabbit 4617787310: a Volume-root probe that times out is "couldn't
+    tell", never "outside the Volumes": at capture and at the job's own check
+    the identity is marked unanswered, so a Rule's failed-hold skips the
+    unchanged Source (``sweep._never_checked``)."""
+    from types import SimpleNamespace
+
+    from models import ConversionMode
+    from services import job_manager as jm
+    from services.rules import sweep
+    from utils import path_utils
+
+    job = _in_place_job(tmp_path, "rootprobe449")
+    monkeypatch.setattr(path_utils, "_fresh_root", lambda _configured: None)  # no answer
+
+    problem = await jm.job_manager._source_identity_problem_bounded(job)
+    assert "couldn't be checked" in problem and "didn't answer" in problem
+    assert sweep._never_checked(SimpleNamespace(_source_identity=job._source_identity))
+
+    specs = [{"file_path": job.file_path}]
+    await jm.job_manager._capture_source_identities(specs, ConversionMode.CREATECD)
+    assert specs[0]["source_identity"].get("unanswered") is True
+    assert sweep._never_checked(SimpleNamespace(_source_identity=specs[0]["source_identity"]))

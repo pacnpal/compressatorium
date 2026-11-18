@@ -7738,7 +7738,9 @@ batch capture never reached is marked `unanswered`; its refusal says nothing
 about the Image, so a Rule's failed-hold neither holds nor releases it and the
 next sweep queues it again (`sweep._never_checked`, CodeRabbit 4615955365).
 The job's own check marks its identity `unanswered` the same way when it
-times out, and a Cancel while it waits ends the job CANCELLED, never refused.
+times out or when a Volume root it depends on doesn't answer (`_confined_answered`
+and `source_identity_problem` raise `TimeoutError` for "couldn't tell", never
+"outside the Volumes"; capture marks such a Source unanswered too), and a Cancel while it waits ends the job CANCELLED, never refused.
 The capture runs before the destination keys are resolved, so its wait never
 sits between those keys and their comparison under the lock. The active-job
 inventory other sweeps read (`_candidate_paths`) names the same files as the

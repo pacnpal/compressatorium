@@ -1602,8 +1602,15 @@ def source_identity_problem(
     if trusted_root is not None:
         if os.path.abspath(identity.get("root") or "") != os.path.abspath(trusted_root):
             return "the Source isn't under the folder it was queued from"
-    elif not is_within_configured_volumes(path, treat_archives=False):
-        return "the Source is no longer inside the configured Volumes"
+    else:
+        inside = volume_containment(path, treat_archives=False)
+        if inside is None:  # couldn't tell: no verdict (CodeRabbit 4617787310)
+            raise TimeoutError(
+                errno.ETIMEDOUT, "a Volume root didn't answer, so containment couldn't be told",
+                path,
+            )
+        if not inside:
+            return "the Source is no longer inside the configured Volumes"
     try:
         fd, name = _folder_beneath_root(path, identity["root"])
     except OSError as exc:
@@ -1661,7 +1668,7 @@ def _companion_identity(ref: str) -> dict:
     tracks beside the link, in another Volume)."""
     # A literal path, never archive syntax: a sheet may name `Track::01.bin`
     # (CodeRabbit 4615955480).
-    confined = _confined_real_path(ref)
+    confined = _confined_answered(ref)
     root = lock_boundary_root(str(confined), treat_archives=False) if confined else None
     if root is None:
         raise OSError(errno.EACCES, f"{ref} isn't confirmed inside the configured Volumes")
@@ -1669,8 +1676,24 @@ def _companion_identity(ref: str) -> dict:
     return {"ref": ref, "path": real, **source_identity(real, str(root))}
 
 
+def _confined_answered(path: str) -> Path | None:
+    """:func:`_confined_real_path`, raising ``TimeoutError`` (an ``OSError``,
+    ETIMEDOUT) instead of returning None when the answer depended on a Volume
+    root that didn't answer (the ``_note_unknown`` count, as
+    :func:`volume_containment` reads it). "Couldn't tell" is then never taken
+    for "confirmed outside": a queued job refused for it is marked
+    ``unanswered`` and takes no failed-hold (CodeRabbit 4617787310)."""
+    before = _unknown_count()
+    confined = _confined_real_path(path)
+    if confined is None and _unknown_count() != before:
+        raise TimeoutError(
+            errno.ETIMEDOUT, "a Volume root didn't answer, so containment couldn't be told", path,
+        )
+    return confined
+
+
 def _confined_source(path: str) -> str:
-    confined = _confined_real_path(strip_archive_path(path))
+    confined = _confined_answered(strip_archive_path(path))
     if confined is None:
         raise OSError(errno.EACCES, f"{path} isn't confirmed inside the configured Volumes")
     return str(confined)
@@ -1688,7 +1711,7 @@ def queued_source_problem(
     order, each still resolving where it did (two track links that swapped
     targets read the disc in another order, codex 4615553385), each
     unchanged. Fail closed. Blocking."""
-    confined = _confined_real_path(strip_archive_path(path))
+    confined = _confined_answered(strip_archive_path(path))
     if confined is None:
         return "the Source is no longer inside the configured Volumes"
     if str(confined) != identity["path"]:
@@ -1698,7 +1721,7 @@ def queued_source_problem(
         return problem
     expected = identity.get("companions", [])
     refs = source_companion_paths(path, mode)
-    now = [_confined_real_path(ref) for ref in refs]
+    now = [_confined_answered(ref) for ref in refs]
     if None in now:
         return (
             "a companion file it reads with the Source is no longer inside "
