@@ -7755,6 +7755,8 @@ counts toward the slot's room and goes with the slot. ctime is compared only
 there: a bound Source's hard link and the move to `processed/` (a rename) both
 move it, so the identities that must survive those leave it out.
 
+An unpack that finds no room (the cap on what is unpacked at once, or the work area's free space) is not a failure: `JobManager.finish_external_job_waiting` ends the `inbox_unpack` job COMPLETED with `job.warning` set and `job.result = {"waiting": True}`, and `run-rules` (`cli._finish`) reports it as `waiting`, named by `job.filename`. Intake writes no Finding and tries the archive again next poll (#458). The Findings kinds an Inbox writes are `findings.INBOX_KINDS`: unsorted, Platform conflict, DAT name conflict (`inbox_dat_conflict`, #457) and failed.
+
 **Extraction** is `ArchiveService.extract_members` (shared, in
 `services/archive.py`), the one extraction path that never hands a library a
 path name (Codex 4608030847). It checks every member it is about to write again,

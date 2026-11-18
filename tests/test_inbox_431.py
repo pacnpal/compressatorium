@@ -585,7 +585,9 @@ def test_the_libraries_view_lists_inboxes_with_their_status():
     for status in ("last_poll", "waiting", "in_progress", "held", "processed"):
         assert f"row.{status}" in panel
     assert "/inboxes`" in endpoints
-    for kind in ("inbox_unsorted", "inbox_conflict", "inbox_failed"):
+    for kind in (
+        "inbox_unsorted", "inbox_conflict", "inbox_dat_conflict", "inbox_failed",
+    ):
         assert f"{kind}:" in findings_view
     shots = (root / "shots.yml").read_text()
     readme = (root / "README.md").read_text()

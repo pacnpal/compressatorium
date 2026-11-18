@@ -1828,6 +1828,21 @@ class JobManager:
         # Enforce max_job_history on completion (exclude_id preserves this job).
         await self._prune_jobs(exclude_id=job_id)
 
+    async def finish_external_job_waiting(self, job_id: str, reason: str) -> None:
+        """End an externally-managed job that did nothing yet, only because
+        it has to wait (an Inbox archive with no room to unpack, #458).
+
+        Not a failure: the job is COMPLETED, its ``warning`` says what it
+        waits for, and ``result["waiting"]`` lets a reader (``run-rules``'s
+        line, the job list) report it as waiting instead of done. The work is
+        tried again by whoever started it."""
+        job = self.jobs.get(job_id)
+        if job is None:
+            return
+        job.warning = reason
+        job.result = {"waiting": True}
+        await self.finish_external_job(job_id, success=True)
+
     async def finish_external_job_cancelled(
         self,
         job_id: str,

@@ -75,7 +75,7 @@ Archives and names (#432):
   with its own extension, by the rename's rule (``dat_rename.dat_file_name``);
   a conversion's output takes it with the output's extension; a sheet's
   tracks keep theirs, so the sheet still names them. Two DATs the ranking
-  puts level that name it differently hold it with an ``inbox_conflict``
+  puts level that name it differently hold it with an ``inbox_dat_conflict``
   Finding naming both: it is never guessed at, and the hold lifts once the
   ranking changes.
 * **A taken name.** A name already in the Library holds the Image with a
@@ -1493,7 +1493,7 @@ async def _name(
         # unnamed, until the ranking orders them.
         named, matches = conflict_text(ranked.conflict)
         await _hold(
-            inbox, state, path, flight.fingerprint, findings.INBOX_CONFLICT,
+            inbox, state, path, flight.fingerprint, findings.INBOX_DAT_CONFLICT,
             f"Its DAT name is in doubt: {named}, and the ranking puts them level; "
             "rank the DATs to choose",
             {"platform": flight.platform, "matches": matches},
@@ -2106,16 +2106,16 @@ async def _unpack(
         # Not the archive's fault: no Finding, and it stays settled, so the
         # next poll tries again (Codex 4608429476).
         _note_no_room(path, why)
-        await job_manager.finish_external_job(
-            job.id, success=False, error_message=f"No room to unpack it yet: {why}",
+        await job_manager.finish_external_job_waiting(
+            job.id, f"No room to unpack it yet: {why}",
         )
         return
     if outcome in ("changed", "deferred"):
         # Not a failure of the file: it is left to settle and be taken again.
         state.seen.pop(path, None)
         why = why or "the storage is still being read by an earlier check"
-        await job_manager.finish_external_job(
-            job.id, success=False, error_message=f"{why}; it is taken again once it settles",
+        await job_manager.finish_external_job_waiting(
+            job.id, f"{why}; it is taken again once it settles",
         )
         return
     if outcome == "incomplete":

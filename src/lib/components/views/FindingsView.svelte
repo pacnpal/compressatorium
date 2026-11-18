@@ -46,12 +46,14 @@
     // A file an Inbox couldn't take into its Library (#431).
     inbox_unsorted: 'Inbox: Unsorted',
     inbox_conflict: 'Inbox: Platform conflict',
+    inbox_dat_conflict: 'Inbox: DAT name conflict',
     inbox_failed: 'Inbox: not taken',
   };
   const KIND_TONE = {
     platform_conflict: 'warning', not_intact: 'error', source_kept: 'warning',
     duplicate: 'info', romm_swap: 'warning', rename_conflict: 'warning',
-    inbox_unsorted: 'warning', inbox_conflict: 'warning', inbox_failed: 'error',
+    inbox_unsorted: 'warning', inbox_conflict: 'warning', inbox_dat_conflict: 'warning',
+    inbox_failed: 'error',
   };
   function bytes(n) {
     const size = Number(n) || 0;
