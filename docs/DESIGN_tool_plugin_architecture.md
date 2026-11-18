@@ -8552,7 +8552,9 @@ file". Whether the read needs the tool is the plugin's
   here. z3ds, cso and nsz (size and extension), nkit (the NKit header), xiso
   (the XDVDFS tables), romz (the archive listing, through zipfile / py7zr) and
   jwud (the WUX header). nsz in particular never waits on its `prod.keys` walk
-  for a File info read.
+  for a File info read. makeps3iso (PARAM.SFO) and exodos (size and
+  extension) read in Python too and say so, though neither has an info route
+  today. `ChainTool` keeps the default: its `info()` is its last tool's.
 
 A new tool sets `info_needs_tool = False` only when its `info()` never spawns
 its program; leaving the default is the safe choice, since a ready tool's info
