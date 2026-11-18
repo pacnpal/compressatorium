@@ -7667,12 +7667,15 @@ Source as it is then (`_capture_source_identities` over
 `path_utils.queued_source_identity`, bounded, off the event loop): the path
 resolved, read beneath its Volume root with no link followed the way
 `AnchoredFolders` opens a folder, plus `path` (the resolved path checked; an
-archive's own file for `archive::member`), `in_place`, and `companions`: the
-snapshot of every file the converter opens itself alongside it (a sheet's
-tracks, a split set's parts, `_track_candidate_paths`), keyed by resolved path,
-each with the Volume root it was read beneath, since a sheet linked across
-Volumes names tracks in another one (CodeRabbit 4614956755, codex
-4615261287). The path is resolved through the shared gate
+archive's own file for `archive::member`), `in_place`, and `companions`:
+every file a job of its mode opens alongside it, from the one shared
+enumeration `path_utils.source_companion_paths(path, mode)` (the sheet's
+tracks in sheet order, then the mode's own tool's `source_companions`, the
+same tool-scoped set `source_companions_are_safe` checks, so a `createhd` on
+`game_part1.wud` has no part 2): an ordered list of the reference the job
+opens, where it resolves, the Volume root it was read beneath (a sheet linked
+across Volumes names tracks in another one) and its snapshot (CodeRabbit
+4614956755; codex 4615261287, 4615553372, 4615553385). The path is resolved through the shared gate
 (`_confined_real_path`), so a spelling outside every Volume is refused before
 the filesystem is asked. One that can't be captured carries
 `{"error": reason}`. Captures go into the attempt's own copies of the specs,
@@ -7687,7 +7690,9 @@ never skipped. An `in_place` identity is not bound (a copy of every Library
 Image into the work area is not a cost a Library job should pay):
 `path_utils.queued_source_problem` requires the path the job was submitted as
 to still resolve to `path`, checks `path` as above, and only then reads the
-sheet for its companions, which must be the ones captured, each unchanged.
+sheet for its companions, which must be the captured references in the same
+order, each still resolving where it did (two track links that swapped
+targets read the disc in another order) and unchanged.
 `_input_paths` likewise locks only the Source of a job with no usable identity
 or whose check fails, so such a sheet is never parsed (CodeRabbit 4614956778,
 4615215842). The job reads the submitted path, not `path` itself (codex

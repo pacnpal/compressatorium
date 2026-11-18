@@ -1227,9 +1227,7 @@ class JobManager:
             for spec in wanted:
                 file_path = str(spec["file_path"])
                 try:
-                    identity = queued_source_identity(
-                        file_path, self._track_candidate_paths(file_path),
-                    )
+                    identity = queued_source_identity(file_path, mode.value)
                 except (OSError, ValueError) as exc:
                     identity = {"error": str(exc)}
                 progress()  # raises once the wait below has given up
@@ -2154,7 +2152,7 @@ class JobManager:
                 # the converter opens a split set's parts and a sheet's tracks
                 # itself.
                 return queued_source_problem(job.file_path, identity) or queued_source_problem(
-                    job.file_path, identity, self._track_candidate_paths(job.file_path),
+                    job.file_path, identity, job.mode.value,
                 )
             return source_identity_problem(job.file_path, identity, job._trusted_root)
 

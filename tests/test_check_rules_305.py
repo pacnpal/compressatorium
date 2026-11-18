@@ -1855,9 +1855,7 @@ async def test_a_converted_images_mode_survives_a_nightly_check(
         verify_after=True,
     )
     job_manager.jobs[job.id] = job
-    job._source_identity = queued_source_identity(
-        job.file_path, job_manager._track_candidate_paths(job.file_path),
-    )
+    job._source_identity = queued_source_identity(job.file_path, job.mode.value)
     try:
         await job_manager._process_job(job.id)
     finally:

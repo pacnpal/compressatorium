@@ -179,9 +179,7 @@ async def test_reconvert_runs_when_track_file_changed(noop_env):
     later = os.stat(track).st_mtime + 50
     os.utime(track, (later, later))
     # Queued after the track changed: a change while queued is refused (#449).
-    job._source_identity = jm_mod.queued_source_identity(
-        job.file_path, mgr._track_candidate_paths(job.file_path),
-    )
+    job._source_identity = jm_mod.queued_source_identity(job.file_path, job.mode.value)
 
     await mgr._process_job(job.id)
     assert len(noop_env["calls"]) == 1

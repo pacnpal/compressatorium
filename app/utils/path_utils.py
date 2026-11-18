@@ -1066,18 +1066,13 @@ def source_companions_are_safe(
     Blocking I/O (an ``lstat`` and a ``realpath`` per companion); call it off
     the event loop.
     """
-    from services.tools import registry  # local: avoids an import cycle
     from utils.delete_plan import sheet_reference_problems  # local: cycle
     from utils.sheet_text import resolve_track  # local: cycle
 
     if sheet_reference_problems(file_path, within=within):
         return False
 
-    try:
-        tool = registry.for_mode(mode)
-    except KeyError:
-        return True
-    for companion in tool.source_companions(file_path):
+    for companion in _tool_companions(file_path, mode):
         if os.path.islink(companion):
             return False
         # The one confined resolver, as for a sheet's tracks: the companion's
@@ -1088,6 +1083,33 @@ def source_companions_are_safe(
         except ValueError:
             return False
     return True
+
+
+def _tool_companions(file_path: str, mode: str) -> list[str]:
+    """The files *mode*'s own tool reads besides *file_path* (a split set's
+    parts), in its order: scoped to that tool, never the registry-wide union,
+    so another plugin's multi-file semantics never count (a ``createhd`` on
+    ``game_part1.wud`` reads no part 2)."""
+    from services.tools import registry  # local: avoids an import cycle
+
+    try:
+        return list(registry.for_mode(mode).source_companions(file_path))
+    except KeyError:
+        return []
+
+
+def source_companion_paths(file_path: str, mode: str) -> list[str]:
+    """Every file a *mode* job on *file_path* reads besides it, in the order
+    it reads them: a ``.cue``/``.gdi`` sheet's tracks as the sheet names them
+    (beside the sheet, unresolved), then the tool's own companions
+    (:func:`_tool_companions`). The one enumeration the queued identity
+    captures and its run-time check repeats (#449). Empty for an archive
+    member. Blocking."""
+    from utils.delete_plan import sheet_track_paths  # local: cycle
+
+    if "::" in file_path:
+        return []
+    return [*sheet_track_paths(file_path), *_tool_companions(file_path, mode)]
 
 
 def is_safe_directory_tree(path: str) -> bool:
@@ -1600,7 +1622,7 @@ def source_identity_problem(
     return None
 
 
-def queued_source_identity(path: str, companions: Sequence[str] = ()) -> dict:
+def queued_source_identity(path: str, mode: str | None = None) -> dict:
     """The :func:`source_identity` a conversion of a Source in a Volume carries
     from the moment it is queued (#449), whoever queued it (a Rule sweep, a
     hand-started conversion, ``run-rules``): *path* (an archive's own file for
@@ -1609,9 +1631,10 @@ def queued_source_identity(path: str, companions: Sequence[str] = ()) -> dict:
 
     The identity adds ``path``, the resolved path checked, ``in_place`` (the
     job checks its Source in place rather than binding a copy into the work
-    area as an Inbox intake does), and ``companions``: each other file the
-    converter reads with it (a sheet's tracks, a split set's parts), by its
-    resolved path, with its snapshot taken the same way. Resolved through the
+    area as an Inbox intake does), and with *mode*, ``companions``: each other
+    file a *mode* job reads with it (:func:`source_companion_paths`), in
+    order, as the reference the job opens (``ref``) with its resolved
+    ``path``, its own Volume ``root`` and its snapshot taken the same way. Resolved through the
     shared gate (``_confined_real_path``), so a spelling outside every Volume
     is refused before the filesystem is asked. Raises OSError when the Source
     or a companion isn't confirmed inside a Volume, can't be read that way, or
@@ -1622,20 +1645,23 @@ def queued_source_identity(path: str, companions: Sequence[str] = ()) -> dict:
         raise OSError(errno.EACCES, f"{path} isn't confirmed inside the configured Volumes")
     return {
         **source_identity(real, str(root)), "path": real, "in_place": True,
-        # Each under its own Volume root (codex 4615261287): a sheet linked
-        # across Volumes names tracks beside the link, in another Volume.
-        "companions": {
-            each: _companion_identity(each)
-            for each in map(_confined_source, companions)
-        },
+        "companions": [
+            _companion_identity(ref)
+            for ref in (source_companion_paths(path, mode) if mode else [])
+        ],
     }
 
 
-def _companion_identity(real: str) -> dict:
+def _companion_identity(ref: str) -> dict:
+    """One companion as :func:`queued_source_identity` records it: the
+    reference, where it resolves, and its snapshot under that file's own
+    Volume root (codex 4615261287: a sheet linked across Volumes names
+    tracks beside the link, in another Volume)."""
+    real = _confined_source(ref)
     root = lock_boundary_root(real)
     if root is None:
-        raise OSError(errno.EACCES, f"{real} isn't confirmed inside the configured Volumes")
-    return source_identity(real, str(root))
+        raise OSError(errno.EACCES, f"{ref} isn't confirmed inside the configured Volumes")
+    return {"ref": ref, "path": real, **source_identity(real, str(root))}
 
 
 def _confined_source(path: str) -> str:
@@ -1646,38 +1672,43 @@ def _confined_source(path: str) -> str:
 
 
 def queued_source_problem(
-    path: str, identity: dict, companions: Sequence[str] | None = None,
+    path: str, identity: dict, mode: str | None = None,
 ) -> str | None:
     """Why the Source a job was submitted as (*path*) isn't the one its
     :func:`queued_source_identity` was taken from, or None. *path* must still
     resolve, through the shared gate, to the identity's ``path``, which must
     pass :func:`source_identity_problem`; a link re-pointed since queueing is
-    refused, never followed. With *companions* (the files the job would read
-    with it now), they must be the companions captured, each unchanged. Fail
-    closed. Blocking."""
+    refused, never followed. With *mode*, the companions a *mode* job would
+    read now must be the ones captured: the same references in the same
+    order, each still resolving where it did (two track links that swapped
+    targets read the disc in another order, codex 4615553385), each
+    unchanged. Fail closed. Blocking."""
     confined = _confined_real_path(strip_archive_path(path))
     if confined is None:
         return "the Source is no longer inside the configured Volumes"
     if str(confined) != identity["path"]:
         return "the Source's path leads somewhere else than when it was queued"
     problem = source_identity_problem(identity["path"], identity)
-    if problem is not None or companions is None:
+    if problem is not None or mode is None:
         return problem
-    expected = identity.get("companions", {})
-    now = [_confined_real_path(each) for each in companions]
+    expected = identity.get("companions", [])
+    refs = source_companion_paths(path, mode)
+    now = [_confined_real_path(ref) for ref in refs]
     if None in now:
         return (
             "a companion file it reads with the Source is no longer inside "
             "the configured Volumes"
         )
-    if {str(each) for each in now} != set(expected):
+    if [(ref, str(real)) for ref, real in zip(refs, now)] != [
+        (each["ref"], each["path"]) for each in expected
+    ]:
         return "the companion files it reads with the Source aren't the ones it was queued with"
-    for each, captured in expected.items():
+    for each in expected:
         try:
-            if source_identity(each, captured["root"])["snapshot"] != captured["snapshot"]:
+            if source_identity(each["path"], each["root"])["snapshot"] != each["snapshot"]:
                 raise OSError(errno.ESTALE, "it was replaced or changed")
         except OSError as exc:
-            name = os.path.basename(each)
+            name = os.path.basename(each["ref"])
             return f"{name}, a companion file it reads with the Source, changed ({exc})"
     return None
 

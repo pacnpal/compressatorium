@@ -343,7 +343,6 @@ def test_a_sheet_linked_across_volumes_keeps_its_companions(tmp_path, monkeypatc
     """codex 4615261287: each companion is captured and checked under its own
     Volume root. A sheet in one Volume linked from another names tracks beside
     the link, in the other Volume."""
-    from services.job_manager import job_manager
     from utils.path_utils import queued_source_identity, queued_source_problem
 
     from config import settings
@@ -358,12 +357,62 @@ def test_a_sheet_linked_across_volumes_keeps_its_companions(tmp_path, monkeypatc
     track = vol_a / "Game.bin"
     track.write_bytes(b"\1" * 2352)
 
-    companions = job_manager._track_candidate_paths(str(submitted))
-    assert [os.path.realpath(p) for p in companions] == [str(track)]
-    identity = queued_source_identity(str(submitted), companions)
-    assert identity["companions"][str(track)]["root"] == str(vol_a)
-    assert queued_source_problem(str(submitted), identity, companions) is None
+    identity = queued_source_identity(str(submitted), "createcd")
+    [companion] = identity["companions"]
+    assert (companion["path"], companion["root"]) == (str(track), str(vol_a))
+    assert queued_source_problem(str(submitted), identity, "createcd") is None
 
     track.unlink()
     track.write_bytes(b"\2" * 4704)
-    assert "changed" in queued_source_problem(str(submitted), identity, companions)
+    assert "changed" in queued_source_problem(str(submitted), identity, "createcd")
+
+
+def test_companions_are_the_selected_modes_only(tmp_volume, tmp_path):
+    """codex 4615553372: the identity's companions come from the mode's own
+    tool (the shared ``source_companion_paths``), so a ``createhd`` on
+    ``game_part1.wud`` captures no part 2 and a changed part 2 doesn't refuse
+    it, while a Wii U job on the same file checks part 2."""
+    from utils.path_utils import queued_source_identity, queued_source_problem
+
+    part1, part2 = tmp_path / "game_part1.wud", tmp_path / "game_part2.wud"
+    part1.write_bytes(b"\1" * 64)
+    part2.write_bytes(b"\2" * 64)
+    raw = queued_source_identity(str(part1), "createhd")
+    wiiu = queued_source_identity(str(part1), "jwud_compress")
+    assert raw["companions"] == []
+    assert [each["path"] for each in wiiu["companions"]] == [str(part2)]
+
+    part2.unlink()
+    part2.write_bytes(b"\3" * 128)
+    assert queued_source_problem(str(part1), raw, "createhd") is None
+    assert "changed" in queued_source_problem(str(part1), wiiu, "jwud_compress")
+
+
+def test_track_links_that_swap_targets_are_refused(tmp_volume, tmp_path):
+    """codex 4615553385: companions are compared reference by reference, in
+    the sheet's order, so two track links swapping targets (the same files,
+    read in another order) refuse the job."""
+    from utils.path_utils import queued_source_identity, queued_source_problem
+
+    cue = tmp_path / "Game.cue"
+    cue.write_text(
+        'FILE "A.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n'
+        'FILE "B.bin" BINARY\n  TRACK 02 AUDIO\n    INDEX 01 00:00:00\n'
+    )
+    data_x, data_y = tmp_path / "x.raw", tmp_path / "y.raw"
+    data_x.write_bytes(b"\1" * 2352)
+    data_y.write_bytes(b"\2" * 2352)
+    link_a, link_b = tmp_path / "A.bin", tmp_path / "B.bin"
+    link_a.symlink_to(data_x)
+    link_b.symlink_to(data_y)
+    identity = queued_source_identity(str(cue), "createcd")
+    assert [each["path"] for each in identity["companions"]] == [str(data_x), str(data_y)]
+    assert queued_source_problem(str(cue), identity, "createcd") is None
+
+    link_a.unlink()
+    link_b.unlink()
+    link_a.symlink_to(data_y)
+    link_b.symlink_to(data_x)
+    assert "aren't the ones it was queued with" in queued_source_problem(
+        str(cue), identity, "createcd",
+    )

@@ -84,9 +84,7 @@ async def test_every_terminal_path_announces_once(
     monkeypatch.setattr(lock_manager, "_lock_dir", str(tmp_path / "locks"))
     monkeypatch.setattr(lock_manager, "_ready", False)
     job = _job(tmp_path, f"once{outcome}")
-    job._source_identity = queued_source_identity(
-        job.file_path, job_manager._track_candidate_paths(job.file_path),
-    )
+    job._source_identity = queued_source_identity(job.file_path, job.mode.value)
     tool = job_manager_module.registry.for_mode("dolphin_rvz")
 
     async def converting(*_args, **_kwargs):
