@@ -1,7 +1,7 @@
 <script>
   import { ui } from '$lib/stores/ui.svelte.js';
   import { registry } from '$lib/tools/registry.js';
-  import { formatSize } from '$lib/api/format.js';
+  import { loadInfo } from '$lib/util/fileInfo.js';
   import BaseModal from './BaseModal.svelte';
   import Button from '$lib/components/ui/Button.svelte';
   import Spinner from '$lib/components/ui/Spinner.svelte';
@@ -38,38 +38,9 @@
     return list;
   });
 
-  // Whatever the directory listing already knows about the file. Used as
-  // a last resort so the modal always shows something rather than just an
-  // error when no tool can parse the file.
-  function basicInfo(entry) {
-    if (!entry) return {};
-    const out = {};
-    if (entry.name) out.name = entry.name;
-    if (entry.path) out.path = entry.path;
-    if (entry.type) out.type = entry.type;
-    if (typeof entry.size === 'number') out.size = formatSize(entry.size);
-    if (entry.extension) out.extension = entry.extension;
-    if (entry.media_type) out.media_type = entry.media_type;
-    return out;
-  }
-
-  // Walk the candidate tools and keep the first getInfo() that returns.
-  // getInfo is the registry binding (chdman: getCHDInfo, dolphin:
-  // getDolphinInfo, z3ds: getZ3DSInfo, nsz: getNszInfo, cso: getCsoInfo),
-  // no per-tool branches here. If none can parse the file, fall back to the basics
-  // the listing already knew; `fellBack` flags that for the UI.
-  async function loadInfo(tools, path, entry) {
-    for (const t of tools) {
-      try {
-        return { info: await t.getInfo(path), fellBack: false };
-      } catch (_e) {
-        // This tool can't read the file; try the next candidate.
-      }
-    }
-    const basics = basicInfo(entry);
-    if (Object.keys(basics).length) return { info: basics, fellBack: true };
-    throw new Error('No info available for this file.');
-  }
+  // loadInfo walks the candidates and keeps the first getInfo() that answers,
+  // else the listing's basics with `notes` saying why, including the server's
+  // reason for each tool that isn't ready (#486). See $lib/util/fileInfo.js.
 
   // Derive the request as a promise and await it in the markup. Deriving
   // (rather than fetching into $state from an $effect) means {#await}
@@ -99,14 +70,14 @@
     {:else}
       {#await request}
         <div class="ci-loading"><Spinner size="md" /> Loading…</div>
-      {:then { info, fellBack }}
+      {:then { info, notes }}
         {@const entries = entriesOf(info)}
         {#if entries.length === 0}
           <p class="ci-empty">No info returned.</p>
         {:else}
-          {#if fellBack}
-            <p class="ci-note">No tool could read this file, showing the basics.</p>
-          {/if}
+          {#each notes as note, i (i)}
+            <p class="ci-note">{note}</p>
+          {/each}
           <dl class="ci-list">
             {#each entries as [key, value] (key)}
               <div class="ci-row">
