@@ -1022,6 +1022,23 @@ Three rules follow for any code that runs a verifier:
     outlived SIGKILL or timed out raises `DiscIdStorageAbandoned`, a cancel
     raises `ReadCancelled`, and a chdman failure (a damaged CHD) is a warning
     and no disc ID.
+  - **"Nothing found" and "could not read" are different outcomes (#490).**
+    `extract_from_chd` returns None only when every strategy ran and found no
+    disc ID; that is the outcome its callers cache by marking the CHD checked,
+    and a checked CHD is not read again until its mtime changes. A read that
+    could not run says nothing about the file, so it raises
+    `DiscIdReadFailed` instead: chdman could not be started, its nice/ionice
+    wrapper exited 126 or 127 (chdman not executable or not found), a signal
+    killed it (a crash), the GDRO `dumpmeta` timed out, or the CHD's header or
+    chdman's output could not be read (`OSError`). Every chdman read goes
+    through one helper, `_capture_chdman`, which also raises
+    `DiscIdStorageAbandoned` for a child that outlived SIGKILL. chdman's own
+    error exit (1: no such tag, a damaged CHD) stays "nothing found". Both
+    callers treat any exception the same way: `/api/info` logs a warning,
+    caches nothing and still answers 200 with the rest of the CHD info, and
+    Phase 2 logs a warning and moves on without marking the file, so the next
+    request or scan retries it. (`DiscIdStorageAbandoned` on `/api/info` is
+    still the 503 above.)
   - `ChdmanTool.post_convert` reads the Source's disc ID (and checks the output
     exists) in one call through the same `bounded_disc_read`; past the bound,
     `DiscIdStorageAbandoned` names the Source and the job fails (above).

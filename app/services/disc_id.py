@@ -76,6 +76,65 @@ class DiscIdStorageAbandoned(StorageAbandoned):
     """
 
 
+class DiscIdReadFailed(Exception):
+    """The disc-ID read of this CHD could not run, so it says nothing about it.
+
+    chdman missing or not executable, chdman killed by a signal (a crash), a
+    ``dumpmeta`` that timed out, or an I/O error reading the CHD. Raised rather
+    than folded into the ``None`` that means "inspected, no disc ID found",
+    because callers cache that ``None`` by marking the CHD checked, and a
+    checked CHD is not read again until its mtime changes. Callers log it and
+    leave the CHD unchecked so the next request or scan retries (issue #490).
+    """
+
+
+# What the nice/ionice wrapper exits with when it cannot exec chdman (POSIX:
+# 126 found but not executable, 127 not found). chdman itself exits 1 on error.
+_EXEC_FAILED_RETURNCODES = frozenset({126, 127})
+
+
+async def _capture_chdman(
+    chd_path: str,
+    chdman_path: str,
+    action: str,
+    *args: str,
+    timeout: float,
+    cancel_event: asyncio.Event | None = None,
+) -> tuple[int | None, bytes]:
+    """Run ``chdman <action> *args`` on *chd_path*: ``(returncode, stderr)``.
+
+    The one chdman spawn of this module, through the chdman runner with the
+    priority wrappers. Raises ``DiscIdStorageAbandoned`` when the child outlived
+    SIGKILL, and ``DiscIdReadFailed`` when chdman could not be started, the
+    wrapper could not exec it, or a signal killed it. A None returncode (timed
+    out or cancelled, nothing abandoned) and a positive one (chdman's own error,
+    such as a missing tag or a damaged CHD) are the caller's to read.
+    """
+    try:
+        with abandonment_checkpoint() as abandoned:
+            returncode, _, stderr = await _chdman_runner().run_capture(
+                _chdman_cmd(chdman_path, action, *args),
+                timeout=timeout,
+                cancel_event=cancel_event,
+                nice_via_wrapper=True,
+            )
+    except OSError as exc:
+        raise DiscIdReadFailed(
+            f"chdman {action} could not be started for {chd_path}: {exc}"
+        ) from exc
+    # Before the result is reduced to None by the caller, which would read as
+    # "no such tag" and invite the next read of the same CHD (#268).
+    _abort_if_abandoned(abandoned, f"chdman {action}", chd_path)
+    if returncode is not None and (
+        returncode < 0 or returncode in _EXEC_FAILED_RETURNCODES
+    ):
+        raise DiscIdReadFailed(
+            f"chdman {action} did not run on {chd_path} (rc={returncode}): "
+            f"{stderr.decode(errors='replace').strip()}"
+        )
+    return returncode, stderr
+
+
 def _abort_if_abandoned(abandoned: list, action: str, chd_path: str) -> None:
     """Raise if ``action`` on ``chd_path`` left a chdman child running.
 
@@ -929,23 +988,19 @@ async def _read_chd_units(
     and raced against *cancel_event*, like the GDRO ``dumpmeta`` read: a child
     that outlived SIGKILL raises ``DiscIdStorageAbandoned`` (into the open
     abandonment sink), a timed-out one raises it too (the storage is not
-    answering), a cancel raises ``ReadCancelled``. A chdman failure (a damaged
-    CHD) is a warning and None.
+    answering), a cancel raises ``ReadCancelled``, and chdman that could not
+    run raises ``DiscIdReadFailed``. chdman's own error (a damaged CHD) is a
+    warning and None.
     """
     name = os.path.basename(chd_path)
     with tempfile.TemporaryDirectory(prefix="cmptr-discid-") as tmp:
         out = os.path.join(tmp, "units.bin")
-        with abandonment_checkpoint() as abandoned:
-            returncode, _, stderr = await _chdman_runner().run_capture(
-                _chdman_cmd(
-                    chdman_path, "extractraw", "-f", "-i", chd_path, "-o", out,
-                    "-isb", str(first * unit_bytes), "-ib", str(count * unit_bytes),
-                ),
-                timeout=_DISC_READ_TIMEOUT_SECONDS,
-                cancel_event=cancel_event,
-                nice_via_wrapper=True,
-            )
-        _abort_if_abandoned(abandoned, "chdman extractraw", chd_path)
+        returncode, stderr = await _capture_chdman(
+            chd_path, chdman_path, "extractraw", "-f", "-i", chd_path, "-o", out,
+            "-isb", str(first * unit_bytes), "-ib", str(count * unit_bytes),
+            timeout=_DISC_READ_TIMEOUT_SECONDS,
+            cancel_event=cancel_event,
+        )
         if returncode is None:
             if cancel_event is not None and cancel_event.is_set():
                 raise ReadCancelled("Read cancelled")
@@ -981,15 +1036,18 @@ async def _extract_from_chd_sectors(
     are plain 2048-byte sectors; a CD CHD's are 2352 or 2448 bytes, probed as
     Mode 2 Form 1 (data at 24) and then Mode 1 (data at 16). Returns the disc
     ID dict, or None. Storage that does not answer raises
-    ``DiscIdStorageAbandoned``; a cancel raises ``ReadCancelled``.
+    ``DiscIdStorageAbandoned``; a cancel raises ``ReadCancelled``; a header
+    that cannot be read, or chdman that cannot run, raises
+    ``DiscIdReadFailed``.
     """
     try:
         header = await bounded_disc_read(
             read_chd_header, chd_path, path=chd_path, cancel_event=cancel_event,
         )
     except OSError as exc:
-        logger.debug("disc_id: cannot read the CHD header of %s: %s", chd_path, exc)
-        return None
+        raise DiscIdReadFailed(
+            f"cannot read the CHD header of {chd_path}: {exc}"
+        ) from exc
     if header is None:
         logger.debug("disc_id: %s is not a CHD v5 file", chd_path)
         return None
@@ -1120,13 +1178,16 @@ async def extract_from_chd(
     There is no app-written GAME/NAME tag to read first: chdman cannot write
     one into a compressed CHD (#352). Returns a dict containing at least
     ``game_id`` when successful; it may also include ``title`` and/or
-    ``platform``. Returns None if no ID could be found.
+    ``platform``. Returns None only when every strategy ran and found no ID:
+    that is the outcome a caller may cache as "checked".
 
     Every file read is bounded and raced against *cancel_event*
     (``bounded_disc_read``): storage that does not answer raises
     ``DiscIdStorageAbandoned`` and a cancel raises ``ReadCancelled``, so the
-    caller never hangs on it and never caches an outcome for a file it did not
-    read.
+    caller never hangs on it. A read that could not run at all (chdman missing,
+    not executable, crashed or timed out, or the CHD unreadable) raises
+    ``DiscIdReadFailed``. On any exception the caller caches nothing, so a file
+    that was not read is tried again (#268, #490).
     """
     # --- Strategy 1: read disc sectors directly (like PCSX2 / AetherSX2) ----
     # For DVD CHDs (unit_bytes=2048) this reads SYSTEM.CNF / PARAM.SFO from
@@ -1234,31 +1295,29 @@ async def _dumpmeta_bin(
 async def _dumpmeta_raw(
     chd_path: str, tag: str, chdman_path: str, suffix: str = ".bin"
 ) -> Optional[bytes]:
-    """Run ``chdman dumpmeta`` and return the output bytes, or None on failure."""
+    """Run ``chdman dumpmeta`` and return the tag's bytes, or None when chdman
+    reports no such tag (or one too large to be real).
+
+    A dumpmeta that could not run (``_capture_chdman``), timed out, or whose
+    output could not be read raises ``DiscIdReadFailed``: "no tag" from a read
+    that never happened would be cached as "no disc ID" (#490).
+    """
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
     tmp_path = tmp.name
     tmp.close()
     try:
-        with abandonment_checkpoint() as abandoned:
-            returncode, _, stderr = await _chdman_runner().run_capture(
-                _chdman_cmd(chdman_path, "dumpmeta", "-i", chd_path, "-t", tag, "-o", tmp_path),
-                timeout=_DUMPMETA_TIMEOUT_SECONDS,
-                nice_via_wrapper=True,
-            )
-        # Before the result is reduced to False/None below, which would read as
-        # "tag absent" / "nothing to delete" and invite the next read or write.
-        _abort_if_abandoned(abandoned, "chdman dumpmeta", chd_path)
+        returncode, stderr = await _capture_chdman(
+            chd_path, chdman_path, "dumpmeta", "-i", chd_path, "-t", tag, "-o", tmp_path,
+            timeout=_DUMPMETA_TIMEOUT_SECONDS,
+        )
         if returncode is None:
             # The shared teardown already bounded the kill; the old path killed
             # the child and then waited for it with no limit, which is what
             # could hang a scan on a dead mount.
-            logger.debug(
-                "disc_id: dumpmeta tag=%s timed out after %ss in %s",
-                tag,
-                _DUMPMETA_TIMEOUT_SECONDS,
-                chd_path,
+            raise DiscIdReadFailed(
+                f"chdman dumpmeta tag={tag} timed out after "
+                f"{_DUMPMETA_TIMEOUT_SECONDS}s in {chd_path}"
             )
-            return None
         if returncode != 0:
             if logger.isEnabledFor(logging.DEBUG):
                 stderr_text = stderr.decode(errors="replace").strip()
@@ -1280,11 +1339,10 @@ async def _dumpmeta_raw(
             return None
         with open(tmp_path, "rb") as f:
             return f.read(_MAX_DUMPMETA_BYTES + 1)
-    except DiscIdStorageAbandoned:
-        raise
-    except Exception as e:
-        logger.debug("disc_id: dumpmeta tag=%s error: %s", tag, e)
-        return None
+    except OSError as e:
+        raise DiscIdReadFailed(
+            f"chdman dumpmeta tag={tag} output for {chd_path} could not be read: {e}"
+        ) from e
     finally:
         try:
             os.unlink(tmp_path)

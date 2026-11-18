@@ -418,6 +418,16 @@
 
 ### Fixed
 
+- **A disc-ID read that couldn't run no longer marks the CHD checked** (#490).
+  When the File info view or the library scan reads a CHD's disc ID and the
+  read fails for a reason that says nothing about the file (chdman missing or
+  not executable, chdman crashing, the Dreamcast tag read timing out, or the
+  CHD unreadable), the CHD was still recorded as having no disc ID, and it
+  was never read again until the file changed. Now it stays unchecked, so the
+  next File info request or scan tries again, and the failure is logged as a
+  warning naming the file. File info still shows everything else about the
+  CHD. A read that ran and found no disc ID is still remembered as before.
+
 - **The File info modal says why a tool isn't ready** (#486). When the only
   tool that could describe a file wasn't ready, the modal showed the basics
   under "No tool could read this file", as if the file were broken, and
