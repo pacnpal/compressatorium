@@ -133,8 +133,23 @@
   size, not the archive's own.
   Removing a Library while another Library or Inbox is being saved answers
   "try again shortly" with nothing removed.
-  Database migration 0027 adds the Inboxes. Archives, DAT names and asking
-  RomM to scan come next (#432, #433).
+  Database migration 0027 adds the Inboxes. Archives and DAT names come next
+  (#432).
+- **Inboxes tell RomM, report each pass, and run from cron** (#433). After a
+  pass that placed Images in a RomM Library, the app asks RomM to scan just
+  the Platform folders it added to, so new games show up in RomM without
+  anyone pressing anything (a folder RomM has no Platform for yet is scanned
+  too). It needs the token's **tasks.run** scope; without it, or when RomM
+  won't take the scan right now, that's said in the pass summary and the log
+  and the scan isn't tried again. Each pass that placed an Image or left one
+  with a Finding sends one notification listing them (**An Inbox pass placed
+  Images or left some with a Finding**); a pass that did nothing sends
+  nothing. `run-rules` makes one Inbox pass after its Rule sweep, under the
+  same one-scheduler-per-data-directory lock, and keeps what intake has seen
+  settling between runs, so a file one cron run sees is taken by the next.
+  The conversions and copies it starts finish before it exits. The RomM call
+  and its scope were checked against RomM 5.4.1 (see the RomM integration
+  roadmap).
 - **Xbox 360 disc images to ZAR, with rom-converto** (#422). A new tool,
   rom-converto (the converter RomM ships, at the version RomM pins, v0.24.0),
   packs an Xbox 360 `.iso` into a `.zar`, the format Xenia mounts directly.

@@ -43,8 +43,9 @@ when the file is taken or gone.
 
 What comes later builds on this: unpacking archives, Recognizing and naming
 from a DAT, and a taken name's handling (#432) all happen in :func:`_take`
-before the plan; asking RomM to scan and the intake notification (#433) read
-what a poll reports as ``placed``.
+before the plan. Each poll reports what was ``placed`` and what was ``left``
+with a Finding since the last one, which :mod:`services.inbox.report` turns
+into RomM's Platform scan and the pass summary (#433).
 """
 
 from __future__ import annotations
@@ -161,6 +162,9 @@ class _State:
     # What was placed since the last poll reported it: ``{"path", "platform",
     # "output"}``, for what runs after a pass (#433).
     placed: list[dict[str, Any]] = field(default_factory=list)
+    # What got a Finding since the last poll reported it: ``{"path", "kind",
+    # "reason"}``, for the pass summary (#433).
+    left: list[dict[str, Any]] = field(default_factory=list)
     last_poll: float | None = None
     waiting: int = 0
     error: str | None = None
@@ -475,6 +479,7 @@ async def _hold(
     else:
         state.held_by.pop(path, None)
     state.seen.pop(path, None)
+    state.left.append({"path": path, "kind": kind, "reason": reason})
     item = findings.Observed(
         kind=kind, image_key=inbox.image_key(path), path=path, reason=reason,
         cause={"inbox": inbox.id, "fingerprint": fingerprint, **(cause or {})},
@@ -511,10 +516,13 @@ async def _clear(inbox: inbox_store.Inbox, path: str) -> None:
 # ---- the poll ------------------------------------------------------------
 
 
-async def poll_all(*, now: float | None = None) -> list[dict[str, Any]]:
-    """One poll of every Inbox: a pass. Never raises; called from the
-    scheduler's tick. A new pass may open files again after a check that had
-    to stop (``_storage_stop``)."""
+async def poll_all(
+    *, now: float | None = None, library_ids: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    """One poll of every Inbox (of the Libraries *library_ids*, when given):
+    a pass. Never raises; called from the scheduler's tick and ``run-rules``.
+    A new pass may open files again after a check that had to stop
+    (``_storage_stop``)."""
     _set_stop(False)
     try:
         inboxes = await run_in_threadpool(inbox_store.all_inboxes)
@@ -523,6 +531,8 @@ async def poll_all(*, now: float | None = None) -> list[dict[str, Any]]:
         return []
     results = []
     for inbox in inboxes:
+        if library_ids is not None and inbox.library_id not in library_ids:
+            continue
         try:
             results.append(await poll(inbox, now=now))
         except Exception:
@@ -539,7 +549,7 @@ async def poll(inbox: inbox_store.Inbox, *, now: float | None = None) -> dict[st
     result: dict[str, Any] = {
         "inbox_id": inbox.id, "library_id": inbox.library_id,
         "queued": 0, "copying": 0, "held": 0, "waiting": 0,
-        "placed": [], "error": None,
+        "placed": [], "left": [], "error": None,
     }
     if state.polling:
         result["error"] = "poll_running"
@@ -631,6 +641,7 @@ async def poll(inbox: inbox_store.Inbox, *, now: float | None = None) -> dict[st
     finally:
         state.last_poll = now
         result["placed"], state.placed = state.placed, []
+        result["left"], state.left = state.left, []
         state.polling = False
 
 
@@ -1630,3 +1641,78 @@ async def _copy_locked(
             await _step(slot.close)
         except (OSError, asyncio.TimeoutError):
             logger.warning("inbox: could not close the staging slot for %s", path, exc_info=True)
+
+
+# ---- a pass from run-rules (#433) ------------------------------------------
+
+
+def settle_memory(inbox_ids: set[int]) -> dict[str, Any]:
+    """What intake remembers between polls of the Inboxes *inbox_ids*, as
+    JSON: the files seen settling (fingerprint and since when) and the ones
+    held with a Finding. ``run-rules`` is a new process each time, so it
+    keeps this between runs (:func:`restore_settle_memory`): a file one run
+    saw is taken by the next once its settle time has passed, and a held
+    file isn't reported again, as on the server's tick."""
+    memory: dict[str, Any] = {}
+    for inbox_id, state in _states.items():
+        if inbox_id not in inbox_ids or state.revoked:
+            continue
+        memory[str(inbox_id)] = {
+            "seen": {path: [s.fingerprint, s.since] for path, s in state.seen.items()},
+            "held": dict(state.held),
+            "held_by": {
+                path: [list(item) for item in depends]
+                for path, depends in state.held_by.items()
+            },
+        }
+    return memory
+
+
+def restore_settle_memory(memory: dict[str, Any] | None) -> None:
+    """Take back what :func:`settle_memory` kept. What this process already
+    knows wins; an entry that can't be read is dropped (the file is then
+    simply seen again)."""
+    for key, kept in (memory or {}).items():
+        try:
+            state = _state(int(key))
+            for path, (fingerprint, since) in (kept.get("seen") or {}).items():
+                state.seen.setdefault(path, _Seen(str(fingerprint), float(since)))
+            for path, fingerprint in (kept.get("held") or {}).items():
+                state.held.setdefault(path, str(fingerprint))
+            for path, depends in (kept.get("held_by") or {}).items():
+                state.held_by.setdefault(path, tuple(tuple(item) for item in depends))
+        except (TypeError, ValueError, AttributeError):
+            logger.warning("inbox: dropped the kept intake state of Inbox %s", key)
+
+
+async def finish_all(*, library_ids: set[str] | None = None) -> list[dict[str, Any]]:
+    """Finish what this process's polls started, for ``run-rules``, which
+    exits after one pass: each ended conversion's original goes to
+    ``processed/`` (as the next poll would on the server), every copy and
+    move is waited for, and what was placed or left with a Finding since
+    the last poll comes back in the shape :func:`poll` reports it. Call it
+    once the queued conversions have ended. Never raises."""
+    try:
+        inboxes = await run_in_threadpool(inbox_store.all_inboxes)
+    except Exception:
+        logger.warning("inbox: could not list the Inboxes", exc_info=True)
+        return []
+    inboxes = [
+        inbox for inbox in inboxes
+        if inbox.id in _states and (library_ids is None or inbox.library_id in library_ids)
+    ]
+    for inbox in inboxes:
+        try:
+            await _settle_flights(inbox, _states[inbox.id])
+        except Exception:
+            logger.warning("inbox: finishing %s failed", inbox.folder, exc_info=True)
+    await drain()
+    results = []
+    for inbox in inboxes:
+        state = _states[inbox.id]
+        results.append({
+            "inbox_id": inbox.id, "library_id": inbox.library_id,
+            "placed": state.placed, "left": state.left,
+        })
+        state.placed, state.left = [], []
+    return results

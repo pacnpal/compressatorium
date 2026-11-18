@@ -11,6 +11,7 @@ batch is queued, and the re-pin backlog reported when the sweep ends.
 
 from __future__ import annotations
 
+import asyncio
 import functools
 import os
 from collections.abc import Sequence
@@ -34,6 +35,7 @@ from services.rules.library import (
     GAMELISTS_FOLDER,
     HIDDEN_STAGING,
     RECOGNIZED_FILTER,
+    AmbiguousFolder,
     Image,
     LibraryDefaults,
     LibraryUnreadable,
@@ -45,11 +47,15 @@ from services.rules.library import (
     placed_in,
 )
 from services.rules.store import RULES_KEY, STATE_KEY
+from services.subprocess_runner import run_detached
 
 # Where RomM kept its Rules and run state before #296, unprefixed. The store
 # reads them once, rewrites them under the "romm:" keys and deletes them.
 LEGACY_RULES_KEY = "romm.rules"
 LEGACY_STATE_KEY = "romm.auto_state"
+
+# How long telling which Platform folders an Inbox pass added to may take.
+_INTAKE_STEP_SECONDS = 60
 
 logger = get_logger("romm_auto")
 
@@ -128,6 +134,19 @@ def image_from_rom(rom: dict) -> Image:
         record=rom,
     )
     return image
+
+
+def scan_refusal(exc: RommError) -> str:
+    """Why RomM didn't take a scan, from its status, never its body (#433)."""
+    if exc.status == 409:
+        return "RomM refused it: a library scan is already running or queued"
+    if exc.status == 503:
+        return "RomM has no scan worker running, so it couldn't queue the scan"
+    if exc.status == 401:
+        return "RomM rejected the API token"
+    if exc.status is not None:
+        return f"RomM answered HTTP {exc.status} to the scan"
+    return "RomM couldn't be reached to ask for the scan"
 
 
 class RommLibrary(LibraryDefaults):
@@ -220,6 +239,57 @@ class RommLibrary(LibraryDefaults):
 
         await romm_routes.replay_identity_cleanup()
         await romm_routes.settle_once()
+
+    async def after_intake(self, placed: list[dict]) -> dict | None:
+        """Ask RomM to scan the Platform folders an Inbox pass added to (#433).
+
+        One quick scan of just those folders (``scan_platforms``), named by
+        their folder on disk, so a Platform RomM has no row for yet is found
+        too. Asked once per pass and never retried: a token without
+        ``tasks.run`` is reported as ``missing_scope``, and any other refusal
+        (a library scan already running, no scan worker, RomM down) as
+        ``not_asked``; RomM's own next scan finds the files either way.
+        """
+        if not self.configured():
+            return None
+        outputs = [p["output"] for p in placed if p.get("output")]
+        try:
+            folders = await asyncio.wait_for(
+                run_detached(self._platform_folders, outputs), _INTAKE_STEP_SECONDS,
+            )
+        except (asyncio.TimeoutError, OSError, AmbiguousFolder) as exc:
+            logger.warning("romm: couldn't tell which Platforms an Inbox pass added to: %s", exc)
+            why = str(exc) or "it took too long"
+            return {
+                "status": "not_asked", "folders": [],
+                "reason": f"couldn't tell which Platform folders the Images went in: {why}",
+            }
+        if not folders:
+            return None
+        try:
+            task_id = await run_in_threadpool(romm_client.scan_platforms, folders)
+        except RommError as exc:
+            logger.warning("romm: the scan of %s after an Inbox pass was refused: %s",
+                           ", ".join(folders), exc)
+            if exc.status == 403:
+                return {
+                    "status": "missing_scope", "folders": folders,
+                    "reason": "RomM's API token lacks the tasks.run scope, so RomM wasn't "
+                    "asked to scan; give the token tasks.run, or let RomM's own scan find "
+                    "the new games",
+                }
+            return {"status": "not_asked", "folders": folders, "reason": scan_refusal(exc)}
+        return {"status": "asked", "folders": folders, "task_id": task_id}
+
+    def _platform_folders(self, outputs: list[str]) -> list[str]:
+        """The Platform folder names (RomM's ``fs_slug``) holding *outputs*,
+        sorted, each once. Blocking (lists RomM's library folder)."""
+        names = set()
+        for output in outputs:
+            folder = self.platform_folder(output)
+            if folder:
+                names.add(os.path.basename(folder.rstrip(os.sep)))
+        return sorted(names)
 
     def sweep_blocked(self) -> str | None:
         """Refuse a sweep while a change of RomM instance is half cleaned up.

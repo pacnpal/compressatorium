@@ -1616,6 +1616,10 @@ async def run_rules(args, printer: Printer, state: RunState) -> int:
         with preferences_store.read_only():
             for library in chosen:
                 failed = await _sweep_one(printer, library, state, dry_run=True) or failed
+        # Intake has no dry run: an Inbox is never polled by one (#433).
+        for library_id in dict.fromkeys(i.library_id for i in await _inboxes_of(chosen)):
+            line = _inbox_line(library_id, status="skipped", reason="dry_run")
+            printer.summary(line, _inbox_text(line))
         return EXIT_FAILED if failed or state.stopping else EXIT_OK
 
 
@@ -1668,7 +1672,98 @@ async def _run_rules_pass(chosen: list, printer: Printer, state: RunState) -> in
         # (#305), so it is waited for here, while the job runner and the
         # listeners above still hear it end. A stop cancels it promptly.
         await rules_check.drain(should_stop=lambda: state.stopping)
+        if not state.stopping:
+            # Then one Inbox pass (#433), as the server's tick polls them
+            # after its sweeps, under the scheduler lock this run holds.
+            failed = await _inbox_pass(chosen, printer, state, jobs, owners, sweeping) or failed
     return EXIT_FAILED if failed or state.stopping else EXIT_OK
+
+
+# Where run-rules keeps intake's memory between runs (#433).
+INBOX_SETTLE_KEY = "inbox_settle"
+
+
+async def _inboxes_of(chosen: list) -> list:
+    """The Inboxes feeding the Libraries in *chosen*."""
+    from fastapi.concurrency import run_in_threadpool
+    from services import inbox as inbox_store
+
+    wanted = {library.id for library in chosen}
+    return [i for i in await run_in_threadpool(inbox_store.all_inboxes) if i.library_id in wanted]
+
+
+async def _inbox_pass(chosen: list, printer: Printer, state: RunState, jobs, owners: dict,
+                      sweeping: list) -> bool:
+    """One poll of every Inbox feeding *chosen*, then what runs after a pass
+    (``services.inbox.report``): RomM's scan and the summary notification.
+
+    A cron run is a new process each time, so what intake has seen settling
+    is kept between runs in the preferences (``INBOX_SETTLE_KEY``). The
+    conversions and copies the poll starts finish within the run, and their
+    originals go to ``processed/`` before it exits (``intake.finish_all``).
+    One line per Library whose Inboxes placed or left something. True when
+    the pass itself failed; an Image left with a Finding is not a failure.
+    """
+    from fastapi.concurrency import run_in_threadpool
+    from services import inbox as inbox_store
+    from services.inbox import intake, report
+    from services.preferences_store import preferences_store
+
+    inboxes = await _inboxes_of(chosen)
+    if not inboxes:
+        return False
+    try:
+        intake.restore_settle_memory(await preferences_store.get(INBOX_SETTLE_KEY))
+        results = []
+        for library_id in dict.fromkeys(inbox.library_id for inbox in inboxes):
+            if state.stopping:
+                break
+            before = set(jobs.jobs)
+            sweeping.append(library_id)
+            results += await intake.poll_all(library_ids={library_id})
+            for job_id in set(jobs.jobs) - before:
+                owners.setdefault(job_id, library_id)
+        if state.stopping:
+            await jobs.cancel_all_jobs()
+        await jobs.drain()
+        await intake.drain()
+        results += await intake.finish_all(library_ids={i.library_id for i in inboxes})
+        every = {inbox.id for inbox in await run_in_threadpool(inbox_store.all_inboxes)}
+        await preferences_store.put(INBOX_SETTLE_KEY, intake.settle_memory(every))
+        summary = await report.after_pass(results)
+    except Exception as exc:  # the Rule sweeps already ran; say so and fail the run
+        logger.warning("run-rules: the Inbox pass failed: %s", exc, exc_info=True)
+        line = _inbox_line(None, status="error", reason=f"inbox_pass_failed: {exc}")
+        printer.summary(line, _inbox_text(line))
+        return True
+    for library_id, entry in summary["libraries"].items():
+        line = _inbox_line(library_id, status="inbox", entry=entry)
+        printer.summary(line, _inbox_text(line))
+    return False
+
+
+def _inbox_line(library_id, *, status: str, entry: dict | None = None,
+                reason: str | None = None) -> dict:
+    entry = entry or {}
+    return {
+        "library": library_id, "inbox": True, "status": status,
+        "placed": [p.get("output") or p["path"] for p in entry.get("placed") or []],
+        "left": [{"path": item["path"], "reason": item["reason"]}
+                 for item in entry.get("left") or []],
+        "scan": entry.get("scan"), "reason": reason,
+    }
+
+
+def _inbox_text(line: dict) -> str:
+    from services.inbox import report
+
+    where = line["library"] or "every Inbox"
+    if line["status"] != "inbox":
+        return f"{line['status']:<10} {where} Inbox pass: {line['reason']}"
+    text = (f"{'inbox':<10} {where}: {len(line['placed'])} placed, "
+            f"{len(line['left'])} left with a Finding")
+    said = report.scan_text(line["scan"])
+    return f"{text}; {said}" if said else text
 
 
 def _finish_check_run(item: Item, job) -> None:

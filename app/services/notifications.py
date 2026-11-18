@@ -76,6 +76,9 @@ def event_list() -> list[dict[str, str]]:
 register_event("sweep_finished", "A sweep finished (one message with counts and space saved)")
 register_event("job_failed", "A job you started failed")
 register_event("rename_finished", "A rename to DAT names finished (one message with counts)")
+register_event(
+    "inbox_pass", "An Inbox pass placed Images or left some with a Finding (one message)",
+)
 
 
 @dataclass

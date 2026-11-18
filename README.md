@@ -1145,8 +1145,25 @@ long a file must stay unchanged before it's taken (60 seconds by default).
   held, and how many it has processed. **Remove** stops using the folder as an
   Inbox and touches no file. Removing the Library removes its Inboxes.
 
-Unpacking archives, naming from a DAT, and asking RomM to scan after intake are
-on the way (#432, #433).
+- **RomM scans what arrived.** After a pass that placed Images in a RomM
+  Library, the app asks RomM to scan just the Platform folders it added to
+  (one quick scan, `POST /api/tasks/scan` with those folders), so new games show
+  up in RomM without you pressing anything. A folder RomM has no Platform for
+  yet is scanned too, and gets one. The token needs the **tasks.run** scope
+  (the one the in-place swap needs too; it comes with an admin's token). A
+  token without it is reported in the pass summary and the log, and the app
+  doesn't try again; RomM's own scheduled scan finds the games instead. A scan
+  RomM won't take right now (a library scan already running) is reported the
+  same way. A folder Library has no one to tell.
+- **A summary of each pass.** A pass that placed an Image or left one with a
+  Finding sends one notification (**An Inbox pass placed Images or left some
+  with a Finding**) to your [notification destinations](#notifications): how
+  many were placed and where, which were left and why, and whether RomM was
+  asked to scan. A pass that did nothing sends nothing.
+- **From cron.** [`run-rules`](#command-line-compressatorium) makes one Inbox pass after its
+  Rule sweep, under the same lock, so intake works without the server.
+
+Unpacking archives and naming from a DAT are on the way (#432).
 
 ### Check Rules
 
@@ -2640,6 +2657,18 @@ job as it ends. A due [check Rule](#check-rules) runs here too, and the pass
 waits for its checks: an Image that is not Intact, or whose check could not
 run, makes it exit `1`, and the check Rule's night counts as done only once its
 checks have finished.
+
+After the Rules, `run-rules` makes one pass over the [Inboxes](#inboxes) of
+the Libraries it swept, as the server's tick does, under the same lock. Each
+run is a new process, so what intake has seen settling is kept between runs:
+a file one run sees is taken by the next run once its settle time has passed
+(so run it at least twice as often as you want new files taken). The
+conversions and copies it starts finish before it exits, and their originals
+move to `processed/`. It prints one line per Library whose Inboxes placed or
+left something (`"inbox": true` in `--json`, with the outputs placed, the files
+left with their Finding, and RomM's scan), and sends the pass summary
+notification. A file left with a Finding doesn't change the exit status.
+`--dry-run` polls no Inbox and says so (`skipped`, `dry_run`).
 
 Before it sweeps RomM, `run-rules` does the RomM upkeep the server does in the
 background: it finishes an identity cleanup a crash left owed (otherwise RomM

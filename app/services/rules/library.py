@@ -406,6 +406,11 @@ class Library(Protocol):
         Library can't be read. Blocking (lists folders, may ask RomM).
         """
 
+    async def after_intake(self, placed: list[Mapping[str, Any]]) -> Mapping[str, Any] | None:
+        """Called after an Inbox pass placed Images in this Library (#433):
+        RomM is asked to scan those Platform folders. Returns what happened
+        for the pass summary, or None. Never raises."""
+
     def summary_fields(self) -> Mapping[str, Any]:
         """Extra keys every per-Platform summary starts with (and the result too)."""
 
@@ -460,6 +465,17 @@ class LibraryDefaults:
 
     async def before_pass(self, *, dry_run: bool) -> None:
         """No upkeep before ``run-rules`` sweeps this Library."""
+
+    async def after_intake(self, placed: list[Mapping[str, Any]]) -> Mapping[str, Any] | None:
+        """Nothing to tell anyone after an Inbox pass placed *placed* here (#433).
+
+        *placed* is what the pass reported placed in this Library, each
+        ``{"path", "platform", "output"}``. A Library that has someone to tell
+        (RomM, which scans the Platform folders) overrides this and returns
+        what happened, ``{"status", "folders", "reason"}``, for the pass
+        summary. Never raises.
+        """
+        return None
 
     def referrer_enabled(self, referrer_id: str) -> bool:
         """No opt-in Referrer is on until a Library's settings say so (#383)."""

@@ -2733,6 +2733,20 @@ API and the Rules view; the engine never reads those three), and:
   `settle_forever`). A dry run must write nothing. `LibraryDefaults` gives the
   no-op, and every Library class inherits it (`FolderLibrary`, `RommLibrary`,
   which overrides it), so `run-rules` calls it on any Library without a check.
+- `after_intake(placed)` (#433) is not called by the sweep either: an Inbox
+  pass (§3.3.25, `services.inbox.report.after_pass`) calls it once per pass for
+  each Library its Inboxes placed Images in, with what was placed
+  (`{"path", "platform", "output"}` each). It returns what it did for the pass
+  summary (`{"status", "folders", "reason"}`) or None, and never raises.
+  `LibraryDefaults` gives None (a folder Library has no one to tell). RomM
+  resolves each output's Platform folder (`platform_folder`, its basename is
+  RomM's `fs_slug`, in either RomM layout) on a detached thread under a bound,
+  then asks for one quick scan of just those folders
+  (`RommClient.scan_platforms`). It is asked once and never retried: a 403
+  (the token lacks `tasks.run`) is `missing_scope`, anything else RomM refuses
+  (409 a library scan already queued or running, 503 no scan worker, no
+  answer) is `not_asked` with a reason worded from the status
+  (`romm.library.scan_refusal`), never RomM's body.
 - `walk_generation()` and `note_paths_changed(paths)` (#353), with
   `LibraryDefaults` giving `0` and a no-op for a Library that lists live.
   `services.libraries.note_job_finished`, attached to the job manager by the
@@ -2892,7 +2906,7 @@ not change. `run_forever(libraries)` takes a callable returning the Libraries to
 sweep on each tick. `main.py` passes `services.libraries.all_libraries` (through
 `services.libraries.run_forever`), so RomM and every folder Library whose
 `schedule_enabled` is on are swept, then calls its `after_tick` once (the
-Inbox poll, §3.3.25; its failure is logged, and a failed Library listing
+Inbox poll and what runs after it, §3.3.25; its failure is logged, and a failed Library listing
 still polls). `compressatorium run-rules` (§3.3.17) sweeps
 the same `services.libraries.all_libraries()` list, so the server's scheduler
 and a cron pass always see the same Libraries.
@@ -6099,6 +6113,18 @@ is a terminal listener, as in `main.py`, and the jobs are waited for with
 `JobManager.drain()`. Each job's line is printed as it ends, under the Library
 whose sweep queued it.
 
+Then one Inbox pass (#433, `cli._inbox_pass`, §3.3.25) over the Inboxes of
+the Libraries it swept, still under the scheduler lock and inside the job
+runner: it restores intake's settle memory, polls each Library's Inboxes,
+drains the jobs and copies the poll started, finishes them
+(`intake.finish_all`), saves the settle memory and runs
+`inbox.report.after_pass` (RomM's scan, the `inbox_pass` notification). It
+prints one `{"inbox": true, ...}` line per Library whose Inboxes placed or
+left something. An Image left with a Finding, or a RomM scan that wasn't
+asked, doesn't change the exit status; an exception in the pass is an
+`error` line and exit 1. A stop skips it. `--dry-run` polls nothing and prints
+a `skipped` / `dry_run` line per Library with Inboxes.
+
 Compared with the server, a pass restores the Hasheous toggle saved in the web
 UI (`routes.dat.load_hasheous_override`, as startup does; folder-Library
 recognition reads it) and does the RomM upkeep `before_pass` covers
@@ -7328,7 +7354,7 @@ The frontend offers **Patch…** in `RowActionsMenu` when
 one, never a disc Image by `registry.discImages`), and `PatchModal` uploads or
 names the patch and starts the job.
 
-### 3.3.25 Inboxes (`services/inbox/`, #431)
+### 3.3.25 Inboxes (`services/inbox/`, #431, #433)
 
 An Inbox is a folder that feeds one Library: what settles in it is placed in the
 Library and the original moved aside. Nothing here deletes anything.
@@ -7336,7 +7362,8 @@ Library and the original moved aside. Nothing here deletes anything.
 | Module | Holds |
 | --- | --- |
 | `inbox/__init__.py` | the `inboxes` rows (migration 0027), cached like the folder Libraries: `register`, `update`, `remove`, `note_processed`, `forget_library`, `describe` |
-| `inbox/intake.py` | one poll of an Inbox (`poll`, `poll_all`), its in-memory state, the copy job |
+| `inbox/intake.py` | one poll of an Inbox (`poll`, `poll_all`), its in-memory state, the copy job; for `run-rules`, `finish_all` and the settle memory (#433) |
+| `inbox/report.py` | what runs after a pass (#433): each Library's `after_intake` hook (RomM's Platform scan) and the `inbox_pass` summary notification |
 
 **Saving** (`inbox.register`, blocking, run through `libraries.run_admitted`).
 Fails closed: the folder must be absolute and `volume_containment(...) is True`
@@ -7627,8 +7654,9 @@ taken again until it changes. Every poll reconciles the Inbox's stored
 Findings against its listing (`findings.stored_of`), not only the held paths in
 memory, so a Finding for a file removed across a restart is cleared too; one
 under a folder the walk couldn't list (or a link it won't walk) is kept. So a second poll over the same files changes nothing. The
-state (seen, held, in flight) lives in memory: after a restart every file
-settles again, and a held one gets its Finding again.
+state (seen, held, in flight) lives in memory: after a server restart every
+file settles again, and a held one gets its Finding again. `run-rules` keeps
+the seen and held state between its runs (#433, below).
 
 **Status and API.** `GET/POST /api/libraries/{id}/inboxes`, `PATCH/DELETE
 .../inboxes/{inbox_id}`. `inbox.describe` adds `intake.status`: last poll,
@@ -7639,7 +7667,47 @@ them.
 **Seams.** Unpacking an archive, Recognizing and naming from a DAT, and a taken
 name's handling (#432) go in `_take` before `_plan`. Each poll returns
 `placed` (`{"path", "platform", "output"}` for every Image placed since the
-last poll), which the RomM scan and the intake notification (#433) read.
+last poll) and `left` (`{"path", "kind", "reason"}` for every Image `_hold`
+gave a Finding since the last poll; a held file isn't held again, so it is
+reported once). Both are kept on the Inbox's state until a poll hands them
+out, so a copy or a move that ends between polls is reported by the next one.
+
+**After a pass** (`inbox/report.py`, #433). `report.after_pass(results)` takes
+one pass's poll results, groups them by Library, calls each Library's
+`after_intake` hook (§3.3.11) once with what was placed in it (RomM asks for a
+quick scan of just those Platform folders), and, when anything was placed or
+left, sends one `inbox_pass` notification (registered with the others in
+`services.notifications`) listing the files, the Findings' reasons and the
+scan outcome. A pass that placed and left nothing sends nothing and asks no
+one. The server's tick (`libraries.run_forever`) runs it after
+`intake.poll_all()`; `run-rules` runs it after its own pass, so the two can't
+drift.
+
+**RomM's Platform scan.** `RommClient.scan_platforms(folders)` is `POST
+/api/tasks/scan` with `{"type": "quick", "platform_fs_slugs": [...]}`, each
+entry a Platform's folder name on disk. Confirmed against RomM 5.4.1 (source
+and a live container, `scripts/spike/romm_platform_scan`, findings in
+`docs/ROMM_INTEGRATION_ROADMAP.md`): it needs `tasks.run` (403 without),
+scans only the named folders, finds a folder with no Platform row yet and
+creates the Platform, scans nothing for a folder that isn't there, and refuses
+an unknown key with 422 (RomM's `ScanPayload` forbids extras), so a typo can't
+widen it to the whole library. `apis` is left out, so the scan uses the
+metadata sources RomM has on, as its own scheduled scan does. The fake RomM
+(`tests/fake_romm.py`) gates every scan on `tasks.run`, refuses unknown keys,
+records each Platform scan in `platform_scans`, and `scan_reply` makes it
+answer 409 or 503.
+
+**From `run-rules`** (§3.3.17). The CLI is a new process each run, so the
+settle memory (seen, held, and what an ownership hold depends on) is kept
+between runs: `intake.settle_memory(inbox_ids)` serialises it and
+`intake.restore_settle_memory` takes it back (what the process already knows
+wins; an unreadable entry is dropped, so the file is simply seen again), under
+the `inbox_settle` preference. `poll_all(library_ids=...)` polls only the
+Inboxes of the Libraries the run swept, one Library at a time so each job's
+line names its Library. `intake.finish_all()` then does what the next poll
+would on the server: settles the conversions that ended (originals to
+`processed/`), waits for every copy and move, and hands back what was placed
+or left, so nothing a run started is left in flight when it exits.
 
 ### 3.4 `registry.py`
 
