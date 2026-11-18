@@ -418,6 +418,15 @@
 
 ### Fixed
 
+- **A deferred rematch no longer logs a false match-lock warning** (#481).
+  When a DAT import had to wait behind a running match job, the rematch that
+  started once that job finished logged `concurrency guard may be
+  compromised` every time. The finishing job starts its successor from its
+  own teardown, while its task is still in the set of running match tasks,
+  and the check counted it. The lock was already free, so nothing was wrong.
+  The check now ignores the task doing the scheduling and any task that has
+  already finished, and still warns if a second match task really is running.
+
 - **A Rule's dropped settings are logged once per sweep, naming the Rule**
   (#477). A Rule stored with something the app can't honour (a codec its mode
   can't use, delete-on-verify its mode can't check strongly enough, a

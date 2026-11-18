@@ -1882,3 +1882,81 @@ async def test_schedule_match_job_uses_create_task_without_background_tasks(
     assert len(dat_routes._background_match_tasks) == 0
     # Drain any incidental tasks (e.g. the prune) so none are left pending.
     await asyncio.gather(*created, return_exceptions=True)
+
+
+_GUARD_WARNING = "concurrency guard may be compromised"
+
+
+@pytest.mark.asyncio
+async def test_a_deferred_rematch_does_not_raise_the_guard_warning(monkeypatch, caplog):
+    """Issue #481: the finishing job schedules its own successor.
+
+    ``_drain_deferred_rematch`` runs from the finishing job's own ``finally``,
+    while that job's task is still in ``_background_match_tasks`` (its discard
+    callback has not run yet). The guard is already released, so the warning
+    that "the guard may be compromised" was a false alarm on every deferred
+    rematch.
+    """
+    monkeypatch.setattr(dat_routes, "is_within_configured_volumes", lambda p: True)
+    monkeypatch.setattr(dat_routes, "_active_match_job_id", None)
+    monkeypatch.setattr(dat_routes, "_deferred_rematch_paths", {"/vol/queued.chd"})
+
+    scheduled: list[asyncio.Task] = []
+
+    class _RecordingSet(set):
+        def add(self, task):
+            scheduled.append(task)
+            super().add(task)
+
+    monkeypatch.setattr(dat_routes, "_background_match_tasks", _RecordingSet())
+
+    async def _ok(path, *, cancel_event=None, local_only=False):
+        return {"path": path, "matched": False}, True
+
+    monkeypatch.setattr(dat_routes, "_hash_one_for_job", _ok)
+    monkeypatch.setattr(dat_routes.dat_store, "set_match", AsyncMock())
+
+    with caplog.at_level("WARNING", logger="compressatorium.dat"):
+        first_id = await dat_routes.schedule_match_job(["/vol/a.chd"])
+        assert first_id
+        await asyncio.wait_for(scheduled[0], timeout=5)
+        # The first job's teardown drained the queue into a second job.
+        assert not dat_routes._deferred_rematch_paths, "the deferred rematch never started"
+        assert len(scheduled) == 2, "the deferred rematch was not scheduled"
+        await asyncio.wait_for(scheduled[1], timeout=5)
+
+    warnings = [r for r in caplog.records if _GUARD_WARNING in r.getMessage()]
+    assert not warnings, f"false guard warning on a deferred rematch: {warnings}"
+
+
+@pytest.mark.asyncio
+async def test_a_live_unrelated_match_task_still_raises_the_guard_warning(
+    monkeypatch, caplog,
+):
+    """...and the check still does its job: a second match task that is
+    genuinely live when a new one is scheduled means the guard was bypassed.
+    """
+    monkeypatch.setattr(dat_routes, "is_within_configured_volumes", lambda p: True)
+    monkeypatch.setattr(dat_routes, "_active_match_job_id", None)
+
+    release = asyncio.Event()
+    stray = asyncio.create_task(release.wait())
+    monkeypatch.setattr(dat_routes, "_background_match_tasks", {stray})
+
+    async def _ok(path, *, cancel_event=None, local_only=False):
+        return {"path": path, "matched": False}, True
+
+    monkeypatch.setattr(dat_routes, "_hash_one_for_job", _ok)
+    monkeypatch.setattr(dat_routes.dat_store, "set_match", AsyncMock())
+
+    try:
+        with caplog.at_level("WARNING", logger="compressatorium.dat"):
+            job_id = await dat_routes.schedule_match_job(["/vol/a.chd"])
+        assert job_id
+        warnings = [r for r in caplog.records if _GUARD_WARNING in r.getMessage()]
+        assert len(warnings) == 1, "a live second match task went unreported"
+        assert "size=1" in warnings[0].getMessage()
+    finally:
+        release.set()
+        pending = [t for t in dat_routes._background_match_tasks if t is not stray]
+        await asyncio.wait_for(asyncio.gather(stray, *pending), timeout=5)

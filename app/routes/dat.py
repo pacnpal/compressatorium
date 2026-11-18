@@ -82,6 +82,24 @@ def _log_background_match_task_error(task: asyncio.Task) -> None:
         )
 
 
+def _other_live_match_tasks() -> list[asyncio.Task]:
+    """Background match tasks still running, other than the one asking.
+
+    A finishing job drains the deferred rematch from its own ``finally``
+    (see :func:`_drain_deferred_rematch`), so it schedules its successor while
+    its own task is still in ``_background_match_tasks``: the discard callback
+    only runs once the task is done. By then it has already released
+    ``_active_match_job_id``, so it is not a second job. A task that is done
+    but not yet discarded is not running either. Anything else still in the
+    set is a genuinely concurrent match task (issue #481).
+    """
+    current = asyncio.current_task()
+    return [
+        task for task in _background_match_tasks
+        if task is not current and not task.done()
+    ]
+
+
 def _get_match_job_lock() -> asyncio.Lock:
     """Return the module-level match-job lock, creating it on first use.
 
@@ -909,15 +927,16 @@ async def schedule_match_job(
                 local_only=local_only,
             )
         else:
-            # Invariant: _background_match_tasks holds at most one task
+            # Invariant: _background_match_tasks holds at most one live task
             # at a time because _active_match_job_id gates re-entry. If
             # this ever prints a warning, the concurrency guard above
             # has been bypassed, investigate before shipping.
-            if _background_match_tasks:
+            live = _other_live_match_tasks()
+            if live:
                 logger.warning(
                     "schedule_match_job: _background_match_tasks was non-empty"
                     " at schedule time (size=%d), concurrency guard may be compromised",
-                    len(_background_match_tasks),
+                    len(live),
                 )
             task = asyncio.create_task(
                 _run_match_job(
