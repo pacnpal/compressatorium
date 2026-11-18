@@ -418,6 +418,11 @@
 
 ### Fixed
 
+- **The Rules view shows only the selected Library's placements** (#464). After
+  switching Libraries, "Where new Images go" shows its loading line until the new
+  Library's folders arrive, instead of the previous Library's rows, and a late
+  answer for the previous Library is no longer shown.
+
 - **A tool killed by the system says so** (#455). When a tool is killed by a
   signal, most often the out-of-memory killer, the job's error now reads like
   "7z was killed (signal 9), most likely out of memory" instead of the tool's
