@@ -144,7 +144,7 @@ async def test_a_missing_tool_is_logged_once_and_again_after_it_clears(
     lines = _skips(caplog)
     assert len(lines) == 1, lines
     _assert_names_the_rule(lines[0])
-    assert "chdman" in lines[0] and "not installed" in lines[0]
+    assert "CHDMAN isn't ready" in lines[0]
 
     # Still retried on the next tick: once the tool is back, the Rule runs.
     caplog.clear()
@@ -160,7 +160,7 @@ async def test_a_missing_tool_is_logged_once_and_again_after_it_clears(
         await sweep.sweep(library, ignore_schedule=True)
         await sweep.sweep(library, ignore_schedule=True)
     lines = _skips(caplog)
-    assert len(lines) == 1 and "not installed" in lines[0], lines
+    assert len(lines) == 1 and "CHDMAN isn't ready" in lines[0], lines
 
 
 @pytest.mark.asyncio
@@ -186,7 +186,7 @@ async def test_a_new_reason_is_logged_when_the_old_one_is_fixed(
 
     lines = _skips(caplog)
     assert len(lines) == 2, lines
-    assert "not installed" in lines[0] and "/outside/tz480" in lines[1], lines
+    assert "CHDMAN isn't ready" in lines[0] and "/outside/tz480" in lines[1], lines
 
 
 @pytest.mark.asyncio
@@ -375,7 +375,7 @@ async def test_a_check_rule_with_no_verifier_is_logged_once_per_change(
     lines = _skips(caplog)
     assert len(lines) == 1, lines
     _assert_names_the_rule(lines[0])
-    assert "check Rule" in lines[0] and "not installed" in lines[0]
+    assert "check Rule" in lines[0] and "CHDMAN isn't ready" in lines[0]
 
     # Installed: nothing said. Gone again: said again.
     caplog.clear()

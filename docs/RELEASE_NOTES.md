@@ -418,6 +418,16 @@
 
 ### Fixed
 
+- **A skipped Rule's log line gives the tool's own reason** (#484). The line
+  the sweep logs for a Rule whose tool can't run said the tool "is not
+  installed", even when it was installed and something else was missing. A
+  Switch Rule with no `prod.keys` now says `Switch isn't ready: no prod.keys
+  was found ...`, and a 3DS check Rule with `zstd` missing says `3DS isn't
+  ready: zstd is not installed, so 3DS files cannot be checked`. A check Rule
+  with more than one verifier not ready names each with its own reason. The
+  CLI, Auto and the sweep now build this text in one place, so they say the
+  same thing. The line is still logged once per reason.
+
 - **A deferred rematch no longer logs a false match-lock warning** (#481).
   When a DAT import had to wait behind a running match job, the rematch that
   started once that job finished logged `concurrency guard may be

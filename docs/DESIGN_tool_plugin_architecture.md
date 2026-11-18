@@ -287,7 +287,9 @@ class ToolPlugin(Protocol):
     # Runtime prerequisites met? False => GET /api/tools reports the tool
     # unavailable and the frontend hides it, instead of offering jobs that can
     # only fail. Default True; nsz overrides (prod.keys). Async because the
-    # probe may touch disk.
+    # probe may touch disk. `not_ready_reason` / `verify_not_ready_reason` say
+    # why it answered False; callers show them through `not_ready_message`
+    # (§3.4) rather than formatting their own line.
     async def is_ready(self) -> bool: ...
 ```
 
@@ -2867,9 +2869,18 @@ Rules the run loop skips:
   (`tool_not_ready`, `output_dir_outside_volumes`, `tool_wrong_for_platform`)
   and no run recorded, so it is due on the next tick and runs as soon as the
   cause is fixed. A check Rule uses the `tool` check the same way:
-  `_sweep_check` reports the verifiers it found not installed (still adding
+  `_sweep_check` reports the verifiers it found not ready (still adding
   `tool_not_ready`, and recording no run when it picked nothing), and a pass
-  that reached its Images without finding one missing clears it. The loop calls `_report_skip` with the reason on a failure
+  that reached its Images without finding one missing clears it. The `tool`
+  reason is the plugin's own (#484), from `not_ready_message` (§3.4, "Saying
+  why a tool can't run"): `"<display_name> isn't ready: <not_ready_reason>"`
+  for a conversion Rule, and for a check Rule the same with
+  `verify_not_ready_reason` for each verifier not ready, sorted by tool id
+  and joined with `"; "`. It is read after the readiness check, never before,
+  since a plugin may learn its reason while it probes (rom-converto). So an
+  nsz Rule with no `prod.keys` says so rather than "not installed", and a
+  reason that changes while the tool stays not ready is a new reason, logged
+  once more. The loop calls `_report_skip` with the reason on a failure
   and with `reason=None` on a pass. The reason is logged once per
   `(library id, kind, platform id)` (`_reported_skips`, which keeps the check
   and the reason), and again only when it changes. A pass forgets a reason
@@ -4001,7 +4012,7 @@ files" when the file is the problem.
 A target whose tool cannot run here is skipped too. The route awaits the
 shared, bounded `registry.ready_tool_ids()` and passes it to `plan_auto`
 (`ready_tool_ids=`), which skips the Image with
-"<display_name> isn't ready: <not_ready_reason>". `ToolPlugin.not_ready_reason`
+"<display_name> isn't ready: <not_ready_reason>" (`not_ready_message`, §3.4). `ToolPlugin.not_ready_reason`
 says why in the user's words; the default names a missing program, nsz names
 `prod.keys`, jwud the JWUDTool launcher and Java. Both Auto routes plan through
 this, so the plan the user confirms and the jobs queued agree.
@@ -8491,6 +8502,27 @@ time until unrelated offloads have nowhere to run — the bound turns a hang int
 a leak rather than removing it. `nsz` (a recursive walk for `prod.keys`) and
 `jwud` (a stat for the `.jar`) are the two that touch the disk today; the
 requirement is stated on `ToolPlugin.is_ready` so a new gated tool inherits it.
+
+#### Saying why a tool can't run (`not_ready_message`)
+
+`ToolPlugin.not_ready_reason` and `verify_not_ready_reason` say, in the user's
+words, why `is_ready()` or `verify_is_ready()` answered False. Every caller
+that tells someone a tool isn't ready builds the line with
+`services.tools.not_ready_message(tool, purpose="convert" | "verify")`, which
+returns `"<display_name> isn't ready: <reason>"` with the reason for that
+purpose (#484). It takes `purpose` the way `tool_is_ready` does. The CLI's
+`--to` and `verify` paths, Auto's plan (`platform_detect._plan_targets`) and
+the Rules sweep's skip line (§3.3.11) all use it, so they say the same thing;
+a new caller does too, rather than formatting its own.
+
+It is a free function rather than a method so a tool that satisfies the
+protocol without subclassing `BaseTool` still works. Read it after the
+readiness check that answered False: rom-converto's `not_ready_reason` is a
+property that returns what its last probe found. Reading a reason is an
+attribute read, never I/O, so it is safe on the event loop; a plugin whose
+reason needs I/O would have to compute it in its readiness probe. A reason
+that raises, or is empty, gives `BaseTool.not_ready_reason` (with a warning
+logged) instead of failing the caller.
 
 #### Resolving what to verify (`_verify_target_bounded`)
 
