@@ -7240,9 +7240,24 @@ hashing, looked up as listed and then along the real path. The new name is the
 top match's `game_name` plus `registry.extension_of`, through
 `safe_file_name`. Each preview and each run first reads every sheet's tracks
 over the Volumes, each with the sheets that name it
-(`image_sets.volume_sheet_owners`, the walk `volume_sheet_tracks` and the
-duplicate delete use): a walk that doesn't finish skips every Image (fail
-closed). `plan_blocking` skips, with the reason: a path not confirmed inside
+(`image_sets.volume_sheet_owners_scoped`, the walk `volume_sheet_tracks` and
+the duplicate delete use): a walk that doesn't finish skips every Image (fail
+closed). A sheet whose tracks can't be told (an absolute `FILE` name, a sheet
+that can't be read whole) doesn't fail the walk (#454): it holds back only
+what it could name. `resolve_track` takes a relative name without `..`, so
+that is its folder and below, through any link inside the Volumes;
+`image_sets.sheet_reach` walks it, following linked folders, and records each
+file by identity, so a hard link counts too. It walks junk names as well
+(`walk_tree(skip_junk=False)`: `resolve_track` takes `__MACOSX/x` like any
+other name). A file link whose real path is outside the Volumes reaches
+nothing, since `resolve_track` refuses it. A folder link out of the Volumes
+fails the whole walk instead, naming the sheet and the link: a link inside
+that folder may lead back in, `resolve_track` checks only the final real
+path, and the walk never goes outside the Volumes to find out. Those identities go in
+`SheetOwners.unknown`, and an Image or a sheet's track among them is skipped
+with the sheet that holds it. A folder or file that walk can't read still
+fails the whole walk. `volume_sheet_owners` keeps the stricter rule (one such
+sheet makes it None) for the duplicate delete. `plan_blocking` skips, with the reason: a path not confirmed inside
 the Volumes, a symlink, a playlist, an Image with members that isn't a sheet
 (`image_sets.image_members`), a track a sheet lists (the sheet above it by
 `owning_sheet`, or any sheet in the Volumes by the walk, through a link too),
