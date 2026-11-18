@@ -133,9 +133,13 @@ async def test_a_stored_bad_rule_runs_on_chdmans_own_codecs_and_says_so(
         await routes.run_library(lib["id"], routes.SweepRequest(platform_ids=["ps2"]))
 
     assert ("Ico.iso", None) in queue
-    assert any(
-        "cdzl" in r.getMessage() and "Create DVD" in r.getMessage() for r in caplog.records
-    ), [r.getMessage() for r in caplog.records]
+    # Once, where the sweep runs the Rule, naming the Library and Platform (#477).
+    lines = [
+        r.getMessage() for r in caplog.records
+        if "cdzl" in r.getMessage() and "Create DVD" in r.getMessage()
+    ]
+    assert len(lines) == 1, [r.getMessage() for r in caplog.records]
+    assert "ps2" in lines[0] and lib["name"] in lines[0], lines[0]
 
 
 def test_an_auto_target_keeps_the_saved_codecs_its_mode_takes() -> None:

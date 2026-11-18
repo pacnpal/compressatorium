@@ -32,7 +32,7 @@ import asyncio
 import functools
 import os
 import re
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -73,6 +73,7 @@ from services.rules.library import (
     LibraryUnreadable,
     QueuedImage,
     duplicate_actions,
+    log_prefix,
     refuse_unsupported_policies,
 )
 from services.rules.rules import (
@@ -84,7 +85,9 @@ from services.rules.rules import (
     _validation_paused,
     effective_check_level,
     normalize_rules,
+    refusal,
     refuse_unusable_compression,
+    rule_changes,
     takes_container_only,
 )
 from services.rules.schedule import _is_due
@@ -98,7 +101,9 @@ from utils.path_utils import (
     source_companions_are_safe,
 )
 
-# The logger name the engine has always logged under (see `rules.logger`).
+# The logger name the engine has always logged under, kept so existing log
+# filters and dashboards still match. A line about one Library's Rule starts
+# with that Library's own prefix instead (`library.log_prefix`, #477).
 logger = get_logger("romm_auto")
 
 # How long one candidate's disk probes may take before the library counts as
@@ -187,6 +192,11 @@ _generations: dict[str, int] = {}
 # this logs the change of state, once each way, instead of every tick.
 _unreadable: dict[tuple[str, str], str] = {}
 
+# (library id, kind, platform key) -> what was last reported about a stored Rule
+# no sweep runs (#477): one the sanitizer refuses outright, or one it paused for
+# a value it refused. Reported once for each stored value, not on every tick.
+_reported_unrunnable: dict[tuple[str, str, str], str] = {}
+
 # (library id, platform id) of each check Rule whose scheduled run is still
 # checking (#305). Its run is recorded only when that run finishes, so until
 # then the Rule would read as due and the next tick would pick another budget's
@@ -214,9 +224,119 @@ async def get_rules(library: Library, kind: str = CONVERT) -> dict[str, dict]:
     sweep, which holds `_sweep_lock` while it runs. The sweep re-checks the
     destination off the loop before it queues anything, which is what covers a
     blob edited straight in the database.
+
+    Logs nothing (#477): it is every read of the Rules. What the sanitizer
+    changed is on each Rule, for :func:`report_rule_changes` where a sweep
+    runs it, and :func:`_report_unrunnable` for what no sweep runs.
     """
+    return (await _read_rules(library, kind))[1]
+
+
+async def _read_rules(library: Library, kind: str = CONVERT) -> tuple[Any, dict[str, dict]]:
+    """*library*'s stored Rules of *kind*: the blob as stored, and normalized."""
     stored = await store.read(store.rules_key(kind), library)
-    return _normalize(library, stored, kind=kind, check_volumes=False)
+    return stored, _normalize(library, stored, kind=kind, check_volumes=False)
+
+
+def report_rule_changes(
+    library: Library, platform: Any, rule: dict, *, kind: str = CONVERT,
+    prefix: str | None = None, seen: set | None = None,
+) -> bool:
+    """Log, in one line, what the sanitizer dropped or refused on *rule*,
+    which is about to run (#477). Whether a line was logged.
+
+    The one place a Rule's changes are logged: the sweep calls it once for
+    each Rule it runs, so a Library of any kind says it once per sweep, and
+    the Inbox calls it as it converts under a Rule, once per pass (*seen*
+    holds what that pass reported already). The line names the Library and
+    *platform*, and starts with *prefix*, by default the Library's own
+    (:func:`services.rules.library.log_prefix`).
+    """
+    changes = rule_changes(rule)
+    if not changes:
+        return False
+    if seen is not None:
+        key = (library.id, kind, str(platform))
+        if key in seen:
+            return False
+        seen.add(key)
+    label = "check" if kind == CHECK else "conversion"
+    logger.warning(
+        "%s: the %s Rule for Platform %s in Library %s: %s",
+        prefix or log_prefix(library), label, platform, library.name, "; ".join(changes),
+    )
+    return True
+
+
+def _report_saved(library: Library, rules: Mapping[str, dict], kind: str) -> None:
+    """Log what a save changed that a later read of the stored Rule won't show.
+
+    A save stores each Rule as the sanitizer left it: a refused timezone is
+    stored as ``UTC``, refused delete-on-verify as off, a refused output folder
+    as none, a lenient save's dropped codecs as gone. Re-reading that finds
+    nothing to drop, so the field the sanitizer recorded is gone before any
+    sweep could report it (Codex on #479). Each Rule is re-read here as it
+    will be stored, and only what that re-read loses is logged, once, now.
+    What survives the round trip (a refused filter is carried by
+    ``invalid_pattern``) is left to the sweep, so nothing is said twice.
+    Derived per change rather than per field, so a field added later is
+    covered too.
+    """
+    label = "check" if kind == CHECK else "conversion"
+    for platform_id, rule in rules.items():
+        reread = _normalize(library, {platform_id: rule}, kind=kind, check_volumes=False)
+        kept = set(rule_changes(reread.get(platform_id) or {}))
+        lost = [change for change in rule_changes(rule) if change not in kept]
+        if lost:
+            logger.warning(
+                "%s: saved the %s Rule for Platform %s in Library %s with changes: %s",
+                log_prefix(library), label, library.platform_value(platform_id),
+                library.name, "; ".join(lost),
+            )
+
+
+def _report_unrunnable(
+    library: Library, stored: Mapping[str, Any], rules: Mapping[str, dict],
+) -> None:
+    """Log each stored Rule no sweep runs, once for each stored value (#477).
+
+    *stored* and *rules* are, by kind, the blob as stored and as normalized.
+    A Rule the sanitizer refuses outright (a mode no tool provides, or one
+    that can't run unattended) never reaches the sweep's loop, and a Rule it
+    paused for a value it refused (an output folder, a filter) is skipped
+    there, so neither would ever be reported where it runs. Each is logged
+    here the first time a sweep of its Library reads it, and again only when
+    what is wrong with it changes; one fixed or removed is forgotten.
+    """
+    problems: dict[tuple[str, str, str], str] = {}
+    for kind in RULE_KINDS:
+        raw = stored.get(kind)
+        for key, value in (raw.items() if isinstance(raw, Mapping) else ()):
+            platform_id = library.canonical_platform_id(key)
+            if platform_id is None:
+                continue
+            rule = rules.get(kind, {}).get(platform_id)
+            if rule is None:
+                problem = refusal(value, kind=kind)
+                if problem is not None:
+                    problems[(library.id, kind, platform_id)] = f"is never run: {problem}"
+            elif _validation_paused(rule) and rule_changes(rule):
+                problems[(library.id, kind, platform_id)] = (
+                    f"is paused: {'; '.join(rule_changes(rule))}"
+                )
+    for memo in [k for k in _reported_unrunnable if k[0] == library.id]:
+        if memo not in problems:
+            _reported_unrunnable.pop(memo, None)
+    for memo, problem in problems.items():
+        if _reported_unrunnable.get(memo) == problem:
+            continue
+        _reported_unrunnable[memo] = problem
+        _, kind, platform_id = memo
+        logger.warning(
+            "%s: the %s Rule for Platform %s in Library %s %s",
+            log_prefix(library), "check" if kind == CHECK else "conversion",
+            library.platform_value(platform_id), library.name, problem,
+        )
 
 
 def _normalize(library: Library, raw: Any, *, kind: str = CONVERT, **kwargs) -> dict[str, dict]:
@@ -346,6 +466,7 @@ async def set_check_rules(library: Library, raw: Any) -> dict[str, dict]:
     async with _sweep_lock:
         rules = _normalize(library, raw, kind=CHECK, check_volumes=False)
         await store.write(store.CHECK_RULES_KEY, library, rules)
+        _report_saved(library, rules, CHECK)
         return rules
 
 
@@ -424,6 +545,7 @@ async def set_rules(library: Library, raw: Any, *, strict: bool = False) -> dict
             if pending:
                 await store.write(store.STATE_KEY, library, state)
         await store.write(store.RULES_KEY, library, rules)
+        _report_saved(library, rules, CONVERT)
         return rules
 
 
@@ -512,6 +634,8 @@ async def forget_library(library: Library) -> None:
                 await _orphan_job(library, owner[2], job_manager.jobs.get(job_id))
         for key in [k for k in _unreadable if k[0] == library.id]:
             _unreadable.pop(key, None)
+        for key in [k for k in _reported_unrunnable if k[0] == library.id]:
+            _reported_unrunnable.pop(key, None)
         for kind in RULE_KINDS:
             await store.write(store.rules_key(kind), library, {})
             await store.write(store.state_key(kind), library, {})
@@ -1895,7 +2019,9 @@ async def _sweep_locked(
 
     # Every Rule of every kind, with its own run state: a Platform's conversion
     # Rule and check Rule run on their own clocks.
-    rules = {kind: await get_rules(library, kind) for kind in RULE_KINDS}
+    read = {kind: await _read_rules(library, kind) for kind in RULE_KINDS}
+    rules = {kind: read[kind][1] for kind in RULE_KINDS}
+    _report_unrunnable(library, {kind: read[kind][0] for kind in RULE_KINDS}, rules)
     states = {kind: await get_state(library, kind) for kind in RULE_KINDS}
     now = datetime.now(timezone.utc)
 
@@ -2028,6 +2154,9 @@ async def _sweep_locked(
         ):
             # Its scheduled run is still checking: one budget per window.
             continue
+        # It runs: what the sanitizer dropped or refused on it is said once,
+        # here, for every kind of Library (#477), not on each read.
+        report_rule_changes(library, platform_ref, rule, kind=kind)
 
         if kind == CHECK:
             if await _sweep_check(

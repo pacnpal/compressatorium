@@ -155,6 +155,8 @@ class RommLibrary(LibraryDefaults):
     id = "romm"
     kind = "romm"
     name = "RomM"
+    # The prefix RomM's Rule lines have always had (#477).
+    log_prefix = "romm_auto"
     capabilities = frozenset({RECOGNIZED_FILTER, CONVERTED_HISTORY, HIDDEN_STAGING})
     legacy_preference_keys = MappingProxyType(
         {RULES_KEY: LEGACY_RULES_KEY, STATE_KEY: LEGACY_STATE_KEY},

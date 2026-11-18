@@ -2816,6 +2816,50 @@ API and the Rules view; the engine never reads those three), and:
   due and the next tick lists the new Images. The same rule for conversion and
   check Rules.
 
+**What the sanitizer changed is logged by the sweep, not on read (#477).**
+`normalize_rule` runs on every read of the Rules (each GET, the editor,
+startup, each scheduler tick), so it logs nothing. It records what it dropped
+or refused on the Rule (`dropped_codecs`, `dropped_timezone`,
+`unsafe_delete_on_verify`, `invalid_output_dir`, `invalid_pattern`);
+`rules.rule_changes(rule)` puts those in words, and `rules.refusal(raw,
+kind=)` says why it refuses a Rule outright (a mode no tool provides, or one
+`mode_is_automatable` refuses; a Rule with no mode is an empty row and gets
+None). Two places in `rules/sweep.py` log them:
+
+- `report_rule_changes(library, platform, rule, kind=, prefix=, seen=)` logs
+  one line for a Rule about to run. The sweep calls it once per Rule it runs
+  (after the paused, due and active-check gates, for both kinds), so any
+  Library logs it once per sweep. An Inbox calls it as it converts under a
+  Rule (`intake._take`), with `prefix="inbox"` and `seen` the pass's
+  `_State.rules_reported`, so once per pass.
+- `_report_unrunnable(library, stored, rules)` runs in each sweep right after
+  the Rules are read (`_read_rules` gives the stored blob and the normalized
+  set, so the store is read once), before the `no_rules` and
+  `not_configured` returns. A Rule the sanitizer refused, or paused for a
+  value it refused, is never reached by the run loop, so it is logged here:
+  once per `(library id, kind, platform id)` and problem
+  (`_reported_unrunnable`), again only when the problem changes, forgotten
+  once fixed and in `forget_library`.
+- `_report_saved(library, rules, kind)` runs at the end of `set_rules` and
+  `set_check_rules`. A save stores each Rule as the sanitizer left it
+  (`timezone: "UTC"`, delete-on-verify off, no output folder, a lenient save's
+  codecs dropped), so re-reading it finds nothing to drop and the recorded
+  field is gone before a sweep could see it. It re-normalizes each Rule as
+  stored and logs, once, only the `rule_changes` that re-read loses. What
+  survives the round trip is left to the sweep, so nothing is said twice:
+  `invalid_pattern` is carried from the stored Rule, so a refused filter is
+  reported by `_report_unrunnable`. The editor's own save (`strict=True`)
+  still refuses a codec the mode can't use (#474) before anything is stored.
+  It compares changes, not fields, so a field added to `rule_changes` later is
+  covered without touching it.
+
+Each line names the Library (`library.name`) and the Platform, and starts with
+the Library's prefix, `rules.library.log_prefix(library)`: the Library's own
+optional `log_prefix` (`RommLibrary` keeps `romm_auto`), else
+`f"{kind}_library"` (`folder_library`), else `library` for a Library with
+neither. It is optional on the contract, so a Library written before it still
+logs. The logger is still `romm_auto`, so log filters keyed on it still match.
+
 Capabilities (`RECOGNIZED_FILTER`, `CONVERTED_HISTORY`, `FAILED_HOLD`) say
 what a Library supports. Nothing in `rules/` asks what kind of Library it has.
 
@@ -8582,8 +8626,8 @@ compression (`rules.refuse_unusable_compression`, raising
 `UnusableCompression`), so nothing is saved that would fail once per Image. A
 stored Rule is read leniently: `normalize_rule`, which every sweep and Inbox
 plan reads its Rules through, keeps only the codecs the mode takes and records
-the rest in the Rule's `dropped_codecs` (the editor names them, and the drop is
-logged), so the job runs on what is left, or on the tool's own codecs when
+the rest in the Rule's `dropped_codecs` (the editor names them, and the sweep that
+runs the Rule logs it once, #477), so the job runs on what is left, or on the tool's own codecs when
 nothing is. The drop is one shared helper, `base.without_unusable_codecs(spec,
 compression)`, which `checked_compression` calls too, so an Auto target keeps
 the saved codecs its mode takes before falling back. The frontend's matching
