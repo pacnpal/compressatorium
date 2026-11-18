@@ -563,9 +563,12 @@ as a pass (CodeRabbit 4616898119, 4617217666).
   interpreter) raises, which both verify paths report as inconclusive
   ("Verification could not run"). The priority is then applied to the child
   by its pid, best effort (`_prioritize_child`): `os.setpriority` to the
-  increment over this process that `nice -n` gives, and `ionice -t ... -p
-  <pid>` through the bounded probe. Either failing leaves the child at normal
-  priority.
+  increment over this process that `nice -n` gives, a syscall made inline,
+  and `ionice -t ... -p <pid>` through the bounded probe as a task of its own
+  that the spawn never awaits, so a stalled one can't hold back the verify's
+  deadline or cancel, which start at once. Either failing leaves the child at
+  normal priority. Their argv comes from the same builder,
+  `_wrapped_command(wrap=False)`.
 
 A wrapper binary that isn't installed omits only its own prefix; the other
 enabled one still applies. Each is looked up once per process, the first

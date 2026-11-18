@@ -299,7 +299,7 @@ async def test_verify_applies_priority_wrappers(tmp_path, monkeypatch):
     monkeypatch.setattr(runner_module, "_resolve_wrappers", resolved)
     reniced = []
 
-    async def prioritize(owner, pid):
+    def prioritize(owner, pid):
         reniced.append((owner, pid))
 
     monkeypatch.setattr(runner_module, "_prioritize_child", prioritize)

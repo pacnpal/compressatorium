@@ -1036,7 +1036,7 @@ def test_the_streaming_verifier_spawns_bare_and_is_reniced(tmp_path, monkeypatch
 
     reniced = []
 
-    async def prioritize(owner, pid):
+    def prioritize(owner, pid):
         reniced.append(owner)
 
     monkeypatch.setattr(sr, "_prioritize_child", prioritize)

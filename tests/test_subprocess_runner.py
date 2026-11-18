@@ -1524,7 +1524,7 @@ def test_a_verifier_the_kernel_cant_exec_is_no_verdict(tmp_path, monkeypatch, bo
     apply the priority to the child by its pid afterwards."""
     reniced = []
 
-    async def prioritize(owner, pid):
+    def prioritize(owner, pid):
         reniced.append((owner, pid))
 
     monkeypatch.setattr(runner_module, "_prioritize_child", prioritize)
@@ -1666,3 +1666,43 @@ def test_a_wrapped_127_forgets_a_stale_inner_wrapper(tmp_path, monkeypatch):
     rc, out, _err = asyncio.run(runner.run_capture(cmd))
     assert (rc, out) == (0, b"ok\n")
     assert runner_module._WRAPPERS == {"nice": str(fake_nice), "ionice": None}
+
+
+def test_a_stalled_ionice_step_never_holds_back_a_verify_deadline(tmp_path, monkeypatch):
+    """CodeRabbit 4617379646: the `ionice -p` step runs as a task of its own,
+    never awaited by the spawn, so a stalled one can't let a verifier run past
+    its deadline or its cancel, on run_capture(verdict=True) or run_verify."""
+    import time
+
+    monkeypatch.setattr(runner_module, "nice_value", lambda _owner=None: None)
+    monkeypatch.setattr(runner_module, "ioprio_prefix", lambda _owner=None: ["ionice", "-t"])
+    real_probe = runner_module._bounded_probe
+
+    async def probe(func, *args, **kwargs):
+        if args and isinstance(args[0], list) and "-p" in args[0]:
+            await asyncio.sleep(30)  # the ionice step that never answers
+        return await real_probe(func, *args, **kwargs)
+
+    monkeypatch.setattr(runner_module, "_bounded_probe", probe)
+    runner = SubprocessRunner(owner="test")
+    slow = [sys.executable, "-c", "import time; time.sleep(30)"]
+
+    started = time.monotonic()
+    rc, _out, _err = asyncio.run(runner.run_capture(slow, timeout=0.3, verdict=True))
+    assert rc is None and time.monotonic() - started < 5  # the deadline held
+
+    target = tmp_path / "a.bin"
+    target.write_bytes(b"x")
+
+    async def cancelled_verify():
+        cancel = asyncio.Event()
+        asyncio.get_running_loop().call_later(0.2, cancel.set)
+        return [e async for e in runner.run_verify(
+            slow, path=str(target), parse_progress=lambda _l: None,
+            success_message="ok", failure_message="bad", cancel_event=cancel,
+        )]
+
+    started = time.monotonic()
+    events = asyncio.run(cancelled_verify())
+    assert events[-1].get("cancelled") is True and time.monotonic() - started < 8
+    assert not runner.active_pids()

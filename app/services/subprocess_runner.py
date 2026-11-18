@@ -735,7 +735,7 @@ async def _wrapped_command(
     return prefix + cmd, bool(prefix)
 
 
-async def _prioritize_child(owner: str | None, pid: int) -> None:
+def _prioritize_child(owner: str | None, pid: int) -> None:
     """Apply *owner*'s priority to a child spawned bare, best effort.
 
     The verify paths (``capture_verify``, ``run_verify``, ``hash_stdout``)
@@ -754,15 +754,28 @@ async def _prioritize_child(owner: str | None, pid: int) -> None:
             os.setpriority(os.PRIO_PROCESS, pid, max(-20, min(19, own + value)))
         except OSError:
             pass
-    prefix = ioprio_prefix(owner) if await _resolve_wrappers(owner) else []
+    # Never awaited by the spawn (CodeRabbit 4617379646): the nice level is a
+    # syscall, and `ionice -p` runs as a task of its own, so a stalled one
+    # can't hold back the verify's deadline or cancel, which start at once.
+    # Its cache was filled by the argv build before the spawn.
+    prefix = ioprio_prefix(owner)
     if prefix:
         import subprocess  # local: the one spawn here, never a preexec_fn
 
-        with contextlib.suppress(asyncio.TimeoutError, OSError):
-            await _bounded_probe(
-                subprocess.run, [*prefix, "-p", str(pid)],
-                capture_output=True, check=False,
-            )
+        task = asyncio.ensure_future(_bounded_probe(
+            subprocess.run, [*prefix, "-p", str(pid)], capture_output=True, check=False,
+        ))
+        _IONICE_TASKS.add(task)
+        task.add_done_callback(_ionice_done)
+
+
+_IONICE_TASKS: set[asyncio.Future] = set()
+
+
+def _ionice_done(task: asyncio.Future) -> None:
+    _IONICE_TASKS.discard(task)
+    if not task.cancelled():
+        task.exception()  # best effort: retrieved, never raised
 
 
 def _forget_wrappers() -> None:
@@ -2207,7 +2220,7 @@ class SubprocessRunner:
         )
         try:
             if verdict:  # inside the try: a cancel here still reaps the child
-                await _prioritize_child(self._owner, process.pid)
+                _prioritize_child(self._owner, process.pid)
             waiters = [comm] + ([cancel_wait] if cancel_wait is not None else [])
             done, _pending = await asyncio.wait(
                 waiters,
@@ -2323,7 +2336,7 @@ class SubprocessRunner:
             else None
         )
         try:
-            await _prioritize_child(self._owner, process.pid)
+            _prioritize_child(self._owner, process.pid)
             done, _pending = await asyncio.wait(
                 [work] + ([cancel_wait] if cancel_wait is not None else []),
                 timeout=timeout or None,
@@ -2617,7 +2630,7 @@ class SubprocessRunner:
             return True
 
         try:
-            await _prioritize_child(self._owner, process.pid)
+            _prioritize_child(self._owner, process.pid)
             while True:
                 try:
                     chunk = await asyncio.wait_for(process.stdout.read(100), timeout=2)
