@@ -303,18 +303,25 @@ class RomConvertoService:
             )
         except OSError as exc:
             return False, f"rom-converto at {resolved} did not run: {exc}"
-        output = (stdout or b"").decode("utf-8", errors="replace").strip()
-        if returncode != 0 and not output:
-            output = (stderr or b"").decode("utf-8", errors="replace").strip()
         if returncode is None:
             return False, (
                 f"rom-converto at {resolved} did not run: no answer to --version "
                 f"within {int(_VERSION_TIMEOUT)}s"
             )
-        if returncode != 0 or not output.startswith("rom-converto"):
-            said = output.splitlines()[0] if output else f"exit code {returncode}"
-            return False, f"rom-converto at {resolved} did not run: {said}"
-        return True, ""
+        out = (stdout or b"").decode("utf-8", errors="replace").strip()
+        err = (stderr or b"").decode("utf-8", errors="replace").strip()
+        # The version line on stdout, or on stderr when stdout is empty (a
+        # build that prints it there), skipping any wrapper diagnostics.
+        lines = out.splitlines()[:1] if out else err.splitlines()
+        if returncode == 0 and any(line.startswith("rom-converto") for line in lines):
+            return True, ""
+        said = (out or err).splitlines()[0] if (out or err) else ""
+        if returncode == 0:
+            return False, (
+                f"rom-converto at {resolved} ran but printed no rom-converto version "
+                f"line" + (f": {said}" if said else "")
+            )
+        return False, f"rom-converto at {resolved} did not run: {said or f'exit code {returncode}'}"
 
     # --- source / output naming ---------------------------------------------
 

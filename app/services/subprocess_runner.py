@@ -32,7 +32,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import contextvars
-import errno
 import functools
 import logging
 import os
@@ -603,7 +602,10 @@ def ioprio_prefix(owner: str | None = None) -> list[str]:
     ionice = _wrapper_path("ionice")
     if not ionice:
         return []
-    return [ionice, "-c", str(ioprio_class), "-n", str(ioprio_level)]
+    # -t: best effort, like nice's renice (CodeRabbit 4615955439). A class the
+    # kernel denies (realtime without CAP_SYS_ADMIN) no longer stops ionice
+    # before it runs the tool with ionice's own exit 1, read as the tool's.
+    return [ionice, "-t", "-c", str(ioprio_class), "-n", str(ioprio_level)]
 
 
 def nice_prefix(owner: str | None = None) -> list[str]:
@@ -659,33 +661,34 @@ def _can_renice(increment: int) -> bool:
 
 @functools.cache
 def _wrapper_path(name: str) -> str | None:
-    """Where ``nice``/``ionice`` is, looked up once per process: a PATH scan
-    stats directories, and a spawn on the event loop must not repeat it. Warmed
-    at import, below, so the first spawn doesn't pay for it either."""
-    return shutil.which(name)
+    """Where ``nice``/``ionice`` is, looked up once per process and only once
+    its setting asks for it (a PATH scan stats directories, so it isn't
+    repeated per spawn, nor made at import when no priority is enabled).
+    Absolute, so a tool started in another folder (romz's ``cwd``) still
+    finds it when PATH held a relative entry."""
+    found = shutil.which(name)
+    return os.path.abspath(found) if found else None
 
 
-def _raise_if_not_launched(
-    tool: str, returncode: int | None, wrapped: bool, said: bytes | str = b"",
-) -> None:
-    """A wrapped run's 126/127 is a launch failure, never the tool's verdict:
-    the exit codes ``nice``/``ionice`` (like a shell) give when they can't
-    exec *tool*, whether it is missing, not executable, or a script whose
-    interpreter is missing (codex 4615398097). Finding *tool* on PATH proves
-    none of that, so no lookup is made. Raised as the ``OSError`` a direct
-    exec would have raised (127 ``FileNotFoundError``, 126
-    ``PermissionError``), which every verify path reports as inconclusive, so
-    a stored pass is never overwritten. No verifier here uses 126/127 for a
-    verdict."""
+def _not_launched_event(returncode: int | None, wrapped: bool, said: bytes | str) -> dict | None:
+    """The inconclusive verify event for a wrapped verifier that exited
+    126/127, or None. Those are the codes ``nice``/``ionice`` (like a shell)
+    exit with when they can't exec the tool: missing, not executable, or a
+    script whose interpreter is missing (codex 4615398097), which finding the
+    tool on PATH can't rule out. No verifier here uses them for a verdict, so
+    a verify reads them as "could not run" and a stored pass is never
+    overwritten. Only the verify paths ask: every other caller sees the exit
+    code as before (a non-zero exit, the "couldn't run" fallback it had)."""
     if not wrapped or returncode not in (126, 127):
-        return
-    code = errno.ENOENT if returncode == 127 else errno.EACCES
+        return None
     if isinstance(said, bytes):
         said = said.decode("utf-8", errors="replace")
     lines = clean_tool_output(said).splitlines()
     reason = f": {lines[-1]}" if lines else ""  # the wrapper's own words, if any
-    raise OSError(
-        code, f"it couldn't be started (the priority wrapper exited {returncode}){reason}", tool,
+    return SubprocessRunner._verify_error(
+        f"Verification could not run: the verifier couldn't be started "
+        f"(the priority wrapper exited {returncode}){reason}",
+        inconclusive=True,
     )
 
 
@@ -701,10 +704,6 @@ def priority_prefix(owner: str | None = None) -> list[str]:
     absent, its prefix is empty and the child runs at normal priority.
     """
     return nice_prefix(owner) + ioprio_prefix(owner)
-
-
-_wrapper_path("nice")
-_wrapper_path("ionice")
 
 
 def info_timeout(owner: str | None = None) -> int:
@@ -2087,7 +2086,7 @@ class SubprocessRunner:
         # full disc for DAT hashing) is just as heavy as a conversion. Command
         # wrappers only, never a preexec_fn (see priority_prefix).
         prefix = priority_prefix(self._owner)
-        tool, cmd = cmd[0], prefix + cmd
+        cmd = prefix + cmd
 
         process = await self._spawn_piped(
             cmd,
@@ -2117,9 +2116,6 @@ class SubprocessRunner:
             )
             if comm in done:
                 stdout, stderr = comm.result()
-                _raise_if_not_launched(
-                    tool, process.returncode, bool(prefix), stderr or stdout or b"",
-                )
                 return process.returncode, stdout or b"", stderr or b""
             # Cancelled or timed out before the process exited; the finally
             # block below terminates it and drains ``comm``.
@@ -2176,7 +2172,7 @@ class SubprocessRunner:
         label = os.path.basename(cmd[0])
         # Command wrappers, never a preexec_fn: see priority_prefix.
         prefix = priority_prefix(self._owner)
-        tool, cmd = cmd[0], prefix + cmd
+        cmd = prefix + cmd
         process = await self._spawn_piped(
             cmd,
             stdin=(
@@ -2244,7 +2240,6 @@ class SubprocessRunner:
             self.untrack_pid(process.pid)
         if process.returncode is not None and process.returncode < 0:
             raise RuntimeError(killed_by_signal_message(label, process.returncode))
-        _raise_if_not_launched(tool, process.returncode, bool(prefix), bytes(stderr_tail))
         if process.returncode != 0:
             tail = clean_tool_output(stderr_tail.decode("utf-8", errors="replace"))
             raise RuntimeError(
@@ -2352,9 +2347,8 @@ class SubprocessRunner:
                 on_abandoned=abandoned_pid.append,
             )
         except OSError as exc:
-            # The verifier couldn't be started (run_capture tells a wrapper's
-            # 127 from the tool's own exit): no verdict, so no stored check is
-            # overwritten.
+            # The verifier couldn't be started: no verdict, so no stored check
+            # is overwritten.
             yield verify_exception_event(exc, prefix="Verification could not run")
             return
         if abandoned_pid:
@@ -2362,6 +2356,12 @@ class SubprocessRunner:
             # still holding the storage whether the operator cancelled or the
             # bound expired, and a caller walking a list has to stop.
             yield abandoned_verify_error(abandoned_pid[0])
+            return
+        not_launched = _not_launched_event(
+            returncode, bool(priority_prefix(self._owner)), stdout or b"",
+        )
+        if not_launched is not None:
+            yield not_launched
             return
         if returncode == 0:
             if on_success_output is not None:
@@ -2422,7 +2422,7 @@ class SubprocessRunner:
         # nice/ionice as command wrappers, never a preexec_fn: see
         # priority_prefix.
         prefix = priority_prefix(self._owner)
-        tool, cmd = cmd[0], prefix + cmd
+        cmd = prefix + cmd
 
         # One the verifier can't open is no verdict, decided before it runs
         # (#359): chdman's exit 1 on "Permission denied" would read as one.
@@ -2587,12 +2587,11 @@ class SubprocessRunner:
             elif process.returncode == 0:
                 yield {"type": "complete", "valid": True, "message": success_message}
             else:
-                try:
-                    _raise_if_not_launched(
-                        tool, process.returncode, bool(prefix), "\n".join(output_lines[-6:]),
-                    )
-                except OSError as exc:  # no verdict: it never ran, or can't be told
-                    yield verify_exception_event(exc, prefix="Verification could not run")
+                not_launched = _not_launched_event(
+                    process.returncode, bool(prefix), "\n".join(output_lines[-6:]),
+                )
+                if not_launched is not None:
+                    yield not_launched
                     return
                 output = "\n".join(output_lines[-20:]).strip()
                 yield verify_exit_event(process.returncode, output or failure_message)
@@ -2687,7 +2686,7 @@ class SubprocessRunner:
         # nice/ionice as command wrappers, never a preexec_fn: see
         # priority_prefix.
         prefix = priority_prefix(self._owner)
-        tool, cmd = cmd[0], prefix + cmd
+        cmd = prefix + cmd
 
         # cmd is built from validated settings paths (no shell interpretation);
         # create_subprocess_exec passes the arg list directly (shell=False), so
@@ -3132,9 +3131,6 @@ class SubprocessRunner:
                     "\n".join(output_lines[-6:]),
                 )
                 raise RuntimeError(killed_by_signal_message(fail_label, process.returncode))
-            _raise_if_not_launched(
-                tool, process.returncode, bool(prefix), "\n".join(output_lines[-6:]),
-            )
             if process.returncode != 0:
                 tail = clean_tool_output("\n".join(output_lines[-6:]))
                 if tail:

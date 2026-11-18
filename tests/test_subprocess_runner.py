@@ -534,6 +534,15 @@ def _preexec_fn_lines(source: str) -> list[int]:
 
     lines = []
     for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Call):
+            # Popen's seventh positional parameter is preexec_fn (CodeRabbit
+            # 4615955530); None there passes nothing.
+            name = getattr(node.func, "attr", None) or getattr(node.func, "id", None)
+            if name == "Popen" and len(node.args) > 6 and not (
+                isinstance(node.args[6], ast.Constant) and node.args[6].value is None
+            ):
+                lines.append(node.lineno)
+            continue
         if not isinstance(node, ast.keyword):
             continue
         if node.arg == "preexec_fn":
@@ -550,6 +559,8 @@ def test_the_preexec_fn_scan_sees_an_unpacked_mapping():
     assert _preexec_fn_lines("f(x, preexec_fn=g)") == [1]
     assert _preexec_fn_lines('f(x, **{"preexec_fn": g})') == [1]
     assert _preexec_fn_lines('f(x, **{"env": e}, cwd=c)') == []
+    assert _preexec_fn_lines("subprocess.Popen(a, -1, None, None, None, None, g)") == [1]
+    assert _preexec_fn_lines("subprocess.Popen(a, -1, None, None, None, None, None)") == []
 
 
 def test_a_negative_nice_this_process_cannot_apply_is_left_off(monkeypatch):
@@ -579,63 +590,82 @@ def test_a_negative_nice_this_process_cannot_apply_is_left_off(monkeypatch):
     assert runner_module.nice_prefix("test")[1:] == ["-n", "5"]
 
 
-def test_a_missing_tool_behind_a_wrapper_raises_like_an_exec(tmp_path, monkeypatch):
-    """The wrapper exits 127 for a tool it can't run; that is no verdict (a
-    stored pass must not be overwritten), so it raises as a direct exec did,
-    and a captured verify reports it as inconclusive."""
+def test_a_tool_that_cant_start_behind_a_wrapper_is_no_verdict(tmp_path, monkeypatch):
+    """codex 4615398097: a wrapped verifier the wrapper can't exec (missing,
+    or a script whose interpreter is missing) exits 127. Finding the tool on
+    PATH proves nothing, so both verify paths read a wrapped 126/127 as "could
+    not run" (inconclusive, a stored pass kept). Every other caller sees the
+    exit code itself, as before: run_capture returns it (dolphin-tool's hash
+    read falls back to no hashes, CodeRabbit's dolphin_tool.py:233 note)."""
     monkeypatch.setattr(runner_module, "priority_prefix", lambda _owner=None: [shutil.which("env")])
+    script = tmp_path / "verifier"
+    script.write_text("#!/nonexistent/interpreter\n")
+    script.chmod(0o755)
     runner = SubprocessRunner(owner="test")
-    missing = str(tmp_path / "no-such-tool")
-
-    with pytest.raises(FileNotFoundError):
-        asyncio.run(runner.run_capture([missing, "t"]))
-
-    archive = tmp_path / "a.7z"
-    archive.write_bytes(b"7z")
-
-    async def verify():
-        return [e async for e in runner.capture_verify(
-            [missing, "t", str(archive)], path=str(archive), success_message="ok",
-        )]
-
-    last = asyncio.run(verify())[-1]
-    assert last["valid"] is False and last.get("inconclusive") is True
-    assert not runner.active_pids()
-
-
-def test_a_tool_whose_interpreter_is_missing_is_no_verdict(tmp_path, monkeypatch):
-    """codex 4615398097: the tool is on disk and executable, but its shebang
-    names an interpreter that isn't, so the wrapper exits 127. Finding the
-    tool proves nothing: a wrapped 126/127 is a launch failure on every path,
-    and a verify reports it as inconclusive, never as a failed check."""
-    monkeypatch.setattr(runner_module, "priority_prefix", lambda _owner=None: [shutil.which("env")])
-    tool = tmp_path / "verifier"
-    tool.write_text("#!/nonexistent/interpreter\n")
-    tool.chmod(0o755)
-    runner = SubprocessRunner(owner="test")
-
-    with pytest.raises(FileNotFoundError, match="couldn't be started"):
-        asyncio.run(runner.run_capture([str(tool)]))
-
     target = tmp_path / "a.7z"
     target.write_bytes(b"7z")
 
-    async def capture():
-        return [e async for e in runner.capture_verify(
-            [str(tool), str(target)], path=str(target), success_message="ok",
-        )]
+    for tool in (str(tmp_path / "no-such-tool"), str(script)):
+        rc, _out, _err = asyncio.run(runner.run_capture([tool]))
+        assert rc == 127
 
-    async def stream():
-        return [e async for e in runner.run_verify(
-            [str(tool), str(target)], path=str(target), parse_progress=lambda _l: None,
-            success_message="ok", failure_message="bad",
-        )]
+        async def capture(tool=tool):
+            return [e async for e in runner.capture_verify(
+                [tool, str(target)], path=str(target), success_message="ok",
+            )]
 
-    for events in (asyncio.run(capture()), asyncio.run(stream())):
-        assert events[-1]["valid"] is False and events[-1].get("inconclusive") is True
-    with pytest.raises(FileNotFoundError):
-        asyncio.run(runner.hash_stdout([str(tool)]))
+        async def stream(tool=tool):
+            return [e async for e in runner.run_verify(
+                [tool, str(target)], path=str(target), parse_progress=lambda _l: None,
+                success_message="ok", failure_message="bad",
+            )]
+
+        for events in (asyncio.run(capture()), asyncio.run(stream())):
+            assert events[-1]["valid"] is False and events[-1].get("inconclusive") is True
+            assert "couldn't be started" in events[-1]["message"]
     assert not runner.active_pids()
+
+
+def test_ionice_is_best_effort(monkeypatch):
+    """CodeRabbit 4615955439: `ionice -t`, so a class the kernel denies
+    doesn't stop ionice before it runs the tool, with ionice's exit 1 read as
+    the tool's."""
+    if not shutil.which("ionice"):
+        pytest.skip("no ionice on this host")
+    monkeypatch.setattr(runner_module, "_resolve_policy", lambda key, _owner: {
+        "ioprio_class": 1, "ioprio_level": 0,
+    }[key])
+    prefix = runner_module.ioprio_prefix("test")
+    assert prefix[1:] == ["-t", "-c", "1", "-n", "0"]
+    # Whether or not this host may set the realtime class, the tool runs and
+    # its own exit status comes back.
+    monkeypatch.setattr(runner_module, "priority_prefix", lambda _owner=None: prefix)
+    rc, _out, _err = asyncio.run(SubprocessRunner(owner="test").run_capture(
+        [sys.executable, "-c", "raise SystemExit(3)"],
+    ))
+    assert rc == 3
+
+
+def test_the_wrapper_path_is_absolute_and_looked_up_lazily(tmp_path, monkeypatch):
+    """CodeRabbit 4615955398 / 4615955456: found through a relative PATH
+    entry, the cached wrapper is absolute (romz starts 7z in another folder);
+    nothing is looked up at import."""
+    import importlib.util
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake = bin_dir / "nice"
+    fake.write_text("#!/bin/sh\nexec \"$@\"\n")
+    fake.chmod(0o755)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PATH", "bin")
+    runner_module._wrapper_path.cache_clear()
+    try:
+        assert runner_module._wrapper_path("nice") == str(fake)
+    finally:
+        runner_module._wrapper_path.cache_clear()
+    source = importlib.util.find_spec("services.subprocess_runner").origin
+    assert '\n_wrapper_path("' not in open(source, encoding="utf-8").read()
 
 
 def test_initial_progress_floor_keeps_bar_monotonic(tmp_path):

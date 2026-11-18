@@ -896,7 +896,7 @@ def platform_boundary_root(path: str) -> Path | None:
     return max(holders, key=lambda root: len(root.parts), default=None)
 
 
-def lock_boundary_root(path: str) -> Path | None:
+def lock_boundary_root(path: str, *, treat_archives: bool = True) -> Path | None:
     """The outermost Volume root over ``path``: where a lock walk stops.
 
     A folder lock (another process packing a folder) can sit anywhere above
@@ -912,7 +912,7 @@ def lock_boundary_root(path: str) -> Path | None:
     is safer, so a cached spelling may extend it. None when the path is
     outside every Volume; a caller then walks to the filesystem root.
     """
-    disk_path = strip_archive_path(path)
+    disk_path = strip_archive_path(path) if treat_archives else path
     real_path = _confined_real_path(disk_path)
     if real_path is None:
         return None
@@ -1657,10 +1657,13 @@ def _companion_identity(ref: str) -> dict:
     reference, where it resolves, and its snapshot under that file's own
     Volume root (codex 4615261287: a sheet linked across Volumes names
     tracks beside the link, in another Volume)."""
-    real = _confined_source(ref)
-    root = lock_boundary_root(real)
+    # A literal path, never archive syntax: a sheet may name `Track::01.bin`
+    # (CodeRabbit 4615955480).
+    confined = _confined_real_path(ref)
+    root = lock_boundary_root(str(confined), treat_archives=False) if confined else None
     if root is None:
         raise OSError(errno.EACCES, f"{ref} isn't confirmed inside the configured Volumes")
+    real = str(confined)
     return {"ref": ref, "path": real, **source_identity(real, str(root))}
 
 

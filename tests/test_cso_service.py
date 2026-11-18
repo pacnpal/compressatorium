@@ -299,7 +299,7 @@ async def test_verify_applies_priority_wrappers(tmp_path, monkeypatch):
 
     await service.verify(str(cso_path))
 
-    assert owners == [maxcso_module._OWNER]
+    assert set(owners) == {maxcso_module._OWNER}
     assert captured["argv"] == [
         "nice", "-n", "10", "ionice", "-c", "2", service.maxcso_path, "--crc", str(cso_path),
     ]

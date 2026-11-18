@@ -211,6 +211,16 @@ async def test_a_source_that_stops_answering_keeps_the_identities_before_it(
     got = [spec["source_identity"] for spec in specs]
     assert got[:2] == [{"path": specs[0]["file_path"]}, {"path": specs[1]["file_path"]}]
     assert all("no answer" in identity["error"] for identity in got[2:])
+    # Never reached, so no verdict on the Image: a Rule's failed-hold skips
+    # it and the next sweep queues it again (CodeRabbit 4615955365).
+    from types import SimpleNamespace
+
+    from services.rules import sweep
+
+    assert [sweep._never_checked(SimpleNamespace(_source_identity=i)) for i in got] == [
+        False, False, True, True, True,
+    ]
+    assert not sweep._never_checked(SimpleNamespace(_source_identity={"error": "a link"}))
 
 
 CUE = 'FILE "Game.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n'
@@ -267,11 +277,22 @@ async def test_a_sheet_swapped_out_of_the_volume_is_never_read(
 
     sheets_read = []
     real_plan = jm.build_delete_plan
+
     def spying_plan(path, *args, **kwargs):
         sheets_read.append(path)
         return real_plan(path, *args, **kwargs)
 
     monkeypatch.setattr(jm, "build_delete_plan", spying_plan)
+    # The companion read too (CodeRabbit 4615955508).
+    import utils.delete_plan as delete_plan
+
+    real_tracks = delete_plan.sheet_track_paths
+
+    def spying_tracks(path, *args, **kwargs):
+        sheets_read.append(path)
+        return real_tracks(path, *args, **kwargs)
+
+    monkeypatch.setattr(delete_plan, "sheet_track_paths", spying_tracks)
     await convert_routes.job_manager._process_job(job.id)
 
     assert job.status.value == JobStatus.FAILED.value
@@ -336,7 +357,6 @@ async def test_a_sheet_job_with_no_identity_never_reads_its_sheet(
         assert job.status == JobStatus.FAILED
         assert job.error_message.startswith("Not converted:")
     assert sheets_read == []
-
 
 
 def test_a_sheet_linked_across_volumes_keeps_its_companions(tmp_path, monkeypatch):
@@ -416,3 +436,44 @@ def test_track_links_that_swap_targets_are_refused(tmp_volume, tmp_path):
     assert "aren't the ones it was queued with" in queued_source_problem(
         str(cue), identity, "createcd",
     )
+
+
+def test_input_locks_come_from_the_captured_companions(tmp_volume, tmp_path, monkeypatch):
+    """CodeRabbit 4615955374: for an in-place job, the input locks are the
+    Source and the companions captured at queue time; nothing is read inside
+    the unbounded lock wait."""
+    from models import ConversionJob, ConversionMode, JobStatus
+    from services import job_manager as jm
+    from utils.path_utils import queued_source_identity
+
+    cue = tmp_path / "Game.cue"
+    cue.write_text(CUE)
+    track = tmp_path / "Game.bin"
+    track.write_bytes(b"\1" * 2352)
+    job = ConversionJob(
+        id="locks449", file_path=str(cue), filename=cue.name,
+        mode=ConversionMode.CREATECD, status=JobStatus.QUEUED,
+        created_at=datetime.now(timezone.utc), output_path=str(tmp_path / "Game.chd"),
+    )
+    job._source_identity = queued_source_identity(job.file_path, job.mode.value)
+
+    def no_reads(*_args, **_kwargs):
+        raise AssertionError("the Source was read inside the input-lock wait")
+
+    monkeypatch.setattr(jm, "build_delete_plan", no_reads)
+    monkeypatch.setattr(jm, "queued_source_problem", no_reads)
+    assert jm.job_manager._input_paths(job) == [str(cue), str(track)]
+
+
+def test_a_track_named_with_a_double_colon_is_a_literal_file(tmp_volume, tmp_path):
+    """CodeRabbit 4615955480: a companion is a literal path, never archive
+    syntax, so a sheet naming `Track::01.bin` is captured as that file."""
+    from utils.path_utils import queued_source_identity, queued_source_problem
+
+    cue = tmp_path / "Game.cue"
+    cue.write_text('FILE "Track::01.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n')
+    track = tmp_path / "Track::01.bin"
+    track.write_bytes(b"\1" * 2352)
+    identity = queued_source_identity(str(cue), "createcd")
+    assert [each["path"] for each in identity["companions"]] == [str(track)]
+    assert queued_source_problem(str(cue), identity, "createcd") is None

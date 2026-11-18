@@ -356,6 +356,29 @@ async def test_a_broken_binary_is_not_ready_and_says_why(tmp_path, monkeypatch):
     SERVICE.forget_readiness()
 
 
+@pytest.mark.asyncio
+async def test_a_version_line_on_stderr_alone_is_ready(tmp_path, monkeypatch):
+    """CodeRabbit 4615955387: a build that prints its version on stderr, with
+    stdout empty and exit 0, is ready; one that prints no version line at all
+    is not, and the reason says that, not "did not run"."""
+    on_stderr = _write_stub(
+        tmp_path / "rom-converto",
+        "import sys\nsys.stderr.write('rom-converto 0.24.0\\n')\n",
+    )
+    monkeypatch.setattr(SERVICE, "binary_path", str(on_stderr))
+    SERVICE.forget_readiness()
+    assert await TOOL.is_ready() is True
+
+    (tmp_path / "other").mkdir()
+    other = _write_stub(tmp_path / "other" / "rom-converto", "print('something else 1.0')\n")
+    monkeypatch.setattr(SERVICE, "binary_path", str(other))
+    SERVICE.forget_readiness()
+    assert await TOOL.is_ready() is False
+    assert "printed no rom-converto version line" in TOOL.not_ready_reason
+    assert "did not run" not in TOOL.not_ready_reason
+    SERVICE.forget_readiness()
+
+
 # --------------------------------------------------------------------------- #
 # Verify and info
 # --------------------------------------------------------------------------- #

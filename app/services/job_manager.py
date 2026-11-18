@@ -1240,7 +1240,11 @@ class JobManager:
             )
             unanswered: dict[str, object] = {}
         except (RuntimeError, asyncio.TimeoutError, OSError) as exc:
-            unanswered = {"error": f"no answer ({exc})" if str(exc) else "no answer"}
+            # Marked: a Source never reached says nothing about the Image, so
+            # a Rule's failed-hold skips it (``sweep._never_checked``).
+            unanswered = {
+                "error": f"no answer ({exc})" if str(exc) else "no answer", "unanswered": True,
+            }
         done = list(captured)  # a late append from an abandoned worker can't land in it
         for index, spec in enumerate(wanted):
             spec["source_identity"] = done[index] if index < len(done) else unanswered
@@ -2392,17 +2396,17 @@ class JobManager:
         if "::" in job.file_path:
             return [job.file_path.split("::", 1)[0]]
         identity = job._source_identity
-        if (
-            not identity
-            or "error" in identity
-            or identity.get("in_place")
-            and queued_source_problem(job.file_path, identity) is not None
-        ):
-            # Its sheet isn't read for tracks to lock until the Source is the
-            # one queued, inside the Volumes (CodeRabbit 4614956778,
-            # 4615215842): a job with no usable identity, or whose Source
-            # fails its check, is refused once its Source's lock is held.
+        if not identity or "error" in identity:
+            # No usable identity: refused once its Source's lock is held, and
+            # its sheet is never parsed for tracks to lock first (CodeRabbit
+            # 4614956778, 4615215842).
             return [job.file_path]
+        if identity.get("in_place"):
+            # The companions captured when it was queued, so nothing is read
+            # here: this runs inside the unbounded input-lock wait (CodeRabbit
+            # 4615955374). The bounded check after the locks are held finds a
+            # companion that changed since.
+            return [job.file_path, *(each["ref"] for each in identity.get("companions", []))]
         return [job.file_path, *self._track_candidate_paths(job.file_path)]
 
     def _begin_input_attempt(self, job_id: str) -> object:

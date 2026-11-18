@@ -880,10 +880,7 @@ async def test_process_job_revalidates_split_companions_after_locking(
     primary = _build_split_set(volume)
     outside = tmp_path / "outside-secret.wud"
     outside.write_bytes(b"secret")
-    # Swap part 2 for a link out of the volume, as if it happened while queued.
     part2 = volume / (jwud_module.WUD_SPLIT_PART_TEMPLATE % 2)
-    part2.unlink()
-    part2.symlink_to(outside)
 
     out = str(volume / "game.wux")
     existing = volume / "game.wux"
@@ -895,6 +892,12 @@ async def test_process_job_revalidates_split_companions_after_locking(
             attr,
             str(volume),
         )
+    # The whole split set's identity, as it was queued (CodeRabbit 4615955496).
+    queued = queued_source_identity(str(primary), "jwud_compress")
+    assert str(part2) in [each["ref"] for each in queued["companions"]]
+    # Then part 2 is swapped for a link out of the volume, while queued.
+    part2.unlink()
+    part2.symlink_to(outside)
 
     called = False
 
@@ -918,11 +921,13 @@ async def test_process_job_revalidates_split_companions_after_locking(
         allow_overwrite=True,
     )
     job_manager.jobs[job.id] = job
-    job._source_identity = queued_source_identity(job.file_path)
+    job._source_identity = queued
     try:
         await job_manager._process_job(job.id)
         assert job.status == JobStatus.FAILED
-        assert "companion" in (job.error_message or "")
+        assert "a companion file it reads with the Source is no longer inside" in (
+            job.error_message or ""
+        )
         assert called is False
         # Non-destructive: the prior output survives the rejection.
         assert existing.read_bytes() == b"the user's prior output"

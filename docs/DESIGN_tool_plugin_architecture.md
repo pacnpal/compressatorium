@@ -546,24 +546,31 @@ returns.
 The runner applies the priority policy, never the tool: every spawn method
 (`run`, `run_capture`, `hash_stdout`, `run_verify`, and `capture_verify` through
 `run_capture`) prefixes the argv with `priority_prefix(owner)`, which is
-`nice -n <level>` then `ionice -c <class> -n <level>` resolved from the
+`nice -n <level>` then `ionice -t -c <class> -n <level>` resolved from the
 `COMPRESSATORIUM_TOOL_*` settings and any `COMPRESSATORIUM_<OWNER>_*` override.
 A tool passes the bare argv; it never adds `nice`/`ionice` itself, which would
 apply them twice. Either binary missing, its prefix is empty and the child runs
-at normal priority. Both are looked up once per process, at import
-(`_wrapper_path`), never on the event loop at spawn time. A nice level
+at normal priority. Each is looked up once per process, the first time its
+setting asks for it, and cached as an absolute path (`_wrapper_path`; nothing
+is scanned at import, and a tool started in another folder still finds it).
+`ionice -t` is best effort, like the renice: a class the kernel denies
+(realtime without CAP_SYS_ADMIN) doesn't stop ionice before it runs the tool,
+which would otherwise hand back ionice's exit 1 as the tool's. A nice level
 this process can't apply is left off (`_can_renice`, the kernel's own rule:
 lowering niceness needs CAP_SYS_NICE, read once from `CapEff`, or room under
 RLIMIT_NICE; being root is not the test): `nice` would warn and run the tool
 anyway, putting its warning into output a caller parses, where the old
 `preexec_fn` renice dropped the failure silently. rom-converto's `--version`
-probe reads stdout alone for the same reason. A wrapped run that exits
-126/127 is a launch failure, never a verdict: those are the codes `nice` and
-`ionice` give when they can't exec the tool (missing, not executable, or a
-script whose interpreter is missing), and no verifier here uses them.
-`_raise_if_not_launched` raises the `OSError` a direct exec would have, with
-the wrapper's own words, and every verify path reports it as inconclusive, so
-a verifier that never ran can't record a failed verdict over a stored pass.
+probe reads the version line from stdout, or from stderr when stdout is
+empty, skipping a wrapper's diagnostics. A wrapped verifier that exits
+126/127 is no verdict: those are the codes `nice` and `ionice` give when they
+can't exec the tool (missing, not executable, or a script whose interpreter
+is missing), which finding the tool on PATH can't rule out, and no verifier
+here uses them. `capture_verify` and `run_verify` report it as inconclusive
+(`_not_launched_event`, with the wrapper's own words), so a verifier that
+never ran can't record a failed verdict over a stored pass. Every other
+caller sees the exit code itself, as before the wrappers were shared (a
+non-zero exit: dolphin-tool's hash read falls back to no hashes).
 
 Nothing passes `preexec_fn`. This process is multithreaded (threadpools, the
 SSE routes), and forking a Python callable from it can deadlock the child on a
@@ -7693,9 +7700,13 @@ to still resolve to `path`, checks `path` as above, and only then reads the
 sheet for its companions, which must be the captured references in the same
 order, each still resolving where it did (two track links that swapped
 targets read the disc in another order) and unchanged.
-`_input_paths` likewise locks only the Source of a job with no usable identity
-or whose check fails, so such a sheet is never parsed (CodeRabbit 4614956778,
-4615215842). The job reads the submitted path, not `path` itself (codex
+`_input_paths` locks only the Source of a job with no usable identity, and the
+Source plus its captured companions for an `in_place` one, so nothing is read
+inside the unbounded input-lock wait and a sheet is never parsed before its
+check (CodeRabbit 4614956778, 4615215842, 4615955374). A Source a stalled
+batch capture never reached is marked `unanswered`; its refusal says nothing
+about the Image, so a Rule's failed-hold neither holds nor releases it and the
+next sweep queues it again (`sweep._never_checked`, CodeRabbit 4615955365). The job reads the submitted path, not `path` itself (codex
 4614857083): a sheet submitted through a link names its tracks beside the
 link, which is where the job locked them. Its output is staged only where its
 Library asks. **What this does not close:** the check runs once, under the
