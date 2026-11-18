@@ -419,8 +419,10 @@
   ranked DATs name it differently now shows in Findings as "Inbox: DAT name
   conflict" (kind `inbox_dat_conflict`), not "Inbox: Platform conflict"; the
   hold still lifts when the ranking orders the DATs, and Findings already
-  stored as `inbox_conflict` keep their label. An archive that only waits for
-  room to unpack (`CHD_ARCHIVE_INBOX_MAX_UNPACKED_SIZE`) now ends its unpack
+  stored as `inbox_conflict` keep their label. An archive that only waits to
+  be unpacked (no room under `CHD_ARCHIVE_INBOX_MAX_UNPACKED_SIZE`, or its
+  file changed or the storage was busy so it is taken again once it
+  settles) now ends its unpack
   job completed with a warning, not failed, and `run-rules` prints it as
   `waiting` under the archive's own file name instead of
   `failed ... /__external_jobs__/<id>`. It still leaves no Finding and still

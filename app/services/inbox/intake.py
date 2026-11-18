@@ -2114,8 +2114,8 @@ async def _unpack(
         # Not a failure of the file: it is left to settle and be taken again.
         state.seen.pop(path, None)
         why = why or "the storage is still being read by an earlier check"
-        await job_manager.finish_external_job(
-            job.id, success=False, error_message=f"{why}; it is taken again once it settles",
+        await job_manager.finish_external_job_waiting(
+            job.id, f"{why}; it is taken again once it settles",
         )
         return
     if outcome == "incomplete":

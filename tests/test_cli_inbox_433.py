@@ -502,3 +502,39 @@ def test_an_archive_waiting_for_room_is_reported_as_waiting_not_failed(
         assert job.warning.startswith("No room to unpack it yet")
     assert all(j.status.value != "failed" for j in jobs)
     assert [f for f in findings.list_findings() if f["kind"] in findings.INBOX_KINDS] == []
+
+
+@pytest.mark.parametrize("outcome", ["changed", "deferred"])
+def test_an_archive_left_to_settle_is_reported_as_waiting_not_failed(
+    folder, dolphin, capsys, monkeypatch, outcome,
+):
+    """#458: an unpack that ended "changed" or "deferred" is a wait ("taken
+    again once it settles"): a waiting line under the archive's own name, the
+    job completed, no Finding, exit 0."""
+    import zipfile
+
+    from services import findings
+    from services.inbox import intake
+    from services.job_manager import job_manager
+
+    gba = folder["vol"] / "Downloads" / "gba"
+    gba.mkdir()
+    with zipfile.ZipFile(gba / "Settle Me.zip", "w") as zf:
+        zf.writestr("Settle Me.gba", b"rom" * 1000)
+    _cli(capsys, "run-rules", "--json")  # seen
+    _new_process()
+
+    async def unpack_in(*_args, **_kwargs):
+        return outcome, "it is still being written", None
+
+    monkeypatch.setattr(intake, "_unpack_in", unpack_in)
+    code, lines, err = _cli(capsys, "run-rules", "--json")
+
+    assert code == 0, (lines, err)
+    [line] = [line for line in lines if line.get("mode") == "inbox_unpack"]
+    assert line["status"] == "waiting"
+    assert line["path"] == "Settle Me.zip"
+    assert "it is taken again once it settles" in line["reason"]
+    [job] = [j for j in job_manager.jobs.values() if j.mode == "inbox_unpack"]
+    assert job.status.value == "completed" and job.result == {"waiting": True}
+    assert [f for f in findings.list_findings() if f["kind"] in findings.INBOX_KINDS] == []
