@@ -102,6 +102,10 @@ class ToolRegistry:
         dispatch already does.
         """
         # Readiness is per operation (#306): "verify" asks `verify_is_ready`.
+        # "info" asks `is_ready` only when the tool's info read runs its
+        # program (#488); a read done in Python is ready without a probe.
+        if purpose == "info" and not tool.info_needs_tool:
+            return True
         probe = tool.verify_is_ready() if purpose == "verify" else tool.is_ready()
         try:
             return bool(await asyncio.wait_for(probe, READY_PROBE_SECONDS))

@@ -36,6 +36,8 @@ class Nkit2IsoTool(BaseTool):
     platform_slugs = frozenset({"ngc", "gamecube", "wii"})
     policy_owner = "nkit2iso"
     display_name = "NKit"
+    # File info reads the NKit header in Python; nkit2iso has no info command.
+    info_needs_tool = False
     modes = (
         ModeSpec(
             mode="nkit_restore",

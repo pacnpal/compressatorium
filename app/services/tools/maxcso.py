@@ -41,6 +41,8 @@ class MaxcsoTool(BaseTool):
     default_compression = "max"
     policy_owner = "maxcso"
     display_name = "CSO"
+    # File info is the size and the extension's format; maxcso isn't run.
+    info_needs_tool = False
     modes = (
         ModeSpec(
             mode="cso_compress",
