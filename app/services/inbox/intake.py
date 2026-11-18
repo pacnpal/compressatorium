@@ -268,6 +268,9 @@ class _State:
     # room to unpack, whichever check found that, or one left to settle.
     # ``{"path", "mode", "reason"}`` (:func:`_wait`), for ``run-rules``.
     waits: list[dict[str, Any]] = field(default_factory=list)
+    # The Rules whose dropped or refused settings this pass logged already
+    # (#477, `sweep.report_rule_changes`): once per pass, not per Image.
+    rules_reported: set[tuple] = field(default_factory=set)
     last_poll: float | None = None
     waiting: int = 0
     error: str | None = None
@@ -861,6 +864,7 @@ async def poll(
         return result
     state.polling = True
     state.should_stop = should_stop
+    state.rules_reported = set()
     # Whether this poll's error is news (#433): the summary notifies once.
     previous_error = state.error
     try:
@@ -1323,6 +1327,13 @@ async def _take(
     if outcome is not None:
         return outcome
     if plan.rule is not None:
+        from services.rules import sweep
+
+        # What the sanitizer dropped or refused on the Rule, said once per
+        # pass where it runs (#477), as the sweep says it.
+        sweep.report_rule_changes(
+            library, platform, plan.rule, prefix="inbox", seen=state.rules_reported,
+        )
         return await _convert(inbox, state, path, flight, plan)
     try:
         taken = await _step(_taken, plan.folder, flight.placed_names)

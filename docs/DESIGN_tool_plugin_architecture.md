@@ -556,9 +556,11 @@ level a non-root process can't apply is left off: `nice` would warn and run
 the tool anyway, putting its warning into output a caller parses, where the
 old `preexec_fn` renice dropped the failure silently. A wrapper exits 126/127
 when it can't exec the tool; when the tool isn't there, the runner raises
-`FileNotFoundError` as a direct exec would (`_raise_if_not_launched`), and the
-verify paths report that as inconclusive, so a missing verifier never records
-a failed verdict over a stored pass.
+`FileNotFoundError` as a direct exec would (`_raise_if_not_launched`, whose
+lookup runs off the event loop through `_bounded_probe`; a lookup that
+doesn't answer raises `OSError` ETIMEDOUT), and the verify paths report either
+as inconclusive, so a missing verifier never records a failed verdict over a
+stored pass.
 
 Nothing passes `preexec_fn`. This process is multithreaded (threadpools, the
 SSE routes), and forking a Python callable from it can deadlock the child on a
@@ -2833,6 +2835,50 @@ API and the Rules view; the engine never reads those three), and:
   between is not recorded (`stale_listing` in its summary), so its Rule stays
   due and the next tick lists the new Images. The same rule for conversion and
   check Rules.
+
+**What the sanitizer changed is logged by the sweep, not on read (#477).**
+`normalize_rule` runs on every read of the Rules (each GET, the editor,
+startup, each scheduler tick), so it logs nothing. It records what it dropped
+or refused on the Rule (`dropped_codecs`, `dropped_timezone`,
+`unsafe_delete_on_verify`, `invalid_output_dir`, `invalid_pattern`);
+`rules.rule_changes(rule)` puts those in words, and `rules.refusal(raw,
+kind=)` says why it refuses a Rule outright (a mode no tool provides, or one
+`mode_is_automatable` refuses; a Rule with no mode is an empty row and gets
+None). Two places in `rules/sweep.py` log them:
+
+- `report_rule_changes(library, platform, rule, kind=, prefix=, seen=)` logs
+  one line for a Rule about to run. The sweep calls it once per Rule it runs
+  (after the paused, due and active-check gates, for both kinds), so any
+  Library logs it once per sweep. An Inbox calls it as it converts under a
+  Rule (`intake._take`), with `prefix="inbox"` and `seen` the pass's
+  `_State.rules_reported`, so once per pass.
+- `_report_unrunnable(library, stored, rules)` runs in each sweep right after
+  the Rules are read (`_read_rules` gives the stored blob and the normalized
+  set, so the store is read once), before the `no_rules` and
+  `not_configured` returns. A Rule the sanitizer refused, or paused for a
+  value it refused, is never reached by the run loop, so it is logged here:
+  once per `(library id, kind, platform id)` and problem
+  (`_reported_unrunnable`), again only when the problem changes, forgotten
+  once fixed and in `forget_library`.
+- `_report_saved(library, rules, kind)` runs at the end of `set_rules` and
+  `set_check_rules`. A save stores each Rule as the sanitizer left it
+  (`timezone: "UTC"`, delete-on-verify off, no output folder, a lenient save's
+  codecs dropped), so re-reading it finds nothing to drop and the recorded
+  field is gone before a sweep could see it. It re-normalizes each Rule as
+  stored and logs, once, only the `rule_changes` that re-read loses. What
+  survives the round trip is left to the sweep, so nothing is said twice:
+  `invalid_pattern` is carried from the stored Rule, so a refused filter is
+  reported by `_report_unrunnable`. The editor's own save (`strict=True`)
+  still refuses a codec the mode can't use (#474) before anything is stored.
+  It compares changes, not fields, so a field added to `rule_changes` later is
+  covered without touching it.
+
+Each line names the Library (`library.name`) and the Platform, and starts with
+the Library's prefix, `rules.library.log_prefix(library)`: the Library's own
+optional `log_prefix` (`RommLibrary` keeps `romm_auto`), else
+`f"{kind}_library"` (`folder_library`), else `library` for a Library with
+neither. It is optional on the contract, so a Library written before it still
+logs. The logger is still `romm_auto`, so log filters keyed on it still match.
 
 Capabilities (`RECOGNIZED_FILTER`, `CONVERTED_HISTORY`, `FAILED_HOLD`) say
 what a Library supports. Nothing in `rules/` asks what kind of Library it has.
@@ -7620,8 +7666,10 @@ resolved, read beneath its Volume root with no link followed the way
 `AnchoredFolders` opens a folder, plus `path` (the resolved path checked; an
 archive's own file for `archive::member`), `in_place`, and `companions`: the
 snapshot of every file the converter opens itself alongside it (a sheet's
-tracks, a split set's parts, `_track_candidate_paths`), keyed by resolved path
-(CodeRabbit 4614956755). The path is resolved through the shared gate
+tracks, a split set's parts, `_track_candidate_paths`), keyed by resolved path,
+each with the Volume root it was read beneath, since a sheet linked across
+Volumes names tracks in another one (CodeRabbit 4614956755, codex
+4615261287). The path is resolved through the shared gate
 (`_confined_real_path`), so a spelling outside every Volume is refused before
 the filesystem is asked. One that can't be captured carries
 `{"error": reason}`. Captures go into the attempt's own copies of the specs,
@@ -7637,9 +7685,9 @@ Image into the work area is not a cost a Library job should pay):
 `path_utils.queued_source_problem` requires the path the job was submitted as
 to still resolve to `path`, checks `path` as above, and only then reads the
 sheet for its companions, which must be the ones captured, each unchanged.
-`_input_paths` likewise locks only the Source of a job whose check fails, so a
-sheet that now leads out of the Volumes is never parsed (CodeRabbit
-4614956778). The job reads the submitted path, not `path` itself (codex
+`_input_paths` likewise locks only the Source of a job with no usable identity
+or whose check fails, so such a sheet is never parsed (CodeRabbit 4614956778,
+4615215842). The job reads the submitted path, not `path` itself (codex
 4614857083): a sheet submitted through a link names its tracks beside the
 link, which is where the job locked them. Its output is staged only where its
 Library asks. **What this does not close:** the check runs once, under the
@@ -8637,8 +8685,8 @@ compression (`rules.refuse_unusable_compression`, raising
 `UnusableCompression`), so nothing is saved that would fail once per Image. A
 stored Rule is read leniently: `normalize_rule`, which every sweep and Inbox
 plan reads its Rules through, keeps only the codecs the mode takes and records
-the rest in the Rule's `dropped_codecs` (the editor names them, and the drop is
-logged), so the job runs on what is left, or on the tool's own codecs when
+the rest in the Rule's `dropped_codecs` (the editor names them, and the sweep that
+runs the Rule logs it once, #477), so the job runs on what is left, or on the tool's own codecs when
 nothing is. The drop is one shared helper, `base.without_unusable_codecs(spec,
 compression)`, which `checked_compression` calls too, so an Auto target keeps
 the saved codecs its mode takes before falling back. The frontend's matching

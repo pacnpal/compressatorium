@@ -632,11 +632,23 @@ def _wrapper_path(name: str) -> str | None:
     return shutil.which(name)
 
 
-def _raise_if_not_launched(tool: str, returncode: int | None, wrapped: bool) -> None:
+async def _raise_if_not_launched(tool: str, returncode: int | None, wrapped: bool) -> None:
     """A wrapper exits 126/127 when it can't exec *tool*; raise what a direct
     exec would have (``FileNotFoundError``), so a missing tool is never read as
-    the tool's own verdict (a verify recording a failure)."""
-    if wrapped and returncode in (126, 127) and shutil.which(tool) is None:
+    the tool's own verdict (a verify recording a failure). The lookup stats
+    PATH directories, so it runs off the event loop and bounded
+    (``_bounded_probe``); one that doesn't answer raises ``OSError``
+    (ETIMEDOUT): it can't be told whether the tool ran, which a verify
+    reports as inconclusive."""
+    if not wrapped or returncode not in (126, 127):
+        return
+    try:
+        found = await _bounded_probe(shutil.which, tool)
+    except asyncio.TimeoutError:
+        raise OSError(
+            errno.ETIMEDOUT, "looking the tool up on PATH did not answer", tool,
+        ) from None
+    if found is None:
         raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), tool)
 
 
@@ -2068,7 +2080,7 @@ class SubprocessRunner:
             )
             if comm in done:
                 stdout, stderr = comm.result()
-                _raise_if_not_launched(tool, process.returncode, bool(prefix))
+                await _raise_if_not_launched(tool, process.returncode, bool(prefix))
                 return process.returncode, stdout or b"", stderr or b""
             # Cancelled or timed out before the process exited; the finally
             # block below terminates it and drains ``comm``.
@@ -2193,7 +2205,7 @@ class SubprocessRunner:
             self.untrack_pid(process.pid)
         if process.returncode is not None and process.returncode < 0:
             raise RuntimeError(killed_by_signal_message(label, process.returncode))
-        _raise_if_not_launched(tool, process.returncode, bool(prefix))
+        await _raise_if_not_launched(tool, process.returncode, bool(prefix))
         if process.returncode != 0:
             tail = clean_tool_output(stderr_tail.decode("utf-8", errors="replace"))
             raise RuntimeError(
@@ -2300,9 +2312,10 @@ class SubprocessRunner:
                 env=env,
                 on_abandoned=abandoned_pid.append,
             )
-        except FileNotFoundError as exc:
-            # The verifier isn't there (run_capture tells a wrapper's 127 from
-            # the tool's own exit): no verdict, so no stored check is overwritten.
+        except OSError as exc:
+            # The verifier couldn't be started (run_capture tells a wrapper's
+            # 127 from the tool's own exit): no verdict, so no stored check is
+            # overwritten.
             yield verify_exception_event(exc, prefix="Verification could not run")
             return
         if abandoned_pid:
@@ -2536,8 +2549,8 @@ class SubprocessRunner:
                 yield {"type": "complete", "valid": True, "message": success_message}
             else:
                 try:
-                    _raise_if_not_launched(tool, process.returncode, bool(prefix))
-                except FileNotFoundError as exc:  # no verdict: it never ran
+                    await _raise_if_not_launched(tool, process.returncode, bool(prefix))
+                except OSError as exc:  # no verdict: it never ran, or can't be told
                     yield verify_exception_event(exc, prefix="Verification could not run")
                     return
                 output = "\n".join(output_lines[-20:]).strip()
@@ -3078,7 +3091,7 @@ class SubprocessRunner:
                     "\n".join(output_lines[-6:]),
                 )
                 raise RuntimeError(killed_by_signal_message(fail_label, process.returncode))
-            _raise_if_not_launched(tool, process.returncode, bool(prefix))
+            await _raise_if_not_launched(tool, process.returncode, bool(prefix))
             if process.returncode != 0:
                 tail = clean_tool_output("\n".join(output_lines[-6:]))
                 if tail:

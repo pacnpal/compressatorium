@@ -569,6 +569,9 @@ async def test_the_server_refuses_to_touch_a_cue_track_another_process_reads(
         mode=ConversionMode.CREATECD, status=JobStatus.QUEUED,
         created_at=datetime.now(timezone.utc), output_path=str(disc / "Game.chd"),
     )
+    job._source_identity = queued_source_identity(
+        job.file_path, job_manager._track_candidate_paths(job.file_path),
+    )
     inputs = job_manager._input_paths(job)
     assert os.path.realpath(track) in {os.path.realpath(p) for p in inputs}
     for path in inputs:  # what the other process's job holds

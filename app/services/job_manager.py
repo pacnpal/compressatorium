@@ -2394,14 +2394,16 @@ class JobManager:
         if "::" in job.file_path:
             return [job.file_path.split("::", 1)[0]]
         identity = job._source_identity
-        if identity and (
-            "error" in identity
+        if (
+            not identity
+            or "error" in identity
             or identity.get("in_place")
             and queued_source_problem(job.file_path, identity) is not None
         ):
             # Its sheet isn't read for tracks to lock until the Source is the
-            # one queued, inside the Volumes (CodeRabbit 4614956778): this job
-            # is refused once its Source's lock is held.
+            # one queued, inside the Volumes (CodeRabbit 4614956778,
+            # 4615215842): a job with no usable identity, or whose Source
+            # fails its check, is refused once its Source's lock is held.
             return [job.file_path]
         return [job.file_path, *self._track_candidate_paths(job.file_path)]
 

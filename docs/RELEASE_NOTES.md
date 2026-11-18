@@ -426,9 +426,9 @@
   them again beneath their Volume with no link followed and is refused
   ("Not converted: ...") if one left the Volumes, the path now leads to
   another file, or one was replaced. A folder conversion (`folder_to_iso`)
-  keeps the folder checks it already had. A folder in a Library swapped for a link while
-  the job waited can no longer make a tool read an image from outside the
-  Volumes.
+  keeps the folder checks it already had. A folder in a Library swapped for a
+  link while the job waited can no longer make a tool read an image from
+  outside the Volumes.
 - **Child processes never start through a Python `preexec_fn`** (#444). The
   shared runner applies the nice level and I/O priority to every tool it
   starts as `nice`/`ionice` command wrappers. Conversions by chdman,
@@ -436,6 +436,26 @@
   `extractcd`, dolphin-tool's hash verify and the 7z archive test used to
   renice the child from Python between fork and exec, which can deadlock in
   this multithreaded process before any timeout applies.
+- **A Rule's dropped settings are logged once per sweep, naming the Rule**
+  (#477). A Rule stored with something the app can't honour (a codec its mode
+  can't use, delete-on-verify its mode can't check strongly enough, a
+  timezone this machine doesn't know, a refused output folder or filter) used
+  to log a warning on every read of the Rules: every page load, every Rule
+  editor open and every scheduler tick, so one such Rule logged a line a
+  minute, under `romm_auto:` even on a folder Library, without saying which
+  Library or Platform it meant. Now the warning comes once from each sweep
+  that runs the Rule (a scheduled run, Run now or Preview), and once per pass
+  from an Inbox that converts under it. It names the Library and the
+  Platform and starts with the Library's own prefix (`folder_library:` for a
+  folder, `romm_auto:` for RomM, `inbox:` from an Inbox). A Rule that is
+  never run (one naming a mode that doesn't exist or can't run unattended,
+  or one paused for a refused output folder or filter) is logged once, the
+  first time a sweep of its Library reads it, and again only if what is wrong
+  with it changes. Saving a Rule the app has to change (a timezone it
+  doesn't know, delete-on-verify it refuses, an output folder outside the
+  Volumes) logs what it changed once, at the save, since the Rule is stored
+  already changed and later sweeps have nothing left to report. What runs,
+  what is paused and what is refused are unchanged.
 - **Rules refuse and drop codecs the CHDMAN mode can't use** (#474). Saving a
   Rule (a Library's, RomM's, and so an Inbox's) that pairs a mode with a codec
   it can't use, Create DVD with cdzl say, is refused with a 400 and the same

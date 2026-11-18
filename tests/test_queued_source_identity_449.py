@@ -298,3 +298,108 @@ async def test_a_refused_submission_captures_again_when_retried(tmp_volume, tmp_
     with pytest.raises(QueueBackpressureError):
         await job_manager.create_jobs_atomic(specs, ConversionMode.CSO_COMPRESS)
     assert "source_identity" not in specs[0]
+
+
+@pytest.mark.asyncio
+async def test_a_sheet_job_with_no_identity_never_reads_its_sheet(
+    tmp_volume, tmp_path, monkeypatch,
+):
+    """CodeRabbit 4615215842 / 4615217022: a CUE job with no usable identity
+    locks only its Source and is refused; its sheet is never parsed."""
+    from models import ConversionJob, ConversionMode, JobStatus
+    from services import job_manager as jm
+
+    cue = tmp_path / "Game.cue"
+    cue.write_text(CUE)
+    (tmp_path / "Game.bin").write_bytes(b"\1" * 2352)
+    sheets_read = []
+    real_plan = jm.build_delete_plan
+
+    def spying_plan(path, *args, **kwargs):
+        sheets_read.append(path)
+        return real_plan(path, *args, **kwargs)
+
+    monkeypatch.setattr(jm, "build_delete_plan", spying_plan)
+    for job_id, identity in (("noid449", None), ("errid449", {"error": "no answer"})):
+        job = ConversionJob(
+            id=job_id, file_path=str(cue), filename=cue.name,
+            mode=ConversionMode.CREATECD, status=JobStatus.QUEUED,
+            created_at=datetime.now(timezone.utc), output_path=str(tmp_path / "Game.chd"),
+        )
+        job._source_identity = identity
+        assert jm.job_manager._input_paths(job) == [str(cue)]
+        jm.job_manager.jobs[job.id] = job
+        try:
+            await jm.job_manager._process_job(job.id)
+        finally:
+            jm.job_manager.jobs.pop(job.id, None)
+        assert job.status == JobStatus.FAILED
+        assert job.error_message.startswith("Not converted:")
+    assert sheets_read == []
+
+
+@pytest.mark.asyncio
+async def test_a_tool_lookup_that_stalls_is_inconclusive(tmp_path, monkeypatch):
+    """CodeRabbit 4615212881: telling a wrapper's 127 from the tool's own exit
+    looks the tool up off the event loop, bounded; a lookup that doesn't
+    answer is no verdict."""
+    import shutil
+
+    from services import subprocess_runner as sr
+
+    monkeypatch.setattr(sr, "priority_prefix", lambda _owner=None: [shutil.which("env")])
+
+    real_probe = sr._bounded_probe
+    looked_up = []
+
+    async def stalled(func, *args, **kwargs):
+        if func is shutil.which:
+            looked_up.append(args)
+            raise asyncio.TimeoutError
+        return await real_probe(func, *args, **kwargs)
+
+    monkeypatch.setattr(sr, "_bounded_probe", stalled)
+    runner = sr.SubprocessRunner(owner="test")
+    missing = str(tmp_path / "no-such-tool")
+    target = tmp_path / "a.7z"
+    target.write_bytes(b"7z")
+
+    with pytest.raises(OSError, match="did not answer"):
+        await runner.run_capture([missing])
+
+    events = [e async for e in runner.capture_verify(
+        [missing, "t", str(target)], path=str(target), success_message="ok",
+    )]
+    assert events[-1]["valid"] is False and events[-1].get("inconclusive") is True
+    assert "did not answer" in events[-1]["message"]
+    assert looked_up == [(missing,), (missing,)]
+
+
+def test_a_sheet_linked_across_volumes_keeps_its_companions(tmp_path, monkeypatch):
+    """codex 4615261287: each companion is captured and checked under its own
+    Volume root. A sheet in one Volume linked from another names tracks beside
+    the link, in the other Volume."""
+    from services.job_manager import job_manager
+    from utils.path_utils import queued_source_identity, queued_source_problem
+
+    from config import settings
+
+    vol_a, vol_b = tmp_path / "volA", tmp_path / "volB"
+    vol_a.mkdir()
+    vol_b.mkdir()
+    monkeypatch.setattr(settings, "chd_volumes", f"{vol_a},{vol_b}")
+    (vol_b / "Game.cue").write_text(CUE)
+    submitted = vol_a / "Game.cue"
+    submitted.symlink_to(vol_b / "Game.cue")
+    track = vol_a / "Game.bin"
+    track.write_bytes(b"\1" * 2352)
+
+    companions = job_manager._track_candidate_paths(str(submitted))
+    assert [os.path.realpath(p) for p in companions] == [str(track)]
+    identity = queued_source_identity(str(submitted), companions)
+    assert identity["companions"][str(track)]["root"] == str(vol_a)
+    assert queued_source_problem(str(submitted), identity, companions) is None
+
+    track.unlink()
+    track.write_bytes(b"\2" * 4704)
+    assert "changed" in queued_source_problem(str(submitted), identity, companions)

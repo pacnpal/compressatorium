@@ -1622,11 +1622,20 @@ def queued_source_identity(path: str, companions: Sequence[str] = ()) -> dict:
         raise OSError(errno.EACCES, f"{path} isn't confirmed inside the configured Volumes")
     return {
         **source_identity(real, str(root)), "path": real, "in_place": True,
+        # Each under its own Volume root (codex 4615261287): a sheet linked
+        # across Volumes names tracks beside the link, in another Volume.
         "companions": {
-            each: source_identity(each, str(root))["snapshot"]
+            each: _companion_identity(each)
             for each in map(_confined_source, companions)
         },
     }
+
+
+def _companion_identity(real: str) -> dict:
+    root = lock_boundary_root(real)
+    if root is None:
+        raise OSError(errno.EACCES, f"{real} isn't confirmed inside the configured Volumes")
+    return source_identity(real, str(root))
 
 
 def _confined_source(path: str) -> str:
@@ -1663,9 +1672,9 @@ def queued_source_problem(
         )
     if {str(each) for each in now} != set(expected):
         return "the companion files it reads with the Source aren't the ones it was queued with"
-    for each, snapshot in expected.items():
+    for each, captured in expected.items():
         try:
-            if source_identity(each, identity["root"])["snapshot"] != snapshot:
+            if source_identity(each, captured["root"])["snapshot"] != captured["snapshot"]:
                 raise OSError(errno.ESTALE, "it was replaced or changed")
         except OSError as exc:
             name = os.path.basename(each)
