@@ -2235,6 +2235,8 @@ class JobManager:
             if isinstance(exc, ReadCancelled):
                 raise ConversionCancelled("Conversion cancelled") from exc
             if isinstance(exc, (OSError, RuntimeError, asyncio.TimeoutError)):
+                if isinstance(exc, TimeoutError):  # no answer: no verdict (codex 4618766182)
+                    job._source_identity = {**identity, "unanswered": True}
                 return f"the Source couldn't be bound for reading ({exc})"
             raise
         job._bound, job._read_path = bound, bound.read_path

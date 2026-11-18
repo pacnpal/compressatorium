@@ -1616,6 +1616,8 @@ def source_identity_problem(
             return "the Source is no longer inside the configured Volumes"
     try:
         fd, name = _folder_beneath_root(path, identity["root"])
+    except TimeoutError:
+        raise  # couldn't tell: no verdict (codex 4618766182)
     except OSError as exc:
         return (
             f"the Source can't be reached under {identity['root']} without "
@@ -1746,6 +1748,8 @@ def queued_source_problem(
         try:
             if source_identity(each["path"], each["root"])["snapshot"] != each["snapshot"]:
                 raise OSError(errno.ESTALE, "it was replaced or changed")
+        except TimeoutError:
+            raise  # an open or stat that timed out: no verdict (codex 4618766182)
         except OSError as exc:
             name = os.path.basename(each["ref"])
             return f"{name}, a companion file it reads with the Source, changed ({exc})"

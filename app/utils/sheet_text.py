@@ -25,6 +25,7 @@ name pass ``resolve_track`` while chdman opens another one:
 """
 from __future__ import annotations
 
+import errno
 import os
 import re
 from collections.abc import Callable, Mapping, Sequence
@@ -150,7 +151,14 @@ def _sheet_spellings(path: str | Path) -> tuple[list[str], str] | None:
     try:
         with open(path, "rb") as fh:
             raw = fh.read(MAX_SHEET_BYTES + 1)
-    except OSError:
+    except OSError as exc:
+        if exc.errno in (errno.ETIMEDOUT, errno.EIO):
+            # Storage that didn't answer: "couldn't tell", never "no tracks",
+            # for a caller that reads the unknown count (the queued identity's
+            # companion list, codex 4618766182).
+            from utils.path_utils import _note_unknown  # local: no cycle
+
+            _note_unknown()
         return None
     return sheet_spellings_of(raw, Path(path).suffix)
 

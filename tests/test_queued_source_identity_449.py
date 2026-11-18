@@ -9,6 +9,7 @@ nothing outside the Volumes is read.
 from __future__ import annotations
 
 import asyncio
+import errno
 import os
 from datetime import datetime, timezone
 
@@ -660,3 +661,76 @@ def test_a_sheet_whose_tracks_cant_be_confined_now_is_no_verdict(tmp_volume, tmp
         queued_source_problem(str(cue), identity, "createcd")
     monkeypatch.setattr(delete_plan, "sheet_track_paths", real_sheet)
     assert queued_source_problem(str(cue), identity, "createcd") is None
+
+
+def _timing_out_on(monkeypatch, name):
+    """``stat_at`` raising TimeoutError (ETIMEDOUT) for *name* alone."""
+    from utils import path_utils
+
+    real_stat = path_utils.stat_at
+
+    def stat_at(entry, folder):
+        if entry == name:
+            raise TimeoutError(errno.ETIMEDOUT, "Connection timed out", entry)
+        return real_stat(entry, folder)
+
+    monkeypatch.setattr(path_utils, "stat_at", stat_at)
+
+
+@pytest.mark.asyncio
+async def test_a_companion_whose_stat_times_out_is_no_verdict(tmp_volume, tmp_path, monkeypatch):
+    """codex 4618766182: a companion's stat that times out (ETIMEDOUT, a
+    TimeoutError) is "couldn't tell", never "the companion changed": at
+    capture and at the job's own check the identity is unanswered."""
+    from types import SimpleNamespace
+
+    from models import ConversionMode
+    from services import job_manager as jm
+    from services.rules import sweep
+
+    job = _in_place_job(tmp_path, "stattimeout449")  # captured while it answers
+    _timing_out_on(monkeypatch, "Game.bin")
+
+    problem = await jm.job_manager._source_identity_problem_bounded(job)
+    assert "couldn't be checked" in problem and "changed" not in problem
+    assert sweep._never_checked(SimpleNamespace(_source_identity=job._source_identity))
+
+    specs = [{"file_path": job.file_path}]
+    await jm.job_manager._capture_source_identities(specs, ConversionMode.CREATECD)
+    assert specs[0]["source_identity"].get("unanswered") is True
+    assert sweep._never_checked(SimpleNamespace(_source_identity=specs[0]["source_identity"]))
+
+
+@pytest.mark.asyncio
+async def test_a_source_or_sheet_read_that_times_out_is_no_verdict(
+    tmp_volume, tmp_path, monkeypatch,
+):
+    """The same for the Source's own folder walk and for the sheet's read
+    (its track list would come back empty, read as "other companions")."""
+    from types import SimpleNamespace
+
+    from services import job_manager as jm
+    from services.rules import sweep
+    from utils import path_utils, sheet_text
+
+    job = _in_place_job(tmp_path, "srctimeout449")
+    real_folder = path_utils._folder_beneath_root
+
+    def folder_times_out(path, root):
+        raise TimeoutError(errno.ETIMEDOUT, "Connection timed out", path)
+
+    monkeypatch.setattr(path_utils, "_folder_beneath_root", folder_times_out)
+    problem = await jm.job_manager._source_identity_problem_bounded(job)
+    assert "couldn't be checked" in problem
+    assert sweep._never_checked(SimpleNamespace(_source_identity=job._source_identity))
+    monkeypatch.setattr(path_utils, "_folder_beneath_root", real_folder)
+
+    job = _in_place_job(tmp_path, "sheettimeout449")
+
+    def sheet_times_out(*_args, **_kwargs):
+        raise TimeoutError(errno.ETIMEDOUT, "Connection timed out")
+
+    monkeypatch.setattr(sheet_text, "open", sheet_times_out, raising=False)
+    problem = await jm.job_manager._source_identity_problem_bounded(job)
+    assert "couldn't be checked" in problem
+    assert sweep._never_checked(SimpleNamespace(_source_identity=job._source_identity))

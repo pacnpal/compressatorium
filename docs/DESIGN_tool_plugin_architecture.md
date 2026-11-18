@@ -7790,7 +7790,10 @@ root-probing lookup in the identity's capture and checks (the containment
 gate, each Volume-root choice, the sheet's track list) goes through one
 helper, `path_utils._answered`, which raises `TimeoutError` when the probe's
 unknown count rose during the call, so "couldn't tell" is never "outside the
-Volumes" or "other companions"; capture marks such a Source unanswered too, and a Cancel while it waits ends the job CANCELLED, never refused.
+Volumes" or "other companions". A `TimeoutError` (ETIMEDOUT) from any open,
+stat or folder walk in those paths is re-raised past their `except OSError`
+refusals, and a sheet read that times out or fails with EIO is counted as
+unknown, so it ends unanswered too; capture marks such a Source unanswered too, and a Cancel while it waits ends the job CANCELLED, never refused.
 The capture runs before the destination keys are resolved, so its wait never
 sits between those keys and their comparison under the lock. The active-job
 inventory other sweeps read (`_candidate_paths`) names the same files as the
