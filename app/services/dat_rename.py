@@ -263,7 +263,10 @@ def _sheet_tracks(path: str, tracks: Owners) -> list[str] | str:
         identity = _identity(track)
         unknown = tracks.unknown.get(identity)
         if unknown is not None:
-            return f"its track {name} may be listed by a sheet whose tracks can't be told ({unknown})"
+            return (
+                f"its track {name} may be listed by a sheet whose tracks "
+                f"can't be told ({unknown})"
+            )
         if tracks.owners.get(identity) != own:
             return f"its track {name} is listed by another sheet too"
     return named
