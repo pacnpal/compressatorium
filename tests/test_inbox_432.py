@@ -1275,41 +1275,58 @@ async def test_a_cue_and_its_bin_in_an_archive_are_one_image(vol, db, queue):
 
 
 @pytest.mark.asyncio
-async def test_a_recognize_waiting_for_the_match_lane_ends_at_cancel(vol, db):
+async def test_a_recognize_waiting_for_the_match_lane_ends_at_cancel(vol, db, monkeypatch):
     """Codex 4608417866: a Recognize waiting for the match lane stops at
-    Cancel, ends cancelled and gives its conversion slot back."""
+    Cancel, ends cancelled and gives its conversion slot back.
+
+    A limiter of the test's own (the app's is shared by every test, and its
+    semaphores bind to the loop of whichever test first waits on them), its
+    one match slot held, and the test's Recognize always cancelled and
+    drained, so nothing it started outlives it."""
     import asyncio
 
     from models import ConversionMode, JobStatus
+    from routes import dat as dat_routes
     from services import inbox
     from services.inbox import intake
-    from services.workload_limiter import workload_limiter
+    from services.workload_limiter import WorkloadLimiter
 
+    limiter = WorkloadLimiter(verify_limit=1, metadata_scan_limit=1, match_limit=1)
+    held = await limiter.acquire("match")
+    waiting = asyncio.Event()
+    real_acquire = limiter.acquire
+
+    async def acquire(lane, **kwargs):
+        if lane == "match":
+            waiting.set()
+        return await real_acquire(lane, **kwargs)
+
+    monkeypatch.setattr(limiter, "acquire", acquire)
+    monkeypatch.setattr(dat_routes, "workload_limiter", limiter)
     await _dat("Sony - PlayStation 2 (Redump)", {"Other": _sha1(b"other")})
-    held = []
-    while (token := await workload_limiter.try_acquire("match")) is not None:
-        held.append(token)
     library = _library(vol)
     box = _inbox(vol, library, settle=0)
     _drop(vol / "Downloads" / "ps2" / "Game.iso", _bytes("lane"))
     before = set(intake.job_manager.jobs)
+
+    def ours() -> list:
+        return [
+            j for job_id, j in intake.job_manager.jobs.items()
+            if job_id not in before and j.mode == ConversionMode.INBOX_RECOGNIZE
+        ]
+
     try:
         await intake.poll(inbox.get(box.id), now=0)
         await intake.poll(inbox.get(box.id), now=1)
-        for _ in range(100):
-            jobs = [
-                j for job_id, j in intake.job_manager.jobs.items()
-                if job_id not in before and j.mode == ConversionMode.INBOX_RECOGNIZE
-            ]
-            if jobs and jobs[0].message == "Recognizing it":
-                break
-            await asyncio.sleep(0.01)
-        [job] = jobs
+        await asyncio.wait_for(waiting.wait(), 5)
+        [job] = ours()
         await intake.job_manager.cancel_job(job.id)
         await asyncio.wait_for(intake.drain(), 5)
     finally:
-        for token in held:
-            token.release()
+        for leftover in ours():
+            await intake.job_manager.cancel_job(leftover.id)
+        held.release()
+        await asyncio.wait_for(intake.drain(), 5)
 
     assert intake.job_manager.get_job(job.id).status == JobStatus.CANCELLED
     assert intake.job_manager.slots_in_use() == 0
