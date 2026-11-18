@@ -382,27 +382,47 @@ class DATStore:
     # Delete
     # ------------------------------------------------------------------
 
-    def _delete_dat_sync(self, dat_id: str) -> bool:
+    @staticmethod
+    def _delete_matches_citing(session, dat_ids: list[str]) -> list[str]:
+        """Delete the cached matches that cite any of *dat_ids*; their paths.
+
+        Listed and deleted in one transaction, like
+        :meth:`_invalidate_dat_derived_matches`: the files lose a verdict here,
+        and another DAT may still know them, so the caller owes them a rematch
+        (CodeRabbit on PR #493). A verdict citing an old DAT can be written
+        after a sync's persist and before its old DATs are deleted.
+        """
+        cites = _db.DATMatch.dat_id.in_(dat_ids)
+        dropped = list(session.scalars(select(_db.DATMatch.path).where(cites)).all())
+        session.execute(delete(_db.DATMatch).where(cites))
+        return dropped
+
+    def _delete_dat_sync(self, dat_id: str) -> tuple[bool, list[str]]:
         # A local hit decided against this DAT and written after the delete
         # would name a DAT that is gone, so a delete moves the generation too.
         with self._changing_local_index(), self._session() as session:
             row = session.get(_db.DAT, dat_id)
             if row is None:
-                return False
+                return False, []
             # Matches don't cascade (FK is SET NULL), drop them
             # explicitly so the behaviour matches the legacy store.
-            session.execute(delete(_db.DATMatch).where(_db.DATMatch.dat_id == dat_id))
+            dropped = self._delete_matches_citing(session, [dat_id])
             # Hashes cascade via FK ON DELETE CASCADE.
             session.delete(row)
             session.commit()
-        return True
+        return True, dropped
 
-    async def delete_dat(self, dat_id: str) -> bool:
-        return await run_in_threadpool(self._delete_dat_sync, dat_id)
+    async def delete_dat(self, dat_id: str, *, invalidated: set[str] | None = None) -> bool:
+        """Delete one DAT. *invalidated* works as in :meth:`import_dat`: it
+        receives the paths whose cached matches cited the DAT."""
+        deleted, dropped = await run_in_threadpool(self._delete_dat_sync, dat_id)
+        if invalidated is not None:
+            invalidated.update(dropped)
+        return deleted
 
-    def _delete_dats_bulk_sync(self, dat_ids: list[str]) -> int:
+    def _delete_dats_bulk_sync(self, dat_ids: list[str]) -> tuple[int, list[str]]:
         if not dat_ids:
-            return 0
+            return 0, []
         # Chunk to stay under SQLite's bind-parameter limit (default 999).
         chunk_size = 900
         with self._changing_local_index(), self._session() as session:
@@ -413,16 +433,26 @@ class DATStore:
                     select(_db.DAT.id).where(_db.DAT.id.in_(chunk))
                 ).all())
             if not existing:
-                return 0
+                return 0, []
+            dropped: list[str] = []
             for i in range(0, len(existing), chunk_size):
                 chunk = existing[i:i + chunk_size]
-                session.execute(delete(_db.DATMatch).where(_db.DATMatch.dat_id.in_(chunk)))
+                dropped.extend(self._delete_matches_citing(session, chunk))
                 session.execute(delete(_db.DAT).where(_db.DAT.id.in_(chunk)))
             session.commit()
-            return len(existing)
+            return len(existing), dropped
 
-    async def delete_dats_bulk(self, dat_ids: list[str]) -> int:
-        return await run_in_threadpool(self._delete_dats_bulk_sync, list(dat_ids))
+    async def delete_dats_bulk(
+        self, dat_ids: list[str], *, invalidated: set[str] | None = None,
+    ) -> int:
+        """Delete DATs by id; how many existed. *invalidated* works as in
+        :meth:`delete_dat`."""
+        deleted, dropped = await run_in_threadpool(
+            self._delete_dats_bulk_sync, list(dat_ids),
+        )
+        if invalidated is not None:
+            invalidated.update(dropped)
+        return deleted
 
     # ------------------------------------------------------------------
     # Lookups
@@ -775,40 +805,44 @@ class DATStore:
             for sha1 in hashes if sha1
         )
 
-    def _verdict_is_stale(self, session, match: dict, current: int | None) -> bool:
+    def _verdict_is_stale(self, session, match: dict, generation: int | None) -> bool:
         """True when *match* must not be written: the local index moved under it.
 
+        Called with SQLite's write lock held, so no index change can commit
+        until the caller does, and *generation* is the value read under it.
         Two tests, by who took part in the verdict:
 
-        * **remote** verdicts keep the hash re-check of
-          :meth:`_local_index_now_covers`, which fires only when the local
-          index now knows one of the candidate hashes. A generation would
-          refuse them on any unrelated import, and their rematch would send the
-          file back to the remote source for nothing.
+        * **remote** verdicts get only the hash re-check of
+          :meth:`_local_index_now_covers`, which fires when the local index now
+          knows one of the candidate hashes. The generation plays no part, even
+          while a change is in flight: a remote answer is not something the
+          local index decided, and a refused verdict goes to a *local-only*
+          rematch, which cannot ask the remote source again. A remote hit
+          refused for an unrelated import would come back as unmatched (Codex
+          on PR #493). A change that commits after this write is covered too:
+          its invalidation keeps a remote hit, which the post-change listing
+          rematches, and drops a remote miss, which it reports.
         * **local** verdicts (a DAT hit, or a miss the remote source was not
           asked about) were decided entirely by the local index, so any change
-          to it can change them. They have to have been decided against the
-          *current* generation (:data:`INDEX_GENERATION_KEY`). A hash re-check
-          is not enough here: a local hit would miss a newly imported DAT that
-          also knows the hash and outranks it, and a miss with no candidate
-          hashes has nothing to re-check. This is issue #492's stale miss, a
-          local-only rematch decided against the old index and written after
-          the import that would have matched it.
+          to it can change them, and a local-only rematch reproduces them.
+          They have to carry the current generation
+          (:data:`INDEX_GENERATION_KEY`). A hash re-check is not enough here: a
+          local hit would miss a newly imported DAT that also knows the hash and
+          outranks it, and a miss with no candidate hashes has nothing to
+          re-check. This is issue #492's stale miss, a local-only rematch
+          decided against the old index and written after the import that
+          would have matched it. ``None`` on either side (the match started, or
+          this write landed, while a change was in flight) is never current.
 
-        A match without the generation key makes no claim and is only
-        hash-checked, as before. One with it is never current while an index
-        change is in flight (*current* is ``None``): there is no telling
-        whether that change commits before this write.
+        A local verdict without the generation key makes no claim and is
+        written as before.
         """
-        if self._local_index_now_covers(session, match):
-            return True
+        if self._remote_took_part(match):
+            return self._local_index_now_covers(session, match)
         if INDEX_GENERATION_KEY not in match:
             return False
-        if current is None:
-            return True
-        if self._remote_took_part(match):
-            return False
-        return match[INDEX_GENERATION_KEY] != current
+        stamp = match[INDEX_GENERATION_KEY]
+        return stamp is None or stamp != generation
 
     @staticmethod
     def _persistable_payload(match: dict) -> dict:
@@ -904,19 +938,22 @@ class DATStore:
         """Write *matches*; return the (normalized) paths owed a rematch.
 
         The one writer: :meth:`set_match` is a batch of one. A path is owed a
-        rematch when :meth:`_verdict_is_stale` refuses its verdict, or when an
-        index change started between the generation read up front and this
-        transaction taking SQLite's write lock, in which case everything the
-        call staged is rolled back. Nothing else is written for those paths,
-        so the caller hands them to a rematch rather than leaving a verdict
-        decided against an index that is no longer current.
+        rematch when :meth:`_verdict_is_stale` refuses its verdict. Nothing is
+        written for it (an existing row is left as it was), so the caller hands
+        it to a rematch rather than keeping a verdict decided against an index
+        that is no longer current.
 
-        Why the generation is read twice: the checks run before the write lock
-        is held, and an import can commit in between. ``flush()`` makes SQLite
-        take the write lock, which an import holds from its first DAT row to
-        its commit, and :meth:`_changing_local_index` moves the generation
-        before that. So once the lock is held, an unchanged generation means
-        no change committed since the checks and none can until this commits.
+        SQLite's write lock is taken before anything is read, which is what
+        makes the checks sound. An import holds that lock from its first DAT
+        row to its commit and moves the generation before that
+        (:meth:`_changing_local_index`), so from here until this commits the
+        committed index cannot change: the hash re-check reads the index the
+        row will sit beside, and any change that started earlier shows in the
+        generation. It also keeps every other writer out between the prefetch
+        and the write. A row an import's invalidation (or a prune) deleted
+        after an unlocked prefetch made the flush raise ``StaleDataError``,
+        which rolled back the whole batch with no path reported, so another
+        path in it fell out of every rematch set (CodeRabbit on PR #493).
         """
         if not matches:
             return []
@@ -924,20 +961,21 @@ class DATStore:
             self._normalize(raw_path): match
             for raw_path, match in matches.items()
         }
-        # Before any read of the index below: see the docstring.
-        current = self.index_generation()
         owed: list[str] = []
-        claims_generation = False
 
-        # Resolve valid dat_ids once and prefetch existing match rows for the
-        # whole batch to avoid an N+1 session.get() loop.
         with self._session() as session:
+            # BEGIN IMMEDIATE takes the write lock now instead of at the first
+            # INSERT; pysqlite sees the open transaction and adds no BEGIN of
+            # its own. Waits out an import under the 30 s busy timeout, as the
+            # flush always did.
+            session.connection().exec_driver_sql("BEGIN IMMEDIATE")
+            generation = self.index_generation()
             # Guard against a dat_id naming a DAT that no longer exists (e.g.
             # deleted between match and persist): null it out rather than
-            # violate the FK.
+            # violate the FK. One query, and existing rows prefetched in
+            # chunks (SQLite's 999 bind-parameter limit), to avoid an N+1
+            # session.get() loop.
             valid_dat_ids = set(session.scalars(select(_db.DAT.id)).all())
-            # Prefetch existing rows in chunks to stay under SQLite's
-            # 999 bind-parameter limit.
             chunk_size = 900
             norm_keys = list(normalized_matches.keys())
             existing_matches: dict[str, _db.DATMatch] = {}
@@ -951,7 +989,7 @@ class DATStore:
                 dat_id = match.get("dat_id")
                 if dat_id is not None and dat_id not in valid_dat_ids:
                     dat_id = None
-                if self._verdict_is_stale(session, match, current):
+                if self._verdict_is_stale(session, match, generation):
                     # A DAT change landed while the match was running. Leave
                     # the row alone and report the path, so it is rematched
                     # against the index that is current now.
@@ -976,7 +1014,6 @@ class DATStore:
                     # and is allowed through. Not owed a rematch: the row
                     # already holds the better answer.
                     continue
-                claims_generation |= INDEX_GENERATION_KEY in match
                 if existing is not None:
                     existing.matched = bool(match.get("matched", False))
                     existing.dat_id = dat_id
@@ -996,10 +1033,6 @@ class DATStore:
                         file_hash=match.get("file_hash"),
                         payload=payload,
                     ))
-            session.flush()  # takes SQLite's write lock
-            if claims_generation and self.index_generation() != current:
-                session.rollback()
-                return sorted(normalized_matches)
             session.commit()
         return owed
 

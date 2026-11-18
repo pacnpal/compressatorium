@@ -1821,10 +1821,9 @@ This is a payload field, not a schema change.
   candidate set before a remote answer is accepted. The third is closed in
   `dat_store._local_index_now_covers()`, which re-checks inside the writing
   transaction and skips the write when the local index has since learned any of
-  the candidates. The transaction boundary itself is closed by the local-index
-  generation (below): the writer reads it before its checks and again once
-  SQLite's write lock is held, and rolls back if it moved, so no import can
-  commit between a check and the write it guards.
+  the candidates. The transaction boundary itself is closed by running that
+  re-check once the writer holds SQLite's write lock (below), so no import can
+  commit between the check and the write it guards.
 
   That third guard covers **every verdict the remote source took part in, over
   the whole candidate set** — not just the hit, and not just the hash that
@@ -1852,17 +1851,30 @@ This is a payload field, not a schema change.
   result with the generation it read before its first lookup
   (`dat_store.INDEX_GENERATION_KEY`, stripped by `_persistable_payload()` like
   the candidates), and `_verdict_is_stale()` refuses a stamped local verdict
-  whose generation is not the current one, and any stamped verdict at all while
-  a change is in flight. A dict with no stamp makes no claim and is only
-  hash-checked, as before.
+  unless its generation is the current one; `None` on either side never is. A
+  local dict with no stamp makes no claim and is written as before.
 
-  The re-read is what makes the comparison sound. The checks run before the
-  writer holds the write lock; `flush()` takes it, and an import holds it from
-  its first DAT row to its commit, with the generation moved before that. So
-  once the writer holds the lock, an unchanged generation means no change
-  committed since the checks and none can until the writer commits; a moved one
-  rolls the whole call back. No Python lock is held across a database wait, and
-  none across a network call.
+  Remote verdicts take no part in the generation check, even while a change is
+  in flight. A refused verdict goes to a *local-only* rematch, which cannot ask
+  the remote source again, so refusing a remote hit for an unrelated import
+  turned it into a cached miss (Codex on PR #493). The hash re-check is enough
+  for them: a change that committed first is seen by it, and one that commits
+  afterwards keeps a remote hit (which the post-change listing rematches) and
+  drops a remote miss (which the invalidation reports).
+
+  Where the checks run is what makes them sound. The writer opens its
+  transaction with `BEGIN IMMEDIATE`, so it holds SQLite's write lock before it
+  reads anything, and only then reads the generation, prefetches the rows and
+  makes the checks. An import holds that lock from its first DAT row to its
+  commit, with the generation moved before that, so while the writer holds it
+  the committed index cannot change and any change that started earlier is
+  visible in the generation. Each verdict is decided on its own, so one stale
+  verdict does not cost the rest of the batch. Holding the lock from the start
+  also keeps out a concurrent delete: with an unlocked prefetch, an import's
+  invalidation (or a prune) could remove a prefetched row before the flush,
+  which raised `StaleDataError` and rolled back the batch with nothing
+  reported. No Python lock is held across a database wait, and none across a
+  network call.
 
   **A refused write is reported, not dropped.** `set_match()` and
   `set_matches_batch()` share one writer (`_set_matches_batch_sync()`; the
@@ -1945,6 +1957,13 @@ This is a payload field, not a schema change.
   snapshot. A row written after the commit was decided against the new index,
   because the store refuses one that was not (above). An empty rematch set is
   logged (`nothing to rematch`) rather than returned silently.
+
+  Deleting a DAT drops the matches that cite it, and those are reported the
+  same way (`delete_dat()` / `delete_dats_bulk()` with `invalidated=`, listed
+  in the delete's transaction by `_delete_matches_citing()`). The sync adds
+  the ones its old-DAT delete removes to its rematch set: a verdict decided
+  after the persist can still cite an old DAT. The delete route rematches only
+  the rows it removed, since a delete cannot improve any other row.
 
   **The rematch job is local-only** (`schedule_match_job(..., local_only=True)`,
   threaded down to `_match_single_file`). What a DAT change alters is the local

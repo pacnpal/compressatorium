@@ -458,7 +458,11 @@ class DATSyncService:
             invalidated: set[str] = set()
             await dat_store.persist(invalidated=invalidated)
             if old_ids:
-                deleted = await dat_store.delete_dats_bulk(old_ids)
+                # Same for the rows that cite an old DAT: a verdict decided
+                # after the persist can name one, and this delete drops it.
+                deleted = await dat_store.delete_dats_bulk(
+                    old_ids, invalidated=invalidated,
+                )
                 if deleted:
                     logger.info(
                         "dat_sync: cleared %d existing DATs after full successful sync",

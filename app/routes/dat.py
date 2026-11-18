@@ -270,9 +270,15 @@ async def delete_dat_ranking():
 @router.delete("/dat/{dat_id}")
 async def delete_dat(dat_id: str):
     """Delete an imported DAT."""
-    deleted = await dat_store.delete_dat(dat_id)
+    dropped: set[str] = set()
+    deleted = await dat_store.delete_dat(dat_id, invalidated=dropped)
     if not deleted:
         raise HTTPException(status_code=404, detail="DAT not found")
+    # The files whose match cited this DAT lost their verdict, and another DAT
+    # may still know them (issue #492). Only those: unlike an import, a delete
+    # cannot improve any other row, so the survivors are not rematched.
+    if dropped:
+        await _schedule_rematch(sorted(dropped), source="delete_dat")
     return {"deleted": True, "id": dat_id}
 
 

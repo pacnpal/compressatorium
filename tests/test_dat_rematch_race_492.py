@@ -264,18 +264,17 @@ async def test_a_remote_verdict_survives_an_unrelated_import(store):
 
 
 @pytest.mark.asyncio
-async def test_an_index_change_that_starts_before_the_write_lock_rolls_it_back(
-    store, monkeypatch,
+async def test_an_index_change_that_starts_before_the_write_lock_refuses_local_verdicts(
+    store,
 ):
-    """The generation is re-read once the write holds SQLite's write lock.
+    """The generation is read once SQLite's write lock is held.
 
-    Simulated by a generation that moves between the up-front read and the
-    re-read: everything the call staged is rolled back and reported as owed.
+    Simulated by a generation that has moved by the time the writer holds
+    the lock: both local verdicts are refused and reported, neither written.
     """
     path_a, path_b = "/vol/a.gba", "/vol/b.gba"
     current = store.index_generation()
-    readings = iter([current, current + 1])
-    monkeypatch.setattr(store, "index_generation", lambda: next(readings))
+    _change_started_before_the_lock(store, current)
 
     owed = await store.set_matches_batch({
         path_a: _miss(path_a, current), path_b: _miss(path_b, current),
@@ -283,6 +282,93 @@ async def test_an_index_change_that_starts_before_the_write_lock_rolls_it_back(
 
     assert sorted(owed) == [path_a, path_b]
     assert _row(store, path_a) is None and _row(store, path_b) is None
+
+
+def _change_started_before_the_lock(store, current: int) -> None:
+    """An index change began before the writer took the write lock: the
+    generation the writer reads under the lock has moved."""
+    store.index_generation = lambda: current + 1
+
+
+def _remote_hit(path: str, generation) -> dict:
+    from services.dat_store import INDEX_GENERATION_KEY
+
+    return {
+        "path": path, "matched": True, "game_name": "Remote Game",
+        "match_type": "file_sha1", "file_hash": "f" * 40, "source": "hasheous",
+        "candidate_hashes": [("f" * 40, "file_sha1")],
+        INDEX_GENERATION_KEY: generation,
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_remote_hit_is_written_while_an_unrelated_change_is_in_flight(store):
+    """Codex on PR #493: a remote hit is not a verdict the local index made.
+
+    Refusing it because an unrelated import was in flight handed it to a
+    local-only rematch, which cannot ask the remote source again, so a file the
+    new DAT does not cover lost its identity and was cached as unmatched.
+    """
+    path = "/vol/remote.chd"
+    with store._changing_local_index():
+        owed = await store.set_match(path, _remote_hit(path, None))
+    assert not owed, "a remote hit was handed to a local-only rematch"
+    row = _row(store, path)
+    assert row is not None and row["source"] == "hasheous"
+
+
+@pytest.mark.asyncio
+async def test_a_moved_generation_does_not_take_a_remote_hit_down_with_it(store):
+    """Refusing the stale local verdicts leaves the rest of the batch written.
+
+    The whole call used to be rolled back when the generation moved after the
+    up-front read, and the remote hit in it went to a local-only rematch that
+    could not recover it (CodeRabbit on PR #493).
+    """
+    local, remote = "/vol/a.gba", "/vol/remote.chd"
+    current = store.index_generation()
+    _change_started_before_the_lock(store, current)
+
+    owed = await store.set_matches_batch({
+        local: _miss(local, current), remote: _remote_hit(remote, current),
+    })
+
+    assert list(owed) == [local]
+    assert _row(store, local) is None
+    assert _row(store, remote) is not None, "the remote hit was rolled back too"
+
+
+@pytest.mark.asyncio
+async def test_a_remote_hit_still_yields_to_a_dat_that_committed_first(store):
+    """The hash re-check, now made under the write lock, still applies."""
+    content = b"covered"
+    path = "/vol/covered.gba"
+    sha1 = hashlib.sha1(content).hexdigest()
+    hit = _remote_hit(path, store.index_generation())
+    hit["file_hash"] = sha1
+    hit["candidate_hashes"] = [(sha1, "file_sha1")]
+    await store.import_dat(_one_entry_dat("Covers", "C", "c.gba", content))
+
+    assert list(await store.set_match(path, hit)) == [path]
+    assert _row(store, path) is None
+
+
+@pytest.mark.asyncio
+async def test_a_refused_update_leaves_the_existing_row_as_it_was(store):
+    """A refused verdict must not change a row that was already there."""
+    path = "/vol/x.gba"
+    await store.set_match(path, _remote_hit(path, store.index_generation()))
+    before = _row(store, path)
+    stale = store.index_generation()
+    await store.import_dat(_one_entry_dat("Unrelated", "U", "u.gba", b"u"))
+
+    owed = await store.set_match(path, {
+        **_miss(path, stale), "checked_remote": None,
+        "file_hash": "f" * 40, "candidate_hashes": [("0" * 40, "file_sha1")],
+    })
+
+    assert list(owed) == [path]
+    assert _row(store, path) == before
 
 
 @pytest.mark.asyncio
@@ -347,4 +433,100 @@ async def test_the_batch_route_queues_a_refused_verdict(tmp_path, store, monkeyp
     await dat_routes.match_batch(dat_routes.MatchBatchRequest(paths=[path]))
 
     assert _row(store, path) is None
+    assert scheduled == [([path], {"defer_if_busy": True, "local_only": True})]
+
+
+# ---------------------------------------------------------------------------
+# Review round on PR #493
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_the_writer_holds_the_write_lock_before_it_reads_anything(
+    tmp_path, store, monkeypatch,
+):
+    """CodeRabbit on PR #493: the prefetch and the checks ran unlocked.
+
+    An import's invalidation could delete a prefetched row before the flush,
+    which then raised ``StaleDataError`` and rolled back the whole batch with
+    nothing reported, so another path in it fell out of every rematch set.
+    The writer now takes SQLite's write lock first, so no other write can land
+    between what it reads and what it writes.
+    """
+    import sqlite3
+
+    kept, fresh = "/vol/kept.gba", "/vol/fresh.gba"
+    await store.set_match(kept, _miss(kept, store.index_generation()))
+    attempts: list[str] = []
+    real_guard = store._would_downgrade_remote_hit
+
+    def concurrent_delete(existing, match):
+        # Runs mid-write, after the prefetch: another writer tries to delete
+        # the row this write is about to update.
+        if not attempts:
+            other = sqlite3.connect(str(tmp_path / "dat_store.db"), timeout=0.1)
+            try:
+                other.execute("DELETE FROM dat_matches WHERE path = ?", (kept,))
+                other.commit()
+                attempts.append("deleted")
+            except sqlite3.OperationalError as exc:
+                attempts.append(str(exc))
+            finally:
+                other.close()
+        return real_guard(existing, match)
+
+    monkeypatch.setattr(store, "_would_downgrade_remote_hit", concurrent_delete)
+    generation = store.index_generation()
+
+    owed = await store.set_matches_batch({
+        kept: _miss(kept, generation), fresh: _miss(fresh, generation),
+    })
+
+    assert attempts == ["database is locked"], attempts
+    assert not owed
+    assert _row(store, kept) is not None and _row(store, fresh) is not None
+
+
+async def _seed_hit_citing(store, path: str, content: bytes) -> str:
+    """Import a DAT covering *content* and cache a hit for *path* against it."""
+    await store.import_dat(_one_entry_dat("Old DAT", "Old Game", "o.gba", content))
+    dat_id = store.list_dats()[0]["id"]
+    await store.set_match(path, {
+        "path": path, "matched": True, "game_name": "Old Game", "dat_id": dat_id,
+        "match_type": "file_sha1", "file_hash": hashlib.sha1(content).hexdigest(),
+        "source": "dat", "index_generation": store.index_generation(),
+    })
+    assert _row(store, path) is not None
+    return dat_id
+
+
+@pytest.mark.asyncio
+async def test_a_dat_delete_reports_the_verdicts_it_removes(store):
+    """CodeRabbit on PR #493: the delete paths dropped rows unreported."""
+    single, bulk = "/vol/single.gba", "/vol/bulk.gba"
+    dat_id = await _seed_hit_citing(store, single, b"single")
+    dropped: set[str] = set()
+    assert await store.delete_dat(dat_id, invalidated=dropped)
+    assert dropped == {single}
+
+    dat_id = await _seed_hit_citing(store, bulk, b"bulk")
+    dropped = set()
+    assert await store.delete_dats_bulk([dat_id], invalidated=dropped) == 1
+    assert dropped == {bulk}
+
+
+@pytest.mark.asyncio
+async def test_the_delete_route_rematches_what_it_removed(store, monkeypatch):
+    path = "/vol/single.gba"
+    dat_id = await _seed_hit_citing(store, path, b"single")
+    scheduled: list[tuple[list[str], dict]] = []
+
+    async def record_schedule(paths, **kwargs):
+        scheduled.append((list(paths), kwargs))
+        return "job-recorded"
+
+    monkeypatch.setattr(dat_routes, "schedule_match_job", record_schedule)
+
+    await dat_routes.delete_dat(dat_id)
+
     assert scheduled == [([path], {"defer_if_busy": True, "local_only": True})]

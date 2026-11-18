@@ -427,8 +427,10 @@
   rematching that file. Now a match decided against DATs that have since
   changed is not saved; the file is rematched against the current DATs
   instead, whether the match came from a match job, browsing or a library
-  scan. Each import rematches every file whose match it cleared. An import
-  that has nothing to rematch now says so in the log.
+  scan. A match from Hasheous is still saved while DATs are being imported.
+  Each import or sync rematches every file whose match it cleared, and so
+  does deleting a DAT. An import that has nothing to rematch now says so in
+  the log.
 - **A queued conversion checks its Source again when it runs** (#449). Every
   file conversion, from a Rule sweep, a hand-started job or `run-rules`, now
   carries the identity of the file it was queued for and of the tracks or
