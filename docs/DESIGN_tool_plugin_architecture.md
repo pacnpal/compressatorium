@@ -7820,7 +7820,7 @@ counts toward the slot's room and goes with the slot. ctime is compared only
 there: a bound Source's hard link and the move to `processed/` (a rename) both
 move it, so the identities that must survive those leave it out.
 
-An unpack that finds no room (the cap on what is unpacked at once, or the work area's free space) is not a failure: `JobManager.finish_external_job_waiting` ends the `inbox_unpack` job COMPLETED with `job.warning` set and `job.result = {"waiting": True}`, and `run-rules` (`cli._finish`) reports it as `waiting`. Every external job (`is_external_mode(job.mode)`, whose `file_path` is the internal `/__external_jobs__/<id>`) is named on its `run-rules` line by `job.filename`, whatever its result (#463). Intake writes no Finding and tries the archive again next poll (#458). The Findings kinds an Inbox writes are `findings.INBOX_KINDS`: unsorted, Platform conflict, DAT name conflict (`inbox_dat_conflict`, #457) and failed.
+An unpack that finds no room (the cap on what is unpacked at once, or the work area's free space) is not a failure: `JobManager.finish_external_job_waiting` ends the `inbox_unpack` job COMPLETED with `job.warning` set and `job.result = {"waiting": True}`, which the job list reads; `run-rules` reports the wait from the Inbox pass's `waits`, not from the job (#470, below). Every external job (`is_external_mode(job.mode)`, whose `file_path` is the internal `/__external_jobs__/<id>`) is named on its `run-rules` line by `job.filename`, whatever its result (#463). Intake writes no Finding and tries the archive again next poll (#458). The Findings kinds an Inbox writes are `findings.INBOX_KINDS`: unsorted, Platform conflict, DAT name conflict (`inbox_dat_conflict`, #457) and failed.
 
 **Extraction** is `ArchiveService.extract_members` (shared, in
 `services/archive.py`), the one extraction path that never hands a library a
@@ -7925,9 +7925,18 @@ stay under `CHD_ARCHIVE_INBOX_MAX_UNPACKED_SIZE`
 must also hold it beyond its reserve (`disk.ensure_headroom` with
 `scratch_margin_bytes`, the cushion every scratch-dir check keeps). An archive
 that doesn't fit waits (`_NoRoom`): no Finding, it stays settled and is tried
-again on a later poll, logged once per wait (`_note_no_room`). `_take_archive`
+again on a later poll, logged once per wait (`_wait_for_room`). `_take_archive`
 looks first, from the cached listing, so a waiting archive starts no job; the
-unpack job checks again as it reserves. The cap keeps many archives from
+unpack job checks again as it reserves. Either way the wait goes through one
+place, `_wait` (#470): it appends `{"path", "mode", "reason"}` to the Inbox's
+`waits`, which `poll` and `finish_all` return like `placed` and `left`, and the
+unpack job, when there is one, ends with the same reason
+(`finish_external_job_waiting`). An unpack left to settle (`changed`,
+`deferred`) is recorded the same way. `run-rules` prints one `waiting` line per
+recorded wait from the pass results (`cli._print_wait`, under the archive's
+file name), and skips a waiting job's own line, so each wait is reported once
+whichever check found it. `report.after_pass` and the server's tick ignore
+`waits`: a wait is neither news nor a failure. The cap keeps many archives from
 adding up past it: one with nothing else unpacked always goes in (the gate
 bounds it), so a single large archive is never stuck behind its own copy.
 

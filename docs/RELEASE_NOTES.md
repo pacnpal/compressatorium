@@ -457,6 +457,14 @@
 - **`run-rules` names every Inbox job by its file** (#463). An unpack or copy
   line (and any other job with no real input path) now shows the file it is
   about, as the `waiting` line does, instead of `/__external_jobs__/<id>`.
+- **`run-rules` names every Inbox archive that waits for room** (#470). The
+  Inbox looks for room before it makes an unpack job, and an archive that
+  look held back made no job, so `run-rules` said nothing about it; only an
+  archive the unpack job itself refused got a `waiting` line. Now every
+  archive that waits gets the same `waiting` line under its own file name,
+  with the reason, whichever check held it back, and exactly one line each.
+  Nothing changes in the web UI: the unpack job, when there is one, still
+  ends completed with its warning.
 - **A job's status message has no tool control characters** (#466). The
   status line a job reports while it runs gets the same cleaning as its error:
   backspaces, colour codes and other control characters removed, blank lines
