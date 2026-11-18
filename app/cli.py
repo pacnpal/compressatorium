@@ -921,6 +921,11 @@ def _finish(item: Item, job) -> None:
         item.reason = job.warning
     if job.error_message:
         item.reason = job.error_message
+    if (getattr(job, "result", None) or {}).get("waiting"):
+        # Only waiting (an Inbox archive with no room to unpack, #458): not a
+        # failure, and named by its own file, not the job's internal path.
+        item.status = "waiting"
+        item.path = job.filename
 
 
 async def convert(args, printer: Printer, state: RunState) -> int:

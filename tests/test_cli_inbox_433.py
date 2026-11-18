@@ -459,3 +459,46 @@ def test_library_limits_the_inbox_pass_to_its_inboxes(folder, dolphin, capsys):
         _new_process()
 
     assert game.exists()
+
+
+def test_an_archive_waiting_for_room_is_reported_as_waiting_not_failed(
+    folder, dolphin, capsys, monkeypatch,
+):
+    """#458: with CHD_ARCHIVE_INBOX_MAX_UNPACKED_SIZE reached, an archive
+    that only waits for room is a "waiting" line under its own file name, not
+    a failed job named by the internal /__external_jobs__/<id> path, and the
+    run exits 0 with no Finding."""
+    import zipfile
+
+    from config import settings
+    from services import findings
+    from services.job_manager import job_manager
+
+    monkeypatch.setattr(settings, "archive_inbox_max_unpacked_size", 100 * 1024)
+    gba = folder["vol"] / "Downloads" / "gba"
+    gba.mkdir()
+    for name in ("A Cap.zip", "B Cap.zip"):
+        with zipfile.ZipFile(gba / name, "w", compression=zipfile.ZIP_STORED) as zf:
+            zf.writestr(name.replace(".zip", ".gba"), name.encode() * 4096 + b"\0" * 65536)
+    _cli(capsys, "run-rules", "--json")  # seen
+    _new_process()
+
+    code, lines, err = _cli(capsys, "run-rules", "--json")
+
+    assert code == 0, (lines, err)
+    unpacks = [line for line in lines if line.get("mode") == "inbox_unpack"]
+    waiting = [line for line in unpacks if line["status"] == "waiting"]
+    assert waiting, unpacks
+    for line in waiting:
+        assert line["path"] in ("A Cap.zip", "B Cap.zip")
+        assert "No room to unpack it yet" in line["reason"]
+    assert not [line for line in lines if line["status"] == "failed"]
+    jobs = [j for j in job_manager.jobs.values() if j.mode == "inbox_unpack"]
+    waiting_jobs = [j for j in jobs if (j.result or {}).get("waiting")]
+    assert waiting_jobs
+    for job in waiting_jobs:  # the job list reads the same job
+        assert job.status.value == "completed"
+        assert job.filename in ("A Cap.zip", "B Cap.zip")
+        assert job.warning.startswith("No room to unpack it yet")
+    assert all(j.status.value != "failed" for j in jobs)
+    assert [f for f in findings.list_findings() if f["kind"] in findings.INBOX_KINDS] == []
