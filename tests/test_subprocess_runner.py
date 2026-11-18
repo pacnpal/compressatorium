@@ -554,12 +554,29 @@ def test_the_preexec_fn_scan_sees_an_unpacked_mapping():
 
 def test_a_negative_nice_this_process_cannot_apply_is_left_off(monkeypatch):
     """`nice` would only warn and run the tool anyway, and the warning would
-    land in output a caller parses (rom-converto's readiness probe)."""
+    land in output a caller parses (rom-converto's readiness probe). Whether
+    it applies is the kernel's rule, not being root (codex 4615398086): root
+    without CAP_SYS_NICE can't lower niceness either."""
+    import resource
+
+    if not shutil.which("nice"):
+        pytest.skip("no nice on this host")
     monkeypatch.setattr(runner_module, "nice_value", lambda _owner=None: -5)
-    monkeypatch.setattr(runner_module.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(runner_module.os, "geteuid", lambda: 0)  # root, but...
+    monkeypatch.setattr(runner_module, "_CAP_SYS_NICE", False)  # ...no capability
+    monkeypatch.setattr(resource, "getrlimit", lambda _which: (0, 0))
     assert runner_module.nice_prefix("test") == []
+    # RLIMIT_NICE that reaches the level, or the capability, lets it through.
+    monkeypatch.setattr(runner_module.os, "getpriority", lambda *_a: 0)
+    monkeypatch.setattr(resource, "getrlimit", lambda _which: (25, 25))
+    assert runner_module.nice_prefix("test")[1:] == ["-n", "-5"]
+    monkeypatch.setattr(resource, "getrlimit", lambda _which: (0, 0))
+    monkeypatch.setattr(runner_module, "_CAP_SYS_NICE", True)
+    assert runner_module.nice_prefix("test")[1:] == ["-n", "-5"]
+    # Raising niceness always applies.
+    monkeypatch.setattr(runner_module, "_CAP_SYS_NICE", False)
     monkeypatch.setattr(runner_module, "nice_value", lambda _owner=None: 5)
-    assert runner_module.nice_prefix("test")[1:] == ["-n", "5"] or not shutil.which("nice")
+    assert runner_module.nice_prefix("test")[1:] == ["-n", "5"]
 
 
 def test_a_missing_tool_behind_a_wrapper_raises_like_an_exec(tmp_path, monkeypatch):
@@ -583,6 +600,41 @@ def test_a_missing_tool_behind_a_wrapper_raises_like_an_exec(tmp_path, monkeypat
 
     last = asyncio.run(verify())[-1]
     assert last["valid"] is False and last.get("inconclusive") is True
+    assert not runner.active_pids()
+
+
+def test_a_tool_whose_interpreter_is_missing_is_no_verdict(tmp_path, monkeypatch):
+    """codex 4615398097: the tool is on disk and executable, but its shebang
+    names an interpreter that isn't, so the wrapper exits 127. Finding the
+    tool proves nothing: a wrapped 126/127 is a launch failure on every path,
+    and a verify reports it as inconclusive, never as a failed check."""
+    monkeypatch.setattr(runner_module, "priority_prefix", lambda _owner=None: [shutil.which("env")])
+    tool = tmp_path / "verifier"
+    tool.write_text("#!/nonexistent/interpreter\n")
+    tool.chmod(0o755)
+    runner = SubprocessRunner(owner="test")
+
+    with pytest.raises(FileNotFoundError, match="couldn't be started"):
+        asyncio.run(runner.run_capture([str(tool)]))
+
+    target = tmp_path / "a.7z"
+    target.write_bytes(b"7z")
+
+    async def capture():
+        return [e async for e in runner.capture_verify(
+            [str(tool), str(target)], path=str(target), success_message="ok",
+        )]
+
+    async def stream():
+        return [e async for e in runner.run_verify(
+            [str(tool), str(target)], path=str(target), parse_progress=lambda _l: None,
+            success_message="ok", failure_message="bad",
+        )]
+
+    for events in (asyncio.run(capture()), asyncio.run(stream())):
+        assert events[-1]["valid"] is False and events[-1].get("inconclusive") is True
+    with pytest.raises(FileNotFoundError):
+        asyncio.run(runner.hash_stdout([str(tool)]))
     assert not runner.active_pids()
 
 

@@ -296,13 +296,16 @@ class RomConvertoService:
 
     async def _probe_version(self, resolved: str) -> tuple[bool, str]:
         try:
-            returncode, stdout, _ = await self._runner.run_capture(
-                [resolved, "--version"], timeout=_VERSION_TIMEOUT,
-                stderr_to_stdout=True, env=_env(),
+            # stdout alone: the version line is there, and stderr may carry a
+            # priority wrapper's diagnostics, which must not decide readiness.
+            returncode, stdout, stderr = await self._runner.run_capture(
+                [resolved, "--version"], timeout=_VERSION_TIMEOUT, env=_env(),
             )
         except OSError as exc:
             return False, f"rom-converto at {resolved} did not run: {exc}"
         output = (stdout or b"").decode("utf-8", errors="replace").strip()
+        if returncode != 0 and not output:
+            output = (stderr or b"").decode("utf-8", errors="replace").strip()
         if returncode is None:
             return False, (
                 f"rom-converto at {resolved} did not run: no answer to --version "

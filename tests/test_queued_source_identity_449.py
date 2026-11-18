@@ -338,42 +338,6 @@ async def test_a_sheet_job_with_no_identity_never_reads_its_sheet(
     assert sheets_read == []
 
 
-@pytest.mark.asyncio
-async def test_a_tool_lookup_that_stalls_is_inconclusive(tmp_path, monkeypatch):
-    """CodeRabbit 4615212881: telling a wrapper's 127 from the tool's own exit
-    looks the tool up off the event loop, bounded; a lookup that doesn't
-    answer is no verdict."""
-    import shutil
-
-    from services import subprocess_runner as sr
-
-    monkeypatch.setattr(sr, "priority_prefix", lambda _owner=None: [shutil.which("env")])
-
-    real_probe = sr._bounded_probe
-    looked_up = []
-
-    async def stalled(func, *args, **kwargs):
-        if func is shutil.which:
-            looked_up.append(args)
-            raise asyncio.TimeoutError
-        return await real_probe(func, *args, **kwargs)
-
-    monkeypatch.setattr(sr, "_bounded_probe", stalled)
-    runner = sr.SubprocessRunner(owner="test")
-    missing = str(tmp_path / "no-such-tool")
-    target = tmp_path / "a.7z"
-    target.write_bytes(b"7z")
-
-    with pytest.raises(OSError, match="did not answer"):
-        await runner.run_capture([missing])
-
-    events = [e async for e in runner.capture_verify(
-        [missing, "t", str(target)], path=str(target), success_message="ok",
-    )]
-    assert events[-1]["valid"] is False and events[-1].get("inconclusive") is True
-    assert "did not answer" in events[-1]["message"]
-    assert looked_up == [(missing,), (missing,)]
-
 
 def test_a_sheet_linked_across_volumes_keeps_its_companions(tmp_path, monkeypatch):
     """codex 4615261287: each companion is captured and checked under its own

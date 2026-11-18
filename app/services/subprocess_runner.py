@@ -610,18 +610,51 @@ def nice_prefix(owner: str | None = None) -> list[str]:
     """Return the ``nice`` command prefix for ``owner``.
 
     Empty when renicing is off for ``owner`` or ``nice`` is unavailable, and
-    for a negative level this process can't apply (not root): ``nice`` would
+    for a level this process can't apply (:func:`_can_renice`): ``nice`` would
     only warn and run the tool anyway, and its warning would land in output a
     caller parses (rom-converto's ``--version`` readiness probe). The old
     ``preexec_fn`` renice dropped that failure silently too.
     """
     value = nice_value(owner)
-    if value is None or (value < 0 and os.geteuid() != 0):
+    if value is None or not _can_renice(value):
         return []
     nice = _wrapper_path("nice")
     if not nice:
         return []
     return [nice, "-n", str(value)]
+
+
+def _has_cap_sys_nice() -> bool:
+    """Whether this process holds CAP_SYS_NICE (bit 23 of CapEff), read once.
+    Being root is not the test (codex 4615398086): a container's root often
+    lacks it. Where /proc can't say, root is assumed to hold it."""
+    try:
+        with open("/proc/self/status", encoding="ascii") as status:
+            for line in status:
+                if line.startswith("CapEff:"):
+                    return bool(int(line.split()[1], 16) >> 23 & 1)
+    except (OSError, ValueError):
+        pass
+    return os.geteuid() == 0
+
+
+_CAP_SYS_NICE = _has_cap_sys_nice()
+
+
+def _can_renice(increment: int) -> bool:
+    """Whether ``nice -n increment`` would apply, by the kernel's rule:
+    raising niceness always may; lowering it to N needs CAP_SYS_NICE or
+    ``20 - N`` within RLIMIT_NICE. A couple of syscalls, no filesystem."""
+    if increment >= 0 or _CAP_SYS_NICE:
+        return True
+    try:
+        import resource
+
+        target = max(-20, os.getpriority(os.PRIO_PROCESS, 0) + increment)
+        soft = resource.getrlimit(resource.RLIMIT_NICE)[0]
+    except (AttributeError, ImportError, OSError):
+        return False
+    return soft == resource.RLIM_INFINITY or 20 - target <= soft
 
 
 @functools.cache
@@ -632,24 +665,28 @@ def _wrapper_path(name: str) -> str | None:
     return shutil.which(name)
 
 
-async def _raise_if_not_launched(tool: str, returncode: int | None, wrapped: bool) -> None:
-    """A wrapper exits 126/127 when it can't exec *tool*; raise what a direct
-    exec would have (``FileNotFoundError``), so a missing tool is never read as
-    the tool's own verdict (a verify recording a failure). The lookup stats
-    PATH directories, so it runs off the event loop and bounded
-    (``_bounded_probe``); one that doesn't answer raises ``OSError``
-    (ETIMEDOUT): it can't be told whether the tool ran, which a verify
-    reports as inconclusive."""
+def _raise_if_not_launched(
+    tool: str, returncode: int | None, wrapped: bool, said: bytes | str = b"",
+) -> None:
+    """A wrapped run's 126/127 is a launch failure, never the tool's verdict:
+    the exit codes ``nice``/``ionice`` (like a shell) give when they can't
+    exec *tool*, whether it is missing, not executable, or a script whose
+    interpreter is missing (codex 4615398097). Finding *tool* on PATH proves
+    none of that, so no lookup is made. Raised as the ``OSError`` a direct
+    exec would have raised (127 ``FileNotFoundError``, 126
+    ``PermissionError``), which every verify path reports as inconclusive, so
+    a stored pass is never overwritten. No verifier here uses 126/127 for a
+    verdict."""
     if not wrapped or returncode not in (126, 127):
         return
-    try:
-        found = await _bounded_probe(shutil.which, tool)
-    except asyncio.TimeoutError:
-        raise OSError(
-            errno.ETIMEDOUT, "looking the tool up on PATH did not answer", tool,
-        ) from None
-    if found is None:
-        raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), tool)
+    code = errno.ENOENT if returncode == 127 else errno.EACCES
+    if isinstance(said, bytes):
+        said = said.decode("utf-8", errors="replace")
+    lines = clean_tool_output(said).splitlines()
+    reason = f": {lines[-1]}" if lines else ""  # the wrapper's own words, if any
+    raise OSError(
+        code, f"it couldn't be started (the priority wrapper exited {returncode}){reason}", tool,
+    )
 
 
 def priority_prefix(owner: str | None = None) -> list[str]:
@@ -2080,7 +2117,9 @@ class SubprocessRunner:
             )
             if comm in done:
                 stdout, stderr = comm.result()
-                await _raise_if_not_launched(tool, process.returncode, bool(prefix))
+                _raise_if_not_launched(
+                    tool, process.returncode, bool(prefix), stderr or stdout or b"",
+                )
                 return process.returncode, stdout or b"", stderr or b""
             # Cancelled or timed out before the process exited; the finally
             # block below terminates it and drains ``comm``.
@@ -2205,7 +2244,7 @@ class SubprocessRunner:
             self.untrack_pid(process.pid)
         if process.returncode is not None and process.returncode < 0:
             raise RuntimeError(killed_by_signal_message(label, process.returncode))
-        await _raise_if_not_launched(tool, process.returncode, bool(prefix))
+        _raise_if_not_launched(tool, process.returncode, bool(prefix), bytes(stderr_tail))
         if process.returncode != 0:
             tail = clean_tool_output(stderr_tail.decode("utf-8", errors="replace"))
             raise RuntimeError(
@@ -2549,7 +2588,9 @@ class SubprocessRunner:
                 yield {"type": "complete", "valid": True, "message": success_message}
             else:
                 try:
-                    await _raise_if_not_launched(tool, process.returncode, bool(prefix))
+                    _raise_if_not_launched(
+                        tool, process.returncode, bool(prefix), "\n".join(output_lines[-6:]),
+                    )
                 except OSError as exc:  # no verdict: it never ran, or can't be told
                     yield verify_exception_event(exc, prefix="Verification could not run")
                     return
@@ -3091,7 +3132,9 @@ class SubprocessRunner:
                     "\n".join(output_lines[-6:]),
                 )
                 raise RuntimeError(killed_by_signal_message(fail_label, process.returncode))
-            await _raise_if_not_launched(tool, process.returncode, bool(prefix))
+            _raise_if_not_launched(
+                tool, process.returncode, bool(prefix), "\n".join(output_lines[-6:]),
+            )
             if process.returncode != 0:
                 tail = clean_tool_output("\n".join(output_lines[-6:]))
                 if tail:

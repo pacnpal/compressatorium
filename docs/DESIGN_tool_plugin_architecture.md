@@ -551,16 +551,19 @@ The runner applies the priority policy, never the tool: every spawn method
 A tool passes the bare argv; it never adds `nice`/`ionice` itself, which would
 apply them twice. Either binary missing, its prefix is empty and the child runs
 at normal priority. Both are looked up once per process, at import
-(`_wrapper_path`), never on the event loop at spawn time. A negative nice
-level a non-root process can't apply is left off: `nice` would warn and run
-the tool anyway, putting its warning into output a caller parses, where the
-old `preexec_fn` renice dropped the failure silently. A wrapper exits 126/127
-when it can't exec the tool; when the tool isn't there, the runner raises
-`FileNotFoundError` as a direct exec would (`_raise_if_not_launched`, whose
-lookup runs off the event loop through `_bounded_probe`; a lookup that
-doesn't answer raises `OSError` ETIMEDOUT), and the verify paths report either
-as inconclusive, so a missing verifier never records a failed verdict over a
-stored pass.
+(`_wrapper_path`), never on the event loop at spawn time. A nice level
+this process can't apply is left off (`_can_renice`, the kernel's own rule:
+lowering niceness needs CAP_SYS_NICE, read once from `CapEff`, or room under
+RLIMIT_NICE; being root is not the test): `nice` would warn and run the tool
+anyway, putting its warning into output a caller parses, where the old
+`preexec_fn` renice dropped the failure silently. rom-converto's `--version`
+probe reads stdout alone for the same reason. A wrapped run that exits
+126/127 is a launch failure, never a verdict: those are the codes `nice` and
+`ionice` give when they can't exec the tool (missing, not executable, or a
+script whose interpreter is missing), and no verifier here uses them.
+`_raise_if_not_launched` raises the `OSError` a direct exec would have, with
+the wrapper's own words, and every verify path reports it as inconclusive, so
+a verifier that never ran can't record a failed verdict over a stored pass.
 
 Nothing passes `preexec_fn`. This process is multithreaded (threadpools, the
 SSE routes), and forking a Python callable from it can deadlock the child on a
