@@ -1115,6 +1115,8 @@ def plan_auto(
 
 
 def _plan_targets(paths, prefs: dict, tools_registry, ready) -> list[AutoTarget]:
+    from services.tools import not_ready_message
+
     tools = tools_registry.all()
     plan: list[AutoTarget] = []
     for path in paths:
@@ -1129,10 +1131,9 @@ def _plan_targets(paths, prefs: dict, tools_registry, ready) -> list[AutoTarget]
             continue
         spec = tools_registry.spec(mode)
         if ready is not None and spec.tool_id not in ready:
-            tool = tools_registry.get(spec.tool_id)
             plan.append(AutoTarget(
                 path, detection, None, None, None,
-                f"{tool.display_name} isn't ready: {tool.not_ready_reason}",
+                not_ready_message(tools_registry.get(spec.tool_id)),
             ))
             continue
         compression = None

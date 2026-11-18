@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from config import settings
 
-from .base import BaseTool, ToolPlugin
+from .base import BaseTool, ToolPlugin, not_ready_message
 from .chain import ChainTool
 from .chdman import ChdmanTool
 from .dolphin import DolphinTool
@@ -52,5 +52,6 @@ __all__ = [
     "ModeSpec",
     "ToolPlugin",
     "ToolRegistry",
+    "not_ready_message",
     "registry",
 ]

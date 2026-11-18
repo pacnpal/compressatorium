@@ -493,7 +493,7 @@
    * nothing and never explains itself.
    */
   const SWEEP_ERROR_LABELS = {
-    tool_not_ready: 'the tool for this format is not installed here — skipped',
+    tool_not_ready: 'the tool for this format isn\'t ready here, skipped (the server log says why)',
     tool_wrong_for_platform: 'the saved format is not for this system — skipped',
     output_dir_outside_volumes:
       'its output folder is outside the configured volumes — skipped',

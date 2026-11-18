@@ -56,7 +56,7 @@ from services.rom_converto import (
     RomConvertoError,
     rom_converto_service,
 )
-from services.tools import registry
+from services.tools import not_ready_message, registry
 from services.tools.base import ToolPlugin
 from services.subprocess_runner import (
     BATCH_STOPPED_MESSAGE,
@@ -1324,11 +1324,9 @@ async def get_rom_converto_info(
         raise HTTPException(status_code=404, detail="File not found")
     if not _is_rom_converto_info_file(path):
         raise HTTPException(status_code=400, detail="Not a ZAR (.zar)")
-    if not await registry.tool_is_ready(registry.get("rom_converto")):
-        raise HTTPException(
-            status_code=503,
-            detail=f"rom-converto isn't ready: {registry.get('rom_converto').not_ready_reason}",
-        )
+    tool = registry.get("rom_converto")
+    if not await registry.tool_is_ready(tool):
+        raise HTTPException(status_code=503, detail=not_ready_message(tool))
 
     try:
         info = await rom_converto_service.info(path)

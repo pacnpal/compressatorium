@@ -92,7 +92,7 @@ from services.rules.rules import (
 )
 from services.rules.schedule import _is_due
 from services.subprocess_runner import bounded_path_check, run_detached
-from services.tools import InputKind, registry
+from services.tools import InputKind, not_ready_message, registry
 from utils.delete_plan import build_delete_snapshot
 from utils.path_utils import (
     is_within_configured_volumes,
@@ -2232,10 +2232,9 @@ async def _sweep_locked(
         # is removed or a container is rebuilt without it, and every job it
         # queues fails at launch. Ask before queueing, and say so: once for
         # each reason (`_report_skip`), as the Rule is tried on every tick.
+        # The plugin's own reason, read after the probe that set it (#484).
         if not await _ready_bounded(tool):
-            _report_skip(
-                library, kind, platform_id, "tool", f"{spec.tool_id} is not installed",
-            )
+            _report_skip(library, kind, platform_id, "tool", not_ready_message(tool))
             result["errors"].append(
                 {"platform_id": platform_ref, "error": "tool_not_ready"},
             )
@@ -2938,11 +2937,14 @@ async def _sweep_check(
 
     if not_ready:
         result["errors"].append({"platform_id": platform_ref, "error": "tool_not_ready"})
+        # Each verifier that can't run, with its own reason (#484).
         missing = sorted(tool_id for tool_id, ok in ready.items() if not ok)
         _report_skip(
             library, CHECK, platform_id, "tool",
-            f"{', '.join(missing)} {'is' if len(missing) == 1 else 'are'} not "
-            "installed to check its Images",
+            "; ".join(
+                not_ready_message(registry.get(tool_id), purpose="verify")
+                for tool_id in missing
+            ),
         )
     elif not unresponsive:
         # Every Image it reached had its verifier: whatever was missing is back.
