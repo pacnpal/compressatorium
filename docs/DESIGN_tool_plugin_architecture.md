@@ -2828,8 +2828,9 @@ None). Two places in `rules/sweep.py` log them:
 
 - `report_rule_changes(library, platform, rule, kind=, prefix=, seen=)` logs
   one line for a Rule about to run. The sweep calls it once per Rule it runs
-  (after the paused, due and active-check gates, for both kinds), so any
-  Library logs it once per sweep. An Inbox calls it as it converts under a
+  (after the paused, due and active-check gates, for both kinds, and for a
+  conversion Rule after the skip checks below too), so any Library logs it
+  once per sweep that runs the Rule. An Inbox calls it as it converts under a
   Rule (`intake._take`), with `prefix="inbox"` and `seen` the pass's
   `_State.rules_reported`, so once per pass.
 - `_report_unrunnable(library, stored, rules)` runs in each sweep right after
@@ -2852,6 +2853,27 @@ None). Two places in `rules/sweep.py` log them:
   still refuses a codec the mode can't use (#474) before anything is stored.
   It compares changes, not fields, so a field added to `rule_changes` later is
   covered without touching it.
+- `_report_skip(library, kind, platform_id, check, reason)` logs a Rule the
+  run loop skips (#480). Before it queues anything for a conversion Rule the
+  loop makes the checks in `_SKIP_CHECKS`, in order: `tool` (its tool is
+  installed, `_ready_bounded`), `output_dir` (its output folder is inside a
+  Volume, `_output_dir_problem`, which also covers a Volume that doesn't
+  answer within `_VOLUME_PROBE_SECONDS`) and, once the Platform is listed,
+  `platform` (`registry.mode_allows_platform` for the Images' slug). A Rule
+  that fails one is skipped with its `result["errors"]` entry
+  (`tool_not_ready`, `output_dir_outside_volumes`, `tool_wrong_for_platform`)
+  and no run recorded, so it is due on the next tick and runs as soon as the
+  cause is fixed. The loop calls `_report_skip` with the reason on a failure
+  and with `reason=None` on a pass. The reason is logged once per
+  `(library id, kind, platform id)` (`_reported_skips`, which keeps the check
+  and the reason), and again only when it changes. A pass forgets a reason
+  from that check or an earlier one, so a cause that clears and comes back is
+  logged again, while a Rule stopped every tick at `platform` keeps its memo
+  through the earlier checks it passes. `_forget_skips` drops the memo of a
+  Rule removed or paused by the operator, at the top of each sweep, and
+  `forget_library` drops a removed Library's. A new skip check goes in
+  `_SKIP_CHECKS` at its place in the loop and reports through `_report_skip`,
+  never through a bare `logger` call, which would repeat on every tick.
 
 Each line names the Library (`library.name`) and the Platform, and starts with
 the Library's prefix, `rules.library.log_prefix(library)`: the Library's own

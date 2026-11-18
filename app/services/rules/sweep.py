@@ -197,6 +197,16 @@ _unreadable: dict[tuple[str, str], str] = {}
 # a value it refused. Reported once for each stored value, not on every tick.
 _reported_unrunnable: dict[tuple[str, str, str], str] = {}
 
+# The checks a sweep makes before it runs a conversion Rule, in the order it
+# makes them: its tool is installed, its output folder is inside a Volume, its
+# mode is one for the Platform. A Rule that fails one is skipped with no run
+# recorded, so it is tried again on the next tick (#480).
+_SKIP_CHECKS = ("tool", "output_dir", "platform")
+
+# (library id, kind, platform id) -> (check, reason) the sweep last skipped
+# that Rule for: logged once for each reason, not on every tick (#480).
+_reported_skips: dict[tuple[str, str, str], tuple[str, str]] = {}
+
 # (library id, platform id) of each check Rule whose scheduled run is still
 # checking (#305). Its run is recorded only when that run finishes, so until
 # then the Rule would read as due and the next tick would pick another budget's
@@ -339,6 +349,46 @@ def _report_unrunnable(
         )
 
 
+def _report_skip(
+    library: Library, kind: str, platform_id: str, check: str, reason: str | None,
+) -> None:
+    """Log that the sweep skips a Rule, once for each reason (#480).
+
+    *check* is the one of :data:`_SKIP_CHECKS` the Rule just failed, or with
+    *reason* None, just passed. A skipped Rule records no run, so it is due
+    again on the next tick and is retried until the tool or folder is fixed;
+    logging there would say the same thing every tick. So it is said once,
+    under the Library's prefix and naming the Library and the Platform, as
+    :func:`_report_unrunnable` says a Rule no sweep runs, and again only when
+    the reason changes. Passing a check forgets a reason that check, or one
+    made before it, reported, so a problem that comes back is said again.
+    """
+    memo = (library.id, kind, str(platform_id))
+    last = _reported_skips.get(memo)
+    if reason is None:
+        if last is not None and _SKIP_CHECKS.index(last[0]) <= _SKIP_CHECKS.index(check):
+            _reported_skips.pop(memo, None)
+        return
+    if last == (check, reason):
+        return
+    _reported_skips[memo] = (check, reason)
+    logger.warning(
+        "%s: the %s Rule for Platform %s in Library %s is skipped: %s",
+        log_prefix(library), "check" if kind == CHECK else "conversion",
+        library.platform_value(platform_id), library.name, reason,
+    )
+
+
+def _forget_skips(library: Library, rules: Mapping[str, Mapping[str, dict]]) -> None:
+    """Forget what was reported for *library*'s Rules that are gone or that
+    the operator paused, so one that comes back is reported again."""
+    for memo in [k for k in _reported_skips if k[0] == library.id]:
+        _, kind, platform_id = memo
+        rule = rules.get(kind, {}).get(platform_id)
+        if rule is None or not rule["enabled"]:
+            _reported_skips.pop(memo, None)
+
+
 def _normalize(library: Library, raw: Any, *, kind: str = CONVERT, **kwargs) -> dict[str, dict]:
     """`normalize_rules` with *library*'s Platform ids and defaults."""
     return normalize_rules(
@@ -404,28 +454,30 @@ async def _ready_bounded(tool) -> bool:
     return await registry.tool_is_ready(tool)
 
 
-async def _within_volumes_bounded(path: str) -> bool:
-    """Is *path* inside the configured volumes, without risking the sweep?
+async def _output_dir_problem(path: str) -> str | None:
+    """Why *path* can't take a Rule's outputs, or None when it is inside the
+    configured volumes; without risking the sweep.
 
     The same stat-every-volume check as at save time, and the sweep holds
     `_sweep_lock` while it runs — so a saved output directory that has since
     become an unresponsive mount would block previews, manual runs, rule edits
     and settings saves behind it, having stranded a pooled worker on the way.
 
-    A bound that expires answers *no*: the platform is skipped with a reason
-    the editor shows, which is what an unwritable destination deserves.
+    A bound that expires is a problem too: the platform is skipped with a
+    reason the editor shows, which is what an unwritable destination deserves.
+    Not logged here: the sweep reports the skip once (:func:`_report_skip`).
     """
     try:
-        return bool(await asyncio.wait_for(
+        inside = await asyncio.wait_for(
             run_detached(is_within_configured_volumes, path),
             _VOLUME_PROBE_SECONDS,
-        ))
-    except (asyncio.TimeoutError, OSError):
-        logger.warning(
-            "romm_auto: checking output_dir %r did not finish in %ss; skipping "
-            "the platform (a volume is not answering)", path, _VOLUME_PROBE_SECONDS,
         )
-        return False
+    except (asyncio.TimeoutError, OSError):
+        return (
+            f"checking its output folder {path} did not finish in "
+            f"{_VOLUME_PROBE_SECONDS}s (a volume is not answering)"
+        )
+    return None if inside else f"its output folder {path} is outside every Volume"
 
 
 async def normalize_rules_bounded(
@@ -636,6 +688,8 @@ async def forget_library(library: Library) -> None:
             _unreadable.pop(key, None)
         for key in [k for k in _reported_unrunnable if k[0] == library.id]:
             _reported_unrunnable.pop(key, None)
+        for key in [k for k in _reported_skips if k[0] == library.id]:
+            _reported_skips.pop(key, None)
         for kind in RULE_KINDS:
             await store.write(store.rules_key(kind), library, {})
             await store.write(store.state_key(kind), library, {})
@@ -2022,6 +2076,7 @@ async def _sweep_locked(
     read = {kind: await _read_rules(library, kind) for kind in RULE_KINDS}
     rules = {kind: read[kind][1] for kind in RULE_KINDS}
     _report_unrunnable(library, {kind: read[kind][0] for kind in RULE_KINDS}, rules)
+    _forget_skips(library, rules)
     states = {kind: await get_state(library, kind) for kind in RULE_KINDS}
     now = datetime.now(timezone.utc)
 
@@ -2154,11 +2209,10 @@ async def _sweep_locked(
         ):
             # Its scheduled run is still checking: one budget per window.
             continue
-        # It runs: what the sanitizer dropped or refused on it is said once,
-        # here, for every kind of Library (#477), not on each read.
-        report_rule_changes(library, platform_ref, rule, kind=kind)
-
         if kind == CHECK:
+            # It runs: what the sanitizer dropped or refused on it is said
+            # once, here, for every kind of Library (#477), not on each read.
+            report_rule_changes(library, platform_ref, rule, kind=kind)
             if await _sweep_check(
                 library, platform_id, rule, result, active_paths,
                 picked=picked, check_runs=check_runs, dry_run=dry_run,
@@ -2176,27 +2230,26 @@ async def _sweep_locked(
         # A rule outlives the install it was written against: the editor only
         # offers ready tools, but a saved rule keeps firing after its binary
         # is removed or a container is rebuilt without it, and every job it
-        # queues fails at launch. Ask before queueing, and say so.
+        # queues fails at launch. Ask before queueing, and say so: once for
+        # each reason (`_report_skip`), as the Rule is tried on every tick.
         if not await _ready_bounded(tool):
-            logger.warning(
-                "romm_auto: %s is not installed, skipping platform %s",
-                spec.tool_id, platform_id,
+            _report_skip(
+                library, kind, platform_id, "tool", f"{spec.tool_id} is not installed",
             )
             result["errors"].append(
                 {"platform_id": platform_ref, "error": "tool_not_ready"},
             )
             continue
+        _report_skip(library, kind, platform_id, "tool", None)
 
         # Belt and braces on the destination: `normalize_rule` refuses an
         # out-of-volume output_dir at save time, but a rules blob can also be
         # edited straight in the database.
-        if rule["output_dir"] and not await _within_volumes_bounded(
-            rule["output_dir"],
-        ):
-            logger.warning(
-                "romm_auto: skipping platform %s, output_dir outside volumes",
-                platform_id,
-            )
+        problem = (
+            await _output_dir_problem(rule["output_dir"]) if rule["output_dir"] else None
+        )
+        _report_skip(library, kind, platform_id, "output_dir", problem)
+        if problem is not None:
             result["errors"].append(
                 {"platform_id": platform_ref, "error": "output_dir_outside_volumes"},
             )
@@ -2219,14 +2272,19 @@ async def _sweep_locked(
         # passes a tool-level check on both, and a rule saved against the wrong
         # one would convert a disc to a format for the other console.
         if not registry.mode_allows_platform(rule["mode"], slug):
-            logger.info(
-                "romm_auto: %s is not a %s mode, skipping platform %s",
-                rule["mode"], slug, platform_id,
+            _report_skip(
+                library, kind, platform_id, "platform",
+                f"{rule['mode']} is not a mode for {slug}",
             )
             result["errors"].append(
                 {"platform_id": platform_ref, "error": "tool_wrong_for_platform"},
             )
             continue
+        _report_skip(library, kind, platform_id, "platform", None)
+        # It runs: what the sanitizer dropped or refused on it is said once,
+        # here, for every kind of Library (#477), not on each read. Not
+        # before the checks above: a Rule they skip is tried on every tick.
+        report_rule_changes(library, platform_ref, rule, kind=kind)
 
         per_platform_cap = min(rule["max_per_run"], cap - result["queued"])
         # Only the destructive policies need provenance: `skip` is already
