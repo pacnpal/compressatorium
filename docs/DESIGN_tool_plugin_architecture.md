@@ -564,9 +564,12 @@ as a pass (CodeRabbit 4616898119, 4617217666).
   ("Verification could not run"). The priority is then applied to the child
   by its pid, best effort (`_prioritize_child`): `os.setpriority` to the
   increment over this process that `nice -n` gives, a syscall made inline,
-  and `ionice -t ... -p <pid>` through the bounded probe as a task of its own
-  that the spawn never awaits, so a stalled one can't hold back the verify's
-  deadline or cancel, which start at once. Either failing leaves the child at
+  and `ionice -t ... -p <pid>` as an asyncio child of its own, from the
+  cached path only, that the spawn never awaits, so a stalled one can't hold
+  back the verify's deadline or cancel, which start at once. It stays out of
+  the shared probe pool: bounded (`_IONICE_SECONDS`), killed and reaped on a
+  stall, and at most `_MAX_IONICE_TASKS` in flight; past that the child gets
+  no I/O priority (CodeRabbit 4617447724). Either failing leaves the child at
   normal priority. Their argv comes from the same builder,
   `_wrapped_command(wrap=False)`.
 

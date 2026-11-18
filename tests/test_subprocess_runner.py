@@ -479,6 +479,8 @@ def test_priority_is_a_command_wrapper_never_a_preexec_fn(tmp_path, monkeypatch)
     # must be there, in order, for the payload to run.
     monkeypatch.setattr(runner_module, "nice_prefix", lambda _owner=None: [wrapper])
     monkeypatch.setattr(runner_module, "ioprio_prefix", lambda _owner=None: [wrapper, "IO=1"])
+    # The verdict path's post-spawn renice is its own test's concern.
+    monkeypatch.setattr(runner_module, "_prioritize_child", lambda _owner, _pid: None)
     spawns: list[tuple[list, dict]] = []
     real_exec = runner_module.asyncio.create_subprocess_exec
 
@@ -1668,22 +1670,27 @@ def test_a_wrapped_127_forgets_a_stale_inner_wrapper(tmp_path, monkeypatch):
     assert runner_module._WRAPPERS == {"nice": str(fake_nice), "ionice": None}
 
 
+def _stalled_ionice(tmp_path, monkeypatch):
+    """A real `ionice` stand-in that records its pid and never answers."""
+    pids = tmp_path / "ionice-pids"
+    stand_in = tmp_path / "ionice"
+    stand_in.write_text(f"#!/bin/sh\necho $$ >> {pids}\nexec sleep 30\n")
+    stand_in.chmod(0o755)
+    monkeypatch.setattr(runner_module, "_WRAPPERS", {"ionice": str(stand_in)})
+    monkeypatch.setattr(runner_module, "_resolve_policy", lambda key, _owner: {
+        "ioprio_class": 2, "ioprio_level": 7,
+    }.get(key))
+    monkeypatch.setattr(runner_module, "_IONICE_SECONDS", 0.3)
+    return pids
+
+
 def test_a_stalled_ionice_step_never_holds_back_a_verify_deadline(tmp_path, monkeypatch):
     """CodeRabbit 4617379646: the `ionice -p` step runs as a task of its own,
     never awaited by the spawn, so a stalled one can't let a verifier run past
     its deadline or its cancel, on run_capture(verdict=True) or run_verify."""
     import time
 
-    monkeypatch.setattr(runner_module, "nice_value", lambda _owner=None: None)
-    monkeypatch.setattr(runner_module, "ioprio_prefix", lambda _owner=None: ["ionice", "-t"])
-    real_probe = runner_module._bounded_probe
-
-    async def probe(func, *args, **kwargs):
-        if args and isinstance(args[0], list) and "-p" in args[0]:
-            await asyncio.sleep(30)  # the ionice step that never answers
-        return await real_probe(func, *args, **kwargs)
-
-    monkeypatch.setattr(runner_module, "_bounded_probe", probe)
+    _stalled_ionice(tmp_path, monkeypatch)
     runner = SubprocessRunner(owner="test")
     slow = [sys.executable, "-c", "import time; time.sleep(30)"]
 
@@ -1706,3 +1713,27 @@ def test_a_stalled_ionice_step_never_holds_back_a_verify_deadline(tmp_path, monk
     events = asyncio.run(cancelled_verify())
     assert events[-1].get("cancelled") is True and time.monotonic() - started < 8
     assert not runner.active_pids()
+
+
+def test_stalled_ionice_steps_stay_out_of_the_probe_pool(tmp_path, monkeypatch):
+    """CodeRabbit 4617447724: `ionice -p` is an asyncio child, bounded and
+    killed on a stall, never a probe-pool thread, and at most a few are in
+    flight; past that a child just gets no I/O priority."""
+    pids = _stalled_ionice(tmp_path, monkeypatch)
+    slots_before = runner_module._probe_slots._value
+
+    async def many():
+        for _ in range(10):  # the stand-in ignores the pid it is given
+            runner_module._prioritize_child("test", 999999)
+            assert len(runner_module._IONICE_TASKS) <= runner_module._MAX_IONICE_TASKS
+        assert runner_module._probe_slots._value == slots_before
+        while runner_module._IONICE_TASKS:
+            await asyncio.sleep(0.05)
+
+    asyncio.run(many())
+    started = [int(line) for line in pids.read_text().split()]
+    assert 0 < len(started) <= runner_module._MAX_IONICE_TASKS
+    for pid in started:  # every stalled stand-in was killed and reaped
+        with pytest.raises(ProcessLookupError):
+            os.kill(pid, 0)
+    assert runner_module._probe_slots._value == slots_before

@@ -757,19 +757,48 @@ def _prioritize_child(owner: str | None, pid: int) -> None:
     # Never awaited by the spawn (CodeRabbit 4617379646): the nice level is a
     # syscall, and `ionice -p` runs as a task of its own, so a stalled one
     # can't hold back the verify's deadline or cancel, which start at once.
-    # Its cache was filled by the argv build before the spawn.
+    # Its cache was filled by the argv build before the spawn (no lookup
+    # here). Kept out of the shared probe pool (CodeRabbit 4617447724): an
+    # asyncio child of its own, bounded and killed on a stall, and at most
+    # _MAX_IONICE_TASKS at once; past that the child gets no I/O priority.
     prefix = ioprio_prefix(owner)
-    if prefix:
-        import subprocess  # local: the one spawn here, never a preexec_fn
-
-        task = asyncio.ensure_future(_bounded_probe(
-            subprocess.run, [*prefix, "-p", str(pid)], capture_output=True, check=False,
-        ))
+    if prefix and len(_IONICE_TASKS) < _MAX_IONICE_TASKS:
+        task = asyncio.ensure_future(_ionice_child([*prefix, "-p", str(pid)]))
         _IONICE_TASKS.add(task)
         task.add_done_callback(_ionice_done)
 
 
+# At most this many `ionice -p` steps in flight, each given this long before
+# it is killed; I/O priority is best effort, never a cost to anything else.
+_MAX_IONICE_TASKS = 4
+_IONICE_SECONDS = 5.0
 _IONICE_TASKS: set[asyncio.Future] = set()
+
+
+async def _ionice_child(argv: list[str]) -> None:
+    """Run ``ionice ... -p <pid>`` as an asyncio child, bounded: one that
+    doesn't finish in :data:`_IONICE_SECONDS` is killed and reaped (bounded
+    too). Every failure is dropped."""
+    try:
+        process = await asyncio.create_subprocess_exec(  # nosemgrep
+            argv[0], *argv[1:],
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+    except OSError:
+        return
+    try:
+        await asyncio.wait_for(process.wait(), _IONICE_SECONDS)
+    except asyncio.TimeoutError:
+        with contextlib.suppress(ProcessLookupError):
+            process.kill()
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(process.wait(), _IONICE_SECONDS)
+    finally:
+        if process.returncode is None:  # cancelled (the loop is closing)
+            with contextlib.suppress(ProcessLookupError):
+                process.kill()
 
 
 def _ionice_done(task: asyncio.Future) -> None:
