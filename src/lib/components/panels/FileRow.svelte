@@ -170,6 +170,10 @@
         {#if entry?.display_name}
           <span class="file-name" title={entry.name}>{entry.name}</span>
         {/if}
+        {#if companionSource}
+          <!-- Beneath the name, so the row's own file name stays readable. -->
+          <span class="file-name" title={entry.companion_of}>part of {companionSource}</span>
+        {/if}
         {#if appName}
           <span class="app-name" title={matchTooltip}>
             {remoteMatch ? 'Hasheous' : 'DAT'}: {appName}
@@ -179,9 +183,6 @@
       {#if isArchive}
         {@const summary = archiveItemSummary(entry)}
         {#if summary}<span class="archive-summary">{summary}</span>{/if}
-      {/if}
-      {#if companionSource}
-        <span class="archive-summary" title={entry.companion_of}>part of {companionSource}</span>
       {/if}
     </button>
   </td>
