@@ -347,8 +347,9 @@ def rar_set_volumes(first_volume: str) -> list[str]:
     Every blocking step, the stats of the set's files and the header read
     alike, runs through ``subprocess_runner.run_detached_blocking`` under the
     ceiling every detached probe shares and :data:`RAR_HEADER_READ_SECONDS`,
-    so a mount that hangs can't hold the caller or pile up threads. Both a list and an unreadable answer are cached
-    against the stat of every file named like the set (:func:`_set_signature`),
+    so a mount that hangs can't hold the caller or pile up threads. Both a
+    list and an unreadable answer are cached against the stat of every file
+    named like the set (:func:`_set_signature`),
     so a broken set is not opened again on every call, and one read while a
     volume was still arriving is read again once it is there. A read that ran
     out of time is not kept. Blocking, and bounded.
