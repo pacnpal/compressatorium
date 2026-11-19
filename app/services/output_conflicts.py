@@ -137,6 +137,11 @@ def get_unique_output_path(base_path: str, mode: str | None = None) -> str:
 QUEUE = "queue"
 SKIP_EXISTING = "skip_existing"
 SKIP_LOCKED = "skip_locked"
+# The final destination is the Source or one of its files
+# (:func:`output_is_part_of_source`): never queued, whatever the policy.
+SKIP_ONTO_SOURCE = "skip_onto_source"
+# The same, in the user's words, for a caller that shows a reason.
+ONTO_SOURCE_REASON = "its output would be the source itself or one of its files"
 
 
 def _same_file(path_a: str, path_b: str) -> bool:
@@ -150,6 +155,24 @@ def _same_file(path_a: str, path_b: str) -> bool:
 
 
 def resolve_destination(
+    tool, path: str, mode: str, output_dir: str | None, duplicate_action: str,
+) -> tuple[str | None, str]:
+    """:func:`_resolve_destination`, then the rule every creator holds a final
+    destination to: never the Source or one of its files (``SKIP_ONTO_SOURCE``,
+    a skip of this one Source, so the rest of a batch still queues)."""
+    destination, decision = _resolve_destination(
+        tool, path, mode, output_dir, duplicate_action,
+    )
+    if (
+        decision == QUEUE and destination
+        and registry.spec(mode).kind is not ModeKind.COPY
+        and output_is_part_of_source(destination, path)
+    ):
+        return None, SKIP_ONTO_SOURCE
+    return destination, decision
+
+
+def _resolve_destination(
     tool, path: str, mode: str, output_dir: str | None, duplicate_action: str,
 ) -> tuple[str | None, str]:
     """Where a conversion of *path* should write, and whether to queue it.
@@ -190,6 +213,13 @@ def resolve_destination(
     # .chd) rewrites in place on purpose.
     if registry.spec(mode).kind is not ModeKind.COPY and _same_file(destination, path):
         return None, SKIP_EXISTING
+    # Nor over one of its files (a RAR set's later volume, a split dump's
+    # part), whatever the policy: a skip of this Source with its own reason,
+    # before the existing-output answer that would hide it.
+    if registry.spec(mode).kind is not ModeKind.COPY and output_is_part_of_source(
+        destination, path,
+    ):
+        return None, SKIP_ONTO_SOURCE
 
     on_disk, locked = output_status(mode, destination)
     exists = on_disk or locked

@@ -33,6 +33,7 @@ from services.job_manager import (
     ROLLBACK_WAIT_CAP_SECONDS,
     DestinationUnresolvableError,
     OutputClaimedError,
+    OutputIsSourceError,
     QueueBackpressureError,
     is_external_mode,
     job_manager,
@@ -1180,6 +1181,10 @@ async def create_job(request: JobCreateRequest):
             split=request.split,
             delete_snapshot=plan.delete_snapshot,
         )
+    except OutputIsSourceError as exc:
+        # The queue's own check: the output would be the Source or one of its
+        # files (planning saw it clear; a header read answered differently).
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except OutputClaimedError as exc:
         # A concurrency outcome, not a malformed request: another live job took
         # this destination between planning and queueing. 409 so the caller can
@@ -1250,6 +1255,10 @@ async def queue_prepared(batch: PreparedBatch) -> list[ConversionJob]:
             container_only=batch.request.container_only,
             split=batch.request.split,
         )
+    except OutputIsSourceError as exc:
+        # The queue's own check: the output would be the Source or one of its
+        # files (planning saw it clear; a header read answered differently).
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except OutputClaimedError as exc:
         # A concurrency outcome, not a malformed request: another live job took
         # this destination between planning and queueing. 409 so the caller can

@@ -53,6 +53,7 @@ from services.job_manager import (
     SOURCE_KEPT_FOR_READERS,
     KeptDeleteRetry,
     OutputClaimedError,
+    OutputIsSourceError,
     QueueBackpressureError,
     job_manager,
 )
@@ -60,6 +61,7 @@ from services.output_conflicts import (
     QUEUE,
     SKIP_EXISTING,
     SKIP_LOCKED,
+    SKIP_ONTO_SOURCE,
     is_renamed_from,
     resolve_destination,
 )
@@ -2324,6 +2326,7 @@ async def _sweep_locked(
             held = await _prune_holds(library, platform_id, held, images)
         held_count = 0
         unsafe_names: list[str] = []
+        onto_source_names: list[str] = []
         batch: list[str] = []
         unresponsive = False
         image_by_path: dict[str, Image] = {}
@@ -2396,6 +2399,12 @@ async def _sweep_locked(
             if decision["skip"] == "unsafe_source":
                 unsafe_names.append(Path(path).name)
                 continue
+            if decision["skip"] == SKIP_ONTO_SOURCE:
+                # Its output would be the Source or one of its files: this
+                # Source is skipped and named, the rest of the batch queues.
+                result["skipped_unconvertible"] += 1
+                onto_source_names.append(Path(path).name)
+                continue
             if decision["skip"] == "held_failed":
                 result["skipped_failed"] += 1
                 held_count += 1
@@ -2440,6 +2449,11 @@ async def _sweep_locked(
             # Present only when there is one, so a clean result keeps its shape.
             result["skipped_unsafe"] = result.get("skipped_unsafe", 0) + len(unsafe_names)
             summary["unsafe"] = unsafe_names[:25]
+        if onto_source_names:
+            # Never queued, and named: its output would be the Source itself or
+            # one of its files (a RAR set's later volume, a split dump's part).
+            # Present only when there is one, so a clean result keeps its shape.
+            summary["onto_source"] = onto_source_names[:25]
         if rule["delete_on_verify"]:
             # What Preview shows: the check that will actually pass before
             # this batch deletes a Source, not the stored preference (a mode
@@ -2632,6 +2646,19 @@ async def _sweep_locked(
                 summary["unqueued"] = len(batch)
                 result["platforms"].append(summary)
                 break
+            except OutputIsSourceError as exc:
+                # The queue's own check found an output onto its Source that
+                # the per-Source skip above did not (a header read that answered
+                # differently in between). Nothing was queued; named, so it
+                # reads as what it is rather than "could not be queued".
+                logger.info(
+                    "%s: Platform %s in Library %s: %s", log_prefix(library),
+                    platform_ref, library.name, exc,
+                )
+                result["errors"].append(
+                    {"platform_id": platform_ref, "error": "output_onto_source"},
+                )
+                summary["queue_failed"] = True
             except OutputClaimedError as exc:
                 # Someone else took a destination between this sweep planning
                 # it and the queue accepting it -- a manual submit, or a

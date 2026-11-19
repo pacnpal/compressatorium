@@ -316,6 +316,7 @@ async def _bounded_probe(func: Callable, *args: object, **kwargs: object) -> obj
 # These helpers are the one bounded seam every tool's cleanup goes through.
 
 _cleanup_logger = get_logger("cleanup")
+_probe_logger = get_logger("detached_probe")
 
 # Hard bound on that sweep. Larger than _STAT_TIMEOUT because a sweep may unlink
 # several files in a row (a split makeps3iso build) or walk a work dir, and each
@@ -1533,6 +1534,51 @@ async def run_detached_bounded(
             return result
         raise DeadlineExpired(f"no answer in {timeout:g}s") from exc
 
+
+
+def run_detached_blocking(
+    func: Callable, *args: object, timeout: float, **kwargs: object,
+) -> object:
+    """:func:`run_detached_bounded` for blocking code already off the event
+    loop (a worker thread, a Library walk): *func* on a throwaway daemon
+    thread, under the same process-wide ceiling every detached probe shares
+    (``_MAX_DETACHED_PROBES``), so a mount that hangs reads can't pile up
+    threads past it.
+
+    Raises :class:`ProbeCapacityExceeded` when no slot is free (nothing is
+    started) and :class:`DeadlineExpired` when *timeout* runs out while the
+    call still runs (it is abandoned; its slot frees when it returns). The
+    call's own exceptions propagate as themselves.
+    """
+    if not _probe_slots.acquire(blocking=False):
+        raise ProbeCapacityExceeded(
+            f"{_MAX_DETACHED_PROBES} filesystem probes are already blocked; "
+            "the volume is not responding",
+        )
+    box: dict = {}
+    done = threading.Event()
+
+    def _worker() -> None:
+        try:
+            box["value"] = func(*args, **kwargs)
+        except Exception as exc:
+            # Relayed to the caller, who raises it as itself.
+            _probe_logger.debug("Detached call failed", exc_info=True)
+            box["error"] = exc
+        finally:
+            _probe_slots.release()
+            done.set()
+
+    try:
+        threading.Thread(target=_worker, daemon=True, name="fs-probe").start()
+    except RuntimeError as exc:
+        _probe_slots.release()
+        raise ProbeCapacityExceeded(f"no filesystem probe thread could start: {exc}") from exc
+    if not done.wait(timeout):
+        raise DeadlineExpired(f"no answer in {timeout:g}s")
+    if "error" in box:
+        raise box["error"]
+    return box["value"]
 
 class Stalled(RuntimeError):
     """A detached call made no progress for its stall bound.

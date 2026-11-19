@@ -32,6 +32,7 @@ import re
 import stat
 import threading
 import zipfile
+from collections import OrderedDict
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import IO, NamedTuple
@@ -263,35 +264,39 @@ class RarVolumesUnknown(OSError):
 # How long one header read of a set may take: the bound a route's Volume work
 # gets (``VOLUME_PROBE_TIMEOUT_SECONDS``). Past it the set's volumes are unknown.
 RAR_HEADER_READ_SECONDS = 30.0
+# How many sets' answers are kept.
+_SET_VOLUMES_MAX = 8192
+# first volume -> (signature of every file named like the set, answer): the
+# headers' volume list, or why they can't be read (a string).
+_set_volumes_cache: OrderedDict[str, tuple[tuple, list[str] | str]] = OrderedDict()
+_set_volumes_lock = threading.Lock()
 
-# The volumes a set's headers read, or why they can't be told (a string), per
-# first volume's (path, mtime, size). A read that ran out of time is not kept.
-_set_volumes_cache: MtimeCache[list[str] | str] = MtimeCache()
 
-
-def _read_volumes_bounded(first_volume: str) -> list[str] | str | None:
-    """The headers' volume list, the reason they can't be read, or None when
-    the read did not finish in time (left running on its daemon thread, which
-    a mount that stops answering may hold; its answer is dropped)."""
-    answer: list = []
-    done = threading.Event()
-
-    def read() -> None:
+def _set_signature(first_volume: str) -> tuple:
+    """The stat of every file named like the set (the first volume and each
+    ``.partN.rar`` / ``.rNN`` after it): a volume arriving, leaving or
+    changing gives another signature, so a set read mid-download is read
+    again once it is whole."""
+    signature = []
+    for path in [first_volume, *rar_later_volumes(first_volume)]:
         try:
-            volumes = read_rar_set(first_volume).volumes
-        except Exception as exc:  # unreadable: the reason is the answer
-            logger.debug("No volume list for %s", first_volume, exc_info=True)
-            answer.append(str(exc) or type(exc).__name__)
-        else:
-            folder = os.path.dirname(first_volume)
-            answer.append([os.path.join(folder, os.path.basename(v)) for v in volumes])
-        finally:
-            done.set()
+            st = os.stat(path)
+        except OSError:
+            signature.append((path, None))
+            continue
+        signature.append((path, st.st_mtime_ns, st.st_ctime_ns, st.st_size))
+    return tuple(signature)
 
-    threading.Thread(target=read, name="rar-set-volumes", daemon=True).start()
-    if not done.wait(RAR_HEADER_READ_SECONDS):
-        return None
-    return answer[0]
+
+def _read_volumes(first_volume: str) -> list[str] | str:
+    """The headers' volume list, or the reason they can't be read. Blocking."""
+    try:
+        volumes = read_rar_set(first_volume).volumes
+    except Exception as exc:  # unreadable: the reason is the answer
+        logger.debug("No volume list for %s", first_volume, exc_info=True)
+        return str(exc) or type(exc).__name__
+    folder = os.path.dirname(first_volume)
+    return [os.path.join(folder, os.path.basename(v)) for v in volumes]
 
 
 def rar_set_volumes(first_volume: str) -> list[str]:
@@ -301,26 +306,50 @@ def rar_set_volumes(first_volume: str) -> list[str]:
 
     The one answer to "is this file part of that set": a file named like a
     volume that the headers never read is not one. Raises
-    :class:`RarVolumesUnknown` when the headers can't be read whole or the
-    read does not finish within :data:`RAR_HEADER_READ_SECONDS`: a listing
-    then shows no companions, and anything that deletes refuses. Both a list
-    and an unreadable answer are cached per the first volume's
-    ``(path, mtime, size)``, so a broken set is not opened again on every
-    call; a read that ran out of time is not. Blocking, and bounded.
+    :class:`RarVolumesUnknown` when the headers can't be read whole, or the
+    read does not finish within :data:`RAR_HEADER_READ_SECONDS`, or no
+    detached-probe slot is free: a listing then shows no companions, and
+    anything that deletes refuses.
+
+    The read runs through ``subprocess_runner.run_detached_blocking``, under
+    the ceiling every detached probe shares, so a mount that hangs reads
+    can't pile up threads. Both a list and an unreadable answer are cached
+    against the stat of every file named like the set (:func:`_set_signature`),
+    so a broken set is not opened again on every call, and one read while a
+    volume was still arriving is read again once it is there. A read that ran
+    out of time is not kept. Blocking, and bounded.
     """
-    timed_out = False
-
-    def read() -> list[str] | str:
-        nonlocal timed_out
-        found = _read_volumes_bounded(first_volume)
-        if found is None:
-            timed_out = True
-            return f"reading its headers took over {RAR_HEADER_READ_SECONDS:g}s"
-        return found
-
-    found = _set_volumes_cache.get_or_compute(
-        first_volume, read, should_cache=lambda _found: not timed_out,
+    from services.subprocess_runner import (  # local: import cycle
+        DeadlineExpired,
+        ProbeCapacityExceeded,
+        run_detached_blocking,
     )
+
+    signature = _set_signature(first_volume)
+    with _set_volumes_lock:
+        hit = _set_volumes_cache.get(first_volume)
+        if hit is not None and hit[0] == signature:
+            _set_volumes_cache.move_to_end(first_volume)
+            found = hit[1]
+        else:
+            found = None
+    if found is None:
+        try:
+            found = run_detached_blocking(
+                _read_volumes, first_volume, timeout=RAR_HEADER_READ_SECONDS,
+            )
+        except (DeadlineExpired, ProbeCapacityExceeded) as exc:
+            raise RarVolumesUnknown(
+                errno.ETIMEDOUT,
+                f"Can't tell the volumes of {os.path.basename(first_volume)}: "
+                f"the header read did not run in time (detached probe: {exc})",
+                first_volume,
+            ) from exc
+        with _set_volumes_lock:
+            _set_volumes_cache[first_volume] = (signature, found)
+            _set_volumes_cache.move_to_end(first_volume)
+            while len(_set_volumes_cache) > _SET_VOLUMES_MAX:
+                _set_volumes_cache.popitem(last=False)
     if isinstance(found, str):
         raise RarVolumesUnknown(
             errno.EIO, f"Can't tell the volumes of {os.path.basename(first_volume)}: {found}",
@@ -338,7 +367,8 @@ def clear_cache() -> None:
     """Drop every cached member list and volume answer (used by tests)."""
     _cache.clear()
     _later_volume_cache.clear()
-    _set_volumes_cache.clear()
+    with _set_volumes_lock:
+        _set_volumes_cache.clear()
 
 
 def read_member_crcs(archive_path: str) -> list[tuple[str, int | None, int | None, bool]]:

@@ -1397,11 +1397,16 @@ candidate; the set's own headers decide what belongs to it:
   `x.part4.rar` or an unrelated `x.r00` is named like a volume too.
 - `rar_set_volumes(first)` is the answer to "is this file part of that set":
   the volumes the headers read (rarfile follows each volume's "more volumes"
-  flag). The read is bounded (`RAR_HEADER_READ_SECONDS`, the bound a route's
-  Volume work gets) on a daemon thread, and both a list and an unreadable
-  answer are cached per the first volume's mtime and size (a read that ran
-  out of time is not). It raises `RarVolumesUnknown` when the headers can't
-  be read whole or in time.
+  flag). The read runs through `subprocess_runner.run_detached_blocking`
+  (the synchronous form of `run_detached_bounded`, under the same ceiling
+  every detached probe shares) bounded by `RAR_HEADER_READ_SECONDS`, the bound
+  a route's Volume work gets. Both a list and an unreadable answer are cached
+  against the stat of *every file named like the set* (the first volume and
+  each `.partN.rar` / `.rNN` after it), so a set read while a volume was
+  still downloading is read again as soon as it arrives, and a broken set is
+  not reopened on every call. A read that ran out of time is not kept. It
+  raises `RarVolumesUnknown` when the headers can't be read whole, in time,
+  or with no probe slot free.
 
 The rar tool's `source_companions` is `rar_set_volumes(first)[1:]`, read only
 when a file named like a later volume is there (a lone `.rar` costs a few
@@ -1429,9 +1434,17 @@ Two callers, one rule. `plan_job` asks it of the *final* output, after the
 duplicate handling, so a skip still says the output exists, a rename's free
 name (`Game_1.rvz` beside `Game.rvz`, Dolphin's same-format re-encode) still
 queues, and an overwrite onto a part answers `OUTPUT_IS_PART_OF_SOURCE`.
-`JobManager._reservation_keys` asks it, off the loop, for every spec of every
-batch (the API, Rules sweeps, Inboxes, the CLI), and the locked reservation
-refuses the batch with `OutputIsSourceError` before any job is created. A
+`output_conflicts.resolve_destination`, which Rules sweeps, Inboxes and the
+RomM re-pin planner decide each Source's destination with, answers
+`SKIP_ONTO_SOURCE` for such a Source whatever the policy (ahead of the
+existing-output answer, which would hide it): a sweep counts it as skipped and
+names it in the Platform's `onto_source`, an Inbox holds it with
+`ONTO_SOURCE_REASON`, and the rest of the batch still queues.
+`JobManager._reservation_keys` asks it once more, off the loop, for every spec
+of every batch, and the locked reservation refuses the batch with
+`OutputIsSourceError` before any job is created: a backstop for an answer that
+changed between planning and queueing (the API routes answer 409, a sweep
+records `output_onto_source`). A
 RAR set's file named like its own later volume, or a split dump's part, would
 otherwise wait on its own input lock forever under overwrite, or have a live
 part of the Source cleared.

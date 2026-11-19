@@ -119,9 +119,12 @@ from services.job_manager import (
 )
 from services.lock_manager import LockFailed, lock_manager
 from services.output_conflicts import (
+    ONTO_SOURCE_REASON,
     QUEUE,
     SKIP_EXISTING,
     SKIP_LOCKED,
+    SKIP_ONTO_SOURCE,
+    output_is_part_of_source,
     output_status,
     resolve_destination,
 )
@@ -2312,9 +2315,15 @@ def _destination(
         destination = os.path.join(os.path.dirname(own), named)
         on_disk, locked = output_status(mode, destination)
         decision = SKIP_EXISTING if on_disk else SKIP_LOCKED if locked else QUEUE
+        if decision == QUEUE and output_is_part_of_source(destination, path):
+            decision = SKIP_ONTO_SOURCE
     else:
         destination, decision = resolve_destination(tool, path, mode, folder, "skip")
     shown = named or (os.path.basename(own) if own else "")
+    if decision == SKIP_ONTO_SOURCE:
+        # Held with the reason, never retried: the same names give the same
+        # answer next poll.
+        return None, ONTO_SOURCE_REASON, shown
     if decision == SKIP_LOCKED:
         # Another job holds the name, nothing is on disk: busy for now, never
         # a Finding (Codex 4606794174).

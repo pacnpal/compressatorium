@@ -907,3 +907,164 @@ async def test_the_delete_plan_route_is_bounded(tmp_path, monkeypatch):
         assert caught.value.status_code == 503
     finally:
         release.set()
+
+
+# --------------------------------------------------------------------------- #
+# Re-review 2 of #503: a set read mid-download is read again once it changes;
+# an output onto its Source is a per-file skip everywhere; header reads share
+# the detached-probe ceiling.
+# --------------------------------------------------------------------------- #
+
+
+def test_a_volume_arriving_after_a_read_is_seen_by_the_next(tmp_path):
+    from services.archive_members import RarVolumesUnknown, rar_set_volumes
+    from services.tools import registry
+
+    volumes = payload_set(RAR5_SET, tmp_path)
+    aside = tmp_path.parent / f"{tmp_path.name}-held" / volumes[2].name
+    aside.parent.mkdir()
+    volumes[2].rename(aside)  # still downloading
+
+    with pytest.raises(RarVolumesUnknown):
+        rar_set_volumes(str(volumes[0]))
+
+    aside.rename(volumes[2])  # the last volume arrives; part1 is untouched
+
+    assert rar_set_volumes(str(volumes[0])) == [str(v) for v in volumes]
+    assert registry.source_companions(str(volumes[0]), strict=True) == [
+        str(v) for v in volumes[1:]
+    ]
+    assert _service().plan(str(volumes[0])).payload == PAYLOAD
+
+
+def test_a_header_read_takes_a_shared_probe_slot(tmp_path, monkeypatch):
+    import threading
+
+    from services import subprocess_runner
+    from services.archive_members import RarVolumesUnknown, rar_set_volumes
+
+    volumes = payload_set(RAR5_SET, tmp_path)
+    # Every shared probe slot is taken (a dead mount): no thread may start.
+    monkeypatch.setattr(subprocess_runner, "_probe_slots", threading.Semaphore(0))
+    started = []
+    real_thread = threading.Thread
+
+    def counting_thread(*args, **kwargs):
+        started.append(kwargs.get("name"))
+        return real_thread(*args, **kwargs)
+
+    monkeypatch.setattr(threading, "Thread", counting_thread)
+
+    with pytest.raises(RarVolumesUnknown, match="probe"):
+        rar_set_volumes(str(volumes[0]))
+    assert started == []
+
+
+def test_resolve_destination_skips_an_output_onto_its_source(tmp_path, monkeypatch):
+    from services.output_conflicts import SKIP_ONTO_SOURCE, resolve_destination
+    from services.tools import registry
+
+    volumes = payload_set(RAR5_SET, tmp_path)
+    tool = registry.get("rar")
+    monkeypatch.setattr(tool, "output_path", lambda *_a, **_k: str(volumes[2]))
+
+    # Whatever the policy: this Source is skipped with its own reason.
+    for action in ("skip", "overwrite", "rename"):
+        assert resolve_destination(
+            tool, str(volumes[0]), "rar_extract", None, action,
+        ) == (None, SKIP_ONTO_SOURCE), action
+
+
+def test_an_inbox_holds_a_source_whose_output_is_onto_it(tmp_path, monkeypatch):
+    from services.inbox import intake
+    from services.tools import registry
+
+    volumes = payload_set(RAR5_SET, tmp_path / "unpacked")
+    monkeypatch.setattr(
+        registry.get("rar"), "output_path",
+        lambda *_a, **_k: str(volumes[2]),
+    )
+    rule = {"mode": "rar_extract"}
+
+    destination, decision, _shown = intake._destination(
+        str(volumes[0]), rule, str(tmp_path / "unpacked"),
+    )
+
+    assert destination is None
+    assert "source" in decision
+
+
+@pytest.mark.asyncio
+async def test_the_api_answers_409_when_the_queue_finds_the_output_onto_the_source(
+    tmp_path, monkeypatch, db_path, reset_db_engine,
+):
+    from fastapi import HTTPException
+    from services import db as _db
+    from services.tools import registry
+
+    from app.models import ConversionMode, DuplicateAction, JobCreateRequest
+    from app.routes import convert as convert_routes
+
+    _db.init_engine(db_path)
+    monkeypatch.setattr(convert_routes.settings, "max_queue_depth", 0)
+    volumes = payload_set(RAR5_SET, tmp_path)
+    monkeypatch.setattr(
+        registry.get("rar"), "output_path", lambda *_a, **_k: str(volumes[2]),
+    )
+    # Planning saw it clear (a header read that answered differently later);
+    # the queue's own check refuses it.
+    monkeypatch.setattr(convert_routes, "output_is_part_of_source", lambda *_a: False)
+
+    with pytest.raises(HTTPException) as caught:
+        await convert_routes.create_job(JobCreateRequest(
+            file_path=str(volumes[0]), mode=ConversionMode("rar_extract"),
+            duplicate_action=DuplicateAction.OVERWRITE,
+        ))
+    assert caught.value.status_code == 409
+    assert "rar5-vols.part3.rar" in caught.value.detail
+    reset_db_engine()
+
+
+@pytest.mark.asyncio
+async def test_a_sweep_skips_that_source_and_queues_the_rest(
+    tmp_path, monkeypatch, db_path, reset_db_engine,
+):
+    from unittest.mock import patch
+
+    from services import db as _db
+    from services.job_manager import job_manager
+    from services.rules import sweep as rules_sweep
+    from services.rules.library import CONVERTED_HISTORY
+    from services.tools import registry
+
+    from .test_rules_library_296 import _FolderLike
+
+    _db.init_engine(db_path, create_schema=True)
+    root = tmp_path / "lib"
+    onto = payload_set(RAR5_SET, root / "gc")
+    fine = payload_set(RAR4_SET, root / "gc")
+    elsewhere = str(tmp_path / "out" / "bigfile.gba")
+
+    def output_path(_mode, input_path, *_a, **_k):
+        return str(onto[2]) if input_path == str(onto[0]) else elsewhere
+
+    monkeypatch.setattr(registry.get("rar"), "output_path", output_path)
+
+    class _WithHistory(_FolderLike):
+        capabilities = frozenset({CONVERTED_HISTORY})
+        name = "Downloads"
+
+    folder = _WithHistory(root)
+    await rules_sweep.set_rules(folder, {
+        "gc": {"mode": "rar_extract", "enabled": True, "duplicate_action": "overwrite"},
+    })
+    before = set(job_manager.jobs)
+
+    with patch.object(job_manager, "get_active_job_candidates", return_value=[]):
+        result = await rules_sweep.sweep(folder, ignore_schedule=True)
+
+    queued = [j for i, j in job_manager.jobs.items() if i not in before]
+    assert [j.file_path for j in queued] == [str(fine[0])]
+    assert not result["errors"], result
+    assert result["platforms"][0]["onto_source"] == [onto[0].name]
+    reset_db_engine()
