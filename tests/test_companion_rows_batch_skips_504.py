@@ -258,3 +258,47 @@ def test_a_prepared_batch_keeps_its_path_to_reason_map():
     )
 
     assert batch.skipped == {"/v/a": "why"}
+
+
+# --------------------------------------------------------------------------- #
+# plan_job confines a Source before it touches the filesystem (CodeQL, #508)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("member", [False, True], ids=["file", "archive-member"])
+@pytest.mark.asyncio
+async def test_plan_job_refuses_a_source_outside_the_volumes_before_any_stat(
+    tmp_path, tmp_path_factory, monkeypatch, member,
+):
+    import os
+
+    from models import DuplicateAction
+    from routes import convert as convert_routes
+
+    outside_dir = tmp_path_factory.mktemp("outside")
+    outside = outside_dir / ("game.zip" if member else "game.iso")
+    outside.write_bytes(b"x")
+    source = f"{outside}::game.iso" if member else str(outside)
+    touched: list[str] = []
+    real_isfile, real_stat = os.path.isfile, os.stat
+
+    def isfile(path):
+        touched.append(str(path))
+        return real_isfile(path)
+
+    def stat(path, *args, **kwargs):
+        touched.append(str(path))
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os.path, "isfile", isfile)
+    monkeypatch.setattr(os, "stat", stat)
+
+    with pytest.raises(convert_routes.SkipFile) as caught:
+        await convert_routes.plan_job(
+            source, spec=convert_routes.registry.spec("createdvd"), mode="createdvd",
+            output_dir=None, duplicate_action=DuplicateAction.SKIP, delete_on_verify=False,
+        )
+
+    assert caught.value.code == "source_outside_volumes"
+    assert caught.value.http()[0] == 403
+    assert not [p for p in touched if p.startswith(str(outside_dir))], touched

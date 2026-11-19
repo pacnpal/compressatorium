@@ -60,6 +60,7 @@ from services.tools.base import compression_problem, without_unusable_codecs
 from services.event_stream import event_stream
 from utils.delete_plan import build_delete_plan, build_delete_snapshot
 from utils.path_utils import (
+    ensure_path_within_volumes,
     is_safe_directory_tree,
     is_within_configured_volumes,
     match_extension,
@@ -343,6 +344,7 @@ class SkipReason(Enum):
     PS3_OUTPUT_OUTSIDE_VOLUMES = "ps3_output_outside_volumes"
     PS3_FOLDER_UNSAFE = "ps3_folder_unsafe"
     SOURCE_COMPANION_UNSAFE = "source_companion_unsafe"
+    SOURCE_OUTSIDE_VOLUMES = "source_outside_volumes"
 
 
 class SkipFile(Exception):  # noqa: N818 - control-flow signal, not an error
@@ -370,6 +372,22 @@ class SkipFile(Exception):  # noqa: N818 - control-flow signal, not an error
     def message(self) -> str:
         """The words a single job answers with (:meth:`http`)."""
         return self.http()[1]
+
+
+def _is_file_within_volumes(path: str) -> bool:
+    """Whether *path* is a file, asked only of its path confined to the Volumes.
+
+    The routes check containment before they plan, and ``plan_job`` checks
+    again here, before its first stat of the Source: a path outside every
+    Volume raises ``SkipFile(SOURCE_OUTSIDE_VOLUMES)`` without reaching the
+    filesystem (``ensure_path_within_volumes`` refuses it lexically), and only
+    the resolved, confined path is stat'ed. Blocking; via ``off_loop_bounded``.
+    """
+    try:
+        confined = ensure_path_within_volumes(path, treat_archives=False)
+    except ValueError:
+        raise SkipFile(SkipReason.SOURCE_OUTSIDE_VOLUMES) from None
+    return os.path.isfile(confined)
 
 
 class DeleteSnapshotError(Exception):
@@ -539,6 +557,10 @@ _SKIP_HTTP: dict[SkipReason, tuple[int, str]] = {
     SkipReason.PS3_FOLDER_UNSAFE: (
         400,
         "PS3 folder contains symlinks or non-regular entries and cannot be packed safely",
+    ),
+    SkipReason.SOURCE_OUTSIDE_VOLUMES: (
+        403,
+        "Access denied: file path outside configured volumes",
     ),
     SkipReason.SOURCE_COMPANION_UNSAFE: (
         400,
@@ -762,7 +784,7 @@ async def plan_job(
         archive_source_dir = os.path.dirname(archive_path)  # Save CHD next to archive
         display_filename = os.path.basename(internal_path)
 
-        if not os.path.isfile(archive_path):
+        if not await off_loop_bounded(_is_file_within_volumes, archive_path):
             raise SkipFile(SkipReason.ARCHIVE_NOT_FOUND)
 
         if bad_ext_reason is not None and not _declares_input(file_path, spec):
@@ -794,7 +816,9 @@ async def plan_job(
             elif duplicate_action == DuplicateAction.RENAME:
                 output_path = _renamed_output(mode, output_path, duplicate_action)
 
-    if "::" not in file_path and not os.path.isfile(file_path):
+    if "::" not in file_path and not await off_loop_bounded(
+        _is_file_within_volumes, file_path,
+    ):
         raise SkipFile(SkipReason.FILE_NOT_FOUND)
 
     if (

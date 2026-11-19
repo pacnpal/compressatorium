@@ -33,6 +33,8 @@ FILEENTRY_KEYS = {
     # RomM listings only (#427): RomM's own verdict and the app's cached match.
     # Always None for a directory listing.
     "romm_identified", "dat_match",
+    # The Source a companion row belongs to (#504); None for any other row.
+    "companion_of",
 }
 # On-disk search hits mirror the file schema minus the listing-only archive
 # summary / media / split fields, plus the ``in_archive`` marker.

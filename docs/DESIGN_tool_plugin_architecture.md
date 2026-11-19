@@ -4311,7 +4311,11 @@ skip)`, whose `reason` is `SkipFile.message` (the tool's `detail`, else the
 single-job text) and whose `code` is `SkipFile.code` (the `SkipReason` value),
 and a file whose output another file of the batch writes is `same_output`. So a
 new `SkipReason` (a tool that isn't ready, #505) reaches the batch report, the
-CLI and Auto with no change to the batch code. Auto prepares every group first, so
+CLI and Auto with no change to the batch code. `plan_job` stats a Source
+only through `_is_file_within_volumes`, which confines it with
+`ensure_path_within_volumes` first: a path outside every Volume is refused
+(`SOURCE_OUTSIDE_VOLUMES`, 403 for a single job) before any filesystem call,
+and only the confined path is stat'ed. Auto prepares every group first, so
 a planning error queues nothing, then checks the whole batch against
 `max_queue_depth`, then queues the groups. Each group is its own atomic call,
 so a later group can still be refused at queue time (409 when another job took
