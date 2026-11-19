@@ -50,6 +50,7 @@ from services.archive import (
 )
 from services.archive_members import (
     IncompleteArchive,
+    incomplete_reason,
     is_rar_volume_name,
     later_volume_of,
     rar_later_volumes,
@@ -139,6 +140,10 @@ def plan_set(first_volume: str) -> RarPlan:
         )
     listing = _read(first_volume)
     members = listing.members
+    partial = incomplete_reason(listing)
+    if partial is not None:
+        # A read that stopped part way (headers it can't decrypt) is no plan.
+        raise RarSetRefused(f"{name} can't be extracted: {partial}")
     if listing.encrypted or any(m.is_encrypted for m in members):
         raise RarSetRefused(f"{name} is encrypted; a password-protected set can't be extracted")
     if not members:

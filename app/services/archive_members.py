@@ -321,13 +321,32 @@ def _set_signature(first_volume: str) -> tuple:
     return tuple(signature)
 
 
+def incomplete_reason(found: RarSet) -> str | None:
+    """Why a read of a set is not the whole set, or None when it is.
+
+    rarfile stops without an error at headers it can't decrypt: it then
+    reports a password is needed, lists no members and names only the volumes
+    it got through. A missing next volume is ``IncompleteArchive`` already.
+    Whatever is partial is unknown, never a complete list of the set."""
+    if found.encrypted and not found.members:
+        return "the set's headers are encrypted"
+    if not found.members:
+        return "its headers list no members"
+    return None
+
+
 def _read_volumes(first_volume: str) -> list[str] | str:
-    """The headers' volume list, or the reason they can't be read. Blocking."""
+    """The headers' volume list, or the reason they can't be read whole.
+    Blocking."""
     try:
-        volumes = _read_rar_set_now(first_volume).volumes
+        found = _read_rar_set_now(first_volume)
     except Exception as exc:  # unreadable: the reason is the answer
         logger.debug("No volume list for %s", first_volume, exc_info=True)
         return str(exc) or type(exc).__name__
+    reason = incomplete_reason(found)
+    if reason is not None:
+        return reason
+    volumes = found.volumes
     folder = os.path.dirname(first_volume)
     return [os.path.join(folder, os.path.basename(v)) for v in volumes]
 
@@ -567,6 +586,10 @@ def _read_rar_now(
     ) as rf:
         if rf.strerror():
             raise IncompleteArchive(f"{archive_path}: {rf.strerror()}")
+        if rf.needs_password() and not rf.infolist():
+            # Headers it can't decrypt: rarfile stops quietly with nothing
+            # listed. That is a partial read, never "an empty archive" (#476).
+            raise IncompleteArchive(f"{archive_path}: the archive's headers are encrypted")
         for info in rf.infolist():
             # rarfile exposes is_symlink() on recent versions; default to False
             # so an older backend simply doesn't flag symlinks (ArchiveService

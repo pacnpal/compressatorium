@@ -1247,3 +1247,77 @@ async def test_the_queue_derives_a_destination_once_off_the_loop(
     assert jobs and jobs[0].output_path == str(tmp_path / "bigfile.gba")
     assert seen == [False]  # once, and never on the event loop (nor under the lock)
     reset_db_engine()
+
+
+# --------------------------------------------------------------------------- #
+# Codex on b3ac6967: a partial rarfile read is unknown, never a complete list.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("fixture", ["rar5-hpsw.rar"])
+def test_a_header_encrypted_set_has_unknown_companions(tmp_path, fixture):
+    from services.archive_members import RarVolumesUnknown, rar_set_volumes
+    from services.tools import registry
+    from services.tools.base import CompanionsUnknown
+    from utils.delete_plan import build_delete_plan
+
+    (first,) = copy_set((fixture,), tmp_path)
+
+    with pytest.raises(RarVolumesUnknown, match="headers are encrypted"):
+        rar_set_volumes(str(first))
+    with pytest.raises(CompanionsUnknown):
+        registry.source_companions(str(first), strict=True)
+    assert registry.source_companions(str(first)) == []  # a listing shows none
+    assert build_delete_plan(str(first))["errors"]
+
+
+def test_rar_extract_names_encrypted_headers(tmp_path):
+    from services.rar_extract import RarSetRefused
+
+    (first,) = copy_set(("rar5-hpsw.rar",), tmp_path)
+
+    with pytest.raises(RarSetRefused, match="headers are encrypted"):
+        _service().plan(str(first))
+
+
+def test_a_header_encrypted_multi_volume_set_never_deletes_part1_alone(tmp_path):
+    from services.tools import registry
+    from services.tools.base import CompanionsUnknown
+    from utils.delete_plan import build_delete_plan
+
+    # A header-encrypted first volume, with later volumes named like it: the
+    # headers can't say which they are, so none is known and nothing deletes.
+    (first,) = copy_set(("rar5-hpsw.rar",), tmp_path)
+    first = first.rename(tmp_path / "Locked.part1.rar")
+    for n in (2, 3):
+        (tmp_path / f"Locked.part{n}.rar").write_bytes(b"later volume bytes")
+
+    with pytest.raises(CompanionsUnknown):
+        registry.source_companions(str(first), strict=True)
+    plan = build_delete_plan(str(first))
+    assert plan["errors"], plan
+
+
+def test_a_set_that_lists_no_members_is_unknown(tmp_path, monkeypatch):
+    from services import archive_members
+
+    volumes = payload_set(RAR5_SET, tmp_path)
+    real = archive_members._read_rar_set_now
+
+    def nothing_listed(path):
+        found = real(path)
+        return found._replace(members=[])
+
+    monkeypatch.setattr(archive_members, "_read_rar_set_now", nothing_listed)
+
+    with pytest.raises(archive_members.RarVolumesUnknown, match="no members"):
+        archive_members.rar_set_volumes(str(volumes[0]))
+
+
+def test_the_listing_never_reads_encrypted_headers_as_an_empty_archive(tmp_path):
+    from services import archive_members
+
+    (first,) = copy_set(("rar5-hpsw.rar",), tmp_path)
+
+    with pytest.raises(archive_members.IncompleteArchive, match="headers are encrypted"):
+        archive_members.read_archive_members(str(first))

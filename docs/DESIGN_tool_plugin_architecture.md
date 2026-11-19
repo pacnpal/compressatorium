@@ -1413,7 +1413,13 @@ The rar tool's `source_companions` is `rar_set_volumes(first)[1:]` for every
 there is none: a set whose `part2` / `.r00` is missing names no later volume,
 yet its first volume's header says more follow, so the headers are always
 read (once per version of the set's files). An incomplete set is unknown, not
-empty. When the volumes are unknown it raises `tools.base.CompanionsUnknown`,
+empty. So is any partial read (`archive_members.incomplete_reason`): rarfile
+stops without an error at headers it can't decrypt, reporting a password is
+needed, no members and only the volumes it got through, and a read that lists
+no members proves nothing either. Such a read is never cached as a complete
+list; `rar_extract` refuses it ("the set's headers are encrypted"), and the
+listing read (`read_archive_members`) raises `IncompleteArchive` rather than
+showing an encrypted-header archive as empty. When the volumes are unknown it raises `tools.base.CompanionsUnknown`,
 never `[]`: `registry.source_companions(path)` (a listing, the Library walk,
 in-use tracking) then adds none, while `registry.source_companions(path,
 strict=True)` lets it propagate, so anything that deletes refuses
