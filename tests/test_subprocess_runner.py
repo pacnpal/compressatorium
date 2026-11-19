@@ -588,6 +588,8 @@ def test_a_negative_nice_this_process_cannot_apply_is_left_off(monkeypatch):
 
     monkeypatch.setattr(runner_module, "_WRAPPERS", {"nice": "/usr/bin/nice"})
     monkeypatch.setattr(runner_module, "nice_value", lambda _owner=None: -5)
+    # macOS has no RLIMIT_NICE; the fake value stands in so getrlimit is reached.
+    monkeypatch.setattr(resource, "RLIMIT_NICE", 13, raising=False)
     monkeypatch.setattr(runner_module.os, "geteuid", lambda: 0)  # root, but...
     monkeypatch.setattr(runner_module, "_CAP_SYS_NICE", False)  # ...no capability
     monkeypatch.setattr(resource, "getrlimit", lambda _which: (0, 0))
@@ -1662,7 +1664,7 @@ def test_a_wrapped_127_forgets_a_stale_inner_wrapper(tmp_path, monkeypatch):
     cmd = [sys.executable, "-c", "print('ok')"]
 
     rc, _out, _err = asyncio.run(runner.run_capture(cmd))
-    assert rc == 127
+    assert rc in (126, 127)  # dash exits 127 for a missing exec, macOS sh 126
     assert runner_module._WRAPPERS == {}
 
     rc, out, _err = asyncio.run(runner.run_capture(cmd))
