@@ -176,9 +176,16 @@ def later_volume_of(
     first = _first_volume_name(os.path.basename(archive_path))
     if first is None:
         return None
-    is_later = _later_volume_cache.get_or_compute(
-        archive_path, lambda: _needs_first_volume(archive_path, progress),
-    )
+    try:
+        is_later = _later_volume_cache.get_or_compute(
+            archive_path,
+            lambda: _bounded_header_read(_needs_first_volume, archive_path, progress),
+        )
+    except RarVolumesUnknown:
+        # Couldn't tell in time: not kept, and not called a later volume. A
+        # caller that converts or deletes reads the set's headers itself, and
+        # refuses on the same bound.
+        return None
     if not is_later:
         return None
     return os.path.join(os.path.dirname(archive_path), first)
@@ -272,6 +279,32 @@ _set_volumes_cache: OrderedDict[str, tuple[tuple, list[str] | str]] = OrderedDic
 _set_volumes_lock = threading.Lock()
 
 
+def _bounded_header_read(func: Callable, *args: object) -> object:
+    """*func* (a rarfile open) through ``subprocess_runner.run_detached_blocking``:
+    on a throwaway thread under the shared detached-probe ceiling, given up on
+    after :data:`RAR_HEADER_READ_SECONDS`. The one way this module reads a RAR
+    header (the listing, a later volume's flag, a set's members and volumes),
+    so a mount that stops answering costs one written-off thread, never a
+    shared pool worker or an unbounded wait. Raises :class:`RarVolumesUnknown`
+    on the bound or with no probe slot free; *func*'s own errors propagate.
+    Blocking."""
+    from services.subprocess_runner import (  # local: import cycle
+        DeadlineExpired,
+        ProbeCapacityExceeded,
+        run_detached_blocking,
+    )
+
+    try:
+        return run_detached_blocking(func, *args, timeout=RAR_HEADER_READ_SECONDS)
+    except (DeadlineExpired, ProbeCapacityExceeded) as exc:
+        name = os.path.basename(str(args[0])) if args else "a RAR set"
+        raise RarVolumesUnknown(
+            errno.ETIMEDOUT,
+            f"Can't read the headers of {name} in time (detached probe: {exc})",
+            str(args[0]) if args else "",
+        ) from exc
+
+
 def _set_signature(first_volume: str) -> tuple:
     """The stat of every file named like the set (the first volume and each
     ``.partN.rar`` / ``.rNN`` after it): a volume arriving, leaving or
@@ -291,7 +324,7 @@ def _set_signature(first_volume: str) -> tuple:
 def _read_volumes(first_volume: str) -> list[str] | str:
     """The headers' volume list, or the reason they can't be read. Blocking."""
     try:
-        volumes = read_rar_set(first_volume).volumes
+        volumes = _read_rar_set_now(first_volume).volumes
     except Exception as exc:  # unreadable: the reason is the answer
         logger.debug("No volume list for %s", first_volume, exc_info=True)
         return str(exc) or type(exc).__name__
@@ -311,21 +344,17 @@ def rar_set_volumes(first_volume: str) -> list[str]:
     detached-probe slot is free: a listing then shows no companions, and
     anything that deletes refuses.
 
-    The read runs through ``subprocess_runner.run_detached_blocking``, under
-    the ceiling every detached probe shares, so a mount that hangs reads
-    can't pile up threads. Both a list and an unreadable answer are cached
+    Every blocking step, the stats of the set's files and the header read
+    alike, runs through ``subprocess_runner.run_detached_blocking`` under the
+    ceiling every detached probe shares and :data:`RAR_HEADER_READ_SECONDS`,
+    so a mount that hangs can't hold the caller or pile up threads. Both a list and an unreadable answer are cached
     against the stat of every file named like the set (:func:`_set_signature`),
     so a broken set is not opened again on every call, and one read while a
     volume was still arriving is read again once it is there. A read that ran
     out of time is not kept. Blocking, and bounded.
     """
-    from services.subprocess_runner import (  # local: import cycle
-        DeadlineExpired,
-        ProbeCapacityExceeded,
-        run_detached_blocking,
-    )
-
-    signature = _set_signature(first_volume)
+    # The stats are blocking work on the same mount: under the same bound.
+    signature = _bounded_header_read(_set_signature, first_volume)
     with _set_volumes_lock:
         hit = _set_volumes_cache.get(first_volume)
         if hit is not None and hit[0] == signature:
@@ -334,17 +363,7 @@ def rar_set_volumes(first_volume: str) -> list[str]:
         else:
             found = None
     if found is None:
-        try:
-            found = run_detached_blocking(
-                _read_volumes, first_volume, timeout=RAR_HEADER_READ_SECONDS,
-            )
-        except (DeadlineExpired, ProbeCapacityExceeded) as exc:
-            raise RarVolumesUnknown(
-                errno.ETIMEDOUT,
-                f"Can't tell the volumes of {os.path.basename(first_volume)}: "
-                f"the header read did not run in time (detached probe: {exc})",
-                first_volume,
-            ) from exc
+        found = _bounded_header_read(_read_volumes, first_volume)
         with _set_volumes_lock:
             _set_volumes_cache[first_volume] = (signature, found)
             _set_volumes_cache.move_to_end(first_volume)
@@ -524,6 +543,13 @@ class IncompleteArchive(RuntimeError):
 def _read_rar(
     archive_path: str, progress: Callable[..., None] | None = None,
 ) -> list[ArchiveMember]:
+    """:func:`_read_rar_now`, bounded and detached (:func:`_bounded_header_read`)."""
+    return _bounded_header_read(_read_rar_now, archive_path, progress)
+
+
+def _read_rar_now(
+    archive_path: str, progress: Callable[..., None] | None = None,
+) -> list[ArchiveMember]:
     """Read every RAR member, flagging symlinks when the rarfile backend reports them.
 
     Always opened by path: rarfile finds a multi-volume archive's next volume
@@ -581,19 +607,46 @@ class RarSet(NamedTuple):
     encrypted: bool
     # Every volume rarfile read, first volume first.
     volumes: list[str]
+    # Members stored as an older version of a file (``name;1``): rarfile
+    # leaves them out of ``infolist``, but an extractor still writes them.
+    versioned: tuple[str, ...] = ()
+
+
+def _versioned_entry(header) -> bool:
+    """Whether a raw RAR file header is an older version of a file: the RAR4
+    ``LHD_VERSION`` flag, or a RAR5 file-version record. rarfile skips these
+    in ``infolist`` (``process_entry``), so they are caught as each header is
+    parsed (``info_callback``)."""
+    import rarfile as rar  # optional backend, as in _needs_first_volume
+
+    if getattr(header, "block_type", None) == rar.RAR5_BLOCK_FILE:
+        return bool(getattr(header, "file_version", None))
+    if getattr(header, "type", None) == rar.RAR_BLOCK_FILE:
+        return bool(getattr(header, "flags", 0) & rar.RAR_FILE_VERSION)
+    return False
 
 
 def _rar_plain_file(info) -> bool:
     """Whether a rarfile entry is a plain file, judged fail-closed."""
     if not info.is_file() or getattr(info, "file_redir", None):
         return False
-    if info.host_os == rarfile.RAR_OS_UNIX:  # type: ignore[name-defined]
+    import rarfile as rar  # optional backend: only reached with a rarfile entry
+
+    if info.host_os == rar.RAR_OS_UNIX:
         # The Unix mode a Unix archiver stored: a device or FIFO is no file.
         return stat.S_IFMT(info.mode or 0) in (0, stat.S_IFREG)
     return True
 
 
 def read_rar_set(first_volume: str) -> RarSet:
+    """:func:`_read_rar_set_now`, bounded and detached
+    (:func:`_bounded_header_read`): what every caller outside this module
+    uses. Raises :class:`RarVolumesUnknown` when the read does not finish in
+    time. Blocking."""
+    return _bounded_header_read(_read_rar_set_now, first_volume)
+
+
+def _read_rar_set_now(first_volume: str) -> RarSet:
     """Every member of the RAR set *first_volume* leads, uncached (#476).
 
     For a caller that extracts the set, so it needs more than the listing
@@ -608,7 +661,16 @@ def read_rar_set(first_volume: str) -> RarSet:
         from services.subprocess_runner import ToolUnavailable
 
         raise ToolUnavailable("rarfile is required to read .rar archives")
-    with rarfile.RarFile(first_volume, "r") as rf:  # type: ignore[name-defined]
+    versioned: list[str] = []
+
+    def on_header(header) -> None:
+        # Every header, the versions rarfile drops from infolist included.
+        if _versioned_entry(header):
+            versioned.append(str(getattr(header, "filename", "") or "?"))
+
+    import rarfile as rar  # optional backend: HAS_RAR was checked above
+
+    with rar.RarFile(first_volume, "r", info_callback=on_header) as rf:
         if rf.strerror():
             raise IncompleteArchive(f"{first_volume}: {rf.strerror()}")
         members = [
@@ -619,4 +681,7 @@ def read_rar_set(first_volume: str) -> RarSet:
             )
             for info in rf.infolist()
         ]
-        return RarSet(members, bool(rf.needs_password()), list(rf.volumelist()))
+        return RarSet(
+            members, bool(rf.needs_password()), list(rf.volumelist()),
+            tuple(dict.fromkeys(versioned)),
+        )

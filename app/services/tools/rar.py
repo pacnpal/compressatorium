@@ -17,12 +17,7 @@ from pathlib import Path
 
 from fastapi.concurrency import run_in_threadpool
 from models import RarInfo
-from services.archive_members import (
-    RarVolumesUnknown,
-    later_volume_of,
-    rar_later_volumes,
-    rar_set_volumes,
-)
+from services.archive_members import RarVolumesUnknown, later_volume_of, rar_set_volumes
 from services.rar_extract import (
     RAR_EXTRACT_MODE,
     RAR_INPUT_EXTENSIONS,
@@ -109,14 +104,16 @@ class RarTool(BaseTool):
         # The later volumes of the set the path leads, as its own headers
         # read them: a file merely named like a volume (a stray part4, an
         # unrelated .r00 beside a single-volume .rar) is never a companion,
-        # so no lock, delete plan or delete-source takes it. Headers that
-        # can't be read give none (fail closed). Read only when a file named
-        # like a later volume is there, so a lone .rar costs a few stats.
-        # Headers that can't be read (or not in time) raise CompanionsUnknown:
+        # so no lock, delete plan or delete-source takes it. Names never
+        # decide the other way either: a set whose part2 / .r00 is missing
+        # names no later volume, yet its part1 says more follow. So every
+        # .rar that is not a later volume has its headers read (bounded,
+        # cached against the set's files); a lone .rar reads its own once.
+        # Headers that can't be read whole or in time raise CompanionsUnknown:
         # a listing then shows none, and anything that deletes refuses.
         if Path(path).suffix.lower() not in RAR_INPUT_EXTENSIONS:
             return []
-        if later_volume_of(path) is not None or not rar_later_volumes(path):
+        if later_volume_of(path) is not None:
             return []
         try:
             return rar_set_volumes(path)[1:]

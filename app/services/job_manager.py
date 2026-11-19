@@ -897,6 +897,8 @@ class JobManager:
         owner: Optional[str] = None,
         source_identity: Optional[Dict[str, object]] = None,
         trusted_root: Optional[str] = None,
+        derived_output_path: Optional[str] = None,
+        derive_error: Optional[BaseException] = None,
     ) -> ConversionJob:
         """Queue a job while holding _create_lock (no backpressure check here)."""
         job_id = str(uuid.uuid4())[:8]
@@ -905,6 +907,7 @@ class JobManager:
         output_path = self._resolve_output_locked(
             file_path, mode, output_dir=output_dir, output_path=output_path,
             resolved=reservation.resolved if reservation else None,
+            derived=derived_output_path, derive_error=derive_error,
         )
 
 
@@ -1025,6 +1028,8 @@ class JobManager:
                 delete_snapshot=delete_snapshot,
                 reservation=reservation,
                 source_identity=specs[0].get("source_identity"),
+                derived_output_path=specs[0].get("derived_output_path"),
+                derive_error=specs[0].get("derive_error"),
             )
         return job
 
@@ -1089,6 +1094,8 @@ class JobManager:
                         owner=owner,
                         source_identity=spec.get("source_identity"),
                         trusted_root=spec.get("trusted_root"),
+                        derived_output_path=spec.get("derived_output_path"),
+                        derive_error=spec.get("derive_error"),
                     )
                 )
         return jobs
@@ -1268,6 +1275,58 @@ class JobManager:
         for index, spec in enumerate(wanted):
             spec["source_identity"] = done[index] if index < len(done) else unanswered
 
+    async def _derive_destinations(
+        self, job_specs: List[Dict[str, object]], mode: ConversionMode,
+    ) -> None:
+        """Derive, once, the destination of every spec queued without one,
+        off the event loop and bounded, and carry it in the spec
+        (``derived_output_path``, or ``derive_error`` when the tool refused).
+
+        A tool's ``output_path`` is not pure string work for every tool: the
+        rar tool reads a set's headers to name the file inside. Deriving it on
+        the loop, or again under ``_create_lock``, would block both on a mount
+        that stops answering. The reservation and the queue then use the one
+        answer. A spec that already carries one is left as it is.
+        """
+        pending = [
+            spec for spec in job_specs
+            if spec.get("output_path") is None
+            and "derived_output_path" not in spec and "derive_error" not in spec
+        ]
+        if not pending:
+            return
+        produced: Dict[int, Tuple[Optional[str], Optional[BaseException]]] = {}
+
+        def _derive_all(progress) -> None:
+            for index, spec in enumerate(pending):
+                output_dir = spec.get("output_dir")
+                try:
+                    produced[index] = (self._derive_output(
+                        str(spec["file_path"]), mode,
+                        str(output_dir) if output_dir is not None else None,
+                    ), None)
+                except (KeyError, ValueError) as exc:
+                    produced[index] = (None, exc)
+                progress()
+
+        try:
+            await run_detached_within_stall_bound(
+                _derive_all, what="Naming the outputs",
+                stall=_CANONICAL_PROBE_SECONDS, report_progress=True,
+            )
+        except (RuntimeError, asyncio.TimeoutError, OSError):
+            raise DestinationUnresolvableError(
+                "The storage holding a source stopped responding, so its output "
+                "could not be named. Nothing was queued; try again once the "
+                "volume is back."
+            ) from None
+        for index, spec in enumerate(pending):
+            derived, error = dict(produced).get(index, (None, None))
+            if error is not None:
+                spec["derive_error"] = error
+            elif derived is not None:
+                spec["derived_output_path"] = derived
+
     async def _reservation_keys(
         self, job_specs: List[Dict[str, object]], mode: ConversionMode,
     ) -> _Reservation:
@@ -1291,6 +1350,7 @@ class JobManager:
         extension) is skipped rather than raised on -- the locked pass runs the
         same derivation and produces the caller-facing error there, once.
         """
+        await self._derive_destinations(job_specs, mode)
         # (destination, mode) pairs whose sidecars have to be enumerated.
         wanted: List[Tuple[str, ConversionMode]] = []
         # (source, destination) pairs to hold against the Source's own files.
@@ -1302,16 +1362,10 @@ class JobManager:
             explicit = spec.get("output_path")
             if explicit is not None:
                 destination = str(explicit)
+            elif spec.get("derived_output_path") is not None:
+                destination = str(spec["derived_output_path"])
             else:
-                output_dir = spec.get("output_dir")
-                try:
-                    destination = self._derive_output(
-                        file_path,
-                        mode,
-                        str(output_dir) if output_dir is not None else None,
-                    )
-                except (KeyError, ValueError):
-                    continue
+                continue  # it could not be derived: the locked pass raises why
             paths.append(destination)
             wanted.append((destination, mode))
             if registry.spec(mode.value).kind != ModeKind.COPY:
@@ -1390,8 +1444,17 @@ class JobManager:
         output_dir: Optional[str] = None,
         output_path: Optional[str] = None,
         resolved: Optional[Mapping[str, str]] = None,
+        derived: Optional[str] = None,
+        derive_error: Optional[BaseException] = None,
     ) -> str:
         """The destination this job will write, with the pre-creation guards.
+
+        *derived* / *derive_error* are what ``_reservation_keys`` derived for
+        the spec off the loop (:meth:`_derive_destinations`): used as they are,
+        so nothing is derived again here, under ``_create_lock``. A tool's
+        ``output_path`` may read the Source (the rar tool reads a set's headers
+        to name its output), so deriving here could block the loop with the
+        lock held.
 
         Split out so a batch can be validated in full before a single job is
         created: raising partway through the creation loop left the earlier
@@ -1401,7 +1464,12 @@ class JobManager:
         """
         if output_path is not None:
             return output_path
-        output_path = self._derive_output(file_path, mode, output_dir)
+        if derive_error is not None:
+            raise derive_error
+        output_path = (
+            derived if derived is not None
+            else self._derive_output(file_path, mode, output_dir)
+        )
         # The HTTP routes validate inputs before passing an explicit
         # output_path; direct service callers reach this fallback. Most
         # tools' output_path() raises for an unsupported extension, but
@@ -1468,6 +1536,8 @@ class JobManager:
                 output_dir=str(output_dir) if output_dir is not None else None,
                 output_path=str(explicit) if explicit is not None else None,
                 resolved=reservation.resolved if reservation else None,
+                derived=spec.get("derived_output_path"),
+                derive_error=spec.get("derive_error"),
             )
             if reservation and (file_path, destination) in reservation.onto_source:
                 raise OutputIsSourceError(

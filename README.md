@@ -2645,10 +2645,12 @@ Debian main; the image's `unrar-free` can't read RAR5).
   they are never deleted with the set. Only the volumes the headers name are
   ever locked or deleted.
 - **The output** is the file's own name, in the set's folder (or the output
-  folder you chose). A file already there is never replaced: with the default
-  duplicate setting the job is skipped, and a name that appears while the job
-  runs fails it, and an output that would be one of the set's own volumes is
-  refused. `unar` extracts into a hidden staging folder beside the output
+  folder you chose). When that name is taken, the default duplicate setting
+  skips the job; with overwrite, the existing file is removed before the
+  extraction starts (as for every mode), so a failed extraction leaves it gone.
+  A file that appears at the name while the job runs is never replaced: the
+  job fails. An output that would be one of the set's own volumes is refused,
+  and so is a set that stores older versions of files (`name;1`). `unar` extracts into a hidden staging folder beside the output
   (`.compressatorium-stage/`), and nothing of it is left behind on success or
   failure; after a crash, the next start removes it.
 - **The checks.** `unar` checks every CRC as it extracts; the file is then

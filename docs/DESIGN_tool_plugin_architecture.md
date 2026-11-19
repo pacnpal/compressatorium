@@ -1408,9 +1408,12 @@ candidate; the set's own headers decide what belongs to it:
   raises `RarVolumesUnknown` when the headers can't be read whole, in time,
   or with no probe slot free.
 
-The rar tool's `source_companions` is `rar_set_volumes(first)[1:]`, read only
-when a file named like a later volume is there (a lone `.rar` costs a few
-stats). When the volumes are unknown it raises `tools.base.CompanionsUnknown`,
+The rar tool's `source_companions` is `rar_set_volumes(first)[1:]` for every
+`.rar` that is not a later volume. Names may suggest a set but never prove
+there is none: a set whose `part2` / `.r00` is missing names no later volume,
+yet its first volume's header says more follow, so the headers are always
+read (once per version of the set's files). An incomplete set is unknown, not
+empty. When the volumes are unknown it raises `tools.base.CompanionsUnknown`,
 never `[]`: `registry.source_companions(path)` (a listing, the Library walk,
 in-use tracking) then adds none, while `registry.source_companions(path,
 strict=True)` lets it propagate, so anything that deletes refuses
@@ -1425,6 +1428,21 @@ files. `read_rar_set(first)` is the uncached read an extractor needs and the
 listing cache does not keep: each member's CRC, `is_plain_file`, whether a
 password is needed (for the headers or any member) and the volumes rarfile
 read.
+
+**Every RAR header read is bounded and detached.** `archive_members` reads a
+RAR header in one way only, `_bounded_header_read`: the listing
+(`read_archive_members`), a later volume's flag (`later_volume_of`), a set's
+members (`read_rar_set`, which `rar_extract`'s planning, `converts_path`,
+`convert_refusal`, info and the Round-trip digest use) and its volumes
+(`rar_set_volumes`). It runs through `subprocess_runner.run_detached_blocking`
+under the shared probe ceiling and gives up after `RAR_HEADER_READ_SECONDS`,
+raising `RarVolumesUnknown`. `plan_job` itself runs its blocking steps
+(`converts_path`, `convert_refusal`, the output path, the companion and output
+checks, the delete snapshot) through `off_loop_bounded`, never the shared
+threadpool, so a mount that hangs a header read answers 503 or a skip with the
+reason, and holds no pool worker. (`ArchiveService`'s extraction of a member
+from a `.rar` for another tool's job reads content, not headers, inside that
+job's own bounds.)
 
 **The output is never part of the Source** (every tool, every job creator).
 `output_conflicts.output_is_part_of_source(output, source)`: the output may

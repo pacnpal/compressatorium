@@ -19,16 +19,25 @@
   name: only the volumes the headers name are ever locked or deleted, so a
   stray `Game.part4.rar` or an unrelated `Game.r00` stays. No conversion's
   output may be its own source or one of the source's files (a later volume, a
-  split dump's part); that is refused before the job is queued. A file already at the output name is never replaced. The
-  extraction uses `unar` (new in the image, from Debian main), which reads
-  RAR5 and checks every CRC; the file is checked again against the CRC32 the
-  set records before it is kept, and with delete-source on, the Round-trip
-  compares its size and CRC32 with the set's before any volume goes; this mode
-  has no container-only option, since the file has no container of its own to
-  check. The API
-  takes it as `POST /api/jobs` with `"mode": "rar_extract"`, and the CLI as
-  `compressatorium convert --to rar_extract`. `UNAR_PATH` sets where `unar`
-  is; without it the RAR sets tool is hidden and every other tool stays.
+  split dump's part); that is refused before the job is queued. A set that
+  stores older versions of files (`name;1`) is refused too. When the output
+  name is taken, the default duplicate setting skips the job; with overwrite,
+  the existing file is removed before the extraction starts, as for every mode,
+  so a failed extraction leaves it gone. A file that appears at the output
+  name while the job runs is never replaced: the job fails. The extraction
+  uses `unar` (new in the image, from Debian main), which reads RAR5 and
+  checks every stored hash; when the set records a CRC32, the file is checked
+  again against it before it is kept, and with delete-source on, the
+  Round-trip compares its size and CRC32 with the set's before any volume
+  goes. This mode has no container-only option, since the file has no
+  container of its own to check. A RAR5 set that stores only a BLAKE2 hash
+  (no CRC32) is extracted on `unar`'s own hash check and a size check, with
+  no CRC32 comparison, and its delete-source always keeps the volumes: the
+  Round-trip has no CRC32 to compare. The API takes it as `POST /api/jobs`
+  with `"mode": "rar_extract"`, and the CLI as
+  `compressatorium convert --to rar_extract`. `UNAR_PATH` (default `unar`, on
+  `PATH`) sets where `unar` is; the RAR sets tool is hidden only when `unar`
+  can't be found there or isn't executable, and every other tool stays.
   `.nfo`, `.sfv`, `.txt` and `.url` files still show in the file list.
 
 - **Patch a cartridge ROM with an IPS or BPS patch** (#428). The file list's

@@ -97,6 +97,29 @@ def _rename_rar4(data: bytearray, old: bytes, new: bytes) -> None:
         pos += head_size + add
 
 
+def flag_rar4_member(volume: Path, name: str, flag: int) -> None:
+    """Set *flag* on member *name*'s file header in one RAR 2.9 volume, header
+    CRC recomputed (``0x0800`` marks an old version of a file, ``name;1``)."""
+    data = bytearray(volume.read_bytes())
+    stored = name.encode().replace(b"/", b"\\")
+    pos = len(_RAR4_SIG)
+    while pos + 7 <= len(data):
+        kind, flags, head_size = struct.unpack_from("<BHH", data, pos + 2)
+        add = 0
+        if flags & 0x8000:
+            add = struct.unpack_from("<I", data, pos + 7)[0]
+        if kind == 0x74 and stored in bytes(data[pos:pos + head_size]):
+            struct.pack_into("<H", data, pos + 3, flags | flag)
+            crc = zlib.crc32(bytes(data[pos + 2:pos + head_size])) & 0xFFFF
+            struct.pack_into("<H", data, pos, crc)
+            volume.write_bytes(bytes(data))
+            return
+        if kind == 0x7B:
+            break
+        pos += head_size + add
+    raise ValueError(f"{name} has no file header in {volume}")
+
+
 def rename_member(volumes: list[Path], old: str, new: str) -> None:
     """Rename member *old* to *new* (same length) in every volume's headers."""
     old_b, new_b = old.encode(), new.encode()

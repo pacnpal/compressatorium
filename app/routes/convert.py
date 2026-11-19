@@ -764,7 +764,7 @@ async def plan_job(
         output_name = archive_service._output_name_for_member(internal_path)
         # Off the event loop: output_path() is pure string work for most tools,
         # but romz extract peeks inside the archive to derive the ROM's name.
-        output_path = await run_in_threadpool(
+        output_path = await off_loop_bounded(
             _get_output_path, mode, output_name, effective_output_dir,
             treat_as_stem=True,
         )
@@ -817,12 +817,12 @@ async def plan_job(
         # default extension-match refinement does not describe it. Runs off the
         # event loop — the probe stats the sibling primary.
         tool = registry.for_mode(mode)
-        if not await run_in_threadpool(tool.converts_path, file_path):
+        if not await off_loop_bounded(tool.converts_path, file_path):
             # The tool may name what it found (the files a RAR set holds),
             # which says more than the reason's fixed message.
             raise SkipFile(
                 _not_convertible_reason(mode, spec.tool_id),
-                detail=await run_in_threadpool(tool.convert_refusal, file_path),
+                detail=await off_loop_bounded(tool.convert_refusal, file_path),
             )
 
     # A multi-file source drags in siblings the request never named, and the
@@ -833,7 +833,7 @@ async def plan_job(
     # the configured volumes and fold its bytes into the output. Registry-driven
     # and a no-op for the eight single-file tools (`source_companions` is `[]`).
     # Off the event loop: it stats and resolves each companion.
-    if not await run_in_threadpool(
+    if not await off_loop_bounded(
         source_companions_are_safe, file_path, mode,
     ):
         raise SkipFile(SkipReason.SOURCE_COMPANION_UNSAFE)
@@ -846,7 +846,7 @@ async def plan_job(
         # existing same-stem file could drive duplicate_action=overwrite to
         # delete that unrelated file before convert() ever validates.
         try:
-            await run_in_threadpool(
+            await off_loop_bounded(
                 romz_service._single_rom_member, file_path,
             )
         except Exception as exc:
@@ -863,7 +863,7 @@ async def plan_job(
     if output_path is None:
         effective_output_dir = output_dir or archive_source_dir
         # Off the event loop: romz extract reads the archive to name its output.
-        output_path = await run_in_threadpool(
+        output_path = await off_loop_bounded(
             _get_output_path, mode, file_path, effective_output_dir,
         )
         base_output_path = output_path
@@ -910,7 +910,7 @@ async def plan_job(
     delete_snapshot = None
     if delete_on_verify:
         try:
-            delete_snapshot = await run_in_threadpool(
+            delete_snapshot = await off_loop_bounded(
                 build_delete_snapshot, file_path,
             )
         except ValueError as exc:
@@ -930,13 +930,13 @@ async def plan_job(
 async def _planned_output_path(mode: str, file_path: str, output_dir: str | None) -> str:
     """The output a conversion of *file_path* would be planned to write."""
     if "::" not in file_path:
-        return await run_in_threadpool(_get_output_path, mode, file_path, output_dir)
+        return await off_loop_bounded(_get_output_path, mode, file_path, output_dir)
     # An archive member is named from its internal filename and lands beside
     # the archive unless an output folder was chosen. Off the event loop: romz
     # extract reads the archive to name its output.
     archive_path, internal_path = file_path.split("::", 1)
     output_name = archive_service._output_name_for_member(internal_path)
-    return await run_in_threadpool(
+    return await off_loop_bounded(
         _get_output_path, mode, output_name, output_dir or os.path.dirname(archive_path),
         treat_as_stem=True,
     )

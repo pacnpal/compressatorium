@@ -844,7 +844,7 @@ def test_an_unreadable_set_is_read_once_per_version(tmp_path, monkeypatch):
         calls.append(path)
         raise archive_members.IncompleteArchive("a volume is missing")
 
-    monkeypatch.setattr(archive_members, "read_rar_set", broken)
+    monkeypatch.setattr(archive_members, "_read_rar_set_now", broken)
 
     for _ in range(3):
         with pytest.raises(archive_members.RarVolumesUnknown):
@@ -868,7 +868,7 @@ def test_a_header_read_that_hangs_lists_no_companions_and_blocks_deletes(
         release.wait(5)
         raise archive_members.IncompleteArchive("never answered")
 
-    monkeypatch.setattr(archive_members, "read_rar_set", hangs)
+    monkeypatch.setattr(archive_members, "_read_rar_set_now", hangs)
     monkeypatch.setattr(archive_members, "RAR_HEADER_READ_SECONDS", 0.05)
     try:
         # A listing: no companions, the volumes stay listed.
@@ -1067,4 +1067,183 @@ async def test_a_sweep_skips_that_source_and_queues_the_rest(
     assert [j.file_path for j in queued] == [str(fine[0])]
     assert not result["errors"], result
     assert result["platforms"][0]["onto_source"] == [onto[0].name]
+    reset_db_engine()
+
+
+# --------------------------------------------------------------------------- #
+# Codex on #503: a name never proves a set has no companions, and every RAR
+# header read is bounded and detached.
+# --------------------------------------------------------------------------- #
+
+
+@SETS
+def test_a_missing_first_later_volume_blocks_the_delete_plan(tmp_path, names):
+    from services.rar_extract import RarSetRefused
+    from services.tools import registry
+    from services.tools.base import CompanionsUnknown
+    from utils.delete_plan import build_delete_plan
+
+    volumes = payload_set(names, tmp_path)
+    volumes[1].unlink()  # part2 / .r00 gone, part3 / .r01 still there
+
+    with pytest.raises(CompanionsUnknown):
+        registry.source_companions(str(volumes[0]), strict=True)
+    plan = build_delete_plan(str(volumes[0]))
+    assert plan["errors"], plan  # never part1 alone, orphaning the rest
+    with pytest.raises(RarSetRefused, match=volumes[1].name.replace(".", r"\.")):
+        _service().plan(str(volumes[0]))
+
+
+def test_a_lone_rar_is_read_not_judged_by_its_name(tmp_path, monkeypatch):
+    from services import archive_members
+    from services.tools import registry
+
+    (single,) = copy_set(("rar5-dups.rar",), tmp_path)
+    single = single.rename(tmp_path / "Game.rar")
+    calls = []
+    real = archive_members._read_rar_set_now
+
+    def counting(path):
+        calls.append(path)
+        return real(path)
+
+    monkeypatch.setattr(archive_members, "_read_rar_set_now", counting)
+
+    assert registry.source_companions(str(single), strict=True) == []
+    assert calls == [str(single)]  # its headers decided, not its name
+
+
+@pytest.mark.asyncio
+async def test_a_hung_header_read_in_planning_is_bounded_and_off_the_pool(
+    tmp_path, monkeypatch,
+):
+    import threading
+    import time
+
+    from fastapi import HTTPException
+    from routes import convert as convert_routes
+    from routes import volume_guard
+    from services import archive_members
+
+    from app.models import ConversionMode, DuplicateAction, JobCreateRequest
+
+    volumes = payload_set(RAR5_SET, tmp_path)
+    release = threading.Event()
+
+    def hangs(path):
+        release.wait(10)
+        raise archive_members.IncompleteArchive("never answered")
+
+    def no_pool(*_a, **_k):
+        raise AssertionError("planning a RAR set must not use the shared threadpool")
+
+    monkeypatch.setattr(archive_members, "_read_rar_set_now", hangs)
+    monkeypatch.setattr(archive_members, "_needs_first_volume", lambda *_a: False)
+    monkeypatch.setattr(archive_members, "RAR_HEADER_READ_SECONDS", 0.2)
+    monkeypatch.setattr(volume_guard, "VOLUME_PROBE_TIMEOUT_SECONDS", 2.0)
+    monkeypatch.setattr(convert_routes, "run_in_threadpool", no_pool)
+    started = time.monotonic()
+    try:
+        with pytest.raises(HTTPException) as caught:
+            await convert_routes.create_job(JobCreateRequest(
+                file_path=str(volumes[0]), mode=ConversionMode("rar_extract"),
+                duplicate_action=DuplicateAction.SKIP,
+            ))
+    finally:
+        release.set()
+    assert time.monotonic() - started < 3.0
+    assert caught.value.status_code in (422, 503)
+
+
+# --------------------------------------------------------------------------- #
+# CodeRabbit on #503: versioned entries, the signature's bound, and the
+# destination derived once, off the loop.
+# --------------------------------------------------------------------------- #
+
+
+def test_a_set_with_a_versioned_entry_is_refused(tmp_path):
+    from services.rar_extract import RarSetRefused
+
+    from .rar_fixtures import flag_rar4_member
+
+    volumes = payload_set(RAR4_SET, tmp_path)
+    # smallfile.txt becomes an old version (`name;1`): rarfile leaves it out
+    # of infolist, unar would still write it.
+    flag_rar4_member(volumes[2], SMALL, 0x0800)
+
+    with pytest.raises(RarSetRefused, match=r"(?i)version.*smallfile"):
+        _service().plan(str(volumes[0]))
+
+
+def test_a_rar5_version_record_marks_a_versioned_entry():
+    from types import SimpleNamespace
+
+    import rarfile
+    from services.archive_members import _versioned_entry
+
+    rar5_old = SimpleNamespace(
+        block_type=rarfile.RAR5_BLOCK_FILE, file_version=(0, 1), filename="a.bin",
+    )
+    rar5_now = SimpleNamespace(
+        block_type=rarfile.RAR5_BLOCK_FILE, file_version=None, filename="a.bin",
+    )
+    rar4_old = SimpleNamespace(
+        type=rarfile.RAR_BLOCK_FILE, flags=rarfile.RAR_FILE_VERSION, filename="b.bin",
+    )
+    rar4_now = SimpleNamespace(type=rarfile.RAR_BLOCK_FILE, flags=0, filename="b.bin")
+
+    assert _versioned_entry(rar5_old) and _versioned_entry(rar4_old)
+    assert not _versioned_entry(rar5_now) and not _versioned_entry(rar4_now)
+
+
+def test_the_set_signature_is_taken_under_the_header_bound(tmp_path, monkeypatch):
+    import threading
+
+    from services import archive_members
+
+    volumes = payload_set(RAR5_SET, tmp_path)
+    release = threading.Event()
+
+    def hangs(path):
+        release.wait(5)
+        return ()
+
+    monkeypatch.setattr(archive_members, "_set_signature", hangs)
+    monkeypatch.setattr(archive_members, "RAR_HEADER_READ_SECONDS", 0.1)
+    try:
+        with pytest.raises(archive_members.RarVolumesUnknown):
+            archive_members.rar_set_volumes(str(volumes[0]))
+    finally:
+        release.set()
+
+
+@pytest.mark.asyncio
+async def test_the_queue_derives_a_destination_once_off_the_loop(
+    tmp_path, monkeypatch, db_path, reset_db_engine,
+):
+    import threading
+
+    from services import db as _db
+    from services.job_manager import job_manager
+    from services.tools import registry
+
+    from app.models import ConversionMode
+
+    _db.init_engine(db_path)
+    volumes = payload_set(RAR5_SET, tmp_path)
+    rar = registry.get("rar")
+    real = type(rar).output_path
+    seen: list[bool] = []
+    loop_thread = threading.current_thread()
+
+    def recording(self, *args, **kwargs):
+        seen.append(threading.current_thread() is loop_thread)
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(type(rar), "output_path", recording)
+
+    jobs = await job_manager.create_batch_jobs([str(volumes[0])], ConversionMode("rar_extract"))
+
+    assert jobs and jobs[0].output_path == str(tmp_path / "bigfile.gba")
+    assert seen == [False]  # once, and never on the event loop (nor under the lock)
     reset_db_engine()

@@ -143,6 +143,13 @@ def plan_set(first_volume: str) -> RarPlan:
         raise RarSetRefused(f"{name} is encrypted; a password-protected set can't be extracted")
     if not members:
         raise RarSetRefused(f"{name} holds no files")
+    if listing.versioned:
+        # rarfile leaves an old version of a file out of its member list, but
+        # unar writes it, past every check below and the free-space sum.
+        raise RarSetRefused(
+            f"{name} stores older versions of files ({_shown(list(listing.versioned))}), "
+            "which this mode does not extract",
+        )
     for member in members:
         try:
             reject_member_traversal(member.name)
