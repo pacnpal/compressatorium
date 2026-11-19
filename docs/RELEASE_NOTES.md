@@ -418,6 +418,13 @@
 
 ### Fixed
 
+- **The sidebar no longer shows tools that are unavailable after a reload** (#496).
+  The sidebar and the dashboard's Quick tools card used to list every tool until
+  the app heard back about which ones can run, then dropped the unavailable ones
+  (Switch with no `prod.keys`, say). They now list no tools until that answer
+  arrives, so an unavailable tool is never drawn and can't be clicked. If the
+  request fails, every tool is shown as before.
+
 - **File info for a junk `.rvz` says it couldn't be read** (#495). For a file
   that isn't a disc image, `dolphin-tool header` exits 0 and prints nothing, so
   File info answered 200 with every field empty. A header read that yields no

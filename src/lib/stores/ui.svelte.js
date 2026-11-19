@@ -32,8 +32,11 @@ class UIStore {
   rulesTarget = $state(null);
   workspaceTool = $state(loadPrimaryTool());
   // Tool ids the backend reports unavailable (e.g. Switch with no prod.keys).
-  // Empty until the first /api/tools fetch, so nothing flickers hidden->shown.
+  // Only meaningful once `toolsKnown`; read the tool list through
+  // `visibleTools`, which draws nothing until then.
   hiddenTools = $state(new Set());
+  // True once the first /api/tools answer (or its failure) has been applied.
+  toolsKnown = $state(false);
 
   // Layout
   sidebarCollapsed = $state(readBool(STORAGE_KEYS.SIDEBAR_COLLAPSED, false));
@@ -70,6 +73,15 @@ class UIStore {
   // Focus signal, bumped on view change so App.svelte can move focus to
   // the main landmark without screen readers losing context.
   focusBump = $state(0);
+
+  /**
+   * The tools to draw (sidebar, quick tools card): none until the backend has
+   * said which can run, so an unavailable tool is never shown and then pulled.
+   */
+  get visibleTools() {
+    if (!this.toolsKnown) return [];
+    return registry.all().filter((t) => !this.hiddenTools.has(t.id));
+  }
 
   /**
    * True when any modal that depends on file-listing state is open.
@@ -164,10 +176,13 @@ class UIStore {
    * Apply the backend's tool-availability report (from GET /api/tools).
    * Hides tools the backend can't run (e.g. Switch without prod.keys), and if
    * the currently selected tool just got hidden, falls back to a visible one.
+   * Passing nothing (the fetch failed) shows every tool. Either way the list
+   * is now known.
    */
   applyToolAvailability(available) {
     const allow = new Set(available ?? [...VALID_TOOLS]);
     this.hiddenTools = new Set([...VALID_TOOLS].filter((id) => !allow.has(id)));
+    this.toolsKnown = true;
     if (this.hiddenTools.has(this.workspaceTool)) {
       const fallback = registry.all().find((t) => !this.hiddenTools.has(t.id));
       if (fallback) this.setWorkspaceTool(fallback.id);
