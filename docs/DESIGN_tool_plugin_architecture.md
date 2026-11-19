@@ -5599,7 +5599,7 @@ caller of the same seams the routes use, not a second conversion path:
 | Find Images | `routes.files.scan_tree`: the `GET /files/search` walk (subfolders, convertible folders, archive members as `archive::member`). `purpose="verify"` also lists every file some tool can check though none converts it (`.chd`), from `tools_verifying_path` |
 | `--to <format>` | `platform_detect.format_route` / `format_candidates` (below) |
 | `--auto` | `routes.convert.plan_auto_targets` (`plan_auto` plus `checked_compression`), the Auto route's planner |
-| Plan | `routes.convert.prepare_batch`: `plan_job` per file; a `BatchSkip` each skip, CLI-reported |
+| Plan | `routes.convert.prepare_batch`: `plan_job` per file; each skip a `BatchSkip` (#504) |
 | Queue and run | `routes.convert.queue_prepared` into the `job_manager` singleton, started with `process_queue()`, emptied with `JobManager.drain()` and stopped with `JobManager.shutdown()`. Fed in chunks below `max_queue_depth` when it is set. A group the planner refuses is re-planned one Image at a time, so only the Image at fault fails |
 | Delete | `JobManager._delete_check`, so `--delete-source` gets the Round-trip check where the mode has one and `--container-only` is the job's `container_only` |
 | Ledger | `ledger.record` as a terminal listener, as in `main.py` |

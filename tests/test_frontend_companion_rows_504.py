@@ -110,7 +110,9 @@ def test_the_toast_names_the_first_few_reasons_and_counts_the_rest(tmp_path):
 const paths = ['/v/a.iso', '/v/b.iso', '/v/c.iso', '/v/d.iso', '/v/e.iso', '/v/k.iso'];
 jobs.createBatch = async () => ({
   jobs: [{ id: 'j', file_path: '/v/k.iso', output_path: '/v/k.chd' }],
-  skipped: paths.slice(0, 5).map((p) => ({ path: p, code: 'file_not_found', reason: 'File not found' })),
+  skipped: paths.slice(0, 5).map((p) => ({
+    path: p, code: 'file_not_found', reason: 'File not found',
+  })),
 });
 await store.submit(paths);
 process.stdout.write(JSON.stringify({ seen }));
