@@ -70,6 +70,7 @@ from services.subprocess_runner import (
 from utils.path_utils import (
     match_extension,
 )
+from utils.sizes import format_size
 
 from config import settings
 
@@ -172,10 +173,6 @@ _INFO_LINE = re.compile(r"^\s+([^:]+):\s+(.+?)\s*$")
 class RomConvertoError(ValueError):
     """rom-converto refused a file (its own ``Error:`` line is the message)."""
 
-
-def _format_size(size: int) -> str:
-    size_mb = size / (1024 * 1024)
-    return f"{size_mb:.2f} MB" if size_mb < 1024 else f"{size_mb / 1024:.2f} GB"
 
 
 def _env() -> dict[str, str]:
@@ -641,7 +638,7 @@ class RomConvertoService:
         return {
             "file": file_path,
             "size": size,
-            "size_display": _format_size(size),
+            "size_display": format_size(size),
             "format": fields.get("format") or "ZAR (ZArchive)",
             "extension": ZAR_OUTPUT_EXTENSION,
             "compressed": True,
@@ -649,7 +646,7 @@ class RomConvertoService:
             "file_count": _int_or_none(fields.get("files")),
             "directory_count": _int_or_none(fields.get("directories")),
             "logical_size": logical,
-            "logical_size_display": _format_size(logical) if logical is not None else None,
+            "logical_size_display": format_size(logical) if logical is not None else None,
             "blocks": _int_or_none(fields.get("blocks")),
             "boot_executable": None if boot is None else boot == "present",
         }

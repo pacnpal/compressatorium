@@ -1097,7 +1097,11 @@ def source_companions_are_safe(
     if sheet_reference_problems(file_path, within=within):
         return False
 
-    for companion in _tool_companions(file_path, mode):
+    try:
+        companions = _tool_companions(file_path, mode)
+    except OSError:  # the tool can't tell its set's members now: not proven safe
+        return False
+    for companion in companions:
         if os.path.islink(companion):
             return False
         # The one confined resolver, as for a sheet's tracks: the companion's

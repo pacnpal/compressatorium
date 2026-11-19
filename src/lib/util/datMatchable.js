@@ -5,8 +5,10 @@
 // extensions the registry lets a user filter by (`registry.allFilterableExts()`).
 
 /** Archive containers. The matcher hashes their compressed bytes, which no DAT
- * lists, so an archived ROM would be recorded as a miss (Codex on PR #442). */
-export const ARCHIVE_EXTS = new Set(['.7z', '.zip']);
+ * lists, so an archived ROM would be recorded as a miss (Codex on PR #442).
+ * `.rar` too: a RAR set's later volume lists as a plain file row (#369), and
+ * the rar tool makes `.rar` a source extension (#476). */
+export const ARCHIVE_EXTS = new Set(['.7z', '.zip', '.rar']);
 
 /**
  * Whether the DAT matcher can identify *entry*, a listing row.

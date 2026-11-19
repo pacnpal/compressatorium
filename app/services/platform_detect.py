@@ -773,6 +773,18 @@ def _can_read(spec, path: str, tools_registry) -> bool:
     return bool(tool.converts_path(disk_path))
 
 
+def _convert_refusal(mode: str, path: str, tools_registry) -> str | None:
+    """Why *mode*'s tool refused a file on disk it reads by extension, in its
+    own words (``ToolPlugin.convert_refusal``), or None."""
+    disk_path, member = _split_member(path)
+    if member:
+        return None
+    tool = tools_registry.for_mode(mode)
+    if match_extension(disk_path, tool.input_extensions) is None:
+        return None
+    return tool.convert_refusal(disk_path)
+
+
 def _best_reader(path: str, specs, tools_registry, reads_of) -> tuple:
     """``(spec, matched extension)`` of the most specific reader of ``path``.
 
@@ -952,7 +964,10 @@ def format_route(
         name = path.split("::", 1)[-1]
         ext = os.path.splitext(name)[1].lower() or name
         if mode is not None:
-            return None, f"{mode} does not read {ext} files"
+            # A file the mode's tool refused on content may say why (the
+            # files a RAR set holds, #476), which beats naming the extension.
+            refusal = _convert_refusal(mode, path, tools_registry)
+            return None, refusal or f"{mode} does not read {ext} files"
         return None, f"No {fmt} target reads {ext} files"
     if platform:
         served = [s for s in candidates if _serves(s, platform, tools_registry)]

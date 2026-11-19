@@ -15,6 +15,7 @@ from logging_setup import get_logger
 from models import InputKind
 from utils.path_utils import match_extension, path_presence
 
+from .base import CompanionsUnknown
 from .spec import DeleteProof
 
 if TYPE_CHECKING:
@@ -147,6 +148,17 @@ class ToolRegistry:
         """
         try:
             return bool(self.spec(mode).supports_round_trip)
+        except KeyError:
+            return False
+
+    def mode_round_trip_required(self, mode: str) -> bool:
+        """Whether a delete-source job in this mode runs the Round-trip even
+        with the container-only opt-out (``ModeSpec.round_trip_required``).
+
+        Unknown modes answer False.
+        """
+        try:
+            return bool(self.spec(mode).round_trip_required)
         except KeyError:
             return False
 
@@ -414,17 +426,29 @@ class ToolRegistry:
         """
         return [t for t in self._tools.values() if t.converts_path(path)]
 
-    def source_companions(self, path: str) -> list[str]:
+    def source_companions(self, path: str, *, strict: bool = False) -> list[str]:
         """Every sibling file the tools consuming ``path`` also read.
 
         Union across tools (deduped, registration order), never including
         ``path`` itself. The delete-on-verify plan adds these so removing a
         multi-file source takes the whole set. Empty for ordinary single-file
         inputs. May do disk I/O; call it off the event loop.
+
+        A tool that can't tell its set's members now raises
+        ``CompanionsUnknown``. *strict* (anything that deletes, or decides an
+        output may not be part of its Source) lets it propagate, so the caller
+        refuses; otherwise (a listing) that tool adds nothing.
         """
         seen: list[str] = []
         for tool in self._tools.values():
-            for companion in tool.source_companions(path):
+            try:
+                found = tool.source_companions(path)
+            except CompanionsUnknown:
+                if strict:
+                    raise
+                logger.debug("Companions of %s unknown to %s", path, tool.id, exc_info=True)
+                continue
+            for companion in found:
                 if companion != path and companion not in seen:
                     seen.append(companion)
         return seen

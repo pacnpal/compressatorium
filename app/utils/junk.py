@@ -48,6 +48,22 @@ def is_junk_entry(name: str) -> bool:
     return any(lower.startswith(prefix) for prefix in _JUNK_PREFIXES)
 
 
+# Files a release ships beside its payload: the scene's .nfo, the .sfv of
+# checksums, a readme .txt, a download .url (#476). Real files a user may want
+# to see, so never hidden from a listing (``is_junk_entry``), but never the
+# thing an archive was made to carry either.
+RELEASE_SIDECAR_SUFFIXES = frozenset({".nfo", ".sfv", ".txt", ".url"})
+
+
+def is_archive_sidecar(path: str) -> bool:
+    """True for an archive member that is never its payload: junk
+    (:func:`is_junk_path`) or a release sidecar (``.nfo``, ``.sfv``, ``.txt``,
+    ``.url``). What a single-file extract counts its payload without."""
+    if is_junk_path(path):
+        return True
+    return PurePosixPath(path).suffix.lower() in RELEASE_SIDECAR_SUFFIXES
+
+
 def is_junk_path(path: str) -> bool:
     """True when any component of an archive member path is a junk entry.
 

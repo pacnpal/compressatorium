@@ -29,6 +29,7 @@ from services.subprocess_runner import (
     remove_partial_output,
 )
 from utils.path_utils import match_extension
+from utils.sizes import format_size
 
 # Compound source extensions: the meaningful part is ``.nkit``, but the
 # container it rides in decides how nkit2iso reads it (a plain nkit byte stream
@@ -88,11 +89,6 @@ logger = get_logger("nkit2iso")
 class NkitHeaderError(ValueError):
     """``path`` is not a readable NKit v01 GameCube/Wii image."""
 
-
-def _format_size(size: int) -> str:
-    """MB/GB display string, matching the other tools' info payloads."""
-    size_mb = size / (1024 * 1024)
-    return f"{size_mb:.2f} MB" if size_mb < 1024 else f"{size_mb / 1024:.2f} GB"
 
 
 def _gcz_first_block(handle, file_size: int) -> bytes:
@@ -332,7 +328,7 @@ class Nkit2IsoService:
         return {
             "file": file_path,
             "size": file_size,
-            "size_display": _format_size(file_size),
+            "size_display": format_size(file_size),
             "format": f"NKit v01 ({header['platform']})",
             "extension": (
                 match_extension(file_path, NKIT2ISO_CONVERTIBLE_EXTENSIONS)
@@ -346,7 +342,7 @@ class Nkit2IsoService:
             "disc_number": header["disc_number"],
             "disc_version": header["disc_version"],
             "restored_size": restored or None,
-            "restored_size_display": _format_size(restored) if restored else None,
+            "restored_size_display": format_size(restored) if restored else None,
             "crc32": header["crc32"],
             "ratio": ratio,
         }

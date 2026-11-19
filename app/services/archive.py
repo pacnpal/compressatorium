@@ -244,6 +244,32 @@ class ArchiveSafetyRefused(ValueError):
         self.rule = rule
 
 
+def reject_member_traversal(name: str) -> None:
+    """Refuse a member that could escape or collide inside an extraction dir.
+
+    The rule every tool that unpacks a whole archive into a private folder
+    applies to every member (romz's ``7z x``, the rar tool's ``unar``, #476):
+    an absolute path or **any** ``..`` component, not just a path whose
+    normalized form still escapes the root. The extractor recreates the literal
+    path, so a sidecar like ``__MACOSX/../Game.gba`` (which normalizes to
+    ``Game.gba``) would land on the payload's own temp path and overwrite it
+    before it is published.
+
+    Deliberately narrower than ``ArchiveService._validate_member`` (which also
+    bans ``:`` and ``\\`` for Windows portability): on a POSIX volume a loose
+    ROM may legally be named ``Game:1.gba`` or ``Game\\x.gba``, and romz must
+    round-trip the archive it produced. Raises :class:`ArchiveSafetyRefused`.
+    """
+    stripped = name.rstrip("/")
+    # POSIX separator only: `\\` is a legal filename character here, not a
+    # path component boundary.
+    if stripped.startswith("/") or ".." in stripped.split("/"):
+        raise ArchiveSafetyRefused(
+            f"Unsafe archive member path: {name}",
+            rule=f"an absolute or .. member path ({name})",
+        )
+
+
 class ArchiveService:
     """Service for handling compressed archives."""
 

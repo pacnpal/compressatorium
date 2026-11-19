@@ -1319,11 +1319,14 @@ write outside the temp dir. `ArchiveService._validate_member` is the strict,
 Windows-portable guard, but it also bans `:` and `\\` — characters a loose ROM
 on a POSIX volume may legally contain — so a tool that must **round-trip** the
 archive it produced (verify/extract its own output) should instead block only
-the actual escape vectors (absolute path, `..` component) via a local check
-like `RomzService._reject_traversal`, which `os.path.normpath`s the member and
-rejects only absolute / `..`-leading results. Such tools must also forbid
-symlink members (zip `external_attr` `S_ISLNK` / py7zr `FileInfo.is_symlink`),
-since `7z x` restores symlinks as links.
+the actual escape vectors (absolute path, any `..` component) with the shared
+`services.archive.reject_member_traversal(name)`, which raises
+`ArchiveSafetyRefused`. romz (`7z x`) and the rar tool (`unar`, #476) both call
+it on every member. Such tools must also forbid symlink members (zip
+`external_attr` `S_ISLNK` / py7zr `FileInfo.is_symlink`), since `7z x` restores
+symlinks as links; the rar tool refuses any member that is not a plain file
+(`RarSetMember.is_plain_file`: a RAR5 hard link or file copy reads as a file to
+rarfile, so the redirect is checked too, and a Unix-mode device or FIFO).
 
 ### 3.3.2 Shared cached archive member reader (`services/archive_members.py`)
 
@@ -1378,6 +1381,97 @@ summarizes only the **visible page** of archive rows (re-hydrating on
 page/sort/filter changes), and the endpoint additionally caps each batch at
 `MAX_ARCHIVE_SUMMARY_PATHS`. The summary batch and the romz gate share the
 reader's cache, so hydrating a folder opens each archive at most once.
+
+**RAR sets (#476).** A multi-volume RAR is one archive in several files.
+`archive_members` owns the set, in one place. A name is only ever a
+candidate; the set's own headers decide what belongs to it:
+
+- `is_rar_volume_name(name)`: `.rar` (`.partN.rar` included) or an old-style
+  `.r00` … `.s99`. Only `r` and `s`: a wider range reads ROMs as volumes
+  (`.t64`, `.v64`, `.z64`), and a test holds every registered input extension
+  but `.rar` out of it.
+- `later_volume_of(path)` names the first volume of a later one, for both
+  namings, confirmed by rarfile's `NeedFirstVolume`.
+- `rar_later_volumes(first)` lists the files *named* like the later volumes,
+  by name plus one stat each, stopping at the first gap. Names only: a stray
+  `x.part4.rar` or an unrelated `x.r00` is named like a volume too.
+- `rar_set_volumes(first)` is the answer to "is this file part of that set":
+  the volumes the headers read (rarfile follows each volume's "more volumes"
+  flag). The read runs through `subprocess_runner.run_detached_blocking`
+  (the synchronous form of `run_detached_bounded`, under the same ceiling
+  every detached probe shares) bounded by `RAR_HEADER_READ_SECONDS`, the bound
+  a route's Volume work gets. Both a list and an unreadable answer are cached
+  against the stat of *every file named like the set* (the first volume and
+  each `.partN.rar` / `.rNN` after it), so a set read while a volume was
+  still downloading is read again as soon as it arrives, and a broken set is
+  not reopened on every call. A read that ran out of time is not kept. It
+  raises `RarVolumesUnknown` when the headers can't be read whole, in time,
+  or with no probe slot free.
+
+The rar tool's `source_companions` is `rar_set_volumes(first)[1:]` for every
+`.rar` that is not a later volume. Names may suggest a set but never prove
+there is none: a set whose `part2` / `.r00` is missing names no later volume,
+yet its first volume's header says more follow, so the headers are always
+read (once per version of the set's files). An incomplete set is unknown, not
+empty. So is any partial read (`archive_members.incomplete_reason`): rarfile
+stops without an error at headers it can't decrypt, reporting a password is
+needed, no members and only the volumes it got through, and a read that lists
+no members proves nothing either. Such a read is never cached as a complete
+list; `rar_extract` refuses it ("the set's headers are encrypted"), and the
+listing read (`read_archive_members`) raises `IncompleteArchive` rather than
+showing an encrypted-header archive as empty. When the volumes are unknown it raises `tools.base.CompanionsUnknown`,
+never `[]`: `registry.source_companions(path)` (a listing, the Library walk,
+in-use tracking) then adds none, while `registry.source_companions(path,
+strict=True)` lets it propagate, so anything that deletes refuses
+(`build_delete_plan` reports it as an error), `source_companions_are_safe`
+answers unsafe, and the output guard below treats the output as part of the
+Source. The delete-plan route builds its plans through `off_loop_bounded`. Because `registry.source_companions` is the union over every tool, this
+is what every delete of a `.rar` uses (the generic delete plan, the duplicate
+cleanup, an archive-member job's delete-source), so a file the set never reads
+is never planned for deletion. `rar_extract` also refuses a set whose named
+and read volumes differ in either direction, naming the extra or missing
+files. `read_rar_set(first)` is the uncached read an extractor needs and the
+listing cache does not keep: each member's CRC, `is_plain_file`, whether a
+password is needed (for the headers or any member) and the volumes rarfile
+read.
+
+**Every RAR header read is bounded and detached.** `archive_members` reads a
+RAR header in one way only, `_bounded_header_read`: the listing
+(`read_archive_members`), a later volume's flag (`later_volume_of`), a set's
+members (`read_rar_set`, which `rar_extract`'s planning, `converts_path`,
+`convert_refusal`, info and the Round-trip digest use) and its volumes
+(`rar_set_volumes`). It runs through `subprocess_runner.run_detached_blocking`
+under the shared probe ceiling and gives up after `RAR_HEADER_READ_SECONDS`,
+raising `RarVolumesUnknown`. `plan_job` itself runs its blocking steps
+(`converts_path`, `convert_refusal`, the output path, the companion and output
+checks, the delete snapshot) through `off_loop_bounded`, never the shared
+threadpool, so a mount that hangs a header read answers 503 or a skip with the
+reason, and holds no pool worker. (`ArchiveService`'s extraction of a member
+from a `.rar` for another tool's job reads content, not headers, inside that
+job's own bounds.)
+
+**The output is never part of the Source** (every tool, every job creator).
+`output_conflicts.output_is_part_of_source(output, source)`: the output may
+not be the Source (the archive, for a member) nor any of
+`registry.source_companions(Source, strict=True)` (unknown counts as yes).
+Two callers, one rule. `plan_job` asks it of the *final* output, after the
+duplicate handling, so a skip still says the output exists, a rename's free
+name (`Game_1.rvz` beside `Game.rvz`, Dolphin's same-format re-encode) still
+queues, and an overwrite onto a part answers `OUTPUT_IS_PART_OF_SOURCE`.
+`output_conflicts.resolve_destination`, which Rules sweeps, Inboxes and the
+RomM re-pin planner decide each Source's destination with, answers
+`SKIP_ONTO_SOURCE` for such a Source whatever the policy (ahead of the
+existing-output answer, which would hide it): a sweep counts it as skipped and
+names it in the Platform's `onto_source`, an Inbox holds it with
+`ONTO_SOURCE_REASON`, and the rest of the batch still queues.
+`JobManager._reservation_keys` asks it once more, off the loop, for every spec
+of every batch, and the locked reservation refuses the batch with
+`OutputIsSourceError` before any job is created: a backstop for an answer that
+changed between planning and queueing (the API routes answer 409, a sweep
+records `output_onto_source`). A
+RAR set's file named like its own later volume, or a split dump's part, would
+otherwise wait on its own input lock forever under overwrite, or have a live
+part of the Source cleared.
 
 ### 3.3.3 Cross-tool chaining (`ChainSpec` / `ChainTool`, `services/disk.py`)
 
@@ -3416,6 +3510,16 @@ async def content_digest(self, path, *, cancel_event=None, within=None) -> Conte
   inputs and its output. `registry.mode_supports_round_trip(mode)` reads it.
   `ChainSpec` carries it too: a chain that sets it compares the first step's
   decoded Source with the final output (see "Chains" below).
+- `ModeSpec.round_trip_required` (mirrored as `roundTripRequired`,
+  parity-tested; read through `registry.mode_round_trip_required`) makes the
+  Round-trip the only way a delete-source job in the mode can pass: the
+  container-only opt-out is ignored (`round_trip_applies`, so
+  `delete_check_level` and a Rule's Preview say `round_trip` too), and the
+  convert panel and the Rule editor don't offer the box. For a mode whose
+  output has no container of its own, so its own check proves nothing about
+  its content: the rar tool's one file out of a set (#476), checked by reading
+  it in full. `tests/test_tool_registry.py` accepts such a mode deleting its
+  Source although no `verify_extensions` cover its output (any extension).
 
 **Where it runs.** `JobManager._delete_check` is the one decision point. It runs
 after the container check passes and returns `(check_passed,
@@ -3793,7 +3897,8 @@ declares a different delete proof on the mode contract:
   identity, a retried delete's required check) calls it, as the job does.
 - **The container-only opt-out is a Round-trip opt-out.** It never skips the
   Recognized proof, whatever a request or a Rule stores, and the convert panel
-  and the Rule editor offer the box only for a mode with `supportsRoundTrip`.
+  and the Rule editor offer the box only for a mode with `supportsRoundTrip`
+  and without `roundTripRequired`.
 - `services/recognized.recognize(path, cancel_event=, timeout=)` hashes the
   output with `stream_digest.hash_files` (SHA-1 on a detached thread a cancel
   stops) under the tool's verify bound, looks the hash up with
@@ -9387,6 +9492,18 @@ list — so the secondary parts stay **visible** (you can still see and delete
 them) but are never offered for conversion, the same shape as the
 visible-but-not-convertible archive members in §17.5 of the adding-a-tool guide.
 
+`ToolPlugin.convert_refusal(path) -> str | None` (#476) says *why*
+`converts_path` answered `False`, in the user's words, for a tool that can name
+what it found. `BaseTool` returns `None`. `plan_job` asks it only after
+`converts_path` refused, and `SkipFile(reason, detail=...)` carries the answer:
+the single-job 4xx and the batch's `skipped` map show it in place of the
+reason's fixed `_SKIP_HTTP` message. The CLI's `format_route` (`--to <mode>`)
+says it too in place of "<mode> does not read .ext files". The rar tool is the
+user: its
+`converts_path` is `convert_refusal(path) is None`, and the refusal names the
+files a RAR set holds when it holds more than one, or says it is encrypted, a
+later volume, or missing a volume.
+
 `ToolPlugin.source_companions(path) -> list[str]` is the input-side mirror of
 `companion_outputs`: the sibling files this input also consumes, never including
 `path` itself, `[]` by default. `build_delete_plan` adds
@@ -9830,6 +9947,13 @@ the file against the tool registry (backend `ModeSpec.codecs` and the
 frontend `registry.js` codec lists), so a rename breaks a test, not the picker.
 
 ## Ignored entries (`utils/junk.py`)
+
+`is_archive_sidecar(path)` is the wider predicate for an archive member that is
+never the archive's payload: junk, or a release sidecar (`.nfo`, `.sfv`,
+`.txt`, `.url`, `RELEASE_SIDECAR_SUFFIXES`) that usenet and scene sets ship
+beside the file (#476). Those are real files a user may want to see, so they
+stay out of `is_junk_entry` and keep listing. The rar tool counts a set's
+payload without them.
 
 `is_junk_entry(name)` is the one predicate for names no listing or walk should
 see: OS and NAS metadata, plus RomM's `.romm_tmp_*` converter staging (prefix

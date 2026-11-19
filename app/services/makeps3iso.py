@@ -47,6 +47,7 @@ from services.subprocess_runner import (
     remove_partial_output,
     run_detached,
 )
+from utils.sizes import format_size
 
 # SubprocessRunner "owner" for the shared priority/timeout policy. An optional
 # COMPRESSATORIUM_MAKEPS3ISO_* override takes precedence over the tool-neutral
@@ -354,10 +355,7 @@ class MakePs3IsoService:
                     total += os.path.getsize(os.path.join(root, name))
 
         keys = ps3.ps3_folder_sfo_keys(folder_path)
-        size_mb = total / (1024 * 1024)
-        size_display = (
-            f"{size_mb:.2f} MB" if size_mb < 1024 else f"{size_mb / 1024:.2f} GB"
-        )
+        size_display = format_size(total)
         return {
             "file": folder_path,
             "size": total,

@@ -249,6 +249,7 @@ A plugin subclasses `BaseTool` and provides:
 | `active_pids()` | PIDs for the debug heartbeat |
 | `post_convert(input_path, output_path, mode)` | optional hook, default no-op |
 | `embedded_hashes(path, *, cancel_event=None)` | **optional** DAT-match fast path. Return `(sha1, match_type)` tuples your format already carries / can derive cheaply (so matching skips a full file hash); default `[]` → the caller falls back to a file-level SHA1, which is correct for raw formats. Raise `EmbeddedHashUnavailable` (from `services.tools.base`) when you *should* yield a hash but the attempt failed transiently, so it's recorded as a non-cacheable miss instead of a false negative. |
+| `ModeSpec.round_trip_required` | optional, with `supports_round_trip`. The container-only opt-out never applies: every delete-source job in the mode runs the Round-trip. For a mode whose output has no container of its own to check (any extension), so a delete rests on the content comparison; the registry guard accepts such a mode deleting its Source with no `verify_extensions` for its output. Mirror it as `roundTripRequired` in `registry.js`. The rar tool is the example (#476). |
 | `content_digest(path, *, cancel_event=None)` | **optional** Round-trip check. Return a `ContentDigest(kind, value)` hashing what the file *decodes to*, for both your inputs and your outputs, and set `ModeSpec.supports_round_trip=True` on the modes it covers. Default `None` keeps the container check. Raise `ContentDigestUnavailable` when the hash should exist but could not be read; the Source is then kept. If the output's content can only be hashed from a decoded copy, decode it inside `services.disk.headroom_scratch_dir(prefix, required_bytes)` (headroom-checked, removed on every exit), as chdman does for CD CHDs. See DESIGN §3.3.12. |
 | `embedded_hash_is_exhaustive` | optional flag (default `False`). Set `True` only when your container bytes can never appear in a DAT (e.g. a recompressed image), so a content-hash miss is definitive and the file-level fallback is skipped; leave `False` if your file's own SHA1 might be indexed. |
 
@@ -931,6 +932,12 @@ _NOT_CONVERTIBLE_REASON: dict[str, SkipReason] = {
 }
 ```
 
+When your tool can say *what it found* (a RAR set that holds three files, not
+one), also override `convert_refusal(path)` to return that reason in the
+user's words. `plan_job` asks it after `converts_path` refused, and the 4xx (or
+the batch's `skipped` entry) shows it in place of the fixed message. The rar
+tool does this; its `converts_path` is `convert_refusal(path) is None`.
+
 Everything else is spec-driven:
 
 - **Output path:** `_get_output_path` delegates to
@@ -1244,8 +1251,11 @@ PLUGIN (app/services/tools/<tool>.py)
 [ ] optional: verifies_path() to refine verify_extensions per-file when the
     tool over-claims a container extension (drives FileEntry.verifiable_by)
 [ ] optional: converts_path() / source_companions() when your source is a SET of
-    files (a split dump) — the first keeps the non-primary members visible but
-    non-convertible, the second makes delete-on-verify take the whole set
+    files (a split dump, a multi-volume RAR) — the first keeps the non-primary
+    members visible but non-convertible, the second makes delete-on-verify take
+    the whole set
+[ ] optional: convert_refusal() when a content refusal can name what it found
+    (the route shows it in place of the skip reason's fixed message)
 [ ] optional: delete_on_verify_is_safe() when a job setting can weaken your
     verify (jwud's -noVerify) — the route then rejects that combination
 [ ] optional: source_kept_reason on a mode that never deletes its Source on
@@ -1371,6 +1381,7 @@ have solved the awkward part.
 | …runs **no binary at all**, edits a zip, or reads a user-supplied side input | **exodos** (`services/exodos.py` + `tools/exodos.py`) | A pure-Python tool registered with an empty binary path, gated on an env var (`EXODOS_DOS_DIR`) through `is_ready()` the way nsz is gated on keys, `converts_path()` reading a zip's directory so `plan_job` takes only its own `.zip` files (without `contentRefined`: archive rows carry no `convertible_by`, so the frontend content gate would refuse every zip), and a product written through the shared `services/archive_edit.rewrite_zip` (rename, drop or add members; crash-safe placement). Also a verify that checks CRCs and structure in Python, served through the shared verify routes (`_VERIFY_CONFIG["exodos"]`) and passed to `rewrite_zip` as its `check`, so every job checks its own product before keeping it; and a verifiable product with no Info (`getInfo` left undefined, so `registry.infoToolForRow` offers no Info action). |
 | …is one binary that converts **several unrelated formats**, ships as a **prebuilt per-arch release binary**, or writes its product under a **temp name of its own** | **rom_converto** (`services/rom_converto.py` + `tools/rom_converto.py`) | Per-mode `platform_slugs` under one tool (§20), a builder stage that maps `TARGETARCH` onto upstream's asset names and checks a pinned SHA-256 per arch, a readiness probe that runs the binary once (`--version`) so a broken download is "not ready" with its reason, `files_in_folder` over a private work folder as the growth signal, and `source_kept_reason` for a mode that is checkable but never deletes its Source. |
 | …has a **compound** extension, or info-but-no-verify | **nkit** (`services/nkit2iso.py` + `tools/nkit2iso.py`) | Declaring `.nkit.iso`/`.nkit.gcz` against the shared suffix match (§18), a Go builder stage in the Dockerfile, a one-direction tool that registers an info route but `verify_extensions = frozenset()` (claiming a *shared* extension like `.iso` for verify would hijack every other tool's rows — see the plugin docstring), an `info()` that parses a header in Python because the binary has no info subcommand, and a service that rewrites the runner's terminal message when the tool reports a caveat. |
+| …unpacks a **multi-file archive set** to the one file inside it, writing into a private folder | **rar** (`services/rar_extract.py` + `tools/rar.py`) | A set as one Source: `converts_path` for the first volume only and `source_companions` from the volumes the set's own headers read (`archive_members.rar_set_volumes`, never names alone), so the locks and the delete plan take every volume and nothing else. A plan read from the headers in Python before the binary runs (`read_rar_set`), refusing in words through `convert_refusal`: exactly one payload besides `utils.junk.is_archive_sidecar`, the shared `reject_member_traversal`, no links. A product written into a staging slot (`services.staging`: hidden, journaled, swept at startup after a crash), checked again (size, CRC32) and moved with `OutputPlacement` (never over a file). A loose output whose own check reads it in full, with the Round-trip (`content_digest`: size and CRC32 from the headers vs. hashed) as the proof for delete-source. |
 
 For a **binary-backed** tool — every row above except **chain** — the *shape* of
 the work is the same: a service that owns the subprocess, a plugin that owns the

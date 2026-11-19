@@ -64,6 +64,7 @@ class ConversionMode(str, Enum):
     CIA_TO_CCI = "cia_to_cci"
     CCI_TO_CIA = "cci_to_cia"
     EXODOS_REPACK = "exodos_repack"
+    RAR_EXTRACT = "rar_extract"
     METADATA_SCAN = "metadata_scan"
     DAT_MATCH = "dat_match"
     # A check Rule's run (#305): Verify over the Images it picked. An external
@@ -517,6 +518,15 @@ class RomzInfo(BasicFileInfo):
     contained_name: str | None = None
     original_size: int | None = None
     ratio: str | None = None
+
+
+class RarInfo(BasicFileInfo):
+    """Information about a RAR set, read from its first volume's headers (#476)."""
+    # The one file the set holds and its size, None when the set does not plan
+    # (more than one file, encrypted, a volume missing); how many volumes.
+    contained_name: str | None = None
+    original_size: int | None = None
+    volumes: int = 1
 
 
 class JwudInfo(BasicFileInfo):

@@ -80,6 +80,7 @@ def _programs_as_in_the_image():
         needed.path
         for tool_id in (
             "chdman", "dolphin", "z3ds", "cso", "romz", "makeps3iso", "xiso", "nkit",
+            "rar",
         )
         for needed in registry.get(tool_id).required_binaries
     }

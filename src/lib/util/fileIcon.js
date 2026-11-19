@@ -39,6 +39,7 @@ export const TOOL_MEDIA = {
   nsz: 'game', // Switch dumps
   romz: 'game', // handheld ROMs (.7z/.zip outputs handled as archives below)
   exodos: 'game', // DOS games repacked for RomM (.dosz; the .zip source is an archive)
+  rar: 'game', // a RAR set's one file (the .rar source is an archive row)
 };
 
 // Loose archive containers get the archive glyph even when they arrive as a

@@ -40,6 +40,7 @@ from services.subprocess_runner import (
     verify_exception_event,
 )
 from utils.junk import is_junk_entry
+from utils.sizes import format_size
 
 # Input -> output extension, both directions. The four extensions are distinct,
 # so this one map covers compress and decompress without ambiguity.
@@ -448,8 +449,7 @@ class NszService:
             ".xcz": "XCZ (compressed XCI)",
         }.get(ext)
 
-        size_mb = file_size / (1024 * 1024)
-        size_display = f"{size_mb:.2f} MB" if size_mb < 1024 else f"{size_mb / 1024:.2f} GB"
+        size_display = format_size(file_size)
 
         return {
             "file": file_path,

@@ -392,6 +392,8 @@ tests/__pycache__/
 *.tar.gz
 *.tgz
 *.rar
+# The rar tool's test sets (#476): rarfile's own ISC-licensed test archives.
+!tests/fixtures/rar/*.rar
 
 # Database files
 *.db

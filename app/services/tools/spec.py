@@ -101,6 +101,12 @@ class ModeSpec:
     # job compares the two before deleting the Source. False keeps the
     # container check alone, and such a job says Intact (#298).
     supports_round_trip: bool = False
+    # The container-only opt-out never applies: a delete-source job always
+    # runs the Round-trip. For a mode whose output has no container of its
+    # own (the rar tool's one file out of a set, #476), so its check, reading
+    # the file in full, says nothing about its content. Only with
+    # ``supports_round_trip``; read through ``ToolRegistry.mode_round_trip_required``.
+    round_trip_required: bool = False
     # Why this mode always keeps its Source, in the user's words, for a mode
     # whose delete-on-verify is off on principle rather than for want of a
     # check (ZAR stores files, not the disc, and nothing rebuilds the ISO).
@@ -239,6 +245,8 @@ class ChainSpec:
     # Structural parity with ModeSpec. A chain that sets it compares the first
     # step's decoded Source with the final output (ChainTool.content_digest).
     supports_round_trip: bool = False
+    # Structural parity with ModeSpec.round_trip_required.
+    round_trip_required: bool = False
     # Structural parity with ModeSpec.source_kept_reason / delete_proof.
     source_kept_reason: str = ""
     delete_proof: DeleteProof = DeleteProof.ROUND_TRIP

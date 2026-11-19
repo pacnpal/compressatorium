@@ -17,6 +17,7 @@ from .makeps3iso import MakePs3IsoTool
 from .maxcso import MaxcsoTool
 from .nkit2iso import Nkit2IsoTool
 from .nsz import NszTool
+from .rar import RarTool
 from .registry import ToolRegistry
 from .rom_converto import RomConvertoTool
 from .romz import RomzTool
@@ -36,6 +37,7 @@ registry.register(Nkit2IsoTool(settings.nkit2iso_path))
 registry.register(JwudTool(settings.jwudtool_path))
 registry.register(XisoTool(settings.extract_xiso_path))
 registry.register(RomConvertoTool(settings.rom_converto_path))
+registry.register(RarTool(settings.unar_path))
 # Pure Python: no binary to locate, gated on EXODOS_DOS_DIR instead.
 registry.register(ExodosTool(""))
 # Composite/pipeline modes register last: ChainTool drives the component tools

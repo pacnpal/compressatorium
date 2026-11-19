@@ -221,6 +221,7 @@ Volume behavior:
 | `DOLPHIN_TOOL_PATH` | `/usr/local/bin/dolphin-tool` | Path to dolphin-tool binary |
 | `MAXCSO_PATH` | `/usr/local/bin/maxcso` | Path to maxcso binary (PSP/PS2 CSO/CSO v2/ZSO/DAX) |
 | `SEVENZIP_PATH` | `7z` | Path to the 7z binary (handheld ROM `.gb`/`.gbc`/`.gba`/`.nds` ↔ `.7z`/`.zip`). Ships via `p7zip-full`; set to `7zz` on distros that provide the newer `7zip` package |
+| `UNAR_PATH` | `unar` | Path to the unar binary (a multi-part RAR4/RAR5 set → the one file inside it, `rar_extract`). Ships via the Debian `unar` package |
 | `MAKEPS3ISO_PATH` | `/usr/local/bin/makeps3iso` | Path to the makeps3iso binary (PS3 decrypted folder → ISO) |
 | `JWUDTOOL_PATH` | `/usr/local/bin/jwudtool` | Path to the JWUDTool launcher (Wii U `.wud` ↔ `.wux`). The image ships a launcher that execs the bundled jar with a headless JRE |
 | `NKIT2ISO_PATH` | `/usr/local/bin/nkit2iso` | Path to the nkit2iso binary (NKit-shrunk GameCube/Wii image → ISO) |

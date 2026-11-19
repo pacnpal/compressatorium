@@ -24,6 +24,7 @@ from services.subprocess_runner import (
     verify_exception_event,
     verify_exit_event,
 )
+from utils.sizes import format_size
 
 # Compress inputs (raw 3DS ROMs). The upstream fork
 # (https://github.com/pacnpal/z3ds_compress) added .cxi/.3dsx alongside the
@@ -286,8 +287,7 @@ class Z3DSCompressService:
             base_format = "3DSX (Homebrew)"
 
         # Format size for display
-        size_mb = file_size / (1024 * 1024)
-        size_display = f"{size_mb:.2f} MB" if size_mb < 1024 else f"{size_mb / 1024:.2f} GB"
+        size_display = format_size(file_size)
 
         return {
             "file": file_path,

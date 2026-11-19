@@ -42,7 +42,7 @@ def test_bad_extension_reason_covers_non_chdman_tools():
     # input_extensions); makeps3iso (directory input, no suffix) is too.
     assert set(_BAD_EXTENSION_REASON) == {
         "dolphin", "z3ds", "nsz", "cso", "chain", "romz", "nkit", "jwud", "xiso",
-        "rom_converto", "exodos",
+        "rom_converto", "exodos", "rar",
     }
     assert "chdman" not in _BAD_EXTENSION_REASON
 

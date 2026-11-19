@@ -127,6 +127,14 @@ export const MODE_BLURBS = {
     + 'inside. Writes '
     + 'Game.dosz beside the source and never modifies or deletes the original. '
     + 'A zip that is not one game folder with a template is skipped, with the reason.',
+  // RAR sets
+  rar_extract:
+    'Unpack a multi-part RAR set (select its first volume: Game.rar or '
+    + 'Game.part01.rar) to the one file inside it, beside the set under its own '
+    + 'name. RAR4 and RAR5. The set must hold exactly one file besides its '
+    + '.nfo/.sfv/.txt/.url sidecars; anything else is refused with what it holds. '
+    + 'Delete-source removes every volume once the file\'s size and CRC32 match '
+    + 'the set\'s.',
   // PS3
   folder_to_iso:
     'Pack a decrypted PS3 folder into an .iso RPCS3 mounts. An optional toggle '
@@ -140,6 +148,7 @@ export const MODE_OUTPUT = {
   nsz_compress: '.nsz / .xcz',
   nsz_decompress: '.nsp / .xci',
   romz_extract: '.gb / .gbc / .gba / .nds',
+  rar_extract: 'the file inside the set',
 };
 
 /**

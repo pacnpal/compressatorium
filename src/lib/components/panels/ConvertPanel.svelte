@@ -32,7 +32,8 @@
   const tool = $derived(conversion.currentTool);
   const auto = $derived(conversion.auto);
   const supportsDeleteOnVerify = $derived(!auto && conversion.supportsDeleteOnVerify);
-  const supportsRoundTrip = $derived(!auto && conversion.supportsRoundTrip);
+  // The container-only opt-out, where a Round-trip runs that a job may skip.
+  const offersContainerOnly = $derived(!auto && conversion.offersContainerOnly);
   const sourceKeptReason = $derived(auto ? '' : conversion.sourceKeptReason);
   const supportsSplit = $derived(!auto && conversion.supportsSplit);
   const converting = $derived(conversion.converting);
@@ -260,8 +261,9 @@
           description={DELETE_CHECK_HINTS[conversion.deleteCheck]}
         />
         <!-- The container-only opt-out is a Round-trip opt-out: offered only
-             where a Round-trip runs, never for a Recognized mode (#423). -->
-        {#if conversion.deleteOnVerify && supportsRoundTrip}
+             where a Round-trip runs, never for a Recognized mode (#423) or one
+             whose Round-trip is required (#476). -->
+        {#if conversion.deleteOnVerify && offersContainerOnly}
           <Checkbox
             bind:checked={conversion.containerOnly}
             label="Container check only (faster, weaker)"

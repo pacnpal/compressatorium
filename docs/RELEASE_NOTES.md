@@ -4,6 +4,42 @@
 
 ### Added
 
+- **Extract a multi-part RAR set to one verified file** (#476). A new **RAR
+  sets** tool and `rar_extract` mode take a usenet download, `Game.rar` with
+  `Game.r00`, `Game.r01`… or `Game.part01.rar`, `Game.part02.rar`…, in RAR4 or
+  RAR5, and write the one file it holds beside it under its own name. Select
+  the first volume; every later volume is part of the same source, so the job
+  locks them all and delete-source deletes them all. The set must hold exactly
+  one file besides its `.nfo`, `.sfv`, `.txt` and `.url` sidecars; a set with
+  two or more (a `.cue` with its `.bin` tracks) is refused before anything is
+  written, and the refusal names what it found. An encrypted set, a missing or
+  damaged volume, an absolute or `..` member path, a link member and a
+  payload that is itself a RAR are refused too, and so is a folder where the
+  files named like the set's volumes are not exactly the volumes its headers
+  name: only the volumes the headers name are ever locked or deleted, so a
+  stray `Game.part4.rar` or an unrelated `Game.r00` stays. No conversion's
+  output may be its own source or one of the source's files (a later volume, a
+  split dump's part); that is refused before the job is queued. A set that
+  stores older versions of files (`name;1`) is refused too. When the output
+  name is taken, the default duplicate setting skips the job; with overwrite,
+  the existing file is removed before the extraction starts, as for every mode,
+  so a failed extraction leaves it gone. A file that appears at the output
+  name while the job runs is never replaced: the job fails. The extraction
+  uses `unar` (new in the image, from Debian main), which reads RAR5 and
+  checks every stored hash; when the set records a CRC32, the file is checked
+  again against it before it is kept, and with delete-source on, the
+  Round-trip compares its size and CRC32 with the set's before any volume
+  goes. This mode has no container-only option, since the file has no
+  container of its own to check. A RAR5 set that stores only a BLAKE2 hash
+  (no CRC32) is extracted on `unar`'s own hash check and a size check, with
+  no CRC32 comparison, and its delete-source always keeps the volumes: the
+  Round-trip has no CRC32 to compare. The API takes it as `POST /api/jobs`
+  with `"mode": "rar_extract"`, and the CLI as
+  `compressatorium convert --to rar_extract`. `UNAR_PATH` (default `unar`, on
+  `PATH`) sets where `unar` is; the RAR sets tool is hidden only when `unar`
+  can't be found there or isn't executable, and every other tool stays.
+  `.nfo`, `.sfv`, `.txt` and `.url` files still show in the file list.
+
 - **Patch a cartridge ROM with an IPS or BPS patch** (#428). The file list's
   **⋯** menu has **Patch…** for a loose ROM, a `.zip` or `.7z` holding one, or
   a ROM inside an archive. Pick the patch by its path in a Volume, or upload
