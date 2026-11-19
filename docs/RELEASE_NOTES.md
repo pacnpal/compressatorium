@@ -418,6 +418,14 @@
 
 ### Fixed
 
+- **A tool whose program is missing is hidden instead of failing** (#494).
+  chdman, dolphin-tool, maxcso, z3ds, makeps3iso, 7z (ROM archives),
+  nkit2iso and extract-xiso now check that their configured binary exists and
+  is executable. When it isn't, the tool drops out of the sidebar, Auto, the
+  CLI, Inbox and Rule sweeps, and its File info answers "isn't ready: <path>
+  was not found" instead of a 500. Nothing changes in the Docker image, which
+  ships every binary.
+
 - **A DAT import during a running rematch no longer leaves a file unmatched**
   (#492). Importing several DATs in quick succession could leave a file the
   last one covers as a cached miss, or with no cached match at all, until it

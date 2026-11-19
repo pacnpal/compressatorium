@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -36,6 +37,22 @@ def _release_leaked_tickets():
     yield
     for key in set(concurrency_manager._ticket_handles) - before:
         concurrency_manager.release(key)
+
+
+@pytest.fixture(autouse=True)
+def _binaries_present(request):
+    """The suite runs without the tools' binaries; treat them as present (#494).
+
+    ``BaseTool.is_ready`` probes ``binary_path``, which would hide every tool
+    here. A test of the probe itself opts out with ``@pytest.mark.real_binaries``.
+    """
+    # Not ``monkeypatch``: requesting it here would tear it down after
+    # ``_restore_tool_instances`` and break every test's instance patch undo.
+    if request.node.get_closest_marker("real_binaries") is not None:
+        yield
+        return
+    with patch("services.tools.base.binary_problem", lambda _path: None):
+        yield
 
 
 @pytest.fixture(autouse=True)

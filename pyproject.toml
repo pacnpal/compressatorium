@@ -258,3 +258,6 @@ extend-exclude = [
 # A stalled test fails with its name instead of hanging CI (#332). Generous on
 # purpose: the slowest real-binary tests take well under a minute.
 timeout = 600
+markers = [
+    "real_binaries: run BaseTool's binary probe for real instead of the suite's stand-in (#494)",
+]

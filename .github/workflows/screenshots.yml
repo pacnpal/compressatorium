@@ -107,6 +107,12 @@ jobs:
           # screenshot run never starts a job, so a no-op executable is enough to
           # keep the tool visible for the capture.
           export JWUDTOOL_PATH=/bin/true
+          # Every binary tool hides itself when its binary is missing
+          # (BaseTool.is_ready, #494); the runner has none of them but 7z.
+          export CHDMAN_PATH=/bin/true DOLPHIN_TOOL_PATH=/bin/true \
+            Z3DS_COMPRESSOR_PATH=/bin/true MAXCSO_PATH=/bin/true \
+            MAKEPS3ISO_PATH=/bin/true NKIT2ISO_PATH=/bin/true \
+            EXTRACT_XISO_PATH=/bin/true
           # rom-converto hides itself unless its binary answers --version
           # (RomConvertoTool.is_ready); the same kind of stand-in keeps it
           # visible. No job runs, so nothing else is asked of it.

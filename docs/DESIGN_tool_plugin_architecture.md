@@ -286,7 +286,8 @@ class ToolPlugin(Protocol):
 
     # Runtime prerequisites met? False => GET /api/tools reports the tool
     # unavailable and the frontend hides it, instead of offering jobs that can
-    # only fail. Default True; nsz overrides (prod.keys). Async because the
+    # only fail. BaseTool's default probes `binary_path` (below); nsz,
+    # jwud, rom-converto and eXoDOS override. Async because the
     # probe may touch disk. `not_ready_reason` / `verify_not_ready_reason` say
     # why it answered False; callers show them through `not_ready_message`
     # (§3.4) rather than formatting their own line.
@@ -366,9 +367,22 @@ class BaseTool:
     def overwrite_targets(self, output_path, mode) -> list[str]:
         return [output_path, *self.companion_outputs(output_path, mode)]
 
-    # Default: nothing to check.
+    # Default: the shared binary probe (#494). `binary_problem(binary_path)`
+    # stats the path (a bare name is looked up on PATH) and checks it is a
+    # file and executable, run detached (a dead mount must not hold a pooled
+    # worker). A problem becomes `not_ready_reason` ("/usr/bin/chdman was not
+    # found"), so the tool list, the info routes' 503, Auto, the CLI, Inbox
+    # and the sweeps all see it through `registry.tool_is_ready`. A tool with
+    # no binary (`""`: chain, eXoDOS) is ready. A tool whose check runs in
+    # Python overrides `verify_is_ready` (makeps3iso). The test suite stubs
+    # the probe in `tests/conftest.py`; `@pytest.mark.real_binaries` opts out.
     async def is_ready(self) -> bool:
-        return True
+        if not self.binary_path:
+            return True
+        problem = await run_detached(binary_problem, self.binary_path)
+        if problem is not None:
+            self.not_ready_reason = problem
+        return problem is None
 
     # subclasses implement: output_path, convert (via self._runner.run),
     # verify_stream, info, info_model

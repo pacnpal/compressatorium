@@ -65,6 +65,10 @@ class MakePs3IsoTool(BaseTool):
         super().__init__(binary_path)
         self._service = makeps3iso_service
 
+    async def verify_is_ready(self) -> bool:
+        # The check reads TITLE_ID back in Python; makeps3iso never runs.
+        return True
+
     def accepts_directory(self, path: str) -> bool:
         # The directory analogue of `ext in input_extensions`: require the
         # decrypted PS3 disc/JB layout (a PS3_GAME/ root, plus PS3_DISC.SFB for

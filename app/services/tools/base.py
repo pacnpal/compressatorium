@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
 from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -19,7 +20,7 @@ from logging_setup import get_logger
 from pydantic import BaseModel
 
 from models import OutputStatus
-from services.subprocess_runner import resolve_verify_timeout
+from services.subprocess_runner import resolve_verify_timeout, run_detached
 from utils.path_utils import match_extension
 
 from .spec import ModeSpec
@@ -599,7 +600,8 @@ class ToolPlugin(Protocol):
         user-supplied key file, an absent optional binary — reports ``False``
         so ``GET /api/tools`` lists it as unavailable and the frontend hides
         it entirely, rather than offering a converter that can only fail at
-        job time. Default ``True``: most tools ship with everything they need.
+        job time. ``BaseTool``'s default checks that ``binary_path`` exists and
+        is executable (#494); a tool with no binary is ready.
 
         Async because a readiness probe may touch the disk (nsz searches the
         configured volumes for ``prod.keys``); implementations that block
@@ -734,7 +736,8 @@ class BaseTool:
     # the same choice in the manual picker.
     default_compression: str | None = None
     # Why ``is_ready()`` answered False, in the user's words. Tools gated on a
-    # user-supplied file or an optional runtime say which one.
+    # user-supplied file or an optional runtime say which one; the default
+    # names the binary the shared probe found missing (#494).
     not_ready_reason: str = "its program is not available on this server"
     # Default True: an info read that runs the program needs it to be ready.
     # A tool whose ``info()`` reads the file in Python sets False, so its File
@@ -1002,9 +1005,17 @@ class BaseTool:
         return None
 
     async def is_ready(self) -> bool:
-        # Default: nothing to check. Tools gated on a user-supplied secret or
-        # an optional binary override this (see nsz / prod.keys).
-        return True
+        # Default: the configured binary is there and executable (#494). A
+        # tool with no binary (``""``) has nothing to check. Tools gated on
+        # something else override this (nsz / prod.keys). Detached, per
+        # ``ToolPlugin.is_ready``: a stat on a dead mount must not hold a
+        # pooled worker.
+        if not self.binary_path:
+            return True
+        problem = await run_detached(binary_problem, self.binary_path)
+        if problem is not None:
+            self.not_ready_reason = problem
+        return problem is None
 
     async def verify_is_ready(self) -> bool:
         # Default: a check needs what a conversion needs.
@@ -1043,6 +1054,16 @@ class BaseTool:
         # run wouldn't. makeps3iso overrides (a mid-split failure can leave the
         # base *and* numbered parts, which never coexist on success).
         return [output_path, *self.companion_outputs(output_path, mode)]
+
+
+def binary_problem(path: str) -> str | None:
+    """Why the binary at *path* can't run, or None. Blocking: a stat."""
+    resolved = path if os.sep in path else shutil.which(path)
+    if resolved is None or not os.path.isfile(resolved):
+        return f"{path} was not found"
+    if not os.access(resolved, os.X_OK):
+        return f"{resolved} is not executable"
+    return None
 
 
 def not_ready_message(tool: ToolPlugin, *, purpose: str = "convert") -> str:
