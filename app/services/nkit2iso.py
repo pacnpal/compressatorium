@@ -90,8 +90,6 @@ class NkitHeaderError(ValueError):
     """``path`` is not a readable NKit v01 GameCube/Wii image."""
 
 
-_format_size = format_size
-
 
 def _gcz_first_block(handle, file_size: int) -> bytes:
     """Inflate the first block of a Dolphin GCZ container.
@@ -330,7 +328,7 @@ class Nkit2IsoService:
         return {
             "file": file_path,
             "size": file_size,
-            "size_display": _format_size(file_size),
+            "size_display": format_size(file_size),
             "format": f"NKit v01 ({header['platform']})",
             "extension": (
                 match_extension(file_path, NKIT2ISO_CONVERTIBLE_EXTENSIONS)
@@ -344,7 +342,7 @@ class Nkit2IsoService:
             "disc_number": header["disc_number"],
             "disc_version": header["disc_version"],
             "restored_size": restored or None,
-            "restored_size_display": _format_size(restored) if restored else None,
+            "restored_size_display": format_size(restored) if restored else None,
             "crc32": header["crc32"],
             "ratio": ratio,
         }

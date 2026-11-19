@@ -122,8 +122,6 @@ class XisoImageError(ValueError):
     """``path`` is not a readable Xbox / Xbox 360 disc image."""
 
 
-_format_size = format_size
-
 
 def detect_layout(path: str) -> tuple[int, str, str | None]:
     """Locate the XDVDFS game partition of ``path``.
@@ -430,7 +428,7 @@ class ExtractXisoService:
         return {
             "file": file_path,
             "size": file_size,
-            "size_display": _format_size(file_size),
+            "size_display": format_size(file_size),
             "format": (
                 f"XISO ({stats['console']})" if trimmed and stats["console"]
                 else "XISO" if trimmed
@@ -446,7 +444,7 @@ class ExtractXisoService:
             "layout": stats["layout"],
             "file_count": stats["file_count"],
             "data_size": data,
-            "data_size_display": _format_size(data),
+            "data_size_display": format_size(data),
             # Share of the image that is game data. On a full disc image this
             # is roughly what trimming keeps; on an XISO it is near 100%.
             "data_ratio": f"{data / file_size * 100:.1f}%" if file_size else None,
@@ -729,7 +727,7 @@ class ExtractXisoService:
                 path=file_path,
                 success_message=(
                     f"XISO structure is Intact ({stats['file_count']} files, "
-                    f"{_format_size(stats['data_bytes'])} of game data)"
+                    f"{format_size(stats['data_bytes'])} of game data)"
                 ),
                 cancel_event=cancel_event,
                 start_message="Listing XISO contents...",

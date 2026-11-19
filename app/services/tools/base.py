@@ -177,6 +177,13 @@ IMAGE_DATA_SHA1_KIND = "image_data_sha1"
 IMAGE_DATA_SHA256_KIND = "image_data_sha256"
 
 
+class CompanionsUnknown(OSError):
+    """``source_companions`` can't tell which files a multi-file Source is
+    made of right now (a RAR set whose headers can't be read, or not in
+    time). Never "none": a listing shows no companions, and anything that
+    deletes refuses (``ToolRegistry.source_companions(strict=True)``)."""
+
+
 class ContentDigestUnavailable(Exception):
     """A tool should have a content digest for this file but could not get one.
 
@@ -343,6 +350,11 @@ class ToolPlugin(Protocol):
         delete-on-verify removes the whole source rather than orphaning the
         parts it didn't name. ``path`` itself is never included, and a tool
         whose inputs are single files returns ``[]``.
+
+        Raise :class:`CompanionsUnknown` when the set's members can't be
+        told now (the rar tool, whose companions come from the set's headers,
+        #476): never answer ``[]`` for a set you can't read, since a delete
+        would then take the named file alone.
 
         Note ``.cue``/``.gdi`` track files are *not* routed through this hook
         today: they're parsed out of the file's contents by

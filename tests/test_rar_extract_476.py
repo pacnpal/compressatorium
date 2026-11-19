@@ -692,9 +692,13 @@ async def _plan(convert_routes, path: str, mode: str, action):
     )
 
 
-@pytest.mark.parametrize("action", ["skip", "overwrite", "rename"])
+@pytest.mark.parametrize(("action", "reason"), [
+    ("overwrite", "OUTPUT_IS_PART_OF_SOURCE"), ("skip", "OUTPUT_EXISTS"), ("rename", None),
+])
 @pytest.mark.asyncio
-async def test_an_output_named_like_a_later_volume_is_refused(tmp_path, monkeypatch, action):
+async def test_an_output_named_like_a_later_volume_is_refused(
+    tmp_path, monkeypatch, action, reason,
+):
     from routes import convert as convert_routes
     from services.tools import registry
 
@@ -705,9 +709,14 @@ async def test_an_output_named_like_a_later_volume_is_refused(tmp_path, monkeypa
         registry.get("rar"), "output_path", lambda *_a, **_k: str(volumes[2]),
     )
 
+    if reason is None:
+        # A rename picks a free name, which is never one of the volumes.
+        plan = await _plan(convert_routes, str(volumes[0]), "rar_extract", DuplicateAction(action))
+        assert plan.output_path not in {str(v) for v in volumes}
+        return
     with pytest.raises(convert_routes.SkipFile) as caught:
         await _plan(convert_routes, str(volumes[0]), "rar_extract", DuplicateAction(action))
-    assert caught.value.reason == convert_routes.SkipReason.OUTPUT_IS_PART_OF_SOURCE
+    assert caught.value.reason == getattr(convert_routes.SkipReason, reason)
 
 
 @pytest.mark.asyncio
@@ -730,3 +739,171 @@ async def test_an_output_named_like_a_split_dump_part_is_refused(tmp_path, monke
         await _plan(convert_routes, str(first), "jwud_compress", DuplicateAction.OVERWRITE)
     assert caught.value.reason == convert_routes.SkipReason.OUTPUT_IS_PART_OF_SOURCE
     assert second.read_bytes() == b"\0" * 64
+
+
+# --------------------------------------------------------------------------- #
+# Re-review of #503: the guard sits on the final output, in the one place
+# every job creator goes through; header reads are bounded and cached.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(("action", "outcome"), [
+    ("rename", "Game_1.rvz"),
+    ("skip", "OUTPUT_EXISTS"),
+    ("overwrite", "DOLPHIN_SAME_PATH"),
+])
+@pytest.mark.asyncio
+async def test_a_same_format_reencode_keeps_its_old_answers(tmp_path, action, outcome):
+    from routes import convert as convert_routes
+
+    from app.models import DuplicateAction
+
+    rvz = tmp_path / "Game.rvz"
+    rvz.write_bytes(b"\0" * 64)
+
+    if outcome.endswith(".rvz"):
+        plan = await _plan(convert_routes, str(rvz), "dolphin_rvz", DuplicateAction(action))
+        assert os.path.basename(plan.output_path) == outcome
+        return
+    with pytest.raises(convert_routes.SkipFile) as caught:
+        await _plan(convert_routes, str(rvz), "dolphin_rvz", DuplicateAction(action))
+    assert caught.value.reason == getattr(convert_routes.SkipReason, outcome)
+
+
+@pytest.mark.asyncio
+async def test_the_job_manager_refuses_an_output_that_is_part_of_the_source(
+    tmp_path, db_path, reset_db_engine,
+):
+    from services import db as _db
+    from services.job_manager import OutputIsSourceError, job_manager
+
+    from app.models import ConversionMode
+
+    _db.init_engine(db_path)
+    volumes = payload_set(RAR5_SET, tmp_path)
+    before = len(job_manager.jobs)
+
+    with pytest.raises(OutputIsSourceError):
+        await job_manager.create_batch_jobs(
+            [str(volumes[0])], ConversionMode("rar_extract"),
+            output_paths={str(volumes[0]): str(volumes[2])}, allow_overwrite=True,
+        )
+    assert len(job_manager.jobs) == before
+    reset_db_engine()
+
+
+@pytest.mark.asyncio
+async def test_a_rule_sweep_never_queues_an_output_onto_its_source(
+    tmp_path, monkeypatch, db_path, reset_db_engine,
+):
+    from unittest.mock import patch
+
+    from services import db as _db
+    from services.job_manager import job_manager
+    from services.rules import sweep as rules_sweep
+    from services.tools import registry
+
+    from .test_rules_library_296 import _FolderLike
+
+    _db.init_engine(db_path, create_schema=True)
+    root = tmp_path / "lib"
+    volumes = payload_set(RAR5_SET, root / "gc")
+    monkeypatch.setattr(
+        registry.get("rar"), "output_path", lambda *_a, **_k: str(volumes[2]),
+    )
+    from services.rules.library import CONVERTED_HISTORY
+
+    class _WithHistory(_FolderLike):
+        # Overwrite needs the converted history (rules.duplicate_actions).
+        capabilities = frozenset({CONVERTED_HISTORY})
+        name = "Downloads"
+
+    folder = _WithHistory(root)
+    saved = await rules_sweep.set_rules(folder, {
+        "gc": {"mode": "rar_extract", "enabled": True, "duplicate_action": "overwrite"},
+    })
+    assert saved["gc"]["duplicate_action"] == "overwrite"
+    before = set(job_manager.jobs)
+
+    with patch.object(job_manager, "get_active_job_candidates", return_value=[]):
+        await rules_sweep.sweep(folder, ignore_schedule=True)
+
+    queued = [j for i, j in job_manager.jobs.items() if i not in before]
+    assert not [j for j in queued if j.output_path == str(volumes[2])]
+    assert all(v.exists() for v in volumes)
+    reset_db_engine()
+
+
+def test_an_unreadable_set_is_read_once_per_version(tmp_path, monkeypatch):
+    from services import archive_members
+
+    volumes = payload_set(RAR5_SET, tmp_path)
+    calls = []
+
+    def broken(path):
+        calls.append(path)
+        raise archive_members.IncompleteArchive("a volume is missing")
+
+    monkeypatch.setattr(archive_members, "read_rar_set", broken)
+
+    for _ in range(3):
+        with pytest.raises(archive_members.RarVolumesUnknown):
+            archive_members.rar_set_volumes(str(volumes[0]))
+    assert len(calls) == 1
+
+
+def test_a_header_read_that_hangs_lists_no_companions_and_blocks_deletes(
+    tmp_path, monkeypatch,
+):
+    import threading
+
+    from services import archive_members
+    from services.tools import registry
+    from utils.delete_plan import build_delete_plan
+
+    volumes = payload_set(RAR5_SET, tmp_path)
+    release = threading.Event()
+
+    def hangs(path):
+        release.wait(5)
+        raise archive_members.IncompleteArchive("never answered")
+
+    monkeypatch.setattr(archive_members, "read_rar_set", hangs)
+    monkeypatch.setattr(archive_members, "RAR_HEADER_READ_SECONDS", 0.05)
+    try:
+        # A listing: no companions, the volumes stay listed.
+        assert registry.source_companions(str(volumes[0])) == []
+        # Anything that deletes: refused.
+        plan = build_delete_plan(str(volumes[0]))
+        assert plan["errors"], plan
+    finally:
+        release.set()
+
+
+@pytest.mark.asyncio
+async def test_the_delete_plan_route_is_bounded(tmp_path, monkeypatch):
+    import threading
+
+    from fastapi import HTTPException
+    from routes import convert as convert_routes
+    from routes import volume_guard
+
+    from app.models import ConversionMode, DeletePlanRequest
+
+    volumes = payload_set(RAR5_SET, tmp_path)
+    release = threading.Event()
+
+    def hangs(*_a, **_k):
+        release.wait(5)
+        return {}
+
+    monkeypatch.setattr(convert_routes, "build_delete_plan", hangs)
+    monkeypatch.setattr(volume_guard, "VOLUME_PROBE_TIMEOUT_SECONDS", 0.1)
+    try:
+        with pytest.raises(HTTPException) as caught:
+            await convert_routes.delete_plan(DeletePlanRequest(
+                file_paths=[str(volumes[0])], mode=ConversionMode("rar_extract"),
+            ))
+        assert caught.value.status_code == 503
+    finally:
+        release.set()

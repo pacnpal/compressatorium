@@ -26,9 +26,11 @@ The returned list is shared across callers and cached; treat it as read-only.
 from __future__ import annotations
 
 import contextlib
+import errno
 import os
 import re
 import stat
+import threading
 import zipfile
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -252,34 +254,79 @@ def _needs_first_volume(
         return False
 
 
-# The volumes a set's headers read, per first volume's (path, mtime, size).
-_set_volumes_cache: MtimeCache[list[str] | None] = MtimeCache()
+class RarVolumesUnknown(OSError):
+    """Which volumes a RAR set has can't be told: its headers can't be read
+    whole (a missing or broken volume, an encrypted header, no rarfile) or
+    the read did not finish within :data:`RAR_HEADER_READ_SECONDS`."""
 
 
-def rar_set_volumes(first_volume: str) -> list[str] | None:
+# How long one header read of a set may take: the bound a route's Volume work
+# gets (``VOLUME_PROBE_TIMEOUT_SECONDS``). Past it the set's volumes are unknown.
+RAR_HEADER_READ_SECONDS = 30.0
+
+# The volumes a set's headers read, or why they can't be told (a string), per
+# first volume's (path, mtime, size). A read that ran out of time is not kept.
+_set_volumes_cache: MtimeCache[list[str] | str] = MtimeCache()
+
+
+def _read_volumes_bounded(first_volume: str) -> list[str] | str | None:
+    """The headers' volume list, the reason they can't be read, or None when
+    the read did not finish in time (left running on its daemon thread, which
+    a mount that stops answering may hold; its answer is dropped)."""
+    answer: list = []
+    done = threading.Event()
+
+    def read() -> None:
+        try:
+            volumes = read_rar_set(first_volume).volumes
+        except Exception as exc:  # unreadable: the reason is the answer
+            logger.debug("No volume list for %s", first_volume, exc_info=True)
+            answer.append(str(exc) or type(exc).__name__)
+        else:
+            folder = os.path.dirname(first_volume)
+            answer.append([os.path.join(folder, os.path.basename(v)) for v in volumes])
+        finally:
+            done.set()
+
+    threading.Thread(target=read, name="rar-set-volumes", daemon=True).start()
+    if not done.wait(RAR_HEADER_READ_SECONDS):
+        return None
+    return answer[0]
+
+
+def rar_set_volumes(first_volume: str) -> list[str]:
     """Every volume of the RAR set *first_volume* leads, as its own headers
     read them (rarfile follows each volume's "more volumes" flag), first
     volume first; ``[first_volume]`` for a single-volume archive (#476).
 
     The one answer to "is this file part of that set": a file named like a
-    volume that the headers never read is not one. None when the headers
-    can't be read whole (a missing or broken volume, an encrypted header, no
-    rarfile): then nothing is a companion, failing closed. Cached per the
-    first volume's ``(path, mtime, size)`` when read. Blocking.
+    volume that the headers never read is not one. Raises
+    :class:`RarVolumesUnknown` when the headers can't be read whole or the
+    read does not finish within :data:`RAR_HEADER_READ_SECONDS`: a listing
+    then shows no companions, and anything that deletes refuses. Both a list
+    and an unreadable answer are cached per the first volume's
+    ``(path, mtime, size)``, so a broken set is not opened again on every
+    call; a read that ran out of time is not. Blocking, and bounded.
     """
-    def read() -> list[str] | None:
-        try:
-            volumes = read_rar_set(first_volume).volumes
-        except Exception:  # unreadable: no companions
-            logger.debug("No volume list for %s", first_volume, exc_info=True)
-            return None
-        folder = os.path.dirname(first_volume)
-        return [os.path.join(folder, os.path.basename(v)) for v in volumes]
+    timed_out = False
 
-    # An unreadable answer is not kept: a volume may still be arriving.
-    return _set_volumes_cache.get_or_compute(
-        first_volume, read, should_cache=lambda volumes: volumes is not None,
+    def read() -> list[str] | str:
+        nonlocal timed_out
+        found = _read_volumes_bounded(first_volume)
+        if found is None:
+            timed_out = True
+            return f"reading its headers took over {RAR_HEADER_READ_SECONDS:g}s"
+        return found
+
+    found = _set_volumes_cache.get_or_compute(
+        first_volume, read, should_cache=lambda _found: not timed_out,
     )
+    if isinstance(found, str):
+        raise RarVolumesUnknown(
+            errno.EIO, f"Can't tell the volumes of {os.path.basename(first_volume)}: {found}",
+            first_volume,
+        )
+    return list(found)
 
 
 def invalidate(archive_path: str) -> None:

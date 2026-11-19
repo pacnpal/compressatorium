@@ -188,7 +188,9 @@ def _image_members(archive: str, member: str, names: set[str]) -> set[str]:
                     pass
             except (OSError, ValueError):
                 continue
-        for part in registry.source_companions(os.path.join(temp_root, *member.split("/"))):
+        for part in registry.source_companions(
+            os.path.join(temp_root, *member.split("/")), strict=True,
+        ):
             rel = os.path.relpath(os.path.realpath(part), os.path.realpath(temp_root))
             owned.add(posixpath.normpath(rel.replace(os.sep, "/")))
     finally:
@@ -409,7 +411,10 @@ def build_delete_plan(
         # dependency on the tool package that builds the registry.
         from services.tools import registry
 
-        for companion in registry.source_companions(str(source)):
+        # Strict: a set whose members can't be told now (a RAR set whose
+        # headers can't be read) blocks the plan rather than deleting the
+        # named file alone.
+        for companion in registry.source_companions(str(source), strict=True):
             _add_path(Path(companion))
     except Exception as exc:
         errors.append(str(exc))

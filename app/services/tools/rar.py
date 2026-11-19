@@ -17,7 +17,12 @@ from pathlib import Path
 
 from fastapi.concurrency import run_in_threadpool
 from models import RarInfo
-from services.archive_members import later_volume_of, rar_later_volumes, rar_set_volumes
+from services.archive_members import (
+    RarVolumesUnknown,
+    later_volume_of,
+    rar_later_volumes,
+    rar_set_volumes,
+)
 from services.rar_extract import (
     RAR_EXTRACT_MODE,
     RAR_INPUT_EXTENSIONS,
@@ -27,7 +32,7 @@ from services.rar_extract import (
 )
 from services.subprocess_runner import ReadCancelled
 
-from .base import BaseTool, ContentDigest, ContentDigestUnavailable
+from .base import BaseTool, CompanionsUnknown, ContentDigest, ContentDigestUnavailable
 from .binaries import RequiredBinary
 from .spec import ModeKind, ModeSpec
 
@@ -107,12 +112,16 @@ class RarTool(BaseTool):
         # so no lock, delete plan or delete-source takes it. Headers that
         # can't be read give none (fail closed). Read only when a file named
         # like a later volume is there, so a lone .rar costs a few stats.
+        # Headers that can't be read (or not in time) raise CompanionsUnknown:
+        # a listing then shows none, and anything that deletes refuses.
         if Path(path).suffix.lower() not in RAR_INPUT_EXTENSIONS:
             return []
         if later_volume_of(path) is not None or not rar_later_volumes(path):
             return []
-        volumes = rar_set_volumes(path)
-        return list(volumes[1:]) if volumes else []
+        try:
+            return rar_set_volumes(path)[1:]
+        except RarVolumesUnknown as exc:
+            raise CompanionsUnknown(*exc.args) from exc
 
     def output_path(
         self,

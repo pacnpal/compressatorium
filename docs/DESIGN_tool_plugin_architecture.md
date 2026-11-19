@@ -1397,12 +1397,21 @@ candidate; the set's own headers decide what belongs to it:
   `x.part4.rar` or an unrelated `x.r00` is named like a volume too.
 - `rar_set_volumes(first)` is the answer to "is this file part of that set":
   the volumes the headers read (rarfile follows each volume's "more volumes"
-  flag), cached per the first volume's mtime and size. None when the headers
-  can't be read whole, and then there are no companions (fail closed).
+  flag). The read is bounded (`RAR_HEADER_READ_SECONDS`, the bound a route's
+  Volume work gets) on a daemon thread, and both a list and an unreadable
+  answer are cached per the first volume's mtime and size (a read that ran
+  out of time is not). It raises `RarVolumesUnknown` when the headers can't
+  be read whole or in time.
 
 The rar tool's `source_companions` is `rar_set_volumes(first)[1:]`, read only
 when a file named like a later volume is there (a lone `.rar` costs a few
-stats). Because `registry.source_companions` is the union over every tool, this
+stats). When the volumes are unknown it raises `tools.base.CompanionsUnknown`,
+never `[]`: `registry.source_companions(path)` (a listing, the Library walk,
+in-use tracking) then adds none, while `registry.source_companions(path,
+strict=True)` lets it propagate, so anything that deletes refuses
+(`build_delete_plan` reports it as an error), `source_companions_are_safe`
+answers unsafe, and the output guard below treats the output as part of the
+Source. The delete-plan route builds its plans through `off_loop_bounded`. Because `registry.source_companions` is the union over every tool, this
 is what every delete of a `.rar` uses (the generic delete plan, the duplicate
 cleanup, an archive-member job's delete-source), so a file the set never reads
 is never planned for deletion. `rar_extract` also refuses a set whose named
@@ -1412,10 +1421,17 @@ listing cache does not keep: each member's CRC, `is_plain_file`, whether a
 password is needed (for the headers or any member) and the volumes rarfile
 read.
 
-**The output is never part of the Source** (`routes/convert.plan_job`, every
-tool). The output path may not be the Source (the archive, for a member) nor
-any of `registry.source_companions(Source)`, whatever the duplicate action:
-`SkipReason.OUTPUT_IS_PART_OF_SOURCE` refuses it before anything is queued. A
+**The output is never part of the Source** (every tool, every job creator).
+`output_conflicts.output_is_part_of_source(output, source)`: the output may
+not be the Source (the archive, for a member) nor any of
+`registry.source_companions(Source, strict=True)` (unknown counts as yes).
+Two callers, one rule. `plan_job` asks it of the *final* output, after the
+duplicate handling, so a skip still says the output exists, a rename's free
+name (`Game_1.rvz` beside `Game.rvz`, Dolphin's same-format re-encode) still
+queues, and an overwrite onto a part answers `OUTPUT_IS_PART_OF_SOURCE`.
+`JobManager._reservation_keys` asks it, off the loop, for every spec of every
+batch (the API, Rules sweeps, Inboxes, the CLI), and the locked reservation
+refuses the batch with `OutputIsSourceError` before any job is created. A
 RAR set's file named like its own later volume, or a split dump's part, would
 otherwise wait on its own input lock forever under overwrite, or have a live
 part of the Source cleared.

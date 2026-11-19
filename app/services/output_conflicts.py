@@ -207,6 +207,24 @@ def resolve_destination(
     return None, (SKIP_EXISTING if on_disk else SKIP_LOCKED)
 
 
+def output_is_part_of_source(output_path: str, file_path: str) -> bool:
+    """Whether *output_path* is the Source (the archive, for a member) or one
+    of the files any tool says it also consumes (``source_companions``: a RAR
+    set's later volumes, a split dump's parts). A Source whose members can't
+    be told now counts as a yes (fail closed). The one rule for every job
+    creator: ``plan_job`` asks it of the final output, and the job manager's
+    reservation of every batch (Rules, Inboxes, the API) refuses on it.
+    Blocking."""
+    from services.tools.base import CompanionsUnknown  # local: import cycle
+
+    source = file_path.split("::", 1)[0]
+    try:
+        parts = [source, *registry.source_companions(source, strict=True)]
+    except CompanionsUnknown:
+        return True
+    return any(_same_file(output_path, part) for part in parts)
+
+
 def input_priority(path: str) -> int:
     """How strongly *path* claims a destination two inputs both resolve to.
 

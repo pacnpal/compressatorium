@@ -60,6 +60,7 @@ from services.subprocess_runner import (
     verify_exception_event,
 )
 from utils.path_utils import path_present
+from utils.sizes import format_size
 
 # Compress takes the raw dump, decompress takes the compressed container.
 JWUD_COMPRESS_EXTENSIONS = {".wud"}
@@ -624,8 +625,7 @@ class JwudToolService:
             if original_size:
                 ratio = f"{file_size / original_size * 100:.1f}%"
 
-        size_mb = file_size / (1024 * 1024)
-        size_display = f"{size_mb:.2f} MB" if size_mb < 1024 else f"{size_mb / 1024:.2f} GB"
+        size_display = format_size(file_size)
 
         return {
             "file": file_path,

@@ -37,6 +37,7 @@ from services.subprocess_runner import (
     verify_preflight,
     verify_exception_event,
 )
+from utils.sizes import format_size
 
 # SubprocessRunner "owner" for the shared priority/timeout policy. An optional
 # COMPRESSATORIUM_MAXCSO_* override takes precedence over the tool-neutral
@@ -261,8 +262,7 @@ class MaxcsoService:
             ".dax": "DAX",
         }.get(ext)
 
-        size_mb = file_size / (1024 * 1024)
-        size_display = f"{size_mb:.2f} MB" if size_mb < 1024 else f"{size_mb / 1024:.2f} GB"
+        size_display = format_size(file_size)
 
         return {
             "file": file_path,

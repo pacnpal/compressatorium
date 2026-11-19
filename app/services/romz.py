@@ -48,6 +48,7 @@ from services.subprocess_runner import (
     verify_exception_event,
 )
 from utils.junk import is_junk_path
+from utils.sizes import format_size
 
 try:
     from py7zr.exceptions import PasswordRequired as _PasswordRequired
@@ -644,10 +645,7 @@ class RomzService:
                     original_size = rom_size
                     ratio = f"{file_size / rom_size * 100:.1f}%"
 
-        size_mb = file_size / (1024 * 1024)
-        size_display = (
-            f"{size_mb:.2f} MB" if size_mb < 1024 else f"{size_mb / 1024:.2f} GB"
-        )
+        size_display = format_size(file_size)
 
         return {
             "file": file_path,

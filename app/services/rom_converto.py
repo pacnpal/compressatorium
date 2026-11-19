@@ -174,8 +174,6 @@ class RomConvertoError(ValueError):
     """rom-converto refused a file (its own ``Error:`` line is the message)."""
 
 
-_format_size = format_size
-
 
 def _env() -> dict[str, str]:
     return {**os.environ, "NO_COLOR": "1"}
@@ -640,7 +638,7 @@ class RomConvertoService:
         return {
             "file": file_path,
             "size": size,
-            "size_display": _format_size(size),
+            "size_display": format_size(size),
             "format": fields.get("format") or "ZAR (ZArchive)",
             "extension": ZAR_OUTPUT_EXTENSION,
             "compressed": True,
@@ -648,7 +646,7 @@ class RomConvertoService:
             "file_count": _int_or_none(fields.get("files")),
             "directory_count": _int_or_none(fields.get("directories")),
             "logical_size": logical,
-            "logical_size_display": _format_size(logical) if logical is not None else None,
+            "logical_size_display": format_size(logical) if logical is not None else None,
             "blocks": _int_or_none(fields.get("blocks")),
             "boot_executable": None if boot is None else boot == "present",
         }

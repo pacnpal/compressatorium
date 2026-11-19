@@ -39,6 +39,7 @@ from services.chdman import ConversionCancelled, chdman_service
 from services.disc_id import DiscIdStorageAbandoned
 from services.concurrency_manager import concurrency_manager
 from services.lock_manager import LockFailed, lock_manager
+from services.output_conflicts import output_is_part_of_source
 from services.mutation_guard import locked_for_mutation
 from services import referrers, staging
 from services.disk import create_scratch_dir
@@ -495,6 +496,10 @@ class _Reservation(NamedTuple):
 
     resolved: Dict[str, str]
     keys: Dict[str, Tuple[str, ...]]
+    # ``(source, destination)`` pairs whose destination is the Source or one
+    # of its files (``output_conflicts.output_is_part_of_source``), read off
+    # the loop with the rest, so the locked check refuses them with no I/O.
+    onto_source: frozenset = frozenset()
 
 
 async def _resolve_paths_bounded(paths: Iterable[str]) -> Dict[str, str]:
@@ -621,6 +626,14 @@ class OutputClaimedError(ValueError):
         super().__init__(detail)
         self.detail = detail
         self.claimed_by = claimed_by
+
+
+class OutputIsSourceError(ValueError):
+    """A job's output would be its own Source or one of the Source's files (a
+    RAR set's later volume, a split dump's part), whoever queued it (#476).
+    Refused before any job of the batch is created: under overwrite the job
+    would wait forever on its own input lock, or clear a live part of the
+    Source."""
 
 
 class QueueBackpressureError(RuntimeError):
@@ -1280,6 +1293,8 @@ class JobManager:
         """
         # (destination, mode) pairs whose sidecars have to be enumerated.
         wanted: List[Tuple[str, ConversionMode]] = []
+        # (source, destination) pairs to hold against the Source's own files.
+        sources: List[Tuple[str, str]] = []
         paths: List[str] = []
         for spec in job_specs:
             file_path = str(spec["file_path"])
@@ -1299,6 +1314,8 @@ class JobManager:
                     continue
             paths.append(destination)
             wanted.append((destination, mode))
+            if registry.spec(mode.value).kind != ModeKind.COPY:
+                sources.append((file_path, destination))
         for job in self.jobs.values():
             if not job.output_path:
                 continue
@@ -1308,12 +1325,20 @@ class JobManager:
             wanted.append((job.output_path, job.mode))
 
         companions: Dict[str, List[str]] = {}
+        onto_source: set = set()
 
         def _enumerate(progress) -> None:
             for destination, job_mode in wanted:
                 if destination in companions:
                     continue
                 companions[destination] = self._companions(job_mode, destination)
+                progress()
+            # Every creator's final destination against its Source's own files
+            # (a RAR set's volumes read from its headers): the one rule plan_job
+            # applies too, held here for the Rules and Inboxes that skip it.
+            for source, destination in sources:
+                if output_is_part_of_source(destination, source):
+                    onto_source.add((source, destination))
                 progress()
 
         try:
@@ -1343,6 +1368,7 @@ class JobManager:
         # Snapshot, for the reason `_resolve_paths_bounded` explains: the
         # abandoned worker keeps writing into its own dict.
         found = dict(companions)
+        refused = frozenset(onto_source)
         for extra in found.values():
             paths.extend(extra)
 
@@ -1354,7 +1380,7 @@ class JobManager:
             ))
             for destination, extra in found.items()
         }
-        return _Reservation(resolved=resolved, keys=keys)
+        return _Reservation(resolved=resolved, keys=keys, onto_source=refused)
 
     def _resolve_output_locked(
         self,
@@ -1443,6 +1469,12 @@ class JobManager:
                 output_path=str(explicit) if explicit is not None else None,
                 resolved=reservation.resolved if reservation else None,
             )
+            if reservation and (file_path, destination) in reservation.onto_source:
+                raise OutputIsSourceError(
+                    f"The output {os.path.basename(destination)} would be "
+                    f"{os.path.basename(file_path)} or one of its files; nothing "
+                    "was queued",
+                )
             # Destination *and* sidecars: a mode that writes `Game.cue` also
             # writes `Game.bin`, which another mode can claim as its primary.
             for key in self._reserved_keys(destination, reservation):
@@ -2385,8 +2417,11 @@ class JobManager:
         the second, deleting or renaming part 5 mid-run would fail a conversion
         that may already have cleared an existing output for overwrite.
 
-        Stays cheap: this helper is called synchronously from async route code,
-        and ``source_companions`` is pure name math for every tool that has none.
+        Blocking: ``source_companions`` stats a split set's parts and reads a
+        RAR set's headers (bounded, and cached per first volume, #476), so its
+        callers run it off the event loop. A set whose members can't be told
+        now adds none here (``CompanionsUnknown``, not strict): this tracks
+        what a running job reads, and the job's own locks hold the rest.
         """
         if "::" in file_path:
             return []

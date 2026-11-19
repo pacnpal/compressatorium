@@ -47,6 +47,7 @@ from services.output_conflicts import (
     OutputPathLocked,
     check_output_conflicts,
     input_priority,
+    output_is_part_of_source,
 )
 from services.output_conflicts import (
     get_unique_output_path as _get_unique_output_path,
@@ -225,17 +226,6 @@ def _is_same_path(path_a: str, path_b: str) -> bool:
         return os.path.realpath(path_a) == os.path.realpath(path_b)
     except OSError:
         return False
-
-
-def _output_is_part_of_source(output_path: str, file_path: str) -> bool:
-    """Whether *output_path* is the Source (the archive, for a member) or one
-    of the files any tool says it also consumes (``source_companions``: a
-    RAR set's later volumes, a split dump's parts). Blocking."""
-    source = file_path.split("::", 1)[0]
-    return any(
-        _is_same_path(output_path, part)
-        for part in [source, *registry.source_companions(source)]
-    )
 
 
 def get_disallowed_archive_paths(file_paths: list[str]) -> set[str]:
@@ -877,13 +867,6 @@ async def plan_job(
         )
         base_output_path = output_path
 
-        # Never the Source or a file of it, for any tool and whatever the
-        # duplicate action: a RAR set's payload named like its own later
-        # volume, a split dump's part. Overwrite would wait on its own input
-        # lock forever, or clear a live part of the Source.
-        if await off_loop_bounded(_output_is_part_of_source, output_path, file_path):
-            raise SkipFile(SkipReason.OUTPUT_IS_PART_OF_SOURCE)
-
         output_exists, is_locked = check_output_conflicts(mode, output_path)
         if output_exists or is_locked:
             if duplicate_action == DuplicateAction.SKIP:
@@ -906,6 +889,18 @@ async def plan_job(
         # chdman copy (.chd -> .chd) is an intentional in-place recompress, and
         # every other mode changes the extension so output never equals input.
         raise SkipFile(SkipReason.DOLPHIN_SAME_PATH)
+
+    # The final output is never the Source or a file of it, for any tool: a
+    # RAR set's payload named like its own later volume, a split dump's part.
+    # After the duplicate handling, so a skip still says the output exists and
+    # a rename's free name (Game_1.rvz beside Game.rvz) still queues. The job
+    # manager holds every creator to the same rule (output_is_part_of_source).
+    if (
+        spec.kind != ModeKind.COPY
+        and output_path
+        and await off_loop_bounded(output_is_part_of_source, output_path, file_path)
+    ):
+        raise SkipFile(SkipReason.OUTPUT_IS_PART_OF_SOURCE)
 
     allow_overwrite = (
         duplicate_action == DuplicateAction.OVERWRITE and output_exists
@@ -1095,7 +1090,10 @@ async def delete_plan(request: DeletePlanRequest) -> dict:
                 "errors": [],
             }
         else:
-            item = await run_in_threadpool(
+            # Bounded like plan_job's Volume work: a set's headers (a RAR set's
+            # volumes) are read here, and a mount that stops answering answers
+            # 503 rather than holding the request (#476).
+            item = await off_loop_bounded(
                 functools.partial(build_delete_plan, file_path, confine_to_volumes=True),
             )
             await _add_referrer_changes(
