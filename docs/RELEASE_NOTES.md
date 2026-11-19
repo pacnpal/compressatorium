@@ -426,6 +426,19 @@
   was not found" instead of a 500. Nothing changes in the Docker image, which
   ships every binary.
 
+- **The sidebar no longer shows tools that are unavailable after a reload** (#496).
+  The sidebar and the dashboard's Quick tools card used to list every tool until
+  the app heard back about which ones can run, then dropped the unavailable ones
+  (Switch with no `prod.keys`, say). They now list no tools until that answer
+  arrives, so an unavailable tool is never drawn and can't be clicked. If the
+  request fails, every tool is shown as before.
+
+- **File info for a junk `.rvz` says it couldn't be read** (#495). For a file
+  that isn't a disc image, `dolphin-tool header` exits 0 and prints nothing, so
+  File info answered 200 with every field empty. A header read that yields no
+  fields now counts as a failed read, like a non-zero exit: the modal shows the
+  basics with the note that no tool could read the file.
+
 - **A DAT import during a running rematch no longer leaves a file unmatched**
   (#492). Importing several DATs in quick succession could leave a file the
   last one covers as a cached miss, or with no cached match at all, until it
