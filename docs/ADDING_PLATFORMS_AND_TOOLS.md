@@ -232,7 +232,9 @@ A plugin subclasses `BaseTool` and provides:
 | `accepts_directory(path)` | the directory analogue of `ext in input_extensions`. Default `False`; a tool with an `InputKind.DIRECTORY` mode overrides it to run its source-layout detector. May do disk I/O — it runs off the event loop. |
 | `companion_outputs(output_path, mode)` | sibling paths this mode writes *besides* `output_path` (never including it). `BaseTool` derives them from `ModeSpec.companion_exts` as pure path math; override only when the set is dynamic (makeps3iso's size-dependent split parts). |
 | `overwrite_targets(output_path, mode)` | every path an authorized overwrite must sweep, primary **first**. A superset of `companion_outputs`: it includes the primary, and it covers artifacts only a *failed* run leaves (an interrupted makeps3iso `-s` build leaves the base *and* numbered parts, which never coexist on success — so `companion_outputs`, describing a finished output, under-reports). Enumeration only; the pipeline validates and unlinks. Default = primary + companions. |
-| `is_ready()` | **async.** Whether the tool's runtime prerequisites are met. `False` ⇒ `GET /api/tools` reports it unavailable and the frontend hides it, instead of offering jobs that can only fail. Default `True`; override for a tool gated on an operator-supplied secret or an optional binary (`NszTool` → `prod.keys`). Threadpool anything that touches disk. |
+| `required_binaries` | The programs your tool runs, as `RequiredBinary(label, path, setting)` from `services.tools.binaries`, e.g. `(RequiredBinary("chdman", self._service.chdman_path, "CHDMAN_PATH"),)`. Read the path from the service at each call, never a copy. `BaseTool.is_ready()` is False while one is missing, not a file or not executable, with that program's reason; the shared probe runs detached and caches each path for 30s (design doc §3.4, "Declaring the programs a tool runs"). **Declare it for every tool that spawns a program**; don't write your own check. Default `()`. |
+| `verify_required_binaries` | Only when your check runs something other than your converter. Default `None`: a check needs what a conversion needs. `()` for a check done in Python (makeps3iso, jwud), or the program it does run (z3ds: `zstd`), so the tool stays verifiable without the converter. |
+| `is_ready()` | **async.** Whether the tool's runtime prerequisites are met. `False` ⇒ `GET /api/tools` reports it unavailable and the frontend hides it, instead of offering jobs that can only fail. `BaseTool` answers it from `required_binaries`; override only for a tool gated on something else, such as an operator-supplied secret (`NszTool` → `prod.keys`) or a downloaded binary that needs a version run (`RomConvertoTool`). Anything that touches disk goes through `run_detached`. |
 | `info_needs_tool` | Whether your `info()` runs the tool's program. Default `True`: your `/<tool>-info` route answers 503 with `not_ready_message(tool)` when `is_ready()` is False, instead of a 500 from the failed run. Set `False` when `info()` reads the file in Python (a header, an archive listing, the size), so File info keeps working without the program (nkit, xiso, jwud). Your info route calls the shared `_require_info_ready("<tool>")` either way (design doc §3.4, "Saying why a tool can't run"). |
 | `detect_output(input_path, *, from_archive=False)` | optional, returns an `OutputStatus` so the file list can badge "output already exists". May content-validate the candidate before claiming it: `romz` only reports a `.7z`/`.zip` sibling as its output when it's a genuine single-ROM archive (not just any file matching the `Game.gba.7z` naming), so the badge and the source row's verify-from-output flow track real outputs. `from_archive` marks `input_path` as the *synthesised* location an archive member would occupy once extracted — the listing-side counterpart of the `treat_as_stem` `plan_job` passes for the same member. Ignore it unless your output *name* depends on the input's neighbours: extraction hands over one member and never its siblings, so a member can only produce a single-file output (`jwud` forwards it, so a member named `game_part1.wud` doesn't badge a real split set's `game.wux`). |
 | `converts_path(path)` | optional per-file refinement of `input_extensions` — the input-side mirror of `verifies_path`. Default is the plain extension match; override when your source is really a *set* of files so only the primary is offered (`jwud` hides the secondary members of a split `game_part1.wud` … `game_part12.wud` dump, which stay listed but non-convertible). Drives `FileEntry.convertible_by`. May do disk I/O — it runs inside the threadpool scan. |
@@ -252,7 +254,8 @@ A plugin subclasses `BaseTool` and provides:
 
 `BaseTool` fills in `input_extensions` (the union of every mode's
 `input_extensions`), `spec(mode)`, no-op `detect_output` / `post_convert`,
-`accepts_directory` (`False`), `is_ready` (`True`), `companion_outputs` (from
+`accepts_directory` (`False`), `is_ready` (from `required_binaries`; `True` when
+none are declared), `companion_outputs` (from
 `companion_exts`), `overwrite_targets` (primary + companions), `source_companions`
 (`[]`), the extension-match `verifies_path` / `converts_path` defaults, and the
 `embedded_hashes` default
@@ -1296,6 +1299,8 @@ PIPELINE (app/services/job_manager.py)
 [ ] directory-input tool: implement overwrite_targets() so the sweep clears
     YOUR artifacts (see §5.6); the directory skip reasons in convert.py are
     still PS3-named, so add your own
+[ ] declare required_binaries (and verify_required_binaries if the check runs
+    something else, or nothing) so a missing program hides the tool
 [ ] keys/secret-gated tool: implement is_ready() so the UI hides it until the
     prerequisite is present — see §16.5
 
@@ -1360,7 +1365,7 @@ have solved the awkward part.
 | …takes a **folder**, not a file | **makeps3iso** | `accepts_directory()`, `input_kinds={InputKind.DIRECTORY}`, a dynamic `companion_outputs()` for split parts, the `split` convert kwarg, and a tool that registers *no* info/verify routes at all. Design doc §3.3.4. Override `overwrite_targets()` too, so an authorized overwrite sweeps your artifacts rather than makeps3iso's split parts (§5.6). |
 | …writes sidecar files beside its output | **chdman** (`extractcd`) | `companion_exts` driving conflict detection, cleanup and size accounting from one place. |
 | …runs an existing tool's output through another tool | **chain** (`tools/chain.py`) | `ChainSpec` / `ChainStep`: a synthetic tool with no binary that drives registered tools in order. Design doc §3.3.3. |
-| …ships as a prebuilt release artifact that needs an interpreter (a .jar, a script) | **jwud** (JWUDTool) | A pinned, SHA256-checked release download (in its own `jwudtool-builder` stage, which also swaps the jar's shaded commons-io for a patched release; the pattern for fixing a CVE in a prebuilt fat jar whose upstream is unmaintained) plus a `/usr/local/bin/<tool>` launcher that `exec`s the interpreter (so the tracked PID is the real process), and `is_ready()` hiding the tool when the launcher is absent. Also the reference for a CLI that writes into an *output folder* under a name of its own choosing, one that **exits 0 on failure** (`require_output` plus a stdout marker scan), and the only **multi-file source** (`converts_path` / `source_companions` for a split `game_part1.wud` dump). |
+| …ships as a prebuilt release artifact that needs an interpreter (a .jar, a script) | **jwud** (JWUDTool) | A pinned, SHA256-checked release download (in its own `jwudtool-builder` stage, which also swaps the jar's shaded commons-io for a patched release; the pattern for fixing a CVE in a prebuilt fat jar whose upstream is unmaintained) plus a `/usr/local/bin/<tool>` launcher that `exec`s the interpreter (so the tracked PID is the real process), and `required_binaries` hiding the tool when the launcher is absent (with `verify_required_binaries = ()`, since its WUX check is Python). Also the reference for a CLI that writes into an *output folder* under a name of its own choosing, one that **exits 0 on failure** (`require_output` plus a stdout marker scan), and the only **multi-file source** (`converts_path` / `source_companions` for a split `game_part1.wud` dump). |
 | …can report a content hash cheaply for DAT matching | **dolphin** | `embedded_hashes()` via `SubprocessRunner.run_capture()`, plus `embedded_hash_is_exhaustive=True` for recompressed containers. |
 | …shares a generic extension with other tools and must tell its files apart **by content** | **xiso** (`services/extract_xiso.py` + `tools/xiso.py`) | `converts_path()` running a cached header probe so the tool appears in `convertible_by` only for its own format, a `_NOT_CONVERTIBLE_REASON` row so plan-time rejection says why, `contentRefined: true` on the frontend descriptor so the Info modal asks it first, and a binary that **renames its input**: the service hands it a symlink in scratch space and moves the product into place itself. Also `supports_verify` without delete-on-verify for a structural-only check. |
 | …runs **no binary at all**, edits a zip, or reads a user-supplied side input | **exodos** (`services/exodos.py` + `tools/exodos.py`) | A pure-Python tool registered with an empty binary path, gated on an env var (`EXODOS_DOS_DIR`) through `is_ready()` the way nsz is gated on keys, `converts_path()` reading a zip's directory so `plan_job` takes only its own `.zip` files (without `contentRefined`: archive rows carry no `convertible_by`, so the frontend content gate would refuse every zip), and a product written through the shared `services/archive_edit.rewrite_zip` (rename, drop or add members; crash-safe placement). Also a verify that checks CRCs and structure in Python, served through the shared verify routes (`_VERIFY_CONFIG["exodos"]`) and passed to `rewrite_zip` as its `check`, so every job checks its own product before keeping it; and a verifiable product with no Info (`getInfo` left undefined, so `registry.infoToolForRow` offers no Info action). |
@@ -1863,11 +1868,13 @@ exposes availability and the frontend hides unavailable tools entirely:
   `{"available": [...], "unavailable": [...]}`. A tool lands in `unavailable`
   when its readiness check fails (for nsz, `keys_available()` is false).
   The check is **your plugin's**, not the route's: `list_tools()` awaits
-  `tool.is_ready()` for every registered tool. `BaseTool` returns `True`, so
-  ordinary tools need nothing; override it when your tool can't run without
-  something the operator supplies. Keep it off the event loop if it touches
-  disk — `NszTool.is_ready` threadpools its `keys_available()` probe, which may
-  walk the configured volumes.
+  `tool.is_ready()` for every registered tool, through
+  `registry.tool_is_ready`. `BaseTool` answers from `required_binaries`, so an
+  ordinary tool only declares its program; override `is_ready()` when your
+  tool can't run without something the operator supplies. Keep it off the
+  event loop if it touches disk: `NszTool.is_ready` runs its
+  `keys_available()` probe through `run_detached`, because it may walk the
+  configured volumes.
 - **Frontend:** `App.svelte` fetches it on mount and calls
   `ui.applyToolAvailability(available)`, which stores `ui.hiddenTools`. Sidebar
   and the dashboard derive their tool list as

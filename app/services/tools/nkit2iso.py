@@ -27,6 +27,7 @@ from services.nkit2iso import (
 )
 
 from .base import BaseTool
+from .binaries import RequiredBinary
 from .spec import ModeKind, ModeSpec
 
 
@@ -67,6 +68,12 @@ class Nkit2IsoTool(BaseTool):
     def __init__(self, binary_path: str) -> None:
         super().__init__(binary_path)
         self._service = nkit2iso_service
+
+    @property
+    def required_binaries(self) -> tuple[RequiredBinary, ...]:
+        # The program every conversion runs, read where the service spawns it
+        # (#494): missing or not executable, and the tool isn't ready.
+        return (RequiredBinary("nkit2iso", self._service.nkit2iso_path, "NKIT2ISO_PATH"),)
 
     def detect_output(
         self, input_path: str, *, from_archive: bool = False,

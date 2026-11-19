@@ -38,6 +38,7 @@ from services.extract_xiso import (
 from services.lock_manager import lock_manager
 
 from .base import BaseTool
+from .binaries import RequiredBinary
 from .spec import ModeKind, ModeSpec
 
 
@@ -72,6 +73,14 @@ class XisoTool(BaseTool):
     def __init__(self, binary_path: str) -> None:
         super().__init__(binary_path)
         self._service = extract_xiso_service
+
+    @property
+    def required_binaries(self) -> tuple[RequiredBinary, ...]:
+        # The program every conversion runs, read where the service spawns it
+        # (#494): missing or not executable, and the tool isn't ready.
+        return (RequiredBinary(
+            "extract-xiso", self._service.extract_xiso_path, "EXTRACT_XISO_PATH",
+        ),)
 
     def converts_path(self, path: str) -> bool:
         return self._service.is_convertible(path)

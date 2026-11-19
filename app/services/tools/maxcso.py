@@ -25,6 +25,7 @@ from services.stream_digest import content_digest_of, file_chunks
 from utils.cso_decode import iter_decoded
 
 from .base import IMAGE_DATA_SHA1_KIND, BaseTool, ContentDigest
+from .binaries import RequiredBinary
 from .spec import ModeKind, ModeSpec
 
 # The .iso a file-list row offers maps to its .cso sibling for the "output
@@ -130,6 +131,12 @@ class MaxcsoTool(BaseTool):
     def __init__(self, binary_path: str) -> None:
         super().__init__(binary_path)
         self._service = maxcso_service
+
+    @property
+    def required_binaries(self) -> tuple[RequiredBinary, ...]:
+        # The program every conversion runs, read where the service spawns it
+        # (#494): missing or not executable, and the tool isn't ready.
+        return (RequiredBinary("maxcso", self._service.maxcso_path, "MAXCSO_PATH"),)
 
     def detect_output(
         self, input_path: str, *, from_archive: bool = False,

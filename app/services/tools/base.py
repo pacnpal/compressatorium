@@ -22,9 +22,13 @@ from models import OutputStatus
 from services.subprocess_runner import resolve_verify_timeout
 from utils.path_utils import match_extension
 
+from .binaries import RequiredBinary, first_binary_problem
 from .spec import ModeSpec
 
 logger = get_logger("tools.base")
+
+# What ``not_ready_message`` says when a tool gives no reason of its own.
+DEFAULT_NOT_READY_REASON = "its program is not available on this server"
 
 
 def compression_problem(spec: ModeSpec, compression: str | None) -> str | None:
@@ -604,6 +608,12 @@ class ToolPlugin(Protocol):
         Async because a readiness probe may touch the disk (nsz searches the
         configured volumes for ``prod.keys``); implementations that block
         should hop to a threadpool rather than stall the event loop.
+
+        ``BaseTool`` answers it from ``required_binaries`` (#494): each program
+        the tool runs must be present and executable, checked by the shared
+        probe in ``services.tools.binaries`` (detached, cached per path). A
+        plugin that runs a program declares it there rather than writing its
+        own check.
         
         **Filesystem work here goes through ``run_detached``, never
         ``run_in_threadpool``.** Callers all fan out over the whole registry
@@ -734,17 +744,58 @@ class BaseTool:
     # the same choice in the manual picker.
     default_compression: str | None = None
     # Why ``is_ready()`` answered False, in the user's words. Tools gated on a
-    # user-supplied file or an optional runtime say which one.
-    not_ready_reason: str = "its program is not available on this server"
+    # user-supplied file or an optional runtime say which one; a tool whose
+    # declared program is missing gets that program's reason from the shared
+    # probe (#494), set on the instance by ``_binaries_ready``.
+    not_ready_reason: str = DEFAULT_NOT_READY_REASON
     # Default True: an info read that runs the program needs it to be ready.
     # A tool whose ``info()`` reads the file in Python sets False, so its File
     # info keeps answering when the program is missing (#488).
     info_needs_tool: bool = True
 
     @property
+    def required_binaries(self) -> tuple[RequiredBinary, ...]:
+        """The programs a conversion (and an info read) runs (#494).
+
+        ``is_ready()`` is False while any of them is missing or not
+        executable, with that program's reason. Read at each probe, so declare
+        the path the service actually spawns (``self._service.<x>_path``), not
+        a copy taken at construction. Default: none, so the tool is ready.
+        """
+        return ()
+
+    @property
+    def verify_required_binaries(self) -> tuple[RequiredBinary, ...] | None:
+        """The programs a check runs, when that is not what a conversion runs.
+
+        None (the default): a check needs what a conversion needs, and
+        ``verify_is_ready()`` is ``is_ready()``. A tuple, possibly empty, is
+        probed on its own: makeps3iso's and jwud's checks read the file in
+        Python (``()``), z3ds's streams the payload through ``zstd``.
+        """
+        return None
+
+    @property
     def verify_not_ready_reason(self) -> str:
         """Why ``verify_is_ready()`` answered False; the convert reason by default."""
-        return self.not_ready_reason
+        return self.__dict__.get("_verify_binary_reason") or self.not_ready_reason
+
+    async def _binaries_ready(
+        self, binaries: tuple[RequiredBinary, ...], purpose: str,
+    ) -> bool:
+        """Probe *binaries*; keep the missing one's reason for *purpose*.
+
+        The reason lands on the instance (``not_ready_reason`` for a
+        conversion, the verify reason for a check), shadowing the class
+        default, and is dropped again once the program is there.
+        """
+        problem = await first_binary_problem(binaries)
+        key = "not_ready_reason" if purpose == "convert" else "_verify_binary_reason"
+        if problem is None:
+            self.__dict__.pop(key, None)
+            return True
+        self.__dict__[key] = problem
+        return False
 
     def __init__(self, binary_path: str) -> None:
         self.binary_path = binary_path
@@ -1002,13 +1053,18 @@ class BaseTool:
         return None
 
     async def is_ready(self) -> bool:
-        # Default: nothing to check. Tools gated on a user-supplied secret or
-        # an optional binary override this (see nsz / prod.keys).
-        return True
+        # The declared programs, through the shared probe (#494); a tool that
+        # runs none is ready. Tools gated on something else (nsz's prod.keys)
+        # override this.
+        return await self._binaries_ready(self.required_binaries, "convert")
 
     async def verify_is_ready(self) -> bool:
-        # Default: a check needs what a conversion needs.
-        return await self.is_ready()
+        # Default: a check needs what a conversion needs, unless the plugin
+        # declares what its check runs.
+        needed = self.verify_required_binaries
+        if needed is None:
+            return await self.is_ready()
+        return await self._binaries_ready(needed, "verify")
 
     def expected_output_size(self, input_path: str, mode: str) -> int | None:
         # Default: unknown. Tools whose source header states the output size
@@ -1058,8 +1114,8 @@ def not_ready_message(tool: ToolPlugin, *, purpose: str = "convert") -> str:
     Read it after the readiness check that answered False: a plugin may learn
     its reason while it probes (rom-converto keeps the last probe's). Reading
     it is an attribute read, never I/O, so it is safe on the event loop. A
-    reason that can't be read, or is empty, gives the base default rather
-    than raising into the caller.
+    reason that can't be read, or is empty, gives
+    :data:`DEFAULT_NOT_READY_REASON` rather than raising into the caller.
     """
     try:
         reason = (
@@ -1069,5 +1125,5 @@ def not_ready_message(tool: ToolPlugin, *, purpose: str = "convert") -> str:
         logger.warning("could not read %s's not-ready reason", tool.id, exc_info=True)
         reason = None
     if not isinstance(reason, str) or not reason.strip():
-        reason = BaseTool.not_ready_reason
+        reason = DEFAULT_NOT_READY_REASON
     return f"{getattr(tool, 'display_name', None) or tool.id} isn't ready: {reason}"

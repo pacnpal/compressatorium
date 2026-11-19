@@ -6,7 +6,6 @@ by running it in a threadpool.
 from __future__ import annotations
 
 import asyncio
-import shutil
 from collections.abc import AsyncGenerator, Sequence
 from pathlib import Path
 
@@ -14,7 +13,6 @@ from fastapi.concurrency import run_in_threadpool
 from models import OutputStatus, Z3DSInfo
 from services.lock_manager import lock_manager
 from services.stream_digest import content_digest_of, file_chunks
-from services.subprocess_runner import run_detached
 from services.z3ds_compress import (
     Z3DS_CONVERTIBLE_EXTENSIONS,
     Z3DS_DECOMPRESS_EXTENSIONS,
@@ -29,6 +27,7 @@ from .base import (
     ContentDigest,
     ContentDigestUnavailable,
 )
+from .binaries import RequiredBinary
 from .spec import ModeKind, ModeSpec
 
 # Compressed containers: the compress outputs == the decompress inputs == the
@@ -78,18 +77,24 @@ class Z3dsTool(BaseTool):
     output_extensions = _Z3DS_COMPRESSED | _Z3DS_DECOMPRESSED
     verify_extensions = _Z3DS_COMPRESSED
 
-    @property
-    def verify_not_ready_reason(self) -> str:
-        return "zstd is not installed, so 3DS files cannot be checked"
-
-    async def verify_is_ready(self) -> bool:
-        # The check streams the payload through `zstd -t` (#306). Detached: a
-        # PATH lookup stats directories, and readiness callers fan out.
-        return await run_detached(shutil.which, "zstd") is not None
-
     def __init__(self, binary_path: str) -> None:
         super().__init__(binary_path)
         self._service = z3ds_compress_service
+
+    @property
+    def required_binaries(self) -> tuple[RequiredBinary, ...]:
+        # The program every conversion runs, read where the service spawns it
+        # (#494): missing or not executable, and the tool isn't ready.
+        return (RequiredBinary(
+            "z3ds_compressor", self._service.z3ds_compressor_path,
+            "Z3DS_COMPRESSOR_PATH",
+        ),)
+
+    @property
+    def verify_required_binaries(self) -> tuple[RequiredBinary, ...]:
+        # The check streams the payload through `zstd -t` (#306); the
+        # compressor itself is not run.
+        return (RequiredBinary("zstd", "zstd"),)
 
     def detect_output(
         self, input_path: str, *, from_archive: bool = False,

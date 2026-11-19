@@ -20,6 +20,7 @@ from services.lock_manager import lock_manager
 from services.makeps3iso import makeps3iso_service
 
 from .base import BaseTool
+from .binaries import RequiredBinary
 from .spec import InputKind, ModeKind, ModeSpec
 
 
@@ -64,6 +65,18 @@ class MakePs3IsoTool(BaseTool):
     def __init__(self, binary_path: str) -> None:
         super().__init__(binary_path)
         self._service = makeps3iso_service
+
+    @property
+    def required_binaries(self) -> tuple[RequiredBinary, ...]:
+        # The program every conversion runs, read where the service spawns it
+        # (#494): missing or not executable, and the tool isn't ready.
+        return (RequiredBinary("makeps3iso", self._service.makeps3iso_path, "MAKEPS3ISO_PATH"),)
+
+    @property
+    def verify_required_binaries(self) -> tuple[RequiredBinary, ...]:
+        # The check reads the built ISO's PARAM.SFO in Python; makeps3iso
+        # has no verify of its own.
+        return ()
 
     def accepts_directory(self, path: str) -> bool:
         # The directory analogue of `ext in input_extensions`: require the

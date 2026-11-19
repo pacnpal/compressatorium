@@ -27,6 +27,7 @@ from .base import (
     ContentDigestUnavailable,
     EmbeddedHashUnavailable,
 )
+from .binaries import RequiredBinary
 from .spec import ModeKind, ModeSpec
 
 # The digest kind every Dolphin mode produces and compares: SHA1 of the whole
@@ -179,6 +180,14 @@ class DolphinTool(BaseTool):
     def __init__(self, binary_path: str) -> None:
         super().__init__(binary_path)
         self._service = dolphin_tool_service
+
+    @property
+    def required_binaries(self) -> tuple[RequiredBinary, ...]:
+        # The program every conversion runs, read where the service spawns it
+        # (#494): missing or not executable, and the tool isn't ready.
+        return (RequiredBinary(
+            "dolphin-tool", self._service.dolphin_tool_path, "DOLPHIN_TOOL_PATH",
+        ),)
 
     def header_platform(self, path: str, *, within=None) -> str | None:
         # The magic numbers in a raw disc header. Dolphin's own containers

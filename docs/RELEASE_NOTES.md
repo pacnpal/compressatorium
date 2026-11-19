@@ -418,6 +418,21 @@
 
 ### Fixed
 
+- **A tool whose program is missing is hidden instead of offered** (#494).
+  chdman, dolphin-tool, z3ds_compressor, maxcso, 7z, makeps3iso, extract-xiso
+  and nkit2iso were listed as available whether or not their program was
+  there, so the convert panel offered jobs that could only fail, and File info
+  on a CHD that wasn't cached answered with an error instead of saying chdman
+  was missing. Each tool now checks that its program is at the configured path
+  (or on `PATH` for a bare name) and is executable. When it isn't, the tool
+  drops out of the tool list, Auto, Rules, Inbox intake and the CLI, and File
+  info says why, for example "CHDMAN isn't ready: chdman was not found at
+  /usr/bin/chdman (set CHDMAN_PATH to where it is)". The Docker image ships
+  every program, so nothing changes there. Outside Docker, a tool whose
+  program is missing is now hidden instead of offered. A check that doesn't
+  run the program still works without it: a PS3 ISO's and a WUX's check are
+  read in Python, and a 3DS check needs only `zstd`. The answer is kept for
+  30 seconds, so installing or removing a program shows up within that time.
 - **A DAT import during a running rematch no longer leaves a file unmatched**
   (#492). Importing several DATs in quick succession could leave a file the
   last one covers as a cached miss, or with no cached match at all, until it

@@ -286,8 +286,10 @@ class ToolPlugin(Protocol):
 
     # Runtime prerequisites met? False => GET /api/tools reports the tool
     # unavailable and the frontend hides it, instead of offering jobs that can
-    # only fail. Default True; nsz overrides (prod.keys). Async because the
-    # probe may touch disk. `not_ready_reason` / `verify_not_ready_reason` say
+    # only fail. BaseTool answers it from `required_binaries` (the programs
+    # the tool runs, through the shared probe, §3.4 "Declaring the programs a
+    # tool runs"); nsz and exodos override it (prod.keys, EXODOS_DOS_DIR).
+    # Async because the probe may touch disk. `not_ready_reason` / `verify_not_ready_reason` say
     # why it answered False; callers show them through `not_ready_message`
     # (§3.4) rather than formatting their own line.
     async def is_ready(self) -> bool: ...
@@ -366,9 +368,12 @@ class BaseTool:
     def overwrite_targets(self, output_path, mode) -> list[str]:
         return [output_path, *self.companion_outputs(output_path, mode)]
 
-    # Default: nothing to check.
+    # The declared programs, each present and executable (#494). A tool
+    # that declares none (exodos, the chain) is ready.
+    required_binaries: tuple[RequiredBinary, ...] = ()
+    verify_required_binaries: tuple[RequiredBinary, ...] | None = None
     async def is_ready(self) -> bool:
-        return True
+        return await self._binaries_ready(self.required_binaries, "convert")
 
     # subclasses implement: output_path, convert (via self._runner.run),
     # verify_stream, info, info_model
@@ -6346,8 +6351,10 @@ another Platform, so the Platform-less chain tool does not make `.cso` shared.
 
 Readiness is per operation: `ToolPlugin.verify_is_ready()` (default
 `is_ready()`), asked through `registry.tool_is_ready(tool, purpose="verify")`.
-jwud's WUX check needs no JWUDTool or Java; z3ds's needs `zstd`
-(`verify_not_ready_reason` says so). The CLI asks once per tool per run, dry
+jwud's WUX check needs no JWUDTool or Java, and makeps3iso's reads PARAM.SFO
+in Python; z3ds's needs `zstd`. Each says so through
+`verify_required_binaries` (§3.4, #494), and `verify_not_ready_reason` names
+the missing program. The CLI asks once per tool per run, dry
 runs included, and skips a tool that cannot check here: exit 1 when the file
 was named on the command line, a reported skip inside a folder.
 
@@ -8714,9 +8721,91 @@ the filesystem must use `run_detached`, not `run_in_threadpool`.** A pooled
 worker wedged on a dead mount is never handed back, and since every caller fans
 out over the whole registry, repeated probes retire the pool one worker at a
 time until unrelated offloads have nowhere to run — the bound turns a hang into
-a leak rather than removing it. `nsz` (a recursive walk for `prod.keys`) and
-`jwud` (a stat for the `.jar`) are the two that touch the disk today; the
+a leak rather than removing it. `nsz` (a recursive walk for `prod.keys`),
+`exodos` (its template tree), `rom_converto` (its own `--version` probe) and
+every tool that declares `required_binaries` (below) touch the disk; the
 requirement is stated on `ToolPlugin.is_ready` so a new gated tool inherits it.
+
+#### Declaring the programs a tool runs (`required_binaries`, #494)
+
+A tool that spawns a program does not write its own readiness check. It
+declares the program on `BaseTool.required_binaries`, a tuple of
+`services.tools.binaries.RequiredBinary(label, path, setting)`, and
+`BaseTool.is_ready()` asks the shared probe for each one. `path` is the value
+the service spawns, read at each probe (`self._service.chdman_path`, not a copy
+taken at construction), so a test or a settings change that moves it is seen.
+A value with a path separator is checked where it is; a bare name (`7z`,
+`zstd`) is looked up on `PATH`, as the spawn would. `setting` is the
+environment variable that sets it, named in the reason.
+
+| Tool | Converts with | Checks with (`verify_required_binaries`) |
+|---|---|---|
+| chdman | `chdman` (`CHDMAN_PATH`) | same |
+| dolphin | `dolphin-tool` (`DOLPHIN_TOOL_PATH`) | same |
+| z3ds | `z3ds_compressor` (`Z3DS_COMPRESSOR_PATH`) | `zstd` on `PATH` |
+| cso | `maxcso` (`MAXCSO_PATH`) | same |
+| romz | `7z` (`SEVENZIP_PATH`) | same |
+| makeps3iso | `makeps3iso` (`MAKEPS3ISO_PATH`) | none: PARAM.SFO is read in Python |
+| xiso | `extract-xiso` (`EXTRACT_XISO_PATH`) | same |
+| nkit | `nkit2iso` (`NKIT2ISO_PATH`) | (no check) |
+| jwud | the JWUDTool launcher (`JWUDTOOL_PATH`) | none: the WUX walk is Python |
+
+`verify_required_binaries` is None by default, meaning a check needs what a
+conversion needs and `verify_is_ready()` is `is_ready()`. A tuple, possibly
+empty, is probed on its own, which is how a check that runs something else
+(z3ds's `zstd -t`) or nothing at all (makeps3iso, jwud) stays verifiable when
+the converter is missing. Not covered: nsz and rom-converto keep their own
+`is_ready()` (prod.keys; a `--version` run), exodos runs no program, and the
+chain tool declares none of its own (its readiness is per tool, while its two
+modes use different tools).
+
+**What the probe checks.** Present, a regular file, and executable for this
+process (`os.access(X_OK)`), nothing more. It never runs the program: several
+of these tools have no cheap, non-interactive way to print a version, and a
+spawn on every probe costs far more than a stat. A binary built for the wrong
+architecture therefore still reads as ready and fails at job time, as before;
+rom-converto, a downloaded per-arch release, keeps its own `--version` probe
+for exactly that.
+
+**Why it isn't ready.** `_binaries_ready` keeps the first failing program's
+reason on the instance, as `not_ready_reason` for a conversion and as
+`verify_not_ready_reason` for a check, and drops it once the program is there.
+The reasons are "`<label>` was not found at `<path>` (set `<SETTING>` to where
+it is)", "`<label>` is not installed (no `<name>` on PATH)", "`<label>` at
+`<path>` is not executable", "... is not a file" and "... could not be read:
+`<error>`". Every caller shows them through `not_ready_message` (below), so the
+tool list, the File info 503, the CLI, Auto's plan, the Rules sweep and Inbox
+intake say the same thing.
+
+**How it runs, and the cache rule.** The stat is `run_detached`: a configured
+path on a mount that has stopped answering costs a disposable thread, never a
+shared pool worker. Answers are cached per configured path for
+`BINARY_PROBE_TTL_SECONDS` (30s), success and failure alike, so the tool list
+and every sweep, which ask every tool each time, stat each binary at most twice
+a minute, and a program that is installed, removed or `chmod`-ed is noticed
+within that window. While a probe of a path is running, other callers on the
+same event loop await that probe (shielded, so one caller's bound doesn't
+cancel it for the rest) instead of starting another, so a dead mount holds one
+written-off thread per path rather than one per request. A probe that raises
+(the detached-probe ceiling) is not cached. `binaries.forget_binary_probes()`
+drops every answer, for tests.
+
+**Callers.** Every readiness caller already went through
+`registry.tool_is_ready`: the tool list, the RomM platform list, the File info
+routes, the CLI, Auto's plan, Inbox intake and the Rules and Library sweeps.
+Each already handled a tool that answers False (nsz without keys), so a tool
+whose program goes missing drops out of all of them at once. Inside the Docker
+image every program ships, so nothing changes there; outside it, a tool whose
+program is missing is hidden rather than offered.
+
+**Tests.** The suite runs as if inside the image: an autouse fixture in
+`tests/conftest.py` (`_programs_as_in_the_image`) counts the paths the eight
+tools above (not jwud, which checked before, nor `zstd`) are configured with
+at the start of each test as installed, at the probe's one seam
+(`binaries._inspect`), and drops every cached answer around each test. Any
+other path is probed for real, so a test of a missing or non-executable
+program points the service's path at a file of its own in `tmp_path`
+(`tests/test_binary_readiness_494.py`) rather than weakening the probe.
 
 #### Saying why a tool can't run (`not_ready_message`)
 
@@ -8769,9 +8858,10 @@ its program; leaving the default is the safe choice, since a ready tool's info
 route answers as before.
 
 chdman's route checks before it reads its metadata cache, so a CHD whose info
-is cached is not shown while chdman isn't ready. chdman and dolphin keep
-`BaseTool.is_ready()` (always True), so today their gate only bites for a
-plugin that overrides it; the route is ready for that without another change.
+is cached is not shown while chdman isn't ready. chdman and dolphin declare
+their programs (`required_binaries`, #494), so a missing or non-executable
+`chdman` / `dolphin-tool` makes `/info` and `/dolphin-info` answer 503 with
+that program's reason instead of a 500 from the failed run.
 
 The SPA shows the 503's text as the server sent it. The shared client's
 `fetchJson` (`src/lib/api/client.js`) throws an `Error` whose `message` is the
