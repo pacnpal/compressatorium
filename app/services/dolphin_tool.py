@@ -157,7 +157,13 @@ class DolphinToolService:
                 or f"dolphin-tool header failed with code {returncode}",
             )
 
-        return self._parse_header(stdout.decode())
+        info = self._parse_header(stdout.decode())
+        # A junk image can make dolphin-tool exit 0 and print nothing. No
+        # parsed field means it never read the image, not that the image has
+        # no header (issue #495).
+        if not info.keys() - {"raw_data"}:
+            raise RuntimeError("dolphin-tool could not read a header from this file")
+        return info
 
     async def disc_hashes(
         self, path: str, *, cancel_event: asyncio.Event | None = None,
