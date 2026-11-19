@@ -433,6 +433,11 @@
   run the program still works without it: a PS3 ISO's and a WUX's check are
   read in Python, and a 3DS check needs only `zstd`. The answer is kept for
   30 seconds, so installing or removing a program shows up within that time.
+- **File info for a junk `.rvz` says it couldn't be read** (#495). For a file
+  that isn't a disc image, `dolphin-tool header` exits 0 and prints nothing, so
+  File info answered 200 with every field empty. A header read that yields no
+  fields now counts as a failed read, like a non-zero exit: the modal shows the
+  basics with the note that no tool could read the file.
 - **A DAT import during a running rematch no longer leaves a file unmatched**
   (#492). Importing several DATs in quick succession could leave a file the
   last one covers as a cached miss, or with no cached match at all, until it
