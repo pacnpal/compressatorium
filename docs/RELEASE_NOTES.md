@@ -909,6 +909,12 @@
     zip or template that could not be read for a moment (a permission or disk
     error) is not remembered, so fixing it is seen on the next listing.
 
+- **A junk or corrupt archive no longer logs an ERROR with a traceback** (#506).
+  Listing a folder that holds a stray `.rar`, `.zip` or `.7z` that is not a real
+  archive, or a partial download, now logs one WARNING naming the file and the
+  reason. A bug in our own code still logs ERROR with the traceback. The listing
+  answers the same.
+
 ### Added
 
 - **ES-DE's own gamelists folder** (#387). ES-DE keeps its gamelists in a
