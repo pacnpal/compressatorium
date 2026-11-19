@@ -4944,13 +4944,17 @@ def test_a_readiness_probe_never_takes_a_shared_pool_worker() -> None:
     """
     import inspect
 
-    for tool_id in ("nsz", "jwud"):
-        source = inspect.getsource(registry.get(tool_id).is_ready)
+    from services.tools import binaries
+
+    # nsz's own probe, and the shared one every tool that declares its
+    # program goes through (#494; jwud's stat moved there).
+    for probe in (registry.get("nsz").is_ready, binaries._probe):
+        source = inspect.getsource(probe)
         assert "run_detached" in source, (
-            f"{tool_id}.is_ready puts filesystem work on the shared pool"
+            f"{probe.__qualname__} puts filesystem work on the shared pool"
         )
         assert "run_in_threadpool" not in source, (
-            f"{tool_id}.is_ready still takes a pooled worker"
+            f"{probe.__qualname__} still takes a pooled worker"
         )
 
 

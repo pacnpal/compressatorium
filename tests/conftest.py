@@ -56,7 +56,7 @@ def _restore_tool_instances():
 
 
 @pytest.fixture(autouse=True)
-def _programs_as_in_the_image(monkeypatch):
+def _programs_as_in_the_image():
     """The suite runs as if inside the Docker image, where every program ships.
 
     Since #494 a tool whose program is missing is not ready, and CI (like a
@@ -69,6 +69,10 @@ def _programs_as_in_the_image(monkeypatch):
     program. Only the tools that never checked their program before #494 are
     included, so jwud (checked before) and ``zstd`` keep their real answers.
     Every cached answer is dropped around each test.
+
+    Patched by hand rather than through ``monkeypatch``: requesting it here
+    would set it up before ``_restore_tool_instances``, so its undo would run
+    after that restore and pin a test's instance patches on the singletons.
     """
     from services.tools import binaries, registry
 
@@ -86,10 +90,13 @@ def _programs_as_in_the_image(monkeypatch):
             return binaries._OK, path
         return real(path)
 
-    monkeypatch.setattr(binaries, "_inspect", inspect)
+    binaries._inspect = inspect
     binaries.forget_binary_probes()
-    yield
-    binaries.forget_binary_probes()
+    try:
+        yield
+    finally:
+        binaries._inspect = real
+        binaries.forget_binary_probes()
 
 
 @pytest.fixture
