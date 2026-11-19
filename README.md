@@ -3022,7 +3022,7 @@ The Web UI communicates with a REST API that can also be used directly. Interact
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | POST | `/api/jobs` | Create a single conversion job |
-| POST | `/api/jobs/batch` | Create multiple conversion jobs |
+| POST | `/api/jobs/batch` | Create multiple jobs (`?report_skipped=true`: `{jobs, skipped}`) |
 | POST | `/api/jobs/check-duplicates` | Check for existing output files |
 | POST | `/api/jobs/delete-plan` | Build delete-on-verify confirmation list, with each planned `.m3u` edit (`referrer_changes`) |
 | GET | `/api/jobs` | List all jobs |

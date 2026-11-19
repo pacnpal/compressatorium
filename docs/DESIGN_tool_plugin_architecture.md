@@ -1435,6 +1435,22 @@ listing cache does not keep: each member's CRC, `is_plain_file`, whether a
 password is needed (for the headers or any member) and the volumes rarfile
 read.
 
+**Companion rows in the listing (#504).** `GET /api/files` marks a row that
+is one of `registry.source_companions` of another row in the same listing
+(a RAR set's later volumes, a split Wii U dump's parts, any tool's
+companions) with `FileEntry.companion_of`, the leading row's path.
+`routes.files.companion_marks(paths, progress)` asks the hook of each listed
+file and archive row in turn, skipping a row already marked, in the lenient
+form: a set whose members can't be told now (`CompanionsUnknown`, an
+unreadable or slow header read, each bounded and detached as below) marks
+nothing. The pass runs after the listing, through
+`run_detached_within_stall_bound` under the listing's own `WALK_STALL_SECONDS`
+with one progress report per row; a pass that stops moving gives up and the
+listing answers with no marks rather than 503. A marked row lists as before
+(a later volume is still a plain `file` row) and the SPA's `_isSelectable`
+refuses it, so it is never ticked, converted, checked or deleted alone; the
+row shows "part of <first volume>". Folder rows are never asked.
+
 **Every RAR header read is bounded and detached.** `archive_members` reads a
 RAR header in one way only, `_bounded_header_read`: the listing
 (`read_archive_members`), a later volume's flag (`later_volume_of`), a set's
@@ -4285,7 +4301,17 @@ never became jobs retired).
 `POST /api/jobs/auto` groups the planned Images by (mode, compression). The
 batch route is split into `prepare_batch` (validate and `plan_job` every file,
 queue nothing) and `queue_prepared` (one atomic `create_jobs_atomic` call);
-`create_batch_jobs` is the two in sequence. Auto prepares every group first, so
+`create_batch_jobs` is the two in sequence. It answers the job list, or with
+`report_skipped=true` a `BatchJobsResponse`, `{jobs, skipped: [{path, reason,
+code}]}` (#504). The flag keeps the bare list for every client written before
+it (the API's users, scripts); the SPA sets it and its submit toast names the
+first three reasons and counts the rest. Every file `prepare_batch` leaves out
+is a `BatchSkip`: a `plan_job` skip becomes one through `BatchSkip.of(path,
+skip)`, whose `reason` is `SkipFile.message` (the tool's `detail`, else the
+single-job text) and whose `code` is `SkipFile.code` (the `SkipReason` value),
+and a file whose output another file of the batch writes is `same_output`. So a
+new `SkipReason` (a tool that isn't ready, #505) reaches the batch report, the
+CLI and Auto with no change to the batch code. Auto prepares every group first, so
 a planning error queues nothing, then checks the whole batch against
 `max_queue_depth`, then queues the groups. Each group is its own atomic call,
 so a later group can still be refused at queue time (409 when another job took
@@ -5560,7 +5586,7 @@ caller of the same seams the routes use, not a second conversion path:
 | Find Images | `routes.files.scan_tree`: the `GET /files/search` walk (subfolders, convertible folders, archive members as `archive::member`). `purpose="verify"` also lists every file some tool can check though none converts it (`.chd`), from `tools_verifying_path` |
 | `--to <format>` | `platform_detect.format_route` / `format_candidates` (below) |
 | `--auto` | `routes.convert.plan_auto_targets` (`plan_auto` plus `checked_compression`), the Auto route's planner |
-| Plan | `routes.convert.prepare_batch`: `plan_job` per file, duplicate handling, delete snapshots. `PreparedBatch.skipped` lists each file it left out with the reason (`_SKIP_HTTP` text, or "Same output as X"), which the CLI reports and the routes ignore |
+| Plan | `routes.convert.prepare_batch`: `plan_job` per file; a `BatchSkip` each skip, CLI-reported |
 | Queue and run | `routes.convert.queue_prepared` into the `job_manager` singleton, started with `process_queue()`, emptied with `JobManager.drain()` and stopped with `JobManager.shutdown()`. Fed in chunks below `max_queue_depth` when it is set. A group the planner refuses is re-planned one Image at a time, so only the Image at fault fails |
 | Delete | `JobManager._delete_check`, so `--delete-source` gets the Round-trip check where the mode has one and `--container-only` is the job's `container_only` |
 | Ledger | `ledger.record` as a terminal listener, as in `main.py` |

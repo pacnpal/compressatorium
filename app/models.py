@@ -151,6 +151,12 @@ class FileEntry(BaseModel):
     # cache; listing never hashes. None for ordinary directory listings.
     romm_identified: bool | None = None
     dat_match: dict | None = None
+    # The Source this row belongs to (#504): set when the row is one of the
+    # ``source_companions`` of another Source in the same listing (a later RAR
+    # volume, a split Wii U dump's part). Never converted, checked or deleted
+    # on its own; the Source's path is what to select. None when it is no
+    # companion, or the set's members can't be told now.
+    companion_of: str | None = None
 
 
 class RommListingSummary(BaseModel):
@@ -382,6 +388,28 @@ class AutoPlanItem(BaseModel):
     tool_id: str | None = None
     compression: str | None = None
     skip_reason: str | None = None
+
+
+class BatchSkippedItem(BaseModel):
+    """One file a batch left out, and why (#504).
+
+    ``reason`` is the words a single job would answer with; ``code`` names the
+    cause for a client to branch on: a ``plan_job`` skip's own code
+    (``file_not_found``, ``rar_set_not_extractable``, ...) or ``same_output``
+    for a file whose output another file of the batch writes.
+    """
+
+    path: str
+    reason: str
+    code: str
+
+
+class BatchJobsResponse(BaseModel):
+    """``POST /api/jobs/batch?report_skipped=true``: the jobs it queued and the
+    files it skipped. Without the flag the route answers the bare job list."""
+
+    jobs: list[ConversionJob]
+    skipped: list[BatchSkippedItem] = []
 
 
 class AutoBatchResponse(BaseModel):

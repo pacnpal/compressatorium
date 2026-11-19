@@ -454,6 +454,21 @@
 
 ### Fixed
 
+- **A RAR set's later volumes can't be ticked on their own, and a skipped
+  batch item says why** (#504). The file list now shows `x.part2.rar`,
+  `x.part3.rar` (or `x.r00`, `x.r01`) and a split Wii U dump's
+  `game_part2.wud`... as part of the set, with no checkbox and a "part of
+  x.part1.rar" note, so only the first volume can be selected. Before, every
+  `.rar` had a checkbox, and starting a later volume alone queued nothing with
+  the toast "No jobs queued (all 1 skipped)" and no reason. The toast now
+  names why each file was left out (the first three, then how many more), for
+  every tool, not just RAR sets. API: `GET /api/files` rows carry
+  `companion_of`, the path of the file that leads the row's set (`null` for
+  any other row, and for a set whose headers can't be read). `POST
+  /api/jobs/batch?report_skipped=true` answers `{"jobs": [...], "skipped":
+  [{"path", "reason", "code"}]}`; without the flag it answers the job list as
+  before, so existing clients are unchanged.
+
 - **A tool whose program is missing is hidden instead of offered** (#494).
   chdman, dolphin-tool, z3ds_compressor, maxcso, 7z, makeps3iso, extract-xiso
   and nkit2iso were listed as available whether or not their program was
