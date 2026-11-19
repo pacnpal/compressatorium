@@ -55,6 +55,50 @@ def _restore_tool_instances():
             vars(tool).update(attrs)
 
 
+@pytest.fixture(autouse=True)
+def _programs_as_in_the_image():
+    """The suite runs as if inside the Docker image, where every program ships.
+
+    Since #494 a tool whose program is missing is not ready, and CI (like a
+    dev checkout) has no chdman, dolphin-tool, maxcso and the rest at their
+    configured paths. So the paths those tools are configured with when a test
+    starts count as installed, at the shared probe's one seam
+    (``binaries._inspect``). Any other path, such as a test's own file in
+    ``tmp_path`` or a bare name it puts on ``PATH``, is probed for real, which
+    is how ``test_binary_readiness_494`` covers a missing or non-executable
+    program. Only the tools that never checked their program before #494 are
+    included, so jwud (checked before) and ``zstd`` keep their real answers.
+    Every cached answer is dropped around each test.
+
+    Patched by hand rather than through ``monkeypatch``: requesting it here
+    would set it up before ``_restore_tool_instances``, so its undo would run
+    after that restore and pin a test's instance patches on the singletons.
+    """
+    from services.tools import binaries, registry
+
+    installed = {
+        needed.path
+        for tool_id in (
+            "chdman", "dolphin", "z3ds", "cso", "romz", "makeps3iso", "xiso", "nkit",
+        )
+        for needed in registry.get(tool_id).required_binaries
+    }
+    real = binaries._inspect
+
+    def inspect(path: str) -> tuple[str, str]:
+        if path in installed:
+            return binaries._OK, path
+        return real(path)
+
+    binaries._inspect = inspect
+    binaries.forget_binary_probes()
+    try:
+        yield
+    finally:
+        binaries._inspect = real
+        binaries.forget_binary_probes()
+
+
 @pytest.fixture
 def db_path(tmp_path: Path) -> str:
     """Fresh SQLite file per test (on-disk, not :memory:, because migration

@@ -173,17 +173,15 @@ def test_xiso_read_error_is_inconclusive(tmp_path, monkeypatch):
     assert result.get("inconclusive") is True, result
 
 
-def test_wux_verify_is_ready_without_java():
+def test_wux_verify_is_ready_without_java(tmp_path, monkeypatch):
     """A .wux check is pure Python: no launcher or Java needed."""
     from services.tools import registry
 
     tool = registry.get("jwud")
-    tool._service.binary_available = lambda: False  # no JWUDTool, no Java
-    try:
-        assert asyncio.run(registry.tool_is_ready(tool, purpose="verify")) is True
-        assert asyncio.run(registry.tool_is_ready(tool)) is False
-    finally:
-        del tool._service.binary_available
+    # No JWUDTool launcher where it is configured (#494's shared probe).
+    monkeypatch.setattr(tool._service, "jwudtool_path", str(tmp_path / "jwudtool"))
+    assert asyncio.run(registry.tool_is_ready(tool, purpose="verify")) is True
+    assert asyncio.run(registry.tool_is_ready(tool)) is False
 
 
 

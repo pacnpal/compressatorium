@@ -24,9 +24,9 @@ from services.jwudtool import (
 )
 from services.lock_manager import lock_manager
 from services.stream_digest import content_digest_of, file_chunks
-from services.subprocess_runner import run_detached
 
 from .base import IMAGE_DATA_SHA256_KIND, BaseTool, ContentDigest
+from .binaries import RequiredBinary
 from .spec import ModeKind, ModeSpec
 
 
@@ -40,7 +40,6 @@ class JwudTool(BaseTool):
     display_name = "Wii U"
     # File info reads the WUX header in Python; JWUDTool and Java aren't run.
     info_needs_tool = False
-    not_ready_reason = "the JWUDTool launcher or its Java runtime is missing"
     modes = (
         ModeSpec(
             mode="jwud_compress",
@@ -89,21 +88,19 @@ class JwudTool(BaseTool):
         super().__init__(binary_path)
         self._service = jwudtool_service
 
-    async def is_ready(self) -> bool:
-        # JWUDTool is a .jar behind a launcher that needs a Java runtime, so it
-        # can genuinely be absent outside the image. Hide the tool rather than
-        # offering jobs that can only fail.
-        #
-        # Detached rather than pooled, for the reason nsz's spells out: this
-        # stats the disk, every readiness caller fans out over the whole
-        # registry, and a stat that never returns must cost a disposable
-        # thread rather than one of the shared pool's few workers.
-        return await run_detached(self._service.binary_available)
+    @property
+    def required_binaries(self) -> tuple[RequiredBinary, ...]:
+        # The launcher every conversion runs (#494). JWUDTool is a .jar behind
+        # a launcher that needs Java, so outside the image it can genuinely be
+        # absent; the tool is hidden rather than offering jobs that can only
+        # fail.
+        return (RequiredBinary("JWUDTool", self._service.jwudtool_path, "JWUDTOOL_PATH"),)
 
-    async def verify_is_ready(self) -> bool:
+    @property
+    def verify_required_binaries(self) -> tuple[RequiredBinary, ...]:
         # The WUX check is pure Python (header, index table, size): it never
         # spawns JWUDTool or Java, so it runs where conversion cannot (#306).
-        return True
+        return ()
 
     def converts_path(self, path: str) -> bool:
         # A split dump is one disc image spread over game_part1…12.wud, and

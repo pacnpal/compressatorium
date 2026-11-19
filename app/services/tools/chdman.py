@@ -37,6 +37,7 @@ from .base import (
     ContentDigestUnavailable,
     EmbeddedHashUnavailable,
 )
+from .binaries import RequiredBinary
 from .spec import ModeKind, ModeSpec
 
 logger = get_logger()
@@ -277,6 +278,12 @@ class ChdmanTool(BaseTool):
     def __init__(self, binary_path: str) -> None:
         super().__init__(binary_path)
         self._service = chdman_service
+
+    @property
+    def required_binaries(self) -> tuple[RequiredBinary, ...]:
+        # The program every conversion runs, read where the service spawns it
+        # (#494): missing or not executable, and the tool isn't ready.
+        return (RequiredBinary("chdman", self._service.chdman_path, "CHDMAN_PATH"),)
 
     def header_platform(self, path: str, *, within=None) -> str | None:
         # PS1/PS2/PSP/Dreamcast through the disc-ID parser, Saturn and Sega CD

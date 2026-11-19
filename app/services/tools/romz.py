@@ -27,6 +27,7 @@ from services.stream_digest import hash_files
 from services.subprocess_runner import ReadCancelled, run_detached
 
 from .base import BaseTool, ContentDigest, ContentDigestUnavailable
+from .binaries import RequiredBinary
 from .spec import ModeKind, ModeSpec
 
 # The member set of an archive (name, size, CRC32 of each), hashed into one
@@ -135,6 +136,12 @@ class RomzTool(BaseTool):
     def __init__(self, binary_path: str) -> None:
         super().__init__(binary_path)
         self._service = romz_service
+
+    @property
+    def required_binaries(self) -> tuple[RequiredBinary, ...]:
+        # The program every conversion runs, read where the service spawns it
+        # (#494): missing or not executable, and the tool isn't ready.
+        return (RequiredBinary("7z", self._service.sevenzip_path, "SEVENZIP_PATH"),)
 
     def detect_output(
         self, input_path: str, *, from_archive: bool = False,

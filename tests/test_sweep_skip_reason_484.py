@@ -52,6 +52,24 @@ def _ready(monkeypatch):
     return state
 
 
+_NO_ZSTD = "zstd is not installed (no zstd on PATH)"
+
+
+async def _probe_without_zstd(monkeypatch, tmp_path: Path):
+    """Probe z3ds's check for real on a PATH with no zstd (#494): the shared
+    probe is where the plugin learns its verify reason."""
+    from services.tools.binaries import forget_binary_probes
+
+    empty = tmp_path / "empty-path"
+    empty.mkdir(exist_ok=True)
+    monkeypatch.setenv("PATH", str(empty))
+    forget_binary_probes()
+    z3ds = registry.get("z3ds")
+    assert await z3ds.verify_is_ready() is False
+    forget_binary_probes()
+    return z3ds
+
+
 def _skips(caplog) -> list[str]:
     return [r.getMessage() for r in caplog.records if "skipped" in r.getMessage()]
 
@@ -88,12 +106,11 @@ def test_the_message_is_the_display_name_and_the_plugins_reason() -> None:
     assert "prod.keys" in not_ready_message(nsz)
 
 
-def test_the_verify_message_reads_the_verify_reason() -> None:
-    z3ds = registry.get("z3ds")
+@pytest.mark.asyncio
+async def test_the_verify_message_reads_the_verify_reason(monkeypatch, tmp_path) -> None:
+    z3ds = await _probe_without_zstd(monkeypatch, tmp_path)
     assert z3ds.verify_not_ready_reason != z3ds.not_ready_reason
-    assert not_ready_message(z3ds, purpose="verify") == (
-        "3DS isn't ready: zstd is not installed, so 3DS files cannot be checked"
-    )
+    assert not_ready_message(z3ds, purpose="verify") == f"3DS isn't ready: {_NO_ZSTD}"
     assert not_ready_message(z3ds) == f"3DS isn't ready: {z3ds.not_ready_reason}"
 
 
@@ -194,11 +211,12 @@ async def test_a_reason_that_raises_does_not_crash_the_tick(
 
 @pytest.mark.asyncio
 async def test_a_check_rule_logs_the_verify_reason(
-    tree: Path, ready, queue, caplog,
+    tree: Path, ready, queue, caplog, monkeypatch, tmp_path,
 ) -> None:
     """z3ds converts without zstd but can't check: the verify reason is said."""
     from services.rules import sweep
 
+    await _probe_without_zstd(monkeypatch, tmp_path)
     (tree / "3ds").mkdir()
     (tree / "3ds" / "Game.zcci").write_bytes(b"\0" * 1024)
     library = await _check_library(tree, "3ds")
@@ -213,7 +231,7 @@ async def test_a_check_rule_logs_the_verify_reason(
     assert len(lines) == 1, lines
     assert "check Rule" in lines[0]
     assert lines[0].endswith(
-        "is skipped: 3DS isn't ready: zstd is not installed, so 3DS files cannot be checked",
+        f"is skipped: 3DS isn't ready: {_NO_ZSTD}",
     ), lines
     assert "not installed to check" not in lines[0]
 
