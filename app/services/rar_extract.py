@@ -10,13 +10,14 @@ Planning reads only the set's headers, in Python (rarfile, through the shared
 kind, and whether a password is needed. A set is refused before anything is
 written unless it holds exactly one payload file (release sidecars and junk
 never count, ``utils.junk.is_archive_sidecar``), no member path is absolute or
-has a ``..``, no member is a link or a device, no password is needed, and
-every volume rarfile reads is one the set's naming names (so the locks and the
-delete take the whole set). Multi-file sets, such as a ``.cue`` with its
-``.bin`` tracks, are not supported.
+has a ``..``, no member is a link or a device, the payload is no RAR itself,
+no password is needed, and the volumes named like the set are exactly the
+volumes its headers read (what the locks and the delete take). Multi-file
+sets, such as a ``.cue`` with its ``.bin`` tracks, are not supported.
 
-``unar`` (The Unarchiver, from Debian main) does the extraction, into a private
-folder beside the output: it reads RAR5 and multi-volume sets, which the
+``unar`` (The Unarchiver, from Debian main) does the extraction, into a
+staging slot beside the output (``services.staging``: hidden, locked, and
+journaled for the startup sweep after a crash): it reads RAR5 and multi-volume sets, which the
 image's ``unrar-free`` can't, and checks every CRC as it goes. The payload is
 then checked again here (a plain file, the size and CRC32 the set records) and
 moved onto the output path without replacing anything
@@ -27,21 +28,21 @@ behind.
 The checks after the conversion: ``verify`` reads the extracted file end to
 end (the container check; the file has no container), and ``content_digest``
 is the file's size and CRC32 on both sides, read from the set's headers for
-the Source and hashed for the output (the Round-trip).
+the Source and hashed for the output (the Round-trip). A RAR5 set that stores
+BLAKE2sp instead of a CRC32 has no Source digest, so its delete-source keeps
+every volume.
 """
 from __future__ import annotations
 
 import asyncio
 import os
-import secrets
-import shutil
 import stat
-import threading
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from pathlib import Path
 
 from logging_setup import get_logger
+from services import staging
 from services.archive import (
     ArchiveSafetyRefused,
     archive_service,
@@ -49,6 +50,7 @@ from services.archive import (
 )
 from services.archive_members import (
     IncompleteArchive,
+    is_rar_volume_name,
     later_volume_of,
     rar_later_volumes,
     read_rar_set,
@@ -58,16 +60,20 @@ from services.output_placement import OutputPlacement
 from services.stream_digest import hash_files
 from services.subprocess_runner import (
     ConversionCancelled,
+    DeadlineExpired,
+    ProbeCapacityExceeded,
     ReadCancelled,
     SubprocessRunner,
     collect_verify,
-    remove_partial_tree,
     run_detached,
+    run_detached_undoable,
     run_detached_within_stall_bound,
+    start_detached_eventually,
     verify_exception_event,
     verify_preflight,
 )
 from utils.junk import is_archive_sidecar
+from utils.sizes import format_size
 
 from config import settings
 
@@ -75,9 +81,8 @@ RAR_EXTRACT_MODE = "rar_extract"
 RAR_INPUT_EXTENSIONS = frozenset({".rar"})
 # The SubprocessRunner owner: COMPRESSATORIUM_RAR_* overrides the shared policy.
 _OWNER = "rar"
-# The private extraction folder, hidden beside the output on its volume.
-_WORK_PREFIX = ".rar-extract-"
-_PRIVATE_DIR_MODE = 0o700
+# How long opening or removing the work folder may take before it is given up.
+_SLOT_SECONDS = 20.0
 # How many names a refusal lists before "...".
 _NAMES_SHOWN = 4
 
@@ -170,18 +175,32 @@ def plan_set(first_volume: str) -> RarPlan:
             ".txt/.url sidecars. Multi-file sets, such as a .cue with its .bin "
             "tracks, are not supported",
         )
-    # Every volume the set is read from must be one its naming names: those
-    # are what the job locks and what deleting the Source removes.
-    folder = os.path.dirname(first_volume)
-    named = {os.path.basename(p) for p in [first_volume, *rar_later_volumes(first_volume)]}
-    read = [os.path.basename(v) for v in listing.volumes]
-    stray = [v for v in read if v not in named]
-    if stray:
-        raise RarSetRefused(
-            f"{name} reads volume(s) not named like the rest of the set "
-            f"({_shown(stray)}), so they would not be kept or deleted with it",
-        )
     (only,) = payload
+    if is_rar_volume_name(os.path.basename(only.name)):
+        raise RarSetRefused(
+            f"{name} holds another RAR set ({only.name}); extract it with another "
+            "tool, then run this mode on the set inside",
+        )
+    # The volumes named like the set and the volumes its headers read must be
+    # the same files: the headers' list is what the job locks and what
+    # deleting the Source removes, so a file named like a volume that the set
+    # never reads (a stray part4, an unrelated .r00) is never touched, and a
+    # read volume the naming misses is never left behind.
+    folder = os.path.dirname(first_volume)
+    named = [os.path.basename(p) for p in [first_volume, *rar_later_volumes(first_volume)]]
+    read = [os.path.basename(v) for v in listing.volumes]
+    extra = [v for v in named if v not in read]
+    missing = [v for v in read if v not in named]
+    if extra or missing:
+        found = []
+        if extra:
+            found.append(f"named like its volumes but not part of it: {_shown(extra)}")
+        if missing:
+            found.append(f"read as its volumes but not named like them: {_shown(missing)}")
+        raise RarSetRefused(
+            f"{name}: the files beside it don't match the volumes its headers name "
+            f"({'; '.join(found)}). Move the other files away, then run it again",
+        )
     return RarPlan(
         payload=only.name,
         size=only.size,
@@ -203,12 +222,35 @@ def set_stem(first_volume: str) -> str:
     return stem
 
 
-def _make_work_dir(work_dir: str, abandoned: threading.Event) -> None:
-    """Create the private work folder; undo it if the caller gave up meanwhile."""
-    os.makedirs(os.path.dirname(work_dir), exist_ok=True)
-    os.mkdir(work_dir, _PRIVATE_DIR_MODE)
-    if abandoned.is_set():
-        shutil.rmtree(work_dir, ignore_errors=True)
+async def _open_work_slot(folder: str) -> staging.StagedOutput:
+    """The extraction's work folder: a staging slot beside the output
+    (``services.staging``), hidden from a Library scanner, locked while in use
+    and journaled, so a crash mid-run leaves nothing the startup sweep
+    (``partial_writes.sweep_recorded``) does not remove. Bounded; a slot that
+    arrives after the bound gave up is closed."""
+    try:
+        return await run_detached_undoable(
+            staging.open_slot, folder, make_folder=True,
+            timeout=_SLOT_SECONDS, undo=lambda slot: slot.close(),
+        )
+    except (OSError, DeadlineExpired, ProbeCapacityExceeded) as exc:
+        raise RuntimeError(f"Could not make the work folder beside the output: {exc}") from exc
+
+
+async def _close_work_slot(slot: staging.StagedOutput | None) -> None:
+    """Remove the work folder and all it holds. Never raises. On the output
+    volume, which may be what the run just died on: the wait is bounded, and
+    what doesn't finish goes on in the background (the journal keeps the
+    slot for the startup sweep until it is gone)."""
+    if slot is None:
+        return
+    worker = start_detached_eventually(slot.close)
+    if worker is None:
+        return
+    try:
+        await asyncio.wait_for(asyncio.shield(worker), _SLOT_SECONDS)
+    except Exception:
+        logger.warning("Removing the work folder %s did not finish", slot.path, exc_info=True)
 
 
 def _check_product(work_dir: str, produced: str, size: int) -> None:
@@ -319,27 +361,22 @@ class RarExtractService:
             "message": f"Extracting {member} from {len(plan.volumes)} volume(s)...",
         }
 
-        work_dir = os.path.join(
-            os.path.dirname(os.path.abspath(output_path)),
-            f"{_WORK_PREFIX}{secrets.token_hex(6)}",
-        )
-        produced = os.path.join(work_dir, *plan.payload.split("/"))
-        abandoned = threading.Event()
+        folder = os.path.dirname(os.path.abspath(output_path))
         # The final move, safe to give up on: never over an existing file, and
         # a move that lands after the job gave up removes its own product.
         placement = OutputPlacement(output_path, label="extracted file")
+        slot: staging.StagedOutput | None = None
         try:
             # Every file the set unpacks lands in the work folder on the
             # output's volume (sidecars too), so that is the room it needs,
             # from the headers, before unar writes a byte.
             await run_detached_within_stall_bound(
-                ensure_headroom, [(work_dir, plan.unpacked)],
+                ensure_headroom, [(folder, plan.unpacked)],
                 what="Checking free space for the extraction", cancel_event=cancel_event,
             )
-            await run_detached_within_stall_bound(
-                _make_work_dir, work_dir, abandoned,
-                what="Preparing the extraction folder", cancel_event=cancel_event,
-            )
+            slot = await _open_work_slot(folder)
+            work_dir = slot.path
+            produced = os.path.join(work_dir, *plan.payload.split("/"))
             async for update in self._runner.run(
                 self._build_command(input_path, work_dir),
                 input_path=input_path,
@@ -390,11 +427,7 @@ class RarExtractService:
                 raise ConversionCancelled("Conversion cancelled") from exc
             raise
         finally:
-            # On the output volume, which may be what the run just died on:
-            # the shared bounded sweep. Flag the setup first, so a setup a
-            # cancel abandoned removes what it creates after this sweep.
-            abandoned.set()
-            await remove_partial_tree(work_dir, label="rar extract dir")
+            await _close_work_slot(slot)
         yield {"progress": 100, "message": f"Extracted {member}"}
 
     # ----- checks -----------------------------------------------------------
@@ -471,11 +504,10 @@ class RarExtractService:
             contained = os.path.basename(plan.payload)
             original = plan.size
             volumes = len(plan.volumes)
-        size_mb = size / (1024 * 1024)
         return {
             "file": file_path,
             "size": size,
-            "size_display": f"{size_mb:.2f} MB" if size_mb < 1024 else f"{size_mb / 1024:.2f} GB",
+            "size_display": format_size(size),
             "format": "RAR set",
             "extension": Path(file_path).suffix.lower(),
             "compressed": True,

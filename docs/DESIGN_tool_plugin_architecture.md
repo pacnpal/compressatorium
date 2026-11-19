@@ -1383,17 +1383,42 @@ page/sort/filter changes), and the endpoint additionally caps each batch at
 reader's cache, so hydrating a folder opens each archive at most once.
 
 **RAR sets (#476).** A multi-volume RAR is one archive in several files.
-`archive_members` owns the naming, in one place: `later_volume_of(path)` names
-the first volume of a later one, for the new naming (`x.part2.rar`) and the old
-(`x.r00` beside `x.rar`), confirmed by rarfile's `NeedFirstVolume`; and
-`rar_later_volumes(first)` lists the later volumes a first volume leads, by
-name plus one stat each, stopping at the first gap (the jwud split-set rule).
-The rar tool's `source_companions` is `rar_later_volumes`, so a set is one
-Source to the locks, the delete plan and delete-source. `read_rar_set(first)`
-is the uncached read an extractor needs and the listing cache does not keep:
-each member's CRC, `is_plain_file`, whether a password is needed (for the
-headers or any member) and the volumes rarfile actually read, so the caller can
-refuse a set that reads a volume its naming does not name.
+`archive_members` owns the set, in one place. A name is only ever a
+candidate; the set's own headers decide what belongs to it:
+
+- `is_rar_volume_name(name)`: `.rar` (`.partN.rar` included) or an old-style
+  `.r00` … `.s99`. Only `r` and `s`: a wider range reads ROMs as volumes
+  (`.t64`, `.v64`, `.z64`), and a test holds every registered input extension
+  but `.rar` out of it.
+- `later_volume_of(path)` names the first volume of a later one, for both
+  namings, confirmed by rarfile's `NeedFirstVolume`.
+- `rar_later_volumes(first)` lists the files *named* like the later volumes,
+  by name plus one stat each, stopping at the first gap. Names only: a stray
+  `x.part4.rar` or an unrelated `x.r00` is named like a volume too.
+- `rar_set_volumes(first)` is the answer to "is this file part of that set":
+  the volumes the headers read (rarfile follows each volume's "more volumes"
+  flag), cached per the first volume's mtime and size. None when the headers
+  can't be read whole, and then there are no companions (fail closed).
+
+The rar tool's `source_companions` is `rar_set_volumes(first)[1:]`, read only
+when a file named like a later volume is there (a lone `.rar` costs a few
+stats). Because `registry.source_companions` is the union over every tool, this
+is what every delete of a `.rar` uses (the generic delete plan, the duplicate
+cleanup, an archive-member job's delete-source), so a file the set never reads
+is never planned for deletion. `rar_extract` also refuses a set whose named
+and read volumes differ in either direction, naming the extra or missing
+files. `read_rar_set(first)` is the uncached read an extractor needs and the
+listing cache does not keep: each member's CRC, `is_plain_file`, whether a
+password is needed (for the headers or any member) and the volumes rarfile
+read.
+
+**The output is never part of the Source** (`routes/convert.plan_job`, every
+tool). The output path may not be the Source (the archive, for a member) nor
+any of `registry.source_companions(Source)`, whatever the duplicate action:
+`SkipReason.OUTPUT_IS_PART_OF_SOURCE` refuses it before anything is queued. A
+RAR set's file named like its own later volume, or a split dump's part, would
+otherwise wait on its own input lock forever under overwrite, or have a live
+part of the Source cleared.
 
 ### 3.3.3 Cross-tool chaining (`ChainSpec` / `ChainTool`, `services/disk.py`)
 

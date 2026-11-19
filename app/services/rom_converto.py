@@ -70,6 +70,7 @@ from services.subprocess_runner import (
 from utils.path_utils import (
     match_extension,
 )
+from utils.sizes import format_size
 
 from config import settings
 
@@ -173,9 +174,7 @@ class RomConvertoError(ValueError):
     """rom-converto refused a file (its own ``Error:`` line is the message)."""
 
 
-def _format_size(size: int) -> str:
-    size_mb = size / (1024 * 1024)
-    return f"{size_mb:.2f} MB" if size_mb < 1024 else f"{size_mb / 1024:.2f} GB"
+_format_size = format_size
 
 
 def _env() -> dict[str, str]:

@@ -227,6 +227,17 @@ def _is_same_path(path_a: str, path_b: str) -> bool:
         return False
 
 
+def _output_is_part_of_source(output_path: str, file_path: str) -> bool:
+    """Whether *output_path* is the Source (the archive, for a member) or one
+    of the files any tool says it also consumes (``source_companions``: a
+    RAR set's later volumes, a split dump's parts). Blocking."""
+    source = file_path.split("::", 1)[0]
+    return any(
+        _is_same_path(output_path, part)
+        for part in [source, *registry.source_companions(source)]
+    )
+
+
 def get_disallowed_archive_paths(file_paths: list[str]) -> set[str]:
     """Get archive paths that should not allow delete-on-verify due to multiple selections."""
     archive_counts = {}
@@ -330,6 +341,7 @@ class SkipReason(Enum):
     EXODOS_NOT_REPACKABLE = "exodos_not_repackable"
     RAR_BAD_EXTENSION = "rar_bad_extension"
     RAR_SET_NOT_EXTRACTABLE = "rar_set_not_extractable"
+    OUTPUT_IS_PART_OF_SOURCE = "output_is_part_of_source"
     SOURCE_NOT_INDEPENDENTLY_CONVERTIBLE = "source_not_independently_convertible"
     DOLPHIN_SAME_PATH = "dolphin_same_path"
     CHAIN_BAD_EXTENSION = "chain_bad_extension"
@@ -481,6 +493,14 @@ _SKIP_HTTP: dict[SkipReason, tuple[int, str]] = {
             "RAR set can't be extracted: it must hold exactly one file besides its "
             ".nfo/.sfv/.txt/.url sidecars, every volume must be there, and it must "
             "not be encrypted"
+        ),
+    ),
+    SkipReason.OUTPUT_IS_PART_OF_SOURCE: (
+        409,
+        (
+            "The output would be the source itself or one of its files (a "
+            "later volume of a RAR set, a part of a split dump); choose another "
+            "output folder"
         ),
     ),
     SkipReason.SOURCE_NOT_INDEPENDENTLY_CONVERTIBLE: (
@@ -856,6 +876,13 @@ async def plan_job(
             _get_output_path, mode, file_path, effective_output_dir,
         )
         base_output_path = output_path
+
+        # Never the Source or a file of it, for any tool and whatever the
+        # duplicate action: a RAR set's payload named like its own later
+        # volume, a split dump's part. Overwrite would wait on its own input
+        # lock forever, or clear a live part of the Source.
+        if await off_loop_bounded(_output_is_part_of_source, output_path, file_path):
+            raise SkipFile(SkipReason.OUTPUT_IS_PART_OF_SOURCE)
 
         output_exists, is_locked = check_output_conflicts(mode, output_path)
         if output_exists or is_locked:

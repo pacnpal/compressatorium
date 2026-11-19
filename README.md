@@ -2637,20 +2637,30 @@ Debian main; the image's `unrar-free` can't read RAR5).
   `.bin` tracks, say) is refused before anything is written, and the refusal
   names what it found. Multi-file sets are not supported.
 - **Refused too:** an encrypted set, a missing, truncated or damaged volume, a
-  member with an absolute or `..` path, a link or device member, and a set over
-  the `CHD_ARCHIVE_MAX_*` limits.
+  member with an absolute or `..` path, a link or device member, a file that is
+  itself a RAR set (extract that one with another tool first), and a set over
+  the `CHD_ARCHIVE_MAX_*` limits. So is a folder where the files named like the
+  set's volumes are not exactly the volumes its headers name (a stray
+  `Game.part4.rar` from another download, say): the refusal names them, and
+  they are never deleted with the set. Only the volumes the headers name are
+  ever locked or deleted.
 - **The output** is the file's own name, in the set's folder (or the output
   folder you chose). A file already there is never replaced: with the default
   duplicate setting the job is skipped, and a name that appears while the job
-  runs fails it. `unar` extracts into a hidden `.rar-extract-*` folder beside the
-  output, and nothing of it is left behind on success or failure.
+  runs fails it, and an output that would be one of the set's own volumes is
+  refused. `unar` extracts into a hidden staging folder beside the output
+  (`.compressatorium-stage/`), and nothing of it is left behind on success or
+  failure; after a crash, the next start removes it.
 - **The checks.** `unar` checks every CRC as it extracts; the file is then
   checked again against the size and CRC32 the set records before it is kept.
   With delete-source on, the Round-trip compares the file's size and CRC32 with
   the set's before any volume is deleted, every time: the file has no container
   to check on its own, so this mode has no container-only option (the CLI's
   `--container-only` and a Rule's container-only level don't skip it). A failed
-  check keeps every volume.
+  check keeps every volume. A RAR5 set can store a BLAKE2 hash in place of a
+  CRC32: such a file is kept after `unar`'s own hash check and a size check,
+  but delete-source never removes its volumes, since the Round-trip has no
+  CRC32 to compare.
 
 From the API, the same way as `romz_extract`:
 

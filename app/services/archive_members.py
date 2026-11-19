@@ -113,12 +113,16 @@ def read_archive_members(
 _RAR_PART = re.compile(
     r"(?P<stem>.+)(?P<part>\.part)(?P<number>\d+)(?P<ext>\.rar)", re.IGNORECASE,
 )
-# ``<stem>.rar`` then ``<stem>.r00`` … ``.r99``, ``.s00`` …: the older naming
-# for the same thing, still what most usenet sets use (#476).
+# ``<stem>.rar`` then ``<stem>.r00`` … ``.r99``, ``.s00`` … ``.s99``: the older
+# naming for the same thing, still what most usenet sets use (#476). Only
+# ``r`` and ``s``: a wider letter range reads ROMs as volumes (``.t64``,
+# ``.v64``, ``.z64``), and a name is never more than a candidate anyway: a
+# file is a volume of a set only once that set's headers read it
+# (:func:`rar_set_volumes`).
 _RAR_OLD_VOLUME = re.compile(
-    r"(?P<stem>.+)\.(?P<letter>[r-z])(?P<number>\d\d)", re.IGNORECASE,
+    r"(?P<stem>.+)\.(?P<letter>[rs])(?P<number>\d\d)", re.IGNORECASE,
 )
-_RAR_OLD_LETTERS = "rstuvwxyz"
+_RAR_OLD_LETTERS = "rs"
 # The most later volumes looked for: far past any real set, and a bound on
 # the stats one lookup makes.
 MAX_RAR_VOLUMES = 999
@@ -140,6 +144,12 @@ def _first_volume_name(name: str) -> str | None:
     if match is not None:
         return f"{match['stem']}.{'RAR' if match['letter'].isupper() else 'rar'}"
     return None
+
+
+def is_rar_volume_name(name: str) -> bool:
+    """Whether *name* is named like a RAR volume: ``.rar`` (``.partN.rar``
+    included) or an old-style ``.r00`` … ``.s99``. Names only."""
+    return name.lower().endswith(".rar") or _RAR_OLD_VOLUME.fullmatch(name) is not None
 
 
 def later_volume_of(
@@ -194,16 +204,17 @@ def _later_volume_names(name: str) -> Iterator[str] | None:
 
 
 def rar_later_volumes(archive_path: str) -> list[str]:
-    """The later volumes of the multi-volume RAR set *archive_path* leads,
-    in order, by name (#476): ``x.part2.rar`` … after ``x.part1.rar``, or
-    ``x.r00`` … after ``x.rar``. Empty for a later volume, a single-volume
-    archive, or anything else.
+    """The files *named* like later volumes of the RAR set *archive_path*
+    leads, in order (#476): ``x.part2.rar`` … after ``x.part1.rar``, or
+    ``x.r00`` … after ``x.rar``. Empty for a later volume, or with no such
+    file beside it.
 
     Stops at the first name that is not a file, as a split Wii U set's parts
-    do: the set is unusable past a gap, so nothing after it is part of a
-    usable Source. This is what makes a set one Source (the rar tool's
-    ``source_companions``: locks, the delete plan, deleting the Source). Pure
-    name math plus one stat per volume, never a read of a header. Blocking.
+    do. Names only, so never what decides membership: a stray
+    ``x.part4.rar`` or an unrelated ``x.r00`` is named like a volume too.
+    :func:`rar_set_volumes` (the headers) decides; ``rar_extract`` refuses a
+    set whose named and read volumes differ. Pure name math plus one stat per
+    volume, never a read of a header. Blocking.
     """
     names = _later_volume_names(os.path.basename(archive_path))
     if names is None:
@@ -241,6 +252,36 @@ def _needs_first_volume(
         return False
 
 
+# The volumes a set's headers read, per first volume's (path, mtime, size).
+_set_volumes_cache: MtimeCache[list[str] | None] = MtimeCache()
+
+
+def rar_set_volumes(first_volume: str) -> list[str] | None:
+    """Every volume of the RAR set *first_volume* leads, as its own headers
+    read them (rarfile follows each volume's "more volumes" flag), first
+    volume first; ``[first_volume]`` for a single-volume archive (#476).
+
+    The one answer to "is this file part of that set": a file named like a
+    volume that the headers never read is not one. None when the headers
+    can't be read whole (a missing or broken volume, an encrypted header, no
+    rarfile): then nothing is a companion, failing closed. Cached per the
+    first volume's ``(path, mtime, size)`` when read. Blocking.
+    """
+    def read() -> list[str] | None:
+        try:
+            volumes = read_rar_set(first_volume).volumes
+        except Exception:  # unreadable: no companions
+            logger.debug("No volume list for %s", first_volume, exc_info=True)
+            return None
+        folder = os.path.dirname(first_volume)
+        return [os.path.join(folder, os.path.basename(v)) for v in volumes]
+
+    # An unreadable answer is not kept: a volume may still be arriving.
+    return _set_volumes_cache.get_or_compute(
+        first_volume, read, should_cache=lambda volumes: volumes is not None,
+    )
+
+
 def invalidate(archive_path: str) -> None:
     """Drop the cached member list for ``archive_path`` (used by tests)."""
     _cache.invalidate(archive_path)
@@ -250,6 +291,7 @@ def clear_cache() -> None:
     """Drop every cached member list and volume answer (used by tests)."""
     _cache.clear()
     _later_volume_cache.clear()
+    _set_volumes_cache.clear()
 
 
 def read_member_crcs(archive_path: str) -> list[tuple[str, int | None, int | None, bool]]:

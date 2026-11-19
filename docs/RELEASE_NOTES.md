@@ -13,8 +13,13 @@
   one file besides its `.nfo`, `.sfv`, `.txt` and `.url` sidecars; a set with
   two or more (a `.cue` with its `.bin` tracks) is refused before anything is
   written, and the refusal names what it found. An encrypted set, a missing or
-  damaged volume, an absolute or `..` member path and a link member are
-  refused too. A file already at the output name is never replaced. The
+  damaged volume, an absolute or `..` member path, a link member and a
+  payload that is itself a RAR are refused too, and so is a folder where the
+  files named like the set's volumes are not exactly the volumes its headers
+  name: only the volumes the headers name are ever locked or deleted, so a
+  stray `Game.part4.rar` or an unrelated `Game.r00` stays. No conversion's
+  output may be its own source or one of the source's files (a later volume, a
+  split dump's part); that is refused before the job is queued. A file already at the output name is never replaced. The
   extraction uses `unar` (new in the image, from Debian main), which reads
   RAR5 and checks every CRC; the file is checked again against the CRC32 the
   set records before it is kept, and with delete-source on, the Round-trip

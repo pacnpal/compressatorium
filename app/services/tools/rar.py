@@ -17,7 +17,7 @@ from pathlib import Path
 
 from fastapi.concurrency import run_in_threadpool
 from models import RarInfo
-from services.archive_members import later_volume_of, rar_later_volumes
+from services.archive_members import later_volume_of, rar_later_volumes, rar_set_volumes
 from services.rar_extract import (
     RAR_EXTRACT_MODE,
     RAR_INPUT_EXTENSIONS,
@@ -101,13 +101,18 @@ class RarTool(BaseTool):
         return None
 
     def source_companions(self, path: str) -> list[str]:
-        # Every later volume of a set the path leads; nothing for any other
-        # file. Name math plus a stat per volume, so it stays cheap.
+        # The later volumes of the set the path leads, as its own headers
+        # read them: a file merely named like a volume (a stray part4, an
+        # unrelated .r00 beside a single-volume .rar) is never a companion,
+        # so no lock, delete plan or delete-source takes it. Headers that
+        # can't be read give none (fail closed). Read only when a file named
+        # like a later volume is there, so a lone .rar costs a few stats.
         if Path(path).suffix.lower() not in RAR_INPUT_EXTENSIONS:
             return []
-        if later_volume_of(path) is not None:
+        if later_volume_of(path) is not None or not rar_later_volumes(path):
             return []
-        return rar_later_volumes(path)
+        volumes = rar_set_volumes(path)
+        return list(volumes[1:]) if volumes else []
 
     def output_path(
         self,

@@ -29,6 +29,7 @@ from services.subprocess_runner import (
     remove_partial_output,
 )
 from utils.path_utils import match_extension
+from utils.sizes import format_size
 
 # Compound source extensions: the meaningful part is ``.nkit``, but the
 # container it rides in decides how nkit2iso reads it (a plain nkit byte stream
@@ -89,10 +90,7 @@ class NkitHeaderError(ValueError):
     """``path`` is not a readable NKit v01 GameCube/Wii image."""
 
 
-def _format_size(size: int) -> str:
-    """MB/GB display string, matching the other tools' info payloads."""
-    size_mb = size / (1024 * 1024)
-    return f"{size_mb:.2f} MB" if size_mb < 1024 else f"{size_mb / 1024:.2f} GB"
+_format_size = format_size
 
 
 def _gcz_first_block(handle, file_size: int) -> bytes:

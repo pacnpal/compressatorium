@@ -41,6 +41,17 @@ def _fresh_listing_cache():
     archive_members.clear_cache()
 
 
+@pytest.fixture(autouse=True)
+def _tmp_path_is_the_volume(tmp_path, tmp_path_factory, monkeypatch):
+    """``tmp_path`` is the configured Volume (the extraction's work folder is
+    a staging slot, made only inside one); the journal lives elsewhere."""
+    from config import settings
+
+    monkeypatch.setattr(settings, "chd_volumes", str(tmp_path))
+    monkeypatch.setattr(settings, "data_mount_root", str(tmp_path))
+    monkeypatch.setattr(settings, "data_dir", str(tmp_path_factory.mktemp("data")))
+
+
 def _tool():
     from services.tools import registry
 
@@ -91,6 +102,86 @@ def test_the_later_volumes_stop_at_the_first_gap(tmp_path):
     volumes[1].unlink()  # .r00
 
     assert rar_later_volumes(str(volumes[0])) == []
+
+
+# A file named like a volume is a companion only when the set's headers read
+# it (review of #503): an unrelated file must never be planned for deletion.
+
+
+@pytest.mark.parametrize(("names", "stray"), [
+    (RAR5_SET, "rar5-vols.part4.rar"), (RAR4_SET, "rar3-old.r02"),
+], ids=["rar5-part4", "rar4-r02"])
+def test_a_stray_volume_name_is_no_companion_and_refuses_the_set(tmp_path, names, stray):
+    from services.rar_extract import RarSetRefused
+    from services.tools import registry
+    from utils.delete_plan import build_delete_plan
+
+    volumes = [str(v) for v in payload_set(names, tmp_path)]
+    (tmp_path / stray).write_bytes(b"an unrelated file, no RAR")
+
+    assert registry.source_companions(volumes[0]) == volumes[1:]
+    assert sorted(build_delete_plan(volumes[0])["delete_paths"]) == sorted(volumes)
+    with pytest.raises(RarSetRefused, match=stray.replace(".", r"\.")):
+        _service().plan(volumes[0])
+
+
+@pytest.mark.parametrize("confine", [False, True])
+def test_an_r00_beside_a_single_volume_rar_is_never_deleted_with_it(tmp_path, confine):
+    from services.tools import registry
+    from utils.delete_plan import build_delete_plan
+
+    (single,) = copy_set(("rar5-dups.rar",), tmp_path)
+    single = single.rename(tmp_path / "Game.rar")
+    (tmp_path / "Game.r00").write_bytes(b"someone else's file")
+
+    assert registry.source_companions(str(single)) == []
+    # The generic delete plan, and the one the duplicate cleanup builds.
+    plan = build_delete_plan(str(single), confine_to_volumes=confine)
+    assert plan["delete_paths"] == [str(single)]
+
+
+def test_a_rom_is_never_read_as_a_volume(tmp_path):
+    from services.archive_members import is_rar_volume_name, later_volume_of, rar_later_volumes
+    from services.tools import registry
+
+    (single,) = copy_set(("rar5-dups.rar",), tmp_path)
+    single = single.rename(tmp_path / "Game.rar")
+    assert is_rar_volume_name("Game.rar") and is_rar_volume_name("Game.r00")
+    assert is_rar_volume_name("Game.S12") and is_rar_volume_name("Game.part02.rar")
+    for ext in sorted(set(registry.convertible_extensions()) - {".rar"}):
+        assert not is_rar_volume_name(f"Game{ext}"), ext  # .v64, .z64, .t64...
+        rom = tmp_path / f"Game{ext}"
+        rom.write_bytes(b"rom")
+        assert later_volume_of(str(rom)) is None, ext
+    assert rar_later_volumes(str(single)) == []
+    assert registry.source_companions(str(single)) == []
+
+
+def test_a_payload_that_is_itself_a_rar_volume_is_refused(tmp_path):
+    from services.rar_extract import RarSetRefused
+
+    volumes = payload_set(RAR5_SET, tmp_path, as_name="vols/bigfile.rar")
+
+    with pytest.raises(RarSetRefused, match=r"another RAR.*bigfile\.rar"):
+        _service().plan(str(volumes[0]))
+
+
+@pytest.mark.asyncio
+async def test_without_a_crc_the_round_trip_keeps_the_source(tmp_path, monkeypatch):
+    from services import rar_extract
+    from services.tools.base import ContentDigestUnavailable
+
+    volumes = payload_set(RAR5_SET, tmp_path)
+    real = rar_extract.read_rar_set
+
+    def blake2_only(path):
+        found = real(path)
+        return found._replace(members=[m._replace(crc=None) for m in found.members])
+
+    monkeypatch.setattr(rar_extract, "read_rar_set", blake2_only)
+
+    with pytest.raises(ContentDigestUnavailable, match="CRC32"):
+        await _tool().content_digest(str(volumes[0]))
 
 
 # --------------------------------------------------------------------------- #
@@ -556,7 +647,86 @@ async def test_too_little_free_space_is_refused_before_unar_runs(tmp_path, monke
     assert _names(tmp_path) == sorted(v.name for v in volumes)
 
 
+@pytest.mark.asyncio
+async def test_the_work_folder_is_a_journaled_staging_slot(tmp_path, monkeypatch):
+    from services import partial_writes
+
+    volumes = payload_set(RAR5_SET, tmp_path)
+    tool = _tool()
+    seen = {}
+
+    async def fake_run(cmd, **kwargs):
+        work = cmd[cmd.index("-o") + 1]
+        seen["work"] = work
+        seen["recorded"] = work in partial_writes.recorded_paths()
+        yield {"progress": 50}
+
+    monkeypatch.setattr(tool._service._runner, "run", fake_run)
+
+    with pytest.raises(RuntimeError, match="without writing"):
+        async for _ in tool.convert(str(volumes[0]), str(tmp_path / "x.gba"), "rar_extract"):
+            pass
+
+    assert "/.compressatorium-stage/slot-" in seen["work"]
+    assert seen["recorded"]  # the startup sweep finds it after a crash
+    assert not os.path.exists(seen["work"])
+    assert seen["work"] not in partial_writes.recorded_paths()
+    assert _names(tmp_path) == sorted(v.name for v in volumes)
+
+
 def test_the_fixtures_are_the_checked_in_ones():
     assert all((FIXTURES / name).is_file() for name in (*RAR5_SET, *RAR4_SET))
     assert (FIXTURES / "LICENSE.rarfile").is_file()
     assert BIG == "vols/bigfile.txt" and os.path.basename(PAYLOAD) == "bigfile.gba"
+
+
+# --------------------------------------------------------------------------- #
+# The output may never be the Source or one of its companions (any tool)
+# --------------------------------------------------------------------------- #
+
+
+async def _plan(convert_routes, path: str, mode: str, action):
+    return await convert_routes.plan_job(
+        path, spec=convert_routes.registry.spec(mode), mode=mode, output_dir=None,
+        duplicate_action=action, delete_on_verify=False,
+    )
+
+
+@pytest.mark.parametrize("action", ["skip", "overwrite", "rename"])
+@pytest.mark.asyncio
+async def test_an_output_named_like_a_later_volume_is_refused(tmp_path, monkeypatch, action):
+    from routes import convert as convert_routes
+    from services.tools import registry
+
+    from app.models import DuplicateAction
+
+    volumes = payload_set(RAR5_SET, tmp_path)
+    monkeypatch.setattr(
+        registry.get("rar"), "output_path", lambda *_a, **_k: str(volumes[2]),
+    )
+
+    with pytest.raises(convert_routes.SkipFile) as caught:
+        await _plan(convert_routes, str(volumes[0]), "rar_extract", DuplicateAction(action))
+    assert caught.value.reason == convert_routes.SkipReason.OUTPUT_IS_PART_OF_SOURCE
+
+
+@pytest.mark.asyncio
+async def test_an_output_named_like_a_split_dump_part_is_refused(tmp_path, monkeypatch):
+    from routes import convert as convert_routes
+    from services.tools import registry
+
+    from app.models import DuplicateAction
+
+    first = tmp_path / "game_part1.wud"
+    second = tmp_path / "game_part2.wud"
+    first.write_bytes(b"\0" * 64)
+    second.write_bytes(b"\0" * 64)
+    assert registry.source_companions(str(first)) == [str(second)]
+    monkeypatch.setattr(
+        registry.get("jwud"), "output_path", lambda *_a, **_k: str(second),
+    )
+
+    with pytest.raises(convert_routes.SkipFile) as caught:
+        await _plan(convert_routes, str(first), "jwud_compress", DuplicateAction.OVERWRITE)
+    assert caught.value.reason == convert_routes.SkipReason.OUTPUT_IS_PART_OF_SOURCE
+    assert second.read_bytes() == b"\0" * 64

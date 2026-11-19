@@ -50,6 +50,7 @@ from services.subprocess_runner import (
     verify_exception_event,
 )
 from utils.path_utils import match_extension
+from utils.sizes import format_size
 
 _OWNER = "xiso"
 # The scratch link dir and the hidden work dir hold paths into the user's
@@ -121,9 +122,7 @@ class XisoImageError(ValueError):
     """``path`` is not a readable Xbox / Xbox 360 disc image."""
 
 
-def _format_size(size: int) -> str:
-    size_mb = size / (1024 * 1024)
-    return f"{size_mb:.2f} MB" if size_mb < 1024 else f"{size_mb / 1024:.2f} GB"
+_format_size = format_size
 
 
 def detect_layout(path: str) -> tuple[int, str, str | None]:
