@@ -418,6 +418,13 @@
 
 ### Fixed
 
+- **The sidebar no longer shows tools that are unavailable after a reload** (#496).
+  The sidebar and the dashboard's Quick tools card used to list every tool until
+  the app heard back about which ones can run, then dropped the unavailable ones
+  (Switch with no `prod.keys`, say). They now list no tools until that answer
+  arrives, so an unavailable tool is never drawn and can't be clicked. If the
+  request fails, every tool is shown as before.
+
 - **A DAT import during a running rematch no longer leaves a file unmatched**
   (#492). Importing several DATs in quick succession could leave a file the
   last one covers as a cached miss, or with no cached match at all, until it

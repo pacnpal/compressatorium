@@ -2,12 +2,11 @@
   // Deep-link tile per tool from the registry. Adding a 4th tool
   // automatically gets a tile here, no edits required.
 
-  import { registry } from '$lib/tools/registry.js';
   import { ui } from '$lib/stores/ui.svelte.js';
   import StatCard from './StatCard.svelte';
   import Zap from '@lucide/svelte/icons/zap';
 
-  const tools = $derived(registry.all().filter((t) => !ui.hiddenTools.has(t.id)));
+  const tools = $derived(ui.visibleTools);
 </script>
 
 <StatCard title="Quick tools" subtitle="Jump into a workspace" accent="var(--badge-dat-match)">

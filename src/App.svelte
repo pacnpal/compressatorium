@@ -123,10 +123,11 @@
   onMount(() => {
     ui.loadVersion();
     // Ask the backend which tools to show. Switch (nsz) is hidden until
-    // prod.keys are configured. Fire and forget, on failure nothing is hidden.
+    // prod.keys are configured. The tool list stays empty until this answers;
+    // on failure every tool is shown rather than none.
     api.getTools()
       .then((t) => ui.applyToolAvailability(t?.available))
-      .catch(() => {});
+      .catch(() => ui.applyToolAvailability(null));
     // Load remembered per-tool compression settings from the server.
     conversion.loadServerPrefs();
     // Rehydrate the verified set + DAT-library state so OK / DAT badges

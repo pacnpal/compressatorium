@@ -1,6 +1,5 @@
 <script>
   import { ui } from '$lib/stores/ui.svelte.js';
-  import { registry } from '$lib/tools/registry.js';
   import SidebarItem from './SidebarItem.svelte';
   import LayoutDashboard from '@lucide/svelte/icons/layout-dashboard';
   import Boxes from '@lucide/svelte/icons/boxes';
@@ -17,7 +16,7 @@
   const collapsed = $derived(ui.sidebarCollapsed);
   const view = $derived(ui.activeView);
   const tool = $derived(ui.workspaceTool);
-  const tools = $derived(registry.all().filter((t) => !ui.hiddenTools.has(t.id)));
+  const tools = $derived(ui.visibleTools);
 
   function go(target, t) {
     ui.closeDrawer();
