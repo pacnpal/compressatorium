@@ -12,6 +12,7 @@ from typing import List, Tuple, Optional, Union, Dict
 
 from config import settings
 from services.archive_members import (
+    IncompleteArchive,
     later_volume_of,
     read_archive_members,
     read_members_of,
@@ -242,6 +243,34 @@ class ArchiveSafetyRefused(ValueError):
     def __init__(self, message: str, *, rule: str):
         super().__init__(message)
         self.rule = rule
+
+
+def _expected_read_errors() -> tuple[type[BaseException], ...]:
+    """The exception types that mean "this file is not a readable archive"."""
+    expected: list[type[BaseException]] = [
+        zipfile.BadZipFile, IncompleteArchive, ArchiveSafetyRefused, OSError,
+    ]
+    if HAS_7Z:
+        expected.append(py7zr.exceptions.ArchiveError)
+    if HAS_RAR:
+        expected.append(rarfile.Error)
+    return tuple(expected)
+
+
+def log_archive_read_failure(log: logging.Logger, path: str, exc: BaseException) -> None:
+    """Log why an archive could not be read, at the level the cause deserves (#506).
+
+    A broken, partial or junk file is the user's, not an app error: a
+    format error from zipfile, py7zr or rarfile, ``IncompleteArchive``, a
+    safety refusal or an ``OSError`` on the file gets one WARNING naming the
+    file and the reason, with no traceback. Anything else is a bug in our
+    code and stays an ERROR with its traceback. The one rule for every path
+    that reads an archive and logs on failure.
+    """
+    if isinstance(exc, _expected_read_errors()):
+        log.warning("Cannot read archive %s: %s", path, exc)
+    else:
+        log.error("Error reading archive %s: %s", path, exc, exc_info=exc)
 
 
 def reject_member_traversal(name: str) -> None:
@@ -736,7 +765,7 @@ class ArchiveService:
                     archive_path, raw_members, allowed,
                 )
             except Exception as e:
-                logger.exception("Error listing archive %s: %s", archive_path, e)
+                log_archive_read_failure(logger, archive_path, e)
             finally:
                 if logger.isEnabledFor(logging.DEBUG):
                     logger.debug(

@@ -18,7 +18,7 @@ from models import (
     PlaylistPreviewRequest,
     Volume,
 )
-from services.archive import ARCHIVE_EXTENSIONS, archive_service
+from services.archive import ARCHIVE_EXTENSIONS, archive_service, log_archive_read_failure
 from services.archive_members import later_volume_of
 from services.chd_metadata_store import chd_metadata_store
 from services.disc_playlist import (
@@ -574,8 +574,8 @@ async def archive_summary_batch(request: MetadataBatchRequest) -> dict:
                 continue
             try:
                 result[path] = _summarize_archive(path)
-            except Exception:
-                logger.exception("Failed to summarize archive %s", path)
+            except Exception as exc:
+                log_archive_read_failure(logger, path, exc)
                 result[path] = {"error": "summary_failed"}
         return result
 
