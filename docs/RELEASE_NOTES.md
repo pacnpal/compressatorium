@@ -4,6 +4,28 @@
 
 ### Added
 
+- **Extract a multi-part RAR set to one verified file** (#476). A new **RAR
+  sets** tool and `rar_extract` mode take a usenet download, `Game.rar` with
+  `Game.r00`, `Game.r01`… or `Game.part01.rar`, `Game.part02.rar`…, in RAR4 or
+  RAR5, and write the one file it holds beside it under its own name. Select
+  the first volume; every later volume is part of the same source, so the job
+  locks them all and delete-source deletes them all. The set must hold exactly
+  one file besides its `.nfo`, `.sfv`, `.txt` and `.url` sidecars; a set with
+  two or more (a `.cue` with its `.bin` tracks) is refused before anything is
+  written, and the refusal names what it found. An encrypted set, a missing or
+  damaged volume, an absolute or `..` member path and a link member are
+  refused too. A file already at the output name is never replaced. The
+  extraction uses `unar` (new in the image, from Debian main), which reads
+  RAR5 and checks every CRC; the file is checked again against the CRC32 the
+  set records before it is kept, and with delete-source on, the Round-trip
+  compares its size and CRC32 with the set's before any volume goes; this mode
+  has no container-only option, since the file has no container of its own to
+  check. The API
+  takes it as `POST /api/jobs` with `"mode": "rar_extract"`, and the CLI as
+  `compressatorium convert --to rar_extract`. `UNAR_PATH` sets where `unar`
+  is; without it the RAR sets tool is hidden and every other tool stays.
+  `.nfo`, `.sfv`, `.txt` and `.url` files still show in the file list.
+
 - **Patch a cartridge ROM with an IPS or BPS patch** (#428). The file list's
   **⋯** menu has **Patch…** for a loose ROM, a `.zip` or `.7z` holding one, or
   a ROM inside an archive. Pick the patch by its path in a Volume, or upload

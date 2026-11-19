@@ -3,16 +3,18 @@
 // a mode whose proof is Recognized (#423) looks its output's hash up in the
 // DATs and Hasheous, whatever the container-only box says; otherwise the
 // Round-trip runs only when the mode supports it and the job did not take the
-// container-only opt-out. The convert panel and the delete confirmation both
-// read this, so neither can promise a check the job will not run.
+// container-only opt-out, which a mode whose Round-trip is required ignores
+// (#476). The convert panel and the delete confirmation both read this, so
+// neither can promise a check the job will not run.
 
 /**
- * @param {{ supportsRoundTrip: boolean, containerOnly: boolean, deleteProof?: string }} opts
+ * @param {{ supportsRoundTrip: boolean, containerOnly: boolean, deleteProof?: string,
+ *   roundTripRequired?: boolean }} opts
  * @returns {'recognized' | 'round_tripped' | 'intact'}
  */
-export function deleteCheckFor({ supportsRoundTrip, containerOnly, deleteProof }) {
+export function deleteCheckFor({ supportsRoundTrip, containerOnly, deleteProof, roundTripRequired }) {
   if (deleteProof === 'recognized') return 'recognized';
-  return supportsRoundTrip && !containerOnly ? 'round_tripped' : 'intact';
+  return supportsRoundTrip && (!containerOnly || roundTripRequired) ? 'round_tripped' : 'intact';
 }
 
 // What the delete option says each check means, in the user's words.

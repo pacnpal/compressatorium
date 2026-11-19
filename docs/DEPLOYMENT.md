@@ -81,7 +81,7 @@ Volume precedence:
 - Multi-stage `Dockerfile`: a Debian `builder`, a `node:lts-slim` `frontend-builder` for the Svelte UI, and a slim runtime with no Node.
 - Conservative CPU/memory limits in the default compose files.
 - Async job queue with configurable concurrency, SSE progress, job cancellation, and per-job file locks.
-- Archive support (ZIP, 7z, RAR) through `py7zr`, `rarfile`, and the `p7zip-full` / `unrar-free` system packages, with temp extraction and cleanup.
+- Archive support (ZIP, 7z, RAR) through `py7zr`, `rarfile`, and the `p7zip-full` / `unrar-free` system packages, with temp extraction and cleanup. Multi-part RAR4/RAR5 sets are unpacked to the file inside them with `unar` (`rar_extract`).
 - Auto-generated API docs at `/docs` (OpenAPI/Swagger).
 - CI/CD in `.github/workflows/docker-image.yml`: builds `linux/amd64` and `linux/arm64` and pushes to Docker Hub and GHCR. It triggers on a published GitHub Release, or by hand (Run workflow with a version, which creates the tag and release first); there is no push or tag trigger. The image tags come from the release tag.
 

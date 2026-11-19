@@ -328,6 +328,8 @@ class SkipReason(Enum):
     ROM_CONVERTO_NOT_CCI = "rom_converto_not_cci"
     EXODOS_BAD_EXTENSION = "exodos_bad_extension"
     EXODOS_NOT_REPACKABLE = "exodos_not_repackable"
+    RAR_BAD_EXTENSION = "rar_bad_extension"
+    RAR_SET_NOT_EXTRACTABLE = "rar_set_not_extractable"
     SOURCE_NOT_INDEPENDENTLY_CONVERTIBLE = "source_not_independently_convertible"
     DOLPHIN_SAME_PATH = "dolphin_same_path"
     CHAIN_BAD_EXTENSION = "chain_bad_extension"
@@ -341,9 +343,18 @@ class SkipReason(Enum):
 class SkipFile(Exception):  # noqa: N818 - control-flow signal, not an error
     """Raised by ``plan_job`` when a file cannot be planned into a job."""
 
-    def __init__(self, reason: SkipReason):
+    def __init__(self, reason: SkipReason, detail: str | None = None):
         self.reason = reason
+        # What the tool found, in the user's words, when it can say more than
+        # the reason's fixed message (``ToolPlugin.convert_refusal``, #476).
+        self.detail = detail
         super().__init__(reason.value)
+
+    def http(self) -> tuple[int, str]:
+        """The status and message a single job answers with: the reason's
+        own, with the tool's detail in place of the fixed message."""
+        status_code, message = _SKIP_HTTP.get(self.reason, (400, self.reason.value))
+        return status_code, self.detail or message
 
 
 class DeleteSnapshotError(Exception):
@@ -460,6 +471,18 @@ _SKIP_HTTP: dict[SkipReason, tuple[int, str]] = {
         "File is not an eXoDOS game zip this tool can repack: it must hold one "
         "game folder whose dosbox.conf template is in EXODOS_DOS_DIR",
     ),
+    SkipReason.RAR_BAD_EXTENSION: (
+        400,
+        "rar_extract requires a RAR set's first volume (.rar or .part1.rar)",
+    ),
+    SkipReason.RAR_SET_NOT_EXTRACTABLE: (
+        422,
+        (
+            "RAR set can't be extracted: it must hold exactly one file besides its "
+            ".nfo/.sfv/.txt/.url sidecars, every volume must be there, and it must "
+            "not be encrypted"
+        ),
+    ),
     SkipReason.SOURCE_NOT_INDEPENDENTLY_CONVERTIBLE: (
         400,
         "File is one part of a multi-file source and cannot be converted on its "
@@ -520,6 +543,7 @@ _BAD_EXTENSION_REASON: dict[str, SkipReason] = {
     "xiso": SkipReason.XISO_BAD_EXTENSION,
     "rom_converto": SkipReason.ROM_CONVERTO_BAD_EXTENSION,
     "exodos": SkipReason.EXODOS_BAD_EXTENSION,
+    "rar": SkipReason.RAR_BAD_EXTENSION,
 }
 
 # Why a file a tool claims by extension was still rejected by its per-file
@@ -530,6 +554,7 @@ _NOT_CONVERTIBLE_REASON: dict[str, SkipReason] = {
     "xiso": SkipReason.XISO_NOT_XBOX_IMAGE,
     "rom_converto": SkipReason.ROM_CONVERTO_NOT_XBOX360_IMAGE,
     "exodos": SkipReason.EXODOS_NOT_REPACKABLE,
+    "rar": SkipReason.RAR_SET_NOT_EXTRACTABLE,
 }
 
 # The same, for a tool whose modes read unrelated formats: each mode names its
@@ -780,10 +805,14 @@ async def plan_job(
         # `input_extensions` and validates by `.chd` presence above, so the
         # default extension-match refinement does not describe it. Runs off the
         # event loop — the probe stats the sibling primary.
-        if not await run_in_threadpool(
-            registry.for_mode(mode).converts_path, file_path,
-        ):
-            raise SkipFile(_not_convertible_reason(mode, spec.tool_id))
+        tool = registry.for_mode(mode)
+        if not await run_in_threadpool(tool.converts_path, file_path):
+            # The tool may name what it found (the files a RAR set holds),
+            # which says more than the reason's fixed message.
+            raise SkipFile(
+                _not_convertible_reason(mode, spec.tool_id),
+                detail=await run_in_threadpool(tool.convert_refusal, file_path),
+            )
 
     # A multi-file source drags in siblings the request never named, and the
     # converter opens them itself — JNUSLib enumerates a split set's parts from
@@ -1105,7 +1134,7 @@ async def create_job(request: JobCreateRequest):
             delete_on_verify=request.delete_on_verify,
         )
     except SkipFile as skip:
-        status_code, detail = _SKIP_HTTP[skip.reason]
+        status_code, detail = skip.http()
         raise HTTPException(status_code=status_code, detail=detail) from None
     except DeleteSnapshotError as exc:
         raise HTTPException(
@@ -1318,7 +1347,9 @@ async def prepare_batch(request: BatchJobCreateRequest) -> PreparedBatch:
                 delete_on_verify=request.delete_on_verify,
             )
         except SkipFile as skip:
-            skipped[file_path] = _SKIP_HTTP.get(skip.reason, (0, skip.reason.value))[1]
+            skipped[file_path] = skip.detail or _SKIP_HTTP.get(
+                skip.reason, (0, skip.reason.value),
+            )[1]
             continue
         except DeleteSnapshotError as exc:
             raise HTTPException(

@@ -85,6 +85,12 @@
       blurb: 'eXoDOS game zips repacked for RomM\'s in-browser DOS player (DOSBox Pure). eXoDOS keeps each game\'s DOSBox setup in a separate !dos folder, with mount paths that point into the whole collection, so a game zip copied into RomM alone does not start. The repack moves the game to the root of a new file and writes its dosbox.conf there with those paths rewritten, which is where DOSBox Pure looks for one. Only mount, imgmount and boot lines change. The result is Game.dosz beside the source (a zip under the name DOSBox Pure documents for one); the original is only ever read. If the config still points outside the game after the rewrite, the job says so, because that game will probably not start. Set EXODOS_DOS_DIR to your eXoDOS !dos folder (inside a volume) to turn the tool on, and in RomM\'s config.yml set emulatorjs.settings.dosbox_pure.dosbox_pure_conf: inside (and leave emulatorjs.disable_batch_bootup at false) so DOSBox Pure can load the file\'s dosbox.conf, which is the file\'s first entry. Whether a repacked game boots in RomM\'s player (EmulatorJS 4.2.3 or the nightly) has not been tested yet.',
       io: '.zip  →  .dosz',
     },
+    {
+      glyph: 'RAR',
+      name: 'RAR sets',
+      blurb: 'A multi-part RAR set, the way usenet downloads arrive, unpacked to the one file it was made to carry, using unar. Select the set\'s first volume (Game.rar beside Game.r00, Game.r01 and so on, or Game.part01.rar); every later volume goes with it as one source, so the locks, the delete plan and delete-source take the whole set. RAR4 and RAR5 both work. The set must hold exactly one file besides its .nfo, .sfv, .txt and .url sidecars, which are never extracted as the payload. A set with two or more files (a .cue with its .bin tracks, say) is refused before anything is written, and the job names what it found. So is an encrypted set, a missing or damaged volume, a member with an absolute or .. path, and a link. The file lands beside the set under its own name and never replaces a file already there. unar checks every CRC as it extracts, and the file is checked again against the CRC32 the set records before it is kept. With delete-source on, every volume goes only after the Round-trip passes: the file\'s size and CRC32 must equal the set\'s.',
+      io: '.rar / .part01.rar (+ .r00… / .part02.rar…)  →  the file inside',
+    },
   ];
 
   // Per-tool mode reference. Generated from the registry (one section per
@@ -428,7 +434,9 @@
       take archive members either: a loose <code>.gb</code>/<code>.gba</code>/<code>.nds</code>
       inside an archive is shown but not converted in place, since its <code>.7z</code>/<code>.zip</code>
       are the packed product (unpack one by selecting the archive and running
-      <code>romz_extract</code>). PS3 ISO sits outside this entirely: it takes a folder, not a
+      <code>romz_extract</code>). A multi-part RAR set from usenet works the same way: select
+      its first volume and run <code>rar_extract</code> to write the one file it holds beside
+      it. PS3 ISO sits outside this entirely: it takes a folder, not a
       file, so a zipped <code>PS3_GAME</code> tree is never an archive input.
     </p>
     <p>

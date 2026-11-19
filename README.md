@@ -2,7 +2,7 @@
 
 > **Fork notice:** This is a fork of MarcTV's Docker CHD Converter. It adds a Web UI and more conversion tools on top of the original CLI converter. Thanks to [MarcTV](https://github.com/MarcTV) for the original.
 
-A game image converter that wraps eleven tools: **CHDMAN** (MAME), **dolphin-tool** (Dolphin Emulator), **z3ds_compressor** (Nintendo 3DS), **nsz** (Nintendo Switch), **maxcso** (PSP/PS2 CSO/ZSO), **7z** (handheld ROM archives), **makeps3iso** (PS3 decrypted folder → ISO), **nkit2iso** (NKit-shrunk GameCube/Wii image → ISO), **JWUDTool** (Wii U WUD ↔ WUX), **extract-xiso** (Xbox / Xbox 360 disc image → XISO), and **rom-converto** (the converter RomM ships; Xbox 360 disc image → ZAR, PSP PBP → ISO, 3DS CIA ↔ CCI). It also repacks **eXoDOS** game zips for RomM's in-browser DOS player. Pick the tool that matches your files and convert from a browser, or run it headless from the command line.
+A game image converter that wraps twelve tools: **CHDMAN** (MAME), **dolphin-tool** (Dolphin Emulator), **z3ds_compressor** (Nintendo 3DS), **nsz** (Nintendo Switch), **maxcso** (PSP/PS2 CSO/ZSO), **7z** (handheld ROM archives), **makeps3iso** (PS3 decrypted folder → ISO), **nkit2iso** (NKit-shrunk GameCube/Wii image → ISO), **JWUDTool** (Wii U WUD ↔ WUX), **extract-xiso** (Xbox / Xbox 360 disc image → XISO), **rom-converto** (the converter RomM ships; Xbox 360 disc image → ZAR, PSP PBP → ISO, 3DS CIA ↔ CCI), and **unar** (a multi-part RAR set from usenet → the one file inside it). It also repacks **eXoDOS** game zips for RomM's in-browser DOS player. Pick the tool that matches your files and convert from a browser, or run it headless from the command line.
 
 ## Features
 
@@ -32,6 +32,7 @@ A game image converter that wraps eleven tools: **CHDMAN** (MAME), **dolphin-too
 | **Xbox** | Xbox / Xbox 360 disc images | .iso (only images holding an Xbox filesystem) | .xiso.iso | None (fixed) | None | `extract-xiso` |
 | **rom-converto** | Xbox 360 disc images for Xenia; PSP PBPs; 3DS CIA and CCI | .iso, .xiso.iso (only images holding an Xbox 360 filesystem), .pbp (PSP games only), .cia, .cci, .3ds | .zar, .iso, .cci, .cia | None (fixed) | None (keys built into rom-converto; the app never downloads or ships any) | `rom-converto` v0.24.0 |
 | **eXoDOS** | eXoDOS DOS game zips, for RomM | .zip (only zips holding one game folder with a template in `EXODOS_DOS_DIR`) | .dosz | None (fixed) | Your own eXoDOS `!dos` folder (`EXODOS_DOS_DIR`) | none (built in) |
+| **RAR sets** | Multi-part RAR sets (usenet downloads), RAR4 and RAR5 | the set's first volume: .rar (with .r00, .r01, …) or .part01.rar (with .part02.rar, …) | the one file inside the set, under its own name | None (fixed) | None | `unar` |
 
 Most conversions above are lossless and fully reversible, including **3DS**, which
 now decompresses back to the original ROM as well. This uses
@@ -1622,6 +1623,12 @@ player.
 |-------|------|
 | ![eXoDOS tool, light](docs/screenshots/workspace-exodos-light.png) | ![eXoDOS tool, dark](docs/screenshots/workspace-exodos-dark.png) |
 
+**RAR sets.** Unpack a multi-part RAR set from usenet to the one file inside it.
+
+| Light | Dark |
+|-------|------|
+| ![RAR sets tool, light](docs/screenshots/workspace-rar-light.png) | ![RAR sets tool, dark](docs/screenshots/workspace-rar-dark.png) |
+
 #### Dashboard
 
 An at-a-glance view of the job queue, verification cache, mounted volumes, recent conversions, and quick tool shortcuts.
@@ -2610,6 +2617,58 @@ can be added later. The behaviour is modelled on
 |----------|---------|-------------|
 | `EXODOS_DOS_DIR` | *(unset)* | Your eXoDOS `!dos` folder (the one holding `<Game>/dosbox.conf`). Must be inside a volume. Unset hides the tool. Nothing from eXoDOS ships with the image. |
 
+## RAR Sets (multi-part .rar → the file inside)
+
+Usenet downloads arrive as multi-part RAR sets: `Game.rar` with `Game.r00`,
+`Game.r01` and so on (the old naming), or `Game.part01.rar`, `Game.part02.rar`
+and so on (the new one), in RAR4 or RAR5. The `rar_extract` mode turns a set
+into the one ROM or disc image it carries, using `unar` (The Unarchiver, from
+Debian main; the image's `unrar-free` can't read RAR5).
+
+### How to use
+
+- **Select the set's first volume** (`Game.rar` or `Game.part01.rar`) in the
+  **RAR sets** tool and run **Extract RAR set → file**. Every later volume goes
+  with it as one source: the job locks them all, and delete-source deletes them
+  all. A later volume selected on its own is refused, naming the first.
+- **One file per set.** The set must hold exactly one file besides its `.nfo`,
+  `.sfv`, `.txt` and `.url` sidecars (and OS junk like `__MACOSX`), which are
+  never the payload. A set with no file or with two or more (a `.cue` with its
+  `.bin` tracks, say) is refused before anything is written, and the refusal
+  names what it found. Multi-file sets are not supported.
+- **Refused too:** an encrypted set, a missing, truncated or damaged volume, a
+  member with an absolute or `..` path, a link or device member, and a set over
+  the `CHD_ARCHIVE_MAX_*` limits.
+- **The output** is the file's own name, in the set's folder (or the output
+  folder you chose). A file already there is never replaced: with the default
+  duplicate setting the job is skipped, and a name that appears while the job
+  runs fails it. `unar` extracts into a hidden `.rar-extract-*` folder beside the
+  output, and nothing of it is left behind on success or failure.
+- **The checks.** `unar` checks every CRC as it extracts; the file is then
+  checked again against the size and CRC32 the set records before it is kept.
+  With delete-source on, the Round-trip compares the file's size and CRC32 with
+  the set's before any volume is deleted, every time: the file has no container
+  to check on its own, so this mode has no container-only option (the CLI's
+  `--container-only` and a Rule's container-only level don't skip it). A failed
+  check keeps every volume.
+
+From the API, the same way as `romz_extract`:
+
+```bash
+curl -X POST http://localhost:8080/api/jobs \
+  -H 'Content-Type: application/json' \
+  -d '{"file_path": "/data/downloads/Game.part01.rar", "mode": "rar_extract", "delete_on_verify": true}'
+```
+
+From the command line:
+`compressatorium convert --to rar_extract /data/downloads/Game.rar --delete-source`.
+
+### RAR Sets Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `UNAR_PATH` | `unar` | Path to the `unar` binary. Ships in the image; outside it, the tool is hidden until `unar` is there. |
+
 ## Command line (`compressatorium`)
 
 The image ships a `compressatorium` command for shells and cron. It drives the
@@ -2888,6 +2947,9 @@ All actions are queued and processed by the job queue (FIFO). The queue is the o
 
 **Handheld ROM (GB/GBC/GBA/NDS)**
 - `romz_7z` (.gb/.gbc/.gba/.nds → .7z), `romz_zip` (.gb/.gbc/.gba/.nds → .zip), `romz_extract` (.7z/.zip → original ROM)
+
+**RAR sets**
+- `rar_extract` (a multi-part RAR set's first volume → the one file inside it; with delete-source, every volume is deleted once the Round-trip passes)
 
 **PS3 ISO (decrypted folder)**
 - `folder_to_iso` (a folder containing `PS3_GAME/` → `<folder>.iso`, with an optional `-s` 4 GB FAT32 split)

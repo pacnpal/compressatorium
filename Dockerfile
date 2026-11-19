@@ -338,6 +338,10 @@ RUN apt-get update -o Acquire::Retries=3 && \
       python3-venv \
       util-linux \
       unrar-free \
+      # unar/lsar (The Unarchiver, LGPL, Debian main): the rar tool's
+      # extractor. Unlike unrar-free it reads RAR5 and multi-volume sets
+      # (`.partN.rar` and `.rar` + `.r00`...), checking every CRC (#476).
+      unar \
       p7zip-full \
       default-jre-headless \
       wget \

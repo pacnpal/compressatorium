@@ -34,7 +34,7 @@ CONVERSION_MODES = [
 # the two parity tests can't drift apart.
 _PATCHED_TOOLS = (
     "chdman", "dolphin", "z3ds", "nsz", "cso", "romz", "makeps3iso", "nkit", "jwud",
-    "xiso", "rom_converto", "exodos",
+    "xiso", "rom_converto", "exodos", "rar",
 )
 
 # Modes whose tool exposes a verify at all. nkit2iso has no verify subcommand —
@@ -79,6 +79,8 @@ def _legacy_dispatch_id(mode: str) -> str:
         return "rom_converto"
     if mode.startswith("exodos_"):
         return "exodos"
+    if mode.startswith("rar_"):
+        return "rar"
     return "chdman"
 
 

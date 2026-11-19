@@ -22,6 +22,7 @@ from app.services.dolphin_tool import (
     dolphin_tool_service,
 )
 from app.services.exodos import INPUT_EXTENSIONS as EXODOS_INPUT_EXTENSIONS
+from app.services.rar_extract import RAR_INPUT_EXTENSIONS
 from app.services.exodos import exodos_service
 from app.services.extract_xiso import (
     XISO_CONVERTIBLE_EXTENSIONS,
@@ -107,12 +108,14 @@ def _legacy_tool_for_mode(mode: str) -> str:
         return "rom_converto"
     if mode.startswith("exodos_"):
         return "exodos"
+    if mode.startswith("rar_"):
+        return "rar"
     return "chdman"
 
 
 def test_every_conversion_mode_resolves_to_exactly_one_tool():
     resolved = {m.value: registry.for_mode(m.value).id for m in CONVERSION_MODES}
-    assert len(resolved) == 39
+    assert len(resolved) == 40
     # Each registered mode is owned by exactly one tool (no duplicates).
     assert sorted(s.mode for s in registry.mode_specs()) == sorted(resolved)
 
@@ -234,6 +237,7 @@ def test_convertible_extensions_match_service_constants():
         | set(ZAR_INPUT_EXTENSIONS)
         | set(PBP_INPUT_EXTENSIONS) | set(CIA_INPUT_EXTENSIONS) | set(CCI_INPUT_EXTENSIONS)
         | set(EXODOS_INPUT_EXTENSIONS)
+        | set(RAR_INPUT_EXTENSIONS)
     )
     assert set(registry.convertible_extensions()) == expected
 
@@ -524,7 +528,10 @@ def test_delete_on_verify_requires_a_verifiable_output():
     The safety-critical direction is one-way: a mode may only delete its source
     after verifying the output, so *every* output it can produce must itself be
     verifiable (its extension is in the owning tool's verify set). That is
-    asserted for every mode, with no exceptions.
+    asserted for every mode. The one other proof that counts is a Round-trip no
+    job can skip (``round_trip_required``, #476): a mode whose output has no
+    container of its own (the one file of a RAR set, any extension) deletes
+    only once that file's content equals the Source's.
 
     The reverse ("verifiable output, therefore delete") used to be asserted too,
     and is wrong: verification proves the output is well-formed, not that the
@@ -543,12 +550,14 @@ def test_delete_on_verify_requires_a_verifiable_output():
             else:
                 vexts = tool.verify_extensions
             verifiable = bool(outs) and outs <= vexts
+            content_proven = mode.supports_round_trip and mode.round_trip_required
 
             if mode.supports_delete_on_verify:
-                assert verifiable, (
+                assert verifiable or content_proven, (
                     f"{mode.mode}: deletes its source after verify, but its "
                     f"outputs {sorted(outs)} are not verifiable against "
-                    f"{sorted(vexts)} — the source would be dropped on no evidence"
+                    f"{sorted(vexts)} and its Round-trip can be skipped — the "
+                    "source would be dropped on no evidence"
                 )
             elif verifiable:
                 assert mode.mode in _DELETE_ON_VERIFY_DECLINED, (

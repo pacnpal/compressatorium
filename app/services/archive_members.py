@@ -36,7 +36,7 @@ from typing import IO, NamedTuple
 
 from logging_setup import get_logger
 from utils.mtime_cache import MtimeCache
-from utils.path_utils import open_reporting_reads
+from utils.path_utils import open_reporting_reads, path_present
 
 try:
     import py7zr
@@ -113,8 +113,33 @@ def read_archive_members(
 _RAR_PART = re.compile(
     r"(?P<stem>.+)(?P<part>\.part)(?P<number>\d+)(?P<ext>\.rar)", re.IGNORECASE,
 )
-# Whether a ``.partN.rar`` (N > 1) is a later volume, per (path, mtime, size).
+# ``<stem>.rar`` then ``<stem>.r00`` … ``.r99``, ``.s00`` …: the older naming
+# for the same thing, still what most usenet sets use (#476).
+_RAR_OLD_VOLUME = re.compile(
+    r"(?P<stem>.+)\.(?P<letter>[r-z])(?P<number>\d\d)", re.IGNORECASE,
+)
+_RAR_OLD_LETTERS = "rstuvwxyz"
+# The most later volumes looked for: far past any real set, and a bound on
+# the stats one lookup makes.
+MAX_RAR_VOLUMES = 999
+# Whether a later-named volume really is one, per (path, mtime, size).
 _later_volume_cache: MtimeCache[bool] = MtimeCache()
+
+
+def _first_volume_name(name: str) -> str | None:
+    """The first volume's file name when *name* is named like a later volume."""
+    match = _RAR_PART.fullmatch(name)
+    if match is not None:
+        if int(match["number"]) <= 1:
+            return None
+        return (
+            f"{match['stem']}{match['part']}{'1'.zfill(len(match['number']))}"
+            f"{match['ext']}"
+        )
+    match = _RAR_OLD_VOLUME.fullmatch(name)
+    if match is not None:
+        return f"{match['stem']}.{'RAR' if match['letter'].isupper() else 'rar'}"
+    return None
 
 
 def later_volume_of(
@@ -124,27 +149,73 @@ def later_volume_of(
     multi-volume RAR set, else ``None`` (#369).
 
     The one place that decides it. By name first: ``<stem>.partN.rar`` with
-    N > 1 (``.r00``-style volumes are not archive extensions the app lists,
-    so they are plain files already). Then confirmed by rarfile itself, which
+    N > 1, or an old-style ``<stem>.r00`` … beside ``<stem>.rar`` (#476; the
+    listing never asks about those, which are not archive extensions it
+    lists, but the rar tool does). Then confirmed by rarfile itself, which
     refuses a volume whose flags say it is not the first
     (``NeedFirstVolume``): a single-volume RAR that is merely named
-    ``x.part2.rar`` is not hidden. A later volume is listed as a plain file,
-    never summarized or searched as an archive, and never logs an error.
+    ``x.part2.rar`` is not hidden, and a stray ``x.r00`` that is no RAR at
+    all is no later volume. A later volume is listed as a plain file, never
+    summarized or searched as an archive, and never logs an error.
     ``progress`` is reported per header rarfile parses. Cached per
     ``(path, mtime, size)``. Blocking.
     """
-    match = _RAR_PART.fullmatch(os.path.basename(archive_path))
-    if match is None or int(match["number"]) <= 1:
+    first = _first_volume_name(os.path.basename(archive_path))
+    if first is None:
         return None
     is_later = _later_volume_cache.get_or_compute(
         archive_path, lambda: _needs_first_volume(archive_path, progress),
     )
     if not is_later:
         return None
-    first = (
-        f"{match['stem']}{match['part']}{'1'.zfill(len(match['number']))}{match['ext']}"
-    )
     return os.path.join(os.path.dirname(archive_path), first)
+
+
+def _later_volume_names(name: str) -> Iterator[str] | None:
+    """Every name a later volume of the set *name* leads could have, in
+    order, or None when *name* does not lead a set by its name."""
+    match = _RAR_PART.fullmatch(name)
+    if match is not None:
+        if int(match["number"]) != 1:
+            return None
+        width = len(match["number"])
+        return (
+            f"{match['stem']}{match['part']}{str(n).zfill(width)}{match['ext']}"
+            for n in range(2, MAX_RAR_VOLUMES + 2)
+        )
+    stem, ext = os.path.splitext(name)
+    if ext.lower() != ".rar":
+        return None
+    letters = _RAR_OLD_LETTERS.upper() if ext.isupper() else _RAR_OLD_LETTERS
+    return (
+        f"{stem}.{letter}{n:02d}"
+        for letter in letters for n in range(100)
+    )
+
+
+def rar_later_volumes(archive_path: str) -> list[str]:
+    """The later volumes of the multi-volume RAR set *archive_path* leads,
+    in order, by name (#476): ``x.part2.rar`` … after ``x.part1.rar``, or
+    ``x.r00`` … after ``x.rar``. Empty for a later volume, a single-volume
+    archive, or anything else.
+
+    Stops at the first name that is not a file, as a split Wii U set's parts
+    do: the set is unusable past a gap, so nothing after it is part of a
+    usable Source. This is what makes a set one Source (the rar tool's
+    ``source_companions``: locks, the delete plan, deleting the Source). Pure
+    name math plus one stat per volume, never a read of a header. Blocking.
+    """
+    names = _later_volume_names(os.path.basename(archive_path))
+    if names is None:
+        return []
+    folder = os.path.dirname(archive_path)
+    later: list[str] = []
+    for name in names:
+        candidate = os.path.join(folder, name)
+        if not path_present(candidate, regular=True):
+            break
+        later.append(candidate)
+    return later
 
 
 def _needs_first_volume(
@@ -365,3 +436,68 @@ def _read_rar(
                 ),
             )
     return members
+
+
+class RarSetMember(NamedTuple):
+    """One member of a RAR set, with what an extractor has to know."""
+
+    name: str
+    size: int
+    # CRC32 of the unpacked file, None when the set stores another hash
+    # (RAR5 can store BLAKE2sp instead).
+    crc: int | None
+    is_dir: bool
+    # A plain file: no link of any kind (a symlink, a hard link, a RAR5 file
+    # copy), no device, FIFO or socket.
+    is_plain_file: bool
+    is_encrypted: bool
+
+
+class RarSet(NamedTuple):
+    """A RAR set read through its first volume (:func:`read_rar_set`)."""
+
+    members: list[RarSetMember]
+    # A password is needed: for the headers (nothing lists) or for any
+    # member's data.
+    encrypted: bool
+    # Every volume rarfile read, first volume first.
+    volumes: list[str]
+
+
+def _rar_plain_file(info) -> bool:
+    """Whether a rarfile entry is a plain file, judged fail-closed."""
+    if not info.is_file() or getattr(info, "file_redir", None):
+        return False
+    if info.host_os == rarfile.RAR_OS_UNIX:  # type: ignore[name-defined]
+        # The Unix mode a Unix archiver stored: a device or FIFO is no file.
+        return stat.S_IFMT(info.mode or 0) in (0, stat.S_IFREG)
+    return True
+
+
+def read_rar_set(first_volume: str) -> RarSet:
+    """Every member of the RAR set *first_volume* leads, uncached (#476).
+
+    For a caller that extracts the set, so it needs more than the listing
+    cache keeps: each member's CRC, whether it is a plain file (a RAR5 hard
+    link or file copy reads as a file to rarfile), whether a password is
+    needed anywhere, and which volumes were read. Opened by path, so rarfile
+    finds the later volumes itself. A missing, truncated or unreadable volume
+    raises :class:`IncompleteArchive`, a later volume ``NeedFirstVolume``.
+    Blocking.
+    """
+    if not HAS_RAR:
+        from services.subprocess_runner import ToolUnavailable
+
+        raise ToolUnavailable("rarfile is required to read .rar archives")
+    with rarfile.RarFile(first_volume, "r") as rf:  # type: ignore[name-defined]
+        if rf.strerror():
+            raise IncompleteArchive(f"{first_volume}: {rf.strerror()}")
+        members = [
+            RarSetMember(
+                info.filename, int(info.file_size or 0),
+                None if info.CRC is None else int(info.CRC),
+                info.is_dir(), _rar_plain_file(info), bool(info.needs_password()),
+            )
+            for info in rf.infolist()
+        ]
+        return RarSet(members, bool(rf.needs_password()), list(rf.volumelist()))

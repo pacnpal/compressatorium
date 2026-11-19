@@ -103,6 +103,12 @@ with open(sys.argv[1], "wb") as fh:
     fh.write(b"\xab" * 4096)
 PY
 
+# RAR sets (#476): rarfile's own ISC-licensed test sets (tests/fixtures/rar),
+# one in each volume naming, as a usenet download folder shows them.
+mkdir -p "$root/Usenet"
+rar_fixtures="$(cd "$(dirname "$0")/../tests/fixtures/rar" && pwd)"
+cp "$rar_fixtures"/rar5-vols.part*.rar "$rar_fixtures"/rar3-old.r* "$root/Usenet/"
+
 # A folder Library (#303): Platform folders the way ES-DE and Batocera lay them
 # out. The placeholders carry no header, so each Image's Platform comes from its
 # folder name; the loose file at the top has none and shows as Unsorted.

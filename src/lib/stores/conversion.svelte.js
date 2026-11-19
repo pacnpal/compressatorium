@@ -189,6 +189,14 @@ class ConversionStore {
     return !!this.currentSpec?.supportsRoundTrip;
   }
 
+  /**
+   * Whether the current mode offers the container-only opt-out: a Round-trip
+   * runs and a job may skip it (not where it is required, #476).
+   */
+  get offersContainerOnly() {
+    return this.supportsRoundTrip && !this.currentSpec?.roundTripRequired;
+  }
+
   /** Why the current mode always keeps its Source ('' when it doesn't say). */
   get sourceKeptReason() {
     return this.currentSpec?.sourceKeptReason ?? '';
@@ -205,6 +213,7 @@ class ConversionStore {
       supportsRoundTrip: this.supportsRoundTrip,
       containerOnly: this.containerOnly,
       deleteProof: this.deleteProof,
+      roundTripRequired: !!this.currentSpec?.roundTripRequired,
     });
   }
 
@@ -566,7 +575,7 @@ class ConversionStore {
     // The backend rejects the combination outright, so a sticky flag
     // would fail the next submission instead of silently degrading.
     if (!this.supportsDeleteOnVerify) this.deleteOnVerify = false;
-    if (!this.supportsRoundTrip) this.containerOnly = false;
+    if (!this.offersContainerOnly) this.containerOnly = false;
     // Likewise clear the split flag when leaving a mode that offers it.
     if (!this.supportsSplit) this.split = false;
     this.#reconcileLevel();
@@ -749,7 +758,7 @@ class ConversionStore {
       // going through setMode (the backend rejects the combination
       // for extract/raw modes).
       deleteOnVerify: this.supportsDeleteOnVerify && this.deleteOnVerify,
-      containerOnly: this.supportsRoundTrip && this.containerOnly,
+      containerOnly: this.offersContainerOnly && this.containerOnly,
       // Same masking for the makeps3iso 4 GB FAT32 split toggle.
       split: this.supportsSplit && this.split,
     };

@@ -307,6 +307,17 @@ class ToolPlugin(Protocol):
         threadpool scan.
         """
 
+    def convert_refusal(self, path: str) -> str | None:
+        """Why ``converts_path(path)`` is False, in the user's words, or None.
+
+        For a tool that refines on content and can name what it found, which
+        says more than its skip reason's fixed message: the rar tool says which
+        files a RAR set holds when it holds more than one (#476). The route
+        asks only after ``converts_path`` said False, and shows this in place
+        of the fixed message. ``BaseTool`` returns None (the fixed message
+        stands). May do disk I/O; call it off the event loop.
+        """
+
     def delete_on_verify_is_safe(self, mode: str, compression: str | None) -> bool:
         """Whether deleting the source after ``verify()`` is safe for this job.
 
@@ -916,6 +927,10 @@ class BaseTool:
         # whose source is a *set* of files (jwud's split Wii U dumps) override it
         # so only the primary is offered; every other tool inherits the match.
         return match_extension(path, self.input_extensions) is not None
+
+    def convert_refusal(self, path: str) -> str | None:
+        # Default: nothing to add to the skip reason's fixed message.
+        return None
 
     def source_companions(self, path: str) -> list[str]:
         # Default: a single-file source consumes nothing else.

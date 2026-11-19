@@ -144,6 +144,10 @@ const ROM_CONVERTO_VERIFY_EXTS = ['.zar'];
 // plan_job and skips one that is not an eXoDOS game, with the reason.
 const EXODOS_INPUT_EXTS = ['.zip'];
 const EXODOS_VERIFY_EXTS = ['.dosz'];
+// RAR sets (#476): a multi-part RAR set's first volume in, the one file it
+// holds out. `.rar` is an archive row; the backend's plan_job skips a later
+// volume or a set that does not hold exactly one file, with what it found.
+const RAR_INPUT_EXTS = ['.rar'];
 
 /**
  * @typedef {Object} ModeEntry
@@ -158,6 +162,8 @@ const EXODOS_VERIFY_EXTS = ['.dosz'];
  * @property {boolean} supportsCompressionLevel
  * @property {boolean} supportsDeleteOnVerify
  * @property {boolean} [supportsRoundTrip] delete-source compares content digests (Round-trip)
+ * @property {boolean} [roundTripRequired] the Round-trip always runs: no container-only opt-out
+ *                                          (mirrors ModeSpec.round_trip_required)
  * @property {string} [sourceKeptReason] why this mode always keeps its Source (mirrors
  *                                        ModeSpec.source_kept_reason); shown where the delete option would be
  * @property {'round_trip'|'recognized'} [deleteProof] the check that lets a delete-source job
@@ -869,6 +875,43 @@ export const TOOLS = [
       if (/\.zip$/i.test(path)) return path.replace(/\.zip$/i, '.dosz');
       return path;
     },
+  },
+  {
+    id: 'rar',
+    label: 'RAR sets',
+    hint: 'Unpack a multi-part RAR set (usenet) to the one ROM or disc image inside it.',
+    // No Verify row action: a set is checked by extracting it, and the
+    // extracted file by the job that wrote it (CRC32, then the Round-trip).
+    verifyPrefix: '',
+    sourceExts: RAR_INPUT_EXTS,
+    verifyExts: [],
+    // Not contentRefined: a .rar is an archive row, which never carries a
+    // convertible_by claim, so (as for eXoDOS) the extension gate lets any
+    // .rar be ticked and plan_job skips one that is not a plannable set.
+    modeGroups: ['rar'],
+    groups: { rar: 'RAR set → file' },
+    defaultMode: 'rar_extract',
+    glyph: 'RAR',
+    accent: 'var(--badge-romz)',
+    compressionCodecs: [],
+    compressionStyle: 'none',
+    modes: [
+      { mode: 'rar_extract', kind: 'extract', label: 'Extract RAR set → file', group: 'rar',
+        outputExt: null, inputExtensions: RAR_INPUT_EXTS,
+        supportsCompression: false, supportsCompressionLevel: false,
+        // Every volume goes once the file's size and CRC32 equal the set's,
+        // and only then: the file has no container to check on its own, so
+        // there is no container-only opt-out (ModeSpec.round_trip_required).
+        supportsDeleteOnVerify: true, supportsRoundTrip: true, roundTripRequired: true,
+        // The volumes are files on disk, never members of another archive.
+        allowsArchiveInput: false },
+    ],
+    getInfo: undefined,
+    verify: undefined,
+    verifyBatch: undefined,
+    // The product is named after the file inside the set, which only the
+    // backend can read, so the set maps to itself.
+    productPath: (path) => path,
   },
 ];
 

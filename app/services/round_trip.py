@@ -31,13 +31,14 @@ def round_trip_applies(mode: str, *, delete_on_verify: bool, container_only: boo
 
     The one answer for every caller: the job pipeline's delete check, and what
     a Rule's Preview says will run (#302). Only a job that deletes its Source,
-    in a mode whose tool has a digest, without the ``container_only`` opt-out.
-    The capability is read from the registry, so a mode that gains a digest
-    changes the answer everywhere at once.
+    in a mode whose tool has a digest, without the ``container_only`` opt-out,
+    which a mode whose Round-trip is required ignores (#476). The capability
+    is read from the registry, so a mode that gains a digest changes the
+    answer everywhere at once.
     """
     return (
         delete_on_verify
-        and not container_only
+        and (not container_only or registry.mode_round_trip_required(mode))
         and registry.mode_delete_proof(mode) == DeleteProof.ROUND_TRIP
         and registry.mode_supports_round_trip(mode)
     )

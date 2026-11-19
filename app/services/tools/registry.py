@@ -150,6 +150,17 @@ class ToolRegistry:
         except KeyError:
             return False
 
+    def mode_round_trip_required(self, mode: str) -> bool:
+        """Whether a delete-source job in this mode runs the Round-trip even
+        with the container-only opt-out (``ModeSpec.round_trip_required``).
+
+        Unknown modes answer False.
+        """
+        try:
+            return bool(self.spec(mode).round_trip_required)
+        except KeyError:
+            return False
+
     def mode_delete_proof(self, mode: str) -> DeleteProof:
         """Which check lets a delete-source job in this mode remove its Source.
 

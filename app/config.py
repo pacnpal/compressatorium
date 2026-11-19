@@ -298,6 +298,11 @@ class Settings(BaseSettings):
     # ship the newer `7zip` package instead).
     sevenzip_path: str = Field(default="7z", alias="SEVENZIP_PATH")
 
+    # unar (The Unarchiver), the rar tool's extractor (#476): a multi-volume
+    # RAR4/RAR5 set to the one file inside it. Ships in the image via the
+    # Debian `unar` package; a bare name resolves on PATH.
+    unar_path: str = Field(default="unar", alias="UNAR_PATH")
+
     # MAMERedump DAT sync
     mameredump_repo: str = Field(
         default="MetalSlug/MAMERedump", alias="MAMEREDUMP_REPO",

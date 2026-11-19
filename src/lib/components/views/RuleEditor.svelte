@@ -227,6 +227,7 @@
       supportsRoundTrip: !!spec?.supportsRoundTrip,
       containerOnly: rule.check_level === CHECK_LEVEL.containerOnly,
       deleteProof: spec?.deleteProof,
+      roundTripRequired: !!spec?.roundTripRequired,
     });
   }
 
@@ -1049,7 +1050,7 @@
                          something, as in the convert panel: a Round-trip mode
                          only, never a Recognized one (#423). The stored level
                          is kept either way. -->
-                    {#if rule.delete_on_verify && spec?.supportsRoundTrip}
+                    {#if rule.delete_on_verify && spec?.supportsRoundTrip && !spec?.roundTripRequired}
                       <Checkbox
                         checked={rule.check_level === CHECK_LEVEL.containerOnly}
                         label="Container check only (faster, weaker)"

@@ -30,7 +30,11 @@ from pathlib import Path
 
 from config import settings
 from logging_setup import get_logger
-from services.archive import ArchiveSafetyRefused, archive_service
+from services.archive import (
+    ArchiveSafetyRefused,
+    archive_service,
+    reject_member_traversal,
+)
 from services.archive_members import read_archive_members
 from services.subprocess_runner import (
     ConversionCancelled,
@@ -336,31 +340,9 @@ class RomzService:
             raise NotSingleRomArchive("Archive is not a single-ROM archive")
         return True
 
-    @staticmethod
-    def _reject_traversal(name: str) -> None:
-        """Reject a member that could escape or collide inside the temp dir.
-
-        Deliberately narrower than ``ArchiveService._validate_member`` (which
-        also bans ``:`` and ``\\`` for Windows portability): on a POSIX volume a
-        loose ROM may legally be named e.g. ``Game:1.gba`` or ``Game\\x.gba``,
-        and this tool must be able to round-trip the archive it produced
-        (verify / extract reuse this gate). ``7z x`` on POSIX treats those as
-        ordinary filename characters.
-
-        Reject an absolute path or **any** ``..`` component — not just paths
-        whose normalized form still escapes the root. ``7z x -y`` recreates the
-        literal path, so a sidecar like ``__MACOSX/../Game.gba`` (which
-        normalizes to ``Game.gba``) would resolve onto the validated ROM's temp
-        path and overwrite it before it is published.
-        """
-        stripped = name.rstrip("/")
-        # POSIX separator only: `\\` is a legal filename character here, not a
-        # path component boundary.
-        if stripped.startswith("/") or ".." in stripped.split("/"):
-            raise ArchiveSafetyRefused(
-                f"Unsafe archive member path: {name}",
-                rule=f"an absolute or .. member path ({name})",
-            )
+    # The shared member-path rule (absolute or any ``..``), applied to every
+    # member because ``7z x`` recreates each literal path under the temp dir.
+    _reject_traversal = staticmethod(reject_member_traversal)
 
     @classmethod
     def _declared_size(cls, archive_path: str) -> int:
