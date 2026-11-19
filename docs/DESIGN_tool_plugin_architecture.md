@@ -1489,6 +1489,15 @@ RAR set's file named like its own later volume, or a split dump's part, would
 otherwise wait on its own input lock forever under overwrite, or have a live
 part of the Source cleared.
 
+**One rule for logging a failed archive read (#506).**
+`services.archive.log_archive_read_failure(logger, path, exc)` decides the level
+for every path that opens an archive and logs on failure (the listing in
+`list_archive_contents`, the `/archive-summary` batch). A zipfile, py7zr or
+rarfile format error, `IncompleteArchive`, `ArchiveSafetyRefused` or an
+`OSError` is the user's broken file: one WARNING naming the file and the reason,
+no traceback. Any other exception is our bug and stays an ERROR with the
+traceback. It only changes the log; what the API returns is unchanged.
+
 ### 3.3.3 Cross-tool chaining (`ChainSpec` / `ChainTool`, `services/disk.py`)
 
 Some conversions are a pipeline of existing single-tool modes (issue #98:
