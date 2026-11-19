@@ -431,8 +431,11 @@
   every program, so nothing changes there. Outside Docker, a tool whose
   program is missing is now hidden instead of offered. A check that doesn't
   run the program still works without it: a PS3 ISO's and a WUX's check are
-  read in Python, and a 3DS check needs only `zstd`. The answer is kept for
-  30 seconds, so installing or removing a program shows up within that time.
+  read in Python, and a 3DS check needs only `zstd`. The one-step pipelines
+  (CSO → CHD, NKit → RVZ) run only when every tool in them is ready, and when
+  one isn't, both are held back with that tool's reason. The answer is kept
+  for 30 seconds, so installing or removing a program shows up within that
+  time.
 - **File info for a junk `.rvz` says it couldn't be read** (#495). For a file
   that isn't a disc image, `dolphin-tool header` exits 0 and prints nothing, so
   File info answered 200 with every field empty. A header read that yields no

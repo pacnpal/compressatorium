@@ -369,7 +369,8 @@ class BaseTool:
         return [output_path, *self.companion_outputs(output_path, mode)]
 
     # The declared programs, each present and executable (#494). A tool
-    # that declares none (exodos, the chain) is ready.
+    # that declares none (exodos) is ready; the chain overrides it to ask
+    # every step tool.
     required_binaries: tuple[RequiredBinary, ...] = ()
     verify_required_binaries: tuple[RequiredBinary, ...] | None = None
     async def is_ready(self) -> bool:
@@ -8755,9 +8756,21 @@ conversion needs and `verify_is_ready()` is `is_ready()`. A tuple, possibly
 empty, is probed on its own, which is how a check that runs something else
 (z3ds's `zstd -t`) or nothing at all (makeps3iso, jwud) stays verifiable when
 the converter is missing. Not covered: nsz and rom-converto keep their own
-`is_ready()` (prod.keys; a `--version` run), exodos runs no program, and the
-chain tool declares none of its own (its readiness is per tool, while its two
-modes use different tools).
+`is_ready()` (prod.keys; a `--version` run), and exodos runs no program.
+
+**The Pipeline (chain) tool.** It runs no program of its own, so it declares
+none, but it is only as ready as the tools its steps run. `ChainTool.is_ready()`
+asks `registry.tool_is_ready` for every step tool of its modes (concurrently,
+each under the registry's bound) and is not ready when any one is, with that
+tool's `not_ready_message` as its reason ("Pipeline isn't ready: NKit isn't
+ready: nkit2iso was not found at ..."). No tool id is checked: the step tools
+come from `ChainSpec.steps` through `registry.for_mode`. Readiness is per tool
+in the contract, and every caller (the tool list, Auto's plan, Rules, Inbox
+intake, the CLI) asks it of `registry.for_mode(mode)`, which for a chain mode
+is the chain. So both chain modes go together: with dolphin-tool missing,
+`cso_to_chd` is held back as well as `nkit_to_rvz`. Readiness per mode would
+keep the other one, at the cost of changing every caller (`plan_auto` takes a
+set of ready tool ids); until then the chain fails closed.
 
 **What the probe checks.** Present, a regular file, and executable for this
 process (`os.access(X_OK)`), nothing more. It never runs the program: several
@@ -8784,7 +8797,7 @@ shared pool worker. Answers are cached per configured path for
 and every sweep, which ask every tool each time, stat each binary at most twice
 a minute, and a program that is installed, removed or `chmod`-ed is noticed
 within that window. While a probe of a path is running, other callers on the
-same event loop await that probe (shielded, so one caller's bound doesn't
+same event loop await that probe (keyed by loop and path) (shielded, so one caller's bound doesn't
 cancel it for the rest) instead of starting another, so a dead mount holds one
 written-off thread per path rather than one per request. A probe that raises
 (the detached-probe ceiling) is not cached. `binaries.forget_binary_probes()`

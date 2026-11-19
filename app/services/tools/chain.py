@@ -33,7 +33,7 @@ from services.lock_manager import lock_manager
 from services.subprocess_runner import remove_partial_tree
 from utils.path_utils import match_extension
 
-from .base import BaseTool, ContentDigest
+from .base import BaseTool, ContentDigest, not_ready_message
 from .spec import ChainSpec, ChainStep, ModeKind
 
 if TYPE_CHECKING:
@@ -140,6 +140,39 @@ class ChainTool(BaseTool):
         # including the final step's post_convert hook, which records the disc ID.
         super().__init__("")
         self._registry = registry
+
+    # ---------------------------------------------------------------- readiness
+    def _step_tools(self) -> list:
+        """Every tool a step of any chain mode runs, in declared order, once."""
+        tools: list = []
+        for spec in self.modes:
+            for step in spec.steps:
+                tool = self._registry.for_mode(step.mode)
+                if tool not in tools:
+                    tools.append(tool)
+        return tools
+
+    async def is_ready(self) -> bool:
+        """Ready only when every tool its steps run is ready (#494).
+
+        Readiness is per tool, and every caller (the tool list, Auto, Rules,
+        Inbox intake, the CLI) asks it of ``registry.for_mode(mode)``, which
+        for a chain mode is this tool. So the chain asks each step tool
+        through the registry's own bounded check, and is not ready, with that
+        tool's message as its reason, when any one of them is not. Both chain
+        modes go together: a missing dolphin-tool also holds back
+        ``cso_to_chd``, the price of keeping readiness per tool.
+        """
+        tools = self._step_tools()
+        answers = await asyncio.gather(
+            *(self._registry.tool_is_ready(tool) for tool in tools),
+        )
+        for tool, ready in zip(tools, answers, strict=True):
+            if not ready:
+                self.__dict__["not_ready_reason"] = not_ready_message(tool)
+                return False
+        self.__dict__.pop("not_ready_reason", None)
+        return True
 
     # ------------------------------------------------------------------ paths
     def output_path(

@@ -118,8 +118,8 @@ def _inspect(path: str) -> tuple[str, str]:
 _lock = threading.Lock()
 # path -> (answered at, (status, detail))
 _answers: dict[str, tuple[float, tuple[str, str]]] = {}
-# path -> (loop, task) of the probe running for it
-_running: dict[str, tuple[asyncio.AbstractEventLoop, asyncio.Task]] = {}
+# (loop, path) -> the probe running for it on that loop
+_running: dict[tuple[asyncio.AbstractEventLoop, str], asyncio.Task] = {}
 
 
 def forget_binary_probes() -> None:
@@ -132,10 +132,10 @@ async def _probe(path: str) -> tuple[str, str]:
     try:
         answer = await run_detached(_inspect, path)
     finally:
+        key = (asyncio.get_running_loop(), path)
         with _lock:
-            running = _running.get(path)
-            if running is not None and running[1] is asyncio.current_task():
-                del _running[path]
+            if _running.get(key) is asyncio.current_task():
+                del _running[key]
     with _lock:
         _answers[path] = (_now(), answer)
     return answer
@@ -154,13 +154,11 @@ async def _status(path: str) -> tuple[str, str]:
         cached = _answers.get(path)
         if cached is not None and _now() - cached[0] < BINARY_PROBE_TTL_SECONDS:
             return cached[1]
-        running = _running.get(path)
-        if running is None or running[0] is not loop or running[1].done():
+        task = _running.get((loop, path))
+        if task is None or task.done():
             task = loop.create_task(_probe(path))
             task.add_done_callback(_retrieve)
-            _running[path] = (loop, task)
-        else:
-            task = running[1]
+            _running[(loop, path)] = task
     # Shielded: a caller's bound (``tool_is_ready``) abandons its own wait,
     # never the probe the other callers are sharing.
     return await asyncio.shield(task)

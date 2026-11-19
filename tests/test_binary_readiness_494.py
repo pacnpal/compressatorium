@@ -318,3 +318,59 @@ async def test_concurrent_probes_of_one_path_share_one_stat(bins, monkeypatch):
 
     assert answers == [True] * 5
     assert calls == [str(program)]
+
+
+# --- The Pipeline tool needs every tool it runs (#501 review) ---------------
+
+def _psp_cso(root):
+    from .test_platform_detect import _write
+
+    return _write(root / "ps2" / "game.cso", b"CISO" + b"\0" * 60)
+
+
+def _gamecube_nkit(root):
+    from .test_platform_detect import _gamecube
+
+    return _gamecube(root / "downloads" / "game.nkit.iso")
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("fresh_detect_cache", "tmp_volume")
+@pytest.mark.parametrize(
+    ("missing", "image", "mode"),
+    [
+        (("nkit",), _gamecube_nkit, "nkit_to_rvz"),
+        (("cso", "chdman"), _psp_cso, "cso_to_chd"),
+    ],
+    ids=["nkit_to_rvz", "cso_to_chd"],
+)
+async def test_a_chain_whose_step_cannot_run_is_not_offered(
+    bins, tmp_path, monkeypatch, missing, image, mode,
+):
+    from services.platform_detect import plan_auto
+
+    path = image(tmp_path)
+    # Everything present: Auto plans the chain.
+    [entry] = await asyncio.to_thread(
+        plan_auto, [path], ready_tool_ids=await registry.ready_tool_ids(),
+    )
+    assert (entry.mode, entry.skip_reason) == (mode, None)
+
+    for tool_id in missing:
+        _point(monkeypatch, tool_id, bins / f"{tool_id}-gone")
+
+    tools = await info_routes.list_tools()
+    assert "chain" in tools["unavailable"]
+    assert registry.for_mode(mode).id == "chain"
+
+    [entry] = await asyncio.to_thread(
+        plan_auto, [path], ready_tool_ids=await registry.ready_tool_ids(),
+    )
+    assert entry.mode is None
+    # The step tool's own reason, naming the missing program.
+    assert str(bins / f"{missing[0]}-gone") in entry.skip_reason
+
+
+@pytest.mark.asyncio
+async def test_the_chain_is_ready_when_every_step_can_run(bins):
+    assert await registry.tool_is_ready(registry.get("chain")) is True
