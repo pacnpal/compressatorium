@@ -6,10 +6,10 @@ from pathlib import Path
 
 from logging_setup import get_logger
 from services.subprocess_runner import (
+    RunnerService,
     StorageAbandoned,
     SubprocessRunner,
     abandonment_checkpoint,
-    collect_verify,
     info_timeout,
     resolve_verify_timeout,
 )
@@ -29,8 +29,10 @@ DEFAULT_DOLPHIN_COMPRESSION_LEVEL = "19"
 logger = get_logger("dolphin_tool")
 
 
-class DolphinToolService:
+class DolphinToolService(RunnerService):
     """Wrapper for dolphin-tool binary."""
+
+    verify_fallback_message = "Disc verification failed"
 
     def __init__(self):
         self.dolphin_tool_path = settings.dolphin_tool_path
@@ -88,13 +90,6 @@ class DolphinToolService:
         except ValueError:
             return [stdbuf, "-oL", "-eL"] + cmd
         return cmd[:idx] + [stdbuf, "-oL", "-eL"] + cmd[idx:]
-
-    def active_pids(self) -> list[int]:
-        return self._runner.active_pids()
-
-    def abandoned_pids(self) -> list[int]:
-        """Children that outlived SIGKILL; see ``SubprocessRunner``."""
-        return self._runner.abandoned_pids()
 
     async def convert(
         self,
@@ -247,15 +242,6 @@ class DolphinToolService:
         if returncode != 0:
             return None
         return stdout.decode("utf-8", "replace")
-
-    async def verify(
-        self, path: str, *, cancel_event: asyncio.Event | None = None,
-    ) -> dict:
-        """Verify the integrity of a disc image."""
-        return await collect_verify(
-            self.verify_stream(path, cancel_event=cancel_event),
-            fallback_message="Disc verification failed",
-        )
 
     def verify_stream(
         self, path: str, *, cancel_event: asyncio.Event | None = None,

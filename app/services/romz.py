@@ -37,9 +37,9 @@ from services.archive import (
 )
 from services.archive_members import read_archive_members
 from services.subprocess_runner import (
+    RunnerService,
     ConversionCancelled,
     SubprocessRunner,
-    collect_verify,
     ReadCancelled,
     remove_partial_output,
     remove_partial_tree,
@@ -188,7 +188,7 @@ def _no_prompt_switch() -> str:
     return "-p" + secrets.token_hex(8)
 
 
-class RomzService:
+class RomzService(RunnerService):
     """Wrapper for the 7z binary, packing/unpacking handheld ROM dumps."""
 
     def __init__(self):
@@ -438,13 +438,6 @@ class RomzService:
         beginning with ``-`` a positional filename."""
         return [self.sevenzip_path, "t", _no_prompt_switch(), "--", archive_path]
 
-    def active_pids(self) -> list[int]:
-        return self._runner.active_pids()
-
-    def abandoned_pids(self) -> list[int]:
-        """Children that outlived SIGKILL; see ``SubprocessRunner``."""
-        return self._runner.abandoned_pids()
-
     # ----- output paths -----------------------------------------------------
 
     @classmethod
@@ -672,14 +665,6 @@ class RomzService:
         return ext in ROMZ_COMPRESS_EXTENSIONS or ext in ROMZ_ARCHIVE_EXTENSIONS
 
     # ----- verify -----------------------------------------------------------
-
-    async def verify(
-        self, file_path: str, *, cancel_event: asyncio.Event | None = None,
-    ) -> dict:
-        return await collect_verify(
-            self.verify_stream(file_path, cancel_event=cancel_event),
-            fallback_message="Verification failed",
-        )
 
     async def verify_stream(
         self, file_path: str, *, cancel_event: asyncio.Event | None = None,

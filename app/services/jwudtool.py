@@ -51,8 +51,8 @@ from pathlib import Path
 from config import settings
 from logging_setup import get_logger
 from services.subprocess_runner import (
+    RunnerService,
     SubprocessRunner,
-    collect_verify,
     ReadCancelled,
     remove_partial_tree,
     run_detached,
@@ -341,7 +341,7 @@ def iter_wux_image(file_path: str, stop=None):
             yield bytes(out)
 
 
-class JwudToolService:
+class JwudToolService(RunnerService):
     """Wrapper for the JWUDTool CLI."""
 
     def __init__(self):
@@ -377,13 +377,6 @@ class JwudToolService:
         if not verification_enabled(compression):
             cmd.append("-noVerify")
         return cmd
-
-    def active_pids(self) -> list[int]:
-        return self._runner.active_pids()
-
-    def abandoned_pids(self) -> list[int]:
-        """Children that outlived SIGKILL; see ``SubprocessRunner``."""
-        return self._runner.abandoned_pids()
 
     def binary_available(self) -> bool:
         """Whether the JWUDTool launcher is present and executable.
@@ -640,14 +633,6 @@ class JwudToolService:
         }
 
     # ----- verify -----------------------------------------------------------
-
-    async def verify(
-        self, file_path: str, *, cancel_event: asyncio.Event | None = None,
-    ) -> dict:
-        return await collect_verify(
-            self.verify_stream(file_path, cancel_event=cancel_event),
-            fallback_message="Verification failed",
-        )
 
     async def verify_stream(
         self, file_path: str, *, cancel_event: asyncio.Event | None = None,

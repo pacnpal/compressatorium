@@ -41,6 +41,7 @@ from config import settings
 from logging_setup import get_logger
 from services import ps3
 from services.subprocess_runner import (
+    RunnerService,
     ConversionCancelled,
     ReadCancelled,
     SubprocessRunner,
@@ -63,7 +64,7 @@ _PROGRESS_RE = re.compile(r"(\d{1,3})\s*%")
 logger = get_logger("makeps3iso")
 
 
-class MakePs3IsoService:
+class MakePs3IsoService(RunnerService):
     """Wrapper for the makeps3iso binary."""
 
     def __init__(self) -> None:
@@ -187,13 +188,6 @@ class MakePs3IsoService:
             return None
         value = int(matches[-1])
         return value if 0 <= value <= 100 else None
-
-    def active_pids(self) -> list[int]:
-        return self._runner.active_pids()
-
-    def abandoned_pids(self) -> list[int]:
-        """Children that outlived SIGKILL; see ``SubprocessRunner``."""
-        return self._runner.abandoned_pids()
 
     # ----- output paths -----------------------------------------------------
 

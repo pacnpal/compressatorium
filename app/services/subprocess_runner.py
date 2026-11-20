@@ -1950,6 +1950,39 @@ async def collect_verify(
     return result
 
 
+class RunnerService:
+    """What every tool service shares over its ``SubprocessRunner`` (#543).
+
+    A service sets ``self._runner``; one with a verify defines
+    ``verify_stream`` and gets ``verify`` from here, which drains it.
+    """
+
+    _runner: "SubprocessRunner"
+    verify_fallback_message = "Verification failed"
+
+    def active_pids(self) -> list[int]:
+        return self._runner.active_pids()
+
+    def abandoned_pids(self) -> list[int]:
+        """Children that outlived SIGKILL; see ``SubprocessRunner``."""
+        return self._runner.abandoned_pids()
+
+    def verify_stream(
+        self, path: str, *, cancel_event: asyncio.Event | None = None,
+    ) -> AsyncGenerator[dict, None]:
+        """This tool's verify events for *path*; a tool with a verify defines it."""
+        raise NotImplementedError(f"{type(self).__name__} has no verify")
+
+    async def verify(
+        self, path: str, *, cancel_event: asyncio.Event | None = None,
+    ) -> dict:
+        """``{"valid", "message"}`` for *path*: ``verify_stream`` drained."""
+        return await collect_verify(
+            self.verify_stream(path, cancel_event=cancel_event),
+            fallback_message=self.verify_fallback_message,
+        )
+
+
 def _split_stream_lines(buffer: str) -> tuple[list[str], str]:
     """Segment accumulated subprocess output into complete lines + a remainder.
 

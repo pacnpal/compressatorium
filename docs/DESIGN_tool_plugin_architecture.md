@@ -596,7 +596,12 @@ async def remove_partial_tree(path: str, *, label="work directory",
 
 `collect_verify(stream, *, fallback_message)` is the module-level reducer every
 `verify()` uses to turn one of those streams into `{"valid","message"}`
-(plus `"cancelled"`).
+(plus `"cancelled"`). The tool *services* (`services/<tool>.py`) share it the
+same way (#543): each subclasses `subprocess_runner.RunnerService`, which gives
+`active_pids()`, `abandoned_pids()` and a `verify()` that drains the service's
+`verify_stream` with its `verify_fallback_message` ("Verification failed" by
+default; chdman and Dolphin name their format). A service defines only
+`verify_stream`; makeps3iso keeps its own `verify` (a PARAM.SFO readback).
 
 Per-tool `convert()` becomes ~15 lines: build argv, then
 `async for u in self._runner.run(cmd, ..., parse_progress=self._parse_progress): yield u`.

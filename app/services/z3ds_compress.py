@@ -11,9 +11,9 @@ from pathlib import Path
 from config import settings
 from services.chdman import ConversionCancelled
 from services.subprocess_runner import (
+    RunnerService,
     SubprocessRunner,
     abandoned_verify_error,
-    collect_verify,
     ReadCancelled,
     feed_stdin_from_file,
     remove_partial_output,
@@ -56,7 +56,7 @@ Z3DS_DECOMPRESS_FORMATS = {
 logger = get_logger("z3ds_compress")
 
 
-class Z3DSCompressService:
+class Z3DSCompressService(RunnerService):
     """Wrapper for z3ds_compressor binary."""
 
     def __init__(self):
@@ -88,13 +88,6 @@ class Z3DSCompressService:
             output_path,
         ]
         return cmd
-
-    def active_pids(self) -> list[int]:
-        return self._runner.active_pids()
-
-    def abandoned_pids(self) -> list[int]:
-        """Children that outlived SIGKILL; see ``SubprocessRunner``."""
-        return self._runner.abandoned_pids()
 
     @staticmethod
     async def _get_verify_payload_offset(
@@ -358,22 +351,6 @@ class Z3DSCompressService:
             return str(Path(output_dir) / filename)
         return str(input_p.parent / filename)
 
-
-    async def verify(
-        self, file_path: str, *, cancel_event: asyncio.Event | None = None,
-    ) -> dict:
-        """Verify the integrity of a compressed 3DS file.
-
-        Performs deep verification by streaming the compressed Z3DS/ZCCI/ZCIA file
-        through `zstd -t` to validate the ZStandard stream integrity.
-
-        Returns:
-            dict: {"valid": bool, "message": str}
-        """
-        return await collect_verify(
-            self.verify_stream(file_path, cancel_event=cancel_event),
-            fallback_message="Verification failed",
-        )
 
     async def verify_stream(
         self, file_path: str, *, cancel_event: asyncio.Event | None = None,
