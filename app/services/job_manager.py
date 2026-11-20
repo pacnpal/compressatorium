@@ -13,13 +13,12 @@ import tempfile
 import threading
 import time
 import uuid
-from collections import OrderedDict, deque
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import (
     Callable,
-    Deque,
     Dict,
     Iterable,
     List,
@@ -307,7 +306,7 @@ def _source_bytes(path: str) -> Optional[int]:
 
 # Modes for externally-managed jobs that bypass the conversion queue,
 # they are driven by callers via create/update/finish_external_job and
-# must NOT count against max_queue_depth backpressure, stuck-detection,
+# must NOT count against max_queue_depth backpressure
 # or the cancel-all / queued-count surfaces that only apply to the
 # chdman/dolphin/z3ds conversion pipeline.
 @dataclass(frozen=True)
@@ -416,7 +415,7 @@ def _is_conversion_job(job) -> bool:
     """A real conversion job, not external bookkeeping (metadata scan / DAT match).
 
     The single definition of "counts toward the conversion queue", used by every
-    backpressure / queue-depth / stuck-detection surface so they can't drift. It
+    backpressure / queue-depth surface so they can't drift. It
     is also what takes one of the ``max_concurrent`` slots: the dispatcher admits
     only these, and the concurrency invariant counts only these (#377). An
     external job (a check run, a scan, a DAT match) is PROCESSING from
@@ -720,14 +719,17 @@ class JobFeed:
             self._manager.unsubscribe(job_id, queue)
 
 
+# How often the maintenance loop runs: stale lock cleanup, the stall warning
+# and (at DEBUG) the heartbeat line.
+MAINTENANCE_INTERVAL_S = 30
+
+
 class JobManager:
     """Manages conversion job queue and execution."""
 
     # Constants
-    STUCK_RECOVERY_COOLDOWN_SECONDS = 60
     ARCHIVED_JOB_TTL_SECONDS = 60 * 15
     MAX_ARCHIVED_JOBS = 2000
-    MAX_TRACKED_EVICTED_IDS = 2000
 
     def __init__(self, max_concurrent: int = 1, max_job_history: int = 500):
         self.jobs: OrderedDict[str, ConversionJob] = OrderedDict()
@@ -816,48 +818,11 @@ class JobManager:
         # External jobs queued for a slot (`hold_slot`), by id: the dispatcher
         # hands each its local slot when its ticket comes up.
         self._slot_waiters: Dict[str, asyncio.Future] = {}
-        self._stuck_detected_at: Optional[float] = None
-        self._last_stuck_recovery_at: float = 0
         self._create_lock = asyncio.Lock()
         # FIFO order of the dispatcher's queue: each queued job (or slot
         # waiter) takes the next number. One process works a data directory
         # at a time (``services.scheduler_lock``), so this needs no disk.
         self._tickets = itertools.count(1)
-        # Running tally of terminal jobs the history cap has evicted, keyed
-        # status → mode → count. `self.jobs` can only ever answer "how much
-        # history is still retained", so once a run passes max_job_history
-        # every UI count derived from it freezes at the cap while work keeps
-        # finishing. This is the missing half: retained + evicted is the real
-        # number. Keyed by mode as well as status so a client can apply the
-        # same external-scan filter it applies to live jobs (the Jobs panel
-        # hides metadata_scan / dat_match unless asked for them).
-        self._evicted_history: Dict[str, Dict[str, int]] = {}
-        # Ids of recently evicted jobs, each stamped with a monotonic sequence
-        # number. A client learns of a completion (SSE) before the prune that
-        # the completion triggers, so for a moment it holds a row the backend
-        # has since deleted; adding the eviction tally on top of that row would
-        # double-count it until the next snapshot poll. Replaying the ids lets
-        # the client drop the stale rows in the same beat it takes the new
-        # totals. The window scales with the history cap — a bigger retained
-        # history means bigger client snapshots and more ids in flight — and a
-        # client that still falls off the end is told its cursor expired so it
-        # can re-sync rather than silently keep a row the cap deleted.
-        self._evicted_ids: Deque[Tuple[int, str]] = deque(
-            maxlen=max(self.MAX_TRACKED_EVICTED_IDS, self.max_job_history * 4)
-        )
-        self._eviction_seq = 0
-        # Where the last Clear landed. A reset drops the id log, so a cursor
-        # from before it has no tombstones to replay — and since Clear deletes
-        # every finished job, a client whose cursor predates one is holding
-        # rows that no longer exist. Both make such a cursor expired.
-        self._last_reset_seq = 0
-        # Identifies this process's eviction log. The sequence lives in memory
-        # and restarts at 0 when the backend does, so a client that compares
-        # sequences to reject stale payloads would reject every payload from
-        # the new process until it out-counted the old one — badges frozen for
-        # the rest of the browser session. A changed generation is the signal
-        # to drop the cursor instead of trusting it.
-        self.history_generation = uuid.uuid4().hex[:12]
 
     def _enforce_queue_backpressure_locked(self, additional_jobs: int = 1) -> None:
         """Raise QueueBackpressureError when queue depth limits are exceeded.
@@ -2786,120 +2751,6 @@ class JobManager:
             if os.path.lexists(target) and _removable(target):
                 os.remove(target)
 
-    def _get_queued_and_processing_jobs(self) -> tuple[list[str], list[str]]:
-        """Get lists of queued and processing job IDs.
-
-        External jobs (e.g. METADATA_SCAN) are excluded so they cannot
-        mask a stuck conversion queue or skew health metrics.
-
-        Returns:
-            Tuple of (queued_job_ids, processing_job_ids)
-        """
-        queued_job_ids: list[str] = []
-        processing_job_ids: list[str] = []
-        for job in self.jobs.values():
-            if not _is_conversion_job(job):
-                continue
-            if job.status == JobStatus.QUEUED:
-                queued_job_ids.append(job.id)
-            elif job.status == JobStatus.PROCESSING:
-                processing_job_ids.append(job.id)
-        return queued_job_ids, processing_job_ids
-
-    def is_stuck(self) -> bool:
-        """Check if the job queue is stuck (queued jobs but none processing).
-
-        External jobs (e.g. METADATA_SCAN) are excluded so a running scan
-        cannot mask a stuck conversion queue.
-
-        Returns:
-            True if conversion jobs are queued but none are processing, False otherwise
-        """
-        has_queued = False
-        for job in self.jobs.values():
-            if not _is_conversion_job(job):
-                continue
-            if job.status == JobStatus.PROCESSING:
-                # Any processing conversion means the queue isn't stuck; bail early.
-                return False
-            if job.status == JobStatus.QUEUED:
-                has_queued = True
-        return has_queued
-
-    def get_stuck_state_info(self) -> Dict[str, object]:
-        """Get information about the stuck state.
-
-        Returns:
-            Dictionary with stuck state information
-        """
-        is_stuck = self.is_stuck()
-        queued_job_ids, processing_job_ids = self._get_queued_and_processing_jobs()
-        now_monotonic = time.monotonic()
-
-        result = {
-            "is_stuck": is_stuck,
-            "queued_count": len(queued_job_ids),
-            "processing_count": len(processing_job_ids),
-        }
-
-        # Expose durations derived from monotonic times rather than the raw values,
-        # which are not meaningful as wall-clock timestamps.
-        if self._stuck_detected_at is not None:
-            result["stuck_for_seconds"] = int(now_monotonic - self._stuck_detected_at)
-
-        if self._last_stuck_recovery_at > 0:
-            result["last_recovery_seconds_ago"] = int(now_monotonic - self._last_stuck_recovery_at)
-
-        return result
-
-    async def recover_from_stuck_state(self) -> Dict[str, object]:
-        """Attempt to recover from a stuck state by cleaning up stale locks.
-
-        Returns:
-            Dictionary with recovery results and actions taken
-        """
-        now = time.monotonic()
-
-        # Prevent recovery spam (minimum cooldown between attempts)
-        if now - self._last_stuck_recovery_at < self.STUCK_RECOVERY_COOLDOWN_SECONDS:
-            return {
-                "success": False,
-                "message": "Recovery attempted too recently, please wait",
-                "cooldown_remaining": int(
-                    self.STUCK_RECOVERY_COOLDOWN_SECONDS - (now - self._last_stuck_recovery_at)
-                )
-            }
-
-        self._last_stuck_recovery_at = now
-
-        logger.warning("Attempting recovery from stuck state")
-
-        # Cleanup stale locks
-        removed_locks = await run_in_threadpool(lock_manager.cleanup_stale_locks_periodic)
-
-        # Get current state
-        queued_job_ids, processing_job_ids = self._get_queued_and_processing_jobs()
-
-        result = {
-            "success": True,
-            "message": "Recovery attempt completed",
-            "removed_locks": removed_locks,
-            "queued_jobs": len(queued_job_ids),
-            "processing_jobs": len(processing_job_ids),
-            "timestamp": datetime.now(timezone.utc).isoformat()
-        }
-
-        logger.info(
-            "Stuck state recovery completed: removed_locks=%d queued=%d processing=%d",
-            removed_locks, len(queued_job_ids), len(processing_job_ids)
-        )
-
-        # Clear stuck detection timestamp if state looks healthy now
-        if not self.is_stuck():
-            self._stuck_detected_at = None
-
-        return result
-
     async def _prune_jobs(self, *, exclude_id: Optional[str] = None):
         """Trim finished jobs down to ``max_job_history``.
 
@@ -2938,112 +2789,7 @@ class JobManager:
 
         removable = [job_id for job_id in terminal_ids if job_id != exclude_id]
         for job_id in removable[:excess]:
-            evicted = self.jobs.get(job_id)
-            if await self.delete_job(job_id) and evicted is not None:
-                self._record_history_eviction(evicted)
-
-    # ------------------------------------------------------------------
-    # History overflow: what the cap has already thrown away
-    # ------------------------------------------------------------------
-
-    def _record_history_eviction(self, job: ConversionJob) -> None:
-        """Tally a terminal job the history cap just evicted.
-
-        Only automatic eviction lands here. A job the user deletes (single
-        row, or Clear) is history they chose to drop, not history we dropped
-        behind their back, so it must not keep inflating the counts.
-        """
-        status = getattr(job.status, "value", str(job.status))
-        mode = getattr(job.mode, "value", str(job.mode))
-        by_mode = self._evicted_history.setdefault(status, {})
-        by_mode[mode] = by_mode.get(mode, 0) + 1
-        self._eviction_seq += 1
-        self._evicted_ids.append((self._eviction_seq, job.id))
-
-    def get_history_overflow(
-        self,
-        since: Optional[int] = None,
-        generation: Optional[str] = None,
-    ) -> Dict[str, object]:
-        """Counts of terminal jobs evicted by the ``max_job_history`` cap.
-
-        Clients add these to the jobs they can still see to report a true
-        total: the retained list stops growing at the cap, the work doesn't.
-
-        ``since`` is a previously returned ``seq``; pass it to also get the ids
-        evicted after that point, so a client can drop rows it still holds for
-        jobs the cap has already deleted (otherwise it would count them twice —
-        once as a retained row, once in the tally). Omit it to get counts only.
-
-        ``generation`` identifies this process's log. The sequence is in-memory
-        and restarts at 0 with the backend, so a client comparing sequences
-        across a restart would reject every newer payload as stale; a changed
-        generation tells it to drop its cursor instead. Pass the generation the
-        cursor came from: a cursor minted by an earlier process means nothing
-        here, and reading it literally would silently return no ids — so it is
-        rewound to the start of this log instead.
-
-        ``cursor_expired`` says the cursor fell off the end of the bounded log,
-        so the ids cannot be complete. The client must then re-sync against the
-        job list rather than trust the rows it holds.
-        """
-        cursor = since
-        cursor_expired = False
-        if cursor is not None and generation is not None and generation != self.history_generation:
-            cursor = 0
-        evicted_ids: List[str] = []
-        if cursor is not None:
-            evicted_ids = [job_id for seq, job_id in self._evicted_ids if seq > cursor]
-            # The oldest entry we still hold is the furthest back we can speak
-            # for. A cursor older than that may be missing ids we dropped. An
-            # empty log holds nothing back: it means nothing has been evicted
-            # since startup or since Clear, so there is nothing to replay.
-            oldest_held = self._evicted_ids[0][0] if self._evicted_ids else None
-            cursor_expired = oldest_held is not None and cursor < oldest_held - 1
-            # A Clear throws the log away, tombstones included, so a cursor
-            # from before it can't be answered either — and a Clear deletes
-            # *every* finished job, so a client reading the list either side
-            # of one is holding rows that no longer exist anywhere.
-            if cursor < self._last_reset_seq:
-                cursor_expired = True
-        return {
-            "generation": self.history_generation,
-            "cursor_expired": cursor_expired,
-            "max_job_history": self.max_job_history,
-            "evicted": {
-                status: dict(by_mode) for status, by_mode in self._evicted_history.items()
-            },
-            "total_evicted": sum(
-                count for by_mode in self._evicted_history.values() for count in by_mode.values()
-            ),
-            "seq": self._eviction_seq,
-            "evicted_ids": evicted_ids,
-        }
-
-    def history_eviction_seq(self) -> int:
-        """Current position in the eviction log, for opening a client cursor."""
-        return self._eviction_seq
-
-    def history_overflow_total(self) -> int:
-        """How many finished jobs the cap has evicted and is still counting."""
-        return sum(
-            count for by_mode in self._evicted_history.values() for count in by_mode.values()
-        )
-
-    def reset_history_overflow(self) -> int:
-        """Forget the evicted-history tally (Clear wipes history wholesale).
-
-        The sequence *advances* rather than rewinding. It is a cursor clients
-        hold, so rewinding it would make a stale cursor look current; advancing
-        it makes every read taken before the reset recognizably older, which is
-        how a client rejects an in-flight hydration response that would
-        otherwise restore the tally it just cleared. Returns the new sequence.
-        """
-        self._evicted_history.clear()
-        self._evicted_ids.clear()
-        self._eviction_seq += 1
-        self._last_reset_seq = self._eviction_seq
-        return self._eviction_seq
+            await self.delete_job(job_id)
 
     async def cancel_job(self, job_id: str, *, reason: str = CANCEL_REQUESTED) -> bool:
         """Cancel a job. *reason* is recorded on it (``cancel_reason``) when
@@ -3342,18 +3088,7 @@ class JobManager:
         self._running = True
         self._dispatcher_task = asyncio.create_task(self._dispatcher_loop())
 
-        # Only start the maintenance loop if the configured heartbeat interval is positive.
-        debug_interval = getattr(settings, "debug_heartbeat_interval", None)
-        if isinstance(debug_interval, (int, float)) and debug_interval > 0:
-            self._debug_task = asyncio.create_task(self._debug_loop())
-        else:
-            self._debug_task = None
-            if debug_interval is not None:
-                logger.warning(
-                    "Maintenance loop disabled: non-positive CHD_DEBUG_HEARTBEAT value %r. "
-                    "Stuck-job detection and stale lock cleanup will not run.",
-                    debug_interval,
-                )
+        self._debug_task = asyncio.create_task(self._debug_loop())
         await self._dispatcher_task
 
     def has_live_conversions(self) -> bool:
@@ -3418,68 +3153,27 @@ class JobManager:
         self._slot_holders.clear()
         self._create_lock = asyncio.Lock()
 
-    async def _handle_background_maintenance(self, cleanup_counter: int) -> int:
-        """Handle stuck state detection and periodic lock cleanup.
+    async def _handle_background_maintenance(self) -> None:
+        """Remove lock files no process holds any more, once per tick.
 
-        Args:
-            cleanup_counter: Current cleanup counter value
-
-        Returns:
-            Updated cleanup counter value
+        The only recovery a queue needs: locks are ``flock``s, which the
+        kernel drops when their holder dies, so a lock file left behind
+        never blocks a job (``_try_file_lock`` takes it), and this only
+        tidies the lock directory.
         """
-        # Check for stuck state (queued jobs but none processing)
-        now = time.monotonic()
-        if self.is_stuck():
-            if self._stuck_detected_at is None:
-                self._stuck_detected_at = now
-                logger.warning(
-                    "Stuck state detected: jobs queued but none processing. "
-                    f"Will attempt automatic recovery in {self.STUCK_RECOVERY_COOLDOWN_SECONDS}"
-                    " seconds if state persists."
-                )
-            else:
-                stuck_duration = now - self._stuck_detected_at
-                if stuck_duration >= self.STUCK_RECOVERY_COOLDOWN_SECONDS:
-                    # Stuck for 60+ seconds, attempt automatic recovery
-                    logger.error(
-                        "Jobs have been stuck for %.1f seconds. Attempting automatic recovery...",
-                        stuck_duration
-                    )
-                    result = await self.recover_from_stuck_state()
-                    if result.get("success"):
-                        logger.info(
-                            "Automatic recovery completed: removed %d stale locks",
-                            result.get("removed_locks", 0)
-                        )
-                    else:
-                        logger.warning("Automatic recovery failed: %s", result.get("message"))
-        else:
-            # Not stuck, clear detection timestamp
-            if self._stuck_detected_at is not None:
-                logger.info("Stuck state cleared")
-                self._stuck_detected_at = None
-
-        # Periodic stale lock cleanup (every 10 heartbeats = 5 minutes by default)
-        cleanup_counter += 1
-        if cleanup_counter >= 10:
-            cleanup_counter = 0
-            try:
-                removed = await run_in_threadpool(lock_manager.cleanup_stale_locks_periodic)
-                if removed > 0:
-                    logger.info("Periodic cleanup removed %d stale lock file(s)", removed)
-            except Exception as e:
-                logger.warning("Periodic lock cleanup failed: %s", e)
-
-        return cleanup_counter
+        try:
+            removed = await run_in_threadpool(lock_manager.cleanup_stale_locks_periodic)
+            if removed > 0:
+                logger.info("Removed %d stale lock file(s)", removed)
+        except Exception as e:
+            logger.warning("Stale lock cleanup failed: %s", e)
 
     def _log_stalled_jobs(self) -> None:
         """Warn about a PROCESSING job whose progress has gone quiet.
 
         Runs at the default log level and *outside* the DEBUG-only heartbeat
-        block: a job wedged mid-conversion is precisely the state `is_stuck()`
-        cannot see -- it bails early on any PROCESSING conversion -- so without
-        this the sole trace of a frozen queue was a debug line nobody would find
-        (issue #263).
+        block: without this the sole trace of a job wedged mid-conversion was
+        a debug line nobody would find (issue #263).
 
         Jobs in the verify phase are reported *as verifying*, not as stalled.
         They used to be skipped outright, because verification emits no progress
@@ -3546,13 +3240,10 @@ class JobManager:
             )
 
     async def _debug_loop(self):
-        cleanup_counter = 0
         while self._running:
             try:
-                await asyncio.sleep(settings.debug_heartbeat_interval)
-
-                # Handle background maintenance tasks
-                cleanup_counter = await self._handle_background_maintenance(cleanup_counter)
+                await asyncio.sleep(MAINTENANCE_INTERVAL_S)
+                await self._handle_background_maintenance()
 
                 # Before the DEBUG gate: this warning must reach a default-level
                 # log, not just a debug one.

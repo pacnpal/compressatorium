@@ -632,7 +632,6 @@ class Settings(BaseSettings):
             "set 'never' to opt out, or 'auto' to follow TTY / NO_COLOR."
         ),
     )
-    debug_heartbeat_interval: int = Field(default=30, alias="CHD_DEBUG_HEARTBEAT")
     debug_progress_interval: int = Field(
         default=30,
         alias="CHD_DEBUG_PROGRESS_INTERVAL",
