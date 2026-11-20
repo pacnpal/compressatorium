@@ -290,10 +290,11 @@ class Placement:
     change: more than one folder could be it and a folder Library picked one
     (#515; a mapping makes it certain), RomM's default structure where its
     structure can't be read off the disk, or one of several RomM folders for
-    the Platform that hold ROMs (#512). ``why`` says in plain words how the folder was picked, or None when
-    there was nothing to pick. ``choices`` are the folder names the Library
-    could have picked from, each with its ROM count, when there are several
-    (RomM's records for one Platform); empty otherwise.
+    the Platform that hold ROMs (#512). ``why`` says in plain words how the
+    folder was picked, or None when there was nothing to pick. ``choices``
+    are the folder names the Library could have picked from, each with its
+    ROM count, when there are several (RomM's records for one Platform);
+    empty otherwise.
     """
 
     platform: str

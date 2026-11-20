@@ -627,8 +627,9 @@ class ToolPlugin(Protocol):
         user-supplied key file, an absent optional binary — reports ``False``
         so ``GET /api/tools`` lists it as unavailable with its reason and the
         frontend shows it as not ready with that fix (#515), rather than
-        offering a converter that can only fail at job time. Planning a job asks it too (#505): ``POST /api/jobs``
-        answers 503 and a batch skips the file with ``tool_not_ready``.
+        offering a converter that can only fail at job time. Planning a job
+        asks it too (#505): ``POST /api/jobs`` answers 503 and a batch skips
+        the file with ``tool_not_ready``.
 
         Async because a readiness probe may touch the disk (nsz searches the
         configured volumes for ``prod.keys``); implementations that block
