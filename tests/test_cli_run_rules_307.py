@@ -1208,15 +1208,6 @@ def test_a_stop_while_delete_snapshots_are_read_queues_nothing(
     assert "last_run_at" not in _rule_state(env).get("gc", {}), "the clock did not move"
 
 
-def test_the_fixture_keeps_every_lock_file_in_the_test_lock_dir(env):
-    """Otherwise the queue's holder file points at the real lock dir, which
-    does not exist on a clean machine, and the first job never starts."""
-    from services.concurrency_manager import concurrency_manager
-
-    assert concurrency_manager._holder_path.startswith(str(env["locks"]))
-    assert concurrency_manager._holder_handle is None
-
-
 @pytest.mark.parametrize("waiting", [True, False])
 def test_the_healthcheck_counts_a_waiting_server_as_healthy(env, waiting):
     """Nothing listens on 8080 while the server waits for the lock; the

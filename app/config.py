@@ -10,7 +10,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # Used only when no data dir is configured at all (a dev checkout without
 # /config). One fixed path, whatever TMPDIR says, so every process on the host
 # picks the same one. Bandit B108: a fixed path is intended here;
-# lock_manager and concurrency_manager create it 0o700.
+# lock_manager creates it 0o700.
 _UNCONFIGURED_LOCK_DIR = "/tmp/chd-locks"  # nosec B108
 
 
@@ -138,8 +138,9 @@ class Settings(BaseSettings):
         default=None,
         alias="CHD_CONCURRENCY_LOCK_DIR",
         description=(
-            "Directory for job lock files, conversion slots and the Rule scheduler "
-            "lock. Default: always <data dir>/locks when a data dir is configured "
+            "Directory for job lock files and the data directory's worker lock "
+            "(services.scheduler_lock). Default: <data dir>/locks when a data dir is "
+            "configured "
             "(shared by every container mounting /config); startup fails if it "
             "can't be created. /tmp/chd-locks only when no data dir is configured "
             "at all."

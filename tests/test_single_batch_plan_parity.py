@@ -921,7 +921,6 @@ async def test_destination_canonicalisation_never_runs_on_the_event_loop(
 
     monkeypatch.setattr(jm.os.path, "realpath", _realpath)
     monkeypatch.setattr(jm, "_CANONICAL_PROBE_SECONDS", 0.2)
-    monkeypatch.setattr(jm.concurrency_manager, "reserve_ticket", lambda key: 0)
 
     manager = jm.JobManager(max_concurrent=1, max_job_history=10)
     ticks = 0
@@ -971,7 +970,6 @@ async def test_a_job_queued_during_another_preflight_still_claims_its_output(
     real.mkdir()
     link = tmp_path / "link"
     link.symlink_to(real)
-    monkeypatch.setattr(jm.concurrency_manager, "reserve_ticket", lambda key: 0)
 
     manager = jm.JobManager(max_concurrent=1, max_job_history=10)
     mode = ConversionMode.CREATECD
@@ -1035,7 +1033,6 @@ async def test_companion_enumeration_never_runs_on_the_event_loop(
     monkeypatch.setattr(jm.os.path, "realpath", _realpath)
     monkeypatch.setattr(jm.JobManager, "_companions", staticmethod(_slow_companions))
     monkeypatch.setattr(jm, "_CANONICAL_PROBE_SECONDS", 0.2)
-    monkeypatch.setattr(jm.concurrency_manager, "reserve_ticket", lambda key: 0)
 
     manager = jm.JobManager(max_concurrent=1, max_job_history=10)
     ticks = 0
@@ -1089,7 +1086,6 @@ async def test_a_reservation_refuses_rather_than_falling_back_to_lexical_keys(
     real.mkdir()
     link = tmp_path / "link"
     link.symlink_to(real)
-    monkeypatch.setattr(jm.concurrency_manager, "reserve_ticket", lambda key: 0)
     monkeypatch.setattr(jm, "_CANONICAL_PROBE_SECONDS", 0.05)
 
     # Wedged for *this* destination only. `realpath` is used across the

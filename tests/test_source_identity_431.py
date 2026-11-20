@@ -238,17 +238,13 @@ async def test_a_cancel_during_the_identity_preflight_releases_everything(
 ) -> None:
     """CodeRabbit 4606147979, ruled: the identity check and the bind run inside
     the job's full finalization region, so a cancel there lets go of the
-    output locks and the cross-process slot, not just the Source's."""
+    output locks, not just the Source's."""
     import asyncio
 
     from models import JobStatus
-    from services import job_manager as job_manager_module
-    from services.concurrency_manager import ConcurrencyManager
     from services.job_manager import job_manager
     from services.lock_manager import lock_manager
 
-    shared = ConcurrencyManager(1, str(tmp_path / "locks"))
-    monkeypatch.setattr(job_manager_module, "concurrency_manager", shared)
     inbox = env["tmp"] / "Downloads"
     game = _gamecube(inbox / "gc" / "Game.iso")
     job = await _queue(env, game, inbox)
@@ -267,9 +263,6 @@ async def test_a_cancel_during_the_identity_preflight_releases_everything(
 
     assert job_manager.jobs[job.id].status == JobStatus.CANCELLED
     assert not lock_manager.is_locked(job_manager.jobs[job.id].output_path)
-    other = ConcurrencyManager(1, str(tmp_path / "locks"))
-    assert await asyncio.wait_for(other.acquire("next"), 5)  # the slot is free
-    other.release("next")
 
 
 def test_unbinding_never_follows_a_swapped_folder(tmp_path, monkeypatch) -> None:
@@ -393,20 +386,16 @@ async def test_a_cancel_during_a_slow_bind_copy_ends_the_job_promptly(
 ) -> None:
     """Codex 4606539525, ruled: the bind's copy hears the job's cancel. A
     cancel while it is copying ends the job CANCELLED at once and lets go of
-    its locks and its slot; the copy stops and removes what it made."""
+    its locks; the copy stops and removes what it made."""
     import asyncio
     import threading
     import time as clock
 
     from models import JobStatus
-    from services import job_manager as job_manager_module
-    from services.concurrency_manager import ConcurrencyManager
     from services.job_manager import job_manager
     from services.lock_manager import lock_manager
     from utils import path_utils
 
-    shared = ConcurrencyManager(1, str(tmp_path / "locks"))
-    monkeypatch.setattr(job_manager_module, "concurrency_manager", shared)
     inbox = env["tmp"] / "Downloads"
     game = _gamecube(inbox / "gc" / "Game.iso")
     job = await _queue(env, game, inbox)
@@ -436,9 +425,6 @@ async def test_a_cancel_during_a_slow_bind_copy_ends_the_job_promptly(
     assert ended.status == JobStatus.CANCELLED
     assert env["commands"] == []
     assert not lock_manager.is_locked(ended.output_path)
-    other = ConcurrencyManager(1, str(tmp_path / "locks"))
-    assert await asyncio.wait_for(other.acquire("next"), 5)
-    other.release("next")
 
 
 @pytest.mark.asyncio

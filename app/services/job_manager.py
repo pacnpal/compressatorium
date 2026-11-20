@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 import inspect
+import itertools
 import logging
 from logging_setup import get_logger
 import os
@@ -37,7 +38,6 @@ from services.archive import archive_service
 from services.chd_metadata_store import chd_metadata_store
 from services.chdman import ConversionCancelled, chdman_service
 from services.disc_id import DiscIdStorageAbandoned
-from services.concurrency_manager import concurrency_manager
 from services.lock_manager import LockFailed, lock_manager
 from services.output_conflicts import output_is_part_of_source
 from services.mutation_guard import locked_for_mutation
@@ -819,6 +819,10 @@ class JobManager:
         self._stuck_detected_at: Optional[float] = None
         self._last_stuck_recovery_at: float = 0
         self._create_lock = asyncio.Lock()
+        # FIFO order of the dispatcher's queue: each queued job (or slot
+        # waiter) takes the next number. One process works a data directory
+        # at a time (``services.scheduler_lock``), so this needs no disk.
+        self._tickets = itertools.count(1)
         # Running tally of terminal jobs the history cap has evicted, keyed
         # status → mode → count. `self.jobs` can only ever answer "how much
         # history is still retained", so once a run passes max_job_history
@@ -960,7 +964,7 @@ class JobManager:
         self._output_keys[job_id] = self._reserved_keys(output_path, reservation)
         if delete_on_verify and delete_snapshot:
             self._delete_plans[job_id] = delete_snapshot
-        ticket = concurrency_manager.reserve_ticket(job_id)
+        ticket = next(self._tickets)
         self._queue.put_nowait((ticket, job_id))
         now = time.monotonic()
         self._last_progress_at[job_id] = now
@@ -1796,11 +1800,9 @@ class JobManager:
     ) -> bool:
         """Take one of the ``max_concurrent`` conversion slots for the external
         job *job_id*, whose mode declares ``takes_slot`` (an Inbox copy, #431),
-        waiting as long as conversions hold them all. Then the cross-process
-        slot too (``concurrency_manager``, the one ``_process_job`` takes), so
-        a CLI process converting holds the copy back as well. False when
+        waiting as long as conversions hold them all. False when
         *cancel_event* fires first (nothing is held then). The caller gives
-        both back with :meth:`release_slot` on every outcome.
+        it back with :meth:`release_slot` on every outcome.
 
         With the dispatcher running it joins the conversions' FIFO (Codex
         4606061259): it reserves its ticket now, as a queued conversion does,
@@ -1837,18 +1839,6 @@ class JobManager:
             if not acquire.done() or cancel_event.is_set():
                 self._drop_acquisition(semaphore, acquire)
                 return False
-        # The local slot is held from here: the cross-process one next, in the
-        # order a conversion takes them (the dispatcher's, then its own).
-        try:
-            got_global = await concurrency_manager.acquire(job_id, cancel_event=cancel_event)
-        except BaseException:
-            concurrency_manager.release(job_id)
-            semaphore.release()
-            raise
-        if not got_global:
-            concurrency_manager.release(job_id)
-            semaphore.release()
-            return False
         self._slot_holders.add(job_id)
         return True
 
@@ -1858,7 +1848,7 @@ class JobManager:
         """Queue *job_id* for the local slot in ticket order and wait for the
         dispatcher to hand it over. False on a cancel (no slot is held then,
         and the ticket is dropped)."""
-        ticket = concurrency_manager.reserve_ticket(job_id)
+        ticket = next(self._tickets)
         waiter = asyncio.get_running_loop().create_future()
         self._slot_waiters[job_id] = waiter
         self._queue.put_nowait((ticket, job_id))
@@ -1883,12 +1873,11 @@ class JobManager:
 
     def _give_up_slot_wait(self, job_id: str, waiter: asyncio.Future) -> None:
         """Stop waiting for the local slot: one already handed over goes back,
-        a pending hand-over never happens, and the ticket is dropped."""
+        a pending hand-over never happens."""
         if waiter.done() and not waiter.cancelled():
             self._semaphore.release()
         else:
             waiter.cancel()
-        concurrency_manager.release(job_id)
 
     @staticmethod
     def _drop_acquisition(semaphore: asyncio.Semaphore, acquire: asyncio.Future) -> None:
@@ -1907,11 +1896,9 @@ class JobManager:
             acquire.add_done_callback(release_if_taken)
 
     def release_slot(self, job_id: str) -> None:
-        """Give back the slots :meth:`hold_slot` took for *job_id*, the local
-        and the cross-process one. Idempotent."""
+        """Give back the slot :meth:`hold_slot` took for *job_id*. Idempotent."""
         if job_id in self._slot_holders:
             self._slot_holders.discard(job_id)
-            concurrency_manager.release(job_id)
             self._semaphore.release()
 
     def slots_in_use(self) -> int:
@@ -2372,9 +2359,8 @@ class JobManager:
         self, job_id: str, job: ConversionJob, message: str, *, dir_lock_held: bool,
     ) -> None:
         """End a job FAILED before its run starts, letting go of everything it
-        holds: the input locks taken so far, its folder and output locks, and
-        its concurrency slot (#306). A job that stays queued holding the slot
-        would stall every later conversion at concurrency 1."""
+        holds: the input locks taken so far and its folder and output locks
+        (#306)."""
         self._release_inputs(job_id)
         if dir_lock_held:
             lock_manager.release_dir_lock(job.file_path)
@@ -2383,7 +2369,6 @@ class JobManager:
             # Already ended another way (a cancel that landed while this path
             # ran): keep that ending, let go of the rest.
             self._cancel_events.pop(job_id, None)
-            concurrency_manager.release(job_id)
             return
         job.status = JobStatus.FAILED
         job.error_message = message
@@ -2393,7 +2378,6 @@ class JobManager:
             job_id, {"type": "error", "job_id": job_id, "error": message},
         )
         self._cancel_events.pop(job_id, None)
-        concurrency_manager.release(job_id)
         await self._cleanup_temp_dir(job)
         await self._prune_jobs(exclude_id=job_id)
 
@@ -2416,7 +2400,6 @@ class JobManager:
             self._release_output_locks(job)
         if job_id in self._cancel_events:
             del self._cancel_events[job_id]
-        concurrency_manager.release(job_id)
         if job is not None:
             job.message = message
             await self._notify_subscribers(
@@ -2452,7 +2435,7 @@ class JobManager:
             ):
                 return
             job.status = JobStatus.QUEUED
-            ticket = concurrency_manager.reserve_ticket(job_id)
+            ticket = next(self._tickets)
             self._queue.put_nowait((ticket, job_id))
             self._last_progress_at[job_id] = time.monotonic()
 
@@ -3120,7 +3103,6 @@ class JobManager:
             cancel_event = self._cancel_events.get(job_id)
             if cancel_event:
                 cancel_event.set()
-            concurrency_manager.release(job_id)
             self._spawn_background(
                 self._notify_subscribers(
                     job_id,
@@ -3190,8 +3172,6 @@ class JobManager:
             self._cancelled.discard(job_id)
             self._delete_plans.pop(job_id, None)
             self._output_keys.pop(job_id, None)
-            if job_id not in self._cancel_events:
-                concurrency_manager.release(job_id)
             if job_id not in self._cancel_events:
                 await self._cleanup_temp_dir(job)
             del self.jobs[job_id]
@@ -3617,7 +3597,7 @@ class JobManager:
                 logger.debug(
                     "Heartbeat jobs=%d queued=%d processing=%d completed=%d failed=%d cancelled=%d "
                     "queue_size=%d semaphore=%s cancelled_set=%d subscribers=%d temp_dirs=%d "
-                    "locks=%d tickets=%d active_chdman=%d rss_raw=%d rss_mb=%.1f"
+                    "locks=%d active_chdman=%d rss_raw=%d rss_mb=%.1f"
                     " open_fds=%s loadavg=%s",
                     len(jobs),
                     status_counts[JobStatus.QUEUED],
@@ -3631,7 +3611,6 @@ class JobManager:
                     subscriber_queues,
                     temp_dirs,
                     lock_manager.stats().get("locks"),
-                    concurrency_manager.stats().get("tickets"),
                     len(chdman_service.active_pids()),
                     rss_raw,
                     rss_mb,
@@ -6068,25 +6047,6 @@ class JobManager:
             await self._prune_jobs(exclude_id=job_id)
             return
 
-        slot_acquired = await concurrency_manager.acquire(
-            job_id, cancel_event=cancel_event
-        )
-        if not slot_acquired:
-            if job.status != JobStatus.CANCELLED:
-                job.status = JobStatus.CANCELLED
-                job.completed_at = datetime.now(timezone.utc)
-                await self._notify_subscribers(
-                    job_id,
-                    {"type": "cancelled", "job_id": job_id, "status": job.status.value},
-                )
-            self._notify_terminal(job)
-            await self._cleanup_temp_dir(job)
-            concurrency_manager.release(job_id)
-            if job_id in self._cancel_events:
-                del self._cancel_events[job_id]
-            await self._prune_jobs(exclude_id=job_id)
-            return
-
         # If this job's path is inside a folder another job is currently packing
         # (makeps3iso folder->iso), don't fail — wait in the queue and retry once
         # that folder job releases its subtree lock, like any queued job.
@@ -6134,7 +6094,6 @@ class JobManager:
             )
             if job_id in self._cancel_events:
                 del self._cancel_events[job_id]
-            concurrency_manager.release(job_id)
             await self._cleanup_temp_dir(job)
             await self._prune_jobs(exclude_id=job_id)
             return
@@ -6171,7 +6130,6 @@ class JobManager:
                 self._release_output_locks(job)
                 if job_id in self._cancel_events:
                     del self._cancel_events[job_id]
-                concurrency_manager.release(job_id)
                 await self._cleanup_temp_dir(job)
                 await self._prune_jobs(exclude_id=job_id)
                 return
@@ -6954,7 +6912,6 @@ class JobManager:
                     try:
                         self._release_inputs(job_id)
                     finally:
-                        concurrency_manager.release(job_id)
                         self._forget_job_runtime(job_id)
                 try:
                     try:

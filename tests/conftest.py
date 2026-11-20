@@ -25,20 +25,6 @@ os.environ.setdefault(
 
 
 @pytest.fixture(autouse=True)
-def _release_leaked_tickets():
-    """A job a test creates but never runs keeps its FIFO ticket in the lock
-    dir, held by this live process, so it is never pruned and sits ahead of
-    every later test's jobs: a later ``_process_job`` waits for its turn
-    forever. Release whatever tickets a test reserved and left behind."""
-    from services.concurrency_manager import concurrency_manager
-
-    before = set(concurrency_manager._ticket_handles)
-    yield
-    for key in set(concurrency_manager._ticket_handles) - before:
-        concurrency_manager.release(key)
-
-
-@pytest.fixture(autouse=True)
 def _restore_tool_instances():
     """The registry's tools are process-wide singletons. ``monkeypatch.setattr``
     on one of them (``tool.verify = fake``) undoes by *setting* the class's

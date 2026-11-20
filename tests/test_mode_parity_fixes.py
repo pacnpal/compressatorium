@@ -685,36 +685,32 @@ async def test_create_jobs_atomic_rejects_batch_without_partial_enqueue(
     manager = JobManager(max_concurrent=1, max_job_history=5)
 
     # Seed one queued job so adding two more would exceed max_queue_depth=2.
-    seeded_job = await manager.create_job(
+    await manager.create_job(
         str(first),
         ConversionMode.CREATECD,
         output_path=str(tmp_path / "a.chd"),
     )
-    try:
-        initial_jobs = manager.get_all_jobs()
-        assert len(initial_jobs) == 1
+    initial_jobs = manager.get_all_jobs()
+    assert len(initial_jobs) == 1
 
-        with pytest.raises(QueueBackpressureError):
-            await manager.create_jobs_atomic(
-                [
-                    {
-                        "file_path": str(second),
-                        "output_path": str(tmp_path / "b.chd"),
-                    },
-                    {
-                        "file_path": str(third),
-                        "output_path": str(tmp_path / "c.chd"),
-                    },
-                ],
-                ConversionMode.CREATECD,
-            )
+    with pytest.raises(QueueBackpressureError):
+        await manager.create_jobs_atomic(
+            [
+                {
+                    "file_path": str(second),
+                    "output_path": str(tmp_path / "b.chd"),
+                },
+                {
+                    "file_path": str(third),
+                    "output_path": str(tmp_path / "c.chd"),
+                },
+            ],
+            ConversionMode.CREATECD,
+        )
 
-        final_jobs = manager.get_all_jobs()
-        assert len(final_jobs) == 1
-        assert final_jobs[0].file_path == str(first)
-    finally:
-        # Avoid leaking a FIFO ticket in the shared global concurrency manager.
-        job_manager_module.concurrency_manager.release(seeded_job.id)
+    final_jobs = manager.get_all_jobs()
+    assert len(final_jobs) == 1
+    assert final_jobs[0].file_path == str(first)
 
 
 @pytest.mark.asyncio
