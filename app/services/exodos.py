@@ -18,6 +18,13 @@ can start by itself. DOSBox Pure mounts the loaded zip as C: and, with its
 * names the product ``<name>.dosz``, the extension DOSBox Pure documents as a
   zip under another name, so it sits beside its Source and can never replace it.
 
+No setting is needed (#513). The template tree is found from the zip itself:
+``!dos`` beside the zip, then in each parent folder up to the Volume, after the
+optional ``EXODOS_DOS_DIR`` override. A game with no template is still
+repacked, with no ``dosbox.conf``, and the job warns that DOSBox Pure's start
+menu will offer the program to run. Such a zip counts as a DOS game only when
+its one folder holds a DOS program (``.exe``, ``.com`` or ``.bat``).
+
 Behaviour modelled on derkommutator/eXo2romm (Unlicense); no code is shared.
 """
 from __future__ import annotations
@@ -47,7 +54,11 @@ from services.subprocess_runner import (
     verify_exception_event,
     verify_preflight,
 )
-from utils.path_utils import is_within_configured_volumes, read_beneath
+from utils.path_utils import (
+    is_within_configured_volumes,
+    lock_boundary_root,
+    read_beneath,
+)
 
 from config import settings
 
@@ -58,6 +69,14 @@ INPUT_EXTENSIONS = frozenset({".zip"})
 _MAX_TEMPLATE_BYTES = 1024 * 1024
 _PROGRESS_INTERVAL = 0.5
 _CHECK_CHUNK = 1024 * 1024
+# What DOSBox Pure's start menu offers to run. A zip with no template counts as
+# a DOS game only when it holds one of these.
+_DOS_PROGRAMS = (".exe", ".com", ".bat")
+_DOS_PROGRAMS_TEXT = "DOS program (.exe, .com or .bat)"
+
+
+def _has_dos_program(names) -> bool:
+    return any(name.lower().endswith(_DOS_PROGRAMS) for name in names)
 
 
 def _never_cancelled() -> bool:
@@ -223,6 +242,10 @@ class ProbeUnavailable(NotRepackable):
     verdict (not an eXoDOS layout, no template) is ever cached."""
 
 
+class NoTemplate(NotRepackable):
+    """This template tree has no template for the game: look in the next one."""
+
+
 class ZipUnreadable(ProbeUnavailable):
     """The game zip could not be read just now."""
 
@@ -240,10 +263,10 @@ _STRUCTURAL_ERRNOS = frozenset({errno.ELOOP, errno.EMLINK, errno.ENOTDIR, errno.
 
 @dataclass(frozen=True)
 class RepackPlan:
-    top: str          # the game folder every member sits in, "Abaron"
-    template: str     # that game's template path, for messages only
-    total_size: int   # uncompressed bytes of every member
-    root: str = ""    # the tree's real path; reads go through read_beneath
+    top: str                 # the game folder every member sits in, "Abaron"
+    template: str | None     # its template's path, for messages; None: none found
+    total_size: int          # uncompressed bytes of every member
+    root: str | None = None  # the tree's real path; reads go through read_beneath
 
 
 class ExodosService:
@@ -252,27 +275,63 @@ class ExodosService:
     def __init__(self, profile: CollectionProfile = EXODOS) -> None:
         self.profile = profile
 
-    # --- gating ------------------------------------------------------------
+    # --- finding the template tree (#513) ----------------------------------
 
-    def dos_dir(self) -> str | None:
-        """The template tree's real path, or ``None`` when it cannot be used.
+    def override(self) -> str | None:
+        """``EXODOS_DOS_DIR``'s real path, or ``None`` when unset or unusable.
 
-        ``EXODOS_DOS_DIR`` is the only source, so a wrong value shows as an
-        unavailable tool rather than a silent fallback. It must be a directory
-        inside a configured Volume, the outer boundary of what the app reads.
+        Optional: a folder inside a configured Volume, searched before any
+        ``!dos`` found from the zip. A value that is not one is skipped, and a
+        game repacked without a template says so.
         """
         raw = settings.exodos_dos_dir
-        if not raw:
-            return None
-        real = os.path.realpath(raw)
+        return self._usable(raw) if raw else None
+
+    @staticmethod
+    def _usable(candidate: str) -> str | None:
+        """``candidate``'s real path if it is a folder inside a Volume."""
+        real = os.path.realpath(candidate)
         if not os.path.isdir(real):
             return None
         if not is_within_configured_volumes(real, treat_archives=False):
             return None
         return real
 
-    def is_ready(self) -> bool:
-        return self.dos_dir() is not None
+    def candidates(self, path: str) -> list[str]:
+        """Every place a template tree may be for the zip at ``path``, in order.
+
+        The ``EXODOS_DOS_DIR`` override first, then ``!dos`` beside the zip and
+        in each parent folder up to the outermost Volume root over it
+        (``lock_boundary_root``). Not yet checked: :meth:`_usable` decides, so
+        each one must still be a folder inside a Volume.
+        """
+        raw = settings.exodos_dos_dir
+        found = [os.path.realpath(raw)] if raw else []
+        boundary = lock_boundary_root(path, treat_archives=False)
+        if boundary is None:
+            return found
+        folder = Path(os.path.realpath(path)).parent
+        while folder == boundary or boundary in folder.parents:
+            found.append(str(folder / self.profile.template_dir))
+            if folder == boundary:
+                break
+            folder = folder.parent
+        return list(dict.fromkeys(found))
+
+    def _find_tree(self, top: str, candidates: list[str]) -> str | None:
+        """The first usable tree holding ``top``'s template, read the confined
+        way, or ``None``. A template that is there but refused, or unreadable
+        just now, raises: it is never a reason to repack without it."""
+        for candidate in candidates:
+            root = self._usable(candidate)
+            if root is None:
+                continue
+            try:
+                self._read_template(root, top)
+            except NoTemplate:
+                continue
+            return root
+        return None
 
     # --- inspection --------------------------------------------------------
 
@@ -280,22 +339,26 @@ class ExodosService:
         """Plan a repack, or raise :class:`NotRepackable` saying why not.
 
         Reads only the zip's directory. Every member name passes the shared
-        archive path rules and the shared entry/size limits, all members sit in
-        one game folder, and that game's template resolves inside the tree.
+        archive path rules and the shared entry/size limits, and all members
+        sit in one game folder. That game's template, when one is found,
+        resolves inside its tree; with none, the folder must hold a DOS program.
         """
-        root = self.dos_dir()
-        if root is None:
-            raise NotRepackable(
-                "No eXoDOS template tree: set EXODOS_DOS_DIR to the "
-                f"{self.profile.template_dir} folder, inside a volume",
-            )
-        return self._inspect(path, root)
-
-    def _inspect(self, path: str, root: str) -> RepackPlan:
         infos, top = self._read_zip(path)
+        return self._plan(infos, top, self.candidates(path))
+
+    def _plan(
+        self, infos: list[zipfile.ZipInfo], top: str, candidates: list[str],
+    ) -> RepackPlan:
+        root = self._find_tree(top, candidates)
+        if root is None and not _has_dos_program(info.filename for info in infos):
+            raise NotRepackable(
+                f"No dosbox.conf template was found for {top}, and its folder holds "
+                f"no {_DOS_PROGRAMS_TEXT}",
+                top=top,
+            )
         return RepackPlan(
             top=top,
-            template=self._template(root, top),
+            template=os.path.join(root, top, self.profile.conf_name) if root else None,
             total_size=sum(info.file_size for info in infos),
             root=root,
         )
@@ -340,30 +403,22 @@ class ExodosService:
             raise NotRepackable("The zip does not hold a single game folder")
         return tops.pop()
 
-    def _template(self, root: str, top: str) -> str:
-        """The template's path, once it has been read the confined way."""
-        self._read_template(root, top)
-        return os.path.join(root, top, self.profile.conf_name)
-
     def is_repackable(self, path: str) -> bool:
         """Whether ``path`` can be repacked.
 
         Cached, a yes and a no alike, per (path, size, mtime) of the zip, and
-        valid only while the template tree is unchanged: the root's and the
-        game folder's mtimes, and the template file's own mtime, size and
-        inode. Adding, removing, renaming or fixing a template in place
-        changes one of them, and the zip is asked again (#331).
+        valid only while every candidate template tree is unchanged: each
+        tree's and its game folder's mtimes, and the template file's own mtime,
+        size and inode. Adding, removing, renaming or fixing a template in
+        place changes one of them, and the zip is asked again (#331).
         """
         if Path(path).suffix.lower() not in INPUT_EXTENSIONS:
-            return False
-        root = self.dos_dir()
-        if root is None:
             return False
         try:
             st = os.stat(path)
         except OSError:
             return False
-        return _probe(self.profile, path, st.st_size, st.st_mtime_ns, root)
+        return _probe(self.profile, path, st.st_size, st.st_mtime_ns)
 
     def _read_template(self, root: str, top: str) -> bytes:
         """Read ``<root>/<top>/dosbox.conf`` through one confined descriptor.
@@ -381,9 +436,8 @@ class ExodosService:
         try:
             return read_beneath(root, relative, max_bytes=_MAX_TEMPLATE_BYTES)
         except FileNotFoundError as exc:
-            raise NotRepackable(
-                f"The game has no template: {relative} is not in EXODOS_DOS_DIR",
-                top=top,
+            raise NoTemplate(
+                f"The game has no template: {relative} is not in {root}", top=top,
             ) from exc
         except OSError as exc:
             if exc.errno not in _STRUCTURAL_ERRNOS:
@@ -392,7 +446,7 @@ class ExodosService:
                 ) from exc
             raise NotRepackable(
                 f"The template for {top} is a link, not a plain file, or lies "
-                f"outside EXODOS_DOS_DIR: {exc}",
+                f"outside its {self.profile.template_dir} folder: {exc}",
                 top=top,
             ) from exc
         except ValueError as exc:
@@ -413,11 +467,12 @@ class ExodosService:
     ) -> AsyncGenerator[dict, None]:
         """Write the repacked game to ``output_path``; the Source is only read.
 
-        Raises :class:`NotRepackable` for a zip that is not one game folder with
-        a template, and ``ConversionCancelled`` when cancelled. Either way no
+        Raises :class:`NotRepackable` for a zip that is not one DOS game
+        folder, and ``ConversionCancelled`` when cancelled. Either way no
         product is left behind (see :func:`services.archive_edit.rewrite_zip`).
-        The last update carries ``warning`` when the conf still points outside
-        the game.
+        The last update says what the game got: its conf and where it came
+        from, or no conf and why. It carries ``warning`` when there is no conf
+        or the conf still points outside the game.
         """
         # These reads run before the rewrite's own watchdog exists, so each is
         # bounded by the same no-progress timeout and raced against Cancel, as
@@ -428,13 +483,15 @@ class ExodosService:
                 self.inspect, input_path,
                 what="Reading the game zip", cancel_event=cancel_event,
             )
-            template = await run_detached_within_stall_bound(
-                self._read_template, plan.root, plan.top,
-                what="Reading the dosbox.conf template", cancel_event=cancel_event,
-            )
+            template = None
+            if plan.root is not None:
+                template = await run_detached_within_stall_bound(
+                    self._read_template, plan.root, plan.top,
+                    what="Reading the dosbox.conf template", cancel_event=cancel_event,
+                )
         except ReadCancelled as exc:
             raise ConversionCancelled("Conversion cancelled") from exc
-        rewrite = rewrite_conf(template, plan.top, self.profile)
+        rewrite = None if template is None else rewrite_conf(template, plan.top, self.profile)
         prefix = f"{plan.top}/"
         # "beats" counts the worker's polls of is_cancelled, which it makes
         # between every chunk it copies or checks: a worker still polling is a
@@ -460,11 +517,14 @@ class ExodosService:
         task = asyncio.ensure_future(run_detached(
             rewrite_zip, input_path, output_path,
             rename=rename,
-            add={self.profile.conf_name: rewrite.data},
+            add={self.profile.conf_name: rewrite.data} if rewrite else None,
             # The same CRC and structure check Verify runs, on the finished
             # temp file: a product that fails it is never placed, so the job
-            # fails and leaves no output. The Source is only ever read.
-            check=lambda path: self._own_check(path, is_cancelled),
+            # fails and leaves no output. The Source is only ever read. A
+            # product that was given a conf must hold it.
+            check=lambda path: self._own_check(
+                path, is_cancelled, require_conf=rewrite is not None,
+            ),
             is_cancelled=is_cancelled,
             on_progress=on_progress,
             cancel_event=cancel_event,
@@ -475,6 +535,21 @@ class ExodosService:
         except BaseException:
             abandoned.set()
             raise
+        yield self._outcome(plan, rewrite)
+
+    def _outcome(self, plan: RepackPlan, rewrite: ConfRewrite | None) -> dict:
+        """The last update: what the game got, its conf or no conf and why."""
+        if rewrite is None:
+            return {
+                "progress": 100,
+                "message": (
+                    f"Repacked with no {self.profile.conf_name}: "
+                    f"{self._no_template_reason(plan.top)}. DOSBox Pure's start "
+                    "menu will offer the program to run."
+                ),
+                "warning": True,
+            }
+        got = f"Repacked with its {self.profile.conf_name} from {plan.template}"
         caveats = []
         if rewrite.leftovers:
             caveats.append(
@@ -488,13 +563,23 @@ class ExodosService:
                 + "; ".join(rewrite.folder_mounts),
             )
         if caveats:
-            yield {
+            return {
                 "progress": 100,
-                "message": f"Repacked, but it may not start. {'. '.join(caveats)}.",
+                "message": f"{got}, but it may not start. {'. '.join(caveats)}.",
                 "warning": True,
             }
-        else:
-            yield {"progress": 100, "message": "Repack complete"}
+        return {"progress": 100, "message": got}
+
+    def _no_template_reason(self, top: str) -> str:
+        reason = (
+            f"no {top}/{self.profile.conf_name} template was found in a "
+            f"{self.profile.template_dir} folder beside the zip or above it, up to the volume"
+        )
+        if settings.exodos_dos_dir and self.override() is None:
+            reason += " (EXODOS_DOS_DIR is set but is not a folder inside a volume)"
+        elif settings.exodos_dos_dir:
+            reason += ", or in EXODOS_DOS_DIR"
+        return reason
 
     @staticmethod
     async def _watch(
@@ -591,18 +676,28 @@ class ExodosService:
             return
         yield {"type": "complete", "valid": True, "message": "File is Intact"}
 
-    def _own_check(self, path: str, is_cancelled: Callable[[], bool]) -> None:
+    def _own_check(
+        self, path: str, is_cancelled: Callable[[], bool], *, require_conf: bool,
+    ) -> None:
         try:
-            self._check_product(path, is_cancelled)
+            self._check_product(path, is_cancelled, require_conf=require_conf)
         except (OSError, ValueError, zipfile.BadZipFile) as exc:
             raise RuntimeError(
                 f"The repacked file failed its own check, so it was not kept: {exc}",
             ) from exc
 
     def _check_product(
-        self, path: str, is_cancelled: Callable[[], bool] = _never_cancelled,
+        self,
+        path: str,
+        is_cancelled: Callable[[], bool] = _never_cancelled,
+        *,
+        require_conf: bool = False,
     ) -> None:
         """CRCs, member names and limits, and the root conf, or ``ValueError``.
+
+        A product repacked with no template has no conf; it must then hold a
+        DOS program, the rule that let it be repacked (#513). ``require_conf``
+        is the repack's own check of a product it gave a conf.
 
         Reads every member, so it polls ``is_cancelled`` between chunks and
         raises ``ConversionCancelled`` rather than make a cancelled job wait
@@ -619,8 +714,15 @@ class ExodosService:
                     archive_service.member_segments(name)
                 except ValueError as exc:
                     raise ValueError(f"{exc}: {info.filename!r}") from exc
-            if self.profile.conf_name not in {info.filename for info in infos}:
-                raise ValueError(f"No {self.profile.conf_name} at the root of the file")
+            names = [info.filename for info in infos]
+            if self.profile.conf_name not in names:
+                if require_conf:
+                    raise ValueError(f"No {self.profile.conf_name} at the root of the file")
+                if not _has_dos_program(names):
+                    raise ValueError(
+                        f"No {self.profile.conf_name} at the root of the file, and "
+                        f"no {_DOS_PROGRAMS_TEXT} in it",
+                    )
             for info in infos:
                 if not info.is_dir():
                     self._read_member(zf, info, is_cancelled)
@@ -688,15 +790,18 @@ _PROBE_CACHE_SIZE = 4096
 _PROBE_LOCK = threading.Lock()
 
 
-def _tree_stamp(root: str, top: str | None, conf_name: str) -> tuple:
-    """What a cached answer depends on: the tree root's mtime and, when the zip
-    named a game folder, that folder's mtime and the template file's own
-    (mtime, size, inode). A template created, removed, renamed or rewritten in
-    place changes one of them. ``None`` for anything that is not there."""
-    paths = [root]
-    if top:
-        folder = os.path.join(root, top)
-        paths += [folder, os.path.join(folder, conf_name)]
+def _tree_stamp(candidates: list[str], top: str | None, conf_name: str) -> tuple:
+    """What a cached answer depends on: each candidate tree's (mtime, size,
+    inode) and, when the zip named a game folder, that folder's and the
+    template file's own. A tree or template created, removed, renamed or
+    rewritten in place changes one of them. ``None`` for anything not there."""
+    paths = []
+    for candidate in candidates:
+        root = os.path.realpath(candidate)
+        paths.append(root)
+        if top:
+            folder = os.path.join(root, top)
+            paths += [folder, os.path.join(folder, conf_name)]
     stamps: list[tuple[int, int, int] | None] = []
     for path in paths:
         try:
@@ -708,32 +813,31 @@ def _tree_stamp(root: str, top: str | None, conf_name: str) -> tuple:
     return tuple(stamps)
 
 
-def _probe(
-    profile: CollectionProfile, path: str, size: int, mtime_ns: int, root: str,
-) -> bool:
+def _probe(profile: CollectionProfile, path: str, size: int, mtime_ns: int) -> bool:
     """Whether the zip can be repacked, from the cache while it is still true."""
-    key = (profile, path, size, mtime_ns, root)
+    service = ExodosService(profile)
+    candidates = service.candidates(path)
+    key = (profile, path, size, mtime_ns, tuple(candidates))
     with _PROBE_LOCK:
         cached = _PROBE_CACHE.get(key)
     if cached is not None:
         answer, top, stamp = cached
-        if _tree_stamp(root, top, profile.conf_name) == stamp:
+        if _tree_stamp(candidates, top, profile.conf_name) == stamp:
             return answer
-    service = ExodosService(profile)
     top = None
     # The stamp is taken before the template is read and checked again after:
     # a tree that moved while it was read keeps the answer out of the cache.
-    before = _tree_stamp(root, None, profile.conf_name)
+    before = _tree_stamp(candidates, None, profile.conf_name)
     try:
-        _infos, top = service._read_zip(path)
-        before = _tree_stamp(root, top, profile.conf_name)
-        service._read_template(root, top)
+        infos, top = service._read_zip(path)
+        before = _tree_stamp(candidates, top, profile.conf_name)
+        service._plan(infos, top, candidates)
         answer = True
     except ProbeUnavailable:
         return False  # not a verdict: asked again next time, never cached
     except NotRepackable:
         answer = False
-    if _tree_stamp(root, top, profile.conf_name) != before:
+    if _tree_stamp(candidates, top, profile.conf_name) != before:
         return answer
     with _PROBE_LOCK:
         _PROBE_CACHE[key] = (answer, top, before)

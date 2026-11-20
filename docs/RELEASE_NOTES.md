@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+### Changed
+
+- **eXoDOS works with no setting** (#513). Point the app at your eXoDOS
+  collection and the eXoDOS tool is there: it is no longer hidden until
+  `EXODOS_DOS_DIR` is set.
+  - Each game's template is found by itself: `!dos/<Game>/dosbox.conf` beside
+    the zip, then in each parent folder, up to the volume. The `!dos` folder
+    must resolve inside a volume, and the template must be a plain file inside
+    it.
+  - `EXODOS_DOS_DIR` is now an optional override, searched first.
+  - A game with no template is still repacked: its files move to the root of
+    the `.dosz`, no `dosbox.conf` is written, and the job finishes with a
+    warning saying DOSBox Pure's start menu will offer the program to run.
+  - Every job now says what the game got: its `dosbox.conf` and where it came
+    from, or no `dosbox.conf` and why.
+  - A zip is taken as a DOS game when it holds exactly one game folder and a
+    template is found for it or the folder holds a DOS program (`.exe`, `.com`
+    or `.bat`). Other zips are skipped with the reason, as before.
+  - Verify accepts a `.dosz` with no `dosbox.conf` when it holds a DOS program.
+
 ## 4.6.0 (2026-11-20)
 
 ### Added

@@ -38,7 +38,7 @@ registry.register(JwudTool(settings.jwudtool_path))
 registry.register(XisoTool(settings.extract_xiso_path))
 registry.register(RomConvertoTool(settings.rom_converto_path))
 registry.register(RarTool(settings.unar_path))
-# Pure Python: no binary to locate, gated on EXODOS_DOS_DIR instead.
+# Pure Python: no binary to locate and no setting needed (#513).
 registry.register(ExodosTool(""))
 # Composite/pipeline modes register last: ChainTool drives the component tools
 # above through the registry, so they must already be present.

@@ -1,7 +1,7 @@
 """A repacked .dosz is checkable without the eXoDOS install (PR #324 review).
 
 The product check reads only the .dosz, so its readiness must not depend on
-EXODOS_DOS_DIR or the template tree that converting needs.
+EXODOS_DOS_DIR or the template tree, and since #513 neither does converting.
 """
 from __future__ import annotations
 
@@ -47,11 +47,11 @@ def _dosz(volume):
     return path
 
 
-def test_checking_needs_no_template_tree_but_converting_does(volume):
+def test_checking_and_converting_need_no_template_tree(volume):
     tool = registry.get("exodos")
 
     assert asyncio.run(registry.tool_is_ready(tool, purpose="verify")) is True
-    assert asyncio.run(registry.tool_is_ready(tool)) is False
+    assert asyncio.run(registry.tool_is_ready(tool)) is True
 
 
 def test_the_cli_checks_a_dosz_without_the_exodos_install(volume, capsys):
@@ -116,7 +116,7 @@ def test_the_cli_still_marks_a_corrupt_file_failed(volume, capsys):
     assert cli.main(["verify", str(product), "--json"]) == 0
     capsys.readouterr()
     with zipfile.ZipFile(product, "w", zipfile.ZIP_STORED) as zf:
-        zf.writestr("ABARON.EXE", b"exe" * 100)  # no dosbox.conf at the root
+        zf.writestr("README.TXT", b"txt" * 100)  # no dosbox.conf, no program
 
     cli.main(["verify", str(product), "--json"])
 
