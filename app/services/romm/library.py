@@ -48,6 +48,7 @@ from services.rules.library import (
 )
 from services.rules.store import RULES_KEY, STATE_KEY
 from services.subprocess_runner import run_detached
+from utils.junk import is_junk_entry
 
 # Where RomM kept its Rules and run state before #296, unprefixed. The store
 # reads them once, rewrites them under the "romm:" keys and deletes them.
@@ -198,6 +199,9 @@ class RommLibrary(LibraryDefaults):
                 folder=p.get("fs_slug"),
             )
             for p in catalog if isinstance(p, dict) and p.get("id") is not None
+            # A NAS metadata folder RomM scanned as a platform (``@eaDir``,
+            # #512) is never one: never offered, placed or swept.
+            and not is_junk_entry(p.get("fs_slug") or "")
         ]
 
     def images(self, platform_id: str) -> list[Image]:
@@ -377,25 +381,44 @@ class RommLibrary(LibraryDefaults):
             raise PlacementUnknown(f"{platform!r} is not a Platform")
         listed = self.platforms() if known is None else known
         records = [p for p in listed if canonical_slug(p.slug) == slug]
-        if len(records) > 1:
-            ids = ", ".join(p.id for p in records)
-            raise PlacementUnknown(f"RomM has more than one {slug} platform ({ids})")
-        name = (records[0].folder if records else None) or slug
-        if name in (".", "..") or "/" in name or os.sep in name:
-            raise PlacementUnknown(f"RomM's folder name {name!r} for {slug} isn't one folder")
-        own = os.path.join(root, name)
-        if os.path.isdir(os.path.join(root, "roms")):
-            folder = os.path.join(root, "roms", name)
-        elif os.path.isdir(os.path.join(own, "roms")):
-            folder = os.path.join(own, "roms")
-        elif os.path.isdir(own) and not os.path.isdir(os.path.join(own, "bios")):
-            folder = own
-        else:
+        names = sorted({p.folder or slug for p in records}) or [slug]
+        for name in names:
+            if name in (".", "..") or "/" in name or os.sep in name:
+                raise PlacementUnknown(
+                    f"RomM's folder name {name!r} for {slug} isn't one folder",
+                )
+        if len(names) > 1:
+            # RomM keeps an empty record beside the real one (``famicom``
+            # beside ``nes``, #512): the one whose folder is there is it.
+            here = [
+                folder for folder in (self._folder(root, name) for name in names)
+                if folder is not None and os.path.isdir(folder)
+            ]
+            if len(here) != 1:
+                ids = ", ".join(p.id for p in records)
+                raise PlacementUnknown(f"RomM has more than one {slug} platform ({ids})")
+            return placed_in(here[0], slug)
+        folder = self._folder(root, names[0])
+        if folder is None:
             raise PlacementUnknown(
                 f"RomM's folder structure can't be told: {root} has no roms folder, "
-                f"and no {name} folder with its ROMs yet",
+                f"and no {names[0]} folder with its ROMs yet",
             )
         return placed_in(folder, slug)
+
+    @staticmethod
+    def _folder(root: str, name: str) -> str | None:
+        """Where the Platform folder *name* sits in RomM's structure under
+        *root*, read off the disk (see ``placement``), or None when the
+        structure can't be told. Blocking."""
+        own = os.path.join(root, name)
+        if os.path.isdir(os.path.join(root, "roms")):
+            return os.path.join(root, "roms", name)
+        if os.path.isdir(os.path.join(own, "roms")):
+            return os.path.join(own, "roms")
+        if os.path.isdir(own) and not os.path.isdir(os.path.join(own, "bios")):
+            return own
+        return None
 
     def referrer_options(self, referrer_id: str) -> dict:
         """The gamelist Referrer's ES-DE gamelists folder from RomM's settings,

@@ -659,3 +659,65 @@ def test_the_panel_waits_for_the_views_own_listing():
     assert "listing={source?.platformsLoading" in view
     assert "if (!untrack(() => listing)) load(id)" in panel
     assert "listing_in_progress" in panel
+
+
+# ---- #512: RomM's second, empty record for a Platform; junk folders ----------------
+
+
+def test_two_romm_platforms_place_in_the_one_whose_folder_is_there(romm):
+    """#512: RomM keeps an empty record beside the real one (``famicom``
+    beside ``nes``). Only one folder is there, so that's where Images go."""
+    from services.romm.library import romm_library
+
+    root, catalog = romm
+    (root / "roms" / "nes").mkdir(parents=True)
+    catalog.extend([
+        {"id": 8, "slug": "nes", "fs_slug": "nes"},
+        {"id": 44, "slug": "famicom", "fs_slug": "famicom"},
+    ])
+
+    placed = romm_library.placement("nes")
+
+    assert placed.folder == str(root / "roms" / "nes")
+    assert placed.exists
+
+
+def test_two_romm_platforms_naming_one_folder_place_there(romm):
+    from services.romm.library import romm_library
+
+    root, catalog = romm
+    (root / "roms").mkdir()
+    catalog.extend([
+        {"id": 14, "slug": "gamegear", "fs_slug": "gamegear"},
+        {"id": 43, "slug": "gg", "fs_slug": "gamegear"},
+    ])
+
+    assert romm_library.placement("gamegear").folder == str(root / "roms" / "gamegear")
+
+
+def test_two_romm_platforms_whose_folders_are_both_there_refuse(romm):
+    from services.romm.library import romm_library
+
+    root, catalog = romm
+    (root / "roms" / "nes").mkdir(parents=True)
+    (root / "roms" / "famicom").mkdir()
+    catalog.extend([
+        {"id": 8, "slug": "nes", "fs_slug": "nes"},
+        {"id": 44, "slug": "famicom", "fs_slug": "famicom"},
+    ])
+
+    with pytest.raises(PlacementUnknown, match="more than one"):
+        romm_library.placement("nes")
+
+
+def test_a_romm_platform_for_a_junk_folder_is_not_listed(romm):
+    """#512: RomM scans Synology's ``@eaDir`` as a platform; it is never one."""
+    from services.romm.library import romm_library
+
+    _root, catalog = romm
+    catalog.extend([
+        {"id": 3, "slug": "ps2", "fs_slug": "ps2"},
+        {"id": 50, "slug": "@eadir", "fs_slug": "@eaDir", "display_name": "@Eadir"},
+    ])
+
+    assert [p.id for p in romm_library.platforms()] == ["3"]
