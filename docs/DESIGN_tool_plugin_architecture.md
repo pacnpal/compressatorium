@@ -1,6 +1,7 @@
 # Design: Tool Plugin Architecture
 
-**Status:** Proposal · **Scope:** internal refactor, no user-facing behavior change ·
+**Status:** Implemented (the code under `app/services/tools/` is the source of truth)
+· **Scope:** internal refactor, no user-facing behavior change ·
 **Companion:** `ADDING_PLATFORMS_AND_TOOLS.md`
 
 ## 1. Problem
@@ -113,6 +114,11 @@ app/services/tools/
   z3ds.py            # Z3dsTool
 ```
 
+The package today also holds `binaries.py` (the `RequiredBinary` probe),
+`chain.py`, and one plugin per further tool: `nsz.py`, `maxcso.py`, `romz.py`,
+`makeps3iso.py`, `nkit2iso.py`, `jwud.py`, `xiso.py`, `rom_converto.py`,
+`rar.py` and `exodos.py`. `__init__.py` registers all fourteen tools.
+
 ### 3.1 `spec.py`: modes carry metadata
 
 ```python
@@ -128,7 +134,7 @@ class ModeKind(str, Enum):
 @dataclass(frozen=True)
 class ModeSpec:
     mode: str                       # wire value, e.g. "createcd" (== ConversionMode value)
-    tool_id: str                    # "chdman" | "dolphin" | "z3ds"
+    tool_id: str                    # the owning plugin's id ("chdman", "dolphin", "rar", ...)
     kind: ModeKind
     label: str                      # UI label
     group: str                      # UI group id ("create","extract","copy","dolphin","z3ds")
@@ -142,6 +148,16 @@ class ModeSpec:
     delete_proof: DeleteProof = DeleteProof.ROUND_TRIP  # or RECOGNIZED (see 3.3.12, #423)
     allows_archive_input: bool = False         # opt-in; set True on every mode that can take a member straight from an archive (chdman create + extract, dolphin, z3ds). Only chdman copy (.chd recompress round-trip) leaves it False
 ```
+
+`spec.py` carries more fields than this sketch, each with a default: the codec
+and level fields (`requires_codec`, `codecs`, `default_compression`,
+`codec_levels`, `implicit_codecs`, `implicit_codecs_unknown`, `block_size`,
+`block_size_rule`), `supports_round_trip` and `round_trip_required` (§3.3.12),
+`companion_exts`, `input_kinds`, `platform_slugs`, `reads_extensions`,
+`auto_target`, `auto_platform_slugs` and `automatable`. `round_trip_required`
+means the container-only opt-out never applies: every delete-source job in the
+mode runs the Round-trip. It is for an output with no container of its own to
+check (the rar tool's extracted file).
 
 **Archive browsing is global, scoped to known extensions; the convert gate is
 narrower.** Two registry unions, two jobs:
@@ -215,8 +231,10 @@ class ToolPlugin(Protocol):
     # at both plan sites and again in `_process_job`, right before the delete.
     def delete_on_verify_is_safe(self, mode: str, compression: str | None) -> bool: ...
 
+    # Callers go through run_convert(), which resolves `compression` with
+    # compression_for() first. `split` is honored only by makeps3iso.
     def convert(self, input_path: str, output_path: str, mode: str, *,
-                compression: str | None = None,
+                compression: str | None = None, split: bool = False,
                 cancel_event: asyncio.Event | None = None) -> AsyncGenerator[dict, None]: ...
 
     # Verify is bounded and cancellable on the same terms as convert (issue
@@ -267,7 +285,8 @@ class ToolPlugin(Protocol):
     # every CHD this app makes (#352). job_manager calls it generically for
     # every mode, and ChainTool routes its final step through the same hook, so
     # a cso_to_chd CHD gets its disc ID exactly like a direct createdvd.
-    async def post_convert(self, input_path: str, output_path: str, mode: str) -> None: ...
+    async def post_convert(self, input_path: str, output_path: str, mode: str,
+                           *, within: Sequence[str] | None = None) -> None: ...
 
     # Sibling outputs a multi-file mode writes beside its primary output_path
     # (extractcd's .cue + .bin data track; a split folder_to_iso's .iso.0/.1/…).
@@ -288,7 +307,8 @@ class ToolPlugin(Protocol):
     # unavailable and the frontend hides it, instead of offering jobs that can
     # only fail. BaseTool answers it from `required_binaries` (the programs
     # the tool runs, through the shared probe, §3.4 "Declaring the programs a
-    # tool runs"); nsz and exodos override it (prod.keys, EXODOS_DOS_DIR).
+    # tool runs"); nsz and exodos override it (prod.keys, EXODOS_DOS_DIR), and
+    # so do rom_converto (its `--version` probe) and the chain (every step).
     # Async because the probe may touch disk. `not_ready_reason` / `verify_not_ready_reason` say
     # why it answered False; callers show them through `not_ready_message`
     # (§3.4) rather than formatting their own line.
@@ -299,6 +319,29 @@ class ToolPlugin(Protocol):
     # False: info() reads the file in Python and answers regardless (§3.4).
     info_needs_tool: bool
 ```
+
+The Protocol in `base.py` has more members than this listing. The ones a new
+tool is most likely to need:
+
+- `convert_refusal(path) -> str | None`: why `converts_path(path)` said False,
+  in the user's words, shown in place of the fixed skip reason. Default None.
+  Asked only after `converts_path` refused, and may read the disk (the rar tool
+  names the files a set holds when it holds more than one).
+- `source_companions(path) -> list[str]`: the other files the source is made of
+  (a split Wii U dump's parts, a RAR set's later volumes), never `path` itself.
+  Default `[]`. Raise `CompanionsUnknown` when the set can't be read now; never
+  answer `[]` for a set you can't read, or a delete would take the named file
+  alone.
+- `accepts_directory(path)` / `converts_path(path)`: per-path refinements of the
+  extension claim.
+- `detect_output(input_path, *, from_archive=False)`, `expected_output_size`,
+  `compression_for(mode, compression)` and `default_compression`.
+- `verify_is_ready()` (defaults to `is_ready()`), `verify_not_ready_reason`,
+  `claims_check`, `verifies_path`, `scannable_path`.
+- The content hooks: `header_platform`, `header_reads`, `raw_image_sha1`,
+  `content_sha1`, `content_digest`, `source_problem`, with the attributes
+  `disc_extensions`, `raw_image_hash_labels`, `raw_image_hash_rebuilds_content`
+  and `platform_slugs`.
 
 `BaseTool(ABC)` provides shared defaults so concrete tools stay tiny:
 
@@ -370,9 +413,12 @@ class BaseTool:
 
     # The declared programs, each present and executable (#494). A tool
     # that declares none (exodos) is ready; the chain overrides it to ask
-    # every step tool.
-    required_binaries: tuple[RequiredBinary, ...] = ()
-    verify_required_binaries: tuple[RequiredBinary, ...] | None = None
+    # every step tool. Both are properties, read at each probe, so a tool
+    # declares the path its service really spawns.
+    @property
+    def required_binaries(self) -> tuple[RequiredBinary, ...]: return ()
+    @property
+    def verify_required_binaries(self) -> tuple[RequiredBinary, ...] | None: return None
     async def is_ready(self) -> bool:
         return await self._binaries_ready(self.required_binaries, "convert")
 
@@ -388,9 +434,9 @@ class BaseTool:
 ### 3.3 `runner.py`: shared subprocess orchestration
 
 This collapses the ~150 near-identical lines that were duplicated in every
-tool's `convert()`. All nine conversion tools now delegate their streaming loop
-here: `chdman`, `dolphin_tool`, `romz`, `makeps3iso`, `nkit2iso`, `jwudtool`
-directly, and
+tool's `convert()`. All twelve tools that spawn a program now delegate their
+streaming loop here: `chdman`, `dolphin_tool`, `romz`, `makeps3iso`, `nkit2iso`,
+`jwudtool`, `extract_xiso`, `rom_converto` and `rar_extract` directly, and
 `z3ds_compress`, `maxcso`, `nsz` via the size-based-progress seam below (their
 CLIs print no parseable percent, so the growing output file is the progress
 signal).
@@ -1639,7 +1685,7 @@ The first user, **`MakePs3IsoTool`** (`folder_to_iso`, the only
   directory source — the archive-extract branch is gated on `"::"`, which a
   folder never carries — so no directory-specific convert branch is needed.
 - **Listing + search.** `files.py` annotates convertible directory rows
-  (`_detect_directory_outputs` → `registry.tools_for_directory`) with
+  (`detect_directory_outputs` → `registry.tools_for_directory`) with
   `convertible_by` + the sibling `.iso` output in **both** `scan_directory` and
   the recursive search `_scan` (the latter emits the folder as a job unit and
   does not recurse past it, so it's discoverable / batch-selectable).
@@ -1695,7 +1741,7 @@ The first user, **`MakePs3IsoTool`** (`folder_to_iso`, the only
   shape — `split_parts()` probes the base then `.0`/`.1`/… post-build; the
   `TITLE_ID` readback reads the first part; failure cleanup unlinks the base and
   every numbered part. `_plan_directory_job` counts an existing split set as an
-  output collision (RENAME steps past it via `get_unique_ps3_iso_output_path`),
+  output collision (RENAME steps past it via `get_unique_output_path`),
   and `files.py` folds a set into one logical listing entry
   (`_fold_split_iso_entries`: name `<base>.iso`, `path` = the `.0` part,
   summed size, `FileEntry.split_parts` = count, no convertible/verify
@@ -2695,7 +2741,7 @@ whatever the new one matches its digest to.
 
 Every remaining filesystem check on these paths is bounded the same way:
 `normalize_rules_bounded` (the save-time output-directory validation, inside
-`_sweep_lock`), `_within_volumes_bounded` (the sweep's re-check of a stored
+`_sweep_lock`), `_output_dir_problem` (the sweep's re-check of a stored
 directory), and the re-pin plan's batch resolve, which is scaled by batch size
 like the catalog scan. Each degrades toward *refuse*: an output directory
 nobody can resolve pauses its rule or skips its platform, and a submitted path
@@ -6762,7 +6808,7 @@ built, though it claims no extension).
 maps a numbered part to `(Game.iso, mode)` when the name without its last
 suffix carries a mode's declared output extension (so `save.0` never
 qualifies) and that mode's `companion_outputs` lists the part, the same rule
-as `cli._split_owner`; `split_members(path)` gives the later parts for the
+the CLI uses (`cli._is_split_part`); `split_members(path)` gives the later parts for the
 first one. The folder Library's walk lists such parts and `image_members`
 folds them into one Image on `Game.iso.0`, so the budget pays the parts'
 summed size and the lock and fingerprint cover every part. The check is
@@ -8416,7 +8462,8 @@ the Image's main file is bound into the app's work area first, as a
 conversion's Source is (`_bind_for_match` over `bind_source`: a hard link or a
 checked copy, opened beneath its root only while it is the file taken), the
 match reads the bound file (its tool first primes the embedded hashes it reads
-for it, `ToolPlugin.prime_embedded_hashes`: chdman reads a CHD's SHA-1s with
+for it, `BaseTool.prime_embedded_hashes`, a no-op that only chdman overrides:
+chdman reads a CHD's SHA-1s with
 `chdman info` into `chd_metadata_store`, bounded and cancellable, Codex
 4609181291), and it is kept only while the bound file is
 unchanged (`BoundSource.changed`), with the identity it was made for; `_name`
@@ -8894,6 +8941,7 @@ environment variable that sets it, named in the reason.
 | xiso | `extract-xiso` (`EXTRACT_XISO_PATH`) | same |
 | nkit | `nkit2iso` (`NKIT2ISO_PATH`) | (no check) |
 | jwud | the JWUDTool launcher (`JWUDTOOL_PATH`) | none: the WUX walk is Python |
+| rar | `unar` (`UNAR_PATH`) | none: the extracted file is read in Python |
 
 `verify_required_binaries` is None by default, meaning a check needs what a
 conversion needs and `verify_is_ready()` is `is_ready()`. A tuple, possibly
@@ -8956,8 +9004,8 @@ image every program ships, so nothing changes there; outside it, a tool whose
 program is missing is hidden rather than offered.
 
 **Tests.** The suite runs as if inside the image: an autouse fixture in
-`tests/conftest.py` (`_programs_as_in_the_image`) counts the paths the eight
-tools above (not jwud, which checked before, nor `zstd`) are configured with
+`tests/conftest.py` (`_programs_as_in_the_image`) counts the paths the nine
+tools above other than jwud (not jwud, which checked before, nor `zstd`) are configured with
 at the start of each test as installed, at the probe's one seam
 (`binaries._inspect`), and drops every cached answer around each test. Any
 other path is probed for real, so a test of a missing or non-executable
@@ -9431,14 +9479,15 @@ keeps `chd`, `dolphin`, `z3ds`), so the frontend and API are unchanged.
 
 #### Tool availability (`is_ready` / `GET /api/tools`)
 
-`GET /api/tools` splits `registry.all()` into `{"available", "unavailable"}` by
-awaiting each plugin's `is_ready()`; `App.svelte` feeds the result to
+`GET /api/tools` splits `registry.all()` into `{"available", "unavailable"}` with
+`registry.ready_tool_ids()`, which runs every tool's bounded `tool_is_ready`
+probe at once; a probe that runs out of time counts as unavailable. `App.svelte` feeds the result to
 `ui.applyToolAvailability()`, which hides unavailable tools everywhere (the
 sidebar and dashboard both derive from `registry.all()` minus `ui.hiddenTools`,
 and the active tool falls back to a visible one).
 
 The readiness check belongs to the plugin, not the route. `BaseTool.is_ready`
-returns `True`; `NszTool` overrides it with a threadpooled
+probes the tool's `required_binaries` (§3.4); `NszTool` overrides it with a threadpooled
 `keys_available()` because Switch content is encrypted and the operator must
 supply their own `prod.keys` (§16 of `ADDING_PLATFORMS_AND_TOOLS.md`). The
 route previously computed `nsz_service.keys_available()` itself and branched on
@@ -9548,7 +9597,8 @@ visible-but-not-convertible archive members in §17.5 of the adding-a-tool guide
 `converts_path` answered `False`, in the user's words, for a tool that can name
 what it found. `BaseTool` returns `None`. `plan_job` asks it only after
 `converts_path` refused, and `SkipFile(reason, detail=...)` carries the answer:
-the single-job 4xx and the batch's `skipped` map show it in place of the
+the single-job 4xx and the batch's skipped list (`?report_skipped=true`, one
+`{path, reason, code}` per file) show it in place of the
 reason's fixed `_SKIP_HTTP` message. The CLI's `format_route` (`--to <mode>`)
 says it too in place of "<mode> does not read .ext files". The rar tool is the
 user: its
@@ -9806,7 +9856,7 @@ Before: ~20 files (see `ADDING_PLATFORMS_AND_TOOLS.md` §3). After:
    `_build_command`, `_parse_progress`, `verify_stream`, `info`, `info_model`.
 2. `app/services/tools/__init__.py`, one `registry.register(NszipTool(...))`.
 3. `app/config.py`, one `nszip_path` Field.
-4. `static/js/tools.js`, one entry in `TOOLS`.
+4. `src/lib/tools/registry.js`, one entry in `TOOLS`.
 5. `Dockerfile`, install the binary (irreducible).
 6. tests + docs.
 

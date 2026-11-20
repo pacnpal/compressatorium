@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 4.6.0 (2026-11-20)
+
 ### Added
 
 - **Extract a multi-part RAR set to one verified file** (#476). A new **RAR
@@ -442,6 +444,314 @@
   each were left out. A folder or file it can't read leaves its groups as they
   were. Nothing is deleted.
 
+- **ES-DE's own gamelists folder** (#387). ES-DE keeps its gamelists in a
+  folder of its own by default (`ES-DE/gamelists/ps2/gamelist.xml` for the
+  games in `ROMs/ps2`), not beside the ROMs. A Library marked as used by an
+  EmulationStation frontend can now name that folder under the switch (in the
+  Rules editor, the Library API or RomM's settings). It must be inside a
+  Volume; a folder outside every Volume is refused, and so is one the app
+  can't confirm while a Volume isn't answering. With it set, a conversion
+  also updates the system's gamelist there, with the same rules as the
+  Platform folder's: only the path text changes, one backup, an atomic write,
+  and the Source kept if it can't be updated. Gamelists in which ES-DE writes
+  its `<alternativeEmulator>` beside `<gameList>` are now read too; before,
+  they kept the Source as "can't be parsed".
+- **ES-DE, Batocera, Knulli and muOS keep their gamelist entries** (#386). A
+  Library (a folder Library or RomM) has a new switch at the top of its
+  Rules: **Used by an EmulationStation frontend**, off by default. When it's
+  on and a conversion deletes its Source, the matching `<path>` in the
+  Platform folder's `gamelist.xml` is pointed at the new file first
+  (`./Game.iso` becomes `./Game.chd`; `./Multi Disc/Game.cue` keeps its
+  folder), so the game's artwork, description, favourite flag and play count
+  stay. Only the path text of entries for replaced files changes: the XML
+  declaration, encoding, comments, element order and every other element are
+  left byte for byte, and the first change keeps `gamelist.xml.bak`. The
+  delete confirmation says "updates gamelist.xml, 1 entry", and the Ledger
+  row records the file and the entry count. A gamelist that can't be parsed
+  or written, or that names the Source in a path that doesn't lead to it,
+  keeps the Source and the output, and the job says which file and why.
+  Close ES-DE before converting: it rewrites its gamelist when it exits.
+  The delete confirmation now also counts the entries each playlist change
+  moves.
+- **Beside RomM's own converter** (#385). Newer RomM releases can convert
+  their library themselves (`ROM_CONVERTO_ENABLED`), and they delete the
+  sources without reading the output back. When RomM reports its converter
+  on, the RomM Settings tab now says so in a banner and advises switching it
+  off. The Automation tab flags each Rule whose Platform RomM also converts,
+  with RomM's target and the Rule's side by side, and marks the Platforms RomM
+  can't convert. The banner's **Import RomM's targets as Rules** button creates
+  a Rule for each Platform RomM converts that has no Rule yet, mapping RomM's
+  format onto a mode here; a format nothing here writes (Xbox 360 `zar`) is
+  skipped and named, and the new Rules start off. Nothing is blocked: these
+  are warnings. A RomM without the converter, or with it off, shows none of
+  it. The README explains why we advise turning RomM's converter off.
+
+- **A Source kept because another job was reading it is deleted later**
+  (#329). When a Rule's delete step finds the Source still in use, the job
+  keeps it and says so; now the next sweep (the app's or `compressatorium
+  run-rules`) tries the delete again, under the same locks and checks, after
+  making sure the output is still the checked one and the Source is unchanged.
+  A Source still in use after 10 sweeps stays, with a **Source kept** Finding.
+  A job you started by hand whose delete stops part way shows the Source as a
+  **Source kept** Finding under **Started by hand**; it clears itself once the
+  files left are gone. A half-finished delete is never forgotten silently:
+  turning the Rule's delete off, Forget history, a RomM instance change or
+  removing the Library reports it the same way. Before a retried delete
+  removes anything, the output's check runs again (the container check, plus
+  the Round-trip where the Rule asks for it): an output changed since its
+  check keeps the Source, even one rewritten in place to the same size and
+  date.
+- **UTF-16 `.m3u` playlists follow a converted disc** (#334). A playlist saved
+  as UTF-16 with a BOM (Windows Notepad's "Unicode") that names the Source is
+  now rewritten like a UTF-8 one, keeping its encoding, BOM and line endings.
+  Before, the Source was kept and the playlist had to be fixed by hand. UTF-16
+  without a BOM still keeps the Source, since its encoding can't be told
+  safely.
+- **eXoDOS repack for RomM** (#323). A new **eXoDOS** tool turns an eXoDOS game
+  zip into a `.dosz` laid out for RomM's in-browser DOS player (DOSBox Pure),
+  with the game's own `dosbox.conf` as the file's first entry. The game moves
+  to the root of the file, and its `dosbox.conf` from eXoDOS's `!dos` folder
+  is written there with the mount paths rewritten.
+  - Manual only: run it from the file browser. Rules never offer it and refuse
+    a stored Rule that names it.
+  - Set `EXODOS_DOS_DIR` to your `!dos` folder, inside a volume, to turn it on.
+    In RomM's `config.yml`, set
+    `emulatorjs.settings.dosbox_pure.dosbox_pure_conf: inside` and leave
+    `emulatorjs.disable_batch_bootup` at `false`. Booting real games in RomM
+    is still to be confirmed.
+  - Only `mount`, `imgmount` and `boot` lines change; line endings and encoding
+    are kept. A game whose config still points outside itself, or mounts a
+    folder on a drive other than C:, finishes with a warning, which stays on
+    the finished job's row.
+  - The output is written beside the source as `Game.dosz`; the source is only
+    read, and delete-source is not offered. Every repack checks every CRC and
+    that `dosbox.conf` is at the root before keeping its output, and Verify on
+    a `.dosz` runs the same check.
+  - Behaviour modelled on eXo2romm (Unlicense); no code is shared.
+- **Check Rules** (#305). A Platform in the Rules view (folder Libraries and
+  RomM) can have a check Rule beside its conversion Rule: tick **Check these
+  Images are Intact** and set a nightly budget in GB, a window and weekdays.
+  Once a day the Images never checked go first, then the oldest checks, until
+  the next one does not fit the budget (one larger than the whole budget goes
+  alone), and each goes through its tool's own Verify as one job in the queue.
+  Run now spends another budget's worth and leaves the nightly run when it
+  is due. A check Rule whose window starts and ends at the same time runs all
+  day (once a day from midnight); a conversion Rule with such a window is
+  paused with the reason shown, since there it is a slip. #306's verdict rules decide: a verifier killed by a signal is no
+  verdict, and an Image whose check never reaches one goes behind the others.
+  An Image gone or changed by its turn is skipped. While an Image's Verify
+  runs and its result is recorded it is held like a file a conversion reads. An Image that fails becomes a **Not
+  Intact** Finding and the run sends one `check_failed` notification listing
+  the failures; a later pass clears the Finding. A check that could not run
+  changes nothing, and an Image no tool can check is skipped. Each Image's
+  last check time is kept in a new `image_checks` table (migration 0014,
+  on top of #304's 0013).
+- **Findings view and folder Platforms** (#304). A new **Findings** view lists
+  the Images in your folder Libraries that need a decision: a Platform
+  conflict (the header disagrees with the folder) or an Unsorted Image. Each
+  row shows the Library, the Image, the kind, first and last seen, and links
+  to **Open folder** and **Set Platform**; **Dismiss** hides it until its cause
+  changes, and **Show again** undoes that. **Set Platform** ("this folder is
+  PSP") is also on a folder's row menu. Below the header, the nearest folder
+  that is set to or named after a Platform decides (on the same folder, the one
+  you set wins), and a header that disagrees is a conflict. The app never moves or deletes an Image over a
+  Finding. API: `/api/findings`, `/api/platform-mappings`, `/api/platforms`.
+  New tables `platform_mappings`, `findings` and `finding_dismissals`
+  (migration 0013, on top of #303's 0012).
+- **Notifications: webhook and Apprise** (#293). Add a webhook URL or an Apprise
+  URL under the new **Settings** page and get one message when a sweep finishes
+  (counts, space saved, and the failures inside it) and one when a job you
+  started by hand fails. **Test** sends a sample and shows the error if it fails.
+  Nothing is sent until a destination is added. Saved URLs are never sent back
+  to the browser, and a destination that errors or hangs never fails or delays a
+  job. Apprise is bundled in the Docker image and imported only when used;
+  webhooks need no extra package.
+  Webhook delivery does not follow redirects (Test reports "HTTP 30x") and does not
+  use `HTTP(S)_PROXY`.
+  A native **Discord webhook** destination (any https URL that speaks Discord's
+  webhook format, no Apprise needed) posts one embed per message with mentions
+  disabled; the generic webhook's JSON is unchanged.
+
+- **`compressatorium convert` and `compressatorium verify`** (#306). A command
+  line for shells and cron that covers every tool, recurses into subfolders and
+  archives, and uses the web UI's planner, delete checks and Ledger.
+  `convert PATH --to chd` (any format, `7z`/`zip` included, or a mode id) or
+  `--auto`, with `--delete-source` (Round-trip where the mode has it,
+  `--container-only` to opt out), `--dry-run` and `--json`. `verify PATH --since
+  30d` checks Images not checked in that window. Exit 0 when done or nothing to
+  do, 1 on a failure, 2 on bad arguments. Safe beside a running server: both
+  take the same output locks, and an `.m3u` both update is rewritten by one at a
+  time, so neither edit is lost. Started as root, it drops to the `converter` user
+  (`PUID`/`PGID`) the way the server does. `CHD_MODE=cli` keeps today's scope
+  and defaults; it now runs through this command. Two differences: with
+  `CHDMAN_MODE=createdvd` it no longer hands top-level `.cue`/`.gdi` files to
+  chdman (that never produced a usable CHD), and one failed file no longer
+  stops the rest of the run.
+- **`compressatorium run-rules`** (#307). One pass over your stored Rules, for
+  cron or Unraid User Scripts: it queues what each Rule says is due, waits for
+  those jobs and exits: 0, or 1 when a job failed or a sweep reported an error
+  (RomM not answering, a tool not installed, ...). It sweeps every Library the
+  server does, RomM and each folder Library; `--library romm` or
+  `--library folder:1` limits it to one; `--dry-run` shows what each Rule would queue. Before sweeping
+  RomM it finishes an owed identity cleanup and settles pending re-pins once.
+  Only one Rule scheduler runs per data directory: the server now holds a lock
+  on `/config/locks/scheduler.lock` while it runs, and `run-rules` exits 3
+  without queuing anything while it is held. A server started during a
+  `run-rules` pass, or beside another server on the same `/config`, waits for
+  the lock (logging who holds it) and then starts.
+- **Create an `.m3u` from selected discs** (#299). Tick two or more disc
+  images of one game in a folder and press **Create .m3u** in the selection bar.
+  A preview shows the file name (the title without `(Disc N)` / `CD N`,
+  editable) and the entries in disc order before anything is written. An
+  existing playlist is never overwritten; a taken name gets the next free one,
+  such as `Game (2).m3u`. New endpoints: `POST /api/files/playlist/preview` and
+  `POST /api/files/playlist`.
+- **`.m3u` playlists follow a converted disc** (#295). With delete-on-verify,
+  an `.m3u` that names the Source, in its folder or any folder above it up to
+  the volume root, is rewritten to the output before the Source is deleted.
+  Only replaced entries change, the write is atomic, and the original is kept
+  once as `<name>.m3u.bak`. The delete confirmation lists each playlist edit.
+  If a playlist can't be updated, or names the Source in a form the app can't
+  follow, the Source is kept and the job ends as "converted, source kept:
+  couldn't update <file> (<reason>)", shown on the finished job. Ledger rows
+  list the playlists updated, or the one that kept the Source and why. The
+  `compressatorium convert --delete-source` line prints the same reason.
+- **Folder Libraries and the Rules view** (#303). Pick **Register as a
+  Library** on any folder inside a Volume, and the new **Rules** view shows the
+  Platforms found in it with Image counts, plus how many Images are Unsorted or
+  Conflicted. A cue/bin or gdi set is one Image, never its tracks. Give a
+  Platform a Rule (the same settings RomM Rules have), then Preview, Run now,
+  or turn the scheduler on. Folder Rules skip an Image whose output exists, so
+  a second sweep queues nothing, and a failed Image waits until one of its
+  files changes (or **Retry failed**); Unsorted and Conflicted Images are
+  never queued. Removing a Library removes its Rules and touches no
+  files. The RomM view's Automation tab is now the same view, opened on RomM.
+  API: `/api/libraries` (list, register, update, remove, platforms, rules,
+  preview, run). Registered folders live in a new `folder_libraries` table
+  (migration 0012).
+  - A `.cue` or `.gdi` whose tracks point outside the configured volumes (an
+    absolute path, `..`, or a symlink) is refused for every conversion, manual
+    or automatic, and a Rule reports it instead of queueing it. A sheet
+    converted from inside an archive is checked against the folder it was
+    extracted into, so its tracks there convert and nothing outside it does.
+  - Library roots never overlap. A folder equal to, inside, or containing
+    another Library (RomM's library folder included) can't be registered, and
+    saving a RomM library folder that overlaps a registered folder is refused
+    with the Library's name.
+  - Every Rule sweep now gives a Library 10 minutes to list a Platform, RomM
+    included (RomM's catalog fetch had no limit). Past that the sweep stops
+    with "the library stopped responding" and the next one starts over.
+- **Auto convert and Platform detection** (#294). Tick **Auto** in the convert
+  panel, select a mix of files, and each Image goes to its Platform's default
+  format with your saved compression. The Platform comes from the Image's own
+  header (GameCube/Wii, PS1/PS2, PSP, Dreamcast, Saturn, Sega CD, Xbox), or from
+  its folder name when there is no readable header. A header that disagrees with
+  its folder, or an Image nothing identifies, is skipped and shown with its
+  reason in the plan you confirm first. API: `POST /api/jobs/auto-plan` and
+  `POST /api/jobs/auto`. The old "ISO handling" toggle is gone for good; a
+  value left from it is ignored.
+- **Ledger: a permanent record of every finished job** (#292). Each job that
+  completes, fails or is cancelled writes one row (finish time, tool, mode,
+  Source and output paths, input and output bytes, duration, status, the check
+  that passed, and any Source files deleted). Rows survive restarts and are
+  kept forever unless `PUT /api/ledger/settings` sets `retention_days`.
+  - New dashboard card **Space saved**: bytes reclaimed by conversions whose
+    Source was deleted, split by Platform and by output format.
+  - **Recent conversions** now reads from the Ledger, so it is no longer empty
+    after a restart.
+- **Ledger view, CSV export and metrics** (#297). A new **Ledger** page lists
+  every row newest first, paged, with search by path and filters for status,
+  tool and Platform. **Export CSV** downloads the rows matching the current
+  filter. New endpoints: `GET /api/ledger` (paged JSON), `GET
+  /api/ledger/export.csv`, and `GET /api/metrics` (Prometheus text: jobs by
+  status, bytes in, bytes out, queue depth). All sit behind the same auth as
+  the rest of the API. `GET /api/ledger/savings` remains the savings summary.
+- **Round-trip check before a Dolphin job deletes its Source** (#298). With
+  delete-source on, a GameCube/Wii conversion now proves the output holds the
+  same disc before removing anything: the Source ISO's SHA1 is compared with
+  the disc SHA1 `dolphin-tool verify` rebuilds from the output (a container
+  Source such as RVZ is rebuilt the same way). On a mismatch, or when a hash
+  can't be read, the Source is kept and the job says why.
+  - **Container check only (faster, weaker)** in the convert panel skips the
+    comparison and deletes once the output passes its own container check.
+  - The other tools followed (#300, #301, below). A job that keeps its Source
+    reads nothing extra.
+  - The job, the Ledger row, Verify results and the file badge now say **Intact** (passed its
+    container check) or **Round-tripped** (decoded to the same content as its
+    Source) instead of "verified". Existing checked files show as Intact.
+  - Delete-source runs on Dolphin modes take longer: the Source and the output
+    are each read once more.
+  - **RomM Rules:** delete-source Rules on Dolphin modes now Round-trip by
+    default, so their sweeps take longer for the same reason.
+- **Each Rule now says which check runs before it deletes a Source** (#302).
+  Next to delete-source, the rule editor offers **Container check only
+  (faster, weaker)**; left unticked, the Rule Round-trips (the default).
+  Sweeps hand the Rule's setting to every job they queue, and Preview shows it.
+  - **On upgrade, every stored Rule with delete-source on is set to
+    Round-trip**, so sweeps on formats that support it read each file once
+    more and take longer. The rule editor says so once, with how to opt out;
+    dismissing the notice is remembered.
+- **Round-trip check for chdman Create CD and Create DVD** (#300). With
+  delete-source on, these jobs now prove the CHD holds the same disc before the
+  ISO or cue/bin is removed. A DVD CHD's data SHA1 is compared with the ISO's
+  SHA1. A CD CHD is extracted to a temp folder on the scratch volume and
+  compared with the Source: the track data, and the track table (number of
+  tracks, and per track the type, sector size, length, INDEX 01 offset and
+  gaps). The temp folder is removed afterwards, also when the job fails or is
+  cancelled. On a mismatch the Source is kept. Container check only skips the
+  comparison here too.
+  - **Behaviour change:** a Create CD or Create DVD delete-source job that used
+    to delete on the container check now fails and keeps its Source when the
+    scratch volume lacks about a disc's worth of free space, or when
+    `chdman info` or `chdman extractcd` fails.
+  - CD delete-source jobs take longer: the CHD is read and written out once
+    more.
+  - Cue flags (DCP, PRE), CATALOG, ISRC and INDEX 02+ are not compared: a CHD
+    does not store them, with or without this check.
+  - These Sources are always kept with "content differs", because chdman does
+    not write them back in the same layout: Redump-style GD-ROM (Dreamcast)
+    cue/bin sets, cues with `CDI/2352` tracks, and cues with WAVE audio files.
+    Use Container check only for those.
+  - **RomM Rules:** delete-source Rules on Create CD and Create DVD now
+    Round-trip too unless the Rule is set to Container check only, so their
+    sweeps need the scratch space and take longer.
+- **Round-trip now covers every tool that has delete-source** (#301). Before a
+  delete-source job removes its Source, the output is decoded and compared with
+  it: CSO/ZSO/DAX (maxcso), 3DS (z3ds) and WUX (JWUDTool) are decoded to a
+  hashing stream with no temp file; an NSZ is compared through the NSP SHA256
+  that `nsz -V` rebuilds; a 7z/zip ROM archive's members (name, size, CRC) must
+  match the ROM exactly; CSO/ZSO/DAX to CHD compares the decoded disc with the
+  CHD; chdman Create HD and Create raw compare the image with the CHD's data
+  SHA1, and Copy compares the two CHDs. On a mismatch the Source is kept.
+  Container check only skips it, as before. PS3 folder to ISO and the XISO trim
+  still offer no delete-source.
+  - **chdman Create LD no longer offers delete-source.** Its Source is an AVI,
+    and nothing a LaserDisc CHD decodes to can be compared with the AVI byte
+    for byte, so the AVI cannot be proven and is never deleted. Rules on Create
+    LD lose their delete-source setting.
+  - chdman Copy first checks the Source CHD with chdman verify; a Source that
+    is not Intact is kept and the job says so. A Copy of a LaserDisc CHD always
+    keeps its Source: a LaserDisc CHD has no content digest to compare.
+  - **Behaviour change:** these delete-source jobs read the Source and the
+    output once more, so they take longer, RomM Rule sweeps included.
+  - An XCZ is decompressed to the scratch volume to be compared, so an XCI job
+    needs about the XCI's size free there, or it keeps the Source.
+  - Kept with "content differs": NSPs whose delta fragments nsz drops (update
+    NSPs, unless compressed with `--keep`). XCIs nsz does not rebuild byte for
+    byte (it rewrites the area before the partitions and does not pad to the
+    cart size) are kept with "nsz did not rebuild this XCI byte-for-byte". Use
+    Container check only for those.
+  - A large ZSO decodes slowly (LZ4 is decoded in Python) and may hit the
+    verify time limit, which keeps the Source.
+  - A 7z/zip ROM archive is checked by CRC32 and size per member, the weakest
+    of these checks; every other tool compares a SHA1 or SHA256.
+- **chdman verify is stricter** (#300). chdman reports a data SHA1 mismatch, and
+  a CHD with no checksum, while still exiting with success. Verify now passes a
+  CHD only when chdman says the raw SHA1 matched, and fails on any error line.
+  This applies to every chdman Verify and to the Intact check of every chdman
+  delete-source job. An uncompressed CHD, or one with no checksum, is now shown
+  as "This CHD carries no checksum, so it can't be checked" instead of passing.
+
 ### Changed
 
 - **Groundwork for gamelist.xml and RomM updates** (#383). Before a Source is
@@ -451,6 +761,63 @@
   One edge case: if the app can't tell which Library holds the Source (the
   Library list can't be read, or the folder doesn't answer in time), the
   Source is kept and the job says why, instead of being deleted.
+
+- **Job locks live in `/config/locks`** (#306). With `CHD_CONCURRENCY_LOCK_DIR`
+  unset, output locks and conversion slots move from `/tmp/chd-locks` to
+  `<data dir>/locks`, so a CLI container that mounts the same `/config` as the
+  web UI shares its locks. The image now sets `CHD_DATA_DIR=/config`, and
+  `<data dir>/locks` is created at start; when it can't be, the process stops
+  with an error naming the folder instead of quietly using `/tmp`. A
+  deployment whose `/config` the `converter` user can't write (one that moved
+  the database and `CHD_TEMP_DIR` elsewhere) used to run with its locks in
+  `/tmp`; it now stops at start and says why. Make `/config` writable or set
+  `CHD_CONCURRENCY_LOCK_DIR`. Only
+  without any data dir configured (a source checkout) is `/tmp/chd-locks`
+  used. Each process holds one lock file for its
+  lifetime and its queue tickets name it, so a process killed without cleanup
+  (closed terminal, SIGKILL, out of memory) no longer stalls the other
+  process's conversions; its tickets are cleared by the next job that waits.
+  The server and the CLI raise their open-file limit to the system maximum at
+  start.
+- **A file a job is reading can't be renamed or deleted from the web UI**
+  (#306), whichever process runs the job. Every job holds a shared lock on its
+  Source and the Source's companions until it ends, so the web answers 409
+  while a CLI run converts that file. Two jobs reading one file don't block each
+  other. Renaming or deleting a folder is refused the same way while a job in
+  any process reads or writes something inside it. A delete-source job whose
+  Source another job is still reading waits up to a minute for it; if it's
+  still being read, the Source is kept and the job completes with "Source
+  kept: it was being read by another job" instead of failing. The web shows
+  it as a warning toast and on the finished job's row.
+  - A CLI container and the web UI that share `/config` must mount each Volume
+    at the same path; locks name container paths.
+- **Delete-source keeps an archive unless everything in it is the converted
+  Image** (#306). Deleting an archive member's Source deletes the whole
+  archive, so the archive is now deleted only when every member belongs to
+  the Image that was converted: its own file, the tracks its sheet names, and
+  its split parts. Any other member, of any type (another disc, a ROM, a loose
+  `.bin`, a nested archive, a folder, a `.txt`, `.nfo` or `.jpg`, `__MACOSX/`
+  clutter), keeps the archive. The web UI refuses such a request and names the
+  first few extra members; the CLI converts the member, keeps the archive,
+  names them on that line and exits 1.
+- **An archive the safety rules refuse is skipped by `verify`, not failed**
+  (#306). A single-ROM archive with a symlink, an absolute or `..` path, an
+  encrypted member, or over a `CHD_ARCHIVE_MAX_*` limit you set is reported as
+  "can't be checked (refused by the archive safety rules: ...)". Its stored
+  check is kept and the exit code is unaffected. The web's Verify says the same
+  (a warning, not an error, and "N can't be checked" in a batch summary, apart
+  from failures). 7z is never left waiting for a
+  password: it reads no terminal input, and an encrypted archive fails at once.
+- **Auto converts a PS3 disc folder to an ISO** (#306). The Auto choice now
+  sends a PS3 disc folder to `folder_to_iso`; it used to leave it alone.
+- A single convert request for an output another job is writing now says
+  "Output file is currently being converted" (still 409) instead of "Output
+  file already exists".
+- **RomM Rules run on a shared Rule engine** (#296). Nothing changes in the
+  app or the API. Stored Rules and their state are copied to new keys prefixed
+  with the Library id (`romm:7`) the first time they are read. The old
+  `romm.rules` and `romm.auto_state` rows are kept and no longer written, so a
+  downgrade gets the Rules and history as they were at upgrade time.
 
 ### Fixed
 
@@ -938,391 +1305,6 @@
   reason. A bug in our own code still logs ERROR with the traceback. The listing
   answers the same.
 
-### Added
-
-- **ES-DE's own gamelists folder** (#387). ES-DE keeps its gamelists in a
-  folder of its own by default (`ES-DE/gamelists/ps2/gamelist.xml` for the
-  games in `ROMs/ps2`), not beside the ROMs. A Library marked as used by an
-  EmulationStation frontend can now name that folder under the switch (in the
-  Rules editor, the Library API or RomM's settings). It must be inside a
-  Volume; a folder outside every Volume is refused, and so is one the app
-  can't confirm while a Volume isn't answering. With it set, a conversion
-  also updates the system's gamelist there, with the same rules as the
-  Platform folder's: only the path text changes, one backup, an atomic write,
-  and the Source kept if it can't be updated. Gamelists in which ES-DE writes
-  its `<alternativeEmulator>` beside `<gameList>` are now read too; before,
-  they kept the Source as "can't be parsed".
-- **ES-DE, Batocera, Knulli and muOS keep their gamelist entries** (#386). A
-  Library (a folder Library or RomM) has a new switch at the top of its
-  Rules: **Used by an EmulationStation frontend**, off by default. When it's
-  on and a conversion deletes its Source, the matching `<path>` in the
-  Platform folder's `gamelist.xml` is pointed at the new file first
-  (`./Game.iso` becomes `./Game.chd`; `./Multi Disc/Game.cue` keeps its
-  folder), so the game's artwork, description, favourite flag and play count
-  stay. Only the path text of entries for replaced files changes: the XML
-  declaration, encoding, comments, element order and every other element are
-  left byte for byte, and the first change keeps `gamelist.xml.bak`. The
-  delete confirmation says "updates gamelist.xml, 1 entry", and the Ledger
-  row records the file and the entry count. A gamelist that can't be parsed
-  or written, or that names the Source in a path that doesn't lead to it,
-  keeps the Source and the output, and the job says which file and why.
-  Close ES-DE before converting: it rewrites its gamelist when it exits.
-  The delete confirmation now also counts the entries each playlist change
-  moves.
-- **Beside RomM's own converter** (#385). Newer RomM releases can convert
-  their library themselves (`ROM_CONVERTO_ENABLED`), and they delete the
-  sources without reading the output back. When RomM reports its converter
-  on, the RomM Settings tab now says so in a banner and advises switching it
-  off. The Automation tab flags each Rule whose Platform RomM also converts,
-  with RomM's target and the Rule's side by side, and marks the Platforms RomM
-  can't convert. The banner's **Import RomM's targets as Rules** button creates
-  a Rule for each Platform RomM converts that has no Rule yet, mapping RomM's
-  format onto a mode here; a format nothing here writes (Xbox 360 `zar`) is
-  skipped and named, and the new Rules start off. Nothing is blocked: these
-  are warnings. A RomM without the converter, or with it off, shows none of
-  it. The README explains why we advise turning RomM's converter off.
-
-- **A Source kept because another job was reading it is deleted later**
-  (#329). When a Rule's delete step finds the Source still in use, the job
-  keeps it and says so; now the next sweep (the app's or `compressatorium
-  run-rules`) tries the delete again, under the same locks and checks, after
-  making sure the output is still the checked one and the Source is unchanged.
-  A Source still in use after 10 sweeps stays, with a **Source kept** Finding.
-  A job you started by hand whose delete stops part way shows the Source as a
-  **Source kept** Finding under **Started by hand**; it clears itself once the
-  files left are gone. A half-finished delete is never forgotten silently:
-  turning the Rule's delete off, Forget history, a RomM instance change or
-  removing the Library reports it the same way. Before a retried delete
-  removes anything, the output's check runs again (the container check, plus
-  the Round-trip where the Rule asks for it): an output changed since its
-  check keeps the Source, even one rewritten in place to the same size and
-  date.
-- **UTF-16 `.m3u` playlists follow a converted disc** (#334). A playlist saved
-  as UTF-16 with a BOM (Windows Notepad's "Unicode") that names the Source is
-  now rewritten like a UTF-8 one, keeping its encoding, BOM and line endings.
-  Before, the Source was kept and the playlist had to be fixed by hand. UTF-16
-  without a BOM still keeps the Source, since its encoding can't be told
-  safely.
-- **eXoDOS repack for RomM** (#323). A new **eXoDOS** tool turns an eXoDOS game
-  zip into a `.dosz` laid out for RomM's in-browser DOS player (DOSBox Pure),
-  with the game's own `dosbox.conf` as the file's first entry. The game moves
-  to the root of the file, and its `dosbox.conf` from eXoDOS's `!dos` folder
-  is written there with the mount paths rewritten.
-  - Manual only: run it from the file browser. Rules never offer it and refuse
-    a stored Rule that names it.
-  - Set `EXODOS_DOS_DIR` to your `!dos` folder, inside a volume, to turn it on.
-    In RomM's `config.yml`, set
-    `emulatorjs.settings.dosbox_pure.dosbox_pure_conf: inside` and leave
-    `emulatorjs.disable_batch_bootup` at `false`. Booting real games in RomM
-    is still to be confirmed.
-  - Only `mount`, `imgmount` and `boot` lines change; line endings and encoding
-    are kept. A game whose config still points outside itself, or mounts a
-    folder on a drive other than C:, finishes with a warning, which stays on
-    the finished job's row.
-  - The output is written beside the source as `Game.dosz`; the source is only
-    read, and delete-source is not offered. Every repack checks every CRC and
-    that `dosbox.conf` is at the root before keeping its output, and Verify on
-    a `.dosz` runs the same check.
-  - Behaviour modelled on eXo2romm (Unlicense); no code is shared.
-- **Check Rules** (#305). A Platform in the Rules view (folder Libraries and
-  RomM) can have a check Rule beside its conversion Rule: tick **Check these
-  Images are Intact** and set a nightly budget in GB, a window and weekdays.
-  Once a day the Images never checked go first, then the oldest checks, until
-  the next one does not fit the budget (one larger than the whole budget goes
-  alone), and each goes through its tool's own Verify as one job in the queue.
-  Run now spends another budget's worth and leaves the nightly run when it
-  is due. A check Rule whose window starts and ends at the same time runs all
-  day (once a day from midnight); a conversion Rule with such a window is
-  paused with the reason shown, since there it is a slip. #306's verdict rules decide: a verifier killed by a signal is no
-  verdict, and an Image whose check never reaches one goes behind the others.
-  An Image gone or changed by its turn is skipped. While an Image's Verify
-  runs and its result is recorded it is held like a file a conversion reads. An Image that fails becomes a **Not
-  Intact** Finding and the run sends one `check_failed` notification listing
-  the failures; a later pass clears the Finding. A check that could not run
-  changes nothing, and an Image no tool can check is skipped. Each Image's
-  last check time is kept in a new `image_checks` table (migration 0014,
-  on top of #304's 0013).
-- **Findings view and folder Platforms** (#304). A new **Findings** view lists
-  the Images in your folder Libraries that need a decision: a Platform
-  conflict (the header disagrees with the folder) or an Unsorted Image. Each
-  row shows the Library, the Image, the kind, first and last seen, and links
-  to **Open folder** and **Set Platform**; **Dismiss** hides it until its cause
-  changes, and **Show again** undoes that. **Set Platform** ("this folder is
-  PSP") is also on a folder's row menu. Below the header, the nearest folder
-  that is set to or named after a Platform decides (on the same folder, the one
-  you set wins), and a header that disagrees is a conflict. The app never moves or deletes an Image over a
-  Finding. API: `/api/findings`, `/api/platform-mappings`, `/api/platforms`.
-  New tables `platform_mappings`, `findings` and `finding_dismissals`
-  (migration 0013, on top of #303's 0012).
-- **Notifications: webhook and Apprise** (#293). Add a webhook URL or an Apprise
-  URL under the new **Settings** page and get one message when a sweep finishes
-  (counts, space saved, and the failures inside it) and one when a job you
-  started by hand fails. **Test** sends a sample and shows the error if it fails.
-  Nothing is sent until a destination is added. Saved URLs are never sent back
-  to the browser, and a destination that errors or hangs never fails or delays a
-  job. Apprise is bundled in the Docker image and imported only when used;
-  webhooks need no extra package.
-  Webhook delivery does not follow redirects (Test reports "HTTP 30x") and does not
-  use `HTTP(S)_PROXY`.
-  A native **Discord webhook** destination (any https URL that speaks Discord's
-  webhook format, no Apprise needed) posts one embed per message with mentions
-  disabled; the generic webhook's JSON is unchanged.
-
-- **`compressatorium convert` and `compressatorium verify`** (#306). A command
-  line for shells and cron that covers every tool, recurses into subfolders and
-  archives, and uses the web UI's planner, delete checks and Ledger.
-  `convert PATH --to chd` (any format, `7z`/`zip` included, or a mode id) or
-  `--auto`, with `--delete-source` (Round-trip where the mode has it,
-  `--container-only` to opt out), `--dry-run` and `--json`. `verify PATH --since
-  30d` checks Images not checked in that window. Exit 0 when done or nothing to
-  do, 1 on a failure, 2 on bad arguments. Safe beside a running server: both
-  take the same output locks, and an `.m3u` both update is rewritten by one at a
-  time, so neither edit is lost. Started as root, it drops to the `converter` user
-  (`PUID`/`PGID`) the way the server does. `CHD_MODE=cli` keeps today's scope
-  and defaults; it now runs through this command. Two differences: with
-  `CHDMAN_MODE=createdvd` it no longer hands top-level `.cue`/`.gdi` files to
-  chdman (that never produced a usable CHD), and one failed file no longer
-  stops the rest of the run.
-- **`compressatorium run-rules`** (#307). One pass over your stored Rules, for
-  cron or Unraid User Scripts: it queues what each Rule says is due, waits for
-  those jobs and exits: 0, or 1 when a job failed or a sweep reported an error
-  (RomM not answering, a tool not installed, ...). It sweeps every Library the
-  server does, RomM and each folder Library; `--library romm` or
-  `--library folder:1` limits it to one; `--dry-run` shows what each Rule would queue. Before sweeping
-  RomM it finishes an owed identity cleanup and settles pending re-pins once.
-  Only one Rule scheduler runs per data directory: the server now holds a lock
-  on `/config/locks/scheduler.lock` while it runs, and `run-rules` exits 3
-  without queuing anything while it is held. A server started during a
-  `run-rules` pass, or beside another server on the same `/config`, waits for
-  the lock (logging who holds it) and then starts.
-- **Create an `.m3u` from selected discs** (#299). Tick two or more disc
-  images of one game in a folder and press **Create .m3u** in the selection bar.
-  A preview shows the file name (the title without `(Disc N)` / `CD N`,
-  editable) and the entries in disc order before anything is written. An
-  existing playlist is never overwritten; a taken name gets the next free one,
-  such as `Game (2).m3u`. New endpoints: `POST /api/files/playlist/preview` and
-  `POST /api/files/playlist`.
-- **`.m3u` playlists follow a converted disc** (#295). With delete-on-verify,
-  an `.m3u` that names the Source, in its folder or any folder above it up to
-  the volume root, is rewritten to the output before the Source is deleted.
-  Only replaced entries change, the write is atomic, and the original is kept
-  once as `<name>.m3u.bak`. The delete confirmation lists each playlist edit.
-  If a playlist can't be updated, or names the Source in a form the app can't
-  follow, the Source is kept and the job ends as "converted, source kept:
-  couldn't update <file> (<reason>)", shown on the finished job. Ledger rows
-  list the playlists updated, or the one that kept the Source and why. The
-  `compressatorium convert --delete-source` line prints the same reason.
-- **Folder Libraries and the Rules view** (#303). Pick **Register as a
-  Library** on any folder inside a Volume, and the new **Rules** view shows the
-  Platforms found in it with Image counts, plus how many Images are Unsorted or
-  Conflicted. A cue/bin or gdi set is one Image, never its tracks. Give a
-  Platform a Rule (the same settings RomM Rules have), then Preview, Run now,
-  or turn the scheduler on. Folder Rules skip an Image whose output exists, so
-  a second sweep queues nothing, and a failed Image waits until one of its
-  files changes (or **Retry failed**); Unsorted and Conflicted Images are
-  never queued. Removing a Library removes its Rules and touches no
-  files. The RomM view's Automation tab is now the same view, opened on RomM.
-  API: `/api/libraries` (list, register, update, remove, platforms, rules,
-  preview, run). Registered folders live in a new `folder_libraries` table
-  (migration 0012).
-  - A `.cue` or `.gdi` whose tracks point outside the configured volumes (an
-    absolute path, `..`, or a symlink) is refused for every conversion, manual
-    or automatic, and a Rule reports it instead of queueing it. A sheet
-    converted from inside an archive is checked against the folder it was
-    extracted into, so its tracks there convert and nothing outside it does.
-  - Library roots never overlap. A folder equal to, inside, or containing
-    another Library (RomM's library folder included) can't be registered, and
-    saving a RomM library folder that overlaps a registered folder is refused
-    with the Library's name.
-  - Every Rule sweep now gives a Library 10 minutes to list a Platform, RomM
-    included (RomM's catalog fetch had no limit). Past that the sweep stops
-    with "the library stopped responding" and the next one starts over.
-- **Auto convert and Platform detection** (#294). Tick **Auto** in the convert
-  panel, select a mix of files, and each Image goes to its Platform's default
-  format with your saved compression. The Platform comes from the Image's own
-  header (GameCube/Wii, PS1/PS2, PSP, Dreamcast, Saturn, Sega CD, Xbox), or from
-  its folder name when there is no readable header. A header that disagrees with
-  its folder, or an Image nothing identifies, is skipped and shown with its
-  reason in the plan you confirm first. API: `POST /api/jobs/auto-plan` and
-  `POST /api/jobs/auto`. The old "ISO handling" toggle is gone for good; a
-  value left from it is ignored.
-- **Ledger: a permanent record of every finished job** (#292). Each job that
-  completes, fails or is cancelled writes one row (finish time, tool, mode,
-  Source and output paths, input and output bytes, duration, status, the check
-  that passed, and any Source files deleted). Rows survive restarts and are
-  kept forever unless `PUT /api/ledger/settings` sets `retention_days`.
-  - New dashboard card **Space saved**: bytes reclaimed by conversions whose
-    Source was deleted, split by Platform and by output format.
-  - **Recent conversions** now reads from the Ledger, so it is no longer empty
-    after a restart.
-- **Ledger view, CSV export and metrics** (#297). A new **Ledger** page lists
-  every row newest first, paged, with search by path and filters for status,
-  tool and Platform. **Export CSV** downloads the rows matching the current
-  filter. New endpoints: `GET /api/ledger` (paged JSON), `GET
-  /api/ledger/export.csv`, and `GET /api/metrics` (Prometheus text: jobs by
-  status, bytes in, bytes out, queue depth). All sit behind the same auth as
-  the rest of the API. `GET /api/ledger/savings` remains the savings summary.
-- **Round-trip check before a Dolphin job deletes its Source** (#298). With
-  delete-source on, a GameCube/Wii conversion now proves the output holds the
-  same disc before removing anything: the Source ISO's SHA1 is compared with
-  the disc SHA1 `dolphin-tool verify` rebuilds from the output (a container
-  Source such as RVZ is rebuilt the same way). On a mismatch, or when a hash
-  can't be read, the Source is kept and the job says why.
-  - **Container check only (faster, weaker)** in the convert panel skips the
-    comparison and deletes once the output passes its own container check.
-  - The other tools followed (#300, #301, below). A job that keeps its Source
-    reads nothing extra.
-  - The job, the Ledger row, Verify results and the file badge now say **Intact** (passed its
-    container check) or **Round-tripped** (decoded to the same content as its
-    Source) instead of "verified". Existing checked files show as Intact.
-  - Delete-source runs on Dolphin modes take longer: the Source and the output
-    are each read once more.
-  - **RomM Rules:** delete-source Rules on Dolphin modes now Round-trip by
-    default, so their sweeps take longer for the same reason.
-- **Each Rule now says which check runs before it deletes a Source** (#302).
-  Next to delete-source, the rule editor offers **Container check only
-  (faster, weaker)**; left unticked, the Rule Round-trips (the default).
-  Sweeps hand the Rule's setting to every job they queue, and Preview shows it.
-  - **On upgrade, every stored Rule with delete-source on is set to
-    Round-trip**, so sweeps on formats that support it read each file once
-    more and take longer. The rule editor says so once, with how to opt out;
-    dismissing the notice is remembered.
-- **Round-trip check for chdman Create CD and Create DVD** (#300). With
-  delete-source on, these jobs now prove the CHD holds the same disc before the
-  ISO or cue/bin is removed. A DVD CHD's data SHA1 is compared with the ISO's
-  SHA1. A CD CHD is extracted to a temp folder on the scratch volume and
-  compared with the Source: the track data, and the track table (number of
-  tracks, and per track the type, sector size, length, INDEX 01 offset and
-  gaps). The temp folder is removed afterwards, also when the job fails or is
-  cancelled. On a mismatch the Source is kept. Container check only skips the
-  comparison here too.
-  - **Behaviour change:** a Create CD or Create DVD delete-source job that used
-    to delete on the container check now fails and keeps its Source when the
-    scratch volume lacks about a disc's worth of free space, or when
-    `chdman info` or `chdman extractcd` fails.
-  - CD delete-source jobs take longer: the CHD is read and written out once
-    more.
-  - Cue flags (DCP, PRE), CATALOG, ISRC and INDEX 02+ are not compared: a CHD
-    does not store them, with or without this check.
-  - These Sources are always kept with "content differs", because chdman does
-    not write them back in the same layout: Redump-style GD-ROM (Dreamcast)
-    cue/bin sets, cues with `CDI/2352` tracks, and cues with WAVE audio files.
-    Use Container check only for those.
-  - **RomM Rules:** delete-source Rules on Create CD and Create DVD now
-    Round-trip too unless the Rule is set to Container check only, so their
-    sweeps need the scratch space and take longer.
-- **Round-trip now covers every tool that has delete-source** (#301). Before a
-  delete-source job removes its Source, the output is decoded and compared with
-  it: CSO/ZSO/DAX (maxcso), 3DS (z3ds) and WUX (JWUDTool) are decoded to a
-  hashing stream with no temp file; an NSZ is compared through the NSP SHA256
-  that `nsz -V` rebuilds; a 7z/zip ROM archive's members (name, size, CRC) must
-  match the ROM exactly; CSO/ZSO/DAX to CHD compares the decoded disc with the
-  CHD; chdman Create HD and Create raw compare the image with the CHD's data
-  SHA1, and Copy compares the two CHDs. On a mismatch the Source is kept.
-  Container check only skips it, as before. PS3 folder to ISO and the XISO trim
-  still offer no delete-source.
-  - **chdman Create LD no longer offers delete-source.** Its Source is an AVI,
-    and nothing a LaserDisc CHD decodes to can be compared with the AVI byte
-    for byte, so the AVI cannot be proven and is never deleted. Rules on Create
-    LD lose their delete-source setting.
-  - chdman Copy first checks the Source CHD with chdman verify; a Source that
-    is not Intact is kept and the job says so. A Copy of a LaserDisc CHD always
-    keeps its Source: a LaserDisc CHD has no content digest to compare.
-  - **Behaviour change:** these delete-source jobs read the Source and the
-    output once more, so they take longer, RomM Rule sweeps included.
-  - An XCZ is decompressed to the scratch volume to be compared, so an XCI job
-    needs about the XCI's size free there, or it keeps the Source.
-  - Kept with "content differs": NSPs whose delta fragments nsz drops (update
-    NSPs, unless compressed with `--keep`). XCIs nsz does not rebuild byte for
-    byte (it rewrites the area before the partitions and does not pad to the
-    cart size) are kept with "nsz did not rebuild this XCI byte-for-byte". Use
-    Container check only for those.
-  - A large ZSO decodes slowly (LZ4 is decoded in Python) and may hit the
-    verify time limit, which keeps the Source.
-  - A 7z/zip ROM archive is checked by CRC32 and size per member, the weakest
-    of these checks; every other tool compares a SHA1 or SHA256.
-- **chdman verify is stricter** (#300). chdman reports a data SHA1 mismatch, and
-  a CHD with no checksum, while still exiting with success. Verify now passes a
-  CHD only when chdman says the raw SHA1 matched, and fails on any error line.
-  This applies to every chdman Verify and to the Intact check of every chdman
-  delete-source job. An uncompressed CHD, or one with no checksum, is now shown
-  as "This CHD carries no checksum, so it can't be checked" instead of passing.
-- **Xbox / Xbox 360: trim disc images to XISO** with
-  [extract-xiso](https://github.com/XboxDev/extract-xiso), the tenth tool. A full
-  (Redump-style) Xbox disc image becomes `Game.xiso.iso` holding only the game's
-  files — what xemu, Xenia and modded consoles load — typically 20-40% smaller.
-  Original Xbox (XGD1) and Xbox 360 (XGD2/XGD3) layouts are both handled.
-  - Offered only on `.iso` files that really contain an Xbox filesystem: the app
-    probes each one, so PSP/PS2/GameCube ISOs never show the option, and an image
-    extract-xiso already trimmed is not offered again.
-  - The source is never renamed or modified. (extract-xiso's own rewrite mode
-    renames its input to `.old` and leaves it that way on failure; the app hands
-    it a symlink instead.)
-  - Verify checks the XISO's structure and has extract-xiso list it. There is no
-    delete-on-verify: XISO carries no checksums and the trim is irreversible.
-  - Info shows console, disc layout, file count and game-data size.
-
-### Changed
-
-- **Job locks live in `/config/locks`** (#306). With `CHD_CONCURRENCY_LOCK_DIR`
-  unset, output locks and conversion slots move from `/tmp/chd-locks` to
-  `<data dir>/locks`, so a CLI container that mounts the same `/config` as the
-  web UI shares its locks. The image now sets `CHD_DATA_DIR=/config`, and
-  `<data dir>/locks` is created at start; when it can't be, the process stops
-  with an error naming the folder instead of quietly using `/tmp`. A
-  deployment whose `/config` the `converter` user can't write (one that moved
-  the database and `CHD_TEMP_DIR` elsewhere) used to run with its locks in
-  `/tmp`; it now stops at start and says why. Make `/config` writable or set
-  `CHD_CONCURRENCY_LOCK_DIR`. Only
-  without any data dir configured (a source checkout) is `/tmp/chd-locks`
-  used. Each process holds one lock file for its
-  lifetime and its queue tickets name it, so a process killed without cleanup
-  (closed terminal, SIGKILL, out of memory) no longer stalls the other
-  process's conversions; its tickets are cleared by the next job that waits.
-  The server and the CLI raise their open-file limit to the system maximum at
-  start.
-- **A file a job is reading can't be renamed or deleted from the web UI**
-  (#306), whichever process runs the job. Every job holds a shared lock on its
-  Source and the Source's companions until it ends, so the web answers 409
-  while a CLI run converts that file. Two jobs reading one file don't block each
-  other. Renaming or deleting a folder is refused the same way while a job in
-  any process reads or writes something inside it. A delete-source job whose
-  Source another job is still reading waits up to a minute for it; if it's
-  still being read, the Source is kept and the job completes with "Source
-  kept: it was being read by another job" instead of failing. The web shows
-  it as a warning toast and on the finished job's row.
-  - A CLI container and the web UI that share `/config` must mount each Volume
-    at the same path; locks name container paths.
-- **Delete-source keeps an archive unless everything in it is the converted
-  Image** (#306). Deleting an archive member's Source deletes the whole
-  archive, so the archive is now deleted only when every member belongs to
-  the Image that was converted: its own file, the tracks its sheet names, and
-  its split parts. Any other member, of any type (another disc, a ROM, a loose
-  `.bin`, a nested archive, a folder, a `.txt`, `.nfo` or `.jpg`, `__MACOSX/`
-  clutter), keeps the archive. The web UI refuses such a request and names the
-  first few extra members; the CLI converts the member, keeps the archive,
-  names them on that line and exits 1.
-- **An archive the safety rules refuse is skipped by `verify`, not failed**
-  (#306). A single-ROM archive with a symlink, an absolute or `..` path, an
-  encrypted member, or over a `CHD_ARCHIVE_MAX_*` limit you set is reported as
-  "can't be checked (refused by the archive safety rules: ...)". Its stored
-  check is kept and the exit code is unaffected. The web's Verify says the same
-  (a warning, not an error, and "N can't be checked" in a batch summary, apart
-  from failures). 7z is never left waiting for a
-  password: it reads no terminal input, and an encrypted archive fails at once.
-- **Auto converts a PS3 disc folder to an ISO** (#306). The Auto choice now
-  sends a PS3 disc folder to `folder_to_iso`; it used to leave it alone.
-- A single convert request for an output another job is writing now says
-  "Output file is currently being converted" (still 409) instead of "Output
-  file already exists".
-- **RomM Rules run on a shared Rule engine** (#296). Nothing changes in the
-  app or the API. Stored Rules and their state are copied to new keys prefixed
-  with the Library id (`romm:7`) the first time they are read. The old
-  `romm.rules` and `romm.auto_state` rows are kept and no longer written, so a
-  downgrade gets the Rules and history as they were at upgrade time.
-
-### Fixed
-
 - **Ledger savings group hand-started jobs by Platform** (#346). A job started
   from the file browser, Auto or the CLI now records the Platform its Source
   was detected as (the same detection Auto uses), and a Rule's job records its
@@ -1379,6 +1361,8 @@
   made it. A stored check is now kept while its split parts are on disk, and
   removed once they are gone.
 
+## 4.5.2 (2026-11-13)
+
 ### Security
 
 - **Docker image: cleared the open Trivy findings.** Base images moved to
@@ -1398,6 +1382,25 @@
   under ESLint. The remaining `deepmerge` advisory has no fixed release; it is a
   build-time dependency of the Svelte Vite plugin and only ever merges this
   project's own config.
+
+## 4.5.1 (2026-11-13)
+
+### Added
+
+- **Xbox / Xbox 360: trim disc images to XISO** with
+  [extract-xiso](https://github.com/XboxDev/extract-xiso), the tenth tool. A full
+  (Redump-style) Xbox disc image becomes `Game.xiso.iso` holding only the game's
+  files — what xemu, Xenia and modded consoles load — typically 20-40% smaller.
+  Original Xbox (XGD1) and Xbox 360 (XGD2/XGD3) layouts are both handled.
+  - Offered only on `.iso` files that really contain an Xbox filesystem: the app
+    probes each one, so PSP/PS2/GameCube ISOs never show the option, and an image
+    extract-xiso already trimmed is not offered again.
+  - The source is never renamed or modified. (extract-xiso's own rewrite mode
+    renames its input to `.old` and leaves it that way on failure; the app hands
+    it a symlink instead.)
+  - Verify checks the XISO's structure and has extract-xiso list it. There is no
+    delete-on-verify: XISO carries no checksums and the trim is irreversible.
+  - Info shows console, disc layout, file count and game-data size.
 
 ### Changed
 

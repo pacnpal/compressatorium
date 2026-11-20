@@ -1,8 +1,10 @@
 # Compressatorium — game-image converter (web UI + headless CLI)
 
-A FastAPI + Svelte app that wraps ten conversion tools — CHDMAN, dolphin-tool,
-z3ds, nsz, maxcso, 7z, makeps3iso, nkit2iso, jwud (JWUDTool), and xiso
-(extract-xiso) — behind one tool-plugin architecture.
+A FastAPI + Svelte app that wraps twelve conversion programs (CHDMAN, dolphin-tool,
+z3ds, nsz, maxcso, 7z, makeps3iso, nkit2iso, jwud (JWUDTool), xiso (extract-xiso),
+rom-converto, and unar for RAR sets) behind one tool-plugin architecture, plus two
+tools that run no program: the eXoDOS repack and the Pipeline tool that chains modes.
+The full list is what `app/services/tools/__init__.py` registers.
 Operational runbook for agents: `AGENTS.md`. Tool plugins and shared
 infrastructure: `docs/DESIGN_tool_plugin_architecture.md`. **Adding a tool or a
 platform/mode: `docs/ADDING_PLATFORMS_AND_TOOLS.md`** — the step-by-step
@@ -15,7 +17,8 @@ walkthrough, file inventory, and checklist.
 - Run (prod-style): `./run_dev.sh` (bootstraps `.venv`, uvicorn on `:8080`)
 - Dev HMR: `npm run dev` (Vite on `:5173`, proxies `/api` + `/health` to `:8080`)
 - Tests: `PYTHONPATH=app python -m pytest -q tests`
-- Lint (Python): `ruff check .` (max line length 100, matching `.pylintrc` / Codacy)
+- Lint (Python): `ruff check .`. Ruff sets no line length; the 100-character limit is
+  pylint's (`.pylintrc`, `pyproject.toml`), which Codacy runs
 - Lint (JS/Svelte): `npm run lint` (eslint)
 - Version lives in `package.json`; releases also update `docs/RELEASE_NOTES.md`.
 

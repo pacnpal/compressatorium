@@ -73,14 +73,14 @@ App URL: `http://localhost:8080` (prod-style) or `http://localhost:5173` (Vite H
 ### 2. Tests
 
 ```bash
-pytest -q tests
+PYTHONPATH=app python -m pytest -q tests
 ```
 
 Targeted suites:
 
 ```bash
-pytest -q tests/test_mode_parity_fixes.py
-pytest -q tests/test_volume_discovery.py
+PYTHONPATH=app python -m pytest -q tests/test_mode_parity_fixes.py
+PYTHONPATH=app python -m pytest -q tests/test_volume_discovery.py
 ```
 
 ### 3. Docker runtime
@@ -136,7 +136,7 @@ curl -s http://localhost:8080/api/chd-metadata/scan/status
 
 The version lives in `package.json` (`version`). There is no `.version` file. A release means bumping `package.json`, updating `docs/RELEASE_NOTES.md` (Keep a Changelog format), and releasing `vX.Y.Z`, either by publishing a GitHub Release or by running the image workflow by hand with the version (see below). Either one builds the image.
 
-Schema changes use `scripts/new_migration.sh` (see README, "Schema changes"). That's the only script in `scripts/`.
+Schema changes use `scripts/new_migration.sh` (see README, "Schema changes").
 
 ### 6. CI (`docker-image.yml`)
 

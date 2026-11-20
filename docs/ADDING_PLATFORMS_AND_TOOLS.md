@@ -17,12 +17,14 @@ plus one synthetic pipeline tool already wired up:
 | **`z3ds`** | built from source (`/usr/local/bin/z3ds_compressor`) | `app/services/z3ds_compress.py` | `app/services/tools/z3ds.py` | Nintendo 3DS ROMs to/from `.zcci/.zcia/.z3ds/.zcxi/.z3dsx` |
 | **`nsz`** | `nsz` pip package (on PATH) | `app/services/nsz.py` | `app/services/tools/nsz.py` | Nintendo Switch `.nsp`/`.xci` to/from `.nsz`/`.xcz` |
 | **`cso`** | maxcso, built from source (`/usr/local/bin/maxcso`) | `app/services/maxcso.py` | `app/services/tools/maxcso.py` | PSP/PS2 `.iso` to/from `.cso` (v1/v2) / `.zso` / `.dax` |
-| **`romz`** | `p7zip-full` (`7z` on PATH) | `app/services/romz.py` | `app/services/tools/romz.py` | Handheld ROM `.gb`/`.gbc`/`.gba`/`.nds` to/from `.7z`/`.zip` |
+| **`romz`** | `p7zip-full` (`7z` on PATH) | `app/services/romz.py` | `app/services/tools/romz.py` | Handheld cartridge ROMs (`.gb`/`.gba`/`.nds`/`.nes`/`.sfc`/`.z64` and 20 more) to/from `.7z`/`.zip` |
 | **`makeps3iso`** | built from source (`/usr/local/bin/makeps3iso`) | `app/services/makeps3iso.py` | `app/services/tools/makeps3iso.py` | A decrypted PS3 folder (`PS3_GAME/` layout) packed to `.iso` — **directory input** |
 | **`nkit`** | built from source, Go (`/usr/local/bin/nkit2iso`) | `app/services/nkit2iso.py` | `app/services/tools/nkit2iso.py` | NKit-shrunk GameCube/Wii `.nkit.iso`/`.nkit.gcz` restored to `.iso` — **compound extensions**, info route but no verify |
 | **`jwud`** | JWUDTool release jar + JRE (`/usr/local/bin/jwudtool`) | `app/services/jwudtool.py` | `app/services/tools/jwud.py` | Wii U disc images `.wud` to/from `.wux` — **multi-file source** (a split dump) |
 | **`xiso`** | built from source (`/usr/local/bin/extract-xiso`) | `app/services/extract_xiso.py` | `app/services/tools/xiso.py` | Xbox / Xbox 360 `.iso` trimmed to `.xiso.iso` — **content-refined source** on a shared extension |
 | **`rom_converto`** | pinned release binary, SHA-256 checked (`/usr/local/bin/rom-converto`) | `app/services/rom_converto.py` | `app/services/tools/rom_converto.py` | Xbox 360 `.iso` to `.zar`, PSP `.pbp` to `.iso`, 3DS `.cia` ↔ `.cci` — **one tool, several unrelated modes** (§20), a mode that keeps its Source and says why, and modes deleted on the Recognized proof |
+| **`rar`** | Debian `unar` (`unar` on PATH, `UNAR_PATH`) | `app/services/rar_extract.py` | `app/services/tools/rar.py` | A multi-part RAR set's first volume extracted to the one file inside it. A **multi-file source** whose members come from the set's headers, and a mode that always runs the Round-trip (`round_trip_required`) |
+| **`exodos`** | *(none: pure Python, gated on `EXODOS_DOS_DIR`)* | `app/services/exodos.py` | `app/services/tools/exodos.py` | An eXoDOS game `.zip` repacked to `.dosz` |
 | **`chain`** | *(none — drives the tools above)* | *(none)* | `app/services/tools/chain.py` | Composite `cso_to_chd` (`.cso/.zso/.dax` → `.iso` → `.chd`) and `nkit_to_rvz` (`.nkit.iso/.nkit.gcz` → `.iso` → `.rvz`), each one job |
 
 Note the **tool id is not always the binary name**: maxcso registers as `cso`,
@@ -41,8 +43,8 @@ plain trailing suffix on purpose.
 > the path this guide walks. Two other shapes sit on the same plugin/registry
 > contract and have their own seams: a **directory-input** tool (`makeps3iso`)
 > selects a folder through `accepts_directory` / `InputKind` instead of a
-> suffix, and a **chain** tool (`chain`, whose only mode is `cso_to_chd`) runs
-> two existing tools as one job through a `ChainSpec`. If you're adding either
+> suffix, and a **chain** tool (`chain`, with the `cso_to_chd` and `nkit_to_rvz`
+> modes) runs two existing tools as one job through a `ChainSpec`. If you're adding either
 > of those, read the file-suffix walkthrough below for the shared plumbing
 > (routes, job pipeline, frontend registry), then see the two seam writeups in
 > `docs/DESIGN_tool_plugin_architecture.md` (§3.3.3 cross-tool chaining and
@@ -140,11 +142,13 @@ Two supporting layers:
 - **`app/models.py`** holds the `ConversionMode` enum (every mode string lives
   here), the `InputKind` enum, the `OutputStatus` / `FileEntry` listing models,
   and the Pydantic info models (`CHDInfo`, `DolphinDiscInfo`, `Z3DSInfo`,
-  `NszInfo`, `CsoInfo`, `RomzInfo`, `Ps3IsoInfo`, `NkitInfo`, `JwudInfo`).
+  `NszInfo`, `CsoInfo`, `RomzInfo`, `Ps3IsoInfo`, `NkitInfo`, `JwudInfo`,
+  `XisoInfo`, `RomConvertoInfo`, `RarInfo`).
 - **`app/config.py`** `Settings` holds the binary path for each tool
   (`chdman_path`, `dolphin_tool_path`, `z3ds_compressor_path`, `nsz_path`,
   `maxcso_path`, `sevenzip_path`, `makeps3iso_path`, `nkit2iso_path`,
-  `jwudtool_path`) plus the shared and per-tool nice/ioprio/timeout policy knobs.
+  `jwudtool_path`, `extract_xiso_path`, `rom_converto_path`, `unar_path`) plus the
+  shared and per-tool nice/ioprio/timeout policy knobs.
 
 ### The tool registry
 
@@ -167,15 +171,16 @@ Two supporting layers:
   `output_extensions()`, and `scannable_extensions()` (which drives the library
   scan / DAT-match discovery).
 - **`chdman.py` / `dolphin.py` / `z3ds.py` / `nsz.py` / `maxcso.py` / `romz.py` /
-  `makeps3iso.py` / `nkit2iso.py` / `jwud.py`** are the nine real plugins. Each is
+  `makeps3iso.py` / `nkit2iso.py` / `jwud.py` / `xiso.py` / `rom_converto.py` /
+  `rar.py` / `exodos.py`** are the thirteen real plugins. Each is
   a thin `BaseTool` subclass that holds `ModeSpec` rows and delegates the real
   work to the underlying service singleton (`makeps3iso.py` is the
   directory-input one, see §3.3.4 of the design doc; `nkit2iso.py` is the
   compound-extension one, see §18; `jwud.py` is the multi-file-source one).
-  **`chain.py`** is the tenth registration: a synthetic `ChainTool` with no
+  **`chain.py`** is the fourteenth registration: a synthetic `ChainTool` with no
   binary and no service, which drives the others through the registry (design
   doc §3.3.3).
-- **`__init__.py`** builds the `registry` singleton and registers all ten.
+- **`__init__.py`** builds the `registry` singleton and registers all fourteen.
   This is the single wiring point. Order matters at the end: `ChainTool` takes
   the registry itself and must register *after* the component tools it drives.
 
@@ -238,12 +243,13 @@ A plugin subclasses `BaseTool` and provides:
 | `info_needs_tool` | Whether your `info()` runs the tool's program. Default `True`: your `/<tool>-info` route answers 503 with `not_ready_message(tool)` when `is_ready()` is False, instead of a 500 from the failed run. Set `False` when `info()` reads the file in Python (a header, an archive listing, the size), so File info keeps working without the program (nkit, xiso, jwud). Your info route calls the shared `_require_info_ready("<tool>")` either way (design doc §3.4, "Saying why a tool can't run"). |
 | `detect_output(input_path, *, from_archive=False)` | optional, returns an `OutputStatus` so the file list can badge "output already exists". May content-validate the candidate before claiming it: `romz` only reports a `.7z`/`.zip` sibling as its output when it's a genuine single-ROM archive (not just any file matching the `Game.gba.7z` naming), so the badge and the source row's verify-from-output flow track real outputs. `from_archive` marks `input_path` as the *synthesised* location an archive member would occupy once extracted — the listing-side counterpart of the `treat_as_stem` `plan_job` passes for the same member. Ignore it unless your output *name* depends on the input's neighbours: extraction hands over one member and never its siblings, so a member can only produce a single-file output (`jwud` forwards it, so a member named `game_part1.wud` doesn't badge a real split set's `game.wux`). |
 | `converts_path(path)` | optional per-file refinement of `input_extensions` — the input-side mirror of `verifies_path`. Default is the plain extension match; override when your source is really a *set* of files so only the primary is offered (`jwud` hides the secondary members of a split `game_part1.wud` … `game_part12.wud` dump, which stay listed but non-convertible). Drives `FileEntry.convertible_by`. May do disk I/O — it runs inside the threadpool scan. |
+| `convert_refusal(path)` | optional. Why `converts_path(path)` said False, in the user's words, shown in place of the fixed skip reason. Default `None`. Asked only after `converts_path` refused, and may read the disk (the rar tool names the files a set holds when it holds more than one). |
 | `header_platform(path)` | optional. The Platform your tool reads from the file's own header (a few bytes), or `None`. Default `None`. Platform detection (`services/platform_detect.py`) asks every tool whose `input_extensions` match, maps the answer onto a RomM slug, and uses it for the convert panel's Auto choice. Override it when your consoles can be told apart from the bytes (chdman: `SYSTEM.CNF` / `PARAM.SFO` / sector-0 ids; dolphin: GC/Wii magic; xiso: XDVDFS layout). Never guess: answer `None` when unsure. Add your Platform's folder names to `_ALIASES` and its display name to `_NAMES` in `platform_detect.py`, keyed by RomM's slug (tests fail until you do). If a mode cannot read every input it accepts by hand, set `ModeSpec.reads_extensions`; set `auto_target=False` on a mode that should never be an Auto default, and `auto_platform_slugs` for a Platform a mode should serve in Auto but not by hand. Add your rows to `tests/test_auto_routing_table.py`. If the probe reads other files (a sheet's tracks), list them from `header_reads(path)` so the cache sees them change. If `is_ready()` can be False, set `not_ready_reason` to say why. See design doc §3.3.14. |
 | `ModeSpec.source_kept_reason` | optional. For a mode whose `supports_delete_on_verify` is False on principle (deleting would lose what nothing can rebuild), the reason in the user's words. The refusing 400, the CLI, the convert panel and the Rule editor show it. Mirror it as `sourceKeptReason` in `registry.js` (the parity test compares them). rom-converto's ZAR mode is the example (§20). |
 | `ModeSpec.delete_proof` | optional. The check that lets a delete-source job remove its Source: `DeleteProof.ROUND_TRIP` (the default: the container check, then the Round-trip where `supports_round_trip`) or `DeleteProof.RECOGNIZED`, for a mode whose output can't be Round-tripped but may still free its Source when the output's SHA-1 is in a DAT or Hasheous. A miss keeps the Source and the job completes saying so. The shared delete path reads it (`round_trip.delete_check_level`); never branch on the tool. A `RECOGNIZED` mode sets `supports_delete_on_verify` and never `supports_round_trip`. Mirror it as `deleteProof` in `registry.js` (the parity test compares them). rom-converto's PBP and CIA/CCI modes are the example (§20, design doc §3.3.12). |
 | `delete_on_verify_is_safe(mode, compression)` | optional per-job guard on delete-on-verify. `ModeSpec.supports_delete_on_verify` says the *mode* offers it; this says the *job* may, given its settings. Default `True` (your `verify()` reads the whole output). Override when a job setting can weaken the guarantee — `jwud` returns `False` for `-noVerify`, because its verify is a structural WUX walk backed by JWUDTool's conversion-time byte-for-byte comparison. `routes/convert.py` rejects the combination for single and batch alike. |
 | `scannable_path(path)` | optional per-file veto on the library metadata / DAT-match walk. `scannable_extensions` selects it by *type*; this drops an individual path. Default `True`; override only when a name matching a produced extension provably is not a standalone artifact (`jwud` vetoes `game_partN.wud` — twelve 2 GiB slices of one disc image that no DAT can match, so hashing them is ~25 GB of pure waste per set). Any tool answering `False` drops the path. May do *bounded* disk I/O — jwud's veto is on membership of a real set, not on the name, so a lone `game_part1.wud` stays scannable and the same path stops being scannable once its siblings appear — but it runs once per candidate across the whole library, so keep it to a stat or two, never a read. It runs inside the threadpool scan walk, never on the event loop. |
-| `source_companions(path)` | optional sibling *input* files this source also consumes, never including `path` — the input-side mirror of `companion_outputs`. Default `[]`. `utils/delete_plan.build_delete_plan` adds them, so delete-on-verify removes a multi-file source whole instead of orphaning the parts the job didn't name. (`.cue`/`.gdi` tracks are still parsed from file *contents* in `delete_plan.py` rather than routed through this hook — see the design doc.) |
+| `source_companions(path)` | optional sibling *input* files this source also consumes, never including `path` — the input-side mirror of `companion_outputs`. Default `[]`. `utils/delete_plan.build_delete_plan` adds them, so delete-on-verify removes a multi-file source whole instead of orphaning the parts the job didn't name. Raise `CompanionsUnknown` when the set can't be read now (the rar tool reads its members from the set's headers); never answer `[]` for a set you can't read. (`.cue`/`.gdi` tracks are still parsed from file *contents* in `delete_plan.py` rather than routed through this hook — see the design doc.) |
 | `disc_extensions` | optional. Extensions of your tool's files that are one disc of a multi-disc game on their own (`.cue`, `.chd`, `.iso`); `registry.disc_extensions()` is the union and decides what "Create .m3u from selected discs" accepts. Leave empty for formats that are not discs (a track `.bin`, a Switch `.nsz`). |
 | `verifies_path(path)` | optional per-file refinement of `verify_extensions`. Default (in `BaseTool`) is a plain extension match; override when your tool claims a broad container extension but only handles a subset (`romz` claims `.7z`/`.zip` yet only verifies single-ROM archives). `routes/files.py` materializes the result into `FileEntry.verifiable_by`, which the frontend gates the Verify/Info row-actions on. May do disk I/O — it runs inside the threadpool scan. |
 | `active_pids()` | PIDs for the debug heartbeat |
@@ -329,7 +335,7 @@ the non-obvious rows is in §8 to §14.
 | 3 | `requirements.txt` | Add any new **Python** runtime dependency the service imports. | If service needs a new pip dep |
 | 4 | `requirements-dev.txt` | Add test-only Python deps. | Rare |
 | 5 | `.local-bin/` + `.env.local` | Local-dev copy of a from-source binary. Only `z3ds_compressor` is committed here today. Dropping a binary in `.local-bin/` is **not** enough: `run_dev.sh` doesn't add it to `PATH`, and from-source tools default to an absolute `/usr/local/bin/...` path, so you must set `<TOOL>_PATH` in `.env.local` (which `run_dev.sh` sources). See §8. | New from-source tool |
-| 6 | `entrypoint.sh` | Add the binary path env passthrough. Headless use needs nothing: `compressatorium` reaches every registered tool (see §9). | New tool |
+| 6 | `entrypoint.sh` | **Nothing.** It passes no `*_PATH` for any tool; `config.py` reads them from the environment. Headless use needs nothing either: `compressatorium` reaches every registered tool (see §9). | Never |
 
 ### 3.2 Backend code
 
@@ -357,7 +363,7 @@ the non-obvious rows is in §8 to §14.
 | 21 | `src/lib/tools/registry.js` | **One new entry** in the `TOOLS` array. Everything downstream (sidebar, workspace, badges, modals, verify dispatch, SSE URL building, compression defaults, icons, Help) looks up this registry. A tool that claims a shared extension by content sets `contentRefined: true` (§19). | New mode and/or tool |
 | 22 | `src/styles/tokens.css` | Add a semantic token only if you need a new tool accent / badge color. Most tools reuse existing tokens via `accent: 'var(--badge-<token>)'`. Add it under **both** `:root` and `:root.dark`. | If new visual identity |
 | 22a | `src/lib/util/fileIcon.js` | **One `TOOL_MEDIA` entry** mapping your tool id to `'disc'` or `'game'`. The `DISC_EXTS`/`GAME_EXTS` sets are *derived* from the registry, so you never re-type extensions — you only say which bucket your media reads as. The coverage guard (`tests/test_frontend_registry_derives_186.py`) fails until every registered tool is classified. **If your tool writes an archive container other than `.7z`/`.zip`, also add it to `ARCHIVE_EXTS`** — that set is hard-coded and checked *first*, so otherwise your output renders with a disc/game icon. The guard won't catch it: the extension is classified, just in the wrong bucket. | New tool |
-| 22b | `src/lib/stores/conversion.svelte.js` | **Nothing.** `defaultCompressionFor()` / `defaultLevelFor()` read `defaultCompression` and `compressionLevelRange` off your registry descriptor. Declare them in `registry.js` (item 21) and the initial value, the slider default, and the shared **Reset to default** button in `CompressionPicker.svelte` all work for free. | Never (registry-driven) |
+| 22b | `src/lib/stores/conversion.svelte.js` | **Nothing.** `defaultCompressionFor()` / `defaultLevelFor()` read `defaultCompression` and `compressionLevelRange` off your registry descriptor. Declare them in `registry.js` (item 21) and the initial value, the slider default, and the shared **Reset to default** button in `CompressionPicker.svelte` all work for free. A new delete or Round-trip field on `ModeSpec` is the exception: #476's `round_trip_required` also changed `offersContainerOnly` here, plus `RuleEditor.svelte`, `util/deleteCheck.js` and `registry.js`. | Never for a tool; a new delete-contract field |
 | 22c | `src/lib/tools/helpModes.js` | One `MODE_BLURBS` line per new mode (and a `MODE_OUTPUT` override only when a single `outputExt` can't tell the story — a reversible mode whose output depends on the input, or a companion pair like extractcd's `.cue` + `.bin`). The same guard test fails on a mode with no blurb or a stale key. | New mode |
 | 22d | `src/lib/components/views/HelpView.svelte` | One curated **tool blurb**. The per-tool mode reference *table* is generated via `helpModeSections(registry)`, so modes and output columns can't drift — only the prose is hand-written. | New tool (docs) |
 
@@ -367,7 +373,7 @@ the non-obvious rows is in §8 to §14.
 |---|------|-------------|------|
 | 23 | `tests/test_<tool>_routes.py` | Info + verify endpoint tests (copy `test_z3ds_routes.py`). | New tool |
 | 24 | `tests/test_<tool>_service.py` | `convert`/`verify`/cancel/bad-extension tests (copy `test_z3ds_verification_service.py`). | New tool |
-| 25 | `tests/test_tool_registry.py` | Assert your modes resolve to your tool and the spec flags are right. Bump the resolved-mode count (currently `29`), extend the `_legacy_tool_for_mode` ladder, the `convertible_extensions` union, `tools_for_input`/`tool_for_verify` cases, and the `output_path` + `output_extensions` parametrize lists. | New tool/mode |
+| 25 | `tests/test_tool_registry.py` | Assert your modes resolve to your tool and the spec flags are right. Bump the resolved-mode count (currently `40`), extend the `_legacy_tool_for_mode` ladder, the `convertible_extensions` union, `tools_for_input`/`tool_for_verify` cases, and the `output_path` + `output_extensions` parametrize lists. | New tool/mode |
 | 26 | `tests/test_single_batch_plan_parity.py` | **This** is the single-vs-batch parity matrix: add your mode + a representative input to the `_cases()` table. `tests/test_mode_parity_fixes.py` has no per-mode matrix — it holds targeted regressions (delete-on-verify messages, external modes, the nsz level token), so touch it only if one of those applies to your tool. | New mode |
 | 26a | `tests/test_dispatch_routing.py` | Extend the convert/verify dispatch ladder (`_legacy_dispatch_id`) and the patched-tool tuple so your modes route to your service. | New tool |
 | 26b | `tests/test_files_outputs_parity.py` | **Usually nothing.** It asserts the *exact* tool-neutral `FileEntry` JSON surface (`convertible_by` / `outputs` / `verifiable_by` / …). Touch it only if you change that surface — adding a tool must not. | Rare |
@@ -375,7 +381,9 @@ the non-obvious rows is in §8 to §14.
 | 26d | `tests/test_archive_conversion_e2e.py` + `tests/test_archive_preference.py` | Add `MATRIX` rows per direction and assert your source exts are in `registry.archive_input_extensions()` (see §17.7). Make parametrize `ids` unique if an extension repeats across modes. | New archive-aware tool |
 | 26e | `tests/test_companion_outputs_182.py` | Assert `companion_outputs()` for your mode if it writes sidecars. | If `companion_exts` set |
 | 26f | `tests/test_verify_routes_factory.py` | Covers the generated verify trio generically; extend if your `_VERIFY_CONFIG` entry has unusual naming. | Rare |
-| 27 | `tests/conftest.py` | **No change for a tool binary.** `conftest.py` is DB-only; it does *not* stub tool binaries. Per-tool route/service tests define their own mocks (monkeypatch `info_routes.<service>` or `app.services.<tool>.asyncio.create_subprocess_exec`). | Rare |
+| 26g | `tests/test_modespec_branches_180.py` | Add your tool id to the exact key set `test_bad_extension_reason_covers_non_chdman_tools` asserts for `_BAD_EXTENSION_REASON`. | New tool |
+| 26h | `tests/test_frontend_parity_186.py` | Mirror a new `ModeSpec` field in the registry descriptor and assert the two agree (#476 added `round_trip_required` / `roundTripRequired`). | New ModeSpec field |
+| 27 | `tests/conftest.py` | **Add your tool id if it declares `required_binaries`.** The autouse fixture `_programs_as_in_the_image` counts the paths of the tools it lists as installed, so the suite runs as if inside the image. A tool missing from that tuple is probed for real and hidden. It stubs nothing else: per-tool route/service tests define their own mocks (monkeypatch `info_routes.<service>` or `app.services.<tool>.asyncio.create_subprocess_exec`). | New tool with a program |
 
 ### 3.5 CI / quality gates (must stay green)
 
@@ -764,7 +772,7 @@ class NszipTool(BaseTool):
     and go completely silent on a pipe. dolphin-tool does exactly that, which is
     why it once showed nothing but a spinning elapsed counter (issue #263).
   - Never hand-roll a size-growth estimator in a service. That logic lives in
-    the runner precisely so all nine tools behave the same way.
+    the runner precisely so every tool behaves the same way.
 - Read the shared timeout policy via the `services.subprocess_runner`
   helpers (`info_timeout(owner)`, `verify_timeout(owner)`,
   `resolve_verify_timeout(path, owner)`). These read the tool-neutral
@@ -1191,8 +1199,10 @@ PYTHONPATH=app python -m pytest -q tests/test_nszip_routes.py \
     tests/test_tool_registry.py tests/test_single_batch_plan_parity.py
 ```
 
-**`tests/conftest.py` does *not* stub tool binaries** — it is DB-only. Each
-per-tool suite mocks what it needs: route tests monkeypatch
+**`tests/conftest.py` stubs only the readiness probe.** Add your tool id to the
+tuple in its `_programs_as_in_the_image` fixture when the tool declares
+`required_binaries`, so its program counts as installed. Each per-tool suite
+mocks the rest of what it needs: route tests monkeypatch
 `info_routes.<service>`, service tests monkeypatch
 `app.services.<tool>.asyncio.create_subprocess_exec`. Copy the mocking style
 from the suite you're cloning rather than expecting a shared fixture.
@@ -1337,7 +1347,12 @@ TESTS + DOCS
 [ ] extend: test_tool_registry (bump mode count), test_dispatch_routing,
     test_single_batch_plan_parity (_cases table), and the archive matrix if
     archive-aware
-[ ] tests/conftest.py: NOTHING — it's DB-only; mock per test file
+[ ] tests/conftest.py: add the tool id to _programs_as_in_the_image if it
+    declares required_binaries; mock the rest per test file
+[ ] tests/test_modespec_branches_180.py: add the tool id to the
+    _BAD_EXTENSION_REASON key set
+[ ] src/lib/util/datMatchable.js: check ARCHIVE_EXTS if a source or output
+    extension is .7z, .zip or .rar
 [ ] full suite green: PYTHONPATH=app python -m pytest -q tests
 [ ] README / RELEASE_NOTES / package.json version bump
 [ ] app/main.py: add the tool to the FastAPI description= string (shown at /docs)
@@ -1736,7 +1751,8 @@ tests/test_dispatch_routing.py      extend convert/verify dispatch ladder
 tests/test_frontend_registry_derives_186.py  guard only — run it, don't edit it (unless you add a registry helper, item 26c)
 tests/test_single_batch_plan_parity.py  add nszip_compress to the _cases() matrix
 tests/test_archive_conversion_e2e.py + test_archive_preference.py  archive matrix (if archive-aware)
-tests/conftest.py                   DB-only; no tool-binary stub (mocks live per-test-file)
+tests/conftest.py                   add nszip to _programs_as_in_the_image (it declares required_binaries)
+tests/test_modespec_branches_180.py add nszip to the _BAD_EXTENSION_REASON key set
 tests/test_files_outputs_parity.py  nothing to add — it pins the tool-neutral FileEntry surface
 tests/test_compound_extension_matching.py  only for a compound extension (§18)
 docker-compose*.yml                 (optional) NSZIP_PATH / CLI env docs

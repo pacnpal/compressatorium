@@ -16,7 +16,7 @@ services:
       # Optional: remap container runtime UID/GID (Unraid-friendly)
       # - PUID=99
       # - PGID=100
-      # Conversion mode: createcd (CD-ROM) or createdvd (DVD-ROM)
+      # CLI-mode conversion (createcd or createdvd). The Web UI ignores it.
       - CHDMAN_MODE=createcd
       # Maximum parallel conversion jobs (Web UI only)
       - MAX_CONCURRENT_JOBS=1

@@ -6,7 +6,7 @@ A game image converter that wraps twelve tools: **CHDMAN** (MAME), **dolphin-too
 
 ## Features
 
-* **Eleven tools in one.** CHDMAN, Dolphin, 3DS, Switch, CSO/ZSO, handheld ROM (GB/GBC/GBA/DS), PS3 ISO (a decrypted PS3 folder packed to `.iso`), NKit (an NKit-shrunk GameCube/Wii image restored to a full `.iso`), Wii U (WUD ↔ WUX), Xbox (a full Xbox / Xbox 360 disc image trimmed to XISO), or rom-converto (an Xbox 360 disc image packed to ZAR for Xenia, a PSP PBP turned back into its ISO, or a 3DS CIA converted to CCI and back), chosen per job.
+* **Thirteen tools in one.** CHDMAN, Dolphin, 3DS, Switch, CSO/ZSO, handheld ROM (GB, GBA, DS, NES, SNES, N64, Mega Drive and more), PS3 ISO (a decrypted PS3 folder packed to `.iso`), NKit (an NKit-shrunk GameCube/Wii image restored to a full `.iso`), Wii U (WUD ↔ WUX), Xbox (a full Xbox / Xbox 360 disc image trimmed to XISO), or rom-converto (an Xbox 360 disc image packed to ZAR for Xenia, a PSP PBP turned back into its ISO, or a 3DS CIA converted to CCI and back), eXoDOS (a DOS game zip repacked for RomM), or RAR sets (a multi-part RAR set extracted to the one file inside it), chosen per job.
 * **Web UI** for browsing files and converting them. The tool picker filters the whole interface down to the tool you chose.
 * **Nested directories and archives.** Browse subfolders and look inside ZIP, 7z, and RAR archives.
 * **Multiple volume mounts** so you can keep separate game libraries separate.
@@ -68,13 +68,12 @@ one-step `nkit_to_rvz` chain, which restores and compresses to RVZ in a single j
 so the full-size ISO never lands in your library. See
 [NKit Support](#nkit-support-nkit--iso).
 
-> **Archive inputs:** most input formats above can be converted straight from inside a ZIP, 7z, or RAR archive, including 3DS ROMs, Dolphin game images, Switch dumps, and Wii U images. Browse into the archive, pick a member, and convert. This even covers CHDMAN's extract modes pulling a `.chd` out of an archive and decompressing it back to a game image. A few exceptions: CHDMAN's **copy/recompress** mode is not offered from an archive (recompressing an already-finished `.chd` would be a pointless round trip); **Handheld ROM** does not accept loose ROMs from inside an archive — its `.7z`/`.zip` are the packed product, so to unpack one select the archive file itself and run `romz_extract`, rather than browsing into it for a member; and **PS3 ISO** takes a folder, not a file, so it is never an archive input (a zipped `PS3_GAME` tree can't be converted from inside an archive).
 Each tool's full mode list (e.g. CHDMAN's `createcd`/`extractcd`, CSO's
 `cso2_compress`, the ROM packer's `romz_7z`/`romz_zip`/`romz_extract`, the PS3
 packer's `folder_to_iso`, and NKit's `nkit_restore`/`nkit_to_rvz`) is in
 [Supported Operations](#supported-operations).
 
-> **Archive inputs:** most input formats above can be converted straight from inside a ZIP, 7z, or RAR archive, including 3DS ROMs, Dolphin game images, Switch dumps, and NKit images. Browse into the archive, pick a member, and convert. This even covers CHDMAN's extract modes pulling a `.chd` out of an archive and decompressing it back to a game image. A few exceptions: CHDMAN's **copy/recompress** mode is not offered from an archive (recompressing an already-finished `.chd` would be a pointless round trip); **Handheld ROM** does not accept loose ROMs from inside an archive — its `.7z`/`.zip` are the packed product, so to unpack one select the archive file itself and run `romz_extract`, rather than browsing into it for a member; and **PS3 ISO** takes a folder, not a file, so it is never an archive input (a zipped `PS3_GAME` tree can't be converted from inside an archive).
+> **Archive inputs:** most input formats above can be converted straight from inside a ZIP, 7z, or RAR archive, including 3DS ROMs, Dolphin game images, Switch dumps, Wii U images and NKit images. Browse into the archive, pick a member, and convert. This even covers CHDMAN's extract modes pulling a `.chd` out of an archive and decompressing it back to a game image. A few exceptions: CHDMAN's **copy/recompress** mode is not offered from an archive (recompressing an already-finished `.chd` would be a pointless round trip); **Handheld ROM** does not accept loose ROMs from inside an archive — its `.7z`/`.zip` are the packed product, so to unpack one select the archive file itself and run `romz_extract`, rather than browsing into it for a member; and **PS3 ISO** takes a folder, not a file, so it is never an archive input (a zipped `PS3_GAME` tree can't be converted from inside an archive). The Xbox, rom-converto, eXoDOS and RAR sets tools don't take a member of an archive either: select the file itself.
 
 ### MAME Redump DAT Integration
 
@@ -370,6 +369,14 @@ When you open the Web UI, you'll see the tool options at the top:
 * **Handheld ROM** - For compressing/extracting cartridge ROM dumps to .7z/.zip archives (Game Boy/GBC/GBA/DS, NES, SNES, N64, Master System, Genesis, Game Gear, Virtual Boy, WonderSwan, Neo Geo Pocket, Lynx, C64, Atari 2600/7800)
 * **PS3 ISO** - For packing a decrypted PS3 folder into a `.iso` RPCS3 can mount
 * **Wii U** - For compressing Wii U disc images to `.wux` and back
+* **NKit** - For restoring an NKit-shrunk GameCube/Wii image to a full `.iso` (or straight
+  to RVZ)
+* **Xbox** - For trimming an Xbox / Xbox 360 disc image to XISO
+* **rom-converto** - For packing an Xbox 360 disc image to ZAR, a PSP PBP back to ISO,
+  or 3DS CIA to CCI and back
+* **eXoDOS** - For repacking an eXoDOS DOS game zip to `.dosz` for RomM (needs
+  `EXODOS_DOS_DIR`)
+* **RAR sets** - For extracting a multi-part RAR set to the one file inside it
 
 **Choose the tool that matches your files.** The interface then shows only the modes and file types that tool can use.
 
@@ -416,12 +423,13 @@ full mode list per tool is in [Supported Operations](#supported-operations).
 
 ### Compression settings
 
-Every tool that compresses (CHD, Dolphin, Switch, CSO) shares one compression
-picker in the convert panel:
+Every tool that compresses (CHD, Dolphin, Switch, CSO, handheld ROM) shares one
+compression picker in the convert panel. Wii U uses the same picker for its verify
+choice:
 
 * **Controls differ per tool.** chdman takes a codec list, Dolphin and Switch take
-  a single codec/layout plus a numeric level, and CSO takes a Fast/Default/Max
-  effort preset (no numeric level). Decompress/extract modes and 3DS have no
+  a single codec/layout plus a numeric level, and CSO and handheld ROM take a
+  Fast/Default/Max effort preset (no numeric level). Decompress/extract modes and 3DS have no
   compression settings, so the picker is hidden for them.
 * **Your choice is remembered** server-side per tool, so it follows you across
   sessions and browsers.
@@ -2032,7 +2040,7 @@ shared picker behavior, including the Reset-to-default button.)
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `NSZ_PATH` | `nsz` | Path to the nsz binary (resolved on PATH by default) |
-| `SWITCH_KEYS` | *(unset)* | Directory holding your `prod.keys`. Source of truth when set; otherwise a best-effort search of `~/.switch` and your volumes runs at startup. |
+| `SWITCH_KEYS` | *(unset)* | Directory holding your `prod.keys`. Source of truth when set; otherwise a best-effort search of `~/.switch`, the nsz config dirs, your volumes and the data dir runs at startup. |
 | `NSZ_COMPRESSION_LEVEL` | `18` | Fallback zstandard level (1-22) when no per-job level is set in the UI |
 
 ### REST API Endpoints
@@ -2954,11 +2962,21 @@ All actions are queued and processed by the job queue (FIFO). The queue is the o
 - `z3ds_compress` (.cci → .zcci, .cia → .zcia, .3ds → .z3ds, .cxi → .zcxi, .3dsx → .z3dsx)
 - `z3ds_decompress` (.zcci → .cci, .zcia → .cia, .z3ds → .3ds, .zcxi → .cxi, .z3dsx → .3dsx)
 
+**Nintendo Switch**
+- `nsz_compress` (.nsp → .nsz, .xci → .xcz), `nsz_decompress` (.nsz → .nsp, .xcz → .xci).
+  Both need your own `prod.keys`
+
 **PSP / PS2 (CSO)**
 - `cso_compress` (.iso → .cso, CSO v1), `cso2_compress` (.iso → .cso, CSO v2), `zso_compress` (.iso → .zso), `dax_compress` (.iso → .dax), `cso_decompress` (.cso/.zso/.dax → .iso), `cso_to_chd` (.cso/.zso/.dax → .chd, one-step chain through maxcso + chdman)
 
-**Handheld ROM (GB/GBC/GBA/NDS)**
-- `romz_7z` (.gb/.gbc/.gba/.nds → .7z), `romz_zip` (.gb/.gbc/.gba/.nds → .zip), `romz_extract` (.7z/.zip → original ROM)
+**Handheld ROM (cartridge ROMs)**
+- `romz_7z` (ROM → .7z), `romz_zip` (ROM → .zip), `romz_extract` (.7z/.zip → original
+  ROM). A ROM is any of the cartridge extensions in
+  [Supported Conversions](#supported-conversions)
+
+**eXoDOS**
+- `exodos_repack` (an eXoDOS game .zip → .dosz, with the game's `dosbox.conf` from
+  `EXODOS_DOS_DIR`)
 
 **RAR sets**
 - `rar_extract` (a multi-part RAR set's first volume → the one file inside it; with delete-source, every volume is deleted once the Round-trip passes)
@@ -2988,9 +3006,7 @@ Notes:
 - `extractcd` produces both `.cue` and `.bin` outputs.
 - Dolphin GCZ/ISO outputs ignore compression selection.
 - 3DS and Wii U compression use fixed settings (no user configuration needed).
-- Archive inputs are supported for the file-based convertible sources (CHD create, Dolphin, 3DS, Switch, CSO, and Wii U), plus CHDMAN's extract modes decompressing a `.chd` pulled out of an archive. Exceptions: CHDMAN's copy/recompress mode (it would just re-compress an already-finished `.chd`), Handheld ROM compression (its `.7z`/`.zip` are the product), and PS3 ISO (its input is a folder, not a file).
-- 3DS compression uses fixed settings (no user configuration needed).
-- Archive inputs are supported for the file-based convertible sources (CHD create, Dolphin, 3DS, Switch, CSO, and NKit), plus CHDMAN's extract modes decompressing a `.chd` pulled out of an archive. Exceptions: CHDMAN's copy/recompress mode (it would just re-compress an already-finished `.chd`), Handheld ROM compression (its `.7z`/`.zip` are the product), and PS3 ISO (its input is a folder, not a file).
+- Archive inputs are supported for the file-based convertible sources (CHD create, Dolphin, 3DS, Switch, CSO, Wii U and NKit), plus CHDMAN's extract modes decompressing a `.chd` pulled out of an archive. Exceptions: CHDMAN's copy/recompress mode (it would just re-compress an already-finished `.chd`), Handheld ROM compression (its `.7z`/`.zip` are the product), PS3 ISO (its input is a folder, not a file), and the Xbox, rom-converto, eXoDOS and RAR sets modes.
 
 ---
 
@@ -3003,7 +3019,7 @@ The Web UI communicates with a REST API that can also be used directly. Interact
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/api/volumes` | List configured volume mount points |
-| GET | `/api/files` | List files in a directory |
+| GET | `/api/files` | List files in a directory. A row that belongs to another row's source (a later RAR volume, a split Wii U part) carries that row's path in `companion_of` and is never converted, checked or deleted on its own; other rows have `companion_of: null` |
 | GET | `/api/files/search` | Recursively search for convertible files |
 | GET | `/api/files/archive` | List contents of an archive file |
 | POST | `/api/files/rename` | Rename a file or directory |
@@ -3011,9 +3027,13 @@ The Web UI communicates with a REST API that can also be used directly. Interact
 | POST | `/api/files/playlist` | Write the previewed `.m3u` beside the discs. Never overwrites: a taken name is a 409 with `detail.suggested_name` |
 | DELETE | `/api/files/delete` | Delete a single file or empty directory |
 | POST | `/api/files/delete-batch` | Delete multiple files at once |
+| POST | `/api/archive-summary` | Per-archive summaries for the lazy file listing |
+| POST | `/api/files/dat-rename/preview` | What renaming each Image to its DAT name would change. Changes nothing |
+| POST | `/api/files/dat-rename` | Rename the Images of a confirmed preview, as a background job |
 
 **Destructive file actions require explicit confirmation headers:**
 - `POST /api/files/rename` requires `X-CHD-Action-Confirm: rename-file`
+- `POST /api/files/dat-rename` requires `X-CHD-Action-Confirm: rename-file`
 - `DELETE /api/files/delete` requires `X-CHD-Action-Confirm: delete-file` (or `recursive-delete` for a non-empty directory)
 - `POST /api/files/delete-batch` requires `X-CHD-Action-Confirm: delete-file`
 
@@ -3022,7 +3042,9 @@ The Web UI communicates with a REST API that can also be used directly. Interact
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | POST | `/api/jobs` | Create a single conversion job |
-| POST | `/api/jobs/batch` | Create multiple jobs (`?report_skipped=true`: `{jobs, skipped}`) |
+| POST | `/api/jobs/batch` | Create multiple jobs. Answers the job list, or with `?report_skipped=true` `{jobs, skipped}`, where each `skipped` item is `{path, reason, code}` |
+| POST | `/api/jobs/auto-plan` | Each Image's Platform and default target, without queueing anything |
+| POST | `/api/jobs/auto` | Queue the Auto plan the user confirmed. Answers `{plan, jobs}` |
 | POST | `/api/jobs/check-duplicates` | Check for existing output files |
 | POST | `/api/jobs/delete-plan` | Build delete-on-verify confirmation list, with each planned `.m3u` edit (`referrer_changes`) |
 | GET | `/api/jobs` | List all jobs |
@@ -3040,6 +3062,19 @@ The Web UI communicates with a REST API that can also be used directly. Interact
 - `DELETE /api/jobs/completed` requires `X-CHD-Action-Confirm: clear-completed-jobs`
 - `POST /api/jobs/cancel-all` requires `X-CHD-Action-Confirm: cancel-all-jobs`
 
+**Why a job isn't created.** `POST /api/jobs` answers `{"detail": "..."}` with:
+- `503` when the mode's tool isn't ready (`"<tool> isn't ready: <reason>"`, for
+  example a missing program), or when the destination's volume doesn't answer.
+  Nothing is queued.
+- `409` when the output would be the source, or another job already claimed it.
+- `429` when the queue is full (`MAX_QUEUE_DEPTH`).
+- `403` for a path outside the volumes, and `400` for a bad mode, compression or
+  delete-on-verify request.
+
+In a batch, the same causes skip the file instead. A skipped item's `code` names
+the cause (`tool_not_ready`, `file_not_found`, `rar_set_not_extractable` and the
+rest), or `same_output` for a file whose output another file in the batch writes.
+
 ### CHD Information & Verification
 
 | Method | Endpoint | Description |
@@ -3048,7 +3083,9 @@ The Web UI communicates with a REST API that can also be used directly. Interact
 | GET | `/api/verify` | Verify a CHD file's integrity |
 | GET | `/api/verify/events` | SSE stream for verification progress |
 | POST | `/api/verify-batch/events` | SSE stream for batch verification |
-| GET | `/api/verified` | List all verified CHD paths |
+| GET | `/api/verified` | Every tool's checked outputs: `{verified: [path], checks: {path: "intact" \| "round_tripped" \| "recognized"}}` |
+| POST | `/api/verified/lookup` | The same, for just the `paths` given |
+| GET | `/api/tools` | Which tools can run here: `{available: [tool_id], unavailable: [tool_id]}` |
 
 ### CHD Metadata & Version
 
@@ -3104,6 +3141,115 @@ The Web UI communicates with a REST API that can also be used directly. Interact
 | GET | `/api/jwud-verify/events` | SSE stream for Wii U verification progress |
 | POST | `/api/jwud-verify-batch/events` | SSE stream for batch Wii U verification |
 
+### Other Tools' Info & Verification
+
+Each of these verify families has the same three routes as the ones above:
+`GET /api/<p>verify`, `GET /api/<p>verify/events` and
+`POST /api/<p>verify-batch/events`.
+
+| Prefix | Info route | Tool |
+|--------|------------|------|
+| `romz-` | `GET /api/romz-info` | Handheld ROM and its `.7z`/`.zip` |
+| `xiso-` | `GET /api/xiso-info` | Xbox / Xbox 360 XISO |
+| `rom-converto-` | `GET /api/rom-converto-info` | rom-converto (ZAR) |
+| `exodos-` | none | eXoDOS `.dosz` |
+
+`GET /api/nkit-info` describes an NKit image: which disc it is and what it
+restores to. NKit and the RAR sets tool have no verify routes, and RAR sets has
+no info route.
+
+### DATs and Hasheous
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/dat/import` | Import a Logiqx XML DAT |
+| GET | `/api/dat/list` | List imported DATs |
+| DELETE | `/api/dat/{dat_id}` | Delete an imported DAT |
+| GET | `/api/dat/stats` | DAT store statistics |
+| GET / PUT / DELETE | `/api/dat/ranking` | Read, save or forget the user's DAT order |
+| POST | `/api/dat/match` | Match one file against the imported DATs |
+| POST | `/api/dat/match-batch` | Match several files |
+| POST | `/api/dat/match-batch/job` | Match a batch as a background job |
+| POST | `/api/dat/matches/lookup` | Read-only lookup in the match cache |
+| POST | `/api/dat/prune` | Drop cached matches for files that no longer exist |
+| POST | `/api/dat/sync` | Sync DATs from the MAMERedump repo |
+| GET | `/api/dat/sync/status` | The sync's status |
+| POST | `/api/dat/sync/cancel` | Cancel a running sync |
+| GET / PUT | `/api/dat/hasheous` | Read or switch the Hasheous fallback |
+| POST | `/api/dat/hasheous/test` | Probe the configured Hasheous server |
+
+### Libraries, Rules, Inboxes and Findings
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET / POST | `/api/libraries` | List folder Libraries, or register a folder inside a Volume |
+| PATCH / DELETE | `/api/libraries/{library_id}` | Change a Library's settings, or remove it (no file is touched) |
+| GET | `/api/libraries/{library_id}/platforms` | Detected Platforms with Image counts |
+| GET | `/api/libraries/{library_id}/placements` | Where new Images of each Platform would land |
+| GET / PUT | `/api/libraries/{library_id}/rules` | The Library's Rules and run state, or replace them |
+| POST | `/api/libraries/{library_id}/rules/forget-converted` | Clear the converted history and failed holds |
+| POST | `/api/libraries/{library_id}/preview` | What a sweep would queue now, without queueing |
+| POST | `/api/libraries/{library_id}/run` | Sweep now, queueing real jobs |
+| POST | `/api/libraries/{library_id}/find-duplicates` | Start a find-duplicates run as a background job |
+| GET / POST | `/api/libraries/{library_id}/inboxes` | List the Library's Inboxes, or add one |
+| PATCH / DELETE | `/api/libraries/{library_id}/inboxes/{inbox_id}` | Change an Inbox's settle time, or stop using it (no file is touched) |
+| GET | `/api/rules/notices` | Which one-time notices the Rule editor shows |
+| POST | `/api/rules/notices/check-level/dismiss` | Stop showing the check-level notice |
+| GET | `/api/findings` | Open Findings by Library and Image |
+| POST | `/api/findings/{finding_id}/dismiss` | Hide a Finding until its cause changes |
+| POST | `/api/findings/{finding_id}/undismiss` | Show a dismissed Finding again |
+| POST | `/api/findings/{finding_id}/delete-plan` | What deleting every copy of a duplicate group but the keeper would remove |
+| POST | `/api/findings/{finding_id}/delete` | Run that delete. Requires `X-CHD-Action-Confirm: delete-file` |
+| POST | `/api/findings/check` | Walk every folder Library now so its Findings are current |
+| GET | `/api/platforms` | Every Platform a folder can be set to |
+| GET / PUT | `/api/platform-mappings` | List, set or clear (`platform: null`) a folder's Platform |
+
+### RomM
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/romm/status` | Whether RomM is reachable, and what the UI needs to know |
+| GET / PUT | `/api/romm/settings` | Read (the token is never returned) or save the RomM settings |
+| POST | `/api/romm/settings/test` | Probe a RomM instance without saving |
+| GET | `/api/romm/platforms` | RomM's platforms |
+| GET | `/api/romm/roms` | A RomM platform's ROMs, as a directory listing |
+| GET | `/api/romm/converter/import-plan` | The Rules importing RomM's converter targets would create |
+| POST | `/api/romm/repin/plan` | Record the metadata to carry across a conversion |
+| POST | `/api/romm/repin/cancel` | Retire re-pins for conversions never submitted |
+| POST | `/api/romm/repin` | Re-attach metadata to converted ROMs RomM has rescanned |
+| GET / PUT | `/api/romm/rules` | The per-platform Rules, or replace them |
+| POST | `/api/romm/rules/forget-converted` | Forget which ROMs the Rules already converted |
+| POST | `/api/romm/auto-convert/preview` | What a sweep would queue now, without queueing |
+| POST | `/api/romm/auto-convert/run` | Run a sweep now |
+
+### Ledger, Notifications and Metrics
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/ledger` | Finished jobs, newest first, paged and filtered: `{items, total}` |
+| GET | `/api/ledger/export.csv` | The same filter, as CSV |
+| GET | `/api/ledger/facets` | The status, tool and Platform values the filters offer |
+| GET | `/api/ledger/recent` | The latest Ledger rows (`limit`, default 5) |
+| GET | `/api/ledger/savings` | The Space saved totals |
+| GET / PUT | `/api/ledger/settings` | `{retention_days}` |
+| GET | `/api/metrics` | Prometheus text: jobs by status, bytes in and out, queue depth |
+| GET | `/api/notifications` | Destinations, events, kinds, and whether Apprise is installed |
+| POST | `/api/notifications/destinations` | Add a destination |
+| PUT / DELETE | `/api/notifications/destinations/{dest_id}` | Edit or delete a destination |
+| POST | `/api/notifications/destinations/{dest_id}/test` | Send a test to a saved destination |
+| POST | `/api/notifications/test` | Test a URL before saving it |
+
+### Patching, Presets, Preferences and Health
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/patch/upload` | Keep an IPS or BPS patch (multipart `file`); answers its `upload_id` |
+| POST | `/api/patch` | Patch one cartridge Image as a background job; answers `{job_id}` |
+| GET | `/api/compat-presets` | The **Compatible with...** targets and the modes and codecs each reads |
+| GET / PUT | `/api/preferences` | The stored workspace layout |
+| GET / PUT | `/api/preferences/conversion` | Remembered per-tool compression settings |
+| GET | `/health` | `{status: "healthy", version}` |
+
 ## Environment Variables
 
 | Variable | Default | Description |
@@ -3126,6 +3272,7 @@ The Web UI communicates with a REST API that can also be used directly. Interact
 | `COMPRESSATORIUM_DB_PATH` | `/config/compressatorium.db` | Unified SQLite database for DATs, match cache, CHD metadata, verification state, and DAT-sync state |
 | `CHD_METADATA_STORE` | *(deprecated)* | Legacy JSON path. Ignored at runtime; auto-migrated into the SQLite DB on first startup (custom path honored if set) and renamed to `chd_metadata.json.migrated.bak` |
 | `CHD_VERIFICATION_STORE` | *(deprecated)* | Legacy JSON path. Ignored at runtime; auto-migrated into the SQLite DB on first startup (custom path honored if set) and renamed to `verified_chds.json.migrated.bak` |
+| `CHD_DAT_STORE` / `CHD_DAT_SYNC_STORE` | *(deprecated)* | Legacy JSON paths for `dat_store.json` and `dat_sync.json`, migrated the same way |
 | `CHDMAN_MODE` | `createcd` | Conversion mode: `createcd` or `createdvd` (CLI mode only) |
 | `CHDMAN_PATH` | `/usr/bin/chdman` | Path to chdman binary (for custom builds) |
 | `DOLPHIN_TOOL_PATH` | `/usr/local/bin/dolphin-tool` | Path to dolphin-tool binary |
@@ -3137,6 +3284,15 @@ The Web UI communicates with a REST API that can also be used directly. Interact
 | `NSZ_PATH` | `nsz` | Path to the nsz binary (Nintendo Switch); resolved on PATH by default |
 | `SEVENZIP_PATH` | `7z` | Path to the 7z binary (handheld ROM archives); resolved on PATH by default (set an absolute path or `7zz` if your distro ships the newer `7zip` package) |
 | `JWUDTOOL_PATH` | `/usr/local/bin/jwudtool` | Path to the JWUDTool launcher (Wii U WUD ↔ WUX); the image ships a launcher that execs the bundled jar with a headless JRE |
+| `EXTRACT_XISO_PATH` | `/usr/local/bin/extract-xiso` | Path to the extract-xiso binary (Xbox / Xbox 360 XISO trim) |
+| `ROM_CONVERTO_PATH` | `/usr/local/bin/rom-converto` | Path to the rom-converto binary (Xbox 360 ZAR, PBP, CIA/CCI) |
+| `UNAR_PATH` | `unar` | Path to unar, the RAR sets tool's extractor; resolved on PATH by default |
+| `SWITCH_KEYS` | *(unset)* | Directory holding your Switch `prod.keys`. See [Switch Environment Variables](#switch-environment-variables) |
+| `NSZ_COMPRESSION_LEVEL` | `18` | zstandard level for nsz compression (1-22) |
+| `EXODOS_DOS_DIR` | *(unset)* | Your eXoDOS `!dos` folder. Must be inside a volume. Unset hides the eXoDOS tool |
+| `MAMEREDUMP_REPO` | `MetalSlug/MAMERedump` | GitHub repo the DAT sync pulls from |
+| `MAMEREDUMP_AUTO_SYNC` | `false` | Sync DATs on startup when none are loaded |
+| `MAMEREDUMP_GITHUB_TOKEN` | *(unset)* | Optional GitHub token for the DAT sync's API calls |
 | `MAX_CONCURRENT_JOBS` | `1` | Maximum parallel conversion jobs (`1` = serial queue processing) |
 | `MAX_QUEUE_DEPTH` | `0` | Max queued+processing conversion jobs before create endpoints return `429` (0 disables) |
 | `COMPRESSATORIUM_CHAIN_DISK_MARGIN_MB` | `512` | Free-space margin in MB the `cso_to_chd` chain keeps beyond the room needed for the temporary `.iso` plus the final `.chd`. A job is rejected when free space is below `required + margin`, so a bigger margin is stricter. If a valid chain job is wrongly rejected for headroom, lower this or free up space (or point `CHD_TEMP_DIR` / the output at a roomier volume). |
@@ -3151,13 +3307,13 @@ The Web UI communicates with a REST API that can also be used directly. Interact
 | `COMPRESSATORIUM_TOOL_NICE` | `10` | Nice level for every conversion tool (0-19, higher = lower priority). Legacy alias: `CHD_CHDMAN_NICE`. |
 | `COMPRESSATORIUM_TOOL_IOPRIO_CLASS` | `2` | I/O priority class for every tool (`1` realtime, `2` best-effort, `3` idle). Legacy alias: `CHD_CHDMAN_IOPRIO_CLASS`. |
 | `COMPRESSATORIUM_TOOL_IOPRIO_LEVEL` | `6` | I/O priority level for every tool (`0` highest, `7` lowest). Legacy alias: `CHD_CHDMAN_IOPRIO_LEVEL`. |
-| `COMPRESSATORIUM_TOOL_INFO_TIMEOUT` | `60` | Timeout in seconds for `info`/`header` subprocesses, used by chdman and Dolphin (nsz/3DS read info from the filesystem, so it doesn't apply to them). 0 disables. Legacy alias: `CHD_INFO_TIMEOUT`. |
+| `COMPRESSATORIUM_TOOL_INFO_TIMEOUT` | `60` | Timeout in seconds for `info`/`header` subprocesses, used by chdman, Dolphin and rom-converto (nsz/3DS read info from the filesystem, so it doesn't apply to them). 0 disables. Legacy alias: `CHD_INFO_TIMEOUT`. |
 | `COMPRESSATORIUM_TOOL_VERIFY_TIMEOUT` | `1800` | Baseline timeout in seconds for verify runs across all tools. The effective bound is this plus `COMPRESSATORIUM_TOOL_VERIFY_TIMEOUT_PER_GIB` per GiB of the file being verified, capped by `COMPRESSATORIUM_TOOL_VERIFY_TIMEOUT_CAP` — verify reads the whole file, so its runtime scales with size. Set to `0` to disable this bound (the no-output stall bound below is a separate knob and stays on; zero both for no bound at all). Legacy alias: `CHD_VERIFY_TIMEOUT`. |
 | `COMPRESSATORIUM_TOOL_VERIFY_TIMEOUT_PER_GIB` | `600` | Extra verify allowance in seconds per GiB of the verified file (0 makes the bound flat). |
 | `COMPRESSATORIUM_TOOL_VERIFY_TIMEOUT_CAP` | `86400` | Upper bound in seconds on the size-scaled verify timeout (0 uncapped). |
 | `COMPRESSATORIUM_TOOL_VERIFY_PROGRESS_TIMEOUT` | `600` | Timeout in seconds without any verify output, for the verifiers that stream progress (chdman, dolphin-tool); catches a wedged verify long before the overall bound. Independent of `COMPRESSATORIUM_TOOL_VERIFY_TIMEOUT` — it still applies when that is `0`. 0 disables. Legacy alias: `CHD_VERIFY_PROGRESS_TIMEOUT`. |
 | `COMPRESSATORIUM_<TOOL>_NICE` / `_IOPRIO_CLASS` / `_IOPRIO_LEVEL` / `_VERIFY_TIMEOUT` | (shared default) | Optional per-tool overrides that fall back to the shared `COMPRESSATORIUM_TOOL_*` values. `<TOOL>` is `CHDMAN`, `DOLPHIN_TOOL`, `NSZ`, `Z3DS`, `MAXCSO`, `ROMZ` (handheld ROM), `MAKEPS3ISO`, `NKIT2ISO`, `JWUD` (Wii U), `XISO` (Xbox / Xbox 360), or `ROM_CONVERTO` (e.g. `COMPRESSATORIUM_DOLPHIN_TOOL_NICE=15`, `COMPRESSATORIUM_NSZ_VERIFY_TIMEOUT=300`, `COMPRESSATORIUM_MAXCSO_VERIFY_TIMEOUT=300`). `NKIT2ISO` and `MAKEPS3ISO` take the `_NICE`/`_IOPRIO_*` knobs but no `_VERIFY_TIMEOUT`: nkit2iso has no verify step, and makeps3iso's has no reachable entry point (no verify route, no delete-on-verify; its post-build PARAM.SFO readback belongs to the conversion). `JWUD` verifies without a subprocess (a WUX container walk), so its `_VERIFY_TIMEOUT` bounds the verify call itself rather than a child process. |
-| `COMPRESSATORIUM_<TOOL>_INFO_TIMEOUT` | (shared default) | Optional per-tool info-timeout override, only for `<TOOL>` = `CHDMAN` or `DOLPHIN_TOOL` (the only tools whose `info` runs a subprocess); falls back to the shared `COMPRESSATORIUM_TOOL_INFO_TIMEOUT`. |
+| `COMPRESSATORIUM_<TOOL>_INFO_TIMEOUT` | (shared default) | Optional per-tool info-timeout override, only for `<TOOL>` = `CHDMAN`, `DOLPHIN_TOOL` or `ROM_CONVERTO` (the only tools whose `info` runs a subprocess); falls back to the shared `COMPRESSATORIUM_TOOL_INFO_TIMEOUT`. |
 | `CHD_ARCHIVE_MAX_ENTRIES` | `5000` | Max archive members to list (0 disables limit) |
 | `CHD_ARCHIVE_MAX_MEMBER_SIZE` | `0` | Max size in bytes per archive member (0 disables limit) |
 | `CHD_ARCHIVE_MAX_TOTAL_SIZE` | `0` | Max total size in bytes for archive listings/extractions (0 disables limit) |
@@ -3166,8 +3322,8 @@ The Web UI communicates with a REST API that can also be used directly. Interact
 | `CHD_ARCHIVE_INBOX_MAX_UNPACKED_SIZE` | `CHD_ARCHIVE_INBOX_MAX_TOTAL_SIZE` | Max bytes every archive an Inbox has unpacked at once may hold in all, in the work area; one more waits for room, with no Finding (0 disables limit) |
 | `CHD_PATCH_MAX_PATCH_SIZE` | `67108864` | Max size in bytes of an IPS or BPS patch, picked or uploaded (64 MiB; 0 disables limit) |
 | `CHD_PATCH_MAX_ROM_SIZE` | `536870912` | Max size in bytes of a ROM to patch, and of the patched ROM (512 MiB; 0 disables limit). The patch is applied in memory. |
-| `LOGLEVEL` | `INFO` | Log verbosity level (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`) |
-| `LOG_PATH` | (none) | Path to log file (logs to stdout only if unset) |
+| `LOGLEVEL` | `INFO` | Log verbosity level (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`). With `LOGLEVEL` unset, the legacy `CHD_DEBUG=true` means `DEBUG` |
+| `LOG_PATH` | (none) | Path to log file (logs to stdout only if unset). Legacy alias: `CHD_DEBUG_LOG_PATH` |
 | `LOG_COLOR` | `always` | ANSI-color stdout logs by level. Values: `always` (default, colored `docker logs` out of the box), `auto` (TTY and no `NO_COLOR`), `never`. File logs are never colored. |
 | `CHD_DEBUG_HEARTBEAT` | `30` | Maintenance loop interval in seconds |
 | `CHD_DEBUG_PROGRESS_INTERVAL` | `30` | Debug progress log interval in seconds |
@@ -3320,11 +3476,18 @@ For production deployment guidance, see [DEPLOYMENT.md](docs/DEPLOYMENT.md).
 - `.cci`, `.cia`, `.3ds`, `.cxi`, `.3dsx` - Nintendo 3DS ROM images (3DS compression)
 - `.zcci`, `.zcia`, `.z3ds`, `.zcxi`, `.z3dsx` - compressed 3DS ROMs (3DS decompression)
 - `.cso`, `.zso`, `.dax` - PSP/PS2 compressed ISO images (CSO decompression, or `cso_to_chd` to a `.chd`)
-- `.gb`, `.gbc`, `.gba`, `.nds` - Game Boy / GBC / GBA / DS ROMs (handheld ROM compression)
+- `.gb`, `.gbc`, `.gba`, `.nds` and the other cartridge ROM extensions - handheld ROM compression
+- `.nsp`, `.xci` - Switch dumps (Switch compression); `.nsz`, `.xcz` - compressed Switch
+  dumps (Switch decompression)
 - `.wud` - Wii U disc images (Wii U compression)
 - `.wux` - compressed Wii U disc images (Wii U decompression)
 - A decrypted PS3 folder (one containing a `PS3_GAME/` directory) - packed to `.iso` (PS3 ISO tool; the input is a folder, not a file)
 - `.nkit.iso`, `.nkit.gcz` - NKit-shrunk GameCube/Wii disc images (NKit restore). These are matched on the whole compound extension, so a plain `.iso`/`.gcz` is never mistaken for one
+- `.iso` holding an Xbox / Xbox 360 filesystem - trimmed to XISO (Xbox); an Xbox 360 one,
+  or a `.xiso.iso`, packed to ZAR (rom-converto)
+- `.pbp` - PSP games (rom-converto, to `.iso`)
+- `.zip` - an eXoDOS game zip (eXoDOS)
+- `.rar` / `.part01.rar` - the first volume of a multi-part RAR set (RAR sets)
 
 **Archive formats (Web UI):**
 - `.zip` - ZIP archives
@@ -3341,6 +3504,12 @@ For production deployment guidance, see [DEPLOYMENT.md](docs/DEPLOYMENT.md).
 - `.wux` - Compressed Wii U disc images (JWUDTool; `jwud_decompress` restores the original `.wud`)
 - `.iso` - the full-size GameCube/Wii disc image restored from an NKit source (nkit2iso)
 - `.rvz` - a GameCube/Wii disc restored from NKit and compressed in one job (the `nkit_to_rvz` chain)
+- `.nsz`, `.xcz` - compressed Switch dumps (nsz; `nsz_decompress` restores `.nsp`/`.xci`)
+- `.xiso.iso` - a trimmed Xbox / Xbox 360 image (extract-xiso)
+- `.zar` - an Xbox 360 game for Xenia (rom-converto)
+- `.iso` from a PSP `.pbp`, and `.cci` / `.cia` from each other (rom-converto)
+- `.dosz` - an eXoDOS game for RomM's DOS player
+- the one file a RAR set holds, under its own name (unar)
 
 ---
 
@@ -3355,7 +3524,7 @@ The Web UI is a **Svelte 5 + Vite** single-page app. Source lives under `src/`, 
 npm install
 
 # In one shell: start the FastAPI backend
-./run_dev.sh                          # or: uvicorn app.main:app --port 8080
+./run_dev.sh                          # or: PYTHONPATH=app uvicorn main:app --port 8080
 
 # In a second shell: start Vite with HMR
 npm run dev                           # → http://localhost:5173

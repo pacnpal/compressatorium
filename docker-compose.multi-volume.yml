@@ -18,6 +18,7 @@ services:
       # Optional: remap container runtime UID/GID (Unraid-friendly)
       # - PUID=99
       # - PGID=100
+      # CLI-mode conversion (createcd or createdvd). The Web UI ignores it.
       - CHDMAN_MODE=createcd
       - MAX_CONCURRENT_JOBS=1
       - COMPRESSATORIUM_TOOL_NICE=10
