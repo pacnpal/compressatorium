@@ -1,27 +1,23 @@
 <script>
   /**
-   * RomM library view.
-   *
-   * Three tabs: browse and convert the catalog, configure per-platform
-   * automation, and set up the connection. The Library tab is the ordinary
-   * workspace — the backend returns a RomM platform's ROMs in the same
-   * DirectoryListing/FileEntry shape a directory listing uses, so FileList,
-   * FileRow, RowActionsMenu, ConvertPanel and JobsPanel are reused verbatim.
+   * RomM's Browse tab: pick a console, see what's converted and what's left,
+   * and convert from the same panel Files uses. The backend returns a RomM
+   * console's ROMs in the same DirectoryListing/FileEntry shape a folder
+   * listing uses, so FileList, FileRow, RowActionsMenu and ConvertPanel are
+   * reused as they are. The view (LibraryView) loads RomM's status,
+   * consoles and Rules, and puts the file browser back when it is left.
    */
-  import { onMount } from 'svelte';
   import { toast } from 'svelte-sonner';
   import { romm } from '$lib/stores/romm.svelte.js';
   import { fileBrowser } from '$lib/stores/fileBrowser.svelte.js';
   import { conversion } from '$lib/stores/conversion.svelte.js';
   import { layout } from '$lib/stores/layout.svelte.js';
   import { registry } from '$lib/tools/registry.js';
+  import { convertTargets } from '$lib/tools/convertTargets.js';
   import { ui } from '$lib/stores/ui.svelte.js';
   import { formatSize } from '$lib/api/format.js';
   import FileList from '$lib/components/panels/FileList.svelte';
   import ConvertPanel from '$lib/components/panels/ConvertPanel.svelte';
-  import JobsPanel from '$lib/components/panels/JobsPanel.svelte';
-  import RommSettings from '$lib/components/views/RommSettings.svelte';
-  import RulesView from '$lib/components/views/RulesView.svelte';
   import Splitter from '$lib/components/ui/Splitter.svelte';
   import Select from '$lib/components/ui/Select.svelte';
   import Button from '$lib/components/ui/Button.svelte';
@@ -38,48 +34,25 @@
   import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
 
   let dragStartRight = 0;
-  // The tab is in the URL (`#/libraries/romm/<tab>`): Browse, Automation,
-  // Connection. Each maps to this view's own tab.
-  const TAB_OF_ROUTE = { browse: 'library', automation: 'automation', connection: 'settings' };
-  const ROUTE_OF_TAB = { library: 'browse', automation: 'automation', settings: 'connection' };
-  let tab = $state(TAB_OF_ROUTE[ui.libraryTab] ?? 'library');
-  $effect(() => {
-    const routed = TAB_OF_ROUTE[ui.libraryTab];
-    if (routed) tab = routed;
-  });
-
-  function openTab(id) {
-    tab = id;
-    ui.navigate('libraries', { id: 'romm', tab: ROUTE_OF_TAB[id] });
-  }
 
   const status = $derived(romm.status);
   const entries = $derived(fileBrowser.entries);
 
   /**
-   * Every target format this platform can actually use.
-   *
-   * Selecting a platform points the workspace at *a* tool the platform allows,
-   * but a platform usually allows several — PS2 takes chdman and maxcso — and
-   * without this the only way to reach the others was to leave RomM for the
-   * sidebar and come back. Narrowed by the backend's own `mode_ids`/`tool_ids`
-   * for this platform, so the list can never offer a format for the wrong
-   * console, and grouped by tool so the choice reads as "what do I want out".
+   * What the chosen console can be converted to, grouped as everywhere else
+   * ($lib/tools/convertTargets.js) and narrowed by the backend's own
+   * `mode_ids` / `tool_ids` for it, so the list never offers a format for the
+   * wrong console.
    */
-  const modeOptions = $derived.by(() => {
+  const modeGroups = $derived.by(() => {
     const platform = romm.platforms.find((p) => p.id === romm.selectedPlatformId);
-    const allowedTools = platform?.tool_ids;
-    const allowedModes = platform?.mode_ids;
-    const out = [];
-    for (const tool of registry.all()) {
-      if (Array.isArray(allowedTools) && !allowedTools.includes(tool.id)) continue;
-      for (const m of tool.modes ?? []) {
-        if (Array.isArray(allowedModes) && !allowedModes.includes(m.mode)) continue;
-        out.push({ value: m.mode, label: `${tool.label} → ${m.label}` });
-      }
-    }
-    return out;
+    return convertTargets({
+      perMode: true,
+      modeIds: Array.isArray(platform?.mode_ids) ? platform.mode_ids : null,
+      toolIds: Array.isArray(platform?.tool_ids) ? platform.tool_ids : null,
+    }).filter((g) => g.group !== 'Recommended');
   });
+  const hasModes = $derived(modeGroups.length > 0);
 
   /** Switch the workspace to a chosen target format, tool included.
    *
@@ -95,7 +68,7 @@
 
   const selectedPlatformName = $derived(
     romm.platforms.find((p) => p.id === romm.selectedPlatformId)?.name
-      ?? 'this platform',
+      ?? 'this console',
   );
 
   const platformOptions = $derived(
@@ -106,15 +79,6 @@
   );
 
   const activeMode = $derived(registry.specFor(conversion.mode) ?? null);
-  // Three states, not two. `settings` stays null when the load *failed*, and
-  // reading that as "on" promises a metadata snapshot the backend may not be
-  // taking — next to a Convert button that can delete the source once it
-  // verifies. Unknown says so instead.
-  const repinState = $derived(
-    romm.settings == null
-      ? 'unknown'
-      : (romm.settings.repin_enabled === false ? 'off' : 'on'),
-  );
   const losesMatch = $derived(romm.losesDatMatch(activeMode));
 
   /**
@@ -245,7 +209,7 @@
       // runs only when that list changes: read it back once now as well.
       datMatching.hydrateFinishedJobs(jobs.jobs);
       if (response?.status === 'started') {
-        toast.info(`Matching ${toRecognize.length} ROM${toRecognize.length === 1 ? '' : 's'} — see Jobs`);
+        toast.info(`Matching ${toRecognize.length} ${toRecognize.length === 1 ? 'game' : 'games'}. Progress shows in Activity.`);
       } else {
         toast.info('Nothing new to match: these already have an answer');
       }
@@ -254,61 +218,6 @@
     } finally {
       recognizing = false;
     }
-  }
-
-  onMount(() => {
-    // The async init below outlives a fast navigation away, and its tail
-    // calls enterRomm() — which would replace the ordinary workspace's
-    // listing with RomM rows after this view is gone.
-    let alive = true;
-    (async () => {
-      await Promise.all([romm.loadStatus(), romm.loadSettings()]);
-      if (!alive) return;
-      if (!romm.configured) {
-        tab = 'settings';
-        return;
-      }
-      // Only touch the library once RomM answers AND its folder is visible
-      // here: listing ROMs stats every file, and doing that against a mount
-      // that is missing or unresponsive would tie up a worker for nothing.
-      if (!romm.usable) return;
-      // allSettled: each store records its own error, and one failing must
-      // not skip the other load or the re-pin pass below.
-      if (!alive) return;
-      await Promise.allSettled([romm.loadPlatforms(), romm.loadRules()]);
-      if (!alive) return;
-      if (romm.pendingRepins > 0 && romm.settings?.repin_on_load !== false) {
-        try {
-          await romm.runRepin();
-        } catch {
-          // Surfaced by the pending badge; a failed settle is retried later.
-        }
-      }
-    })();
-    // Leaving the view returns the browser to ordinary filesystem listing, or
-    // the workspace would open showing RomM rows under a directory heading.
-    return () => {
-      alive = false;
-      // Before exitRomm, not after: a platform load still in flight ends by
-      // selecting a platform, which re-enters RomM mode — so leaving without
-      // abandoning it puts the catalog straight back into the browser the
-      // line below just restored. `alive` cannot cover that; the side effect
-      // happens inside the store, not after the await here.
-      romm.cancelPlatformLoad();
-      fileBrowser.exitRomm();
-    };
-  });
-
-  /** Refresh what the new connection settings changed. Errors land in the store.
-   *
-   * Rules only: `saveSettings` already force-reloads the platforms and
-   * re-enters the selected one, which fetches its whole catalog and stats
-   * every file in it. Reloading here as well meant even a metadata toggle
-   * cost two remote catalog reads and two filesystem scans of a large
-   * library. The store owns the platform reload; this owns what it does not.
-   */
-  async function reloadAfterSave() {
-    await romm.loadRules().catch(() => {});
   }
 
   async function handleRepin() {
@@ -342,78 +251,35 @@
   }
 </script>
 
-<section class="view" aria-labelledby="romm-title">
-  <header class="header">
-    <div>
-      <h1 id="romm-title">RomM library</h1>
-      <p class="hint">
-        Convert your RomM library in place. Game names and platforms come from
-        RomM; the files are read from the mounted library.
-      </p>
-      <p class="hint">
-        Unlike RomM's own converter, Compressatorium also converts ROMs stored
-        inside zip and 7z archives.
-      </p>
-    </div>
-    <div class="header-right">
-      {#if status?.version}<Badge tone="info">RomM {status.version}</Badge>{/if}
-      {#if romm.pendingRepins > 0}
-        <Badge tone="warning">{romm.pendingRepins} awaiting re-match</Badge>
-        <Button
-          size="sm" variant="secondary" loading={romm.repinning}
-          onclick={handleRepin} icon={refreshIcon}
-        >Re-match in RomM</Button>
-      {/if}
-    </div>
-  </header>
-
-  <!-- A real tab set, not a nav: `aria-current="page"` marks the current item
-       among navigation links, which does not tell a screen-reader user that
-       these three form one group with one selected. Keyboard access already
-       works (they are buttons), so this is semantics only. -->
-  <div class="tabs" role="tablist" aria-label="RomM sections">
-    {#each [['library', 'Library'], ['automation', 'Automation'], ['settings', 'Settings']] as [id, label] (id)}
-      <button
-        type="button" class="tab" class:active={tab === id}
-        role="tab"
-        id={`romm-tab-${id}`}
-        aria-selected={tab === id}
-        aria-controls={`romm-panel-${id}`}
-        onclick={() => openTab(id)}
-      >{label}</button>
-    {/each}
-  </div>
-
-  <div
-    role="tabpanel"
-    id={`romm-panel-${tab}`}
-    aria-labelledby={`romm-tab-${tab}`}
-    class="panel"
-  >
-  {#if tab === 'settings'}
-    <RommSettings onsaved={() => { if (romm.usable) { reloadAfterSave(); } }} />
-  {:else if tab === 'automation'}
-    <!-- The Rules view, opened on the RomM Library. -->
-    <RulesView embedded />
-  {:else if romm.statusLoading}
+<section class="browse">
+  {#if romm.statusLoading && !romm.status}
     <div class="notice"><Spinner /> Checking RomM connection…</div>
   {:else if !romm.configured}
     <EmptyState
-      title="RomM is not connected yet"
-      description="Add your RomM URL, API token and library path in Settings — it takes about a minute."
-    />
+      title="RomM isn't connected yet"
+      description="Connect it once and its consoles show up here."
+    >
+      {#snippet actions()}
+        <Button onclick={() => ui.navigate('libraries', { id: 'romm', tab: 'connection' })}>
+          Connect RomM
+        </Button>
+      {/snippet}
+    </EmptyState>
   {:else if !romm.connected}
     <div class="notice error">
       <TriangleAlert size={16} />
-      <span>Could not reach RomM{status?.error ? `: ${status.error}` : '.'}</span>
+      <span>Couldn't reach RomM.{status?.error ? ` ${String(status.error).replace(/^[^:]*:\s*/, '')}` : ''}</span>
+      <Button size="sm" variant="secondary" onclick={() => romm.loadStatus()}>Try again</Button>
+      <Button size="sm" variant="ghost" onclick={() => ui.navigate('libraries', { id: 'romm', tab: 'connection' })}>
+        Check the connection
+      </Button>
     </div>
   {:else if status && !status.libraryRootMounted}
     <div class="notice error">
       <TriangleAlert size={16} />
       <span>
-        The library path ({status.libraryRoot || 'unset'}) is not a directory
-        here. Mount RomM's library folder into this container and check the path
-        in Settings.
+        RomM's games folder ({status.libraryRoot || 'not set'}) isn't here. Add it to
+        the container, then check the Connection tab.
       </span>
     </div>
   {:else}
@@ -428,21 +294,34 @@
           <span class="error-text">{romm.platformsError}</span>
         {:else if platformOptions.length > 0}
           <Select
-            label="Platform"
+            label="Console"
             value={String(romm.selectedPlatformId ?? '')}
             options={platformOptions}
             onchange={(v) => romm.selectPlatform(v)}
           />
         {:else}
-          <span class="muted">No platforms in RomM.</span>
+          <span class="muted">No consoles in RomM.</span>
         {/if}
-        {#if modeOptions.length > 0}
-          <Select
-            label="Convert to"
-            value={conversion.mode ?? ''}
-            options={modeOptions}
-            onchange={(v) => chooseMode(v)}
-          />
+        {#if hasModes}
+          <label class="convert-to">
+            <span class="label">Convert to</span>
+            <select value={conversion.mode ?? ''} onchange={(e) => chooseMode(e.currentTarget.value)}>
+              {#each modeGroups as g (g.group)}
+                <optgroup label={g.group}>
+                  {#each g.options as o (o.value)}
+                    <option value={o.value}>{o.label} · {o.hint}</option>
+                  {/each}
+                </optgroup>
+              {/each}
+            </select>
+          </label>
+        {/if}
+        {#if romm.pendingRepins > 0}
+          <Badge tone="warning">{romm.pendingRepins} awaiting re-match</Badge>
+          <Button
+            size="sm" variant="secondary" loading={romm.repinning}
+            onclick={handleRepin} icon={refreshIcon}
+          >Re-match in RomM</Button>
         {/if}
       </div>
 
@@ -462,8 +341,8 @@
       {:else if summary.total > 0}
         <div class="summary" aria-live="polite">
           <span class="muted">
-            {summary.total} ROMs — progress is not counted while the convert panel
-            writes to a custom output folder, which this listing does not scan.
+            {summary.total} games. Progress isn't counted while new files go to another
+            folder.
           </span>
         </div>
       {/if}
@@ -480,9 +359,9 @@
         />
         {#if fileBrowser.rommUnidentified && !fileBrowser.loading}
           <span class="muted">
-            The app Recognizes <strong>{recognizedUnidentified}</strong> of
-            {unidentifiedRows.length} from its own DATs or Hasheous, so a Rule
-            set to "only Recognized" converts them too.
+            <strong>{recognizedUnidentified}</strong> of {unidentifiedRows.length} are known
+            good dumps from your game lists or Hasheous, so a console set to "Only known
+            good dumps" converts them too.
           </span>
           {#if archivedUnidentified > 0}
             <span class="muted">
@@ -504,35 +383,11 @@
     {#if losesMatch}
       <div class="notice warn">
         <TriangleAlert size={16} />
-        {#if repinState === 'on'}
-          <span>
-            RomM cannot hash-match <strong>{activeMode?.outputExt}</strong> files.
-            Their metadata is saved before converting. Where RomM re-identifies
-            the format on its own, the saved metadata is confirmed against
-            RomM's record and only re-applied if RomM didn't match it; otherwise
-            it is restored by <em>Re-match in RomM</em> once RomM rescans. CHD
-            and ZIP/7z keep their match automatically.
-          </span>
-        {:else if repinState === 'unknown'}
-          <span>
-            RomM cannot hash-match <strong>{activeMode?.outputExt}</strong> files,
-            and the metadata settings could not be read, so whether a snapshot
-            is taken is unknown. Check Settings → Metadata before converting
-            anything you cannot re-identify by hand.
-          </span>
-        {:else}
-          <!-- The promise has to follow the setting. With re-pinning off,
-               /romm/repin/plan records nothing and returns "disabled", so the
-               reassuring version of this message was telling the operator a
-               snapshot existed while they converted — and possibly deleted —
-               the only file that carried the metadata. -->
-          <span>
-            RomM cannot hash-match <strong>{activeMode?.outputExt}</strong> files,
-            and <strong>metadata preservation is switched off</strong> (Settings →
-            Metadata). These conversions will lose their RomM match and need
-            re-identifying by hand. CHD and ZIP/7z keep their match automatically.
-          </span>
-        {/if}
+        <span>
+          RomM can't match {activeMode?.outputExt?.replace(/^\./, '').toUpperCase()} files by
+          hash. Compressatorium keeps their RomM details and puts them back after RomM's
+          next scan.
+        </span>
       </div>
     {/if}
 
@@ -631,7 +486,7 @@
 
       <Splitter
         variant="panel"
-        label="Resize convert and jobs panel"
+        label="Resize the convert panel"
         value={layout.panels.right}
         min={280}
         max={640}
@@ -642,7 +497,7 @@
       />
 
       <article class="right">
-        {#if romm.selectedPlatformUnsupported || modeOptions.length === 0}
+        {#if romm.selectedPlatformUnsupported || !hasModes}
           <!-- Nothing installed converts this platform. The panel would still
                submit against whatever tool the workspace was last left on —
                a PS2 ISO to Dolphin RVZ — so it is replaced rather than
@@ -650,81 +505,52 @@
           <div class="notice warn">
             <TriangleAlert size={16} />
             <span>
-              No installed tool converts <strong>{selectedPlatformName}</strong>.
-              Install the tool for this system, or pick another platform.
+              Nothing here converts <strong>{selectedPlatformName}</strong> games. Pick
+              another console.
             </span>
           </div>
         {:else}
           <ConvertPanel />
         {/if}
-        <div class="separator" aria-hidden="true"></div>
-        <JobsPanel />
       </article>
     </div>
   {/if}
-  </div>
 </section>
 
 {#snippet refreshIcon()}<RefreshCw size={14} />{/snippet}
 
 <style>
-  /* The tab panel is a passthrough wrapper: it exists for the ARIA
-     relationship, so it must not introduce a layout box of its own. */
-  .panel {
-    display: contents;
-  }
-
-  .view {
+  .browse {
     display: flex;
     flex-direction: column;
     gap: var(--space-4);
-    padding: var(--space-5);
-    /* Matches WorkArea: the file table needs the room on a big monitor. */
-    max-width: 1760px;
-    margin: 0 auto;
-    width: 100%;
     min-width: 0;
   }
-  .header {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: var(--space-3);
-    flex-wrap: wrap;
-  }
-  .header h1 {
-    margin: 0;
-    font-size: var(--text-2xl);
-    font-weight: var(--weight-semibold);
-    color: var(--text-1);
-  }
-  .header-right { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
-  .hint { color: var(--text-2); margin-top: var(--space-1); }
-
-  .tabs {
-    display: flex;
-    gap: var(--space-1);
-    border-bottom: 1px solid var(--border-subtle);
-  }
-  .tab {
-    padding: var(--space-2) var(--space-3);
-    background: none;
-    border: 0;
-    border-bottom: 2px solid transparent;
-    color: var(--text-2);
-    font: inherit;
+  .convert-to { display: inline-flex; flex-direction: column; gap: var(--space-1); min-width: 0; }
+  .convert-to .label {
+    font-size: var(--text-xs);
     font-weight: var(--weight-medium);
-    cursor: pointer;
+    color: var(--text-2);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
   }
-  .tab.active { color: var(--text-1); border-bottom-color: var(--accent); }
-
+  .convert-to select {
+    background: var(--surface-2);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    color: var(--text-1);
+    font: inherit;
+    font-size: var(--text-sm);
+    padding: var(--space-2) var(--space-3);
+    max-width: 100%;
+  }
   .toolbar {
     display: flex;
     align-items: flex-end;
     gap: var(--space-4);
     flex-wrap: wrap;
   }
-  .picker { min-width: 240px; }
+  .picker { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--space-3); min-width: 0; }
   .summary {
     display: flex;
     gap: var(--space-3);
@@ -793,11 +619,6 @@
     min-width: 0;
   }
   .right { display: flex; flex-direction: column; gap: var(--space-4); }
-  .separator {
-    height: 1px;
-    background: var(--border-subtle);
-    margin: var(--space-2) 0;
-  }
 
   .diag-empty {
     display: flex;

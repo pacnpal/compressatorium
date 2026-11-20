@@ -5,7 +5,12 @@
 // and they come in through the constructor:
 //
 //   { getRules(), saveRules(rules, checkRules), forgetConverted(platformIds),
-//     preview(body), run(body), loadError }
+//     preview(body), run(body), recommended(), loadError }
+//
+// Every edit saves on its own (#541): the table calls `scheduleSave(delay)`
+// after it changes a Rule, and `saveState` says how that went. Preview, Run
+// now and turning automation on `flush()` first, so they never act on a
+// configuration the server hasn't got.
 //
 // A subclass adds its Platforms and the members the editor reads beside the
 // Rules: platforms, imageCount(platform), platformName(id), emptyTitle,
@@ -62,6 +67,9 @@ export class RulesSource {
   rulesDirty = $state(false);
   sweepResult = $state(null);
   sweeping = $state(false);
+  // The autosave: 'idle', 'saving', 'saved' or 'error' (with `saveError`).
+  saveState = $state('idle');
+  saveError = $state(null);
 
   // [one, many]: what an Image is called in this Library's counts.
   imageNouns = ['Image', 'Images'];
@@ -77,6 +85,8 @@ export class RulesSource {
   // Saves run one at a time, in the order they were asked for; see `saveRules`.
   #saveChain = Promise.resolve();
   #savesPending = 0;
+  // The pending autosave's timer; see `scheduleSave`.
+  #saveTimer = null;
 
   constructor(endpoints) {
     this.#endpoints = endpoints;
@@ -261,6 +271,79 @@ export class RulesSource {
     this.checkRules = data?.check_rules ?? this.checkRules;
     this.rulesDirty = false;
     return this.rules;
+  }
+
+  /**
+   * Save the Rules after *delay* ms, restarting the wait on every call: a
+   * text field passes 600 so a save goes out once typing stops, a switch 0.
+   */
+  scheduleSave(delay = 0) {
+    clearTimeout(this.#saveTimer);
+    this.saveState = 'saving';
+    this.#saveTimer = setTimeout(() => {
+      this.#saveTimer = null;
+      this.#autosave();
+    }, delay);
+  }
+
+  async #autosave() {
+    this.saveState = 'saving';
+    try {
+      await this.saveRules();
+      // A later edit has its own save coming; that one reports.
+      if (!this.#saveTimer && this.#savesPending === 0) {
+        this.saveState = this.rulesDirty ? 'saving' : 'saved';
+      }
+      this.saveError = null;
+    } catch (e) {
+      this.saveState = 'error';
+      this.saveError = e?.message ?? "Couldn't save";
+    }
+  }
+
+  /**
+   * Send any edit still waiting, now. True once the server holds what the
+   * table shows. An edit made while a save was out leaves the Rules dirty
+   * (see `#saveNow`), so it saves once more before giving up.
+   */
+  async flush() {
+    if (this.#saveTimer) {
+      clearTimeout(this.#saveTimer);
+      this.#saveTimer = null;
+    }
+    for (let attempt = 0; attempt < 2 && this.rulesDirty; attempt += 1) {
+      await this.#autosave();
+      if (this.saveState === 'error') return false;
+    }
+    return !this.rulesDirty;
+  }
+
+  /**
+   * Apply recommended: give each console with games and no target the format
+   * the backend picks for it, on, with *fieldsFor(mode)* (the saved safety
+   * defaults) on top. A console that has a target keeps it. Saves, and
+   * returns `{ added: [platform ids], skipped: [{platform_id, name, reason}] }`.
+   */
+  async applyRecommended(fieldsFor = () => ({})) {
+    const plan = await this.#endpoints.recommended();
+    const zone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+    const added = [];
+    for (const [platformId, entry] of Object.entries(plan?.rules ?? {})) {
+      if (!entry?.mode || this.rules[String(platformId)]?.mode) continue;
+      this.setRule(platformId, {
+        ...this.ruleFor(platformId),
+        compression: null,
+        compression_level: null,
+        split: false,
+        timezone: zone,
+        ...fieldsFor(entry.mode),
+        mode: entry.mode,
+        enabled: true,
+      });
+      added.push(String(platformId));
+    }
+    if (added.length) await this.flush();
+    return { added, skipped: plan?.skipped ?? [] };
   }
 
   /** How many sources this rule remembers having produced an output for. */

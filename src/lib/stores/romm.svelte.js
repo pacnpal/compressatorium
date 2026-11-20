@@ -65,6 +65,7 @@ class RommStore extends RulesSource {
       forgetConverted: (platformIds) => api.forgetRommConverted(platformIds),
       preview: (body) => api.previewRommAutoConvert(body),
       run: (body) => api.runRommAutoConvert(body),
+      recommended: () => api.getRecommendedRules('romm'),
       loadError: 'Failed to load automation rules',
     });
   }

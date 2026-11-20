@@ -22,7 +22,3 @@ export function newCheckRule(defaults) {
   };
 }
 
-/** The row summary for a check Rule. */
-export function checkSummary(rule) {
-  return `${rule?.check_budget_gb ?? 50} GB a night`;
-}

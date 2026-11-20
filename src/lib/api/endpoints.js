@@ -768,18 +768,6 @@ export const api = {
       'Failed to save RomM rules',
     ),
 
-  // One-time notices any rule editor shows (#302). Not RomM-specific.
-  getRuleNotices: () =>
-    fetchJson(`${API_BASE}/rules/notices`, undefined, 'Failed to load rule notices'),
-
-  dismissCheckLevelNotice: () =>
-    jsonPost(
-      `${API_BASE}/rules/notices/check-level/dismiss`,
-      {},
-      {},
-      'Failed to dismiss the notice',
-    ),
-
   // Clears the "already converted by this rule" history that stops overwrite
   // and rename rules from reconverting the same sources every interval.
   forgetRommConverted: (platformIds = null) =>
@@ -909,6 +897,14 @@ export const api = {
 
   runLibrary: (id, body = {}) =>
     jsonPost(`${API_BASE}/libraries/${encodeURIComponent(id)}/run`, body, {}, 'Run failed'),
+
+  // Apply recommended (#541): `{ rules: {platform_id: {mode, enabled}}, skipped }`
+  // for the consoles with games and no target. Read-only; the caller saves.
+  getRecommendedRules: (id) =>
+    fetchJson(
+      `${API_BASE}/libraries/${encodeURIComponent(id)}/recommended-rules`, undefined,
+      "Couldn't work out the best formats",
+    ),
 
   // A Library's find-duplicates run (#388): a background job whose groups
   // land in Findings. `{ job_id }`; 409 while the previous run still runs.

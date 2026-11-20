@@ -1,15 +1,17 @@
 <script>
   /**
-   * Where new Images go in one Library (#430).
+   * Where new games go in one Library (#430), folded in a <details> that
+   * opens by itself when a console needs a choice or can't be placed.
    *
-   * A folder Library picks its layout here (RomM style, ES-DE/Batocera style
-   * or flat). Every Library lists where new Images of each of its Platforms
-   * would land ("PlayStation 2 → roms/ps2"), whether that folder is there yet,
-   * or why it can't be told. The backend works it out (`Library.placement`),
-   * so the folder names here are the ones detection reads back.
+   * A folder Library picks its folder style here (RomM style, ES-DE/Batocera
+   * style or all in one). Every Library lists where new games of each of its
+   * consoles would land ("PlayStation 2 → roms/ps2"), whether that folder is
+   * there yet, or why it can't be told. The backend works it out
+   * (`Library.placement`), so the folder names here are the ones detection
+   * reads back.
    *
-   * RomM often keeps several records for one Platform (#512). Each row shows
-   * its own folder; the one new Images go to says so and why ("RomM's NES
+   * RomM often keeps several records for one console (#512). Each row shows
+   * its own folder; the one new games go to says so and why ("RomM's NES
    * folder, 4933 ROMs"), and offers the others in one select. A pick is
    * saved and wins over the automatic one.
    */
@@ -28,9 +30,9 @@
   let { library, listing = false, platforms = null } = $props();
 
   const LAYOUTS = [
-    { value: 'esde', label: 'ES-DE / Batocera: <root>/<platform>' },
-    { value: 'romm', label: 'RomM: <root>/roms/<platform>' },
-    { value: 'flat', label: 'Flat: every Image in <root>' },
+    { value: 'esde', label: 'One folder per console (ES-DE, Batocera)' },
+    { value: 'romm', label: 'RomM style (roms/<console>)' },
+    { value: 'flat', label: 'All in one folder' },
   ];
 
   const isFolder = $derived(library?.kind === 'folder');
@@ -56,6 +58,10 @@
   // flush, and the placements must not set off first.
   const libraryId = $derived(library?.id);
   const shown = $derived(placementsOf(loaded, libraryId));
+  // Open by itself when a console needs a choice or can't be placed.
+  const needsYou = $derived(
+    !!shown?.error || !!shown?.placements?.some((row) => row.error || row.choices?.length > 1),
+  );
   const layout = $derived(library?.layout);
   $effect(() => {
     const id = libraryId;
@@ -85,12 +91,12 @@
     try {
       await api.pickLibraryPlacement(library.id, row.platform, folder || null);
       toast.success(
-        folder ? `New ${row.name} Images go to ${folder}` : `New ${row.name} Images go to the automatic pick`,
+        folder ? `New ${row.name} games go to ${folder}` : `New ${row.name} games go to the automatic pick`,
       );
       await load(library.id);
     } catch (e) {
       pickReset += 1;
-      toast.error(e?.message ?? 'Failed to save where new Images go');
+      toast.error(e?.message ?? "Couldn't save where new games go");
     } finally {
       picking = false;
     }
@@ -101,31 +107,30 @@
     saving = true;
     try {
       await libraries.saveSettings(library.id, { layout });
-      toast.success('Layout saved');
+      toast.success('Folder style saved');
     } catch (e) {
-      toast.error(e?.message ?? 'Failed to save the layout');
+      toast.error(e?.message ?? "Couldn't save the folder style");
     } finally {
       saving = false;
     }
   }
 </script>
 
-<section class="placement">
+<details class="placement" open={needsYou || undefined}>
+  <summary>Where new games go</summary>
   <div class="placement-text">
-    <h2>Where new Images go</h2>
     <p class="muted">
-      Where new Images of each Platform land, named the way Platform detection reads
-      them. A folder that isn't there yet is created when the first Image arrives.
+      A folder that isn't there yet is made when the first game arrives.
       {#if isFolder}
-        Changing the layout moves nothing that's already here.
+        Changing the folder style moves nothing that's already here.
       {:else}
-        RomM's own folder structure decides.
+        RomM's own folders decide.
       {/if}
     </p>
     {#if isFolder}
       <div class="layout">
         <Select
-          label="Layout"
+          label="Folder style"
           value={library.layout ?? 'esde'}
           options={LAYOUTS}
           disabled={saving}
@@ -139,7 +144,7 @@
   {:else if shown.error}
     <p class="error">{shown.error}</p>
   {:else if shown.placements.length === 0}
-    <p class="muted">No Platforms yet.</p>
+    <p class="muted">No consoles yet.</p>
   {:else}
     <ul class="rows">
       <!-- Keyed by the Library's own Platform id: two RomM platforms can
@@ -155,9 +160,9 @@
             {#if row.rom_count != null}<span class="muted">{roms(row.rom_count)}</span>{/if}
             {#if !row.exists}<span class="muted new">will be created</span>{/if}
             {#if row.new_images_here}
-              <span class="here">new Images go here</span>
+              <span class="here">new games go here</span>
             {:else if row.new_images_here === false}
-              <span class="muted">not used for new Images</span>
+              <span class="muted">not used for new games</span>
             {/if}
             {#if row.guessed}<span class="guess">best guess</span>{/if}
             {#if row.why}<span class="why muted">{row.why}</span>{/if}
@@ -168,7 +173,7 @@
             <div class="pick">
               {#key pickReset}
               <Select
-                ariaLabel={`Where new ${row.name} Images go`}
+                ariaLabel={`Where new ${row.name} games go`}
                 value={row.picked}
                 options={choiceOptions(row)}
                 disabled={picking}
@@ -181,7 +186,7 @@
       {/each}
     </ul>
   {/if}
-</section>
+</details>
 
 <style>
   .placement {
@@ -193,9 +198,10 @@
     border: 1px solid var(--border);
     border-radius: var(--radius-md, 8px);
   }
-  .placement-text h2 {
-    margin: 0 0 4px;
-    font-size: var(--text-md, 1rem);
+  .placement summary {
+    cursor: pointer;
+    font-weight: var(--weight-semibold);
+    color: var(--text-1);
   }
   .placement-text p { margin: 0; }
   .layout { margin-top: var(--space-2, 8px); max-width: 360px; }
