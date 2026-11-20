@@ -1189,6 +1189,45 @@ long a file must stay unchanged before it's taken (60 seconds by default).
 
 Unpacking archives and naming from a DAT are on the way (#432).
 
+### Sonarr / Radarr / ROMarr
+
+Sonarr, Radarr and [ROMarr](https://github.com/BlizzHacker/romarr) can tell
+the app the moment they import a file, so an Inbox takes it in at once, with
+no polling and no settle wait. Point the *arr's root (or completed downloads)
+folder at an [Inbox](#inboxes), then in the *arr open **Settings →
+Connect → + → Webhook** and set:
+
+- **On Import** (and **On Upgrade**) ticked; the other triggers are ignored.
+- **URL**: the one shown in the Rules view under **Sonarr, Radarr and ROMarr**
+  (with a Copy button), `http://<this app>:8080/api/hooks/arr`.
+- **Method** POST, and one **Header**: `X-Chd-Action-Confirm` = `scan`.
+- When the app's login is on: **Username** as set (`admin` by default) and
+  **Password** your API token.
+
+Press **Test** in the *arr: it passes once the URL, header and login are right.
+
+**Different folder names.** When the *arr sees a folder under another name
+(it sees `/downloads`, this app sees `/data/downloads`), add a **path
+rewrite** in the same card: the longest matching folder wins, as in Autoscan.
+Type a path as the *arr sees it into **Test a path**: the card says where it
+lands and whether an Inbox takes it, and when it can find the file under one
+of your Volumes it suggests the rewrite, one click to add. Paths the *arrs
+sent lately are listed with the same answer. A rewritten path must still be
+inside a Volume and inside an Inbox; anything else is refused and left alone.
+
+**Scripts, and ROMarr's custom script.** `POST /api/scan` with
+`{"path": "/data/downloads/ps2/Game.iso"}` (a file or a folder) or
+`{"paths": [...]}`, and the same header, does the same thing:
+
+```bash
+curl -X POST http://localhost:8080/api/scan \
+  -H 'X-Chd-Action-Confirm: scan' -H 'Content-Type: application/json' \
+  -d '{"path": "/data/downloads/ps2/Game.iso"}'
+```
+
+The answer (202 when something was taken) lists what was accepted and what
+was skipped, with why.
+
 ### Check Rules
 
 A check Rule checks Images instead of converting them: it has no target format.
@@ -1671,6 +1710,14 @@ A folder registered as a Library, with the Platforms found in it, its Unsorted a
 | Light | Dark |
 |-------|------|
 | ![Rules view on a folder Library, light](docs/screenshots/rules-folder-light.png) | ![Rules view on a folder Library, dark](docs/screenshots/rules-folder-dark.png) |
+
+#### Sonarr / Radarr / ROMarr webhook
+
+The webhook URL and header to copy, and a path tested as the *arr sees it, with the rewrite suggested from the Volumes. See [Sonarr / Radarr / ROMarr](#sonarr--radarr--romarr).
+
+| Light | Dark |
+|-------|------|
+| ![Webhook card, light](docs/screenshots/arr-hook-light.png) | ![Webhook card, dark](docs/screenshots/arr-hook-dark.png) |
 
 #### EmulationStation frontend switch
 

@@ -274,6 +274,9 @@ class _State:
     # The Rules whose dropped or refused settings this pass logged already
     # (#477, `sweep.report_rule_changes`): once per pass, not per Image.
     rules_reported: set[tuple] = field(default_factory=set)
+    # Path -> when a trigger (#522: the *arr webhook, ``/api/scan``) said it
+    # is finished: an Image at, below or holding it skips the settle wait.
+    ready: dict[str, float] = field(default_factory=dict)
     last_poll: float | None = None
     waiting: int = 0
     error: str | None = None
@@ -508,6 +511,41 @@ def _job_done(reader: Any) -> None:
 
 def _state(inbox_id: int) -> _State:
     return _states.setdefault(inbox_id, _State())
+
+
+# How long a trigger's "this is finished" stands for a path no poll found yet.
+# ponytail: a fixed hour, long enough for a slow share to show the file.
+READY_SECONDS = 3600
+
+
+def mark_ready(inbox_id: int, path: str) -> None:
+    """Say the file (or folder) at *path* in the Inbox is finished (#522), so
+    the next poll takes what is there without waiting for it to settle. A
+    held Image stays held, and only files the poll lists are ever taken."""
+    _state(inbox_id).ready[os.path.realpath(path)] = time.monotonic()
+
+
+async def _is_ready(state: _State, path: str) -> bool:
+    """Whether a trigger named *path*, a folder above it, or one of its
+    files (a sheet's track). The marker of a file goes once it is matched."""
+    if not state.ready:
+        return False
+    now = time.monotonic()
+    for marker, at in list(state.ready.items()):
+        if now - at > READY_SECONDS:
+            state.ready.pop(marker, None)
+    for marker in state.ready:
+        if path.startswith(marker + os.sep):
+            return True
+        if marker == path:
+            state.ready.pop(marker, None)
+            return True
+    near = [m for m in state.ready if m.startswith(os.path.dirname(path) + os.sep)]
+    if near and set(near) & set(await _step(_members, path)):
+        for marker in near:
+            state.ready.pop(marker, None)
+        return True
+    return False
 
 
 def status(inbox_id: int) -> dict[str, Any]:
@@ -930,6 +968,9 @@ async def poll(
             state.ranked_holds.pop(path, None)
             state.taken_holds.pop(path, None)
             seen = state.seen.get(path)
+            if await _is_ready(state, path):
+                # A trigger said it's finished (#522): settled now.
+                seen = state.seen[path] = _Seen(fingerprint, now - inbox.settle_seconds)
             if seen is None or seen.fingerprint != fingerprint:
                 state.seen[path] = _Seen(fingerprint, now)
                 result["waiting"] += 1
