@@ -119,7 +119,7 @@ placeholder "$root/ROM Library/roms/gc/metroid-prime.iso" 2048
 placeholder "$root/ROM Library/roms/mystery-disc.iso" 1024
 
 # eXoDOS: a synthetic game zip (one game folder) and its template in the !dos
-# tree, which the workflow points EXODOS_DOS_DIR at. Nothing from eXoDOS itself.
+# tree beside it, where the tool finds it with no setting. Nothing from eXoDOS itself.
 printf '[autoexec]\r\nmount c .\\eXoDOS\\SQuest\r\nc:\r\nSQUEST.EXE\r\n' \
   > "$root/eXoDOS/!dos/SQuest/dosbox.conf"
 python3 - "$root/eXoDOS/Sample Quest (1993).zip" <<'PY'
