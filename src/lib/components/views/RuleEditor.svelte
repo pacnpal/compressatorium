@@ -512,7 +512,7 @@
       + 'partway',
     libraries_changed:
       'a Library was added or removed inside this one while it ran — nothing was '
-      + 'queued, the next run lists again',
+      + 'queued for this platform, the next run lists it again',
   };
 
   function sweepErrorLabel(code) {

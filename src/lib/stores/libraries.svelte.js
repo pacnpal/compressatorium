@@ -318,6 +318,8 @@ class LibrariesStore {
       const library = await api.registerLibrary(path, name);
       if (library?.id) this.#registeredAt.set(library.id, this.#catalogueEpoch++);
       this.adopt(library);
+      // The Libraries around it now list it in `contains` (#514).
+      void this.load();
       return library;
     } finally {
       this.registering = false;
@@ -330,6 +332,9 @@ class LibrariesStore {
     this.#sources.delete(id);
     this.list = this.list.filter((lib) => lib.id !== id);
     if (this.selectedId === id) this.selectedId = ROMM_LIBRARY_ID;
+    // The Libraries around it no longer list it in `contains` (CodeRabbit
+    // PR #518): read the catalogue again rather than keep a stale notice.
+    void this.load();
   }
 }
 

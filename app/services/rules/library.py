@@ -303,6 +303,11 @@ class Placement:
     choices: tuple[tuple[str, int], ...] = ()
 
 
+class LibrariesChanged(Exception):
+    """Which Libraries sit inside which changed since a listing was taken
+    (``libraries.owned_as_listed``, PR #518): work from it is refused."""
+
+
 class PlacementUnknown(Exception):
     """Where a Platform's Images go can't be told, so nothing may be placed.
 
