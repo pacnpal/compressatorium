@@ -29,9 +29,9 @@ services:
       # app best-effort looks in ~/.switch and your mounted volumes. No keys
       # ship with the image.
       # - SWITCH_KEYS=/keys
-      # eXoDOS repack for RomM: your eXoDOS !dos folder (holding
-      # <Game>/dosbox.conf). Must be inside one of your mounted volumes. Unset
-      # hides the tool.
+      # eXoDOS repack for RomM: nothing to set. Each game's template is found
+      # in the !dos folder beside its zip, or in a parent folder up to the
+      # volume. Optional override, searched first (inside a mounted volume):
       # - EXODOS_DOS_DIR=/data/eXoDOS/eXo/eXoDOS/!dos
     volumes:
       # Required: Persistent config storage

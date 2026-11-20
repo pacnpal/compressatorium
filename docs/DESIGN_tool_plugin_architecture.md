@@ -307,8 +307,8 @@ class ToolPlugin(Protocol):
     # unavailable and the frontend hides it, instead of offering jobs that can
     # only fail. BaseTool answers it from `required_binaries` (the programs
     # the tool runs, through the shared probe, §3.4 "Declaring the programs a
-    # tool runs"); nsz and exodos override it (prod.keys, EXODOS_DOS_DIR), and
-    # so do rom_converto (its `--version` probe) and the chain (every step).
+    # tool runs"); nsz overrides it (prod.keys), exodos (always ready, #513),
+    # and so do rom_converto (its `--version` probe) and the chain (every step).
     # Async because the probe may touch disk. `not_ready_reason` / `verify_not_ready_reason` say
     # why it answered False; callers show them through `not_ready_message`
     # (§3.4) rather than formatting their own line.
@@ -3516,8 +3516,16 @@ and `automatable_modes`, as RomM's platform list carries),
 `GET /api/libraries/{id}/placements` (any Library, #430) lists, for each of
 the Library's `platforms()` (one listing, passed to every row as `known`),
 the Platform's own `id` (the row's key: two RomM platforms can share a slug),
-its `placement` relative to the root, whether the folder exists, or the
-`PlacementUnknown` reason; the PATCH takes a folder Library's `layout`. The
+its `placement` relative to the root, placed by its own record alone
+(`known=[platform]`, so two RomM records show their own two folders, #512),
+whether the folder exists, its `rom_count`, `guessed` and `why`, or the
+`PlacementUnknown` reason. Where the Platform's new Images go is placed from
+the whole listing: when that has `choices`, the row it lands on has
+`new_images_here` True, the `choices` and the `picked` folder name, and the
+Platform's other rows have `new_images_here` False. When the pick can't take
+Images, its row keeps the `PlacementUnknown` reason with the `choices`, so it
+can be changed. The PATCH takes a folder
+Library's `layout`. The
 panel (`LibraryPlacement.svelte`) waits for the view's own Platform listing
 and drops a superseded answer (`src/lib/util/latestOnly.js`).
 
@@ -3527,7 +3535,10 @@ inverse of `platform_folder`: given a Platform slug (detection's vocabulary,
 so the Inbox can pass what `detect_platform` returned without asking which
 kind of Library it has), the folder its Images go in. `Placement` carries
 `platform`, `folder` (absolute) and `exists` (False: whoever places an Image
-creates the folder; `placement` never does). It raises `PlacementUnknown`
+creates the folder; `placement` never does), and, for a best guess the user
+may want to change (#512), `guessed`, `why` (how it was picked, in plain
+words) and `choices` (`(folder name, ROM count)` pairs it picked from, when
+there were several). It raises `PlacementUnknown`
 when the answer can't be told, and `LibraryUnreadable` when the Library can't
 be read. Every implementation ends in `rules.library.placed_in(folder,
 platform, mapped=...)`, which fails closed: the folder must be inside a Volume
@@ -3551,14 +3562,37 @@ a Library that needs its Platform records (RomM's folder names, carried as
   nothing: `platform_folder` finds the folder holding an existing Image
   whatever the layout, directly under the root or, when that folder is the
   root's `roms`, directly under `roms`.
-- `RommLibrary` names the folder by the RomM platform's `fs_slug` (`Platform.folder`; the slug
-  for a Platform RomM has no record of yet; two RomM platforms for one slug
-  refuse) and reads RomM's structure off the disk at the directory level, as
-  `RommClient.local_path` does: `<root>/roms/<name>` when `<root>/roms`
-  exists, `<root>/<name>/roms` when that exists, `<root>/<name>` when it
-  exists with neither `roms` nor `bios` in it (the root is RomM's `roms`
-  folder). Anything else refuses: RomM 5.3 declares the structure in a setting
-  this app doesn't read.
+- `RommLibrary` names the folder by a RomM platform record's `fs_slug`
+  (`Platform.folder`; the slug for a Platform RomM has no record of yet).
+  RomM often keeps several records for one Platform (`famicom` beside `nes`,
+  #512): their folders, each with its summed `rom_count` (`Platform.rom_count`),
+  are `Placement.choices`, and the pick is the user's saved one
+  (`romm_settings.platform_folders()`, the `platform_folders` key of RomM's
+  settings row, written only by `romm_settings.pick_platform_folder`), else the
+  only folder holding ROMs, else the one with the most (then the one named as
+  the Platform) with `guessed` True. A folder name with a path in it is never
+  picked over a good one, and refuses when it is the only one.
+  `Placement.why` says how it was picked ("RomM's NES folder, 4933 ROMs: the
+  only one with ROMs"). It reads RomM's structure off the disk at the
+  directory level, as `RommClient.local_path` does: `<root>/roms/<name>` when
+  `<root>/roms` exists, `<root>/<name>/roms` when that exists,
+  `<root>/<name>` when it exists with neither `roms` nor `bios` in it (the
+  root is RomM's `roms` folder). `<root>/<name>/bios` alone guesses
+  `<root>/<name>/roms`, and nothing at all guesses RomM's default
+  `<root>/roms/<name>`, both `guessed` (RomM 5.3 declares the structure in a
+  setting this app doesn't read). With no folder for the Platform yet, it
+  follows the other Platform folders under the root first (Codex PR #516):
+  `<root>/<name>/roms` when one holds `roms` or `bios`, else `<root>/<name>`,
+  never a new `<root>/roms`, which would flip `local_path`'s layout and lose
+  every existing record. When `placed_in` refuses the pick,
+  `PlacementUnknown.choices` and `.picked` carry the choices, so the
+  listing's row for the picked folder keeps its chooser and the pick can be
+  changed. `RommLibrary.platforms` drops a record whose
+  `fs_slug` is a junk name (`utils.junk.is_junk_entry`, Synology's `@eaDir`).
+  `RommLibrary.pick_folder(platform, folder)` saves a pick after checking it is
+  one folder (no path in it) and one of the choices; the panel's "Automatic"
+  option sends None to forget it (`PUT /api/libraries/{id}/placements/{platform}`, 422
+  otherwise; 400 for a Library without `pick_folder`).
 
 **The Rules view** (`src/lib/components/views/RulesView.svelte`). A Library
 picker over `RuleEditor.svelte` (the former `RommAutomation.svelte`). The editor
@@ -7067,20 +7101,43 @@ way to produce an edited copy of a zip. The first user is the eXoDOS repack
   even when that worker is abandoned by the stall bound: its unlink is guarded
   by the folder descriptor, sidecar lock and inode checks the same thread
   holds while it unlinks, not by locks a caller could release.
-- **Gating.** `EXODOS_DOS_DIR` is the only source of the template tree. It must
-  be a directory inside a configured Volume; otherwise `is_ready` is false (run
-  through `run_detached`, since it stats a possibly dead mount) and the tool is
-  hidden. Checking a product reads only the `.dosz`, so `verify_is_ready` is
-  always true: `compressatorium verify` and Verify work without the install.
+- **No gating (#513).** `is_ready` and `verify_is_ready` are always true: the
+  tool runs no binary and needs no setting. The template tree is found per zip
+  by `ExodosService.candidates(path)`: the `EXODOS_DOS_DIR` override first, then
+  `<folder>/!dos` for the zip's real folder and each parent up to
+  `lock_boundary_root(path)`, nearest first. A candidate is used only when its
+  real path is a directory inside a Volume (`is_within_configured_volumes`), and
+  the template is read beneath that real path through `read_beneath`, so it
+  resolves inside the `!dos` folder it came from. The first candidate holding
+  `<game>/dosbox.conf` wins (`NoTemplate`, a missing file, moves on to the next).
+  A template that is there but refused (a link, not a regular file, too large)
+  or unreadable just now stops the search and fails the zip: it never becomes
+  a repack without a conf.
+- **No template.** A zip with no template found still repacks when its one game
+  folder holds a DOS program (`.exe`, `.com`, `.bat`, what DOSBox Pure's start
+  menu offers). That is the line between an eXoDOS game zip and any other zip
+  with one folder: the tool is manual only and writes a new `.dosz` beside a
+  Source it never changes, so a false yes costs one extra file, while a folder
+  with nothing to run is refused. Such a product gets no `dosbox.conf`: the
+  zip's own `<Game>/dosbox.conf` (in any case, `DOSBOX.CONF` too), never
+  rewritten, is left out too (PR #517), or DOSBox Pure would load it instead
+  of its start menu. The job's last update is a warning naming where it
+  looked (`RepackPlan.no_template_reason`, worked out during the bounded
+  inspection, so nothing is read on the event loop), and saying so when it
+  left the zip's own conf out. A candidate tree that is missing is skipped;
+  one whose stat fails just now (`EIO`) raises `TemplateUnreadable`, a
+  `ProbeUnavailable` the probe never caches. The repack's own
+  check requires the root conf only when it wrote one; Verify accepts a `.dosz`
+  with no root conf when it holds a DOS program.
 - **Content-refined source.** `.zip` is romz's archive extension too, so
   `converts_path` reads the zip's directory: every name passes
   `member_segments` and `enforce_archive_limits`, every member sits in one game
   folder (a loose root file refuses it), and `<tree>/<game>/dosbox.conf`
   is read through `read_beneath` (no symlink on any component, a regular
   file, one descriptor). The answer, a yes or a no, is cached per (path,
-  size, mtime) of the zip and kept only while the template tree is unchanged
-  (#331): the root's and the game folder's mtimes, and the template file's
-  own mtime, size and inode. That stamp is taken before the template is read
+  size, mtime) of the zip and its candidate list, and kept only while every
+  candidate tree is unchanged (#331, #513): each tree's, its game folder's
+  and its template file's mtime, size and inode. That stamp is taken before the template is read
   and checked again after; if the tree moved in between, the answer is not
   cached. Only a verdict is cached (not an eXoDOS layout, no template): any
   OSError reading the zip or the template (a permission or I/O error, an

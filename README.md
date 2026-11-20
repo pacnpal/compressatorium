@@ -31,7 +31,7 @@ A game image converter that wraps twelve tools: **CHDMAN** (MAME), **dolphin-too
 | **NKit** | NKit-shrunk GameCube / Wii discs | .nkit.iso, .nkit.gcz | .iso, .rvz (via the `nkit_to_rvz` chain) | None (fixed) | None | `nkit2iso` (+ dolphin-tool for `nkit_to_rvz`) |
 | **Xbox** | Xbox / Xbox 360 disc images | .iso (only images holding an Xbox filesystem) | .xiso.iso | None (fixed) | None | `extract-xiso` |
 | **rom-converto** | Xbox 360 disc images for Xenia; PSP PBPs; 3DS CIA and CCI | .iso, .xiso.iso (only images holding an Xbox 360 filesystem), .pbp (PSP games only), .cia, .cci, .3ds | .zar, .iso, .cci, .cia | None (fixed) | None (keys built into rom-converto; the app never downloads or ships any) | `rom-converto` v0.24.0 |
-| **eXoDOS** | eXoDOS DOS game zips, for RomM | .zip (only zips holding one game folder with a template in `EXODOS_DOS_DIR`) | .dosz | None (fixed) | Your own eXoDOS `!dos` folder (`EXODOS_DOS_DIR`) | none (built in) |
+| **eXoDOS** | eXoDOS DOS game zips, for RomM | .zip (only zips holding one game folder that has a template or a DOS program) | .dosz | None (fixed) | Nothing to set: templates are found in your eXoDOS `!dos` folder | none (built in) |
 | **RAR sets** | Multi-part RAR sets (usenet downloads), RAR4 and RAR5 | the set's first volume: .rar (with .r00, .r01, …) or .part01.rar (with .part02.rar, …) | the one file inside the set, under its own name | None (fixed) | None | `unar` |
 
 Most conversions above are lossless and fully reversible, including **3DS**, which
@@ -374,8 +374,8 @@ When you open the Web UI, you'll see the tool options at the top:
 * **Xbox** - For trimming an Xbox / Xbox 360 disc image to XISO
 * **rom-converto** - For packing an Xbox 360 disc image to ZAR, a PSP PBP back to ISO,
   or 3DS CIA to CCI and back
-* **eXoDOS** - For repacking an eXoDOS DOS game zip to `.dosz` for RomM (needs
-  `EXODOS_DOS_DIR`)
+* **eXoDOS** - For repacking an eXoDOS DOS game zip to `.dosz` for RomM (no setup:
+  point it at your eXoDOS collection)
 * **RAR sets** - For extracting a multi-part RAR set to the one file inside it
 
 **Choose the tool that matches your files.** The interface then shows only the modes and file types that tool can use.
@@ -1110,7 +1110,14 @@ What a folder Library shows and does:
   existing `GameCube` folder, or a new `gc` one), and marks a folder that will
   be created. Two folders for one Platform are shown as "can't tell" instead
   of picking one. Changing the layout moves nothing. On RomM the list follows
-  RomM's own folder structure.
+  RomM's own folder structure: each RomM platform shows its own folder and ROM
+  count. RomM often keeps a second, empty record for a Platform (`famicom`
+  beside `nes`), so the row new Images go to says so and why ("RomM's NES
+  folder, 4933 ROMs: the only one with ROMs"). When several hold ROMs, the one
+  with the most is picked and marked as a best guess; pick another from the
+  list on that row and the choice is kept. Before RomM has a `roms` folder,
+  RomM's default `roms/<platform>` is used, marked as a best guess too. Junk
+  folders RomM scanned as platforms (Synology's `@eaDir`) are left out.
 - **Remove Library** forgets the Library and its Rules. It never touches a file.
 
 The RomM view's **Automation** tab is the same Rules view, opened on RomM.
@@ -2571,6 +2578,18 @@ DOSBox setup in a separate `!dos` folder, at `!dos/Abaron/dosbox.conf`. That con
 mounts paths inside the whole collection (`mount c .\eXoDOS\Abaron`), so a game zip
 copied into RomM alone does not start.
 
+**No setup.** Point the app at your eXoDOS collection and tick the game zips. For
+each zip the repack finds the game's template by itself: it looks for
+`!dos/<Game>/dosbox.conf` beside the zip (`eXo/eXoDOS/Abaron.zip` next to
+`eXo/eXoDOS/!dos/Abaron/dosbox.conf`), then in each parent folder, up to the volume.
+The nearest `!dos` that holds the game wins. A `!dos` folder is only used when it
+resolves inside a volume, and the template must be a plain file inside it (no
+links). `EXODOS_DOS_DIR` is an optional override: when set, that folder is searched
+first.
+
+**Each job says what the game got.** It finishes with "Repacked with its
+dosbox.conf from `<path>`", or with a warning naming why there is none.
+
 - **What the repack writes.** The repack moves the game's files out of their
   folder to the root of the file, and writes the game's template there as the
   file's first entry, `dosbox.conf`, with its mount paths rewritten (`mount c .\eXoDOS\Abaron` becomes `mount c .\`,
@@ -2595,15 +2614,22 @@ copied into RomM alone does not start.
   name and moved into place only once it is complete, so a cancelled or failed job
   leaves nothing that looks finished. There is no delete-after-verify option: the
   product differs from the source by design, and the source is your eXoDOS install.
+- **A game with no template is still repacked.** Its files move to the root of
+  the `.dosz` and no `dosbox.conf` is written. The job finishes with a warning
+  saying no template was found, and that DOSBox Pure's start menu will offer the
+  program to run. A template that is there but refused (a link) or unreadable
+  just now fails the job instead: the app never quietly leaves a config out.
 - **Checked before it is kept.** Every repack tests every member's CRC, checks
-  the member names, and checks that `dosbox.conf` sits at the root before the
-  file is moved into place; a file that fails is removed and the job fails.
-  The same check runs from **Verify** on any `.dosz` row.
-- **Only eXoDOS game zips are queued.** Any `.zip` can be ticked in this mode; one
-  is queued when it holds one game folder and that game's template is in
-  `EXODOS_DOS_DIR`, and skipped with the reason otherwise. Member names are checked
-  with the same rules as archive extraction (no absolute paths, no `..`), the
-  archive size limits apply, and the template must resolve inside `EXODOS_DOS_DIR`.
+  the member names, and checks that `dosbox.conf` sits at the root (when the game
+  had a template) before the file is moved into place; a file that fails is
+  removed and the job fails. The same check runs from **Verify** on any `.dosz`
+  row, where a file with no `dosbox.conf` must hold a DOS program instead.
+- **Only eXoDOS game zips are queued.** Any `.zip` can be ticked in this mode. One
+  is queued when it holds exactly one game folder and either a template is found
+  for that game or the folder holds a DOS program (`.exe`, `.com` or `.bat`). Any
+  other zip (loose files, two folders, a folder of photos) is skipped with the
+  reason. Member names are checked with the same rules as archive extraction (no
+  absolute paths, no `..`), and the archive size limits apply.
 - **Not from archives**: the repack needs the zip itself and the `!dos` folder.
 - **Manual only.** Run it from the file browser. Rules never offer it, a
   stored Rule that names it is refused, and Auto leaves a `dos` folder's zips
@@ -2641,7 +2667,7 @@ can be added later. The behaviour is modelled on
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `EXODOS_DOS_DIR` | *(unset)* | Your eXoDOS `!dos` folder (the one holding `<Game>/dosbox.conf`). Must be inside a volume. Unset hides the tool. Nothing from eXoDOS ships with the image. |
+| `EXODOS_DOS_DIR` | *(unset)* | Optional. A `!dos` folder (holding `<Game>/dosbox.conf`) to search first. Not needed: the tool finds `!dos` beside each game zip or above it. Must be inside a volume; a value that is not is skipped. Nothing from eXoDOS ships with the image. |
 
 ## RAR Sets (multi-part .rar → the file inside)
 
@@ -2994,7 +3020,7 @@ All actions are queued and processed by the job queue (FIFO). The queue is the o
 
 **eXoDOS**
 - `exodos_repack` (an eXoDOS game .zip → .dosz, with the game's `dosbox.conf` from
-  `EXODOS_DOS_DIR`)
+  the `!dos` folder beside it or above it, or with none and a warning)
 
 **RAR sets**
 - `rar_extract` (a multi-part RAR set's first volume → the one file inside it; with delete-source, every volume is deleted once the Round-trip passes)
@@ -3204,6 +3230,7 @@ no info route.
 | PATCH / DELETE | `/api/libraries/{library_id}` | Change a Library's settings, or remove it (no file is touched) |
 | GET | `/api/libraries/{library_id}/platforms` | Detected Platforms with Image counts |
 | GET | `/api/libraries/{library_id}/placements` | Where new Images of each Platform would land |
+| PUT | `/api/libraries/{library_id}/placements/{platform}` | Pick which of RomM's folders a Platform's new Images go to (`{"folder": null}` goes back to the automatic pick) |
 | GET / PUT | `/api/libraries/{library_id}/rules` | The Library's Rules and run state, or replace them |
 | POST | `/api/libraries/{library_id}/rules/forget-converted` | Clear the converted history and failed holds |
 | POST | `/api/libraries/{library_id}/preview` | What a sweep would queue now, without queueing |
@@ -3307,7 +3334,7 @@ no info route.
 | `UNAR_PATH` | `unar` | Path to unar, the RAR sets tool's extractor; resolved on PATH by default |
 | `SWITCH_KEYS` | *(unset)* | Directory holding your Switch `prod.keys`. See [Switch Environment Variables](#switch-environment-variables) |
 | `NSZ_COMPRESSION_LEVEL` | `18` | zstandard level for nsz compression (1-22) |
-| `EXODOS_DOS_DIR` | *(unset)* | Your eXoDOS `!dos` folder. Must be inside a volume. Unset hides the eXoDOS tool |
+| `EXODOS_DOS_DIR` | *(unset)* | Optional `!dos` folder to search first. Not needed: templates are found beside each game zip. Must be inside a volume |
 | `MAMEREDUMP_REPO` | `MetalSlug/MAMERedump` | GitHub repo the DAT sync pulls from |
 | `MAMEREDUMP_AUTO_SYNC` | `false` | Sync DATs on startup when none are loaded |
 | `MAMEREDUMP_GITHUB_TOKEN` | *(unset)* | Optional GitHub token for the DAT sync's API calls |

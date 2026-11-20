@@ -503,7 +503,8 @@ _SKIP_HTTP: dict[SkipReason, tuple[int, str]] = {
     SkipReason.EXODOS_NOT_REPACKABLE: (
         400,
         "File is not an eXoDOS game zip this tool can repack: it must hold one "
-        "game folder whose dosbox.conf template is in EXODOS_DOS_DIR",
+        "game folder that has a dosbox.conf template (in a !dos folder beside "
+        "the zip or above it) or holds a DOS program (.exe, .com or .bat)",
     ),
     SkipReason.RAR_BAD_EXTENSION: (
         400,

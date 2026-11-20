@@ -55,12 +55,13 @@ def test_only_repackable_zips_are_offered(tree, tmp_path):
     assert tool.converts_path(str(loose)) is False
 
 
-def test_the_tool_is_ready_only_with_a_template_tree(tree, monkeypatch):
+def test_the_tool_is_ready_with_no_setting(tree, monkeypatch):
     tool = registry.get("exodos")
 
     assert asyncio.run(tool.is_ready()) is True
     monkeypatch.setattr(exodos_module.settings, "exodos_dos_dir", None)
-    assert asyncio.run(tool.is_ready()) is False
+    monkeypatch.setattr(exodos_module.settings, "chd_volumes", "")
+    assert asyncio.run(tool.is_ready()) is True
 
 
 def test_the_product_verifies_through_this_tool():
