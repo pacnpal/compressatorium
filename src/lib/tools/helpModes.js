@@ -121,12 +121,16 @@ export const MODE_BLURBS = {
   // eXoDOS
   exodos_repack:
     'Repack an eXoDOS game zip for RomM\'s in-browser DOS player (DOSBox Pure): '
-    + 'the game moves to the root of the file and its dosbox.conf, taken from '
-    + 'EXODOS_DOS_DIR with the mount paths rewritten, goes in as the first entry. '
+    + 'the game moves to the root of the file and its dosbox.conf, found by itself '
+    + 'in the !dos folder beside the zip or above it, goes in as the first entry '
+    + 'with the mount paths rewritten. No setting needed. A game with no template '
+    + 'is still repacked, with no dosbox.conf, and the job says so: DOSBox Pure\'s '
+    + 'start menu then offers the program to run. '
     + 'In RomM\'s config.yml set emulatorjs.settings.dosbox_pure.dosbox_pure_conf: '
     + 'inside. Writes '
     + 'Game.dosz beside the source and never modifies or deletes the original. '
-    + 'A zip that is not one game folder with a template is skipped, with the reason.',
+    + 'A zip that is not one game folder with a template or a DOS program is '
+    + 'skipped, with the reason.',
   // RAR sets
   rar_extract:
     'Unpack a multi-part RAR set (select its first volume: Game.rar or '

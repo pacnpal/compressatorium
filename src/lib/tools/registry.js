@@ -844,8 +844,9 @@ export const TOOLS = [
     // Not contentRefined, unlike xiso: a .zip is an archive row, and the
     // listing never puts a convertible_by claim on archive rows, so the
     // content gate would refuse every zip. The extension gate lets any .zip be
-    // ticked, and plan_job's converts_path skips a zip that is not one game
-    // folder with a template in EXODOS_DOS_DIR, with the reason.
+    // ticked, and plan_job's converts_path skips a zip that is not one DOS
+    // game folder (a template found for it, or a DOS program in it), with the
+    // reason.
     modeGroups: ['exodos'],
     groups: { exodos: 'eXoDOS → RomM' },
     defaultMode: 'exodos_repack',

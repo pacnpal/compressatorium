@@ -178,6 +178,24 @@
     </p>
   {/if}
 
+  <!-- Libraries may overlap (#514): the nearest root owns a file. -->
+  {#if selected?.within || selected?.contains?.length}
+    <p class="hint muted ownership">
+      <FolderCog size={14} aria-hidden="true" />
+      <span>
+        {#if selected.within}
+          This folder is inside <strong>{selected.within.name}</strong>. Its files belong to
+          {selected.name}, so only these Rules convert them.
+        {/if}
+        {#if selected.contains?.length}
+          Files in {selected.contains.map((lib) => lib.name).join(', ')} belong to
+          {selected.contains.length === 1 ? 'that Library' : 'those Libraries'}, so these Rules
+          leave them alone.
+        {/if}
+      </span>
+    </p>
+  {/if}
+
   {#if isFolder && source}
     <section class="library">
       <div class="library-text">

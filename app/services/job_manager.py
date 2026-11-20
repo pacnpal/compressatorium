@@ -45,7 +45,6 @@ from services import referrers, staging
 from services.disk import create_scratch_dir
 from services.recognized import recognize
 from services.round_trip import RECOGNIZED, recognized_applies, round_trip, round_trip_applies
-from services.rules.library import HIDDEN_STAGING
 from services.subprocess_runner import (
     DeadlineExpired,
     MutationInFlight,
@@ -3826,7 +3825,8 @@ class JobManager:
     @staticmethod
     async def _needs_stage(job: ConversionJob) -> bool:
         """Whether *job* writes into a hidden staging slot: its output lands
-        in a Library declaring ``HIDDEN_STAGING`` (RomM). When which Library
+        in any Library declaring ``HIDDEN_STAGING`` (RomM), a folder Library
+        inside RomM's folder included (#514). When which Library
         holds it can't be told (a timeout, the Library list unreadable), it
         stages: hiding the work is always safe. No Library, or one without
         the capability (a folder Library), writes in place as before."""
@@ -3839,8 +3839,10 @@ class JobManager:
             # (Codex 4606539513).
             return True
         try:
-            library = await run_detached_bounded(
-                libraries.library_for, job.output_path, timeout=_CANONICAL_PROBE_SECONDS,
+            # Any Library holding the output, not only its owner: RomM scans a
+            # folder Library inside its folder too (#514).
+            return await run_detached_bounded(
+                libraries.hidden_staging, job.output_path, timeout=_CANONICAL_PROBE_SECONDS,
             )
         except Exception:
             logger.warning(
@@ -3848,7 +3850,6 @@ class JobManager:
                 job.output_path, exc_info=True,
             )
             return True
-        return library is not None and HIDDEN_STAGING in library.capabilities
 
     async def _open_stage(self, job: ConversionJob) -> staging.StagedOutput | None:
         """A staging slot beside the job's output, or None when the job
