@@ -70,18 +70,26 @@
   });
 
   const roms = (n) => (n === 1 ? '1 ROM' : `${n} ROMs`);
-  const choiceOptions = (row) =>
-    row.choices.map((c) => ({ value: c.name, label: `${c.name} (${roms(c.rom_count)})` }));
+  // "Automatic" ('') forgets a saved pick (CodeRabbit PR #516).
+  const choiceOptions = (row) => [
+    { value: '', label: 'Automatic (the folder with the most ROMs)' },
+    ...row.choices.map((c) => ({ value: c.name, label: `${c.name} (${roms(c.rom_count)})` })),
+  ];
 
   let picking = $state(false);
+  // Bumped on a failed save, so the select goes back to the saved pick.
+  let pickReset = $state(0);
   async function pick(row, folder) {
     if (!library || folder === row.picked) return;
     picking = true;
     try {
-      await api.pickLibraryPlacement(library.id, row.platform, folder);
-      toast.success(`New ${row.name} Images go to ${folder}`);
+      await api.pickLibraryPlacement(library.id, row.platform, folder || null);
+      toast.success(
+        folder ? `New ${row.name} Images go to ${folder}` : `New ${row.name} Images go to the automatic pick`,
+      );
       await load(library.id);
     } catch (e) {
+      pickReset += 1;
       toast.error(e?.message ?? 'Failed to save where new Images go');
     } finally {
       picking = false;
@@ -158,6 +166,7 @@
                the chooser, so it can be changed (Codex PR #516). -->
           {#if row.choices.length > 1}
             <div class="pick">
+              {#key pickReset}
               <Select
                 ariaLabel={`Where new ${row.name} Images go`}
                 value={row.picked}
@@ -165,6 +174,7 @@
                 disabled={picking}
                 onchange={(folder) => pick(row, folder)}
               />
+              {/key}
             </div>
           {/if}
         </li>

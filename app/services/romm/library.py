@@ -535,6 +535,8 @@ class RommLibrary(LibraryDefaults):
         if slug is None:
             raise PlacementUnknown(f"{platform!r} is not a Platform")
         if folder is not None:
+            if not _one_folder(folder):
+                raise PlacementUnknown(f"{folder!r} isn't one folder")
             listed = await asyncio.wait_for(run_detached(self.platforms), _PICK_SECONDS)
             names = [name for name, _, _ in _choices(listed, slug)]
             if folder not in names:

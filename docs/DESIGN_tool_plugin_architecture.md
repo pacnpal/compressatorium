@@ -3560,7 +3560,8 @@ a Library that needs its Platform records (RomM's folder names, carried as
   changed. `RommLibrary.platforms` drops a record whose
   `fs_slug` is a junk name (`utils.junk.is_junk_entry`, Synology's `@eaDir`).
   `RommLibrary.pick_folder(platform, folder)` saves a pick after checking it is
-  one of the choices (`PUT /api/libraries/{id}/placements/{platform}`, 422
+  one folder (no path in it) and one of the choices; the panel's "Automatic"
+  option sends None to forget it (`PUT /api/libraries/{id}/placements/{platform}`, 422
   otherwise; 400 for a Library without `pick_folder`).
 
 **The Rules view** (`src/lib/components/views/RulesView.svelte`). A Library

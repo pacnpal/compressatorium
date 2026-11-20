@@ -794,6 +794,8 @@ async def test_a_pick_must_be_one_of_romms_folders_for_the_platform(romm, db):
     ])
 
     with pytest.raises(PlacementUnknown, match="isn't one of"):
+        await romm_library.pick_folder("nes", "elsewhere")
+    with pytest.raises(PlacementUnknown, match="isn't one folder"):
         await romm_library.pick_folder("nes", "../elsewhere")
 
 
@@ -955,3 +957,46 @@ async def test_a_picked_folder_that_cant_take_images_keeps_the_chooser(romm, db)
     assert rows["44"]["picked"] == "famicom"
     assert [c["name"] for c in rows["44"]["choices"]] == ["famicom", "nes"]
     assert rows["8"]["new_images_here"] is False
+
+
+@pytest.mark.asyncio
+async def test_a_pick_of_a_folder_name_with_a_path_in_it_is_refused(romm, db):
+    """CodeRabbit PR #516: the only record's folder is ``../nes``; saving it
+    would leave a pick every later placement refuses."""
+    from services.romm.library import romm_library
+
+    root, catalog = romm
+    (root / "roms").mkdir()
+    catalog.append({"id": 8, "slug": "nes", "fs_slug": "../nes", "rom_count": 3})
+
+    with pytest.raises(PlacementUnknown, match="isn't one folder"):
+        await romm_library.pick_folder("nes", "../nes")
+
+
+@pytest.mark.asyncio
+async def test_an_automatic_pick_detection_refuses_keeps_the_chooser(romm, db):
+    """CodeRabbit PR #516: the folder with most ROMs reads as another
+    Platform; its row still offers the valid one."""
+    from routes import libraries as library_routes
+
+    root, catalog = romm
+    (root / "roms").mkdir()
+    catalog.extend([
+        {"id": 8, "slug": "nes", "fs_slug": "nes", "rom_count": 3},
+        {"id": 9, "slug": "nes", "fs_slug": "ps2", "rom_count": 900},
+    ])
+
+    rows = {
+        row["id"]: row
+        for row in (await library_routes.library_placements("romm"))["placements"]
+    }
+
+    assert rows["9"]["error"] and rows["9"]["picked"] == "ps2"
+    assert [c["name"] for c in rows["9"]["choices"]] == ["nes", "ps2"]
+
+
+def test_the_panel_can_go_back_to_the_automatic_pick_and_resets_a_failed_one():
+    root = Path(__file__).resolve().parents[1]
+    panel = (root / "src/lib/components/views/LibraryPlacement.svelte").read_text()
+    assert "Automatic" in panel and "folder || null" in panel
+    assert "{#key pickReset}" in panel and "pickReset += 1" in panel

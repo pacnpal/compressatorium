@@ -183,16 +183,19 @@ async def load(*, force: bool = False) -> dict[str, Any]:
     with _lock:
         if _cache is not None and not force:
             return dict(_cache)
-    stored = await preferences_store.get(SETTINGS_KEY)
-    merged = _merge(stored)
-    row = stored if isinstance(stored, dict) else {}
-    stored_token = row.get("token")
-    with _lock:
-        _cache = merged
-        _token = stored_token if stored_token else None
-        _token_cleared = bool(row.get(CLEARED_KEY))
-        _cleanup_pending = bool(row.get(CLEANUP_KEY))
-        _picks = _picks_of(row)
+    # Under the writers' lock, so a read that started before a save can't
+    # land after it and put the older row back (CodeRabbit PR #516).
+    async with _save_lock:
+        stored = await preferences_store.get(SETTINGS_KEY)
+        merged = _merge(stored)
+        row = stored if isinstance(stored, dict) else {}
+        stored_token = row.get("token")
+        with _lock:
+            _cache = merged
+            _token = stored_token if stored_token else None
+            _token_cleared = bool(row.get(CLEARED_KEY))
+            _cleanup_pending = bool(row.get(CLEANUP_KEY))
+            _picks = _picks_of(row)
     return dict(merged)
 
 
