@@ -401,6 +401,11 @@ class Library(Protocol):
     def sweep_blocked(self) -> str | None:
         """An error code when the Library must not be swept now, else None."""
 
+    def excluded(self, name: str) -> bool:
+        """Whether the Library ignores a file or game folder named *name*
+        (#532): RomM's ``exclude:`` settings. The sweep skips such an Image,
+        and a Rule whose outputs it would ignore. In memory, never blocks."""
+
     def referrer_enabled(self, referrer_id: str) -> bool:
         """Whether this Library's settings turn on the opt-in Referrer *referrer_id* (#383).
 
@@ -518,6 +523,10 @@ class LibraryDefaults:
         summary. Never raises.
         """
         return None
+
+    def excluded(self, name: str) -> bool:
+        """A Library ignores no file by its name (#532)."""
+        return False
 
     def referrer_enabled(self, referrer_id: str) -> bool:
         """No opt-in Referrer is on until a Library's settings say so (#383)."""

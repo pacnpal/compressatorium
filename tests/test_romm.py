@@ -281,7 +281,7 @@ async def test_status_does_not_leak_romm_response_body() -> None:
     assert "Traceback" not in status["error"]
     assert "/srv/romm" not in status["error"]
     # Still actionable: it names what to go fix.
-    assert "ROMM_TOKEN" in status["error"]
+    assert "API token" in status["error"]
 
 
 @pytest.mark.asyncio
@@ -1601,6 +1601,7 @@ async def test_connection_test_with_a_cleared_token_does_not_reuse_the_saved_one
     class _Probe:
         def __init__(self, *, base_url: str, token: str) -> None:
             seen.append(token)
+            self.base_url = ""
 
         def heartbeat(self) -> dict:
             return {"VERSION": "3.0"}
@@ -1988,7 +1989,8 @@ async def test_connection_test_treats_a_cleared_url_as_cleared(
         romm_routes.RommSettingsPatch(url=""),
     )
     assert result["reachable"] is False
-    assert result["error"] == "Set the RomM URL first."
+    assert result["field"] == "url"
+    assert result["error"].startswith("Fill in the RomM URL")
 
 
 def test_re_recording_supersedes_rather_than_mutating(repin_db) -> None:

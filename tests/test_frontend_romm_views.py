@@ -92,17 +92,31 @@ def _script_of(component: Path) -> str:
 
 _STUBS = """
 const __saved = [];
+const __tested = [];
+const __paired = [];
+let __testReply = {
+  reachable: true, authorized: true, library_root_mounted: true, version: '5.4.1', error: null,
+};
 const toast = { success() {}, error() {}, info() {}, warning() {} };
 const romm = {
   settings: {
     url: 'http://romm:8080', library_root: '/library',
     repin_enabled: true, repin_on_load: true, repin_abandon_days: 7,
-    env_defaults: [],
+    swap_keep_rom_id: false, env_defaults: [],
   },
   settingsSaving: false,
   testResult: null,
   async saveSettings(patch) { __saved.push(patch); return this.settings; },
-  async testConnection(patch) { __saved.push(patch); return {}; },
+  async testConnection(patch) {
+    __tested.push(patch);
+    return typeof __testReply === 'function' ? __testReply(patch) : __testReply;
+  },
+  async pair(url, code) {
+    __paired.push([url, code]);
+    return { settings: this.settings, missing_scopes: [] };
+  },
+  async discover() { return null; },
+  async loadStatus() {},
 };
 """
 
@@ -121,104 +135,93 @@ def _run(tmp_path: Path, component: Path, scenario: str) -> dict:
     return json.loads(proc.stdout)
 
 
-_METADATA_SAVE = """
-// The operator has half-typed a new URL in the Connection card above, and has
-// not pressed its Save. Then they toggle a metadata checkbox and save *that*.
-url = 'http://new-rom';
-libraryRoot = '/somewhere/else';
-token = 'rmm_half_typed';
+_REPORT = """
+process.stdout.write(JSON.stringify({
+  saved: __saved, tested: __tested, paired: __paired, problem,
+  credential, clear_after: clearToken, library_root: libraryRoot,
+}));
+"""
+
+
+def test_save_tests_first_and_saves_nothing_that_fails(tmp_path):
+    """Test on Save (#532): a connection that doesn't work is not saved, and
+    the problem names the field to fix."""
+    data = _run(tmp_path, _SETTINGS, """
+url = 'http://typo:8080';
+__testReply = { reachable: false, authorized: null, library_root_mounted: null,
+                field: 'url', error: 'Could not reach RomM.' };
+await handleSave();
+""" + _REPORT)
+
+    assert data["tested"][0]["url"] == "http://typo:8080", data
+    assert data["saved"] == [], data
+    assert data["problem"]["field"] == "url", data
+
+
+def test_save_anyway_skips_the_test(tmp_path):
+    data = _run(tmp_path, _SETTINGS, """
+__testReply = { reachable: false, field: 'url', error: 'down' };
+await handleSave(true);
+""" + _REPORT)
+    assert data["tested"] == [], data
+    assert len(data["saved"]) == 1, data
+
+
+def test_one_save_sends_the_whole_form(tmp_path):
+    """One form, one Save: connection and metadata go together."""
+    data = _run(tmp_path, _SETTINGS, """
 repinOnLoad = false;
-
-await handleSaveMetadata();
-
-process.stdout.write(JSON.stringify({
-  submitted: __saved,
-  // What the Connection card would send is unchanged — this is about which
-  // button sends which fields, not about forbidding connection edits.
-  connection_keys: Object.keys(patch()).sort(),
-  // ...and the buffers the save did not carry are still there to be saved.
-  token_after: token,
-  clear_after: clearToken,
-}));
-"""
-
-
-_CONNECTION_SAVE = """
-token = 'rmm_new_credential';
+credential = 'rmm_new_credential';
 await handleSave();
-process.stdout.write(JSON.stringify({
-  submitted: __saved, token_after: token, clear_after: clearToken,
-}));
-"""
+""" + _REPORT)
 
-
-_CLEAR_TOKEN_SAVE = """
-clearToken = true;
-await handleSave();
-process.stdout.write(JSON.stringify({
-  submitted: __saved, token_after: token, clear_after: clearToken,
-}));
-"""
-
-
-def test_saving_metadata_does_not_submit_the_connection_buffers(tmp_path):
-    """A metadata toggle must not commit a half-typed connection edit.
-
-    Both cards shared one handler, and it always submitted the URL, token and
-    library-root buffers. A URL or root that differs from the saved one is an
-    identity change on the backend: it clears the conversion history and
-    retires every pending re-pin snapshot. Toggling "re-apply on load" is not a
-    reason to lose those — and if the settings load had failed, the buffers are
-    still empty, so it would have submitted a *blank* URL and root.
-    """
-    data = _run(tmp_path, _SETTINGS, _METADATA_SAVE)
-
-    assert len(data["submitted"]) == 1, data
-    sent = data["submitted"][0]
-    # The Hasheous ids switch (#427) lives on the Metadata card too.
-    assert sorted(sent) == [
-        "hasheous_write_ids", "repin_abandon_days", "repin_enabled", "repin_on_load",
-    ], sent
+    sent = data["saved"][0]
+    assert sent["url"] == "http://romm:8080", sent
+    assert sent["token"] == "rmm_new_credential", sent
     assert sent["repin_on_load"] is False, sent
-    # The Connection card still owns those fields.
-    assert "url" in data["connection_keys"], data
-    assert "library_root" in data["connection_keys"], data
+    # The swap switch didn't change, so it isn't sent (it probes the token).
+    assert "swap_keep_rom_id" not in sent, sent
+    # Once submitted, the token doesn't linger in the field.
+    assert data["credential"] == "", data
 
 
-def test_a_metadata_save_does_not_discard_the_typed_token(tmp_path):
-    """The credential buffers belong to the card that submits them.
-
-    Splitting the patch fixed *what is sent*; the shared success handler still
-    cleared the token buffer and the "clear token" tick on every save. So
-    saving a metadata toggle wiped a replacement token typed next door and not
-    yet submitted — and RomM shows an API token once, at creation, so it is
-    usually not recoverable: the operator has to issue a new one and update
-    whatever else was using it.
-    """
-    data = _run(tmp_path, _SETTINGS, _METADATA_SAVE)
-
-    sent = data["submitted"][0]
-    assert "token" not in sent and "clear_token" not in sent, sent
-    assert data["token_after"] == "rmm_half_typed", data
+def test_a_cleared_token_is_sent_and_the_tick_reset(tmp_path):
+    data = _run(tmp_path, _SETTINGS, "clearToken = true;\nawait handleSave();\n" + _REPORT)
+    assert data["saved"][0]["clear_token"] is True, data
     assert data["clear_after"] is False, data
 
 
-def test_a_connection_save_still_clears_the_credential_buffers(tmp_path):
-    """Once submitted, the token must not linger in the component.
+def test_a_pairing_code_is_traded_for_a_token_not_saved_as_one(tmp_path):
+    """RomM's pairing code (#532) goes to the pair call, never into `token`."""
+    data = _run(tmp_path, _SETTINGS, "credential = 'abcd-2345';\nawait handleSave();\n" + _REPORT)
 
-    The reset is what stops a saved credential sitting in a field for the rest
-    of the session and being re-submitted by the next save.
-    """
-    saved = _run(tmp_path, _SETTINGS, _CONNECTION_SAVE)
-    assert saved["submitted"][0]["token"] == "rmm_new_credential", saved
-    assert saved["token_after"] == "", saved
-
-    cleared = _run(tmp_path, _SETTINGS, _CLEAR_TOKEN_SAVE)
-    assert cleared["submitted"][0]["clear_token"] is True, cleared
-    assert cleared["clear_after"] is False, cleared
+    assert data["paired"] == [["http://romm:8080", "abcd-2345"]], data
+    assert all("token" not in sent for sent in data["saved"]), data
+    assert data["credential"] == "", data
 
 
-def test_every_save_button_waits_for_the_settings_to_load(tmp_path):
+def test_an_empty_library_path_is_filled_from_romm(tmp_path):
+    data = _run(tmp_path, _SETTINGS, """
+libraryRoot = '';
+__testReply = (patch) => patch.library_root
+  ? { reachable: true, authorized: true, library_root_mounted: true, error: null }
+  : { reachable: true, authorized: true, library_root_mounted: null,
+      library_root_suggestion: '/data/romm/library', field: 'library_root', error: 'Fill in' };
+await handleSave();
+""" + _REPORT)
+
+    assert data["library_root"] == "/data/romm/library", data
+    assert data["saved"][0]["library_root"] == "/data/romm/library", data
+
+
+def test_the_keep_rom_id_switch_is_saved_on_its_own(tmp_path):
+    """Turning it on probes the token; a refusal must not undo the rest."""
+    data = _run(tmp_path, _SETTINGS, "swapKeepRomId = true;\nawait handleSave();\n" + _REPORT)
+    assert data["saved"][-1] == {"swap_keep_rom_id": True}, data
+    assert "swap_keep_rom_id" not in data["saved"][0], data
+
+
+def test_the_one_save_button_waits_for_the_settings_to_load():
     """Empty buffers submitted as a connection read as a move to nowhere.
 
     Until the saved settings arrive the edit buffers are `''`. Saving then
@@ -226,13 +229,10 @@ def test_every_save_button_waits_for_the_settings_to_load(tmp_path):
     that retires pending snapshots.
     """
     src = _SETTINGS.read_text(encoding="utf-8")
-    buttons = re.findall(r"<Button\b[^>]*?onclick=\{(handleSave\w*)\}(.*?)/>", src, re.DOTALL)
-    found = {name for name, _ in buttons}
-    assert found == {"handleSave", "handleSaveMetadata", "handleSaveSwap"}, found
-    for name, attrs in buttons:
-        assert "disabled={!loaded}" in attrs, (
-            f"{name}'s button can fire before the settings have loaded"
-        )
+    submits = re.findall(r'<Button\b[^>]*?type="submit"(.*?)>', src, re.DOTALL)
+    assert len(submits) == 1, submits
+    assert "disabled={!loaded}" in submits[0], submits[0]
+    assert "handleSaveMetadata" not in src and "handleSaveSwap" not in src
 
 
 def test_enabling_automation_commits_pending_rule_edits():

@@ -23,6 +23,7 @@ from fastapi.concurrency import run_in_threadpool
 from logging_setup import get_logger
 from services.platform_detect import canonical_slug
 from services.romm import RommError, romm_client
+from services.romm import connect as romm_connect
 from services.romm import repin as romm_repin
 from services.romm import settings as romm_settings
 
@@ -113,8 +114,12 @@ def _pick(slug: str, choices: list[tuple[str, int, str]]) -> tuple[str, bool, st
 
 def _structure(root: str, name: str) -> tuple[str, str | None]:
     """Where the Platform folder *name* sits in RomM's structure under *root*,
-    read off the disk (see ``RommLibrary.placement``), and why it's a guess
-    when it is one. Blocking."""
+    and why it's a guess when it is one (see ``RommLibrary.placement``).
+    RomM's own ``filesystem.structure`` when RomM declared it (#532), else
+    read off the disk. Blocking."""
+    declared = romm_connect.structure()
+    if declared is not None:
+        return _declared(root, name, *declared), None
     own = os.path.join(root, name)
     if os.path.isdir(os.path.join(root, "roms")):
         return os.path.join(root, "roms", name), None
@@ -142,6 +147,28 @@ def _structure(root: str, name: str) -> tuple[str, str | None]:
         os.path.join(root, "roms", name),
         f"guessed RomM's default structure, roms/{name}: there's no roms folder yet",
     )
+
+
+def _declared(
+    root: str, name: str, before: tuple[str, ...], levels: tuple[str | None, ...],
+) -> str:
+    """The folder RomM's declared structure puts *name*'s games in (#532).
+
+    ``roms/...`` is read the way ``RommClient.local_path`` maps RomM's paths:
+    a root with no ``roms`` folder but Platform folders in it is RomM's
+    ``roms`` folder itself. Refuses a structure with a folder per group of
+    games (``{category}``): which one a new game goes in isn't this app's
+    call."""
+    if None in levels:
+        raise PlacementUnknown(
+            f"RomM's folder structure, {romm_connect.layout().get('structure_template')}, "
+            "keeps games in folders of their own under each platform, so this app "
+            "can't tell which one a new game goes in",
+        )
+    if before[:1] == ("roms",) and not os.path.isdir(os.path.join(root, "roms")) \
+            and _platform_dirs(root):
+        before = before[1:]
+    return os.path.join(root, *before, name, *levels)
 
 
 def _holds_structure(folder: str) -> bool:
@@ -335,6 +362,10 @@ class RommLibrary(LibraryDefaults):
     def max_per_sweep(self) -> int:
         return int(romm_settings.effective().get("auto_convert_max_per_run", 25))
 
+    def excluded(self, name: str) -> bool:
+        """RomM's ``exclude:`` settings ignore files named *name* (#532)."""
+        return romm_connect.excluded(name)
+
     def schedule_enabled(self) -> bool:
         return bool(romm_settings.effective().get("auto_convert"))
 
@@ -479,7 +510,9 @@ class RommLibrary(LibraryDefaults):
         only folder holding ROMs (RomM's ``rom_count``); else the one with the
         most ROMs (then the one named as the Platform), marked ``guessed``.
 
-        Where that folder sits is read off the disk, at the directory level as
+        Where that folder sits is RomM's own ``filesystem.structure`` when
+        RomM declared it (5.3+, read by ``services.romm.connect``, #532), not
+        a guess. Otherwise it is read off the disk, at the directory level as
         ``RommClient.local_path`` maps ROMs:
 
         * ``<root>/roms`` exists: RomM's standard structure,

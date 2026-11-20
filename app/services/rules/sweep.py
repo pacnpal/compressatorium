@@ -200,10 +200,10 @@ _unreadable: dict[tuple[str, str], str] = {}
 _reported_unrunnable: dict[tuple[str, str, str], str] = {}
 
 # The checks a sweep makes before it runs a conversion Rule, in the order it
-# makes them: its tool is installed, its output folder is inside a Volume, its
-# mode is one for the Platform. A Rule that fails one is skipped with no run
+# makes them: its tool is installed, its output folder is inside a Volume, the
+# Library doesn't ignore its outputs (#532), its mode is one for the Platform. A Rule that fails one is skipped with no run
 # recorded, so it is tried again on the next tick (#480).
-_SKIP_CHECKS = ("tool", "output_dir", "platform")
+_SKIP_CHECKS = ("tool", "output_dir", "output_excluded", "platform")
 
 # (library id, kind, platform id) -> (check, reason) the sweep last skipped
 # that Rule for: logged once for each reason, not on every tick (#480).
@@ -2268,6 +2268,18 @@ async def _sweep_locked(
             )
             continue
 
+        # The Library would ignore every output (#532): RomM told to exclude
+        # the target format would drop each converted game from its catalog.
+        output_ext = (spec.output_ext or "").lstrip(".")
+        problem = (
+            f"{library.name} ignores .{output_ext} files, so its outputs would vanish from it"
+            if output_ext and library.excluded(f"output.{output_ext}") else None
+        )
+        _report_skip(library, kind, platform_id, "output_excluded", problem)
+        if problem is not None:
+            result["errors"].append({"platform_id": platform_ref, "error": "output_excluded"})
+            continue
+
         listed_at = _walk_generation(library)
         images = await _list_images(library, platform_id, result, stopping)
         if images is None:
@@ -2345,6 +2357,10 @@ async def _sweep_locked(
             if stopping():
                 break
             considered += 1
+            # A file the Library ignores (#532), told apart by name alone.
+            if library.excluded(image.name or ""):
+                result["skipped_filtered"] += 1
+                continue
             # One hop to a worker thread for every disk-touching check on this
             # candidate — the local-path mapping and volume check included,
             # since both resolve paths against a mount that may be remote.

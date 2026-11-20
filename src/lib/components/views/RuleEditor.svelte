@@ -498,6 +498,7 @@
     tool_wrong_for_platform: 'the saved format is not for this system — skipped',
     output_dir_outside_volumes:
       'its output folder is outside the configured volumes — skipped',
+    output_excluded: "RomM is set to ignore this format, so converted games would vanish from it — skipped",
     unreadable: 'the Library could not list this platform',
     root_unavailable:
       'the folder could not be reached inside the configured volumes (a mount may '

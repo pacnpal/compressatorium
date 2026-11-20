@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### Added
+
+- **RomM connects itself** (#532).
+  - On first run, RomM's Settings looks for RomM at `http://romm:8080` and its
+    other usual addresses and offers **Found RomM at …: Use it**.
+  - Type RomM's **pairing code** (RomM 4.8+) instead of pasting a 64-character
+    token. Pasting a token still works.
+  - The **Library path** fills itself in from RomM's platform folders, matched
+    against your volumes.
+  - New games go where RomM's own folder structure says (RomM 5.3+), not a
+    guess from what's on disk. Rules skip files RomM is set to ignore, and
+    refuse a target format RomM ignores.
+  - **Save tests the connection first** and names the field to fix, with
+    **Retry** and **Save anyway**. A check that couldn't run shows as "not
+    checked" instead of failed.
+  - The three RomM Settings cards are one form with one Save; the re-pin
+    knobs are under **Advanced**.
+  - RomM errors name the field to fix instead of an environment variable.
+
 ### Fixed
 
 - **RomM: every Platform gets a folder for new Images, even when RomM keeps

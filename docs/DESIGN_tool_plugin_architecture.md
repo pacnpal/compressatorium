@@ -3083,8 +3083,25 @@ API and the Rules view; the engine never reads those three), and:
 
 **Hooks for steps only one Library performs.**
 
+RomM's connection helpers live in `services/romm/connect.py` (#532):
+`discover()` (the heartbeat at RomM's usual addresses, bounded, no token
+sent), `find_library_root(FS_PLATFORMS)` (a bounded breadth-first look through
+the Volumes), and the layout cache (`refresh_layout()`; `structure()` and
+`excluded()` only read it). The layout is re-read at most every five minutes,
+by `/api/romm/status`, a connection test, and a Save that changes the
+connection. RomM placement uses the declared structure when there is one,
+and refuses a structure with a wildcard level (`{category}`).
+
 - `sweep_blocked()` returns an error code to refuse the sweep. RomM refuses
   with `identity_cleanup_pending` while a change of instance is half cleaned up.
+- `excluded(name)` (#532) says the Library ignores a file or game folder by
+  that name. The sweep skips such an Image (counted in `skipped_filtered`) and
+  skips a Rule whose output extension the Library ignores (error
+  `output_excluded`, skip check `output_excluded`). In memory, never blocks.
+  `LibraryDefaults` answers False; RomM answers from its `exclude:` settings
+  (`EXCLUDED_SINGLE_EXT`, `EXCLUDED_SINGLE_FILES`, `EXCLUDED_MULTI_FILES` and
+  RomM's defaults, from `GET /api/config`), cached by
+  `services/romm/connect.py`.
 - `summary_fields()` seeds every per-Platform summary and the result (RomM:
   `repins_recorded: 0`).
 - `after_queue(rule, spec, queued, summary, result)` runs once a Platform's

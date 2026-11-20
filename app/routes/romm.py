@@ -58,6 +58,9 @@ from services.romm import (
     auto as romm_auto,
 )
 from services.romm import (
+    connect as romm_connect,
+)
+from services.romm import (
     converter as romm_converter,
 )
 from services.romm import (
@@ -174,18 +177,21 @@ def _plan_deadline(paths: int) -> float:
 _settle_lock = asyncio.Lock()
 
 
+_NOT_CONNECTED = "RomM isn't connected yet. Connect it on the RomM page's Settings tab."
+
+
 def _require_configured() -> None:
     if not romm_client.configured:
         raise HTTPException(
             status_code=503,
-            detail="RomM is not configured. Set ROMM_URL (and ROMM_TOKEN).",
+            detail=_NOT_CONNECTED,
         )
     if not romm_client.library_root:
         raise HTTPException(
             status_code=503,
             detail=(
-                "ROMM_LIBRARY_ROOT is not set. Point it at the local mount of "
-                "RomM's library directory."
+                "RomM's library path isn't set. Fill in the Library path on the "
+                "RomM page's Settings tab."
             ),
         )
 
@@ -212,12 +218,12 @@ def _safe_error(exc: RommError) -> str:
     """
     status = getattr(exc, "status", None)
     if status in (401, 403):
-        return "RomM rejected the API token. Check ROMM_TOKEN and its scopes."
+        return "RomM rejected the API token. Pair again, or paste a new token."
     if status == 404:
-        return "RomM returned 404. Check that ROMM_URL points at the API root."
+        return "RomM returned 404. Check the RomM URL: it's the address you open RomM at."
     if status is not None:
         return f"RomM returned HTTP {status}."
-    return "Could not reach RomM. Check ROMM_URL and that the instance is up."
+    return "Could not reach RomM. Check the RomM URL and that RomM is running."
 
 
 def _romm_call(exc: RommError, *, context: str) -> HTTPException:
@@ -230,7 +236,7 @@ def _romm_call(exc: RommError, *, context: str) -> HTTPException:
     if isinstance(exc, RommNotConfigured):
         return HTTPException(
             status_code=503,
-            detail="RomM is not configured. Set ROMM_URL (and ROMM_TOKEN).",
+            detail=_NOT_CONNECTED,
         )
     return HTTPException(status_code=502, detail=_safe_error(exc))
 
@@ -314,8 +320,8 @@ async def romm_status() -> dict:
                 "romm: could not stat ROMM_LIBRARY_ROOT", exc_info=True,
             )
             result["error"] = (
-                "Could not read ROMM_LIBRARY_ROOT. Check the mount is present "
-                "and readable."
+                "Could not read RomM's library folder. Check the Library path and "
+                "that its mount is present and readable."
             )
     if configured:
         try:
@@ -327,6 +333,9 @@ async def romm_status() -> dict:
             result["error"] = _safe_error(exc)
         else:
             result["converter"] = await _converter_status(heartbeat)
+            # RomM's structure and exclusions, for placement and the Rules
+            # (#532). Re-read at most every few minutes.
+            await romm_connect.refresh_layout()
             if result["swap"]["keep_rom_id"]:
                 await _swap_status(result["swap"])
     result["pending_repins"] = await run_in_threadpool(romm_repin.count_pending)
@@ -381,7 +390,7 @@ async def _require_swap_permissions(submitted: dict) -> None:
     if not url:
         raise HTTPException(
             status_code=503,
-            detail="RomM is not configured. Set ROMM_URL (and ROMM_TOKEN).",
+            detail=_NOT_CONNECTED,
         )
     if not token:
         raise HTTPException(status_code=422, detail=romm_swap.NO_TOKEN)
@@ -1824,9 +1833,12 @@ async def put_romm_settings(patch: RommSettingsPatch) -> dict:
                 libraries.check_gamelists_folder, folder, what="The gamelists folder",
             ) if folder.strip() else ""
         async with libraries.romm_root_claim(submitted.get("library_root")):
-            return await _save_settings(submitted)
+            saved = await _save_settings(submitted)
     except libraries.LibraryPathError as exc:
         raise HTTPException(status_code=exc.status, detail=str(exc)) from None
+    if submitted.keys() & {"url", "token", "clear_token"}:
+        await romm_connect.refresh_layout(force=True)
+    return saved
 
 
 async def _save_settings(submitted: dict) -> dict:
@@ -2063,11 +2075,14 @@ async def _identity_moved(before: dict, after: dict) -> bool:
 async def test_romm_connection(patch: RommSettingsPatch | None = None) -> dict:
     """Probe a RomM instance and report what works, without saving anything.
 
-    Deliberately granular: "it doesn't work" is useless when there are three
-    independent things to get right. This separates *reachable* (the public
-    heartbeat), *authorised* (a scoped call the token must pass), and *mounted*
-    (the library visible to this container), so the answer names the one that
-    is wrong.
+    Three things to get right, each reported on its own: *reachable* (the
+    public heartbeat), *authorized* (a scoped call the token must pass), and
+    *mounted* (the library visible to this container). A check that couldn't
+    run is None, not failed: an unreachable RomM says nothing about the token.
+    ``field`` names the one input to fix first (``url``, ``token`` or
+    ``library_root``), and ``error`` says how, in plain words. When the
+    library path is unset or wrong, ``library_root_suggestion`` is where RomM's
+    platform folders are in the Volumes, if they are (#532).
     """
     override = patch.model_dump(exclude_unset=True) if patch else {}
     saved = romm_settings.effective()
@@ -2094,33 +2109,46 @@ async def test_romm_connection(patch: RommSettingsPatch | None = None) -> dict:
 
     result: dict = {
         "reachable": False,
-        "authorized": False,
-        "library_root_mounted": False,
+        "authorized": None,
+        "library_root_mounted": None,
         "version": None,
         "platform_count": None,
+        "library_root_suggestion": None,
+        "field": None,
         "error": None,
     }
+
+    def fail(field: str, error: str) -> None:
+        # The first problem found is the one to fix first.
+        if result["error"] is None:
+            result["field"], result["error"] = field, error
+
+    heartbeat: dict = {}
     if not url:
-        result["error"] = "Set the RomM URL first."
-        return result
-
-    probe = RommClient(base_url=url, token=token or "")
-    try:
-        heartbeat = await run_in_threadpool(probe.heartbeat)
-        result["reachable"] = True
-        result["version"] = heartbeat_version(heartbeat)
-    except RommError as exc:
-        logger.warning("romm: connection test failed: %s", exc)
-        result["error"] = _safe_error(exc)
-        return result
-
-    try:
-        platforms = await run_in_threadpool(probe.platforms)
-        result["authorized"] = True
-        result["platform_count"] = len(platforms)
-    except RommError as exc:
-        logger.warning("romm: connection test auth failed: %s", exc)
-        result["error"] = _safe_error(exc)
+        fail("url", "Fill in the RomM URL: the address you open RomM at.")
+    else:
+        probe = RommClient(base_url=url, token=token or "")
+        try:
+            heartbeat = await run_in_threadpool(probe.heartbeat)
+            result["reachable"] = True
+            result["version"] = heartbeat_version(heartbeat)
+        except RommError as exc:
+            logger.warning("romm: connection test failed: %s", exc)
+            fail("url", _safe_error(exc))
+        if result["reachable"] and not token:
+            result["authorized"] = False
+            fail("token", "Add an API token: type the pairing code from RomM, or paste a token.")
+        elif result["reachable"]:
+            try:
+                platforms = await run_in_threadpool(probe.platforms)
+                result["authorized"] = True
+                result["platform_count"] = len(platforms)
+            except RommError as exc:
+                logger.warning("romm: connection test auth failed: %s", exc)
+                result["authorized"] = False
+                fail("token", _safe_error(exc))
+        if result["authorized"]:
+            await romm_connect.refresh_layout(probe, force=True)
 
     outside_volumes = False
     if library_root:
@@ -2132,17 +2160,86 @@ async def test_romm_connection(patch: RommSettingsPatch | None = None) -> dict:
             outside_volumes = is_dir and not result["library_root_mounted"]
         except (asyncio.TimeoutError, OSError):
             result["library_root_mounted"] = False
-    if result["authorized"] and not result["library_root_mounted"]:
+    if result["library_root_mounted"] is not True and heartbeat:
+        found = await romm_connect.suggest_library_root(heartbeat)
+        if found and found != library_root:
+            result["library_root_suggestion"] = found
+    found = result["library_root_suggestion"]
+    if not library_root:
+        fail("library_root", (
+            f"Fill in the Library path. RomM's library looks to be at {found}."
+            if found else
+            "Fill in the Library path: where RomM's library folder is mounted in this "
+            "container."
+        ))
+    elif result["library_root_mounted"] is False:
         # Two different fixes, so two different messages: mounting a folder and
         # moving it inside a configured volume are not the same job.
-        result["error"] = result["error"] or (
-            "Connected to RomM, but its library folder is outside the configured "
-            "Compressatorium volumes, so no ROM in it can be read."
+        fail("library_root", (
+            "The Library path is outside the Compressatorium volumes, so no ROM in "
+            "it can be read. Mount it inside one."
             if outside_volumes else
-            "Connected to RomM, but its library folder is not mounted here. "
-            "Check the library path and the volume mount."
-        )
+            "The Library path isn't a folder here. It's where RomM's library is "
+            "mounted in this container, not the path RomM sees."
+        ) + (f" RomM's library looks to be at {found}." if found else ""))
     return result
+
+
+class PairRequest(BaseModel):
+    """A RomM pairing code (#532), and the RomM it came from."""
+
+    url: str | None = None
+    code: str = Field(min_length=4, max_length=64)
+
+
+# RomM's answers to a pairing exchange, in plain words.
+_PAIR_ERRORS = {
+    404: "RomM doesn't know that code, or it has expired. Press Pair in RomM again "
+         "and type the new code.",
+    403: "RomM refused: the token's owner is disabled in RomM.",
+    405: "This RomM can't pair: that needs RomM 4.8 or newer. Paste an API token instead.",
+    429: "Too many tries. Wait a minute, then press Pair in RomM again.",
+}
+
+
+@router.post("/romm/pair")
+async def pair_romm(payload: PairRequest) -> dict:
+    """Connect with a RomM pairing code instead of a pasted token (#532).
+
+    In RomM, the owner presses Pair on a client API token and gets a short
+    code. RomM trades it, once, for a new secret for that token
+    (``POST /api/client-tokens/exchange``, RomM 4.8+), which is saved here
+    with the URL, as a Save would. The token is never sent back; the answer
+    says which of the scopes the features use it lacks.
+    """
+    url = (payload.url or "").strip().rstrip("/") or str(
+        romm_settings.effective().get("url") or "",
+    ).rstrip("/")
+    if not url:
+        raise HTTPException(status_code=400, detail="Fill in the RomM URL first.")
+    client = RommClient(base_url=url, token="")
+    try:
+        token = await run_in_threadpool(client.exchange_pair_code, payload.code)
+    except RommError as exc:
+        logger.warning("romm: pairing failed: %s", exc)
+        detail = _PAIR_ERRORS.get(exc.status) or _safe_error(exc)
+        raise HTTPException(status_code=400, detail=detail) from None
+    saved = await put_romm_settings(RommSettingsPatch(url=url, token=token["raw_token"]))
+    scopes = {s for s in token.get("scopes") or () if isinstance(s, str)}
+    return {
+        "settings": saved,
+        "name": token.get("name"),
+        "missing_scopes": [s for s in romm_connect.RECOMMENDED_SCOPES if s not in scopes],
+    }
+
+
+@router.get("/romm/discover")
+async def discover_romm() -> dict:
+    """Look for RomM at the addresses its compose example gives it (#532),
+    with short timeouts: ``{"url", "version", "library_root"}``, all None
+    when nothing answered. Only RomM's public heartbeat is asked."""
+    found = await romm_connect.discover()
+    return found or {"url": None, "version": None, "library_root": None}
 
 
 @router.get("/romm/rules")

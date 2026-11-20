@@ -244,6 +244,9 @@ class _FolderLike:
     def sweep_blocked(self):
         return None
 
+    def excluded(self, name):
+        return False
+
     def summary_fields(self):
         return {}
 
