@@ -15,6 +15,7 @@ place the server keeps it (``COMPRESSATORIUM_AUTH_TOKEN`` or
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import http.client
 import json
 import socket
@@ -126,7 +127,5 @@ class Server:
             raise
 
     async def cancel(self, job_id: str) -> None:
-        try:
+        with contextlib.suppress(ServerRefused):  # already ended, or gone
             await self.call("DELETE", f"/api/jobs/{urlparse.quote(job_id)}")
-        except ServerRefused:
-            pass  # already ended, or gone

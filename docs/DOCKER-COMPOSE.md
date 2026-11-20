@@ -258,7 +258,6 @@ Volume behavior:
 | `CHD_PATCH_MAX_ROM_SIZE` | `536870912` | Max size in bytes of a ROM to patch, and of the patched ROM (0 disables) |
 | `LOGLEVEL` | `INFO` | Log verbosity level (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`) |
 | `LOG_PATH` | (none) | Path to log file (stdout only if unset). Legacy alias: `CHD_DEBUG_LOG_PATH` |
-| `CHD_DEBUG_HEARTBEAT` | `30` | Maintenance loop interval (seconds) |
 | `CHD_DEBUG_PROGRESS_INTERVAL` | `30` | Debug progress log interval |
 | `CHD_DEBUG_PROGRESS_TIMEOUT` | `300` | Debug progress timeout |
 | `CHD_PROGRESS_TIMEOUT` | `600` | Fail a conversion if progress and output size do not advance for this many seconds (0 disables) |

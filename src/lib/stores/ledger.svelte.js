@@ -15,19 +15,23 @@ const SETTLE_MS = 1500;
 class LedgerStore {
   recent = $state([]);
   savings = $state(null);
+  // Finished jobs by status, all time: {completed, failed, cancelled}.
+  totals = $state(null);
   _seq = 0;
   _timer = null;
 
   async _load() {
     const seq = ++this._seq;
     try {
-      const [recent, savings] = await Promise.all([
+      const [recent, savings, totals] = await Promise.all([
         api.getLedgerRecent(5),
         api.getLedgerSavings(),
+        api.getLedgerTotals(),
       ]);
       if (seq !== this._seq) return;
       this.recent = recent;
       this.savings = savings;
+      this.totals = totals?.jobs ?? null;
     } catch {
       // Keep the last good values; the next refresh retries.
     }

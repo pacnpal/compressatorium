@@ -472,7 +472,10 @@ curl -X PUT http://localhost:8080/api/ledger/settings \
 ```
 
 `GET /api/ledger/recent?limit=N` and `GET /api/ledger/savings` return the rows and
-the totals as JSON.
+the totals as JSON. `GET /api/ledger/totals` counts every finished job by status;
+the job queue lists only the most recent finished jobs (`MAX_JOB_HISTORY`), so
+the dashboard's Done and Failed numbers come from here, and the Completed and
+Failed tabs link to the Ledger for the rest.
 
 ### Notifications
 
@@ -2733,6 +2736,9 @@ compressatorium run-rules --dry-run
 - `--duplicate skip|overwrite|rename` (default `skip`), `--output-dir DIR`,
   `--no-recurse` (top level only), `--no-archives` (leave archives alone),
   `--any-platform` (with `--to`, no Platform check).
+- `--server URL` hands the jobs to the server at that address. You rarely
+  need it: a server running on the same `/config` is found on its own (see
+  below).
 
 **`verify PATH... [--since AGE]`** checks each Image is Intact and stores the
 result. `--since 30d` (also `12h`, `2w`) skips Images checked within that window.
@@ -2810,7 +2816,8 @@ Warnings and errors always go to stderr; `-v` adds INFO messages there. Exit
 status: `0` when everything finished or there was nothing to do, `1` when any
 Image or job failed (for `run-rules`, also a sweep error), `2` on bad arguments
 (a path that does not exist included), `3` when `run-rules` found another
-scheduler using the data directory, `4` when `verify` failed nothing but could
+process using the data directory, or `convert` found a server there that did
+not answer, `4` when `verify` failed nothing but could
 not check at least one Image (`uncheckable`: no verdict, such as a file it
 can't open or a check that ran past its time limit). `2` and `3` stop the
 command before anything is checked or run, so a missing path checks nothing;
@@ -2822,22 +2829,29 @@ file is never hidden behind a softer code.
 Each Image is planned on its own, so one bad file is reported and the others
 still convert. When `MAX_QUEUE_DEPTH` is set, jobs are fed in batches below it.
 
-**Beside a running server.** Each job holds a file lock on its output, and both
-share the conversion slots. These live in `CHD_CONCURRENCY_LOCK_DIR`, which
-defaults to `/config/locks`, so a separate container that mounts the same
-`/config` (such as `docker-compose.cli.yml`) shares them too. Run it in the
-server's container with `docker exec compressatorium compressatorium convert ...`.
-Started as root (`docker exec` without `-u`, or `--entrypoint`), the command
+**With a server running, `convert` uses it.** One process works a data
+directory at a time. When the server is running on the same `/config`,
+`convert` finds it there and hands it the jobs: they show in the web UI's job
+queue, share its `MAX_CONCURRENT_JOBS` limit and land in its Ledger, and the
+command prints each line as its job ends. Ctrl-C cancels this run's jobs on the
+server. With no server running, `convert` runs the jobs itself, and a server
+started meanwhile waits until it is done. Either way a command and the server
+never work on the same file. A server in another container is found the same
+way, by its host name, so put both on one Docker network (Compose does); if
+it can't be reached, `convert` says so and exits `3`, and `--server URL`
+names it. `verify` only reads, and runs beside the server under the same file
+locks. Run it in the server's container with `docker exec compressatorium
+compressatorium convert ...`. Started as root (`docker exec` without `-u`, or `--entrypoint`), the command
 first remaps and drops to the `converter` user through the image's entrypoint,
 honouring `PUID`/`PGID` the same way the server does, so the files it writes
 belong to the user the server runs as.
 
-**One Rule scheduler per data directory.** `convert` and `verify` run beside a
-server; `run-rules` does not. The server holds a lock on
-`/config/locks/scheduler.lock` for as long as it runs, and its own scheduler
-runs the Rules. While that lock is held, `run-rules` prints who holds it and
-exits `3` without queuing anything. A server started while a `run-rules` pass
-(or another server) holds the lock waits for it before it opens anything,
+**One Rule scheduler per data directory.** `run-rules` does not run beside a
+server. The server holds a lock on `/config/locks/scheduler.lock` for as long
+as it runs, and its own scheduler runs the Rules. While that lock is held,
+`run-rules` prints who holds it and exits `3` without queuing anything. A
+server started while a `run-rules` pass, a `convert` running its own jobs or
+another server holds the lock waits for it before it opens anything,
 logging who it waits for every 30 seconds, then starts; `docker stop` still
 stops it while it waits. The web UI does not answer while it waits, but the
 container's health check counts the wait as healthy. Use `run-rules` where the server is not running all the
@@ -3061,9 +3075,6 @@ The Web UI communicates with a REST API that can also be used directly. Interact
 | POST | `/api/jobs/cancel-all` | Cancel all queued and processing jobs |
 | GET | `/api/jobs/events` | SSE stream for job progress updates |
 | GET | `/api/jobs/{id}/events` | SSE stream for a single job's progress |
-| GET | `/api/jobs/stuck-status` | Check if job queue is in a stuck state |
-| GET | `/api/jobs/history-overflow` | Counts of finished jobs already evicted by `MAX_JOB_HISTORY` |
-| POST | `/api/jobs/recover` | Manually trigger recovery from stuck job queue |
 
 **Destructive jobs actions require explicit confirmation headers:**
 - `DELETE /api/jobs/completed` requires `X-CHD-Action-Confirm: clear-completed-jobs`
@@ -3239,6 +3250,7 @@ no info route.
 | GET | `/api/ledger/facets` | The status, tool and Platform values the filters offer |
 | GET | `/api/ledger/recent` | The latest Ledger rows (`limit`, default 5) |
 | GET | `/api/ledger/savings` | The Space saved totals |
+| GET | `/api/ledger/totals` | Finished jobs by status, all time |
 | GET / PUT | `/api/ledger/settings` | `{retention_days}` |
 | GET | `/api/metrics` | Prometheus text: jobs by status, bytes in and out, queue depth |
 | GET | `/api/notifications` | Destinations, events, kinds, and whether Apprise is installed |
@@ -3333,7 +3345,6 @@ no info route.
 | `LOGLEVEL` | `INFO` | Log verbosity level (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`). With `LOGLEVEL` unset, the legacy `CHD_DEBUG=true` means `DEBUG` |
 | `LOG_PATH` | (none) | Path to log file (logs to stdout only if unset). Legacy alias: `CHD_DEBUG_LOG_PATH` |
 | `LOG_COLOR` | `always` | ANSI-color stdout logs by level. Values: `always` (default, colored `docker logs` out of the box), `auto` (TTY and no `NO_COLOR`), `never`. File logs are never colored. |
-| `CHD_DEBUG_HEARTBEAT` | `30` | Maintenance loop interval in seconds |
 | `CHD_DEBUG_PROGRESS_INTERVAL` | `30` | Debug progress log interval in seconds |
 | `CHD_DEBUG_PROGRESS_TIMEOUT` | `300` | Debug progress timeout in seconds |
 | `CHD_PROGRESS_TIMEOUT` | `600` | Fail a conversion if progress and output size do not advance for this many seconds (0 disables) |
@@ -3554,7 +3565,7 @@ npm run lint        # ESLint (JS + .svelte), flat config in eslint.config.js
 * `src/lib/stores/*.svelte.js`: class-singleton stores with Svelte 5 `$state` fields, one per feature domain (jobs / fileBrowser / conversion / verification / datMatching / chdMetadata / ui).
 * `src/lib/api/`: REST client, auto-reconnecting EventSource (`sse.js`), and a POST-body SSE stream parser for batch verify (`sseFetch.js`). Backend snapshot-on-connect (`/api/jobs/events`) hydrates the full job state, so there's no separate REST round-trip.
 * `src/lib/tools/registry.js`: every tool fact (id, label, hint, verify URL segment, source/verify exts, modes, groups, default mode, glyph, accent, **compression codecs / style / level range**, API bindings). Adding another tool is one new entry plus the backend plugin. Helpers like `registry.allFilterableExts()` keep UI surfaces (file-list filter dropdown, conversion mode dropdown, compression picker, and so on) extended automatically.
-* `src/lib/components/panels/`: `VolumeList`, `Breadcrumb`, `FileList`, `FileRow`, `RowActionsMenu` (file browser); `ModeSelect`, `CompressionPicker`, `ConvertPanel` (conversion config); `JobRow`, `JobsPanel` (queue / completed / failed tabs with global Cancel-all / Clear / stuck-state recovery).
+* `src/lib/components/panels/`: `VolumeList`, `Breadcrumb`, `FileList`, `FileRow`, `RowActionsMenu` (file browser); `ModeSelect`, `CompressionPicker`, `ConvertPanel` (conversion config); `JobRow`, `JobsPanel` (queue / completed / failed tabs with global Cancel-all / Clear).
 * `src/lib/components/modals/`: `BaseModal` (bits-ui Dialog wrapper), `ConfirmModal` (canonical confirm/cancel), then `BulkVerifyModal`, `DuplicateModal`, `DeleteModal`, `BulkDeleteModal`, `RenameModal`, `FileInfoModal`, `CancelAllJobsModal`, `ClearDoneModal`. Each mounts in `App.svelte` and self-renders against a `ui` store target.
 * `src/lib/components/dashboard/`: `StatCard` wrapper plus `QueueSummaryCard`, `VolumeOverviewCard`, `RecentConversionsCard`, `VerificationStatusCard`, `QuickToolsCard`. QuickToolsCard iterates `registry.all()`, so adding a tool auto-adds a tile.
 * `src/styles/tokens.css`: semantic design tokens keyed by `:root` (light defaults) and `:root.dark` (dark overrides). No hex colors live outside this file.

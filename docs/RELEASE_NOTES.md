@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+### Changed
+
+- **`compressatorium convert` uses the running server** (#533). When the
+  server is running on the same `/config`, the command finds it there and
+  hands it the jobs: they show in the web UI's queue, share its limit on
+  parallel jobs and land in its Ledger, and the command prints each line as
+  its job ends. Ctrl-C cancels the run's own jobs on the server. With no
+  server running, the command runs the jobs itself, and a server started
+  meanwhile waits until it is done, so a command and the server never work
+  on the same file. A server in another container is found by its host name;
+  `--server URL` names one that can't be found. The cross-process job queue
+  the two used to share in `/config/locks` (`queue_*.ticket`,
+  `holder_*.lock`, `convert_slot_*.lock`) is gone; old files there are
+  harmless and can be deleted.
+- **No more Recover button or "jobs look stuck" banner** (#533). Recovery
+  only ever removed lock files no process held, and such a file never blocks
+  a job; the app removes them on its own every 30 seconds. The
+  `CHD_DEBUG_HEARTBEAT` setting is gone: that cadence is fixed.
+  `GET /api/jobs/stuck-status` and `POST /api/jobs/recover` are removed.
+- **Job totals come from the Ledger** (#533). The dashboard's Done and Failed
+  numbers count every finished job, from the Ledger
+  (`GET /api/ledger/totals`). The Jobs panel's Completed and Failed tabs
+  count the jobs they list, and link to the Ledger for the older ones.
+  `GET /api/jobs/history-overflow` and the job stream's `history` event are
+  removed; `DELETE /api/jobs/completed` answers `{deleted, count}`.
+
 ### Fixed
 
 - **RomM: every Platform gets a folder for new Images, even when RomM keeps
