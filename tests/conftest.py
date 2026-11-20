@@ -101,6 +101,24 @@ def _programs_as_in_the_image():
 
 
 @pytest.fixture
+def tools_ready(monkeypatch):
+    """Every tool counts as ready, for tests of planning rather than readiness.
+
+    Job creation refuses a tool that isn't ready (#505). jwud, nsz,
+    rom-converto and eXoDOS keep their real readiness answers here (Java,
+    ``prod.keys``, a downloaded binary, ``zstd``), so a test that plans their
+    jobs outside the image opts in with
+    ``pytestmark = pytest.mark.usefixtures("tools_ready")``.
+    """
+    from services.tools import registry
+
+    async def ready(_tool, *, purpose: str = "convert") -> bool:
+        return True
+
+    monkeypatch.setattr(registry, "tool_is_ready", ready)
+
+
+@pytest.fixture
 def db_path(tmp_path: Path) -> str:
     """Fresh SQLite file per test (on-disk, not :memory:, because migration
     tests assert persistence across engine disposals)."""

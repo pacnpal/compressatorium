@@ -33,6 +33,9 @@ from app.routes import convert as convert_routes
 from services.job_manager import OutputClaimedError
 from services.lock_manager import lock_manager
 
+# Planning, not readiness: jwud/nsz/rom-converto/eXoDOS jobs plan here (#505).
+pytestmark = pytest.mark.usefixtures("tools_ready")
+
 
 @pytest.fixture(name="parity_env")
 def _parity_env(tmp_path: Path, monkeypatch):

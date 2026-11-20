@@ -28,6 +28,9 @@ import pytest
 from app.models import ConversionMode, DuplicateAction, JobCreateRequest, JobStatus
 from app.routes import convert as convert_routes
 
+# Planning, not readiness: jwud/nsz/rom-converto/eXoDOS jobs plan here (#505).
+pytestmark = pytest.mark.usefixtures("tools_ready")
+
 # (input extension, mode, expected output extension). Covers every member of
 # registry.archive_input_extensions(): chdman create sources, Dolphin sources,
 # 3DS sources, and Switch (nsz) sources. z3ds and nsz are the interesting

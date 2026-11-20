@@ -26,6 +26,9 @@ from app.services import job_manager as job_manager_module
 from app.services.job_manager import JobManager, QueueBackpressureError
 from app.utils.delete_plan import build_delete_snapshot
 
+# Planning, not readiness: jwud/nsz/rom-converto/eXoDOS jobs plan here (#505).
+pytestmark = pytest.mark.usefixtures("tools_ready")
+
 
 @pytest.fixture(name="files_env")
 def _files_env(tmp_path: Path, monkeypatch):

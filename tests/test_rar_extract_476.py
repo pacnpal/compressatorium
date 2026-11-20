@@ -719,6 +719,7 @@ async def test_an_output_named_like_a_later_volume_is_refused(
     assert caught.value.reason == getattr(convert_routes.SkipReason, reason)
 
 
+@pytest.mark.usefixtures("tools_ready")  # plans a jwud job (#505)
 @pytest.mark.asyncio
 async def test_an_output_named_like_a_split_dump_part_is_refused(tmp_path, monkeypatch):
     from routes import convert as convert_routes

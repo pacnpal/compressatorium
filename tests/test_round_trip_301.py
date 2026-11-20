@@ -22,6 +22,9 @@ from services.tools.base import ContentDigest, ContentDigestUnavailable
 
 from .cso_fixtures import write_ciso, write_dax
 
+# Planning, not readiness: jwud/nsz/rom-converto/eXoDOS jobs plan here (#505).
+pytestmark = pytest.mark.usefixtures("tools_ready")
+
 IMAGE = "image_data_sha1"
 # z3ds and JWUDTool compare only digests they make themselves, so SHA-256.
 IMAGE256 = "image_data_sha256"
