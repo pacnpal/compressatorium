@@ -406,6 +406,11 @@ class FolderLibrary(LibraryDefaults):
             raise RootUnavailable(f"{root} is not reachable inside the configured Volumes")
         if not os.path.isdir(root):
             raise RootUnavailable(f"{root} is not a folder")
+        from services import libraries
+
+        # Another Library's root inside this one owns its files (#514): not
+        # walked, so neither Rules, Findings nor duplicates here see them.
+        inner = libraries.inner_folders(self)
         extensions = _image_extensions()
         files: list[tuple[str, os.stat_result]] = []
         unreadable = 0
@@ -425,7 +430,13 @@ class FolderLibrary(LibraryDefaults):
         for current, dirs, names in os.walk(root, followlinks=False, onerror=on_error):
             # Junk (OS metadata, RomM's `.romm_tmp_*` staging) is neither
             # walked into nor listed: the same predicate the file browser uses.
-            dirs[:] = sorted(d for d in dirs if not is_junk_entry(d))
+            dirs[:] = sorted(
+                d for d in dirs if not is_junk_entry(d) and not (
+                    inner and libraries.is_inner(
+                        os.path.relpath(os.path.join(current, d), root), inner,
+                    )
+                )
+            )
             for name in sorted(n for n in names if not is_junk_entry(n)):
                 path = os.path.join(current, name)
                 # A split output's numbered parts (`Game.iso.0`, `.1`) carry no

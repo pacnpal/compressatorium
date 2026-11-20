@@ -1060,7 +1060,17 @@ them on in Automation once you've switched RomM's converter off.
 
 You don't need RomM to automate conversions. Open any folder inside a Volume in
 the Workspace, and pick **Register as a Library** from its row menu. The folder
-becomes a Library, and the **Rules** view (in the sidebar) shows it:
+becomes a Library, and the **Rules** view (in the sidebar) shows it.
+
+Any folder can be registered, even one inside RomM's library folder or inside
+or around another Library. Where Libraries overlap, each file belongs to the
+Library with the nearest folder: that Library's Rules and settings (its
+gamelist, for one) apply to it, and the Library around it leaves it alone, so
+no file is ever converted twice. The Rules view says which Library sits inside
+which. Only the same folder twice, and a Library overlapping an Inbox, are
+refused.
+
+What a folder Library shows and does:
 
 - **Images** are what gets converted, not files: a `.cue` or `.gdi` and the
   tracks it lists are one Image (the sheet), and a split Wii U dump is one Image
@@ -1702,6 +1712,14 @@ The folder Library's layout picker and where new Images of each of its Platforms
 | Light | Dark |
 |-------|------|
 | ![Library layout, light](docs/screenshots/rules-folder-layout-light.png) | ![Library layout, dark](docs/screenshots/rules-folder-layout-dark.png) |
+
+#### A Library inside a Library
+
+A folder Library registered inside another one: its Rules view says which Library it sits inside, and that its files are its own. See [Folder Libraries and the Rules view](#folder-libraries-and-the-rules-view).
+
+| Light | Dark |
+|-------|------|
+| ![Nested folder Library, light](docs/screenshots/rules-folder-nested-light.png) | ![Nested folder Library, dark](docs/screenshots/rules-folder-nested-dark.png) |
 
 #### Inboxes
 

@@ -4,6 +4,20 @@
 
 ### Changed
 
+- **Libraries may overlap; the nearest folder owns a file** (#514). Any
+  folder can be registered as a Library now, including one inside RomM's
+  library folder or inside or around another folder Library, and RomM's
+  library folder can be set around or inside a folder Library. A file belongs
+  to the Library with the nearest folder: its Rules convert the file and its
+  settings (its ES-DE gamelist) apply, and the Library around it leaves the
+  file out of its Rules, check Rules, Findings, find-duplicates and counts,
+  so no file is converted twice. An output written into a folder Library
+  inside RomM's folder is still hidden from RomM's scanner while it is
+  written. The Rules view says which Library a Library sits inside and which
+  sit inside it. Still refused: the same folder twice, a Library overlapping
+  an Inbox, and a file reached through one Library's folder that lives in
+  another (its Source is kept).
+
 - **eXoDOS works with no setting** (#513). Point the app at your eXoDOS
   collection and the eXoDOS tool is there: it is no longer hidden until
   `EXODOS_DOS_DIR` is set.
