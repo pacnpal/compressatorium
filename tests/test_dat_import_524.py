@@ -82,7 +82,9 @@ def prefs(monkeypatch):
 @pytest.mark.asyncio
 async def test_batch_upload_imports_several_dats_and_a_pack_zip(store):
     pack = _zip_bytes({
-        "No-Intro/Nintendo - Game Boy (20261120).dat": _dat_xml("Nintendo - Game Boy", "G", "a" * 40),
+        "No-Intro/Nintendo - Game Boy (20261120).dat": _dat_xml(
+            "Nintendo - Game Boy", "G", "a" * 40,
+        ),
         "No-Intro/Sega - Game Gear (20261120).dat": _dat_xml("Sega - Game Gear", "S", "b" * 40),
         "readme.txt": "not a DAT",
         "__MACOSX/No-Intro/._Sega - Game Gear (20261120).dat": b"\x00\x05junk",
@@ -176,7 +178,9 @@ def test_extracted_dats_never_take_the_member_name_on_disk(tmp_path):
 
 
 def _redump_zip(name: str, sha1: str) -> bytes:
-    return _zip_bytes({f"{name} (20261120).dat": _dat_xml(name, "Disc", sha1, homepage="redump.org")})
+    return _zip_bytes(
+        {f"{name} (20261120).dat": _dat_xml(name, "Disc", sha1, homepage="redump.org")},
+    )
 
 
 @pytest.fixture
