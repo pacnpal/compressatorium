@@ -1559,6 +1559,8 @@
   javascript: *js_findings_duplicate_delete
 
 # --- DAT Library ----------------------------------------------------------
+# The fixture has never answered the Hasheous question, so this shows the
+# first-run yes/no (#524) beside Import DATs and Sync Redump.
 - url: http://127.0.0.1:8099/?s=dat-light#/dat
   output: docs/screenshots/dat-light.png
   width: 1280

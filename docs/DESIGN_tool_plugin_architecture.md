@@ -10064,3 +10064,28 @@ match only) and this app's own `.compressatorium-stage` folder
 folder Library walk (which feeds sweeps, check Rules and the Platform walk) and
 the Switch key search all route through it. Add a new ignored name there, not in
 a caller.
+
+## DAT import and Redump sync (`services/dat_import.py`, #524)
+
+One path imports DATs for the batch upload (`POST /dat/import-batch`), the
+Redump sync (`POST /dat/redump/sync`) and the CLI (`dat import`, `dat sync`):
+
+- `import_files([(label, path)])` takes `.dat`/`.xml` files and `.zip` files
+  of them. `extract_dats` reads a zip under the Inbox gate
+  (`ArchiveService.check_inbox_source`: entries, declared sizes, links,
+  absolute and `..` paths, expansion ratio) and the extract path's name rules
+  (`member_segments`), counts the bytes it reads with `_UnpackBudget`, skips
+  `is_junk_path` members, and copies each DAT to `<n>.dat` in a private temp
+  folder, so a member name never reaches the disk. Any bad member refuses the
+  whole zip.
+- Each DAT is imported with `dat_store.import_dat(..., replace=True)`: an
+  earlier DAT with the same name and family is deleted in the same
+  transaction (its rank carries over). One rematch runs after the batch.
+- `sync_redump` maps Platform slugs (`REDUMP_SYSTEMS`) to Redump's systems,
+  asks `http://redump.org/datfile/<system>/` through `http.client` on the fixed
+  host (no redirect followed, generic `USER_AGENT`), one system at a time with
+  `REQUEST_GAP_SECONDS` between requests, at most one sync at once. The cache
+  (preference `redump_sync`) skips a system synced within `FRESH_FOR` whose
+  DATs are still imported, sends `If-None-Match`/`If-Modified-Since` when it
+  has them, and skips re-importing an identical download (SHA-256).
+- `dat_sync.save_capped` is the capped download loop both syncs share.

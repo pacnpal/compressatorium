@@ -244,23 +244,37 @@ class DATStore:
     # Import
     # ------------------------------------------------------------------
 
-    def _import_dat_sync(self, source: str) -> tuple[dict, list[str]]:
+    def _import_dat_sync(self, source: str, replace: bool = False) -> tuple[dict, list[str]]:
         """Parse *source* and insert all entries into the DB in one transaction.
+
+        With *replace*, an earlier import of the same DAT (same name and
+        family: yesterday's No-Intro pack, last month's Redump zip) goes in
+        the same transaction, so re-importing a pack never doubles it (#524).
 
         Returns the import result and the paths the invalidation dropped.
         """
         header, entries = parse_dat(source)
         dat_info = _dat_info(header, entries)
         hash_rows = _hash_rows(entries, dat_info["id"])
+        replaced: list[str] = []
         with self._changing_local_index(), self._session() as session:
             self._insert_dat(session, dat_info, hash_rows)
+            if replace:
+                old = list(session.scalars(select(_db.DAT.id).where(
+                    _db.DAT.name == dat_info["name"],
+                    _db.DAT.family == dat_info["family"],
+                    _db.DAT.id != dat_info["id"],
+                )).all())
+                if old:
+                    replaced = self._delete_matches_citing(session, old)
+                    session.execute(delete(_db.DAT).where(_db.DAT.id.in_(old)))
             # Importing a new DAT invalidates the match cache (a
             # previously-"unmatched" file may now match, or a previously
             # matched file may now match against a different DAT) -- except
             # for remote hits, which the local DATs did not produce.
             dropped = self._invalidate_dat_derived_matches(session)
             session.commit()
-        return _import_result(dat_info, len(hash_rows)), dropped
+        return _import_result(dat_info, len(hash_rows)), [*replaced, *dropped]
 
     @staticmethod
     def _insert_dat(session, dat_info: dict, hash_rows: list[dict[str, Any]]) -> None:
@@ -319,7 +333,9 @@ class DATStore:
                 .on_conflict_do_nothing(),
             )
 
-    async def import_dat(self, source: str, *, invalidated: set[str] | None = None) -> dict:
+    async def import_dat(
+        self, source: str, *, invalidated: set[str] | None = None, replace: bool = False,
+    ) -> dict:
         """Parse and import a DAT file (path or XML string).
 
         *invalidated*, when given, receives the paths whose cached verdicts the
@@ -329,7 +345,7 @@ class DATStore:
         snapshot taken before the import misses a row written between the
         snapshot and the commit.
         """
-        result, dropped = await run_in_threadpool(self._import_dat_sync, source)
+        result, dropped = await run_in_threadpool(self._import_dat_sync, source, replace)
         if invalidated is not None:
             invalidated.update(dropped)
         return result

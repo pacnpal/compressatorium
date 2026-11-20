@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### Added
+
+- **DATs made easy** (#524). **Import DATs** takes several `.dat`/`.xml` files
+  at once, and zips of them: No-Intro's daily pack or a Redump zip imports
+  every DAT inside in one go. A zip is read under the same caps and member-name
+  rules as an archive an Inbox takes in, and each DAT is capped at 100 MB.
+  Re-importing a DAT replaces the older copy instead of doubling it. One bad
+  DAT is reported and the rest still import.
+- **Sync Redump in one click** (#524). Downloads Redump's DAT for each disc
+  Platform in your Libraries, one request at a time, and leaves a system
+  synced in the last day alone. Only DATs: never keys, BIOS sets or games.
+  No-Intro stays upload-only, because its site is gated.
+- **Online identification is a single yes/no** (#524). Until you answer, the
+  DAT Library asks once whether to look up unknown files on Hasheous.
+- **CLI:** `compressatorium dat import PATH...` and `compressatorium dat sync`.
+
 ## 4.6.0 (2026-11-20)
 
 ### Added

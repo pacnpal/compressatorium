@@ -199,6 +199,28 @@ def build_parser() -> argparse.ArgumentParser:
         "--library", metavar="ID", help="only this Library's Rules (romm, ...)",
     )
     _common(run_rules_cmd)
+
+    dat = sub.add_parser("dat", help="import DATs, or sync Redump's (#524)")
+    dat_sub = dat.add_subparsers(dest="dat_command", metavar="ACTION", required=True)
+    dat_import = dat_sub.add_parser(
+        "import", help="import .dat/.xml files and zips of them (No-Intro's daily pack)",
+    )
+    dat_import.add_argument("paths", nargs="+", metavar="PATH")
+    dat_sync = dat_sub.add_parser(
+        "sync", help="download Redump's DATs for the disc Platforms in your Libraries",
+    )
+    dat_sync.add_argument(
+        "--platform", action="append", metavar="SLUG",
+        help="only this Platform (psx, ps2, ngc, ...); repeatable",
+    )
+    dat_sync.add_argument(
+        "--force", action="store_true", help="ask again even for a system synced today",
+    )
+    for cmd in (dat_import, dat_sync):
+        cmd.add_argument("--json", action="store_true", help="print the result as JSON")
+        cmd.add_argument("-v", "--verbose", action="store_true",
+                         help="also log INFO messages to stderr")
+        cmd.set_defaults(dry_run=False)
     return parser
 
 
@@ -1924,6 +1946,54 @@ def _signals(state: RunState):
                 loop.remove_signal_handler(sig)
 
 
+# --------------------------------------------------------------------------- #
+# dat
+# --------------------------------------------------------------------------- #
+
+
+async def dat(args) -> int:
+    """``dat import PATH...`` and ``dat sync``: thin wrappers over
+    ``services.dat_import``, the Web UI's own. Exit 1 when anything failed.
+
+    No rematch job: that runs in a server. The files whose verdict a new DAT
+    dropped are matched again the next time they are asked about.
+    """
+    from services import dat_import
+
+    if args.dat_command == "import":
+        files = [(p, os.path.abspath(p)) for p in args.paths]
+        missing = [label for label, path in files if not os.path.isfile(path)]
+        if missing:
+            raise UsageError(f"not a file: {', '.join(missing)}")
+        _open_db(False)
+        result = await dat_import.import_files(files, rematch=False)
+        lines = [f"imported {d['file']}: {d['name']} ({d['file_count']} entries)"
+                 for d in result["imported"]]
+        failed = bool(result["errors"])
+    else:
+        _open_db(False)
+        try:
+            result = await dat_import.sync_redump(
+                args.platform, force=args.force, rematch=False,
+            )
+        except dat_import.SyncRunning as exc:
+            print(f"compressatorium: {exc}", file=sys.stderr)
+            return EXIT_FAILED
+        lines = [f"{s['system']}: {s['status'].replace('_', ' ')}"
+                 + (f": {s['error']}" if s.get("error") else "")
+                 for s in result["systems"]]
+        failed = bool(result["failed"])
+    if args.json:
+        print(json.dumps(result), flush=True)
+    else:
+        for line in lines:
+            print(line, flush=True)
+        for error in result.get("errors", []):
+            print(f"refused {error['file']}: {error['error']}", flush=True)
+        print(result["message"], flush=True)
+    return EXIT_FAILED if failed else EXIT_OK
+
+
 async def _run(args) -> int:
     from services.lock_manager import lock_manager
 
@@ -1938,6 +2008,8 @@ async def _run(args) -> int:
             return await convert(args, printer, state)
         if args.command == "run-rules":
             return await run_rules(args, printer, state)
+        if args.command == "dat":
+            return await dat(args)
         return await verify(args, printer, state)
 
 
