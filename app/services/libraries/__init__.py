@@ -472,11 +472,15 @@ def _canonical_root(root: str) -> Path:
             _canonical_roots.clear()
             _canonical_generation = generation
         cached = _canonical_roots.get(root)
+        owned_at = _ownership_generation
     if cached is not None:
         return cached
     canonical = Path(root).resolve()
     with _lock:
-        if _canonical_generation == generation:
+        # Not cached when the cache was cleared while this resolved (a save,
+        # or an ownership change, CodeRabbit PR #551): the caller still gets
+        # it, but a later lookup resolves again.
+        if _canonical_generation == generation and _ownership_generation == owned_at:
             _canonical_roots[root] = canonical
     return canonical
 

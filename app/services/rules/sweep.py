@@ -2772,7 +2772,14 @@ async def _sweep_locked(
                         on_finished=check_run_ended,
                     )
             except LibrariesChanged:
-                result["errors"].append({"platform_id": None, "error": "libraries_changed"})
+                # Against each Platform whose pick it was (CodeRabbit PR
+                # #551); nothing is checked and no run is recorded.
+                for run in check_runs:
+                    summary = run[1]
+                    summary["libraries_changed"] = True
+                    result["errors"].append(
+                        {"platform_id": summary["platform_id"], "error": "libraries_changed"},
+                    )
         else:
             await record_check_runs()
     result.update(await library.sweep_extras())

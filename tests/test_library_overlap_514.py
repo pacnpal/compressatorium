@@ -368,6 +368,8 @@ def test_the_catalogue_is_read_again_after_a_library_is_added_or_removed() -> No
     for method in ("register", "remove"):
         body = re.search(rf"async {method}\(.*?\n  \}}\n", store, re.DOTALL).group(0)
         assert "this.load()" in body, method
+    # A read answering after a newer one was applied is dropped.
+    assert "if (sent < this.#loadApplied) return this.list;" in store
     editor = (root / "src/lib/components/views/RuleEditor.svelte").read_text()
     assert "nothing was '\n      + 'queued for this platform" in editor
 
@@ -427,3 +429,22 @@ async def test_a_dead_romm_mount_never_holds_up_a_removal(tree: Path, monkeypatc
         assert not libraries._register_lock.locked()
     finally:
         release.set()
+
+
+def test_a_root_resolved_across_an_ownership_change_is_not_cached(tree: Path, monkeypatch) -> None:
+    """CodeRabbit PR #551: a resolve that began before the cache was cleared
+    must not put its answer back after the clear."""
+    from services import libraries
+
+    real_resolve = Path.resolve
+
+    def resolving_while_ownership_changes(self, *args, **kwargs):
+        libraries._forget_walks()
+        return real_resolve(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", resolving_while_ownership_changes)
+    answer = libraries._canonical_root(str(tree))
+    monkeypatch.setattr(Path, "resolve", real_resolve)
+
+    assert answer == tree.resolve()
+    assert str(tree) not in libraries._canonical_roots

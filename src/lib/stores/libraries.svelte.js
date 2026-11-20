@@ -164,6 +164,11 @@ class LibrariesStore {
   #catalogueEpoch = 0;
   // Library id -> the catalogue epoch it was registered at.
   #registeredAt = new Map();
+  // Catalogue reads in the order they were sent, and the newest one applied:
+  // a read answering after a newer one was applied is dropped, so it can't
+  // restore stale nesting (`contains`, `within`) over it (CodeRabbit PR #551).
+  #loadsSent = 0;
+  #loadApplied = 0;
 
   get selected() {
     return this.list.find((lib) => lib.id === this.selectedId) ?? null;
@@ -191,8 +196,11 @@ class LibrariesStore {
     this.error = null;
     const readAt = new Map(this.#settingsGenerations);
     const epoch = this.#catalogueEpoch;
+    const sent = ++this.#loadsSent;
     try {
       const data = await api.listLibraries();
+      if (sent < this.#loadApplied) return this.list;
+      this.#loadApplied = sent;
       const current = new Map(this.list.map((lib) => [lib.id, lib]));
       // A row whose settings were saved while this read was out keeps the
       // saved row; see `adopt`.
