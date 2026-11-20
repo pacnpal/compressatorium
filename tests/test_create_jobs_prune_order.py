@@ -1,4 +1,4 @@
-"""Queueing never awaits after it registers a job (CodeRabbit 4576895540).
+"""Queueing never awaits after it registers a job.
 
 ``create_jobs_atomic`` / ``create_job`` used to prune history *after*
 registering their jobs. The prune awaits (``delete_job`` cleans temp dirs), so

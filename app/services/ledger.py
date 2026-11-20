@@ -132,7 +132,7 @@ def _bump_totals(session, row: dict) -> None:
     )
 
 
-# Serialises writing a job's row with amending it (CodeRabbit 4594978832):
+# Serialises writing a job's row with amending it:
 # the row is built from the job under this lock, so an amend either finds the
 # row already written or runs before it is built (and the row then carries
 # the amended values).
@@ -212,7 +212,7 @@ async def amend(job: ConversionJob) -> None:
     """Amend listener (``JobManager.add_amend_listener``): update *job*'s row,
     if it was written, with what the job removed and its Referrer records,
     which an apply handed off at shutdown can change after the job ended
-    (#391, CodeRabbit 4594978832). A row not yet written is left to
+    (#391). A row not yet written is left to
     :func:`record`, which then writes the amended values. Never raises."""
     try:
         await run_in_threadpool(_amend_sync, job)

@@ -5,7 +5,7 @@ docker-compose.cli.yml) share the /config mount but not /tmp, so their output
 locks and conversion slots only meet when the lock files live under /config.
 
 The choice is a pure function of configuration, never of whether a folder
-exists yet (codex 4576813495): with a data dir configured it is always
+exists yet: with a data dir configured it is always
 ``<data dir>/locks``, created when chosen, and an uncreatable one fails at
 startup instead of quietly moving the locks somewhere no other process looks.
 """

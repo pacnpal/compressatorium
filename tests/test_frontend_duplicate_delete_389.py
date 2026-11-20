@@ -111,7 +111,7 @@ def test_the_view_offers_the_delete_only_where_the_backend_does() -> None:
 
 
 def test_the_keeper_cannot_change_while_its_delete_runs(tmp_path):
-    """CodeRabbit 4593240111: picking another keeper during the delete would
+    """picking another keeper during the delete would
     drop the running delete's state; it is ignored, and the selector is off."""
     data = _run(tmp_path, f"""
 api.duplicateDeletePlan = __call('duplicateDeletePlan');
@@ -136,7 +136,7 @@ process.stdout.write(JSON.stringify({{
 
 
 def test_a_delete_answer_for_a_closed_dialog_writes_nothing(tmp_path):
-    """CodeRabbit 4593240130: the dialog was closed and another one opened
+    """the dialog was closed and another one opened
     while the delete ran; its answer must not close or mark the new one."""
     other = _ROW.replace("id: 7", "id: 8").replace("'f7'", "'f8'")
     data = _run(tmp_path, f"""
@@ -161,7 +161,7 @@ process.stdout.write(JSON.stringify({{
 
 
 def test_cleanup_is_offered_only_with_a_keeper() -> None:
-    """CodeRabbit 4593240120: a group whose every copy failed its check has no
+    """a group whose every copy failed its check has no
     keeper, so no Delete others button."""
     view = _VIEW.read_text(encoding="utf-8")
     assert "row.kind === 'duplicate' && row.deletable && row.keeper" in view
@@ -169,7 +169,7 @@ def test_cleanup_is_offered_only_with_a_keeper() -> None:
 
 
 def test_closing_and_reopening_during_a_delete_keeps_it_locked(tmp_path):
-    """CodeRabbit 4593355703: the delete in flight belongs to the Finding, not
+    """the delete in flight belongs to the Finding, not
     the dialog. Closed and reopened while it runs, the dialog shows it as
     deleting, keeps its keeper, and plans nothing new until it settles."""
     data = _run(tmp_path, f"""
@@ -215,7 +215,7 @@ process.stdout.write(JSON.stringify({{
 
 
 def test_a_keeper_changed_during_the_delete_leaves_a_warning(tmp_path):
-    """Codex 4593499350: the backend says the copy kept no longer looked like
+    """the backend says the copy kept no longer looked like
     the file it hashed once the last delete was done. The dialog stays open
     and says so, instead of closing as a plain success."""
     data = _run(tmp_path, f"""

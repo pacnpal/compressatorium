@@ -425,7 +425,7 @@ async def test_a_failing_referrer_puts_the_file_and_every_updated_referrer_back(
 ) -> None:
     """The playlist is updated (observed), then the gamelist fails. The
     playlist goes back to exactly what it held: its dangling entry that
-    already named the new name is not touched (Codex 4602560232)."""
+    already named the new name is not touched."""
     from services.referrers import ReferrerError
     from services.referrers.gamelist import GamelistReferrer
 
@@ -465,7 +465,7 @@ async def test_a_destination_taken_during_the_hook_leaves_it_alone_and_puts_refe
 ) -> None:
     """Another file takes the new name while the hook runs: the rename can't
     place the Image, the newcomer is untouched, and the playlist goes back
-    without the Image ever being moved onto it (CodeRabbit 4602644886)."""
+    without the Image ever being moved onto it."""
     from services import image_rename
 
     roms = db / "roms"
@@ -637,8 +637,7 @@ async def test_a_cancel_mid_way_through_the_file_phase_puts_the_updated_playlist
     await dat_rename.drain()
 
     job = (await client.get(f"/api/jobs/{job_id}")).json()
-    # Cancelled during its only Image: the job ends cancelled, not completed
-    # (Codex 4603430454).
+    # Cancelled during its only Image: the job ends cancelled, not completed.
     assert job["status"] == "cancelled", job
     assert job["result"]["cancelled"] is True
     result = _result(job)[str(game)]
@@ -743,7 +742,7 @@ async def test_a_parent_swapped_for_a_link_after_the_check_never_moves_a_file_ou
 ) -> None:
     """The Image's folder is swapped for a symlink to a folder outside every
     Volume after it was checked. The move is bound to the folder that was
-    checked, so the file outside is never touched (Codex 4602569670)."""
+    checked, so the file outside is never touched."""
     from services import image_rename
 
     ps2 = db / "roms" / "ps2"
@@ -828,7 +827,7 @@ async def test_a_cancel_while_romm_renames_settles_romm_before_the_rename_ends(
     """The job is cancelled while RomM's rename request is in flight, and
     RomM writes a sanitized name. The swap still reads RomM back and puts the
     old name back, so the rename ends with the Image, RomM and the playlist
-    as they were (CodeRabbit 4602644910)."""
+    as they were."""
     import asyncio
     import threading
 
@@ -874,7 +873,7 @@ async def test_a_stalled_conflict_settle_is_never_started_twice(
     """A settle stuck on a Volume keeps its worker; every Findings load and
     every ranking save while it runs answers within the bound and starts no
     other one, so stalled requests can't hang or use up the shared detached
-    slots (CodeRabbit 4602978437, Codex 4603430802). One settle, shared by
+    slots. One settle, shared by
     both routes."""
     import asyncio
     import threading
@@ -915,7 +914,7 @@ async def test_a_folder_open_that_answers_late_closes_its_folders(
 ) -> None:
     """Opening the Image's folders outlasts its bound, so the rename stops
     waiting; when the open answers later its folder descriptors are closed,
-    never leaked (Codex 4603430442)."""
+    never leaked."""
     import asyncio
     import time
 
@@ -960,7 +959,7 @@ async def test_a_romm_request_still_running_after_the_wait_is_settled_before_dec
     up on it. RomM then renames after the rename's own wait for handed-off
     requests has passed. Nothing is decided until the request has ended: the
     file, RomM and the playlist all end on the new name, and the records
-    follow (CodeRabbit 4602980637)."""
+    follow."""
     import asyncio
     import threading
 
@@ -1005,7 +1004,7 @@ async def test_a_cancel_while_romm_puts_the_old_name_back_reads_romm_back(
 ) -> None:
     """RomM writes a sanitized name, the swap asks for the old one back, and
     the job is cancelled while that request is in flight. The swap still
-    reads RomM back once it has answered (CodeRabbit 4602987587)."""
+    reads RomM back once it has answered."""
     import asyncio
     import threading
 

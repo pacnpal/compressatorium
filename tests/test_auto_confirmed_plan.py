@@ -1,4 +1,4 @@
-"""``/jobs/auto`` queues only the plan the user confirmed (Codex 4576967499).
+"""``/jobs/auto`` queues only the plan the user confirmed.
 
 The client sends the confirmed actionable rows, each as ``{file_path, mode}``;
 an Image the preview skipped is never sent. The route replans those paths and

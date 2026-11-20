@@ -264,7 +264,7 @@ def _archive_verdict(source_path: str) -> tuple[str, List[str]] | None:
         logger.debug("Could not list %s", archive, exc_info=True)
         return ("unreadable", [os.path.basename(archive)])
     # Fail closed on a name or kind the extraction validator refuses, before
-    # anything is created from any name (codex 4577029535).
+    # anything is created from any name.
     unsafe = [m.name for m in members if _unsafe_member_reason(m)]
     if unsafe:
         return ("unsafe", unsafe)

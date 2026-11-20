@@ -42,7 +42,7 @@ def test_strict_read_iso_file_raises_on_io_errors(tmp_path):
 
 
 def test_split_set_discovery_on_a_hung_mount_never_blocks_the_loop(tmp_path, monkeypatch):
-    """codex 4577688831: finding a split set stats the disk; on a hung mount
+    """finding a split set stats the disk; on a hung mount
     that must happen off the event loop, so the verify's bound still fires and
     other tasks keep running."""
     import threading

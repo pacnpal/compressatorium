@@ -1,4 +1,4 @@
-"""Concurrent first-run database initialisation (codex 4577304461).
+"""Concurrent first-run database initialisation.
 
 Several CLI processes started at once on a fresh database each ran Alembic,
 and all but one failed with "table already exists". ``init_app_database``

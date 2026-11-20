@@ -1,4 +1,4 @@
-"""Lock walks stop at the outermost Volume root, not the deepest (Codex 4578823857).
+"""Lock walks stop at the outermost Volume root, not the deepest.
 
 With Volumes ``/mnt`` and ``/games -> /mnt/MyGame/PS3_GAME``, the deepest root
 holding ``PS3_GAME/PARAM.SFO`` is the ``/games`` alias. That is the right

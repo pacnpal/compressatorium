@@ -95,8 +95,8 @@ def _move_committed(name: str, target: str, *, src_dir_fd: int, dst_dir_fd: int)
     """Move a user's file between the slot and its folder, never over
     anything and with no delete race (``identity_sensitive``).
 
-    A :class:`PlacementCommitted` is told apart by what it left (CodeRabbit
-    4606887339): the old name gone means the file moved and only the
+    A :class:`PlacementCommitted` is told apart by what it left: the old name
+    gone means the file moved and only the
     quarantine's cleanup failed, answered as moved, never as a failure a
     caller would undo by discarding the slot it is now in. The old name still
     the same file as *target* (both names: it never moved) isn't a move: the
@@ -471,7 +471,7 @@ def _relock(stage_fd: int, lock_name: str) -> int:
     """Take an existing slot's lock: its descriptor, flocked. Raises
     ``BlockingIOError`` while anyone else holds it.
 
-    A failed flock closes only the descriptor (Codex 4595373632): a live
+    A failed flock closes only the descriptor: a live
     holder's lock file is left as it is. A flock that succeeded counts only
     while the name still points at the file locked
     (``partial_writes.same_file``, as the sweeps check): a holder's ``keep``

@@ -524,7 +524,7 @@ async def test_a_cancel_whose_undo_outlasts_the_grace_leaves_the_source_parked(
 async def test_a_removal_that_outlasts_the_grace_still_reaches_the_job_and_ledger(
     vol, romm, monkeypatch,
 ):
-    """Codex 4595004160: a Cancel lands while the parked Source is being
+    """a Cancel lands while the parked Source is being
     deleted, and the delete outlasts ``CANCEL_GRACE_SECONDS``, so the hook
     returns with the swap still running. When the delete then succeeds, the
     job records the Source as deleted, the swap's record says updated (not
@@ -609,7 +609,7 @@ async def test_a_slot_holding_the_source_is_never_removed_on_a_flags_word(
 async def test_a_romm_instance_change_mid_swap_renames_nothing_anywhere(
     vol, romm, monkeypatch,
 ):
-    """Codex 4594286722: the swap is bound to the RomM instance it planned
+    """the swap is bound to the RomM instance it planned
     against. If the instance changes before the rename, nothing is renamed
     on either, and the row is left for the next run."""
     from services.romm import settings as romm_settings
@@ -644,7 +644,7 @@ async def test_a_romm_instance_change_mid_swap_renames_nothing_anywhere(
 
 @pytest.mark.asyncio
 async def test_a_romm_identity_change_waits_for_a_running_swap(vol, romm):
-    """Codex 4594286722: a settings save that moves RomM's identity waits for
+    """a settings save that moves RomM's identity waits for
     a swap in flight to end, so the swap finishes on the instance it began."""
     from routes import romm as romm_routes
 
@@ -664,7 +664,7 @@ async def test_a_romm_identity_change_waits_for_a_running_swap(vol, romm):
     ))
     try:
         running = asyncio.create_task(convert_routes.job_manager._process_job(job.id))
-        # Bounded, and never past the job's end (CodeRabbit 4594841908): a
+        # Bounded, and never past the job's end: a
         # conversion that ends without renaming fails here with its state.
         for _ in range(500):
             if renaming.is_set() or running.done():
@@ -691,7 +691,7 @@ async def test_a_romm_identity_change_waits_for_a_running_swap(vol, romm):
 async def test_an_identity_change_waits_for_a_stuck_swap_only_so_long(
     vol, romm, monkeypatch,
 ):
-    """CodeRabbit 4594841850: a swap stuck on a mount that stopped answering
+    """a swap stuck on a mount that stopped answering
     must not hang the settings save. Past its bound the save is refused, a
     409 to try again, and nothing is saved."""
     from fastapi import HTTPException
@@ -716,7 +716,7 @@ async def test_an_identity_change_waits_for_a_stuck_swap_only_so_long(
 
 @pytest.mark.asyncio
 async def test_a_step_finishes_before_a_second_cancel_goes_on(monkeypatch):
-    """CodeRabbit 4594841855: a step is never abandoned, not even by a second
+    """a step is never abandoned, not even by a second
     cancel landing while ``_mutate`` waits for it: the cancel goes on only
     once the step has ended, so nothing released after it races it."""
     from services.romm import swap_referrer
@@ -741,7 +741,7 @@ async def test_a_step_finishes_before_a_second_cancel_goes_on(monkeypatch):
 async def test_a_removal_handed_off_at_shutdown_still_reaches_the_job(
     vol, romm, monkeypatch,
 ):
-    """CodeRabbit 4594841860: a shutdown cancels the job's task after the
+    """a shutdown cancels the job's task after the
     swap deleted the Source, while its bookkeeping still runs. The swap's
     result is still taken: the Source is recorded as deleted, and its record
     is kept, once the handed-off swap ends."""
@@ -778,7 +778,7 @@ async def test_a_removal_handed_off_at_shutdown_still_reaches_the_job(
 
 @pytest.mark.asyncio
 async def test_an_apply_done_just_before_the_cancel_keeps_its_result():
-    """CodeRabbit 4594978832 (a): the apply finishes in the instant the
+    """The apply finishes in the instant the
     awaiter is cancelled. It is already done, so nothing still runs, but its
     result is handed off all the same, as a normal completion would record
     it."""
@@ -823,7 +823,7 @@ async def test_an_apply_done_just_before_the_cancel_keeps_its_result():
 async def test_a_late_removal_updates_the_ledger_row_already_written(
     vol, romm, monkeypatch,
 ):
-    """CodeRabbit 4594978832 (b): the job's Ledger row is written when it is
+    """The job's Ledger row is written when it is
     announced, before the swap handed off at shutdown has ended. Its result
     still reaches the persisted row (read back from the database)."""
     from services import db as db_module
@@ -885,7 +885,7 @@ async def test_a_late_removal_updates_the_ledger_row_already_written(
 
 @pytest.mark.asyncio
 async def test_a_rom_romm_marks_missing_keeps_the_source(vol, romm):
-    """CodeRabbit 4594841868: RomM's ``missing_from_fs`` can be stale (the
+    """RomM's ``missing_from_fs`` can be stale (the
     file is back, RomM hasn't rescanned). A record that is the Source but is
     marked missing is not taken as "no ROM": the Source is kept, so its id is
     never left behind on a missing name."""
@@ -906,7 +906,7 @@ async def test_a_rom_romm_marks_missing_keeps_the_source(vol, romm):
 async def test_a_fallback_that_cant_queue_its_re_pin_keeps_the_source(
     vol, romm, monkeypatch, why,
 ):
-    """CodeRabbit 4594841873, 4594841887: the fallback (the output placed
+    """the fallback (the output placed
     before the hook) deletes the Source only once its re-pin is queued. A
     re-pin record a newer plan refuses, or one written while RomM's identity
     is changing (the same gate as swaps), keeps the Source."""
@@ -932,7 +932,7 @@ async def test_a_fallback_that_cant_queue_its_re_pin_keeps_the_source(
 
 @pytest.mark.asyncio
 async def test_cancelling_the_job_task_hands_its_holds_to_the_undo(vol, romm, monkeypatch):
-    """Codex 4594286704: a shutdown cancels the job's task mid-swap. The
+    """a shutdown cancels the job's task mid-swap. The
     undo outlives it, and the job's output lock and delete hold stay held
     until the undo ends."""
     from services import staging
@@ -1091,7 +1091,7 @@ FALLBACK = (
 
 @pytest.mark.asyncio
 async def test_a_retried_delete_falls_back_to_the_re_pin_and_says_so(vol, romm, monkeypatch):
-    """CodeRabbit 4593839018: a reader held the Source, so the job placed the
+    """a reader held the Source, so the job placed the
     output beside it and kept the Source. RomM can't rename onto a name that
     is taken, so the retried delete takes today's path, deleting the Source
     and queueing the re-pin, and says the ROM did not keep its id."""
@@ -1178,7 +1178,7 @@ async def test_a_duplicate_delete_is_not_a_failed_swap(vol, romm):
 async def test_a_delete_check_that_fails_before_the_hook_keeps_the_output(
     vol, romm, monkeypatch,
 ):
-    """CodeRabbit 4593839025: the output is still staged when the delete step
+    """the output is still staged when the delete step
     starts; a Source check that fails before the Referrer hook must not let
     the job's cleanup discard the checked output."""
     platform = _platform(vol)
@@ -1202,7 +1202,7 @@ async def test_a_delete_check_that_fails_before_the_hook_keeps_the_output(
     ("switch", "0" * 40, False),   # but a SHA-1 it reports is compared
 ])
 def test_the_read_back_compares_the_sha1_wherever_romm_reports_one(slug, reported, ok):
-    """CodeRabbit 4593839047: size alone confirms a swap only on a Platform
+    """size alone confirms a swap only on a Platform
     RomM never hashes, and only when it reports no SHA-1."""
     from services.romm.swap_referrer import _Plan, _read_back_problem
 
@@ -1218,7 +1218,7 @@ def test_the_read_back_compares_the_sha1_wherever_romm_reports_one(slug, reporte
 async def test_a_checked_output_whose_name_is_taken_is_kept_in_its_slot(
     vol, romm, monkeypatch, swap,
 ):
-    """CodeRabbit 4593970363: a file appears at the output's name after the
+    """a file appears at the output's name after the
     checks, so the checked output can't be placed. It is kept in its slot,
     out of every sweep, the Source stays, and the job says where."""
     from services import partial_writes, staging
@@ -1241,7 +1241,7 @@ async def test_a_checked_output_whose_name_is_taken_is_kept_in_its_slot(
     assert [p.read_bytes() for p in kept] == [OUTPUT_BYTES], kept
     assert f"kept at {kept[0]}" in job.message
     assert any(r.get("status") == "kept" for r in job.referrers_updated)
-    # Its check record moved with it (CodeRabbit 4594086355).
+    # Its check record moved with it.
     from services.verification_store import verification_store
 
     assert verification_store.get_record_blocking(str(kept[0])) is not None
@@ -1256,7 +1256,7 @@ async def test_a_checked_output_whose_name_is_taken_is_kept_in_its_slot(
 async def test_a_set_aside_that_fails_still_keeps_the_output_from_every_sweep(
     vol, romm, monkeypatch,
 ):
-    """CodeRabbit 4594086355: if the slot can't be renamed to a ``park-``
+    """if the slot can't be renamed to a ``park-``
     slot, it is marked kept in place, so no sweep removes the only copy of
     a checked output once the job lets go of its lock."""
     from services import partial_writes, staging
@@ -1294,7 +1294,7 @@ async def test_a_set_aside_that_fails_still_keeps_the_output_from_every_sweep(
 def test_a_keep_marker_written_while_the_sweep_takes_the_lock_still_keeps_the_slot(
     vol, monkeypatch,
 ):
-    """CodeRabbit 4594218526: the marker is written, and the lock let go,
+    """the marker is written, and the lock let go,
     between the sweep's first look and its lock. The sweep looks again under
     the lock and keeps the slot."""
     from services import partial_writes
@@ -1325,7 +1325,7 @@ def test_a_keep_marker_written_while_the_sweep_takes_the_lock_still_keeps_the_sl
 async def test_a_set_aside_that_answers_after_the_bound_still_moves_the_records(
     vol, romm, monkeypatch,
 ):
-    """CodeRabbit 4594218526: setting the slot aside outlasts the job's bound.
+    """setting the slot aside outlasts the job's bound.
     The slot stays protected meanwhile (its lock held), and when the worker
     answers, the records move to the ``park-`` path and the job is told the
     real path."""
@@ -1368,7 +1368,7 @@ async def test_a_set_aside_that_answers_after_the_bound_still_moves_the_records(
 async def test_a_failed_source_check_then_a_taken_name_keeps_everything(
     vol, romm, monkeypatch,
 ):
-    """CodeRabbit 4594086355: the Source check fails before the hook, then
+    """the Source check fails before the hook, then
     placing the checked output finds its name taken. The output is kept with
     its check record, and the Source stays."""
     from services.verification_store import verification_store
@@ -1394,7 +1394,7 @@ async def test_a_failed_source_check_then_a_taken_name_keeps_everything(
 async def test_a_cancel_during_set_aside_still_releases_and_announces_the_job(
     vol, romm, monkeypatch,
 ):
-    """CodeRabbit 4594326475: a cancel while the job's ``finally`` sets the
+    """a cancel while the job's ``finally`` sets the
     checked output aside must not skip the terminal notice, the lock
     releases or the concurrency slot."""
     from services import staging
@@ -1450,7 +1450,7 @@ async def test_a_cancel_during_set_aside_still_releases_and_announces_the_job(
 async def test_a_set_aside_with_no_thread_at_all_marks_the_slot_and_ends_the_job(
     vol, romm, monkeypatch,
 ):
-    """CodeRabbit 4594745731, 4594981268: no detached thread is free and a
+    """no detached thread is free and a
     thread of its own can't start either (the OS thread limit). The slot's
     lock stays held (no sweep takes it) and the keep marker is written off
     the loop once a thread starts, never on it, even when writing it blocks
@@ -1548,7 +1548,7 @@ async def test_a_set_aside_with_no_thread_at_all_marks_the_slot_and_ends_the_job
 
 @pytest.mark.asyncio
 async def test_a_detached_thread_that_cant_start_frees_its_slot_and_falls_back(monkeypatch):
-    """CodeRabbit 4594855525: a free detached slot whose thread the OS
+    """a free detached slot whose thread the OS
     refuses gives the slot back and falls back to a thread of its own, as
     when no slot is free, instead of raising a bare RuntimeError."""
     from services import subprocess_runner
@@ -1569,7 +1569,7 @@ async def test_a_detached_thread_that_cant_start_frees_its_slot_and_falls_back(m
 
 @pytest.mark.asyncio
 async def test_letting_go_with_no_thread_at_all_still_releases_the_locks(monkeypatch):
-    """CodeRabbit 4594855525: when no thread can start at all, letting go of
+    """when no thread can start at all, letting go of
     locks the job no longer owns neither raises nor drops them: it tries
     again until a thread starts, and the locks are let go."""
     from services import subprocess_runner
@@ -1600,7 +1600,7 @@ async def test_letting_go_with_no_thread_at_all_still_releases_the_locks(monkeyp
 async def test_a_set_aside_with_no_detached_thread_free_still_keeps_the_output(
     vol, romm, monkeypatch,
 ):
-    """CodeRabbit 4594613612: with every detached thread in use, the
+    """with every detached thread in use, the
     set-aside still starts before the first await a cancel can interrupt,
     on a thread of its own; a cancel during the listing, a restart and the
     sweeps leave the output kept."""
@@ -1619,7 +1619,7 @@ async def test_a_set_aside_with_no_detached_thread_free_still_keeps_the_output(
 async def test_a_cancel_before_the_set_aside_starts_still_keeps_the_output(
     vol, romm, monkeypatch,
 ):
-    """CodeRabbit 4594495308: a cancel during the first probe of preserving
+    """a cancel during the first probe of preserving
     a checked output (listing its names) must not leave its slot merely
     locked. After a "restart" (every slot's lock let go) and the sweeps, the
     output is still there."""
@@ -1684,7 +1684,7 @@ async def test_a_cancel_before_the_set_aside_starts_still_keeps_the_output(
 async def test_a_lingering_swap_keeps_the_job_from_placing_the_output(
     vol, romm, monkeypatch,
 ):
-    """Codex 4594772381: a Cancel lands while the Source is parked, and the
+    """a Cancel lands while the Source is parked, and the
     parking's journal write outlives the hook's grace, so the swap lingers.
     The job must not place the output meanwhile: the swap's undo then puts
     the Source back under its old name (``rolled_back``), and the checked
@@ -1731,7 +1731,7 @@ async def test_a_lingering_swap_keeps_the_job_from_placing_the_output(
 async def test_a_cancel_during_placing_waits_for_it_and_keeps_the_holds(
     vol, romm, monkeypatch,
 ):
-    """Codex 4594650576: a Cancel lands while the swap places the output.
+    """a Cancel lands while the swap places the output.
     Placing is never abandoned: the swap waits for its real outcome (here,
     placed), undoes accordingly (the Source back beside the output, ``kept``),
     and no hold or lock of the job is let go before that undo has ended."""
@@ -1790,7 +1790,7 @@ async def test_a_cancel_during_placing_waits_for_it_and_keeps_the_holds(
 async def test_a_source_changed_during_the_rom_lookup_is_never_swapped(
     vol, romm, monkeypatch,
 ):
-    """Codex 4594537162: the swap's baseline is the Source's pre-conversion
+    """the swap's baseline is the Source's pre-conversion
     fingerprint (the delete snapshot), not a fresh stat. A Source replaced
     while the ROM is looked up is not renamed, parked or deleted."""
     from services.romm import swap_referrer
@@ -1818,7 +1818,7 @@ async def test_a_source_changed_during_the_rom_lookup_is_never_swapped(
 async def test_a_cancel_after_the_source_is_deleted_still_reports_it_deleted(
     vol, romm, monkeypatch, during,
 ):
-    """Codex 4594537178: once the parked Source is deleted, a Cancel during
+    """once the parked Source is deleted, a Cancel during
     the bookkeeping after it (settling the re-pin, recording ``done``) never
     loses the swap's result: the job records the Source as deleted."""
     from services.romm import swap_journal, swap_referrer
@@ -1865,7 +1865,7 @@ async def test_a_cancel_after_the_source_is_deleted_still_reports_it_deleted(
 
 @pytest.mark.asyncio
 async def test_a_cancel_while_the_parked_source_is_deleted_ends_done(vol, romm, monkeypatch):
-    """CodeRabbit 4594326517: the Cancel lands while the parked Source is
+    """the Cancel lands while the parked Source is
     removed. The removal is recorded on its own thread, so the swap ends
     ``done`` and the job records the Source as deleted, not kept."""
     from services import staging
@@ -1895,7 +1895,7 @@ async def test_a_cancel_while_the_parked_source_is_deleted_ends_done(vol, romm, 
 
 @pytest.mark.asyncio
 async def test_a_re_pin_settle_that_times_out_still_reports_the_swap(vol, romm, monkeypatch):
-    """CodeRabbit 4594326492: settling the re-pin is bookkeeping. A timeout
+    """settling the re-pin is bookkeeping. A timeout
     there, after the Source is gone, still reports the swap as applied."""
     from services.romm import swap_referrer
     from services.subprocess_runner import DeadlineExpired
@@ -1921,7 +1921,7 @@ async def test_a_re_pin_settle_that_times_out_still_reports_the_swap(vol, romm, 
 async def test_a_failed_referrer_is_recorded_even_when_placing_then_fails(
     vol, romm, monkeypatch,
 ):
-    """CodeRabbit 4594326468: a file Referrer fails, then placing the checked
+    """a file Referrer fails, then placing the checked
     output finds its name taken. The Referrer's failure stays in the job's
     record (and so the Ledger's)."""
     from services.romm import settings as romm_settings
@@ -1943,7 +1943,7 @@ async def test_a_failed_referrer_is_recorded_even_when_placing_then_fails(
 
 
 def test_the_fake_lists_roms_a_page_at_a_time(vol, romm):
-    """CodeRabbit 4593839062: like RomM, the listing honours ``limit`` and
+    """like RomM, the listing honours ``limit`` and
     ``offset``, and ``total`` counts every ROM the filter matches."""
     from services.romm import RommClient
 

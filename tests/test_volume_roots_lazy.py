@@ -1,4 +1,4 @@
-"""The containment gate resolves only the Volume roots it needs (Codex 4576916119).
+"""The containment gate resolves only the Volume roots it needs.
 
 ``_confined_real_path`` used to ``realpath()`` every configured Volume before it
 matched a path, so one stalled mount blocked containment checks for files on
@@ -111,7 +111,7 @@ def test_a_volume_configured_through_a_symlink_still_matches_its_real_spelling(
     assert path_utils.is_within_configured_volumes(str(real / "games" / "game.iso"))
 
 
-# --- Cached resolved root spellings (CodeRabbit 4577045035) -------------------
+# --- Cached resolved root spellings -------------------
 # The roots' resolved spellings are cached (trusted configuration, never a
 # request path), each resolved on its own thread with its own bound. An alias
 # then never waits on an unrelated stalled root, and a symlink from one
@@ -213,7 +213,7 @@ def test_a_symlink_from_one_volume_into_another_is_accepted(tmp_path, monkeypatc
     assert not path_utils.is_within_configured_volumes(str(a / "escape" / "secret.iso"))
 
 
-# --- Cached spellings select; a fresh probe grants (Codex 4577171595) ---------
+# --- Cached spellings select; a fresh probe grants ---------
 # A Volume configured as a symlink can be repointed. The cache would still
 # cover the old target until it refreshes, and ensure_path_within_volumes
 # guards delete_file. So a cached spelling only selects the root; access needs
@@ -276,7 +276,7 @@ def test_a_fresh_probe_that_times_out_refuses(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("order", ["outer-first", "inner-first"])
 def test_nested_symlinked_volumes_give_the_most_specific_root(tmp_path, monkeypatch, order):
-    # CodeRabbit 4577311057: /outer -> /data/PS2 and /inner -> /data/PS2/library;
+    # /outer -> /data/PS2 and /inner -> /data/PS2/library;
     # a path spelled through the targets belongs to the deepest Volume.
     from config import settings
 
@@ -295,7 +295,7 @@ def test_nested_symlinked_volumes_give_the_most_specific_root(tmp_path, monkeypa
 
 
 def test_a_deeper_alias_root_wins_over_a_configured_spelling(tmp_path, monkeypatch):
-    # CodeRabbit 4578050378: /mnt matches by its configured spelling, and
+    # /mnt matches by its configured spelling, and
     # /games -> /mnt/ps2/library by its alias. The alias root is deeper, so it
     # holds /mnt/ps2/library/game.iso, and the folder walk must stop there,
     # never reading "ps2" above it.
@@ -319,7 +319,7 @@ def test_a_deeper_alias_root_wins_over_a_configured_spelling(tmp_path, monkeypat
 
 
 def test_refreshes_over_a_blocked_root_keep_one_live_probe(tmp_path, monkeypatch):
-    # CodeRabbit 4577311054: each refresh used to start its own probe thread,
+    # each refresh used to start its own probe thread,
     # so a mount that stays blocked accumulated one stuck thread per refresh.
     import threading
 
@@ -359,7 +359,7 @@ def test_refreshes_over_a_blocked_root_keep_one_live_probe(tmp_path, monkeypatch
 
 
 def test_a_probe_started_before_the_check_never_authorises(tmp_path, monkeypatch):
-    # CodeRabbit 4577602604: a probe resolved /vol to /old, then paused; /vol
+    # a probe resolved /vol to /old, then paused; /vol
     # is repointed to /new. A check that starts after that must not take the
     # paused probe's /old as a fresh observation.
     import threading

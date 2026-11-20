@@ -457,7 +457,7 @@ class ToolPlugin(Protocol):
 
         The one way into a conversion: the job runner and every chain step call
         this, so a step a chain passes no codec (nkit_to_rvz's RVZ step) still
-        gets its mode's default (CodeRabbit 4581672840).
+        gets its mode's default.
         """
 
     async def verify(
@@ -1034,8 +1034,8 @@ class BaseTool:
         self, path: str, *, cancel_event: asyncio.Event | None = None,
         fd: int | None = None,
     ) -> str | None:
-        # The binding to the held file lives here, once for every tool (Codex
-        # 4593632748): each tool's own pass (`_content_sha1`) reads *target*.
+        # The binding to the held file lives here, once for every tool: each
+        # tool's own pass (`_content_sha1`) reads *target*.
         target = path
         if fd is not None:
             from services.subprocess_runner import run_detached_bounded

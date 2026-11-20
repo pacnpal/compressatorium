@@ -424,7 +424,7 @@ class MakePs3IsoService(RunnerService):
             # Finding the set stats the disk too, so it runs on the same
             # detached thread as the check, never on the event loop: a hung
             # mount then meets the verify's bound and cancel like the
-            # readback above (codex 4577688831).
+            # readback above.
             try:
                 damage = await run_detached(
                     self._split_set_damage, iso_path, cancel_event=cancel_event,

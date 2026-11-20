@@ -6,7 +6,7 @@ numbered split part (``Game.iso.0``), the lock on its logical owner
 (``Game.iso``). A split build locks only the logical output and writes its
 parts as it goes, so a part has no lock file of its own; the owner is found by
 name (``registry.split_owner_name``), so a part made after the lock was taken
-is covered too (codex 4577940381).
+is covered too.
 """
 from __future__ import annotations
 

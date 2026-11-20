@@ -600,7 +600,7 @@ async def test_a_header_keyed_copy_that_passed_its_check_may_be_kept(
     db: Path, client: httpx.AsyncClient, monkeypatch,
 ) -> None:
     """Kept only after a full pass under its lock: chdman's verify decodes it
-    and the header it then reads must be the group's key (Codex 4593004806)."""
+    and the header it then reads must be the group's key."""
     from services.chdman import chdman_service
     from services.tools import registry
     from services.verification_store import verification_store
@@ -617,7 +617,7 @@ async def test_a_header_keyed_copy_that_passed_its_check_may_be_kept(
     passes: list[str] = []
 
     async def verify(path, *, cancel_event=None):
-        # The pass reads the held file (Codex 4593632748), named by identity.
+        # The pass reads the held file, named by identity.
         passes.append(os.stat(path).st_ino)
         return {"valid": True, "message": "ok"}
 
@@ -742,7 +742,7 @@ async def test_a_sheet_further_up_naming_other_files_does_not_block(
 
 
 # ----------------------------------------------------------------------
-# the keeper is read in full before anything goes (Codex 4593004806)
+# the keeper is read in full before anything goes
 # ----------------------------------------------------------------------
 
 
@@ -875,7 +875,7 @@ def _statuses(done) -> dict[str, tuple[str, str]]:
 async def test_a_keeper_renamed_away_mid_batch_stops_the_batch(
     db: Path, client: httpx.AsyncClient, monkeypatch,
 ) -> None:
-    """Codex 4593214751: the keeper is held open from its hash to the end of
+    """the keeper is held open from its hash to the end of
     the batch, and before each delete its path must still name that file."""
     from services.job_manager import job_manager
 
@@ -911,7 +911,7 @@ async def test_a_keeper_renamed_away_mid_batch_stops_the_batch(
 async def test_a_keeper_lock_lost_mid_batch_stops_the_batch(
     db: Path, client: httpx.AsyncClient, monkeypatch,
 ) -> None:
-    """CodeRabbit 4593240091: a Referrer operation that takes the keeper's lock
+    """a Referrer operation that takes the keeper's lock
     with it leaves the batch without it: nothing more is deleted."""
     from services import job_manager as jm
 
@@ -940,7 +940,7 @@ async def test_a_keeper_lock_lost_mid_batch_stops_the_batch(
 async def test_a_sheet_that_names_a_copy_after_the_plan_keeps_it(
     db: Path, client: httpx.AsyncClient, monkeypatch,
 ) -> None:
-    """CodeRabbit 4593240099: the sheet check runs again under the copy's
+    """the sheet check runs again under the copy's
     locks, right before it is deleted."""
     from services.job_manager import job_manager
 
@@ -981,7 +981,7 @@ def _case_insensitive(folder: Path) -> bool:
 async def test_a_sheet_naming_the_track_in_another_case_owns_it(
     db: Path, client: httpx.AsyncClient, monkeypatch,
 ) -> None:
-    """CodeRabbit 4593240059: on a case-insensitive share the sheet's spelling
+    """on a case-insensitive share the sheet's spelling
     and the file's differ; they are compared by file identity."""
     roms = db / "romm"
     roms.mkdir(parents=True, exist_ok=True)
@@ -997,7 +997,7 @@ async def test_a_sheet_naming_the_track_in_another_case_owns_it(
 async def test_settling_never_overwrites_a_newer_finding(
     db: Path, client: httpx.AsyncClient,
 ) -> None:
-    """CodeRabbit 4593240053: the post-delete update applies only to the
+    """the post-delete update applies only to the
     Finding the delete read; a run that changed it meanwhile wins."""
     from fastapi.concurrency import run_in_threadpool
     from services import duplicate_cleanup
@@ -1021,7 +1021,7 @@ async def test_settling_never_overwrites_a_newer_finding(
 async def test_a_first_failed_check_is_recorded_and_bars_the_keeper(
     db: Path, client: httpx.AsyncClient,
 ) -> None:
-    """CodeRabbit review 5929914808: a copy with no record whose first check
+    """A copy with no record whose first check
     fails is recorded as failed, so it is never kept."""
     from services.verification_store import verification_store
 
@@ -1064,7 +1064,7 @@ async def test_no_cleanup_is_offered_when_every_copy_failed(
 async def test_a_missing_track_named_in_another_case_still_owns_the_copy(
     db: Path, client: httpx.AsyncClient, monkeypatch,
 ) -> None:
-    """CodeRabbit 4593353319: a track the filesystem reports missing is
+    """a track the filesystem reports missing is
     compared by its case-folded path, which only widens what counts as the
     sheet's own, so it fails closed."""
     roms = db / "romm"
@@ -1092,7 +1092,7 @@ async def test_a_missing_track_named_in_another_case_still_owns_the_copy(
 async def test_a_keeper_opened_after_the_bound_is_closed_again(
     db: Path, client: httpx.AsyncClient, monkeypatch,
 ) -> None:
-    """Codex 4593499336: an open of the keeper that answers after the bound
+    """an open of the keeper that answers after the bound
     gave up hands its descriptor to an undo, which closes it."""
     import time as _time
 
@@ -1134,7 +1134,7 @@ async def test_a_keeper_opened_after_the_bound_is_closed_again(
 async def test_a_produced_chd_is_kept_only_while_its_latest_check_is_current(
     db: Path, client: httpx.AsyncClient, monkeypatch,
 ) -> None:
-    """Codex 4593499342: the latest check decides, not the fingerprint the
+    """the latest check decides, not the fingerprint the
     conversion recorded. Touched after it, the CHD is blocked; a Verify that
     passes makes it eligible again; changed after that, blocked again."""
     import time as _time
@@ -1256,7 +1256,7 @@ async def test_a_run_with_no_record_of_sheet_tracks_offers_no_delete(
 
 
 # ----------------------------------------------------------------------
-# a container keeper is read through its held descriptor (Codex 4593632748)
+# a container keeper is read through its held descriptor
 # ----------------------------------------------------------------------
 
 
@@ -1535,7 +1535,7 @@ async def test_a_volume_added_after_the_run_makes_its_record_stale(
 async def test_a_sheet_romm_does_not_list_still_blocks_its_track(
     db: Path, client: httpx.AsyncClient, monkeypatch,
 ) -> None:
-    """Codex 4594076949: RomM lists ``shared/Track.bin`` and ``Game.iso`` but
+    """RomM lists ``shared/Track.bin`` and ``Game.iso`` but
     not ``disc/Disc.cue``, whose linked track is that file. Ownership comes
     from the on-disk walk of the Volumes, not RomM's records."""
     roms = db / "romm"

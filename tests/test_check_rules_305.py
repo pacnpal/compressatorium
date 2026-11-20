@@ -1964,7 +1964,7 @@ async def test_a_split_set_counts_as_one_image_for_a_conversion_rule(db: Path, r
 
 @pytest.mark.asyncio
 async def test_a_split_iso_being_rebuilt_is_skipped_as_busy(db: Path, ready, sent) -> None:
-    """Codex 4577570988: a directory-input rebuild locks only the logical
+    """a directory-input rebuild locks only the logical
     GAME.iso. The check holds that path too, so while another process has it
     the Image is skipped as busy: no Finding, no check time, record untouched,
     even though the parts on disk look damaged mid-build."""
@@ -2003,7 +2003,7 @@ async def test_a_split_iso_being_rebuilt_is_skipped_as_busy(db: Path, ready, sen
 
 @pytest.mark.asyncio
 async def test_an_image_with_no_library_size_is_charged_for_every_file(db: Path) -> None:
-    """Codex 4577598584: with no size from the Library (a RomM ROM without
+    """with no size from the Library (a RomM ROM without
     fs_size_bytes) the budget pays for the whole Image, every split part, not
     only the first."""
     from services.rules import check
@@ -2030,7 +2030,7 @@ async def test_an_image_with_no_library_size_is_charged_for_every_file(db: Path)
 
 @pytest.mark.asyncio
 async def test_a_failed_ps3_iso_is_checked_again_once_repaired(db: Path, ready, sent) -> None:
-    """Codex 4577598580: a failure takes away the pass but keeps what made the
+    """a failure takes away the pass but keeps what made the
     file, so the next sweep still routes the ISO to makeps3iso, and a pass after
     the repair clears its Finding."""
     from routes import libraries as routes
@@ -2121,7 +2121,7 @@ async def test_a_stop_while_images_are_picked_starts_no_check(
 async def test_a_scheduled_check_run_holds_its_window_until_it_ends(
     tree: Path, ready, sent, monkeypatch,
 ) -> None:
-    """Codex 4578034601: while a scheduled check run is still checking, the next
+    """while a scheduled check run is still checking, the next
     tick picks nothing more for that Rule, so the budget applies once per
     window. A run that is cancelled leaves the Rule due, and the next tick
     picks again; one that finishes records the run."""
@@ -2198,7 +2198,7 @@ async def test_a_scheduled_check_run_holds_its_window_until_it_ends(
 async def test_a_tick_that_finds_its_image_held_by_a_conversion_stays_due(
     tree: Path, ready, verifier, sent, monkeypatch, held_by,
 ) -> None:
-    """Codex 4578154650: an Image a conversion holds (queued or converting
+    """an Image a conversion holds (queued or converting
     here, or locked for writing by another process) is held elsewhere, like
     one a check run holds. A pick that comes up empty only for that records
     nothing; once the conversion ends the next tick checks it."""
@@ -2245,7 +2245,7 @@ async def test_a_tick_that_finds_its_image_held_by_a_conversion_stays_due(
 async def test_each_checked_images_verdict_is_published_as_it_settles(
     tree: Path, ready, verifier, sent, monkeypatch,
 ) -> None:
-    """Codex 4578116084, 4578154653: an open browser hears each Image's new
+    """an open browser hears each Image's new
     check state on the jobs stream as that Image settles, in order, so an
     Intact badge a failed check took away goes away there too, and nothing
     is replayed in a batch at the end that could overwrite a newer pass."""
@@ -2283,7 +2283,7 @@ async def test_each_checked_images_verdict_is_published_as_it_settles(
     )
     (end,) = [e for e in events if e["type"] in ("complete", "error", "cancelled")]
     assert "verification_changes" not in end
-    # Codex 4578664511: the paths it settled, no verdicts, so a page that
+    # the paths it settled, no verdicts, so a page that
     # missed progress events re-reads them from the database.
     assert end["verification_paths"] == [os.path.realpath(cove), os.path.realpath(bolt)]
 
@@ -2320,7 +2320,7 @@ async def test_the_verified_lookup_answers_for_the_paths_asked(
 async def test_a_tick_that_finds_every_image_held_by_run_now_stays_due(
     tree: Path, ready, sent, monkeypatch,
 ) -> None:
-    """Codex 4578116078: while Run now is checking every Image of a Platform,
+    """while Run now is checking every Image of a Platform,
     a scheduler tick selects none of them. That empty pick is not the night's
     run: nothing is recorded, and once Run now is cancelled the next tick picks."""
     from models import ConversionMode
@@ -2376,7 +2376,7 @@ async def test_a_tick_that_finds_every_image_held_by_run_now_stays_due(
 async def test_a_run_stopped_by_an_abandoned_verifier_leaves_its_rule_due(
     tree: Path, ready, verifier, sent,
 ) -> None:
-    """Codex 4578054443: two picked Images, the first verifier abandoned on
+    """two picked Images, the first verifier abandoned on
     stalled storage. The run stops before the second, so the Rule is not
     recorded as run, and the next tick picks again."""
     from routes import libraries as routes

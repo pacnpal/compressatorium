@@ -1745,7 +1745,7 @@ async def _record_terminal(path: str, terminal: dict | None) -> bool | None:
     Called once per verification, before the producer marks itself done and
     lets go of the verify lane, so the record is written while this check
     still holds the lane: a client that stops reading can never write an old
-    verdict over a newer check's (CodeRabbit 4582189521). No terminal result
+    verdict over a newer check's. No terminal result
     (the verification was cancelled first) records nothing; nor does a result
     with no verdict (``check_verdict``). Never raises: a store error is logged,
     and the result still reaches the client.
@@ -1765,8 +1765,8 @@ async def _publish_terminal(
     """Persist, then publish, a verify stream's terminal result (#351).
 
     The verdict is written (:func:`_record_terminal`) before the event reaches
-    the queue, so a reader that sees it can rely on the record (codex
-    4582270883): it may stop reading and cancel the producer at once. The
+    the queue, so a reader that sees it can rely on the record: it may stop
+    reading and cancel the producer at once. The
     write runs as its own task under ``asyncio.shield``: a cancel (a client
     that went away) stops this wait, never the write, and the lane is let go
     only once the write has finished (:func:`_release_after_writes`, via
@@ -1845,7 +1845,7 @@ def _sse_from_verify_stream(
             async def _pump() -> None:
                 async for update in cfg.service().verify_stream(path):
                     if update.get("type") in ("complete", "error"):
-                        # Persisted before it is published (codex 4582270883).
+                        # Persisted before it is published.
                         await _publish_terminal(path, queue, update, writes)
                     else:
                         await _offer_verify_update(queue, update)
@@ -1874,8 +1874,7 @@ def _sse_from_verify_stream(
                 # that stopped reading, and holding the one-slot lane until it
                 # resumes would refuse every later verification for good.
                 # The generator's own finally stays the backstop for the paths
-                # that never start this. Not before the terminal write is done
-                # (CodeRabbit 4582189521, codex 4582270883).
+                # that never start this. Not before the terminal write is done.
                 _release_after_writes(writes, verify_token.release)
 
         # Everything after the token is acquired runs inside the try, including

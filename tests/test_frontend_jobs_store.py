@@ -84,7 +84,7 @@ def _evaluate(tmp_path: Path, scenario: str):
     return json.loads(proc.stdout)
 
 
-# CodeRabbit 4577311063: SSE completes j1 and the history prune evicts it
+# SSE completes j1 and the history prune evicts it
 # before the Auto response arrives. With its row gone, the response's older
 # `queued` snapshot looked like an unknown job and went back into the active
 # queue for good. Eviction leaves a tombstone, and adopt() skips it.
@@ -118,7 +118,7 @@ def test_eviction_tombstones_are_bounded(tmp_path):
     assert 0 < kept <= 2000
 
 
-# CodeRabbit 4577602616: refresh() infers an eviction only for jobs it knew
+# refresh() infers an eviction only for jobs it knew
 # before it asked. A job created and finished over SSE while getJobs() was in
 # flight is simply newer than that snapshot: it stays, and is not tombstoned.
 _SSE_JOB_DURING_REFRESH = """
@@ -145,7 +145,7 @@ def test_a_job_born_during_refresh_is_neither_dropped_nor_tombstoned(tmp_path):
     assert data == {"ids": ["j9"], "tombstoned": ["old"]}, data
 
 
-# CodeRabbit review 5909981859: Clear completed removes finished jobs on the
+# Clear completed removes finished jobs on the
 # backend too. A late Auto response listing one must not bring it back as an
 # unknown queued row: the cleared ids are tombstoned like evictions.
 _CLEARED_BEFORE_ADOPT = """
@@ -238,7 +238,7 @@ def test_a_job_the_clear_deleted_never_comes_back(tmp_path, path):
     assert _evaluate(tmp_path, _LATE_COPY_AFTER_CLEAR % {"path": path}) == ["j2"]
 
 
-# CodeRabbit 4602984524 (#425): a job one request started, followed until it
+# #425: a job one request started, followed until it
 # ends whoever is looking. A short job can end before the job stream
 # subscribes to it, so it is read from the API: each read joins the list, a
 # failed read is tried again, and a job the server no longer has stops it.

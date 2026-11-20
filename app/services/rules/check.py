@@ -189,7 +189,7 @@ def _hold(check: Check) -> list[str] | None:
     ok = False
     # A split output also holds its logical `Game.iso` (`record_path`): a
     # directory-input rebuild locks only that path, so without it a rebuild
-    # could rewrite the parts mid-check (Codex 4577570988). The set is #306's:
+    # could rewrite the parts mid-check. The set is #306's:
     # logical path, first part, then `registry.split_members(first)`, which
     # `members` already carries.
     paths = (check.record_path, check.path, *check.members) if check.record_path else (

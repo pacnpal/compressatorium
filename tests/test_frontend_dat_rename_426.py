@@ -16,8 +16,8 @@ def test_the_preview_lists_every_file_the_folder_and_the_sheet_rewrite():
     assert "item.folder" in modal
     assert "item.sheet_rewrite" in modal
     # Every file of the Image but the sheet itself: one the folder rename
-    # moves under the same name (CodeRabbit 4604333215), and a track that
-    # already has its DAT name (CodeRabbit 4604545529).
+    # moves under the same name, and a track that
+    # already has its DAT name.
     other = modal.split("function otherFiles(item)", 1)[1].split("\n  }\n", 1)[0]
     assert "files.filter((f) => f.path !== item.path)" in other
     assert "f.new_path !== f.path" not in other

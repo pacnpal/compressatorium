@@ -311,7 +311,7 @@ def clear_gone(
     cleared.
 
     The files are looked at outside the write lock, so the delete is a
-    compare-and-delete (CodeRabbit 4580360075): only a row still carrying the
+    compare-and-delete: only a row still carrying the
     id and cause fingerprint that was looked at goes. One a producer updated
     meanwhile (a new cause, another list of files left) stays.
     """

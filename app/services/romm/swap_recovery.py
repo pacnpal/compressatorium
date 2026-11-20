@@ -258,7 +258,7 @@ def _drop_second_link(row: dict) -> bool:
     leaving things as they were before the park, then its slot once empty:
     True when it was. Only while it is the same inode as the file at the
     Source's or the output's path (where RomM moved it). Blocking
-    (CodeRabbit 4606887339)."""
+    ."""
     parked = row.get("parked_path")
     if not parked:
         return False
@@ -470,7 +470,7 @@ class _Recovery:
         self._same_instance()
         if facts.parked == SOURCE and SOURCE in (facts.source, facts.output):
             # Parked and in place both: a park that left a second link. That
-            # link is dropped, never refused (CodeRabbit 4606887339).
+            # link is dropped, never refused.
             if await _mutate(_drop_second_link, row):
                 facts.parked = ABSENT
         facts.romm_name = await self._romm_name()
@@ -525,7 +525,7 @@ class _Recovery:
             await self._step("restoring")
             await _mutate(_restore_parked, row)
             return "kept"
-        # Journal first (Codex 4595373639): stopped after the delete, the
+        # Journal first: stopped after the delete, the
         # next run sees ``deleting`` with the Source gone, and ends it done.
         await self._step("deleting")
         await _mutate(_delete_parked, row)
@@ -616,7 +616,7 @@ async def _recover_row(row: dict, binding: _Binding) -> bool:
     try:
         try:
             # Under a bound; a worker that takes them after it gives them
-            # back (Codex 4595373643).
+            # back.
             locked = await run_detached_undoable(
                 _lock, paths, timeout=LOCK_SECONDS, undo=_unlock,
             )
@@ -681,7 +681,7 @@ def _observe_finding(row: dict, facts: _Facts | None, why: str) -> None:
 
 async def _leave_finding(row: dict, facts: _Facts | None, why: str) -> None:
     """Write the row's Finding, built and written on one bounded detached
-    call, never on the event loop (Codex 4595373645). Never raises (but a
+    call, never on the event loop. Never raises (but a
     cancel)."""
     try:
         await _probe(_observe_finding, row, facts, why)

@@ -142,7 +142,7 @@ def test_dir_lock_release_never_lets_two_processes_hold_one_folder(tmp_path, mon
 
 
 # --------------------------------------------------------------------------- #
-# The web mutation guard sees another process's folder lock (codex 4576670752)
+# The web mutation guard sees another process's folder lock
 # --------------------------------------------------------------------------- #
 
 
@@ -224,7 +224,7 @@ async def test_the_exact_path_check_still_refuses_a_locked_output(guarded_volume
 
 
 # --------------------------------------------------------------------------- #
-# Input locks: a job's Source is visible to other processes (codex 4576728590)
+# Input locks: a job's Source is visible to other processes
 # --------------------------------------------------------------------------- #
 
 
@@ -331,7 +331,7 @@ async def test_the_server_refuses_to_delete_or_rename_a_folder_holding_a_lock(
 
 
 # --------------------------------------------------------------------------- #
-# Subtree exclusion across processes, both orders (codex 4576810647)
+# Subtree exclusion across processes, both orders
 # --------------------------------------------------------------------------- #
 
 
@@ -379,7 +379,7 @@ def test_a_folder_lock_does_not_trip_over_its_own_lock_file(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# Lock identity is the real path (codex 4576966571, review r9 M3)
+# Lock identity is the real path (review r9 M3)
 # --------------------------------------------------------------------------- #
 
 
@@ -633,7 +633,7 @@ def test_a_dead_process_lock_is_cleared_by_the_next_probe(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# Native (non-UTF-8) names in lock identities (codex 4577157688)
+# Native (non-UTF-8) names in lock identities
 # --------------------------------------------------------------------------- #
 
 
@@ -714,7 +714,7 @@ def test_a_cue_naming_a_native_track_converts(tmp_path, monkeypatch, db_path, re
 
 
 # --------------------------------------------------------------------------- #
-# A job's companion outputs are locked across processes (codex 4577208360)
+# A job's companion outputs are locked across processes
 # --------------------------------------------------------------------------- #
 
 
@@ -790,7 +790,7 @@ async def test_a_companion_output_is_held_against_other_processes(
 
 
 # --------------------------------------------------------------------------- #
-# An output lock covers both places a write can land (codex 4577612344)
+# An output lock covers both places a write can land
 # --------------------------------------------------------------------------- #
 
 
@@ -885,7 +885,7 @@ async def test_an_overwrite_job_on_a_symlinked_output_keeps_its_destination_lock
 
 
 # --------------------------------------------------------------------------- #
-# A symlinked output inside a packed folder (codex 4577847011)
+# A symlinked output inside a packed folder
 # --------------------------------------------------------------------------- #
 
 
@@ -946,7 +946,7 @@ def test_the_dispatch_probe_sees_a_symlinked_output_in_a_packed_folder(
 
 
 # --------------------------------------------------------------------------- #
-# Recorded paths round-trip any pathname (codex 4578027196)
+# Recorded paths round-trip any pathname
 # --------------------------------------------------------------------------- #
 
 
@@ -987,7 +987,7 @@ def test_a_lock_recorded_the_old_way_still_counts(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# No filesystem I/O under the mutex (codex 4579852997)
+# No filesystem I/O under the mutex
 # --------------------------------------------------------------------------- #
 
 

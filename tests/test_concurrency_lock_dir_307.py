@@ -1,6 +1,6 @@
 """A job queue whose lock directory was deleted while in use makes it again.
 
-Found while reviewing #307 (codex 4576665771): ``ConcurrencyManager`` made its
+Found while reviewing #307: ``ConcurrencyManager`` made its
 directory once, on first use. Deleted afterwards (a tmp cleaner on the
 ``/tmp/chd-locks`` default, someone clearing ``/config/locks``), every
 holder, ticket and slot file failed to open and the next job waited forever,

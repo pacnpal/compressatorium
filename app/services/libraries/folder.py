@@ -777,7 +777,7 @@ class FolderLibrary(LibraryDefaults):
         The same walk as every listing: junk (OS metadata, RomM's
         ``.romm_tmp_*`` staging) is never listed, and a sheet's tracks belong
         to their sheet. The walk's own record of what it could not see goes
-        with them (Codex 4589796861): the folders it could not list
+        with them: the folders it could not list
         (``Scan.unwalked``) and the Image files it could not read
         (``Scan.unreadable_files``), as the walk's Findings already use them.
         Raises :class:`ListingInProgress` while another walk runs.

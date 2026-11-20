@@ -121,7 +121,7 @@ process.stdout.write(JSON.stringify({{
 
 
 def test_a_listing_older_than_a_settings_save_keeps_the_saved_settings(tmp_path):
-    """Codex 4577832447: a stale read cannot flip a saved schedule switch back.
+    """a stale read cannot flip a saved schedule switch back.
 
     A Platform listing starts, the schedule switch is saved on, then the
     listing answers with the Library as it was before the save. The switch
@@ -181,7 +181,7 @@ process.stdout.write(JSON.stringify({{
 
 
 def test_a_library_registered_during_a_list_load_is_kept(tmp_path):
-    """CodeRabbit 4578050384: an older catalogue cannot drop a new Library.
+    """an older catalogue cannot drop a new Library.
 
     A list load starts, a folder is registered and selected, then the load
     answers with the catalogue as it was before: the new Library stays, and
@@ -206,7 +206,7 @@ process.stdout.write(JSON.stringify({{
 
 
 def test_settings_saves_reach_the_backend_in_click_order(tmp_path):
-    """CodeRabbit 4578050386 and 4578075312: one save per Library at a time.
+    """One save per Library at a time.
 
     On, then off. The off save is not sent until the on save has answered,
     so the backend applies them in click order, and the switch shows off,
@@ -282,7 +282,7 @@ process.stdout.write(JSON.stringify({{
 
 
 def test_a_listing_answered_after_removal_does_not_bring_the_library_back(tmp_path):
-    """Codex 4576901574: a late response for a removed Library is ignored.
+    """a late response for a removed Library is ignored.
 
     Start a Platform listing, remove the Library, then the listing answers
     with its Library row: the picker stays empty and the source is dropped.
@@ -313,7 +313,7 @@ process.stdout.write(JSON.stringify({{
 
 
 def test_a_read_that_started_before_a_save_is_dropped(tmp_path):
-    """CodeRabbit 4576895559: a stale loadRules() response cannot undo a save.
+    """a stale loadRules() response cannot undo a save.
 
     The read of configuration A starts, B is saved and lands, then A's response
     arrives: the editor keeps B.
@@ -340,7 +340,7 @@ process.stdout.write(JSON.stringify({{
 
 
 def test_saves_reach_the_backend_in_the_order_they_were_made(tmp_path):
-    """CodeRabbit 4576895561: one save at a time per source, in invocation order.
+    """one save at a time per source, in invocation order.
 
     Save A, edit, save B: B is not sent until A has answered, so an older
     save can never land after a newer one. B then submits the latest rules.
@@ -375,7 +375,7 @@ process.stdout.write(JSON.stringify({{
 
 
 def test_a_refreshed_list_updates_a_cached_source_and_keeps_its_edits(tmp_path):
-    """Codex 4576870640: a cached source follows the Library's refreshed settings.
+    """a cached source follows the Library's refreshed settings.
 
     The schedule switch flipped elsewhere (another tab) shows after
     ``libraries.load()``, and the unsaved Rule edit survives the refresh.
@@ -584,7 +584,7 @@ def test_the_sweep_summary_names_every_reason_a_library_gives():
 
 
 def test_the_deferred_romm_load_stops_once_the_view_is_gone():
-    """Codex 4576551537: the RomM view's lifecycle guard, after every await."""
+    """the RomM view's lifecycle guard, after every await."""
     src = _RULES_VIEW.read_text(encoding="utf-8")
     body = re.search(r"async function loadRomm\(\) \{(.*?)\n  \}", src, re.DOTALL)
     assert body, "loadRomm moved"
@@ -615,7 +615,7 @@ def test_the_rules_screenshot_finds_its_row_by_platform_id():
 
 
 def test_a_deep_link_change_reselects_while_the_view_stays_mounted():
-    """Codex 4576629013: #/rules/folder:1 -> #/rules/folder:2 (or Back) reselects."""
+    """#/rules/folder:1 -> #/rules/folder:2 (or Back) reselects."""
     src = _RULES_VIEW.read_text(encoding="utf-8")
     effect = re.search(
         r"\$effect\(\(\) => \{\s*if \(embedded\) return;\s*"

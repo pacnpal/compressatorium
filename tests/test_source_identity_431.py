@@ -1,4 +1,4 @@
-"""A queued conversion that carries its Source's identity (#431, Codex 4604325922).
+"""A queued conversion that carries its Source's identity (#431).
 
 The job pipeline's shared check: a conversion may be queued with the identity
 its Source had when it was chosen (device, inode, size, mtime) and the folder it
@@ -99,7 +99,7 @@ async def test_a_source_replaced_after_queueing_is_refused(env) -> None:
 async def test_a_folder_swapped_after_the_check_still_converts_the_bound_source(
     env, monkeypatch,
 ) -> None:
-    """Codex 4605281757 (P1), ruled: the Source is bound before anything else
+    """The Source is bound before anything else
     runs. Swapping its folder for a link right after the check (here, as the
     job sizes its Source) can't redirect the converter: it reads the staged
     link of the file that was checked, and nothing outside is read."""
@@ -164,7 +164,7 @@ def _no_links(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_a_slow_bind_copy_that_keeps_moving_finishes(env, monkeypatch) -> None:
-    """Codex 4606061281, ruled: the bind's copy fallback is bounded by its
+    """The bind's copy fallback is bounded by its
     progress, not a fixed deadline: a copy slower overall than the bound but
     never stalled finishes and converts."""
     import time as clock
@@ -236,7 +236,7 @@ async def test_a_bind_copy_that_stalls_fails_and_leaves_nothing(env, monkeypatch
 async def test_a_cancel_during_the_identity_preflight_releases_everything(
     env, monkeypatch, tmp_path,
 ) -> None:
-    """CodeRabbit 4606147979, ruled: the identity check and the bind run inside
+    """The identity check and the bind run inside
     the job's full finalization region, so a cancel there lets go of the
     output locks and the cross-process slot, not just the Source's."""
     import asyncio
@@ -304,7 +304,7 @@ def test_unbinding_never_follows_a_swapped_folder(tmp_path, monkeypatch) -> None
 
 @pytest.mark.asyncio
 async def test_the_bound_copy_lives_where_no_inbox_writer_can_reach(env, monkeypatch) -> None:
-    """Codex 4606562350 (P1), ruled: the Source is bound under the job's own
+    """The Source is bound under the job's own
     work folder in the app's work area, never in the Inbox. A writer that
     renames every entry of the Inbox (the old private-folder spot included)
     and puts a link to a folder of its own in its place, once the job is
@@ -355,7 +355,7 @@ async def test_the_bound_copy_lives_where_no_inbox_writer_can_reach(env, monkeyp
 async def test_a_source_written_to_during_its_conversion_publishes_nothing(
     env, monkeypatch,
 ) -> None:
-    """Codex 4606539513, ruled: a hard-linked Source a resumed download
+    """A hard-linked Source a resumed download
     appends to mid-conversion is caught before any output is published: the
     staged output is discarded, the job fails saying the Source changed, and
     the Source is left as it is."""
@@ -391,7 +391,7 @@ async def test_a_source_written_to_during_its_conversion_publishes_nothing(
 async def test_a_cancel_during_a_slow_bind_copy_ends_the_job_promptly(
     env, monkeypatch, tmp_path,
 ) -> None:
-    """Codex 4606539525, ruled: the bind's copy hears the job's cancel. A
+    """The bind's copy hears the job's cancel. A
     cancel while it is copying ends the job CANCELLED at once and lets go of
     its locks and its slot; the copy stops and removes what it made."""
     import asyncio
@@ -445,7 +445,7 @@ async def test_a_cancel_during_a_slow_bind_copy_ends_the_job_promptly(
 async def test_deleting_a_finished_job_whose_binding_is_still_held_answers(
     env, monkeypatch,
 ) -> None:
-    """Codex 4606539536, ruled: an archived snapshot leaves out the job's
+    """An archived snapshot leaves out the job's
     runtime-only state (the bound Source's descriptors and lock), so deleting
     a finished job while its locks are still being let go answers, never a
     500, and the live job keeps its own."""
@@ -487,7 +487,7 @@ async def test_deleting_a_finished_job_whose_binding_is_still_held_answers(
 async def test_a_bound_source_is_removed_with_every_probe_slot_taken(
     env, monkeypatch,
 ) -> None:
-    """CodeRabbit 4606887319, ruled: the bound folder is removed through
+    """The bound folder is removed through
     ``start_detached_eventually``, which falls back to a thread of its own,
     so a job ending while every probe slot is taken still removes it."""
     import asyncio

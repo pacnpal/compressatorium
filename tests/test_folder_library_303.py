@@ -1398,7 +1398,7 @@ async def test_a_library_no_longer_reports_a_constant_configured(tree: Path) -> 
 
 @pytest.mark.asyncio
 async def test_an_images_size_is_all_of_its_files(psx: Path, ready, queue) -> None:
-    """Codex 4576551531: a 67-byte .cue for a large .bin is the size of the set."""
+    """a 67-byte .cue for a large .bin is the size of the set."""
     from routes import libraries as routes
     from services import libraries
 
@@ -1429,7 +1429,7 @@ async def test_an_images_size_is_all_of_its_files(psx: Path, ready, queue) -> No
 async def test_removing_a_library_mid_callback_leaves_no_holds(
     tree: Path, ready, queue, monkeypatch,
 ) -> None:
-    """Codex 4576551534: a failure noted while the Library is removed writes nothing."""
+    """a failure noted while the Library is removed writes nothing."""
     import asyncio
 
     from models import JobStatus
@@ -1475,7 +1475,7 @@ async def test_removing_a_library_mid_callback_leaves_no_holds(
 
 @pytest.mark.asyncio
 async def test_a_removed_librarys_id_is_never_reused(tree: Path) -> None:
-    """Codex 4576551534: state keyed by Library id must not reach a new Library."""
+    """state keyed by Library id must not reach a new Library."""
     from routes import libraries as routes
 
     first = await _register(tree / "gc")
@@ -1579,7 +1579,7 @@ def test_the_volume_check_confines_a_path_before_touching_it(tree: Path, tmp_pat
 async def test_grouping_and_detection_read_a_sheet_the_same_way(
     db: Path, file_line: str,
 ) -> None:
-    """Codex 4576629009: one CUE parser (utils.sheet_text) for grouping and detection.
+    """one CUE parser (utils.sheet_text) for grouping and detection.
 
     No Platform-named folder, so only the header can name the Platform: the
     sheet's track is a Saturn disc. The .bin is hidden behind its sheet, and
@@ -1605,7 +1605,7 @@ async def test_grouping_and_detection_read_a_sheet_the_same_way(
 
 
 def test_no_other_cue_file_line_parser_remains() -> None:
-    """Codex 4576629009: utils.sheet_text.cue_tracks is the only FILE-line reader."""
+    """utils.sheet_text.cue_tracks is the only FILE-line reader."""
     app_dir = Path(__file__).resolve().parents[1] / "app"
     offenders = [
         str(path.relative_to(app_dir))
@@ -1620,7 +1620,7 @@ def test_no_other_cue_file_line_parser_remains() -> None:
 async def test_a_failure_under_an_old_rule_holds_nothing_under_the_new_one(
     tree: Path, ready, queue, monkeypatch,
 ) -> None:
-    """Codex 4576629016: queue RVZ, retarget to WIA, fail the RVZ job.
+    """queue RVZ, retarget to WIA, fail the RVZ job.
 
     The hold belongs to the Rule that queued the job. After the Rule is
     retargeted, the old job's failure is dropped, and the WIA preview queues
@@ -1662,7 +1662,7 @@ async def test_a_failure_under_an_old_rule_holds_nothing_under_the_new_one(
 
 @pytest.mark.asyncio
 async def test_a_split_part_added_later_joins_its_image(db: Path) -> None:
-    """Codex 4576709447: a cached membership follows the folder's current parts.
+    """a cached membership follows the folder's current parts.
 
     Scan with only part 1, add part 2, refresh: one Image of 30 bytes, not two.
     """
@@ -1684,7 +1684,7 @@ async def test_a_split_part_added_later_joins_its_image(db: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_a_walk_builds_each_folders_listing_marker_once(db: Path, monkeypatch) -> None:
-    """Codex 4576751001: the membership cache key holds a per-folder marker.
+    """the membership cache key holds a per-folder marker.
 
     Each folder's listing is turned into one generation marker per walk, and
     every file in it shares that marker, so a cached walk compares a short
@@ -1720,7 +1720,7 @@ async def test_a_walk_builds_each_folders_listing_marker_once(db: Path, monkeypa
 
 @pytest.mark.asyncio
 async def test_a_backslash_track_path_is_one_detected_image(db: Path) -> None:
-    """Codex 4576790199: grouping and detection read ``tracks\\game.bin`` alike.
+    """grouping and detection read ``tracks\\game.bin`` alike.
 
     As chdman does on POSIX (#294's 2b246fe), the backslash is part of the
     name: the sheet names the file ``tracks\\game.bin`` beside it. No folder
@@ -1791,7 +1791,7 @@ async def _fail_melee_while_probing(tree: Path, monkeypatch, during) -> dict:
 async def test_a_rule_retargeted_during_the_hold_probe_gets_no_hold(
     tree: Path, ready, queue, monkeypatch,
 ) -> None:
-    """CodeRabbit 4576895547: the Rule identity is checked again under the lock.
+    """the Rule identity is checked again under the lock.
 
     The RVZ job fails; while its hold's fingerprint is being read the Rule is
     retargeted to WIA. The RVZ failure must not be held under the WIA Rule.
@@ -1811,7 +1811,7 @@ async def test_a_rule_retargeted_during_the_hold_probe_gets_no_hold(
 async def test_a_source_repaired_before_the_hold_probe_gets_no_hold(
     tree: Path, ready, queue, monkeypatch,
 ) -> None:
-    """CodeRabbit 4576895550: the hold is bound to the Source the job had.
+    """the hold is bound to the Source the job had.
 
     The job fails; the operator replaces the Source before the hold's
     fingerprint is read. The repaired file never failed, so it is not held.
@@ -1877,7 +1877,7 @@ def test_the_folder_libraries_migration_stacks_on_the_ledger_totals_one(tmp_path
 
 @pytest.mark.asyncio
 async def test_an_ancestor_swapped_for_a_symlink_re_detects(db: Path) -> None:
-    """CodeRabbit 4578050375: the walk's folder context is part of the cache key.
+    """the walk's folder context is part of the cache key.
 
     ``ps2`` is cached for ``ps2/library/game.iso`` from its folder. Rename
     ``ps2`` to ``neutral`` and put a ``ps2`` symlink to it in its place: the
@@ -1905,7 +1905,7 @@ async def test_an_ancestor_swapped_for_a_symlink_re_detects(db: Path) -> None:
 
 
 def test_the_detection_key_names_its_probe_set(db: Path) -> None:
-    """CodeRabbit 4576895544: ``detection_key`` itself carries the probe set.
+    """``detection_key`` itself carries the probe set.
 
     Both caches key on it (the shared one and a folder Library's), so a
     Detection made by one set of tools is never reused for another.
@@ -1929,7 +1929,7 @@ def test_the_detection_key_names_its_probe_set(db: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_a_slow_walk_is_reused_from_when_it_finished(db: Path, monkeypatch) -> None:
-    """CodeRabbit 4576895543: the reuse window starts when the walk is ready.
+    """the reuse window starts when the walk is ready.
 
     Detection here takes 40 s of (fake) clock, longer than the 30 s window;
     the next listing right after must reuse the walk, not repeat it.
@@ -1972,7 +1972,7 @@ async def test_a_slow_walk_is_reused_from_when_it_finished(db: Path, monkeypatch
 async def test_a_romm_root_overlapping_a_folder_library_is_refused(
     db: Path, where: str,
 ) -> None:
-    """Codex 4576816771: saving RomM's library root checks every folder Library.
+    """saving RomM's library root checks every folder Library.
 
     The same overlap rule as registration, the other way round: a RomM root
     equal to, containing, or inside a registered folder is a 409 naming the
@@ -1999,7 +1999,7 @@ async def test_a_romm_root_overlapping_a_folder_library_is_refused(
 async def test_a_hung_romm_root_check_answers_503_and_holds_no_lock(
     db: Path, monkeypatch,
 ) -> None:
-    """CodeRabbit 4576895541: the RomM root check is bounded, and runs first.
+    """the RomM root check is bounded, and runs first.
 
     The check runs before the settle lock and the sweep pause are taken. Past
     its bound the save is refused with 503, nothing is saved, and every lock
@@ -2039,7 +2039,7 @@ async def test_a_hung_romm_root_check_answers_503_and_holds_no_lock(
 async def test_registration_workers_are_capped_until_they_finish(
     db: Path, monkeypatch,
 ) -> None:
-    """CodeRabbit 4576895542: admission control for registration workers.
+    """admission control for registration workers.
 
     Two registrations stuck on a dead mount time out but keep their slots
     until their workers actually return; a third is refused with 503 at once,

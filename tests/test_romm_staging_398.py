@@ -241,7 +241,7 @@ async def test_an_existing_file_at_the_destination_is_never_overwritten_by_placi
 ):
     """Something took the output's name while the job converted: the placing
     refuses and keeps that file. The checked output is never discarded for
-    it (CodeRabbit 4593970363, #391): it stays in its slot, set aside out of
+    it (#391): it stays in its slot, set aside out of
     every sweep, and the job says where."""
     platform = vol / "romm" / "ps2"
     tools = _Tools(platform)

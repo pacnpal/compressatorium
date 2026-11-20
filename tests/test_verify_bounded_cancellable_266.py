@@ -1042,7 +1042,7 @@ def test_the_streaming_verifier_spawns_bare_and_is_reniced(tmp_path, monkeypatch
 
     monkeypatch.setattr(sr, "_prioritize_child", prioritize)
     events = asyncio.run(drain())
-    # A verdict never comes through an execvp wrapper (CodeRabbit 4616898119):
+    # A verdict never comes through an execvp wrapper:
     # the verifier is spawned bare and given its priority by pid.
     assert spawned == [cmd]
     assert reniced == ["test"]

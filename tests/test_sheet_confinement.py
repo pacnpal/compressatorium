@@ -112,7 +112,7 @@ def test_the_probe_and_the_cache_list_agree_on_tracks(layout):
     cue.write_text('FILE "../../outside/x.bin" BINARY\n  TRACK 01 MODE1/2352\n')
 
     # Refused for the probe; the cache's dependency list is unknown (None), so
-    # the answer is not cached (CodeRabbit 4577311048).
+    # the answer is not cached.
     assert registry.get("chdman").header_reads(str(cue)) is None
 
 

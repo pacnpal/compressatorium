@@ -1,4 +1,4 @@
-"""A sheet's tracks are the files chdman opens: the raw-byte spelling (Codex 4576999696).
+"""A sheet's tracks are the files chdman opens: the raw-byte spelling.
 
 chdman opens a track by the sheet's raw bytes. For a sheet that is not UTF-8,
 the decoded spellings (cp1252, Latin-1) name a *different* file on POSIX

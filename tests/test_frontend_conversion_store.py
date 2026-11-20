@@ -481,7 +481,7 @@ def test_run_auto_updates_the_repin_badge_even_when_queueing_fails(tmp_path):
     assert data["after"] is False, data
 
 
-# --- An aborted Auto run (Codex 4576827983) ----------------------------------
+# --- An aborted Auto run ----------------------------------
 # The panel passes an AbortSignal and aborts it when it unmounts. An aborted
 # run never opens the confirmation, resolves a pending one as cancelled, and
 # clears autoInFlight, so Start works again when the panel comes back. The
@@ -556,7 +556,7 @@ def test_an_aborted_auto_run_resolves_a_pending_confirm_as_cancelled(tmp_path):
     }, data
 
 
-# --- The target is captured before the first await (CodeRabbit 4576895563/5) --
+# --- The target is captured before the first await --
 # The user can change the mode, its options or the output folder while the
 # RomM snapshot or the Auto plan request is pending. What is queued must be
 # what was planned: everything target-dependent is read once, up front.
@@ -655,7 +655,7 @@ def test_run_auto_uses_the_output_folder_it_previewed(tmp_path):
     }, data
 
 
-# --- The server enforces the confirmed plan (Codex 4576967499) ----------------
+# --- The server enforces the confirmed plan ----------------
 # Only the confirmed plan's actionable rows are sent, each with the target the
 # user saw; an Image the preview skipped is never sent. When the server's
 # replan differs it answers 409 with the new plan, and the flow shows that plan
@@ -747,9 +747,9 @@ def test_declining_the_changed_plan_queues_nothing(tmp_path):
 
 
 # --- Auto turned off mid-run; abort during the RomM snapshot ------------------
-# CodeRabbit 4577045040: picking a target by hand turns Auto off; a run whose
+# picking a target by hand turns Auto off; a run whose
 # plan was still loading then ends without a modal or a queue.
-# CodeRabbit 4577045042: an abort while the RomM snapshot is being taken stops
+# an abort while the RomM snapshot is being taken stops
 # the run before createAutoJobs, and the recorded metadata is retired.
 
 _RUN_AUTO_ENDS_WHEN_AUTO_TURNS_OFF = """
@@ -821,7 +821,7 @@ def test_an_abort_during_the_snapshot_never_queues_and_retires_the_metadata(tmp_
     }, data
 
 
-# CodeRabbit 4578050381: the snapshot can stay pending (a stalled RomM). The
+# the snapshot can stay pending (a stalled RomM). The
 # wait for it is abort-aware: closing the panel frees Start at once (neither
 # autoInFlight nor converting stays set), and the rows the stalled snapshot
 # records when it finally returns are retired on their own, without touching
@@ -975,7 +975,7 @@ def test_an_aborted_run_s_planner_sends_no_further_snapshot_requests(tmp_path):
 
 
 def test_a_codec_picked_for_rvz_never_reaches_wia(tmp_path):
-    """#345, codex 4581559119: the codec selection is kept per tool, so zstd
+    """#345: The codec selection is kept per tool, so zstd
     picked for RVZ is still selected when the mode turns to WIA, which
     dolphin-tool refuses with zstd. The store sends the mode's own default
     instead; RVZ still gets what was picked."""

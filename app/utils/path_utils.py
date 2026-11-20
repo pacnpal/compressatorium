@@ -42,7 +42,7 @@ def path_present(path: str | os.PathLike, *, regular: bool = False) -> bool:
     swallow every error. False when it is absent. Any other ``OSError``
     (ETIMEDOUT, EIO) is "couldn't tell": counted as unknown (``_note_unknown``)
     and reported absent, so a caller that reads the count (``_answered``, the
-    queued identity, codex 4620404219) gets no verdict, and every other caller
+    queued identity) gets no verdict, and every other caller
     sees what the boolean check gave it before."""
     try:
         st = os.stat(path)
@@ -289,14 +289,13 @@ def _quarantine_move(
         # Nothing has moved yet: the file is still at src. The name published
         # at dst goes again, only while it is that same file. If it can't, dst
         # stays published beside src: answered PlacementCommitted, the first
-        # failure chained, so a caller rolls it back as moved
-        # (CodeRabbit 4606441954).
+        # failure chained, so a caller rolls it back as moved.
         try:
             here = _stat_unless_gone(name, parent)
             there = _stat_unless_gone(dst, dst_dir_fd)
         except OSError as exc:
             # Only ENOENT says dst is gone; any other error means it can't be
-            # told, so dst may still be published (CodeRabbit 4606738359).
+            # told, so dst may still be published.
             logger.error(
                 "place_without_clobbering: moving %s failed (%s) and %s couldn't be "
                 "checked: %s", src, failure, dst, exc,
@@ -321,7 +320,7 @@ def _quarantine_move(
                 ) from failure
         elif there is not None and (linked is None or _same_inode(there, linked)):
             # src was replaced (or removed) after the link: dst holds the
-            # original, its only name now, and stays (CodeRabbit 4607070950).
+            # original, its only name now, and stays.
             # (Its link unchecked, it may be: taken as published.)
             logger.error(
                 "place_without_clobbering: %s was replaced while it was moved and "
@@ -1142,7 +1141,7 @@ def source_companion_paths(file_path: str, mode: str) -> list[str]:
     # doesn't answer leaves the list short, so it is an error, not a list.
     tracks = _answered(sheet_track_paths, file_path, whole=True)
     # The tool's own companions the same way: a split set's part whose stat
-    # didn't answer would otherwise drop out of the list (codex 4620404219).
+    # didn't answer would otherwise drop out of the list.
     return [*tracks, *_answered(_tool_companions, file_path, mode, whole=True)]
 
 
@@ -1487,7 +1486,7 @@ def open_dir_beneath(root: str, relative: str = "") -> int:
 def file_snapshot(st: os.stat_result, *, ctime: bool = False) -> dict[str, int]:
     """A file's identity as a delete snapshot has it: size, mtime, inode, device.
 
-    With *ctime*, its ctime too (#432, Codex 4608936764): a rewrite in place
+    With *ctime*, its ctime too (#432): a rewrite in place
     that keeps the inode and size and puts the mtime back can't put the ctime
     back. Only where the file must not change at all while it is read (an
     Inbox archive while it is copied): a hard link or a rename moves the ctime
@@ -1638,7 +1637,7 @@ def source_identity_problem(
             return "the Source isn't under the folder it was queued from"
     else:
         inside = volume_containment(path, treat_archives=False)
-        if inside is None:  # couldn't tell: no verdict (CodeRabbit 4617787310)
+        if inside is None:  # couldn't tell: no verdict
             raise TimeoutError(
                 errno.ETIMEDOUT, "a Volume root didn't answer, so containment couldn't be told",
                 path,
@@ -1648,7 +1647,7 @@ def source_identity_problem(
     try:
         fd, name = _folder_beneath_root(path, identity["root"])
     except TimeoutError:
-        raise  # couldn't tell: no verdict (codex 4618766182)
+        raise  # couldn't tell: no verdict
     except OSError as exc:
         return (
             f"the Source can't be reached under {identity['root']} without "
@@ -1683,8 +1682,8 @@ def queued_source_identity(path: str, mode: str | None = None) -> dict:
     or a companion isn't confirmed inside a Volume, can't be read that way, or
     isn't a regular file. Blocking."""
     real = _confined_source(path)
-    # The resolved path is literal: a folder named `a::b` is no archive
-    # (CodeRabbit 4616898142). Archive syntax was read off *path* above.
+    # The resolved path is literal: a folder named `a::b` is no archive.
+    # Archive syntax was read off *path* above.
     root = _answered(lock_boundary_root, real, treat_archives=False)
     if root is None:
         raise OSError(errno.EACCES, f"{path} isn't confirmed inside the configured Volumes")
@@ -1700,10 +1699,9 @@ def queued_source_identity(path: str, mode: str | None = None) -> dict:
 def _companion_identity(ref: str) -> dict:
     """One companion as :func:`queued_source_identity` records it: the
     reference, where it resolves, and its snapshot under that file's own
-    Volume root (codex 4615261287: a sheet linked across Volumes names
+    Volume root (a sheet linked across Volumes names
     tracks beside the link, in another Volume)."""
-    # A literal path, never archive syntax: a sheet may name `Track::01.bin`
-    # (CodeRabbit 4615955480).
+    # A literal path, never archive syntax: a sheet may name `Track::01.bin`.
     confined = _confined_answered(ref)
     root = _answered(lock_boundary_root, str(confined), treat_archives=False) if confined else None
     if root is None:
@@ -1720,7 +1718,7 @@ def _answered(call: Callable, *args: object, whole: bool = False, **kwargs: obje
     missing what a silent root held), whatever it returned. The one place
     the queued identity's capture and checks turn "couldn't tell" into an
     error a job refused for is marked ``unanswered`` by, never "confirmed
-    outside" (CodeRabbit 4617787310, 4617888601)."""
+    outside"."""
     before = _unknown_count()
     result = call(*args, **kwargs)
     if (whole or result is None) and _unknown_count() != before:
@@ -1753,7 +1751,7 @@ def queued_source_problem(
     refused, never followed. With *mode*, the companions a *mode* job would
     read now must be the ones captured: the same references in the same
     order, each still resolving where it did (two track links that swapped
-    targets read the disc in another order, codex 4615553385), each
+    targets read the disc in another order), each
     unchanged. Fail closed. Blocking."""
     confined = _confined_answered(strip_archive_path(path))
     if confined is None:
@@ -1780,7 +1778,7 @@ def queued_source_problem(
             if source_identity(each["path"], each["root"])["snapshot"] != each["snapshot"]:
                 raise OSError(errno.ESTALE, "it was replaced or changed")
         except TimeoutError:
-            raise  # an open or stat that timed out: no verdict (codex 4618766182)
+            raise  # an open or stat that timed out: no verdict
         except OSError as exc:
             name = os.path.basename(each["ref"])
             return f"{name}, a companion file it reads with the Source, changed ({exc})"
@@ -1904,7 +1902,7 @@ class BoundSource:
         """The first bound file whose size, mtime or ctime is no longer what it
         was at bind time, read through its own descriptor, or None. A hard
         link shares its inode with the Inbox's file, so a resumed download
-        writing that file in place shows here (Codex 4606539513). Blocking."""
+        writing that file in place shows here. Blocking."""
         for name, (fd, then) in self._files.items():
             if _held(os.fstat(fd)) != then:
                 return name
@@ -1946,7 +1944,7 @@ def bind_source(path: str, identity: dict, into: str, progress=None) -> BoundSou
     *into* is an empty folder the job made in the app's own work area
     (``disk.create_scratch_dir``), never in the Inbox: no Inbox writer has
     any right on its parent chain, so it can't be renamed or swapped for a
-    link (Codex 4606562350). The Source and each of its members
+    link. The Source and each of its members
     (``identity["members"]``, a sheet's tracks) are put in it through
     descriptors opened beneath the identity's root with no link followed,
     each checked to be the inode that was validated: a hard link where *into*
@@ -1986,7 +1984,7 @@ def bind_source(path: str, identity: dict, into: str, progress=None) -> BoundSou
             }
             # Baselines only once every name is bound: linking a second name
             # of one inode (two track names hard-linked together) moves its
-            # ctime (CodeRabbit 4606887346). Each is still checked against
+            # ctime. Each is still checked against
             # the identity validated.
             for each, expected in files.items():
                 bound._hold(each, expected if linked[each] else None)

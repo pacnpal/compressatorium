@@ -104,7 +104,7 @@ async def _settle_started_by_hand() -> None:
     They have no Library, so no sweep settles them; the view does, as it
     loads. Bounded and detached: a volume that does not answer leaves them
     listed as they are, and the next load tries again. At most one settle is
-    in flight (CodeRabbit 4580360066): while one runs, even one stuck on a
+    in flight: while one runs, even one stuck on a
     dead mount, a load starts none and lists the Findings as they are, so
     stuck settles never take more than one detached probe slot.
     """

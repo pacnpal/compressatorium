@@ -23,7 +23,7 @@
 // No imports on purpose: the store tests evaluate this file with Node.
 
 // `invalid_window` belongs to the server: `normalize_rule` recomputes it from
-// the window on every save, so the editor never sends it (Codex 4577383258: a
+// the window on every save, so the editor never sends it (a
 // sent flag kept a corrected window paused for good). It is dropped on screen
 // as soon as the window or Enabled changes, so a stale error does not linger
 // until the save answers. Any other edit leaves the server's error showing.

@@ -286,7 +286,7 @@ async def recompute(
     other file goes through its tool's ``content_sha1`` (a full pass: a
     rebuild or a verify), bounded by the tool's ``verify_timeout`` and raced
     against *cancel_event*, and with *fd* it reads the held file, never the
-    name (Codex 4593632748).
+    name.
     """
     name = os.path.basename(path)
     if is_raw_image(path):

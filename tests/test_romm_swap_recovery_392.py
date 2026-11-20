@@ -498,7 +498,7 @@ async def test_a_swap_records_its_instance_and_its_files_fingerprints(vol, romm)
 
 @pytest.mark.asyncio
 async def test_a_slot_another_holds_is_never_taken_twice(vol, romm):
-    """Codex 4595373632: while one holder has a slot, every other
+    """while one holder has a slot, every other
     ``reopen_slot`` fails, and none removes the holder's lock file, so none
     can make a second lock and run beside it."""
     from services import staging
@@ -520,7 +520,7 @@ async def test_a_slot_another_holds_is_never_taken_twice(vol, romm):
 async def test_a_stalled_volume_while_writing_a_finding_never_holds_the_loop(
     vol, romm, monkeypatch,
 ):
-    """Codex 4595373645: the Finding names the slots left, which is a look at
+    """the Finding names the slots left, which is a look at
     the Volume. A Volume that stalls there stalls a detached thread, never
     the event loop: other tasks keep running."""
     seed = Seed(vol, romm)
@@ -559,7 +559,7 @@ async def test_a_stalled_volume_while_writing_a_finding_never_holds_the_loop(
 async def test_a_crash_after_deleting_the_parked_source_settles_done_next_time(
     vol, romm, monkeypatch,
 ):
-    """Codex 4595373639: ``deleting`` is in the journal before the parked
+    """``deleting`` is in the journal before the parked
     Source goes, as in the swap. Stopped after the delete and before
     ``done``, the next run sees ``deleting`` with the Source gone and ends
     the row done, rather than leaving a Finding for good."""
@@ -591,7 +591,7 @@ async def test_a_crash_after_deleting_the_parked_source_settles_done_next_time(
 
 @pytest.mark.asyncio
 async def test_locks_taken_after_the_bound_are_let_go(vol, romm, monkeypatch):
-    """Codex 4595373643: taking the job locks outlives its bound; the pass
+    """taking the job locks outlives its bound; the pass
     moves on, and the locks the late worker took are let go once it ends."""
     from services.lock_manager import lock_manager
     from services.romm import swap_recovery
@@ -841,7 +841,7 @@ async def test_a_swap_left_for_the_same_reason_warns_once_then_again_on_a_new_on
 
 @pytest.mark.asyncio
 async def test_a_parked_name_that_is_a_second_link_of_the_source_is_dropped(vol, romm):
-    """CodeRabbit 4606887339, ruled: a park that left both names (the Source
+    """A park that left both names (the Source
     never moved; the slot holds a second hard link to it) is reconciled by
     dropping that link, never refused as something that isn't the Source.
     Recovery then sees the Source where RomM moved it and nothing parked:
@@ -864,7 +864,7 @@ async def test_a_parked_name_that_is_a_second_link_of_the_source_is_dropped(vol,
 
 @pytest.mark.asyncio
 async def test_a_second_link_beside_a_source_still_in_place_is_settled(vol, romm):
-    """CodeRabbit 4607068244 (a): once the second link is dropped, a Source
+    """Once the second link is dropped, a Source
     still in place under the name RomM has for it is the state before the
     swap moved anything: the row settles on its own, the output the job kept
     is placed beside the Source, and there is no Finding."""

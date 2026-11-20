@@ -294,7 +294,7 @@ def _summarize_archive(
 async def _assert_path_not_in_use(path: str, *, is_dir: bool = False) -> None:
     # The path's own lock, or for a numbered split part (Game.iso.0) the lock
     # on its logical owner, which a split build in another process holds while
-    # it writes parts that have no lock of their own (codex 4577940381).
+    # it writes parts that have no lock of their own.
     if await run_in_threadpool(locked_for_mutation, path) is not None:
         raise HTTPException(
             status_code=409, detail="Path is locked by an active conversion",

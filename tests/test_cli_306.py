@@ -1143,7 +1143,7 @@ def test_a_z3ds_verifier_killed_by_a_signal_keeps_the_stored_pass(
     volume, dolphin, capsys, monkeypatch,
 ):
     """z3ds runs zstd itself, outside the shared runner: its signal death goes
-    through the same killed_verify_error classification (codex 4576670747)."""
+    through the same killed_verify_error classification."""
     import asyncio
     import shutil
     import struct
@@ -1181,7 +1181,7 @@ def test_a_cli_run_imports_the_legacy_verification_store_first(
     volume, dolphin, capsys,
 ):
     """The first CLI write must not leave verified_chds.json behind forever: the
-    CLI runs the same legacy import the web startup does (codex 4576670759)."""
+    CLI runs the same legacy import the web startup does."""
     import asyncio
     import json as json_module
 
@@ -1464,7 +1464,7 @@ def test_a_stored_check_goes_back_to_the_tool_of_its_recorded_mode(
 def test_a_stored_check_skips_platform_narrowing(volume, dolphin, capsys):
     """r7 I2 / P7: a GameCube .iso with a stored Dolphin pass, header gone, in a
     ps2 folder, still reaches Dolphin and fails. The record names the mode
-    that made it, as every conversion's record now does (codex 4577381607);
+    that made it, as every conversion's record now does;
     a record with no mode is routed by Platform instead (tested below)."""
     iso = volume / "ps2" / "Game.iso"
     iso.parent.mkdir()
@@ -1544,7 +1544,7 @@ def test_an_iso_whose_platform_is_unknown_is_skipped_not_failed(volume, dolphin,
 
 
 def test_an_archive_holding_another_image_is_kept(volume, dolphin, capsys):
-    """codex 4576728587: converting only Game.iso out of pack.zip must not
+    """converting only Game.iso out of pack.zip must not
     delete pack.zip, which also holds Other.nsp."""
     pack = volume / "gc" / "pack.zip"
     pack.parent.mkdir()
@@ -1605,7 +1605,7 @@ def test_a_single_image_archive_is_still_deleted(volume, dolphin, capsys):
 
 
 def test_refreshing_a_check_keeps_the_recorded_mode(volume, dolphin, capsys, monkeypatch):
-    """codex 4576728584: a passing re-check wrote produced_meta=None, so the
+    """a passing re-check wrote produced_meta=None, so the
     next run lost the recorded mode and sent the PS3 ISO to Dolphin."""
     from services import ps3
 
@@ -1643,7 +1643,7 @@ def test_a_ps3_iso_goes_to_makeps3iso_on_every_run(volume, dolphin, capsys, monk
 
 
 def test_a_cli_job_holds_its_input_for_other_processes(volume, dolphin, capsys, monkeypatch):
-    """codex 4576728590: while a job reads Game.wia, another process sees the
+    """while a job reads Game.wia, another process sees the
     input as taken (the web guard's exact-path probe refuses with 409)."""
     from services.lock_manager import LockManager, lock_manager
 
@@ -1674,7 +1674,7 @@ def test_a_cli_job_holds_its_input_for_other_processes(volume, dolphin, capsys, 
 def test_delete_on_verify_keeps_a_source_whose_folder_another_process_locked(
     volume, dolphin, capsys, monkeypatch,
 ):
-    """codex 4576810647: in the window after the job lets go of its read locks,
+    """in the window after the job lets go of its read locks,
     another process takes the Source's folder (makeps3iso packing it). The
     delete check sees that lock above the Source and keeps it."""
     from services import job_manager as job_manager_module
@@ -1865,7 +1865,7 @@ def test_an_xiso_outside_an_xbox_folder_goes_to_xiso(volume):
 def test_an_archive_with_an_unsafe_member_is_kept_and_nothing_is_written(
     volume, dolphin, capsys, tmp_path, monkeypatch,
 ):
-    """codex 4577029535: a member named ``../outside-...`` keeps the archive,
+    """a member named ``../outside-...`` keeps the archive,
     exit 1, and no file is created from its name anywhere."""
     import tempfile
     import uuid
@@ -1905,7 +1905,7 @@ def test_the_extraction_validator_refuses_a_nul_in_a_member_name():
 
 
 def test_a_folder_of_chds_is_discovered_for_an_extract_mode(volume, capsys):
-    """codex 4577029533: with --to a mode id, a folder walk uses that mode's
+    """with --to a mode id, a folder walk uses that mode's
     accepted extensions; chdman leaves .chd out of its tool-wide inputs, so
     `convert DIR --to extractdvd` used to find nothing."""
     ps2 = volume / "ps2"
@@ -1934,7 +1934,7 @@ def _other_process():
 def test_a_verify_holds_the_file_against_writers_until_it_ends(
     volume, dolphin, capsys, monkeypatch,
 ):
-    """codex 4577087047: while the CLI checks a file, no other process can
+    """while the CLI checks a file, no other process can
     take it to overwrite or replace it; once the check ends, it can."""
     rvz = _rvz(volume, "gc/Game.rvz")
     other = _other_process()
@@ -2067,7 +2067,7 @@ def test_a_check_lock_that_raises_part_way_leaves_nothing_held(volume, monkeypat
 def test_an_input_lock_that_raises_fails_the_job_and_frees_the_slot(
     volume, dolphin, capsys, monkeypatch,
 ):
-    """codex 4577157688: an exception while taking a job's input locks must
+    """an exception while taking a job's input locks must
     not leave it queued holding its output lock and the slot (which stalls
     every later conversion at concurrency 1). It fails, everything is let go,
     and the next job runs."""
@@ -2102,7 +2102,7 @@ def test_an_input_lock_that_raises_fails_the_job_and_frees_the_slot(
 def test_a_job_cancelled_while_waiting_for_a_reader_keeps_its_source(
     volume, dolphin, capsys, monkeypatch,
 ):
-    """codex 4577178425: cancelled during the reader wait, and the reader lets
+    """cancelled during the reader wait, and the reader lets
     go before the next poll: the Source must survive and the job end
     CANCELLED, not take its delete locks and unlink."""
     import asyncio
@@ -2167,7 +2167,7 @@ def test_a_job_cancelled_while_waiting_for_a_reader_keeps_its_source(
 def test_a_symlink_out_of_the_volumes_is_skipped_never_read(
     volume, dolphin, capsys, tmp_path, command,
 ):
-    """codex 4577208363: a symlink in a Volume pointing outside every Volume is
+    """a symlink in a Volume pointing outside every Volume is
     not planned, checked or converted; it is skipped as outside the
     configured Volumes."""
     outside = tmp_path / "outside"
@@ -2192,7 +2192,7 @@ def test_a_symlink_out_of_the_volumes_is_skipped_never_read(
 def test_a_checked_file_replaced_by_an_escaping_symlink_is_skipped_once(
     volume, dolphin, capsys, tmp_path,
 ):
-    """codex 4577304458: a verified CHD later replaced by a symlink to a file
+    """a verified CHD later replaced by a symlink to a file
     outside the Volumes is listed once, as skipped outside, and no record is
     written for it or for the outside target."""
     chd = volume / "ps2" / "Game.chd"
@@ -2229,7 +2229,7 @@ def _all_records():
 
 
 # --------------------------------------------------------------------------- #
-# Every conversion check records its producing mode (codex 4577381607)
+# Every conversion check records its producing mode
 # --------------------------------------------------------------------------- #
 
 
@@ -2320,7 +2320,7 @@ def test_a_legacy_record_with_no_mode_and_no_platform_is_skipped(volume, dolphin
 
 
 # --------------------------------------------------------------------------- #
-# A split PS3 ISO is one logical Image (codex 4577442578)
+# A split PS3 ISO is one logical Image
 # --------------------------------------------------------------------------- #
 
 
@@ -2468,7 +2468,7 @@ def test_a_split_iso_missing_a_later_part_fails(volume, dolphin, capsys):
 
 
 def test_a_numbered_file_that_is_no_split_output_plans_nothing(volume, dolphin, capsys):
-    """codex 4577484083: save.0 is not a split part; no mode writes `save`.
+    """save.0 is not a split part; no mode writes `save`.
     Only a base carrying a mode's declared output extension qualifies."""
     saves = volume / "saves"
     saves.mkdir()
@@ -2480,7 +2480,7 @@ def test_a_numbered_file_that_is_no_split_output_plans_nothing(volume, dolphin, 
 
 
 def test_a_split_part_pointing_outside_skips_the_whole_image(volume, dolphin, capsys, tmp_path):
-    """codex 4577484093: containment covers every file the check reads, not
+    """containment covers every file the check reads, not
     only the logical name: part 0 a symlink to outside skips the Image, in a
     folder verify and when a contained later part is named."""
     staging = tmp_path / "staging"
@@ -2499,7 +2499,7 @@ def test_a_split_part_pointing_outside_skips_the_whole_image(volume, dolphin, ca
 
 
 def test_a_split_iso_being_rebuilt_is_skipped_as_busy(volume, dolphin, capsys, tmp_path):
-    """codex 4577520805: a rebuild holds only the logical output's lock
+    """a rebuild holds only the logical output's lock
     (Game.iso); the check must see it and skip as busy, not judge a
     half-written set."""
     iso = _real_split_iso(volume / "games")
@@ -2612,7 +2612,7 @@ def test_a_lock_that_cannot_be_made_fails_the_line_with_the_reason(
 ):
     """A lock file that can't be made (EACCES here; a 184-byte track name
     once gave ENAMETOOLONG) is an error, not contention: the job fails with
-    the reason at once instead of being requeued forever (codex 4577893015).
+    the reason at once instead of being requeued forever.
     ``Game_rvz`` is the output lock, ``Game_iso`` the Source's input lock."""
     import errno
 

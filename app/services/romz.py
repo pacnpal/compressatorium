@@ -700,7 +700,7 @@ class RomzService(RunnerService):
             )
             # The bound comes from what `7z t` decompresses, the members'
             # declared sizes (the archive limits bound them), never the
-            # archive's own small size (#431, Codex 4607318277).
+            # archive's own small size (#431).
             declared = await run_detached(
                 self._declared_size, file_path, cancel_event=cancel_event,
             )

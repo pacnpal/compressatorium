@@ -543,7 +543,7 @@ def detect_platform_as(
     Image the Inbox unpacked into the app's work area (#432) is judged by the
     folders its archive sat in and those inside the archive. Uncached.
     *within*: the trusted roots its header probes resolve a sheet's tracks
-    under (its unpack folder, Codex 4608919681); None is the configured
+    under (its unpack folder); None is the configured
     Volumes. Blocking."""
     from services.platform_mappings import MappingsUnavailable
 

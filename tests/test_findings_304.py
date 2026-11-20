@@ -71,7 +71,7 @@ def _mappings_in_turn(monkeypatch, *snapshots: dict[str, str]) -> list[int]:
 
 @pytest.mark.asyncio
 async def test_a_detection_reads_one_mapping_snapshot(db: Path, monkeypatch) -> None:
-    """CodeRabbit 4579059369: the cache key and the decision read the same mappings.
+    """the cache key and the decision read the same mappings.
 
     The mapping says psp when the key is built and ngc a moment later. Read
     twice, the ngc header would be accepted and cached under the psp key. Read
@@ -123,7 +123,7 @@ def _unreadable_mappings(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_unreadable_mappings_never_decide_a_platform(db: Path, monkeypatch) -> None:
-    """CodeRabbit 4579059370: "could not read the mappings" is not "no mappings".
+    """"could not read the mappings" is not "no mappings".
 
     A psp mapping is saved on the folder of a GameCube disc. If the mappings
     can't be read, the header alone would pass as ngc with no conflict.
@@ -791,7 +791,7 @@ def test_the_platform_picker_lists_known_platforms() -> None:
 
 @pytest.mark.asyncio
 async def test_every_platform_the_picker_offers_can_be_mapped(db: Path) -> None:
-    """Codex 4578608816: the picker offers exactly what a mapping accepts.
+    """the picker offers exactly what a mapping accepts.
 
     Picking DOS failed with 422 because the picker listed every display name
     while the mapping accepts only aliased or tool-declared Platforms. Every

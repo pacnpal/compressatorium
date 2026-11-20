@@ -707,7 +707,7 @@ def normalize_rule(
         out["enabled"] = False
     # `invalid_window` is never read from `raw`. The window is kept as sent, so
     # the check above recomputes the flag on every save; honouring a sent flag
-    # would keep a corrected window paused for good (Codex 4577383258).
+    # would keep a corrected window paused for good.
 
     out["check_budget_gb"] = _clamp(
         "check_budget_gb", raw.get("check_budget_gb"), DEFAULT_CHECK_BUDGET_GB,

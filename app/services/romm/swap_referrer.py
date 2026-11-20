@@ -161,7 +161,7 @@ _TASK_ENDED = frozenset({"finished", "failed", "stopped", "canceled", "cancelled
 
 @dataclass(frozen=True)
 class _Binding:
-    """The RomM instance a swap planned against (Codex 4594286722): its URL
+    """The RomM instance a swap planned against: its URL
     and token, and RomM's identity generation then
     (``romm_settings.identity_generation``, bumped by every save that moves
     the instance or library root). Every call of the swap goes to this
@@ -190,7 +190,7 @@ class _Binding:
         )
 
 
-# Swaps running now, and identity changes waiting for them (Codex 4594286722):
+# Swaps running now, and identity changes waiting for them:
 # a settings save that moves RomM's instance or library root waits until no
 # swap runs, and no swap starts while one is waiting. Touched on the event
 # loop only.
@@ -199,7 +199,7 @@ _identity_changes = 0
 
 
 # How long a settings save that moves RomM's identity waits for running swaps
-# before it is refused (CodeRabbit 4594841850): a swap stuck on a mount that
+# before it is refused: a swap stuck on a mount that
 # stopped answering must not hang the request, nor the locks it holds.
 IDENTITY_CHANGE_WAIT_SECONDS = 30.0
 
@@ -273,8 +273,7 @@ RENAME_ONE_FILE_ONLY = (
     "its folder, isn't renamed in a RomM Library"
 )
 
-# What the job and the Ledger say when the swap couldn't run (CodeRabbit
-# 4593839018).
+# What the job and the Ledger say when the swap couldn't run.
 FALLBACK = "the ROM did not keep its id: the swap can't run after the output was placed"
 
 
@@ -371,7 +370,7 @@ def _rom_for(source: str) -> dict | None:
     if found[0].get("missing_from_fs"):
         # RomM says the file is gone while it is here: its scan state can't
         # be trusted, so nothing is renamed and the Source is kept (fail
-        # closed, CodeRabbit 4594841868).
+        # closed).
         raise ReferrerError(
             "RomM", f"RomM marks ROM {found[0]['id']} ({os.path.basename(source)}) missing",
         )
@@ -542,7 +541,7 @@ async def _mutate(func: Callable[..., Any], *args: Any) -> Any:
     outcome on its thread (a flag, the journal), so what happened is known
     before anything acts on the cancel. Every further cancel (a shutdown
     cancelling again during the hook's grace) waits too: the step ends before
-    anything released after it can race it (CodeRabbit 4594841855)."""
+    anything released after it can race it."""
     return await run_detached_to_end(func, *args)
 
 
@@ -552,7 +551,7 @@ def _size_and_sha1(path: str) -> tuple[int, str]:
 
 def _is_snapshot(now: FileIdentity | None, snapshot: Mapping[str, int] | None) -> bool:
     """Whether *now* is the file the delete snapshot *snapshot* fingerprinted
-    before the conversion (Codex 4594537162), by the job's own rule
+    before the conversion, by the job's own rule
     (``JobManager._delete_path_problem``): the same size and ``mtime_ns``,
     and the same inode and device where both sides know them. A rename on
     one filesystem keeps all four, so the Source RomM moved, and the one
@@ -620,7 +619,7 @@ def _queue_repin(plan: _Plan, fill: dict) -> bool:
         plan.rom, plan.output, ids, None, pre_fingerprint="", source_path=plan.source,
     ):
         # Refused (RomM's identity changing, or no row written): the Source
-        # stays rather than lose the metadata (CodeRabbit 4594841873).
+        # stays rather than lose the metadata.
         raise RuntimeError("the re-pin was refused")
     return True
 
@@ -638,13 +637,13 @@ def _refuse_if_romm_changed(plan: _Plan, target: str) -> None:
 async def _fall_back(plan: _Plan, target: str) -> Applied:
     """The swap can't run (the output is in place): take today's path. The
     Source is deleted by the job as with the switch off, the re-pin carries
-    the metadata, and the job and the Ledger say the ROM did not keep its id
-    (CodeRabbit 4593839018). A re-pin that can't be queued keeps the Source.
+    the metadata, and the job and the Ledger say the ROM did not keep its id.
+    A re-pin that can't be queued keeps the Source.
 
     Refused, keeping the Source, while RomM's identity is being changed or
     once the settings no longer name the instance planned against; counted
     as a running swap while the re-pin is written, so an identity change
-    waits for it (CodeRabbit 4594841887)."""
+    waits for it."""
     global _active_swaps
     _refuse_if_romm_changed(plan, target)
     # The Hasheous ids (#427) first, bounded and abandonable: the lookup maps
@@ -743,7 +742,7 @@ class _RenameInPlace:
             await _mutate(self.client.rename_rom, plan.rom_id, plan.new_name)
         except asyncio.CancelledError:
             # The request has ended (``_mutate`` waits for it): settle what it
-            # did before the cancel goes on (CodeRabbit 4602644910).
+            # did before the cancel goes on.
             await self._settle_after_cancel()
             raise
         except RommError as exc:
@@ -829,7 +828,7 @@ class _RenameInPlace:
             except asyncio.CancelledError:
                 # The request has ended (``_mutate`` waits for it): read RomM
                 # back so its result is known, not guessed from the file's
-                # path, before the cancel goes on (CodeRabbit 4602987587).
+                # path, before the cancel goes on.
                 await self._verify_after_cancel(problem)
                 raise
             name = await self._read_name()
@@ -858,8 +857,8 @@ class _Stopped(ReferrerError):
 
 
 class _Unbound(ReferrerError):
-    """RomM's settings no longer name the instance the swap planned against
-    (Codex 4594286722). Nothing more is changed on either instance: the row
+    """RomM's settings no longer name the instance the swap planned against.
+    Nothing more is changed on either instance: the row
     is left for the next run."""
 
 
@@ -889,7 +888,7 @@ class _Swap:
         self.parked = False
         self.placed = False
         # The parked Source was removed: set on the removal's own thread,
-        # so a cancel landing meanwhile still knows (CodeRabbit 4594326517).
+        # so a cancel landing meanwhile still knows.
         self.removed = False
         # The row was left for the next run (``_leave``): the output stays
         # held when the swap ends.
@@ -977,8 +976,8 @@ class _Swap:
             await _mutate(begin)
         except Exception as exc:
             raise ReferrerError(self.target, f"couldn't write the swap journal ({exc})") from exc
-        # From the first move on, the job never places the output on its own
-        # (Codex 4594772381): the swap places it, or releases it when it ends
+        # From the first move on, the job never places the output on its own:
+        # the swap places it, or releases it when it ends
         # (``run``), so a lingering swap is never overtaken.
         self.placement.held.set()
         try:
@@ -1000,7 +999,7 @@ class _Swap:
                         exc.target, f"{exc.reason}; {left}", kept=exc.kept,
                     ) from exc
                 raise
-            # The parked Source was already removed (CodeRabbit 4594326517):
+            # The parked Source was already removed:
             # the swap is done, whatever came after.
             logger.warning("romm_swap: swap %s finished; then %s", self.row, exc)
         except BaseException as exc:
@@ -1014,8 +1013,8 @@ class _Swap:
             # first: the swap is done, and is reported so.
         finally:
             await self._release_park()
-        # The Source is gone: from here on the swap's result is never lost
-        # (Codex 4594537178). The bookkeeping runs as a task of its own; a
+        # The Source is gone: from here on the swap's result is never lost.
+        # The bookkeeping runs as a task of its own; a
         # cancel landing on it leaves it running and still returns the result,
         # which the hook takes (``_await_bounded``).
         bookkeeping = asyncio.ensure_future(self._finish())
@@ -1032,7 +1031,7 @@ class _Swap:
     async def _finish(self) -> None:
         """Record the finished swap and settle the output's re-pin. Never
         raises: bookkeeping after the Source is gone never makes the applied
-        swap look failed (CodeRabbit 4594326492)."""
+        swap look failed."""
         plan = self.plan
         try:
             await self._end("done")
@@ -1097,7 +1096,7 @@ class _Swap:
         plan = self.plan
         self._require_same_instance("the rename")
         # Under the Source's hold (the job holds it through the hook): still
-        # the file that was converted? (Codex 4594537162)
+        # the file that was converted?
         try:
             source = await _probe(file_identity, plan.source)
         except OSError as exc:
@@ -1166,7 +1165,7 @@ class _Swap:
     async def _place_output(self) -> None:
         """Step 3: the job's staged output takes the name.
 
-        A step like every other move (``_mutate``, Codex 4594650576): run on a
+        A step like every other move (``_mutate``): run on a
         thread of its own and never abandoned, so a cancel waits for its real
         outcome before the undo picks its branch, and with no hand-off of the
         job's holds to a worker. The swap, and its undo, keep them until it

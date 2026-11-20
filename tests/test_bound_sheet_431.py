@@ -1,4 +1,4 @@
-"""A bound track sheet (#431, Codex 4606794168).
+"""A bound track sheet (#431).
 
 An Inbox conversion reads its Source from a folder of its own in the app's
 work area (``bind_source``), which is outside every Volume as deployed. Like an
@@ -104,7 +104,7 @@ async def test_a_bound_cue_naming_a_file_outside_its_folder_is_refused(
 
 @pytest.mark.asyncio
 async def test_two_track_names_linked_to_one_file_convert_cleanly(env) -> None:
-    """CodeRabbit 4606887346, ruled: binding the second of two names of one
+    """Binding the second of two names of one
     inode changes its ctime; the baselines are taken once every name is
     bound, so the Source isn't taken for changed and the job converts."""
     volume = env["volume"]

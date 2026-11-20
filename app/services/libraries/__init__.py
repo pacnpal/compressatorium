@@ -259,8 +259,8 @@ def library_for(path: str) -> Library | None:
 
     Then where it lives: *path* resolved against each root resolved, once
     (:func:`_canonical_root`, cached), so a root reached through a symlink (a
-    symlinked ``ROMM_LIBRARY_ROOT``) still holds its Images (codex
-    4588646131), and a file reached from outside every Library through a link
+    symlinked ``ROMM_LIBRARY_ROOT``) still holds its Images, and a file reached
+    from outside every Library through a link
     into one still belongs to it.
 
     The two agree, or one of them finds nothing: that Library. When they name
@@ -697,12 +697,12 @@ async def _remove(library: FolderLibrary, library_id: str, record_id: int) -> No
     # Under the registration lock (#431): an Inbox saved for this Library
     # between its Inboxes' removal and the delete would be left behind,
     # feeding a Library that no longer exists. Taken before anything is
-    # cleaned up, and bounded (CodeRabbit 4606147989): a registration that
+    # cleaned up, and bounded: a registration that
     # won't end answers a retryable 409 with the Library untouched.
     await _claim_registration()
     # Who lets go of the lock: the delete's worker once it has started, else
     # this request. Decided under `guard`, so a worker that starts as the
-    # request gives up never runs without it (CodeRabbit 4606887332).
+    # request gives up never runs without it.
     guard = threading.Lock()
     run = {"started": False, "abandoned": False}
     try:

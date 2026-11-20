@@ -503,7 +503,7 @@ def read_members_of(source: IO[bytes], ext: str) -> list[ArchiveMember]:
     a caller that must read the listing and the contents from one open file
     (the Inbox, #432, gating the very archive it unpacks). A rar is refused
     (``ValueError``): rarfile finds a later volume by the file's name and
-    gives up silently on a file object (Codex 4584380491)."""
+    gives up silently on a file object."""
     if ext == ".zip":
         return _zip_members(source)
     if ext == ".7z" and HAS_7Z:
@@ -574,7 +574,7 @@ def _read_rar_now(
 
     Always opened by path: rarfile finds a multi-volume archive's next volume
     from the file name and gives up silently on a file object, which would
-    list only the first volume (Codex 4584380491). Progress comes from its
+    list only the first volume. Progress comes from its
     supported ``info_callback``, one report per header parsed, across every
     volume. rarfile's default ``errors="stop"`` ends a parse quietly at a
     missing or broken volume; that is :class:`IncompleteArchive` here.

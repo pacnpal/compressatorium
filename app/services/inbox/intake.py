@@ -203,7 +203,7 @@ class _Flight:
     job_id: str | None = None
     task: asyncio.Task | None = None
     # Its output is in the Library and the originals still wait to go to
-    # processed/: set when another job held one of them (Codex 4607108034),
+    # processed/: set when another job held one of them,
     # so the next poll tries the move again (``_settle_flights``).
     archive: str | None = None
     # Each of its files' names in the Library, in ``files`` order: its main
@@ -237,7 +237,7 @@ class _State:
     held: dict[str, str] = field(default_factory=dict)
     # Path -> what an ownership hold depends on (the sheets that caused it,
     # each with its fingerprint): recomputed each poll, and a hold whose key
-    # changed is lifted and the Image looked at again (Codex 4607108025).
+    # changed is lifted and the Image looked at again.
     held_by: dict[str, tuple] = field(default_factory=dict)
     flights: dict[str, _Flight] = field(default_factory=dict)
     # What was placed since the last poll reported it: ``{"path", "platform",
@@ -257,7 +257,7 @@ class _State:
     taken_holds: dict[str, list[str]] = field(default_factory=dict)
     # Archive path -> {"fingerprint", "members": {path in the archive:
     # {"output", "identity"}}}: each of its Images already placed, kept
-    # outside its disposable unpack slot (CodeRabbit 4608968248), so one
+    # outside its disposable unpack slot, so one
     # unpacked again counts as placed while its output is still that file
     # (a conversion's bytes can't be compared with its Source).
     placed_members: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -279,11 +279,11 @@ class _State:
     error: str | None = None
     polling: bool = False
     # Set when the Inbox is removed (`forget`): a poll or copy still holding
-    # this state admits nothing new (CodeRabbit 4606147955).
+    # this state admits nothing new.
     revoked: bool = False
     # Guards `revoked` against a removal on another thread: set under it, and
     # each admission checks it and records what it admitted under it, with no
-    # await between (CodeRabbit 4606443430). Never held across I/O or awaits.
+    # await between. Never held across I/O or awaits.
     guard: threading.Lock = field(default_factory=threading.Lock)
 
 
@@ -297,13 +297,12 @@ _UNPACK_PREFIX = "inbox_unpack_"
 _slot_roots: set[str] = set()
 _slots_lock = threading.Lock()
 # What each open unpack slot reserved (its archive's declared total), by
-# slot: all of them together stay under `inbox_unpacked_limit` (Codex
-# 4608429476). Guarded by `_slots_lock`.
+# slot: all of them together stay under `inbox_unpacked_limit`. Guarded by `_slots_lock`.
 _slot_sizes: dict[int, int] = {}
 # Archives whose wait for room was logged already: logged once per wait.
 _room_logged: set[str] = set()
-# How long the Recognize read may go without progress before it is given up
-# (Codex 4608007769); None is the conversion's own stall limit.
+# How long the Recognize read may go without progress before it is given up;
+# None is the conversion's own stall limit.
 _RECOGNIZE_STALL_SECONDS: float | None = None
 # How long priming a bound file's embedded hashes (a CHD's `chdman info`)
 # may take before the match goes on without them.
@@ -345,7 +344,7 @@ class _Incomplete(Exception):
 
 
 class _NoRoom(Exception):
-    """No room to unpack an archive now (#432, Codex 4608429476): the work
+    """No room to unpack an archive now (#432): the work
     area's free space, or the cap on what is unpacked at once. Not the
     archive's fault: it waits, with no Finding, and is tried again."""
 
@@ -416,8 +415,7 @@ def forget(inbox_id: int) -> None:
 
 def _close_unpacked(state: _State) -> None:
     """Remove every unpack slot of a removed Inbox (idempotent): at once
-    when nothing reads from it, else once the last reader ends (Codex
-    4608007773, CodeRabbit 4608968241): a conversion queued or running from
+    when nothing reads from it, else once the last reader ends: a conversion queued or running from
     it, or a copy's task (a copy waiting for a conversion slot included), so
     it still runs. The map itself is left as it is: a poll still running on
     the loop may be reading it. Blocking."""
@@ -585,7 +583,7 @@ def _list(
     files, unlisted = _walk([folder, *extra], folder, progress)
     # Progress between Images through grouping, fingerprinting and the
     # ownership checks too, so the stall bound measures stalled storage, not
-    # how long a big pass takes (Codex 4607108046).
+    # how long a big pass takes.
 
     def members(path: str) -> list[str]:
         progress(path)
@@ -651,12 +649,12 @@ def _behind_unreadable_sheets(
 ) -> dict[str, str]:
     """Image -> the sheet of unknown ownership (its path) that could name it,
     for every loose track-type file in that sheet's folder or any folder
-    below it (Codex 4606061269, 4607108018): a sheet may name
+    below it: a sheet may name
     ``tracks/Track.bin``. A sheet's ownership is unknown when it can't be
     read whole (unreadable, over the size cap) or its track list doesn't
     fully resolve beneath *within* (``sheet_track_list`` is None: an
     absolute, escaping or missing reference, anything ``image_members``
-    drops, Codex 4607280415), the test ``owning_sheet`` applies. Such a
+    drops), the test ``owning_sheet`` applies. Such a
     sheet owns nobody, so its tracks would be taken as Images of their own:
     they are held instead, failing closed. Blocking."""
     from services.image_sets import SHEET_EXTENSIONS, is_playlist
@@ -834,8 +832,8 @@ async def poll_all(
             results.append(await poll(inbox, now=now, should_stop=should_stop))
         except Exception as exc:
             logger.warning("inbox: polling %s failed", inbox.folder, exc_info=True)
-            # The same last-error comparison as a listing error (CodeRabbit
-            # 4608135791): kept as the Inbox's error, news only when it
+            # The same last-error comparison as a listing error: kept as the
+            # Inbox's error, news only when it
             # differs from the error before this poll.
             error = f"Polling the Inbox failed: {exc}"
             state.error = error
@@ -974,7 +972,7 @@ async def poll(
         return result
     except Exception as exc:
         # Kept as the Inbox's error like a listing error, so it goes through
-        # the same comparison (CodeRabbit 4608135791), and what was placed or
+        # the same comparison, and what was placed or
         # left before it raised is still reported.
         logger.warning("inbox: polling %s failed", inbox.folder, exc_info=True)
         state.error = result["error"] = f"Polling the Inbox failed: {exc}"
@@ -1063,8 +1061,8 @@ async def _settle_unpacked(
             continue
         remaining = unpacked.images - unpacked.placed
         if remaining and all(image in state.held for image in remaining):
-            # Every Image left in it is held: nothing is kept for them
-            # (Codex 4608429476). The archive stays the source of truth.
+            # Every Image left in it is held: nothing is kept for them.
+            # The archive stays the source of truth.
             busy.update(unpacked.images)
             await _hold_unpacked(state, archive, unpacked, remaining)
             continue
@@ -1106,8 +1104,8 @@ async def _hold_unpacked(
 
 def _outputs_identity(output: str) -> dict[str, dict[str, int]] | None:
     """Every file of the output Image at *output* in the Library (the file
-    and its members: a CUE's BINs, an extractcd's tracks, a split's parts,
-    Codex 4609181297), each with its identity; None when any of them isn't a
+    and its members: a CUE's BINs, an extractcd's tracks, a split's parts),
+    each with its identity; None when any of them isn't a
     regular file there now. Blocking."""
     out: dict[str, dict[str, int]] = {}
     for name in [output, *_members(output)]:
@@ -1218,8 +1216,7 @@ async def _take(
     transient; the next poll tries again)."""
     owner = _unpacked_holding(state, path)
     if owner is not None and await _placed_before(state, owner, path):
-        # Placed before this archive was unpacked again (CodeRabbit
-        # 4608968248): counted, nothing taken.
+        # Placed before this archive was unpacked again: counted, nothing taken.
         owner[1].placed.add(path)
         return "placed_before"
     if archive_service.is_archive(path):
@@ -1343,7 +1340,7 @@ async def _take(
     except (asyncio.TimeoutError, OSError):
         return "retry"
     if taken:
-        # Under the output locks a copy would take (CodeRabbit 4608968255):
+        # Under the output locks a copy would take:
         # no job writes the Library's file while it is compared.
         targets = [os.path.join(plan.folder, name) for name in flight.placed_names]
         try:
@@ -1410,8 +1407,8 @@ def _same_as_placed(
                 name, dst_fd, progress, opened=opened,
             ):
                 return False
-            # The Library's name must still be the very file just hashed
-            # (CodeRabbit 4608968255): one replaced while it was read is not.
+            # The Library's name must still be the very file just hashed:
+            # one replaced while it was read is not.
             there = stat_at(name, dst_fd)
             if there is None or not opened or _held_identity(there) != _held_identity(
                 opened[0],
@@ -1522,7 +1519,7 @@ async def _name(
             state.ranked_holds[path] = ranking
         return "held"
     if ranked.top is not None and ranked.top.get("game_name"):
-        # Every part of a split output alike (Codex 4608919686); a sheet's
+        # Every part of a split output alike; a sheet's
         # tracks keep their names.
         named = dat_file_names(ranked.top["game_name"], names)
         if named:
@@ -1641,16 +1638,16 @@ async def _recognize(
         else:
             try:
                 await job_manager.update_external_job(job.id, message="Recognizing it")
-                # The bytes intake takes, never the pathname (CodeRabbit
-                # 4608968259): its file bound into the app's work area as a
+                # The bytes intake takes, never the pathname: its file bound
+                # into the app's work area as a
                 # conversion's Source is, identity-checked, read there, and
                 # the match kept only while the bound file is unchanged. The
-                # read is stall-bounded and stops at Cancel (Codex
-                # 4608007769); the slot is given back below either way.
+                # read is stall-bounded and stops at Cancel; the slot is given
+                # back below either way.
                 bound = await _bind_for_match(inbox, path, flight, cancel)
                 try:
                     # What its tool reads its embedded hashes from, read from
-                    # the bound copy (Codex 4609181291): a CHD's SHA-1s.
+                    # the bound copy: a CHD's SHA-1s.
                     await _prime_for_match(bound.read_path, cancel)
                     with collect_abandonment() as abandoned:
                         try:
@@ -1687,7 +1684,7 @@ async def _recognize(
         why = str(exc)
     if outcome == "recognized":
         # With the identity of the file it hashed: `_name` uses it only for
-        # that very file (CodeRabbit 4608968259).
+        # that very file.
         name = os.path.basename(path)
         state.recognized[path] = (flight.fingerprint, flight.identities.get(name), result)
         await job_manager.finish_external_job(job.id, success=True)
@@ -1730,7 +1727,7 @@ def _archive_is_image(path: str) -> bool:
 def _gate_opened(inbox: inbox_store.Inbox, path: str, identity: dict) -> None:
     """The Inbox gate on the archive at *path*, opened through the Inbox's
     own folder with no link followed and only while it is *identity*: the
-    file judged is the one taken (Codex 4608007766). Blocking."""
+    file judged is the one taken. Blocking."""
     folder_fd, names = _folder_beneath(inbox, [path])
     try:
         fd = os.open(names[0], os.O_RDONLY | _NOFOLLOW, dir_fd=folder_fd)
@@ -1750,8 +1747,7 @@ async def _gate_archive(
     anything reads it whole: None when it passes, else the outcome (held with
     a Finding, or ``retry``). *what* says what wasn't done to it."""
     # Anyone who can write the Inbox can drop one: an archive past the
-    # Inbox's size and expansion caps is never unpacked, checked nor copied
-    # (Codex 4607318277).
+    # Inbox's size and expansion caps is never unpacked, checked nor copied.
     try:
         await _step(_gate_opened, inbox, path, identity)
     except _SourceChanged:
@@ -1841,7 +1837,7 @@ async def _take_archive(
             "outer one by hand",
         )
         return "held"
-    # Room first (Codex 4608429476): an archive that won't fit now waits,
+    # Room first: an archive that won't fit now waits,
     # with no Finding and no job. The unpack job checks it again, reserving.
     try:
         room = await _step(_room_problem, path)
@@ -1852,7 +1848,7 @@ async def _take_archive(
         return "waiting"
     _room_logged.discard(path)
     # Its identity first: the unpack job gates and unpacks the one file it
-    # then opens, and only while it is this one (Codex 4608007766).
+    # then opens, and only while it is this one.
     try:
         identities = await _step(_identities, inbox, [path])
     except asyncio.TimeoutError:
@@ -1874,7 +1870,7 @@ async def _take_archive(
 class _UnpackSlot:
     """A private folder an archive is unpacked into (#432), in the app's own
     work area (``disk.create_scratch_dir``, the tree a bound Source uses), on
-    which no Inbox writer has any right (Codex 4608030847). Held open
+    which no Inbox writer has any right. Held open
     (``fd``): extraction writes beneath the descriptor, never by path. Its
     real path is registered as a root intake may read an Image under
     (:func:`_root_of`) until it is closed."""
@@ -2014,10 +2010,10 @@ def _unpack_blocking(
     followed, and only while it is the file that was taken. A private copy of
     it is made first, into the slot (``copy_checked``, the copy a bound
     Source falls back to: bounded by its progress, its source's identity,
-    ctime included, checked before the first read and after the last, Codex
-    4608936764), so nothing an Inbox writer does to the original afterwards
+    ctime included, checked before the first read and after the last), so
+    nothing an Inbox writer does to the original afterwards
     can reach what is gated and unpacked. The gate and the extraction both
-    read that copy (Codex 4608007766), which counts toward the slot's room
+    read that copy, which counts toward the slot's room
     and goes with it. Blocking."""
     _may_open(os.path.basename(path))
     folder_fd, names = _folder_beneath(inbox, [path])
@@ -2062,8 +2058,7 @@ def _unpack_blocking(
         files, unlisted = _walk([slot.path], None, progress)
         if unlisted:
             # An inventory missing a folder would let the archive move to
-            # processed/ with its Images there never placed (CodeRabbit
-            # 4608968267): nothing is taken from it.
+            # processed/ with its Images there never placed: nothing is taken from it.
             raise _Incomplete(os.path.relpath(unlisted[0], slot.path))
         images = list(group_images(sorted(files), members=_members))
         progress()
@@ -2136,7 +2131,7 @@ async def _unpack(
         return
     if outcome == "no_room":
         # Not the archive's fault: no Finding, and it stays settled, so the
-        # next poll tries again (Codex 4608429476).
+        # next poll tries again.
         await job_manager.finish_external_job_waiting(
             job.id, _wait_for_room(state, path, why),
         )
@@ -2326,7 +2321,7 @@ def _destination(
         return None, ONTO_SOURCE_REASON, shown
     if decision == SKIP_LOCKED:
         # Another job holds the name, nothing is on disk: busy for now, never
-        # a Finding (Codex 4606794174).
+        # a Finding.
         return None, "busy", shown
     if decision != QUEUE or not destination:
         return None, "already_taken", shown
@@ -2471,8 +2466,8 @@ async def _settle_ended(
     if state.flights.get(path) is not flight or flight.job_id != job.id:
         return  # settled already, or not this job's
     if job.status == JobStatus.COMPLETED:
-        # Moving the original to processed/ is its own tracked flight
-        # (CodeRabbit 4606147968): a slow move never holds up this poll,
+        # Moving the original to processed/ is its own tracked flight:
+        # a slow move never holds up this poll,
         # and the Image stays in flight, not taken again, until it ends.
         flight.job_id = None
         _note_placed(state, path, flight, job.output_path)
@@ -2499,7 +2494,7 @@ async def on_job_finished(job: Any) -> None:
     """A terminal listener (``run-rules`` registers it, #433): settle the
     Inbox conversion *job* belongs to the moment it ends, from the job itself,
     so nothing depends on the job history still holding it when the next
-    poll or :func:`finish_all` looks (Codex 4608095516). Never raises."""
+    poll or :func:`finish_all` looks. Never raises."""
     inbox_id = getattr(job, "inbox_id", None)
     state = _states.get(inbox_id) if inbox_id is not None else None
     if state is None or job.mode in (
@@ -2527,7 +2522,7 @@ async def on_job_finished(job: Any) -> None:
 def _note_placed(state: _State, path: str, flight: _Flight, output: str | None) -> None:
     """The Image's output is in the Library: it counts as placed now, before
     its original goes to ``processed/``, so the pass summary and RomM's scan
-    see it even when that move fails (Codex 4608095510). An Image unpacked
+    see it even when that move fails. An Image unpacked
     from an archive (#432) is reported with the archive's path, and counts
     toward that archive's own move to ``processed/`` from now on."""
     owner = _unpacked_holding(state, path)
@@ -2541,8 +2536,8 @@ def _note_placed(state: _State, path: str, flight: _Flight, output: str | None) 
 def _archive_later(
     inbox: inbox_store.Inbox, state: _State, path: str, flight: _Flight, output: str | None,
 ) -> None:
-    """Move the originals to ``processed/`` as *flight*'s own tracked task
-    (CodeRabbit 4606147968): a slow move never holds up a poll."""
+    """Move the originals to ``processed/`` as *flight*'s own tracked task:
+    a slow move never holds up a poll."""
     flight.archive = None
     _track(state, path, flight, _finish(inbox, state, path, flight, output))
 
@@ -2572,7 +2567,7 @@ async def _finish(
     Only while it is still the Image that was taken: replaced or changed since,
     the Library holds the old contents, so the file stays in the Inbox to
     settle and be taken again. And only under the exclusive locks on every
-    original (Codex 4607108034): while another job reads one (its input
+    original: while another job reads one (its input
     lock), nothing moves, no Finding is written, and the Image stays in
     flight for the next poll (``flight.archive``).
     """
@@ -2662,7 +2657,7 @@ class _SourceChanged(OSError):
 
 def _slot_within(path: str) -> list[str] | None:
     """The unpack folder *path* sits in, as the one trusted root its sheet's
-    tracks resolve within (#432, Codex 4608417860): the value its conversion
+    tracks resolve within (#432): the value its conversion
     job is created trusting. None for a file in a Volume."""
     with _slots_lock:
         for root in _slot_roots:
@@ -2866,7 +2861,7 @@ def _move_to_processed(
                     if at_old is not None:
                         # Its Inbox name is taken by another file (a writer
                         # put one there): never moved back over it. It keeps
-                        # its only name, in processed/ (CodeRabbit 4607070950).
+                        # its only name, in processed/.
                         logger.error(
                             "inbox: %s stays in processed/: %s is taken by another file",
                             here, there,
@@ -3292,21 +3287,21 @@ def settle_memory(inbox_ids: set[int]) -> dict[str, Any]:
                 path: [list(item) for item in depends]
                 for path, depends in state.held_by.items()
             },
-            # What a naming conflict or a taken name is held on (#432, Codex
-            # 4608417851): a later run lifts the hold when it changed.
+            # What a naming conflict or a taken name is held on (#432): a later
+            # run lifts the hold when it changed.
             "ranked_holds": {
                 path: [list(item) for item in ranking]
                 for path, ranking in state.ranked_holds.items()
             },
             "taken_holds": {path: list(taken) for path, taken in state.taken_holds.items()},
-            # Each archive's Images placed (CodeRabbit 4608968248).
+            # Each archive's Images placed.
             "placed_members": state.placed_members,
             # The last poll's error, so the same outage isn't news to the
-            # next run's summary (Codex 4608095505).
+            # next run's summary.
             "error": state.error,
             # Originals whose output is in the Library but whose move to
             # processed/ was put off (another process held one): the next run
-            # does only that move (CodeRabbit 4608135794).
+            # does only that move.
             "archive": {
                 path: {
                     "fingerprint": flight.fingerprint, "files": list(flight.files),

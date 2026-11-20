@@ -113,7 +113,7 @@ process.stdout.write(JSON.stringify({
 
 
 def test_a_superseded_open_folder_does_not_win(tmp_path):
-    """CodeRabbit 4579059379: only the latest Open folder navigates.
+    """only the latest Open folder navigates.
 
     With no Volumes loaded yet, two Open folder actions each fetch the Volume
     list. The second fetch answers first and opens its folder; when the first

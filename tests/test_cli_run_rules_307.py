@@ -1171,7 +1171,7 @@ def test_a_stop_while_images_are_inspected_ends_the_inspection(
 def test_a_stop_while_delete_snapshots_are_read_queues_nothing(
     env, dolphin, capsys, monkeypatch,
 ):
-    """codex 4577047502: a delete-on-verify batch reads one snapshot per
+    """a delete-on-verify batch reads one snapshot per
     Source before it queues; a stop during that must queue none of it."""
     import os
     import signal
@@ -1269,7 +1269,7 @@ asyncio.run(main())
 
 
 def test_schedulers_before_and_after_db_init_share_one_lock(tmp_path):
-    """Fresh install (codex 4576813495): the data dir does not exist when the
+    """Fresh install: the data dir does not exist when the
     first scheduler starts; its database init creates it. A scheduler started
     after that must contend for the same lock file and wait, not take another."""
     import os
@@ -1402,7 +1402,7 @@ def test_a_folder_library_has_the_contracts_no_op_before_pass(mixed, dolphin, ca
 def test_a_dry_run_on_a_fresh_data_dir_lists_libraries_without_a_database(
     env, dolphin, capsys, monkeypatch,
 ):
-    """codex 4577832438: folder Libraries live in the database, so with none
+    """folder Libraries live in the database, so with none
     there are only the Libraries that need none (RomM). A dry run reports
     no_rules instead of failing, and --library is still checked."""
     from services import libraries
@@ -1423,7 +1423,7 @@ def test_a_dry_run_on_a_fresh_data_dir_lists_libraries_without_a_database(
 def test_run_rules_restores_the_saved_hasheous_toggle_before_sweeping(
     env, dolphin, capsys, monkeypatch,
 ):
-    """codex 4577832444: folder-Library recognition reads the Hasheous toggle.
+    """folder-Library recognition reads the Hasheous toggle.
     The server restores the one saved in the web UI at startup; run-rules must
     too, or a Rule's only_unmatched filter decides differently."""
     from routes.dat import HASHEOUS_PREF_KEY
@@ -1456,7 +1456,7 @@ def test_run_rules_restores_the_saved_hasheous_toggle_before_sweeping(
 def test_a_stop_while_a_library_lists_its_images_ends_the_pass_promptly(
     env, dolphin, capsys,
 ):
-    """codex 4577873883: a listing on a slow mount can take up to the listing
+    """a listing on a slow mount can take up to the listing
     bound (600 s). A stop must not wait for it: the listing worker is left to
     finish on its own and the pass ends at once."""
     import os
@@ -1485,7 +1485,7 @@ def test_a_stop_while_a_library_lists_its_images_ends_the_pass_promptly(
 def test_a_full_queue_is_a_failed_pass_that_says_what_was_left(
     env, dolphin, capsys, monkeypatch,
 ):
-    """codex 4577873888: when the queue refuses a batch the sweep stops with
+    """when the queue refuses a batch the sweep stops with
     queue_full and queues nothing more. That is not a clean pass: exit 1, and
     the Platform's line says how many Images were left unqueued."""
     from config import settings
@@ -1508,7 +1508,7 @@ def test_a_full_queue_is_a_failed_pass_that_says_what_was_left(
 
 
 # --------------------------------------------------------------------------- #
-# A check Rule's run (#305 x #307, codex 4577971073)
+# A check Rule's run (#305 x #307)
 # --------------------------------------------------------------------------- #
 
 
@@ -1590,7 +1590,7 @@ def test_a_check_that_finds_damage_exits_1(env, monkeypatch, capsys):
 
 
 def test_a_check_failure_alert_is_sent_before_exit(env, monkeypatch, capsys):
-    """Codex 4578034606: the check run's alert goes out through the queued
+    """the check run's alert goes out through the queued
     notify(); run-rules waits for queued sends before it exits, even when the
     destinations are slow to load."""
     from services import notifications

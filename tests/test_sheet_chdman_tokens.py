@@ -275,7 +275,7 @@ def test_a_line_one_byte_over_a_chdman_read_is_unreadable(layout):
 
 
 # --------------------------------------------------------------------------- #
-# Unterminated quotes (CodeRabbit 4577045037)
+# Unterminated quotes
 # --------------------------------------------------------------------------- #
 # chdman's tokenizer keeps the line's "\n" inside an unclosed quote, so
 # `1 0 4 2048 'pipe` opens a file named "pipe\n". A sheet with a line whose

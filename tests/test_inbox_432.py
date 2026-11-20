@@ -607,7 +607,7 @@ async def test_a_held_archives_finding_goes_when_it_leaves_the_inbox(vol, db, mo
 async def test_an_archive_swapped_before_the_gate_is_gated_as_the_file_unpacked(
     vol, db, monkeypatch,
 ):
-    """Codex 4608007766 (P1): an archive replaced after it settled, before
+    """An archive replaced after it settled, before
     the gate, must be gated as the very file that is unpacked. The
     replacement is over the cap, so nothing is written and it is held."""
     import os
@@ -660,7 +660,7 @@ def _stored_zip(path: Path, name: str, data: bytes) -> Path:
 
 
 def test_a_member_bigger_than_it_declares_is_stopped(tmp_path, monkeypatch):
-    """Codex 4608007766, defence in depth: the bytes actually written are
+    """The bytes actually written are
     counted, and a member that yields more than its header declares is
     stopped there, never written whole."""
     import copy
@@ -728,7 +728,7 @@ def _hung_hash(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_a_recognize_read_that_stalls_fails_within_its_bound(vol, db, monkeypatch):
-    """Codex 4608007769 (P1): the SHA-1 fallback is stall-bounded, so a hung
+    """The SHA-1 fallback is stall-bounded, so a hung
     read fails the job with a Finding and gives its conversion slot back."""
     import asyncio
 
@@ -787,7 +787,7 @@ async def test_cancelling_a_recognize_mid_hash_ends_it_promptly(vol, db, monkeyp
 
 @pytest.mark.asyncio
 async def test_removing_an_inbox_keeps_a_slot_a_queued_conversion_reads(vol, db, queue):
-    """Codex 4608007773 (P2): a slot a queued conversion reads from outlives
+    """A slot a queued conversion reads from outlives
     the Inbox's removal, and goes once that job ends."""
     import asyncio
 
@@ -837,7 +837,7 @@ async def test_removing_an_inbox_with_no_job_on_a_slot_removes_it_at_once(
 
 @pytest.mark.asyncio
 async def test_an_archive_is_unpacked_in_the_work_area_not_the_inbox(vol, db, monkeypatch):
-    """Codex 4608030847 (P1): the unpack folder is the app's own, outside the
+    """The unpack folder is the app's own, outside the
     Inbox (and every Volume), where no Inbox writer has any right."""
     from services.inbox import intake
 
@@ -860,7 +860,7 @@ async def test_an_archive_is_unpacked_in_the_work_area_not_the_inbox(vol, db, mo
 async def test_an_unpack_folder_swapped_for_a_link_writes_nothing_outside(
     vol, db, tmp_path, monkeypatch,
 ):
-    """Codex 4608030847 (P1): the unpack folder replaced by a link to another
+    """The unpack folder replaced by a link to another
     folder mid-extract. Every byte goes beneath the folder held open, so
     nothing lands where the link points, and the archive is refused with a
     Finding."""
@@ -895,7 +895,7 @@ async def test_an_unpack_folder_swapped_for_a_link_writes_nothing_outside(
 
 @pytest.mark.parametrize("kind", ["zip", "7z"])
 def test_extraction_writes_through_the_held_folder(tmp_path, kind):
-    """Codex 4608030847: every format is unpacked through descriptors (a
+    """every format is unpacked through descriptors (a
     nested folder made with ``mkdir(dir_fd=...)``, each file ``O_EXCL``), and
     the bytes come out right."""
     import os
@@ -1202,7 +1202,7 @@ async def test_one_run_rules_pass_places_an_archives_images(vol, db, monkeypatch
 
 @pytest.mark.asyncio
 async def test_a_naming_conflict_hold_lifts_across_runs_when_the_ranking_changes(vol, db):
-    """Codex 4608417851: a run-rules run is a new process. The ranking a
+    """a run-rules run is a new process. The ranking a
     conflict was held under is kept with intake's memory, so a later run
     sees the ranking changed and places the Image."""
     import json
@@ -1233,7 +1233,7 @@ async def test_a_naming_conflict_hold_lifts_across_runs_when_the_ranking_changes
 
 @pytest.mark.asyncio
 async def test_a_cue_and_its_bin_in_an_archive_are_one_image(vol, db, queue):
-    """Codex 4608417860: inside the unpack folder, a sheet's tracks resolve
+    """inside the unpack folder, a sheet's tracks resolve
     within that folder, so a cue and its bin are one Image. Its conversion
     carries the track in its identity and passes the companion check."""
     from services.job_manager import JobManager, _reads, _trusted_roots, job_manager
@@ -1277,7 +1277,7 @@ async def test_a_cue_and_its_bin_in_an_archive_are_one_image(vol, db, queue):
 
 @pytest.mark.asyncio
 async def test_a_recognize_waiting_for_the_match_lane_ends_at_cancel(vol, db, monkeypatch):
-    """Codex 4608417866: a Recognize waiting for the match lane stops at
+    """a Recognize waiting for the match lane stops at
     Cancel, ends cancelled and gives its conversion slot back.
 
     A limiter of the test's own (the app's is shared by every test, and its
@@ -1333,7 +1333,7 @@ async def test_a_recognize_waiting_for_the_match_lane_ends_at_cancel(vol, db, mo
     assert intake.job_manager.slots_in_use() == 0
 
 
-# ---- unpack folders don't pile up (Codex 4608429476) -------------------------
+# ---- unpack folders don't pile up -------------------------
 
 
 @pytest.mark.asyncio
@@ -1440,7 +1440,7 @@ async def test_low_free_space_in_the_work_area_defers_with_no_finding(vol, db, m
 
 @pytest.mark.asyncio
 async def test_an_unpacked_ps1_cue_is_detected_by_its_header(vol, db, monkeypatch):
-    """Codex 4608919681: a PS1 cue and bin in a zip with no Platform folder.
+    """a PS1 cue and bin in a zip with no Platform folder.
     Its header is read with the unpack folder as the trusted root its track
     resolves within, so it is detected as psx and placed."""
     from .test_disc_id import _make_iso, _make_mode1_bin
@@ -1466,7 +1466,7 @@ async def test_an_unpacked_ps1_cue_is_detected_by_its_header(vol, db, monkeypatc
 
 @pytest.mark.asyncio
 async def test_a_split_image_takes_its_dat_name_on_every_part(vol, db):
-    """Codex 4608919686: a numbered split Image named from its DAT keeps its
+    """a numbered split Image named from its DAT keeps its
     logical extension and renames every part alike, so it is still one set."""
     from services.tools import registry
 
@@ -1595,7 +1595,7 @@ def _ps1_cue_zip(archive: Path) -> tuple[bytes, bytes]:
 async def test_an_unpacked_disc_in_the_wrong_platform_folder_is_a_conflict(
     vol, db, monkeypatch,
 ):
-    """CodeRabbit 4608968270: the header is read from the unpacked track, so
+    """the header is read from the unpacked track, so
     a PS1 disc in a ps2 folder raises the header/folder conflict instead of
     being placed by its folder."""
     _verifies(monkeypatch)
@@ -1614,7 +1614,7 @@ async def test_an_unpacked_disc_in_the_wrong_platform_folder_is_a_conflict(
 
 
 def test_unpacking_never_writes_past_what_was_reserved(tmp_path):
-    """CodeRabbit 4608968265: the total written is held to the slot's
+    """the total written is held to the slot's
     reservation too, and a reservation of 0 allows nothing."""
     from services.archive import ArchiveSafetyRefused, archive_service
 
@@ -1632,7 +1632,7 @@ def test_unpacking_never_writes_past_what_was_reserved(tmp_path):
 
 @pytest.mark.asyncio
 async def test_an_unpack_whose_folders_cant_all_be_listed_is_held(vol, db, monkeypatch):
-    """CodeRabbit 4608968267: a walk of the unpacked files that missed a
+    """a walk of the unpacked files that missed a
     folder is no inventory: the archive is held, naming the folder, and
     nothing is taken from it."""
     from services.inbox import intake
@@ -1664,7 +1664,7 @@ async def test_an_unpack_whose_folders_cant_all_be_listed_is_held(vol, db, monke
 
 @pytest.mark.asyncio
 async def test_removing_an_inbox_keeps_a_slot_a_waiting_copy_reads(vol, db, monkeypatch):
-    """CodeRabbit 4608968241: a copy waiting for a conversion slot reads
+    """a copy waiting for a conversion slot reads
     from the unpack folder too: removing the Inbox keeps the folder until
     the copy ends."""
     import asyncio
@@ -1704,7 +1704,7 @@ async def test_removing_an_inbox_keeps_a_slot_a_waiting_copy_reads(vol, db, monk
 
 @pytest.mark.asyncio
 async def test_a_library_file_swapped_while_compared_is_not_taken_as_placed(vol, db):
-    """CodeRabbit 4608968255: the Library's file must still be the one
+    """the Library's file must still be the one
     hashed: one replaced while it was read leaves the Image held."""
     import os
 
@@ -1741,7 +1741,7 @@ async def test_a_library_file_swapped_while_compared_is_not_taken_as_placed(vol,
 
 @pytest.mark.asyncio
 async def test_a_recognize_stuck_before_its_read_ends_at_cancel(vol, db, monkeypatch):
-    """CodeRabbit 4608968234: the Recognize's first look at its file (its
+    """the Recognize's first look at its file (its
     stat) is detached and bounded too: a Cancel while it hangs ends the job
     promptly and gives the slot back."""
     import asyncio
@@ -1788,7 +1788,7 @@ async def test_a_recognize_stuck_before_its_read_ends_at_cancel(vol, db, monkeyp
 async def test_a_converted_image_from_an_archive_stays_placed_across_unpacks(
     vol, db, queue,
 ):
-    """CodeRabbit 4608968248: A converts, B is held on a taken name. When B's
+    """A converts, B is held on a taken name. When B's
     name is freed and the archive is unpacked again, A counts as placed by
     the record of its output (a conversion's bytes can't be compared), B
     converts, and the archive completes."""
@@ -1826,7 +1826,7 @@ async def test_a_converted_image_from_an_archive_stays_placed_across_unpacks(
 
 @pytest.mark.asyncio
 async def test_a_match_read_while_the_file_was_swapped_never_names_it(vol, db, monkeypatch):
-    """CodeRabbit 4608968259: the Recognize reads the bytes intake takes. A
+    """the Recognize reads the bytes intake takes. A
     swapped for B while the match reads, then put back, is never placed
     under B's name."""
     import os
@@ -1869,7 +1869,7 @@ async def test_a_match_read_while_the_file_was_swapped_never_names_it(vol, db, m
 
 @pytest.mark.asyncio
 async def test_a_chd_matched_by_its_embedded_sha1_takes_its_dat_name(vol, db, monkeypatch):
-    """Codex 4609181291: the bound copy's CHD metadata is read before the
+    """the bound copy's CHD metadata is read before the
     match, so a DAT that knows the CHD only by its embedded SHA-1 names it."""
     from services.chdman import chdman_service
 
@@ -1898,7 +1898,7 @@ async def test_a_chd_matched_by_its_embedded_sha1_takes_its_dat_name(vol, db, mo
 async def test_an_image_whose_placed_track_is_gone_is_not_counted_placed(
     vol, db, monkeypatch,
 ):
-    """Codex 4609181297: a record counts only while every output file is
+    """a record counts only while every output file is
     still there as placed. Its BIN deleted, a CUE/BIN unpacked again is taken
     anew; its surviving CUE then holds it on the taken name, and the archive
     doesn't move to processed/."""

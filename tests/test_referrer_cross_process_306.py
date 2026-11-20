@@ -1,4 +1,4 @@
-"""Two processes updating one playlist never lose an edit (codex 4577804154).
+"""Two processes updating one playlist never lose an edit.
 
 With the CLI (#306) a CLI conversion and the server, or two CLIs, can update
 the same ``.m3u`` for different discs at once. The in-process lock alone let

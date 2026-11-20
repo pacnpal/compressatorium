@@ -131,7 +131,7 @@ async def test_the_web_batch_refuses_it_too(tmp_path, monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
-# Unsafe member names keep the archive and create nothing (codex 4577029535)
+# Unsafe member names keep the archive and create nothing
 # --------------------------------------------------------------------------- #
 
 

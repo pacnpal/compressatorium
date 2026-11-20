@@ -293,7 +293,7 @@ async def test_apply_async_defaults_to_the_sync_apply_off_the_loop(tmp_path):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("phase", [Phase.FILE, Phase.NETWORK])
 async def test_a_sync_applys_removed_source_reaches_the_outcome(tmp_path, fakes, phase):
-    """CodeRabbit review 5930768363: what a synchronous ``apply`` returns
+    """What a synchronous ``apply`` returns
     (``Applied``) is kept through its phase and into the hook's outcome, as
     an async one's is."""
     from services.referrers import Applied
@@ -491,7 +491,7 @@ async def test_a_job_that_cant_tell_the_image_library_keeps_the_source(
 
 
 def test_a_symlinked_romm_root_still_maps_its_images_to_romm(tmp_path, db, monkeypatch):
-    """codex 4588646131: the Image path is resolved, so the root must be too."""
+    """the Image path is resolved, so the root must be too."""
     from services import libraries
     from services.romm import client as romm_client_module
     from services.romm.library import romm_library
@@ -553,7 +553,7 @@ class _CheckingAsyncFake(_AsyncFake):
 
 @pytest.mark.asyncio
 async def test_an_async_apply_keeps_the_write_guard(tmp_path, fakes):
-    """codex 4588646144: an output replaced during the await is refused."""
+    """an output replaced during the await is refused."""
     log: list = []
     network = _CheckingAsyncFake("network", log, phase=Phase.NETWORK, gate=asyncio.Event())
     fakes.register(network)
@@ -593,7 +593,7 @@ class _SlowCleanupFake(_AsyncFake):
 async def test_an_apply_still_cleaning_up_holds_the_caller_locks_until_it_ends(
     tmp_path, fakes, monkeypatch, caplog,
 ):
-    """codex 4588646155: a cancelled apply is waited for briefly; one still
+    """a cancelled apply is waited for briefly; one still
     running is abandoned, keeps the Source, and owns the holds until it ends."""
     monkeypatch.setattr(referrers, "CANCEL_GRACE_SECONDS", 0.05)
     log: list = []
@@ -648,7 +648,7 @@ async def test_a_job_keeps_its_holds_while_an_abandoned_apply_cleans_up(
 
 @pytest.mark.asyncio
 async def test_cancelling_the_hook_mid_phase_stops_the_worker_writing(tmp_path, fakes):
-    """CodeRabbit 4588773569: a cancelled awaiter must abandon the thread."""
+    """a cancelled awaiter must abandon the thread."""
     from services.referrers.base import check_write
 
     entered, release, finished = threading.Event(), threading.Event(), threading.Event()

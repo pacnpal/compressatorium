@@ -37,7 +37,7 @@ class VerificationStore {
   _seq = 0;
   _versions = Object.create(null);
   // The number of the newest full answer applied. A full answer speaks for
-  // every path, the ones it never names too (codex 4579151542), so nothing
+  // every path, the ones it never names too, so nothing
   // older than it may set any path afterwards.
   _floor = 0;
   // Re-reads of a check run's paths still in flight (see applyJobEvent).
@@ -151,7 +151,7 @@ class VerificationStore {
     }
     // A check run's end lists the files it settled. Its progress events can
     // be dropped on a busy stream, so the database answers for those files
-    // again; live events that land meanwhile still win (codex 4578664511).
+    // again; live events that land meanwhile still win.
     const settled = data?.verification_paths;
     if (Array.isArray(settled) && settled.length) {
       const lookup = this.loadVerified(settled);

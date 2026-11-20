@@ -113,7 +113,7 @@ KEPT_UNKNOWN = "unknown"
 # succeeded): the delete has started, and is finished on the next sweep.
 KEPT_STARTED = "started"
 # The caller stopped (``run-rules`` on SIGTERM) before anything was decided or
-# removed: not an attempt, and nothing to record (codex 4580441303).
+# removed: not an attempt, and nothing to record.
 KEPT_STOPPED = "stopped"
 # How long a retry waits for the Source's volume to answer its stat checks.
 KEPT_DELETE_PROBE_SECONDS = 30.0
@@ -246,8 +246,8 @@ def unfinished_delete(
 
     *in_flight*: the unlinks were handed off while running (a timeout or a
     cancel, ``run_detached_mutation``), so their outcome is unknown whatever
-    *removed* says yet; the first unlink may be the one still running
-    (CodeRabbit 4580360083). That is a started delete, and every planned file
+    *removed* says yet; the first unlink may be the one still running.
+    That is a started delete, and every planned file
     not seen removed is left to settle: a finish, or ``clear_gone``, checks
     what actually remains, so one that went through just clears."""
     removed = set(removed)
@@ -536,8 +536,8 @@ async def _resolve_paths_bounded(paths: Iterable[str]) -> Dict[str, str]:
             progress()
 
     try:
-        # Bounded by progress, not by the batch's size (codex 4614857109's
-        # class): the clock restarts after each path.
+        # Bounded by progress, not by the batch's size: the clock restarts
+        # after each path.
         await run_detached_within_stall_bound(
             _resolve_all, what="Canonicalising destinations",
             stall=_CANONICAL_PROBE_SECONDS, report_progress=True,
@@ -656,7 +656,7 @@ class ExternalJobCancelled(Exception):
 
 
 class SourceChanged(RuntimeError):
-    """A bound Source changed while its job ran (Codex 4606539513): its
+    """A bound Source changed while its job ran: its
     output is discarded, never published, and the Source is left alone."""
 
 
@@ -1231,8 +1231,8 @@ class JobManager:
         (``{"error": ...}``) and its job is refused when it runs, with that
         reason. A folder Source (a DIRECTORY mode) has no file identity and is
         re-checked by the folder checks when it runs. Off the event loop,
-        bounded by progress rather than by the batch's size (codex
-        4614857109): the clock restarts after each Source, so a large healthy
+        bounded by progress rather than by the batch's size: the clock restarts
+        after each Source, so a large healthy
         batch is never cut off, and when one stops answering, the Sources
         already captured keep their identities and only the rest carry the
         stall as their error."""
@@ -1396,8 +1396,8 @@ class JobManager:
                 progress()
 
         try:
-            # Bounded by progress, not by the batch's size (codex
-            # 4614857109's class): the clock restarts after each destination.
+            # Bounded by progress, not by the batch's size: the clock restarts
+            # after each destination.
             await run_detached_within_stall_bound(
                 _enumerate, what="Listing companion outputs",
                 stall=_CANONICAL_PROBE_SECONDS, report_progress=True,
@@ -1650,7 +1650,7 @@ class JobManager:
     def add_amend_listener(self, callback: Callable[[ConversionJob], object]) -> None:
         """Call *callback* when a job's deleted files or Referrer records change
         after it may already have been announced terminal: an apply handed
-        off at shutdown that ends later (#391, CodeRabbit 4594978832). Sync
+        off at shutdown that ends later (#391). Sync
         or async, like a terminal listener; for a consumer that persisted
         the job when it ended (the Ledger) to update what it wrote."""
         if callback not in self._amend_listeners:
@@ -1723,7 +1723,7 @@ class JobManager:
 
     def _archive_job_for_lookup(self, job: ConversionJob) -> None:
         # Without its runtime-only state (descriptors, locks), which can't be
-        # deep-copied and means nothing in a snapshot (Codex 4606539536).
+        # deep-copied and means nothing in a snapshot.
         archived = job.archived_copy()
         self._archived_jobs[archived.id] = (archived, time.monotonic())
         self._prune_archived_jobs()
@@ -1802,8 +1802,8 @@ class JobManager:
         *cancel_event* fires first (nothing is held then). The caller gives
         both back with :meth:`release_slot` on every outcome.
 
-        With the dispatcher running it joins the conversions' FIFO (Codex
-        4606061259): it reserves its ticket now, as a queued conversion does,
+        With the dispatcher running it joins the conversions' FIFO: it reserves
+        its ticket now, as a queued conversion does,
         and the dispatcher hands it the local slot when that ticket comes up
         (:meth:`_hand_slot`). So it never holds the local slot while an older
         conversion waits for it, and with one slot it can't deadlock behind
@@ -2190,7 +2190,7 @@ class JobManager:
         # In this process (`_dir_locks`), or in any other: a held lock file on
         # a folder above, up to the Volume root (#306). The output is probed
         # under every identity its lock takes (`_output_keys`: the
-        # non-following destination and a symlink's target, codex 4577847011).
+        # non-following destination and a symlink's target).
         if job.output_path and lock_manager.output_folder_locked_above(
             job.output_path,
         ) is not None:
@@ -2264,8 +2264,7 @@ class JobManager:
         def problem() -> Optional[str]:
             if identity.get("in_place"):
                 # The Source first: its sheet isn't read for the companions
-                # until it is the one queued, inside the Volumes (CodeRabbit
-                # 4614956778). Then its companions too (CodeRabbit 4614956755):
+                # until it is the one queued, inside the Volumes. Then its companions too:
                 # the converter opens a split set's parts and a sheet's tracks
                 # itself.
                 return queued_source_problem(job.file_path, identity) or queued_source_problem(
@@ -2280,8 +2279,7 @@ class JobManager:
         except ReadCancelled as exc:
             raise ConversionCancelled("Conversion cancelled") from exc
         except (asyncio.TimeoutError, OSError) as exc:
-            # No answer is no verdict on the Image (CodeRabbit, review
-            # 5960207187): ``sweep._never_checked`` reads this mark.
+            # No answer is no verdict on the Image: ``sweep._never_checked`` reads this mark.
             job._source_identity = {**identity, "unanswered": True}
             return f"the Source couldn't be checked ({exc or 'no answer'})"
 
@@ -2292,10 +2290,10 @@ class JobManager:
         every later step (sizing, detection, the companion checks, the
         converter) reads ``job._read_path``, in a folder of the job's own in
         the app's work area (``disk.create_scratch_dir``), where no Inbox
-        writer has any right on the parent chain (Codex 4606562350). None when
+        writer has any right on the parent chain. None when
         bound (or nothing to bind), else why it couldn't be. Bounded by its
         progress; a cancel (*cancel_event*) stops it and ends the job
-        CANCELLED (Codex 4606539525); a late answer's folder is removed."""
+        CANCELLED; a late answer's folder is removed."""
         identity = job._source_identity
         if not identity or job.input_kind == InputKind.DIRECTORY:
             return None
@@ -2304,10 +2302,10 @@ class JobManager:
             # it was submitted as, which `queued_source_problem` just found
             # still leads to the file checked. Not the resolved path: a sheet
             # submitted through a link names its tracks beside the link, and
-            # that is what the job locked (codex 4614857083).
+            # that is what the job locked.
             return None
         # A copy fallback (no hard links on a NAS) takes as long as the Image:
-        # bounded by its progress, not a fixed deadline (Codex 4606061281).
+        # bounded by its progress, not a fixed deadline.
         guard = threading.Lock()
         state: Dict[str, object] = {"abandoned": False, "result": None}
 
@@ -2337,7 +2335,7 @@ class JobManager:
             if isinstance(exc, ReadCancelled):
                 raise ConversionCancelled("Conversion cancelled") from exc
             if isinstance(exc, (OSError, RuntimeError, asyncio.TimeoutError)):
-                if isinstance(exc, TimeoutError):  # no answer: no verdict (codex 4618766182)
+                if isinstance(exc, TimeoutError):  # no answer: no verdict
                     job._source_identity = {**identity, "unanswered": True}
                 return f"the Source couldn't be bound for reading ({exc})"
             raise
@@ -2347,7 +2345,7 @@ class JobManager:
     async def _require_bound_unchanged(self, job: ConversionJob) -> None:
         """Before any output is published: every bound file, read through the
         descriptor kept from bind time, still has the size, mtime and ctime it
-        had then (Codex 4606539513). A hard link shares its inode with the
+        had then. A hard link shares its inode with the
         Inbox's file, so a resumed download writing it in place shows here.
         Raises :class:`SourceChanged` (the job fails, its staged output is
         discarded and the Source left alone), or when it can't be told."""
@@ -2523,13 +2521,12 @@ class JobManager:
         identity = job._source_identity
         if not identity or "error" in identity:
             # No usable identity: refused once its Source's lock is held, and
-            # its sheet is never parsed for tracks to lock first (CodeRabbit
-            # 4614956778, 4615215842).
+            # its sheet is never parsed for tracks to lock first.
             return [job.file_path]
         if identity.get("in_place"):
             # The companions captured when it was queued, so nothing is read
-            # here: this runs inside the unbounded input-lock wait (CodeRabbit
-            # 4615955374). The bounded check after the locks are held finds a
+            # here: this runs inside the unbounded input-lock wait. The bounded
+            # check after the locks are held finds a
             # companion that changed since.
             return [job.file_path, *(each["ref"] for each in identity.get("companions", []))]
         return [job.file_path, *self._track_candidate_paths(job.file_path)]
@@ -2606,8 +2603,7 @@ class JobManager:
         meanwhile: the caller keeps the Source (and, for a cancel, ends the job
         CANCELLED). Cancellation is checked before every attempt and again
         right after one succeeds, so a cancel that lands while it sleeps never
-        becomes a delete when the reader lets go before the next poll
-        (codex 4577178425).
+        becomes a delete when the reader lets go before the next poll.
         """
 
         def cancelled() -> bool:
@@ -2637,7 +2633,7 @@ class JobManager:
     def _candidate_paths(self, job: ConversionJob) -> List[str]:
         # The files it reads, as its input locks name them: the captured
         # companions for an in-place Source, so a sheet swapped since it was
-        # queued isn't read here (CodeRabbit, review 5960207187).
+        # queued isn't read here.
         paths = self._input_paths(job)
         if job.output_path:
             paths.append(job.output_path)
@@ -3247,7 +3243,7 @@ class JobManager:
             bound, job._bound = job._bound, None
             # Cleanup that must happen: started now whatever the probe slots
             # say (a thread of its own when they are all taken, retried when
-            # no thread can start), never skipped (CodeRabbit 4606887319).
+            # no thread can start), never skipped.
             closing = start_detached_eventually(bound.close)
             if closing is not None:
                 try:
@@ -3835,8 +3831,7 @@ class JobManager:
 
         if job._source_identity and not job._source_identity.get("in_place"):
             # A bound Source (#431) may change under its job: its output is
-            # staged, so one made from a changed Source is never published
-            # (Codex 4606539513).
+            # staged, so one made from a changed Source is never published.
             return True
         try:
             library = await run_detached_bounded(
@@ -3886,8 +3881,8 @@ class JobManager:
     ) -> None:
         """The placing :meth:`_place_staged` does, blocking, with no lock
         hand-off: for a caller that owns the job's holds and locks and always
-        waits for the outcome itself (the RomM swap's ``_mutate``, Codex
-        4594650576). A no-op once placed. Raises ``OSError`` when nothing
+        waits for the outcome itself (the RomM swap's ``_mutate``). A no-op
+        once placed. Raises ``OSError`` when nothing
         moved; the records' carrying is logged, never raised."""
         if slot.placed:
             return
@@ -3971,8 +3966,7 @@ class JobManager:
     async def _set_aside_output(
         self, job: ConversionJob, slot: staging.StagedOutput,
     ) -> None:
-        """Keep a checked output that was never placed (CodeRabbit
-        4593970363, 4594086355): the only copy, never sweepable.
+        """Keep a checked output that was never placed: the only copy, never sweepable.
 
         ``StagedOutput.set_aside`` renames its slot to a ``park-`` slot no
         sweep removes, or marks it kept in place when it can't be renamed;
@@ -3984,7 +3978,7 @@ class JobManager:
         never runs ``_close_stage`` on it. Never raises.
 
         Setting it aside runs under ``SET_ASIDE_SECONDS`` through
-        ``run_detached_undoable`` (CodeRabbit 4594218526). The slot is
+        ``run_detached_undoable``. The slot is
         protected throughout: ``set_aside`` holds its lock until the rename
         or the keep marker is in place. One that answers after the bound gets
         its records moved by its own worker (``late``), which logs the real
@@ -4005,9 +3999,9 @@ class JobManager:
             job.message = f"{job.message}; {note}" if job.message else note
             job.warning = f"{job.warning}; {note}" if job.warning else note
 
-        # The set-aside starts before anything a cancel can interrupt
-        # (CodeRabbit 4594495308): its thread starts now, a detached one or,
-        # with none free, one of its own (CodeRabbit 4594613612), so the slot
+        # The set-aside starts before anything a cancel can interrupt:
+        # its thread starts now, a detached one or,
+        # with none free, one of its own, so the slot
         # is renamed or marked kept whatever happens to this await. An answer
         # nobody waits for any more goes to ``late``, once.
         def mark_kept_later() -> None:
@@ -4031,11 +4025,10 @@ class JobManager:
         try:
             future = start_detached_or_own_thread(slot.set_aside)
         except NoThreadAvailable:
-            # The OS thread limit (CodeRabbit 4594745731): the slot is held,
+            # The OS thread limit: the slot is held,
             # its lock kept, so no sweep takes it while the process lives, and
             # the keep marker is written off the loop once a thread starts,
-            # never on it: its create can block on a dead Volume (CodeRabbit
-            # 4594981268).
+            # never on it: its create can block on a dead Volume.
             future = None
             durable = False
             self._held_slots.append(slot)
@@ -4297,7 +4290,7 @@ class JobManager:
             "source": source_fp,
             "output": output_fp,
             # Every companion output (extractcd's .bin) as it was checked: a
-            # retried delete re-checks them too (CodeRabbit 4580102953).
+            # retried delete re-checks them too.
             "companions": companions,
         }
 
@@ -4423,10 +4416,10 @@ class JobManager:
         the lock probe: its exclusive lock is this job's, and while it is held
         no other job or process can lock that path. Any other locked path is
         refused, and so is a numbered split part whose logical owner another
-        job writes (``mutation_guard``, codex 4577940381).
+        job writes (``mutation_guard``).
 
-        Every probe runs on a detached thread under ``_CANONICAL_PROBE_SECONDS``
-        (CodeRabbit 4579539704): a volume that stops answering refuses the
+        Every probe runs on a detached thread under ``_CANONICAL_PROBE_SECONDS``:
+        a volume that stops answering refuses the
         delete instead of stalling the event loop.
         """
         own_holds = set(self._delete_holds.get(job_id, ()))
@@ -4567,8 +4560,7 @@ class JobManager:
         """The delete step, shared by a job and a retried delete (#329).
 
         *hook_records* gets the Referrer hook's records as soon as it returns,
-        so a caller keeps them even when a later step raises (CodeRabbit
-        4594326468).
+        so a caller keeps them even when a later step raises.
 
         *placement* is the job's output, still staged for a Referrer that
         places it itself (the RomM swap, #391). Whatever the hook did not
@@ -4599,7 +4591,7 @@ class JobManager:
         hook the conversion's stall bound, the unlinks no bound, as before).
 
         Each unlink is a mutation, never abandoned with its locks
-        (``run_detached_mutation``, codex 4579725632): when the caller stops
+        (``run_detached_mutation``): when the caller stops
         waiting while one still runs (the bound, a cancel), the delete holds,
         and the caller's *travelling_locks* (its output locks), pass to
         its worker, which releases them once the unlink has finished, and
@@ -4612,7 +4604,7 @@ class JobManager:
         except BaseException:
             # Refused before the Referrer hook took the staged output: it was
             # checked, so it is placed, never discarded with its slot because
-            # the Source side failed (CodeRabbit 4593839025).
+            # the Source side failed.
             if placement is not None:
                 await self._place_checked_output(placement)
             raise
@@ -4634,7 +4626,7 @@ class JobManager:
         except asyncio.CancelledError:
             # A shutdown cancelled this job mid-hook while an apply (the RomM
             # swap's undo) still runs: it owns the holds from here, as an
-            # abandoned one does below (Codex 4594286704).
+            # abandoned one does below.
             if unawaited:
                 self._hand_holds_to(
                     referrers.ReferrerOutcome(lingering=[h.task for h in unawaited]),
@@ -4642,7 +4634,7 @@ class JobManager:
                 )
                 # What each one did, when it ends, still reaches the job: a
                 # Source the swap removed is recorded as deleted, with its
-                # record (CodeRabbit 4594841860).
+                # record.
                 for handed in unawaited:
                     handed.task.add_done_callback(self._take_late_outcome(
                         handed, deleted, hook_records, owner_id,
@@ -4666,12 +4658,12 @@ class JobManager:
             expected_paths = [p for p in expected_paths if p not in removed]
             delete_order = [p for p in delete_order if p not in removed]
         if referrer_outcome.lingering:
-            # An async apply was cancelled and is still cleaning up (codex
-            # 4588646155): like a mutation's worker, it owns the delete holds
+            # An async apply was cancelled and is still cleaning up: like a
+            # mutation's worker, it owns the delete holds
             # and the travelling locks from here, let go when it ends. The
             # outcome failed, so the Source is kept below, unless the apply
             # then finishes: what it did is taken when it ends (the RomM
-            # swap's delete of the parked Source, Codex 4595004160), into
+            # swap's delete of the parked Source), into
             # the records this job keeps.
             self._hand_holds_to(referrer_outcome, owner_id, travelling_locks)
             for handed in referrer_outcome.handed_off:
@@ -4708,7 +4700,7 @@ class JobManager:
                 outcome.kept_reason = skipped
         if outcome.kept_reason and referrer_outcome.handed_off:
             # Not "definitely kept" while a handed-off apply may still remove
-            # it (Codex 4595004160): the job is updated when it ends.
+            # it: the job is updated when it ends.
             names = ", ".join(sorted({h.referrer_id for h in referrer_outcome.handed_off}))
             outcome.kept_reason = (
                 f"{outcome.kept_reason}; {names} is still finishing, so the source "
@@ -4723,7 +4715,7 @@ class JobManager:
             return outcome
         if planned is not None:
             planned[:] = delete_order
-        # The whole set is one mutation (codex 4580176201): a caller that stops
+        # The whole set is one mutation: a caller that stops
         # waiting hands the rest of the plan to the worker with the locks, and
         # the worker removes every planned file before it lets them go.
         await run_detached_mutation(
@@ -4743,8 +4735,7 @@ class JobManager:
         """A done callback that records what an apply handed off at shutdown
         did once it ends: the Source files it removed go to *deleted*, its
         Ledger record to *records*, and the amend listeners are told, so a
-        Ledger row written when the job ended is updated too (CodeRabbit
-        4594978832). Runs on the loop; never raises."""
+        Ledger row written when the job ended is updated too. Runs on the loop; never raises."""
 
         def ended(_task: asyncio.Future) -> None:
             outcome = handed.outcome()
@@ -4869,7 +4860,7 @@ class JobManager:
         Letting go of a lock is lock-file I/O (``_unlink_then_close``), which a
         lock directory that stops answering can stall: never on the event
         loop, never on the shared threadpool, never unbounded under
-        ``_sweep_lock`` (codex 4579986280). The worker owns the release once
+        ``_sweep_lock``. The worker owns the release once
         started and finishes on its own, closing every handle, whether or not
         the caller still waits. The one path a job and a retry both let go by.
 
@@ -4885,7 +4876,7 @@ class JobManager:
         bound = KEPT_DELETE_PROBE_SECONDS if seconds is None else seconds
         # No detached slot: a thread of its own, still never the pool; no
         # thread at all: tried again until one starts, so the locks are never
-        # left held (CodeRabbit 4594855525).
+        # left held.
         worker = start_detached_eventually(_let_go, paths)
         if worker is None:
             return
@@ -4928,7 +4919,7 @@ class JobManager:
         mtime, inode, device), and the Source set is byte-for-byte the one
         that output was made and checked from. The record names the Source
         by its real path, so the two are compared resolved: a Library reached
-        through a symlink is still the same Source (codex 4579683123).
+        through a symlink is still the same Source.
         """
         if os.path.realpath(source_path) != recorded_source:
             return "the output's check record names another Source"
@@ -4975,8 +4966,8 @@ class JobManager:
 
         Under the output's, its companions' and the delete paths' locks, held
         until the block ends, this re-establishes everything the delete stands
-        on and re-runs the output's check (:meth:`_recheck_output`, codex
-        4580346573). ``run.refused`` is the outcome when it no longer holds;
+        on and re-runs the output's check (:meth:`_recheck_output`).
+        ``run.refused`` is the outcome when it no longer holds;
         otherwise ``await run.delete()`` removes the Source. The two are split
         so a caller can run the long check without its own lock and take that
         lock only to delete (the sweep's ``_sweep_lock``). *planned* finishes a
@@ -5002,7 +4993,7 @@ class JobManager:
                 )
             yield run
         finally:
-            # Off the loop: lock files are I/O (codex 4579852997).
+            # Off the loop: lock files are I/O.
             holds = self._delete_holds.pop(owner_id, [])
             await self._let_go_in_background([*holds, *travelling.take()])
 
@@ -5025,7 +5016,7 @@ class JobManager:
         *required_check* is the check the Rule asks for now (its
         ``effective_check_level``): ``round_trip`` takes a Round-tripped
         record, ``container_only`` an Intact or a Round-tripped one. A record
-        that falls short is ``stale`` (codex 4579636593).
+        that falls short is ``stale``.
         """
         async with self.kept_delete(
             source_path=source_path, output_path=output_path,
@@ -5063,8 +5054,8 @@ class JobManager:
 
     async def _take_output(self, output_path: str, travelling: HeldLocks) -> Optional[KeptDeleteRetry]:
         """Take the output's lock for a retried delete, bounded: taking it
-        stats the path, and a lock taken after this gave up is let go (codex
-        4579529051). None once it is held (in *travelling*)."""
+        stats the path, and a lock taken after this gave up is let go. None
+        once it is held (in *travelling*)."""
         try:
             output_held = await run_detached_undoable(
                 lock_manager.acquire_lock, output_path, allow_existing=True,
@@ -5084,8 +5075,8 @@ class JobManager:
         self, source_path: Optional[str], output_path: str, meta: dict,
         required_check: Optional[str],
     ) -> Optional[KeptDeleteRetry]:
-        """Re-run the output's check before a retried delete removes anything
-        (codex 4580346573). None when it passes.
+        """Re-run the output's check before a retried delete removes anything.
+        None when it passes.
 
         The record's stat fingerprint only filters: an in-place rewrite of
         the same length with its mtime put back keeps all of it, and the
@@ -5157,8 +5148,8 @@ class JobManager:
         if isinstance(found, KeptDeleteRetry):
             return found
         check, meta, record = found
-        # The companion outputs too, as the job held them (#329,
-        # CodeRabbit 4580102953): nobody may change one while this runs.
+        # The companion outputs too, as the job held them (#329): nobody may
+        # change one while this runs.
         companions = list(meta.get("companions") or {})
         if companions:
             try:
@@ -5244,7 +5235,7 @@ class JobManager:
                     KEPT_UNKNOWN, str(exc), tuple(deleted), tuple(rest or planned),
                 )
             except asyncio.CancelledError:
-                # Cancelled mid-plan (CodeRabbit 4580360089, 4580360083): what
+                # Cancelled mid-plan: what
                 # started, or is still running on the worker, is recorded by
                 # the caller from `run.started`; then this goes on.
                 rest = unfinished_delete(planned, deleted, in_flight=bool(handed_off))
@@ -5259,10 +5250,10 @@ class JobManager:
                 )
                 rest = unfinished_delete(planned, deleted)
                 if rest:
-                    # Started, then refused part way (codex 4580227623): the
+                    # Started, then refused part way: the
                     # rest is finished on the next sweep, never dropped.
                     return KeptDeleteRetry(KEPT_STARTED, str(exc), tuple(deleted), tuple(rest))
-                # A refusal before any file went: an attempt (codex 4579529048).
+                # A refusal before any file went: an attempt.
                 return KeptDeleteRetry(KEPT_KEPT, str(exc), tuple(deleted))
             if removal.cancelled:
                 return KeptDeleteRetry(KEPT_STOPPED, "stopped before the unlinks")
@@ -5440,7 +5431,7 @@ class JobManager:
             if refused is None:
                 try:
                     # A descriptor that arrives after the bound gave up is
-                    # closed by the undo, never left open (Codex 4593499336).
+                    # closed by the undo, never left open.
                     fd, snapshot = await run_detached_undoable(
                         self._open_keeper, keeper, timeout=KEPT_DELETE_PROBE_SECONDS,
                         undo=_close_opened,
@@ -5630,7 +5621,7 @@ class JobManager:
         self, *, source_path: str, output_path: str, planned: List[str],
         required_check: Optional[str] = None,
     ) -> KeptDeleteRetry:
-        """Finish a retried delete that outlived its wait (codex 4580176201).
+        """Finish a retried delete that outlived its wait.
 
         The Source is part deleted by design, so it is not planned again.
         Under the output's, its companions' and the remaining files' locks,
@@ -5729,7 +5720,7 @@ class JobManager:
                     KEPT_UNKNOWN, str(exc), tuple(removed), tuple(rest or remaining),
                 )
             except asyncio.CancelledError:
-                # Cancelled mid-plan (CodeRabbit 4580360089): the delete has
+                # Cancelled mid-plan: the delete has
                 # started either way, so what is left (or still running on
                 # the worker) stays for the next sweep; the caller records
                 # that, then this goes on.
@@ -5847,7 +5838,7 @@ class JobManager:
         (``verify_timeout``). Returns the path it verified.
 
         The one check for every caller: a job after its conversion, and a
-        retried delete before it removes anything (#329, codex 4580346573).
+        retried delete before it removes anything (#329).
         Raises :class:`VerifyUnanswered` when nothing was judged (the bound
         ran out, the storage stopped answering), ``ConversionCancelled`` on a
         Cancel, and ``RuntimeError`` when the output fails its check, after
@@ -5895,8 +5886,8 @@ class JobManager:
         verdict = check_verdict(verify_result)
         if verdict is None and not verify_result.get("uncheckable"):
             # The verifier reached no verdict (its own bound ran out, the file
-            # could not be read): the same as the outer bound running out
-            # (CodeRabbit 4582189529). A job fails on it as before; a retried
+            # could not be read): the same as the outer bound running out.
+            # A job fails on it as before; a retried
             # delete counts an attempt and tries again, never "stale". An
             # uncheckable file stays a failed check: retrying cannot help.
             raise VerifyUnanswered(
@@ -6087,7 +6078,7 @@ class JobManager:
             lock_acquired = await run_in_threadpool(self._take_output_locks, job)
         except LockFailed as exc:
             # Not contention: the lock file can't be made. Fail with the
-            # reason now, never requeue (codex 4577893015).
+            # reason now, never requeue.
             lock_acquired, lock_error = False, str(exc)
         if not lock_acquired:
             # A transient block by a folder->iso subtree lock (racing the
@@ -6200,7 +6191,7 @@ class JobManager:
         placement: referrers.StagedPlacement | None = None
         # Set once the output is to be placed (its checks passed, or none was
         # asked): from then on a staged output that is not placed is kept,
-        # never discarded (CodeRabbit 4593970363).
+        # never discarded.
         placeable = False
         try:
             try:
@@ -6261,7 +6252,7 @@ class JobManager:
             # The Source is still the file the job was queued for, read beneath
             # the folder it must stay under with no link followed (#431), now
             # that its lock is held and before anything reads it. Inside this
-            # region (CodeRabbit 4606147979): a cancel while either waits lets
+            # region: a cancel while either waits lets
             # go of the output locks and the slot too. A refusal ends the job
             # FAILED with nothing written or removed: no output exists yet.
             problem = await self._source_identity_problem_bounded(job, cancel_event)
@@ -6325,7 +6316,7 @@ class JobManager:
             # The trusted root(s) a source's track sheet may name files under
             # (utils.sheet_text.resolve_track's ``within``): None for a source
             # in a Volume; the folder it is read from for one outside them,
-            # a bound Source's (Codex 4606794168) or, set below, an archive
+            # a bound Source's or, set below, an archive
             # member's extraction dir. Built once here (`_trusted_roots`) and
             # handed to every consumer.
             within = _trusted_roots(job)
@@ -6775,8 +6766,7 @@ class JobManager:
                             )
                         except asyncio.CancelledError:
                             # The task itself was cancelled once the unlinks
-                            # began, or while the first still ran (CodeRabbit
-                            # 4580360083): what started, or is still running
+                            # began, or while the first still ran: what started, or is still running
                             # on the worker, is recorded (bounded, never
                             # waiting on the unlink worker), the job ends
                             # CANCELLED and is announced (the `finally`
@@ -6870,8 +6860,8 @@ class JobManager:
         except asyncio.CancelledError:
             # The runner's task was cancelled (a shutdown), not the job's Cancel
             # button: the job still ends CANCELLED, so the terminal listeners
-            # (`finally`) hear it and nothing is left PROCESSING
-            # (CodeRabbit 4580360083). Then the cancel goes on.
+            # (`finally`) hear it and nothing is left PROCESSING.
+            # Then the cancel goes on.
             self._cancelled.discard(job_id)
             job.status = JobStatus.CANCELLED
             job.completed_at = datetime.now(timezone.utc)
@@ -6896,8 +6886,7 @@ class JobManager:
 
         finally:
             # Whatever the set-aside below raises, a cancel or any error, is
-            # held until every release after it has run, then raised
-            # (CodeRabbit 4594326475, 4594745731).
+            # held until every release after it has run, then raised.
             set_aside_cancel: BaseException | None = None
             if placeable and slot is not None and not slot.placed:
                 # A checked output that could not be placed (its name was
@@ -6922,7 +6911,7 @@ class JobManager:
             # Only release lock if we acquired it. The output locks (unless an
             # unlink took them) and the delete holds, in the background like
             # a retry's: lock-file I/O never on the loop.
-            # Each release in its own `finally` (codex 4580441305): a cancel
+            # Each release in its own `finally`: a cancel
             # while one awaits (the output locks' bounded wait) must not skip
             # the input and folder locks, or the concurrency slot, after it.
             # The cancel goes on once all of them ran.

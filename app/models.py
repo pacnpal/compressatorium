@@ -304,7 +304,7 @@ class ConversionJob(BaseModel):
         """A deep copy for the archive of finished jobs, without the
         runtime-only private state (``RUNTIME_ONLY_PRIVATES``: open handles,
         locks), which can't be copied and means nothing once archived. The
-        live job is never touched (Codex 4606539536)."""
+        live job is never touched."""
         shallow = self.model_copy()
         shallow.__pydantic_private__ = dict(shallow.__pydantic_private__ or {})
         for name in RUNTIME_ONLY_PRIVATES:

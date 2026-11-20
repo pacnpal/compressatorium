@@ -63,7 +63,7 @@ class _UnpackBudget:
     most what it declares (and *max_member*), all of them at most
     *max_total*; and with *max_ratio*, each member at most that many times
     its compressed size, all of them at most that many times the archive's
-    own size *packed* (Codex 4608936764). 0 is no limit. Counts the bytes
+    own size *packed*. 0 is no limit. Counts the bytes
     actually written, so a header that lies is caught at the first chunk
     past it (#432)."""
 
@@ -378,7 +378,7 @@ class ArchiveService:
     @staticmethod
     def inbox_limits() -> Tuple[int, int, int]:
         """``(max member, max total, max ratio)`` for an archive an Inbox
-        takes in (#431, Codex 4607318277): the declared uncompressed size per
+        takes in (#431): the declared uncompressed size per
         member and in all (``CHD_ARCHIVE_MAX_MEMBER_SIZE`` /
         ``CHD_ARCHIVE_MAX_TOTAL_SIZE`` where set, else
         ``CHD_ARCHIVE_INBOX_MAX_TOTAL_SIZE``), and the uncompressed to
@@ -412,7 +412,7 @@ class ArchiveService:
     def check_inbox_source(self, source, archive_path: str) -> int:
         """:meth:`check_inbox_archive` on the archive already open as
         *source* (a binary file object), reading its listing and size from
-        that open file, never from *archive_path* (#432, Codex 4608007766):
+        that open file, never from *archive_path* (#432):
         so the gate judges the very file :meth:`extract_members` then reads
         from the same *source*. A zip or 7z; anything else raises
         ``ValueError``. Blocking."""
@@ -503,16 +503,16 @@ class ArchiveService:
         ``open``, py7zr's writer factory) into a file created beneath the
         held folder *destination_fd* (opened from *destination* with no link
         followed when not given) by ``mkdir``/``open`` with ``dir_fd`` and
-        ``O_NOFOLLOW``, the file ``O_EXCL``: nothing is reached by path name
-        (Codex 4608030847). The bytes are counted as they are written, never
-        the header trusted (Codex 4608007766): a member that yields more than
+        ``O_NOFOLLOW``, the file ``O_EXCL``: nothing is reached by path name.
+        The bytes are counted as they are written, never
+        the header trusted: a member that yields more than
         it declares, or more than *max_member*, or a total past *max_total*
         (0: no limit), is refused before the chunk that would cross the line
         is written. With *max_ratio*, the bytes written are held to that
         many times each member's compressed size, and in all to that many
-        times the archive's own size (Codex 4608936764). With
+        times the archive's own size. With
         *reserved_total*, the total written is held to it exactly, the room
-        the caller reserved (CodeRabbit 4608968265); 0 allows nothing.
+        the caller reserved; 0 allows nothing.
 
         *source*, when given, is the archive already opened by the caller (a
         binary file object it read through its own folder, no link

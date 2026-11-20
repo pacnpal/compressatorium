@@ -183,7 +183,7 @@ def test_a_dry_run_takes_nothing_from_an_inbox(folder, dolphin, capsys):
 
 
 def test_an_inbox_that_cant_be_read_fails_the_run(folder, dolphin, capsys, sent):
-    """Codex 4607809607: a poll that couldn't read its Inbox reports an
+    """a poll that couldn't read its Inbox reports an
     error; run-rules prints it and exits 1, as for a failed sweep, and the
     pass summary says so."""
     import shutil
@@ -202,7 +202,7 @@ def test_an_inbox_that_cant_be_read_fails_the_run(folder, dolphin, capsys, sent)
 
 
 def test_the_same_outage_fails_each_run_but_notifies_once(folder, dolphin, capsys, sent):
-    """Codex 4608095505: the Inbox's last error is kept with the settle
+    """the Inbox's last error is kept with the settle
     memory, so a cron run that hits the same outage again prints it and exits
     1, but doesn't send the summary again."""
     import shutil
@@ -221,7 +221,7 @@ def test_the_same_outage_fails_each_run_but_notifies_once(folder, dolphin, capsy
 
 
 def test_a_big_pass_settles_each_conversion_as_it_ends(folder, dolphin, capsys, monkeypatch):
-    """Codex 4608095516: with a tiny job history, the jobs that ended first
+    """with a tiny job history, the jobs that ended first
     are pruned before the pass ends. Each conversion is settled as it ends
     (the run's terminal listener), so every original still moves to
     processed/ and none is "Lost track of"."""
@@ -250,7 +250,7 @@ def test_a_big_pass_settles_each_conversion_as_it_ends(folder, dolphin, capsys, 
 def test_a_failed_intake_copy_leaves_a_finding_but_not_a_failed_run(
     folder, dolphin, capsys,
 ):
-    """CodeRabbit 4608135778: an Inbox job that fails leaves its Finding; it
+    """an Inbox job that fails leaves its Finding; it
     isn't a Rule job, so the run still exits 0."""
     from services import findings
 
@@ -271,7 +271,7 @@ def test_a_failed_intake_copy_leaves_a_finding_but_not_a_failed_run(
 def test_a_settle_memory_that_cant_be_saved_still_reports_the_pass(
     folder, dolphin, capsys, sent, monkeypatch,
 ):
-    """CodeRabbit 4608135785: saving intake's memory failing doesn't skip
+    """saving intake's memory failing doesn't skip
     what runs after the pass; it fails the run and says why."""
     from services.preferences_store import preferences_store
 
@@ -310,7 +310,7 @@ def test_a_settle_memory_that_cant_be_saved_still_reports_the_pass(
 def test_a_deferred_move_to_processed_is_finished_by_the_next_run(
     folder, dolphin, capsys, monkeypatch,
 ):
-    """CodeRabbit 4608135794: the original was locked by another process
+    """the original was locked by another process
     through the end of the run, so its move to processed/ was put off. The
     duty is kept with the settle memory, and the next run moves it, with no
     hold and no Finding, and doesn't copy it again."""
@@ -403,7 +403,7 @@ def test_a_stop_mid_conversion_leaves_the_file_to_be_taken_next_time(
 def test_each_inbox_job_line_names_the_library_it_came_from(
     folder, dolphin, capsys, monkeypatch,
 ):
-    """Codex 4607940252: a copy's job is made when its task runs, which can
+    """a copy's job is made when its task runs, which can
     be while another Library's Inbox is being polled. Each intake job carries
     its Library and Inbox, and run-rules names the Library from that."""
     from services import inbox, libraries

@@ -36,7 +36,7 @@ CONFIRM = rename_425.CONFIRM
 
 def _confirmed(preview: dict) -> list[dict]:
     """Each preview item as the dialog confirms it: its new path and each
-    file's (CodeRabbit 4604333228)."""
+    file's."""
     return [
         {
             "path": i["path"], "new_path": i["new_path"],
@@ -327,7 +327,7 @@ async def test_a_failure_on_the_last_track_puts_every_file_the_sheet_and_the_pla
 async def test_a_run_whose_files_differ_from_the_plan_renames_nothing(
     db: Path, client: httpx.AsyncClient,
 ) -> None:
-    """CodeRabbit 4604333228: one track's confirmed new name isn't the
+    """one track's confirmed new name isn't the
     plan's, so the Image is skipped and no file changes."""
     psx = db / "roms" / "psx"
     image = await _cue_image(client, psx)
@@ -349,7 +349,7 @@ async def test_a_run_whose_files_differ_from_the_plan_renames_nothing(
 async def test_a_run_that_confirms_only_the_sheets_path_renames_nothing(
     db: Path, client: httpx.AsyncClient,
 ) -> None:
-    """CodeRabbit 4604333160: a client that sends no ``files`` confirmed one
+    """a client that sends no ``files`` confirmed one
     path; an Image of several files needs every file confirmed."""
     psx = db / "roms" / "psx"
     image = await _cue_image(client, psx)
@@ -371,7 +371,7 @@ async def test_a_run_that_confirms_only_the_sheets_path_renames_nothing(
 async def test_tracks_whose_bytes_are_the_same_are_each_named_from_the_dat(
     db: Path, client: httpx.AsyncClient,
 ) -> None:
-    """CodeRabbit 4604333173: two silent tracks share their bytes, so the
+    """two silent tracks share their bytes, so the
     hash index keeps one row for both; the DAT's file list keeps both."""
     psx = db / "roms" / "psx"
     sheet = psx / "game.cue"
@@ -409,7 +409,7 @@ async def test_a_dats_file_list_goes_with_it(db: Path, client: httpx.AsyncClient
 async def test_a_gamelist_entry_for_the_renamed_folder_follows_it(
     db: Path, client: httpx.AsyncClient,
 ) -> None:
-    """Codex 4604233211: an ES-DE ``<folder>`` entry names the folder itself."""
+    """an ES-DE ``<folder>`` entry names the folder itself."""
     psx = db / "roms" / "psx"
     image = await _cue_image(client, psx / "game")
     gamelist = psx / "gamelist.xml"
@@ -439,7 +439,7 @@ async def test_a_gamelist_entry_for_the_renamed_folder_follows_it(
 async def test_a_windows_1252_sheet_has_its_reference_rewritten_as_it_was_resolved(
     db: Path, client: httpx.AsyncClient,
 ) -> None:
-    """Codex 4604233197: the sheet names ``café`` in Windows-1252 and the
+    """the sheet names ``café`` in Windows-1252 and the
     file is spelled in UTF-8; the reference found is the one rewritten."""
     psx = db / "roms" / "psx"
     game = "Cafe Racer (Europe)"
@@ -471,7 +471,7 @@ async def test_a_windows_1252_sheet_has_its_reference_rewritten_as_it_was_resolv
 async def _assert_untouched(client, db: Path, monkeypatch, seam: str, broken) -> None:
     """Break the sheet rewrite's *seam* with *broken*: the Image is not
     renamed, and the sheet, its tracks, the folder and the playlist end
-    exactly as they were (Codex 4604210916, 4604210926)."""
+    exactly as they were."""
     from services import image_rename
 
     psx = db / "roms" / "psx"
@@ -615,7 +615,7 @@ def test_the_sheet_rewrite_changes_only_the_track_names() -> None:
 async def test_a_committed_placement_is_rolled_back_with_the_rest(
     db: Path, client: httpx.AsyncClient, monkeypatch,
 ) -> None:
-    """CodeRabbit 4606148011: a move that raises PlacementCommitted (the file
+    """a move that raises PlacementCommitted (the file
     is at its new name) counts as moved, so the rollback puts it back too."""
     from services import image_rename
     from utils.path_utils import PlacementCommitted
@@ -645,7 +645,7 @@ async def test_a_committed_placement_is_rolled_back_with_the_rest(
 async def test_a_committed_move_whose_old_name_is_taken_is_kept_and_named(
     db: Path, client: httpx.AsyncClient, monkeypatch,
 ) -> None:
-    """CodeRabbit 4607070950 (b), ruled: a committed move whose old name a
+    """A committed move whose old name a
     writer took meanwhile is never moved back over the replacement. The file
     keeps its new name (its only one), and the not-renamed result names both
     paths."""

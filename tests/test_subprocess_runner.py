@@ -506,7 +506,7 @@ def test_priority_is_a_command_wrapper_never_a_preexec_fn(tmp_path, monkeypatch)
 
     assert len(spawns) == 3
     # run and run_capture behind both wrappers, in order; hash_stdout's
-    # digest is a verdict, so it is spawned bare (CodeRabbit 4616898119).
+    # digest is a verdict, so it is spawned bare.
     for argv, _kwargs in spawns[:2]:
         assert argv[:4] == [wrapper, wrapper, "IO=1", sys.executable]
     assert spawns[2][0][0] == sys.executable
@@ -540,7 +540,7 @@ def _preexec_fn_lines(source: str) -> list[int]:
 
     lines = []
     tree = ast.parse(source)
-    # `from subprocess import Popen as P` too (CodeRabbit 4616898209).
+    # `from subprocess import Popen as P` too.
     popen_names = {"Popen"} | {
         alias.asname for node in ast.walk(tree)
         if isinstance(node, ast.ImportFrom) and node.module == "subprocess"
@@ -548,8 +548,7 @@ def _preexec_fn_lines(source: str) -> list[int]:
     }
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
-            # Popen's seventh positional parameter is preexec_fn (CodeRabbit
-            # 4615955530); None there passes nothing.
+            # Popen's seventh positional parameter is preexec_fn; None there passes nothing.
             name = getattr(node.func, "attr", None) or getattr(node.func, "id", None)
             if name in popen_names and len(node.args) > 6 and not (
                 isinstance(node.args[6], ast.Constant) and node.args[6].value is None
@@ -582,7 +581,7 @@ def test_the_preexec_fn_scan_sees_an_unpacked_mapping():
 def test_a_negative_nice_this_process_cannot_apply_is_left_off(monkeypatch):
     """`nice` would only warn and run the tool anyway, and the warning would
     land in output a caller parses (rom-converto's readiness probe). Whether
-    it applies is the kernel's rule, not being root (codex 4615398086): root
+    it applies is the kernel's rule, not being root: root
     without CAP_SYS_NICE can't lower niceness either."""
     import resource
 
@@ -608,7 +607,7 @@ def test_a_negative_nice_this_process_cannot_apply_is_left_off(monkeypatch):
 
 
 def test_a_verifier_that_cant_start_is_no_verdict(tmp_path, monkeypatch):
-    """codex 4615398097: a verifier that can't start (missing, or a script
+    """a verifier that can't start (missing, or a script
     whose interpreter is missing) is no verdict on either verify path: they
     spawn it bare, so the direct exec raises and they report "could not run".
     run_capture for anything else still wraps, and returns the wrapper's 127
@@ -643,7 +642,7 @@ def test_a_verifier_that_cant_start_is_no_verdict(tmp_path, monkeypatch):
 
 
 def test_ionice_is_best_effort(monkeypatch):
-    """CodeRabbit 4615955439: `ionice -t`, so a class the kernel denies
+    """`ionice -t`, so a class the kernel denies
     doesn't stop ionice before it runs the tool, with ionice's exit 1 read as
     the tool's."""
     if not shutil.which("ionice"):
@@ -664,7 +663,7 @@ def test_ionice_is_best_effort(monkeypatch):
 
 
 def test_the_wrapper_path_is_absolute_and_looked_up_lazily(tmp_path, monkeypatch):
-    """CodeRabbit 4615955398 / 4615955456: found through a relative PATH
+    """Found through a relative PATH
     entry, the cached wrapper is absolute (romz starts 7z in another folder);
     nothing is looked up at import."""
     import importlib.util
@@ -1464,7 +1463,7 @@ def test_a_cancel_abandons_a_sweep_that_had_not_started_unlinking(tmp_path):
 
 
 def test_a_wrapper_lookup_that_stalls_runs_at_normal_priority(monkeypatch):
-    """CodeRabbit 4616166783: a spawn looks its wrappers up off the event
+    """a spawn looks its wrappers up off the event
     loop, bounded; a PATH entry that doesn't answer means that spawn runs
     with no wrapper, and nothing is cached, so a later spawn tries again."""
     monkeypatch.setattr(runner_module, "_WRAPPERS", {})
@@ -1501,7 +1500,7 @@ def test_a_wrapper_lookup_that_stalls_runs_at_normal_priority(monkeypatch):
     assert len(looked_up) == 1  # one bounded lookup, of nice
     assert runner_module._WRAPPERS == {}
 
-    # capture_verify too (CodeRabbit 4616275683): after the stalled lookup it
+    # capture_verify too: after the stalled lookup it
     # neither scans PATH nor reads the run as wrapped, so an exit 127 from a
     # tool that ran unwrapped is its own verdict, not "could not start".
     import tempfile
@@ -1521,7 +1520,7 @@ def test_a_wrapper_lookup_that_stalls_runs_at_normal_priority(monkeypatch):
 
 @pytest.mark.parametrize("body", [b"", b"#!\n"], ids=["empty", "bare-shebang"])
 def test_a_verifier_the_kernel_cant_exec_is_no_verdict(tmp_path, monkeypatch, body):
-    """CodeRabbit 4616898119, 4617217666: `nice`/`ionice` exec through execvp,
+    """`nice`/`ionice` exec through execvp,
     which hands an empty file or a bare `#!` to /bin/sh, and that exits 0. A
     verdict never comes from a process started through them: both verify
     paths spawn the tool directly, so the kernel's ENOEXEC is the answer, and
@@ -1616,7 +1615,7 @@ def test_a_verifier_that_runs_gives_a_verdict_at_its_priority(tmp_path, monkeypa
 
 
 def test_one_wrapper_lookup_at_a_time(monkeypatch):
-    """CodeRabbit 4616898109: while a lookup of `nice` is still out (its
+    """while a lookup of `nice` is still out (its
     caller gave up on it), no second one starts; the spawn runs unwrapped."""
     monkeypatch.setattr(runner_module, "_WRAPPERS", {})
     monkeypatch.setattr(runner_module, "_LOOKING_UP", {"nice"})
@@ -1644,7 +1643,7 @@ def test_a_wrapper_that_fails_to_start_is_looked_up_again(tmp_path, monkeypatch)
 
 
 def test_a_wrapped_127_forgets_a_stale_inner_wrapper(tmp_path, monkeypatch):
-    """codex 4617171876: a cached inner `ionice` removed since makes the outer
+    """a cached inner `ionice` removed since makes the outer
     `nice` exit 127. That run forgets the cache, so the next spawn looks the
     wrappers up again and runs without the missing one."""
     bin_dir = tmp_path / "bin"
@@ -1687,7 +1686,7 @@ def _stalled_ionice(tmp_path, monkeypatch):
 
 
 def test_a_stalled_ionice_step_never_holds_back_a_verify_deadline(tmp_path, monkeypatch):
-    """CodeRabbit 4617379646: the `ionice -p` step runs as a task of its own,
+    """the `ionice -p` step runs as a task of its own,
     never awaited by the spawn, so a stalled one can't let a verifier run past
     its deadline or its cancel, on run_capture(verdict=True) or run_verify."""
     import time
@@ -1718,7 +1717,7 @@ def test_a_stalled_ionice_step_never_holds_back_a_verify_deadline(tmp_path, monk
 
 
 def test_stalled_ionice_steps_stay_out_of_the_probe_pool(tmp_path, monkeypatch):
-    """CodeRabbit 4617447724: `ionice -p` is an asyncio child, bounded and
+    """`ionice -p` is an asyncio child, bounded and
     killed on a stall, never a probe-pool thread, and at most a few are in
     flight; past that a child just gets no I/O priority."""
     pids = _stalled_ionice(tmp_path, monkeypatch)
@@ -1742,7 +1741,7 @@ def test_stalled_ionice_steps_stay_out_of_the_probe_pool(tmp_path, monkeypatch):
 
 
 def test_an_ionice_child_that_outlives_sigkill_turns_the_step_off(tmp_path, monkeypatch):
-    """CodeRabbit 4617587026: an `ionice` child whose reap gives up after
+    """an `ionice` child whose reap gives up after
     SIGKILL would free its slot while still alive. Instead the post-spawn
     I/O-priority step is turned off for the rest of the process."""
     _stalled_ionice(tmp_path, monkeypatch)

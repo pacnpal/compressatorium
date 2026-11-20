@@ -231,7 +231,7 @@ class ReferrerOutcome:
     guard: WriteGuard | None = field(default=None, repr=False, compare=False)
     lingering: list[asyncio.Task] = field(default_factory=list, repr=False, compare=False)
     # The same applies with what each was doing, for the caller to take
-    # their results when they end (Codex 4595004160).
+    # their results when they end.
     handed_off: list[HandedOff] = field(default_factory=list, repr=False, compare=False)
 
     def outlive(self, release: Callable[[], object]) -> None:
@@ -408,7 +408,7 @@ def _limit(bound: float | None) -> float | None:
 
 
 # How long a cancelled async apply gets to finish its cleanup before the hook
-# stops waiting and hands it the caller's holds (codex 4588646155).
+# stops waiting and hands it the caller's holds.
 CANCEL_GRACE_SECONDS = 5.0
 
 
@@ -510,10 +510,9 @@ async def _await_bounded(
         if unawaited is not None:
             # This awaiter is cancelled (a shutdown) while the apply still
             # cleans up, or just after it finished: the caller hands it its
-            # holds, as ``outlive`` does, and takes its result when it ends
-            # (CodeRabbit 4594841860), at once for one already done, so a
-            # result that beat the cancel is never lost (CodeRabbit
-            # 4594978832).
+            # holds, as ``outlive`` does, and takes its result when it ends,
+            # at once for one already done, so a
+            # result that beat the cancel is never lost.
             unawaited.append(HandedOff(referrer.id, change, task))
         raise
     finally:
@@ -642,7 +641,7 @@ async def update_before_source_removal(
     except BaseException:
         # This awaiter was cancelled (or worse) mid-phase: the detached worker,
         # or an async apply's cleanup, may still run, and must write nothing
-        # more once the caller lets go of its locks (CodeRabbit 4588773569).
+        # more once the caller lets go of its locks.
         abandoned.set()
         raise
     if not outcome.ok:

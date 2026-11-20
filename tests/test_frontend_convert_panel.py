@@ -1,4 +1,4 @@
-"""ConvertPanel cancels its Auto run when it unmounts (Codex 4576827983).
+"""ConvertPanel cancels its Auto run when it unmounts.
 
 If the panel unmounts while the Auto plan request is loading, the run must not
 stay suspended at a confirmation no mounted modal can answer: that left the

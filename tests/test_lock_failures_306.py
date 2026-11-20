@@ -1,5 +1,4 @@
-"""Lock file names stay short, and a lock that can't be made is an error
-(codex 4577893015).
+"""Lock file names stay short, and a lock that can't be made is an error.
 
 A cue track with a 184-byte name gave a lock file name over 255 bytes; making
 it raised ENAMETOOLONG, which read as "busy", and the job was requeued

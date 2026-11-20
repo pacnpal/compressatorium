@@ -519,7 +519,7 @@ class DATStore:
         size}``, once per name, in name order. What an Image rename (#426)
         names a sheet's tracks after.
 
-        Read from the DAT's file list (``dat_files``, CodeRabbit 4604333173),
+        Read from the DAT's file list (``dat_files``),
         which keeps a file whose bytes another file shares. A DAT imported
         before that list existed has none until it is imported again: its
         hash index is read instead, which may miss such a file, so a caller

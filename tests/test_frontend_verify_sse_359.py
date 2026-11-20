@@ -3,7 +3,7 @@
 ``verifyEventSource`` (``src/lib/api/sse.js``) is what every tool's Verify in
 the file menu goes through (``tool.verify`` -> ``verification.verifyOne``). A
 ``verify_error`` with no verdict, ``uncheckable`` (refused here) or
-``inconclusive`` (the file could not be opened, codex 4583706723), is an
+``inconclusive`` (the file could not be opened), is an
 answer, not an error: it resolves with its flags and message, so the menu
 warns instead of reporting a failure. A real failure still rejects.
 

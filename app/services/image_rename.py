@@ -23,7 +23,7 @@ that fails puts back the files already renamed and raises, so the files are
 found under their old names and the journal puts the sheet's bytes and every
 Referrer back exactly.
 
-**Bound to the folders it checked** (Codex 4602569670). Each file's folder
+**Bound to the folders it checked**. Each file's folder
 is resolved, confirmed inside a Volume and opened beneath the Volume root
 with no symlink on the way (``open_dir_beneath``); every look at the files
 and every move then goes through those descriptors (``*at`` calls,
@@ -32,8 +32,7 @@ is moved only while it is still the one fingerprinted. A folder swapped for a
 link afterwards can't redirect a move, and nothing is ever moved over
 another file.
 
-**One rule for every ending** (Codex 4602538922, CodeRabbit 4602644829 to
-4602644910): the rename runs as a task of its own, shielded from its caller's
+**One rule for every ending**: the rename runs as a task of its own, shielded from its caller's
 cancel (a Cancel reaches it through the hook's *cancel_event*), so it always
 gets to: settle (every RomM request handed off by the hook, and every
 Referrer worker it stopped waiting for, ends first); then inspect where the
@@ -41,13 +40,13 @@ files are now; then carry or compensate; then let go of its locks.
 
 * Every file under its new name: renamed. What the app knows about each file
   follows it (its check record, cached ``chdman info`` and DAT match, under
-  the listed and the real path, Codex 4602538941), whatever the hook said.
+  the listed and the real path), whatever the hook said.
 * Every file under its old name: not renamed. Each Referrer file the hook
   wrote is put back to exactly the bytes it held (``WriteJournal``,
   ``referrers.restore_written``): no re-plan, so an entry the rename never
-  changed is left as it is (Codex 4602560232), and no file is moved, so a
-  destination someone else took meanwhile is never touched (CodeRabbit
-  4602644886). A Referrer file changed since is left alone and reported.
+  changed is left as it is, and no file is moved, so a
+  destination someone else took meanwhile is never touched. A Referrer file
+  changed since is left alone and reported.
 * Anything else (a RomM that renamed and then stopped answering): never
   guessed at; the reason says so.
 """
@@ -106,10 +105,10 @@ _fsync = os.fsync
 # the same).
 PROBE_SECONDS = 20.0
 # How long opening the Image's folders may take. One that answers later is
-# closed then (``run_detached_undoable``), never leaked (Codex 4603430442).
+# closed then (``run_detached_undoable``), never leaked.
 OPEN_SECONDS = PROBE_SECONDS
 # Recovery waits, with no bound, for every RomM request the hook handed off
-# and every Referrer worker it stopped waiting for (CodeRabbit 4602980637):
+# and every Referrer worker it stopped waiting for:
 # these are how often it says what it is still waiting for.
 SETTLE_SECONDS = 30.0
 HANDED_OFF_SECONDS = 30.0
@@ -154,7 +153,7 @@ def inner_renames(renames: Mapping[str, str], folder: Folder | None) -> dict[str
 def referrer_renames(renames: Mapping[str, str], folder: Folder | None) -> dict[str, str]:
     """What the Referrers are told moves: every file, and a renamed folder
     too, so an entry that names the folder itself (an ES-DE ``<folder>``
-    entry, Codex 4604233211) follows it as an entry naming a file does. The
+    entry) follows it as an entry naming a file does. The
     preview plans with it and the hook runs with it."""
     moved = dict(renames)
     if folder is not None:
@@ -280,7 +279,7 @@ class _Files:
         self.journal: WriteJournal | None = None
         # Files a put-back left under their new name because a writer took
         # the old one meanwhile: what the not-renamed result says, both
-        # paths each (CodeRabbit 4607070950).
+        # paths each.
         self.kept_apart: list[str] = []
 
     @classmethod
@@ -373,7 +372,7 @@ class _Files:
                     )
                 except PlacementCommitted:
                     # It landed, and its old name is gone: put back with
-                    # the rest (CodeRabbit 4606148011).
+                    # the rest.
                     done.append(move)
                     raise
                 done.append(move)
@@ -442,7 +441,7 @@ class _Files:
         every other byte kept (``sheet_rewrite``), through its checked folder
         and only while it is the file fingerprinted (#426).
 
-        Atomic (Codex 4604210916, 4604210926): the new sheet is written
+        Atomic: the new sheet is written
         whole to a hidden file beside it (every byte, a short write written
         on), synced, given the sheet's mode and group, and only then renamed
         over the sheet, which is checked once more just before. Any failure
@@ -592,7 +591,7 @@ def sheet_reference_changes(
 
     A reference is resolved the way the tracks were found
     (``sheet_track_list``, ``pick_existing``): each spelling of it the sheet
-    has, in order (Codex 4604233197: a Windows-1252 ``café`` whose file is
+    has, in order (a Windows-1252 ``café`` whose file is
     spelled in UTF-8). The written reference is the native one, which is
     what the rewrite changes, and its folder part must be the resolved
     spelling's. Every file *renames* renames in the sheet's folders must be
@@ -816,8 +815,8 @@ async def _settle(
 ) -> None:
     """Wait until whatever the hook left running has ended: a RomM request it
     handed off or abandoned, and a Referrer worker it stopped waiting for
-    (whose writes are refused from then on). No bound (CodeRabbit
-    4602980637): deciding while one still runs could undo a rename it then
+    (whose writes are refused from then on). No bound: deciding while one still
+    runs could undo a rename it then
     completes, or restore a playlist it then writes. A RomM request ends at
     its client's timeout; a worker stuck on a Volume that stopped answering
     keeps the rename waiting, its locks held, and *on_wait* says so every
@@ -884,8 +883,8 @@ def _carry_records(renames: Mapping[str, str], real: Mapping[str, str]) -> None:
     from services.verification_store import verification_store
 
     # A file reached through a symlinked folder may be cached under its real
-    # path (the DAT matcher keys it so): that entry is carried as well (Codex
-    # 4602538941), from the folders as they were opened, never re-resolved.
+    # path (the DAT matcher keys it so): that entry is carried as well, from
+    # the folders as they were opened, never re-resolved.
     pairs = {**dict(real), **dict(renames)}
     for old, new in pairs.items():
         for store, move in (

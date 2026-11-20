@@ -107,7 +107,7 @@ def _stamp_ns(stamp: str | None) -> int | None:
 
 def _is_intact(copy: dict, record: dict | None) -> bool:
     """Whether the copy's latest check passed and still describes it: the
-    check was made after the copy last changed (Codex 4593499342).
+    check was made after the copy last changed.
 
     The latest check decides, so a Verify that passes after a change makes the
     copy eligible again. The fingerprint a conversion recorded
