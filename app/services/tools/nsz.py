@@ -41,7 +41,8 @@ class NszTool(BaseTool):
     # File info is the size and the extension's format; nsz and prod.keys aren't needed.
     info_needs_tool = False
     not_ready_reason = (
-        "no prod.keys was found (set SWITCH_KEYS, or put prod.keys on a mounted volume)"
+        "no prod.keys was found. Put your own prod.keys anywhere on a Volume, or in "
+        "~/.switch, then reload: it is found on its own (or set SWITCH_KEYS)"
     )
     modes = (
         ModeSpec(
@@ -188,7 +189,8 @@ class NszTool(BaseTool):
 
         The app ships none (they're console-specific and copyrighted); the
         operator supplies their own. Until they do, report unavailable so the
-        UI hides the tool rather than offering jobs that can only fail.
+        UI lists the tool as not ready, with the fix, rather than offering
+        jobs that can only fail.
 
         ``keys_available`` resolves the key file, which when ``SWITCH_KEYS`` is
         unset means a **recursive walk of every configured volume**. On a

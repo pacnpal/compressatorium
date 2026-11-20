@@ -178,7 +178,7 @@ def _require_configured() -> None:
     if not romm_client.configured:
         raise HTTPException(
             status_code=503,
-            detail="RomM is not configured. Set ROMM_URL (and ROMM_TOKEN).",
+            detail="RomM is not set up yet. Add its URL and API token on the RomM page.",
         )
     if not romm_client.library_root:
         raise HTTPException(
@@ -212,12 +212,15 @@ def _safe_error(exc: RommError) -> str:
     """
     status = getattr(exc, "status", None)
     if status in (401, 403):
-        return "RomM rejected the API token. Check ROMM_TOKEN and its scopes."
+        return "RomM rejected the API token. On the RomM page, check the token and its scopes."
     if status == 404:
-        return "RomM returned 404. Check that ROMM_URL points at the API root."
+        return (
+            "RomM returned 404. On the RomM page, check that the RomM URL is the "
+            "instance's base address."
+        )
     if status is not None:
         return f"RomM returned HTTP {status}."
-    return "Could not reach RomM. Check ROMM_URL and that the instance is up."
+    return "Could not reach RomM. On the RomM page, check the RomM URL, and that RomM is running."
 
 
 def _romm_call(exc: RommError, *, context: str) -> HTTPException:
@@ -230,7 +233,7 @@ def _romm_call(exc: RommError, *, context: str) -> HTTPException:
     if isinstance(exc, RommNotConfigured):
         return HTTPException(
             status_code=503,
-            detail="RomM is not configured. Set ROMM_URL (and ROMM_TOKEN).",
+            detail="RomM is not set up yet. Add its URL and API token on the RomM page.",
         )
     return HTTPException(status_code=502, detail=_safe_error(exc))
 
@@ -381,7 +384,7 @@ async def _require_swap_permissions(submitted: dict) -> None:
     if not url:
         raise HTTPException(
             status_code=503,
-            detail="RomM is not configured. Set ROMM_URL (and ROMM_TOKEN).",
+            detail="RomM is not set up yet. Add its URL and API token on the RomM page.",
         )
     if not token:
         raise HTTPException(status_code=422, detail=romm_swap.NO_TOKEN)

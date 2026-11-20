@@ -229,7 +229,7 @@ def _placements(library: Library) -> list[dict]:
         slug = canonical_slug(platform.slug or platform.id)
         row = {
             "id": platform.id, "platform": slug, "name": platform.name,
-            "folder": None, "exists": None, "error": None,
+            "folder": None, "exists": None, "error": None, "guessed": False,
         }
         try:
             placed = library.placement(slug, known=listed)
@@ -239,6 +239,7 @@ def _placements(library: Library) -> list[dict]:
             rel = os.path.relpath(placed.folder, library.root)
             row["folder"] = "" if rel == "." else rel.replace(os.sep, "/")
             row["exists"] = placed.exists
+            row["guessed"] = placed.guessed
         out.append(row)
     return sorted(out, key=lambda r: (r["platform"] or "", r["id"]))
 
@@ -247,7 +248,8 @@ def _placements(library: Library) -> list[dict]:
 async def library_placements(library_id: str) -> dict:
     """Where new Images of each of the Library's Platforms would land (#430):
     the folder relative to the Library's root (``roms/ps2``), whether it
-    exists yet, or why it can't be told. Any kind of Library."""
+    exists yet, whether it is a best guess among several (``guessed``, #515),
+    or why it can't be told. Any kind of Library."""
     library = _library(library_id)
     try:
         placements = await asyncio.wait_for(

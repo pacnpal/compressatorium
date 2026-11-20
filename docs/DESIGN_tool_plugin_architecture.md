@@ -304,8 +304,9 @@ class ToolPlugin(Protocol):
     def overwrite_targets(self, output_path: str, mode: str) -> list[str]: ...
 
     # Runtime prerequisites met? False => GET /api/tools reports the tool
-    # unavailable and the frontend hides it, instead of offering jobs that can
-    # only fail. BaseTool answers it from `required_binaries` (the programs
+    # unavailable, with `not_ready_message` in its `reasons` map (#515), and
+    # the dashboard lists it under "Not ready here" with that fix, instead
+    # of offering jobs that can only fail. BaseTool answers it from `required_binaries` (the programs
     # the tool runs, through the shared probe, §3.4 "Declaring the programs a
     # tool runs"); nsz and exodos override it (prod.keys, EXODOS_DOS_DIR), and
     # so do rom_converto (its `--version` probe) and the chain (every step).
@@ -3486,7 +3487,9 @@ and `automatable_modes`, as RomM's platform list carries),
 `GET /api/libraries/{id}/placements` (any Library, #430) lists, for each of
 the Library's `platforms()` (one listing, passed to every row as `known`),
 the Platform's own `id` (the row's key: two RomM platforms can share a slug),
-its `placement` relative to the root, whether the folder exists, or the
+its `placement` relative to the root, whether the folder exists, whether it
+is a best guess among several (`guessed`, #515; `Placement.guessed`, False
+by default, is the shared field every Library sets), or the
 `PlacementUnknown` reason; the PATCH takes a folder Library's `layout`. The
 panel (`LibraryPlacement.svelte`) waits for the view's own Platform listing
 and drops a superseded answer (`src/lib/util/latestOnly.js`).
@@ -3514,7 +3517,9 @@ a Library that needs its Platform records (RomM's folder names, carried as
   (`<root>/roms/<platform>`) or `flat` (`<root>`, where the header decides).
   For the first two it uses a folder already in the parent that names the
   Platform by the user's mapping or by a name detection reads
-  (`platform_detect.platform_folders`, spelled as listed; two refuse), else a
+  (`platform_detect.platform_folders`, spelled as listed; with two or more it
+  takes the one holding the most Image files, ties by name, and marks the
+  `Placement` `guessed=True`, #515), else a
   new one named by `platform_detect.esde_folder_name(slug)` (ES-DE's system
   name, `_ESDE_FOLDERS`, each value an alias of its slug) or the RomM slug.
   The layout decides only where new Images go, and changing it moves
@@ -8919,6 +8924,15 @@ every tool that declares `required_binaries` (below) touch the disk; the
 requirement is stated on `ToolPlugin.is_ready` so a new gated tool inherits it.
 
 #### Declaring the programs a tool runs (`required_binaries`, #494)
+
+Where a program is found (#515): each image-installed fixed path
+(`config._IMAGE_BINARIES`: `CHDMAN_PATH`, `DOLPHIN_TOOL_PATH`, ...) is
+resolved once, when `Settings` is built, by `config.detected_binary`: the
+default when it exists, else the same base name on `PATH`, else the default
+(so the not-ready reason names it). A path the operator set is never
+replaced. `SEVENZIP_PATH` falls back to `7zz` the same way. A new tool whose
+image path is fixed adds its field to `_IMAGE_BINARIES`; the probe below then
+checks the resolved path like any other.
 
 A tool that spawns a program does not write its own readiness check. It
 declares the program on `BaseTool.required_binaries`, a tuple of

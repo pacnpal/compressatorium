@@ -282,11 +282,14 @@ class Placement:
 
     ``folder`` is absolute and inside a Volume. ``exists`` is False for a
     Platform folder that isn't there yet: whoever places an Image creates it.
+    ``guessed`` is True when more than one folder could be it and the Library
+    picked one (#515): the UI says so, and a mapping makes it certain.
     """
 
     platform: str
     folder: str
     exists: bool
+    guessed: bool = False
 
 
 class PlacementUnknown(Exception):

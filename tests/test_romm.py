@@ -281,7 +281,7 @@ async def test_status_does_not_leak_romm_response_body() -> None:
     assert "Traceback" not in status["error"]
     assert "/srv/romm" not in status["error"]
     # Still actionable: it names what to go fix.
-    assert "ROMM_TOKEN" in status["error"]
+    assert "the RomM page" in status["error"]
 
 
 @pytest.mark.asyncio

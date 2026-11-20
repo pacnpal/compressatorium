@@ -42,6 +42,13 @@ The full environment variable reference lives in [README.md](../README.md#enviro
 | `EXODOS_DOS_DIR` | (unset) | Your eXoDOS `!dos` folder (holding `<Game>/dosbox.conf`) for the eXoDOS repack. Must be inside a volume; unset hides the tool. Nothing from eXoDOS ships with the image. |
 | `STATIC_DIR` | `/static` | Static web assets |
 
+**Out of the box.** Nothing above has to be set. Every folder mounted under
+`/data` is a Volume, every tool whose program is in the image (or, outside it,
+on `PATH`) works, and a tool that can't run is listed on the dashboard under
+**Not ready here** with the one thing to install or set. A folder Library with
+two folders for one Platform places new Images in the one that already holds
+the most, and says it guessed.
+
 **Switch keys.** The Switch (nsz) tool needs your own `prod.keys`, dumped from a
 console you own. Mount the directory holding it read-only and set `SWITCH_KEYS`
 to that directory. When unset, the app does a cheap, non-blocking best-effort

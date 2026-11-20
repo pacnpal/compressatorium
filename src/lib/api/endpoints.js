@@ -469,8 +469,8 @@ export const api = {
     return fetchJson(buildApiUrl('/rom-converto-info', params), undefined, 'Failed to get ZAR info');
   },
 
-  // Which tools the UI should show. Switch is reported unavailable when no
-  // prod.keys are configured, so the sidebar can hide it entirely.
+  // Which tools can run, and `reasons`: why each of the others can't, with
+  // the fix (Switch with no prod.keys, a program that isn't installed).
   getTools() {
     return fetchJson(`${API_BASE}/tools`, undefined, 'Failed to load tool availability');
   },
