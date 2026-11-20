@@ -2,9 +2,9 @@
 
 The client sends the confirmed actionable rows, each as ``{file_path, mode}``;
 an Image the preview skipped is never sent. The route replans those paths and
-answers 409 "The plan changed", with the new plan, when any item's target
-differs (another tool, or now skipped). Nothing is queued then: the client
-shows the new plan and asks again.
+queues each item whose target is still the one confirmed. An item whose
+target changed (another tool, or now skipped) is not queued: it comes back in
+``skipped`` with code ``plan_changed``, and its plan row says why (#520).
 """
 from __future__ import annotations
 
@@ -49,7 +49,7 @@ async def test_the_confirmed_items_are_queued_and_nothing_else(route_env):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("change", ["other-target", "now-skipped"])
-async def test_a_plan_that_changed_since_the_preview_is_refused(route_env, change):
+async def test_an_item_whose_plan_changed_is_reported_and_the_rest_queued(route_env, change):
     tmp = route_env["tmp_path"]
     ps2 = _ps2(tmp / "pile" / "ps2.iso")
     gc = _gamecube(tmp / "pile" / "gc.iso")
@@ -62,28 +62,29 @@ async def test_a_plan_that_changed_since_the_preview_is_refused(route_env, chang
     else:
         Path(ps2).write_bytes(b"\0" * 4096)   # now unreadable: skipped
 
-    with pytest.raises(convert_routes.HTTPException) as exc:
-        await convert_routes.create_auto_jobs(AutoJobCreateRequest(items=items))
+    result = await convert_routes.create_auto_jobs(AutoJobCreateRequest(items=items))
 
-    assert exc.value.status_code == 409
-    assert "plan changed" in exc.value.detail["message"].lower()
-    new = {Path(row["file_path"]).name: row for row in exc.value.detail["plan"]}
-    assert set(new) == {"ps2.iso", "gc.iso"}
-    assert new["ps2.iso"]["mode"] == ("dolphin_rvz" if change == "other-target" else None)
-    assert route_env["queued"] == []                 # nothing queued
+    # The unchanged item is queued; the changed one is not, and says why.
+    assert route_env["queued"] == [
+        {"mode": "dolphin_rvz", "files": ["gc.iso"], "compression": "zstd:19"},
+    ]
+    assert [(Path(s.path).name, s.code) for s in result.skipped] == [("ps2.iso", "plan_changed")]
+    plan = {Path(row.file_path).name: row for row in result.plan}
+    assert plan["ps2.iso"].mode is None
+    assert "changed" in plan["ps2.iso"].skip_reason.lower()
+    assert plan["gc.iso"].mode == "dolphin_rvz"
 
 
 @pytest.mark.asyncio
-async def test_an_item_naming_another_target_than_the_plan_is_refused(route_env):
+async def test_an_item_naming_another_target_than_the_plan_is_not_queued(route_env):
     ps2 = _ps2(route_env["tmp_path"] / "pile" / "ps2.iso")
 
-    with pytest.raises(convert_routes.HTTPException) as exc:
-        await convert_routes.create_auto_jobs(AutoJobCreateRequest(
-            items=[AutoJobItem(file_path=ps2, mode="createcd")],
-        ))
+    result = await convert_routes.create_auto_jobs(AutoJobCreateRequest(
+        items=[AutoJobItem(file_path=ps2, mode="createcd")],
+    ))
 
-    assert exc.value.status_code == 409
     assert route_env["queued"] == []
+    assert [s.code for s in result.skipped] == ["plan_changed"]
 
 
 @pytest.mark.asyncio

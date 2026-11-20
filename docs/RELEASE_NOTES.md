@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### Changed
+
+- **A Rule turns on when you pick its target, and an empty run says why**
+  (#520). Picking "Convert to" for a console now enables that Rule, so Preview
+  and Run now no longer answer "0 queued" for a Rule that was silently off.
+  When nothing runs, Preview and Run now say why: the Rule is off, no files
+  match, all of them are already converted or already in the queue, or a Rule
+  could not run.
+- **A batch never fails over one file** (#520). A file whose output another
+  job is already writing is skipped and named in the result; the rest of the
+  batch is queued. Auto queues every Image whose plan is unchanged since you
+  confirmed it and names the ones that changed, instead of refusing the whole
+  run and asking again; if one target's group can't be queued, the others
+  still are. A compression level outside the codec's range is clamped to it
+  (`zstd:40` on RVZ runs as `zstd:22`) instead of refused.
+
 ## 4.6.0 (2026-11-20)
 
 ### Added

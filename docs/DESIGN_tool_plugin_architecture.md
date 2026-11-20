@@ -4372,22 +4372,30 @@ only through `_is_file_within_volumes`, which confines it with
 (`SOURCE_OUTSIDE_VOLUMES`, 403 for a single job) before any filesystem call,
 and only the confined path is stat'ed. Auto prepares every group first, so
 a planning error queues nothing, then checks the whole batch against
-`max_queue_depth`, then queues the groups. Each group is its own atomic call,
-so a later group can still be refused at queue time (409 when another job took
-a destination, 503 when a volume stops answering), and earlier jobs may have
-started by then. On any failure the route withdraws the jobs this request
-queued (`job_manager.cancel_job`) and returns the error. A job that had already
-finished cannot be withdrawn: its output stays, it is logged, and the error
-returns it, for an HTTP error from the queue and for an unexpected exception
-alike (the latter logged with its traceback and returned as a 500; a
-cancellation still propagates). `/jobs/auto` queues only the plan the user
-confirmed: the client sends the confirmed plan's actionable rows as
-`items: [{file_path, mode}]` (an Image the preview skipped is never sent), the
-route replans those paths, and if any target differs (another tool, or now
-skipped) it answers 409 with `detail = {"message", "plan"}` before queueing
-anything. `conversion.runAuto` then shows the new plan and asks again.
-Queueing an Image the user never saw would also skip its RomM metadata
-snapshot. Nothing in either Auto endpoint, or in the
+`max_queue_depth`, then queues the groups. Each group is its own queue call.
+A group the queue refuses whole (503 when a volume stops answering, or an
+unexpected exception, logged with its traceback) reports each of its files as
+`queue_failed` and the other groups stay queued (#520); only a cancelled
+request (a client disconnect) withdraws what it queued (`_cancel_queued`).
+`/jobs/auto` queues only the plan the user confirmed: the client sends the
+confirmed plan's actionable rows as `items: [{file_path, mode}]` (an Image the
+preview skipped is never sent), and the route replans those paths. Each item
+whose target is unchanged is queued; one whose target changed (another tool,
+or now skipped) is not, since queueing an Image the user never saw would also
+skip its RomM metadata snapshot. `AutoBatchResponse` carries `skipped:
+[{path, reason, code}]` like the batch route: `plan_changed`, `queue_failed`,
+`output_claimed` and every `prepare_batch` skip, and each skipped file's plan
+row has `mode: null` and the reason. The SPA's shared submit toast names them.
+
+**One claimed destination skips one file (#520).** The locked reservation
+(`_reject_claimed_destinations_locked`) still never lets two live jobs write
+one file. `create_jobs_atomic(..., skipped=[...])` leaves a spec whose
+destination (or a sidecar) a live job or an earlier spec holds out of the
+batch, appends `(file_path, reason)`, and queues the rest; `queue_prepared`
+passes the list and reports each as `output_claimed`, so the batch route, Auto
+and the CLI skip that file rather than failing a Select-All of thousands over
+it. Without the list (the sweep, the Inbox, a single job) the call stays
+all-or-nothing and raises `OutputClaimedError` (409 for a single job). Nothing in either Auto endpoint, or in the
 batch preparation they share, touches a Volume on the event loop: the per-path
 Volume checks run together with planning (`_checked_auto_plan`) or on their
 own (`_check_within_volumes`) through `routes.volume_guard.off_loop_bounded`,
@@ -9232,8 +9240,10 @@ read through `ModeSpec.level_range(codec)`, from the plugin's `CODEC_LEVELS`
 (Dolphin's `DiscIO/WIABlob.cpp` `GetAllowedCompressionLevels`: bzip2, lzma and
 lzma2 1-9, zstd 1-22; zstd keeps this app's 19, the others Dolphin's dialog
 default, 5). `compression_for` gives a codec with no level its default level;
-an explicit level outside the range is refused, never clamped, by the same
-two checks (`base.compression_problem`). The frontend mirrors both per mode in `registry.js`
+an explicit level outside the range is clamped into it by the routes
+(`base.clamp_levels`, #520: `zstd:40` on RVZ runs as `zstd:22`, for a single
+job, a batch and a saved Auto preference), and one that reaches the plugin
+some other way is refused there (`base.compression_problem`). The frontend mirrors both per mode in `registry.js`
 (`compressionCodecs`, `defaultCompression` on the mode entry, read through
 `registry.codecsForMode` / `defaultCompressionForMode`), and each codec entry's
 `levelRange` (`registry.levelRangeFor(mode, codec)`), so the pickers never

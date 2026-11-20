@@ -1043,8 +1043,16 @@ class JobManager:
         verify_after: bool = False,
         container_only: bool = False,
         owner: Optional[str] = None,
+        skipped: Optional[List[tuple]] = None,
     ) -> List[ConversionJob]:
-        """Create multiple jobs atomically under a single backpressure check."""
+        """Create multiple jobs atomically under a single backpressure check.
+
+        A destination another live job (or an earlier spec) already holds
+        refuses the whole batch with ``OutputClaimedError``, unless the caller
+        passes a ``skipped`` list (#520): then that one spec is left out, its
+        ``(file_path, reason)`` appended, and the rest are queued. Either way no
+        two live jobs write one file.
+        """
         if not job_specs:
             return []
 
@@ -1066,7 +1074,9 @@ class JobManager:
         reservation = await self._reservation_keys(job_specs, mode)
         async with self._create_lock:
             self._enforce_queue_backpressure_locked(len(job_specs))
-            self._reject_claimed_destinations_locked(job_specs, mode, reservation)
+            job_specs = self._reject_claimed_destinations_locked(
+                job_specs, mode, reservation, skipped=skipped,
+            )
             for spec in job_specs:
                 file_path = str(spec["file_path"])
                 output_dir = spec.get("output_dir")
@@ -1497,8 +1507,13 @@ class JobManager:
         job_specs: List[Dict[str, object]],
         mode: ConversionMode,
         reservation: Optional[_Reservation] = None,
-    ) -> None:
+        *,
+        skipped: Optional[List[tuple]] = None,
+    ) -> List[Dict[str, object]]:
         """Refuse the batch if any destination is already spoken for.
+
+        With a ``skipped`` list the claimed specs are left out instead, each
+        ``(file_path, reason)`` appended, and the specs still free returned.
 
         No two live jobs may write the same file. Callers resolve duplicates
         before submitting, but that resolution is a prediction made outside
@@ -1507,10 +1522,10 @@ class JobManager:
         second then overwrites the first's result -- with delete-on-verify,
         removing both sources for one surviving output.
 
-        Every destination is checked before any job is created, so the batch
-        stays all-or-nothing. Intra-batch collisions count too: two specs of
-        one submit resolving to the same path is the same bug arriving twice
-        at once.
+        Every destination is checked before any job is created, so without a
+        ``skipped`` list the batch stays all-or-nothing. Intra-batch
+        collisions count too: two specs of one submit resolving to the same
+        path is the same bug arriving twice at once.
         """
         # Canonicalise once per path and compare keys. The pairwise version of
         # this re-resolved every earlier destination for every new one, and the
@@ -1526,6 +1541,7 @@ class JobManager:
         # the whole process with it.
         active = self._active_output_map(reservation)
         planned: Dict[str, str] = {}   # canonical destination -> source
+        free: List[Dict[str, object]] = []
         for spec in job_specs:
             file_path = str(spec["file_path"])
             output_dir = spec.get("output_dir")
@@ -1547,22 +1563,41 @@ class JobManager:
                 )
             # Destination *and* sidecars: a mode that writes `Game.cue` also
             # writes `Game.bin`, which another mode can claim as its primary.
-            for key in self._reserved_keys(destination, reservation):
-                claimed_by = active.get(key)
-                if claimed_by is not None:
-                    raise OutputClaimedError(
-                        f"Another queued job ({claimed_by}) is already writing "
-                        f"{os.path.basename(destination)}",
-                        claimed_by=claimed_by,
-                    )
-                other = planned.get(key)
-                if other is not None:
-                    raise OutputClaimedError(
-                        "Two files in this batch would write the same output: "
-                        f"{os.path.basename(other)} and "
-                        f"{os.path.basename(file_path)}",
-                    )
-                planned[key] = file_path
+            # Every key is checked before any is taken, so a skipped spec
+            # claims nothing.
+            keys = self._reserved_keys(destination, reservation)
+            claim = self._claim_on(keys, active, planned, file_path, destination)
+            if claim is not None:
+                if skipped is None:
+                    raise claim
+                skipped.append((file_path, claim.detail))
+                continue
+            planned.update((key, file_path) for key in keys)
+            free.append(spec)
+        return free
+
+    @staticmethod
+    def _claim_on(
+        keys, active: Dict[str, str], planned: Dict[str, str],
+        file_path: str, destination: str,
+    ) -> Optional[OutputClaimedError]:
+        """Why *destination* is taken: by a live job or an earlier spec."""
+        for key in keys:
+            claimed_by = active.get(key)
+            if claimed_by is not None:
+                return OutputClaimedError(
+                    f"Another queued job ({claimed_by}) is already writing "
+                    f"{os.path.basename(destination)}",
+                    claimed_by=claimed_by,
+                )
+            other = planned.get(key)
+            if other is not None:
+                return OutputClaimedError(
+                    "Two files in this batch would write the same output: "
+                    f"{os.path.basename(other)} and "
+                    f"{os.path.basename(file_path)}",
+                )
+        return None
 
     def _active_output_map(
         self, reservation: Optional[_Reservation] = None,
