@@ -53,6 +53,11 @@ CLEARED_KEY = "token_cleared"
 # two commit together; see `cleanup_owed`.
 CLEANUP_KEY = "identity_cleanup_pending"
 
+# Persisted alongside the settings: the user's pick of RomM folder per
+# Platform (#512), ``{platform slug: folder name}``, for a Platform RomM keeps
+# several records for. Changed only by `pick_platform_folder`.
+PICKS_KEY = "platform_folders"
+
 # field -> (env var, default, kind). One table, so a new setting is one row and
 # every layer (env fallback, coercion, serialization) picks it up for free.
 _FIELDS: dict[str, tuple[str, Any, str]] = {
@@ -103,6 +108,7 @@ _cache: dict[str, Any] | None = None
 _token: str | None = None
 _token_cleared = False
 _cleanup_pending = False
+_picks: dict[str, str] = {}
 # Bumped by every save that moves the identity. Anything that reads the catalog
 # and then writes rows against it -- the re-pin plan -- carries this across its
 # awaits and refuses to write if it changed underneath. See `identity_generation`.
@@ -173,20 +179,57 @@ def token() -> str | None:
 
 async def load(*, force: bool = False) -> dict[str, Any]:
     """Prime the cache from the store. Called once at startup."""
-    global _cache, _token, _token_cleared, _cleanup_pending
+    global _cache, _token, _token_cleared, _cleanup_pending, _picks
     with _lock:
         if _cache is not None and not force:
             return dict(_cache)
-    stored = await preferences_store.get(SETTINGS_KEY)
-    merged = _merge(stored)
-    row = stored if isinstance(stored, dict) else {}
-    stored_token = row.get("token")
-    with _lock:
-        _cache = merged
-        _token = stored_token if stored_token else None
-        _token_cleared = bool(row.get(CLEARED_KEY))
-        _cleanup_pending = bool(row.get(CLEANUP_KEY))
+    # Under the writers' lock, so a read that started before a save can't
+    # land after it and put the older row back (CodeRabbit PR #516).
+    async with _save_lock:
+        stored = await preferences_store.get(SETTINGS_KEY)
+        merged = _merge(stored)
+        row = stored if isinstance(stored, dict) else {}
+        stored_token = row.get("token")
+        with _lock:
+            _cache = merged
+            _token = stored_token if stored_token else None
+            _token_cleared = bool(row.get(CLEARED_KEY))
+            _cleanup_pending = bool(row.get(CLEANUP_KEY))
+            _picks = _picks_of(row)
     return dict(merged)
+
+
+def _picks_of(row: dict) -> dict[str, str]:
+    stored = row.get(PICKS_KEY)
+    if not isinstance(stored, dict):
+        return {}
+    return {str(k): str(v) for k, v in stored.items() if isinstance(v, str) and v}
+
+
+def platform_folders() -> dict[str, str]:
+    """The user's pick of RomM folder per Platform slug (#512). Safe to call
+    from a worker thread; empty before :func:`load`."""
+    with _lock:
+        return dict(_picks)
+
+
+async def pick_platform_folder(platform: str, folder: str | None) -> None:
+    """Save *folder* as the RomM folder for *platform*'s new Images (#512), or
+    forget the pick when *folder* is None. The caller checks it is one of
+    RomM's folders for the Platform."""
+    global _picks
+    async with _save_lock:
+        stored = await preferences_store.get(SETTINGS_KEY)
+        stored = dict(stored) if isinstance(stored, dict) else {}
+        picks = _picks_of(stored)
+        if folder:
+            picks[platform] = folder
+        else:
+            picks.pop(platform, None)
+        stored[PICKS_KEY] = picks
+        await preferences_store.put(SETTINGS_KEY, stored)
+        with _lock:
+            _picks = picks
 
 
 async def save(
@@ -327,8 +370,9 @@ def public(values: dict[str, Any] | None = None) -> dict[str, Any]:
 
 def reset_for_tests() -> None:
     """Drop the cached snapshot (tests re-prime against their own store)."""
-    global _cache, _token, _token_cleared
+    global _cache, _token, _token_cleared, _picks
     with _lock:
         _cache = None
         _token = None
         _token_cleared = False
+        _picks = {}

@@ -1084,8 +1084,7 @@ class BaseTool:
     async def is_ready(self) -> bool:
         # The declared programs, through the shared probe (#494); a tool that
         # runs none is ready. Tools gated on something else (nsz's prod.keys,
-        # exodos's EXODOS_DOS_DIR, rom-converto's --version run, the chain's
-        # steps) override this.
+        # rom-converto's --version run, the chain's steps) override this.
         return await self._binaries_ready(self.required_binaries, "convert")
 
     async def verify_is_ready(self) -> bool:

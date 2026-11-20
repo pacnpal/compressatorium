@@ -1811,8 +1811,9 @@ async def put_romm_settings(patch: RommSettingsPatch) -> dict:
     # but slow, and a refusal must change nothing.
     if submitted.get("swap_keep_rom_id") is True:
         await _require_swap_permissions(submitted)
-    # RomM's root must not overlap a folder Library, or two Rule sets act on
-    # the same Images. Checked and saved under the registration lock
+    # RomM's root must not be a folder Library's root or overlap an Inbox
+    # (inside or around a folder Library is fine, #514: the nearest root owns
+    # a file). Checked and saved under the registration lock
     # (`libraries.romm_root_claim`), so a folder registration cannot race it,
     # and refused before anything is persisted. Taken first, before the settle
     # lock and the sweep pause: the check is bounded (503 past it), and a root

@@ -82,7 +82,7 @@
     {
       glyph: 'DOS',
       name: 'eXoDOS',
-      blurb: 'eXoDOS game zips repacked for RomM\'s in-browser DOS player (DOSBox Pure). eXoDOS keeps each game\'s DOSBox setup in a separate !dos folder, with mount paths that point into the whole collection, so a game zip copied into RomM alone does not start. The repack moves the game to the root of a new file and writes its dosbox.conf there with those paths rewritten, which is where DOSBox Pure looks for one. Only mount, imgmount and boot lines change. The result is Game.dosz beside the source (a zip under the name DOSBox Pure documents for one); the original is only ever read. If the config still points outside the game after the rewrite, the job says so, because that game will probably not start. Set EXODOS_DOS_DIR to your eXoDOS !dos folder (inside a volume) to turn the tool on, and in RomM\'s config.yml set emulatorjs.settings.dosbox_pure.dosbox_pure_conf: inside (and leave emulatorjs.disable_batch_bootup at false) so DOSBox Pure can load the file\'s dosbox.conf, which is the file\'s first entry. Whether a repacked game boots in RomM\'s player (EmulatorJS 4.2.3 or the nightly) has not been tested yet.',
+      blurb: 'eXoDOS game zips repacked for RomM\'s in-browser DOS player (DOSBox Pure). eXoDOS keeps each game\'s DOSBox setup in a separate !dos folder, with mount paths that point into the whole collection, so a game zip copied into RomM alone does not start. The repack moves the game to the root of a new file and writes its dosbox.conf there with those paths rewritten, which is where DOSBox Pure looks for one. Only mount, imgmount and boot lines change. The result is Game.dosz beside the source (a zip under the name DOSBox Pure documents for one); the original is only ever read. If the config still points outside the game after the rewrite, the job says so, because that game will probably not start. Nothing to set: each game\'s template is found in the !dos folder beside its zip, or in a parent folder up to the volume (EXODOS_DOS_DIR, if set, is searched first). A game with no template is still repacked, with no dosbox.conf, and the job says so; DOSBox Pure\'s start menu then offers the program to run. Each job says what its game got. In RomM\'s config.yml set emulatorjs.settings.dosbox_pure.dosbox_pure_conf: inside (and leave emulatorjs.disable_batch_bootup at false) so DOSBox Pure can load the file\'s dosbox.conf, which is the file\'s first entry. Whether a repacked game boots in RomM\'s player (EmulatorJS 4.2.3 or the nightly) has not been tested yet.',
       io: '.zip  →  .dosz',
     },
     {
@@ -269,6 +269,15 @@
       it. You get three choices: <strong>skip</strong> leaves the existing file alone,
       <strong>rename</strong> writes the new one under a different name, and
       <strong>overwrite</strong> replaces it. Nothing is overwritten without you saying so.
+    </p>
+    <p>
+      For a Library, <strong>Where new Images go</strong> in the Rules view shows the folder
+      each Platform's new Images land in, from an Inbox or a sweep. On RomM that's RomM's
+      own folder for the Platform. RomM often keeps a second, empty record for a Platform
+      (<code>famicom</code> beside <code>nes</code>); the folder holding the ROMs is picked
+      for you, and the row says which and why ("RomM's NES folder, 4933 ROMs"). When more
+      than one holds ROMs, the one with the most is picked and marked as a best guess. Pick
+      another folder from the list on that row and it's kept.
     </p>
   </article>
 

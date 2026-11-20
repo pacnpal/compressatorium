@@ -21,6 +21,61 @@
   placements list marks that row `guessed`; a folder mapping makes it
   certain. Containment and the detection check still apply to the guess.
 
+- **Libraries may overlap; the nearest folder owns a file** (#514). Any
+  folder can be registered as a Library now, including one inside RomM's
+  library folder or inside or around another folder Library, and RomM's
+  library folder can be set around or inside a folder Library. A file belongs
+  to the Library with the nearest folder: its Rules convert the file and its
+  settings (its ES-DE gamelist) apply, and the Library around it leaves the
+  file out of its Rules, check Rules, Findings, find-duplicates and counts,
+  so no file is converted twice. An output written into a folder Library
+  inside RomM's folder is still hidden from RomM's scanner while it is
+  written. The Rules view says which Library a Library sits inside and which
+  sit inside it. Still refused: the same folder twice, a Library overlapping
+  an Inbox, and a file reached through one Library's folder that lives in
+  another (its Source is kept).
+
+- **eXoDOS works with no setting** (#513). Point the app at your eXoDOS
+  collection and the eXoDOS tool is there: it is no longer hidden until
+  `EXODOS_DOS_DIR` is set.
+  - Each game's template is found by itself: `!dos/<Game>/dosbox.conf` beside
+    the zip, then in each parent folder, up to the volume. The `!dos` folder
+    must resolve inside a volume, and the template must be a plain file inside
+    it.
+  - `EXODOS_DOS_DIR` is now an optional override, searched first.
+  - A game with no template is still repacked: its files move to the root of
+    the `.dosz`, no `dosbox.conf` is written (a `dosbox.conf` the zip carries
+    in the game folder is left out too, since it was never rewritten), and the
+    job finishes with a warning saying DOSBox Pure's start menu will offer the
+    program to run.
+  - Every job now says what the game got: its `dosbox.conf` and where it came
+    from, or no `dosbox.conf` and why.
+  - A zip is taken as a DOS game when it holds exactly one game folder and a
+    template is found for it or the folder holds a DOS program (`.exe`, `.com`
+    or `.bat`). Other zips are skipped with the reason, as before.
+  - Verify accepts a `.dosz` with no `dosbox.conf` when it holds a DOS program.
+
+### Fixed
+
+- **RomM: every Platform gets a folder for new Images, even when RomM keeps
+  two records for it** (#512). RomM often keeps an empty record beside the
+  real one (`famicom` beside `nes`, `gg` beside `gamegear`), and **Where new
+  Images go** showed "can't tell" for each, so an Inbox or sweep couldn't
+  place NES, SNES, Genesis, Game Gear and others. Now each RomM platform shows
+  its own folder and ROM count, and the folder holding the ROMs is picked for
+  new Images, with the reason on its row ("RomM's NES folder, 4933 ROMs: the
+  only one with ROMs"). When several hold ROMs, the one with the most is
+  picked and marked as a best guess. Pick another from the list on that row
+  and the choice is kept in RomM's settings and wins from then on. A Platform
+  with no folder yet goes beside RomM's other platform folders, in the same
+  structure, so adding one never hides the ROMs already there; before RomM
+  has any folder, RomM's default `roms/<platform>` is used, marked as a best
+  guess, instead of "can't tell". A pick whose folder can't take Images keeps
+  the list on its row, so it can be changed. A folder name with a path in it, a
+  folder outside every Volume, and a folder detection would read as another
+  Platform are still refused. Synology's `@eaDir` folder, which RomM scans as
+  a platform, is no longer listed, placed or swept.
+
 ## 4.6.0 (2026-11-20)
 
 ### Added

@@ -24,7 +24,12 @@ from services import duplicates, inbox, libraries
 from services.libraries.folder import ListingInProgress
 from services.platform_detect import canonical_slug
 from services.rules import editor as rules_editor
-from services.rules.library import Library, LibraryUnreadable, PlacementUnknown
+from services.rules.library import (
+    Library,
+    LibraryUnreadable,
+    Placement,
+    PlacementUnknown,
+)
 from services.subprocess_runner import run_detached
 from services.tools import registry
 
@@ -67,6 +72,13 @@ class InboxRequest(BaseModel):
 
     folder: str
     settle_seconds: int = Field(default=inbox.DEFAULT_SETTLE_SECONDS, ge=0)
+
+
+class PlacementPick(BaseModel):
+    """The folder a Platform's new Images go to (#512): one of the
+    Library's choices for it, or None to go back to the automatic pick."""
+
+    folder: str | None = None
 
 
 class UpdateInboxRequest(BaseModel):
@@ -214,32 +226,69 @@ async def library_platforms(library_id: str) -> dict:
     }
 
 
+def _offer_failed_pick(row: dict, name: str, failed: object) -> None:
+    """On the row whose folder is the pick that can't take Images, offer the
+    choices, so it can be changed (Codex PR #516)."""
+    if isinstance(failed, PlacementUnknown) and failed.choices and failed.picked == name:
+        row["new_images_here"] = False
+        row["picked"] = name
+        row["why"] = f"New Images can't go here: {failed}"
+        row["choices"] = [{"name": n, "rom_count": c} for n, c in failed.choices]
+
+
 def _placements(library: Library) -> list[dict]:
     """Where each of *library*'s Platforms' Images go (#430). Blocking.
 
     One listing of the Platforms, handed to every row's ``placement`` (Codex
     PRRT_kwDOQ9nULM64es7O: RomM's catalog was fetched again per row). Each
-    row carries the Library's own Platform id: two RomM platforms can share a
-    slug, and both rows stay, each saying why it can't be placed (Codex
-    PRRT_kwDOQ9nULM64es7J).
+    row carries the Library's own Platform id and is placed by its own record
+    alone, so two RomM records for one Platform show their own two folders
+    (#512). Where the Platform's new Images go (an Inbox, a sweep, which know
+    only the Platform) is placed from the whole listing: when it has several
+    choices, the row it lands on says so (``new_images_here``) with why and
+    the choices, and the others say they aren't used.
     """
     listed = library.platforms()
+    shared: dict[str, Placement | PlacementUnknown] = {}
     out = []
     for platform in listed:
         slug = canonical_slug(platform.slug or platform.id)
         row = {
             "id": platform.id, "platform": slug, "name": platform.name,
-            "folder": None, "exists": None, "error": None, "guessed": False,
+            "folder": None, "exists": None, "error": None,
+            "rom_count": platform.rom_count, "guessed": False, "why": None,
+            "new_images_here": None, "choices": [], "picked": None,
         }
         try:
-            placed = library.placement(slug, known=listed)
+            if slug not in shared:
+                try:
+                    shared[slug] = library.placement(slug, known=listed)
+                except PlacementUnknown as exc:
+                    shared[slug] = exc
+            placed = library.placement(slug, known=[platform])
         except PlacementUnknown as exc:
             row["error"] = str(exc)
-        else:
-            rel = os.path.relpath(placed.folder, library.root)
-            row["folder"] = "" if rel == "." else rel.replace(os.sep, "/")
-            row["exists"] = placed.exists
-            row["guessed"] = placed.guessed
+            _offer_failed_pick(row, platform.folder or slug, shared.get(slug))
+            out.append(row)
+            continue
+        rel = os.path.relpath(placed.folder, library.root)
+        row["folder"] = "" if rel == "." else rel.replace(os.sep, "/")
+        row["exists"] = placed.exists
+        row["guessed"], row["why"] = placed.guessed, placed.why
+        pick = shared[slug]
+        if isinstance(pick, PlacementUnknown):
+            if pick.choices:
+                row["new_images_here"] = False
+                _offer_failed_pick(row, platform.folder or slug, pick)
+        elif pick.choices:
+            row["new_images_here"] = pick.folder == placed.folder
+            if row["new_images_here"]:
+                row["guessed"], row["why"] = pick.guessed, pick.why
+                # This row's record is the pick, so its folder name is.
+                row["picked"] = platform.folder or slug
+                row["choices"] = [
+                    {"name": name, "rom_count": count} for name, count in pick.choices
+                ]
         out.append(row)
     return sorted(out, key=lambda r: (r["platform"] or "", r["id"]))
 
@@ -248,8 +297,7 @@ def _placements(library: Library) -> list[dict]:
 async def library_placements(library_id: str) -> dict:
     """Where new Images of each of the Library's Platforms would land (#430):
     the folder relative to the Library's root (``roms/ps2``), whether it
-    exists yet, whether it is a best guess among several (``guessed``, #515),
-    or why it can't be told. Any kind of Library."""
+    exists yet, or why it can't be told. Any kind of Library."""
     library = _library(library_id)
     try:
         placements = await asyncio.wait_for(
@@ -268,6 +316,30 @@ async def library_placements(library_id: str) -> dict:
         "layout": libraries.describe(library)["layout"],
         "placements": placements,
     }
+
+
+@router.put("/libraries/{library_id}/placements/{platform}")
+async def pick_placement(library_id: str, platform: str, payload: PlacementPick) -> dict:
+    """Pick which of the Library's folders for *platform* its new Images go
+    to (#512), saved and winning over the automatic pick; ``folder`` None
+    goes back to it. Only a Library with several folders per Platform (RomM)
+    takes a pick (400 otherwise); a folder that isn't one of its choices is
+    refused (422)."""
+    library = _library(library_id)
+    pick = getattr(library, "pick_folder", None)
+    if pick is None:
+        raise HTTPException(
+            status_code=400, detail="This Library places by its layout; change the layout",
+        )
+    try:
+        await pick(platform, payload.folder)
+    except PlacementUnknown as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    except LibraryUnreadable as exc:
+        raise HTTPException(status_code=409, detail=f"Library unreadable: {exc}") from None
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="RomM did not answer in time") from None
+    return {"library_id": library.id, "platform": platform, "folder": payload.folder}
 
 
 @router.post("/libraries/{library_id}/find-duplicates")
