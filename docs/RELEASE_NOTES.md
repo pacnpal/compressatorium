@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### Fixed
+
+- **RomM: every Platform gets a folder for new Images, even when RomM keeps
+  two records for it** (#512). RomM often keeps an empty record beside the
+  real one (`famicom` beside `nes`, `gg` beside `gamegear`), and **Where new
+  Images go** showed "can't tell" for each, so an Inbox or sweep couldn't
+  place NES, SNES, Genesis, Game Gear and others. Now each RomM platform shows
+  its own folder and ROM count, and the folder holding the ROMs is picked for
+  new Images, with the reason on its row ("RomM's NES folder, 4933 ROMs: the
+  only one with ROMs"). When several hold ROMs, the one with the most is
+  picked and marked as a best guess. Pick another from the list on that row
+  and the choice is kept in RomM's settings and wins from then on. Before RomM
+  has a `roms` folder, RomM's default `roms/<platform>` is used, marked as a
+  best guess, instead of "can't tell". A folder name with a path in it, a
+  folder outside every Volume, and a folder detection would read as another
+  Platform are still refused. Synology's `@eaDir` folder, which RomM scans as
+  a platform, is no longer listed, placed or swept.
+
 ## 4.6.0 (2026-11-20)
 
 ### Added
