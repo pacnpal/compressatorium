@@ -39,3 +39,22 @@ async def test_verify_drains_the_stream_with_the_services_fallback():
     assert (await _Quiet().verify("x"))["message"] == "CHD verification failed"
     assert chdman.ChdmanService.verify_fallback_message == "CHD verification failed"
     assert dolphin_tool.DolphinToolService.verify_fallback_message == "Disc verification failed"
+
+
+@pytest.mark.asyncio
+async def test_run_capture_feeds_a_file_from_an_offset_on_stdin(tmp_path):
+    """The runner owns a child fed on stdin (z3ds's ``zstd -t``, #543)."""
+    from services.subprocess_runner import SubprocessRunner
+
+    src = tmp_path / "payload.bin"
+    src.write_bytes(b"HDRthe payload")
+    code, out, _err = await SubprocessRunner(owner="test").run_capture(
+        ["cat"], stdin_path=str(src), stdin_offset=3,
+    )
+    assert (code, out) == (0, b"the payload")
+
+
+def test_z3ds_spawns_nothing_outside_the_runner():
+    import inspect
+
+    assert "create_subprocess_exec" not in inspect.getsource(z3ds_compress)

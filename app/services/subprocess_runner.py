@@ -2266,8 +2266,14 @@ class SubprocessRunner:
         env: Mapping[str, str] | None = None,
         on_abandoned: Callable[[int], None] | None = None,
         verdict: bool = False,
+        stdin_path: str | None = None,
+        stdin_offset: int = 0,
     ) -> tuple[int | None, bytes, bytes]:
         """Run ``cmd`` to completion and capture ``(returncode, stdout, stderr)``.
+
+        With *stdin_path*, the child reads that file from *stdin_offset* on
+        its stdin (:func:`feed_stdin_from_file`, z3ds's ``zstd -t``, #543);
+        the feed is inside the same cancel and timeout race as the run.
 
         Shared one-shot counterpart to :meth:`run` for tools that need a
         buffered result rather than the streaming line loop (info / header /
@@ -2321,7 +2327,10 @@ class SubprocessRunner:
             cmd,
             # Never the caller's terminal: a tool that asks for input (7z
             # wanting a password) fails at once instead of waiting (#306).
-            stdin=asyncio.subprocess.DEVNULL,
+            stdin=(
+                asyncio.subprocess.PIPE if stdin_path is not None
+                else asyncio.subprocess.DEVNULL
+            ),
             stderr=(
                 asyncio.subprocess.STDOUT
                 if stderr_to_stdout
@@ -2331,7 +2340,22 @@ class SubprocessRunner:
             wrapped=wrapped,
         )
         self.track_pid(process.pid)
-        comm = asyncio.ensure_future(process.communicate())
+
+        async def _fed_then_communicate():
+            await feed_stdin_from_file(
+                process, stdin_path, offset=stdin_offset, cancel_event=cancel_event,
+                chunk_size=4 << 20,
+            )
+            if process.stdin is not None:
+                # A child that quit early on bad data closed its end first;
+                # its exit code and output are the verdict.
+                with contextlib.suppress(BrokenPipeError, ConnectionResetError):
+                    await process.stdin.wait_closed()
+            return await process.communicate()
+
+        comm = asyncio.ensure_future(
+            _fed_then_communicate() if stdin_path is not None else process.communicate()
+        )
         cancel_wait = (
             asyncio.ensure_future(cancel_event.wait())
             if cancel_event is not None
@@ -2541,8 +2565,13 @@ class SubprocessRunner:
         start_message: str = "Verifying integrity...",
         on_success_output: Callable[[bytes], None] | None = None,
         size: int | None = None,
+        stdin_path: str | None = None,
+        stdin_offset: int = 0,
     ) -> AsyncGenerator[dict, None]:
         """Run a one-shot verifier, yielding this tool's verify events.
+
+        *stdin_path* / *stdin_offset* feed the verifier a file on its stdin
+        (:meth:`run_capture`).
 
         For a verifier that prints nothing useful until it exits: the whole run
         is one :meth:`run_capture` bounded by :func:`resolve_verify_timeout` for
@@ -2585,6 +2614,8 @@ class SubprocessRunner:
                 env=env,
                 on_abandoned=abandoned_pid.append,
                 verdict=True,
+                stdin_path=stdin_path,
+                stdin_offset=stdin_offset,
             )
         except OSError as exc:
             # The verifier couldn't be started: no verdict, so no stored check

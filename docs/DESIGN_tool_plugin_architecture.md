@@ -569,12 +569,17 @@ class SubprocessRunner:
 
     async def capture_verify(self, cmd: list[str], *, path: str,
                              success_message: str, cancel_event=None, env=None,
-                             start_message="Verifying integrity..."
+                             start_message="Verifying integrity...",
+                             stdin_path=None, stdin_offset=0,
                              ) -> AsyncGenerator[dict, None]:
-        """One-shot verifier (maxcso --crc, nsz -V, 7z t): the same event shape
-        around a single run_capture() with the same bound and cancel_event.
-        run_capture reports both an abort and a timeout as returncode None, so
-        the two are told apart by asking the cancel event which happened.
+        """One-shot verifier (maxcso --crc, nsz -V, 7z t, zstd -t): the same
+        event shape around a single run_capture() with the same bound and
+        cancel_event. run_capture reports both an abort and a timeout as
+        returncode None, so the two are told apart by asking the cancel event
+        which happened. stdin_path/stdin_offset feed the child a file on stdin
+        (feed_stdin_from_file) inside the same race: z3ds's `zstd -t` reads
+        the payload past the container header this way (#543), so no tool
+        spawns a child outside the runner.
         """
 
 

@@ -2,6 +2,7 @@
 
 import asyncio
 import struct
+import sys
 from pathlib import Path
 
 import pytest
@@ -176,7 +177,10 @@ async def test_verify_times_out_when_process_hangs(tmp_path: Path, monkeypatch):
     async def _tiny_bound(_path, _owner=None, *, cancel_event=None):
         return 0.05
 
-    monkeypatch.setattr(z3ds_module, "resolve_verify_timeout", _tiny_bound)
+    monkeypatch.setattr(
+        sys.modules[type(z3ds_module.z3ds_compress_service._runner).__module__],
+        "resolve_verify_timeout", _tiny_bound,
+    )
 
     service = z3ds_module.z3ds_compress_service
     result = await service.verify(str(rom_path))

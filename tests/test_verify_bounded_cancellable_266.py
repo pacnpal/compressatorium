@@ -409,7 +409,8 @@ async def _z3ds_cancel_during_bound_resolution(tmp_path: Path, monkeypatch):
         return 0
 
     monkeypatch.setattr(z3ds_module.shutil, "which", lambda _name: "/usr/bin/zstd")
-    monkeypatch.setattr(z3ds_module, "resolve_verify_timeout", _slow_bound)
+    runner_mod = _runner_module(z3ds_module.z3ds_compress_service)
+    monkeypatch.setattr(runner_mod, "resolve_verify_timeout", _slow_bound)
     async def _offset(_path, *, cancel_event=None):
         return 0
 
