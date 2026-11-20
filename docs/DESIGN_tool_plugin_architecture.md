@@ -10089,3 +10089,6 @@ Redump sync (`POST /dat/redump/sync`) and the CLI (`dat import`, `dat sync`):
   DATs are still imported, sends `If-None-Match`/`If-Modified-Since` when it
   has them, and skips re-importing an identical download (SHA-256).
 - `dat_sync.save_capped` is the capped download loop both syncs share.
+- The MAMERedump sync follows the same replace rule (#525): after a full
+  success it deletes only the existing DATs whose name and family match a DAT
+  it just staged, never DATs from another source.

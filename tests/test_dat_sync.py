@@ -363,12 +363,18 @@ async def test_sync_defers_deletion_until_all_imports_succeed(sync_service, tmp_
     dat_file = tmp_path / "sample.dat"
     dat_file.write_text("<datafile></datafile>")
 
-    existing_dat = {"id": "old-dat", "name": "Old DAT"}
+    # The previous sync's copy of the DAT, and a No-Intro DAT the user
+    # imported: only the first is the sync's to replace (#525).
+    existing = [
+        {"id": "old-dat", "name": "MAME Redump DAT", "family": "MAME"},
+        {"id": "pack", "name": "Nintendo - Game Boy", "family": "No-Intro"},
+    ]
     mock_dat_store = MagicMock()
-    mock_dat_store.list_dats = MagicMock(return_value=[existing_dat])
+    mock_dat_store.list_dats = MagicMock(return_value=existing)
     mock_dat_store.delete_dats_bulk = AsyncMock(return_value=1)
     mock_dat_store.import_dat_no_persist = AsyncMock(return_value={
-        "id": "new-dat", "name": "New DAT", "file_count": 1, "hashes_added": 1,
+        "id": "new-dat", "name": "MAME Redump DAT", "family": "MAME",
+        "file_count": 1, "hashes_added": 1,
     })
     mock_dat_store.persist = AsyncMock()
     mock_dat_store.list_match_paths = MagicMock(return_value=[])
@@ -657,7 +663,8 @@ async def test_do_sync_rematches_what_its_old_dat_delete_removed(sync_service, t
     ])
     mock_store.delete_dats_bulk = delete_old
     mock_store.import_dat_no_persist = AsyncMock(return_value={
-        "id": "new1", "name": "Fresh", "file_count": 1, "hashes_added": 1,
+        # A new copy of the old DAT (same name), so the sync replaces it (#525).
+        "id": "new1", "name": "Old", "file_count": 1, "hashes_added": 1,
     })
     mock_store.persist = AsyncMock()
     mock_store.list_match_paths = MagicMock(return_value=[])
@@ -986,3 +993,47 @@ def test_download_dat_aborts_mid_stream_if_oversized(sync_service, monkeypatch, 
 
     with pytest.raises(ValueError, match="exceeded size limit"):
         sync_service._download_dat("MAME Redump/test.dat", "0.285")
+
+
+def _xml(name: str, home: str, sha1: str) -> str:
+    return (f'<?xml version="1.0"?><datafile><header><name>{name}</name>'
+            f'<homepage>{home}</homepage></header><game name="G">'
+            f'<rom name="g.bin" size="4" sha1="{sha1}"/></game></datafile>')
+
+
+@pytest.mark.asyncio
+async def test_sync_keeps_dats_it_did_not_import(sync_service, tmp_path, monkeypatch):
+    """#525: a MAMERedump sync replaces its own DATs, never an imported pack."""
+    from services.dat_store import DATStore
+
+    store = DATStore(store_path=str(tmp_path / "store.db"))
+    monkeypatch.setattr(
+        "routes.dat.rematch_after_dat_change", AsyncMock(return_value=("none", None)),
+    )
+    for name, home, sha1 in (
+        ("Nintendo - Game Boy", "No-Intro", "a" * 40),
+        ("Sony - PlayStation", "redump.org", "b" * 40),
+    ):
+        src = tmp_path / f"{sha1[0]}.dat"
+        src.write_text(_xml(name, home, sha1))
+        await store.import_dat(str(src))
+
+    async def run(tag, sha1):
+        def download(*_args):
+            out = tmp_path / f"{tag}.dat"
+            out.write_text(_xml("MAME Redump CHD", "", sha1))
+            return str(out)
+
+        listing = [{"name": "mame.dat", "path": "MAME Redump/mame.dat", "size": 100}]
+        with patch.object(sync_service, "_list_dat_files", side_effect=[listing, []]), \
+             patch.object(sync_service, "_download_dat", side_effect=download), \
+             patch.object(sync_service, "_get_dat_store", return_value=store):
+            return await sync_service.sync(tag=tag)
+
+    assert (await run("0.285", "c" * 40))["status"] == "complete"
+    assert (await run("0.286", "d" * 40))["status"] == "complete"
+    names = sorted(d["name"] for d in store.list_dats())
+    assert names == ["MAME Redump CHD", "Nintendo - Game Boy", "Sony - PlayStation"]
+    # The second sync replaced the first one's copy.
+    assert store.lookup_sha1("c" * 40) is None
+    assert store.lookup_sha1("d" * 40) is not None

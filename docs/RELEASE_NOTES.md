@@ -18,6 +18,13 @@
   DAT Library asks once whether to look up unknown files on Hasheous.
 - **CLI:** `compressatorium dat import PATH...` and `compressatorium dat sync`.
 
+### Fixed
+
+- **Sync MAMERedump no longer deletes your other DATs** (#525). It used to
+  delete every DAT in the store after a successful sync, including No-Intro
+  packs and Redump DATs you had imported or synced. It now replaces only the
+  DATs it brings a new copy of (same name and family).
+
 ## 4.6.0 (2026-11-20)
 
 ### Added
