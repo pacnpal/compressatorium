@@ -92,9 +92,9 @@ def test_the_shells_host_the_existing_screens():
                  "<SavingsCard />", "<QueueSummaryCard />"):
         assert part in activity, part
     settings = _read("views/SettingsView.svelte")
-    for section in ("connections", "identification", "notifications", "converters"):
-        assert f'id="settings-{section}"' in settings, section
-    assert "<DATView />" in settings and "<Converters />" in settings
+    for section in ("connections", "identification", "notifications", "defaults", "converters"):
+        assert f"id: '{section}'" in settings, section
+    assert "<Identification />" in settings and "<Converters />" in settings
     romm = _read("views/RommView.svelte")
     assert "ui.navigate('libraries', { id: 'romm', tab: ROUTE_OF_TAB[id] })" in romm
 

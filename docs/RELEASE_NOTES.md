@@ -30,6 +30,23 @@
 - New `GET`/`PUT /api/preferences/defaults` store the safety choices new
   conversions start with (check each new file on, delete the original off).
   The Settings screen that edits them comes next.
+- **One Settings page** (#540). Five sections, each with its own link
+  (`#/settings/<section>`) and its own loading and error line, with the section
+  list pinned at the left on a wide screen:
+  - **Connections**: whether RomM answers, with **Manage** to its Library page;
+    the **Identify games online (Hasheous)** switch, moved here from the DAT
+    screen, which checks Hasheous answers as soon as it's turned on (the
+    separate Test button is gone) and asks once on a fresh install; and where
+    to set up Sonarr, Radarr and ROMarr.
+  - **Game identification** (the old DAT Library): **Import game lists…**
+    takes several files at once, **Update MAME Redump**, the lists with their
+    game counts and dates, and the order under **Name order**. The hash-count
+    tiles and the hash essay are gone.
+  - **Defaults** (new): what new conversions start with (check each new file,
+    delete the original once it checks out, quick check), the compression for
+    each format (the same one the Convert panel remembers), and **Keep history
+    for** forever, 30 days, 90 days or a year. Nothing in the UI set History's
+    retention before.
 - **eXoDOS works with no setting** (#513). Point the app at your eXoDOS
   collection and the eXoDOS tool is there: it is no longer hidden until
   `EXODOS_DOS_DIR` is set.

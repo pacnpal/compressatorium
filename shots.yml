@@ -1619,27 +1619,42 @@
   javascript: *js_findings_duplicate_delete
 
 # === PR 5: Settings ===
-# --- DAT Library ----------------------------------------------------------
-- url: http://127.0.0.1:8099/?s=dat-light#/settings/identification
-  output: docs/screenshots/dat-light.png
+# --- Settings: the whole page ---------------------------------------------
+# No RomM, no game lists, no notification destination in the fixture, so this
+# is the first-run page: Hasheous asks its one question under Connections.
+- url: http://127.0.0.1:8099/?s=settings-light#/settings
+  output: docs/screenshots/settings-light.png
   width: 1280
   height: 900
   wait: 1800
   javascript: *js_theme_light
-- url: http://127.0.0.1:8099/?s=dat-dark#/settings/identification
-  output: docs/screenshots/dat-dark.png
+- url: http://127.0.0.1:8099/?s=settings-dark#/settings
+  output: docs/screenshots/settings-dark.png
   width: 1280
   height: 900
   wait: 1800
   javascript: *js_theme_dark
 
-# --- DAT Library: the DAT order (#424) -----------------------------------
-# The fixture has no DATs, so three small synthetic ones (made-up names and
-# hashes, one per family) are imported first; skipped when already there, so
-# the dark shot reuses the light shot's. Shows the family badges, the move
-# up/down controls and the default-order hint.
-- url: http://127.0.0.1:8099/?s=dat-ranking-light#/settings/identification
-  output: docs/screenshots/dat-ranking-light.png
+# --- Settings: Game identification ----------------------------------------
+- url: http://127.0.0.1:8099/?s=settings-identification-light#/settings/identification
+  output: docs/screenshots/settings-identification-light.png
+  width: 1280
+  height: 900
+  wait: 1800
+  javascript: *js_theme_light
+- url: http://127.0.0.1:8099/?s=settings-identification-dark#/settings/identification
+  output: docs/screenshots/settings-identification-dark.png
+  width: 1280
+  height: 900
+  wait: 1800
+  javascript: *js_theme_dark
+
+# --- Settings: Name order (#424) ------------------------------------------
+# The fixture has no game lists, so three small synthetic ones (made-up names
+# and hashes, one per family) are imported first; skipped when already there,
+# so the dark shot reuses the light shot's. Opens the Name order fold.
+- url: http://127.0.0.1:8099/?s=settings-name-order-light#/settings/identification
+  output: docs/screenshots/settings-name-order-light.png
   width: 1280
   height: 900
   wait: 1800
@@ -1653,6 +1668,7 @@
         ['My homebrew set', '', 'Example Homebrew'],
       ];
       const have = (await (await fetch('/api/dat/ranking')).json()).dats.map(d => d.name);
+      let added = false;
       for (const [index, [name, home, game]] of sets.entries()) {
         if (have.includes(name)) continue;
         const sha1 = String(index + 1).repeat(40);
@@ -1663,43 +1679,90 @@
         form.append('file', new Blob([xml], { type: 'text/xml' }), `${index}.dat`);
         const response = await fetch('/api/dat/import', { method: 'POST', body: form });
         if (!response.ok) throw new Error(`DAT import failed: ${response.status}`);
+        added = true;
       }
-      const panel = document.querySelector('.dat-ranking');
-      if (!panel) throw new Error('DAT list panel not shown');
-      panel.querySelector('button[aria-label="Refresh"]').click();
-      await new Promise(r => setTimeout(r, 900));
-      if (!panel.querySelector('button[aria-label^="Move "]')) throw new Error('no move controls');
-      panel.scrollIntoView({ block: 'start' });
+      if (added) {
+        // Remount the section so it loads the lists just imported.
+        location.hash = '#/files';
+        await new Promise(r => setTimeout(r, 400));
+        location.hash = '#/settings/identification';
+        await new Promise(r => setTimeout(r, 1200));
+      }
+      const order = document.querySelector('details.dat-ranking');
+      if (!order) throw new Error('Name order not shown');
+      order.open = true;
+      await new Promise(r => setTimeout(r, 200));
+      if (!order.querySelector('button[aria-label^="Move "]')) throw new Error('no move controls');
+      order.scrollIntoView({ block: 'start' });
       await new Promise(r => setTimeout(r, 300));
     })('light')
-- url: http://127.0.0.1:8099/?s=dat-ranking-dark#/settings/identification
-  output: docs/screenshots/dat-ranking-dark.png
+- url: http://127.0.0.1:8099/?s=settings-name-order-dark#/settings/identification
+  output: docs/screenshots/settings-name-order-dark.png
   width: 1280
   height: 900
   wait: 1800
   javascript: |
-    (async () => {
-      localStorage.setItem('theme-preference', 'dark');
-      window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: 'dark' }));
-      await new Promise(r => setTimeout(r, 500));
-      const panel = document.querySelector('.dat-ranking');
-      if (!panel) throw new Error('DAT list panel not shown');
-      if (!panel.querySelector('button[aria-label^="Move "]')) throw new Error('no move controls');
-      panel.scrollIntoView({ block: 'start' });
+    (async (theme) => {
+      localStorage.setItem('theme-preference', theme);
+      window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: theme }));
+      const sets = [
+        ['Example Console - Discs', 'redump.org', 'Example Disc Game'],
+        ['Example Handheld', 'No-Intro', 'Example Cartridge Game'],
+        ['My homebrew set', '', 'Example Homebrew'],
+      ];
+      const have = (await (await fetch('/api/dat/ranking')).json()).dats.map(d => d.name);
+      let added = false;
+      for (const [index, [name, home, game]] of sets.entries()) {
+        if (have.includes(name)) continue;
+        const sha1 = String(index + 1).repeat(40);
+        const xml = `<?xml version="1.0"?><datafile><header><name>${name}</name>` +
+          `<description>${name}</description><homepage>${home}</homepage></header>` +
+          `<game name="${game}"><rom name="${game}.bin" size="4" sha1="${sha1}"/></game></datafile>`;
+        const form = new FormData();
+        form.append('file', new Blob([xml], { type: 'text/xml' }), `${index}.dat`);
+        const response = await fetch('/api/dat/import', { method: 'POST', body: form });
+        if (!response.ok) throw new Error(`DAT import failed: ${response.status}`);
+        added = true;
+      }
+      if (added) {
+        // Remount the section so it loads the lists just imported.
+        location.hash = '#/files';
+        await new Promise(r => setTimeout(r, 400));
+        location.hash = '#/settings/identification';
+        await new Promise(r => setTimeout(r, 1200));
+      }
+      const order = document.querySelector('details.dat-ranking');
+      if (!order) throw new Error('Name order not shown');
+      order.open = true;
+      await new Promise(r => setTimeout(r, 200));
+      if (!order.querySelector('button[aria-label^="Move "]')) throw new Error('no move controls');
+      order.scrollIntoView({ block: 'start' });
       await new Promise(r => setTimeout(r, 300));
-    })()
+    })('dark')
 
-# --- Settings: notifications ----------------------------------------------
-# No destination is configured in the fixture, so this captures the first-run
-# state: nothing is sent until one is added.
-- url: http://127.0.0.1:8099/?s=settings-light#/settings
-  output: docs/screenshots/settings-light.png
+# --- Settings: Defaults ---------------------------------------------------
+- url: http://127.0.0.1:8099/?s=settings-defaults-light#/settings/defaults
+  output: docs/screenshots/settings-defaults-light.png
   width: 1280
   height: 900
   wait: 1800
   javascript: *js_theme_light
-- url: http://127.0.0.1:8099/?s=settings-dark#/settings
-  output: docs/screenshots/settings-dark.png
+- url: http://127.0.0.1:8099/?s=settings-defaults-dark#/settings/defaults
+  output: docs/screenshots/settings-defaults-dark.png
+  width: 1280
+  height: 900
+  wait: 1800
+  javascript: *js_theme_dark
+
+# --- Settings: Converters -------------------------------------------------
+- url: http://127.0.0.1:8099/?s=settings-converters-light#/settings/converters
+  output: docs/screenshots/settings-converters-light.png
+  width: 1280
+  height: 900
+  wait: 1800
+  javascript: *js_theme_light
+- url: http://127.0.0.1:8099/?s=settings-converters-dark#/settings/converters
+  output: docs/screenshots/settings-converters-dark.png
   width: 1280
   height: 900
   wait: 1800

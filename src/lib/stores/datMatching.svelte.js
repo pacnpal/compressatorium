@@ -48,6 +48,13 @@ class DATMatchingStore {
   // DAT order saves, one at a time in click order; only the latest is adopted.
   #orderSaves = new LatestSaveQueue();
   stats = $state(null);
+  /**
+   * The last Hasheous probe: null (never asked, or Hasheous is off),
+   * `{ pending: true }` while it runs, then `{ ok, latency_ms }` or
+   * `{ ok: false, error }`. Turning Hasheous on runs one (Settings, #540).
+   */
+  hasheousTest = $state(null);
+  #hasheousProbe = 0;
 
   // Paths we've already kicked a match-job for, mapped to WHEN. The backend
   // may complete a job without caching a result, which would otherwise make
@@ -167,7 +174,7 @@ class DATMatchingStore {
   }
 
   async refreshMatchingAvailability() {
-    // App.svelte and DATView both refresh on mount, so one of those can be
+    // App.svelte and Game identification both refresh on mount, so one of those can be
     // in flight when a toggle PUT lands. Its older /dat/stats answer would
     // otherwise arrive last and overwrite the authoritative state the PUT
     // just applied -- the panel snaps back to "off" and matchingAvailable
@@ -261,7 +268,27 @@ class DATMatchingStore {
     // older one for up to a poll interval -- gating valid matching, or
     // attempting work the backend had just disabled.
     if (this.stats === before) this._applyHasheousState(state);
+    // Turning it on asks Hasheous at once, so the switch says whether it
+    // answered; not awaited, so the switch settles before the probe does.
+    if (state?.enabled) this.#probeHasheous();
+    else {
+      this.#hasheousProbe += 1;
+      this.hasheousTest = null;
+    }
     return state;
+  }
+
+  async #probeHasheous() {
+    const probe = ++this.#hasheousProbe;
+    this.hasheousTest = { pending: true };
+    let result;
+    try {
+      result = await api.testHasheous();
+    } catch (e) {
+      result = { ok: false, error: e?.message ?? 'Request failed' };
+    }
+    // A later toggle owns the answer.
+    if (probe === this.#hasheousProbe) this.hasheousTest = result;
   }
 
   /** Merge a /dat/hasheous response into the cached stats. */
@@ -822,7 +849,7 @@ class DATMatchingStore {
   async cancelSync() {
     // Don't swallow failures. /api/dat/sync/cancel returns 409 with
     // "No sync in progress" when there's nothing to cancel; swallowing
-    // that would make DATView.handleCancelSync() always take the
+    // that would make Identification.handleCancelSync() always take the
     // success path and tell the user cancellation was requested when
     // it wasn't. Let the caller decide the UX.
     const res = await api.cancelSync();
