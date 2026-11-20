@@ -82,6 +82,25 @@ function untilAborted(promise, signal) {
   return Promise.race([promise, abortedPromise(signal)]);
 }
 
+// How many skipped files a submit toast names before it counts the rest.
+const SKIP_REASONS_SHOWN = 3;
+
+/**
+ * The toast description for a batch's skipped files (#504): the first few as
+ * "name: reason", then how many more. Null when the backend reported none.
+ * @param {{ path: string, reason: string }[]} skipped
+ */
+function skipReasons(skipped) {
+  if (!Array.isArray(skipped) || skipped.length === 0) return null;
+  const lines = skipped.slice(0, SKIP_REASONS_SHOWN).map((skip) => {
+    const name = String(skip?.path ?? '').split(/[\\/]/).pop();
+    return name ? `${name}: ${skip?.reason ?? 'skipped'}` : (skip?.reason ?? 'skipped');
+  });
+  const rest = skipped.length - SKIP_REASONS_SHOWN;
+  if (rest > 0) lines.push(`and ${rest} more`);
+  return lines.join('; ');
+}
+
 const INITIAL_TOOL = loadPrimaryTool();
 
 class ConversionStore {
@@ -767,8 +786,10 @@ class ConversionStore {
       { [mode]: filePaths },
       { duplicateAction, rommRepin, rommPlatformId, outputDir },
       async () => {
+        // `{ jobs, skipped }` (#504): each file the backend left out, and why.
         const result = await jobs.createBatch(filePaths, mode, batchOpts);
-        return { result, createdJobs: Array.isArray(result) ? result : [] };
+        const createdJobs = Array.isArray(result) ? result : (result?.jobs ?? []);
+        return { result, createdJobs, skipped: result?.skipped ?? [] };
       },
     );
   }
@@ -978,7 +999,7 @@ class ConversionStore {
         if (!Array.isArray(e?.createdJobs)) throw e;
         queued = { result: null, createdJobs: e.createdJobs, error: e };
       }
-      const { result, createdJobs, error } = queued;
+      const { result, createdJobs, error, skipped = [] } = queued;
       // Report what the backend actually created. createBatch can
       // legitimately return fewer jobs than requested when the user
       // chose duplicateAction: 'skip', or when create_batch_jobs
@@ -989,10 +1010,16 @@ class ConversionStore {
       const requested = filePaths.length;
       // On a partial failure the error toast below says what happened.
       if (!error) {
+        // Why each file was left out, when the backend said (#504).
+        const why = skipReasons(skipped);
+        const opts = why ? { description: why, duration: 10000 } : undefined;
         if (created === 0) {
-          toast.warning(`No jobs queued (all ${requested} skipped)`);
+          toast.warning(`No jobs queued (all ${requested} skipped)`, opts);
         } else if (created < requested) {
-          toast.success(`Queued ${created} of ${requested} job(s); ${requested - created} skipped`);
+          toast.success(
+            `Queued ${created} of ${requested} job(s); ${requested - created} skipped`,
+            opts,
+          );
         } else {
           toast.success(`Queued ${created} job(s)`);
         }
