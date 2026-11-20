@@ -6279,36 +6279,7 @@ class JobManager:
             # #184, site 1). Checked before extraction / _clear_existing_output
             # so the existing verified output is neither re-extracted-from nor
             # deleted. Honors a cancel requested before we got here.
-            if not cancel_event.is_set() and await self._output_already_verified(job):
-                # Re-check after the awaited store/stat lookups: a cancel that
-                # landed while they were in flight must win over the no-op.
-                if cancel_event.is_set():
-                    raise ConversionCancelled("Conversion cancelled")
-                self._cancelled.discard(job_id)
-                job.progress = 100
-                job.output_size = await self._output_size_bounded(job)
-                job.status = JobStatus.COMPLETED
-                job.completed_at = datetime.now(timezone.utc)
-                # No check ran in this job, so job.check_passed stays unset;
-                # the event reports the check the reused output already
-                # passed, so the UI doesn't downgrade a Round-tripped badge.
-                stored_check = await self._stored_check(job.output_path)
-                job.message = (
-                    f"Output already {_CHECK_LABELS[stored_check]}; "
-                    "skipped re-conversion."
-                )
-                await self._notify_subscribers(
-                    job_id,
-                    {
-                        "type": "complete",
-                        "job_id": job_id,
-                        "output_path": job.output_path,
-                        "output_size": job.output_size,
-                        "verified": True,
-                        "check_passed": stored_check,
-                        "source_deleted": False,
-                    },
-                )
+            if await self._complete_from_verified_output(job, cancel_event):
                 return
 
             # A bound Source (#431) is read from its folder in the work area.
@@ -6321,54 +6292,8 @@ class JobManager:
             # handed to every consumer.
             within = _trusted_roots(job)
             if "::" in job.file_path:
-                extract_start = time.monotonic()
-                archive_path, internal_path = job.file_path.split("::", 1)
-                if logger.isEnabledFor(logging.DEBUG):
-                    logger.debug(
-                        "Job %s extracting archive %s member %s",
-                        job_id,
-                        archive_path,
-                        internal_path,
-                    )
-                extract_task = asyncio.create_task(
-                    run_in_threadpool(
-                        archive_service.extract_file, archive_path, internal_path
-                    )
-                )
-                extract_status_task = asyncio.create_task(
-                    self._emit_extract_updates(
-                        job_id, archive_path, internal_path, extract_task
-                    )
-                )
-                input_path, temp_dir = await extract_task
-                extract_status_task.cancel()
-                try:
-                    await extract_status_task
-                except asyncio.CancelledError:
-                    pass
-                job.temp_dir = temp_dir
+                input_path = await self._extract_archive_member(job, cancel_event)
                 within = _trusted_roots(job)
-                await run_in_threadpool(
-                    archive_service.extract_related_files,
-                    archive_path,
-                    internal_path,
-                    temp_dir,
-                )
-                if logger.isEnabledFor(logging.DEBUG):
-                    extracted_size = None
-                    try:
-                        extracted_size = os.path.getsize(input_path)
-                    except OSError:
-                        pass
-                    logger.debug(
-                        "Job %s extracted to %s size=%s in %.2fs",
-                        job_id,
-                        input_path,
-                        extracted_size,
-                        time.monotonic() - extract_start,
-                    )
-                if cancel_event.is_set():
-                    raise ConversionCancelled("Conversion cancelled")
 
             # Same point-in-time problem as the directory check below, for a
             # multi-file *file* source: a queued split Wii U set's
@@ -6381,20 +6306,10 @@ class JobManager:
                 source_companions_are_safe, input_path, job.mode.value,
                 within=within,
             ):
-                job.status = JobStatus.FAILED
-                job.error_message = (
+                await self._fail_now(job, (
                     "A companion file this source consumes is a symlink or "
                     "resolves outside configured volumes"
-                )
-                job.completed_at = datetime.now(timezone.utc)
-                await self._notify_subscribers(
-                    job_id,
-                    {
-                        "type": "error",
-                        "job_id": job_id,
-                        "error": job.error_message,
-                    },
-                )
+                ))
                 return
 
             if job.input_kind == InputKind.DIRECTORY:
@@ -6407,20 +6322,10 @@ class JobManager:
                 # overwrite job is non-destructive: the user's prior ISO/split
                 # set is only removed once the source is confirmed still safe.
                 if not await run_in_threadpool(is_safe_directory_tree, input_path):
-                    job.status = JobStatus.FAILED
-                    job.error_message = (
+                    await self._fail_now(job, (
                         "PS3 folder contains symlinks, special files, "
                         "or paths outside configured volumes"
-                    )
-                    job.completed_at = datetime.now(timezone.utc)
-                    await self._notify_subscribers(
-                        job_id,
-                        {
-                            "type": "error",
-                            "job_id": job_id,
-                            "error": job.error_message,
-                        },
-                    )
+                    ))
                     return
 
             # The recursive PS3 safety walk above can take a while on a large
@@ -6532,94 +6437,13 @@ class JobManager:
                 # keeps the source. One block runs it either way, so a verified
                 # output means the same thing however it was requested.
                 if job.delete_on_verify or job.verify_after:
-                    # Both halves of the contract, re-asked here because this is
-                    # where the source actually gets unlinked. The plan sites
-                    # (`routes/convert.py`, `romm_auto.normalize_rule`) check the
-                    # same pair, but a job can reach this point without passing
-                    # either -- restored queue state, a hand-edited rule blob, a
-                    # future caller. `supports_delete_on_verify` says the mode
-                    # can offer it at all; `delete_on_verify_is_safe` says THIS
-                    # job can, given its compression, and that is the one that
-                    # stops a Wii U `noverify` conversion from deleting a 25 GB
-                    # source on a structural check.
-                    if job.delete_on_verify and not (
-                        registry.spec(job.mode.value).supports_delete_on_verify
-                        and registry.for_mode(job.mode.value).delete_on_verify_is_safe(
-                            job.mode.value, job.compression,
-                        )
-                    ):
-                        raise RuntimeError(
-                            "Delete-on-verify is not safe for this conversion: "
-                            "the mode or its compression settings cannot prove "
-                            "the output before the source is removed"
-                        )
-                    if cancel_event.is_set():
-                        raise ConversionCancelled("Conversion cancelled")
-
-                    verified = False
-                    job.message = "Verifying output..."
-                    await self._notify_subscribers(
-                        job_id,
-                        {
-                            "type": "progress",
-                            "job_id": job_id,
-                            "progress": job.progress,
-                            "message": job.message,
-                        },
+                    tool, verify_path = await self._verify_output(
+                        job, write_path, cancel_event,
                     )
-
-                    tool = registry.for_mode(job.mode.value)
-                    # Bound the whole verify, not just whatever subprocess it
-                    # happens to spawn: a tool whose verify is pure Python (the
-                    # Wii U container walk, the PS3 PARAM.SFO readback) has no
-                    # subprocess timeout to hide behind, and with
-                    # MAX_CONCURRENT_JOBS=1 a verify that never returns freezes
-                    # every job queued behind it (issue #266). The tool resolves
-                    # the number so its own per-tool override applies, and takes
-                    # the cancel event because sizing the output is a stat of
-                    # its own: on a mount that has stopped answering, a Cancel
-                    # pressed here must not wait out the probe bound before the
-                    # verify that would report it even starts.
-                    # Ask the tool what to verify rather than assuming the
-                    # planned path holds it: a split makeps3iso build writes
-                    # `<iso>.0`/`.1`/… and no bare `.iso`, so verifying
-                    # `output_path` read a file that was never created and
-                    # failed a conversion that had in fact succeeded.
-                    # The shared check (`_container_check`), the one a retried
-                    # delete re-runs before it removes anything.
-                    verify_path = await self._container_check(
-                        tool, write_path, job.mode.value, cancel_event,
-                        verifying_id=job_id,
-                    )
-
                     verified = True
-                    # The delete decision (#298): which check the output
-                    # passed, and, when it is not enough to delete the Source,
-                    # why. The job (and so the Ledger row) records the check
-                    # either way.
-                    decided = await self._delete_check(
-                        job, tool, input_path, verify_path, cancel_event,
+                    decided = await self._decide_delete(
+                        job, tool, input_path, write_path, verify_path, cancel_event,
                     )
-                    check_passed = decided.check
-                    job.check_passed = check_passed
-                    job.check_dat = decided.dat_name
-                    if decided.fail_reason:
-                        # The Round-trip did not pass, so this output may not
-                        # hold the Source's content. Store nothing that would
-                        # present it as a checked result: no badge, no reuse
-                        # snapshot for the re-run fast path. A failed check
-                        # keeps provenance: the record names this output's
-                        # mode and tool (replacing whatever an earlier run
-                        # left) and is marked failed, so the next check still
-                        # goes to the tool that made it. A staged output is
-                        # never placed: its records go with it (#398).
-                        await verification_store.mark_verified(
-                            write_path,
-                            source_path=job.file_path,
-                            produced_meta=self._verifier_identity(job),
-                        )
-                        await verification_store.mark_failed(write_path)
-                        raise RuntimeError(decided.fail_reason)
                     # Both checks passed: only now does a staged output
                     # appear beside the Source (#398). Everything below
                     # works on the placed output, unless a Referrer places
@@ -6633,193 +6457,12 @@ class JobManager:
                     if placement is None:
                         await self._place_staged(job, slot, write_path)
                     checked_path = write_path if placement is not None else job.output_path
-                    # Snapshot what produced this verified artifact (mode +
-                    # output shaping + source/output fingerprints) so a later
-                    # re-queue can recognize prior success and complete as a
-                    # no-op without re-spawning the converter (#184, site 1).
-                    # The source still exists here (delete runs below), so its
-                    # complete set can be fingerprinted.
-                    # Bounded like the output size (#352): it stats the
-                    # output and the Source on the same storage.
-                    snapshot_meta = await run_detached_within_stall_bound(
-                        self._build_produced_meta, job, checked_path,
-                        what=f"Fingerprinting {os.path.basename(job.output_path)}",
+                    check_label = await self._record_check(
+                        job, checked_path, decided.check,
                     )
-                    # The verifier identity (the mode and tool that made the
-                    # output) is recorded for every passing check, with or
-                    # without a delete snapshot: the CLI routes the next check
-                    # by it (#306). The fingerprints that back the re-run fast
-                    # path come only from the snapshot.
-                    produced_meta = {
-                        **self._verifier_identity(job), **(snapshot_meta or {}),
-                    }
-                    await verification_store.mark_verified(
-                        checked_path,
-                        source_path=job.file_path,
-                        produced_meta=produced_meta,
-                        check=check_passed,
+                    source_deleted = await self._finish_delete_on_verify(
+                        job, decided, check_label, placement, cancel_event,
                     )
-                    check_label = _CHECK_LABELS[check_passed]
-
-                    if not job.delete_on_verify or decided.keep_reason:
-                        # verify_after only: the source is kept by design, so
-                        # the job is finished the moment the output checks out.
-                        # Or the output is Intact but its delete proof found
-                        # nothing to vouch for it (not Recognized, #423): the
-                        # Source stays and the job completes, saying why.
-                        job.message = f"Output is {check_label}."
-                        if decided.keep_reason:
-                            job.warning = decided.keep_reason
-                            job.message = f"Output is {check_label}, {decided.keep_reason}"
-                        await self._notify_subscribers(
-                            job_id,
-                            {
-                                "type": "progress",
-                                "job_id": job_id,
-                                "progress": job.progress,
-                                "message": job.message,
-                            },
-                        )
-                    elif cancel_event.is_set():
-                        job.message = (
-                            f"Output is {check_label}. Delete skipped (cancelled)."
-                        )
-                        await self._notify_subscribers(
-                            job_id,
-                            {
-                                "type": "progress",
-                                "job_id": job_id,
-                                "progress": job.progress,
-                                "message": job.message,
-                            },
-                        )
-                    elif not await self._hold_delete_paths_waiting(job_id, cancel_event):
-                        if cancel_event.is_set() or job_id in self._cancelled:
-                            # Cancelled while it waited: the Source stays and
-                            # the job ends CANCELLED, never reported as a
-                            # reader.
-                            raise ConversionCancelled("Conversion cancelled")
-                        # Another job is still reading the Source (or a folder
-                        # above it): the output is done and checked, so the job
-                        # completes, keeping the Source.
-                        job.warning = SOURCE_KEPT_FOR_READERS
-                        job.message = f"Output is {check_label}. {SOURCE_KEPT_FOR_READERS}."
-                        await self._notify_subscribers(
-                            job_id,
-                            {
-                                "type": "progress",
-                                "job_id": job_id,
-                                "progress": job.progress,
-                                "message": job.message,
-                            },
-                        )
-                    else:
-                        delete_label = (
-                            "source archive"
-                            if "::" in job.file_path
-                            else "source"
-                        )
-                        job.message = (
-                            f"Output is {check_label}. Deleting {delete_label}..."
-                        )
-                        await self._notify_subscribers(
-                            job_id,
-                            {
-                                "type": "progress",
-                                "job_id": job_id,
-                                "progress": job.progress,
-                                "message": job.message,
-                            },
-                        )
-
-                        snapshot = self._delete_plans.get(job_id)
-                        if not snapshot or not snapshot.get("paths"):
-                            raise RuntimeError(
-                                "Delete plan snapshot missing; refusing to delete"
-                            )
-
-                        # Every delete path is held exclusively from here until
-                        # the unlinks finish (``_hold_delete_paths_waiting``,
-                        # above): no job can start reading one between the
-                        # checks and its unlink (#306).
-                        job_planned: List[str] = []
-                        job_handed_off: List[bool] = []
-                        try:
-                            removal = await self._delete_source_set(
-                                job_id,
-                                file_path=job.file_path,
-                                output_path=job.output_path,
-                                expected_paths=list(snapshot.get("paths", [])),
-                                fingerprints=snapshot.get("fingerprints") or {},
-                                check_label=check_label,
-                                cancel_event=cancel_event,
-                                cancelled=lambda: job_id in self._cancelled,
-                                deleted=job.deleted_paths,
-                                # The output locks travel with an unlink this
-                                # job stops waiting for (a cancel), like a
-                                # retry's.
-                                travelling_locks=self._output_locks.get(job_id),
-                                planned=job_planned,
-                                handed_off=job_handed_off,
-                                placement=placement,
-                                hook_records=job.referrers_updated,
-                            )
-                        except asyncio.CancelledError:
-                            # The task itself was cancelled once the unlinks
-                            # began, or while the first still ran: what started, or is still running
-                            # on the worker, is recorded (bounded, never
-                            # waiting on the unlink worker), the job ends
-                            # CANCELLED and is announced (the `finally`
-                            # below), then the cancel goes on.
-                            rest = unfinished_delete(
-                                job_planned, job.deleted_paths,
-                                in_flight=bool(job_handed_off),
-                            )
-                            if rest:
-                                await self._report_unfinished_delete(
-                                    job, rest, "the job was cancelled",
-                                )
-                            raise
-                        except (RuntimeError, OSError) as exc:
-                            rest = unfinished_delete(
-                                job_planned, job.deleted_paths,
-                                in_flight=bool(job_handed_off),
-                            )
-                            if rest is None:
-                                raise
-                            # Started, then refused part way: never silent.
-                            await self._report_unfinished_delete(job, rest, exc)
-                            raise RuntimeError(
-                                f"Source part deleted: {len(job.deleted_paths)} of "
-                                f"{len(job_planned)} files removed, {len(rest)} remain "
-                                f"({exc})",
-                            ) from exc
-                        job.referrers_updated = removal.referrer_records
-                        if removal.cancelled:
-                            # One last look before anything is unlinked
-                            # (#306): a cancel here ends CANCELLED.
-                            raise ConversionCancelled("Conversion cancelled")
-                        if removal.kept_reason:
-                            # The Source stays and the job completes: say why
-                            # where every reader of a finished job looks (the
-                            # CLI's report, the job row): job.warning.
-                            job.message = removal.kept_reason
-                            job.warning = removal.kept_reason
-                            await self._notify_subscribers(
-                                job_id,
-                                {
-                                    "type": "progress",
-                                    "job_id": job_id,
-                                    "progress": job.progress,
-                                    "message": job.message,
-                                },
-                            )
-                        else:
-                            source_deleted = True
-                            if removal.notes:
-                                # Said, never left to look like a swap (#391).
-                                job.warning = "; ".join(removal.notes)
-                                job.message = f"Output is {check_label}. {job.warning}"
 
                 if slot is not None and not slot.placed:
                     # Not from a bound Source that changed meanwhile.
@@ -6945,6 +6588,358 @@ class JobManager:
                 logger.debug("Job %s finished status=%s", job_id, job.status.value)
             if set_aside_cancel is not None:
                 raise set_aside_cancel
+
+    async def _complete_from_verified_output(
+        self, job: ConversionJob, cancel_event: asyncio.Event,
+    ) -> bool:
+        """Complete *job* at once when its verified output already exists."""
+        if cancel_event.is_set() or not await self._output_already_verified(job):
+            return False
+        # Re-check after the awaited store/stat lookups: a cancel that
+        # landed while they were in flight must win over the no-op.
+        if cancel_event.is_set():
+            raise ConversionCancelled("Conversion cancelled")
+        self._cancelled.discard(job.id)
+        job.progress = 100
+        job.output_size = await self._output_size_bounded(job)
+        job.status = JobStatus.COMPLETED
+        job.completed_at = datetime.now(timezone.utc)
+        # No check ran in this job, so job.check_passed stays unset;
+        # the event reports the check the reused output already
+        # passed, so the UI doesn't downgrade a Round-tripped badge.
+        stored_check = await self._stored_check(job.output_path)
+        job.message = (
+            f"Output already {_CHECK_LABELS[stored_check]}; "
+            "skipped re-conversion."
+        )
+        await self._notify_subscribers(
+            job.id,
+            {
+                "type": "complete",
+                "job_id": job.id,
+                "output_path": job.output_path,
+                "output_size": job.output_size,
+                "verified": True,
+                "check_passed": stored_check,
+                "source_deleted": False,
+            },
+        )
+        return True
+
+    async def _extract_archive_member(
+        self, job: ConversionJob, cancel_event: asyncio.Event,
+    ) -> str:
+        """Extract the archive member *job* reads into its temp dir; its path."""
+        extract_start = time.monotonic()
+        archive_path, internal_path = job.file_path.split("::", 1)
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "Job %s extracting archive %s member %s",
+                job.id,
+                archive_path,
+                internal_path,
+            )
+        extract_task = asyncio.create_task(
+            run_in_threadpool(
+                archive_service.extract_file, archive_path, internal_path
+            )
+        )
+        extract_status_task = asyncio.create_task(
+            self._emit_extract_updates(
+                job.id, archive_path, internal_path, extract_task
+            )
+        )
+        input_path, temp_dir = await extract_task
+        extract_status_task.cancel()
+        try:
+            await extract_status_task
+        except asyncio.CancelledError:
+            pass
+        job.temp_dir = temp_dir
+        await run_in_threadpool(
+            archive_service.extract_related_files,
+            archive_path,
+            internal_path,
+            temp_dir,
+        )
+        if logger.isEnabledFor(logging.DEBUG):
+            extracted_size = None
+            try:
+                extracted_size = os.path.getsize(input_path)
+            except OSError:
+                pass
+            logger.debug(
+                "Job %s extracted to %s size=%s in %.2fs",
+                job.id,
+                input_path,
+                extracted_size,
+                time.monotonic() - extract_start,
+            )
+        if cancel_event.is_set():
+            raise ConversionCancelled("Conversion cancelled")
+        return input_path
+
+    async def _notify_progress(self, job: ConversionJob) -> None:
+        await self._notify_subscribers(job.id, {
+            "type": "progress", "job_id": job.id,
+            "progress": job.progress, "message": job.message,
+        })
+
+    async def _fail_now(self, job: ConversionJob, message: str) -> None:
+        """End *job* FAILED with *message*, before anything was written."""
+        job.status = JobStatus.FAILED
+        job.error_message = message
+        job.completed_at = datetime.now(timezone.utc)
+        await self._notify_subscribers(
+            job.id, {"type": "error", "job_id": job.id, "error": job.error_message},
+        )
+
+    async def _verify_output(
+        self, job: ConversionJob, write_path: str, cancel_event: asyncio.Event,
+    ) -> tuple:
+        """Run *job*'s requested check on its output: ``(tool, verify_path)``."""
+        # Both halves of the contract, re-asked here because this is
+        # where the source actually gets unlinked. The plan sites
+        # (`routes/convert.py`, `romm_auto.normalize_rule`) check the
+        # same pair, but a job can reach this point without passing
+        # either -- restored queue state, a hand-edited rule blob, a
+        # future caller. `supports_delete_on_verify` says the mode
+        # can offer it at all; `delete_on_verify_is_safe` says THIS
+        # job can, given its compression, and that is the one that
+        # stops a Wii U `noverify` conversion from deleting a 25 GB
+        # source on a structural check.
+        if job.delete_on_verify and not (
+            registry.spec(job.mode.value).supports_delete_on_verify
+            and registry.for_mode(job.mode.value).delete_on_verify_is_safe(
+                job.mode.value, job.compression,
+            )
+        ):
+            raise RuntimeError(
+                "Delete-on-verify is not safe for this conversion: "
+                "the mode or its compression settings cannot prove "
+                "the output before the source is removed"
+            )
+        if cancel_event.is_set():
+            raise ConversionCancelled("Conversion cancelled")
+
+        job.message = "Verifying output..."
+        await self._notify_progress(job)
+
+        tool = registry.for_mode(job.mode.value)
+        # Bound the whole verify, not just whatever subprocess it
+        # happens to spawn: a tool whose verify is pure Python (the
+        # Wii U container walk, the PS3 PARAM.SFO readback) has no
+        # subprocess timeout to hide behind, and with
+        # MAX_CONCURRENT_JOBS=1 a verify that never returns freezes
+        # every job queued behind it (issue #266). The tool resolves
+        # the number so its own per-tool override applies, and takes
+        # the cancel event because sizing the output is a stat of
+        # its own: on a mount that has stopped answering, a Cancel
+        # pressed here must not wait out the probe bound before the
+        # verify that would report it even starts.
+        # Ask the tool what to verify rather than assuming the
+        # planned path holds it: a split makeps3iso build writes
+        # `<iso>.0`/`.1`/… and no bare `.iso`, so verifying
+        # `output_path` read a file that was never created and
+        # failed a conversion that had in fact succeeded.
+        # The shared check (`_container_check`), the one a retried
+        # delete re-runs before it removes anything.
+        return tool, await self._container_check(
+            tool, write_path, job.mode.value, cancel_event,
+            verifying_id=job.id,
+        )
+
+    async def _decide_delete(
+        self, job: ConversionJob, tool, input_path: str, write_path: str,
+        verify_path: str, cancel_event: asyncio.Event,
+    ) -> "_DeleteCheck":
+        """Which check the output passed, and whether it may delete the Source."""
+        # The delete decision (#298): which check the output
+        # passed, and, when it is not enough to delete the Source,
+        # why. The job (and so the Ledger row) records the check
+        # either way.
+        decided = await self._delete_check(
+            job, tool, input_path, verify_path, cancel_event,
+        )
+        job.check_passed = decided.check
+        job.check_dat = decided.dat_name
+        if decided.fail_reason:
+            # The Round-trip did not pass, so this output may not
+            # hold the Source's content. Store nothing that would
+            # present it as a checked result: no badge, no reuse
+            # snapshot for the re-run fast path. A failed check
+            # keeps provenance: the record names this output's
+            # mode and tool (replacing whatever an earlier run
+            # left) and is marked failed, so the next check still
+            # goes to the tool that made it. A staged output is
+            # never placed: its records go with it (#398).
+            await verification_store.mark_verified(
+                write_path,
+                source_path=job.file_path,
+                produced_meta=self._verifier_identity(job),
+            )
+            await verification_store.mark_failed(write_path)
+            raise RuntimeError(decided.fail_reason)
+        return decided
+
+    async def _record_check(
+        self, job: ConversionJob, checked_path: str, check: str,
+    ) -> str:
+        """Store the passed check for *checked_path*; the check's label."""
+        # Snapshot what produced this verified artifact (mode +
+        # output shaping + source/output fingerprints) so a later
+        # re-queue can recognize prior success and complete as a
+        # no-op without re-spawning the converter (#184, site 1).
+        # The source still exists here (delete runs below), so its
+        # complete set can be fingerprinted.
+        # Bounded like the output size (#352): it stats the
+        # output and the Source on the same storage.
+        snapshot_meta = await run_detached_within_stall_bound(
+            self._build_produced_meta, job, checked_path,
+            what=f"Fingerprinting {os.path.basename(job.output_path)}",
+        )
+        # The verifier identity (the mode and tool that made the
+        # output) is recorded for every passing check, with or
+        # without a delete snapshot: the CLI routes the next check
+        # by it (#306). The fingerprints that back the re-run fast
+        # path come only from the snapshot.
+        produced_meta = {
+            **self._verifier_identity(job), **(snapshot_meta or {}),
+        }
+        await verification_store.mark_verified(
+            checked_path,
+            source_path=job.file_path,
+            produced_meta=produced_meta,
+            check=check,
+        )
+        return _CHECK_LABELS[check]
+
+    async def _finish_delete_on_verify(
+        self, job: ConversionJob, decided: "_DeleteCheck", check_label: str,
+        placement, cancel_event: asyncio.Event,
+    ) -> bool:
+        """Keep or delete the Source once the output passed; True if deleted."""
+        deleted = False
+        if not job.delete_on_verify or decided.keep_reason:
+            # verify_after only: the source is kept by design, so
+            # the job is finished the moment the output checks out.
+            # Or the output is Intact but its delete proof found
+            # nothing to vouch for it (not Recognized, #423): the
+            # Source stays and the job completes, saying why.
+            job.message = f"Output is {check_label}."
+            if decided.keep_reason:
+                job.warning = decided.keep_reason
+                job.message = f"Output is {check_label}, {decided.keep_reason}"
+            await self._notify_progress(job)
+        elif cancel_event.is_set():
+            job.message = (
+                f"Output is {check_label}. Delete skipped (cancelled)."
+            )
+            await self._notify_progress(job)
+        elif not await self._hold_delete_paths_waiting(job.id, cancel_event):
+            if cancel_event.is_set() or job.id in self._cancelled:
+                # Cancelled while it waited: the Source stays and
+                # the job ends CANCELLED, never reported as a
+                # reader.
+                raise ConversionCancelled("Conversion cancelled")
+            # Another job is still reading the Source (or a folder
+            # above it): the output is done and checked, so the job
+            # completes, keeping the Source.
+            job.warning = SOURCE_KEPT_FOR_READERS
+            job.message = f"Output is {check_label}. {SOURCE_KEPT_FOR_READERS}."
+            await self._notify_progress(job)
+        else:
+            delete_label = (
+                "source archive"
+                if "::" in job.file_path
+                else "source"
+            )
+            job.message = (
+                f"Output is {check_label}. Deleting {delete_label}..."
+            )
+            await self._notify_progress(job)
+
+            snapshot = self._delete_plans.get(job.id)
+            if not snapshot or not snapshot.get("paths"):
+                raise RuntimeError(
+                    "Delete plan snapshot missing; refusing to delete"
+                )
+
+            # Every delete path is held exclusively from here until
+            # the unlinks finish (``_hold_delete_paths_waiting``,
+            # above): no job can start reading one between the
+            # checks and its unlink (#306).
+            job_planned: List[str] = []
+            job_handed_off: List[bool] = []
+            try:
+                removal = await self._delete_source_set(
+                    job.id,
+                    file_path=job.file_path,
+                    output_path=job.output_path,
+                    expected_paths=list(snapshot.get("paths", [])),
+                    fingerprints=snapshot.get("fingerprints") or {},
+                    check_label=check_label,
+                    cancel_event=cancel_event,
+                    cancelled=lambda: job.id in self._cancelled,
+                    deleted=job.deleted_paths,
+                    # The output locks travel with an unlink this
+                    # job stops waiting for (a cancel), like a
+                    # retry's.
+                    travelling_locks=self._output_locks.get(job.id),
+                    planned=job_planned,
+                    handed_off=job_handed_off,
+                    placement=placement,
+                    hook_records=job.referrers_updated,
+                )
+            except asyncio.CancelledError:
+                # The task itself was cancelled once the unlinks
+                # began, or while the first still ran: what started, or is still running
+                # on the worker, is recorded (bounded, never
+                # waiting on the unlink worker), the job ends
+                # CANCELLED and is announced (the `finally`
+                # below), then the cancel goes on.
+                rest = unfinished_delete(
+                    job_planned, job.deleted_paths,
+                    in_flight=bool(job_handed_off),
+                )
+                if rest:
+                    await self._report_unfinished_delete(
+                        job, rest, "the job was cancelled",
+                    )
+                raise
+            except (RuntimeError, OSError) as exc:
+                rest = unfinished_delete(
+                    job_planned, job.deleted_paths,
+                    in_flight=bool(job_handed_off),
+                )
+                if rest is None:
+                    raise
+                # Started, then refused part way: never silent.
+                await self._report_unfinished_delete(job, rest, exc)
+                raise RuntimeError(
+                    f"Source part deleted: {len(job.deleted_paths)} of "
+                    f"{len(job_planned)} files removed, {len(rest)} remain "
+                    f"({exc})",
+                ) from exc
+            job.referrers_updated = removal.referrer_records
+            if removal.cancelled:
+                # One last look before anything is unlinked
+                # (#306): a cancel here ends CANCELLED.
+                raise ConversionCancelled("Conversion cancelled")
+            if removal.kept_reason:
+                # The Source stays and the job completes: say why
+                # where every reader of a finished job looks (the
+                # CLI's report, the job row): job.warning.
+                job.message = removal.kept_reason
+                job.warning = removal.kept_reason
+                await self._notify_progress(job)
+            else:
+                deleted = True
+                if removal.notes:
+                    # Said, never left to look like a swap (#391).
+                    job.warning = "; ".join(removal.notes)
+                    job.message = f"Output is {check_label}. {job.warning}"
+        return deleted
 
     def _forget_job_runtime(self, job_id: str) -> None:
         """Drop a finished job's in-memory runtime bookkeeping. Never raises."""
