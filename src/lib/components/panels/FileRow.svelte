@@ -25,6 +25,11 @@
   // folder-input mode (makeps3iso) and only when the backend marked them
   // convertible. Drives the checkbox; the name button still navigates.
   const selectable = $derived(fileBrowser.isSelectable(entry));
+  // A row that is part of another row's set (#504: a later RAR volume, a
+  // split dump's part) names the file that leads it; it is never ticked alone.
+  const companionSource = $derived(
+    entry?.companion_of ? entry.companion_of.split(/[\\/]/).pop() : null,
+  );
   // A RomM listing's own matches are seeded into the store (#427), so this is
   // the one answer, and a policy change clears it everywhere at once.
   const datMatch = $derived(datMatching.matchFor(path));
@@ -164,6 +169,10 @@
         <span class="name-text">{entry?.display_name || entry?.name}</span>
         {#if entry?.display_name}
           <span class="file-name" title={entry.name}>{entry.name}</span>
+        {/if}
+        {#if companionSource}
+          <!-- Beneath the name, so the row's own file name stays readable. -->
+          <span class="file-name" title={entry.companion_of}>part of {companionSource}</span>
         {/if}
         {#if appName}
           <span class="app-name" title={matchTooltip}>

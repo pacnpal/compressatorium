@@ -31,9 +31,14 @@ from services.disc_playlist import (
 )
 from services.job_manager import job_manager
 from services.lock_manager import lock_manager
+from services.subprocess_runner import (
+    ProbeCapacityExceeded,
+    Stalled,
+    run_detached_within_stall_bound,
+)
 from services.mutation_guard import locked_for_mutation
 from services.tools import registry
-from routes.volume_guard import off_loop_bounded, off_loop_until_stalled
+from routes.volume_guard import WALK_STALL_SECONDS, off_loop_bounded, off_loop_until_stalled
 from services.verification_store import verification_store
 from utils.junk import is_junk_entry
 from utils.path_utils import (
@@ -405,6 +410,54 @@ def _resolve_in_volumes(path: str, *, folder: bool) -> str:
     return resolved_str
 
 
+def companion_marks(
+    paths: list[str], progress: Callable[..., None] | None = None,
+) -> dict[str, str]:
+    """Which of *paths* belong to another of them (#504): companion -> Source.
+
+    A row is marked when it is one of ``registry.source_companions`` of another
+    listed path (a RAR set's later volumes, a split Wii U dump's parts): the
+    tools' own hook decides, never an extension. The lenient form, so a set
+    whose members can't be told now (an unreadable or slow RAR header, already
+    bounded and detached there) marks nothing. A path already marked is no
+    Source of its own and is not asked. ``progress`` is reported per path.
+    Blocking.
+    """
+    listed = set(paths)
+    marks: dict[str, str] = {}
+    for path in paths:
+        if progress is not None:
+            progress(path)
+        if path in marks:
+            continue
+        for companion in registry.source_companions(path):
+            if companion in listed and companion not in marks:
+                marks[companion] = path
+    return marks
+
+
+async def _listing_companion_marks(entries: list[FileEntry]) -> None:
+    """Set ``companion_of`` on the listed rows that belong to another row.
+
+    Off the event loop under the listing's own stall bound. The marks are a
+    hint: a pass that stops moving (a mount that hangs between two bounded
+    header reads) gives up and marks nothing rather than failing the listing.
+    """
+    paths = [entry.path for entry in entries if entry.type != "directory"]
+    if len(paths) < 2:
+        return
+    try:
+        marks = await run_detached_within_stall_bound(
+            companion_marks, paths, what="Finding a listing's multi-file sets",
+            stall=WALK_STALL_SECONDS, report_progress=True,
+        )
+    except (Stalled, ProbeCapacityExceeded):
+        logger.warning("Listing marks no companion rows: the sets did not answer in time")
+        return
+    for entry in entries:
+        entry.companion_of = marks.get(entry.path)
+
+
 def _listing_volume(path: str) -> str:
     """The name of the Volume the listed folder is in, after the folder checks.
 
@@ -533,6 +586,7 @@ async def list_files(
     entries = await off_loop_until_stalled(
         scan_directory, path, show_archives, summarize_archives, what="Listing a folder",
     )
+    await _listing_companion_marks(entries)
 
     return DirectoryListing(volume=volume_name, path=path, entries=entries)
 

@@ -815,6 +815,9 @@ class FileBrowserStore {
    */
   _isSelectable(entry) {
     if (!entry) return false;
+    // Part of another row's set (#504: a later RAR volume, a split dump's
+    // part): converted, checked and deleted with its Source, never alone.
+    if (entry.companion_of) return false;
     if (entry.type === 'directory') {
       // Directories are navigation-only EXCEPT under a directory-input mode
       // (makeps3iso folder_to_iso), where a folder the backend marked

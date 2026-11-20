@@ -280,8 +280,10 @@ export const api = {
     split = false,
     containerOnly = false,
   ) {
+    // report_skipped (#504): `{ jobs, skipped }`, each skipped file with its
+    // reason and code, instead of the bare job list.
     return jsonPost(
-      `${API_BASE}/jobs/batch`,
+      `${API_BASE}/jobs/batch?report_skipped=true`,
       {
         file_paths: filePaths,
         mode,

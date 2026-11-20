@@ -527,7 +527,7 @@ class JobsStore {
   async createBatch(filePaths, mode, opts = {}) {
     for (const fp of filePaths) this._addOptimistic(fp, mode);
     try {
-      const created = await api.createBatchJobs(
+      const answer = await api.createBatchJobs(
         filePaths,
         mode,
         opts.outputDir ?? null,
@@ -537,10 +537,10 @@ class JobsStore {
         opts.split ?? false,
         opts.containerOnly ?? false,
       );
-      if (Array.isArray(created)) {
-        for (const job of created) this._applyJob(job);
-      }
-      return created;
+      // `{ jobs, skipped }` (#504); a bare job list from a server before it.
+      const created = Array.isArray(answer) ? answer : (answer?.jobs ?? []);
+      for (const job of created) this._applyJob(job);
+      return { jobs: created, skipped: Array.isArray(answer?.skipped) ? answer.skipped : [] };
     } finally {
       // Always clear placeholders for the requested paths. _applyJob already
       // removes the placeholder for any path that came back as a real job;

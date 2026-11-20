@@ -6,10 +6,10 @@ import re
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path
-from typing import Optional
+from typing import Annotated, Optional
 
 from config import settings
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.concurrency import run_in_threadpool
 from models import (
     AutoBatchResponse,
@@ -17,6 +17,8 @@ from models import (
     AutoPlanItem,
     AutoPlanRequest,
     BatchJobCreateRequest,
+    BatchJobsResponse,
+    BatchSkippedItem,
     CheckDuplicatesRequest,
     ConversionJob,
     ConversionMode,
@@ -58,6 +60,7 @@ from services.tools.base import compression_problem, without_unusable_codecs
 from services.event_stream import event_stream
 from utils.delete_plan import build_delete_plan, build_delete_snapshot
 from utils.path_utils import (
+    ensure_path_within_volumes,
     is_safe_directory_tree,
     is_within_configured_volumes,
     match_extension,
@@ -341,6 +344,7 @@ class SkipReason(Enum):
     PS3_OUTPUT_OUTSIDE_VOLUMES = "ps3_output_outside_volumes"
     PS3_FOLDER_UNSAFE = "ps3_folder_unsafe"
     SOURCE_COMPANION_UNSAFE = "source_companion_unsafe"
+    SOURCE_OUTSIDE_VOLUMES = "source_outside_volumes"
 
 
 class SkipFile(Exception):  # noqa: N818 - control-flow signal, not an error
@@ -358,6 +362,32 @@ class SkipFile(Exception):  # noqa: N818 - control-flow signal, not an error
         own, with the tool's detail in place of the fixed message."""
         status_code, message = _SKIP_HTTP.get(self.reason, (400, self.reason.value))
         return status_code, self.detail or message
+
+    @property
+    def code(self) -> str:
+        """The reason's stable code, what a batch reports beside the words."""
+        return self.reason.value
+
+    @property
+    def message(self) -> str:
+        """The words a single job answers with (:meth:`http`)."""
+        return self.http()[1]
+
+
+def _is_file_within_volumes(path: str) -> bool:
+    """Whether *path* is a file, asked only of its path confined to the Volumes.
+
+    The routes check containment before they plan, and ``plan_job`` checks
+    again here, before its first stat of the Source: a path outside every
+    Volume raises ``SkipFile(SOURCE_OUTSIDE_VOLUMES)`` without reaching the
+    filesystem (``ensure_path_within_volumes`` refuses it lexically), and only
+    the resolved, confined path is stat'ed. Blocking; via ``off_loop_bounded``.
+    """
+    try:
+        confined = ensure_path_within_volumes(path, treat_archives=False)
+    except ValueError:
+        raise SkipFile(SkipReason.SOURCE_OUTSIDE_VOLUMES) from None
+    return os.path.isfile(confined)
 
 
 class DeleteSnapshotError(Exception):
@@ -527,6 +557,10 @@ _SKIP_HTTP: dict[SkipReason, tuple[int, str]] = {
     SkipReason.PS3_FOLDER_UNSAFE: (
         400,
         "PS3 folder contains symlinks or non-regular entries and cannot be packed safely",
+    ),
+    SkipReason.SOURCE_OUTSIDE_VOLUMES: (
+        403,
+        "Access denied: file path outside configured volumes",
     ),
     SkipReason.SOURCE_COMPANION_UNSAFE: (
         400,
@@ -750,7 +784,7 @@ async def plan_job(
         archive_source_dir = os.path.dirname(archive_path)  # Save CHD next to archive
         display_filename = os.path.basename(internal_path)
 
-        if not os.path.isfile(archive_path):
+        if not await off_loop_bounded(_is_file_within_volumes, archive_path):
             raise SkipFile(SkipReason.ARCHIVE_NOT_FOUND)
 
         if bad_ext_reason is not None and not _declares_input(file_path, spec):
@@ -782,7 +816,9 @@ async def plan_job(
             elif duplicate_action == DuplicateAction.RENAME:
                 output_path = _renamed_output(mode, output_path, duplicate_action)
 
-    if "::" not in file_path and not os.path.isfile(file_path):
+    if "::" not in file_path and not await off_loop_bounded(
+        _is_file_within_volumes, file_path,
+    ):
         raise SkipFile(SkipReason.FILE_NOT_FOUND)
 
     if (
@@ -1204,6 +1240,29 @@ async def create_job(request: JobCreateRequest):
     return job
 
 
+# The code a batch reports for a file whose output another file of the batch
+# writes (the batch keeps the higher-priority one). Not a ``SkipReason``: a
+# single job never answers it.
+SAME_OUTPUT_CODE = "same_output"
+
+
+@dataclass(frozen=True)
+class BatchSkip:
+    """One file a batch left out (#504): its ``path``, ``reason`` (the same
+    words a single-job request would get) and ``code`` (a ``SkipReason``
+    value, or :data:`SAME_OUTPUT_CODE`). Every ``plan_job`` skip becomes one,
+    whatever raised it, so a new skip reaches every caller with no change
+    here."""
+
+    path: str
+    reason: str
+    code: str
+
+    @classmethod
+    def of(cls, path: str, skip: SkipFile) -> "BatchSkip":
+        return cls(path=path, reason=skip.message, code=skip.code)
+
+
 @dataclass
 class PreparedBatch:
     """A batch planned to the last detail and not yet queued."""
@@ -1211,11 +1270,15 @@ class PreparedBatch:
     request: BatchJobCreateRequest
     compression: str | None
     plans: list[JobPlan]
-    # file path -> why it was left out: a ``plan_job`` skip (the same words a
-    # single-job request would get), or a file whose output another file of
-    # the batch writes. Auto says so in its plan; the CLI reports each one
-    # (#294, #306).
-    skipped: dict[str, str] = field(default_factory=dict)
+    # Each file left out and why: a ``plan_job`` skip, or a file whose output
+    # another file of the batch writes. Auto says so in its plan; the CLI
+    # reports each one (#294, #306); the batch route reports them (#504).
+    skips: list[BatchSkip] = field(default_factory=list)
+
+    @property
+    def skipped(self) -> dict[str, str]:
+        """File path -> why it was left out."""
+        return {skip.path: skip.reason for skip in self.skips}
 
     @property
     def job_specs(self) -> list[dict]:
@@ -1276,15 +1339,37 @@ async def queue_prepared(batch: PreparedBatch) -> list[ConversionJob]:
         raise HTTPException(status_code=429, detail=exc.detail) from exc
 
 
-@router.post("/jobs/batch", response_model=list[ConversionJob])
-async def create_batch_jobs(request: BatchJobCreateRequest):
-    """Create multiple conversion jobs."""
+@router.post("/jobs/batch", response_model=list[ConversionJob] | BatchJobsResponse)
+async def create_batch_jobs(
+    request: BatchJobCreateRequest,
+    report_skipped: Annotated[bool, Query(
+        description=(
+            "Answer {jobs, skipped} instead of the bare job list: each file the "
+            "batch left out, with its reason and code (#504)"
+        ),
+    )] = False,
+):
+    """Create multiple conversion jobs.
+
+    Answers the list of jobs it queued. With ``report_skipped=true`` it answers
+    ``{"jobs": [...], "skipped": [{"path", "reason", "code"}, ...]}`` instead,
+    so a caller can say why a file was left out; existing clients are unchanged.
+    """
     batch = await prepare_batch(request)
     # Proactive batch backpressure: reject before enqueuing any jobs if
     # accepting the batch would push the queue past ``max_queue_depth``.
     # Keeps single-job and batch submission behaviour consistent.
     _check_queue_room(len(batch.plans))
-    return await queue_prepared(batch)
+    jobs = await queue_prepared(batch)
+    if not report_skipped:
+        return jobs
+    return BatchJobsResponse(
+        jobs=jobs,
+        skipped=[
+            BatchSkippedItem(path=skip.path, reason=skip.reason, code=skip.code)
+            for skip in batch.skips
+        ],
+    )
 
 
 def _check_within_volumes(file_paths, output_dir: str | None = None) -> None:
@@ -1367,7 +1452,8 @@ async def prepare_batch(request: BatchJobCreateRequest) -> PreparedBatch:
             detail=f"Conversion queue full ({max_depth} jobs). Retry later.",
         )
 
-    skipped: dict[str, str] = {}
+    # By path, so a file named twice is reported once.
+    skipped: dict[str, BatchSkip] = {}
     candidates: list[JobPlan] = []
 
     for file_path in request.file_paths:
@@ -1381,9 +1467,7 @@ async def prepare_batch(request: BatchJobCreateRequest) -> PreparedBatch:
                 delete_on_verify=request.delete_on_verify,
             )
         except SkipFile as skip:
-            skipped[file_path] = skip.detail or _SKIP_HTTP.get(
-                skip.reason, (0, skip.reason.value),
-            )[1]
+            skipped[file_path] = BatchSkip.of(file_path, skip)
             continue
         except DeleteSnapshotError as exc:
             raise HTTPException(
@@ -1409,15 +1493,17 @@ async def prepare_batch(request: BatchJobCreateRequest) -> PreparedBatch:
             selected[key] = plan
         else:
             loser = plan
-        skipped[loser.file_path] = (
-            f"Same output as {os.path.basename(selected[key].file_path)}"
+        skipped[loser.file_path] = BatchSkip(
+            path=loser.file_path,
+            reason=f"Same output as {os.path.basename(selected[key].file_path)}",
+            code=SAME_OUTPUT_CODE,
         )
 
     return PreparedBatch(
         request=request,
         compression=compression,
         plans=[selected[key] for key in order],
-        skipped=skipped,
+        skips=list(skipped.values()),
     )
 
 
