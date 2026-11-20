@@ -483,9 +483,14 @@ Nothing leaves the server until you add a destination. You get:
 - one message when a sweep finishes, with its counts and the space it saved;
   anything that failed inside the sweep is listed in that message, not sent
   separately;
-- one message when a job you started by hand fails;
+- one message when a job you started by hand fails, and, if you choose it,
+  one when it succeeds;
 - one message when a [check Rule](#check-rules) finds Images that are not
   Intact, listing them.
+
+Each destination picks which of these messages it gets, so a phone can hear
+only about failures while a dashboard hears everything. A new destination gets
+all of them except the success message.
 
 There are three destination types. A **generic webhook** gets a JSON `POST`:
 
@@ -494,6 +499,19 @@ There are three destination types. A **generic webhook** gets a JSON `POST`:
  "message": "Queued 3. Space saved: 1.2 GB.",
  "data": {"queued": 3, "completed": 3, "failed": 0, "cancelled": 0, "saved_bytes": 1288490188,
           "failures": [], "errors": []}}
+```
+
+A generic webhook can have a **signing secret**. Each message then carries
+`X-Compressatorium-Signature: sha256=<hex>`, the HMAC-SHA256 of the raw request
+body keyed with the secret, so your endpoint can check the message came from
+here. Like the URL, the secret is never shown again once saved. To check it:
+
+```python
+import hashlib, hmac
+
+def is_from_compressatorium(body: bytes, header: str, secret: str) -> bool:
+    want = "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(want, header)
 ```
 
 A **Discord webhook** takes any https URL that speaks Discord's webhook format
@@ -594,10 +612,12 @@ and the job ends as `converted, source kept: couldn't update <playlist>
 kept the source and why.
 
 **EmulationStation gamelists follow the conversion too, if you say so.** ES-DE,
-Batocera, Knulli and muOS keep each game's artwork, description, favourite flag
-and play count in the Platform folder's `gamelist.xml`, keyed on the game's
-`<path>`. Tick **Used by an EmulationStation frontend** at the top of a
-Library's Rules (RomM's included) and, before a source in that Library is
+Batocera and Knulli keep each game's artwork, description, favourite flag and
+play count in a `gamelist.xml`, keyed on the game's `<path>`. Pick your
+**Frontend** at the top of a Library's Rules (RomM's included): **ES-DE**, or
+**Batocera or Knulli** (their gamelist sits in each Platform folder). muOS needs
+nothing: it keeps its artwork in its own catalogue by game name, which a
+conversion doesn't change. Then, before a source in that Library is
 deleted, the matching `<path>` is pointed at the new file: `./Game.iso` becomes
 `./Game.chd`, and `./Multi Disc/Game.cue` keeps its folder. It's off by
 default, and the app never edits a gamelist in a Library without it. Only the
@@ -609,11 +629,15 @@ entry count. A gamelist that can't be parsed or written keeps the source, as
 a playlist does. **Close ES-DE before converting**: it rewrites its gamelist
 when it exits, which would put the old paths back.
 
-ES-DE keeps its gamelists in a folder of its own by default
-(`ES-DE/gamelists`), one subfolder per system named like the system's ROM
-folder: the games in `ROMs/ps2` are listed in `gamelists/ps2/gamelist.xml`.
-For that layout, set **ES-DE gamelists folder** under the switch (it must be
-inside a Volume, so mount it into the container). An Image's system is its
+ES-DE 2.0 and later read gamelists only from a folder of their own
+(`ES-DE/gamelists`), never from the ROM folders, one subfolder per system named
+like the system's ROM folder: the games in `ROMs/ps2` are listed in
+`gamelists/ps2/gamelist.xml`. Picking **ES-DE** searches the Volumes for that
+folder (up to four folders deep) and offers each one it finds with **Use this
+folder**; you can also type the path. It must be inside a Volume, so mount it
+into the container. Nothing is turned on until the folder is chosen. A Library
+set to Batocera or Knulli whose Volumes hold an ES-DE gamelists folder is
+offered it too. An Image's system is its
 Platform folder: the folder directly under a folder Library
 (`ROMs/ps2/Multi Disc/Game.cue` is `ps2`), or under RomM's `roms` folder
 (`roms/ps2/...`, or `ps2/roms/...` in RomM's other layout). Only that
@@ -1674,7 +1698,7 @@ A folder registered as a Library, with the Platforms found in it, its Unsorted a
 
 #### EmulationStation frontend switch
 
-The same folder Library marked as used by an EmulationStation frontend, so conversions update its `gamelist.xml`. The note says to close ES-DE first.
+The same folder Library with its **Frontend** set to Batocera or Knulli, so conversions update the `gamelist.xml` in each Platform folder. The note says to close ES-DE first.
 
 | Light | Dark |
 |-------|------|
@@ -1682,7 +1706,7 @@ The same folder Library marked as used by an EmulationStation frontend, so conve
 
 #### ES-DE gamelists folder
 
-The ES-DE gamelists folder field under the switch, with a folder typed in and ready to save.
+ES-DE picked in the Frontend select: the Volumes are searched for ES-DE's gamelists folder (none in this demo), and a folder is typed in and ready to save.
 
 | Light | Dark |
 |-------|------|
@@ -1753,6 +1777,12 @@ Notification destinations for finished sweeps and failed jobs.
 | Light | Dark |
 |-------|------|
 | ![Settings, light](docs/screenshots/settings-light.png) | ![Settings, dark](docs/screenshots/settings-dark.png) |
+
+A new generic webhook's form: its signing secret and the messages it gets.
+
+| Light | Dark |
+|-------|------|
+| ![Notification destination form, light](docs/screenshots/settings-notification-form-light.png) | ![Notification destination form, dark](docs/screenshots/settings-notification-form-dark.png) |
 
 #### Help
 

@@ -1095,12 +1095,12 @@
   wait: 1800
   javascript: *js_rule_editor_check
 
-# --- EmulationStation frontend switch (#386) -------------------------------
+# --- Frontend select (#386, #523) ------------------------------------------
 # The fixture's "ROM Library/roms" folder registered as a Library (a 409 means
-# it already is), its "used by an EmulationStation frontend" switch turned on
-# through the API, and the Rules view opened on it: the switch shows ticked
-# with its close-ES-DE-first note. After every other shot of the Rules view,
-# so they keep showing the switch off, as a new Library has it.
+# it already is), its gamelist switch turned on through the API with no
+# gamelists folder, and the Rules view opened on it: the Frontend select shows
+# "Batocera or Knulli" with its close-ES-DE-first note. After every other shot
+# of the Rules view, so they keep showing None, as a new Library has it.
 - url: http://127.0.0.1:8099/?s=rules-es-frontend-light#/workspace/chdman
   output: docs/screenshots/rules-es-frontend-light.png
   width: 1280
@@ -1143,10 +1143,11 @@
   wait: 1800
   javascript: *js_rules_es_frontend
 
-# --- ES-DE gamelists folder (#387) -----------------------------------------
-# The same Library, switch on, with an ES-DE gamelists folder typed into the
-# field beside it (not saved: the fixture has no ES-DE folder), so the field,
-# its Save button and its hint show.
+# --- ES-DE gamelists folder (#387, #523) -----------------------------------
+# The same Library with ES-DE picked in the Frontend select: the Volumes are
+# searched (the fixture has no ES-DE folder, so the "none found" note shows)
+# and a folder is typed into the field (not saved), so the field, its Save
+# button and its hint show.
 - url: http://127.0.0.1:8099/?s=rules-esde-gamelists-light#/workspace/chdman
   output: docs/screenshots/rules-esde-gamelists-light.png
   width: 1280
@@ -1177,6 +1178,11 @@
       if (!saved.ok) throw new Error('could not turn the frontend switch on');
       location.hash = `#/rules/${id}`;
       await new Promise(r => setTimeout(r, 1200));
+      const select = document.querySelector('.master.frontend select');
+      if (!select) throw new Error('Frontend select not shown');
+      select.value = 'esde';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      await new Promise(r => setTimeout(r, 800));
       const field = document.querySelector('.master.frontend .gamelists input');
       if (!field) throw new Error('ES-DE gamelists folder field not shown');
       field.value = volume.path + '/ES-DE/gamelists';
@@ -1643,6 +1649,37 @@
   height: 900
   wait: 1800
   javascript: *js_theme_dark
+
+# --- Settings: a notification destination's form (#523) -------------------
+# "Add destination" opened on the generic webhook: its URL, label, signing
+# secret, and the messages it gets (all but the success message ticked).
+- url: http://127.0.0.1:8099/?s=settings-notification-form-light#/settings
+  output: docs/screenshots/settings-notification-form-light.png
+  width: 1280
+  height: 1000
+  wait: 1800
+  javascript: &js_settings_notification_form |
+    (async () => {
+      const theme = location.search.includes('-dark') ? 'dark' : 'light';
+      localStorage.setItem('theme-preference', theme);
+      window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: theme }));
+      await new Promise(r => setTimeout(r, 800));
+      const card = document.querySelector('[aria-labelledby="notif-title"]');
+      if (!card) throw new Error('Notifications card not shown');
+      const add = [...card.querySelectorAll('button')].find(b => b.textContent.includes('Add destination'));
+      if (!add) throw new Error('Add destination button not shown');
+      add.click();
+      await new Promise(r => setTimeout(r, 300));
+      if (!card.querySelector('.events')) throw new Error('event choices not shown');
+      card.scrollIntoView({ block: 'start' });
+      await new Promise(r => setTimeout(r, 300));
+    })()
+- url: http://127.0.0.1:8099/?s=settings-notification-form-dark#/settings
+  output: docs/screenshots/settings-notification-form-dark.png
+  width: 1280
+  height: 1000
+  wait: 1800
+  javascript: *js_settings_notification_form
 
 # --- Help -----------------------------------------------------------------
 - url: http://127.0.0.1:8099/?s=help-light#/help

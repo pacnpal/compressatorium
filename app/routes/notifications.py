@@ -15,17 +15,25 @@ class NewDestination(BaseModel):
     kind: str = Field(max_length=32)  # one of notifications.KINDS, checked on save
     url: str = Field(max_length=notifications.MAX_URL_LEN)
     label: str | None = Field(default=None, max_length=notifications.MAX_LABEL_LEN)
+    # The event keys it gets (#523); omitted means the defaults.
+    events: list[str] | None = Field(default=None, max_length=50)
+    # A generic webhook's HMAC-SHA256 signing secret (#523). Never returned.
+    secret: str | None = Field(default=None, max_length=notifications.MAX_SECRET_LEN)
 
 
 class DestinationEdit(BaseModel):
     # Omit url to keep the stored one: it is never sent to the browser to edit.
     url: str | None = Field(default=None, max_length=notifications.MAX_URL_LEN)
     label: str | None = Field(default=None, max_length=notifications.MAX_LABEL_LEN)
+    events: list[str] | None = Field(default=None, max_length=50)
+    # Omit to keep the stored secret; "" stops signing.
+    secret: str | None = Field(default=None, max_length=notifications.MAX_SECRET_LEN)
 
 
 class DraftTest(BaseModel):
     kind: str = Field(max_length=32)
     url: str = Field(max_length=notifications.MAX_URL_LEN)
+    secret: str | None = Field(default=None, max_length=notifications.MAX_SECRET_LEN)
 
 
 def _refuse(exc: notifications.NotificationError) -> HTTPException:
@@ -45,7 +53,9 @@ async def get_notifications() -> dict:
 @router.post("/notifications/destinations")
 async def add_destination(body: NewDestination) -> dict:
     try:
-        return await notifications.add_destination(body.kind, body.url, body.label)
+        return await notifications.add_destination(
+            body.kind, body.url, body.label, events=body.events, secret=body.secret,
+        )
     except notifications.NotificationError as exc:
         raise _refuse(exc) from None
 
@@ -53,7 +63,9 @@ async def add_destination(body: NewDestination) -> dict:
 @router.put("/notifications/destinations/{dest_id}")
 async def edit_destination(dest_id: str, body: DestinationEdit) -> dict:
     try:
-        dest = await notifications.update_destination(dest_id, body.url, body.label)
+        dest = await notifications.update_destination(
+            dest_id, body.url, body.label, events=body.events, secret=body.secret,
+        )
     except notifications.NotificationError as exc:
         raise _refuse(exc) from None
     if dest is None:
@@ -79,4 +91,4 @@ async def test_saved_destination(dest_id: str) -> dict:
 @router.post("/notifications/test")
 async def test_draft(body: DraftTest) -> dict:
     """Test a URL before saving it."""
-    return await notifications.test_destination(kind=body.kind, url=body.url)
+    return await notifications.test_destination(kind=body.kind, url=body.url, secret=body.secret)

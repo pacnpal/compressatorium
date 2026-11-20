@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+### Added
+
+- **ES-DE's gamelists are found for you** (#523). ES-DE 2.0 and later read
+  gamelists only from `ES-DE/gamelists/<system>`, never from the ROM folders,
+  so an ES-DE Library updated nothing until you typed that folder. The Rules
+  editor's **Frontend** select (None, ES-DE, Batocera or Knulli) replaces the
+  "Used by an EmulationStation frontend" checkbox. Picking ES-DE searches the
+  Volumes for the folder and offers each one found with **Use this folder**.
+  A Library already set up the old way is offered the folder too.
+- **Choose which messages each notification destination gets** (#523), and a
+  new **A job you started finished** message (off unless chosen).
+- **Signed webhooks** (#523). A generic webhook can have a signing secret; each
+  message then carries `X-Compressatorium-Signature: sha256=<hex>`, the
+  HMAC-SHA256 of the body.
+
+### Fixed
+
+- muOS is no longer listed as reading `gamelist.xml`. It keeps its artwork in
+  its own catalogue (`MUOS/info/catalogue`), by game name.
+
 ## 4.6.0 (2026-11-20)
 
 ### Added

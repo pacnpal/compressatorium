@@ -788,6 +788,14 @@ export const api = {
   listLibraries: () =>
     fetchJson(`${API_BASE}/libraries`, undefined, 'Failed to list Libraries'),
 
+  // ES-DE gamelists folders found in the Volumes (#523).
+  findGamelistsFolders: () =>
+    fetchJson(
+      `${API_BASE}/libraries/gamelists-folders`,
+      undefined,
+      'Failed to search the Volumes for ES-DE gamelists',
+    ),
+
   registerLibrary: (path, name = null) =>
     jsonPost(`${API_BASE}/libraries`, { path, name }, {}, 'Failed to register the Library'),
 

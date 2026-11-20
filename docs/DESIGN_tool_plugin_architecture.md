@@ -4033,15 +4033,28 @@ never see a transport:
   filtered or capped sweep forgets nothing. There is no recovery message. The key
   is the error text, so those texts must stay constant.
 
-Events are a registry: `register_event(key, title)` adds one, `event_list()`
-feeds Settings. A later ticket (check failed, with check Rules) registers its own
-event and calls `notify`; no transport changes.
+Events are a registry: `register_event(key, title, default=True)` adds one,
+`event_list()` feeds Settings. A later ticket (check failed, with check Rules)
+registers its own event and calls `notify`; no transport changes. Each
+destination chooses its events (#523): an `events` list of keys stored on it
+(unknown keys refused on save), or, when it never chose, every event
+registered `default=True`, so a new default event reaches it with no
+migration. The dispatcher enqueues an event only for the destinations whose
+`_events_of(dest)` holds its kind; Test ignores the choice. `job_succeeded`
+(a job started by hand that completed, `default=False`) is the one event off
+by default.
 
 Destination types are rows of one table, `_KINDS` (`Kind(key, label, placeholder,
-send, check, hint)`); `KINDS`, `TRANSPORTS` and `kind_list()` (which Settings reads
+send, check, hint, signs)`); `KINDS`, `TRANSPORTS` and `kind_list()` (which Settings reads
 to build its picker) derive from it, so adding a type is one row and nothing else
 branches on the kind. Transports are `TRANSPORTS[kind](url, event)`, blocking and
-raising on failure. `webhook` and `discord` share one HTTP path, `_post_json`
+raising on failure. A kind with `signs=True` (the generic webhook, #523) also
+takes the destination's signing secret as a third argument, passed only when
+one is set: `_post_json` then sends `SIGNATURE_HEADER`
+(`X-Compressatorium-Signature: sha256=<hex>`), the HMAC-SHA256 of the exact
+body bytes. A secret on any other kind is refused on save. Like the URL, it
+is never returned (`public_view` says only `signed`); an edit omitting it
+keeps it and `""` removes it. `webhook` and `discord` share one HTTP path, `_post_json`
 (`http.client`, JSON `POST`, http/https only, one overall deadline) and differ only
 in the payload builder: `generic_payload` is `{"event", "title", "message", "data"}`
 (example in the README); `discord_payload` is one embed (colour by outcome, at most
@@ -4862,8 +4875,8 @@ rewrite.
 **The `gamelist.xml` Referrer** (`gamelist.py`, #386) is opt-in
 (`opt_in = True`), in `Phase.FILE`, with a plain `apply`
 (`files.rewrite_in_place`). EmulationStation frontends (ES-DE, Batocera,
-Knulli, muOS) key each game's artwork, favourite flag and play count on its
-`<path>`.
+Knulli) key each game's artwork, favourite flag and play count on its
+`<path>`. muOS reads no gamelist (its catalogue is keyed by game name).
 
 - *When it runs.* Only for an Image whose Library says
   `referrer_enabled("gamelist")` (`rules.library.ES_FRONTEND_REFERRER`): a
@@ -4871,9 +4884,16 @@ Knulli, muOS) key each game's artwork, favourite flag and play count on its
   existing row), RomM's `es_frontend` setting (`ROMM_ES_FRONTEND`). Both are
   in memory, so the registry's question never blocks. `describe()` and
   `GET /api/libraries` report `es_frontend`; `PATCH /api/libraries/{id}` and
-  `PUT /api/romm/settings` set it. The Rules editor shows the switch for the
-  selected Library (`source.esFrontend` / `source.setEsFrontend`) with the
-  note to close ES-DE first, since ES-DE rewrites its gamelist on exit.
+  `PUT /api/romm/settings` set it. The Rules editor shows it as a
+  **Frontend** select (#523) over the two stored settings, with no column of
+  its own: None is the switch off, Batocera or Knulli the switch on with no
+  gamelists folder, ES-DE the switch on with one. ES-DE is turned on only once
+  its folder is chosen. `GET /api/libraries/gamelists-folders`
+  (`libraries.find_gamelists_folders`) finds candidates: a folder named
+  `gamelists` holding a `<system>/gamelist.xml`, at most
+  `GAMELISTS_SEARCH_DEPTH` (4) below a Volume root, hidden folders and
+  symlinks not walked, each confirmed inside the Volumes, capped by
+  `GAMELISTS_SEARCH_MAX_FOLDERS` and run under `admitted`'s time bound.
 - *Where it looks.* A `gamelist.xml` directly in each folder of
   `files.dirs_for(renames)`: the Platform folder, with the Image beside it or
   in a subfolder. Each entry resolves against its gamelist's folder; the
