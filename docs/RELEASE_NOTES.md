@@ -4,6 +4,12 @@
 
 ### Changed
 
+- **Backend cleanup** (#543). The 3DS verify (`zstd -t`) now runs through the
+  shared process runner like every other tool's check, so it gets the same
+  process priority, bound and cancel handling. Dead code is gone, the tool
+  services share their common methods, and the two longest functions (the job
+  runner and the Rule sweep) are split into named steps. Nothing else changes.
+
 - **eXoDOS works with no setting** (#513). Point the app at your eXoDOS
   collection and the eXoDOS tool is there: it is no longer hidden until
   `EXODOS_DOS_DIR` is set.

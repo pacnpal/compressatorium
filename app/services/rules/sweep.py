@@ -2068,6 +2068,129 @@ async def sweep(
     return result
 
 
+async def _read_delete_snapshots(
+    library: Library, batch: list[str], stopping: Callable[[], bool],
+) -> tuple[dict, list[str]]:
+    """Each Source's delete snapshot, and the Sources whose snapshot could not
+    be read (#543: a step of ``_sweep_locked``)."""
+    unreadable: list[str] = []
+    snapshots = {}
+    for path in batch:
+        # One probe per Source, each up to its bound: a stop
+        # must not wait for the rest of them.
+        if stopping():
+            break
+        # Bounded, and a missing snapshot is not silently
+        # accepted: `_process_job` refuses to delete without
+        # one, so an unreadable source must drop out of the
+        # batch rather than reach the runner and fail there.
+        snapshot = await _probe(
+            build_delete_snapshot, path, default=None, library=library,
+        )
+        if snapshot is None:
+            unreadable.append(path)
+            continue
+        snapshots[path] = snapshot
+    return snapshots, unreadable
+
+
+async def _after_queued(
+    library: Library, *, platform_id: str, platform_ref: Any, kind: str,
+    rule: dict, spec, states: dict, jobs: list, batch: list[str],
+    image_by_path: dict, destinations: dict, pre_by_path: dict,
+    fingerprint_by_path: dict, resolved_by_path: dict, active_paths: set,
+    summary: dict, result: dict,
+) -> None:
+    """Record a queued batch: its jobs' Platform and owner, the Library's own
+    steps, what the Rule converted, and the claimed Sources (#543: a step of
+    ``_sweep_locked``)."""
+    summary["queued"] = len(jobs)
+    result["queued"] += len(jobs)
+    # The Library's Platform for each job, for its Ledger row
+    # (#346). Before any await, so a job that starts at once has it.
+    for job in jobs:
+        queued_image = image_by_path.get(job.file_path)
+        if queued_image is not None and queued_image.platform:
+            job.platform = queued_image.platform
+
+    # Before the first await after acceptance. The terminal-job
+    # listener fires from the queue worker, so a fast conversion on
+    # an idle queue can end while the bookkeeping below is still
+    # running -- and an outcome announced before its owner is
+    # registered is discarded. See `_own_jobs`.
+    job_by_path = {j.file_path: j.id for j in jobs}
+    converted = _converted_entries([
+        (image_by_path[path].key, destinations[path],
+         pre_by_path[path], job_by_path.get(path))
+        for path in batch
+    ])
+    _own_jobs(
+        library, platform_id, converted, _output_identity(rule),
+        fingerprints={
+            str(image_by_path[path].key): fingerprint_by_path.get(path)
+            for path in batch
+        },
+        decision=(
+            _delete_decision_identity(rule, library),
+            _decision_generation(states[kind].get(platform_id)),
+        ),
+    )
+    notifications.sweep_jobs_queued(jobs)  # sync, before any await
+
+    # Only now, with the jobs actually queued: the steps only this
+    # Library performs (RomM snapshots metadata for formats it
+    # cannot hash-match). Before the queue call they would leave
+    # records behind for conversions that never ran.
+    #
+    # Every path in `batch` is queued or none is: create_jobs_atomic
+    # takes the queue lock once and checks backpressure for the
+    # whole set, so reaching here means the batch went in.
+    await library.after_queue(
+        rule, spec,
+        [
+            QueuedImage(
+                image=image_by_path[path], source=path,
+                destination=destinations[path], pre=pre_by_path[path],
+            )
+            for path in batch
+        ],
+        summary, result,
+    )
+
+    # Record what this rule has now converted, so `overwrite` and
+    # `rename` stop here instead of reconverting the same sources
+    # every interval. Only after the queue accepted them.
+    if rule["duplicate_action"] != "skip":
+        # Paired by source path, not by position (see
+        # `_converted_entries` above): the record is only
+        # meaningful if it names the job whose outcome decides
+        # whether this ROM was really converted.
+        try:
+            await _mark_converted(library, platform_id, converted)
+        except Exception:
+            # Isolated for the same reason as the re-pin write
+            # above, and this one is worse: the batch is already
+            # running, and reaching the handler below would report
+            # it as `queue_failed` -- which skips this very record
+            # and leaves `overwrite`/`rename` with no memory of the
+            # accepted jobs, so the next sweep converts them all
+            # again. A failed write costs this run its provenance
+            # and nothing else; the terminal-job listener still
+            # writes each outcome as it lands.
+            logger.warning(
+                "%s: could not record what Platform %s in Library %s "
+                "produced; this run is not remembered",
+                log_prefix(library), platform_ref, library.name,
+                exc_info=True,
+            )
+            summary["provenance_failed"] = True
+
+    # Claim them immediately so a later platform in the same sweep
+    # cannot queue the same source twice. Already resolved during
+    # selection, so this costs no further disk work.
+    active_paths.update(resolved_by_path.values())
+
+
 async def _sweep_locked(
     library: Library,
     *,
@@ -2471,25 +2594,10 @@ async def _sweep_locked(
                 # missing") and fails every job after doing the full
                 # conversion. Same helper the manual path uses.
                 snapshots = None
-                unreadable: list[str] = []
                 if rule["delete_on_verify"]:
-                    snapshots = {}
-                    for path in batch:
-                        # One probe per Source, each up to its bound: a stop
-                        # must not wait for the rest of them.
-                        if stopping():
-                            break
-                        # Bounded, and a missing snapshot is not silently
-                        # accepted: `_process_job` refuses to delete without
-                        # one, so an unreadable source must drop out of the
-                        # batch rather than reach the runner and fail there.
-                        snapshot = await _probe(
-                            build_delete_snapshot, path, default=None, library=library,
-                        )
-                        if snapshot is None:
-                            unreadable.append(path)
-                            continue
-                        snapshots[path] = snapshot
+                    snapshots, unreadable = await _read_delete_snapshots(
+                        library, batch, stopping,
+                    )
                     if unreadable:
                         batch = [p for p in batch if p not in set(unreadable)]
                         logger.warning(
@@ -2545,91 +2653,15 @@ async def _sweep_locked(
                     allow_overwrite=rule["duplicate_action"] == "overwrite",
                     owner=owner,
                 )
-                summary["queued"] = len(jobs)
-                result["queued"] += len(jobs)
-                # The Library's Platform for each job, for its Ledger row
-                # (#346). Before any await, so a job that starts at once has it.
-                for job in jobs:
-                    queued_image = image_by_path.get(job.file_path)
-                    if queued_image is not None and queued_image.platform:
-                        job.platform = queued_image.platform
-
-                # Before the first await after acceptance. The terminal-job
-                # listener fires from the queue worker, so a fast conversion on
-                # an idle queue can end while the bookkeeping below is still
-                # running -- and an outcome announced before its owner is
-                # registered is discarded. See `_own_jobs`.
-                job_by_path = {j.file_path: j.id for j in jobs}
-                converted = _converted_entries([
-                    (image_by_path[path].key, destinations[path],
-                     pre_by_path[path], job_by_path.get(path))
-                    for path in batch
-                ])
-                _own_jobs(
-                    library, platform_id, converted, _output_identity(rule),
-                    fingerprints={
-                        str(image_by_path[path].key): fingerprint_by_path.get(path)
-                        for path in batch
-                    },
-                    decision=(
-                        _delete_decision_identity(rule, library),
-                        _decision_generation(states[kind].get(platform_id)),
-                    ),
+                await _after_queued(
+                    library, platform_id=platform_id, platform_ref=platform_ref,
+                    kind=kind, rule=rule, spec=spec, states=states, jobs=jobs,
+                    batch=batch, image_by_path=image_by_path,
+                    destinations=destinations, pre_by_path=pre_by_path,
+                    fingerprint_by_path=fingerprint_by_path,
+                    resolved_by_path=resolved_by_path, active_paths=active_paths,
+                    summary=summary, result=result,
                 )
-                notifications.sweep_jobs_queued(jobs)  # sync, before any await
-
-                # Only now, with the jobs actually queued: the steps only this
-                # Library performs (RomM snapshots metadata for formats it
-                # cannot hash-match). Before the queue call they would leave
-                # records behind for conversions that never ran.
-                #
-                # Every path in `batch` is queued or none is: create_jobs_atomic
-                # takes the queue lock once and checks backpressure for the
-                # whole set, so reaching here means the batch went in.
-                await library.after_queue(
-                    rule, spec,
-                    [
-                        QueuedImage(
-                            image=image_by_path[path], source=path,
-                            destination=destinations[path], pre=pre_by_path[path],
-                        )
-                        for path in batch
-                    ],
-                    summary, result,
-                )
-
-                # Record what this rule has now converted, so `overwrite` and
-                # `rename` stop here instead of reconverting the same sources
-                # every interval. Only after the queue accepted them.
-                if rule["duplicate_action"] != "skip":
-                    # Paired by source path, not by position (see
-                    # `_converted_entries` above): the record is only
-                    # meaningful if it names the job whose outcome decides
-                    # whether this ROM was really converted.
-                    try:
-                        await _mark_converted(library, platform_id, converted)
-                    except Exception:
-                        # Isolated for the same reason as the re-pin write
-                        # above, and this one is worse: the batch is already
-                        # running, and reaching the handler below would report
-                        # it as `queue_failed` -- which skips this very record
-                        # and leaves `overwrite`/`rename` with no memory of the
-                        # accepted jobs, so the next sweep converts them all
-                        # again. A failed write costs this run its provenance
-                        # and nothing else; the terminal-job listener still
-                        # writes each outcome as it lands.
-                        logger.warning(
-                            "%s: could not record what Platform %s in Library %s "
-                            "produced; this run is not remembered",
-                            log_prefix(library), platform_ref, library.name,
-                            exc_info=True,
-                        )
-                        summary["provenance_failed"] = True
-
-                # Claim them immediately so a later platform in the same sweep
-                # cannot queue the same source twice. Already resolved during
-                # selection, so this costs no further disk work.
-                active_paths.update(resolved_by_path.values())
             except QueueBackpressureError:
                 # The queue is full. Stop rather than spin: the next sweep
                 # resumes exactly here, because the filesystem still reports

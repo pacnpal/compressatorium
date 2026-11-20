@@ -6787,7 +6787,14 @@ holds only the check times. `sweep.get_rules` / `get_state` take the kind;
 
 **Sweep.** `_sweep_locked` walks every (kind, Platform) in priority, Platform,
 kind order, gating each on its own `enabled` and its own kind's state, and
-hands a check Rule to `_sweep_check`. Run now ignores both clocks, so it runs
+hands a check Rule to `_sweep_check`. Queueing a Platform's batch is two named
+steps (#543): `_read_delete_snapshots` (each Source's delete snapshot, and the
+ones that could not be read) and `_after_queued` (the jobs' Platform and owner,
+the Library's `after_queue`, what the Rule converted, the claimed Sources).
+`JobManager._process_job` is split the same way: `_complete_from_verified_output`,
+`_extract_archive_member`, `_fail_now`, `_verify_output`, `_decide_delete`,
+`_record_check` and `_finish_delete_on_verify`; the staged-output state its
+`finally` reads (`slot`, `placement`, `placeable`) stays in `_process_job`. Run now ignores both clocks, so it runs
 both kinds and a check spends another budget. A check Rule's Run now stamps
 `last_manual_run_at`, not `last_run_at` (either stamped with the `now` the
 sweep found the Rule due at, so a pick that runs past midnight counts for the
