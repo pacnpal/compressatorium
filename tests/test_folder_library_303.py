@@ -10,6 +10,7 @@ stubbed, as the other sweep tests do.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import time
 from pathlib import Path
@@ -87,11 +88,14 @@ def _queue(monkeypatch):
     """The queue stubbed: records what a run queued, and reports it in flight."""
     queued: list[str] = []
 
-    async def fake_batch(paths, mode, **_kwargs):
-        jobs = []
-        for path in paths:
-            queued.append(path)
-            jobs.append(SimpleNamespace(file_path=path, id=f"job-{len(queued)}"))
+    async def fake_batch(paths, mode, **kwargs):
+        # As the real queue does: the admission is entered around queueing.
+        admission = kwargs.get("admission")
+        with admission() if admission is not None else contextlib.nullcontext():
+            jobs = []
+            for path in paths:
+                queued.append(path)
+                jobs.append(SimpleNamespace(file_path=path, id=f"job-{len(queued)}"))
         return jobs
 
     monkeypatch.setattr(job_manager, "create_batch_jobs", fake_batch)

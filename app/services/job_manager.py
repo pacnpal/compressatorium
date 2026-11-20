@@ -1042,8 +1042,14 @@ class JobManager:
         verify_after: bool = False,
         container_only: bool = False,
         owner: Optional[str] = None,
+        admission: Callable[[], contextlib.AbstractContextManager[object]] | None = None,
     ) -> List[ConversionJob]:
-        """Create multiple jobs atomically under a single backpressure check."""
+        """Create multiple jobs atomically under a single backpressure check.
+
+        *admission*, when given, is entered under the queue lock around the
+        checks and the queueing, with no await inside: it may raise to refuse
+        the whole batch, and holds whatever it holds until every job is queued
+        (a sweep's ``libraries.owned_as_listed``, PR #518)."""
         if not job_specs:
             return []
 
@@ -1064,39 +1070,40 @@ class JobManager:
         # Outside the lock, and off the event loop: see `_reservation_keys`.
         reservation = await self._reservation_keys(job_specs, mode)
         async with self._create_lock:
-            self._enforce_queue_backpressure_locked(len(job_specs))
-            self._reject_claimed_destinations_locked(job_specs, mode, reservation)
-            for spec in job_specs:
-                file_path = str(spec["file_path"])
-                output_dir = spec.get("output_dir")
-                output_path = spec.get("output_path")
-                filename_override = spec.get("filename_override")
-                jobs.append(
-                    self._queue_job_locked(
-                        file_path=file_path,
-                        mode=mode,
-                        output_dir=str(output_dir) if output_dir is not None else None,
-                        output_path=str(output_path) if output_path is not None else None,
-                        allow_overwrite=bool(spec.get("allow_overwrite", False)),
-                        filename_override=(
-                            str(filename_override)
-                            if filename_override is not None
-                            else None
-                        ),
-                        compression=compression,
-                        delete_on_verify=delete_on_verify,
-                        container_only=container_only,
-                        verify_after=verify_after,
-                        split=split,
-                        delete_snapshot=spec.get("delete_snapshot"),
-                        reservation=reservation,
-                        owner=owner,
-                        source_identity=spec.get("source_identity"),
-                        trusted_root=spec.get("trusted_root"),
-                        derived_output_path=spec.get("derived_output_path"),
-                        derive_error=spec.get("derive_error"),
+            with admission() if admission is not None else contextlib.nullcontext():
+                self._enforce_queue_backpressure_locked(len(job_specs))
+                self._reject_claimed_destinations_locked(job_specs, mode, reservation)
+                for spec in job_specs:
+                    file_path = str(spec["file_path"])
+                    output_dir = spec.get("output_dir")
+                    output_path = spec.get("output_path")
+                    filename_override = spec.get("filename_override")
+                    jobs.append(
+                        self._queue_job_locked(
+                            file_path=file_path,
+                            mode=mode,
+                            output_dir=str(output_dir) if output_dir is not None else None,
+                            output_path=str(output_path) if output_path is not None else None,
+                            allow_overwrite=bool(spec.get("allow_overwrite", False)),
+                            filename_override=(
+                                str(filename_override)
+                                if filename_override is not None
+                                else None
+                            ),
+                            compression=compression,
+                            delete_on_verify=delete_on_verify,
+                            container_only=container_only,
+                            verify_after=verify_after,
+                            split=split,
+                            delete_snapshot=spec.get("delete_snapshot"),
+                            reservation=reservation,
+                            owner=owner,
+                            source_identity=spec.get("source_identity"),
+                            trusted_root=spec.get("trusted_root"),
+                            derived_output_path=spec.get("derived_output_path"),
+                            derive_error=spec.get("derive_error"),
+                        )
                     )
-                )
         return jobs
 
     async def create_batch_jobs(
@@ -1116,6 +1123,7 @@ class JobManager:
         owner: Optional[str] = None,
         source_identities: Optional[Dict[str, Dict[str, object]]] = None,
         trusted_roots: Optional[Dict[str, str]] = None,
+        admission: Callable[[], contextlib.AbstractContextManager[object]] | None = None,
     ) -> List[ConversionJob]:
         """Create multiple conversion jobs.
 
@@ -1165,6 +1173,7 @@ class JobManager:
             verify_after=verify_after,
             container_only=container_only,
             owner=owner,
+            admission=admission,
         )
 
     @staticmethod
