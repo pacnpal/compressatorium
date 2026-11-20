@@ -469,8 +469,8 @@ export const api = {
     return fetchJson(buildApiUrl('/rom-converto-info', params), undefined, 'Failed to get ZAR info');
   },
 
-  // Which tools the UI should show. Switch is reported unavailable when no
-  // prod.keys are configured, so the sidebar can hide it entirely.
+  // Which tools can run, and `reasons`: why each of the others can't, with
+  // the fix (Switch with no prod.keys, a program that isn't installed).
   getTools() {
     return fetchJson(`${API_BASE}/tools`, undefined, 'Failed to load tool availability');
   },
@@ -831,6 +831,19 @@ export const api = {
       `${API_BASE}/libraries/${encodeURIComponent(id)}/placements`,
       undefined,
       'Failed to read where Images go',
+    ),
+
+  // Which of RomM's folders a Platform's new Images go to (#512); `null`
+  // goes back to the automatic pick.
+  pickLibraryPlacement: (id, platform, folder) =>
+    fetchJson(
+      `${API_BASE}/libraries/${encodeURIComponent(id)}/placements/${encodeURIComponent(platform)}`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ folder }),
+      },
+      'Failed to save where new Images go',
     ),
 
   // A Library's Inboxes (#431): folders whose new files are taken into it.

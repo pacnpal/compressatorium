@@ -1909,3 +1909,41 @@
   height: 900
   wait: 1800
   javascript: *js_dat_rename_cue
+
+# --- Overlapping Libraries (#514) ---------------------------------------------
+# Last on purpose: it registers "roms/psx" as a Library inside the "roms" one
+# the earlier shots use, which takes the psx files out of that Library's Rules.
+# Its Rules view says which Library it sits inside.
+- url: http://127.0.0.1:8099/?s=rules-folder-nested-light#/workspace/chdman
+  output: docs/screenshots/rules-folder-nested-light.png
+  width: 1280
+  height: 760
+  wait: 1800
+  javascript: &js_rules_folder_nested |
+    (async () => {
+      const theme = location.search.includes('-dark') ? 'dark' : 'light';
+      localStorage.setItem('theme-preference', theme);
+      window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: theme }));
+      const volumes = await (await fetch('/api/volumes')).json();
+      const volume = volumes.find(v => v.name === 'ROM Library');
+      if (!volume) throw new Error('ROM Library volume not found');
+      for (const path of [volume.path + '/roms', volume.path + '/roms/psx']) {
+        await fetch('/api/libraries', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path }),
+        });
+      }
+      const libs = await (await fetch('/api/libraries')).json();
+      const lib = libs.find(l => l.kind === 'folder' && l.within);
+      if (!lib) throw new Error('nested folder Library not registered');
+      location.hash = `#/rules/${encodeURIComponent(lib.id)}`;
+      await new Promise(r => setTimeout(r, 1500));
+      if (!document.querySelector('.ownership')) throw new Error('ownership note not shown');
+    })()
+- url: http://127.0.0.1:8099/?s=rules-folder-nested-dark#/workspace/chdman
+  output: docs/screenshots/rules-folder-nested-dark.png
+  width: 1280
+  height: 760
+  wait: 1800
+  javascript: *js_rules_folder_nested

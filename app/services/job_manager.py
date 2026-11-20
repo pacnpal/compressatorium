@@ -45,7 +45,6 @@ from services import referrers, staging
 from services.disk import create_scratch_dir
 from services.recognized import recognize
 from services.round_trip import RECOGNIZED, recognized_applies, round_trip, round_trip_applies
-from services.rules.library import HIDDEN_STAGING
 from services.subprocess_runner import (
     DeadlineExpired,
     MutationInFlight,
@@ -1043,8 +1042,14 @@ class JobManager:
         verify_after: bool = False,
         container_only: bool = False,
         owner: Optional[str] = None,
+        admission: Callable[[], contextlib.AbstractContextManager[object]] | None = None,
     ) -> List[ConversionJob]:
-        """Create multiple jobs atomically under a single backpressure check."""
+        """Create multiple jobs atomically under a single backpressure check.
+
+        *admission*, when given, is entered under the queue lock around the
+        checks and the queueing, with no await inside: it may raise to refuse
+        the whole batch, and holds whatever it holds until every job is queued
+        (a sweep's ``libraries.owned_as_listed``, PR #518)."""
         if not job_specs:
             return []
 
@@ -1065,39 +1070,40 @@ class JobManager:
         # Outside the lock, and off the event loop: see `_reservation_keys`.
         reservation = await self._reservation_keys(job_specs, mode)
         async with self._create_lock:
-            self._enforce_queue_backpressure_locked(len(job_specs))
-            self._reject_claimed_destinations_locked(job_specs, mode, reservation)
-            for spec in job_specs:
-                file_path = str(spec["file_path"])
-                output_dir = spec.get("output_dir")
-                output_path = spec.get("output_path")
-                filename_override = spec.get("filename_override")
-                jobs.append(
-                    self._queue_job_locked(
-                        file_path=file_path,
-                        mode=mode,
-                        output_dir=str(output_dir) if output_dir is not None else None,
-                        output_path=str(output_path) if output_path is not None else None,
-                        allow_overwrite=bool(spec.get("allow_overwrite", False)),
-                        filename_override=(
-                            str(filename_override)
-                            if filename_override is not None
-                            else None
-                        ),
-                        compression=compression,
-                        delete_on_verify=delete_on_verify,
-                        container_only=container_only,
-                        verify_after=verify_after,
-                        split=split,
-                        delete_snapshot=spec.get("delete_snapshot"),
-                        reservation=reservation,
-                        owner=owner,
-                        source_identity=spec.get("source_identity"),
-                        trusted_root=spec.get("trusted_root"),
-                        derived_output_path=spec.get("derived_output_path"),
-                        derive_error=spec.get("derive_error"),
+            with admission() if admission is not None else contextlib.nullcontext():
+                self._enforce_queue_backpressure_locked(len(job_specs))
+                self._reject_claimed_destinations_locked(job_specs, mode, reservation)
+                for spec in job_specs:
+                    file_path = str(spec["file_path"])
+                    output_dir = spec.get("output_dir")
+                    output_path = spec.get("output_path")
+                    filename_override = spec.get("filename_override")
+                    jobs.append(
+                        self._queue_job_locked(
+                            file_path=file_path,
+                            mode=mode,
+                            output_dir=str(output_dir) if output_dir is not None else None,
+                            output_path=str(output_path) if output_path is not None else None,
+                            allow_overwrite=bool(spec.get("allow_overwrite", False)),
+                            filename_override=(
+                                str(filename_override)
+                                if filename_override is not None
+                                else None
+                            ),
+                            compression=compression,
+                            delete_on_verify=delete_on_verify,
+                            container_only=container_only,
+                            verify_after=verify_after,
+                            split=split,
+                            delete_snapshot=spec.get("delete_snapshot"),
+                            reservation=reservation,
+                            owner=owner,
+                            source_identity=spec.get("source_identity"),
+                            trusted_root=spec.get("trusted_root"),
+                            derived_output_path=spec.get("derived_output_path"),
+                            derive_error=spec.get("derive_error"),
+                        )
                     )
-                )
         return jobs
 
     async def create_batch_jobs(
@@ -1117,6 +1123,7 @@ class JobManager:
         owner: Optional[str] = None,
         source_identities: Optional[Dict[str, Dict[str, object]]] = None,
         trusted_roots: Optional[Dict[str, str]] = None,
+        admission: Callable[[], contextlib.AbstractContextManager[object]] | None = None,
     ) -> List[ConversionJob]:
         """Create multiple conversion jobs.
 
@@ -1166,6 +1173,7 @@ class JobManager:
             verify_after=verify_after,
             container_only=container_only,
             owner=owner,
+            admission=admission,
         )
 
     @staticmethod
@@ -3826,7 +3834,8 @@ class JobManager:
     @staticmethod
     async def _needs_stage(job: ConversionJob) -> bool:
         """Whether *job* writes into a hidden staging slot: its output lands
-        in a Library declaring ``HIDDEN_STAGING`` (RomM). When which Library
+        in any Library declaring ``HIDDEN_STAGING`` (RomM), a folder Library
+        inside RomM's folder included (#514). When which Library
         holds it can't be told (a timeout, the Library list unreadable), it
         stages: hiding the work is always safe. No Library, or one without
         the capability (a folder Library), writes in place as before."""
@@ -3839,8 +3848,10 @@ class JobManager:
             # (Codex 4606539513).
             return True
         try:
-            library = await run_detached_bounded(
-                libraries.library_for, job.output_path, timeout=_CANONICAL_PROBE_SECONDS,
+            # Any Library holding the output, not only its owner: RomM scans a
+            # folder Library inside its folder too (#514).
+            return await run_detached_bounded(
+                libraries.hidden_staging, job.output_path, timeout=_CANONICAL_PROBE_SECONDS,
             )
         except Exception:
             logger.warning(
@@ -3848,7 +3859,6 @@ class JobManager:
                 job.output_path, exc_info=True,
             )
             return True
-        return library is not None and HIDDEN_STAGING in library.capabilities
 
     async def _open_stage(self, job: ConversionJob) -> staging.StagedOutput | None:
         """A staging slot beside the job's output, or None when the job
