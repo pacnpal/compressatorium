@@ -345,3 +345,58 @@ async def test_two_sheets_named_by_their_tracks_are_both_taken_at_once(vol, db):
 
     assert (vol / "ROMs" / "psx" / "A.cue").exists()
     assert (vol / "ROMs" / "psx" / "B.cue").exists()
+
+
+@pytest.mark.asyncio
+async def test_a_folder_marked_ready_waits_for_a_sheets_late_track(vol, db):
+    """Codex PR #526: every file of the Image must predate the marker, not
+    only the sheet."""
+    import os
+    import time
+
+    from services.inbox import intake
+
+    library = t431._library(vol)
+    box = t431._inbox(vol, library, settle=3600)
+    t431._drop(
+        vol / "Downloads" / "psx" / "Game.cue",
+        b'FILE "Game.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n',
+    )
+    track = t431._drop(vol / "Downloads" / "psx" / "Game.bin")
+    intake.mark_ready(box.id, str(vol / "Downloads" / "psx"))
+    later = time.time() + 60
+    os.utime(track, (later, later))
+
+    await t431._poll(box, now=0)
+
+    assert not (vol / "ROMs" / "psx" / "Game.cue").exists()
+    assert track.exists()
+
+
+@pytest.mark.asyncio
+async def test_taking_a_path_in_reads_no_folder_on_the_event_loop(vol, db, monkeypatch):
+    """Codex PR #526: the marker's path is resolved in the bounded check,
+    never on the event loop."""
+    import os
+    import threading
+
+    from services.inbox import trigger
+
+    library = t431._library(vol)
+    t431._inbox(vol, library, settle=3600)
+    game = t431._drop(vol / "Downloads" / "ps2" / "Game.iso")
+    main = threading.current_thread()
+    real = os.path.realpath
+    on_loop: list[str] = []
+
+    def watched(path, *args, **kwargs):
+        if threading.current_thread() is main:
+            on_loop.append(str(path))
+        return real(path, *args, **kwargs)
+
+    monkeypatch.setattr(os.path, "realpath", watched)
+    result = await trigger.process([str(game)], source="test")
+    monkeypatch.setattr(os.path, "realpath", real)
+
+    assert result["accepted"]
+    assert on_loop == []

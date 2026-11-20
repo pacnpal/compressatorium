@@ -1041,10 +1041,11 @@
   javascript: *js_rules_folder
 
 # --- Sonarr / Radarr / ROMarr webhook card (#522) --------------------------
-# The folder Library with an Inbox on the fixture's downloads folder, and a
-# path tested as an *arr would see it (/downloads/...): the card shows the URL
-# and header to copy, and the rewrite suggested from the Volumes. Only the
-# dry-run check runs; nothing is taken in.
+# The folder Library, and a path tested as an *arr would see it
+# (/downloads/...): the card shows the URL and header to copy, and the rewrite
+# suggested from the Volumes. Only the dry-run check runs; no Inbox is
+# registered, so intake can't take the fixture in and put a Finding into a
+# later shot (CodeRabbit PR #526).
 - url: http://127.0.0.1:8099/?s=arr-hook-light#/workspace/chdman
   output: docs/screenshots/arr-hook-light.png
   width: 1280
@@ -1066,10 +1067,6 @@
       const lib = libs.find(l => l.kind === 'folder');
       if (!lib) throw new Error('folder Library not registered');
       const id = encodeURIComponent(lib.id);
-      await fetch(`/api/libraries/${id}/inboxes`, {
-        method: 'POST', headers: json,
-        body: JSON.stringify({ folder: volume.path + '/downloads', settle_seconds: 60 }),
-      });
       await fetch('/api/hooks/arr/rewrites', {
         method: 'PUT', headers: json, body: JSON.stringify({ rewrites: [] }),
       });

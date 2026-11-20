@@ -24,9 +24,16 @@
 
   const url = `${window.location.origin}/api/hooks/arr`;
 
+  // Moves when a save starts and when it lands: a refresh sent before either
+  // is dropped, so it can't put the old rewrites back (CodeRabbit PR #526).
+  let saves = 0;
+
   async function load() {
+    const sent = saves;
     try {
-      setup = await api.getArrHook();
+      const fresh = await api.getArrHook();
+      if (sent !== saves) return;
+      setup = fresh;
       rewrites = setup.rewrites ?? [];
     } catch (e) {
       toast.error(e?.message ?? 'Could not read the webhook setup');
@@ -50,8 +57,10 @@
 
   async function save(next) {
     saving = true;
+    saves += 1;
     try {
       rewrites = (await api.saveArrRewrites(next)).rewrites;
+      saves += 1;
       return true;
     } catch (e) {
       toast.error(e?.message ?? 'Could not save the rewrites');

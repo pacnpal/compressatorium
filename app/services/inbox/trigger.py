@@ -202,6 +202,15 @@ def check(path: str, rules: list[dict[str, str]]) -> dict[str, Any]:
     return result
 
 
+def _checked(path: str, rules: list[dict[str, str]]) -> tuple[dict[str, Any], str | None]:
+    """:func:`check`, and the real path of what an Inbox takes, resolved in
+    the same bounded worker so the marker needs no disk on the event loop
+    (Codex PR #526). Blocking."""
+    found = check(path, rules)
+    real = os.path.realpath(found["local"]) if found["inbox_id"] is not None else None
+    return found, real
+
+
 async def check_one(path: str) -> dict[str, Any]:
     rules = await load_rewrites()
     return await asyncio.wait_for(run_detached(check, path, rules), _STEP_SECONDS)
@@ -226,10 +235,12 @@ async def process(paths: list[str], *, source: str) -> dict[str, Any]:
     boxes: dict[int, inbox_store.Inbox] = {}
     for path in paths[:MAX_PATHS]:
         try:
-            found = await asyncio.wait_for(run_detached(check, path, rules), _STEP_SECONDS)
+            found, real = await asyncio.wait_for(
+                run_detached(_checked, path, rules), _STEP_SECONDS,
+            )
         except (OSError, TimeoutError, ValueError) as exc:
-            found = {"path": path, "local": path, "inbox_id": None, "library_id": None,
-                     "problem": f"Couldn't check it: {exc}", "suggestion": None}
+            found, real = {"path": path, "local": path, "inbox_id": None, "library_id": None,
+                           "problem": f"Couldn't check it: {exc}", "suggestion": None}, None
         _recent.appendleft({"at": _now(), "source": source, **found})
         if found["inbox_id"] is None:
             skipped.append(found)
@@ -238,7 +249,7 @@ async def process(paths: list[str], *, source: str) -> dict[str, Any]:
         if box is None:
             skipped.append({**found, "inbox_id": None, "problem": "The Inbox was removed"})
             continue
-        intake.mark_ready(box.id, found["local"])
+        intake.mark_ready(box.id, real, resolved=True)
         boxes[box.id] = box
         accepted.append({"path": path, "local": found["local"], "inbox_id": box.id})
     for box in boxes.values():

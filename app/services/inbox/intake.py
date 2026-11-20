@@ -520,19 +520,27 @@ def _state(inbox_id: int) -> _State:
 READY_SECONDS = 3600
 
 
-def mark_ready(inbox_id: int, path: str) -> None:
+def mark_ready(inbox_id: int, path: str, *, resolved: bool = False) -> None:
     """Say the file (or folder) at *path* in the Inbox is finished (#522), so
     the next poll takes what is there without waiting for it to settle. A
     held Image stays held, and only files the poll lists are ever taken. A
     folder covers what was finished in it when it was named: a file written
-    there afterwards settles as usual (Codex PR #526)."""
-    _state(inbox_id).ready[os.path.realpath(path)] = (time.monotonic(), time.time())
+    there afterwards settles as usual (Codex PR #526). *resolved* says
+    *path* is already its real path (a caller on the event loop resolves it
+    in a bounded worker first, Codex PR #526); else it is resolved here,
+    which touches the disk."""
+    real = path if resolved else os.path.realpath(path)
+    _state(inbox_id).ready[real] = (time.monotonic(), time.time())
 
 
 def _written_by(path: str, wall: float) -> bool:
-    """Whether *path* was last written by *wall* (the wall clock). Blocking."""
+    """Whether *path* and every file of its Image (a sheet's tracks) were
+    last written by *wall* (the wall clock), Codex PR #526. Blocking."""
     try:
-        return os.stat(path).st_mtime <= wall
+        return all(
+            os.stat(member).st_mtime <= wall
+            for member in {path, *_members(path)}
+        )
     except OSError:
         return False
 
