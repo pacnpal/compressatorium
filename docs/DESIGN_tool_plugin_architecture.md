@@ -8925,6 +8925,15 @@ whose program goes missing drops out of all of them at once. Inside the Docker
 image every program ships, so nothing changes there; outside it, a tool whose
 program is missing is hidden rather than offered.
 
+Job creation asks too (#505). `plan_job` refuses a tool that isn't ready
+before anything else, through `registry.tool_is_ready(registry.for_mode(mode))`
+(for a chain mode, the chain, so a missing step tool refuses it), raising
+`SkipFile(SkipReason.TOOL_NOT_READY, detail=not_ready_message(tool))`. So
+`POST /api/jobs` answers 503 with that message and queues nothing, and
+`prepare_batch` (the batch route, Auto) skips each file with it. A batch probes
+once and hands the answer to every `plan_job` call (`tool_ready=`), rather than
+once per file.
+
 **Tests.** The suite runs as if inside the image: an autouse fixture in
 `tests/conftest.py` (`_programs_as_in_the_image`) counts the paths the eight
 tools above (not jwud, which checked before, nor `zstd`) are configured with

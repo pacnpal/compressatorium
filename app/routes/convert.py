@@ -53,7 +53,7 @@ from services.output_conflicts import (
 from services.output_conflicts import (
     get_unique_output_path as _get_unique_output_path,
 )
-from services.tools import InputKind, ModeKind, registry
+from services.tools import InputKind, ModeKind, not_ready_message, registry
 from services.tools.base import compression_problem, without_unusable_codecs
 from services.event_stream import event_stream
 from utils.delete_plan import build_delete_plan, build_delete_snapshot
@@ -341,6 +341,7 @@ class SkipReason(Enum):
     PS3_OUTPUT_OUTSIDE_VOLUMES = "ps3_output_outside_volumes"
     PS3_FOLDER_UNSAFE = "ps3_folder_unsafe"
     SOURCE_COMPANION_UNSAFE = "source_companion_unsafe"
+    TOOL_NOT_READY = "tool_not_ready"
 
 
 class SkipFile(Exception):  # noqa: N818 - control-flow signal, not an error
@@ -534,6 +535,8 @@ _SKIP_HTTP: dict[SkipReason, tuple[int, str]] = {
         "the configured volumes (for a split Wii U dump, one of the other "
         "game_partN.wud files)",
     ),
+    # The detail is always ``not_ready_message(tool)``; this is the fallback.
+    SkipReason.TOOL_NOT_READY: (503, "The tool for this mode isn't ready"),
 }
 
 
@@ -710,6 +713,7 @@ async def plan_job(
     output_dir: str | None,
     duplicate_action: DuplicateAction,
     delete_on_verify: bool,
+    tool_ready: bool | None = None,
 ) -> JobPlan:
     """Resolve one input file into a concrete ``JobPlan``.
 
@@ -721,7 +725,19 @@ async def plan_job(
     Request-level concerns (compression validation, volume containment, queue
     backpressure, the cross-file archive multi-select guard, the batch dedup
     pass) stay in the endpoints, not here.
+
+    A tool that isn't ready (``registry.tool_is_ready``, #505) refuses before
+    anything else, with ``not_ready_message`` as the detail; a chain mode asks
+    the chain, which is ready only when every step tool is. *tool_ready* is
+    that answer when the caller already has it (a batch probes once, not once
+    per file); ``None`` asks here.
     """
+    tool = registry.for_mode(mode)
+    if tool_ready is None:
+        tool_ready = await registry.tool_is_ready(tool)
+    if not tool_ready:
+        raise SkipFile(SkipReason.TOOL_NOT_READY, detail=not_ready_message(tool))
+
     # Directory-as-input mode (makeps3iso folder->iso): a folder, not a file with
     # a suffix. Validate isdir + the tool's source-layout detector instead of
     # isfile + an extension match, and derive the output / display name from the
@@ -816,7 +832,6 @@ async def plan_job(
         # `input_extensions` and validates by `.chd` presence above, so the
         # default extension-match refinement does not describe it. Runs off the
         # event loop — the probe stats the sibling primary.
-        tool = registry.for_mode(mode)
         if not await off_loop_bounded(tool.converts_path, file_path):
             # The tool may name what it found (the files a RAR set holds),
             # which says more than the reason's fixed message.
@@ -1369,6 +1384,8 @@ async def prepare_batch(request: BatchJobCreateRequest) -> PreparedBatch:
 
     skipped: dict[str, str] = {}
     candidates: list[JobPlan] = []
+    # One readiness probe for the whole batch; plan_job skips each file on it.
+    tool_ready = await registry.tool_is_ready(registry.for_mode(mode))
 
     for file_path in request.file_paths:
         try:
@@ -1379,6 +1396,7 @@ async def prepare_batch(request: BatchJobCreateRequest) -> PreparedBatch:
                 output_dir=output_dir,
                 duplicate_action=request.duplicate_action,
                 delete_on_verify=request.delete_on_verify,
+                tool_ready=tool_ready,
             )
         except SkipFile as skip:
             skipped[file_path] = skip.detail or _SKIP_HTTP.get(

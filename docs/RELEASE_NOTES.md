@@ -454,6 +454,14 @@
 
 ### Fixed
 
+- **A job for a tool that isn't ready is refused when it's created** (#505).
+  `/api/tools` already hid a tool whose program is missing, but `POST
+  /api/jobs` and the batch route still queued a job for it, which then failed
+  at run time with the spawn error. Now the single-job route answers 503 with
+  the tool's not-ready reason (the same one the File info routes give) and
+  queues nothing, and the batch route skips each such file with that reason. A
+  chain mode is refused when one of its step tools isn't ready.
+
 - **A tool whose program is missing is hidden instead of offered** (#494).
   chdman, dolphin-tool, z3ds_compressor, maxcso, 7z, makeps3iso, extract-xiso
   and nkit2iso were listed as available whether or not their program was
