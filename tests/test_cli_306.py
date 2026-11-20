@@ -241,7 +241,7 @@ def test_auto_skips_and_reports_unsorted_images(volume, dolphin, capsys):
     assert by_path[str(gc)]["status"] == "completed"
     assert by_path[str(gc)]["mode"] == "dolphin_rvz"
     assert by_path[str(loose)]["status"] == "skipped"
-    assert by_path[str(loose)]["reason"].startswith("Unsorted")
+    assert by_path[str(loose)]["reason"].startswith("Unknown console")
     assert not loose.with_suffix(".rvz").exists()
 
 
@@ -392,7 +392,7 @@ def test_to_skips_a_conflicted_image_with_its_reason(volume, dolphin, capsys):
     assert lines[0]["detection"] == "conflict"
     assert lines[0]["platform"] is None
     assert lines[0]["reason"] == (
-        "Platform conflict: in the ps2 folder, but the header says ngc"
+        "Console unclear: in the ps2 folder, but the header says ngc"
     )
 
 

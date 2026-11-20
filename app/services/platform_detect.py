@@ -43,6 +43,9 @@ FOLDER = "folder"
 MAPPING = "mapping"
 CONFLICT = "conflict"
 UNSORTED = "unsorted"
+# The user picked the console for a game detection left undecided (the
+# Convert panel's "Pick console", sent as ``platform_overrides``).
+CHOSEN = "chosen"
 
 # Platform slug -> every other name for the same console: IGDB's slug where
 # RomM's differs, the tools' and the disc-ID parser's own vocabulary, and the
@@ -714,6 +717,17 @@ class AutoTarget:
     tool_id: str | None
     compression: str | None
     skip_reason: str | None
+    # The basename of the file the mode would write (before duplicate handling).
+    output_name: str | None = None
+
+
+def _console(platform: str) -> str:
+    """A console's name for a skip reason: its display name, else its slug."""
+    return platform_name(platform) or platform
+
+
+def _format_label(fmt: str) -> str:
+    return fmt.lstrip(".").upper()
 
 
 def _auto_candidates(platform: str, tools_registry) -> list:
@@ -968,13 +982,15 @@ def format_route(
             # files a RAR set holds, #476), which beats naming the extension.
             refusal = _convert_refusal(mode, path, tools_registry)
             return None, refusal or f"{mode} does not read {ext} files"
-        return None, f"No {fmt} target reads {ext} files"
+        return None, f"No converter here makes {_format_label(fmt)} from {ext} files"
     if platform:
         served = [s for s in candidates if _serves(s, platform, tools_registry)]
         if not served:
             if mode is not None:
-                return None, f"{mode} does not convert {platform} Images"
-            return None, f"No {fmt} target for {platform} Images"
+                return None, f"{mode} does not convert {_console(platform)} games"
+            return None, (
+                f"No converter here makes {_format_label(fmt)} for {_console(platform)} games"
+            )
         candidates = served
     if mode is not None:
         return mode, None
@@ -983,9 +999,9 @@ def format_route(
         lambda spec: tools_registry.mode_reads_extensions(spec.mode),
     )
     if best is None:
-        return None, f"No {fmt} target reads this Image"
+        return None, f"No converter here makes {_format_label(fmt)} from this game"
     if matched and matched.lower() == fmt:
-        return None, f"Already {fmt.lstrip('.').upper()}"
+        return None, f"Already {_format_label(fmt)}"
     return best.mode, None
 
 
@@ -1034,19 +1050,54 @@ def auto_route(path: str, platform: str, tools_registry) -> tuple[str | None, st
 
 def _no_target_reason(path: str, platform: str, tools_registry) -> str:
     """Why an Image with a Platform has no target: the Platform, or the file."""
+    console = _console(platform)
     if not _auto_candidates(platform, tools_registry):
-        return f"No tool converts {platform} Images"
+        return f"No converter here handles {console} games"
     name = path.split("::", 1)[-1]
     if "::" not in path and os.path.isdir(path):
-        return f"No {platform} target takes this folder"
+        return f"No converter here takes this folder as a {console} game"
     ext = os.path.splitext(name)[1].lower() or name
-    return f"No {platform} target reads {ext} files"
+    return f"No converter here reads {ext} files for {console}"
 
 
 def _skip_reason(detection: Detection) -> str:
     if detection.how == CONFLICT:
-        return f"Platform conflict: {detection.reason}"
-    return f"Unsorted: {detection.reason}"
+        return f"Console unclear: {detection.reason}"
+    return f"Unknown console: {detection.reason}"
+
+
+def route_for(
+    path: str, detection: Detection | None, target: str | None, tools_registry,
+) -> tuple[str | None, str | None]:
+    """``(mode, None)`` for where one game goes, or ``(None, reason)``.
+
+    The one decision the Convert panel's plan and the CLI's ``--to`` share.
+    With no ``target`` it is Auto: an undecided console is skipped, a decided
+    one goes to its default target (``auto_route``). With a ``target`` (a
+    format or a mode id) a Conflicted game is still skipped, and any other
+    goes to ``format_route``: a known console narrows the modes, and an
+    Unsorted game goes ahead only to a mode that reads it. ``detection`` None
+    leaves the console out entirely (the CLI's ``--any-platform``).
+    """
+    if target is None:
+        if detection is None or not detection.decided:
+            return None, _skip_reason(detection) if detection else "Unknown console"
+        return auto_route(path, detection.platform, tools_registry)
+    if detection is not None and detection.how == CONFLICT:
+        return None, _skip_reason(detection)
+    platform = detection.platform if detection is not None else None
+    return format_route(path, target, platform, tools_registry)
+
+
+def _chosen(detection: Detection, slug: str | None) -> Detection:
+    """The user's console for a game detection left undecided; a decided one stays."""
+    chosen = known_slug(slug)
+    if detection.decided or chosen is None:
+        return detection
+    return replace(
+        detection, platform=chosen, how=CHOSEN,
+        reason=f"You picked {platform_name(chosen)}",
+    )
 
 
 def _target_output(path: str, mode: str, output_dir: str | None, tools_registry) -> str | None:
@@ -1080,8 +1131,15 @@ def plan_auto(
     output_dir: str | None = None,
     ready_tool_ids: Iterable[str] | None = None,
     tools_registry=None,
+    target: str | None = None,
+    platform_overrides: dict[str, str] | None = None,
 ) -> list[AutoTarget]:
     """Work out each Image's Platform and default target, without queueing.
+
+    ``target`` (a format such as ``chd``, or a mode id) sends each game to the
+    modes that write it instead of its default (``route_for``).
+    ``platform_overrides`` maps a path to the console the user picked for it;
+    it replaces only a detection that decided nothing (``how = "chosen"``).
 
     ``compression_prefs`` is the saved per-tool compression (the convert
     panel's remembered setting, keyed by tool id). A mode that takes no
@@ -1098,7 +1156,10 @@ def plan_auto(
     if tools_registry is None:
         from services.tools import registry as tools_registry
     ready = set(ready_tool_ids) if ready_tool_ids is not None else None
-    plan = _plan_targets(paths, compression_prefs or {}, tools_registry, ready)
+    plan = _plan_targets(
+        paths, compression_prefs or {}, tools_registry, ready,
+        target=target, overrides=platform_overrides or {},
+    )
     from services.output_conflicts import input_priority
 
     claimed: dict[str, int] = {}
@@ -1126,21 +1187,24 @@ def plan_auto(
                 f"({os.path.basename(out)})"
             ),
         )
-    return plan
+    return [
+        replace(t, output_name=os.path.basename(out)) if t.mode and (
+            out := _target_output(t.file_path, t.mode, output_dir, tools_registry)
+        ) else t
+        for t in plan
+    ]
 
 
-def _plan_targets(paths, prefs: dict, tools_registry, ready) -> list[AutoTarget]:
+def _plan_targets(
+    paths, prefs: dict, tools_registry, ready, *, target=None, overrides=None,
+) -> list[AutoTarget]:
     from services.tools import not_ready_message
 
     tools = tools_registry.all()
     plan: list[AutoTarget] = []
     for path in paths:
-        detection = detect_platform(path, tools=tools)
-        if not detection.decided:
-            plan.append(AutoTarget(path, detection, None, None, None,
-                                   _skip_reason(detection)))
-            continue
-        mode, reason = auto_route(path, detection.platform, tools_registry)
+        detection = _chosen(detect_platform(path, tools=tools), (overrides or {}).get(path))
+        mode, reason = route_for(path, detection, target, tools_registry)
         if mode is None:
             plan.append(AutoTarget(path, detection, None, None, None, reason))
             continue

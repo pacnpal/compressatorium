@@ -1328,6 +1328,7 @@ async def queue_prepared(batch: PreparedBatch) -> list[ConversionJob]:
             delete_on_verify=batch.request.delete_on_verify,
             container_only=batch.request.container_only,
             split=batch.request.split,
+            verify_after=batch.request.verify_after,
         )
     except OutputIsSourceError as exc:
         # The queue's own check: the output would be the Source or one of its
@@ -1567,6 +1568,7 @@ async def _plan_auto(request: AutoPlanRequest) -> list:
     plan = await off_loop_bounded(
         _checked_auto_plan, list(request.file_paths),
         compression_prefs=prefs, output_dir=output_dir, ready_tool_ids=ready,
+        target=request.target, platform_overrides=request.platform_overrides,
     )
     return _with_checked_compression(plan)
 
@@ -1612,6 +1614,7 @@ def _plan_item(target) -> AutoPlanItem:
         tool_id=target.tool_id,
         compression=target.compression,
         skip_reason=target.skip_reason,
+        output_name=target.output_name,
     )
 
 
@@ -1660,6 +1663,7 @@ async def create_auto_jobs(request: AutoJobCreateRequest):
         return AutoBatchResponse(plan=[], jobs=[])
     plan = await _plan_auto(AutoPlanRequest(
         file_paths=list(confirmed), output_dir=request.output_dir,
+        target=request.target, platform_overrides=request.platform_overrides,
     ))
     if any(target.mode != confirmed.get(target.file_path) for target in plan) or (
         {target.file_path for target in plan} != set(confirmed)
@@ -1679,13 +1683,7 @@ async def create_auto_jobs(request: AutoJobCreateRequest):
             )
 
     prepared = [
-        await prepare_batch(BatchJobCreateRequest(
-            file_paths=paths,
-            mode=ConversionMode(mode),
-            output_dir=request.output_dir,
-            duplicate_action=request.duplicate_action,
-            compression=compression,
-        ))
+        await prepare_batch(_auto_group_request(request, mode, compression, paths))
         for (mode, compression), paths in groups.items()
     ]
     _check_queue_room(sum(len(batch.plans) for batch in prepared))
@@ -1740,6 +1738,33 @@ async def create_auto_jobs(request: AutoJobCreateRequest):
             await _cancel_queued(jobs)
             raise
     return AutoBatchResponse(plan=[_plan_item(t) for t in plan], jobs=jobs)
+
+
+def _auto_group_request(
+    request: AutoJobCreateRequest, mode: str, compression: str | None, paths: list[str],
+) -> BatchJobCreateRequest:
+    """One Auto group's batch, with the panel's choices this mode can honour.
+
+    Delete (and its quick check) only where the mode deletes safely
+    (``supports_delete_on_verify``); the other groups keep their originals and
+    are still checked when asked, where the mode has a check. The 4 GB split only for a folder mode (the
+    one that writes split parts; other tools ignore the flag). ``prepare_batch``
+    then validates and snapshots every group as it would a hand-picked batch,
+    so no check is ever weaker than the mode's own.
+    """
+    spec = registry.spec(mode)
+    delete = request.delete_on_verify and spec.supports_delete_on_verify
+    return BatchJobCreateRequest(
+        file_paths=paths,
+        mode=ConversionMode(mode),
+        output_dir=request.output_dir,
+        duplicate_action=request.duplicate_action,
+        compression=compression,
+        delete_on_verify=delete,
+        container_only=delete and request.container_only,
+        verify_after=delete or (request.verify_after and registry.mode_supports_verify(mode)),
+        split=request.split and InputKind.DIRECTORY in spec.input_kinds,
+    )
 
 
 async def _cancel_queued(jobs: list) -> list:

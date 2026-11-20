@@ -20,6 +20,7 @@ from models import (
 )
 from services.archive import ARCHIVE_EXTENSIONS, archive_service, log_archive_read_failure
 from services.archive_members import later_volume_of
+from services import image_sets
 from services.chd_metadata_store import chd_metadata_store
 from services.disc_playlist import (
     PlaylistBusy,
@@ -50,6 +51,7 @@ from utils.path_utils import (
     is_configured_volume_root,
     is_within_configured_volumes,
     list_folder,
+    read_beneath,
 )
 
 router = APIRouter()
@@ -415,29 +417,76 @@ def companion_marks(
 ) -> dict[str, str]:
     """Which of *paths* belong to another of them (#504): companion -> Source.
 
-    A row is marked when it is one of ``registry.source_companions`` of another
-    listed path (a RAR set's later volumes, a split Wii U dump's parts): the
-    tools' own hook decides, never an extension. The lenient form, so a set
-    whose members can't be told now (an unreadable or slow RAR header, already
-    bounded and detached there) marks nothing. A path already marked is no
-    Source of its own and is not asked. ``progress`` is reported per path.
-    Blocking.
+    A row is marked when it is one of ``image_sets.image_members`` of another
+    listed path: a ``.cue``/``.gdi``'s tracks, a RAR set's later volumes, a
+    split dump's parts (the tools' own hooks decide, never an extension). The
+    lenient form, so a set whose members can't be told now (an unreadable
+    sheet, an unreadable or slow RAR header, already bounded and detached
+    there) marks nothing. A path already marked is no Source of its own and is
+    not asked. ``progress`` is reported per path. Blocking.
     """
-    listed = set(paths)
+    listed = {os.path.normpath(p): p for p in paths}
     marks: dict[str, str] = {}
     for path in paths:
         if progress is not None:
             progress(path)
         if path in marks:
             continue
-        for companion in registry.source_companions(path):
-            if companion in listed and companion not in marks:
+        for member in image_sets.image_members(path):
+            companion = listed.get(os.path.normpath(member))
+            if companion is not None and companion != path and companion not in marks:
                 marks[companion] = path
     return marks
 
 
+PLAYLIST_EXTENSIONS = (".m3u", ".m3u8")
+# A playlist is a few lines; a bigger file is not one to fold a listing by.
+PLAYLIST_READ_BYTES = 64 * 1024
+
+
+def disc_marks(
+    paths: list[str], progress: Callable[..., None] | None = None,
+) -> dict[str, str]:
+    """Which of *paths* a listed playlist names: disc -> ``.m3u`` path.
+
+    Each entry resolves against the playlist's own folder. The read follows no
+    symlink and stops at ``PLAYLIST_READ_BYTES``; a playlist that can't be
+    read marks nothing. Blocking.
+    """
+    from services.referrers import m3u
+
+    listed = {os.path.normpath(p): p for p in paths}
+    marks: dict[str, str] = {}
+    for path in paths:
+        if not path.lower().endswith(PLAYLIST_EXTENSIONS):
+            continue
+        if progress is not None:
+            progress(path)
+        folder = os.path.dirname(path)
+        try:
+            data = read_beneath(
+                os.path.realpath(folder), os.path.basename(path),
+                max_bytes=PLAYLIST_READ_BYTES,
+            )
+        except (OSError, ValueError):
+            continue
+        for entry in m3u.entries(data):
+            disc = listed.get(os.path.normpath(os.path.join(folder, entry)))
+            if disc is not None and disc != path and disc not in marks:
+                marks[disc] = path
+    return marks
+
+
+def game_row_marks(
+    paths: list[str], progress: Callable[..., None] | None = None,
+) -> tuple[dict[str, str], dict[str, str]]:
+    """``(companion_marks, disc_marks)`` in one blocking pass."""
+    return companion_marks(paths, progress), disc_marks(paths, progress)
+
+
 async def _listing_companion_marks(entries: list[FileEntry]) -> None:
-    """Set ``companion_of`` on the listed rows that belong to another row.
+    """Set ``companion_of`` and ``disc_of`` on the listed rows that belong to
+    another row (a sheet's tracks, a playlist's discs).
 
     Off the event loop under the listing's own stall bound. The marks are a
     hint: a pass that stops moving (a mount that hangs between two bounded
@@ -447,15 +496,16 @@ async def _listing_companion_marks(entries: list[FileEntry]) -> None:
     if len(paths) < 2:
         return
     try:
-        marks = await run_detached_within_stall_bound(
-            companion_marks, paths, what="Finding a listing's multi-file sets",
+        companions, discs = await run_detached_within_stall_bound(
+            game_row_marks, paths, what="Finding a listing's multi-file sets",
             stall=WALK_STALL_SECONDS, report_progress=True,
         )
     except (Stalled, ProbeCapacityExceeded):
         logger.warning("Listing marks no companion rows: the sets did not answer in time")
         return
     for entry in entries:
-        entry.companion_of = marks.get(entry.path)
+        entry.companion_of = companions.get(entry.path)
+        entry.disc_of = discs.get(entry.path)
 
 
 def _listing_volume(path: str) -> str:

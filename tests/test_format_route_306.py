@@ -51,7 +51,7 @@ def test_a_platform_no_writer_serves_is_skipped_with_a_reason(tmp_path):
     path = _touch(tmp_path, "Game.iso")
     mode, reason = format_route(path, "chd", "ngc", registry)
     assert mode is None
-    assert reason == "No .chd target for ngc Images"
+    assert reason == "No converter here makes CHD for GameCube games"
 
 
 @pytest.mark.parametrize(("name", "target", "reason"), [
@@ -72,7 +72,7 @@ def test_a_mode_id_is_refused_for_a_platform_it_does_not_serve(tmp_path):
     path = _touch(tmp_path, "Game.iso")
     mode, reason = format_route(path, "createcd", "ngc", registry)
     assert mode is None
-    assert reason == "createcd does not convert ngc Images"
+    assert reason == "createcd does not convert GameCube games"
 
 
 def test_candidates_say_whether_an_image_is_in_scope(tmp_path):
