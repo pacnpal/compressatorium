@@ -692,7 +692,9 @@
 
 # The Automation tab. NOT the Settings tab: with no RomM configured the view
 # opens on Settings by itself, so the base shot above already captures that
-# surface and a second one would be identical. Clicked after the theme flip, so
+# surface and a second one would be identical. With no RomM here, the tab shows
+# its "RomM is not connected yet" state (#521); the rule-editor shot below
+# stubs a connected RomM to show the Rules. Clicked after the theme flip, so
 # the JS is inline rather than using the shared anchors.
 - url: http://127.0.0.1:8099/?s=romm-automation-light#/romm
   output: docs/screenshots/romm-automation-light.png

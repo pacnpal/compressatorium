@@ -173,6 +173,15 @@ class LibrariesStore {
     return this.list.filter((lib) => lib.kind === 'folder');
   }
 
+  /** The folder Library *path* is in (its root or below it), or null. */
+  folderLibraryFor(path) {
+    if (!path) return null;
+    return this.folders.find((lib) => {
+      const root = String(lib.root ?? '').replace(/\/+$/, '');
+      return !!root && (path === root || path.startsWith(`${root}/`));
+    }) ?? null;
+  }
+
   /** The rules source for *id*: the RomM store, or a folder Library's own. */
   sourceFor(id) {
     if (id === ROMM_LIBRARY_ID) return romm;
@@ -306,10 +315,20 @@ class LibrariesStore {
     this.selectedId = id || ROMM_LIBRARY_ID;
   }
 
-  /** Open the Rules view on *id*. The RomM view's Automation tab passes `romm`. */
+  /** Open the Rules view on *id*, kept in the URL so a reload stays there. */
   open(id = ROMM_LIBRARY_ID) {
     this.select(id);
-    ui.navigate('rules');
+    ui.navigate('rules', id);
+  }
+
+  /**
+   * The Rules view is opening on RomM: if RomM isn't set up, open on the first
+   * folder Library instead, the first one that can do anything.
+   */
+  openOnConfigured(rommConfigured) {
+    if (rommConfigured || this.selectedId !== ROMM_LIBRARY_ID) return;
+    const folder = this.folders[0];
+    if (folder) this.selectedId = folder.id;
   }
 
   async register(path, name = null) {

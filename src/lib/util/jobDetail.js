@@ -12,6 +12,8 @@
 // `job.warning` (#306, so the CLI reports it too), so the reason is shown once:
 // as the warning, or, for a job without one, as the kept line.
 
+import { baseName } from '../api/format.js';
+
 /**
  * @param {any} job
  * @returns {{ kind: 'message' | 'error' | 'output' | 'warning' | 'kept', text: string }[]}
@@ -26,7 +28,8 @@ export function jobDetailLines(job) {
   }
   if (status === 'completed') {
     const lines = [];
-    if (job?.output_path) lines.push({ kind: 'output', text: `→ ${job.output_path}` });
+    // The name only; the row's tooltip has the full path.
+    if (job?.output_path) lines.push({ kind: 'output', text: `→ ${baseName(job.output_path)}` });
     if (job?.warning) lines.push({ kind: 'warning', text: job.warning });
     else if (sourceKept(job)) lines.push({ kind: 'kept', text: job.message });
     // A job that writes nothing (a check Rule's run, #305) shows its result.

@@ -77,23 +77,10 @@
 
   const outputs = $derived(Array.isArray(entry?.outputs) ? entry.outputs : []);
 
-  // The check badge surfaces when EITHER this file itself passed a check OR
-  // any of its declared outputs (entry.outputs[].path) did.
-  // The verification store is keyed by output paths, so a source
-  // .cue / .gdi row would otherwise lose the badge even though the
-  // backend listing already reports its .chd as verified.
-  // Which check passed: 'round_tripped' outranks 'intact' when this row and
-  // its outputs disagree. Null when nothing has passed a check.
-  const check = $derived.by(() => {
-    const found = [verification.checkFor(path)];
-    for (const out of outputs) {
-      if (out?.path) found.push(verification.checkFor(out.path));
-    }
-    if (found.includes('round_tripped')) return 'round_tripped';
-    // Recognized (#423): Intact, and its hash is in a DAT or Hasheous.
-    if (found.includes('recognized')) return 'recognized';
-    return found.includes('intact') ? 'intact' : null;
-  });
+  // The check badge is this file's own check only. A source .cue / .bin was
+  // not checked when its .chd was, so it doesn't read "Intact": its output
+  // badge carries the tick instead (below). Null when nothing passed.
+  const check = $derived(verification.checkFor(path) ?? null);
   const CHECK_BADGES = {
     round_tripped: ['Round-tripped', 'Round-tripped: decoded to the same content as its source when converted'],
     recognized: ['Recognized', 'Recognized: Intact, and its hash is in one of your DATs or in Hasheous'],
@@ -205,7 +192,12 @@
     {/if}
     {#each outputs as out (out.tool_id)}
       {#if out.exists}
-        <Badge tone="success" title={`${out.tool_id} output ready (${out.path ?? ''})`}>
+        {@const outCheck = out.path ? verification.checkFor(out.path) : null}
+        <Badge
+          tone="success"
+          title={`${out.tool_id} output ready${outCheck ? ` and checked (${CHECK_BADGES[outCheck]?.[0] ?? outCheck})` : ''}`}
+        >
+          {#if outCheck}<CircleCheck size={11} aria-hidden="true" />{/if}
           {out.tool_id}{out.ready ? '' : '*'}
         </Badge>
       {/if}

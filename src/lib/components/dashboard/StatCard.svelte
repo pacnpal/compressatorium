@@ -40,7 +40,6 @@
     padding: var(--space-4);
     box-shadow: var(--elev-1);
     min-width: 0;
-    border-top: 3px solid var(--card-accent);
   }
   .card-head { display: flex; align-items: center; gap: var(--space-2); }
   .card-icon {

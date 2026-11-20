@@ -71,7 +71,8 @@
 
   --text-1: #0b1220;
   --text-2: #475569;
-  --text-3: #94a3b8;
+  /* Muted text, 4.5:1 or better on surface-1 and surface-2 (WCAG AA). */
+  --text-3: #5b6779;
   --text-inverse: #ffffff;
 
   --border-subtle: #e2e8f0;
@@ -90,6 +91,11 @@
   --error-muted: rgba(220, 38, 38, 0.1);
   --info: #0ea5e9;
   --info-muted: rgba(14, 165, 233, 0.1);
+  /* Status colours as text. The fills above are too light for text on white;
+     these pass AA (4.5:1) on surface-1 and surface-2. */
+  --success-text: #15703a;
+  --warning-text: #a14a08;
+  --info-text: #0369a1;
 
   --badge-verified: #16a34a;
   --badge-dat-match: #7c3aed;
@@ -139,6 +145,9 @@
   --error-muted: rgba(248, 113, 113, 0.14);
   --info: #38bdf8;
   --info-muted: rgba(56, 189, 248, 0.14);
+  --success-text: var(--success);
+  --warning-text: var(--warning);
+  --info-text: var(--info);
 
   --badge-verified: #4ade80;
   --badge-dat-match: #c084fc;
@@ -166,4 +175,14 @@
     animation-duration: 1ms !important;
     transition-duration: 1ms !important;
   }
+  /* Busy indicators keep saying "working": a slow fade instead of motion. */
+  .spinner .ring,
+  .spin,
+  .indeterminate {
+    animation: reduced-busy 1.6s ease-in-out infinite !important;
+  }
+}
+
+@keyframes reduced-busy {
+  50% { opacity: 0.35; }
 }

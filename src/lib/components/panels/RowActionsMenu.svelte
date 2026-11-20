@@ -167,6 +167,10 @@
     }
   }
 
+  // Set Platform (#304) works only on a folder inside a folder Library (the
+  // backend refuses the rest), so it is offered only there.
+  const canSetPlatform = $derived(canRegister && !!libraries.folderLibraryFor(path));
+
   function handleRename() {
     ui.renameTarget = entry;
   }
@@ -186,7 +190,11 @@
   }
 </script>
 
-<DropdownMenu.Root>
+<DropdownMenu.Root
+  onOpenChange={(open) => {
+    if (open && libraries.list.length === 0 && !libraries.loading) libraries.load();
+  }}
+>
   <DropdownMenu.Trigger
     class="actions-trigger"
     aria-label={`Actions for ${entry?.name ?? 'file'}`}
@@ -218,7 +226,8 @@
           <FolderCog size={14} aria-hidden="true" />
           <span>Register as a Library</span>
         </DropdownMenu.Item>
-        <!-- "This folder is PSP" (#304); the backend refuses a folder outside a Library. -->
+      {/if}
+      {#if canSetPlatform}
         <DropdownMenu.Item
           class="row-actions-item"
           onSelect={() => findings.openMapping(path, entry?.name)}
@@ -298,9 +307,12 @@
     user-select: none;
     outline: none;
   }
+  /* The keyboard's place in the menu: a ring as well as the tint, which alone
+     is too faint to see. */
   :global(.row-actions-item[data-highlighted]) {
     background: var(--accent-muted);
     color: var(--accent);
+    box-shadow: inset 0 0 0 2px var(--accent);
   }
   :global(.row-actions-item[data-disabled]) {
     opacity: 0.5;
@@ -310,6 +322,7 @@
   :global(.row-actions-item.danger[data-highlighted]) {
     background: var(--error-muted);
     color: var(--error);
+    box-shadow: inset 0 0 0 2px var(--error);
   }
   :global(.row-actions-sep) {
     height: 1px;

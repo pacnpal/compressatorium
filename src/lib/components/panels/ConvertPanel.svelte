@@ -381,13 +381,13 @@
     display: flex;
     gap: var(--space-2);
     background: var(--warning-muted);
-    color: var(--warning);
+    color: var(--warning-text);
     border-radius: var(--radius-md);
     padding: var(--space-2) var(--space-3);
     font-size: var(--text-sm);
     align-items: flex-start;
   }
-  .warning.info { background: var(--info-muted); color: var(--info); }
+  .warning.info { background: var(--info-muted); color: var(--info-text); }
 
   .actions {
     display: flex;

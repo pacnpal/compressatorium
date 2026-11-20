@@ -52,10 +52,10 @@ def test_a_completed_job_shows_its_warning_under_the_output(tmp_path):
     })
 
     assert lines["warned"] == [
-        {"kind": "output", "text": "→ /v/Game.dosz"},
+        {"kind": "output", "text": "→ Game.dosz"},
         {"kind": "warning", "text": "Repacked, but it may not start."},
     ]
-    assert lines["clean"] == [{"kind": "output", "text": "→ /v/Game.dosz"}]
+    assert lines["clean"] == [{"kind": "output", "text": "→ Game.dosz"}]
 
 
 def test_other_states_keep_their_lines(tmp_path):

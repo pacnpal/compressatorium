@@ -6,12 +6,15 @@
 // #306; a tool's caveat, #323): it resolves as a warning naming it, never as a
 // plain success. The job row shows the same warning (jobDetail.js).
 
+import { baseName } from '../api/format.js';
+
 /**
  * @param {any} job
  * @returns {{ kind: 'success' | 'warning', description: string, duration: number }}
  */
 export function completionToast(job) {
-  const output = job?.output_path ? `→ ${job.output_path}` : 'Completed';
+  // The new file's name, not its full path inside the container.
+  const output = job?.output_path ? `→ ${baseName(job.output_path)}` : 'Completed';
   if (job?.warning) {
     return { kind: 'warning', description: job.warning, duration: 8000 };
   }

@@ -675,9 +675,8 @@ def test_the_editor_reads_policies_from_the_library():
 def test_the_rules_view_has_a_library_picker():
     src = _RULES_VIEW.read_text(encoding="utf-8")
     assert re.search(r'<Select\s+label="Library"', src), "the Library picker is gone"
-    assert "onchange={pick}" in src
-    # Inside the RomM view, another Library opens the full Rules view.
-    assert "if (embedded && id !== ROMM_LIBRARY_ID) libraries.open(id);" in src
+    assert "onchange={(id) => libraries.select(id)}" in src
+    # Inside the RomM view there is no picker: it shows RomM's Rules (#521).
 
 
 def test_folders_offer_register_as_a_library():
@@ -691,7 +690,8 @@ def test_folders_offer_register_as_a_library():
 
 def test_rules_is_a_view_of_its_own():
     ui = (_SRC / "lib" / "stores" / "ui.svelte.js").read_text(encoding="utf-8")
-    assert "'rules'" in ui.split("const VIEWS", 1)[1].split("\n", 1)[0]
+    titles = ui.split("export const VIEW_TITLES", 1)[1].split("});", 1)[0]
+    assert "rules: 'Rules'" in titles
     sidebar = (_SRC / "lib" / "components" / "layout" / "Sidebar.svelte").read_text(
         encoding="utf-8",
     )
