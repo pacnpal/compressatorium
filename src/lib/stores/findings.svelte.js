@@ -38,6 +38,11 @@ class FindingsStore {
   duplicateRuns = $state([]);
   showDismissed = $state(false);
   loading = $state(false);
+
+  /** How many problems are open (not ignored): the sidebar's Activity badge. */
+  get openCount() {
+    return this.list.reduce((n, row) => (row?.dismissed ? n : n + 1), 0);
+  }
   error = $state(null);
   checking = $state(false);
   platforms = $state([]);

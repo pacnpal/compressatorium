@@ -307,7 +307,7 @@ class FileBrowserStore {
       .filter((v) => v?.path && (path === v.path || path.startsWith(`${v.path.replace(/\/+$/, '')}/`)))
       .sort((a, b) => b.path.length - a.path.length)[0];
     if (holder) this.selectedVolume = holder;
-    ui.navigate('workspace');
+    ui.navigate('files');
     await this.navigate(path);
   }
 
@@ -348,7 +348,7 @@ class FileBrowserStore {
       // link — so a decrypted PS3 folder was a one-way trip, with no way back
       // to the catalog short of leaving and reopening the whole view. The
       // workspace is the screen that knows how to show a directory.
-      ui.navigate('workspace');
+      ui.navigate('files');
     }
     this.currentPath = path;
     this.currentArchivePath = null;

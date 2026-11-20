@@ -95,7 +95,7 @@ process.stdout.write(JSON.stringify({
     assert data["volume"] == "/target", data
     assert data["path"] == "/target/roms", data
     assert data["listed"] == ["/target/roms"], data
-    assert data["navigated"] == ["workspace"], data
+    assert data["navigated"] == ["files"], data
     assert data["entries"] == 1, data
 
 
@@ -138,4 +138,4 @@ process.stdout.write(JSON.stringify({
 """)
     assert data["path"] == "/target/b", data
     assert data["listed"] == ["/target/b"], data
-    assert data["navigated"] == ["workspace"], data
+    assert data["navigated"] == ["files"], data

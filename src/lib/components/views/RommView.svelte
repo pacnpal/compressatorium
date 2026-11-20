@@ -38,7 +38,20 @@
   import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
 
   let dragStartRight = 0;
-  let tab = $state('library');
+  // The tab is in the URL (`#/libraries/romm/<tab>`): Browse, Automation,
+  // Connection. Each maps to this view's own tab.
+  const TAB_OF_ROUTE = { browse: 'library', automation: 'automation', connection: 'settings' };
+  const ROUTE_OF_TAB = { library: 'browse', automation: 'automation', settings: 'connection' };
+  let tab = $state(TAB_OF_ROUTE[ui.libraryTab] ?? 'library');
+  $effect(() => {
+    const routed = TAB_OF_ROUTE[ui.libraryTab];
+    if (routed) tab = routed;
+  });
+
+  function openTab(id) {
+    tab = id;
+    ui.navigate('libraries', { id: 'romm', tab: ROUTE_OF_TAB[id] });
+  }
 
   const status = $derived(romm.status);
   const entries = $derived(fileBrowser.entries);
@@ -76,10 +89,7 @@
    */
   function chooseMode(mode) {
     const tool = registry.toolForMode(mode);
-    if (tool && tool.id !== conversion.primaryTool) {
-      conversion.setPrimaryTool(tool.id);
-      ui.workspaceTool = tool.id;
-    }
+    if (tool && tool.id !== conversion.primaryTool) conversion.setPrimaryTool(tool.id);
     conversion.chooseTarget(mode);
   }
 
@@ -369,7 +379,7 @@
         id={`romm-tab-${id}`}
         aria-selected={tab === id}
         aria-controls={`romm-panel-${id}`}
-        onclick={() => (tab = id)}
+        onclick={() => openTab(id)}
       >{label}</button>
     {/each}
   </div>

@@ -34,8 +34,8 @@
     {/if}
   {/snippet}
   {#snippet footer()}
-    <Button variant="ghost" size="sm" onclick={() => ui.navigate('workspace', ui.workspaceTool)}>
-      Go to workspace →
+    <Button variant="ghost" size="sm" onclick={() => ui.navigate('files')}>
+      Go to Files →
     </Button>
   {/snippet}
 </StatCard>

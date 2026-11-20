@@ -306,10 +306,10 @@ class LibrariesStore {
     this.selectedId = id || ROMM_LIBRARY_ID;
   }
 
-  /** Open the Rules view on *id*. The RomM view's Automation tab passes `romm`. */
-  open(id = ROMM_LIBRARY_ID) {
+  /** Open Library *id*'s page, on *tab* when given (`#/libraries/<id>[/<tab>]`). */
+  open(id = ROMM_LIBRARY_ID, tab = null) {
     this.select(id);
-    ui.navigate('rules');
+    ui.navigate('libraries', { id, tab });
   }
 
   async register(path, name = null) {

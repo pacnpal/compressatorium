@@ -225,8 +225,8 @@
 
   {#if !tool}
     <EmptyState
-      title="No tool selected"
-      description="Pick a tool from the sidebar to configure conversions."
+      title="Nothing to convert to"
+      description="No converter can run here. Settings lists what is missing."
       glyph="◈"
     />
   {:else}
@@ -238,7 +238,11 @@
       />
       {#if !auto}
         <ModeSelect />
-        <CompressionPicker />
+        <CompressionPicker
+          mode={conversion.mode}
+          value={conversion.compressionChoice}
+          onchange={(v) => conversion.setCompressionChoice(v)}
+        />
       {/if}
 
       <label class="field">

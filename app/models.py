@@ -647,3 +647,18 @@ class ConversionPreferences(BaseModel):
     """
 
     model_config = ConfigDict(extra="allow")
+
+
+class DefaultsPreferences(BaseModel):
+    """The safety choices a new conversion or a new console setting starts with.
+
+    Stored under the ``defaults`` preference key. Check each new file, keep the
+    original, and run the full check: the safe answer for each, so nothing is
+    deleted until the user asks for it.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    verify_after: bool = True
+    delete_on_verify: bool = False
+    container_only: bool = False

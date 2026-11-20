@@ -619,13 +619,13 @@ def test_a_deep_link_change_reselects_while_the_view_stays_mounted():
     src = _RULES_VIEW.read_text(encoding="utf-8")
     effect = re.search(
         r"\$effect\(\(\) => \{\s*if \(embedded\) return;\s*"
-        r"const target = ui\.rulesTarget;(.*?)\n  \}\);",
+        r"const target = ui\.libraryTarget;(.*?)\n  \}\);",
         src, re.DOTALL,
     )
-    assert effect, "the selection does not follow ui.rulesTarget"
+    assert effect, "the selection does not follow ui.libraryTarget"
     assert "libraries.select(target)" in effect.group(1)
     # Not only once on mount.
-    assert "else if (ui.rulesTarget) libraries.select(ui.rulesTarget);" not in src
+    assert "else if (ui.libraryTarget) libraries.select(ui.libraryTarget);" not in src
 
 
 def test_both_libraries_share_one_rules_source():
@@ -644,7 +644,7 @@ def test_opening_rules_on_a_library_navigates_there(tmp_path):
 libraries.open('folder:3');
 process.stdout.write(JSON.stringify({ selected: libraries.selectedId, view: ui.navigated }));
 """)
-    assert data == {"selected": "folder:3", "view": "rules"}, data
+    assert data == {"selected": "folder:3", "view": "libraries"}, data
 
 
 # ----------------------------------------------------------------------
@@ -689,10 +689,13 @@ def test_folders_offer_register_as_a_library():
     assert "libraries.register(path)" in src
 
 
-def test_rules_is_a_view_of_its_own():
-    ui = (_SRC / "lib" / "stores" / "ui.svelte.js").read_text(encoding="utf-8")
-    assert "'rules'" in ui.split("const VIEWS", 1)[1].split("\n", 1)[0]
+def test_a_folder_librarys_rules_open_from_its_page():
+    """Restructure item 8: `#/libraries/<folder id>` shows that Library's Rules."""
+    view = (_SRC / "lib" / "components" / "views" / "LibrariesView.svelte").read_text(
+        encoding="utf-8",
+    )
+    assert "{#key id}<RulesView />{/key}" in view
     sidebar = (_SRC / "lib" / "components" / "layout" / "Sidebar.svelte").read_text(
         encoding="utf-8",
     )
-    assert "go('rules')" in sidebar
+    assert "view: 'libraries'" in sidebar

@@ -142,6 +142,20 @@ export const api = {
       'Failed to save preferences',
     );
   },
+  // The safety choices new conversions start with (check, delete, quick check).
+  getDefaultsPrefs: () =>
+    fetchJson(`${API_BASE}/preferences/defaults`, undefined, 'Failed to load defaults'),
+  putDefaultsPrefs(prefs) {
+    return fetchJson(
+      `${API_BASE}/preferences/defaults`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(prefs),
+      },
+      "Couldn't save the defaults",
+    );
+  },
 
   // ─── Files ────────────────────────────────────────────────────────────
   // summarizeArchives=false keeps the directory listing fast in folders with

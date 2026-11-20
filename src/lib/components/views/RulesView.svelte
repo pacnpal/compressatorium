@@ -67,7 +67,7 @@
   // link to another's, or Back, reselects instead of showing the previous one.
   $effect(() => {
     if (embedded) return;
-    const target = ui.rulesTarget;
+    const target = ui.libraryTarget;
     if (target) untrack(() => libraries.select(target));
   });
 

@@ -5,14 +5,10 @@
   import Sidebar from '$lib/components/layout/Sidebar.svelte';
   import MobileDrawer from '$lib/components/layout/MobileDrawer.svelte';
   import TopBar from '$lib/components/layout/TopBar.svelte';
-  import Dashboard from '$lib/components/views/Dashboard.svelte';
-  import WorkArea from '$lib/components/views/WorkArea.svelte';
-  import RommView from '$lib/components/views/RommView.svelte';
-  import RulesView from '$lib/components/views/RulesView.svelte';
-  import FindingsView from '$lib/components/views/FindingsView.svelte';
-  import DATView from '$lib/components/views/DATView.svelte';
+  import FilesView from '$lib/components/views/FilesView.svelte';
+  import LibrariesView from '$lib/components/views/LibrariesView.svelte';
+  import ActivityView from '$lib/components/views/ActivityView.svelte';
   import SettingsView from '$lib/components/views/SettingsView.svelte';
-  import LedgerView from '$lib/components/views/LedgerView.svelte';
   import HelpView from '$lib/components/views/HelpView.svelte';
   import EmptyState from '$lib/components/ui/EmptyState.svelte';
   import Button from '$lib/components/ui/Button.svelte';
@@ -23,6 +19,8 @@
   import { verification } from '$lib/stores/verification.svelte.js';
   import { datMatching } from '$lib/stores/datMatching.svelte.js';
   import { fileBrowser } from '$lib/stores/fileBrowser.svelte.js';
+  import { findings } from '$lib/stores/findings.svelte.js';
+  import { defaults } from '$lib/stores/defaults.svelte.js';
   import { ModeWatcher, mode } from 'mode-watcher';
   import { Toaster, toast } from 'svelte-sonner';
   import { STORAGE_KEYS } from '$lib/util/localStorage.js';
@@ -52,8 +50,13 @@
     });
   });
 
+  // The Convert panel never sits on a tool the backend can't run (Switch with
+  // no prod.keys): once availability is known, move it to the first that can.
   $effect(() => {
-    conversion.setPrimaryTool(ui.workspaceTool);
+    const tools = ui.visibleTools;
+    if (tools.length && !tools.some((t) => t.id === conversion.primaryTool)) {
+      conversion.setPrimaryTool(tools[0].id);
+    }
   });
 
   // Refresh the file listing when terminal job events arrive, newly
@@ -130,6 +133,10 @@
       .catch(() => ui.applyToolAvailability(null));
     // Load remembered per-tool compression settings from the server.
     conversion.loadServerPrefs();
+    // The safety choices new conversions start with.
+    defaults.load();
+    // What needs attention, for the sidebar's Activity badge.
+    findings.load();
     // Rehydrate the verified set + DAT-library state so OK / DAT badges
     // survive reloads. Fire and forget, failure leaves the cache empty.
     verification.loadVerified();
@@ -192,14 +199,10 @@
     <TopBar />
     <main id="main-content" bind:this={mainEl} class="main" tabindex="-1" aria-label="Main content">
       <svelte:boundary onerror={onBoundaryError}>
-        {#if ui.activeView === 'dashboard'}<Dashboard />
-        {:else if ui.activeView === 'workspace'}<WorkArea />
-        {:else if ui.activeView === 'romm'}<RommView />
-        {:else if ui.activeView === 'rules'}<RulesView />
-        {:else if ui.activeView === 'findings'}<FindingsView />
-        {:else if ui.activeView === 'dat'}<DATView />
+        {#if ui.activeView === 'files'}<FilesView />
+        {:else if ui.activeView === 'libraries'}<LibrariesView />
+        {:else if ui.activeView === 'activity'}<ActivityView />
         {:else if ui.activeView === 'settings'}<SettingsView />
-        {:else if ui.activeView === 'ledger'}<LedgerView />
         {:else if ui.activeView === 'help'}<HelpView />
         {/if}
         {#snippet failed(error, reset)}

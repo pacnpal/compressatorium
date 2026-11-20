@@ -20,11 +20,17 @@
 # Each URL carries a unique `?s=` query so every shot is a full page load rather
 # than a same-document hash change (the app is a hash-router SPA). The server is
 # expected on http://127.0.0.1:8099 (see the workflow). Views are addressed
-# through the hash router: #/workspace/<tool>, #/dashboard, #/dat, #/help.
+# through the hash router (src/lib/router/routes.js): #/files, #/libraries[/<id>],
+# #/activity[/<tab>], #/settings[/<section>], #/help. An old route a script sets
+# (#/rules/<id>, #/findings, #/dashboard) still lands, through its redirect.
+#
+# Sections are marked `# === PR n: <area> ===` by the restructure PR that owns
+# their shots, so each one rewrites only its own.
 
+# === PR 2: Files ===
 # --- Workspace: CHDMAN (default tool, Arcade CHD volume) -------------------
 # These two shots also define the shared theme-flip anchors.
-- url: http://127.0.0.1:8099/?s=workspace-chdman-light#/workspace/chdman
+- url: http://127.0.0.1:8099/?s=workspace-chdman-light#/files
   output: docs/screenshots/workspace-chdman-light.png
   width: 1280
   height: 900
@@ -35,7 +41,7 @@
       window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: 'light' }));
       await new Promise(r => setTimeout(r, 500));
     })()
-- url: http://127.0.0.1:8099/?s=workspace-chdman-dark#/workspace/chdman
+- url: http://127.0.0.1:8099/?s=workspace-chdman-dark#/files
   output: docs/screenshots/workspace-chdman-dark.png
   width: 1280
   height: 900
@@ -49,7 +55,7 @@
 
 # --- Compression picker: Compatible with... (#429) -------------------------
 # Picks NetherSX2 (zlib only), then adds zstd so the advisory warning shows.
-- url: http://127.0.0.1:8099/?s=compat-picker-light#/workspace/chdman
+- url: http://127.0.0.1:8099/?s=compat-picker-light#/files
   output: docs/screenshots/compat-picker-light.png
   width: 1280
   height: 900
@@ -71,7 +77,7 @@
     })()
 
 # --- Workspace: batch selection (all files ticked, convert panel armed) ----
-- url: http://127.0.0.1:8099/?s=workspace-batch-light#/workspace/chdman
+- url: http://127.0.0.1:8099/?s=workspace-batch-light#/files
   output: docs/screenshots/workspace-batch-light.png
   width: 1280
   height: 900
@@ -89,7 +95,7 @@
       if (all && !all.checked) all.click();
       await new Promise(r => setTimeout(r, 400));
     })()
-- url: http://127.0.0.1:8099/?s=workspace-batch-dark#/workspace/chdman
+- url: http://127.0.0.1:8099/?s=workspace-batch-dark#/files
   output: docs/screenshots/workspace-batch-dark.png
   width: 1280
   height: 900
@@ -112,7 +118,7 @@
 # Auto is read from localStorage only at boot, so the shot ticks the convert
 # panel's Auto box instead. "Start conversion" then opens the plan preview,
 # which only reads the files (POST /api/jobs/auto-plan queues nothing).
-- url: http://127.0.0.1:8099/?s=workspace-auto-plan-light#/workspace/chdman
+- url: http://127.0.0.1:8099/?s=workspace-auto-plan-light#/files
   output: docs/screenshots/workspace-auto-plan-light.png
   width: 1280
   height: 900
@@ -134,7 +140,7 @@
       if (start) start.click();
       await new Promise(r => setTimeout(r, 900));
     })()
-- url: http://127.0.0.1:8099/?s=workspace-auto-plan-dark#/workspace/chdman
+- url: http://127.0.0.1:8099/?s=workspace-auto-plan-dark#/files
   output: docs/screenshots/workspace-auto-plan-dark.png
   width: 1280
   height: 900
@@ -161,7 +167,7 @@
 # Selects one disc on the PlayStation volume, ticks delete-on-verify and
 # presses Start conversion, which only opens the confirmation (no job is
 # queued). The modal lists the files to delete and the planned .m3u edit.
-- url: http://127.0.0.1:8099/?s=delete-plan-light#/workspace/chdman
+- url: http://127.0.0.1:8099/?s=delete-plan-light#/files
   output: docs/screenshots/delete-plan-light.png
   width: 1280
   height: 900
@@ -187,7 +193,7 @@
       [...document.querySelectorAll('button')].find(b => b.textContent.includes('Start conversion'))?.click();
       await sleep(1200);
     })()
-- url: http://127.0.0.1:8099/?s=delete-plan-dark#/workspace/chdman
+- url: http://127.0.0.1:8099/?s=delete-plan-dark#/files
   output: docs/screenshots/delete-plan-dark.png
   width: 1280
   height: 900
@@ -214,12 +220,13 @@
       await sleep(1200);
     })()
 
+# === PR 3: Libraries ===
 # --- Delete-on-verify confirmation with the RomM swap (#391) ----------------
 # A single-file disc on the GameCube volume, delete-on-verify ticked. The
 # fixture has no RomM, so the plan's answer gets the change the RomM swap
 # would add ("RomM: rename ROM 1234 to mario-kart.chd"), canned in the page as
 # the RomM shots below do. The theme comes from `?s=`.
-- url: http://127.0.0.1:8099/?s=delete-plan-romm-light#/workspace/chdman
+- url: http://127.0.0.1:8099/?s=delete-plan-romm-light#/files
   output: docs/screenshots/delete-plan-romm-light.png
   width: 1280
   height: 900
@@ -267,18 +274,19 @@
       [...document.querySelectorAll('button')].find(b => b.textContent.includes('Start conversion'))?.click();
       await sleep(1200);
     })()
-- url: http://127.0.0.1:8099/?s=delete-plan-romm-dark#/workspace/chdman
+- url: http://127.0.0.1:8099/?s=delete-plan-romm-dark#/files
   output: docs/screenshots/delete-plan-romm-dark.png
   width: 1280
   height: 900
   wait: 1800
   javascript: *js_delete_plan_romm
 
+# === PR 2: Files ===
 # --- Create .m3u from selected discs (three discs ticked, preview dialog) ---
 # Ticks the discs of Star Saga on the PlayStation volume, in scrambled
 # fixture order, and presses Create .m3u. The dialog previews the name and
 # the entries in disc order; nothing is written.
-- url: http://127.0.0.1:8099/?s=playlist-light#/workspace/chdman
+- url: http://127.0.0.1:8099/?s=playlist-light#/files
   output: docs/screenshots/playlist-light.png
   width: 1280
   height: 900
@@ -302,7 +310,7 @@
       [...document.querySelectorAll('button')].find(b => b.textContent.includes('Create .m3u'))?.click();
       await sleep(1200);
     })()
-- url: http://127.0.0.1:8099/?s=playlist-dark#/workspace/chdman
+- url: http://127.0.0.1:8099/?s=playlist-dark#/files
   output: docs/screenshots/playlist-dark.png
   width: 1280
   height: 900
@@ -328,7 +336,7 @@
     })()
 
 # --- Workspace: Dolphin (GameCube volume selected) -------------------------
-- url: http://127.0.0.1:8099/?s=workspace-dolphin-light#/workspace/dolphin
+- url: http://127.0.0.1:8099/?s=workspace-dolphin-light#/files
   output: docs/screenshots/workspace-dolphin-light.png
   width: 1280
   height: 900
@@ -338,11 +346,15 @@
       localStorage.setItem('theme-preference', 'light');
       window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: 'light' }));
       await new Promise(r => setTimeout(r, 400));
+      // The Convert panel's tool comes from its Convert-to list now, not the URL.
+      const pick = document.querySelector('select[aria-label="Convert to"]');
+      if (pick) { pick.value = 'dolphin_rvz'; pick.dispatchEvent(new Event('change', { bubbles: true })); }
+      await new Promise(r => setTimeout(r, 300));
       const vol = [...document.querySelectorAll('button.item')].find(b => b.textContent.trim() === 'GameCube');
       if (vol) vol.click();
       await new Promise(r => setTimeout(r, 500));
     })()
-- url: http://127.0.0.1:8099/?s=workspace-dolphin-dark#/workspace/dolphin
+- url: http://127.0.0.1:8099/?s=workspace-dolphin-dark#/files
   output: docs/screenshots/workspace-dolphin-dark.png
   width: 1280
   height: 900
@@ -352,6 +364,10 @@
       localStorage.setItem('theme-preference', 'dark');
       window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: 'dark' }));
       await new Promise(r => setTimeout(r, 400));
+      // The Convert panel's tool comes from its Convert-to list now, not the URL.
+      const pick = document.querySelector('select[aria-label="Convert to"]');
+      if (pick) { pick.value = 'dolphin_rvz'; pick.dispatchEvent(new Event('change', { bubbles: true })); }
+      await new Promise(r => setTimeout(r, 300));
       const vol = [...document.querySelectorAll('button.item')].find(b => b.textContent.trim() === 'GameCube');
       if (vol) vol.click();
       await new Promise(r => setTimeout(r, 500));
@@ -361,7 +377,7 @@
 # Selects every GameCube file and ticks delete-source so the convert panel
 # shows the Round-trip wording and the "Container check only" opt-out (#298).
 # The checkbox is found by its label text, the only stable hook it has.
-- url: http://127.0.0.1:8099/?s=workspace-dolphin-delete-light#/workspace/dolphin
+- url: http://127.0.0.1:8099/?s=workspace-dolphin-delete-light#/files
   output: docs/screenshots/workspace-dolphin-delete-light.png
   width: 1280
   height: 900
@@ -373,6 +389,10 @@
       localStorage.setItem('theme-preference', theme);
       window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: theme }));
       await new Promise(r => setTimeout(r, 400));
+      // The Convert panel's tool comes from its Convert-to list now, not the URL.
+      const pick = document.querySelector('select[aria-label="Convert to"]');
+      if (pick) { pick.value = 'dolphin_rvz'; pick.dispatchEvent(new Event('change', { bubbles: true })); }
+      await new Promise(r => setTimeout(r, 300));
       const vol = [...document.querySelectorAll('button.item')].find(b => b.textContent.trim() === 'GameCube');
       if (vol) vol.click();
       await new Promise(r => setTimeout(r, 500));
@@ -385,7 +405,7 @@
       if (input && !input.checked) input.click();
       await new Promise(r => setTimeout(r, 400));
     })()
-- url: http://127.0.0.1:8099/?s=workspace-dolphin-delete-dark#/workspace/dolphin
+- url: http://127.0.0.1:8099/?s=workspace-dolphin-delete-dark#/files
   output: docs/screenshots/workspace-dolphin-delete-dark.png
   width: 1280
   height: 900
@@ -395,7 +415,7 @@
 # --- Workspace: rom-converto, Xbox 360 ISO -> ZAR (#422) ------------------
 # Selects the Xbox 360 image so the convert panel shows the ZAR mode, and in
 # place of the delete option the line saying why the Source is always kept.
-- url: http://127.0.0.1:8099/?s=workspace-rom-converto-light#/workspace/rom_converto
+- url: http://127.0.0.1:8099/?s=workspace-rom-converto-light#/files
   output: docs/screenshots/workspace-rom-converto-light.png
   width: 1280
   height: 900
@@ -407,6 +427,10 @@
       localStorage.setItem('theme-preference', theme);
       window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: theme }));
       await new Promise(r => setTimeout(r, 400));
+      // The Convert panel's tool comes from its Convert-to list now, not the URL.
+      const pick = document.querySelector('select[aria-label="Convert to"]');
+      if (pick) { pick.value = 'zar_compress'; pick.dispatchEvent(new Event('change', { bubbles: true })); }
+      await new Promise(r => setTimeout(r, 300));
       const vol = [...document.querySelectorAll('button.item')].find(b => b.textContent.trim() === 'Xbox 360');
       if (!vol) throw new Error('Xbox 360 volume not found');
       vol.click();
@@ -416,7 +440,7 @@
       await new Promise(r => setTimeout(r, 500));
       if (!document.querySelector('.source-kept')) throw new Error('source-kept line not shown');
     })()
-- url: http://127.0.0.1:8099/?s=workspace-rom-converto-dark#/workspace/rom_converto
+- url: http://127.0.0.1:8099/?s=workspace-rom-converto-dark#/files
   output: docs/screenshots/workspace-rom-converto-dark.png
   width: 1280
   height: 900
@@ -427,7 +451,7 @@
 # Picks the CIA -> CCI mode, selects the fixture's synthetic CIA and ticks
 # delete-source, so the panel says the output must be Recognized and offers no
 # container-only box.
-- url: http://127.0.0.1:8099/?s=workspace-rom-converto-recognized-light#/workspace/rom_converto
+- url: http://127.0.0.1:8099/?s=workspace-rom-converto-recognized-light#/files
   output: docs/screenshots/workspace-rom-converto-recognized-light.png
   width: 1280
   height: 900
@@ -439,7 +463,7 @@
       localStorage.setItem('theme-preference', theme);
       window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: theme }));
       await new Promise(r => setTimeout(r, 400));
-      const sel = document.querySelector('select[aria-label="Conversion mode"]');
+      const sel = document.querySelector('select[aria-label="Convert to"]');
       if (!sel) throw new Error('mode select not found');
       sel.value = 'cia_to_cci';
       sel.dispatchEvent(new Event('change', { bubbles: true }));
@@ -459,7 +483,7 @@
       await new Promise(r => setTimeout(r, 400));
       if (!box.textContent.includes('Recognized')) throw new Error('Recognized hint not shown');
     })()
-- url: http://127.0.0.1:8099/?s=workspace-rom-converto-recognized-dark#/workspace/rom_converto
+- url: http://127.0.0.1:8099/?s=workspace-rom-converto-recognized-dark#/files
   output: docs/screenshots/workspace-rom-converto-recognized-dark.png
   width: 1280
   height: 900
@@ -467,7 +491,7 @@
   javascript: *js_rom_converto_recognized
 
 # --- Workspace: 3DS (Nintendo 3DS volume selected) ------------------------
-- url: http://127.0.0.1:8099/?s=workspace-3ds-light#/workspace/z3ds
+- url: http://127.0.0.1:8099/?s=workspace-3ds-light#/files
   output: docs/screenshots/workspace-3ds-light.png
   width: 1280
   height: 900
@@ -477,11 +501,15 @@
       localStorage.setItem('theme-preference', 'light');
       window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: 'light' }));
       await new Promise(r => setTimeout(r, 400));
+      // The Convert panel's tool comes from its Convert-to list now, not the URL.
+      const pick = document.querySelector('select[aria-label="Convert to"]');
+      if (pick) { pick.value = 'z3ds_compress'; pick.dispatchEvent(new Event('change', { bubbles: true })); }
+      await new Promise(r => setTimeout(r, 300));
       const vol = [...document.querySelectorAll('button.item')].find(b => b.textContent.trim() === 'Nintendo 3DS');
       if (vol) vol.click();
       await new Promise(r => setTimeout(r, 500));
     })()
-- url: http://127.0.0.1:8099/?s=workspace-3ds-dark#/workspace/z3ds
+- url: http://127.0.0.1:8099/?s=workspace-3ds-dark#/files
   output: docs/screenshots/workspace-3ds-dark.png
   width: 1280
   height: 900
@@ -491,13 +519,17 @@
       localStorage.setItem('theme-preference', 'dark');
       window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: 'dark' }));
       await new Promise(r => setTimeout(r, 400));
+      // The Convert panel's tool comes from its Convert-to list now, not the URL.
+      const pick = document.querySelector('select[aria-label="Convert to"]');
+      if (pick) { pick.value = 'z3ds_compress'; pick.dispatchEvent(new Event('change', { bubbles: true })); }
+      await new Promise(r => setTimeout(r, 300));
       const vol = [...document.querySelectorAll('button.item')].find(b => b.textContent.trim() === 'Nintendo 3DS');
       if (vol) vol.click();
       await new Promise(r => setTimeout(r, 500));
     })()
 
 # --- Workspace: Wii U (Wii U volume selected) -----------------------------
-- url: http://127.0.0.1:8099/?s=workspace-wiiu-light#/workspace/jwud
+- url: http://127.0.0.1:8099/?s=workspace-wiiu-light#/files
   output: docs/screenshots/workspace-wiiu-light.png
   width: 1280
   height: 900
@@ -507,11 +539,15 @@
       localStorage.setItem('theme-preference', 'light');
       window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: 'light' }));
       await new Promise(r => setTimeout(r, 400));
+      // The Convert panel's tool comes from its Convert-to list now, not the URL.
+      const pick = document.querySelector('select[aria-label="Convert to"]');
+      if (pick) { pick.value = 'jwud_compress'; pick.dispatchEvent(new Event('change', { bubbles: true })); }
+      await new Promise(r => setTimeout(r, 300));
       const vol = [...document.querySelectorAll('button.item')].find(b => b.textContent.trim() === 'Wii U');
       if (vol) vol.click();
       await new Promise(r => setTimeout(r, 500));
     })()
-- url: http://127.0.0.1:8099/?s=workspace-wiiu-dark#/workspace/jwud
+- url: http://127.0.0.1:8099/?s=workspace-wiiu-dark#/files
   output: docs/screenshots/workspace-wiiu-dark.png
   width: 1280
   height: 900
@@ -521,13 +557,17 @@
       localStorage.setItem('theme-preference', 'dark');
       window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: 'dark' }));
       await new Promise(r => setTimeout(r, 400));
+      // The Convert panel's tool comes from its Convert-to list now, not the URL.
+      const pick = document.querySelector('select[aria-label="Convert to"]');
+      if (pick) { pick.value = 'jwud_compress'; pick.dispatchEvent(new Event('change', { bubbles: true })); }
+      await new Promise(r => setTimeout(r, 300));
       const vol = [...document.querySelectorAll('button.item')].find(b => b.textContent.trim() === 'Wii U');
       if (vol) vol.click();
       await new Promise(r => setTimeout(r, 500));
     })()
 
 # --- Workspace: eXoDOS (eXoDOS volume selected) ---------------------------
-- url: http://127.0.0.1:8099/?s=workspace-exodos-light#/workspace/exodos
+- url: http://127.0.0.1:8099/?s=workspace-exodos-light#/files
   output: docs/screenshots/workspace-exodos-light.png
   width: 1280
   height: 900
@@ -537,11 +577,15 @@
       localStorage.setItem('theme-preference', 'light');
       window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: 'light' }));
       await new Promise(r => setTimeout(r, 400));
+      // The Convert panel's tool comes from its Convert-to list now, not the URL.
+      const pick = document.querySelector('select[aria-label="Convert to"]');
+      if (pick) { pick.value = 'exodos_repack'; pick.dispatchEvent(new Event('change', { bubbles: true })); }
+      await new Promise(r => setTimeout(r, 300));
       const vol = [...document.querySelectorAll('button.item')].find(b => b.textContent.trim() === 'eXoDOS');
       if (vol) vol.click();
       await new Promise(r => setTimeout(r, 500));
     })()
-- url: http://127.0.0.1:8099/?s=workspace-exodos-dark#/workspace/exodos
+- url: http://127.0.0.1:8099/?s=workspace-exodos-dark#/files
   output: docs/screenshots/workspace-exodos-dark.png
   width: 1280
   height: 900
@@ -551,13 +595,17 @@
       localStorage.setItem('theme-preference', 'dark');
       window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: 'dark' }));
       await new Promise(r => setTimeout(r, 400));
+      // The Convert panel's tool comes from its Convert-to list now, not the URL.
+      const pick = document.querySelector('select[aria-label="Convert to"]');
+      if (pick) { pick.value = 'exodos_repack'; pick.dispatchEvent(new Event('change', { bubbles: true })); }
+      await new Promise(r => setTimeout(r, 300));
       const vol = [...document.querySelectorAll('button.item')].find(b => b.textContent.trim() === 'eXoDOS');
       if (vol) vol.click();
       await new Promise(r => setTimeout(r, 500));
     })()
 
 # --- Workspace: RAR sets (Usenet volume selected) ------------------------
-- url: http://127.0.0.1:8099/?s=workspace-rar-light#/workspace/rar
+- url: http://127.0.0.1:8099/?s=workspace-rar-light#/files
   output: docs/screenshots/workspace-rar-light.png
   width: 1280
   height: 900
@@ -567,11 +615,15 @@
       localStorage.setItem('theme-preference', 'light');
       window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: 'light' }));
       await new Promise(r => setTimeout(r, 400));
+      // The Convert panel's tool comes from its Convert-to list now, not the URL.
+      const pick = document.querySelector('select[aria-label="Convert to"]');
+      if (pick) { pick.value = 'rar_extract'; pick.dispatchEvent(new Event('change', { bubbles: true })); }
+      await new Promise(r => setTimeout(r, 300));
       const vol = [...document.querySelectorAll('button.item')].find(b => b.textContent.trim() === 'Usenet');
       if (vol) vol.click();
       await new Promise(r => setTimeout(r, 500));
     })()
-- url: http://127.0.0.1:8099/?s=workspace-rar-dark#/workspace/rar
+- url: http://127.0.0.1:8099/?s=workspace-rar-dark#/files
   output: docs/screenshots/workspace-rar-dark.png
   width: 1280
   height: 900
@@ -581,19 +633,24 @@
       localStorage.setItem('theme-preference', 'dark');
       window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: 'dark' }));
       await new Promise(r => setTimeout(r, 400));
+      // The Convert panel's tool comes from its Convert-to list now, not the URL.
+      const pick = document.querySelector('select[aria-label="Convert to"]');
+      if (pick) { pick.value = 'rar_extract'; pick.dispatchEvent(new Event('change', { bubbles: true })); }
+      await new Promise(r => setTimeout(r, 300));
       const vol = [...document.querySelectorAll('button.item')].find(b => b.textContent.trim() === 'Usenet');
       if (vol) vol.click();
       await new Promise(r => setTimeout(r, 500));
     })()
 
+# === PR 4: Activity ===
 # --- Dashboard ------------------------------------------------------------
-- url: http://127.0.0.1:8099/?s=dashboard-light#/dashboard
+- url: http://127.0.0.1:8099/?s=dashboard-light#/activity
   output: docs/screenshots/dashboard-light.png
   width: 1280
   height: 900
   wait: 1800
   javascript: *js_theme_light
-- url: http://127.0.0.1:8099/?s=dashboard-dark#/dashboard
+- url: http://127.0.0.1:8099/?s=dashboard-dark#/activity
   output: docs/screenshots/dashboard-dark.png
   width: 1280
   height: 900
@@ -603,24 +660,25 @@
 # --- Ledger ---------------------------------------------------------------
 # The fixture environment converts nothing, so this captures the empty Ledger
 # with its search box, filters and Export CSV button, like the dashboard shots.
-- url: http://127.0.0.1:8099/?s=ledger-light#/ledger
+- url: http://127.0.0.1:8099/?s=ledger-light#/activity/history
   output: docs/screenshots/ledger-light.png
   width: 1280
   height: 900
   wait: 1800
   javascript: *js_theme_light
-- url: http://127.0.0.1:8099/?s=ledger-dark#/ledger
+- url: http://127.0.0.1:8099/?s=ledger-dark#/activity/history
   output: docs/screenshots/ledger-dark.png
   width: 1280
   height: 900
   wait: 1800
   javascript: *js_theme_dark
 
+# === PR 2: Files ===
 # --- Patch dialog (#428) ----------------------------------------------------
 # Handheld ROM workspace, "ROM Library" volume, roms/gba: opens the row actions
 # of tiny-golf.zip (bits-ui opens its menu on pointerdown) and picks Patch…,
 # which only opens the dialog. Nothing is patched.
-- url: http://127.0.0.1:8099/?s=patch-light#/workspace/romz
+- url: http://127.0.0.1:8099/?s=patch-light#/files
   output: docs/screenshots/patch-light.png
   width: 1280
   height: 900
@@ -646,7 +704,7 @@
       [...document.querySelectorAll('.row-actions-item')].find(i => i.textContent.includes('Patch'))?.click();
       await sleep(700);
     })()
-- url: http://127.0.0.1:8099/?s=patch-dark#/workspace/romz
+- url: http://127.0.0.1:8099/?s=patch-dark#/files
   output: docs/screenshots/patch-dark.png
   width: 1280
   height: 900
@@ -673,17 +731,18 @@
       await sleep(700);
     })()
 
+# === PR 3: Libraries ===
 # --- RomM library ---------------------------------------------------------
 # The screenshot environment has no RomM instance configured, so these capture
 # the first-run state. That is deliberate: the setup form is what a new user
 # actually meets, and the Settings tab is where the integration is configured.
-- url: http://127.0.0.1:8099/?s=romm-light#/romm
+- url: http://127.0.0.1:8099/?s=romm-light#/libraries/romm
   output: docs/screenshots/romm-light.png
   width: 1280
   height: 900
   wait: 1800
   javascript: *js_theme_light
-- url: http://127.0.0.1:8099/?s=romm-dark#/romm
+- url: http://127.0.0.1:8099/?s=romm-dark#/libraries/romm
   output: docs/screenshots/romm-dark.png
   width: 1280
   height: 900
@@ -694,7 +753,7 @@
 # opens on Settings by itself, so the base shot above already captures that
 # surface and a second one would be identical. Clicked after the theme flip, so
 # the JS is inline rather than using the shared anchors.
-- url: http://127.0.0.1:8099/?s=romm-automation-light#/romm
+- url: http://127.0.0.1:8099/?s=romm-automation-light#/libraries/romm
   output: docs/screenshots/romm-automation-light.png
   width: 1280
   height: 900
@@ -712,7 +771,7 @@
       tab.click();
       await new Promise(r => setTimeout(r, 600));
     })()
-- url: http://127.0.0.1:8099/?s=romm-automation-dark#/romm
+- url: http://127.0.0.1:8099/?s=romm-automation-dark#/libraries/romm
   output: docs/screenshots/romm-automation-dark.png
   width: 1280
   height: 900
@@ -737,7 +796,7 @@
 # wrapped, the view is re-entered so it loads through the wrapper, and the rest
 # (defaults, options) still comes from the real backend. The theme is read from
 # the `?s=` suffix so both shots share one script. Tall, so the open Rule fits.
-- url: http://127.0.0.1:8099/?s=romm-rule-editor-light#/romm
+- url: http://127.0.0.1:8099/?s=romm-rule-editor-light#/libraries/romm
   output: docs/screenshots/romm-rule-editor-light.png
   width: 1280
   height: 1700
@@ -785,7 +844,7 @@
       await new Promise(r => setTimeout(r, 400));
       if (!document.querySelector('.notice')) throw new Error('check-level notice not shown');
     })()
-- url: http://127.0.0.1:8099/?s=romm-rule-editor-dark#/romm
+- url: http://127.0.0.1:8099/?s=romm-rule-editor-dark#/libraries/romm
   output: docs/screenshots/romm-rule-editor-dark.png
   width: 1280
   height: 1700
@@ -800,7 +859,7 @@
 # different format from RomM's (open, so the two targets show side by side),
 # PlayStation's Rule agrees with RomM, and Game Boy Advance is a Platform RomM
 # cannot convert. The theme comes from the `?s=` suffix; the tab from it too.
-- url: http://127.0.0.1:8099/?s=romm-converter-light#/romm
+- url: http://127.0.0.1:8099/?s=romm-converter-light#/libraries/romm
   output: docs/screenshots/romm-converter-light.png
   width: 1280
   height: 1100
@@ -866,19 +925,19 @@
         throw new Error('converter banner not shown');
       }
     })()
-- url: http://127.0.0.1:8099/?s=romm-converter-dark#/romm
+- url: http://127.0.0.1:8099/?s=romm-converter-dark#/libraries/romm
   output: docs/screenshots/romm-converter-dark.png
   width: 1280
   height: 1100
   wait: 1800
   javascript: *js_romm_converter
-- url: http://127.0.0.1:8099/?s=romm-converter-rules-light#/romm
+- url: http://127.0.0.1:8099/?s=romm-converter-rules-light#/libraries/romm
   output: docs/screenshots/romm-converter-rules-light.png
   width: 1280
   height: 1300
   wait: 1800
   javascript: *js_romm_converter
-- url: http://127.0.0.1:8099/?s=romm-converter-rules-dark#/romm
+- url: http://127.0.0.1:8099/?s=romm-converter-rules-dark#/libraries/romm
   output: docs/screenshots/romm-converter-rules-dark.png
   width: 1280
   height: 1300
@@ -893,7 +952,7 @@
 # Hasheous ids onto converted ROMs. RomM's answers are canned in the page, as
 # in the shots above; the listing follows the `unidentified` query. The theme
 # comes from the `?s=` suffix and the surface from it too.
-- url: http://127.0.0.1:8099/?s=romm-unidentified-light#/romm
+- url: http://127.0.0.1:8099/?s=romm-unidentified-light#/libraries/romm
   output: docs/screenshots/romm-unidentified-light.png
   width: 1280
   height: 900
@@ -974,19 +1033,19 @@
       await new Promise(r => setTimeout(r, 800));
       if (!document.querySelector('.app-name')) throw new Error('Recognized name not shown');
     })()
-- url: http://127.0.0.1:8099/?s=romm-unidentified-dark#/romm
+- url: http://127.0.0.1:8099/?s=romm-unidentified-dark#/libraries/romm
   output: docs/screenshots/romm-unidentified-dark.png
   width: 1280
   height: 900
   wait: 1800
   javascript: *js_romm_unidentified
-- url: http://127.0.0.1:8099/?s=romm-hasheous-ids-light#/romm
+- url: http://127.0.0.1:8099/?s=romm-hasheous-ids-light#/libraries/romm
   output: docs/screenshots/romm-hasheous-ids-light.png
   width: 1280
   height: 900
   wait: 1800
   javascript: *js_romm_unidentified
-- url: http://127.0.0.1:8099/?s=romm-hasheous-ids-dark#/romm
+- url: http://127.0.0.1:8099/?s=romm-hasheous-ids-dark#/libraries/romm
   output: docs/screenshots/romm-hasheous-ids-dark.png
   width: 1280
   height: 900
@@ -997,7 +1056,7 @@
 # The fixture's "ROM Library/roms" folder is registered as a Library through the
 # API (a 409 on the second shot means it already is), given a PS2 Rule, and
 # opened at #/rules/<library id>. The PS2 row is expanded so the editor shows.
-- url: http://127.0.0.1:8099/?s=rules-folder-light#/workspace/chdman
+- url: http://127.0.0.1:8099/?s=rules-folder-light#/files
   output: docs/screenshots/rules-folder-light.png
   width: 1280
   height: 900
@@ -1033,7 +1092,7 @@
       row.click();
       await new Promise(r => setTimeout(r, 500));
     })()
-- url: http://127.0.0.1:8099/?s=rules-folder-dark#/workspace/chdman
+- url: http://127.0.0.1:8099/?s=rules-folder-dark#/files
   output: docs/screenshots/rules-folder-dark.png
   width: 1280
   height: 900
@@ -1045,7 +1104,7 @@
 # Rule (no target format: a nightly budget, a window and weekdays), and the row
 # expanded so both forms show. Tall, so the check Rule below the conversion
 # Rule fits.
-- url: http://127.0.0.1:8099/?s=rule-editor-check-light#/workspace/chdman
+- url: http://127.0.0.1:8099/?s=rule-editor-check-light#/files
   output: docs/screenshots/rule-editor-check-light.png
   width: 1280
   height: 2000
@@ -1088,7 +1147,7 @@
         .find(s => s.textContent.includes('GB a night'));
       if (!budget) throw new Error('check-Rule form not shown');
     })()
-- url: http://127.0.0.1:8099/?s=rule-editor-check-dark#/workspace/chdman
+- url: http://127.0.0.1:8099/?s=rule-editor-check-dark#/files
   output: docs/screenshots/rule-editor-check-dark.png
   width: 1280
   height: 2000
@@ -1101,7 +1160,7 @@
 # through the API, and the Rules view opened on it: the switch shows ticked
 # with its close-ES-DE-first note. After every other shot of the Rules view,
 # so they keep showing the switch off, as a new Library has it.
-- url: http://127.0.0.1:8099/?s=rules-es-frontend-light#/workspace/chdman
+- url: http://127.0.0.1:8099/?s=rules-es-frontend-light#/files
   output: docs/screenshots/rules-es-frontend-light.png
   width: 1280
   height: 700
@@ -1136,7 +1195,7 @@
       section.scrollIntoView({ block: 'center' });
       await new Promise(r => setTimeout(r, 300));
     })()
-- url: http://127.0.0.1:8099/?s=rules-es-frontend-dark#/workspace/chdman
+- url: http://127.0.0.1:8099/?s=rules-es-frontend-dark#/files
   output: docs/screenshots/rules-es-frontend-dark.png
   width: 1280
   height: 700
@@ -1147,7 +1206,7 @@
 # The same Library, switch on, with an ES-DE gamelists folder typed into the
 # field beside it (not saved: the fixture has no ES-DE folder), so the field,
 # its Save button and its hint show.
-- url: http://127.0.0.1:8099/?s=rules-esde-gamelists-light#/workspace/chdman
+- url: http://127.0.0.1:8099/?s=rules-esde-gamelists-light#/files
   output: docs/screenshots/rules-esde-gamelists-light.png
   width: 1280
   height: 760
@@ -1184,7 +1243,7 @@
       field.closest('.master.frontend').scrollIntoView({ block: 'center' });
       await new Promise(r => setTimeout(r, 300));
     })()
-- url: http://127.0.0.1:8099/?s=rules-esde-gamelists-dark#/workspace/chdman
+- url: http://127.0.0.1:8099/?s=rules-esde-gamelists-dark#/files
   output: docs/screenshots/rules-esde-gamelists-dark.png
   width: 1280
   height: 760
@@ -1195,7 +1254,7 @@
 # The same Library, its layout set to ES-DE style (the default, set again so
 # the shot doesn't depend on an earlier one), with the panel listing where new
 # Images of each detected Platform would land scrolled into view.
-- url: http://127.0.0.1:8099/?s=rules-folder-layout-light#/workspace/chdman
+- url: http://127.0.0.1:8099/?s=rules-folder-layout-light#/files
   output: docs/screenshots/rules-folder-layout-light.png
   width: 1280
   height: 760
@@ -1230,7 +1289,7 @@
       panel.scrollIntoView({ block: 'center' });
       await new Promise(r => setTimeout(r, 300));
     })()
-- url: http://127.0.0.1:8099/?s=rules-folder-layout-dark#/workspace/chdman
+- url: http://127.0.0.1:8099/?s=rules-folder-layout-dark#/files
   output: docs/screenshots/rules-folder-layout-dark.png
   width: 1280
   height: 760
@@ -1241,7 +1300,7 @@
 # The same Library, with the fixture's "ROM Library/downloads" folder saved as
 # its Inbox (a 409 on the second shot means it already is), and the Inboxes
 # panel scrolled into view: the folder, its settle time and its status.
-- url: http://127.0.0.1:8099/?s=rules-inboxes-light#/workspace/chdman
+- url: http://127.0.0.1:8099/?s=rules-inboxes-light#/files
   output: docs/screenshots/rules-inboxes-light.png
   width: 1280
   height: 760
@@ -1296,18 +1355,19 @@
       panel.scrollIntoView({ block: 'center' });
       await new Promise(r => setTimeout(r, 300));
     })()
-- url: http://127.0.0.1:8099/?s=rules-inboxes-dark#/workspace/chdman
+- url: http://127.0.0.1:8099/?s=rules-inboxes-dark#/files
   output: docs/screenshots/rules-inboxes-dark.png
   width: 1280
   height: 760
   wait: 1800
   javascript: *js_rules_inboxes
 
+# === PR 4: Activity ===
 # --- Findings view (#304) -------------------------------------------------
 # The fixture's "ROM Library/roms" folder is registered as a Library (a 409
 # means it already is) and walked through Check now's endpoint, which records
 # a Platform conflict (a GameCube disc under ps2) and an Unsorted Image.
-- url: http://127.0.0.1:8099/?s=findings-light#/workspace/chdman
+- url: http://127.0.0.1:8099/?s=findings-light#/files
   output: docs/screenshots/findings-light.png
   width: 1280
   height: 900
@@ -1332,7 +1392,7 @@
         throw new Error('no Findings listed');
       }
     })()
-- url: http://127.0.0.1:8099/?s=findings-dark#/workspace/chdman
+- url: http://127.0.0.1:8099/?s=findings-dark#/files
   output: docs/screenshots/findings-dark.png
   width: 1280
   height: 900
@@ -1347,7 +1407,7 @@
 # as they are, and Run now checks both through romz's own Verify. The first
 # pair of shots is the Findings view with the damaged one's Not Intact row; the
 # second is the Check job in the Jobs panel's Completed tab.
-- url: http://127.0.0.1:8099/?s=findings-not-intact-light#/workspace/chdman
+- url: http://127.0.0.1:8099/?s=findings-not-intact-light#/files
   output: docs/screenshots/findings-not-intact-light.png
   width: 1280
   height: 900
@@ -1395,13 +1455,13 @@
         throw new Error('Not Intact row not shown');
       }
     })()
-- url: http://127.0.0.1:8099/?s=findings-not-intact-dark#/workspace/chdman
+- url: http://127.0.0.1:8099/?s=findings-not-intact-dark#/files
   output: docs/screenshots/findings-not-intact-dark.png
   width: 1280
   height: 900
   wait: 1800
   javascript: *js_findings_not_intact
-- url: http://127.0.0.1:8099/?s=jobs-check-light#/workspace/chdman
+- url: http://127.0.0.1:8099/?s=jobs-check-light#/activity/running
   output: docs/screenshots/jobs-check-light.png
   width: 1280
   height: 900
@@ -1445,7 +1505,7 @@
       if (!row) throw new Error('Check job not shown');
       row.scrollIntoView({ block: 'center' });
     })()
-- url: http://127.0.0.1:8099/?s=jobs-check-dark#/workspace/chdman
+- url: http://127.0.0.1:8099/?s=jobs-check-dark#/activity/running
   output: docs/screenshots/jobs-check-dark.png
   width: 1280
   height: 900
@@ -1458,7 +1518,7 @@
 # zero-filled placeholder, so a find-duplicates run of the folder Library (a 409
 # means it is already registered) groups them as one disc; the GBA archives have
 # no content key and show as not checked.
-- url: http://127.0.0.1:8099/?s=findings-duplicates-light#/workspace/chdman
+- url: http://127.0.0.1:8099/?s=findings-duplicates-light#/files
   output: docs/screenshots/findings-duplicates-light.png
   width: 1280
   height: 900
@@ -1498,7 +1558,7 @@
       if (!row) throw new Error('Duplicate row not shown');
       row.scrollIntoView({ block: 'center' });
     })()
-- url: http://127.0.0.1:8099/?s=findings-duplicates-dark#/workspace/chdman
+- url: http://127.0.0.1:8099/?s=findings-duplicates-dark#/files
   output: docs/screenshots/findings-duplicates-dark.png
   width: 1280
   height: 900
@@ -1509,7 +1569,7 @@
 # The same group, its "Delete others..." dialog open on the suggested keeper:
 # the confirmation list the backend planned. Nothing is confirmed, so nothing
 # is deleted and later shots see the fixture as it was.
-- url: http://127.0.0.1:8099/?s=findings-duplicate-delete-light#/workspace/chdman
+- url: http://127.0.0.1:8099/?s=findings-duplicate-delete-light#/files
   output: docs/screenshots/findings-duplicate-delete-light.png
   width: 1280
   height: 900
@@ -1551,21 +1611,22 @@
       await new Promise(r => setTimeout(r, 1200));
       if (!document.querySelector('[role="dialog"]')) throw new Error('delete dialog not open');
     })()
-- url: http://127.0.0.1:8099/?s=findings-duplicate-delete-dark#/workspace/chdman
+- url: http://127.0.0.1:8099/?s=findings-duplicate-delete-dark#/files
   output: docs/screenshots/findings-duplicate-delete-dark.png
   width: 1280
   height: 900
   wait: 1800
   javascript: *js_findings_duplicate_delete
 
+# === PR 5: Settings ===
 # --- DAT Library ----------------------------------------------------------
-- url: http://127.0.0.1:8099/?s=dat-light#/dat
+- url: http://127.0.0.1:8099/?s=dat-light#/settings/identification
   output: docs/screenshots/dat-light.png
   width: 1280
   height: 900
   wait: 1800
   javascript: *js_theme_light
-- url: http://127.0.0.1:8099/?s=dat-dark#/dat
+- url: http://127.0.0.1:8099/?s=dat-dark#/settings/identification
   output: docs/screenshots/dat-dark.png
   width: 1280
   height: 900
@@ -1577,7 +1638,7 @@
 # hashes, one per family) are imported first; skipped when already there, so
 # the dark shot reuses the light shot's. Shows the family badges, the move
 # up/down controls and the default-order hint.
-- url: http://127.0.0.1:8099/?s=dat-ranking-light#/dat
+- url: http://127.0.0.1:8099/?s=dat-ranking-light#/settings/identification
   output: docs/screenshots/dat-ranking-light.png
   width: 1280
   height: 900
@@ -1611,7 +1672,7 @@
       panel.scrollIntoView({ block: 'start' });
       await new Promise(r => setTimeout(r, 300));
     })('light')
-- url: http://127.0.0.1:8099/?s=dat-ranking-dark#/dat
+- url: http://127.0.0.1:8099/?s=dat-ranking-dark#/settings/identification
   output: docs/screenshots/dat-ranking-dark.png
   width: 1280
   height: 900
@@ -1644,6 +1705,7 @@
   wait: 1800
   javascript: *js_theme_dark
 
+# === PR 1: Help ===
 # --- Help -----------------------------------------------------------------
 - url: http://127.0.0.1:8099/?s=help-light#/help
   output: docs/screenshots/help-light.png
@@ -1658,8 +1720,9 @@
   wait: 1800
   javascript: *js_theme_dark
 
+# === PR 2: Files ===
 # --- Responsive layouts (workspace at desktop / tablet / mobile widths) ----
-- url: http://127.0.0.1:8099/?s=docs-desktop-view#/workspace/chdman
+- url: http://127.0.0.1:8099/?s=docs-desktop-view#/files
   output: docs/screenshots/docs-desktop-view.png
   width: 1280
   height: 900
@@ -1670,31 +1733,32 @@
 # set because this band had no coverage when its layout regressed (the
 # convert panel collapsed into the 220px rail column, unseen by the 1280px
 # and 768px shots).
-- url: http://127.0.0.1:8099/?s=docs-laptop-view#/workspace/chdman
+- url: http://127.0.0.1:8099/?s=docs-laptop-view#/files
   output: docs/screenshots/docs-laptop-view.png
   width: 1100
   height: 900
   wait: 1800
   javascript: *js_theme_light
-- url: http://127.0.0.1:8099/?s=docs-tablet-view#/workspace/chdman
+- url: http://127.0.0.1:8099/?s=docs-tablet-view#/files
   output: docs/screenshots/docs-tablet-view.png
   width: 768
   height: 1024
   wait: 1800
   javascript: *js_theme_light
-- url: http://127.0.0.1:8099/?s=docs-mobile-view#/workspace/chdman
+- url: http://127.0.0.1:8099/?s=docs-mobile-view#/files
   output: docs/screenshots/docs-mobile-view.png
   width: 375
   height: 812
   wait: 1800
   javascript: *js_theme_light
 
+# === PR 3: Libraries ===
 # --- Keep the ROM id when converting (#390) --------------------------------
 # The Settings tab's switch card with the switch on and RomM saying the token
 # lacks tasks.run, so the permission problem and the admin-token hint show. The
 # status and settings are canned in the page, as in the shots above. Tall, so
 # the card at the foot of the Settings tab fits. The theme comes from `?s=`.
-- url: http://127.0.0.1:8099/?s=romm-swap-light#/romm
+- url: http://127.0.0.1:8099/?s=romm-swap-light#/libraries/romm
   output: docs/screenshots/romm-swap-light.png
   width: 1280
   height: 1900
@@ -1737,13 +1801,14 @@
         throw new Error('swap card not shown');
       }
     })()
-- url: http://127.0.0.1:8099/?s=romm-swap-dark#/romm
+- url: http://127.0.0.1:8099/?s=romm-swap-dark#/libraries/romm
   output: docs/screenshots/romm-swap-dark.png
   width: 1280
   height: 1900
   wait: 1800
   javascript: *js_romm_swap
 
+# === PR 2: Files ===
 # --- Rename to DAT name (#425) ----------------------------------------------
 # The fixture's "ROM Library/roms/snes/castle-quest.sfc" holds a known line of
 # text; a small synthetic DAT (made-up name, that line's SHA1) is imported and
@@ -1753,7 +1818,7 @@
 # first puts the fixture's name back (through the single-file rename) when an
 # earlier one renamed it, so each starts from the fixture as it was. Last in
 # the file, so no earlier shot sees the sample DAT.
-- url: http://127.0.0.1:8099/?s=dat-rename-preview-light#/workspace/chdman
+- url: http://127.0.0.1:8099/?s=dat-rename-preview-light#/files
   output: docs/screenshots/dat-rename-preview-light.png
   width: 1280
   height: 900
@@ -1820,19 +1885,19 @@
       if (!dialog.textContent.includes('Renamed 1')) throw new Error('rename job did not finish');
       await sleep(400);
     })()
-- url: http://127.0.0.1:8099/?s=dat-rename-preview-dark#/workspace/chdman
+- url: http://127.0.0.1:8099/?s=dat-rename-preview-dark#/files
   output: docs/screenshots/dat-rename-preview-dark.png
   width: 1280
   height: 900
   wait: 1800
   javascript: *js_dat_rename
-- url: http://127.0.0.1:8099/?s=dat-rename-done-light#/workspace/chdman
+- url: http://127.0.0.1:8099/?s=dat-rename-done-light#/files
   output: docs/screenshots/dat-rename-done-light.png
   width: 1280
   height: 900
   wait: 1800
   javascript: *js_dat_rename
-- url: http://127.0.0.1:8099/?s=dat-rename-done-dark#/workspace/chdman
+- url: http://127.0.0.1:8099/?s=dat-rename-done-dark#/files
   output: docs/screenshots/dat-rename-done-dark.png
   width: 1280
   height: 900
@@ -1844,7 +1909,7 @@
 # SHA1 and lists both tracks by size. The sheet is ticked and the preview
 # shows every file, the folder and the two sheet references that change.
 # Preview only, so nothing on disk changes. Last in the file.
-- url: http://127.0.0.1:8099/?s=dat-rename-cue-light#/workspace/chdman
+- url: http://127.0.0.1:8099/?s=dat-rename-cue-light#/files
   output: docs/screenshots/dat-rename-cue-light.png
   width: 1280
   height: 900
@@ -1901,7 +1966,7 @@
         throw new Error('cue rename preview not shown');
       }
     })()
-- url: http://127.0.0.1:8099/?s=dat-rename-cue-dark#/workspace/chdman
+- url: http://127.0.0.1:8099/?s=dat-rename-cue-dark#/files
   output: docs/screenshots/dat-rename-cue-dark.png
   width: 1280
   height: 900
