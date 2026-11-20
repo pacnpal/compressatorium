@@ -429,21 +429,6 @@ def build_delete_plan(
     }
 
 
-def collect_delete_paths(source_path: str) -> List[str]:
-    plan = build_delete_plan(source_path)
-    errors = list(plan.get("errors", []))
-    unsafe = list(plan.get("unsafe_paths", []))
-    missing = list(plan.get("missing_paths", []))
-
-    if errors or unsafe:
-        details = "; ".join(errors + unsafe)
-        raise ValueError(details or "Unsafe delete plan")
-    if missing:
-        raise ValueError("Missing companion files; refusing to delete")
-
-    return list(plan.get("delete_paths", []))
-
-
 def build_delete_snapshot(source_path: str) -> Dict[str, object]:
     plan = build_delete_plan(source_path)
     errors = list(plan.get("errors", []))

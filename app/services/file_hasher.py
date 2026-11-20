@@ -59,22 +59,3 @@ def _update_from_file(h, file_path: str, progress=None) -> None:
             h.update(chunk)
             if progress is not None:
                 progress(file_path)
-
-
-async def compute_file_sha1_with_size(file_path: str) -> tuple[str, int]:
-    """Compute SHA1 and return file size."""
-    return await run_in_threadpool(_sha1_with_size_sync, file_path)
-
-
-def _sha1_with_size_sync(file_path: str) -> tuple[str, int]:
-    """Synchronous SHA1 + size computation."""
-    h = hashlib.sha1(usedforsecurity=False)  # nosec # nosemgrep: insecure-hash-algorithm-sha1  # pylint: disable=unexpected-keyword-arg
-    size = 0
-    with open(file_path, "rb") as f:
-        while True:
-            chunk = f.read(_CHUNK_SIZE)
-            if not chunk:
-                break
-            h.update(chunk)
-            size += len(chunk)
-    return h.hexdigest(), size

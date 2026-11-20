@@ -104,10 +104,6 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def running_job(library_id: str) -> str | None:
-    return _running.get(library_id)
-
-
 def start(library: Library) -> Any:
     """Start *library*'s find-duplicates run as an external job. Returns the job.
 

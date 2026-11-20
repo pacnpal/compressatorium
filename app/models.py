@@ -429,15 +429,6 @@ class DuplicateInfo(BaseModel):
     exists: bool
 
 
-class ArchiveEntry(BaseModel):
-    archive_path: str
-    internal_path: str
-    name: str
-    size: int
-    extension: str
-    convertible: bool = False
-
-
 class CHDInfo(BaseModel):
     file: str
     input_file: str | None = None

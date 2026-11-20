@@ -547,9 +547,6 @@ class DATStore:
     def lookup_sha1(self, sha1: str) -> dict | None:
         return self._lookup_hash(sha1, "sha1")
 
-    def lookup_md5(self, md5: str) -> dict | None:
-        return self._lookup_hash(md5, "md5")
-
     # ------------------------------------------------------------------
     # Ranking (#424)
     # ------------------------------------------------------------------

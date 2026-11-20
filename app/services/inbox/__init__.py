@@ -83,10 +83,6 @@ class Inbox:
     settle_seconds: int = DEFAULT_SETTLE_SECONDS
     processed_count: int = 0
 
-    @property
-    def processed_folder(self) -> str:
-        return os.path.join(self.folder, PROCESSED)
-
     def image_key(self, path: str) -> str:
         """The Findings key of the file at *path* in this Inbox."""
         rel = os.path.relpath(path, self.folder).replace(os.sep, "/")

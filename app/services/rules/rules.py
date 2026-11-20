@@ -472,11 +472,6 @@ def is_check_rule(rule: Mapping[str, Any]) -> bool:
     return not rule.get("mode")
 
 
-def rule_kind(rule: Mapping[str, Any]) -> str:
-    """``CHECK`` for a check Rule, else ``CONVERT``."""
-    return CHECK if is_check_rule(rule) else CONVERT
-
-
 class UnusableCompression(ValueError):
     """A submitted Rule names a codec (or level) its mode refuses (#474).
 

@@ -5309,19 +5309,6 @@ class JobManager:
             return KEPT_DELETE_UNANSWERED
 
     @staticmethod
-    def _identity_problem(path: str, identity: Tuple[int, int]) -> Optional[str]:
-        """Why *path* is not the file of *identity* (size, mtime) now. Blocking."""
-        try:
-            st = os.stat(path)
-        except FileNotFoundError:
-            return "is gone"
-        except OSError as exc:
-            return f"could not be read ({exc})"
-        if (st.st_size, st.st_mtime_ns) != tuple(identity):
-            return "changed since the Finding was recorded"
-        return None
-
-    @staticmethod
     def _open_keeper(path: str) -> Tuple[int, Tuple[int, int, int, int]]:
         """Open *path* to read, and its ``(device, inode, size, mtime_ns)``
         through that descriptor. Blocking. The caller closes the descriptor."""

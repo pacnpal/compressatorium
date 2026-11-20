@@ -2159,31 +2159,3 @@ def safe_file_name(name: str) -> str | None:
     if not cleaned or len(cleaned.encode("utf-8")) > MAX_NAME_BYTES:
         return None
     return cleaned
-
-
-def safe_join(base_dir: str, *parts: str) -> Path:
-    """Join parts to a base directory while ensuring the result stays inside the base.
-
-    The base goes through the same gate as every request path, so it must be
-    an existing directory inside a Volume.
-    """
-    resolved_base = _confined_real_path(base_dir, strict=True)
-    if resolved_base is None:
-        raise ValueError("Base directory does not exist")
-
-    candidate = resolved_base.joinpath(*parts).resolve(strict=False)
-    try:
-        candidate.relative_to(resolved_base)
-    except ValueError as exc:
-        raise ValueError("Resulting path escapes base directory") from exc
-
-    return candidate
-
-
-def cleanup_orphan_lock(lock_path: str):
-    """Best-effort removal of leftover lock files."""
-    try:
-        if os.path.exists(lock_path):
-            os.remove(lock_path)
-    except OSError:
-        pass
