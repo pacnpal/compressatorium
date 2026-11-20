@@ -213,12 +213,14 @@ Volume behavior:
 | `CHD_SEARCH_AUTO_RETURN_TO_FILE_LIST` | `true` | Legacy alias for `COMPRESSATORIUM_SEARCH_AUTO_RETURN_TO_FILE_LIST` |
 | `CHD_TEMP_DIR` | `/config/temp` | Temporary working directory for archive extraction (auto-created) |
 | `CHD_CONCURRENCY_LOCK_DIR` | `/config/locks` | Directory for job lock files, conversion slots and the Rule scheduler lock, shared by every container that mounts `/config`. Created at start; the process stops with an error if it can't be |
-| `COMPRESSATORIUM_DB_PATH` | `/config/compressatorium.db` | Unified SQLite database (DAT index, DAT-sync state, match cache, CHD metadata, verification state). On first startup, legacy JSON files are auto-migrated to this DB and renamed to `*.migrated.bak` (never deleted). Custom legacy paths set via `CHD_METADATA_STORE` / `CHD_VERIFICATION_STORE` are honored during migration. |
+| `COMPRESSATORIUM_DB_PATH` | `/config/compressatorium.db` | Unified SQLite database (DAT index, DAT-sync state, match cache, CHD metadata, verification state). On first startup, legacy JSON files are auto-migrated to this DB and renamed to `*.migrated.bak` (never deleted). Custom legacy paths set via `CHD_METADATA_STORE`, `CHD_VERIFICATION_STORE`, `CHD_DAT_STORE` or `CHD_DAT_SYNC_STORE` are honored during migration. |
 | `CHD_METADATA_STORE` | *(deprecated)* | Legacy JSON path; auto-migrated to SQLite on first startup (custom path honored if set) |
 | `CHD_VERIFICATION_STORE` | *(deprecated)* | Legacy JSON path; auto-migrated to SQLite on first startup (custom path honored if set) |
 | `CHDMAN_MODE` | `createcd` | Conversion mode: `createcd` or `createdvd` (CLI mode) |
 | `CHDMAN_PATH` | `/usr/bin/chdman` | Path to chdman binary |
 | `DOLPHIN_TOOL_PATH` | `/usr/local/bin/dolphin-tool` | Path to dolphin-tool binary |
+| `Z3DS_COMPRESSOR_PATH` | `/usr/local/bin/z3ds_compressor` | Path to the z3ds_compressor binary (3DS) |
+| `NSZ_PATH` | `nsz` | Path to the nsz binary (Switch); resolved on PATH by default |
 | `MAXCSO_PATH` | `/usr/local/bin/maxcso` | Path to maxcso binary (PSP/PS2 CSO/CSO v2/ZSO/DAX) |
 | `SEVENZIP_PATH` | `7z` | Path to the 7z binary (handheld ROM `.gb`/`.gbc`/`.gba`/`.nds` ↔ `.7z`/`.zip`). Ships via `p7zip-full`; set to `7zz` on distros that provide the newer `7zip` package |
 | `UNAR_PATH` | `unar` | Path to the unar binary (a multi-part RAR4/RAR5 set → the one file inside it, `rar_extract`). Ships via the Debian `unar` package |
@@ -228,21 +230,24 @@ Volume behavior:
 | `EXTRACT_XISO_PATH` | `/usr/local/bin/extract-xiso` | Path to the extract-xiso binary (Xbox / Xbox 360 disc image → trimmed XISO) |
 | `ROM_CONVERTO_PATH` | `/usr/local/bin/rom-converto` | Path to the rom-converto binary (Xbox 360 disc image → ZAR; the image ships v0.24.0) |
 | `NKIT2ISO_RECOVERY` | `none` | What nkit2iso does with a Wii image whose update partition was removed: `none` zero-fills it (fully offline; playable but not redump-verifiable), `download` fetches the publicly archived recovery partition for a bit-exact restore. `download` is the only path on which the tool uses the network. |
-| `SWITCH_KEYS` | *(unset)* | Directory holding your own Switch `prod.keys`. Source of truth for Switch (nsz); mount it read-only. When unset, the app best-effort checks `~/.switch` and your mounted volumes. No keys ship with the image. |
+| `SWITCH_KEYS` | *(unset)* | Directory holding your own Switch `prod.keys`. Source of truth for Switch (nsz); mount it read-only. When unset, the app best-effort checks `~/.switch`, the nsz config dirs, your mounted volumes and the data dir. No keys ship with the image. |
 | `NSZ_COMPRESSION_LEVEL` | `18` | zstandard level for Switch compression (1-22) |
 | `EXODOS_DOS_DIR` | *(unset)* | Your eXoDOS `!dos` folder (holding `<Game>/dosbox.conf`) for the eXoDOS repack. Must be inside a mounted volume; unset hides the tool. Nothing from eXoDOS ships with the image. |
 | `MAX_CONCURRENT_JOBS` | `1` | Parallel conversion jobs |
+| `MAMEREDUMP_REPO` | `MetalSlug/MAMERedump` | GitHub repo the DAT sync pulls from |
+| `MAMEREDUMP_AUTO_SYNC` | `false` | Sync DATs on startup when none are loaded |
+| `MAMEREDUMP_GITHUB_TOKEN` | *(unset)* | Optional GitHub token for the DAT sync's API calls |
 | `MAX_JOB_HISTORY` | `500` | Finished jobs to retain in history (the counts stay true past the cap; only the listed rows are trimmed) |
 | `COMPRESSATORIUM_TOOL_NICE` | `10` | Nice level for all tools (0-19). Legacy alias: `CHD_CHDMAN_NICE`. |
 | `COMPRESSATORIUM_TOOL_IOPRIO_CLASS` | `2` | I/O priority class for all tools (`1` realtime, `2` best-effort, `3` idle). Legacy alias: `CHD_CHDMAN_IOPRIO_CLASS`. |
 | `COMPRESSATORIUM_TOOL_IOPRIO_LEVEL` | `6` | I/O priority level for all tools (`0` highest, `7` lowest). Legacy alias: `CHD_CHDMAN_IOPRIO_LEVEL`. |
-| `COMPRESSATORIUM_TOOL_INFO_TIMEOUT` | `60` | Timeout in seconds for `info`/`header` subprocesses (chdman and Dolphin; nsz/3DS read info from the filesystem). 0 disables. Legacy alias: `CHD_INFO_TIMEOUT`. |
+| `COMPRESSATORIUM_TOOL_INFO_TIMEOUT` | `60` | Timeout in seconds for `info`/`header` subprocesses (chdman, Dolphin and rom-converto; nsz/3DS read info from the filesystem). 0 disables. Legacy alias: `CHD_INFO_TIMEOUT`. |
 | `COMPRESSATORIUM_TOOL_VERIFY_TIMEOUT` | `1800` | Baseline timeout in seconds for verify runs across all tools. The effective bound is this plus `COMPRESSATORIUM_TOOL_VERIFY_TIMEOUT_PER_GIB` per GiB of the file being verified, capped by `COMPRESSATORIUM_TOOL_VERIFY_TIMEOUT_CAP` — verify reads the whole file, so its runtime scales with size. Set to `0` to disable this bound (the no-output stall bound below is a separate knob and stays on; zero both for no bound at all). Legacy alias: `CHD_VERIFY_TIMEOUT`. |
 | `COMPRESSATORIUM_TOOL_VERIFY_TIMEOUT_PER_GIB` | `600` | Extra verify allowance in seconds per GiB of the verified file (0 makes the bound flat). |
 | `COMPRESSATORIUM_TOOL_VERIFY_TIMEOUT_CAP` | `86400` | Upper bound in seconds on the size-scaled verify timeout (0 uncapped). |
 | `COMPRESSATORIUM_TOOL_VERIFY_PROGRESS_TIMEOUT` | `600` | Timeout in seconds without any verify output, for the verifiers that stream progress (chdman, dolphin-tool); catches a wedged verify long before the overall bound. Independent of `COMPRESSATORIUM_TOOL_VERIFY_TIMEOUT` — it still applies when that is `0`. 0 disables. Legacy alias: `CHD_VERIFY_PROGRESS_TIMEOUT`. |
 | `COMPRESSATORIUM_<TOOL>_NICE` / `_IOPRIO_CLASS` / `_IOPRIO_LEVEL` / `_VERIFY_TIMEOUT` | *(shared default)* | Optional per-tool overrides (`<TOOL>` = `CHDMAN`, `DOLPHIN_TOOL`, `NSZ`, `Z3DS`, `MAXCSO`, `ROMZ`, `MAKEPS3ISO`, `NKIT2ISO`, `JWUD`, `XISO`, `ROM_CONVERTO`) that fall back to the shared `COMPRESSATORIUM_TOOL_*` values. `NKIT2ISO` and `MAKEPS3ISO` have no `_VERIFY_TIMEOUT` (no verify step, and no reachable verify entry point, respectively); `JWUD` verifies without a subprocess, so its bound applies to the verify call itself. |
-| `COMPRESSATORIUM_<TOOL>_INFO_TIMEOUT` | *(shared default)* | Optional per-tool info-timeout override, only for `<TOOL>` = `CHDMAN` or `DOLPHIN_TOOL` (the only tools whose `info` runs a subprocess). |
+| `COMPRESSATORIUM_<TOOL>_INFO_TIMEOUT` | *(shared default)* | Optional per-tool info-timeout override, only for `<TOOL>` = `CHDMAN`, `DOLPHIN_TOOL` or `ROM_CONVERTO` (the only tools whose `info` runs a subprocess). |
 | `CHD_ARCHIVE_MAX_ENTRIES` | `5000` | Max archive members to list (0 disables limit) |
 | `CHD_ARCHIVE_MAX_MEMBER_SIZE` | `0` | Max size in bytes per archive member (0 disables limit) |
 | `CHD_ARCHIVE_MAX_TOTAL_SIZE` | `0` | Max total size in bytes for archive listings/extractions (0 disables) |
@@ -252,7 +257,7 @@ Volume behavior:
 | `CHD_PATCH_MAX_PATCH_SIZE` | `67108864` | Max size in bytes of an IPS or BPS patch, picked or uploaded (0 disables) |
 | `CHD_PATCH_MAX_ROM_SIZE` | `536870912` | Max size in bytes of a ROM to patch, and of the patched ROM (0 disables) |
 | `LOGLEVEL` | `INFO` | Log verbosity level (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`) |
-| `LOG_PATH` | (none) | Path to log file (stdout only if unset) |
+| `LOG_PATH` | (none) | Path to log file (stdout only if unset). Legacy alias: `CHD_DEBUG_LOG_PATH` |
 | `CHD_DEBUG_HEARTBEAT` | `30` | Maintenance loop interval (seconds) |
 | `CHD_DEBUG_PROGRESS_INTERVAL` | `30` | Debug progress log interval |
 | `CHD_DEBUG_PROGRESS_TIMEOUT` | `300` | Debug progress timeout |
@@ -260,6 +265,13 @@ Volume behavior:
 | `CHD_PROGRESS_TIMEOUT_PER_GIB` | `120` | Additional stall-timeout seconds per GiB of input size |
 | `CHD_PROGRESS_TIMEOUT_CAP` | `7200` | Upper bound for adaptive conversion stall timeout (0 disables cap) |
 | `STATIC_DIR` | `/static` | Path to static web assets |
+
+This table leaves out the queue, verify, metadata-scan and match limits
+(`MAX_QUEUE_DEPTH`, `MAX_VERIFY_CONCURRENCY`, `MAX_METADATA_SCAN_CONCURRENCY`,
+`MAX_MATCH_CONCURRENCY`, `MATCH_MAX_FILE_SIZE`), the Hasheous settings
+(`COMPRESSATORIUM_HASHEOUS_*`), `COMPRESSATORIUM_CHAIN_DISK_MARGIN_MB` and
+`LOG_COLOR`. The README's
+[Environment Variables](../README.md#environment-variables) table has them all.
 
 ### RomM
 
@@ -280,6 +292,10 @@ view entirely.
 | `ROMM_REPIN_ON_LOAD` | `true` | Re-apply saved metadata automatically when the RomM view loads. |
 | `ROMM_REPIN_ABANDON_DAYS` | `7` | Retire a saved re-pin whose output never appeared after this many days. |
 | `ROMM_VERIFY_AFTER_CONVERT` | `false` | Default for new platform rules: verify each converted file, keeping the source. |
+| `ROMM_SWAP_KEEP_ROM_ID` | `false` | Keep RomM's ROM id (and the saves, notes and collections on it) when a conversion replaces a file. Needs a token with `roms.write` and `tasks.run`. |
+| `ROMM_ES_FRONTEND` | `false` | The library is used by an EmulationStation frontend: a conversion rewrites the matching `<path>` in the Platform folder's `gamelist.xml`. |
+| `ROMM_GAMELISTS_FOLDER` | *(unset)* | ES-DE's own gamelists folder for the library. Must be inside a Volume. Unset looks beside the ROMs. |
+| `ROMM_HASHEOUS_WRITE_IDS` | `false` | After a conversion, write the provider ids a Hasheous match found onto the ROM in RomM, only where it has none. Needs re-pinning on. |
 | `ROMM_DELETE_SOURCE_AFTER_VERIFY` | `false` | Default for new platform rules: delete the source once the new output verifies. Destructive, so off by default, and refused for modes whose verify is too weak to justify it. |
 
 ---

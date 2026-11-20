@@ -4,7 +4,8 @@
 #
 # The workflow builds the Svelte frontend, boots the FastAPI backend against a
 # throwaway fixture volume (scripts/make_screenshot_fixture.sh), then runs
-# `shot-scraper multi shots.yml`. Outputs land in docs/screenshots/ and are
+# `python scripts/take_screenshots.py shots.yml`, which takes each shot with
+# `shot-scraper shot`. Outputs land in docs/screenshots/ and are
 # referenced from README.md and docs/.
 #
 # Theme control: the UI stores its light/dark preference in the

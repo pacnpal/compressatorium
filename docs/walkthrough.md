@@ -2,6 +2,11 @@
 
 This writeup covers a round of fixes to blocking I/O and thread safety in the core services.
 
+> **Historical.** This records an early change. The VerificationStore has since
+> moved to the SQLite database, so the `_lock` / `_write_lock` / `_version`
+> / `_persist` design in section 1 is gone. Read
+> `app/services/verification_store.py` for how it works now.
+
 ## Key changes
 
 ### 1. VerificationStore (async and thread-safe)

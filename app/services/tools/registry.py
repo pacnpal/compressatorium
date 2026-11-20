@@ -80,8 +80,8 @@ class ToolRegistry:
 
         The callers are all user-facing and all fan out over the whole
         registry, so the cost is the whole screen: ``GET /api/tools`` (the
-        sidebar's tool list) awaits each tool in turn, and
-        ``GET /api/romm/platforms`` gathers them, so the Library and the
+        sidebar's tool list, through :meth:`ready_tool_ids`) and
+        ``GET /api/romm/platforms`` gather them, so the Library and the
         automation editor never finish loading. Repeat the request and each
         attempt strands another worker.
 
@@ -95,8 +95,9 @@ class ToolRegistry:
         that touches the filesystem must run it through ``run_detached`` rather
         than ``run_in_threadpool``, or every expired probe retires one of the
         shared pool's few workers and repeated probes starve every unrelated
-        offload in the process. nsz and jwud are the two that touch it; the
-        requirement is on ``ToolPlugin.is_ready``.
+        offload in the process. nsz's key search and the shared program probe
+        behind ``required_binaries`` (``services.tools.binaries``, #494) touch
+        it, both detached; the requirement is on ``ToolPlugin.is_ready``.
 
         One seam rather than a bound per call site, so a future caller of
         ``is_ready()`` is covered by using the registry the way every other

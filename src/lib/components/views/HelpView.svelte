@@ -46,13 +46,13 @@
     {
       glyph: 'ROM',
       name: 'Handheld ROM',
-      blurb: 'Game Boy, Game Boy Color, Game Boy Advance, and Nintendo DS ROM dumps to a standard .7z or .zip archive, and back. Archive-quality lossless compression with the 7z tool: GBA dumps shrink by roughly half, GB/GBC by around two thirds. Reverting is just extraction. .7z gives the smallest file (LZMA2); .zip trades some size for the broadest compatibility. No keys needed.',
-      io: '.gb / .gbc / .gba / .nds  ↔  .7z / .zip',
+      blurb: 'Game Boy, Game Boy Color, Game Boy Advance, Nintendo DS and other cartridge ROM dumps (NES, SNES, N64, Mega Drive and more) to a standard .7z or .zip archive, and back. Archive-quality lossless compression with the 7z tool: GBA dumps shrink by roughly half, GB/GBC by around two thirds. Reverting is just extraction. .7z gives the smallest file (LZMA2); .zip trades some size for the broadest compatibility. No keys needed.',
+      io: '.gb / .gba / .nds / .nes / .sfc / .z64 and more  ↔  .7z / .zip',
     },
     {
       glyph: 'PS3',
       name: 'PS3 ISO',
-      blurb: 'A decrypted PS3 disc or JB folder packed into a single .iso that RPCS3 mounts directly, using makeps3iso. This is the one tool that takes a folder instead of a file, and the only tool with no reverse mode at all: it repackages a folder you already decrypted, and never deletes it. Most PS3 discs are over 4 GB, so for a FAT32 drive there is a per-job toggle that splits the image into 4 GB parts (RPCS3 mounts the .0). No keys, and no decryption here.',
+      blurb: 'A decrypted PS3 disc or JB folder packed into a single .iso that RPCS3 mounts directly, using makeps3iso. This is the one tool that takes a folder instead of a file, and it has no reverse mode: it repackages a folder you already decrypted, and never deletes it. Most PS3 discs are over 4 GB, so for a FAT32 drive there is a per-job toggle that splits the image into 4 GB parts (RPCS3 mounts the .0). No keys, and no decryption here.',
       io: 'the folder holding PS3_GAME/  →  .iso',
     },
     {
@@ -249,7 +249,8 @@
       of the box. Your choice is remembered per tool between sessions.
     </p>
     <p>
-      Every tool that takes compression settings (CHD, Dolphin, Switch, CSO) has a
+      Every tool that takes compression settings (CHD, Dolphin, Switch, CSO, handheld ROM,
+      Wii U) has a
       <strong>Reset to default</strong> button under its picker: one click puts that tool's
       codec / layout / level / effort back to its default and confirms with a toast. It's
       greyed out when you're already on the defaults.

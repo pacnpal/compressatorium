@@ -23,4 +23,4 @@ The code review found no hardcoded secrets, path-traversal protection in `files.
 
 ## Follow-ups since
 
-Some items flagged here have since shipped. The runtime drops to a non-root `converter` user (`entrypoint.sh` plus `gosu`), and the compose files carry resource limits. What's still left to the operator: HTTPS and auth through a reverse proxy, security headers, rate limiting, and monitoring. DEPLOYMENT.md tracks the live list.
+Some items flagged here have since shipped. The runtime drops to a non-root `converter` user (`entrypoint.sh` plus `gosu`), and the compose files carry resource limits. The app also has opt-in token auth (`COMPRESSATORIUM_ENABLE_AUTH`). What's still left to the operator: HTTPS through a reverse proxy, security headers, rate limiting, and monitoring. DEPLOYMENT.md tracks the live list.
