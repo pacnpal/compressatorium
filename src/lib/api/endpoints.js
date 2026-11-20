@@ -824,6 +824,19 @@ export const api = {
       'Failed to read where Images go',
     ),
 
+  // Which of RomM's folders a Platform's new Images go to (#512); `null`
+  // goes back to the automatic pick.
+  pickLibraryPlacement: (id, platform, folder) =>
+    fetchJson(
+      `${API_BASE}/libraries/${encodeURIComponent(id)}/placements/${encodeURIComponent(platform)}`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ folder }),
+      },
+      'Failed to save where new Images go',
+    ),
+
   // A Library's Inboxes (#431): folders whose new files are taken into it.
   listInboxes: (id) =>
     fetchJson(
