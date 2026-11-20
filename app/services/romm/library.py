@@ -127,10 +127,38 @@ def _structure(root: str, name: str) -> tuple[str, str | None]:
         )
     if os.path.isdir(own):
         return own, None
+    # No folder for this Platform yet: follow the other Platform folders
+    # already there (Codex PR #516). Creating ``<root>/roms`` beside them
+    # would flip ``RommClient.local_path``'s layout and lose their records.
+    others = _platform_dirs(root)
+    if any(_holds_structure(os.path.join(root, d)) for d in others):
+        return (
+            os.path.join(own, "roms"),
+            f"guessed RomM's per-platform structure, {name}/roms, like its other platforms",
+        )
+    if others:
+        return own, f"guessed {name} beside RomM's other platform folders"
     return (
         os.path.join(root, "roms", name),
         f"guessed RomM's default structure, roms/{name}: there's no roms folder yet",
     )
+
+
+def _holds_structure(folder: str) -> bool:
+    return any(os.path.isdir(os.path.join(folder, d)) for d in ("roms", "bios"))
+
+
+def _platform_dirs(root: str) -> list[str]:
+    """The folders directly under *root* that can be Platform folders. A
+    root ``bios`` folder is RomM's standard structure, never a Platform."""
+    try:
+        entries = os.listdir(root)
+    except OSError:
+        return []
+    return [
+        e for e in entries
+        if e != "bios" and not is_junk_entry(e) and os.path.isdir(os.path.join(root, e))
+    ]
 
 
 # Where RomM kept its Rules and run state before #296, unprefixed. The store
@@ -462,8 +490,11 @@ class RommLibrary(LibraryDefaults):
           first ROM, ``<root>/<folder>/roms``, marked ``guessed``.
         * ``<root>/<folder>`` exists with neither ``roms`` nor ``bios`` in
           it: the root is RomM's ``roms`` folder itself, ``<root>/<folder>``.
-        * Nothing yet: RomM's default, ``<root>/roms/<folder>``, marked
-          ``guessed``.
+        * No folder for it yet: beside the other Platform folders under the
+          root, ``<root>/<folder>/roms`` when one holds ``roms`` or ``bios``,
+          else ``<root>/<folder>``, never a new ``<root>/roms`` that would
+          flip ``RommClient.local_path``'s layout (Codex PR #516); with none,
+          RomM's default, ``<root>/roms/<folder>``. Marked ``guessed``.
 
         Refuses a folder name with a path in it, and whatever ``placed_in``
         refuses. Blocking: asks RomM for its platforms (unless *known* already
@@ -480,13 +511,19 @@ class RommLibrary(LibraryDefaults):
         name, guessed, why = _pick(slug, choices)
         if not _one_folder(name):
             raise PlacementUnknown(f"RomM's folder name {name!r} for {slug} isn't one folder")
+        offered = tuple((n, count) for n, count, _ in choices) if len(choices) > 1 else ()
         folder, structure = _structure(root, name)
-        placed = placed_in(folder, slug)
+        try:
+            placed = placed_in(folder, slug)
+        except PlacementUnknown as exc:
+            # Keep the choices, so a pick that can't take Images can be
+            # changed (Codex PR #516).
+            raise PlacementUnknown(str(exc), choices=offered, picked=name) from exc
         return replace(
             placed,
             guessed=guessed or structure is not None,
             why="; ".join(part for part in (why, structure) if part) or None,
-            choices=tuple((n, count) for n, count, _ in choices) if len(choices) > 1 else (),
+            choices=offered,
         )
 
     async def pick_folder(self, platform: str, folder: str | None) -> None:

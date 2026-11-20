@@ -13,9 +13,12 @@
   new Images, with the reason on its row ("RomM's NES folder, 4933 ROMs: the
   only one with ROMs"). When several hold ROMs, the one with the most is
   picked and marked as a best guess. Pick another from the list on that row
-  and the choice is kept in RomM's settings and wins from then on. Before RomM
-  has a `roms` folder, RomM's default `roms/<platform>` is used, marked as a
-  best guess, instead of "can't tell". A folder name with a path in it, a
+  and the choice is kept in RomM's settings and wins from then on. A Platform
+  with no folder yet goes beside RomM's other platform folders, in the same
+  structure, so adding one never hides the ROMs already there; before RomM
+  has any folder, RomM's default `roms/<platform>` is used, marked as a best
+  guess, instead of "can't tell". A pick whose folder can't take Images keeps
+  the list on its row, so it can be changed. A folder name with a path in it, a
   folder outside every Volume, and a folder detection would read as another
   Platform are still refused. Synology's `@eaDir` folder, which RomM scans as
   a platform, is no longer listed, placed or swept.

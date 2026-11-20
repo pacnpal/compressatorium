@@ -153,17 +153,19 @@
             {/if}
             {#if row.guessed}<span class="guess">best guess</span>{/if}
             {#if row.why}<span class="why muted">{row.why}</span>{/if}
-            {#if row.choices.length > 1}
-              <div class="pick">
-                <Select
-                  ariaLabel={`Where new ${row.name} Images go`}
-                  value={row.picked}
-                  options={choiceOptions(row)}
-                  disabled={picking}
-                  onchange={(folder) => pick(row, folder)}
-                />
-              </div>
-            {/if}
+          {/if}
+          <!-- Outside the error branch: a pick that can't take Images keeps
+               the chooser, so it can be changed (Codex PR #516). -->
+          {#if row.choices.length > 1}
+            <div class="pick">
+              <Select
+                ariaLabel={`Where new ${row.name} Images go`}
+                value={row.picked}
+                options={choiceOptions(row)}
+                disabled={picking}
+                onchange={(folder) => pick(row, folder)}
+              />
+            </div>
           {/if}
         </li>
       {/each}

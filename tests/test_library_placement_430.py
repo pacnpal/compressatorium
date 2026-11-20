@@ -896,3 +896,62 @@ def test_a_romm_platform_for_a_junk_folder_is_not_listed(romm):
     ])
 
     assert [p.id for p in romm_library.platforms()] == ["3"]
+
+
+def test_a_new_platform_beside_flat_platform_folders_keeps_the_flat_layout(romm):
+    """Codex PR #516: the root is RomM's ``roms`` folder itself (``nes``
+    directly in it). A Platform with no folder yet goes beside it, never into
+    a new ``roms`` folder, which would make ``RommClient.local_path`` stop
+    stripping ``roms/`` and lose every existing record."""
+    from services.romm.library import romm_library
+
+    root, catalog = romm
+    (root / "nes").mkdir()
+    catalog.extend([
+        {"id": 8, "slug": "nes", "fs_slug": "nes", "rom_count": 3},
+        {"id": 9, "slug": "snes", "fs_slug": "snes", "rom_count": 0},
+    ])
+
+    placed = romm_library.placement("snes")
+
+    assert placed.folder == str(root / "snes")
+    assert not (root / "roms").exists()
+
+
+def test_a_new_platform_beside_per_platform_roms_folders_keeps_that_layout(romm):
+    from services.romm.library import romm_library
+
+    root, catalog = romm
+    (root / "nes" / "roms").mkdir(parents=True)
+    catalog.append({"id": 9, "slug": "snes", "fs_slug": "snes"})
+
+    assert romm_library.placement("snes").folder == str(root / "snes" / "roms")
+
+
+@pytest.mark.asyncio
+async def test_a_picked_folder_that_cant_take_images_keeps_the_chooser(romm, db):
+    """Codex PR #516: the picked folder is a file. Its row says why and still
+    offers the other folders, so the pick can be undone from the UI."""
+    from routes import libraries as library_routes
+    from services.romm import settings as romm_settings
+    from services.romm.library import romm_library
+
+    root, catalog = romm
+    (root / "roms" / "nes").mkdir(parents=True)
+    (root / "roms" / "famicom").write_text("not a folder")
+    catalog.extend([
+        {"id": 8, "slug": "nes", "fs_slug": "nes", "rom_count": 5},
+        {"id": 44, "slug": "famicom", "fs_slug": "famicom", "rom_count": 1},
+    ])
+    await romm_settings.load(force=True)
+    await romm_library.pick_folder("nes", "famicom")
+
+    rows = {
+        row["id"]: row
+        for row in (await library_routes.library_placements("romm"))["placements"]
+    }
+
+    assert rows["44"]["error"]
+    assert rows["44"]["picked"] == "famicom"
+    assert [c["name"] for c in rows["44"]["choices"]] == ["famicom", "nes"]
+    assert rows["8"]["new_images_here"] is False

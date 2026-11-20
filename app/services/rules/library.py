@@ -308,8 +308,18 @@ class PlacementUnknown(Exception):
 
     The message says why (two folders a folder Library can't choose between,
     a folder name with a path in it, a folder outside every Volume, a folder
-    detection would read as another Platform).
+    detection would read as another Platform). ``choices`` and ``picked``
+    are the Platform's folder choices and the one picked, when the Library
+    had several to pick from (Codex PR #516), so a bad pick can be changed.
     """
+
+    def __init__(
+        self, message: str = "", *,
+        choices: tuple[tuple[str, int], ...] = (), picked: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.choices = choices
+        self.picked = picked
 
 
 @dataclass(frozen=True)

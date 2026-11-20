@@ -226,6 +226,16 @@ async def library_platforms(library_id: str) -> dict:
     }
 
 
+def _offer_failed_pick(row: dict, name: str, failed: object) -> None:
+    """On the row whose folder is the pick that can't take Images, offer the
+    choices, so it can be changed (Codex PR #516)."""
+    if isinstance(failed, PlacementUnknown) and failed.choices and failed.picked == name:
+        row["new_images_here"] = False
+        row["picked"] = name
+        row["why"] = f"New Images can't go here: {failed}"
+        row["choices"] = [{"name": n, "rom_count": c} for n, c in failed.choices]
+
+
 def _placements(library: Library) -> list[dict]:
     """Where each of *library*'s Platforms' Images go (#430). Blocking.
 
@@ -239,7 +249,7 @@ def _placements(library: Library) -> list[dict]:
     the choices, and the others say they aren't used.
     """
     listed = library.platforms()
-    shared: dict[str, Placement | None] = {}
+    shared: dict[str, Placement | PlacementUnknown] = {}
     out = []
     for platform in listed:
         slug = canonical_slug(platform.slug or platform.id)
@@ -253,11 +263,12 @@ def _placements(library: Library) -> list[dict]:
             if slug not in shared:
                 try:
                     shared[slug] = library.placement(slug, known=listed)
-                except PlacementUnknown:
-                    shared[slug] = None
+                except PlacementUnknown as exc:
+                    shared[slug] = exc
             placed = library.placement(slug, known=[platform])
         except PlacementUnknown as exc:
             row["error"] = str(exc)
+            _offer_failed_pick(row, platform.folder or slug, shared.get(slug))
             out.append(row)
             continue
         rel = os.path.relpath(placed.folder, library.root)
@@ -265,7 +276,11 @@ def _placements(library: Library) -> list[dict]:
         row["exists"] = placed.exists
         row["guessed"], row["why"] = placed.guessed, placed.why
         pick = shared[slug]
-        if pick is not None and pick.choices:
+        if isinstance(pick, PlacementUnknown):
+            if pick.choices:
+                row["new_images_here"] = False
+                _offer_failed_pick(row, platform.folder or slug, pick)
+        elif pick.choices:
             row["new_images_here"] = pick.folder == placed.folder
             if row["new_images_here"]:
                 row["guessed"], row["why"] = pick.guessed, pick.why

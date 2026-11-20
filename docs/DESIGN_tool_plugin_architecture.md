@@ -3492,7 +3492,9 @@ whether the folder exists, its `rom_count`, `guessed` and `why`, or the
 `PlacementUnknown` reason. Where the Platform's new Images go is placed from
 the whole listing: when that has `choices`, the row it lands on has
 `new_images_here` True, the `choices` and the `picked` folder name, and the
-Platform's other rows have `new_images_here` False. The PATCH takes a folder
+Platform's other rows have `new_images_here` False. When the pick can't take
+Images, its row keeps the `PlacementUnknown` reason with the `choices`, so it
+can be changed. The PATCH takes a folder
 Library's `layout`. The
 panel (`LibraryPlacement.svelte`) waits for the view's own Platform listing
 and drops a superseded answer (`src/lib/util/latestOnly.js`).
@@ -3548,7 +3550,14 @@ a Library that needs its Platform records (RomM's folder names, carried as
   root is RomM's `roms` folder). `<root>/<name>/bios` alone guesses
   `<root>/<name>/roms`, and nothing at all guesses RomM's default
   `<root>/roms/<name>`, both `guessed` (RomM 5.3 declares the structure in a
-  setting this app doesn't read). `RommLibrary.platforms` drops a record whose
+  setting this app doesn't read). With no folder for the Platform yet, it
+  follows the other Platform folders under the root first (Codex PR #516):
+  `<root>/<name>/roms` when one holds `roms` or `bios`, else `<root>/<name>`,
+  never a new `<root>/roms`, which would flip `local_path`'s layout and lose
+  every existing record. When `placed_in` refuses the pick,
+  `PlacementUnknown.choices` and `.picked` carry the choices, so the
+  listing's row for the picked folder keeps its chooser and the pick can be
+  changed. `RommLibrary.platforms` drops a record whose
   `fs_slug` is a junk name (`utils.junk.is_junk_entry`, Synology's `@eaDir`).
   `RommLibrary.pick_folder(platform, folder)` saves a pick after checking it is
   one of the choices (`PUT /api/libraries/{id}/placements/{platform}`, 422
