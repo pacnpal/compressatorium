@@ -1163,10 +1163,10 @@ def plan_auto(
     from services.output_conflicts import input_priority
 
     claimed: dict[str, int] = {}
-    for index, target in enumerate(plan):
-        if not target.mode:
+    for index, row in enumerate(plan):
+        if not row.mode:
             continue
-        out = _target_output(target.file_path, target.mode, output_dir, tools_registry)
+        out = _target_output(row.file_path, row.mode, output_dir, tools_registry)
         if out is None:
             continue
         holder = claimed.get(out)
@@ -1176,7 +1176,7 @@ def plan_auto(
         # The batch path's rule: the higher input_priority keeps the output
         # (.cue/.gdi over .iso over .bin), ties to the earlier selection.
         keep, lose = holder, index
-        if input_priority(target.file_path) > input_priority(plan[holder].file_path):
+        if input_priority(row.file_path) > input_priority(plan[holder].file_path):
             keep, lose = index, holder
             claimed[out] = index
         winner = plan[keep].file_path

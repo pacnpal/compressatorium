@@ -386,7 +386,7 @@
         {#snippet icon()}
           {#if converting}<Loader size={14} class="spin" />{:else}<Play size={14} />{/if}
         {/snippet}
-        {converting ? 'Starting…' : `Convert ${convertCount} ${convertCount === 1 ? 'game' : 'games'}`}
+        {converting ? 'Starting…' : convertCount ? `Convert ${convertCount} ${convertCount === 1 ? 'game' : 'games'}` : 'Convert'}
       </Button>
       <p class="muted small">Progress shows in Activity.</p>
     </div>

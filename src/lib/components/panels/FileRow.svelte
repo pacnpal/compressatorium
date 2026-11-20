@@ -33,7 +33,9 @@
   // playlist and its discs) is one row; its files fold under it (#504).
   const parts = $derived(Array.isArray(entry?.parts) ? entry.parts : []);
   let expanded = $state(false);
-  const partWord = $derived(entry?.part_kind === 'discs' ? 'discs' : 'files');
+  const partWord = $derived(
+    `${entry?.part_kind === 'discs' ? 'disc' : 'file'}${parts.length === 1 ? '' : 's'}`,
+  );
   // A RomM listing's own matches are seeded into the store (#427), so this is
   // the one answer, and a policy change clears it everywhere at once.
   const datMatch = $derived(datMatching.matchFor(path));
@@ -197,7 +199,7 @@
     </button>
     </div>
   </td>
-  <td class="size">{isFile ? formatSize(entry?.size) : ''}</td>
+  <td class="size">{isFile || parts.length ? formatSize(entry?.size) : ''}</td>
   <td class="ext">{registry.displayExtension(entry)}</td>
   <td class="badges">
     {#if mediaType === 'cd'}<Badge tone="cd">CD</Badge>{/if}
@@ -240,7 +242,9 @@
       <td class="name">
         <span class="part-name" title={part.path}>
           {part.name}
-          {#if part.parts?.length}<span class="file-name">{part.parts.length} files</span>{/if}
+          {#if part.parts?.length}
+            <span class="file-name">{part.parts.length} {part.parts.length === 1 ? 'file' : 'files'}</span>
+          {/if}
         </span>
       </td>
       <td class="size">{formatSize(part.size)}</td>

@@ -47,7 +47,7 @@
   // Why a row is skipped, as the line it joins.
   function skipLine(reason) {
     const text = String(reason ?? 'Skipped');
-    if (text.startsWith('Already ')) return { key: text, kind: 'done', label: text.toLowerCase() };
+    if (text.startsWith('Already ')) return { key: text, kind: 'done', label: `already ${text.slice('Already '.length)}` };
     if (text.startsWith('Unknown console')) {
       return { key: 'unknown', kind: 'pick', label: 'skipped: unknown console' };
     }

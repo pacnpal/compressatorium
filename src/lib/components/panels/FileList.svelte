@@ -379,7 +379,9 @@
           <XIcon size={12} />
         </IconButton>
       {/if}
-      <div class="scope" role="group" aria-label="Where to search">
+    </form>
+
+    <div class="scope" role="group" aria-label="Where to search">
         <button
           type="button"
           class="scope-chip"
@@ -393,8 +395,7 @@
           title="Every game under this folder, inside archives too"
           onclick={() => setScope('everywhere')}
         ><FolderSearch size={12} aria-hidden="true" /> Everywhere</button>
-      </div>
-    </form>
+    </div>
 
     <div class="actions">
       <label class="filter">
@@ -601,16 +602,22 @@
 <style>
   .filelist { display: flex; flex-direction: column; min-width: 0; gap: var(--space-3); }
 
+  /* The breadcrumb gets a row of its own; the search box, its scope and the
+     filter wrap below it as the panel narrows. */
   .toolbar {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto auto;
-    gap: var(--space-3);
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2) var(--space-3);
     align-items: center;
   }
-  @media (max-width: 700px) {
-    .toolbar { grid-template-columns: 1fr; }
+  .crumbs {
+    display: flex;
+    flex: 1 0 100%;
+    align-items: center;
+    gap: var(--space-1);
+    min-width: 0;
   }
-  .crumbs { display: flex; align-items: center; gap: var(--space-1); min-width: 0; }
+  .toolbar .search { flex: 1 1 180px; min-width: 0; }
 
   .search {
     position: relative;
@@ -621,7 +628,6 @@
     background: var(--surface-2);
     border: 1px solid var(--border-subtle);
     border-radius: var(--radius-md);
-    min-width: 220px;
   }
   .search :global(.search-icon) { color: var(--text-3); flex-shrink: 0; }
   .search input {
