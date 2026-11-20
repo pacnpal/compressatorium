@@ -4,6 +4,23 @@
 
 ### Changed
 
+- **Works out of the box** (#515). A tool program that isn't at the path the
+  image uses (`/usr/bin/chdman`, `/usr/local/bin/maxcso`, ...) is looked up on
+  `PATH` by name when its `*_PATH` is unset, so a Homebrew or distro install
+  works with nothing set; `7zz` stands in for a missing `7z`. A path you set
+  is used as is.
+- **A tool that can't run is shown, not hidden** (#515). The dashboard's Quick
+  tools card lists it under **Not ready here** with the one thing to install
+  or set (`GET /api/tools` now carries a `reasons` map). The Switch reason says
+  a `prod.keys` anywhere on a Volume is found on its own. The empty Volume list
+  says to mount folders under `/data`. RomM errors point at the URL and token
+  on the RomM page instead of naming `ROMM_URL` / `ROMM_TOKEN`, and Help no
+  longer tells you to set environment variables for Switch keys or NKit.
+- **A folder Library with two folders for one Platform places new Images in
+  the one already holding the most** (#515), instead of refusing. The
+  placements list marks that row `guessed`; a folder mapping makes it
+  certain. Containment and the detection check still apply to the guess.
+
 - **Libraries may overlap; the nearest folder owns a file** (#514). Any
   folder can be registered as a Library now, including one inside RomM's
   library folder or inside or around another folder Library, and RomM's
