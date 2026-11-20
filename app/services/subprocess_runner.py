@@ -2612,8 +2612,9 @@ class SubprocessRunner:
                 env=env,
                 on_abandoned=abandoned_pid.append,
                 verdict=True,
-                stdin_path=stdin_path,
-                stdin_offset=stdin_offset,
+                **({} if stdin_path is None else {
+                    "stdin_path": stdin_path, "stdin_offset": stdin_offset,
+                }),
             )
         except OSError as exc:
             # The verifier couldn't be started: no verdict, so no stored check
