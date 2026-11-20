@@ -8762,7 +8762,10 @@ it on that Inbox's `_State.ready`, and the Inbox is polled at once
 (`_poll_now`, waiting out a poll already running, then
 `report.after_pass`). A poll treats an Image as settled when a marker names it,
 a folder above it, or one of its files (a sheet's track): only the settle wait
-is skipped. A held Image stays held, and only files the poll lists (no link,
+is skipped. A folder's marker covers only what was last written by the time
+it was named (the file's mtime against the marker's wall-clock time), so a
+download still being written there settles as usual; a matched sheet consumes
+only its own tracks' markers (PR #526). A held Image stays held, and only files the poll lists (no link,
 no `processed/`) are ever taken, so a marker can't reach anything intake
 wouldn't. Markers expire after `READY_SECONDS`. `trigger.check` is the
 dry run the UI's **Test** uses; for a path that lands nowhere,

@@ -296,3 +296,52 @@ async def test_naming_a_sheets_track_takes_the_whole_sheet(vol, db):
 
     assert (vol / "ROMs" / "psx" / "Game.cue").exists()
     assert (vol / "ROMs" / "psx" / "Game.bin").exists()
+
+
+@pytest.mark.asyncio
+async def test_a_folder_marked_ready_does_not_hurry_files_written_after(vol, db):
+    """Codex PR #526: the folder's marker covers what was finished when it
+    was named; a download still being written there afterwards settles as
+    usual."""
+    import os
+    import time
+
+    from services.inbox import intake
+
+    library = t431._library(vol)
+    box = t431._inbox(vol, library, settle=3600)
+    t431._drop(vol / "Downloads" / "ps2" / "A.iso")
+    intake.mark_ready(box.id, str(vol / "Downloads" / "ps2"))
+    late = t431._drop(vol / "Downloads" / "ps2" / "Late.iso")
+    later = time.time() + 60
+    os.utime(late, (later, later))
+
+    await t431._poll(box, now=0)
+
+    assert (vol / "ROMs" / "ps2" / "A.iso").exists()
+    assert late.exists()
+    assert not (vol / "ROMs" / "ps2" / "Late.iso").exists()
+
+
+@pytest.mark.asyncio
+async def test_two_sheets_named_by_their_tracks_are_both_taken_at_once(vol, db):
+    """Codex PR #526: matching one sheet consumes only its own tracks'
+    markers."""
+    from services.inbox import intake
+
+    library = t431._library(vol)
+    box = t431._inbox(vol, library, settle=3600)
+    tracks = []
+    for name in ("A", "B"):
+        t431._drop(
+            vol / "Downloads" / "psx" / f"{name}.cue",
+            f'FILE "{name}.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n'.encode(),
+        )
+        tracks.append(t431._drop(vol / "Downloads" / "psx" / f"{name}.bin"))
+    for track in tracks:
+        intake.mark_ready(box.id, str(track))
+
+    await t431._poll(box, now=0)
+
+    assert (vol / "ROMs" / "psx" / "A.cue").exists()
+    assert (vol / "ROMs" / "psx" / "B.cue").exists()

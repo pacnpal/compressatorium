@@ -276,7 +276,9 @@ class _State:
     rules_reported: set[tuple] = field(default_factory=set)
     # Path -> when a trigger (#522: the *arr webhook, ``/api/scan``) said it
     # is finished: an Image at, below or holding it skips the settle wait.
-    ready: dict[str, float] = field(default_factory=dict)
+    # When twice: on the monotonic clock for its expiry, and on the wall
+    # clock to compare with a file's mtime (a folder's marker).
+    ready: dict[str, tuple[float, float]] = field(default_factory=dict)
     last_poll: float | None = None
     waiting: int = 0
     error: str | None = None
@@ -521,8 +523,18 @@ READY_SECONDS = 3600
 def mark_ready(inbox_id: int, path: str) -> None:
     """Say the file (or folder) at *path* in the Inbox is finished (#522), so
     the next poll takes what is there without waiting for it to settle. A
-    held Image stays held, and only files the poll lists are ever taken."""
-    _state(inbox_id).ready[os.path.realpath(path)] = time.monotonic()
+    held Image stays held, and only files the poll lists are ever taken. A
+    folder covers what was finished in it when it was named: a file written
+    there afterwards settles as usual (Codex PR #526)."""
+    _state(inbox_id).ready[os.path.realpath(path)] = (time.monotonic(), time.time())
+
+
+def _written_by(path: str, wall: float) -> bool:
+    """Whether *path* was last written by *wall* (the wall clock). Blocking."""
+    try:
+        return os.stat(path).st_mtime <= wall
+    except OSError:
+        return False
 
 
 async def _is_ready(state: _State, path: str) -> bool:
@@ -531,18 +543,24 @@ async def _is_ready(state: _State, path: str) -> bool:
     if not state.ready:
         return False
     now = time.monotonic()
-    for marker, at in list(state.ready.items()):
+    for marker, (at, _wall) in list(state.ready.items()):
         if now - at > READY_SECONDS:
             state.ready.pop(marker, None)
-    for marker in state.ready:
+    for marker, (_at, wall) in list(state.ready.items()):
         if path.startswith(marker + os.sep):
-            return True
+            # A folder: only what was finished in it when it was named.
+            if await _step(_written_by, path, wall):
+                return True
+            continue
         if marker == path:
             state.ready.pop(marker, None)
             return True
-    near = [m for m in state.ready if m.startswith(os.path.dirname(path) + os.sep)]
-    if near and set(near) & set(await _step(_members, path)):
-        for marker in near:
+    near = {m for m in state.ready if m.startswith(os.path.dirname(path) + os.sep)}
+    matched = near & set(await _step(_members, path)) if near else set()
+    if matched:
+        # Only this sheet's own tracks: another sheet named beside it keeps
+        # its markers for its own turn (Codex PR #526).
+        for marker in matched:
             state.ready.pop(marker, None)
         return True
     return False
