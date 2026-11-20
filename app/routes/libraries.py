@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from collections import Counter
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException
@@ -22,8 +23,9 @@ from pydantic import BaseModel, Field
 from routes import rules as shared_rule_routes
 from services import duplicates, inbox, libraries
 from services.libraries.folder import ListingInProgress
-from services.platform_detect import canonical_slug
+from services.platform_detect import auto_route, canonical_slug
 from services.rules import editor as rules_editor
+from services.rules import sweep as rules_sweep
 from services.rules.library import (
     Library,
     LibraryUnreadable,
@@ -31,7 +33,7 @@ from services.rules.library import (
     PlacementUnknown,
 )
 from services.subprocess_runner import run_detached
-from services.tools import registry
+from services.tools import not_ready_message, registry
 
 router = APIRouter()
 
@@ -224,6 +226,92 @@ async def library_platforms(library_id: str) -> dict:
             if registry.mode_is_automatable(spec.mode)
         ),
     }
+
+
+# How many of a console's games Apply recommended routes before it picks a
+# format: enough to outvote a stray file, few enough to stay quick.
+_RECOMMEND_SAMPLE = 25
+
+
+def _route_samples(library: Library, skip: set[str]) -> list[tuple]:
+    """``(platform, Counter of modes, first reason)`` for each console with
+    games that is not in *skip*. Blocking: lists the Library and stats files."""
+    out = []
+    for platform in library.platforms():
+        if platform.id in skip:
+            continue
+        images = library.images(platform.id)[:_RECOMMEND_SAMPLE]
+        if not images:
+            continue
+        modes: Counter = Counter()
+        reason = None
+        for image in images:
+            path = image.path
+            if not path or not platform.slug:
+                continue
+            mode, why = auto_route(path, platform.slug, registry)
+            if mode:
+                modes[mode] += 1
+            else:
+                reason = reason or why
+        out.append((platform, modes, reason))
+    return out
+
+
+def _best_mode(modes: Counter, ready: set[str]) -> tuple[str | None, str | None]:
+    """The most common mode that may run unattended with its tool ready here,
+    or ``(None, why not)``."""
+    why = None
+    for mode, _count in modes.most_common():
+        if not registry.mode_is_automatable(mode):
+            why = why or "This format can't run on its own"
+            continue
+        tool_id = registry.spec(mode).tool_id
+        if tool_id not in ready:
+            why = why or not_ready_message(registry.get(tool_id))
+            continue
+        return mode, None
+    return None, why
+
+
+@router.get("/libraries/{library_id}/recommended-rules")
+async def recommended_rules(library_id: str) -> dict:
+    """The best format for each console with games and no conversion Rule.
+
+    Routes up to ``_RECOMMEND_SAMPLE`` of each console's games the way Auto
+    does and keeps the most common mode, dropping one that can't run
+    unattended or whose tool isn't ready. Read-only, like the RomM
+    converter's import plan: the Automation tab merges ``rules`` into the
+    Rules it holds and saves them through ``PUT .../rules``.
+    """
+    library = _library(library_id)
+    rules = await rules_sweep.get_rules(library)
+    taken = {pid for pid, rule in rules.items() if rule.get("mode")}
+    ready = set(await registry.ready_tool_ids())
+    try:
+        samples = await asyncio.wait_for(
+            run_detached(lambda: _route_samples(library, taken)), _SCAN_SECONDS,
+        )
+    except ListingInProgress:
+        raise HTTPException(status_code=409, detail=LISTING_IN_PROGRESS) from None
+    except LibraryUnreadable as exc:
+        raise HTTPException(status_code=409, detail=f"Library unreadable: {exc}") from None
+    except (asyncio.TimeoutError, OSError):
+        raise HTTPException(
+            status_code=504, detail="The Library's folder did not answer in time",
+        ) from None
+    planned: dict[str, dict] = {}
+    skipped: list[dict] = []
+    for platform, modes, reason in samples:
+        mode, why = _best_mode(modes, ready)
+        if mode:
+            planned[platform.id] = {"mode": mode, "enabled": True}
+        else:
+            skipped.append({
+                "platform_id": platform.id, "name": platform.name,
+                "reason": why or reason or "No converter here takes these games",
+            })
+    return {"rules": planned, "skipped": skipped}
 
 
 def _offer_failed_pick(row: dict, name: str, failed: object) -> None:
