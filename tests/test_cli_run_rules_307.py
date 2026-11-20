@@ -832,8 +832,8 @@ def test_a_server_waits_for_the_lock_then_starts(env, server_start, caplog, hold
     finally:
         first.release()
 
-    assert f"by {'the server' if holder == 'server' else 'another run-rules'}" in caplog.text
-    assert caplog.text.count("Waiting for the Rule scheduler lock") >= 2, "logged again"
+    assert f"by {'the server' if holder == 'server' else 'a run-rules pass'}" in caplog.text
+    assert caplog.text.count("Waiting for the data directory") >= 2, "logged again"
     # Released when startup failed, so the next start does not wait.
     scheduler_lock.acquire("server", wait=0).release()
 

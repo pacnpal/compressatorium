@@ -8,7 +8,7 @@ from pathlib import Path
 
 from auth import ensure_auth_token, require_auth_middleware
 from config import settings
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from routes import convert, dat, files, info, preferences, romm
@@ -223,18 +223,19 @@ def startup_volume_work() -> None:
 async def lifespan(app: FastAPI):
     """Wait for the Rule scheduler lock, then start the app (``_serve``).
 
-    One Rule scheduler per data directory (#307). The lock is held for the
-    server's whole life and taken before anything touches the data directory.
-    While a `run-rules` pass (or another server) holds it, startup waits and
-    says so every ``scheduler_lock._WAIT_LOG_EVERY`` seconds; a SIGTERM while
-    waiting stops startup.
+    One process works a data directory at a time (#307, #533). The lock is
+    held for the server's whole life and taken before anything touches the
+    data directory. While a `run-rules` pass, a CLI `convert` running its jobs
+    in-process, or another server holds it, startup waits and says so every
+    ``scheduler_lock._WAIT_LOG_EVERY`` seconds; a SIGTERM while waiting stops
+    startup. A CLI started while the server holds it hands its jobs here.
     """
     configure_logging()
     logger = get_logger()
     from services import scheduler_lock
 
     def waiting(held: scheduler_lock.SchedulerLockHeld) -> None:
-        logger.warning("Waiting for the Rule scheduler lock: %s", held)
+        logger.warning("Waiting for the data directory: %s", held)
 
     with _watch_stop_signals() as stopped:
         try:
@@ -243,10 +244,12 @@ async def lifespan(app: FastAPI):
             )
         except scheduler_lock.StoppedWaiting as exc:
             raise RuntimeError(str(exc)) from None
+    app.state.scheduler = scheduler
     try:
         async with _serve(app):
             yield
     finally:
+        app.state.scheduler = None
         scheduler.release()
 
 
@@ -490,8 +493,12 @@ app.include_router(dat_rename_routes.router, prefix="/api", tags=["files"])
 
 
 @app.get("/health")
-async def health_check():
-    """Health check endpoint."""
+async def health_check(request: Request):
+    """Health check endpoint. Also names the port this server answers on in
+    its worker lock, where a CLI looks for it (``services.server_client``)."""
+    held = getattr(request.app.state, "scheduler", None)
+    if held is not None:
+        held.note_port((request.scope.get("server") or (None, None))[1])
     return {"status": "healthy", "version": get_version()}
 
 

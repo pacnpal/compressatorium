@@ -707,7 +707,7 @@ def test_a_hangup_stops_the_run_like_sigterm(volume, monkeypatch, capsys, signam
 
 
 def test_only_a_small_window_of_jobs_is_queued_at_once(volume, dolphin, capsys, monkeypatch):
-    """Each queued job holds a ticket in the queue the server shares: a run over
+    """Only a small window of jobs is queued at once (as on a server): a run over
     a whole library must not put every job ahead of the web UI's."""
     from routes import convert as convert_routes
     from services.job_manager import job_manager
