@@ -15,6 +15,7 @@ import asyncio
 import functools
 import os
 from collections.abc import Sequence
+from dataclasses import replace
 from types import MappingProxyType
 from typing import Any
 
@@ -48,6 +49,117 @@ from services.rules.library import (
 )
 from services.rules.store import RULES_KEY, STATE_KEY
 from services.subprocess_runner import run_detached
+from utils.junk import is_junk_entry
+
+# How long checking a folder pick may wait on RomM's catalog (#512).
+_PICK_SECONDS = 60
+
+
+def _count(raw: Any) -> int | None:
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return None
+
+
+def _one_folder(name: str) -> bool:
+    return name not in ("", ".", "..") and "/" not in name and os.sep not in name
+
+
+def _choices(listed: Sequence[Platform], slug: str) -> list[tuple[str, int, str]]:
+    """RomM's folders for Platform *slug* (#512): ``(folder name, ROMs, the
+    name of its record with the most ROMs)`` per folder, by name, records
+    naming one folder counted together. A name with a path in it is dropped
+    when there are others, so it's never picked over a good one."""
+    folders: dict[str, tuple[int, int, str]] = {}
+    for p in listed:
+        if canonical_slug(p.slug) != slug:
+            continue
+        name = p.folder or slug
+        count = p.rom_count or 0
+        total, best, label = folders.get(name, (0, -1, p.name))
+        folders[name] = (total + count, max(best, count), p.name if count > best else label)
+    out = sorted((name, total, label) for name, (total, _, label) in folders.items())
+    good = [c for c in out if _one_folder(c[0])]
+    return good or out
+
+
+def _roms(count: int) -> str:
+    return "1 ROM" if count == 1 else f"{count} ROMs"
+
+
+def _pick(slug: str, choices: list[tuple[str, int, str]]) -> tuple[str, bool, str | None]:
+    """The folder name for *slug*'s new Images among *choices*, whether it is
+    a guess, and why (#512). See ``RommLibrary.placement``."""
+    if not choices:
+        return slug, False, None
+    if len(choices) == 1:
+        return choices[0][0], False, None
+    by_name = {name: (count, label) for name, count, label in choices}
+    saved = romm_settings.platform_folders().get(slug)
+    if saved in by_name:
+        name, (count, label) = saved, by_name[saved]
+        guessed, reason = False, "your choice"
+    else:
+        holding = [c for c in choices if c[1]]
+        name, count, label = max(choices, key=lambda c: (c[1], c[0] == slug))
+        guessed = len(holding) != 1
+        if not guessed:
+            reason = "the only one with ROMs"
+        else:
+            reason = "it has the most ROMs" if holding else "none has ROMs yet"
+    return name, guessed, f"RomM's {label} folder, {_roms(count)}: {reason}"
+
+
+def _structure(root: str, name: str) -> tuple[str, str | None]:
+    """Where the Platform folder *name* sits in RomM's structure under *root*,
+    read off the disk (see ``RommLibrary.placement``), and why it's a guess
+    when it is one. Blocking."""
+    own = os.path.join(root, name)
+    if os.path.isdir(os.path.join(root, "roms")):
+        return os.path.join(root, "roms", name), None
+    if os.path.isdir(os.path.join(own, "roms")):
+        return os.path.join(own, "roms"), None
+    if os.path.isdir(os.path.join(own, "bios")):
+        return (
+            os.path.join(own, "roms"),
+            f"guessed RomM's per-platform structure: {name} has a bios folder and no roms yet",
+        )
+    if os.path.isdir(own):
+        return own, None
+    # No folder for this Platform yet: follow the other Platform folders
+    # already there (Codex PR #516). Creating ``<root>/roms`` beside them
+    # would flip ``RommClient.local_path``'s layout and lose their records.
+    others = _platform_dirs(root)
+    if any(_holds_structure(os.path.join(root, d)) for d in others):
+        return (
+            os.path.join(own, "roms"),
+            f"guessed RomM's per-platform structure, {name}/roms, like its other platforms",
+        )
+    if others:
+        return own, f"guessed {name} beside RomM's other platform folders"
+    return (
+        os.path.join(root, "roms", name),
+        f"guessed RomM's default structure, roms/{name}: there's no roms folder yet",
+    )
+
+
+def _holds_structure(folder: str) -> bool:
+    return any(os.path.isdir(os.path.join(folder, d)) for d in ("roms", "bios"))
+
+
+def _platform_dirs(root: str) -> list[str]:
+    """The folders directly under *root* that can be Platform folders. A
+    root ``bios`` folder is RomM's standard structure, never a Platform."""
+    try:
+        entries = os.listdir(root)
+    except OSError:
+        return []
+    return [
+        e for e in entries
+        if e != "bios" and not is_junk_entry(e) and os.path.isdir(os.path.join(root, e))
+    ]
+
 
 # Where RomM kept its Rules and run state before #296, unprefixed. The store
 # reads them once, rewrites them under the "romm:" keys and deletes them.
@@ -196,8 +308,12 @@ class RommLibrary(LibraryDefaults):
                 name=p.get("display_name") or p.get("name") or str(p["id"]),
                 # Its folder on disk, which the operator may have renamed (#430).
                 folder=p.get("fs_slug"),
+                rom_count=_count(p.get("rom_count")),
             )
             for p in catalog if isinstance(p, dict) and p.get("id") is not None
+            # A NAS metadata folder RomM scanned as a platform (``@eaDir``,
+            # #512) is never one: never offered, placed or swept.
+            and not is_junk_entry(p.get("fs_slug") or "")
         ]
 
     def images(self, platform_id: str) -> list[Image]:
@@ -350,24 +466,39 @@ class RommLibrary(LibraryDefaults):
     ) -> Placement:
         """Where *platform*'s Images go in RomM's own folder structure (#430).
 
-        The folder is named by the RomM platform's ``fs_slug`` (its folder on
-        disk, which the operator may have renamed), or by the slug itself for
-        a Platform RomM has no record of yet, as RomM names a new one. Where
-        that folder sits is read off the disk, at the directory level as
+        The folder is named by a RomM platform record's ``fs_slug`` (its
+        folder on disk, which the operator may have renamed), or by the slug
+        itself for a Platform RomM has no record of yet, as RomM names a new
+        one. The records are *known* when given (the placements listing hands
+        each row its own record, so each shows its own folder), else RomM's
+        whole catalog.
+
+        RomM often keeps several records for one Platform (``famicom`` beside
+        ``nes``, #512). Their folders are the choices, and the pick is, in
+        order: the user's saved pick (``romm_settings.platform_folders``); the
+        only folder holding ROMs (RomM's ``rom_count``); else the one with the
+        most ROMs (then the one named as the Platform), marked ``guessed``.
+
+        Where that folder sits is read off the disk, at the directory level as
         ``RommClient.local_path`` maps ROMs:
 
         * ``<root>/roms`` exists: RomM's standard structure,
           ``<root>/roms/<folder>``.
         * ``<root>/<folder>/roms`` exists: the other structure,
           ``<root>/<folder>/roms``.
+        * ``<root>/<folder>/bios`` alone: the other structure before its
+          first ROM, ``<root>/<folder>/roms``, marked ``guessed``.
         * ``<root>/<folder>`` exists with neither ``roms`` nor ``bios`` in
           it: the root is RomM's ``roms`` folder itself, ``<root>/<folder>``.
+        * No folder for it yet: beside the other Platform folders under the
+          root, ``<root>/<folder>/roms`` when one holds ``roms`` or ``bios``,
+          else ``<root>/<folder>``, never a new ``<root>/roms`` that would
+          flip ``RommClient.local_path``'s layout (Codex PR #516); with none,
+          RomM's default, ``<root>/roms/<folder>``. Marked ``guessed``.
 
-        Anything else can't be told (RomM 5.3 declares its structure in a
-        setting this app doesn't read), so it refuses, as it does for two RomM
-        platforms with the slug or a folder name with a path in it. Blocking:
-        asks RomM for its platforms (unless *known* already holds them) and
-        stats a few folders.
+        Refuses a folder name with a path in it, and whatever ``placed_in``
+        refuses. Blocking: asks RomM for its platforms (unless *known* already
+        holds them) and stats a few folders.
         """
         root = self.root
         if not root:
@@ -376,26 +507,43 @@ class RommLibrary(LibraryDefaults):
         if slug is None:
             raise PlacementUnknown(f"{platform!r} is not a Platform")
         listed = self.platforms() if known is None else known
-        records = [p for p in listed if canonical_slug(p.slug) == slug]
-        if len(records) > 1:
-            ids = ", ".join(p.id for p in records)
-            raise PlacementUnknown(f"RomM has more than one {slug} platform ({ids})")
-        name = (records[0].folder if records else None) or slug
-        if name in (".", "..") or "/" in name or os.sep in name:
+        choices = _choices(listed, slug)
+        name, guessed, why = _pick(slug, choices)
+        if not _one_folder(name):
             raise PlacementUnknown(f"RomM's folder name {name!r} for {slug} isn't one folder")
-        own = os.path.join(root, name)
-        if os.path.isdir(os.path.join(root, "roms")):
-            folder = os.path.join(root, "roms", name)
-        elif os.path.isdir(os.path.join(own, "roms")):
-            folder = os.path.join(own, "roms")
-        elif os.path.isdir(own) and not os.path.isdir(os.path.join(own, "bios")):
-            folder = own
-        else:
-            raise PlacementUnknown(
-                f"RomM's folder structure can't be told: {root} has no roms folder, "
-                f"and no {name} folder with its ROMs yet",
-            )
-        return placed_in(folder, slug)
+        offered = tuple((n, count) for n, count, _ in choices) if len(choices) > 1 else ()
+        folder, structure = _structure(root, name)
+        try:
+            placed = placed_in(folder, slug)
+        except PlacementUnknown as exc:
+            # Keep the choices, so a pick that can't take Images can be
+            # changed (Codex PR #516).
+            raise PlacementUnknown(str(exc), choices=offered, picked=name) from exc
+        return replace(
+            placed,
+            guessed=guessed or structure is not None,
+            why="; ".join(part for part in (why, structure) if part) or None,
+            choices=offered,
+        )
+
+    async def pick_folder(self, platform: str, folder: str | None) -> None:
+        """Save *folder* (one of RomM's folder names for *platform*) as where
+        its new Images go (#512), or forget the pick when None. Refuses
+        anything that isn't one of those folders with
+        :class:`PlacementUnknown`; asks RomM for its platforms, bounded."""
+        slug = canonical_slug(platform)
+        if slug is None:
+            raise PlacementUnknown(f"{platform!r} is not a Platform")
+        if folder is not None:
+            if not _one_folder(folder):
+                raise PlacementUnknown(f"{folder!r} isn't one folder")
+            listed = await asyncio.wait_for(run_detached(self.platforms), _PICK_SECONDS)
+            names = [name for name, _, _ in _choices(listed, slug)]
+            if folder not in names:
+                raise PlacementUnknown(
+                    f"{folder!r} isn't one of RomM's {slug} folders ({', '.join(names)})",
+                )
+        await romm_settings.pick_platform_folder(slug, folder)
 
     def referrer_options(self, referrer_id: str) -> dict:
         """The gamelist Referrer's ES-DE gamelists folder from RomM's settings,

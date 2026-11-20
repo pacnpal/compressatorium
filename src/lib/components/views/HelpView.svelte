@@ -270,6 +270,15 @@
       <strong>rename</strong> writes the new one under a different name, and
       <strong>overwrite</strong> replaces it. Nothing is overwritten without you saying so.
     </p>
+    <p>
+      For a Library, <strong>Where new Images go</strong> in the Rules view shows the folder
+      each Platform's new Images land in, from an Inbox or a sweep. On RomM that's RomM's
+      own folder for the Platform. RomM often keeps a second, empty record for a Platform
+      (<code>famicom</code> beside <code>nes</code>); the folder holding the ROMs is picked
+      for you, and the row says which and why ("RomM's NES folder, 4933 ROMs"). When more
+      than one holds ROMs, the one with the most is picked and marked as a best guess. Pick
+      another folder from the list on that row and it's kept.
+    </p>
   </article>
 
   <article class="panel">

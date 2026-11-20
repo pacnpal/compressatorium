@@ -1100,7 +1100,14 @@ becomes a Library, and the **Rules** view (in the sidebar) shows it:
   existing `GameCube` folder, or a new `gc` one), and marks a folder that will
   be created. Two folders for one Platform are shown as "can't tell" instead
   of picking one. Changing the layout moves nothing. On RomM the list follows
-  RomM's own folder structure.
+  RomM's own folder structure: each RomM platform shows its own folder and ROM
+  count. RomM often keeps a second, empty record for a Platform (`famicom`
+  beside `nes`), so the row new Images go to says so and why ("RomM's NES
+  folder, 4933 ROMs: the only one with ROMs"). When several hold ROMs, the one
+  with the most is picked and marked as a best guess; pick another from the
+  list on that row and the choice is kept. Before RomM has a `roms` folder,
+  RomM's default `roms/<platform>` is used, marked as a best guess too. Junk
+  folders RomM scanned as platforms (Synology's `@eaDir`) are left out.
 - **Remove Library** forgets the Library and its Rules. It never touches a file.
 
 The RomM view's **Automation** tab is the same Rules view, opened on RomM.
@@ -3205,6 +3212,7 @@ no info route.
 | PATCH / DELETE | `/api/libraries/{library_id}` | Change a Library's settings, or remove it (no file is touched) |
 | GET | `/api/libraries/{library_id}/platforms` | Detected Platforms with Image counts |
 | GET | `/api/libraries/{library_id}/placements` | Where new Images of each Platform would land |
+| PUT | `/api/libraries/{library_id}/placements/{platform}` | Pick which of RomM's folders a Platform's new Images go to (`{"folder": null}` goes back to the automatic pick) |
 | GET / PUT | `/api/libraries/{library_id}/rules` | The Library's Rules and run state, or replace them |
 | POST | `/api/libraries/{library_id}/rules/forget-converted` | Clear the converted history and failed holds |
 | POST | `/api/libraries/{library_id}/preview` | What a sweep would queue now, without queueing |

@@ -7,6 +7,11 @@
    * would land ("PlayStation 2 → roms/ps2"), whether that folder is there yet,
    * or why it can't be told. The backend works it out (`Library.placement`),
    * so the folder names here are the ones detection reads back.
+   *
+   * RomM often keeps several records for one Platform (#512). Each row shows
+   * its own folder; the one new Images go to says so and why ("RomM's NES
+   * folder, 4933 ROMs"), and offers the others in one select. A pick is
+   * saved and wins over the automatic one.
    */
   import { untrack } from 'svelte';
   import { toast } from 'svelte-sonner';
@@ -64,6 +69,33 @@
     return () => clearTimeout(timer);
   });
 
+  const roms = (n) => (n === 1 ? '1 ROM' : `${n} ROMs`);
+  // "Automatic" ('') forgets a saved pick (CodeRabbit PR #516).
+  const choiceOptions = (row) => [
+    { value: '', label: 'Automatic (the folder with the most ROMs)' },
+    ...row.choices.map((c) => ({ value: c.name, label: `${c.name} (${roms(c.rom_count)})` })),
+  ];
+
+  let picking = $state(false);
+  // Bumped on a failed save, so the select goes back to the saved pick.
+  let pickReset = $state(0);
+  async function pick(row, folder) {
+    if (!library || folder === row.picked) return;
+    picking = true;
+    try {
+      await api.pickLibraryPlacement(library.id, row.platform, folder || null);
+      toast.success(
+        folder ? `New ${row.name} Images go to ${folder}` : `New ${row.name} Images go to the automatic pick`,
+      );
+      await load(library.id);
+    } catch (e) {
+      pickReset += 1;
+      toast.error(e?.message ?? 'Failed to save where new Images go');
+    } finally {
+      picking = false;
+    }
+  }
+
   async function setLayout(layout) {
     if (!library || layout === library.layout) return;
     saving = true;
@@ -120,7 +152,30 @@
           {:else}
             <span aria-hidden="true">→</span>
             <code>{row.folder || '(the root)'}</code>
+            {#if row.rom_count != null}<span class="muted">{roms(row.rom_count)}</span>{/if}
             {#if !row.exists}<span class="muted new">will be created</span>{/if}
+            {#if row.new_images_here}
+              <span class="here">new Images go here</span>
+            {:else if row.new_images_here === false}
+              <span class="muted">not used for new Images</span>
+            {/if}
+            {#if row.guessed}<span class="guess">best guess</span>{/if}
+            {#if row.why}<span class="why muted">{row.why}</span>{/if}
+          {/if}
+          <!-- Outside the error branch: a pick that can't take Images keeps
+               the chooser, so it can be changed (Codex PR #516). -->
+          {#if row.choices.length > 1}
+            <div class="pick">
+              {#key pickReset}
+              <Select
+                ariaLabel={`Where new ${row.name} Images go`}
+                value={row.picked}
+                options={choiceOptions(row)}
+                disabled={picking}
+                onchange={(folder) => pick(row, folder)}
+              />
+              {/key}
+            </div>
           {/if}
         </li>
       {/each}
@@ -163,6 +218,15 @@
   .rows code { overflow-wrap: anywhere; }
   .name { font-weight: 600; }
   .new { font-style: italic; }
+  .here { font-weight: 600; color: var(--success, var(--text-1)); }
+  .guess {
+    padding: 0 6px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm, 4px);
+    font-size: var(--text-xs, 0.75rem);
+  }
+  .why { flex-basis: 100%; }
+  .pick { flex-basis: 100%; max-width: 320px; }
   .muted { color: var(--text-3); }
   .error { color: var(--danger, #d33); }
 </style>

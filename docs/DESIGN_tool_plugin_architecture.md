@@ -3486,8 +3486,16 @@ and `automatable_modes`, as RomM's platform list carries),
 `GET /api/libraries/{id}/placements` (any Library, #430) lists, for each of
 the Library's `platforms()` (one listing, passed to every row as `known`),
 the Platform's own `id` (the row's key: two RomM platforms can share a slug),
-its `placement` relative to the root, whether the folder exists, or the
-`PlacementUnknown` reason; the PATCH takes a folder Library's `layout`. The
+its `placement` relative to the root, placed by its own record alone
+(`known=[platform]`, so two RomM records show their own two folders, #512),
+whether the folder exists, its `rom_count`, `guessed` and `why`, or the
+`PlacementUnknown` reason. Where the Platform's new Images go is placed from
+the whole listing: when that has `choices`, the row it lands on has
+`new_images_here` True, the `choices` and the `picked` folder name, and the
+Platform's other rows have `new_images_here` False. When the pick can't take
+Images, its row keeps the `PlacementUnknown` reason with the `choices`, so it
+can be changed. The PATCH takes a folder
+Library's `layout`. The
 panel (`LibraryPlacement.svelte`) waits for the view's own Platform listing
 and drops a superseded answer (`src/lib/util/latestOnly.js`).
 
@@ -3497,7 +3505,10 @@ inverse of `platform_folder`: given a Platform slug (detection's vocabulary,
 so the Inbox can pass what `detect_platform` returned without asking which
 kind of Library it has), the folder its Images go in. `Placement` carries
 `platform`, `folder` (absolute) and `exists` (False: whoever places an Image
-creates the folder; `placement` never does). It raises `PlacementUnknown`
+creates the folder; `placement` never does), and, for a best guess the user
+may want to change (#512), `guessed`, `why` (how it was picked, in plain
+words) and `choices` (`(folder name, ROM count)` pairs it picked from, when
+there were several). It raises `PlacementUnknown`
 when the answer can't be told, and `LibraryUnreadable` when the Library can't
 be read. Every implementation ends in `rules.library.placed_in(folder,
 platform, mapped=...)`, which fails closed: the folder must be inside a Volume
@@ -3521,14 +3532,37 @@ a Library that needs its Platform records (RomM's folder names, carried as
   nothing: `platform_folder` finds the folder holding an existing Image
   whatever the layout, directly under the root or, when that folder is the
   root's `roms`, directly under `roms`.
-- `RommLibrary` names the folder by the RomM platform's `fs_slug` (`Platform.folder`; the slug
-  for a Platform RomM has no record of yet; two RomM platforms for one slug
-  refuse) and reads RomM's structure off the disk at the directory level, as
-  `RommClient.local_path` does: `<root>/roms/<name>` when `<root>/roms`
-  exists, `<root>/<name>/roms` when that exists, `<root>/<name>` when it
-  exists with neither `roms` nor `bios` in it (the root is RomM's `roms`
-  folder). Anything else refuses: RomM 5.3 declares the structure in a setting
-  this app doesn't read.
+- `RommLibrary` names the folder by a RomM platform record's `fs_slug`
+  (`Platform.folder`; the slug for a Platform RomM has no record of yet).
+  RomM often keeps several records for one Platform (`famicom` beside `nes`,
+  #512): their folders, each with its summed `rom_count` (`Platform.rom_count`),
+  are `Placement.choices`, and the pick is the user's saved one
+  (`romm_settings.platform_folders()`, the `platform_folders` key of RomM's
+  settings row, written only by `romm_settings.pick_platform_folder`), else the
+  only folder holding ROMs, else the one with the most (then the one named as
+  the Platform) with `guessed` True. A folder name with a path in it is never
+  picked over a good one, and refuses when it is the only one.
+  `Placement.why` says how it was picked ("RomM's NES folder, 4933 ROMs: the
+  only one with ROMs"). It reads RomM's structure off the disk at the
+  directory level, as `RommClient.local_path` does: `<root>/roms/<name>` when
+  `<root>/roms` exists, `<root>/<name>/roms` when that exists,
+  `<root>/<name>` when it exists with neither `roms` nor `bios` in it (the
+  root is RomM's `roms` folder). `<root>/<name>/bios` alone guesses
+  `<root>/<name>/roms`, and nothing at all guesses RomM's default
+  `<root>/roms/<name>`, both `guessed` (RomM 5.3 declares the structure in a
+  setting this app doesn't read). With no folder for the Platform yet, it
+  follows the other Platform folders under the root first (Codex PR #516):
+  `<root>/<name>/roms` when one holds `roms` or `bios`, else `<root>/<name>`,
+  never a new `<root>/roms`, which would flip `local_path`'s layout and lose
+  every existing record. When `placed_in` refuses the pick,
+  `PlacementUnknown.choices` and `.picked` carry the choices, so the
+  listing's row for the picked folder keeps its chooser and the pick can be
+  changed. `RommLibrary.platforms` drops a record whose
+  `fs_slug` is a junk name (`utils.junk.is_junk_entry`, Synology's `@eaDir`).
+  `RommLibrary.pick_folder(platform, folder)` saves a pick after checking it is
+  one folder (no path in it) and one of the choices; the panel's "Automatic"
+  option sends None to forget it (`PUT /api/libraries/{id}/placements/{platform}`, 422
+  otherwise; 400 for a Library without `pick_folder`).
 
 **The Rules view** (`src/lib/components/views/RulesView.svelte`). A Library
 picker over `RuleEditor.svelte` (the former `RommAutomation.svelte`). The editor
