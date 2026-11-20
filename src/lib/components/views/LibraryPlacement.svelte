@@ -193,10 +193,6 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-2, 8px);
-    padding: 12px 16px;
-    background: var(--surface-2);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-md, 8px);
   }
   .placement summary {
     cursor: pointer;

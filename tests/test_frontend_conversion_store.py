@@ -384,7 +384,7 @@ def test_an_explicit_target_choice_turns_auto_off_and_says_so(tmp_path):
 
 def test_every_target_selector_goes_through_choose_target():
     src = Path(__file__).resolve().parents[1] / "src" / "lib" / "components"
-    for rel in ("panels/ModeSelect.svelte", "views/RommView.svelte"):
+    for rel in ("panels/ModeSelect.svelte", "library/RommBrowse.svelte"):
         text = (src / rel).read_text(encoding="utf-8")
         assert "conversion.chooseTarget(" in text, rel
         assert "conversion.setMode(" not in text, rel
@@ -1123,11 +1123,14 @@ process.stdout.write(JSON.stringify({ typed, blank, zstd: store.compressionLevel
 
 
 def test_the_rule_editor_holds_its_level_to_the_codecs_range(tmp_path):
-    """RuleEditor's level box goes through the same clamp, and its codec
-    change through the same fit, as the convert panel."""
-    editor = (_SRC / "components" / "views" / "RuleEditor.svelte").read_text(encoding="utf-8")
-    assert "onchange={(e) => setRuleLevel(platform.id, rule, e.currentTarget.value)}" in editor
-    assert "clampLevel(range, value)" in editor and "fitLevel(range, level)" in editor
+    """A console's level goes through the same clamp, and its codec change
+    through the same fit, as the convert panel: both use compression.js."""
+    advanced = (_SRC / "components" / "library" / "RuleAdvanced.svelte").read_text(
+        encoding="utf-8",
+    )
+    assert "onchange={(v) => onupdate(toRule(rule.mode, v))}" in advanced
+    shared = (_SRC / "tools" / "compression.js").read_text(encoding="utf-8")
+    assert "clampLevel(range, level)" in shared and "fitLevel(range, value?.level)" in shared
     data = _run(tmp_path, """
 const lzma2 = { min: 1, max: 9, default: 5 };
 process.stdout.write(JSON.stringify({

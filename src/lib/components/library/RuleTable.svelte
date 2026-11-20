@@ -16,6 +16,7 @@
   import { newCheckRule } from '$lib/rules/checkRule.js';
   import { newRuleSafety, ruleUpdate } from '$lib/rules/ruleTable.js';
   import { CHECK_LEVEL } from '$lib/util/checkLevels.js';
+  import { DELETE_CHECK_HINTS, deleteCheckFor } from '$lib/util/deleteCheck.js';
   import { defaults } from '$lib/stores/defaults.svelte.js';
   import RuleAdvanced from './RuleAdvanced.svelte';
   import IconButton from '$lib/components/ui/IconButton.svelte';
@@ -50,6 +51,18 @@
 
   function specOf(mode) {
     return mode ? registry.specFor(mode) : null;
+  }
+
+  // The check a delete-original job from this console passes before the
+  // original goes (#302, #423): the helper the Convert panel reads, so the
+  // two never differ. A Recognized mode ignores the stored quick check.
+  function ruleDeleteCheck(spec, rule) {
+    return deleteCheckFor({
+      supportsRoundTrip: !!spec?.supportsRoundTrip,
+      containerOnly: rule.check_level === CHECK_LEVEL.containerOnly,
+      deleteProof: spec?.deleteProof,
+      roundTripRequired: !!spec?.roundTripRequired,
+    });
   }
 
   /** Change one console's conversion Rule, then save after *delay* ms. */
@@ -113,7 +126,11 @@
     }
     if (source.losesDatMatch(spec)) {
       out.push(`RomM can't match ${spec.outputExt?.replace(/^\./, '').toUpperCase()} files by hash. `
-        + "Compressatorium keeps their RomM details and puts them back after RomM's next scan.");
+        + "Compressatorium keeps their RomM details and puts them back after RomM's next scan."
+        // A split build's numbered parts have no single file for RomM to hash.
+        + (spec.supportsSplit && rule.split
+          ? ' Not for a game split into 4 GB parts: RomM needs those identified by hand.'
+          : ''));
     }
     return out;
   }
@@ -183,7 +200,9 @@
       </span>
       <span role="cell" class="check">
         {#if spec}
-          <label title={spec.supportsDeleteOnVerify ? undefined : (spec.sourceKeptReason ?? "This format can't be checked well enough")}>
+          <label title={spec.supportsDeleteOnVerify
+            ? DELETE_CHECK_HINTS[ruleDeleteCheck(spec, rule)]
+            : (spec.sourceKeptReason ?? "This format can't be checked well enough")}>
             <input
               type="checkbox"
               checked={!!rule.delete_on_verify}
@@ -267,7 +286,7 @@
     grid-column: 1 / -1;
     margin: 0;
     font-size: var(--text-sm);
-    color: var(--warning-text, var(--text-1));
+    color: var(--text-1);
   }
   .expanded { grid-column: 1 / -1; }
   .sr-only {

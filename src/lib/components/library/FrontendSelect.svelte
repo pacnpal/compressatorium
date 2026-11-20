@@ -77,7 +77,10 @@
   {#key reset}
     <Select label="Game list app" value={app} options={APPS} onchange={choose} />
   {/key}
-  <p class="hint">Keeps its game lists pointing at the new files.</p>
+  <p class="hint">
+    Keeps its game lists pointing at the new files.
+    {#if app !== 'none'}Close ES-DE first: it rewrites its game lists when it quits.{/if}
+  </p>
   {#if app === 'esde'}
     <p class="folder">
       <span class="muted">ES-DE's game lists:</span>

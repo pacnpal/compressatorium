@@ -136,7 +136,7 @@
   {:else}
     <ul class="rows">
       {#each inboxes as row (row.id)}
-        <li>
+        <li data-folder={row.folder}>
           <div class="where">
             <code>{where(row.folder)}</code>
             <span class="status muted">
@@ -215,5 +215,5 @@
   .status a { color: var(--accent); }
   .state { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin: 0; }
   .muted { color: var(--text-2); font-size: var(--text-sm); margin: 0; }
-  .error { color: var(--danger-text, var(--text-1)); font-size: var(--text-sm); }
+  .error { color: var(--error); font-size: var(--text-sm); }
 </style>

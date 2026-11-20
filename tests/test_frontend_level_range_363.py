@@ -61,17 +61,18 @@ def test_the_level_range_is_the_running_codecs(tmp_path):
 
 
 def test_both_level_controls_show_only_for_a_codec_that_takes_a_level():
-    """The Rule editor and the convert panel gate the level box on that range,
-    and take its bounds and "Blank uses" hint from it."""
-    editor = (_SRC / "components" / "views" / "RuleEditor.svelte").read_text(encoding="utf-8")
+    """A console's settings and the convert panel share one picker, which gates
+    the level box on that range and takes its bounds from it."""
+    advanced = (_SRC / "components" / "library" / "RuleAdvanced.svelte").read_text(
+        encoding="utf-8",
+    )
     picker = (_SRC / "components" / "panels" / "CompressionPicker.svelte").read_text(
         encoding="utf-8",
     )
     store = (_SRC / "stores" / "conversion.svelte.js").read_text(encoding="utf-8")
 
-    assert "{@const range = ruleLevelRange(rule)}" in editor
-    assert "return registry.levelRangeFor(rule.mode, codec);" in editor
-    assert "{#if range}" in editor and "Blank uses {range.default}" in editor
+    assert "<CompressionPicker" in advanced and "value={fromRule(rule)}" in advanced
+    assert "onchange={(v) => onupdate(toRule(rule.mode, v))}" in advanced
     assert "const levelRange = $derived(rangeOf(mode, value));" in picker
     assert "{#if levelRange}" in picker
     assert "return registry.levelRangeFor(this.mode, this.singleCodec);" in store

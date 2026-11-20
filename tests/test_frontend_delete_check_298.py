@@ -86,7 +86,7 @@ def test_the_panel_and_the_rule_editor_say_which_proof_each_mode_uses():
     src = Path(__file__).resolve().parents[1] / "src" / "lib" / "components"
     panel = (src / "panels" / "ConvertPanel.svelte").read_text(encoding="utf-8")
     assert "DELETE_CHECK_HINTS[conversion.deleteCheck]" in panel
-    editor = (src / "views" / "RuleEditor.svelte").read_text(encoding="utf-8")
-    assert "DELETE_CHECK_HINTS[ruleDeleteCheck(spec, rule)]" in editor
+    table = (src / "library" / "RuleTable.svelte").read_text(encoding="utf-8")
+    assert "DELETE_CHECK_HINTS[ruleDeleteCheck(spec, rule)]" in table
     modal = (src / "modals" / "DeletePlanModal.svelte").read_text(encoding="utf-8")
     assert "conversion.deleteCheck === 'recognized'" in modal

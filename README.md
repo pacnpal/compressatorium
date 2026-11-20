@@ -734,8 +734,8 @@ extension-matching, so a new console never leaves you with an unconvertible row.
    token as one.
 2. Mount RomM's library folder into the Compressatorium container, and make sure
    it's inside a configured Compressatorium volume.
-3. Open **RomM → Settings**, paste the URL, token and library path, and press
-   **Test connection**.
+3. Open **Libraries → RomM → Connection**, paste the address, token and where
+   RomM's games are, and press **Save** (it tests the connection too).
 
 The test reports three things separately, because they fail independently and
 "it doesn't work" is useless when it could be any of them:
@@ -837,7 +837,7 @@ never disturbs the other.
 
 RomM won't convert a ROM it couldn't identify, and it identifies through
 network services that miss a lot. Many of those ROMs are clean dumps your own
-DATs or Hasheous know. Tick **Unidentified in RomM** on the Library tab to list
+DATs or Hasheous know. Tick **Unidentified in RomM** on RomM's **Browse** tab to list
 only the ROMs RomM couldn't identify, with a count of how many of them the app
 Recognizes and, beside each one it does, the name its DAT or Hasheous gives it.
 The list reads the matches the app already has and never starts hashing by
@@ -851,14 +851,14 @@ Hasheous match for its file is a hit, so a Rule set to **Only Recognized**
 converts these too. A Rule set to **only ROMs RomM could not identify** keeps
 reading RomM's verdict alone.
 
-Turn on **Write Hasheous ids onto converted ROMs** (RomM **Settings →
-Metadata**, off by default) and, after converting a ROM the app found through
+Turn on **Add online IDs to converted games** (RomM's **Connection** tab,
+under **More**, off by default) and, after converting a ROM the app found through
 Hasheous, the provider ids Hasheous returned (IGDB, TheGamesDB and the rest
 RomM stores) are written onto the ROM in RomM, so it shows the cover and
 description. Only ids the ROM doesn't already have are written: a match RomM
 made is never replaced. They travel with the metadata snapshot, so they land
 once RomM knows the converted file (its next scan, or the rehash after keeping
-the ROM id), and it needs **Save metadata before converting** on. They are
+the ROM id), and it needs **Keep RomM's details (cover, notes, play history) when converting** on. They are
 written for every output format, CHD and 7z included, since RomM never matched
 these ROMs in the first place.
 
@@ -867,15 +867,15 @@ zip and 7z archives, so an archived library isn't stuck.
 
 | Light | Dark |
 |-------|------|
-| ![Unidentified in RomM filter, light](docs/screenshots/romm-unidentified-light.png) | ![Unidentified in RomM filter, dark](docs/screenshots/romm-unidentified-dark.png) |
-| ![Write Hasheous ids switch, light](docs/screenshots/romm-hasheous-ids-light.png) | ![Write Hasheous ids switch, dark](docs/screenshots/romm-hasheous-ids-dark.png) |
+| ![RomM's Browse tab with the Unidentified in RomM filter, light](docs/screenshots/romm-browse-light.png) | ![RomM's Browse tab with the Unidentified in RomM filter, dark](docs/screenshots/romm-browse-dark.png) |
+| ![More on RomM's Connection tab, light](docs/screenshots/romm-more-light.png) | ![More on RomM's Connection tab, dark](docs/screenshots/romm-more-dark.png) |
 
 #### Keeping the ROM id
 
 Converting a game and deleting its source normally leaves RomM a new file and a
 missing one: RomM adds a new game, and the old one keeps your saves, states,
-notes, collections and play history. Turn on **Keep the ROM id when converting**
-on the RomM **Settings** tab (the token needs `roms.read`, `roms.write` and
+notes, collections and play history. Turn on **Keep the same RomM entry when the file changes**
+(RomM's **Connection** tab, under **More**) (the token needs `roms.read`, `roms.write` and
 `tasks.run`; turning it on checks) and a conversion renames RomM's record to the new
 file instead, so the game keeps its id and everything on it. It works for a
 single-file game (an `.iso`, say) converted to one file beside it, when the
@@ -978,7 +978,7 @@ games (`.cue`/`.bin`) and anything else keep the usual behaviour.
 
 #### Formats RomM re-identifies by itself
 
-With **Keep the ROM id when converting** off, some conversions shouldn't
+With **Keep the same RomM entry when the file changes** off, some conversions shouldn't
 need the metadata re-pin: RomM finds the game again on its own. RomM 5.4.1,
 with title-id extraction on (its default), moves a missing ROM onto its
 converted file by the game's title id at its next library scan, keeping the
@@ -1028,7 +1028,7 @@ RomM's target and the Rule's side by side. Platforms RomM can't convert at all
 are marked too, since only Compressatorium converts those. A RomM without the
 converter, or with it off, shows none of this.
 
-The banner's **Import RomM's targets as Rules** button turns RomM's targets into
+With RomM's own converter on, RomM's **Automation** tab says so, and its **Use RomM's choices** button turns RomM's targets into
 Rules, for Platforms that have no Rule yet. Each RomM target is mapped onto a
 mode here that writes the same format (`chd` on PlayStation becomes CHDMAN's CD
 mode, `rvz` on GameCube becomes Dolphin RVZ, `zar` on Xbox 360 becomes
@@ -1040,15 +1040,32 @@ them on in Automation once you've switched RomM's converter off.
 
 | Light | Dark |
 |-------|------|
-| ![RomM's converter banner, light](docs/screenshots/romm-converter-light.png) | ![RomM's converter banner, dark](docs/screenshots/romm-converter-dark.png) |
-| ![RomM converter flags on Rules, light](docs/screenshots/romm-converter-rules-light.png) | ![RomM converter flags on Rules, dark](docs/screenshots/romm-converter-rules-dark.png) |
-| ![Keep the ROM id switch, light](docs/screenshots/romm-swap-light.png) | ![Keep the ROM id switch, dark](docs/screenshots/romm-swap-dark.png) |
+| ![RomM's converter on the Automation tab, light](docs/screenshots/romm-converter-light.png) | ![RomM's converter on the Automation tab, dark](docs/screenshots/romm-converter-dark.png) |
+| ![Keep the same RomM entry, under More, light](docs/screenshots/romm-more-light.png) | ![Keep the same RomM entry, under More, dark](docs/screenshots/romm-more-dark.png) |
 
-### Folder Libraries and the Rules view
+### Folder Libraries
 
-You don't need RomM to automate conversions. Open any folder inside a Volume in
-the Workspace, and pick **Register as a Library** from its row menu. The folder
-becomes a Library, and the **Rules** view (in the sidebar) shows it:
+You don't need RomM to automate conversions. In **Libraries**, press **Add a
+Library** and pick a folder on a Drive (a Drive's own top folder works too), or
+open the folder in **Files** and pick **Make this folder a Library**. Its page
+has two tabs:
+
+- **Browse** lists its consoles, how many games each has and the folder they're
+  in, each with **Open** into Files. Games no console can be told for are
+  counted at the top, with a link to fix them in Activity.
+- **Automation** is one table, a row per console, with three choices: what to
+  **Convert to**, **Check after**, and **Delete original** (only once the new
+  file checks out; on, it turns the check on too). **Apply recommended** sets
+  every console with games and no format yet to its best one, checks every new
+  file and keeps originals; a console you set is never changed. Every change
+  saves on its own ("Saving…", "Saved"). The sliders button on a row opens
+  the rest: compression, where new files go, which games, when it runs, and a
+  nightly re-check. **Convert automatically** turns the scheduler on, and
+  **Re-check games every night** turns the re-check on for every console that
+  converts. Below the table sit the Library's [watch folders](#watch-folders),
+  **Where new games go**, and the **Game list app** it feeds.
+
+How it works underneath:
 
 - **Images** are what gets converted, not files: a `.cue` or `.gdi` and the
   tracks it lists are one Image (the sheet), and a split Wii U dump is one Image
@@ -1078,12 +1095,13 @@ becomes a Library, and the **Rules** view (in the sidebar) shows it:
   nobody has matched yet is neither: both filters skip it, so run a DAT match
   over the folder first.
 - **Preview** shows what a sweep would queue and moves no schedule clock. **Run
-  now** queues it. **Run automatically** turns the scheduler on for that Library.
+  now** queues it. **Convert automatically** turns the scheduler on for that
+  Library. Both save any change still waiting first.
 - If the folder cannot be reached during a run (a NAS rebooting, a mount
   dropping), that run says so and queues nothing; the next run checks again.
-- **Layout** says where a Platform's Images go: ES-DE / Batocera style
-  (`<root>/ps2`, the default), RomM style (`<root>/roms/ps2`) or flat (every
-  Image in the root, sorted by its header). **Where new Images go** lists the
+- **Folder style** says where a console's games go: one folder per console
+  (ES-DE, Batocera: `<root>/ps2`, the default), RomM style (`<root>/roms/ps2`)
+  or all in one folder (sorted by each game's header). **Where new games go** lists the
   folder for each Platform, named the way Platform detection reads it (an
   existing `GameCube` folder, or a new `gc` one), and marks a folder that will
   be created. Two folders for one Platform are shown as "can't tell" instead
@@ -1096,16 +1114,21 @@ becomes a Library, and the **Rules** view (in the sidebar) shows it:
   list on that row and the choice is kept. Before RomM has a `roms` folder,
   RomM's default `roms/<platform>` is used, marked as a best guess too. Junk
   folders RomM scanned as platforms (Synology's `@eaDir`) are left out.
-- **Remove Library** forgets the Library and its Rules. It never touches a file.
+- **Remove Library** (the `⋯` menu, beside **Find duplicates**, **Open folder in
+  Files** and **Rename…**) forgets the Library and its Rules. It never touches a
+  file.
 
-The RomM view's **Automation** tab is the same Rules view, opened on RomM.
+RomM's **Automation** tab is the same table, on RomM's consoles.
 
-### Inboxes
+### Watch folders
 
-An Inbox is a folder whose new files are taken into one Library: point it at
-your downloads folder and new games are sorted into the Library for you. In the
-Rules view, pick the Library and type the folder under **Inboxes**, with how
-long a file must stay unchanged before it's taken (60 seconds by default).
+A watch folder (an Inbox, in the API) is a folder whose new files are taken
+into one Library: point it at your downloads folder and new games are sorted
+into the Library for you. On the Library's **Automation** tab, press **Add a
+watch folder** and pick the folder; a file is taken once it has stayed the same
+for a minute. Each row says when it was last checked, how many are still
+downloading, how many need you (a link to Activity) and how many were taken in,
+and re-reads every 15 seconds.
 
 - The folder must be inside a Volume, and can't be inside a Library or hold
   one (intake would read its own output, or take another Library's Images). A
@@ -1640,72 +1663,54 @@ An at-a-glance view of the job queue, verification cache, mounted volumes, recen
 |-------|------|
 | ![Dashboard, light](docs/screenshots/dashboard-light.png) | ![Dashboard, dark](docs/screenshots/dashboard-dark.png) |
 
-#### RomM library
+#### Libraries
 
-Connect a [RomM](https://romm.app) instance and browse your library by platform — real game names instead of filenames, and the platform tells Compressatorium what a bare `.iso` actually is. Everything is configured in the app; this is the first-run setup. See [RomM integration](#romm-integration).
-
-| Light | Dark |
-|-------|------|
-| ![RomM setup, light](docs/screenshots/romm-light.png) | ![RomM setup, dark](docs/screenshots/romm-dark.png) |
-
-Per-platform automation — target format, schedule, queueing limits and selection filters for each platform independently:
+Every Library on one page, RomM first, each with its consoles, games, whether
+it converts on its own, and anything that needs you. With none yet, the page
+says how to start. See [Folder Libraries](#folder-libraries).
 
 | Light | Dark |
 |-------|------|
-| ![RomM automation, light](docs/screenshots/romm-automation-light.png) | ![RomM automation, dark](docs/screenshots/romm-automation-dark.png) |
+| ![Libraries, light](docs/screenshots/libraries-light.png) | ![Libraries, dark](docs/screenshots/libraries-dark.png) |
+| ![No Libraries yet, light](docs/screenshots/libraries-empty-light.png) | ![No Libraries yet, dark](docs/screenshots/libraries-empty-dark.png) |
 
-A Rule open in the editor. A Rule that deletes its source Round-trips the new file first unless *Container check only* is ticked:
-
-| Light | Dark |
-|-------|------|
-| ![RomM rule editor, light](docs/screenshots/romm-rule-editor-light.png) | ![RomM rule editor, dark](docs/screenshots/romm-rule-editor-dark.png) |
-#### Rules on a folder Library
-
-A folder registered as a Library, with the Platforms found in it, its Unsorted and Conflicted counts, and a PS2 Rule. See [Folder Libraries and the Rules view](#folder-libraries-and-the-rules-view).
+**Add a Library** picks a folder by walking the Drives, never by typing a path.
 
 | Light | Dark |
 |-------|------|
-| ![Rules view on a folder Library, light](docs/screenshots/rules-folder-light.png) | ![Rules view on a folder Library, dark](docs/screenshots/rules-folder-dark.png) |
+| ![Add a Library, light](docs/screenshots/library-add-light.png) | ![Add a Library, dark](docs/screenshots/library-add-dark.png) |
 
-#### EmulationStation frontend switch
+#### One Library
 
-The same folder Library marked as used by an EmulationStation frontend, so conversions update its `gamelist.xml`. The note says to close ES-DE first.
-
-| Light | Dark |
-|-------|------|
-| ![EmulationStation frontend switch, light](docs/screenshots/rules-es-frontend-light.png) | ![EmulationStation frontend switch, dark](docs/screenshots/rules-es-frontend-dark.png) |
-
-#### ES-DE gamelists folder
-
-The ES-DE gamelists folder field under the switch, with a folder typed in and ready to save.
+**Browse** lists its consoles and their folders. **Automation** is a row per
+console: Convert to, Check after, Delete original, and **Apply recommended**
+to set them all at once. The sliders button opens the rest, the nightly
+re-check included (see [Check Rules](#check-rules)).
 
 | Light | Dark |
 |-------|------|
-| ![ES-DE gamelists folder, light](docs/screenshots/rules-esde-gamelists-light.png) | ![ES-DE gamelists folder, dark](docs/screenshots/rules-esde-gamelists-dark.png) |
+| ![A Library's consoles, light](docs/screenshots/library-browse-light.png) | ![A Library's consoles, dark](docs/screenshots/library-browse-dark.png) |
+| ![The console table after Apply recommended, light](docs/screenshots/library-automation-light.png) | ![The console table after Apply recommended, dark](docs/screenshots/library-automation-dark.png) |
+| ![A console's More settings with its nightly re-check, light](docs/screenshots/library-automation-advanced-light.png) | ![A console's More settings with its nightly re-check, dark](docs/screenshots/library-automation-advanced-dark.png) |
 
-#### Library layout
-
-The folder Library's layout picker and where new Images of each of its Platforms would land. See [Folder Libraries and the Rules view](#folder-libraries-and-the-rules-view).
-
-| Light | Dark |
-|-------|------|
-| ![Library layout, light](docs/screenshots/rules-folder-layout-light.png) | ![Library layout, dark](docs/screenshots/rules-folder-layout-dark.png) |
-
-#### Inboxes
-
-A folder saved as the Library's Inbox, with its settle time, last poll, the files waiting to settle, in progress, held with a Finding, and processed. See [Inboxes](#inboxes).
+Its [watch folders](#watch-folders), where new games go, and the game list app
+it feeds sit under the table.
 
 | Light | Dark |
 |-------|------|
-| ![Inboxes, light](docs/screenshots/rules-inboxes-light.png) | ![Inboxes, dark](docs/screenshots/rules-inboxes-dark.png) |
+| ![Watch folders, light](docs/screenshots/library-watch-folders-light.png) | ![Watch folders, dark](docs/screenshots/library-watch-folders-dark.png) |
+| ![Where new games go, light](docs/screenshots/library-placement-light.png) | ![Where new games go, dark](docs/screenshots/library-placement-dark.png) |
+| ![Game list app, light](docs/screenshots/library-frontend-light.png) | ![Game list app, dark](docs/screenshots/library-frontend-dark.png) |
 
-#### Check Rule
+#### RomM
 
-A PS2 Platform with a conversion Rule and a check Rule: 50 GB a night between 01:00 and 05:00. See [Check Rules](#check-rules).
+Connect a [RomM](https://romm.app) instance on its Connection tab; Browse and
+Automation then work on RomM's consoles. See [RomM integration](#romm-integration).
 
 | Light | Dark |
 |-------|------|
-| ![Check Rule in the rule editor, light](docs/screenshots/rule-editor-check-light.png) | ![Check Rule in the rule editor, dark](docs/screenshots/rule-editor-check-dark.png) |
+| ![RomM's Connection tab, light](docs/screenshots/romm-connect-light.png) | ![RomM's Connection tab, dark](docs/screenshots/romm-connect-dark.png) |
+| ![RomM's console table, light](docs/screenshots/romm-automation-light.png) | ![RomM's console table, dark](docs/screenshots/romm-automation-dark.png) |
 
 #### Findings
 
@@ -2766,7 +2771,7 @@ waits for its checks: an Image that is not Intact, or whose check could not
 run, makes it exit `1`, and the check Rule's night counts as done only once its
 checks have finished.
 
-After the Rules, `run-rules` makes one pass over the [Inboxes](#inboxes) of
+After the Rules, `run-rules` makes one pass over the [watch folders](#watch-folders) of
 the Libraries it swept, as the server's tick does, under the same lock. Each
 run is a new process, so what intake has seen settling is kept between runs:
 a file one run sees is taken by the next run once its settle time has passed

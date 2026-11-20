@@ -4,6 +4,32 @@
 
 ### Changed
 
+- **One page per Library** (#541). **Libraries** lists every Library as a
+  card with its consoles, games, whether it converts on its own, its watch
+  folders and how many problems need you. A Library's page has **Browse** (its
+  consoles and their folders, each a link into Files; RomM's catalog for
+  RomM), **Automation** and, for RomM, **Connection**. The Rules view, the
+  separate RomM view and the Inboxes panel are gone; their old links open the
+  new page.
+- **A console table instead of the Rule editor.** Each console is one row:
+  **Convert to**, **Check after**, **Delete original**. The rest (compression,
+  where new files go, which games, when it runs, the nightly re-check) is
+  under the row's sliders button. Picking a format turns the console on; a
+  new console starts from your saved defaults. Every change saves on its own,
+  so the **Save rules** button is gone. **Apply recommended** sets every
+  console with games and no format yet to its best one in one click, checks
+  each new file and keeps originals, and never changes a console you set
+  (new `GET /api/libraries/{id}/recommended-rules`). **Re-check games every
+  night** turns the check on for every converting console at once.
+- **Watch folders** (Inboxes) are picked from your Drives, never typed, and
+  each row says when it was last checked, what's still downloading, what
+  needs you and what was taken in, refreshed every 15 seconds. **Where new
+  games go** and the **Game list app** (None, ES-DE or Batocera/Knulli; ES-DE's
+  gamelists folder is picked from your Drives) sit below the table.
+- **RomM's Connection tab** has one **Save** that tests the connection after
+  saving. RomM's details, keeping the same entry and online IDs fold under
+  **More**. RomM's own converter shows as a banner on the Automation tab with
+  **Use RomM's choices**.
 - **Four places instead of eleven** (#534). The sidebar is now **Files**,
   **Libraries**, **Activity** and **Settings**, with **Help** at the foot.
   Files is the old Workspace; Libraries holds RomM and every folder Library;

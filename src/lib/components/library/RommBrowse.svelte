@@ -402,16 +402,16 @@
           && fileBrowser.rommUnidentified && (fileBrowser.rommDiagnostics?.total ?? 0) === 0}
           <EmptyState
             title="RomM identified every ROM here"
-            description="Nothing on this platform is unidentified in RomM. Clear the filter to see every ROM."
+            description="RomM knows every game on this console. Clear the filter to see them all."
           />
         {:else if !fileBrowser.loading && entries.length === 0 && romm.selectedPlatformId !== null}
           {@const diag = fileBrowser.rommDiagnostics}
           {#if diag && diag.total > 0}
             <div class="diag-empty">
               <span class="diag-glyph" aria-hidden="true">∅</span>
-              <h3>No matching ROMs on this volume</h3>
+              <h3>None of these games are on your Drives</h3>
               <p>
-                RomM lists {diag.total} ROM{diag.total === 1 ? '' : 's'} for this platform,
+                RomM lists {diag.total} {diag.total === 1 ? 'game' : 'games'} for this console,
                 but none resolved to a file on disk.
               </p>
               <dl class="diag-breakdown">
@@ -424,7 +424,7 @@
                 {#if diag.outside_volumes > 0}
                   <div class="diag-row">
                     <dt>{diag.outside_volumes}</dt>
-                    <dd>path outside configured volumes</dd>
+                    <dd>not on any of your Drives</dd>
                   </div>
                 {/if}
                 {#if diag.no_path > 0}
@@ -456,7 +456,7 @@
                   {/if}
                   {#if diag.volumes.length > 0}
                     <div class="diag-row">
-                      <dt>Volumes</dt>
+                      <dt>Drives</dt>
                       <dd><code>{diag.volumes.join(', ')}</code></dd>
                     </div>
                   {/if}
@@ -475,8 +475,8 @@
             </div>
           {:else}
             <EmptyState
-              title="No matching ROMs on this volume"
-              description="RomM lists ROMs for this platform, but none of them resolve to a file inside a configured Compressatorium volume."
+              title="None of these games are on your Drives"
+              description="RomM lists games for this console, but none of them are files on your Drives."
             />
           {/if}
         {:else}
@@ -568,7 +568,7 @@
   .unidentified strong { color: var(--text-1); }
   .saving { color: var(--accent); font-weight: var(--weight-medium); }
   .muted { color: var(--text-2); }
-  .error-text { color: var(--danger-text, var(--text-1)); }
+  .error-text { color: var(--error); }
 
   .notice {
     display: flex;
@@ -582,11 +582,11 @@
   }
   .notice.error {
     border-color: var(--danger-border, var(--border-subtle));
-    color: var(--danger-text, var(--text-1));
+    color: var(--error);
   }
   .notice.warn {
-    border-color: var(--warning-border, var(--border-subtle));
-    color: var(--warning-text, var(--text-1));
+    border-color: var(--warning);
+    color: var(--text-1);
   }
 
   .grid {

@@ -112,7 +112,7 @@
   .warn {
     margin: 0 0 var(--space-3);
     padding: var(--space-2) var(--space-3);
-    border: 1px solid var(--warning-border, var(--border-subtle));
+    border: 1px solid var(--warning);
     border-radius: var(--radius-md);
     font-size: var(--text-sm);
   }

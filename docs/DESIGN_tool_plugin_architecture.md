@@ -4340,6 +4340,20 @@ read off the spec, so it holds for any tool. Today the only such row is a
 GameCube/Wii `.rvz` under `dolphin_rvz` ("Already RVZ"); a `.wia` or `.gcz`
 still converts to RVZ.
 
+**Apply recommended** (#541) reuses it for a whole Library:
+`GET /api/libraries/{id}/recommended-rules` routes up to 25 games of each
+console with games and no conversion Rule through `auto_route`, keeps the most
+common mode, and drops one that `mode_is_automatable` refuses or whose tool is
+not in `ready_tool_ids()` (that console goes to `skipped` with the tool's own
+`not_ready_message`). It runs off the loop under the platforms route's bound
+and saves nothing; the Automation tab merges `rules` into the Rules it holds
+(`RulesSource.applyRecommended`, never over a console that has a target) and
+saves them through `PUT .../rules`. RomM uses the same route with `id=romm`.
+On the frontend every edit in the console table saves on its own:
+`RulesSource.scheduleSave(delay)` (600 ms for typed fields) goes through the
+existing one-at-a-time `saveRules` chain, and `flush()` sends a waiting edit
+before Preview, Run now or turning automation on.
+
 `ModeSpec.reads_extensions` is the mode's real input domain when it is
 narrower than `input_extensions`; empty means "every input extension". It must
 be a subset of `input_extensions`, which keeps gating manual selection and

@@ -602,10 +602,10 @@ def test_the_rules_view_shows_the_switch_with_its_note():
     """Static check: the editor offers the switch for every Library, and its
     help text says to close ES-DE first."""
     src = Path(__file__).resolve().parents[1] / "src" / "lib"
-    editor = (src / "components" / "views" / "RuleEditor.svelte").read_text()
+    editor = (src / "components" / "library" / "FrontendSelect.svelte").read_text()
     folder = (src / "stores" / "libraries.svelte.js").read_text()
     romm = (src / "stores" / "romm.svelte.js").read_text()
-    assert "Used by an EmulationStation frontend" in editor
+    assert "Game list app" in editor and "Batocera or Knulli" in editor
     assert "Close ES-DE" in editor
     assert "source.setEsFrontend" in editor
     assert "es_frontend" in folder and "es_frontend" in romm
@@ -616,10 +616,10 @@ def test_the_switch_has_a_screenshot_entry():
     shots = (root / "shots.yml").read_text(encoding="utf-8")
     readme = (root / "README.md").read_text(encoding="utf-8")
     for theme in ("light", "dark"):
-        name = f"docs/screenshots/rules-es-frontend-{theme}.png"
+        name = f"docs/screenshots/library-frontend-{theme}.png"
         assert f"output: {name}" in shots
         assert name in readme
-    assert ".master.frontend" in shots
+    assert "document.querySelector('.frontend')" in shots
 
 
 def test_the_delete_confirmation_shows_how_many_entries_change():

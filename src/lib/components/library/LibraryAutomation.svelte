@@ -289,7 +289,7 @@
   .nightly { margin-top: var(--space-3); font-size: var(--text-sm); }
   .buttons { display: flex; gap: var(--space-2); }
   .result { margin: var(--space-3) 0 0; font-size: var(--text-sm); color: var(--text-1); }
-  .errors { margin: var(--space-2) 0 0; padding-left: var(--space-4); font-size: var(--text-sm); color: var(--warning-text, var(--text-1)); }
+  .errors { margin: var(--space-2) 0 0; padding-left: var(--space-4); font-size: var(--text-sm); color: var(--text-1); }
   .banner {
     display: flex;
     flex-wrap: wrap;
@@ -297,7 +297,7 @@
     gap: var(--space-2) var(--space-3);
     margin-top: var(--space-3);
     padding: var(--space-2) var(--space-3);
-    border: 1px solid var(--warning-border, var(--border-subtle));
+    border: 1px solid var(--warning);
     border-radius: var(--radius-md);
     font-size: var(--text-sm);
   }
@@ -311,7 +311,7 @@
   }
   .table-head h2 { margin: 0; font-size: var(--text-lg); font-weight: var(--weight-semibold); }
   .table-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); }
-  .save-error { display: inline-flex; align-items: center; gap: var(--space-2); font-size: var(--text-sm); color: var(--danger-text, var(--text-1)); }
+  .save-error { display: inline-flex; align-items: center; gap: var(--space-2); font-size: var(--text-sm); color: var(--error); }
   .state { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin: 0; }
   .muted { color: var(--text-2); font-size: var(--text-sm); }
 </style>

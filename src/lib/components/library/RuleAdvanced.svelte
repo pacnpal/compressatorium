@@ -199,7 +199,7 @@
       <input type="number" min="5" max="10080" value={rule.interval_minutes}
         onchange={(e) => onupdate({ interval_minutes: num(e) })} />
     </label>
-    {@render schedule(rule, onupdate)}
+    {@render schedule(rule, onupdate, false)}
     <div class="pair">
       <label class="field">
         <span>At most, per run</span>
@@ -232,7 +232,7 @@
         <input type="number" min="1" value={check.check_budget_gb}
           onchange={(e) => oncheck({ check_budget_gb: num(e) })} />
       </label>
-      {@render schedule(check, oncheck)}
+      {@render schedule(check, oncheck, true)}
     {/if}
   </fieldset>
 
@@ -251,7 +251,7 @@
   </footer>
 </div>
 
-{#snippet schedule(target, change)}
+{#snippet schedule(target, change, equalIsAllDay)}
   <div class="pair">
     <label class="field">
       <span>Only between</span>
@@ -264,6 +264,12 @@
         onchange={(e) => change({ window_end: e.currentTarget.value || null })} />
     </label>
   </div>
+  <!-- A re-check reads the same start and end as the whole day; a
+       conversion is paused for it (RuleTable says so). -->
+  <span class="muted">
+    Times are {target.timezone || 'UTC'}.
+    {#if equalIsAllDay}Leave both blank, or give the same start and end, to run at any hour.{:else}Leave both blank to run at any hour.{/if}
+  </span>
   <div class="days" role="group" aria-label="On these days">
     {#each DAY_LABELS as label, day (label)}
       <button
