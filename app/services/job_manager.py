@@ -314,12 +314,11 @@ def _source_bytes(path: str) -> Optional[int]:
 class ExternalMode:
     """What an externally-managed job mode declares about itself.
 
-    ``in_ledger``: whether its finished jobs get a Ledger row. A check Rule's
-    run (#305) verifies and converts nothing, so it says no; a metadata scan
-    and a DAT match keep the rows they have always written.
+    Every finished job, external or not, gets a History (Ledger) row
+    (restructure PR 4): History is everything that ran, so the Running list
+    can be the queue only.
     """
 
-    in_ledger: bool = True
     # Whether a failed job of this mode is "a job you started" (#293's
     # ``job_failed`` message). A check Rule's run is started by the scheduler.
     started_by_hand: bool = True
@@ -332,46 +331,44 @@ class ExternalMode:
 EXTERNAL_JOB_MODES: Dict[ConversionMode, ExternalMode] = {
     ConversionMode.METADATA_SCAN: ExternalMode(),
     ConversionMode.DAT_MATCH: ExternalMode(),
-    ConversionMode.CHECK: ExternalMode(in_ledger=False, started_by_hand=False),
+    ConversionMode.CHECK: ExternalMode(started_by_hand=False),
     # A find-duplicates run (#388) reads and converts nothing; a person starts it.
-    ConversionMode.FIND_DUPLICATES: ExternalMode(in_ledger=False),
+    ConversionMode.FIND_DUPLICATES: ExternalMode(),
     # A duplicate delete (#389): a person confirmed it; each copy's delete goes
     # through the job's own delete step, so it converts nothing to record.
-    ConversionMode.DELETE_DUPLICATES: ExternalMode(in_ledger=False),
+    ConversionMode.DELETE_DUPLICATES: ExternalMode(),
     # A patch applied to a cartridge Image (#428): a person started it, and it
     # writes an output, so it has a Ledger row naming the patch file.
     ConversionMode.PATCH: ExternalMode(),
     # A rename to DAT names (#425): a person confirmed it; it renames, so it
     # converts nothing to record.
-    ConversionMode.DAT_RENAME: ExternalMode(in_ledger=False),
+    ConversionMode.DAT_RENAME: ExternalMode(),
     # An Inbox's copy of an Image no Rule converts (#431): the scheduler starts
     # it, and it converts nothing, so it has no Ledger row.
     ConversionMode.INBOX_COPY: ExternalMode(
-        in_ledger=False, started_by_hand=False, takes_slot=True,
+        started_by_hand=False, takes_slot=True,
     ),
     # An Inbox unpacking an archive, and Recognizing an Image before it is
     # named (#432): the scheduler starts them, they read and write as much as
     # a copy, and convert nothing.
     ConversionMode.INBOX_UNPACK: ExternalMode(
-        in_ledger=False, started_by_hand=False, takes_slot=True,
+        started_by_hand=False, takes_slot=True,
     ),
     ConversionMode.INBOX_RECOGNIZE: ExternalMode(
-        in_ledger=False, started_by_hand=False, takes_slot=True,
+        started_by_hand=False, takes_slot=True,
     ),
 }
 _EXTERNAL_JOB_MODES = frozenset(EXTERNAL_JOB_MODES)
+# Where an external job's placeholder ``file_path`` lives: no Volume path ever
+# starts with it, so no in-use check can match one. History names such a job
+# by its ``filename`` instead (``ledger.row_from_job``).
+EXTERNAL_JOB_PATH = "/__external_jobs__/"
 
 
 def started_by_hand(mode) -> bool:
     """Whether a job of *mode* is one a person started (every conversion may be)."""
     declared = EXTERNAL_JOB_MODES.get(mode)
     return declared is None or declared.started_by_hand
-
-
-def in_ledger(mode) -> bool:
-    """Whether a finished job of *mode* gets a Ledger row (every conversion does)."""
-    declared = EXTERNAL_JOB_MODES.get(mode)
-    return declared is None or declared.in_ledger
 
 
 def is_external_mode(mode) -> bool:
@@ -1748,7 +1745,7 @@ class JobManager:
             id=job_id,
             # Use a sentinel path that will never resolve to a real volume path
             # so that path-in-use checks cannot accidentally match this job.
-            file_path=f"/__external_jobs__/{job_id}",
+            file_path=f"{EXTERNAL_JOB_PATH}{job_id}",
             filename=filename,
             mode=mode,
             status=JobStatus.PROCESSING,

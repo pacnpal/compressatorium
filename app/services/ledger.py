@@ -15,6 +15,7 @@ from __future__ import annotations
 import csv
 import io
 import os
+import re
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -24,6 +25,7 @@ from fastapi.concurrency import run_in_threadpool
 from logging_setup import get_logger
 from models import ConversionJob, JobStatus
 from services import db as _db
+from services.job_manager import EXTERNAL_JOB_PATH
 from services.preferences_store import preferences_store
 from services.tools import registry
 from sqlalchemy import delete, func, select, update
@@ -76,7 +78,11 @@ def row_from_job(job: ConversionJob) -> dict:
         "finished_at": _iso(finished),
         "tool": tool,
         "mode": mode,
-        "source_path": job.file_path,
+        # An external job's path is a placeholder: its name says what it was
+        # ("Check 12 games in Roms").
+        "source_path": (
+            job.filename if job.file_path.startswith(EXTERNAL_JOB_PATH) else job.file_path
+        ),
         "output_path": job.output_path,
         "input_bytes": job.input_bytes,
         "output_bytes": job.output_size,
@@ -175,13 +181,9 @@ async def retention_days() -> int | None:
 async def record(job: ConversionJob) -> None:
     """Terminal listener: write *job*'s row. Never raises.
 
-    Skipped only for a job mode that declares it has no row
-    (``job_manager.EXTERNAL_JOB_MODES``: a check Rule's run).
+    Every job has one, external jobs included (a check run, a duplicate
+    delete, a watch folder's copy): History is everything that ran.
     """
-    from services.job_manager import in_ledger
-
-    if not in_ledger(job.mode):
-        return
     try:
         await run_in_threadpool(_insert_job_sync, job, await retention_days())
     except Exception:
@@ -292,6 +294,23 @@ _CSV_PAGE = 500
 _METRIC_STATUSES = ("completed", "failed", "cancelled")
 
 
+_SINCE_RELATIVE = re.compile(r"(\d{1,6})([hd])")
+
+
+def since_cutoff(since: str, *, now: datetime | None = None) -> str:
+    """The ``finished_at`` a ``since`` filter starts at: ``24h``, ``7d`` or an
+    ISO time (a naive one reads as UTC). Raises ValueError for anything else."""
+    relative = _SINCE_RELATIVE.fullmatch(since.strip())
+    if relative:
+        amount, unit = int(relative.group(1)), relative.group(2)
+        delta = timedelta(hours=amount) if unit == "h" else timedelta(days=amount)
+        return _iso((now or datetime.now(timezone.utc)) - delta)
+    text = since.strip()
+    if text.endswith(("Z", "z")):
+        text = text[:-1] + "+00:00"
+    return _iso(datetime.fromisoformat(text))
+
+
 @dataclass(frozen=True)
 class LedgerFilter:
     """What the Ledger view and its CSV export filter on.
@@ -303,10 +322,18 @@ class LedgerFilter:
     status: str = ""
     tool: str = ""
     platform: str = ""
+    # ``24h``, ``7d`` or an ISO time: rows that finished at or after it.
+    since: str = ""
+    # Only rows whose new file passed a check (Checked, Exact copy, Known good dump).
+    checked: bool = False
 
     def clauses(self) -> list:
         e = _db.LedgerEntry
         out = []
+        if self.since:
+            out.append(e.finished_at >= since_cutoff(self.since))
+        if self.checked:
+            out.append(e.check_passed != "none")
         if self.q:
             out.append(
                 e.source_path.contains(self.q, autoescape=True)

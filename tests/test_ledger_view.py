@@ -117,10 +117,13 @@ async def test_routes_call_the_same_query_layer():
 
     await _seed()
     page = await routes.ledger_list(
-        q="", status="failed", tool="", platform="", limit=50, offset=0,
+        q="", status="failed", tool="", platform="", since="", checked=False,
+        limit=50, offset=0,
     )
     assert page["total"] == 1
-    resp = await routes.ledger_export(q="", status="failed", tool="", platform="")
+    resp = await routes.ledger_export(
+        q="", status="failed", tool="", platform="", since="", checked=False,
+    )
     assert resp.headers["content-disposition"].startswith('attachment; filename="ledger')
     assert resp.media_type == "text/csv"
     assert (await routes.metrics()).media_type.startswith("text/plain")
@@ -142,7 +145,9 @@ async def test_export_route_streams_the_csv_body():
     from routes import ledger as routes
 
     await _seed()
-    resp = await routes.ledger_export(q="", status="", tool="", platform="")
+    resp = await routes.ledger_export(
+        q="", status="", tool="", platform="", since="", checked=False,
+    )
     body = "".join([c async for c in resp.body_iterator])
     assert body.startswith("job_id,finished_at,tool")
     assert len(body.strip().splitlines()) == 4
@@ -294,7 +299,9 @@ async def test_a_failed_send_closes_the_export_stream(monkeypatch):
     for i in range(5):
         await ledger.record(_done(f"j{i}", base + timedelta(days=i)))
     closed = _track_snapshot_close(monkeypatch)
-    resp = await routes.ledger_export(q="", status="", tool="", platform="")
+    resp = await routes.ledger_export(
+        q="", status="", tool="", platform="", since="", checked=False,
+    )
 
     async def receive():
         await asyncio.sleep(3600)

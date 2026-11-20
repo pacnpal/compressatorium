@@ -1,7 +1,7 @@
 """Ledger routes (#292): recent rows, savings summary, retention setting."""
 
 import anyio
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 from services import ledger
@@ -36,17 +36,38 @@ class LedgerSettings(BaseModel):
     )
 
 
+def _filter(
+    q: str, status: str, tool: str, platform: str, since: str, checked: bool,
+) -> ledger.LedgerFilter:
+    """The filter both the list and the export read; 400 for a bad ``since``."""
+    if since:
+        try:
+            ledger.since_cutoff(since)
+        except ValueError:
+            raise HTTPException(
+                status_code=400, detail="since takes 24h, 7d or an ISO time",
+            ) from None
+    return ledger.LedgerFilter(
+        q=q, status=status, tool=tool, platform=platform, since=since, checked=checked,
+    )
+
+
 @router.get("/ledger")
 async def ledger_list(
     q: str = Query("", max_length=500),
     status: str = Query("", max_length=40),
     tool: str = Query("", max_length=40),
     platform: str = Query("", max_length=40),
+    since: str = Query("", max_length=40),
+    checked: bool = False,
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
 ) -> dict:
-    """Newest-first, paged, filtered rows: ``{"items": [...], "total": N}``."""
-    flt = ledger.LedgerFilter(q=q, status=status, tool=tool, platform=platform)
+    """Newest-first, paged, filtered rows: ``{"items": [...], "total": N}``.
+
+    ``since`` (``24h``, ``7d`` or an ISO time) keeps rows that finished at or
+    after it; ``checked`` keeps rows whose new file passed a check."""
+    flt = _filter(q, status, tool, platform, since, checked)
     return await ledger.list_page(flt, limit, offset)
 
 
@@ -56,9 +77,11 @@ async def ledger_export(
     status: str = Query("", max_length=40),
     tool: str = Query("", max_length=40),
     platform: str = Query("", max_length=40),
+    since: str = Query("", max_length=40),
+    checked: bool = False,
 ) -> StreamingResponse:
     """Every row matching the same filter the list takes, as CSV."""
-    flt = ledger.LedgerFilter(q=q, status=status, tool=tool, platform=platform)
+    flt = _filter(q, status, tool, platform, since, checked)
     return ClosingStreamingResponse(
         ledger.export_csv(flt),
         media_type="text/csv",
