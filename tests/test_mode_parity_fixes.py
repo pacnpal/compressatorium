@@ -152,6 +152,11 @@ async def test_nsz_compress_accepts_level_token(tmp_path: Path, monkeypatch):
     source_path = tmp_path / "game.nsp"
     source_path.write_bytes(b"nsp")
 
+    async def ready():
+        return True
+
+    monkeypatch.setattr(convert_routes.registry.get("nsz"), "is_ready", ready)
+
     monkeypatch.setattr(convert_routes.settings, "chd_volumes", str(tmp_path))
     monkeypatch.setattr(convert_routes.settings, "data_mount_root", str(tmp_path))
     create_job_mock = AsyncMock()

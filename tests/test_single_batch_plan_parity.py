@@ -43,6 +43,14 @@ def _parity_env(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(convert_routes.settings, "exodos_dos_dir", str(tmp_path / "!dos"))
     monkeypatch.setattr(convert_routes.job_manager, "get_queue_depth", lambda: 0)
 
+    # Planning refuses a tool that isn't ready (#505); these cases are about the
+    # input, and a checkout has no JWUDTool, rom-converto or eXoDOS tooling.
+    async def ready():
+        return True
+
+    for tool_id in ("jwud", "rom_converto", "exodos"):
+        monkeypatch.setattr(convert_routes.registry.get(tool_id), "is_ready", ready)
+
     single_mock = AsyncMock(return_value="job")
     monkeypatch.setattr(convert_routes.job_manager, "create_job", single_mock)
 

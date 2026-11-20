@@ -8988,6 +8988,19 @@ reason needs I/O would have to compute it in its readiness probe. A reason
 that raises, or is empty, gives `BaseTool.not_ready_reason` (with a warning
 logged) instead of failing the caller.
 
+**Job creation (#505).** `plan_job` (`routes/convert.py`), the one planner
+behind `POST /api/jobs`, `POST /api/jobs/batch`, Auto and the CLI's batch,
+asks `registry.tool_is_ready(registry.get(spec.tool_id))` before it reads the
+source. A tool that answers False raises `SkipFile(SkipReason.TOOL_NOT_READY)`
+whose detail is `not_ready_message(tool)`. The single-job route turns it into a
+503 with that line, and nothing is queued. A batch skips the item with that
+reason and the code `tool_not_ready` (`report_skipped=true`), the same path as
+every other planning skip. A chain mode is refused when any step tool is not
+ready, since `ChainTool.is_ready` asks each. The CLI, the Rules sweeps and the
+Inbox already skip a not-ready tool before they plan, so they never reach this
+check and nothing is reported twice. Per-route or per-tool checks are not
+needed.
+
 **File info routes (#488).** Every `GET /api/*info` route in `routes/info.py`
 (`/info` for chdman, `/dolphin-info`, `/z3ds-info`, `/nkit-info`, `/xiso-info`,
 `/rom-converto-info`, `/cso-info`, `/romz-info`, `/jwud-info`, `/nsz-info`)
