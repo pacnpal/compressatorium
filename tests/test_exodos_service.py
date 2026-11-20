@@ -995,3 +995,22 @@ def test_a_template_that_cannot_be_read_does_not_fall_back_to_no_conf(bare, monk
 
     with pytest.raises(NotRepackable, match="could not be read"):
         ExodosService().inspect(_game_zip(bare))
+
+
+def test_a_game_with_no_template_leaves_out_its_own_untouched_conf(bare):
+    """Codex PR #517: the zip's own ``<Game>/dosbox.conf`` was never
+    rewritten, so it would land at the root and DOSBox Pure would load it
+    (``dosbox_pure_conf: inside``) instead of the start menu promised."""
+    service = ExodosService()
+    source = _game_zip(
+        bare, ["Zork/", "Zork/ZORK.EXE", "Zork/dosbox.conf", "Zork/SUB/dosbox.conf"],
+        name="Zork.zip",
+    )
+    output = service.get_output_path(source)
+
+    updates = _convert(service, source, output)
+
+    assert set(_members(output)) == {"ZORK.EXE", "SUB/dosbox.conf"}
+    assert "no dosbox.conf" in updates[-1]["message"]
+    assert "left out" in updates[-1]["message"]
+    assert _verify(service, output)["valid"] is True

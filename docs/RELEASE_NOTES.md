@@ -13,8 +13,10 @@
     it.
   - `EXODOS_DOS_DIR` is now an optional override, searched first.
   - A game with no template is still repacked: its files move to the root of
-    the `.dosz`, no `dosbox.conf` is written, and the job finishes with a
-    warning saying DOSBox Pure's start menu will offer the program to run.
+    the `.dosz`, no `dosbox.conf` is written (a `dosbox.conf` the zip carries
+    in the game folder is left out too, since it was never rewritten), and the
+    job finishes with a warning saying DOSBox Pure's start menu will offer the
+    program to run.
   - Every job now says what the game got: its `dosbox.conf` and where it came
     from, or no `dosbox.conf` and why.
   - A zip is taken as a DOS game when it holds exactly one game folder and a

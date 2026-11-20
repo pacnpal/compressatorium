@@ -498,9 +498,19 @@ class ExodosService:
         # worker still making progress.
         progress = {"done": 0, "total": plan.total_size, "beats": 0}
         abandoned = threading.Event()
+        # With no template, the zip's own top-level conf is left out: it was
+        # never rewritten, and DOSBox Pure would load it instead of offering
+        # the start menu (Codex PR #517).
+        own_conf = f"{prefix}{self.profile.conf_name}"
+        left_out: list[str] = []
 
         def rename(name: str) -> str | None:
-            return None if name == prefix else name[len(prefix):]
+            if name == prefix:
+                return None
+            if rewrite is None and name == own_conf:
+                left_out.append(name)
+                return None
+            return name[len(prefix):]
 
         def on_progress(done: int, total: int) -> None:
             progress["done"], progress["total"] = done, total
@@ -535,16 +545,23 @@ class ExodosService:
         except BaseException:
             abandoned.set()
             raise
-        yield self._outcome(plan, rewrite)
+        yield self._outcome(plan, rewrite, left_out=bool(left_out))
 
-    def _outcome(self, plan: RepackPlan, rewrite: ConfRewrite | None) -> dict:
+    def _outcome(
+        self, plan: RepackPlan, rewrite: ConfRewrite | None, *, left_out: bool = False,
+    ) -> dict:
         """The last update: what the game got, its conf or no conf and why."""
         if rewrite is None:
+            own = (
+                f" The zip's own {plan.top}/{self.profile.conf_name} was left out:"
+                " it was never rewritten for the file."
+                if left_out else ""
+            )
             return {
                 "progress": 100,
                 "message": (
                     f"Repacked with no {self.profile.conf_name}: "
-                    f"{self._no_template_reason(plan.top)}. DOSBox Pure's start "
+                    f"{self._no_template_reason(plan.top)}.{own} DOSBox Pure's start "
                     "menu will offer the program to run."
                 ),
                 "warning": True,
