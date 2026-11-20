@@ -454,6 +454,14 @@
 
 ### Fixed
 
+- **Creating a job for a tool that isn't ready is refused** (#505). With
+  chdman's program missing or not executable, `POST /api/jobs` still queued a
+  job that failed when it ran. Planning now asks the same readiness check as
+  the tool list: the single-job route answers 503 with the tool's "isn't ready"
+  reason and queues nothing, a batch skips each such item with that reason and
+  the code `tool_not_ready`, and a chain mode is refused when any of its tools
+  isn't ready.
+
 - **A RAR set's later volumes can't be ticked on their own, and a skipped
   batch item says why** (#504). The file list now shows `x.part2.rar`,
   `x.part3.rar` (or `x.r00`, `x.r01`) and a split Wii U dump's

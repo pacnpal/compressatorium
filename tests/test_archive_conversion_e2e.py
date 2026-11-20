@@ -79,6 +79,20 @@ MATRIX = [
 ]
 
 
+@pytest.fixture(autouse=True)
+def _nsz_and_jwud_are_ready(monkeypatch):
+    """Planning refuses a tool that isn't ready (#505); nsz needs keys and jwud
+    its program, neither of which a checkout has. These tests are about the
+    archive member, not readiness."""
+    from services.tools import registry
+
+    async def ready():
+        return True
+
+    for tool_id in ("nsz", "jwud"):
+        monkeypatch.setattr(registry.get(tool_id), "is_ready", ready)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("ext", "mode", "out_ext"), MATRIX,

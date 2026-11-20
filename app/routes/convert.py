@@ -55,7 +55,7 @@ from services.output_conflicts import (
 from services.output_conflicts import (
     get_unique_output_path as _get_unique_output_path,
 )
-from services.tools import InputKind, ModeKind, registry
+from services.tools import InputKind, ModeKind, not_ready_message, registry
 from services.tools.base import compression_problem, without_unusable_codecs
 from services.event_stream import event_stream
 from utils.delete_plan import build_delete_plan, build_delete_snapshot
@@ -345,6 +345,7 @@ class SkipReason(Enum):
     PS3_FOLDER_UNSAFE = "ps3_folder_unsafe"
     SOURCE_COMPANION_UNSAFE = "source_companion_unsafe"
     SOURCE_OUTSIDE_VOLUMES = "source_outside_volumes"
+    TOOL_NOT_READY = "tool_not_ready"
 
 
 class SkipFile(Exception):  # noqa: N818 - control-flow signal, not an error
@@ -562,6 +563,8 @@ _SKIP_HTTP: dict[SkipReason, tuple[int, str]] = {
         403,
         "Access denied: file path outside configured volumes",
     ),
+    # The words are the tool's own (``not_ready_message``), set as the detail.
+    SkipReason.TOOL_NOT_READY: (503, "The tool isn't ready"),
     SkipReason.SOURCE_COMPANION_UNSAFE: (
         400,
         "A companion file this source consumes is a symlink or resolves outside "
@@ -755,7 +758,14 @@ async def plan_job(
     Request-level concerns (compression validation, volume containment, queue
     backpressure, the cross-file archive multi-select guard, the batch dedup
     pass) stay in the endpoints, not here.
+
+    A tool that isn't ready (#505) is refused first, before anything is read:
+    ``SkipFile(TOOL_NOT_READY)`` with ``not_ready_message(tool)`` as its
+    detail, so every caller says it the way the info routes do.
     """
+    tool = registry.get(spec.tool_id)
+    if not await registry.tool_is_ready(tool):
+        raise SkipFile(SkipReason.TOOL_NOT_READY, not_ready_message(tool))
     # Directory-as-input mode (makeps3iso folder->iso): a folder, not a file with
     # a suffix. Validate isdir + the tool's source-layout detector instead of
     # isfile + an extension match, and derive the output / display name from the

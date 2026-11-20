@@ -735,6 +735,11 @@ async def test_an_output_named_like_a_split_dump_part_is_refused(tmp_path, monke
         registry.get("jwud"), "output_path", lambda *_a, **_k: str(second),
     )
 
+    async def ready():
+        return True
+
+    monkeypatch.setattr(registry.get("jwud"), "is_ready", ready)
+
     with pytest.raises(convert_routes.SkipFile) as caught:
         await _plan(convert_routes, str(first), "jwud_compress", DuplicateAction.OVERWRITE)
     assert caught.value.reason == convert_routes.SkipReason.OUTPUT_IS_PART_OF_SOURCE

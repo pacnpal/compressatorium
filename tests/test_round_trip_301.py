@@ -530,6 +530,12 @@ def _small_wud(monkeypatch):
     size = 5 * _WUX_SECTOR + 1234
     monkeypatch.setattr(jwudtool, "WUD_IMAGE_SIZE", size)
     monkeypatch.setattr(jwudtool, "WUD_SPLIT_PART_SIZE", 2 * _WUX_SECTOR)
+
+    # Planning refuses a tool that isn't ready (#505); a checkout has no JWUDTool.
+    async def ready():
+        return True
+
+    monkeypatch.setattr(registry.get("jwud"), "is_ready", ready)
     return size
 
 
