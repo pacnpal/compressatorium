@@ -268,4 +268,3 @@ async def _poll_now(box: inbox_store.Inbox) -> None:
 async def overview() -> dict[str, Any]:
     """The rewrites and the most recent paths received, newest first."""
     return {"rewrites": await load_rewrites(), "recent": list(_recent)}
-
