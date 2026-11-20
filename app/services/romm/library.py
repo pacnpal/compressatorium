@@ -201,11 +201,26 @@ class RommLibrary(LibraryDefaults):
         ]
 
     def images(self, platform_id: str) -> list[Image]:
+        # Imported here: services.libraries imports this module.
+        from services import libraries
+
         try:
             roms = romm_client.roms(int(platform_id))
         except RommError as exc:
             raise LibraryUnreadable(str(exc)) from exc
-        return [image_from_rom(rom) for rom in roms]
+        images = [image_from_rom(rom) for rom in roms]
+        # A folder Library inside RomM's folder owns its files (#514), so
+        # RomM's Rules leave them alone. Only then is each path worked out
+        # here (it stats the mount); `local_path` answers it resolved.
+        inner = libraries.inner_folders(self)
+        if not inner:
+            return images
+        real_root = os.path.realpath(self.root)
+        return [
+            image for image in images
+            if not image.path
+            or not libraries.is_inner(os.path.relpath(image.path, real_root), inner)
+        ]
 
     def rule_defaults(self) -> dict[str, Any]:
         cfg = romm_settings.effective()

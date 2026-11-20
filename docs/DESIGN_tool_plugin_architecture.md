@@ -3445,12 +3445,42 @@ of `folder_libraries` (root unique, name, `schedule_enabled`, `max_per_sweep`,
 migration 0012, `AUTOINCREMENT` so a removed Library's id is never reused and
 state keyed by it cannot reach another folder), read once and cached; `register`, `update` and `remove`
 replace the cached copy. `register` uses `ensure_path_within_volumes` (the file
-browser's check), requires a folder, and refuses the same root or one that
-contains or sits inside another Library's root, a registered folder or RomM's
-library folder (409), since two Libraries would give one Image two Rules. The
-rule is one function, `libraries.find_overlap`, run in both directions: the
-RomM settings route checks a new RomM library root against every folder
-Library (`check_romm_root`, a 409 naming the Library) before saving it. Both
+browser's check), requires a folder, and refuses the same root as another
+Library, a registered folder or RomM's library folder (409), and a root that
+is, holds or sits inside an Inbox (409). The same-root rule is one function,
+`libraries.same_root`, run in both directions: the RomM settings route checks
+a new RomM library root against every folder Library (`check_romm_root`, a 409
+naming the Library) before saving it.
+
+Libraries may nest (#514): a folder inside RomM's library folder, or inside or
+around another folder Library, registers, and RomM's root may be set around or
+inside one. **The nearest root owns a file.** `library_for` takes the longest
+root spelling that holds the path as listed and the deepest resolved root that
+holds where it lives; when those two name different Libraries it still raises
+`AmbiguousLibrary` (#413), and every caller fails closed as before. The owner's
+Referrers apply, and only the owner's: a file in a folder Library inside RomM
+gets that Library's gamelist and `.m3u` Referrers, never RomM's swap, re-pin
+or gamelist, because RomM's Rules never convert it and RomM's settings were
+not chosen for it (RomM sees the new file on its next library scan). No file
+is swept twice: `libraries.inner_folders(library)` lists the roots of the
+other Libraries inside *library*'s (resolved, relative to its root), and each
+Library's listing leaves them out. A folder Library's walk prunes them (so its
+Rules, check Rules, Findings, find-duplicates and counts never see an inner
+Library's files), and `RommLibrary.images` drops the ROMs whose local path is
+in one (it works the paths out only when there is an inner Library). A root
+that can't be resolved there raises `LibraryUnreadable`: the listing fails
+rather than take an inner Library's files. Registering, removing a Library
+and saving RomM's root drop every folder Library's kept walk, so an outer
+Library re-lists. Hidden staging (#398) asks `libraries.hidden_staging(path)`,
+any Library holding the path with `HIDDEN_STAGING`, not only its owner: RomM
+scans its whole folder, an inner folder Library included. Folder Platform
+mappings belong to the nearest folder Library (`set_mapping`), and where two
+Libraries mapped one folder the nearer root's mapping wins in the index. The
+Libraries API adds `within` (the nearest Library around this one, or null)
+and `contains` (the Libraries inside it), worked out from the stored and
+already-resolved roots without touching the disk; the Rules view shows them.
+
+Registration and the RomM root save both
 take `_register_lock`: `register` in its worker thread, held across RomM's
 root resolve and the database write, and the RomM save through
 `romm_root_claim`, which polls for the lock without parking a thread, so a

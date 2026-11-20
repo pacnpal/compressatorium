@@ -87,11 +87,16 @@ def _build_index() -> dict[str, str]:
             for r in session.query(_db.PlatformMappingRecord).all()
         ]
     index: dict[str, str] = {}
+    placed = []
     for library_id, folder, platform in rows:
         library = libraries.get(library_id)
         if library is None or not library.root:
             continue
-        index[os.path.normpath(os.path.join(library.root, folder))] = platform
+        placed.append((library.root, folder, platform))
+    # Libraries may nest (#514): where two map one folder, the nearer root's
+    # mapping (the folder's owner) is written last, so it wins.
+    for root, folder, platform in sorted(placed, key=lambda row: len(Path(row[0]).parts)):
+        index[os.path.normpath(os.path.join(root, folder))] = platform
     return index
 
 
@@ -130,13 +135,14 @@ def mapped_folders() -> dict[str, str]:
 
 
 def _folder_library_for(folder: Path):
+    """The folder Library with the nearest root holding *folder* (#514)."""
     from services import libraries
 
-    for library in libraries.folder_libraries():
-        root = Path(library.root)
-        if folder == root or folder.is_relative_to(root):
-            return library
-    return None
+    holding = [
+        library for library in libraries.folder_libraries()
+        if folder.is_relative_to(Path(library.root))
+    ]
+    return max(holding, key=lambda library: len(Path(library.root).parts), default=None)
 
 
 def set_mapping(path: str, platform: str | None) -> dict[str, Any]:
