@@ -3475,8 +3475,9 @@ rather than take an inner Library's files. Registering, removing a Library
 and saving RomM's root drop every folder Library's kept walk, so an outer
 Library re-lists, and move `libraries.ownership_generation()`, all as one
 step under `libraries._ownership_lock` (`_changing_ownership`, which also drops
-every cached resolved root, then seeds RomM's again so the Rules view's
-nesting is right before any scan). A sweep reads the counter when it lists a
+every cached resolved root; registration, removal and every RomM settings
+save then seed RomM's again, `_reseed_romm_root`, so the Rules view's nesting
+is right before any scan). A sweep reads the counter when it lists a
 Platform and admits its work through `libraries.owned_as_listed(owned_at)`,
 which raises `rules.library.LibrariesChanged` when it moved and otherwise
 holds that lock while the work goes in: `JobManager.create_jobs_atomic(...,

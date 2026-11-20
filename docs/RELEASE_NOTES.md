@@ -40,6 +40,17 @@
 
 ### Fixed
 
+- **Adding or removing a Library while a sweep runs never converts a file
+  under the wrong Rules** (#518 follow-up). A sweep that listed a Platform
+  before a Library was registered or removed inside it (or before RomM's
+  folder moved) now queues none of that listing and checks none of it: the
+  Platform says "a Library was added or removed inside this one while it ran",
+  its run isn't recorded, and the next run lists it again. The check and the
+  queueing are one step, so no registration can slip in between. The Rules
+  view reads the Library list again after a Library is added or removed, so
+  which Library sits inside which stays right, also for a RomM folder reached
+  through a link.
+
 - **RomM: every Platform gets a folder for new Images, even when RomM keeps
   two records for it** (#512). RomM often keeps an empty record beside the
   real one (`famicom` beside `nes`, `gg` beside `gamegear`), and **Where new

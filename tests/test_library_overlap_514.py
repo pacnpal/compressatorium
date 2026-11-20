@@ -366,7 +366,34 @@ def test_the_catalogue_is_read_again_after_a_library_is_added_or_removed() -> No
     root = Path(__file__).resolve().parents[1]
     store = (root / "src/lib/stores/libraries.svelte.js").read_text()
     for method in ("register", "remove"):
-        body = re.search(rf"async {method}\(.*?\n  \}}\n", store, re.S).group(0)
+        body = re.search(rf"async {method}\(.*?\n  \}}\n", store, re.DOTALL).group(0)
         assert "this.load()" in body, method
     editor = (root / "src/lib/components/views/RuleEditor.svelte").read_text()
     assert "nothing was '\n      + 'queued for this platform" in editor
+
+
+@pytest.mark.asyncio
+async def test_removing_a_library_keeps_a_linked_romm_folders_nesting(db: Path) -> None:
+    """Codex PR #551: removing any Library dropped RomM's resolved root, so
+    a Library under its real path lost its ``within`` until a scan. Saving
+    RomM's settings without a root did the same."""
+    from routes import libraries as routes
+    from routes import romm as romm_routes
+
+    real = db / "real"
+    (real / "roms" / "gc").mkdir(parents=True)
+    (db / "other").mkdir()
+    (db / "link").symlink_to(real)
+    await romm_routes.put_romm_settings(romm_routes.RommSettingsPatch(
+        url="http://romm:8080", library_root=str(db / "link"),
+    ))
+    inner = await _register(real / "roms" / "gc")
+    other = await _register(db / "other")
+
+    await routes.remove_library(other["id"])
+    listed = {lib["id"]: lib for lib in await routes.list_libraries()}
+    assert listed[inner["id"]]["within"] == {"id": "romm", "name": "RomM"}
+
+    await romm_routes.put_romm_settings(romm_routes.RommSettingsPatch(url="http://romm:8081"))
+    listed = {lib["id"]: lib for lib in await routes.list_libraries()}
+    assert listed[inner["id"]]["within"] == {"id": "romm", "name": "RomM"}

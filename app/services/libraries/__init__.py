@@ -443,6 +443,16 @@ _canonical_roots: dict[str, Path] = {}
 _canonical_generation: int | None = None
 
 
+def _reseed_romm_root() -> None:
+    """Cache RomM's root resolved again, after an ownership change dropped
+    every cached root. Blocking (resolves it); best effort."""
+    from services.romm.library import romm_library
+
+    if romm_library.root:
+        with suppress(OSError, RuntimeError):
+            _canonical_root(romm_library.root)
+
+
 def _remember_root(root: str | None, canonical: Path) -> None:
     """Cache *root*'s resolved path, already worked out. Never waits."""
     if root:
@@ -650,13 +660,12 @@ async def romm_root_claim(path: str | None):
         yield
         # Which folder Libraries sit inside or around RomM's may have changed.
         _forget_walks()
-        if path:
-            # Resolved now, under the save's new generation, so the Rules
-            # view's nesting reads it before any scan (CodeRabbit PR #518).
-            # Best effort: a root that can't be resolved just now is resolved
-            # on first use, as before.
-            with suppress(Exception):
-                await run_admitted(_canonical_root, path, timeout=ROOT_CHECK_SECONDS)
+        # RomM's root (the one saved, or kept when the save didn't touch it)
+        # resolved again now, so the Rules view's nesting reads it before any
+        # scan (CodeRabbit PR #518, Codex PR #551). Best effort: a root that
+        # can't be resolved just now is resolved on first use, as before.
+        with suppress(Exception):
+            await run_admitted(_reseed_romm_root, timeout=ROOT_CHECK_SECONDS)
     finally:
         _register_lock.release()
 
@@ -872,6 +881,7 @@ async def _remove(library: FolderLibrary, library_id: str, record_id: int) -> No
                 with _changing_ownership(), _lock:
                     if _cache is not None:
                         _cache.pop(record_id, None)
+                _reseed_romm_root()
             finally:
                 _register_lock.release()
 
