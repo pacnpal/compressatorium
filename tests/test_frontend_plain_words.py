@@ -32,6 +32,12 @@ CHECKED_FILES = [
     "panels/SafetyOptions.svelte",
     "panels/CompressionPicker.svelte",
     "panels/ModeSelect.svelte",
+    # PR 4: Activity.
+    "activity/ActivitySummary.svelte",
+    "activity/NeedsAttention.svelte",
+    "activity/RunningList.svelte",
+    "activity/HistoryList.svelte",
+    "modals/MappingModal.svelte",
 ]
 
 OLD_WORDS = re.compile(

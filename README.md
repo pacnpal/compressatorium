@@ -442,16 +442,32 @@ replaces it.
 Every conversion and verify runs through one FIFO queue — one job at a time by
 default, which keeps the host responsive during big batches. Progress streams
 live, and jobs run on the server, so closing the browser (or rebooting your
-laptop) doesn't stop them; reopen the page and it reconnects. The queue has
-active / completed / failed tabs, plus **Cancel All** and **Clear Done** (both
-confirm first).
+laptop) doesn't stop them; reopen the page and it reconnects. **Activity ›
+Running** is the queue and nothing else: what is running first, then what is
+waiting, with **Cancel all** (it confirms first). A job leaves the list when it
+ends; History keeps it. The top bar shows "2 converting · 3 waiting" while
+anything runs.
+
+### Activity
+
+**Activity** in the sidebar is where anything that needs you, and everything
+that ran, lives. A strip on top says how many problems need you, what is
+running, the space saved so far and how many games passed a check; each one
+links to its tab. The tabs are **Needs attention**, **Running** and **History**.
+A bare `#/activity` opens on Needs attention when anything needs you, else on
+Running when anything runs, else on History.
+
+| Light | Dark |
+|-------|------|
+| ![Activity, light](docs/screenshots/activity-light.png) | ![Activity, dark](docs/screenshots/activity-dark.png) |
 
 ### The Ledger
 
-Every job that finishes, fails or is cancelled is written to the Ledger in the
-app database, so the history survives restarts. The dashboard's **Space saved**
-card totals the bytes reclaimed by conversions whose Source was deleted, by
-Platform and by output format, and **Recent conversions** lists the latest rows.
+Every job that finishes, fails or is cancelled is written to the Ledger
+(**History** in Activity) in the app database, so it survives restarts. That is
+every job, not only conversions: a check run, a find-duplicates run, a
+duplicate delete, a rename, a watch folder taking a file in. **Space saved**
+totals the bytes reclaimed by conversions whose original was deleted.
 Rows are kept forever by default; to prune, set a retention in days:
 
 ```bash
@@ -508,12 +524,17 @@ never delays or fails a job. Messages to one destination are sent in order, so a
 Docker image; without it, Apprise URLs are refused with a message and webhooks
 still work. The same destinations are available at `/api/notifications`.
 
-The **Ledger** view in the sidebar lists every row, newest first, 25 to a page.
-Search matches the Source or output path, and you can filter by status, tool and
-Platform. **Export CSV** downloads every row matching the current search and
-filters (the same query behind `GET /api/ledger/export.csv`). The list is also
-available as JSON from `GET /api/ledger?q=&status=&tool=&platform=&limit=&offset=`,
-which returns `{"items": [...], "total": N}`.
+**Activity › History** lists every row, newest first, 25 to a page: when, the
+game, its console, the result ("CHD · saved 312 MB", or "Failed:" and why) and
+its check ("✓ Exact copy", "✓ Checked", "✓ Known good dump"). Search matches the
+name or path, and you can filter by status (Done, Failed, Checked, Cancelled),
+format and console. `#/activity/history?status=failed` opens it on the failures.
+**Export CSV** downloads every row matching the current search and filters (the
+same query behind `GET /api/ledger/export.csv`). The list is also available as
+JSON from
+`GET /api/ledger?q=&status=&tool=&platform=&since=&checked=&limit=&offset=`, which
+returns `{"items": [...], "total": N}`. `since` takes `24h`, `7d` or an ISO time;
+`checked=true` keeps the rows whose new file passed a check.
 
 For a home-lab dashboard, `GET /api/metrics` serves Prometheus text:
 
@@ -533,7 +554,7 @@ contents when you upgrade.)
 
 | Light | Dark |
 |-------|------|
-| ![Ledger, light](docs/screenshots/ledger-light.png) | ![Ledger, dark](docs/screenshots/ledger-dark.png) |
+| ![History, light](docs/screenshots/activity-history-light.png) | ![History, dark](docs/screenshots/activity-history-dark.png) |
 
 ### Verifying and deleting safely
 
@@ -1151,8 +1172,9 @@ long a file must stay unchanged before it's taken (60 seconds by default).
 - A file it can't place stays in the Inbox with a Finding saying why: Unsorted
   (no Platform), a Platform conflict, or not taken (a failed or cancelled
   conversion, a name already in the Library, no folder for the Platform). It
-  isn't tried again until it changes: move it into a folder named after its
-  Platform, or rename it. "Cancelled" means you cancelled its job; a job
+  isn't tried again until it changes: pick its console in Activity › Needs
+  attention and **Place it**, or move it into a folder named after its
+  Platform yourself, or rename it. "Cancelled" means you cancelled its job; a job
   cancelled because the app or `run-rules` was stopping (`docker stop`,
   Ctrl-C) gets no Finding, and the file is taken again once it has settled.
 - Each Inbox shows its last poll, the files waiting to settle, in progress and
@@ -1231,14 +1253,15 @@ much to read a night ("check 50 GB a night"), a time window and weekdays:
 
 A check never converts, moves, renames or deletes anything.
 
-A run on a GBA folder with one damaged ROM archive: its Not Intact row in
-Findings (no Set Platform: the file is the problem, not its folder), and the
-run's Check job in the Jobs panel with its result.
+A run on a GBA folder with one damaged ROM archive: its "Failed its check" row
+in Activity › Needs attention (its fix is Open folder: the file is the problem,
+not its console), and the run's check job in Running while it runs. Once it
+ends, History has the run.
 
 | Light | Dark |
 |-------|------|
-| ![Findings with a Not Intact row, light](docs/screenshots/findings-not-intact-light.png) | ![Findings with a Not Intact row, dark](docs/screenshots/findings-not-intact-dark.png) |
-| ![A Check job in the Jobs panel, light](docs/screenshots/jobs-check-light.png) | ![A Check job in the Jobs panel, dark](docs/screenshots/jobs-check-dark.png) |
+| ![A failed check in Needs attention, light](docs/screenshots/activity-not-intact-light.png) | ![A failed check in Needs attention, dark](docs/screenshots/activity-not-intact-dark.png) |
+| ![A check job in Running, light](docs/screenshots/activity-running-light.png) | ![A check job in Running, dark](docs/screenshots/activity-running-dark.png) |
 
 ### Finding duplicates
 
@@ -1310,31 +1333,46 @@ Finding duplicates deletes nothing by itself. To clean a group up:
 
 | Light | Dark |
 |-------|------|
-| ![Deleting the other copies of a group, light](docs/screenshots/findings-duplicate-delete-light.png) | ![Deleting the other copies of a group, dark](docs/screenshots/findings-duplicate-delete-dark.png) |
+| ![Deleting the other copies of a group, light](docs/screenshots/activity-duplicate-delete-light.png) | ![Deleting the other copies of a group, dark](docs/screenshots/activity-duplicate-delete-dark.png) |
 
 | Light | Dark |
 |-------|------|
-| ![Findings with a Duplicate group, light](docs/screenshots/findings-duplicates-light.png) | ![Findings with a Duplicate group, dark](docs/screenshots/findings-duplicates-dark.png) |
+| ![A Duplicate group in Needs attention, light](docs/screenshots/activity-duplicates-light.png) | ![A Duplicate group in Needs attention, dark](docs/screenshots/activity-duplicates-dark.png) |
 
 ### Findings and folder Platforms
 
-The **Findings** view (in the sidebar) lists every Image in a folder Library
-that needs your decision:
+**Activity › Needs attention** lists every problem Compressatorium can't fix on
+its own (a Finding), each in one sentence with the one button that fixes it:
 
-- **Platform conflict**: the Image's header disagrees with its folder, or with
-  the Platform you set on the folder ("in the ps2 folder, but the header says
-  ngc").
-- **Unsorted**: nothing names the Image's Platform, or the file could not be
-  read.
-- **Not Intact**: a [check Rule](#check-rules) found the Image fails its
-  tool's check (in a folder or RomM Library). It has no Set Platform action.
+| Problem | What it means | Its fix |
+|---|---|---|
+| **Unknown console** | Nothing names the game's console, or the file could not be read | **Pick console** (set the folder's console) |
+| **Console unclear** | "The file says GameCube, its folder says PlayStation 2" | **Pick console** |
+| **Failed its check** | A [check Rule](#check-rules) found it no longer reads back the same | **Open folder**: replace it from a good copy |
+| **Original kept** | The new file is fine, but the original couldn't be deleted safely | **Open folder** |
+| **Duplicate** | Several copies of the same game ([Finding duplicates](#finding-duplicates)) | **Delete the others…** |
+| **RomM update unfinished** | A RomM swap that didn't finish | **Open folder** |
+| **Name unclear** | Your game lists disagree on its name | **Choose name order** (Settings › Game identification) |
+| **Unknown console (watch folder)** | A file dropped in a watch folder whose console nothing names | **This is a… ▾** then **Place it**, or **Delete** |
+| **Console unclear (watch folder)** | The file and its folder in the watch folder disagree | **This is a… ▾** then **Place it** |
+| **Couldn't take it in** | A watch folder couldn't take the file in, and why | **Delete** |
 
-Each row shows the Library, the Image, the kind, and when it was first and last
-seen, with three actions: **Open folder** shows it in the Workspace, **Set
-Platform** tells the app what the folder holds, and **Dismiss** hides the row
-until its cause changes (a dismissed conflict comes back if the header or
-folder later says something else). **Show dismissed** lists the hidden ones,
-each with **Show again**. **Check now** lists every folder Library again.
+**Place it** moves the file (a sheet with its tracks) into a folder named after
+the console you picked, inside the same watch folder, and it is taken in at
+once: placed in the Library, converted under its Rule, and the original moved
+to `processed/`. It never overwrites a file (a name already taken there is
+refused, and nothing moves), and only a file still inside its watch folder and
+a Drive is moved. A console the file's own data disagrees with stays unclear,
+so the select puts the consoles the file and its folder name first.
+
+Each row shows the Library, the game (and where it sits, "Drive › folder"), and
+the problem; hover a row for when it was first and last seen. **Ignore** hides a
+row until its cause changes (an ignored conflict comes back if the header or
+folder later says something else). **Show ignored** lists the hidden ones, each
+with **Show again**. **Check again** lists every folder Library again. The
+Library select (or `#/activity/attention/<library id>`) shows one Library's
+problems. When conversions failed in the last day, a line above the list links
+to them in History.
 Findings are written each time a Library is listed or swept, and cleared once
 the cause is gone. A subfolder or file that cannot be read during a listing
 keeps its Findings as they were until it can. A dismissal is kept even when its
@@ -1350,7 +1388,8 @@ over both, and a header that disagrees is a conflict, never a guess. **Clear
 mapping** removes it. If the Library is being listed when you save, the
 Findings update once that listing finishes.
 
-The app never moves, renames or deletes an Image because of a Finding.
+The app never moves, renames or deletes a game because of a Finding on its
+own: only Place it, Delete the others… and Delete do, each when you press it.
 
 #### Your metadata survives conversion
 
@@ -1632,13 +1671,13 @@ player.
 |-------|------|
 | ![RAR sets tool, light](docs/screenshots/workspace-rar-light.png) | ![RAR sets tool, dark](docs/screenshots/workspace-rar-dark.png) |
 
-#### Dashboard
+#### Activity
 
-An at-a-glance view of the job queue, verification cache, mounted volumes, recent conversions, and quick tool shortcuts.
+What needs you, what's running and everything that ran, with the summary strip on top. See [Activity](#activity).
 
 | Light | Dark |
 |-------|------|
-| ![Dashboard, light](docs/screenshots/dashboard-light.png) | ![Dashboard, dark](docs/screenshots/dashboard-dark.png) |
+| ![Activity, light](docs/screenshots/activity-light.png) | ![Activity, dark](docs/screenshots/activity-dark.png) |
 
 #### RomM library
 
@@ -1707,13 +1746,19 @@ A PS2 Platform with a conversion Rule and a check Rule: 50 GB a night between 01
 |-------|------|
 | ![Check Rule in the rule editor, light](docs/screenshots/rule-editor-check-light.png) | ![Check Rule in the rule editor, dark](docs/screenshots/rule-editor-check-dark.png) |
 
-#### Findings
+#### Needs attention
 
-A Platform conflict (a GameCube disc filed under `ps2`) and an Unsorted Image, each with its actions. See [Findings and folder Platforms](#findings-and-folder-platforms).
+A console that's unclear (a GameCube disc filed under `ps2`) and one nothing names, each with its fix. See [Findings and folder Platforms](#findings-and-folder-platforms).
 
 | Light | Dark |
 |-------|------|
-| ![Findings view, light](docs/screenshots/findings-light.png) | ![Findings view, dark](docs/screenshots/findings-dark.png) |
+| ![Needs attention, light](docs/screenshots/activity-attention-light.png) | ![Needs attention, dark](docs/screenshots/activity-attention-dark.png) |
+
+A file dropped in a watch folder with no console: pick it and **Place it**.
+
+| Light | Dark |
+|-------|------|
+| ![Place it, light](docs/screenshots/activity-watch-folder-light.png) | ![Place it, dark](docs/screenshots/activity-watch-folder-dark.png) |
 
 #### DAT Library
 
@@ -3561,9 +3606,9 @@ npm run lint        # ESLint (JS + .svelte), flat config in eslint.config.js
 * `src/lib/stores/*.svelte.js`: class-singleton stores with Svelte 5 `$state` fields, one per feature domain (jobs / fileBrowser / conversion / verification / datMatching / chdMetadata / ui).
 * `src/lib/api/`: REST client, auto-reconnecting EventSource (`sse.js`), and a POST-body SSE stream parser for batch verify (`sseFetch.js`). Backend snapshot-on-connect (`/api/jobs/events`) hydrates the full job state, so there's no separate REST round-trip.
 * `src/lib/tools/registry.js`: every tool fact (id, label, hint, verify URL segment, source/verify exts, modes, groups, default mode, glyph, accent, **compression codecs / style / level range**, API bindings). Adding another tool is one new entry plus the backend plugin. Helpers like `registry.allFilterableExts()` keep UI surfaces (file-list filter dropdown, conversion mode dropdown, compression picker, and so on) extended automatically.
-* `src/lib/components/panels/`: `VolumeList`, `Breadcrumb`, `FileList`, `FileRow`, `RowActionsMenu` (file browser); `ModeSelect`, `CompressionPicker`, `ConvertPanel` (conversion config); `JobRow`, `JobsPanel` (queue / completed / failed tabs with global Cancel-all / Clear / stuck-state recovery).
-* `src/lib/components/modals/`: `BaseModal` (bits-ui Dialog wrapper), `ConfirmModal` (canonical confirm/cancel), then `BulkVerifyModal`, `DuplicateModal`, `DeleteModal`, `BulkDeleteModal`, `RenameModal`, `FileInfoModal`, `CancelAllJobsModal`, `ClearDoneModal`. Each mounts in `App.svelte` and self-renders against a `ui` store target.
-* `src/lib/components/dashboard/`: `StatCard` wrapper plus `QueueSummaryCard`, `VolumeOverviewCard`, `RecentConversionsCard`, `VerificationStatusCard`, `QuickToolsCard`. QuickToolsCard iterates `registry.all()`, so adding a tool auto-adds a tile.
+* `src/lib/components/panels/`: `VolumeList`, `Breadcrumb`, `FileList`, `FileRow`, `RowActionsMenu` (file browser); `ModeSelect`, `CompressionPicker`, `ConvertPanel` (conversion config); `JobRow` (one job).
+* `src/lib/components/modals/`: `BaseModal` (bits-ui Dialog wrapper), `ConfirmModal` (canonical confirm/cancel), then `BulkVerifyModal`, `DuplicateModal`, `DeleteModal`, `BulkDeleteModal`, `RenameModal`, `FileInfoModal`, `CancelAllJobsModal`. Each mounts in `App.svelte` and self-renders against a `ui` store target.
+* `src/lib/components/activity/`: Activity's parts. `ActivitySummary` (the four numbers on top), `NeedsAttention` (each problem in one sentence with its fix, Place it included), `RunningList` (the queue only) and `HistoryList` (every job that ran, from the Ledger).
 * `src/styles/tokens.css`: semantic design tokens keyed by `:root` (light defaults) and `:root.dark` (dark overrides). No hex colors live outside this file.
 
 ### Runtime dependencies

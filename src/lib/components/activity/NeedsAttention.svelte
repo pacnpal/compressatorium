@@ -1,60 +1,104 @@
 <script>
   /**
-   * The Findings view (#304): everything that needs a person's decision.
+   * Activity › Needs attention: every problem Compressatorium can't fix on its
+   * own, in one sentence, with the one button that fixes it.
    *
-   * Each folder Library's walk records a Platform conflict (the header and
-   * the folder or mapping disagree) or an Unsorted Image (nobody could tell
-   * its Platform). Each row links to what fixes it: open the folder in the
-   * file browser, or set the folder's Platform. A check Rule (#305) adds a
-   * "not Intact" row for an Image that failed its check, in any Library.
-   * A Library's find-duplicates run (#388) adds one "Duplicate" row per group
-   * of Images holding the same disc, with each copy's path, container and
-   * size, and says which formats it could not check. Delete others (#389)
-   * deletes the other copies of a group whose key proves them equal, as a
-   * background job, after the user confirms its plan.
-   * Dismiss hides a row until its cause changes. The app never moves or
-   * deletes an Image over a Finding.
+   * Each folder Library's walk records a console it can't tell or that is
+   * unclear (#304); a check (#305) records a game that failed it; a delete a
+   * Rule couldn't make (#329) keeps its original; a find-duplicates run
+   * (#388) records each group of copies, and Delete the others (#389)
+   * deletes them as a background job after the user confirms its plan; a
+   * watch folder (#431) records a file it couldn't take in. Place it (plan
+   * item 13) moves a watch folder's file into the folder of the console
+   * picked, and it's taken in at once. Ignore hides a row until its cause
+   * changes. Nothing else here moves or deletes a file.
    */
-  import { untrack } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import { toast } from 'svelte-sonner';
+  import { api } from '$lib/api/endpoints.js';
   import { findings, findingName, keeperWarning } from '$lib/stores/findings.svelte.js';
   import { fileBrowser } from '$lib/stores/fileBrowser.svelte.js';
   import { libraries } from '$lib/stores/libraries.svelte.js';
   import { jobs } from '$lib/stores/jobs.svelte.js';
+  import { ui } from '$lib/stores/ui.svelte.js';
   import { TERMINAL_STATUSES } from '$lib/stores/jobConstants.js';
   import Button from '$lib/components/ui/Button.svelte';
   import Badge from '$lib/components/ui/Badge.svelte';
   import Checkbox from '$lib/components/ui/Checkbox.svelte';
   import EmptyState from '$lib/components/ui/EmptyState.svelte';
+  import Select from '$lib/components/ui/Select.svelte';
   import Spinner from '$lib/components/ui/Spinner.svelte';
   import FolderOpen from '@lucide/svelte/icons/folder-open';
   import FolderPen from '@lucide/svelte/icons/folder-pen';
+  import FolderInput from '@lucide/svelte/icons/folder-input';
   import EyeOff from '@lucide/svelte/icons/eye-off';
   import Eye from '@lucide/svelte/icons/eye';
+  import ListOrdered from '@lucide/svelte/icons/list-ordered';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
   import Trash2 from '@lucide/svelte/icons/trash-2';
   import DuplicateDeleteModal from '$lib/components/modals/DuplicateDeleteModal.svelte';
+  import AddLibraryModal from '$lib/components/modals/AddLibraryModal.svelte';
 
-  const KIND_LABEL = {
-    platform_conflict: 'Platform conflict',
-    unsorted: 'Unsorted',
-    not_intact: 'Not Intact',
-    source_kept: 'Source kept',
-    duplicate: 'Duplicate',
-    romm_swap: 'RomM swap unfinished',
-    rename_conflict: 'Rename conflict',
-    // A file an Inbox couldn't take into its Library (#431).
-    inbox_unsorted: 'Inbox: Unsorted',
-    inbox_conflict: 'Inbox: Platform conflict',
-    inbox_dat_conflict: 'Inbox: DAT name conflict',
-    inbox_failed: 'Inbox: not taken',
+  // What each problem is called, the one sentence that says it, and the one
+  // fix it offers: `console` (set the folder's console), `folder` (open it),
+  // `duplicates` (delete the other copies), `names` (choose the name order),
+  // `place` (Place it) or `delete` (delete the file). Ignore goes with each.
+  const KIND_COPY = {
+    unsorted: { label: 'Unknown console', tone: 'warning', fix: 'console',
+      say: () => "Compressatorium can't tell which console this is for." },
+    platform_conflict: { label: 'Console unclear', tone: 'warning', fix: 'console',
+      say: (row) => clash(row) },
+    not_intact: { label: 'Failed its check', tone: 'error', fix: 'folder',
+      say: () => 'It no longer reads back the same. Replace it from a good copy.' },
+    source_kept: { label: 'Original kept', tone: 'warning', fix: 'folder',
+      say: (row) => `The new file is fine, but the original wasn't deleted: ${keptWhy(row)}.` },
+    duplicate: { label: 'Duplicate', tone: 'info', fix: 'duplicates',
+      say: (row) => `${row.cause?.copies?.length ?? 2} copies of the same game.` },
+    romm_swap: { label: 'RomM update unfinished', tone: 'warning', fix: 'folder',
+      say: (row) => row.reason },
+    rename_conflict: { label: 'Name unclear', tone: 'warning', fix: 'names',
+      say: () => 'Your game lists disagree on its name.' },
+    inbox_unsorted: { label: 'Unknown console (watch folder)', tone: 'warning', fix: 'place',
+      say: (row) => `Dropped in ${row.inbox_name ?? 'a watch folder'}. Pick its console and it's sorted in.` },
+    inbox_conflict: { label: 'Console unclear (watch folder)', tone: 'warning', fix: 'place',
+      say: (row) => clash(row) },
+    inbox_dat_conflict: { label: 'Name unclear (watch folder)', tone: 'warning', fix: 'names',
+      say: () => 'Your game lists disagree on its name.' },
+    inbox_failed: { label: "Couldn't take it in", tone: 'error', fix: 'delete',
+      say: (row) => takeInWhy(row) },
   };
-  const KIND_TONE = {
-    platform_conflict: 'warning', not_intact: 'error', source_kept: 'warning',
-    duplicate: 'info', romm_swap: 'warning', rename_conflict: 'warning',
-    inbox_unsorted: 'warning', inbox_conflict: 'warning', inbox_dat_conflict: 'warning',
-    inbox_failed: 'error',
-  };
+  const copyOf = (row) => KIND_COPY[row?.kind]
+    ?? { label: row?.kind ?? '', tone: 'neutral', fix: 'folder', say: (r) => r.reason };
+
+  // A console's name; its slug when the list hasn't loaded.
+  const consoleNames = $derived(new Map(findings.platforms.map((p) => [p.slug, p.name])));
+  const consoleName = (slug) => consoleNames.get(slug) ?? slug;
+
+  function clash(row) {
+    const cause = row.cause ?? {};
+    if ((cause.headers?.length ?? 0) > 1) {
+      return `Its own data names more than one console: ${cause.headers.map(consoleName).join(', ')}.`;
+    }
+    const said = cause.header;
+    const folder = cause.folder_platform ?? cause.folder;
+    if (said && folder) return `The file says ${consoleName(said)}, its folder says ${consoleName(folder)}.`;
+    return row.reason;
+  }
+
+  function keptWhy(row) {
+    return String(row.reason ?? 'it could not be deleted safely')
+      .replace(/^Source kept:\s*/i, '')
+      .replace(/\.$/, '');
+  }
+
+  function takeInWhy(row) {
+    const why = String(row.reason ?? '');
+    if (/archive/i.test(why) && /(damaged|corrupt|incomplete|truncated|crc|unexpected end)/i.test(why)) {
+      return 'This archive is damaged or incomplete. Download it again.';
+    }
+    return why;
+  }
+
   function bytes(n) {
     const size = Number(n) || 0;
     if (size < 1024) return `${size} bytes`;
@@ -75,15 +119,76 @@
       .join(', ');
   }
 
-  // Lists on open, and again when "Show dismissed" flips.
+  const base = (path) => String(path ?? '').split(/[/\\]/).filter(Boolean).pop() ?? '';
+
+  // The Drive holding *path*: the configured folder it sits under.
+  function driveOf(path) {
+    return fileBrowser.volumes
+      .filter((v) => v?.path && (path === v.path || path?.startsWith(`${v.path.replace(/\/+$/, '')}/`)))
+      .sort((a, b) => b.path.length - a.path.length)[0] ?? null;
+  }
+
+  // What a row's game is called, and where it sits: "{drive} › {folder}",
+  // or for a watch folder's file "{watch folder} › {folder in it}".
+  function gameName(row) {
+    if (row.kind === 'duplicate') return findingName(row);
+    return base(row.relative ?? row.path) || row.image_key;
+  }
+  function gamePlace(row) {
+    if (row.inbox_name) {
+      const inside = String(row.relative ?? '').split('/').slice(0, -1);
+      return [row.inbox_name, ...inside].join(' › ');
+    }
+    return onDrive(row.folder);
+  }
+  // A path as "{drive} › {folder} › …", or as it is outside every Drive.
+  function onDrive(path) {
+    const drive = driveOf(path);
+    if (!drive) return path ?? '';
+    const inside = path.slice(drive.path.replace(/\/+$/, '').length).split('/').filter(Boolean);
+    return [drive.name ?? base(drive.path), ...inside].join(' › ');
+  }
+
+  function when(stamp) {
+    if (!stamp) return '';
+    const date = new Date(stamp);
+    return Number.isNaN(date.getTime()) ? stamp : date.toLocaleString();
+  }
+  const seen = (row) => `First seen ${when(row.first_seen)} · Last seen ${when(row.last_seen)}`;
+
+  // The Library filter, from the URL (`#/activity/attention/<library id>`).
+  const libraryFilter = $derived(ui.activityLibrary ?? '');
+  const libraryOptions = $derived([
+    { value: '', label: 'All Libraries' },
+    ...[...new Map(findings.list.map((r) => [r.library_id, r.library_name])).entries()]
+      .map(([value, label]) => ({ value, label: label ?? value })),
+  ]);
+  const rows = $derived(
+    libraryFilter ? findings.list.filter((r) => r.library_id === libraryFilter) : findings.list,
+  );
+  function pickLibrary(id) {
+    ui.navigate('activity', { tab: 'attention', id: id || null });
+  }
+
+  // Lists on open, and again when "Show ignored" flips.
   $effect(() => {
     void findings.showDismissed;
     untrack(() => findings.load());
   });
 
+  // How many conversions failed in the last day: a line that links to them.
+  let failedToday = $state(0);
+  onMount(() => {
+    fileBrowser.volumes.length || fileBrowser.fetchVolumes();
+    findings.loadPlatforms().catch(() => {});
+    api.getLedgerPage({ status: 'failed', since: '24h', limit: 1 })
+      .then((page) => { failedToday = page?.total ?? 0; })
+      .catch(() => {});
+  });
+
   // Lists again when a find-duplicates run (#388) ends while the view is open,
-  // from the jobs store as the Dashboard and the file list follow finished jobs.
-  // Keyed on the finished runs' ids, so a status changing in place counts.
+  // from the jobs store as the file list follows finished jobs. Keyed on the
+  // finished runs' ids, so a status changing in place counts.
   const finishedRuns = $derived(
     jobs.jobs
       .filter((j) => j.mode === 'find_duplicates' && TERMINAL_STATUSES.has(j.status))
@@ -118,29 +223,20 @@
     });
   });
 
-  // Whether any folder Library exists, for the empty state.
+  // Whether any Library exists, for the empty state.
   $effect(() => {
     untrack(() => {
       if (libraries.list.length === 0) libraries.load();
     });
   });
+  const noLibrary = $derived(!libraries.loading && libraries.list.length === 0);
+  let adding = $state(false);
 
-  const emptyText = $derived.by(() => {
-    if (findings.dismissed > 0 && !findings.showDismissed) {
-      const n = findings.dismissed;
-      return `Nothing open. ${n} dismissed Finding${n === 1 ? ' is' : 's are'} hidden; tick Show dismissed to see ${n === 1 ? 'it' : 'them'}.`;
-    }
-    if (!libraries.loading && libraries.folders.length === 0) {
-      return 'No folder Library yet. Open a folder in the Workspace and pick Register as a Library from its row menu.';
-    }
-    return 'Nothing needs a decision right now. Findings are recorded each time a folder Library is listed or swept, or when you press Check now.';
+  const ignoredNote = $derived.by(() => {
+    const n = findings.dismissed;
+    if (!n || findings.showDismissed) return '';
+    return ` ${n} ignored ${n === 1 ? 'problem is' : 'problems are'} hidden.`;
   });
-
-  function when(stamp) {
-    if (!stamp) return '';
-    const date = new Date(stamp);
-    return Number.isNaN(date.getTime()) ? stamp : date.toLocaleString();
-  }
 
   async function check() {
     try {
@@ -155,7 +251,7 @@
         });
       }
     } catch (e) {
-      toast.error(e?.message ?? 'Could not check the Libraries');
+      toast.error(e?.message ?? "Couldn't check the Libraries");
     }
   }
 
@@ -181,7 +277,7 @@
     try {
       await findings.undismiss(row.id);
     } catch (e) {
-      toast.error(e?.message ?? 'Could not show the Finding again');
+      toast.error(e?.message ?? "Couldn't show it again");
       // A 409 means the row changed since it was listed: show what it is now.
       findings.load();
     }
@@ -190,55 +286,103 @@
   async function dismiss(row) {
     try {
       await findings.dismiss(row.id);
-      toast.success(`Dismissed until its cause changes: ${findingName(row)}`);
+      toast.success(`Ignored until it changes: ${gameName(row)}`);
     } catch (e) {
-      toast.error(e?.message ?? 'Could not dismiss the Finding');
+      toast.error(e?.message ?? "Couldn't ignore it");
       findings.load();
     }
   }
 
+  // Place it: the console picked for each row (by id), and the rows placing.
+  let picked = $state({});
+  let placing = $state({});
+
+  // The consoles to offer: the ones the file or its folder name first, then
+  // the rest by name.
+  function consoleOptions(row) {
+    const cause = row.cause ?? {};
+    const likely = [cause.header, cause.folder, ...(cause.headers ?? [])].filter(Boolean);
+    const sorted = [...findings.platforms].sort((a, b) => a.name.localeCompare(b.name));
+    const first = sorted.filter((p) => likely.includes(p.slug));
+    return [
+      { value: '', label: 'This is a…' },
+      ...[...first, ...sorted.filter((p) => !likely.includes(p.slug))]
+        .map((p) => ({ value: p.slug, label: p.name })),
+    ];
+  }
+  const choiceOf = (row) => picked[row.id] ?? row.cause?.header ?? '';
+
+  async function place(row) {
+    const platform = choiceOf(row);
+    if (!platform) return;
+    placing = { ...placing, [row.id]: true };
+    try {
+      await findings.place(row.id, platform);
+      toast.success(`Placing ${gameName(row)} as ${consoleName(platform)}…`);
+    } catch (e) {
+      toast.error(e?.message ?? "Couldn't place it");
+      findings.load();
+    } finally {
+      const { [row.id]: _done, ...rest } = placing;
+      placing = rest;
+    }
+  }
+
+  function remove(row) {
+    ui.deleteTarget = { path: row.path, name: gameName(row) };
+  }
 </script>
 
-<div class="findings-view">
-  <header class="head">
-    <div class="title">
-      <h1>Findings</h1>
-      <p class="muted">
-        Images that need your decision. Nothing here is moved or deleted by the app:
-        open the folder to move a file yourself, or tell the app which Platform a folder holds.
-      </p>
+<div class="attention">
+  <div class="controls">
+    <Select
+      label="Library"
+      value={libraryFilter}
+      options={libraryOptions}
+      onchange={pickLibrary}
+    />
+    <span class="spacer"></span>
+    <Checkbox
+      bind:checked={findings.showDismissed}
+      label={`Show ignored (${findings.dismissed})`}
+    />
+    <Button variant="secondary" onclick={check} loading={findings.checking} icon={refreshIcon}>
+      Check again
+    </Button>
+  </div>
+
+  {#if failedToday > 0}
+    <div class="notice failed" role="status">
+      <span>
+        {failedToday} conversion{failedToday === 1 ? '' : 's'} failed in the last day.
+      </span>
+      <a href="#/activity/history?status=failed">See them in History</a>
     </div>
-    <div class="head-actions">
-      <Checkbox
-        bind:checked={findings.showDismissed}
-        label={`Show dismissed (${findings.dismissed})`}
-      />
-      <Button variant="secondary" onclick={check} loading={findings.checking} icon={refreshIcon}>
-        Check now
-      </Button>
-    </div>
-  </header>
+  {/if}
 
   {#if findings.pending}
-    <div class="notice pending" role="status">
+    <div class="notice" role="status">
       <span>{findings.pending}</span>
       <Button variant="ghost" size="sm" onclick={check} loading={findings.checking}>
-        Check now
+        Check again
       </Button>
     </div>
   {/if}
 
   {#if findings.error}
-    <div class="notice error" role="alert">Could not list the Findings: {findings.error}</div>
+    <div class="notice error" role="alert">
+      <span>Couldn't load this. {findings.error}</span>
+      <Button variant="ghost" size="sm" onclick={() => findings.load()}>Try again</Button>
+    </div>
   {/if}
 
   {#each findings.duplicateRuns as run (run.library_id)}
-    <div class="notice runs" role="status">
+    <div class="notice" role="status">
       <span>
         <strong>{run.library_name}</strong>: duplicates last looked for {when(run.finished_at)}.
-        {run.groups} group{run.groups === 1 ? '' : 's'}, {run.keyed} Image{run.keyed === 1 ? '' : 's'} checked.
+        {run.groups} group{run.groups === 1 ? '' : 's'}, {run.keyed} game{run.keyed === 1 ? '' : 's'} checked.
         {#if notChecked(run)}
-          Not checked, no content key for these formats yet: {notChecked(run)}.
+          Not compared yet, no way to tell these formats apart: {notChecked(run)}.
         {/if}
         {#if run.unreadable}{run.unreadable} could not be read.{/if}
         {#if run.unlisted}{run.unlisted} folder{run.unlisted === 1 ? '' : 's'} could not be listed.{/if}
@@ -250,31 +394,40 @@
 
   {#if findings.loading && findings.list.length === 0}
     <p class="muted"><Spinner /> Loading…</p>
-  {:else if findings.list.length === 0 && findings.error}
+  {:else if rows.length === 0 && findings.error}
     <!-- The error notice above says it all; no empty table under it. -->
-  {:else if findings.list.length === 0}
-    <EmptyState title="No Findings" description={emptyText} />
+  {:else if rows.length === 0}
+    <EmptyState
+      glyph="✓"
+      title="Nothing needs you"
+      description={`Problems Compressatorium can't fix on its own show up here.${ignoredNote}${noLibrary ? " Add a Library and it's watched for problems too." : ''}`}
+    >
+      {#snippet actions()}
+        {#if noLibrary}
+          <Button variant="secondary" onclick={() => (adding = true)}>Add a Library</Button>
+        {/if}
+      {/snippet}
+    </EmptyState>
   {:else}
-    <div class="table" role="table" aria-label="Findings">
+    <div class="table" role="table" aria-label="Needs attention">
       <div class="row header" role="row">
         <span role="columnheader">Library</span>
-        <span role="columnheader">Image</span>
-        <span role="columnheader">Kind</span>
-        <span role="columnheader">First seen</span>
-        <span role="columnheader">Last seen</span>
+        <span role="columnheader">Game</span>
+        <span role="columnheader">Problem</span>
         <!-- Hidden text inside a cell that still takes its track. -->
         <span role="columnheader"><span class="sr-only">Actions</span></span>
       </div>
-      {#each findings.list as row (row.id)}
-        <div class="row" class:dismissed={row.dismissed} role="row">
+      {#each rows as row (row.id)}
+        {@const about = copyOf(row)}
+        <div class="row" class:dismissed={row.dismissed} role="row" title={seen(row)}>
           <span role="cell" class="library">{row.library_name}</span>
-          <span role="cell" class="image">
+          <span role="cell" class="game">
+            <span class="name">{gameName(row)}</span>
             {#if row.kind === 'duplicate'}
-              <span class="reason">{row.reason}</span>
               <ul class="copies" aria-label="Copies">
                 {#each row.cause?.copies ?? [] as copy (copy.path)}
                   <li>
-                    <code>{copy.path}</code>
+                    <span class="copy" title={copy.path}>{onDrive(copy.path)}</span>
                     <span class="muted small">{copy.container} · {bytes(copy.size)}</span>
                     {#if copy.path === row.keeper}
                       <Badge tone="success">Keep</Badge>
@@ -282,8 +435,19 @@
                   </li>
                 {/each}
               </ul>
+            {:else}
+              <span class="muted small where">{gamePlace(row)}</span>
+            {/if}
+          </span>
+          <span role="cell" class="problem">
+            <span class="label">
+              <Badge tone={about.tone}>{about.label}</Badge>
+              {#if row.dismissed}<span class="muted small">ignored</span>{/if}
+            </span>
+            <span class="say">{about.say(row)}</span>
+            {#if row.kind === 'duplicate'}
               {#if row.keeper_reason}
-                <span class="muted small">Suggested keeper: {row.keeper_reason}.</span>
+                <span class="muted small">Suggested copy to keep: {row.keeper_reason}.</span>
               {/if}
               {#if row.deletable && row.keeper_problem}
                 <!-- Not yet proven to decode to the disc (#389): what to do first. -->
@@ -292,51 +456,68 @@
               {#if !row.deletable && row.not_deletable}
                 <span class="muted small">No delete offered: {row.not_deletable}.</span>
               {/if}
-            {:else}
-              <code>{row.image_key}</code>
-              <span class="muted reason">{row.reason}</span>
             {/if}
           </span>
-          <span role="cell">
-            <Badge tone={KIND_TONE[row.kind] ?? 'neutral'}>
-              {KIND_LABEL[row.kind] ?? row.kind}
-            </Badge>
-            {#if row.dismissed}<span class="muted small">dismissed</span>{/if}
-          </span>
-          <span role="cell" class="muted small"><span class="cell-label">First seen </span>{when(row.first_seen)}</span>
-          <span role="cell" class="muted small"><span class="cell-label">Last seen </span>{when(row.last_seen)}</span>
           <span role="cell" class="actions">
-            <Button
-              variant="ghost" size="sm" icon={openIcon}
-              ariaLabel={`Open the folder of ${findingName(row)}`}
-              onclick={() => fileBrowser.openFolder(row.folder)}
-            >
-              Open folder
-            </Button>
-            <!-- A check Rule's "not Intact" (#305), a Source a Rule could
-                 not delete (#329) and an unfinished RomM swap (#392) are about
-                 the file, not its Platform: Open folder reaches Verify, the
-                 backup and the file itself. An Inbox's file (#431) isn't in a
-                 Library folder to map: it moves into a Platform-named folder
-                 inside the Inbox instead. -->
-            {#if row.kind !== 'not_intact' && row.kind !== 'source_kept' && row.kind !== 'duplicate'
-              && row.kind !== 'romm_swap' && row.kind !== 'rename_conflict'
-              && !row.kind.startsWith('inbox_')}
+            {#if about.fix === 'console'}
               <Button
                 variant="ghost" size="sm" icon={mapIcon}
-                ariaLabel={`Set the Platform of the folder holding ${findingName(row)}`}
+                ariaLabel={`Pick the console of ${findingName(row)}`}
                 onclick={() => findings.openMapping(row.folder)}
               >
-                Set Platform
+                Pick console
               </Button>
+            {:else if about.fix === 'folder'}
+              <Button
+                variant="ghost" size="sm" icon={openIcon}
+                ariaLabel={`Open the folder of ${findingName(row)}`}
+                onclick={() => fileBrowser.openFolder(row.folder)}
+              >
+                Open folder
+              </Button>
+            {:else if about.fix === 'duplicates'}
+              {#if row.kind === 'duplicate' && row.deletable && row.keeper}
+                <Button
+                  variant="ghost" size="sm" icon={deleteIcon}
+                  ariaLabel={`Delete the other copies of ${findingName(row)}`}
+                  onclick={() => findings.openCleanup(row)}
+                >
+                  Delete the others…
+                </Button>
+              {/if}
+            {:else if about.fix === 'names'}
+              <Button
+                variant="ghost" size="sm" icon={orderIcon}
+                ariaLabel={`Choose the name order for ${gameName(row)}`}
+                onclick={() => ui.navigate('settings', { tab: 'identification' })}
+              >
+                Choose name order
+              </Button>
+            {:else if about.fix === 'place' && !row.dismissed}
+              <span class="place">
+                <Select
+                  ariaLabel={`The console of ${gameName(row)}`}
+                  value={choiceOf(row)}
+                  options={consoleOptions(row)}
+                  onchange={(v) => (picked = { ...picked, [row.id]: v })}
+                />
+                <Button
+                  size="sm" icon={placeIcon}
+                  disabled={!choiceOf(row)}
+                  loading={!!placing[row.id]}
+                  onclick={() => place(row)}
+                >
+                  Place it
+                </Button>
+              </span>
             {/if}
-            {#if row.kind === 'duplicate' && row.deletable && row.keeper}
+            {#if (about.fix === 'delete' || row.kind === 'inbox_unsorted') && driveOf(row.path)}
               <Button
                 variant="ghost" size="sm" icon={deleteIcon}
-                ariaLabel={`Delete the other copies of ${findingName(row)}`}
-                onclick={() => findings.openCleanup(row)}
+                ariaLabel={`Delete ${gameName(row)}`}
+                onclick={() => remove(row)}
               >
-                Delete others…
+                Delete
               </Button>
             {/if}
             {#if row.dismissed}
@@ -350,10 +531,10 @@
             {:else}
               <Button
                 variant="ghost" size="sm" icon={dismissIcon}
-                ariaLabel={`Dismiss ${findingName(row)}`}
+                ariaLabel={`Ignore ${findingName(row)}`}
                 onclick={() => dismiss(row)}
               >
-                Dismiss
+                Ignore
               </Button>
             {/if}
           </span>
@@ -364,49 +545,51 @@
 </div>
 
 <DuplicateDeleteModal />
+<AddLibraryModal open={adding} onClose={() => (adding = false)} />
 
 {#snippet refreshIcon()}<RefreshCw size={14} />{/snippet}
 {#snippet deleteIcon()}<Trash2 size={14} />{/snippet}
 {#snippet openIcon()}<FolderOpen size={14} />{/snippet}
 {#snippet mapIcon()}<FolderPen size={14} />{/snippet}
+{#snippet placeIcon()}<FolderInput size={14} />{/snippet}
+{#snippet orderIcon()}<ListOrdered size={14} />{/snippet}
 {#snippet dismissIcon()}<EyeOff size={14} />{/snippet}
 {#snippet showIcon()}<Eye size={14} />{/snippet}
 
 <style>
-  .findings-view {
+  .attention {
     display: flex;
     flex-direction: column;
-    gap: var(--space-4, 16px);
-    padding: var(--space-6, 24px);
-    max-width: 1200px;
-    margin: 0 auto;
-    width: 100%;
+    gap: var(--space-4);
+    min-width: 0;
   }
-  .head {
+  .controls {
     display: flex;
     flex-wrap: wrap;
     align-items: flex-end;
+    gap: var(--space-3);
+  }
+  .spacer { flex: 1; }
+  .muted { color: var(--text-2); }
+  .small { font-size: var(--text-sm); }
+  .notice {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
     justify-content: space-between;
-    gap: var(--space-4, 16px);
-  }
-  .title h1 { margin: 0 0 4px; font-size: var(--text-xl, 1.25rem); }
-  .title p { margin: 0; max-width: 70ch; }
-  .head-actions { display: flex; align-items: center; gap: var(--space-3, 12px); flex-wrap: wrap; }
-  .muted { color: var(--text-3); }
-  .small { font-size: var(--text-sm, 0.85rem); }
-  .notice.error {
-    padding: 8px 12px;
-    border: 1px solid var(--danger, #d33);
+    gap: var(--space-2);
+    padding: var(--space-2) var(--space-3);
+    border: 1px solid var(--border-subtle);
     border-radius: var(--radius-sm);
-    color: var(--danger, #d33);
-  }
-  .notice.runs {
-    padding: 8px 12px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
+    background: var(--surface-1);
     color: var(--text-2);
-    font-size: var(--text-sm, 0.85rem);
+    font-size: var(--text-sm);
   }
+  .notice.error {
+    border-color: var(--error);
+    color: var(--error);
+  }
+  .notice.failed a { color: var(--accent); font-weight: var(--weight-medium); }
   .copies {
     margin: 2px 0 0;
     padding: 0;
@@ -416,52 +599,44 @@
     gap: 2px;
   }
   .copies li { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; min-width: 0; }
-  .notice.pending {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--space-2, 8px);
-    padding: 8px 12px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--surface-2);
-    color: var(--text-2);
-  }
+  .copies .copy { overflow-wrap: anywhere; font-size: var(--text-sm); }
   .table {
     display: flex;
     flex-direction: column;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-md, 8px);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-lg);
     background: var(--surface-1);
+    box-shadow: var(--elev-1);
     overflow: hidden;
   }
   .row {
     display: grid;
     /* Every row is its own grid, so every track has a size that does not
        depend on the row's content: the header lines up with the rows. */
-    grid-template-columns: 6rem minmax(10rem, 1fr) 8.5rem 7rem 7rem 11.5rem;
-    gap: var(--space-3, 12px);
-    align-items: center;
+    grid-template-columns: 7rem minmax(12rem, 1fr) minmax(14rem, 1.2fr) 14rem;
+    gap: var(--space-3);
+    align-items: start;
     padding: 10px 14px;
-    border-top: 1px solid var(--border-subtle, var(--border));
+    border-top: 1px solid var(--border-subtle);
   }
   .row.header {
     border-top: none;
     background: var(--surface-2);
-    font-size: var(--text-xs, 0.75rem);
+    font-size: var(--text-xs);
     font-weight: var(--weight-semibold);
     color: var(--text-2);
     text-transform: uppercase;
     letter-spacing: 0.03em;
   }
   .row.dismissed { opacity: 0.6; }
-  .image { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-  .image code { overflow-wrap: anywhere; font-size: var(--text-sm, 0.85rem); }
-  .reason { font-size: var(--text-sm, 0.85rem); }
+  .game, .problem { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .name { font-weight: var(--weight-medium); color: var(--text-1); overflow-wrap: anywhere; }
+  .where { overflow-wrap: anywhere; }
+  .label { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+  .say { font-size: var(--text-sm); color: var(--text-1); overflow-wrap: anywhere; }
   .library { overflow-wrap: anywhere; }
   .actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px; }
-  .cell-label { display: none; }
+  .place { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; justify-content: flex-end; }
   .sr-only {
     position: absolute;
     width: 1px;
@@ -470,12 +645,10 @@
     clip: rect(0 0 0 0);
     white-space: nowrap;
   }
-  /* Below this the tracks (800px at their narrowest) do not fit beside the sidebar. */
+  /* Below this the tracks do not fit beside the sidebar. */
   @media (max-width: 1180px) {
-    .findings-view { padding: var(--space-4, 16px); }
-    .row { grid-template-columns: 1fr; gap: 4px; }
+    .row { grid-template-columns: 1fr; gap: 6px; }
     .row.header { display: none; }
-    .actions { justify-content: flex-start; }
-    .cell-label { display: inline; }
+    .actions, .place { justify-content: flex-start; }
   }
 </style>

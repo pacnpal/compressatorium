@@ -6,7 +6,7 @@
    * automation, and set up the connection. The Library tab is the ordinary
    * workspace — the backend returns a RomM platform's ROMs in the same
    * DirectoryListing/FileEntry shape a directory listing uses, so FileList,
-   * FileRow, RowActionsMenu, ConvertPanel and JobsPanel are reused verbatim.
+   * FileRow, RowActionsMenu, ConvertPanel and the Running list are reused verbatim.
    */
   import { onMount } from 'svelte';
   import { toast } from 'svelte-sonner';
@@ -19,7 +19,7 @@
   import { formatSize } from '$lib/api/format.js';
   import FileList from '$lib/components/panels/FileList.svelte';
   import ConvertPanel from '$lib/components/panels/ConvertPanel.svelte';
-  import JobsPanel from '$lib/components/panels/JobsPanel.svelte';
+  import RunningList from '$lib/components/activity/RunningList.svelte';
   import RommSettings from '$lib/components/views/RommSettings.svelte';
   import RulesView from '$lib/components/views/RulesView.svelte';
   import Splitter from '$lib/components/ui/Splitter.svelte';
@@ -658,7 +658,7 @@
           <ConvertPanel />
         {/if}
         <div class="separator" aria-hidden="true"></div>
-        <JobsPanel />
+        <RunningList />
       </article>
     </div>
   {/if}

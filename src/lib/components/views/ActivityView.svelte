@@ -9,14 +9,13 @@
   import { jobs } from '$lib/stores/jobs.svelte.js';
   import { ledger } from '$lib/stores/ledger.svelte.js';
   import { findings } from '$lib/stores/findings.svelte.js';
-  import FindingsView from './FindingsView.svelte';
-  import LedgerView from './LedgerView.svelte';
-  import JobsPanel from '$lib/components/panels/JobsPanel.svelte';
-  import SavingsCard from '$lib/components/dashboard/SavingsCard.svelte';
-  import QueueSummaryCard from '$lib/components/dashboard/QueueSummaryCard.svelte';
+  import ActivitySummary from '$lib/components/activity/ActivitySummary.svelte';
+  import NeedsAttention from '$lib/components/activity/NeedsAttention.svelte';
+  import RunningList from '$lib/components/activity/RunningList.svelte';
+  import HistoryList from '$lib/components/activity/HistoryList.svelte';
 
   const attention = $derived(findings.openCount);
-  const running = $derived(jobs.activeCount);
+  const running = $derived(jobs.runningList.length);
   const tab = $derived(
     ui.activityTab ?? (attention > 0 ? 'attention' : running > 0 ? 'running' : 'history'),
   );
@@ -26,7 +25,7 @@
     { id: 'history', label: 'History' },
   ]);
 
-  // Refresh the savings card whenever the set of finished jobs changes.
+  // Refresh the space saved whenever the set of finished jobs changes.
   // Keyed on identity, not count: once history hits its cap a new finished
   // job replaces an evicted one and the count stays flat.
   const finished = $derived(
@@ -47,10 +46,7 @@
     <p class="hint">What needs you, what's running, and everything that ran.</p>
   </header>
 
-  <div class="summary">
-    <QueueSummaryCard />
-    <SavingsCard />
-  </div>
+  <ActivitySummary />
 
   <div class="tabs" role="tablist" aria-label="Activity sections">
     {#each TABS as t (t.id)}
@@ -69,15 +65,11 @@
 
   <div role="tabpanel" id="activity-panel" aria-labelledby={`activity-tab-${tab}`} class="panel">
     {#if tab === 'attention'}
-      <FindingsView />
+      <NeedsAttention />
     {:else if tab === 'running'}
-      <!-- The whole jobs panel for now: a Check Rule's runs write no History
-           row, so its Completed and Failed tabs are still the only place
-           those show. -->
-
-      <div class="card"><JobsPanel /></div>
+      <RunningList />
     {:else}
-      <LedgerView />
+      <HistoryList />
     {/if}
   </div>
 </section>
@@ -100,11 +92,6 @@
     color: var(--text-1);
   }
   .hint { color: var(--text-2); margin-top: var(--space-1); }
-  .summary {
-    display: grid;
-    gap: var(--space-4);
-    grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
-  }
   .tabs {
     display: flex;
     flex-wrap: wrap;
@@ -129,13 +116,4 @@
   }
   .tab:focus-visible { outline: none; box-shadow: var(--focus-ring); }
   .panel { min-width: 0; }
-  /* The hosted views bring their own page padding; take it back here. */
-  .panel > :global(.view) { padding: 0; }
-  .card {
-    background: var(--surface-1);
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-lg);
-    padding: var(--space-4);
-    box-shadow: var(--elev-1);
-  }
 </style>

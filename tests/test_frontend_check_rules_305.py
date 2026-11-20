@@ -20,7 +20,7 @@ from .test_frontend_verification_store_298 import _run as _run_verification
 _SRC = Path(__file__).resolve().parents[1] / "src"
 _HELPER = _SRC / "lib" / "rules" / "checkRule.js"
 _EDITOR = _SRC / "lib" / "components" / "views" / "RuleEditor.svelte"
-_FINDINGS = _SRC / "lib" / "components" / "views" / "FindingsView.svelte"
+_FINDINGS = _SRC / "lib" / "components" / "activity" / "NeedsAttention.svelte"
 _JOB_ROW = _SRC / "lib" / "components" / "panels" / "JobRow.svelte"
 _ENDPOINTS = _SRC / "lib" / "api" / "endpoints.js"
 _SHOTS = Path(__file__).resolve().parents[1] / "shots.yml"
@@ -372,8 +372,8 @@ def test_only_the_check_form_offers_an_equal_window_as_all_day() -> None:
 
 def test_a_not_intact_finding_has_a_label_and_no_set_platform() -> None:
     src = _FINDINGS.read_text(encoding="utf-8")
-    assert "not_intact: 'Not Intact'" in src
-    assert "row.kind !== 'not_intact'" in src
+    # Restructure PR 4: in plain words, and its fix is the folder, not a console.
+    assert "not_intact: { label: 'Failed its check', tone: 'error', fix: 'folder'" in src
 
 
 def test_a_check_job_shows_its_name_and_result() -> None:
@@ -393,7 +393,7 @@ def test_shots_capture_a_not_intact_finding_and_a_check_job() -> None:
     shots = _SHOTS.read_text(encoding="utf-8")
     readme = (Path(__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8")
     section = readme.split("### Check Rules", 1)[1].split("\n### ", 1)[0]
-    for name in ("findings-not-intact", "jobs-check"):
+    for name in ("activity-not-intact", "activity-running"):
         for theme in ("light", "dark"):
             image = f"docs/screenshots/{name}-{theme}.png"
             assert image in shots, image

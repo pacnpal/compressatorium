@@ -940,6 +940,14 @@ export const api = {
       'Failed to show the Finding again',
     ),
 
+  // Place it (plan item 13): move a watch folder's file into the folder of
+  // the console picked, and take it in. `{ path, platform, inbox_id }`.
+  placeFinding: (id, platform) =>
+    jsonPost(
+      `${API_BASE}/findings/${encodeURIComponent(id)}/place`, { platform }, {},
+      "Couldn't place it",
+    ),
+
   checkFindings: () =>
     jsonPost(`${API_BASE}/findings/check`, {}, {}, 'Failed to check the Libraries'),
 

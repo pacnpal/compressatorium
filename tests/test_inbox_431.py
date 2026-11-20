@@ -579,7 +579,7 @@ def test_the_libraries_view_lists_inboxes_with_their_status():
     view = (root / "src/lib/components/views/RulesView.svelte").read_text()
     panel = (root / "src/lib/components/views/LibraryInboxes.svelte").read_text()
     endpoints = (root / "src/lib/api/endpoints.js").read_text()
-    findings_view = (root / "src/lib/components/views/FindingsView.svelte").read_text()
+    findings_view = (root / "src/lib/components/activity/NeedsAttention.svelte").read_text()
     assert "<LibraryInboxes" in view
     assert "api.listInboxes" in panel and "api.createInbox" in panel
     for status in ("last_poll", "waiting", "in_progress", "held", "processed"):

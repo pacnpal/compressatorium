@@ -357,10 +357,9 @@ def test_a_reader_again_keeps_it_until_the_cap_then_files_a_finding(
 def test_the_findings_view_names_a_kept_source_and_offers_no_set_platform():
     from pathlib import Path
 
-    src = (Path(__file__).resolve().parents[1] / "src" / "lib" / "components" / "views"
-           / "FindingsView.svelte").read_text(encoding="utf-8")
-    assert "source_kept: 'Source kept'" in src
-    assert "row.kind !== 'source_kept'" in src
+    src = (Path(__file__).resolve().parents[1] / "src" / "lib" / "components" / "activity"
+           / "NeedsAttention.svelte").read_text(encoding="utf-8")
+    assert "source_kept: { label: 'Original kept', tone: 'warning', fix: 'folder'" in src
 
 
 # --------------------------------------------------------------------------- #

@@ -6,7 +6,6 @@ const STORAGE_KEYS = Object.freeze({
   // values are tool ids, so a value left from it still loads as a tool tab.
   PRIMARY_TOOL: 'primary_tool_preference',
   AUTO_CONVERT: 'compressatorium_auto_convert',
-  SHOW_METADATA_JOBS: 'compressatorium_show_metadata_jobs',
   THEME: 'theme-preference',
   SIDEBAR_COLLAPSED: 'sidebar-collapsed',
   LAYOUT: 'workspace-layout',

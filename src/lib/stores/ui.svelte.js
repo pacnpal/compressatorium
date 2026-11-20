@@ -60,7 +60,6 @@ class UIStore {
   duplicateCheck = $state(null);
   deletePlan = $state(null);
   showCancelAll = $state(false);
-  showClearDone = $state(false);
   // ConvertPanel awaits a per-submit user choice on duplicate outputs.
   // Flag is observed by App.svelte so background refresh-on-terminal
   // events can't swap entries out from under the open dialog.

@@ -273,3 +273,29 @@ def test_a_tracked_job_the_server_no_longer_has_stops_the_tracking(tmp_path):
     data = _evaluate(tmp_path, _TRACKED % {"answers": "[{ status: 'processing' }, { fail: 404 }]"})
 
     assert data["calls"] == 2 and data["ended"] is None, data
+
+
+# Restructure PR 4: Running is the queue only. Running first, then waiting;
+# a finished job leaves on its own (History has it), and the background scans
+# stay hidden (the "Show metadata jobs" toggle is gone).
+_RUNNING_LIST = """
+const store = new JobsStore();
+store._applyJob({ id: 'q1', file_path: '/v/a.iso', mode: 'createdvd', status: 'queued' });
+store._applyJob({ id: 'p1', file_path: '/v/b.iso', mode: 'createdvd', status: 'processing' });
+store._applyJob({ id: 'd1', file_path: '/v/c.iso', mode: 'createdvd', status: 'completed' });
+store._applyJob({ id: 'f1', file_path: '/v/d.iso', mode: 'createdvd', status: 'failed' });
+store._applyJob({ id: 's1', file_path: '/x/1', mode: 'metadata_scan', status: 'processing' });
+store._applyJob({ id: 'c1', file_path: '/x/2', mode: 'check', status: 'queued' });
+process.stdout.write(JSON.stringify({
+  ids: store.runningList.map((j) => j.id),
+  toggle: typeof store.setShowExternalScanJobs,
+  shown: store.showExternalScanJobs,
+}));
+"""
+
+
+def test_running_lists_the_queue_only_running_first(tmp_path):
+    out = _evaluate(tmp_path, _RUNNING_LIST)
+    assert out["ids"] == ["p1", "q1", "c1"]
+    assert out["toggle"] == "undefined"
+    assert out["shown"] is False
